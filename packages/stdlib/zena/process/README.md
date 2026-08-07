@@ -34,7 +34,7 @@ stdlib module:
 - **Compile time**: `zena:process` is a virtual module mapped only for
   the `wasi` and `zena-cli` targets. There is no `host` (JS) mapping.
   The `wasi` mapping exists because artifacts compiled `--target wasi`
-  are still routinely *executed* by zena-cli — the stdlib test runners
+  are still routinely _executed_ by zena-cli — the stdlib test runners
   are built that way (`build-wasi-tests.js`), and the process tests run
   through them. It also keeps the imports embedder-neutral: the module
   compiles against a plain import contract (`zena_process`), so any

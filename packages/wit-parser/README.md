@@ -11,11 +11,11 @@ written in Zena (`zena/`). The full ported wasm-tools UI corpus passes:
 **Real WASI parses and resolves end to end** — three trees, checked on every
 `npm test`:
 
-| tree | packages / interfaces / worlds |
-| --- | --- |
-| WASI 0.2 (`wasi:http@0.2.8` + 6 deps) | 7 / 31 / 9 |
-| WASI 0.3.0-rc-2025-09-16 draft | 6 / 25 / 8 |
-| **WASI 0.3.0, released** | 6 / 25 / 8 |
+| tree                                  | packages / interfaces / worlds |
+| ------------------------------------- | ------------------------------ |
+| WASI 0.2 (`wasi:http@0.2.8` + 6 deps) | 7 / 31 / 9                     |
+| WASI 0.3.0-rc-2025-09-16 draft        | 6 / 25 / 8                     |
+| **WASI 0.3.0, released**              | 6 / 25 / 8                     |
 
 Getting there took five fixes for combinations the synthetic corpus never
 exercised — passing it was no evidence at all that real WASI would work. Each is
@@ -37,12 +37,12 @@ let doc = parse(source);   // parses AND resolves; throws on either failure
 
 `zena/wit.zena` is the entry point:
 
-| | |
-| --- | --- |
-| `parse(source)` | parse + resolve → `Ast`. What you almost always want. |
-| `parseSyntax(source)` | parse only, for tooling that reparses a file in isolation |
-| `resolve(ast)` | resolve an AST in place, for documents assembled from several sources |
-| `toJson(ast, order?)` | the `.wit.json` shape `wasm-tools` emits |
+|                       |                                                                       |
+| --------------------- | --------------------------------------------------------------------- |
+| `parse(source)`       | parse + resolve → `Ast`. What you almost always want.                 |
+| `parseSyntax(source)` | parse only, for tooling that reparses a file in isolation             |
+| `resolve(ast)`        | resolve an AST in place, for documents assembled from several sources |
+| `toJson(ast, order?)` | the `.wit.json` shape `wasm-tools` emits                              |
 
 The names are unqualified because the module already says what they are about;
 rename at the import site if `parse` is ambiguous in context. The test harness
@@ -64,21 +64,21 @@ not.
 
 That guard only works if something builds it, and for a while nothing did: the
 example had rotted into calling `.toString()` on an `i32`, which neither
-compiler accepts. `npm test` now builds *and runs* it with the self-hosted CLI
+compiler accepts. `npm test` now builds _and runs_ it with the self-hosted CLI
 (`test:example`), so a broken package map, a compile regression, or a parser
 that throws all fail the suite.
 
 > **The package both compiles and is consumable under the self-hosted
-> compiler.** All 12 modules compile — generic *private* methods
+> compiler.** All 12 modules compile — generic _private_ methods
 > (`Parser.#parseList<T>`, 0e7effe4), distributed sealed variants and
 > block-scoped function bindings (#164), self/forward-referencing closure
-> captures (#165) — and a *consumer* reaching the package through the
+> captures (#165) — and a _consumer_ reaching the package through the
 > package map now works too. That last one was a reachability bug, not
 > anything cross-module: a checkable-phase visit of a member satisfied
 > the later reachable visit, stranding closures the first visit had
 > created but not marked reached. See BUGS.md.
 
-Nothing in the *compiler* calls the parser yet — making WIT imports first-class
+Nothing in the _compiler_ calls the parser yet — making WIT imports first-class
 is the next step; see
 [component-model.md](../../docs/design/component-model.md).
 
@@ -153,7 +153,7 @@ Two sources are pinned, laid out as `<root>/<source-name>/…` by both fetchers:
   the pin will not move again. Its layout — deps vendored, the package header in
   only one file per package — is what exposed the ordering bugs.
 - **`wasi`** — `WebAssembly/WASI` at `v0.3.0`, where 0.3 actually lives now.
-  Structurally different: one `wit/` per proposal under `proposals/`, with *no*
+  Structurally different: one `wit/` per proposal under `proposals/`, with _no_
   vendored deps, so resolving it leans on topological package ordering instead.
 
 Both pins are deliberately behind upstream (0.2 is now at 0.2.12, and 0.3 has

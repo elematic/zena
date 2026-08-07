@@ -74,7 +74,7 @@ an alias") arrived, and the primitive was deleted.
 3.  **Access**: An element load is `array.get_u` (or `array.get_s` for the signed narrow types), which extends the stored byte to an `i32` on the stack. No manual shifting is required.
 
 Nothing changed at the wasm level: `getByteArrayType()` and `array<u8>` resolve
-to the *same* cached array type. What changed is the source-level type of an
+to the _same_ cached array type. What changed is the source-level type of an
 element, which is now `u8` rather than `i32` — what a byte always was in fact.
 Combining one with an `i32` therefore needs an explicit `as`, like any other
 mixed-signedness pair.

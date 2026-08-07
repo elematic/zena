@@ -19,10 +19,10 @@ Code generation separates semantic discovery from lowering and emission
   invariants, and verification workflow, and `docs/design/ir.md` for
   the design. `ir.zena` (instruction set + flat encoding),
   `builder.zena`, `cfg.zena`, `lowering.zena` + `lowering-context.zena`
-  + per-construct modules (control-flow, patterns, operators, equality,
-  templates, intrinsics, scaffold), `gvn.zena`, `verifier.zena`,
-  `emit.zena` (SSA destruction, stack scheduling, local coalescing),
-  `printer.zena` for WAT-comment dumps.
+  - per-construct modules (control-flow, patterns, operators, equality,
+    templates, intrinsics, scaffold), `gvn.zena`, `verifier.zena`,
+    `emit.zena` (SSA destruction, stack scheduling, local coalescing),
+    `printer.zena` for WAT-comment dumps.
 - **`wasm-emitter.zena`**: `WasmEmitter` interface. The required hooks for
   generating Wasm modules and instructions.
 - **`binary-emitter.zena`**: `BinaryEmitter`. Implements `WasmEmitter` to output
@@ -81,7 +81,7 @@ Code generation separates semantic discovery from lowering and emission
 - **Category gating (`runList`)**: `src/scripts/run-execution-tests.ts`
   filters execution tests by top-level category directory via its
   `runList` array, which currently names every category. A new test in
-  an existing category runs automatically; a new category *directory*
+  an existing category runs automatically; a new category _directory_
   must be added to `runList` or its tests are silently skipped.
 - Run execution tests locally via: `npm run test:execution  -w @zena-lang/zena-compiler -- [filter]` explicitly to isolate generated Wasm regressions
   natively using the `wasmtime --invoke main` interface wrapped by Node.js.

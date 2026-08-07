@@ -388,7 +388,7 @@ website served by a Zena server":
     the union payload, which is its own piece of work.
   - **Not yet: `Future<void>`** (§8 question 1), blocked on something
     older and more general than async — `void` as a generic type
-    argument lowers to a void-typed *parameter*, which ZIR rejects. A
+    argument lowers to a void-typed _parameter_, which ZIR rejects. A
     plain `new Completer<void>()` in non-async code fails identically.
     Async lowering says so explicitly rather than failing deep in the
     stdlib.
@@ -397,6 +397,7 @@ website served by a Zena server":
   suspension inside a loop, failure propagation, async methods and
   closures, and an async `main` driven by the synthesized export
   wrapper (§4).
+
 - **A2 — timers.** `sleep`/timeout over WASI p1 `poll_oneoff`; the
   drain/park arm; JS-host parking via the event loop.
 - **A3 — external completions on the JS host.** The
@@ -474,7 +475,7 @@ input for async v1.)
    that has nothing to do with async. `void` as a generic type
    argument produces a void-typed parameter (here,
    `CallbackListener<void>.onValue`) that ZIR rejects; `new
-   Completer<void>()` in ordinary non-async code fails the same way.
+Completer<void>()` in ordinary non-async code fails the same way.
    Whichever spelling wins, fire-and-forget async needs that generics
    hole fixed first, so it is the natural next piece of work after A1.
 2. **Async main**: is `export async function main(): Future<i32>` the

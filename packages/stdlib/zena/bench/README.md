@@ -24,7 +24,7 @@ The full rationale and architecture live in
 - **Distributions, not point estimates.** Each variant is summarized
   with a 95% t-confidence interval of the mean.
 - **Conclusions from difference CIs.** Variants are compared with the CI
-  of the *difference* of means (Welch's construction). Only when that
+  of the _difference_ of means (Welch's construction). Only when that
   interval excludes zero does the report say "A is faster than B";
   otherwise it honestly says "unsure".
 - **Auto-sampling against horizons.** After `minSamples`, the runner
@@ -116,9 +116,9 @@ milestone workload suite.
 
 ## Files
 
-| File         | Role                                                             |
-| ------------ | ---------------------------------------------------------------- |
-| `index.zena` | Public entry: runner, reports, `analyze()` for external samples  |
+| File         | Role                                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------------ |
+| `index.zena` | Public entry: runner, reports, `analyze()` for external samples                                  |
 | `stats.zena` | Private: t-table, `summarize`, Welch difference CIs, horizons — re-exported from the entry point |
 
 Statistics are deliberately small: a Student-t table at 95% (the only

@@ -267,7 +267,7 @@ literals.
 A negated literal is measured as a whole, so `let low: i8 = -128;` is accepted
 even though `128` alone would not fit.
 
-> Earlier versions of this document stated that contextual typing did *not*
+> Earlier versions of this document stated that contextual typing did _not_
 > apply to annotated declarations and that `let a: i64 = 1;` was an error.
 > That has never matched the compiler's behaviour; the rule above is what
 > ships.
@@ -902,10 +902,10 @@ let makeCounter = (start: i32) => {
 Because a `function` provably has no captured environment, the compiler never
 allocates a context object for it: a call compiles to a direct call, and there
 is nothing to heap-allocate at the point the function "comes into existence."
-(Referring to one as a *value* still produces a function value — see
+(Referring to one as a _value_ still produces a function value — see
 [As a value](#as-a-value) — because that is what every function value in Zena
 is.) An arrow bound to a top-level `let` that happens not to capture anything
-compiles the same way today, but only `function` *guarantees* it: a later edit
+compiles the same way today, but only `function` _guarantees_ it: a later edit
 cannot silently turn it into a closure.
 
 #### Hoisting, recursion, and mutual recursion
@@ -2288,7 +2288,7 @@ case let Point { x: 0, y: (1, z) }: ...
 
 #### Names in Patterns
 
-Whether a name in a pattern *binds* a new variable or *refers* to something
+Whether a name in a pattern _binds_ a new variable or _refers_ to something
 that already exists is decided syntactically, by the enclosing `let`/`var` —
 never by whether the name happens to resolve.
 
@@ -2315,7 +2315,7 @@ a name that is merely misspelled still parses as a valid binding; making it
 depend on the explicit `let`/`var` (as Swift does) means every unresolved name
 is a diagnosable error.
 
-There is no pattern that compares against an existing variable's *value*. Use a
+There is no pattern that compares against an existing variable's _value_. Use a
 guard instead:
 
 ```zena

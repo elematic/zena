@@ -51,13 +51,10 @@ for (const zenaFile of files) {
 
   // Compile for the zena-cli host, which run-wasmtime.ts uses to run these
   try {
-    execSync(
-      `"${zenaCliPath}" build "${zenaFile}" -o "${wasmFile}"`,
-      {
-        stdio: 'pipe',
-        cwd: repoRoot,
-      },
-    );
+    execSync(`"${zenaCliPath}" build "${zenaFile}" -o "${wasmFile}"`, {
+      stdio: 'pipe',
+      cwd: repoRoot,
+    });
     console.log(`  ✓ ${relPath}`);
     built++;
   } catch (e: unknown) {

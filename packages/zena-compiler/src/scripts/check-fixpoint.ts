@@ -54,7 +54,9 @@ try {
   statSync(stageB);
 } catch {
   console.error(`✗ stage B is missing: ${stageB}`);
-  console.error('  run `npm run build:self-hosted -w @zena-lang/zena-compiler`');
+  console.error(
+    '  run `npm run build:self-hosted -w @zena-lang/zena-compiler`',
+  );
   process.exit(1);
 }
 
@@ -66,9 +68,15 @@ try {
 try {
   build(stageC, join('zena', 'out', 'definitely-not-a-compiler.wasm'));
   console.error(`✗ ${COMPILER_ENV} is being ignored by zena-cli.`);
-  console.error('  A build with a nonexistent compiler path succeeded, so stage C');
-  console.error('  would be built by the default compiler and this check would');
-  console.error('  compare stage B against itself. See packages/zena-cli/src/main.rs.');
+  console.error(
+    '  A build with a nonexistent compiler path succeeded, so stage C',
+  );
+  console.error(
+    '  would be built by the default compiler and this check would',
+  );
+  console.error(
+    '  compare stage B against itself. See packages/zena-cli/src/main.rs.',
+  );
   process.exit(1);
 } catch {
   // Expected: zena-cli rejects a compiler path that does not exist.
@@ -79,7 +87,9 @@ try {
   build(stageC, stageBRel);
 } catch (e) {
   const err = e as {stdout?: unknown; stderr?: unknown};
-  console.error('✗ stage C failed to build — stage B cannot build the compiler');
+  console.error(
+    '✗ stage C failed to build — stage B cannot build the compiler',
+  );
   for (const stream of [err.stdout, err.stderr]) {
     if (stream != null && String(stream).trim() !== '') {
       console.error(String(stream).replace(/^/gm, '  '));
@@ -98,9 +108,15 @@ if (b.equals(c)) {
 
 console.error('✗ FIXPOINT BROKEN: stage B ≢ stage C');
 console.error('');
-console.error('  Stage B and stage C are built from the same source by compilers');
-console.error('  that are themselves built from the same source, so they should be');
-console.error('  identical. A difference means the compiler miscompiles itself.');
+console.error(
+  '  Stage B and stage C are built from the same source by compilers',
+);
+console.error(
+  '  that are themselves built from the same source, so they should be',
+);
+console.error(
+  '  identical. A difference means the compiler miscompiles itself.',
+);
 console.error('');
 console.error(`  stage B  ${stageB}`);
 console.error(`  stage C  ${stageC}`);
@@ -118,6 +134,8 @@ if (b.length === c.length) {
   console.error(`  lengths differ by ${Math.abs(b.length - c.length)} bytes`);
 }
 console.error('');
-console.error('  To investigate: `wasm-tools objdump` both to find which section');
+console.error(
+  '  To investigate: `wasm-tools objdump` both to find which section',
+);
 console.error('  moved, then `wasm-tools print` and diff.');
 process.exit(1);

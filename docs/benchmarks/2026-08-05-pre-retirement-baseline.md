@@ -15,22 +15,22 @@ Everything else in the retirement plan can be redone. This cannot. That is why
 capturing it is step 1.
 
 Post-retirement regressions should be measured against these numbers, with the
-caveat that they are single-machine and single-run-set — see *Reading these
-numbers* below.
+caveat that they are single-machine and single-run-set — see _Reading these
+numbers_ below.
 
 ## Environment
 
-| | |
-| --- | --- |
-| Commit | `6299d9ca` (`main`) |
-| CPU | AMD Ryzen 9 5950X, 16 cores / 32 threads |
-| Memory | 23 GB, no swap |
-| OS | Linux 6.18.41 |
-| Node.js | v26.3.0 |
-| wasmtime | 46.0.0 (423be7a4e, 2026-06-22) |
-| wasm-tools | 1.252.0 |
-| rustc | 1.95.0 (59807616e, 2026-04-14) |
-| Command | `npm run benchmark -w @zena-lang/zena-compiler`, inside `nix develop` |
+|            |                                                                       |
+| ---------- | --------------------------------------------------------------------- |
+| Commit     | `6299d9ca` (`main`)                                                   |
+| CPU        | AMD Ryzen 9 5950X, 16 cores / 32 threads                              |
+| Memory     | 23 GB, no swap                                                        |
+| OS         | Linux 6.18.41                                                         |
+| Node.js    | v26.3.0                                                               |
+| wasmtime   | 46.0.0 (423be7a4e, 2026-06-22)                                        |
+| wasm-tools | 1.252.0                                                               |
+| rustc      | 1.95.0 (59807616e, 2026-04-14)                                        |
+| Command    | `npm run benchmark -w @zena-lang/zena-compiler`, inside `nix develop` |
 
 Run inside the flake dev shell deliberately: outside it the environment supplies
 Node v22, and the CLI warns that Zena requires Node 25+. A baseline taken on an
@@ -53,11 +53,11 @@ unsupported runtime would not be comparable.
 
 ## Status of this capture: COMPLETE
 
-| Measurement | Status |
-| --- | --- |
-| Compile time — all four targets | ✅ |
-| Emitted code size, bootstrap vs self-hosted | ✅ |
-| Runtime of emitted code, bootstrap vs self-hosted | ✅ |
+| Measurement                                       | Status |
+| ------------------------------------------------- | ------ |
+| Compile time — all four targets                   | ✅     |
+| Emitted code size, bootstrap vs self-hosted       | ✅     |
+| Runtime of emitted code, bootstrap vs self-hosted | ✅     |
 
 The 2026-08-04 capture was partial: `stdlib_moderate` and `stdlib_heavy` could
 not be compiled by the self-hosted compiler at all, and neither emitted size nor
@@ -70,12 +70,12 @@ document is internally consistent rather than a mix of pre- and post-fix runs.
 Bootstrap = TypeScript compiler on Node. Ratios relative to Bootstrap; lower is
 better. Means of 5 runs, except `self_compile` which runs once.
 
-| Target | Bootstrap (Node) | Self-Hosted (Wasmtime) | Self-Hosted (Node) | Wt/Boot | Node/Boot |
-| --- | --- | --- | --- | --- | --- |
-| `minimal.zena` | 301.68 ms | 434.86 ms | 274.25 ms | 1.44× | 0.91× |
-| `stdlib_moderate.zena` | 321.14 ms | 527.24 ms | 295.23 ms | 1.64× | 0.92× |
-| `stdlib_heavy.zena` | 405.32 ms | 934.89 ms | 403.82 ms | 2.31× | 1.00× |
-| `self_compile` | 5122.78 ms | 9449.86 ms | 2981.90 ms | 1.84× | 0.58× |
+| Target                 | Bootstrap (Node) | Self-Hosted (Wasmtime) | Self-Hosted (Node) | Wt/Boot | Node/Boot |
+| ---------------------- | ---------------- | ---------------------- | ------------------ | ------- | --------- |
+| `minimal.zena`         | 301.68 ms        | 434.86 ms              | 274.25 ms          | 1.44×   | 0.91×     |
+| `stdlib_moderate.zena` | 321.14 ms        | 527.24 ms              | 295.23 ms          | 1.64×   | 0.92×     |
+| `stdlib_heavy.zena`    | 405.32 ms        | 934.89 ms              | 403.82 ms          | 2.31×   | 1.00×     |
+| `self_compile`         | 5122.78 ms       | 9449.86 ms             | 2981.90 ms         | 1.84×   | 0.58×     |
 
 The self-hosted compiler is slower than the bootstrap under wasmtime and roughly
 at parity — or better — on Node, which is the same runtime the bootstrap uses.
@@ -88,36 +88,36 @@ Each fixture is compiled by **both** compilers and both artifacts run under
 wasmtime, so the only variable is which compiler produced the code. 59
 comparisons:
 
-| | |
-| --- | --- |
-| Median ratio (self-hosted / bootstrap) | **0.91×** |
-| Comparisons slower than 1.10× | **4 of 59** |
+|                                        |             |
+| -------------------------------------- | ----------- |
+| Median ratio (self-hosted / bootstrap) | **0.91×**   |
+| Comparisons slower than 1.10×          | **4 of 59** |
 
 **Self-hosted codegen is meaningfully faster than the bootstrap's**, with the
 wins concentrated where the ZIR work has been:
 
-| Benchmark | Bootstrap | Self-hosted | Ratio |
-| --- | --- | --- | --- |
-| `DevirtInferCall` | 8.71 ms | 2.62 ms | **0.30×** |
-| `DevirtStaticCall` | 6.48 ms | 2.14 ms | **0.33×** |
-| `LoopForInImmutableArrayInterface` | 299.61 ms | 141.94 ms | **0.47×** |
-| `FieldAssignDevirtFinalField` | 4.25 ms | 2.28 ms | **0.54×** |
+| Benchmark                          | Bootstrap | Self-hosted | Ratio     |
+| ---------------------------------- | --------- | ----------- | --------- |
+| `DevirtInferCall`                  | 8.71 ms   | 2.62 ms     | **0.30×** |
+| `DevirtStaticCall`                 | 6.48 ms   | 2.14 ms     | **0.33×** |
+| `LoopForInImmutableArrayInterface` | 299.61 ms | 141.94 ms   | **0.47×** |
+| `FieldAssignDevirtFinalField`      | 4.25 ms   | 2.28 ms     | **0.54×** |
 
 The four cases above 1.10×:
 
-| Benchmark | Bootstrap | Self-hosted | Ratio |
-| --- | --- | --- | --- |
-| `FieldAccessVirtual` | 2.22 ms | 4.39 ms | 1.98× |
-| `FieldAccessDevirtFinalField` | 2.43 ms | 4.36 ms | 1.79× |
-| `IfSingle` | 9.02 ms | 10.54 ms | 1.17× |
-| `FieldAccessRecordAdapt` | 134.69 ms | 149.23 ms | 1.11× |
+| Benchmark                     | Bootstrap | Self-hosted | Ratio |
+| ----------------------------- | --------- | ----------- | ----- |
+| `FieldAccessVirtual`          | 2.22 ms   | 4.39 ms     | 1.98× |
+| `FieldAccessDevirtFinalField` | 2.43 ms   | 4.36 ms     | 1.79× |
+| `IfSingle`                    | 9.02 ms   | 10.54 ms    | 1.17× |
+| `FieldAccessRecordAdapt`      | 134.69 ms | 149.23 ms   | 1.11× |
 
 For context, `FieldAccessVirtual` was **59.53×** in the 2026-08-04 capture, at
 126.79 ms. It is now 4.39 ms.
 
 The residual ~2× is worth understanding but is not a stable property of any one
 benchmark. Across runs, two of the four field-access benchmarks sit at ~4.2 ms
-and two at ~2.1 ms, and *which* two swapped after an unrelated reachability
+and two at ~2.1 ms, and _which_ two swapped after an unrelated reachability
 change — earlier it was `DevirtFinal` and `DevirtEffectivelyFinal`, now it is
 `Virtual` and `DevirtFinalField`. Reproduced across two consecutive runs, so it
 is not measurement noise. That points at an inlining threshold rather than
@@ -129,17 +129,17 @@ Measured **excluding custom sections**. Raw file size is not comparable: the
 self-hosted compiler always emits a `name` section while the bootstrap only does
 under `-g`, and that section accounted for 55–62% of the apparent gap.
 
-| Target | Bootstrap | Self-hosted | Ratio |
-| --- | --- | --- | --- |
-| `minimal.zena` | 13,097 B | 22,082 B | 1.69× |
-| `stdlib_moderate.zena` | 22,972 B | 36,930 B | 1.61× |
-| `stdlib_heavy.zena` | 65,217 B | 94,817 B | 1.45× |
-| the compiler itself | 1,959,761 B | 2,721,008 B | **1.39×** |
+| Target                 | Bootstrap   | Self-hosted | Ratio     |
+| ---------------------- | ----------- | ----------- | --------- |
+| `minimal.zena`         | 13,097 B    | 22,082 B    | 1.69×     |
+| `stdlib_moderate.zena` | 22,972 B    | 36,930 B    | 1.61×     |
+| `stdlib_heavy.zena`    | 65,217 B    | 94,817 B    | 1.45×     |
+| the compiler itself    | 1,959,761 B | 2,721,008 B | **1.39×** |
 
 **Correction to the 2026-08-04 capture.** That version concluded the size gap
 was proportional rather than fixed overhead, on the grounds that the ratio held
 steady as programs grew. With custom sections excluded and the dead closure
-wrappers removed, that no longer holds: the ratio *declines* with program size
+wrappers removed, that no longer holds: the ratio _declines_ with program size
 (1.69 → 1.61 → 1.45 → 1.39), and the incremental ratio against the `minimal`
 baseline converges to the same ~1.39×. So there is a modest fixed component that
 dominates small programs, on top of a proportional ~1.39×. The earlier reading

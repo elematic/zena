@@ -6,7 +6,7 @@
   describe `promoteNumeric` in `packages/zena-compiler/zena/lib/types.zena`,
   not a proposal.
 - **Narrow integers (`u8`, `u16`, `i8`, `i16`) implemented 2026-08-06**, as
-  types, promotion, casts and literal range checking. Their *packed storage*
+  types, promotion, casts and literal range checking. Their _packed storage_
   is not built yet — see [Two representations](#two-representations). See
   [Narrow integers](#narrow-integers).
 - This document previously proposed rules that the compiler never adopted —
@@ -29,17 +29,17 @@
 
 Symmetric — swapping the operands gives the same answer.
 
-| Left | Right | Result |
-| --- | --- | --- |
-| anything | `f64` | `f64` |
-| `f32` | `i64`/`u64` | `f64` (precision) |
-| `f32` | anything else | `f32` |
-| `u64` | `u64` | `u64` |
-| `u64` | anything else | **error** |
-| `i64` | any signed integer | `i64` |
-| `u32` | `u32` | `u32` |
-| `i32` | `i32` | `i32` |
-| signed int | unsigned int | **error** |
+| Left       | Right              | Result            |
+| ---------- | ------------------ | ----------------- |
+| anything   | `f64`              | `f64`             |
+| `f32`      | `i64`/`u64`        | `f64` (precision) |
+| `f32`      | anything else      | `f32`             |
+| `u64`      | `u64`              | `u64`             |
+| `u64`      | anything else      | **error**         |
+| `i64`      | any signed integer | `i64`             |
+| `u32`      | `u32`              | `u32`             |
+| `i32`      | `i32`              | `i32`             |
+| signed int | unsigned int       | **error**         |
 
 Integer literals without a `.` start as `i32`; with a `.`, `f64`.
 
@@ -62,11 +62,11 @@ general-purpose numeric tier.
 
 A narrow integer is stored packed and computed wide:
 
-| Position | Representation | Status |
-| --- | --- | --- |
-| array element | packed — wasm `i8` / `i16` storage | implemented |
-| struct/record field | packed — wasm `i8` / `i16` storage | **not yet** — currently `i32` |
-| local, parameter, return, expression value | unpacked — wasm `i32` | implemented |
+| Position                                   | Representation                     | Status                        |
+| ------------------------------------------ | ---------------------------------- | ----------------------------- |
+| array element                              | packed — wasm `i8` / `i16` storage | implemented                   |
+| struct/record field                        | packed — wasm `i8` / `i16` storage | **not yet** — currently `i32` |
+| local, parameter, return, expression value | unpacked — wasm `i32`              | implemented                   |
 
 This is exactly what `ByteArray` already does: a wasm `(array i8)` whose reads
 produce `i32`. Loads zero-extend for unsigned types (`array.get_u`) and
@@ -81,7 +81,7 @@ for WIT's `list<u8>`), where `array.get_u`/`array.get_s` can be introduced
 once rather than twice.
 
 **The invariant that makes this work** is that an unpacked narrow value is
-always in *canonical* form — unsigned values zero-extended, signed values
+always in _canonical_ form — unsigned values zero-extended, signed values
 sign-extended — so every promotion and comparison downstream is plain 32-bit
 work with no masking. Only `as` can break that invariant, so `as` is the only
 operation that re-normalizes (`normalizeNarrow` in `ir/operators.zena`).
@@ -118,7 +118,7 @@ the ceremony to prevent.
 
 The promotion is implicit, which is a real cost against "no implicit
 coercion". It is precedented (`i32 + i64 -> i64` already widens implicitly)
-and it is *value-preserving* — unlike the mixed-signedness case, no operand
+and it is _value-preserving_ — unlike the mixed-signedness case, no operand
 changes meaning. Narrowing, which can change meaning, stays explicit.
 
 ### Comparison and equality
@@ -142,7 +142,7 @@ The range check covers the narrow types and the unsigned types. `i32` and
 `i64` are deliberately excluded: they have never checked their literals, and
 tightening them is a separate change with its own fallout.
 
-This replaced a hard `throw` in the checker that rejected *every* literal in a
+This replaced a hard `throw` in the checker that rejected _every_ literal in a
 `u32` or `u64` context, which is why unsigned code previously had to write
 `5 as u32` on each constant.
 

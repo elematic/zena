@@ -25,7 +25,7 @@ every shipping WASI package uses. Until they were fixed, neither
    consumed the `.` separating `@1.0.0-alpha` from `.{a}`. Covered by
    `versioned-paths/`.
 2. **Versioned interface path in a world `import`/`export`** — that path had its
-   own copy of the version parser which accepted the version only *before* the
+   own copy of the version parser which accepted the version only _before_ the
    slash, while WIT puts it after. Covered by `versioned-paths/`.
 3. **Doc comment inside a function parameter list** — covered by
    `param-doc-comments.wit`.
@@ -60,9 +60,8 @@ Both are asserted by `npm test`, against a pinned copy of the real WIT
 they cannot regress silently. See the README for how the corpus is fetched; the
 check fails rather than skips when it is missing.
 
-That check earned its keep immediately: it had pinned the p3 *failure*, so the
+That check earned its keep immediately: it had pinned the p3 _failure_, so the
 moment p3 started resolving it said so and named what to update.
-
 
 Detail and impact: [component-model.md](../../docs/design/component-model.md),
 Part 9.

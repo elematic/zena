@@ -94,7 +94,11 @@ if (filter) {
  * parsed, which also means a failure would otherwise surface as an opaque
  * `Command failed` with the actual compiler diagnostics swallowed. Print them.
  */
-const runStep = (cmd: string, opts: Parameters<typeof execSync>[1], label: string): string => {
+const runStep = (
+  cmd: string,
+  opts: Parameters<typeof execSync>[1],
+  label: string,
+): string => {
   try {
     return (execSync(cmd, opts) ?? '') as unknown as string;
   } catch (e) {
@@ -1596,9 +1600,7 @@ const compareCodegen = (label: string, srcName: string) => {
   }
   console.log(sep('└', '┴', '┘'));
   if (worstName !== '') {
-    console.log(
-      `\n  worst regression: ${worstName} at ${worst.toFixed(2)}x\n`,
-    );
+    console.log(`\n  worst regression: ${worstName} at ${worst.toFixed(2)}x\n`);
   }
 };
 

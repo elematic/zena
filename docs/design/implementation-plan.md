@@ -145,7 +145,7 @@ A.
   **This is the milestone that matters for other work**: it freezes the
   signatures, so Track W's bindgen (component-model.md Part 8 stage 3) can
   proceed on O0 without waiting for O2, and `fs.open(): Result<Own<Descriptor>,
-  Error>` becomes writable.
+Error>` becomes writable.
 - **O0.5 — `using`** and the scope-exit cleanup lowering (`try`/`finally` on all
   exit paths). Same codegen O3 reuses, reached from the easier side.
 - **O1 — the checker flow graph.** TypeScript-style flow nodes as a

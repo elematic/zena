@@ -43,7 +43,7 @@ This document tracks completed work and planned features. For project instructio
 
 - **Async Functions & Cooperative Multithreading**: Native support for asynchronous execution, targeting upcoming WASM P3 features with cooperative multithreading.
   - **A0 (front end) and A1 (transform) are done.** `async`/`await` parse,
-    check, and *run*: the split pass compiles async bodies into frame-based
+    check, and _run_: the split pass compiles async bodies into frame-based
     state machines that park on futures and resume off a microtask queue, and
     an async `main` is driven to completion by a synthesized export wrapper —
     so async programs run under plain `wasmtime --invoke main` today, with no
@@ -59,7 +59,7 @@ This document tracks completed work and planned features. For project instructio
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running
-    component. The near-term work is *language* work, because a WIT import needs
+    component. The near-term work is _language_ work, because a WIT import needs
     a Zena type for every construct it mentions — see
     [component-model.md](docs/design/component-model.md) Part 8:
     1. ~~`Result<T, E>` in the stdlib, plus `inline` tuples permitted in type
@@ -72,7 +72,7 @@ This document tracks completed work and planned features. For project instructio
     3. ~~`FixedArray<u8>` / `Array<u8>`, retiring the bespoke `ByteArray`
        primitive~~ **done** (`list<u8>` is half of all lists in p2): narrow
        array elements are stored packed, and `ByteArray` is now simply
-       `array<u8>` rather than a type of its own. Packed *struct fields*
+       `array<u8>` rather than a type of its own. Packed _struct fields_
        are still outstanding.
     4. `Disposable`, giving WIT `resource` a shape (79% of p2 functions are
        resource methods). This is the first step of **Track O**, adopted

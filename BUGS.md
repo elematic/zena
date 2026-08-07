@@ -124,7 +124,7 @@ immediately trying to fix it (which can pollute the current task's context).
   `expected.line` is used only in the failure text) and it does not
   consume a matched diagnostic, unlike the warning matcher just below it,
   which at least keeps a `matchedWarnings` array. Consequences:
-  - *N* identical directives are all satisfied by **one** actual error.
+  - _N_ identical directives are all satisfied by **one** actual error.
   - An error expected on line 10 passes if the only error is on line 40.
   - Unexpected errors are ignored entirely whenever the file declares at
     least one expected error — the "fail on any unexpected error" branch
@@ -132,7 +132,7 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Caught in the wild**: `semantics/type-system/inline_tuple_restrictions.zena`
   carried seven directives while the checker only ever produced six
   errors; the directive on `let bad6 = ok1();` had never once matched its
-  own line. Splitting positive cases into a file with *no* directives is
+  own line. Splitting positive cases into a file with _no_ directives is
   the current workaround, since only that path is strict.
 - **Fix**: match on line as well as message, consume matched diagnostics,
   and report unexpected errors even when some are expected. Expect
@@ -143,7 +143,7 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Found**: 2026-08-07 (adding a second defaulted parameter to
   `resolveTypeAnnotation` in `checker.zena`)
 - **Severity**: medium — it silently constrains how top-level functions can
-  evolve, and the error blames the *call site* rather than the declaration.
+  evolve, and the error blames the _call site_ rather than the declaration.
 - **Details**: a top-level `let f = (…) => …` whose parameters have defaults is
   arity-checked as if the defaults were required when the call appears
   **lexically above** the definition. Adding a second defaulted parameter to
@@ -158,17 +158,19 @@ immediately trying to fix it (which can pollute the current task's context).
 
   The pre-existing single default on that function never exposed it, because
   every call passed all three arguments.
+
 - **Workaround in place**: `checker.zena` carries `resourceMentionOk` as a field
   on `CheckerContext` instead of a parameter, with a comment pointing here.
 - **Fix sketch**: the forward-reference path appears to record a signature from
-  the declaration's parameter *count* before default expressions are attached.
+  the declaration's parameter _count_ before default expressions are attached.
   Compare how arity is resolved for a call whose callee is already checked
   versus one resolved through the forward-declaration stub.
 
 ### Type-annotation diagnostics are reported one line and one column late
+
 - **Found**: 2026-08-06 (adding the `resource class` bare-mention error; the new
   diagnostic inherited the same offset, which is how it was noticed)
-- **Severity**: low, but it affects *every* diagnostic that passes a
+- **Severity**: low, but it affects _every_ diagnostic that passes a
   `NamedTypeAnnotation`'s `loc`, so it is broad.
 - **Details**: the `loc` carried by a `NamedTypeAnnotation` renders one line and
   one column past the annotation. Pre-existing and not specific to any one
@@ -181,6 +183,7 @@ immediately trying to fix it (which can pollute the current task's context).
   reports `1:15`'s error at `2:16`. The same file with a `resource class`
   mention misreports identically, which is what confirmed it is the shared
   location and not the individual `ctx.error` call.
+
 - **Fix sketch**: find where `NamedTypeAnnotation`'s `loc` is built in
   `parser.zena` — the +1/+1 pattern suggests a location captured after the
   annotation's token has been consumed, or a 1-based value being incremented
@@ -208,16 +211,16 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Symptom**: `zena:byte-array:13:37 - Error: Type 'u8' not found.`,
   followed by a cascade of `FixedArray<<error>>` mismatches across every
   module that touches the affected stdlib type. Nothing in the message
-  suggests the *compiler binary* is the problem.
+  suggests the _compiler binary_ is the problem.
 - **Details**: `build:cli` compiles the compiler — and with it the whole
   stdlib — using the pinned seed at
   `packages/zena-compiler/bootstrap/cli.wasm`. The seed is a compiler
   from an earlier commit, so it only understands language features that
   existed when it was cut. Narrow integers had landed in the source
-  tree, but the seed predates them, so stdlib *source text* saying `u8`
+  tree, but the seed predates them, so stdlib _source text_ saying `u8`
   is unbuildable. Verified directly: the seed rejects `let b: u8 = 200;`
   while the freshly built compiler accepts it.
-- **The asymmetry that makes this survivable**: the *compiler's own*
+- **The asymmetry that makes this survivable**: the _compiler's own_
   source is under the same constraint, but it rarely trips, because the
   compiler refers to new types through its own classes (`new U8Type()`)
   rather than through the surface syntax (`u8`). A feature can therefore
@@ -225,7 +228,7 @@ immediately trying to fix it (which can pollute the current task's context).
   stdlib has to wait a release cycle. `ByteArray` was defined in the
   checker's prelude instead of the stdlib for exactly this reason.
 - **Resolution when it does block you**: `npm run reseed -w
-  @zena-lang/zena-compiler` copies `zena/out/cli-self.wasm` over
+@zena-lang/zena-compiler` copies `zena/out/cli-self.wasm` over
   `bootstrap/cli.wasm`, gated on the full test suite passing. That is
   the intended mechanism, but it rewrites a checked-in 4MB binary that
   is the build's trust root, so it deserves its own commit and an
@@ -241,7 +244,7 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Found**: 2026-08-06 (repointing the nix flake's `zena` command at
   zena-cli during bootstrap retirement)
 - **Severity**: low for development (in-repo files are the workflow),
-  high for an *installable* zena — `nix run .#zena` can only compile
+  high for an _installable_ zena — `nix run .#zena` can only compile
   files under ZENA_REPO_ROOT
 - **Details**: `compile_to_cache` requires the source under the repo
   root (`strip_prefix(repo_root)` — "File must be inside the Zena
@@ -257,7 +260,7 @@ immediately trying to fix it (which can pollute the current task's context).
 
 - **Fixed**: 2026-08-06 by b5cc02fa, "Report unresolved names in patterns
   instead of binding them" — a bare identifier in a pattern is a
-  *reference*, not a binding; binding is spelled `let x` / `var x`, which
+  _reference_, not a binding; binding is spelled `let x` / `var x`, which
   the parser already produces as a distinct node. The checker no longer
   invents a binding when the name fails to resolve to a class.
 - **Verified**: a mistyped variant now reports at the mistake, with a
@@ -271,25 +274,26 @@ immediately trying to fix it (which can pollute the current task's context).
 
   (A cascading `Unreachable case.` still follows on the arms after it,
   which is normal once the first arm has errored.)
+
 - **Found**: 2026-08-06 (adding the narrow integer types; four new
   `case U8Type:` arms were added to a match in `compiler.zena` without
   adding the names to that file's import list).
 - **Severity**: was high (silently disabled exhaustiveness checking, the
   main safety property of sealed hierarchies)
 - **Details**: `case SomeName:` where `SomeName` resolves to nothing is
-  parsed as an *identifier pattern* — a binding that matches anything —
+  parsed as an _identifier pattern_ — a binding that matches anything —
   rather than a class pattern. No unresolved-name diagnostic is emitted.
   The arm therefore consumes the whole scrutinee, and every later arm is
   reported as `Unreachable case.`, which points the reader at the wrong
-  arms entirely: the errors began ten lines *below* the actual mistake,
+  arms entirely: the errors began ten lines _below_ the actual mistake,
   and the arms named in them were all perfectly correct.
-- **Why it is dangerous**: a *typo* in a variant name has the same shape.
+- **Why it is dangerous**: a _typo_ in a variant name has the same shape.
   `case ClasType:` in an otherwise-exhaustive match would silently turn
   into a catch-all, and exhaustiveness would stop protecting that match
   from then on — with no diagnostic anywhere.
 - **Recurrences** (both 2026-08-06, same day it was filed — this is not a
   rare shape):
-  - *Deleting* a variant does it too, not just failing to import one.
+  - _Deleting_ a variant does it too, not just failing to import one.
     Removing `ByteArrayType` turned two surviving multi-line
     `case ByteArrayType: { … }` arms into catch-alls and produced nine
     `Unreachable case.` errors on innocent arms. Note the asymmetry that
@@ -297,9 +301,9 @@ immediately trying to fix it (which can pollute the current task's context).
     single-line arms (`case X: expr`) silently leaves the block form
     (`case X: { … }`) behind, and the block form is exactly the one that
     then swallows the match.
-  - Because the diagnostics name *later* arms, the instinct is to
+  - Because the diagnostics name _later_ arms, the instinct is to
     investigate the arms that are reported. Both times the actual
-    mistake was the *first* line that stopped erroring — i.e. the arm
+    mistake was the _first_ line that stopped erroring — i.e. the arm
     immediately above the first reported one. That is the place to look.
 - **Why the fix is the right shape**: the original sketch here proposed
   guessing intent from capitalization. The fix that landed is better and
@@ -315,13 +319,13 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Fixed 2026-08-06.** The guess in the original entry — an adaptation
   wrapper synthesized during lowering — was wrong; nothing is
   synthesized late. RTA visits a member twice, once while only
-  *checking* it and once as *reachable*, and `processQueues` gated both
+  _checking_ it and once as _reachable_, and `processQueues` gated both
   on a single `reachedMembers` set. So the checkable visit consumed the
   key and the reachable visit hit `continue` and never ran. That
   mattered because the closure branch of `traverseDependencies` calls
   `addFunction` unconditionally but `markFunctionReached` only when
   `currentReachable` — a closure created during the checkable visit is
-  therefore *added but not reached*, and the reachable re-visit is what
+  therefore _added but not reached_, and the reachable re-visit is what
   would have marked it. Skipped, it stayed unmarked, so RTA's
   `wasm.functions = reachedList` pruning dropped it and it never got an
   index in `layout()`, while lowering still emitted a `ref_func` to it.
@@ -330,13 +334,13 @@ immediately trying to fix it (which can pollute the current task's context).
   `referencedInterfaceMembers` /
   `referencedReachableInterfaceMembers` pair beside it).
 - **Why it looked cross-module-only**: nothing about it is. It needs
-  the checkable visit of a member to land *before* the reachable one,
+  the checkable visit of a member to land _before_ the reachable one,
   and the reachable queue drains first, so a small single-module
   program never orders them that way. Attempts to distill it into a
   portable test all passed pre-fix for that reason; the regression
   guard is `test:example` (below) instead.
 - **Guard**: `npm run test:example -w @zena-lang/wit-parser` now
-  compiles *and runs* `examples/parse-wit.zena` with the self-hosted
+  compiles _and runs_ `examples/parse-wit.zena` with the self-hosted
   CLI. Verified failing before the fix and passing after.
 - **Diagnosis aid kept**: the `ref_func` case in `emit.zena` used to
   fail inside `BinaryEmitter.emitRefFunc` with a message naming neither
@@ -349,14 +353,14 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Fixed 2026-08-05.** The `anyref` was a stale ErrorType snapshot,
   not a lookup default: an unannotated field (`var fixedLength = 0 - 1;`)
   holds an ErrorType placeholder in the base's member map until its
-  initializer is inferred, and the inference patches the FieldInfo *in
-  place* — but extends-resolution used to *clone* every inherited
+  initializer is inferred, and the inference patches the FieldInfo _in
+  place_ — but extends-resolution used to _clone_ every inherited
   member into the subclass. A variant materialized on demand before the
   base's body check (here: the base's own earlier methods match over
   the variants, and `fixedLength` is declared after them) froze the
   placeholder forever, and RTA's synthesized variant getter lowered it
   to anyref over the physical i32 field. Fix: when the superclass has
-  no type parameters to substitute, the subclass now *shares* the
+  no type parameters to substitute, the subclass now _shares_ the
   parent's MemberInfo object, so the in-place inference fix-up is seen
   everywhere (the only in-place member mutation is that fix-up). Test:
   `execution/sealed-classes/inferred-field-copied-before-inference.zena`
@@ -498,7 +502,7 @@ immediately trying to fix it (which can pollute the current task's context).
      `ensureMemory()` only ran via WASI infra registration, so a host
      build reaching `zena:memory` (the compiler's time.zena, via the
      LSP) produced wasm that failed instantiation with `memory index 0
-     exceeds number of declared memories`. Reaching any linear-memory
+exceeds number of declared memories`. Reaching any linear-memory
      intrinsic now declares (and exports) the memory, matching the
      bootstrap. Covered by the language-service suite (54/54) against
      the self-hosted-built lsp.wasm.
@@ -584,7 +588,7 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Severity**: medium (silent wrong values for u32 >= 2^31 / u64 >=
   2^63 in widening and float casts)
 - **Workaround**: mask explicitly before widening.
-- **Details**: Widening an unsigned value emits the *signed* conversion
+- **Details**: Widening an unsigned value emits the _signed_ conversion
   — `(3000000000 as u32) as u64` sign-extends to a negative i64 —
   because the `_u` IrOps and emitter methods do not exist in ZIR.
   Verified still present 2026-08-06.
@@ -594,7 +598,7 @@ immediately trying to fix it (which can pollute the current task's context).
   backend, "until that ruling". That backend and the bootstrap compiler
   are both deleted, so nothing is being matched any more; what remains
   is just a wrong answer. Fixing it means adding the four `_u`
-  conversion ops and picking them from the operand's *semantic* type
+  conversion ops and picking them from the operand's _semantic_ type
   (`scalarConvert` currently sees only wasm valtypes, so signedness has
   to be threaded in from the caller).
 - **Not a narrow-integer problem**: `u8` and `u16` cannot reach 2^31, so
@@ -751,9 +755,9 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Severity**: none (measurement artifact on a ~0.2ns operation)
 - **Details**: two of the four field-access benchmarks read ~4.2 ms per 10M
   iterations from self-hosted output vs ~2.1 ms from the bootstrap's, with the
-  slow pair *changing membership* after unrelated codegen changes. Root cause:
+  slow pair _changing membership_ after unrelated codegen changes. Root cause:
   both compilers fully devirtualize all four accesses to a bare `struct.get`
-  loop (the self-hosted body is one instruction *shorter* — Cranelift folds
+  loop (the self-hosted body is one instruction _shorter_ — Cranelift folds
   the load into the add), and the entire difference is code placement. On
   Zen 3, a tight dependent loop whose ~34-byte body fits inside one 64-byte
   fetch/op-cache block sustains 1 cycle/iteration; a body straddling a block
@@ -783,6 +787,7 @@ immediately trying to fix it (which can pollute the current task's context).
   `narrowedTypes` maps (checker/context.ts) that is pushed and popped per
   scope. Nothing removes a narrowing when the narrowed path is assigned, so
   a narrowing outlives the fact that established it:
+
   ```zena
   class Box { var v: i32 = 42; }
   let f = (b: Box | null): i32 => {
@@ -794,6 +799,7 @@ immediately trying to fix it (which can pollute the current task's context).
     return 0;
   };
   ```
+
   `zena check` reports nothing; running it fails with
   `RuntimeError: dereferencing a null pointer`. The unnarrowed control
   (`b.v` with no guard) correctly reports Z2001, so the null check itself
@@ -1221,14 +1227,16 @@ found, returning false`, so the reachability pass is probably
   SymbolIds per (path, declaration) so rebuilt scopes stay addressable.
 
 ### fs.zena errno messages lack the numeric code
+
 - **Found**: 2026-07-26 (debugging a WASI errno 48 as "UNKNOWN")
 - **Severity**: low
 - **Workaround**: none.
-- **Details**: __errnoToString maps a subset of WASI errnos and prints
+- **Details**: \_\_errnoToString maps a subset of WASI errnos and prints
   bare "UNKNOWN" otherwise; unmapped codes (48 = ENOMEM among them)
   should at least print their number.
 
 ### Self-hosted checker mistypes forward-referenced classes with generic field initializers used from top-level functions
+
 - **Found**: 2026-08-01 (writing zena:bench's analyze(): hoisting a
   method body into a top-level function made the whole module
   miscompile)

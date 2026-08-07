@@ -24,14 +24,14 @@ problems, and only the first is the classic bootstrap question:
 
 ## 1. What depends on the TypeScript compiler today
 
-| Package | Kind | How it uses the TS compiler | Migration |
-| --- | --- | --- | --- |
-| `packages/zena-compiler` | CLI | `build:cli` shells out to `cli.js build` to build the seed | replaced by the checked-in seed (§2) |
-| `packages/language-service` | CLI | `build:wasm` shells out, `--target host` | swap the command — **needs `--target` on `zena-cli build`** |
-| `packages/zena-formatter` | CLI | `build-wasi-tests.ts` `execSync`s `cli.js` | swap the command |
-| `packages/wit-parser` | **library** | imports `Compiler`, `CodeGenerator`; compiles in-process and instantiates the result | restructure: shell out to `zena-cli build`, then instantiate |
-| `packages/runtime` | **library** | test files import `compile` | restructure, or use prebuilt fixtures |
-| `packages/cli` | **library** | it *is* the TS CLI | deleted, not migrated |
+| Package                     | Kind        | How it uses the TS compiler                                                          | Migration                                                    |
+| --------------------------- | ----------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| `packages/zena-compiler`    | CLI         | `build:cli` shells out to `cli.js build` to build the seed                           | replaced by the checked-in seed (§2)                         |
+| `packages/language-service` | CLI         | `build:wasm` shells out, `--target host`                                             | swap the command — **needs `--target` on `zena-cli build`**  |
+| `packages/zena-formatter`   | CLI         | `build-wasi-tests.ts` `execSync`s `cli.js`                                           | swap the command                                             |
+| `packages/wit-parser`       | **library** | imports `Compiler`, `CodeGenerator`; compiles in-process and instantiates the result | restructure: shell out to `zena-cli build`, then instantiate |
+| `packages/runtime`          | **library** | test files import `compile`                                                          | restructure, or use prebuilt fixtures                        |
+| `packages/cli`              | **library** | it _is_ the TS CLI                                                                   | deleted, not migrated                                        |
 
 **Two shapes, not one.** An earlier draft of this document claimed every
 dependent was a build-step dependency that just needed its command swapped.
@@ -43,7 +43,7 @@ changing a command line; they need restructuring to shell out to `zena-cli
 build` and instantiate the resulting `.wasm`, or an equivalent library surface
 from the self-hosted compiler.
 
-Neither is a *capability* gap — the self-hosted compiler can compile everything
+Neither is a _capability_ gap — the self-hosted compiler can compile everything
 involved — but they are meaningfully more work than the command swaps, and
 `wit-parser`'s custom host (which maps `/wit-parser/` and `zena:` specifiers
 onto a virtual filesystem) is the fiddliest part.
@@ -65,7 +65,7 @@ So the only TypeScript-compiler dependency is this line:
 build:wasm: node ../cli/lib/cli.js build zena/lsp.zena --target host -g -o lsp.wasm
 ```
 
-Pointing it at `zena-cli` is the whole *build-system* fix. The self-hosted
+Pointing it at `zena-cli` is the whole _build-system_ fix. The self-hosted
 compiler already accepts the target (`zena/cli/main.zena` validates `zena-cli`
 and `host`); the `--target` passthrough on `zena-cli build` landed 2026-08-05.
 
@@ -88,13 +88,13 @@ Worth doing, but it is cleanup, not a retirement blocker.
 
 Nearly. Command coverage:
 
-| Node CLI | `zena-cli` |
-| --- | --- |
-| `build` | `Build` — but **no `--target` flag** |
-| `run` | `Run` |
-| `test` | `Test` |
-| `check` | **missing** |
-| — | `Precompile` (extra) |
+| Node CLI | `zena-cli`                           |
+| -------- | ------------------------------------ |
+| `build`  | `Build` — but **no `--target` flag** |
+| `run`    | `Run`                                |
+| `test`   | `Test`                               |
+| `check`  | **missing**                          |
+| —        | `Precompile` (extra)                 |
 
 Two gaps, both small:
 
@@ -122,7 +122,7 @@ After retirement the build is `seed → compiler → everything`.
 
 **What the seed is not:** a native binary. The seed is a `cli.wasm`, and it is
 executed by `zena-cli` — the Rust host — **built from source at HEAD** by cargo.
-So only the *compiler* is prebuilt; the *host that runs it* is compiled from
+So only the _compiler_ is prebuilt; the _host that runs it_ is compiled from
 tree like any other dependency. That keeps the prebuilt surface as small as it
 can be, and it means a seed cannot silently carry a stale wasmtime
 configuration: the GC/exceptions/function-references flags come from
@@ -131,10 +131,10 @@ configuration: the GC/exceptions/function-references flags come from
 `zena/out/` is currently `.gitignore`d, so today's artifacts are all local.
 Current sizes:
 
-| Artifact | Size | Checked in? |
-| --- | --- | --- |
-| `cli.wasm` (self-hosted-built) | 4.0 MB | **yes** — this is the seed (`bootstrap/cli.wasm`) |
-| `cli.cwasm` (precompiled native) | 42 MB | no — regenerate locally via `zena-cli precompile` |
+| Artifact                         | Size   | Checked in?                                       |
+| -------------------------------- | ------ | ------------------------------------------------- |
+| `cli.wasm` (self-hosted-built)   | 4.0 MB | **yes** — this is the seed (`bootstrap/cli.wasm`) |
+| `cli.cwasm` (precompiled native) | 42 MB  | no — regenerate locally via `zena-cli precompile` |
 
 **Decided: check `cli.wasm` into git** at a stable path such as
 `packages/zena-compiler/bootstrap/cli.wasm`, rather than fetching it.
@@ -160,13 +160,13 @@ diagnosable rather than mysterious.
 ## 3. The ratchet
 
 The rule: **the seed must be able to build current HEAD.** Nothing more. So the
-seed advances *on demand*, not per commit — which is what keeps option (a)
+seed advances _on demand_, not per commit — which is what keeps option (a)
 affordable if we pick it.
 
 The workflow this forces is worth stating explicitly, because it will come up
 constantly and surprises people the first time:
 
-> To use a new language feature *in the compiler's own source*, it takes two
+> To use a new language feature _in the compiler's own source_, it takes two
 > commits. First teach the compiler to accept the feature and re-baseline the
 > seed. Only then may the compiler's source use it — because the seed compiles
 > that source, and the old seed does not know the feature.
@@ -178,7 +178,7 @@ impose. It is not a defect; it is the cost of self-hosting, and the alternative
 **Re-baseline procedure:**
 
 1. Build a new seed with the current compiler.
-2. Verify the fixpoint gate (§4) with the *new* seed.
+2. Verify the fixpoint gate (§4) with the _new_ seed.
 3. Update the pin (or commit the binary), with the source commit it was built
    from recorded alongside.
 4. CI proves a clean checkout builds from the new seed.
@@ -196,10 +196,10 @@ A, B and C are all the same program — the self-hosted compiler, built from the
 current source. They differ only in which compiler built them:
 
 | Stage | Built by |
-| --- | --- |
-| A | the seed |
-| B | A |
-| C | B |
+| ----- | -------- |
+| A     | the seed |
+| B     | A        |
+| C     | B        |
 
 **The invariant is `B ≡ C`, byte for byte.** A and B differ, because the seed's
 codegen is not the self-hosted compiler's — the two emit materially different
@@ -211,7 +211,7 @@ same source, so they must emit identical bytes.
 
 A `B ≢ C` failure means the compiler miscompiles itself — the single highest-
 severity class of bug available here, and one the existing test suites can miss
-because they exercise the compiler's *output*, not its *self-image*.
+because they exercise the compiler's _output_, not its _self-image_.
 
 **Done (2026-08-05):** `npm run test:fixpoint -w @zena-lang/zena-compiler`,
 wired into that package's `test` target, so it runs with the rest of the suite.
@@ -254,7 +254,7 @@ What to capture, in priority order:
    this** — the micro-benchmarks build their fixtures with the bootstrap
    compiler and run that one artifact under wasmtime, Node and against JS, so
    they measure Zena against JavaScript rather than one compiler's output
-   against the other's. Note the suite *does* compare the two compilers on
+   against the other's. Note the suite _does_ compare the two compilers on
    compile **time**, including the compiler compiling itself. **Emitted code
    size** is nearly free to add — both artifacts are already written per target
    — and already shows the self-hosted compiler emitting ~2× the bytes; see the
@@ -275,25 +275,25 @@ costs almost nothing now, and once `packages/compiler` is deleted the
 cross-implementation comparison can never be reproduced. Everything else in this
 plan can be redone.
 
-1. **Capture and commit final benchmarks** (§5). *Partially done —
+1. **Capture and commit final benchmarks** (§5). _Partially done —
    [2026-08-04 baseline](../benchmarks/2026-08-04-pre-retirement-baseline.md).
    Compile time, emitted size and emitted-code runtime are all captured and
    now measured by the suite; `stdlib_moderate` and `stdlib_heavy` were
-   blocked at capture time and need a re-run.*
+   blocked at capture time and need a re-run._
 2. ~~**Land the fixpoint gate** (§4) while the oracle still exists~~ — **done**,
    `test:fixpoint`.
 3. **Clear the six dependents** (§1), in two waves. First the `--target`
    passthrough plus the command swaps (`zena-compiler`, `language-service`,
    `zena-formatter`). Then the two in-process library users (`wit-parser`,
    `runtime`), which need restructuring to shell out and instantiate.
-   *Progress 2026-08-05: wave one is COMPLETE — `--target` passthrough,
+   _Progress 2026-08-05: wave one is COMPLETE — `--target` passthrough,
    the `zena-formatter` swap, and the `language-service` swap are all
    done (the self-hosted CLI loads `zena-packages.json`; the compiler
    bugs each swap exposed are fixed with portable tests — see §1 and
    BUGS.md). `zena-compiler`'s own `build:cli` intentionally stays on
-   the bootstrap until the seed lands (§2).*
+   the bootstrap until the seed lands (§2)._
 
-   *Wave two progress 2026-08-05: both restructures are DONE. The
+   _Wave two progress 2026-08-05: both restructures are DONE. The
    `runtime` tests and the `wit-parser` build/tests compile through the
    self-hosted compiler as a library: `api.wasm` (`build:api`) exports
    `compileSource()` plus error/output accessors, and the packages
@@ -305,19 +305,20 @@ plan can be redone.
    variants, block-scoped function bindings, celled captures,
    inherited-member snapshots freezing pre-inference field types, and
    record literals ignoring their contextual type. The full wit-parser
-   suite passes self-hosted-compiled.*
+   suite passes self-hosted-compiled._
 
-   *2026-08-06: the package's last bootstrap caller is gone too.
+   _2026-08-06: the package's last bootstrap caller is gone too.
    `test:example` ran `../cli/lib/cli.js check` on
    `examples/parse-wit.zena` because the self-hosted compiler crashed
    on it; it now builds and runs that example with `zena-cli`. The
    crash was a seventh compiler bug — a checkable-phase member visit
    satisfying the later reachable one, stranding closures it had
    created but not marked reached (BUGS.md). `packages/wit-parser` no
-   longer invokes the bootstrap anywhere.*
+   longer invokes the bootstrap anywhere._
+
 4. **Choose and populate the seed** (§2), with the pin in-tree.
 
-   *DONE 2026-08-06: `packages/zena-compiler/bootstrap/cli.wasm` (4.0 MB),
+   _DONE 2026-08-06: `packages/zena-compiler/bootstrap/cli.wasm` (4.0 MB),
    with provenance and re-baseline instructions in `bootstrap/README.md`.
    The seed is the **self-hosted-built** compiler (stage B), not the
    bootstrap-built one: since B≡C held at the pin commit, the seed
@@ -326,18 +327,19 @@ plan can be redone.
    `zena-cli` (`ZENA_COMPILER_WASM=bootstrap/cli.wasm`); the TypeScript
    compiler is no longer in the compiler's own build path. The wireit
    edge `zena-cli:build → build:cli` was inverted to break the cycle,
-   with dependents given the explicit edge.*
+   with dependents given the explicit edge._
+
 5. **Prove a clean-checkout build from the seed alone**, with the TypeScript
    compiler still present but unused — a dry run that can be reverted.
 
-   *DONE 2026-08-06: `nix flake check` builds the whole monorepo
+   _DONE 2026-08-06: `nix flake check` builds the whole monorepo
    hermetically — cargo → `zena-cli`, seed → `cli.wasm`, everything
-   else on top — and runs the full test suite offline.*
+   else on top — and runs the full test suite offline._
 
 6. **Delete `packages/compiler`**, and with it the `@skip: bootstrap` markers
    (13 files) and the BUGS.md items deferred to retirement.
 
-   *DONE 2026-08-06: `packages/compiler` and `packages/cli` are gone
+   _DONE 2026-08-06: `packages/compiler` and `packages/cli` are gone
    (the marker count had grown to 47 by then — generators alone added
    a dozen). The dual test suites collapsed onto the self-hosted
    variants first, so the deletion itself was reference cleanup: root
@@ -346,7 +348,7 @@ plan can be redone.
    can't-compile-outside-the-repo limitation is filed in BUGS.md), and
    the two deferred BUGS.md items are marked unblocked. **Retirement
    complete** — the standing architecture is
-   [bootstrapping.md](./bootstrapping.md).*
+   [bootstrapping.md](./bootstrapping.md)._
 
 Steps 1, 2 and 3 are independent and can run in parallel. Only 5 and 6 are
 ordered.
@@ -362,7 +364,7 @@ ordered.
    `host`|`zena-cli` (§1.1).
 5. Does `wit-parser` build through `zena-cli`, or does the compiler grow a
    library API for embedders (§1)?
-6. Do we keep a *second* older seed to test that the ratchet still works from
+6. Do we keep a _second_ older seed to test that the ratchet still works from
    further back, or is one deep enough?
 
 ## Related

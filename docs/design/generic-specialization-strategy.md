@@ -386,8 +386,8 @@ member, type-argument tuple) pair that is ever dispatched:
   iterate the fixpoint; layout binds post-fixpoint (ir.md §10.2).
 - **VTable/interface struct layout**: the interface struct gains one
   exactly-typed funcref field per reached (member, targsKey). Typed
-  slots stay exact — no casts before call_ref, preserving the
-  existing dispatch pillar. Slot count is bounded by _reached_
+  slots stay exact — no casts before call*ref, preserving the
+  existing dispatch pillar. Slot count is bounded by \_reached*
   combinations; a program that maps to three result types through an
   interface pays three slots, not a combinatorial table.
 - **Call sites (both backends)**: interface dispatch resolves the

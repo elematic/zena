@@ -573,7 +573,7 @@ the exception value. Constraints on passes:
   a callee proven non-throwing — a cheap bottom-up module analysis we get for
   free from the callgraph scan).
 - Code motion never moves an instruction into or out of a handled region.
-- A handler edge leaves from *anywhere* in the region, so it can carry no
+- A handler edge leaves from _anywhere_ in the region, so it can carry no
   per-variable SSA state: values threaded along it can only be the ones
   live at region entry. Locals the region ASSIGNS therefore cannot ride
   it — the handler would not see an assignment the body completed before
@@ -590,7 +590,7 @@ case: a hot loop inside a `try`) works fully.
 #### 5.1.1 Mutable variables
 
 Wasm locals survive an exception unwinding to a handler in the same
-frame; SSA values do not, because a value is a *definition*, reachable
+frame; SSA values do not, because a value is a _definition_, reachable
 only along edges from its defining block. ZIR therefore has one
 non-SSA construct, used for nothing else:
 
@@ -1105,7 +1105,7 @@ until M4.
   straight-line + control-flow subset; `--backend=zir -O0` runs a growing
   slice of the portable execution suite. Emission via stackifier + trivial
   locals (every value a local — correctness first).
-  *Status: complete.*
+  _Status: complete._
 - **M2 — parity.** Full construct coverage (classes, interfaces, closures,
   match, exceptions, generics-as-v1). Stack scheduling + local coalescing.
   Entire portable suite + self-compile parity green under `--backend=zir`.
@@ -1120,18 +1120,18 @@ until M4.
   self-compile passing under strict mode (zero fallbacks); until then,
   strict mode is the everyday tool for finding the next construct to
   lower.
-  *Status: complete (2026-07-31) — the portable suite and the full
+  _Status: complete (2026-07-31) — the portable suite and the full
   self-compile pass strict mode with zero fallbacks; the benchmark
-  gate held (self-compile 0.97× vs streaming at the flip).*
+  gate held (self-compile 0.97× vs streaming at the flip)._
 - **M3 — the loop.** simplify/DCE/blockmerge, then inline, devirt, SRoA,
   SCCP; golden WAT tests per pass; `-O2`/`-Os` wired. §10 harvest pass.
   Success metric: measurable size _and_ speed wins on the benchmark suite
   and on the compiler compiling itself (the compiler is our biggest, most
   interface-heavy program — it is the benchmark).
-  *Status: in progress — GVN, stack scheduling, local coalescing, and
+  _Status: in progress — GVN, stack scheduling, local coalescing, and
   loop-shape emission landed (geomean 0.58× vs streaming at deletion
   time; binary −21%); the inline/devirt/SRoA/SCCP fixpoint loop and
-  the §10 harvest pass remain open.*
+  the §10 harvest pass remain open._
 - **M4 — flip the default.** Delete the direct `FunctionGenerator` emission
   path; ZIR backend becomes the only backend, and with it the fallback
   (and strict mode) cease to exist — any lowering gap is a hard compile
@@ -1146,10 +1146,10 @@ until M4.
   initializer list, and the super chain's contributions into values and
   allocate with one `struct.new` — `struct.new_default` retires along
   with the nullable field types it required.
-  *Status: complete (2026-08-05, PR #132) — the streaming backend is
+  _Status: complete (2026-08-05, PR #132) — the streaming backend is
   deleted and ZIR is the only backend; lowering gaps are hard compile
   errors by construction. The non-null-fields / single-shot
-  `struct.new` flip (§12.1) is now unblocked.*
+  `struct.new` flip (§12.1) is now unblocked._
 - **M5 — template ZIR (v2 generics).** Per-source-function lowering +
   table-substitution specialization. Success metric: cold-compile of
   `assert_test.zena` and `zena:test`-heavy files (the 47s case) drops by

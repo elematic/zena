@@ -323,7 +323,7 @@ slots, the type mapping, the canonical ABI, and component emission.
 
 The sketch that used to sit here is gone for the same two reasons Phase 3 was.
 It integrated with the **TypeScript** compiler (`packages/compiler/src/wit-integration.ts`),
-which is being retired; and it generated Zena *source* from WIT, which is not the
+which is being retired; and it generated Zena _source_ from WIT, which is not the
 direction — WIT is to be first-class in the compiler, with a WIT-backed package
 resolving to a `SourceFile` whose `ModuleExports` are synthesized from the
 resolved WIT, so no `.zena` files are emitted at all.

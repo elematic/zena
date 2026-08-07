@@ -1,6 +1,6 @@
 # Developing Zena
 
-How the repository builds, tests, and bootstraps. For what Zena *is*,
+How the repository builds, tests, and bootstraps. For what Zena _is_,
 see [README.md](./README.md); for agent-focused rules, see
 [AGENTS.md](./AGENTS.md).
 
@@ -40,7 +40,7 @@ zena/out/cli.wasm    → everything else     (stdlib tests, LSP, formatter, …)
 The invariant, enforced by `npm test` and CI on every change: **the
 bootstrap must build a HEAD that passes the test suite**, including
 `test:fixpoint` — the compiler compiled by itself must byte-match the
-compiler compiled by *that* compiler, so a compiler that miscompiles
+compiler compiled by _that_ compiler, so a compiler that miscompiles
 itself cannot land.
 
 Re-baselining the bootstrap (rare, on demand):

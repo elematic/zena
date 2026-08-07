@@ -59,7 +59,8 @@ const runParser = async (source, resolve = false) => {
   return new TextDecoder().decode(bytes);
 };
 
-const failed = (out) => out.startsWith('ParseError:') || out.startsWith('THREW');
+const failed = (out) =>
+  out.startsWith('ParseError:') || out.startsWith('THREW');
 
 const tryParse = async (source, resolve) => {
   try {
@@ -83,7 +84,8 @@ const PKG_HEADER = /^\s*package\s+[\w-]+:[\w-]+(@[\w.+-]+)?\s*;/m;
  */
 const headerFirst = async (paths) => {
   const files = [];
-  for (const p of [...paths].sort()) files.push([p, await readFile(p, 'utf-8')]);
+  for (const p of [...paths].sort())
+    files.push([p, await readFile(p, 'utf-8')]);
   return [
     ...files.filter(([, s]) => PKG_HEADER.test(s)),
     ...files.filter(([, s]) => !PKG_HEADER.test(s)),
@@ -231,13 +233,34 @@ const PROBES = {
   // Gap 3: doc comment inside a function parameter list.
   'doc comment in param list':
     P +
-    ['interface i {', '  f: func(', '    /// how many', '    len: u64', '  ) -> u32;', '}'].join(NL),
+    [
+      'interface i {',
+      '  f: func(',
+      '    /// how many',
+      '    len: u64',
+      '  ) -> u32;',
+      '}',
+    ].join(NL),
   'line comment in param list (works)':
     P +
-    ['interface i {', '  f: func(', '    // how many', '    len: u64', '  ) -> u32;', '}'].join(NL),
+    [
+      'interface i {',
+      '  f: func(',
+      '    // how many',
+      '    len: u64',
+      '  ) -> u32;',
+      '}',
+    ].join(NL),
   'doc comment in record (works)':
     P +
-    ['interface i {', '  record r {', '    /// a field', '    a: u64,', '  }', '}'].join(NL),
+    [
+      'interface i {',
+      '  record r {',
+      '    /// a field',
+      '    a: u64,',
+      '  }',
+      '}',
+    ].join(NL),
 };
 
 /**
@@ -368,7 +391,9 @@ if (args[0] === '--check') {
 } else if (args[0] === '--files') {
   for (const dir of args.slice(1)) await parseFiles(dir);
 } else if (args.length === 0) {
-  console.error('usage: parse-real-wit.js [--check|--probe|--files] <wit-dir>...');
+  console.error(
+    'usage: parse-real-wit.js [--check|--probe|--files] <wit-dir>...',
+  );
   process.exit(1);
 } else {
   let ok = true;

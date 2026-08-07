@@ -149,21 +149,21 @@ Zena's primitive types map directly to WebAssembly value types, with no boxing
 overhead. Integer and float literals default to `i32` and `f32` respectively;
 use `as` to convert to other numeric types.
 
-| Type      | WASM Type       | Description                                          |
-| --------- | --------------- | ---------------------------------------------------- |
-| `i32`     | `i32`           | 32-bit signed integer (default for integer literals) |
-| `i64`     | `i64`           | 64-bit signed integer                                |
-| `u32`     | `i32`           | 32-bit unsigned (uses unsigned WASM operators)       |
-| `u64`     | `i64`           | 64-bit unsigned (uses unsigned WASM operators)       |
-| `u8` `u16` | `i32`          | Narrow unsigned; promote to `u32` in any operation   |
-| `i8` `i16` | `i32`          | Narrow signed; promote to `i32` in any operation     |
-| `f32`     | `f32`           | 32-bit float (default for float literals)            |
-| `f64`     | `f64`           | 64-bit float                                         |
-| `boolean` | `i32`           | `true` or `false`                                    |
-| `String`  | `(ref $String)` | Immutable Unicode string                             |
-| `anyref`  | `anyref`        | Top type for all reference types                     |
-| `any`     | `anyref`        | Can hold any value (primitives are auto-boxed)       |
-| `never`   | —               | Bottom type (e.g., result of `throw`)                |
+| Type       | WASM Type       | Description                                          |
+| ---------- | --------------- | ---------------------------------------------------- |
+| `i32`      | `i32`           | 32-bit signed integer (default for integer literals) |
+| `i64`      | `i64`           | 64-bit signed integer                                |
+| `u32`      | `i32`           | 32-bit unsigned (uses unsigned WASM operators)       |
+| `u64`      | `i64`           | 64-bit unsigned (uses unsigned WASM operators)       |
+| `u8` `u16` | `i32`           | Narrow unsigned; promote to `u32` in any operation   |
+| `i8` `i16` | `i32`           | Narrow signed; promote to `i32` in any operation     |
+| `f32`      | `f32`           | 32-bit float (default for float literals)            |
+| `f64`      | `f64`           | 64-bit float                                         |
+| `boolean`  | `i32`           | `true` or `false`                                    |
+| `String`   | `(ref $String)` | Immutable Unicode string                             |
+| `anyref`   | `anyref`        | Top type for all reference types                     |
+| `any`      | `anyref`        | Can hold any value (primitives are auto-boxed)       |
+| `never`    | —               | Bottom type (e.g., result of `throw`)                |
 
 > **Note**: We are strongly considering removing the `any` type and all auto-boxing in a future release to make boxing/allocation costs explicit (requiring manual boxing using `Box<T>`).
 

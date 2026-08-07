@@ -6,7 +6,7 @@
 - **Date**: 2026-08-06
 
 How a fresh checkout of Zena builds a Zena compiler, given that the
-compiler is written in Zena. (The *plan* that got us here is
+compiler is written in Zena. (The _plan_ that got us here is
 [bootstrap-retirement.md](./bootstrap-retirement.md) — a historical
 document; this one stays current.)
 
@@ -26,7 +26,7 @@ zena/out/cli.wasm    → everything else     (stdlib tests, LSP, formatter, …)
 The `build:cli` wireit script in `packages/zena-compiler` is the
 second step: it runs the bootstrap through `zena-cli`
 (`ZENA_COMPILER_WASM=bootstrap/cli.wasm`) to compile
-`zena/cli/main.zena`. Only the *compiler* is prebuilt; the host that
+`zena/cli/main.zena`. Only the _compiler_ is prebuilt; the host that
 executes it is built by cargo at HEAD, so the bootstrap can never pin
 a stale wasmtime configuration.
 
@@ -44,7 +44,7 @@ re-baseline procedure (below) builds the artifact from that same
 commit's source. There is no separate provenance file to keep in sync.
 
 The artifact is also self-certifying: the bootstrap is always the
-*self-hosted-built* compiler (stage B of the fixpoint gate), and
+_self-hosted-built_ compiler (stage B of the fixpoint gate), and
 because the B≡C fixpoint held when it was made, the bootstrap
 compiling its own source reproduces itself **byte-for-byte**. To audit a bootstrap, check out its re-baseline
 commit, run `build:cli`, and `cmp` the output against it.
@@ -69,11 +69,11 @@ builds a green HEAD is a good bootstrap.
 
 ### How an incompatible change is caught
 
-You cannot *accidentally* land a change the bootstrap can't compile.
+You cannot _accidentally_ land a change the bootstrap can't compile.
 `build:cli`'s wireit inputs are the entire compiler source
 (`zena/**/*.zena`), the stdlib source, and `bootstrap/cli.wasm`
 itself — so **any** edit to compiler or stdlib source invalidates the
-cached result and reruns compilation *through the bootstrap*. If the
+cached result and reruns compilation _through the bootstrap_. If the
 bootstrap can't compile the new source, `build:cli` fails right there,
 before a single test runs, and every test script depends on it. CI
 (`nix flake check`) runs the same graph from a clean copy of the tree,
@@ -82,7 +82,7 @@ compile error from `build:cli`, which is the signal to use the
 two-step landing below.
 
 A language or stdlib change can make compiler source unbuildable by
-the existing bootstrap (for example, the compiler starts *using* new
+the existing bootstrap (for example, the compiler starts _using_ new
 syntax it just gained). Two options, in order of preference:
 
 1. **Two-step landing.** First land the feature without using it in
@@ -102,8 +102,8 @@ npm run reseed -w @zena-lang/zena-compiler
 (fixpoint included) and only then copies `zena/out/cli-self.wasm` —
 the self-hosted-built stage — over `bootstrap/cli.wasm`. After it
 runs, run `npm test` once more: the changed bootstrap invalidates
-`build:cli`, so this second pass rebuilds and tests everything *from
-the new bootstrap*, which is exactly the "is the new bootstrap good?"
+`build:cli`, so this second pass rebuilds and tests everything _from
+the new bootstrap_, which is exactly the "is the new bootstrap good?"
 check. Commit the new `bootstrap/cli.wasm` together with whatever
 change motivated the re-baseline.
 

@@ -11,16 +11,16 @@
 
 ## What exists today
 
-| Piece                                | State                                                                              |
-| ------------------------------------ | ---------------------------------------------------------------------------------- |
-| WIT lexer / parser / resolver        | ✅ Done — [wit-parser.md](./wit-parser.md), 211/211 wasm-tools UI tests             |
-| WIT → `.wit.json` (wasm-tools shape) | ✅ Done                                                                            |
+| Piece                                | State                                                                                                          |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| WIT lexer / parser / resolver        | ✅ Done — [wit-parser.md](./wit-parser.md), 211/211 wasm-tools UI tests                                        |
+| WIT → `.wit.json` (wasm-tools shape) | ✅ Done                                                                                                        |
 | Parser callable from the compiler    | ⚠️ Has a public entry point (`wit-parser:wit`) and is in the package map; nothing in the compiler calls it yet |
-| WIT → Zena bindings (bindgen)        | ❌ Does not exist                                                                   |
-| Canonical ABI lift/lower             | ❌ Does not exist. WASI is used today via hand-written `@external` decls at the      |
-|                                      | already-flattened core ABI with manual `i32.store8` pokes (see `wasi_fs_test.ts`)   |
-| Component emission                   | ❌ `--target wasi` emits a **core module** with `wasi_snapshot_preview1` imports     |
-| `async` / `await` in the language    | ❌ Zero occurrences in either compiler's lexer or parser                             |
+| WIT → Zena bindings (bindgen)        | ❌ Does not exist                                                                                              |
+| Canonical ABI lift/lower             | ❌ Does not exist. WASI is used today via hand-written `@external` decls at the                                |
+|                                      | already-flattened core ABI with manual `i32.store8` pokes (see `wasi_fs_test.ts`)                              |
+| Component emission                   | ❌ `--target wasi` emits a **core module** with `wasi_snapshot_preview1` imports                               |
+| `async` / `await` in the language    | ❌ Zero occurrences in either compiler's lexer or parser                                                       |
 
 So: parsing WIT is solved; **everything that turns a parsed WIT into a running
 component is unbuilt**, and this document is the missing design for that.
@@ -33,7 +33,7 @@ The question "how do you get a handle to an interface — do you construct it, o
 is it handed to you?" has three different answers, because WIT uses one word
 for three unrelated things.
 
-### 1. An *imported interface* — neither. It is **linked**.
+### 1. An _imported interface_ — neither. It is **linked**.
 
 A component's world lists interfaces it imports. Those are satisfied at
 instantiation time by the host or by a composition tool. From inside the guest
@@ -58,7 +58,7 @@ world w {
 ```
 
 That survives the full round trip — `component embed --dummy` → `component new`
-→ `component wit` reproduces all three imports — and lowers to three *distinct*
+→ `component wit` reproduces all three imports — and lowers to three _distinct_
 core import modules, which is what a Zena `@external` binds to:
 
 ```wat
@@ -72,7 +72,7 @@ Aliasing works cross-package, and versions namespace independently
 three of the obvious mechanisms — **renaming, namespacing, and
 instantiation-time wiring** — are real and compose.
 
-The one thing genuinely fixed is the *count and names*: the set of import slots
+The one thing genuinely fixed is the _count and names_: the set of import slots
 is frozen in the world at compile time. You choose how many `handler`s you want
 and what to call them when you write the world; you cannot ask for an
 `n+1`-th at runtime.
@@ -86,13 +86,13 @@ and what to call them when you write the world; you cannot ask for an
 > referring to specific guest bindgen toolchains. It is **not** a constraint
 > Zena needs to design around; we write our own bindgen.
 
-### 2. An *exported interface* — you don't get one, you **implement** it.
+### 2. An _exported interface_ — you don't get one, you **implement** it.
 
-`world service { export handler; }` means the host will call *you*. There is no
+`world service { export handler; }` means the host will call _you_. There is no
 handle; there is an obligation. In Zena this is a class or function you write
 plus a declaration binding it to the world's export.
 
-### 3. A *resource* — **this** is the real handle.
+### 3. A _resource_ — **this** is the real handle.
 
 `request`, `response`, `input-stream`, `fields` are resources: opaque `i32`
 handles into a host-owned table. These you genuinely do construct
@@ -104,7 +104,7 @@ handles into a host-owned table. These you genuinely do construct
 consume-body: static func(this: request, res: future<...>) -> tuple<stream<u8>, ...>;
 ```
 
-`consume-body` is a *static* function taking `this` explicitly precisely because
+`consume-body` is a _static_ function taking `this` explicitly precisely because
 it consumes the `request`. After that call the handle is dead.
 
 **Summary answer**: interfaces are linked (in as many named slots as the world
@@ -128,7 +128,7 @@ import {Request, Response, Handler} from 'wasi:http/handler';
 
 `wasi` is the package, `http/handler` is the path. **No new specifier grammar.**
 
-Versions deliberately do *not* appear in the specifier — `@0.3.0-rc-2025-09-16`
+Versions deliberately do _not_ appear in the specifier — `@0.3.0-rc-2025-09-16`
 is not valid in a Zena specifier and adding it would fork the grammar for one
 consumer. The version is pinned in the resolution file, which is already where
 Zena pins things:
@@ -150,7 +150,7 @@ better at the import site; the latter maps 1:1 onto WIT packages and versions
 independently. Recommendation: per namespace, with per-package version pins
 inside the entry.
 
-### What the import *does*
+### What the import _does_
 
 It is a **linking declaration**, not a value binding. `import {send} from
 'wasi:http/client'` asserts "this component's world imports `wasi:http/client`",
@@ -170,7 +170,7 @@ language reference:
 ### Named import slots
 
 Because a world can import one interface into several named slots (Part 1),
-Zena needs surface syntax for "give me *another* one, called this". Without it
+Zena needs surface syntax for "give me _another_ one, called this". Without it
 the middleware shape — forward to an upstream `handler` while exporting
 `handler` — is inexpressible in Zena even though it is expressible in WIT.
 
@@ -270,20 +270,20 @@ decorator — it keeps the obligation next to the code that satisfies it, and
 ## Part 4: How this relates to wac
 
 wac is a **composition** language. It operates on already-built components, and
-in wac, instances *are* first-class values: you instantiate a component, maybe
+in wac, instances _are_ first-class values: you instantiate a component, maybe
 several times, and wire specific exports into specific imports.
 
 The difference is **not** one-instance versus many — Zena can declare as many
-named import slots as it likes (Part 1). The difference is *declaring slots*
-versus *filling* them:
+named import slots as it likes (Part 1). The difference is _declaring slots_
+versus _filling_ them:
 
-| | wac | Zena source imports |
-| --- | --- | --- |
-| Operates on | built components | one component's own source |
-| Instances | N, created and wired by the author | N, one per declared import slot |
-| Decides *how many* | the composer | the component author |
-| Decides *what satisfies each* | the composer, explicitly | not decided; left open |
-| When | after compilation | at compilation |
+|                               | wac                                | Zena source imports             |
+| ----------------------------- | ---------------------------------- | ------------------------------- |
+| Operates on                   | built components                   | one component's own source      |
+| Instances                     | N, created and wired by the author | N, one per declared import slot |
+| Decides _how many_            | the composer                       | the component author            |
+| Decides _what satisfies each_ | the composer, explicitly           | not decided; left open          |
+| When                          | after compilation                  | at compilation                  |
 
 So the two are complementary rather than competing. Zena's job is to emit one
 well-formed component whose world declares the slots it wants — `upstream`,
@@ -292,7 +292,7 @@ component ends up plugged into each slot is wac's job, and stays an out-of-band
 step over components Zena emits.
 
 This is a weaker and more accurate claim than an earlier draft of this document
-made. The practical consequence for Zena is a *requirement*, not a limitation:
+made. The practical consequence for Zena is a _requirement_, not a limitation:
 the import design must let an author name slots (Part 2), because a component
 that cannot say "I want a second `handler` called `upstream`" cannot be
 composed into a middleware chain no matter how good the composer is.
@@ -305,26 +305,26 @@ Measured over the pinned `wasi-http` tree (WASI p2: 33 files, 7 packages, 32
 interfaces, 173 functions). Counts are comment-stripped text matches, so ±a
 few — they are for sizing, not accounting.
 
-| WIT | Zena | p2 uses | State |
-| --- | --- | --- | --- |
-| `s32`, `s64`, `f32`, `f64` | `i32`, `i64`, `f32`, `f64` | 2 | ✅ exists |
-| `u32`, `u64` | `u32`, `u64` | 53 | ✅ exists |
-| `u8`, `u16`, `s8`, `s16` | `u8`, `u16`, `i8`, `i16` | 34 | ❌ **Zena has no narrow integers** |
-| `bool` | `boolean` | | ✅ exists |
-| `char` | — | **0** | deferred: p2 never uses it |
-| `string` | `String` | | ✅ exists |
-| `list<u8>` | `FixedArray<u8>` | 11 | ❌ needs `u8` |
-| `list<T>` (other) | `Array<T>` / `FixedArray<T>` | 11 | ✅ exists |
-| `tuple<A, B>` | inline tuple | 11 | ✅ exists |
-| `option<T>` | `Option<T>` | 50 | ✅ exists |
-| `result<T, E>` | `Result<T, E>` | **101 + 10 bare** | ❌ **not in stdlib** |
-| `record` | case class | 10 | ✅ exists |
-| `variant` | sealed case-class hierarchy | 8 | ✅ exists |
-| `enum` | enum | 6 | ✅ exists |
-| `flags` | `u32` newtype | 3 | ❌ no analogue |
-| `resource` | `final class` + `Disposable` | **25** | ❌ see Part 6 |
-| `own<T>` / `borrow<T>` | same class, differing lifetime rules | 0 / 13 explicit | see Part 6 |
-| `stream<T>` / `future<T>` | needs async | **0** | not needed for p2 |
+| WIT                        | Zena                                 | p2 uses           | State                              |
+| -------------------------- | ------------------------------------ | ----------------- | ---------------------------------- |
+| `s32`, `s64`, `f32`, `f64` | `i32`, `i64`, `f32`, `f64`           | 2                 | ✅ exists                          |
+| `u32`, `u64`               | `u32`, `u64`                         | 53                | ✅ exists                          |
+| `u8`, `u16`, `s8`, `s16`   | `u8`, `u16`, `i8`, `i16`             | 34                | ❌ **Zena has no narrow integers** |
+| `bool`                     | `boolean`                            |                   | ✅ exists                          |
+| `char`                     | —                                    | **0**             | deferred: p2 never uses it         |
+| `string`                   | `String`                             |                   | ✅ exists                          |
+| `list<u8>`                 | `FixedArray<u8>`                     | 11                | ❌ needs `u8`                      |
+| `list<T>` (other)          | `Array<T>` / `FixedArray<T>`         | 11                | ✅ exists                          |
+| `tuple<A, B>`              | inline tuple                         | 11                | ✅ exists                          |
+| `option<T>`                | `Option<T>`                          | 50                | ✅ exists                          |
+| `result<T, E>`             | `Result<T, E>`                       | **101 + 10 bare** | ❌ **not in stdlib**               |
+| `record`                   | case class                           | 10                | ✅ exists                          |
+| `variant`                  | sealed case-class hierarchy          | 8                 | ✅ exists                          |
+| `enum`                     | enum                                 | 6                 | ✅ exists                          |
+| `flags`                    | `u32` newtype                        | 3                 | ❌ no analogue                     |
+| `resource`                 | `final class` + `Disposable`         | **25**            | ❌ see Part 6                      |
+| `own<T>` / `borrow<T>`     | same class, differing lifetime rules | 0 / 13 explicit   | see Part 6                         |
+| `stream<T>` / `future<T>`  | needs async                          | **0**             | not needed for p2                  |
 
 Three corrections to what this table used to say, each found by measuring
 rather than reading:
@@ -339,7 +339,7 @@ decided for them.
 It should map to a packed byte array, not `Array<u32>`. Today's `ByteArray` is
 a bespoke primitive in the checker (`ByteArrayType`, a wasm `(array i8)`); once
 `u8` exists it becomes exactly `FixedArray<u8>`, and the special case can be
-retired. Note `Array<T>` is the *growable* heap class
+retired. Note `Array<T>` is the _growable_ heap class
 (`stdlib/zena/growable-array.zena`) while `FixedArray<T>` is the extension
 class over the intrinsic `array<T>` — so `ByteArray` is the latter, not the
 former.
@@ -419,14 +419,14 @@ resources whose release point is not lexical.
 Bindgen's hard dependency is **O0, not O2**. O0 freezes the type lattice —
 `Own<T>`/`Borrow<T>`/`Unmanaged<T>`, `resource class`, `disown`/`adopt` — with
 runtime-only enforcement of move discipline. Since O2 upgrades detection from
-runtime to compile time *without changing any signature*, generated wrappers can
+runtime to compile time _without changing any signature_, generated wrappers can
 be written once against their final API as soon as O0 lands, which is much
 earlier than the previous "wait for layers 0–2" reading implied. Stages 1, 2, 4
 and 6 below remain independent of ownership entirely and proceed in parallel.
 
 ---
 
-## Part 7: You can have an HTTP server *before* async
+## Part 7: You can have an HTTP server _before_ async
 
 This matters for sequencing, so it deserves to be explicit.
 
@@ -536,7 +536,7 @@ open question 2 is not cosmetic.
 
 **Re-ordered 2026-08-06.** The original ordering put "first-class WIT imports"
 first and "bindgen, types only" third, as if binding symbols were separable
-from typing them. It is not: synthesizing a `ModuleExports` *is* the type side
+from typing them. It is not: synthesizing a `ModuleExports` _is_ the type side
 of bindgen, and it cannot be done for a WIT that mentions `result` or a
 `resource` — which, measured on p2, is 45% and 79% of all functions
 respectively. So the language work that gives those two a Zena type now comes
@@ -544,27 +544,27 @@ first.
 
 The revised order, decided with the measurements in Part 5:
 
-| # | Stage | Why here |
-| --- | --- | --- |
-| 0a | **`Result<T,E>` + `inline` in type aliases** | gates 45% of p2 functions |
-| 0b | **Narrow integers `u8`/`u16`/`i8`/`i16`** | gates `list<u8>`, 34 direct uses |
-| 0c | **`FixedArray<u8>`/`Array<u8>`; retire `ByteArrayType`** | the body/bytes type |
-| 0d | **`Disposable`** | gives `resource` a Zena shape (79% of functions) |
-| 1 | First-class WIT imports | now has a type for everything it must bind |
-| 2… | Canonical ABI, ownership, component emission, p2 server | unchanged below |
+| #   | Stage                                                    | Why here                                         |
+| --- | -------------------------------------------------------- | ------------------------------------------------ |
+| 0a  | **`Result<T,E>` + `inline` in type aliases**             | gates 45% of p2 functions                        |
+| 0b  | **Narrow integers `u8`/`u16`/`i8`/`i16`**                | gates `list<u8>`, 34 direct uses                 |
+| 0c  | **`FixedArray<u8>`/`Array<u8>`; retire `ByteArrayType`** | the body/bytes type                              |
+| 0d  | **`Disposable`**                                         | gives `resource` a Zena shape (79% of functions) |
+| 1   | First-class WIT imports                                  | now has a type for everything it must bind       |
+| 2…  | Canonical ABI, ownership, component emission, p2 server  | unchanged below                                  |
 
 Stages 0a–0d are **language and stdlib work, done in the self-hosted compiler
 only** — `packages/compiler` is about to be deleted (see
 [bootstrap-retirement.md](./bootstrap-retirement.md)), so new portable tests
 for these carry `@skip: bootstrap`.
 
-Stage 0d deliberately ships `Disposable` *before* the full ownership model of
+Stage 0d deliberately ships `Disposable` _before_ the full ownership model of
 stage 5. Resources get a `final class` wrapping the handle plus the Part 6
 `owned|moved|dropped` flag, with runtime checks and no static affine
 guarantees. That is not a stopgap to be thrown away: Part 6 already concluded
 the flag is the permanent story for the non-affine half, and stage 5's
 `Own<T>`/`Borrow<T>` tightens the same surface API rather than replacing it.
-It is viable now because WIT borrows are overwhelmingly *implicit* — 137 of
+It is viable now because WIT borrows are overwhelmingly _implicit_ — 137 of
 p2's 173 functions are resource methods, each an implicit `borrow<self>`,
 while explicit `own<>` appears zero times and explicit `borrow<>` only 13. The
 hard part of ownership governs the rare case; the common case is "call a
@@ -592,7 +592,7 @@ on its own.
    `packages/compiler`; that assumed the TypeScript compiler was the consumer,
    and has been removed.)
 
-   What remains is making WIT imports *first-class*: a WIT-backed package
+   What remains is making WIT imports _first-class_: a WIT-backed package
    resolving to a `SourceFile` whose `ModuleExports` are synthesized from the
    resolved WIT, so `import {Request} from 'wasi:http/types'` binds real symbols
    with no generated source.
@@ -601,6 +601,7 @@ on its own.
    compile `packages/wit-parser` at all. That is fixed — all 12 modules compile
    and the package is consumable (PRs #164, #165, #171). It is now blocked only
    on stages 0a–0d above, which give it types to bind.
+
 2. **`Result<T, E>` in the stdlib — as an inline multi-value union, not a
    heap type.** Blocks essentially every binding. **DECIDED 2026-08-05:** the
    representation is
@@ -614,23 +615,25 @@ on its own.
    inline tuples compile to WASM multi-value returns, so an ok/err return costs
    no allocation. Pattern-based narrowing (`if (let (true, v) = f())`) already
    works on it. See Part 8a for where this meets WIT.
+
 3. **Bindgen, types only.** WIT types → Zena declarations. No ABI yet.
    Verifiable against real `wasi:http` WIT.
 
    Mostly **absorbed into stages 0a–0d and 1**: once every WIT construct has a
    Zena type and imports synthesize a `ModuleExports`, "bindgen, types only"
-   *is* stage 1. What remains distinct is the ability to **dump** the
+   _is_ stage 1. What remains distinct is the ability to **dump** the
    synthesized declarations as Zena source — a verification and debugging
    artifact, letting us diff our type mapping against real `wasi:http` by
    reading it.
 
    This item used to read "output is checkable Zena source", which invited the
-   opposite reading: that bindings are *delivered* as generated `.zena` files.
+   opposite reading: that bindings are _delivered_ as generated `.zena` files.
    They are not — see Part 2. Zena binds symbols directly, with no generated
    source on the build path.
 
    Resource wrappers no longer wait for stage 5; stage 0d gives them their
    shape, which stage 5 tightens rather than replaces.
+
 4. **Canonical ABI.** Lift/lower for string/list/record/variant/flags,
    `cabi_realloc` (build on the existing `FreeListAllocator` in
    `stdlib/zena/memory.zena`), post-return, and resource tables with the Part 6
@@ -644,7 +647,7 @@ on its own.
    O0's ordering: signatures freeze there.
 6. **Component emission.** Encode the `component-type` custom section from the
    resolved WIT, export `memory` + `cabi_realloc`, then `wasm-tools component
-   new`. Shell out first; a native encoder later if it earns its keep.
+new`. Shell out first; a native encoder later if it earns its keep.
 7. **p2 HTTP server end-to-end** under `wasmtime serve`. This is the milestone
    that proves the stages above.
 8. **p3**, after async/CPS lands: re-run bindgen against the p3 world, add the
@@ -652,16 +655,16 @@ on its own.
 
 ### Part 8a: `Result` as an inline union, measured against real WIT
 
-The inline representation fits WIT's *shape* exactly. WIT's `result` has four
+The inline representation fits WIT's _shape_ exactly. WIT's `result` has four
 forms and our parser already models them as `ResultKind(ok: TypeRef | null, err:
 TypeRef | null)`, which maps onto the two arms with `_` in the unit slots:
 
-| WIT | Zena |
-| --- | --- |
+| WIT            | Zena                                          |
+| -------------- | --------------------------------------------- |
 | `result<T, E>` | `inline (true, T, _) \| inline (false, _, E)` |
-| `result<T>` | `inline (true, T, _) \| inline (false, _, _)` |
+| `result<T>`    | `inline (true, T, _) \| inline (false, _, _)` |
 | `result<_, E>` | `inline (true, _, _) \| inline (false, _, E)` |
-| `result` | `inline (true, _, _) \| inline (false, _, _)` |
+| `result`       | `inline (true, _, _) \| inline (false, _, _)` |
 
 No conflict there — and `result<_, E>` is the single most common form in real
 WASI (117 of 291 occurrences), which is exactly the case that benefits most from
@@ -690,9 +693,7 @@ inline unions is `if (let (true, v) = f())` / `while (let (true, v) = f())`,
 which discards the false arm. That is sufficient for the iterator protocol,
 whose false arm is `inline (false, _)` and carries nothing — but `Result`'s
 false arm carries `E`. _(Corrected 2026-08-05: an earlier revision claimed the
-error arm cannot be bound at all. It can — `if (let (false, _, e) = f())`
-narrows correctly, now pinned by
-`tests/language/execution/control-flow/if_let_result.zena`.)_ What is missing
+error arm cannot be bound at all. It can — `if (let (false, _, e) = f())`narrows correctly, now pinned by`tests/language/execution/control-flow/if*let_result.zena`.)* What is missing
 is consuming **both arms of a single evaluation**: if-let's else branch sees
 nothing, and `match` arms over an inline union do not narrow — the binding
 gets the merged lane type (pinned by
@@ -721,7 +722,7 @@ if (ok) { /* value */ } else { /* err */ }
 ```
 
 This does not typecheck usefully. Narrowing is `#narrowings:
-Array<HashMap<SymbolId, Type>>` (checker.zena) — keyed by a *single* symbol — so
+Array<HashMap<SymbolId, Type>>` (checker.zena) — keyed by a _single_ symbol — so
 `if (ok)` narrows `ok` and nothing else; narrowing `value` off a test of `ok` is
 correlated narrowing between distinct bindings, which that structure cannot
 express. And with no literal in the pattern no arm is selected, so `value` is
@@ -753,7 +754,7 @@ inline tuple unions, not new pattern machinery.
   and a WIT-derived signature's representation depends on where it appears.
 - **(b) Let inline tuples nest and be stored.** A language change well beyond
   WIT, and it partly defeats the point: something stored has to live somewhere.
-- **(c) Box only at the WIT boundary.** Keep the inline union as *the* Zena
+- **(c) Box only at the WIT boundary.** Keep the inline union as _the_ Zena
   `Result`, and have bindgen introduce an explicit boxed carrier for the nested
   cases (a `Future<Result<…>>` wrapper class). Keeps the language unchanged and
   confines the cost to the 12%.
@@ -780,7 +781,7 @@ in a cancelled task's state machine, which needs G1.
 
 The tracks converge at stage 8. Note that implementation-plan.md puts JSPI
 ahead of the WASI P3 callback ABI as the first async host driver, so p3 HTTP is
-downstream of *both* Track W stages 1–7 and Track G's second host driver. That
+downstream of _both_ Track W stages 1–7 and Track G's second host driver. That
 is a further argument for taking p2 first: it is the only HTTP milestone
 reachable on Track W alone.
 
@@ -864,7 +865,7 @@ A `use` path was resolved with a general symbol lookup that walks every
 enclosing scope, so the type won over the interface. World `include` paths
 already avoided this by looking specifically for world definitions; `use` now
 looks specifically for interfaces, falling back to the symbol table so that
-interface *aliases* (`use foo as bar;`), which exist only there, still resolve.
+interface _aliases_ (`use foo as bar;`), which exist only there, still resolve.
 
 **Blocked: all of `wasi:sockets`**, and so `wasi:cli` and `wasi:http` with it.
 Covered by `tests/interface-shadowed-by-use.wit`.
@@ -884,7 +885,7 @@ interface types { use test:clocks/monotonic-clock@1.0.0.{duration}; }
 Resolving the cross-package `use` recurses into `monotonic-clock`, whose own
 unqualified `use types.{duration}` must mean `test:clocks/types`. It was answered
 from the scope stack instead, which yields the `types` currently being resolved
-in the *other* package, so the two appeared mutually dependent.
+in the _other_ package, so the two appeared mutually dependent.
 
 The fix threads the **owning package** — the package of the interface a `use`
 sits in — through `#validateUseNames`, `#findItemInInterface` and
@@ -910,7 +911,7 @@ than against whatever is nearest on the scope stack.
 
 Worth noting for the async work: released 0.3.0 is where `async func`, `stream<T>`,
 `future<T>` and `error-context` actually appear (36 `async func` alone across the
-draft), so the parser is already handling that surface — it is the *bindgen* and
+draft), so the parser is already handling that surface — it is the _bindgen_ and
 canonical-ABI sides that remain unbuilt.
 
 ---

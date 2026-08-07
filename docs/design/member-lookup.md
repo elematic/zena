@@ -490,7 +490,7 @@ Summarizing the contract this spec creates:
    `name + getSignatureKey(recorded)` and must resolve exactly (§5.2).
 2. Member identity for dispatch comes from the receiver _value's_
    struct/class info; privacy and private field naming come from the
-   *lexical* class via `resolvePrivateFieldName` (§6).
+   _lexical_ class via `resolvePrivateFieldName` (§6).
 3. No signature reconstruction from argument node types anywhere.
 
 ## 9. Implementation-gap index
