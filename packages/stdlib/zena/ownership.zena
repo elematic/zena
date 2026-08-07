@@ -6,8 +6,9 @@
  * handles, linear-memory allocations, WASI descriptors and FFI pointers share
  * a single release mechanism instead of four.
  *
- * `Own<T>`, `Borrow<T>`, `Unmanaged<T>`, `disown` and `adopt` land here in a
- * later O0 change; `dispose` is what all of them ultimately call.
+ * `Own<T>`, `Borrow<T>` and `Unmanaged<T>` are the three handle kinds;
+ * `disown` and `adopt` move a resource between the affine regime and the
+ * manually-managed one. `dispose` is what all of them ultimately call.
  */
 
 /**
@@ -84,3 +85,64 @@ export opaque type Borrow<T> = T;
  * `adopt` into a clean error rather than a double free.
  */
 export opaque type Unmanaged<T> = T;
+
+/**
+ * Leaves the affine regime: takes the owning handle and hands back an
+ * aliasable one that is never implicitly dropped.
+ *
+ * ```zena
+ * let raw: Unmanaged<Descriptor> = disown(f);   // f is consumed
+ * // … alias it, store it in a field, put it in an ordinary Array …
+ * let f2: Own<Descriptor> = adopt(raw);         // back under implicit drop
+ * ```
+ *
+ * The handles are erased, so this re-types the object rather than allocating
+ * anything: `Own<T>` and `Unmanaged<T>` lower to the same wasm type, and the
+ * body compiles to an identity function returning its argument. The call
+ * itself is not yet inlined away.
+ *
+ * `disown` **consumes** its argument. Otherwise an `Own` that will implicitly
+ * drop would coexist with an `Unmanaged` alias to the same resource, and the
+ * drop would run under an alias that outlives it. Consumption is not yet
+ * enforced: it needs move checking (O2), which is why entering this regime is
+ * currently a promise rather than a guarantee.
+ *
+ * The `owned | disowned | moved | dropped` lifecycle flag that ownership.md
+ * §"Disowning and adopting" specifies is not injected yet either, so `adopt`
+ * cannot currently reject a second adopter. That flag lives on the resource
+ * object rather than on a handle, because an `Unmanaged<R>` alias and a later
+ * `adopt` must observe the same one.
+ *
+ * The cast is legal here and nowhere else: `Own<T>` and `Unmanaged<T>` are
+ * opaque types declared in this file, and both erase to `T`, so re-labelling
+ * one as the other mints nothing. See ownership.md §"Handles are not
+ * forgeable" — outside this file the same cast is a diagnostic, which is what
+ * makes `disown` and `adopt` the only doors between the two regimes.
+ */
+export function disown<T>(value: Own<T>): Unmanaged<T> {
+  return value as Unmanaged<T>;
+}
+
+/**
+ * Re-enters the affine regime: takes a disowned handle back under implicit
+ * drop, so it is released at scope exit again.
+ *
+ * The inverse of `disown`, and the only way back — `Unmanaged<R>`
+ * has no user-callable `dispose`, since it is not an owner and cannot call the
+ * consuming form. A disowned resource is either scoped with `using` or adopted
+ * back.
+ *
+ * Specified to **throw** when the resource is not in the `disowned` state:
+ * `owned` means something else adopted it first and `dropped` means it is
+ * already released, both programming errors rather than expected conditions.
+ * That check needs the lifecycle flag, which is not injected yet, so today
+ * `adopt` accepts anything. Two racing adopters will therefore both succeed
+ * until it lands; once it does, the loser gets a clear error instead of a
+ * double free.
+ *
+ * `adopt` cannot retract aliases. Aliasability is the point of the disowned
+ * state, so the flag is the only defence here, by design.
+ */
+export function adopt<T>(value: Unmanaged<T>): Own<T> {
+  return value as Own<T>;
+}

@@ -1097,9 +1097,15 @@ of surface syntax.
 | **O3.5** | `affine T` type parameters + container opt-in                                                             | O2, A0's `where` bounds           | G, V           |
 | **O4**   | `isolated<T>`/`frozen<T>`/regions                                                                         | O2                                | V, A           |
 
-Implementation currently trails this document in two known places: the
+Implementation currently trails this document in four known places: the
 consuming receiver in §"Release consumes its receiver" needs receiver-type
-syntax (O0.1) and is not yet enforced, and `Scoped<T>` is design-only.
+syntax (O0.1) and is not yet enforced, `Scoped<T>` is design-only, and
+`disown`/`adopt` ship without the two guards §"Disowning and adopting"
+specifies for them — the lifecycle flag is not injected into resource classes
+yet, so `adopt` cannot reject a second adopter, and `disown` does not yet
+consume its argument, which waits on move checking (O2). Both functions
+themselves are landed: they needed no compiler intrinsics, only casts between
+two opaque aliases inside the library that declares them.
 
 **O0 unblocks the most.** The whole handle lattice ships there with runtime-only
 enforcement of move discipline, which freezes the _signatures_ immediately:

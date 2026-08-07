@@ -1,0 +1,66 @@
+// @mode: run
+// @result: 178
+
+// `disown` and `adopt` move a resource between the affine regime and the
+// manually-managed one. See docs/design/ownership.md §"Disowning and adopting".
+//
+// The interesting property is the middle: `Unmanaged<T>` is unrestricted, so a
+// disowned resource goes into an ordinary `Array<Unmanaged<Counter>>` with no
+// affine-generics machinery at all. ownership.md calls that out as the interim
+// path for resource-holding containers, ahead of O3.5's `affine T`.
+//
+// Neither function needs a compiler intrinsic. Both are ordinary generic Zena
+// whose body casts between two opaque aliases over the same target, which is
+// legal inside the file that declares them and rejected everywhere else.
+
+import { Own, Borrow, Unmanaged, Disposable, disown, adopt } from 'zena:ownership';
+
+resource class Counter {
+  var #n: i32;
+  new(n: i32) : #n = n;
+
+  value(): i32 { return this.#n; }
+  bump(by: i32): void { this.#n += by; }
+
+  :Disposable.dispose(): void {}
+}
+
+let readBorrowed = (c: Borrow<Counter>): i32 => c.value();
+
+export function main(): i32 {
+  let owned = new Counter(10);        // Own<Counter>
+  owned.bump(5);                      // 15
+
+  // Leave the affine regime. The handles are erased, so this re-types the
+  // same object rather than allocating a new one.
+  let raw = disown(owned);            // Unmanaged<Counter>
+
+  // Mutating through the alias reaches the same resource: members forward
+  // through Unmanaged exactly as they do through Own.
+  raw.bump(7);                        // 22
+
+  // `Unmanaged<T>` is unrestricted, so an ordinary container holds it. An
+  // `Array<Own<Counter>>` would need `affine T` and does not work yet.
+  let pending = new Array<Unmanaged<Counter>>();
+  pending.push(raw);
+  pending.push(disown(new Counter(100)));
+
+  // Aliasing is the point of the disowned state: `raw` and `pending[0]` are
+  // the same resource, so a mutation through one is visible through the other.
+  pending[0].bump(3);                 // 25
+  let viaAlias = raw.value();         // 25
+
+  // Adopt each element back under implicit drop.
+  var adopted = 0;
+  for (let entry in pending) {
+    let back = adopt(entry);          // Own<Counter>
+    back.bump(1);
+    adopted += readBorrowed(back);    // 26 + 101
+  }
+
+  // Round-tripping preserves identity, not just value: the counter `raw` still
+  // names picked up the +1 the adopted handle applied.
+  let afterRoundTrip = raw.value();   // 26
+
+  return viaAlias + adopted + afterRoundTrip;   // 25 + 127 + 26
+}

@@ -1,0 +1,26 @@
+// @mode: check
+
+// `disown` and `adopt` are ordinary generic Zena, not intrinsics — their
+// bodies are a single cast between two opaque aliases. So the guarantee rests
+// entirely on nobody else being able to write that cast.
+//
+// These are the two bodies, copied verbatim out of zena:ownership into a file
+// that may not write them. They are a sharper test than the concrete casts in
+// handles-are-not-forgeable.zena: `Own<T>` and `Unmanaged<T>` both erase to
+// `T`, so the anti-laundering rule for casts that mention a type parameter
+// (#197) sees nothing minted and lets them through. The declaring-file rule is
+// the only thing standing here, and this file is where that is load-bearing.
+//
+// They live alone in this file on purpose. The semantics runner satisfies each
+// `@error:` from any diagnostic anywhere in the file, so alongside the other
+// forge cases these would pass whether or not the checker rejected them.
+//
+// See docs/design/ownership.md §"Handles are not forgeable".
+
+import { Own, Unmanaged } from 'zena:ownership';
+
+// @error: opaque type
+let forgeDisown = <T>(v: Own<T>): Unmanaged<T> => v as Unmanaged<T>;
+
+// @error: opaque type
+let forgeAdopt = <T>(v: Unmanaged<T>): Own<T> => v as Own<T>;
