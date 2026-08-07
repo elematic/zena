@@ -48,19 +48,21 @@ Resource-ness is a property of a *class*, declared with the `resource` modifier:
 resource class Descriptor {
   #handle: i32;
   new(handle: i32) : #handle = handle;
-  :Disposable.dispose(): void { __wasi_descriptor_drop(this.#handle); }
+  :Disposable.dispose(this: Own<this>): void { __wasi_descriptor_drop(this.#handle); }
 }
 ```
 
 `resource class` carries three obligations:
 
-1. **It must provide a release action.** A resource class nominally implements
-   [`Disposable`](#disposable) and must define `:Disposable.dispose()`. No
-   `implements Disposable` clause is written — the `resource` modifier is the
-   conformance, following the way case classes nominally implement `Hashable`.
-   This is what makes the class a resource rather than merely a class you must
-   not copy; a class that needs uniqueness but has nothing to release is not a
-   resource (see [Uniqueness without a resource](#uniqueness-without-a-resource)).
+1. **It must provide a release action**, with a consuming receiver:
+   `:Disposable.dispose(this: Own<this>): void`. No `implements Disposable`
+   clause is written — the `resource` modifier carries the requirement — and the
+   consuming receiver is part of the resource-class contract rather than of the
+   `Disposable` interface, which cannot express it for both populations. See
+   [Release consumes its receiver](#release-consumes-its-receiver). This is what
+   makes the class a resource rather than merely a class you must not copy; a
+   class that needs uniqueness but has nothing to release is not a resource (see
+   [Uniqueness without a resource](#uniqueness-without-a-resource)).
 2. **It has no unwrapped form.** Bare `Descriptor` is not a spellable type.
    Every mention in a type position is `Own<Descriptor>`, `Borrow<Descriptor>`
    or `Unmanaged<Descriptor>`, so which regime a signature is in is always
@@ -152,28 +154,127 @@ not expressible as an interface; see
 Every reference to a resource is one of three **handle kinds**, all declared in
 `zena:ownership`:
 
-| Handle | Meaning | Duplicate? | Escape the frame? | Releases? |
+| Handle | Meaning | Duplicate? | Outlive its extent? | Releases? |
 | --- | --- | --- | --- | --- |
-| `Own<R>` | the owning reference | **no** | yes | yes, when it leaves scope unmoved |
+| `Own<R>` | the owning reference | **no** | — an owner carries its extent with it | yes, when it leaves scope unmoved |
 | `Borrow<R>` | temporary access, no ownership | yes | **no** | never |
-| `Unmanaged<R>` | ownership handed back to the programmer | yes | yes | **never implicitly** |
+| `Unmanaged<R>` | ownership handed back to the programmer | yes | — | **never implicitly** |
 
 The three are exhaustive: a resource class has no unwrapped form, so a value of
-one is always behind exactly one of them.
+one is always behind exactly one of them. A fourth type,
+[`Scoped<T>`](#scopedt-the-fourth-corner), is not a handle — it applies to any
+value, not just resources — but belongs to the same lattice and is introduced
+with the async rules that motivate it.
 
 They differ along two independent axes, and keeping the axes separate is what
 makes the system tractable:
 
 - **Affineness** governs duplication. Only `Own<R>` is affine.
-- **Second-class-ness** governs escape. Only `Borrow<R>` is second-class.
+- **Second-class-ness** governs extent. Only `Borrow<R>` is second-class — and
+  "extent" rather than "frame" is load-bearing; see the note under the universe
+  table below.
 
 Which yields three universes over all Zena types:
 
-| Universe | Members | Duplicate? | Escape? | Released? |
+| Universe | Members | Duplicate? | Outlive its extent? | Released? |
 | --- | --- | --- | --- | --- |
-| Unrestricted | primitives, `String`, ordinary classes, `Unmanaged<R>` | yes | yes | never implicitly |
-| Affine | `Own<R>`, and types containing one | **no** | yes | at scope exit, unmoved |
+| Unrestricted | primitives, `String`, ordinary classes, `Unmanaged<R>` | yes | — extent is the whole program | never implicitly |
+| Affine | `Own<R>`, and types containing one | **no** | — an owner carries its extent with it | at scope exit, unmoved |
 | Second-class | `Borrow<R>` | yes | **no** | never |
+| Scoped | `Scoped<T>`, and types containing one | **no** | **no** | at scope exit |
+
+The two properties are independent, so these are four corners of one lattice
+rather than a list: **affineness** governs duplication, **second-class-ness**
+governs extent, and `Scoped<T>` is the corner where both bind.
+
+**"Outlive its extent", not "cross a frame boundary".** The restriction on
+`Borrow<R>` and `Scoped<T>` is that the value may not be stored in the heap — no
+field, array element, or closure capture — and may not be returned *except* to
+the caller that supplied the source it derives from. A value that derives from
+nothing has the defining frame as its extent, so for it the two readings
+coincide; that is why the shorter phrasing is usually harmless.
+
+The exception is not a loophole, it is what makes the derived cases work at all:
+
+```zena
+let name = (f: Borrow<File>): Borrow<String> => f.name;
+async function read(f: Borrow<File>): Scoped<Future<String>> { … }
+```
+
+Both return a second-class value, and neither escapes: each derives from `f`,
+whose extent is the *caller's* borrow scope — wider than the callee's frame — so
+returning hands the value back into a region where it was already valid. What
+stays illegal is leaving that region:
+
+```zena
+var cache: Borrow<File>;                      // rejected — a field outlives any extent
+let leak = (): Scoped<Future<String>> => …;   // rejected — no borrow parameter to derive from
+```
+
+For `Scoped<T>` the two axes are satisfied separately and neither conflicts with
+returning: a return is a **move**, which is how `Own<T>` returns legally too, and
+the derivation rule is what keeps the moved-to location inside the extent.
+
+#### Handles have no runtime representation
+
+The three are **`distinct type` aliases over the resource**:
+
+```zena
+export distinct type Own<T> = T;
+export distinct type Borrow<T> = T;
+export distinct type Unmanaged<T> = T;
+```
+
+A `distinct type` is nominally distinct to the checker — `Own<Descriptor>`,
+`Borrow<Descriptor>` and `Unmanaged<Descriptor>` are three different types —
+while sharing its target's representation. So a handle costs no allocation and
+no indirection, and all three lower to the same wasm type: a reference to the
+resource. This is what makes `Borrow<i32>` and `i32` the same thing rather than
+a special case, and what lets `disown` re-type an object without allocating a
+new one.
+
+It is also forced. As real classes the handles broke codegen outright: a
+constructor typed `Own<Counter>` is a *different class* from `Counter`, with a
+different constructor arity.
+
+#### Handles are not forgeable
+
+Casting *into* a `distinct type` is otherwise legal in Zena, which would make
+the handles forgeable and the whole static guarantee decorative:
+
+```zena
+let forge = (b: Borrow<D>): Own<D> => b as Own<D>;      // two owners, so two drops
+let promote = (u: Unmanaged<D>): Own<D> => u as Own<D>; // skips adopt()'s flag check
+```
+
+The first creates a second owner, so once implicit drop lands the resource is
+released twice. The second bypasses the state-flag check that is the unmanaged
+regime's only guard. Both defeat the guarantee outright rather than degrading to
+a loud runtime error, which is the worse failure mode.
+
+So **a cast to or from `Own`, `Borrow`, `Unmanaged` or `Scoped` is rejected
+outside the `zena:ownership` library**, where `disown` and `adopt` live. Nothing legitimate
+needs one: construction produces an `Own<R>`, `disown`/`adopt` change regime, and
+`Own → Borrow` at a call site is an implicit coercion rather than a cast.
+
+This is a special case of a general gap — see
+[Blessed producers](#blessed-producers).
+
+#### Where the runtime state lives
+
+Because handles are erased, they have nowhere to store anything. Three
+different things could be called "state", and only one of them is stored:
+
+| | Where | Notes |
+| --- | --- | --- |
+| **Move state** — is this binding live or moved-from? | **nowhere; compile time only** | This is what §"The branch-join rule" buys: a conditionally-moved value is uniformly dead at the merge, so no runtime drop flag is needed. A local holding an `Own<T>` is an ordinary wasm local holding a reference. |
+| **The lifecycle flag** — `owned \| disowned \| moved \| dropped` | **a private field of the resource object** | It must be shared by every reference to that resource: an `Unmanaged<R>` alias and a later `adopt` have to observe the same flag, which only works if it lives on the object rather than on a handle. |
+| **The reference itself** | a local, or a **frame field** after the generator/async split | A resource live across a suspension is stored in the state-machine frame; that is the reference moving, not new state. |
+
+So a resource class carries its own state, and the ownership system adds no
+per-handle storage anywhere. The one place per-frame runtime state may still be
+needed is the `try`/`catch` case in §"Where the join rule does not reach", where
+"was this initialized when we unwound?" is genuinely dynamic.
 
 ### Resource-ness and affineness are separate
 
@@ -224,6 +325,13 @@ same reason it is easy in Rust; it is returning a *borrow* that is hard.
 Consequently the loan pattern is not forced: `fs.open()` hands a descriptor back
 rather than requiring `withFile(path, cb)`.
 
+**The result need not be bound.** Discarding is permitted — that is what makes
+this affine rather than linear — so `fs.open(path);` as a statement opens a
+descriptor and releases it at the end of that statement, the temporary's extent.
+That is safe but almost always a mistake, so an unused `Own<…>` result is a
+**warning**, not an error. Making it an error would impose linearity at the
+value level, which §"Affine types" rejects.
+
 `Result<Own<T>, E>` costs nothing extra. `Result` is a type alias over an inline
 multi-value union, so an owned handle rides in one lane of a multi-value return
 and is destructured at the call site:
@@ -236,7 +344,7 @@ if (let (true, f, _) = fs.open(path, Flags.Read)) {
 
 ### Borrowing
 
-Borrows are stack-bound and may not escape:
+Borrows are bound to an extent and may not outlive it:
 
 1. Legal only as parameter types and local bindings.
 2. A function may return a borrow only when it derives from exactly one of its
@@ -293,6 +401,225 @@ borrow may travel out one frame, to the caller that supplied its source". That
 is far less than full lifetimes — no lifetime variables, no variance, no
 `outlives` constraints, no annotations in the common case — but it is not
 nothing.
+
+#### Borrows and suspension
+
+An `async` or `gen` function's frame is a heap object that outlives the call,
+so rule 3 already forbids a borrow reaching one. The precise rule is about
+liveness rather than storage, because a borrow spilled into a frame and never
+read again is harmless, while a borrow *read after* a suspension is not — the
+owner's scope may have ended and released the resource in between:
+
+> **A `Borrow<T>` may not be live across a suspension point.**
+
+That lands differently on the two constructs, because their ramps differ:
+
+- **A generator may not take a borrow parameter at all.** Its ramp is lazy: it
+  allocates the frame, spills the arguments and returns the `Iterator<T>`
+  without running any body code. Every use of a borrow parameter therefore
+  happens after the caller has taken the iterator, so there is no prefix in
+  which the borrow is safe.
+- **An async function may use a borrow parameter up to its first `await`.** Its
+  ramp is *eager*: the body runs synchronously until the first suspension, and
+  that prefix executes inside the caller's dynamic extent, where the owner is
+  provably still alive.
+
+The enforcement mechanism already exists. The split pass computes exactly which
+values are live across suspensions in order to decide which become frame
+fields; a `Borrow<T>` in that set is the error. The checker reports it against
+the flow graph so the diagnostic has a span, with the split pass's liveness as
+a cross-check.
+
+**Awaiting the call is not by itself sufficient.** `await read(file)` looks safe
+— the caller suspends until the callee finishes, so the borrow's extent appears
+to nest inside the owner's — but `let fut = read(file);` without awaiting hands
+the caller a heap value that owns the borrow, and nothing stops it outliving
+`file`.
+
+#### Lifting the restriction: borrow-derived futures and iterators
+
+The mechanism is **second-class-ness, not affineness**. `Own<Future<T>>` does
+not help: owns are first-class and may be returned, stored in a field or moved
+into a container, so an owned future still escapes the borrow's extent. What is
+needed is that the future cannot outlive the borrow's extent.
+
+§"Derived borrows" already provides it. A function with exactly one borrow
+parameter may return a value derived from it, with extent equal to the caller's
+borrow scope, and "a borrow of a place reachable from a borrowed value derives
+from that value". A `Future` or `Iterator` holding a borrow *is* a value
+reachable from a borrowed value, so it inherits second-class-ness by the
+existing rule:
+
+```zena
+async function read(f: Borrow<File>): Future<String>     // future derives from f
+
+function lines(f: Borrow<File>): Iterator<String> {      // iterator derives from f
+  return lineGen(f);
+}
+
+for (let line in lines(file)) { … }   // legal: the loop is inside f's extent
+```
+
+This is Rust's `impl Future + 'a` without the lifetime variable. It also
+supplies most of the cancellation guarantee for free: a future that cannot
+escape is dropped at the end of the borrow's extent, *before* the owner's scope
+ends, so the nesting is enforced structurally rather than by a cancellation
+protocol. The residual is narrower than "settle cancellation first" — it is
+whatever paths abandon a frame other than by scope exit (open question 4).
+
+##### `Scoped<T>`: the fourth corner
+
+Leaving the restriction implicit is not acceptable: if `Future<String>` is
+escapable or not depending on whether the callee happened to take a borrow, a
+reader cannot tell from the signature, and `let fut = read(file)` has no way to
+carry the restriction to the checker.
+
+**`Borrow<Future<String>>` is the wrong spelling**, on two counts. Nothing else
+owns that future — it was created by the callee, while `Borrow<T>` means
+temporary access to something another party owns. And a borrow *never releases*
+what it points at, whereas a borrow-derived future must be dropped: releasing
+its frame at the end of the extent is exactly what makes the nesting argument
+work.
+
+The reason no good spelling existed is that the universe table has four corners
+and only three were named. A borrow-derived future or iterator owns a frame — so
+it cannot be duplicated and must be dropped — *and* cannot outlive its extent:
+
+| | Duplicate? | Outlive its extent? | Released? | |
+| --- | --- | --- | --- | --- |
+| Unrestricted | yes | — | never | ordinary values |
+| `Own<R>` | **no** | — | at scope exit | affine |
+| `Borrow<R>` | yes | **no** | never | second-class |
+| `Scoped<T>` | **no** | **no** | at scope exit | a borrow-derived frame |
+
+`Scoped<T>` is returnable for the same reason `Borrow<T>` is: returning is a
+move, and the derivation rule keeps the result inside the caller's borrow scope,
+which is the extent it already belonged to. See §Handles.
+
+So the signature is spelled:
+
+```zena
+async function read(f: Borrow<File>): Scoped<Future<String>>
+```
+
+Like the handles, `Scoped<T>` is a `distinct type` alias — erased, carrying
+permissions rather than data — and gets the same one-directional coercion as
+`Own<R>` → `Borrow<R>`: a first-class `Future<T>` is usable where a
+`Scoped<Future<T>>` is expected, since dropping capability is safe, but never
+the reverse.
+
+**Naming risk.** `Borrow<R>` is also scoped — it occupies the other
+no-escape corner — so `Scoped<T>` names the *axis* rather than the corner it
+occupies, and a reader may reasonably ask why `Borrow` is not spelled `Scoped`.
+The two are genuinely different (one borrows another party's resource, one owns
+a frame), but this should be renamed before `zena:ownership` has clients if it
+reads badly.
+
+##### Combinators: scopedness derives, and generics opt in
+
+Naming the corner is not by itself enough to make `Future.all` work. Passing
+`Scoped<Future<String>>` values means putting scoped values into an `Array`,
+and storing a second-class value in a container is what escape *means*. Two
+rules close it, both mirroring machinery this document already has:
+
+**Scopedness derives structurally**, exactly as affineness does. Affine is
+"`Own<R>`, and types containing one"; scoped is "`Scoped<T>`, and types
+containing one". So `Array<Scoped<Future<T>>>` is itself scoped, with no
+annotation — which makes storing a scoped value in it harmless, because the
+container cannot escape either. This is the standard second-class relaxation:
+second-class values may be stored in second-class structures.
+
+**The combinator opts in**, exactly as containers opt into affine elements:
+
+```zena
+Future.all<scoped T>(futures: Array<T>): Future<Array<T>>
+```
+
+With `T = Scoped<Future<String>>`, `Array<T>` derives scoped and the returned
+`Future<Array<T>>` derives scoped, so neither needs an annotation.
+
+##### The two axes, side by side
+
+`scoped T` is the escape-axis twin of [`affine T`](#affine-type-arguments):
+
+| Axis | Default | Opt-in | What the body gives up |
+| --- | --- | --- | --- |
+| **Duplication** | unrestricted | `affine T` | may move a `T` at most once per path |
+| **Extent** | first-class | `scoped T` | may not let a `T` outlive its extent |
+
+Identical in shape: widening what a parameter accepts narrows what its body may
+do, both derive structurally through containing types, and both default to the
+permissive case so existing code is unaffected. They compose — `<affine scoped
+T>` for a fully restricted parameter — and the motivating case needs the
+combination, since a `Scoped<Future<T>>` is both affine (it owns a frame) and
+scoped.
+
+Costs, so this does not read as free:
+
+- **Vocabulary growth.** A fourth type constructor and a second type-parameter
+  modifier, in a design that had settled on three handles and one modifier.
+- **Every combinator that should accept scoped values needs `<scoped T>`** —
+  `Future.all`, and the iterator adapters `map`/`filter`/`take`. One modifier
+  each, but it is a real audit.
+- **Two borrow parameters** hit the ambiguity in §"Derived borrows" — the same
+  decision, not a new one.
+- **The rule must survive the split pass**, since the future or iterator *is*
+  the frame: "derives from a borrow" has to propagate into frame typing.
+
+Ship the liveness rule first; this relaxation is the natural follow-on.
+
+#### Value types, containers, and slot references
+
+Data-oriented layouts — a `MultiList` holding values struct-of-arrays, an
+arena-backed buffer — raise a case the garbage collector cannot help with: a
+"reference" to an element that is not itself a GC object, but whose backing
+storage must outlive it.
+
+Second-class borrows are the answer, and they are a better one than GC tracking
+here. **An element reference is a borrow derived from the container**, per the
+projection rule in §"Derived borrows", and its safety comes from the static
+extent rather than from reachability: it cannot outlive the container because it
+cannot escape the scope that borrowed the container. No tracing, no fat pointer,
+no pinning. The alternative — making an element reference a GC reference to the
+backing array plus an index — reintroduces exactly the per-element cost that a
+struct-of-arrays layout exists to remove.
+
+**Arenas are the same shape**, which is why §"Linear memory and FFI" recommends
+the region rather than the pointer as the unit of ownership. An arena is never
+freed per allocation; it is freed as a unit. So per-object ownership is the
+wrong granularity: one `Own<Arena>`, N borrows into it, and every borrow is
+statically dead before the arena drops. That is also why arena allocation is
+fast — no per-object bookkeeping and no per-object drop.
+
+Whether the container needs ownership at all depends on what backs it:
+
+| Container | Ownership | Element references |
+| --- | --- | --- |
+| GC-backed (`MultiList` over GC arrays) | none needed | borrows derived from the container |
+| Arena- or linear-memory-backed | `Own<Arena>`, released by implicit drop | borrows derived from the container |
+
+**The guarantee is the inverse of "keep alive while referenced".** A second-class
+borrow cannot outlive its container; it does not extend the container's life.
+Container lifetime is declared by a scope and references are forced to fit inside
+it. Reachability semantics — keep the backing alive as long as anything points
+at it — is refcounting or a GC-tracked fat reference, and costs per element what
+this layout is trying to save.
+
+**Open — a wrinkle in the identity rule below.** `Borrow<T> ≡ T` at unrestricted
+instantiations is justified by "an unrestricted `T` has no owner to outlive". A
+`MultiList` element breaks that: `Point` is unrestricted, but a reference to the
+*slot* very much has an owner to outlive. Two different things are being called a
+borrow:
+
+| | Outlives the container? | Second-class? |
+| --- | --- | --- |
+| Reading an element **by value** (a copy) | irrelevant — it is a copy | no; the identity rule holds |
+| A reference to the **slot** — mutate in place, or avoid copying a large value | must not | **yes**, whether or not `T` is affine |
+
+So second-class-ness attaches to the *derivation*, not to whether `T` is affine
+— which is what §"Derived borrows" already says, and what the identity rule
+below contradicts for place references. Resolving it needs either a separate
+spelling for a slot reference or a qualification on the identity rule.
 
 #### `Borrow<T>` is the identity at unrestricted instantiations
 
@@ -375,6 +702,15 @@ using file = openConfig(path);
 
 Semantics: reverse declaration order at scope exit; runs on normal exit, early
 return, `break`/`continue`, and exception unwind. It desugars to `try`/`finally`.
+
+A binding is optional. `using _ = foo()` is a workaround for a syntax gap in
+other languages and should not be inherited; `using` is a keyword, so a bare
+expression form is unambiguous:
+
+```zena
+using acquire(lock);           // scope-bound, nothing to name
+using let file = open(path);   // bound
+```
 
 It composes with refutable pattern conditions as a binding modifier:
 
@@ -464,7 +800,8 @@ language reference.
 - **Suspension.** After the generator split pass, locals live across a yield
   become frame fields, and a suspended frame may be dropped without being
   resumed. "Which owns are live in state *k*" is a per-state table, not a
-  lexical list.
+  lexical list. Borrows have the mirror-image problem — see
+  [Borrows and suspension](#borrows-and-suspension).
 
 ### Implicit drop
 
@@ -513,6 +850,10 @@ let discard = <affine T>(x: T) => {};   // fine for Own<R> and for i32
 `affine T` drops the implicit `T extends Copyable` bound. Widening what a
 parameter accepts narrows what its body may do: inside such a body, each
 `T`-typed value may be moved at most once per path. Borrowing stays unlimited.
+
+`affine T` governs the duplication axis. Its twin on the escape axis is `scoped
+T` — see §"The two axes, side by side". They compose: `<affine scoped T>` is a
+parameter that may be both.
 
 Three things that need no opt-in, because they are the common cases:
 
@@ -744,12 +1085,17 @@ of surface syntax.
 | | Work | Needs | Independent of |
 | --- | --- | --- | --- |
 | **O0** | `resource class`, `zena:ownership` (`Own`/`Borrow`/`Unmanaged`/`Disposable`), `disown`/`adopt`, drop glue | nothing | everything |
+| **O0.1** | Receiver types (`this: Own<this>`), so release can consume | O0 | everything |
 | **O0.5** | `using` + scope-exit cleanup lowering | O0 | everything |
 | **O1** | Checker flow graph | nothing | everything |
 | **O2** | Move checking on the flow graph | O0, O1 | G, V, A |
 | **O3** | Implicit drop | O2; G1 for the cancellation table | V, A |
 | **O3.5** | `affine T` type parameters + container opt-in | O2, A0's `where` bounds | G, V |
 | **O4** | `isolated<T>`/`frozen<T>`/regions | O2 | V, A |
+
+Implementation currently trails this document in two known places: the
+consuming receiver in §"Release consumes its receiver" needs receiver-type
+syntax (O0.1) and is not yet enforced, and `Scoped<T>` is design-only.
 
 **O0 unblocks the most.** The whole handle lattice ships there with runtime-only
 enforcement of move discipline, which freezes the *signatures* immediately:
@@ -830,14 +1176,150 @@ thing — rather than adding a third IR.
 
 ---
 
-## Open questions
+<a id="should-release-consume-its-receiver"></a>
+### Release consumes its receiver
+
+A resource's release action ends the object's life, so it is declared with a
+consuming receiver:
+
+```zena
+resource class Descriptor {
+  :Disposable.dispose(this: Own<this>): void { __wasi_descriptor_drop(this.#handle); }
+}
+```
+
+`this` is already a type in Zena — `Sequence.map` takes `seq: this` — and
+`Own<this>` is what makes the receiver correct under inheritance: on a subclass
+it means `Own<Subclass>`, which a written-out `Own<Descriptor>` would not give.
+
+The payoff is concrete. With a *borrowing* receiver, an explicit `d.dispose()`
+leaves `d` live, so the compiler still inserts a drop at scope exit and release
+runs twice — idempotence makes that safe, but it is a wasted call and "I
+released early" is not something the type system knows. With a consuming
+receiver the call moves `d`: no drop is inserted, and any later use is a compile
+error rather than a runtime flag check.
+
+**There is no legitimate dispose-then-use.** After release the resource is dead,
+and catching that is the point. A caller who genuinely needs a reference to
+survive release can `disown` first: the resulting `Unmanaged<R>` stays valid as
+a reference, its flag reads `dropped`, and later uses are runtime errors. That
+is exactly the trade of entering the unmanaged regime, so it needs no special
+provision.
+
+**`Unmanaged<R>` has no user-callable dispose.** It cannot call the consuming
+form — it is not an owner — and giving it a second, borrowing form would mean
+overloading on the receiver. Instead, once disowned a resource is either scoped
+with `using` or adopted back:
+
+```zena
+using let raw = disown(f);   // released at scope exit
+let f2 = adopt(raw);         // or take it back; drops normally
+```
+
+`using` performs the release internally against the state flag, which it must do
+for ordinary disposables anyway.
+
+**This splits `Disposable` into two contracts.** The receivers genuinely differ:
+
+| | Receiver | Why |
+| --- | --- | --- |
+| `resource class R` | `this: Own<this>` | consuming — release ends its life |
+| An ordinary `Disposable` | borrowing | aliasable, released by `using`; there is no owner to consume |
+
+A class cannot *strengthen* an inherited borrowing receiver to a consuming one
+without breaking interface dispatch, so one interface signature cannot serve
+both. The `dispose` **symbol** is shared; the consuming receiver is part of the
+**`resource class` contract** rather than of the `Disposable` interface. That
+replaces the nominal `Disposable` conformance described under §Resource.
+
+### Disposing groups
+
+A collection of resources released together is a `Resource<Array<Own<R>>>` held
+as a field — dropping the container drops each element through derived glue
+(§Containers). **`using` does not cover this case**: it is lexically scoped,
+whereas a registry of subscriptions built during setup and released at teardown
+is bound to an *object's* lifetime and deliberately outlives the function that
+filled it.
+
+JavaScript's `DisposableStack` adds ergonomics over that container rather than
+new capability — `use(x)` returning `x` for inline registration, `move()` for
+the adopt-on-success pattern, and error aggregation across failed disposals.
+Those belong in the stdlib if they earn their keep, not in the language. The one
+piece not expressible over a container is `defer(fn)` for arbitrary cleanup that
+is not a resource, since a closure is not `Disposable`.
+
+<a id="blessed-producers"></a>
+### Blessed producers and `opaque type`
+
+The handle rule above is a special case of something the language does not yet
+express: **a type only certain locations may create.** `distinct type` gives
+nominal distinctness but not producer control, since anything may cast into it.
+That is right for units of measure — `distinct type Meters = i32` wants `5 as
+Meters` to be convenient — and wrong for capabilities, handles, and
+`distinct type Ptr<T> = i32`, where only the allocator should mint a value.
+
+Every language that solves this uses a file/library boundary as the unit of
+blessing: ML abstract types in signatures, Haskell's unexported newtype
+constructor, Rust's newtype with a private field, Java's private constructor
+plus factory.
+
+#### Specification
+
+**`opaque` replaces `distinct`, it does not compose with it.** Opacity implies
+nominal distinctness — an opaque *transparent* alias would be meaningless, since
+if `X` and `Y` are the same type there is nothing to hide. Three levels in one
+keyword slot:
+
+```zena
+type Feet = i32;              // transparent — the same type
+distinct type Meters = i32;   // nominal; `5 as Meters` is allowed
+opaque type Ptr<T> = i32;     // nominal; only the declaring library converts
+```
+
+1. **The boundary is the declaring library** — one file — not the package.
+   ("Library" rather than "module" throughout: *module* is reserved for Wasm
+   modules.) That is the boundary Zena already has, since a library is what
+   `export` scopes, and opacity's value scales inversely with the size of the
+   trusted set: "anything in the stdlib may mint a `Ptr`" is a far weaker
+   guarantee than "only `zena:memory` may". A package whose producers genuinely
+   span files has one library own the conversion and export a blessed
+   constructor to its siblings, which keeps the trusted set small and
+   greppable.
+2. **The name is public; the representation is private.** Other libraries may
+   name the type in signatures, bind it, pass it and store it. They may not
+   convert.
+   This is what lets `Own<T>` appear in every user signature while remaining
+   unforgeable.
+3. **Both directions are restricted.** Casting *out* is what leaks the
+   representation, and for `Own<T>` casting out is exactly the
+   ownership-stripping hole. A library that needs the underlying value exports
+   an accessor.
+4. **`is` checks are a compile error.** Opaque types are erased, so `x is
+   Ptr<T>` cannot be answered at runtime; it should be rejected rather than
+   silently always true.
+5. **Representation and codegen are unchanged** — the same erasure `distinct
+   type` already has.
+
+Residual: an `@external` declaration can still claim to return an opaque type,
+since the FFI boundary is trusted by construction. That is the same class as a
+wrong `@external` signature, already accepted under §"Linear memory and FFI".
+
+Until this exists, the handles are special-cased by name and `sourcePath` in the
+checker, the same way `Hashable` is. Adopting `opaque` should fold that special
+case into the general rule and re-declare the handles as
+`opaque type Own<T> = T` and so on.
+
+## Open questions## Open questions
 
 1. Multi-borrow returns: reject, or name the source parameter?
 2. `try`/`catch` and the branch-join rule: a runtime drop flag inside `try`
    bodies, or split the try region at each acquisition?
 3. Child-before-parent drop ordering: recorded on the wrapper, or inferred?
 4. Who drops a resource in an *abandoned* task's frame? (Cancellation itself is
-   answered by the per-state drop table.)
+   answered by the per-state drop table.) This is the residual gate on
+   §"Lifting the restriction": second-class futures make the common case nest
+   structurally, leaving only the paths that abandon a frame without a scope
+   exit.
 5. Raw linear-memory access: privileged allocator module, or a general `unsafe`?
 6. Mutable-field narrowing: stay restrictive, adopt TypeScript's unsoundness, or
    use whole-program reachability for `#private` fields?
@@ -849,6 +1331,25 @@ thing — rather than adding a third IR.
    hand-written resource classes still write their own.
 10. Naming: `disown`/`adopt`, `Unmanaged<T>`, `affine T`. Cheap to change until
     `zena:ownership` has clients.
+11. ~~Should a resource's release consume its receiver?~~ — **decided**: yes,
+    `:Disposable.dispose(this: Own<this>): void`. It does split `Disposable`
+    into two contracts sharing one symbol; see
+    [Release consumes its receiver](#release-consumes-its-receiver).
+12. ~~How is a borrow-derived future or iterator spelled?~~ — **decided**:
+    `Scoped<T>`, the fourth corner of the universe table, with `scoped T` as
+    the type-parameter opt-in. Follow-on: `Borrow<R>` is also scoped, so
+    `Scoped` names the axis rather than its corner — rename before
+    `zena:ownership` has clients if that reads badly.
+13. Adopt `opaque type` and fold in the handle cast ban? Specified under
+    [Blessed producers](#blessed-producers); the open part is scheduling, not
+    design.
+14. Slot references: does `Borrow<T> ≡ T` need qualifying, or does a reference
+    into a container slot need its own spelling? See §"Value types, containers,
+    and slot references".
+15. How should the checker resolve `Own` when wrapping `new R(…)`? It must not
+    depend on the user having imported it, and putting `zena:ownership` in the
+    prelude puts the module in every program's graph — measurably, since the
+    WatGenerator import-count tests change for programs with no resources.
 
 ## Related
 
