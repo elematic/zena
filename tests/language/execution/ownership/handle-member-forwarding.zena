@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 30
+
+// Ownership handles are `distinct type` aliases, so they are erased at
+// codegen: Own<Counter>, Borrow<Counter> and Counter all lower to the same
+// wasm type. That is what lets a forwarded member call actually run — before
+// the erasure, lowering saw a handle as a type it had no class for.
+// See docs/design/ownership.md §Handles.
+
+import { Own, Borrow, Disposable } from 'zena:ownership';
+
+resource class Counter {
+  var #n: i32;
+  new(n: i32) : #n = n;
+
+  value(): i32 { return this.#n; }
+  bump(by: i32): void { this.#n += by; }
+
+  :Disposable.dispose(): void {}
+}
+
+// Borrowing at a call site is implicit, so an Own<Counter> is accepted here.
+let readBorrowed = (c: Borrow<Counter>): i32 => c.value();
+
+export function main(): i32 {
+  let owned = new Counter(10);              // Own<Counter>
+  owned.bump(5);                            // forwards through Own
+  return owned.value() + readBorrowed(owned);   // 15 + 15
+}

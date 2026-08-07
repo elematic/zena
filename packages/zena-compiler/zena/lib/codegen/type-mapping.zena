@@ -739,6 +739,27 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
 export let eraseTypeParameters = (t: Type): Type => {
   return match (t) {
     case TypeParameterType: new AnyRefType()
+    case TypeAliasType as ta: {
+      // Codegen wants representations, and a `distinct type` is nominally
+      // distinct only to the checker — it shares its target's representation.
+      // This is what makes the ownership handles cost nothing at runtime:
+      // `Own<Descriptor>`, `Borrow<Descriptor>` and `Descriptor` all lower to
+      // the same wasm type. Without it, lowering sees a handle as a type it
+      // has no class for and bails (`new of non-class`, `method receiver
+      // kind`, `constructor arity adaptation`).
+      //
+      // instantiateTypeAliasType keeps the *unsubstituted* target and carries
+      // the arguments alongside (types.zena), so substitute before recursing —
+      // otherwise `Own<T> = T` erases to the bare type parameter, and
+      // `Ptr<T> = i32` would wrongly erase to `T`.
+      let tps = ta.typeParameters;
+      let targs = ta.typeArguments;
+      if (tps != null && targs != null) {
+        return eraseTypeParameters(substituteTypeParamsInCodegen(
+            tps as Array<TypeParameterType>, targs as Array<Type>, ta.target));
+      }
+      eraseTypeParameters(ta.target)
+    }
     case ArrayType {elementType}: {
       let sub = eraseTypeParameters(elementType);
       if (sub == elementType) { return t; }

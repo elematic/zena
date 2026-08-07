@@ -3068,8 +3068,11 @@ export final class FunctionLowerer {
       this.#bail('untyped new');
     }
     // Inside a class body, `new Point(...)` may be typed via the checker's
-    // Point_This marker; resolve to the concrete class first.
-    let selfResolved = this.#resolveSelfType(nodeType as Type);
+    // Point_This marker; resolve to the concrete class first. Erase before the
+    // class check, not after: constructing a resource is typed `Own<R>`, a
+    // distinct-type alias that erases to `R`, so checking first would bail on
+    // a type that does have a class behind it.
+    let selfResolved = eraseTypeParameters(this.#resolveSelfType(nodeType as Type));
     if (!(selfResolved is ClassType)) {
       this.#bail('new of non-class');
     }
@@ -4226,7 +4229,10 @@ export final class FunctionLowerer {
       let fnValue = this.#lowerRecordReadOn(rt, member, recv);
       return this.#lowerClosureCallOn(call, fnValue);
     }
-    let selfResolved = this.#resolveSelfType(objectType as Type);
+    // Erase before dispatching on the receiver's kind: a receiver typed
+    // `Own<R>`/`Borrow<R>`/`Unmanaged<R>` is a distinct-type alias that erases
+    // to `R`, and member access forwards through it (ownership.md §Handles).
+    let selfResolved = eraseTypeParameters(this.#resolveSelfType(objectType as Type));
     if (selfResolved is InterfaceType) {
       let propName = getMemberPropertyName(
           member.isSymbolAccess, member.property.name);

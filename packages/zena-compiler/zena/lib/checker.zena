@@ -2225,6 +2225,39 @@ let ownershipHandleInner = (t: Type): Type | null => {
   return a[0];
 };
 
+/**
+ * Wraps a bare resource-class type in `Own<…>`. Constructing a resource
+ * produces the owning reference: without this, the inferred type of
+ * `let d = new Descriptor(…)` would be bare `Descriptor`, which is not a
+ * spellable type, so the value could not be named or passed anywhere.
+ *
+ * `Own` is resolved by ordinary scope lookup rather than through the prelude —
+ * putting `zena:ownership` in the prelude would add it to every program's
+ * module graph, which is measurable even for programs with no resources. A file
+ * that constructs a resource must therefore import `Own`, and if it has not,
+ * this reports that rather than silently leaving the value unwrapped.
+ */
+let wrapResourceInOwn = (ctx: CheckerContext, t: Type, loc: SourceLocation | null): Type => {
+  if (!(t is ClassType)) { return t; }
+  let ct = t as ClassType;
+  if (!ct.isResource) { return t; }
+  let own = ctx.resolveTypeName("Own");
+  if (own == null || !(own is TypeAliasType)) {
+    ctx.error(
+      "Constructing the resource class '" + ct.name + "' produces an 'Own<" +
+      ct.name + ">', but 'Own' is not in scope. Add: import { Own } from 'zena:ownership';",
+      DiagnosticCode.SymbolNotFound,
+      loc
+    );
+    return t;
+  }
+  let ot = own as TypeAliasType;
+  if (ot.typeParameters == null) { return t; }
+  let args = new Array<Type>();
+  args.push(t);
+  return instantiateTypeAliasType(ot, args);
+};
+
 let isOwnershipWrapper = (t: Type): boolean => {
   if (!(t is TypeAliasType)) { return false; }
   let ta = t as TypeAliasType;
@@ -6746,7 +6779,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     }
   }
   case NewExpression as newExpr: {
-    checkNewExpression(ctx, newExpr, newExpr.callee, newExpr.typeArguments, newExpr.args, newExpr.loc)
+    let constructed = checkNewExpression(ctx, newExpr, newExpr.callee, newExpr.typeArguments, newExpr.args, newExpr.loc);
+    wrapResourceInOwn(ctx, constructed, newExpr.loc)
   }
   case AsExpression {expression, typeAnnotation, loc}: {
     let sourceType = checkExpression(ctx, expression, null);
