@@ -24,6 +24,33 @@ export { MixinKey } from '../types.zena';
 @intrinsic('hash')
 declare function hash<T>(value: T): i32;
 
+/**
+ * The hidden struct field holding a resource's lifecycle flag —
+ * `owned | disowned | moved | dropped`, docs/design/ownership.md
+ * §"Disowning and adopting".
+ *
+ * It is a codegen-only field with no declared counterpart, like
+ * `<vtable>`: the functions that read it, zena:ownership's `disown` and
+ * `adopt`, are generic over an unbounded `T`, and a generic body cannot
+ * name a member that only some instantiations have. They reach it
+ * through the `resource.state` / `resource.set_state` intrinsics
+ * instead, which resolve this name on the concrete class after
+ * monomorphization.
+ *
+ * It lives on the resource object rather than on a handle because
+ * handles are erased and an `Unmanaged<R>` alias and a later `adopt`
+ * must observe the same flag.
+ */
+export let RESOURCE_STATE_FIELD = '$ownState';
+
+/**
+ * The lifecycle-flag values, matching the `ResourceState` constants in
+ * packages/stdlib/zena/ownership.zena. `owned` is 0 so that
+ * struct.new_default gives every fresh resource the right initial
+ * state with no constructor work.
+ */
+export let RESOURCE_STATE_OWNED = 0;
+
 // TODO: Add string comparison to the stdlib and use that instead.
 export let compareStrings = (a: String, b: String): i32 => {
   let lenA = a.length;

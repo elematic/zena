@@ -1,0 +1,115 @@
+// @mode: run
+// @result: 604
+// The `owned | disowned | moved | dropped` flag every resource object
+// carries (ownership.md §"Disowning and adopting"). It is what stops a
+// second `adopt` from silently minting a second owner, and a second
+// `disown` from handing out two unmanaged aliases with one disposal
+// obligation between them.
+//
+// Verified by deleting the field injection in specialization.zena and
+// watching this fail: with no field the accessors fold to "always
+// owned", `disown` records nothing, and `adopt` then rejects a resource
+// it should accept. So the failure is loud — a trap in
+// `requireState_spec_Counter` — rather than a silent pass.
+//
+// The flag lives on the resource OBJECT, not on the handle, because the
+// handles are erased and an `Unmanaged<R>` alias and a later `adopt`
+// have to observe the same one. `sharesFlagWithAlias` is the case that
+// pins that down.
+import { Own, Unmanaged, Disposable, disown, adopt, ResourceStateError } from 'zena:ownership';
+
+resource class Counter {
+  var #n: i32;
+  new(n: i32) : #n = n;
+  value(): i32 { return this.#n; }
+  bump(by: i32): void { this.#n += by; }
+  :Disposable.dispose(): void {}
+}
+
+/** A second adopter loses, rather than becoming a second owner. */
+let secondAdoptThrows = (): i32 => {
+  let raw = disown(new Counter(1));
+  let first = adopt(raw);
+  try {
+    // `raw` still names the resource — aliasability is the whole point
+    // of the disowned state — but it is no longer disowned.
+    let second = adopt(raw);
+    return -1;
+  } catch (e) {
+    if (!(e is ResourceStateError)) {
+      return -2;
+    }
+  }
+  return first.value();
+};
+
+/** Disowning twice is caught even though `disown` cannot consume yet. */
+let secondDisownThrows = (): i32 => {
+  let c = new Counter(2);
+  let raw = disown(c);
+  try {
+    // Move checking will reject this statically, by which point `c` is
+    // moved-from. Until then the flag is what catches it.
+    let again = disown(c);
+    return -3;
+  } catch (e) {
+    if (!(e is ResourceStateError)) {
+      return -4;
+    }
+  }
+  return raw.value();
+};
+
+/**
+ * Adopting through a different alias than the one disowned works, and
+ * flips the state for every alias at once. Two handles to one object
+ * must not disagree about whether it is owned.
+ */
+let sharesFlagWithAlias = (): i32 => {
+  let raw = disown(new Counter(4));
+  let alias = raw;
+  let back = adopt(alias);
+  try {
+    // Adopting via the ORIGINAL alias must now fail: adopting through
+    // `alias` moved the object, not a per-handle copy of the flag.
+    let viaOther = adopt(raw);
+    return -5;
+  } catch (e) {
+    if (!(e is ResourceStateError)) {
+      return -6;
+    }
+  }
+  return back.value();
+};
+
+/** A resource can cycle between the two regimes any number of times. */
+let roundTripsRepeatedly = (): i32 => {
+  var owned = new Counter(8);
+  for (var i = 0; i < 3; i += 1) {
+    let raw = disown(owned);
+    raw.bump(1);
+    owned = adopt(raw);
+  }
+  return owned.value();
+};
+
+// Not covered here: `Own<T>` over an ordinary class carries no flag, and
+// the accessors fold to "always owned" for it. That path is unreachable
+// from user code today — `new C()` yields a bare `C`, and casting one
+// into `Own<C>` is exactly what the opaque-type rule forbids outside
+// zena:ownership — so it cannot be tested until `Own<C>` can be produced
+// from a provably exclusive source.
+
+export function main(): i32 {
+  let a = secondAdoptThrows();       // 1
+  if (a < 0) { return a; }
+  let b = secondDisownThrows();      // 2
+  if (b < 0) { return b; }
+  let c = sharesFlagWithAlias();     // 4
+  if (c < 0) { return c; }
+  let d = roundTripsRepeatedly();    // 8 + 3 = 11
+  if (d < 0) { return d; }
+  // The distinct powers of two make a skipped case impossible to hide:
+  // any subset sums to something else. 1 + 2 + 4 + 11 = 18.
+  return (a + b + c + d) * 33 + 10;
+}

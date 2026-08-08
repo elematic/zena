@@ -11,7 +11,7 @@ import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, RESOURCE_STATE_FIELD } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
 
 /**
@@ -1602,6 +1602,26 @@ export final class Specializer implements SpecializerInterface {
         fields.push(wf);
       }
     }
+    // Every resource class carries the lifecycle flag disown/adopt check.
+    // Only the root of a resource chain contributes it: `fields` starts as
+    // a copy of the superclass's, so a subclass already has the inherited
+    // slot and a second one would shadow it — reads through the base
+    // struct and writes through the derived one would then disagree.
+    //
+    // struct.new_default zeroes it, and `owned` is 0, so a fresh resource
+    // is in the right state with no constructor work.
+    if (ct.isResource) {
+      var hasStateField = false;
+      for (let f in fields) {
+        if (f.name == RESOURCE_STATE_FIELD) {
+          hasStateField = true;
+        }
+      }
+      if (!hasStateField) {
+        fields.push(new WasmField(RESOURCE_STATE_FIELD, new ValTypeI32(), true));
+      }
+    }
+
     for (let f in fields) {
       st.fields.push(f);
     }

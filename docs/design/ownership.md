@@ -660,6 +660,12 @@ This is checked, not unsafe. Every resource carries an
   expected condition, so throwing is right; a `tryAdopt(): Result<Own<T>, …>`
   can be added if a caller wants the branch.
 
+The flag is a hidden struct field on every resource class, not a declared
+member: `disown` and `adopt` are generic over an unbounded `T`, so they reach
+it through intrinsic accessors that resolve the field once `T` is concrete.
+It has to live on the object rather than the handle because the handles are
+erased — see §"Where the runtime state lives".
+
 Two racing adopters therefore do not double-free — the loser gets a clear error.
 What entering `Unmanaged<T>` gives up is **leak-freedom** and _compile-time_
 detection of use-after-dispose, the latter degrading to a runtime error. Type
@@ -1099,13 +1105,39 @@ of surface syntax.
 
 Implementation currently trails this document in four known places: the
 consuming receiver in §"Release consumes its receiver" needs receiver-type
-syntax (O0.1) and is not yet enforced, `Scoped<T>` is design-only, and
-`disown`/`adopt` ship without the two guards §"Disowning and adopting"
-specifies for them — the lifecycle flag is not injected into resource classes
-yet, so `adopt` cannot reject a second adopter, and `disown` does not yet
-consume its argument, which waits on move checking (O2). Both functions
-themselves are landed: they needed no compiler intrinsics, only casts between
-two opaque aliases inside the library that declares them.
+syntax (O0.1) and is not yet enforced, `Scoped<T>` is design-only, `disown`
+does not yet **consume** its argument (that waits on move checking, O2), and
+the `dropped` state is declared but never set, so adopting an
+already-released resource is not the clean error it is specified to be —
+nothing releases anything until implicit drop (O3).
+
+The lifecycle flag itself is landed, so `adopt` does reject a second adopter
+and `disown` a second disowner. It is a hidden i32 struct field appended to
+every resource class, reached from `disown`/`adopt` through the
+`resource.state` / `resource.set_state` intrinsics. The intrinsics are what
+that costs: both functions are generic over an unbounded `T`, and a generic
+body cannot name a member only some instantiations have — after
+monomorphization `T` is concrete, which is what makes the accessors
+lowerable.
+
+A `T` with no flag reads as `owned` and ignores writes. **That is contingent,
+not principled, and it must be revisited before `Own<C>` over an ordinary
+class becomes producible.** It is sound today only because the field is
+injected wherever the flag can be observed: `disown`/`adopt` accept any
+`Own<T>`, but the only way to obtain one is `new R(…)` on a resource class,
+since casting into `Own<C>` is what §"Handles are not forgeable" prohibits.
+The moment [uniqueness without release](#uniqueness-without-a-resource)
+supplies an `Own<C>` from a provably exclusive source, that stops holding —
+and the justification "an ordinary class has nothing to release" covers only
+double free, not exclusivity, which is the whole of what `Own<C>` claims
+there. A second `adopt` would then silently mint a second exclusive owner.
+
+The fix at that point is not to constrain `T`. Restricting `disown`/`adopt`
+to resources would block exactly the case the lattice is meant to grow into,
+and a `Resource` marker interface reintroduces the laundering upcast
+§"`Resource` as a marker interface" rejects. It is to widen the *injection*
+predicate from "is a resource class" to "can appear under `Own<…>`", which
+the reachability pass already knows.
 
 **O0 unblocks the most.** The whole handle lattice ships there with runtime-only
 enforcement of move discipline, which freezes the _signatures_ immediately:

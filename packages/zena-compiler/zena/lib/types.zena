@@ -421,6 +421,13 @@ let substituteInType = (
         inst.fieldSetterNames = ct.fieldSetterNames;
         inst.isFinal = ct.isFinal;
         inst.isCaseClass = ct.isCaseClass;
+        // Resource-ness is a property of the class, uniform across every
+        // mention of it (ownership.md §"Resource-ness and affineness are
+        // separate"), so an instantiation of a generic resource class is
+        // still a resource class. Codegen keys the hidden lifecycle field
+        // off this flag, and an instantiation that dropped it would get
+        // no field and silently skip disown/adopt's state check.
+        inst.isResource = ct.isResource;
         inst.isAbstract = ct.isAbstract;
         inst.isExtension = ct.isExtension;
         inst.isSealed = ct.isSealed;
@@ -780,6 +787,9 @@ export let instantiateClassType = (
   result.fieldSetterNames = source.fieldSetterNames;
   result.isFinal = source.isFinal;
   result.isCaseClass = source.isCaseClass;
+  // See the matching copy in instantiateClassType: resource-ness is
+  // declared at the class and survives instantiation.
+  result.isResource = source.isResource;
   result.isAbstract = source.isAbstract;
   result.isExtension = source.isExtension;
   if (source.isExtension) {
