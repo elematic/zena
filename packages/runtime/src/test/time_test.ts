@@ -142,22 +142,36 @@ suite('Runtime - zena:time host integration', () => {
     );
   });
 
-  test('createTimeHost reports idle only once wakes are delivered', async () => {
+  test('createTimeHost reports idle only once timers have elapsed', async () => {
+    // No instance behind it: the timer never gets to complete anything,
+    // which is fine here — what is under test is the outstanding-work
+    // accounting `run()` waits on, not the completion itself.
     const host = createTimeHost(() => undefined);
     const now = host.imports['now_ms'] as () => number;
-    const requestWake = host.imports['request_wake'] as (ms: number) => void;
+    const sleepMs = host.imports['sleep_ms'] as (
+      handle: number,
+      ms: number,
+    ) => void;
 
     assert.ok(typeof now() === 'number', 'now_ms must return a number');
 
     // Idle immediately when nothing is scheduled.
     await host.idle();
 
-    requestWake(30);
+    sleepMs(1, 30);
     let settled = false;
-    const waiting = host.idle().then(() => {
-      settled = true;
-    });
-    assert.strictEqual(settled, false, 'idle resolved with a wake pending');
+    const waiting = host.idle().then(
+      () => {
+        settled = true;
+      },
+      () => {
+        // Completing into a module that does not exist fails, and that
+        // failure is reported through idle(). Either way it is no longer
+        // outstanding, which is what this asserts.
+        settled = true;
+      },
+    );
+    assert.strictEqual(settled, false, 'idle resolved with a timer pending');
     await waiting;
     assert.strictEqual(settled, true);
   });

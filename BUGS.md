@@ -7,6 +7,27 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
+### `is` and downcasts always fail through an interface-typed reference
+- **Found**: 2026-08-08 (designing zena:host-async's handle registry, which
+  wanted to hold completers of different payload types in one map)
+- **Severity**: high (a wrong answer, not a rejected program — the checker
+  accepts the test and the runtime silently says "no")
+- **Details**: A value held as an interface cannot be tested against, or cast
+  back to, its concrete type. Given `interface Marker {}` and
+  `class Plain implements Marker`, `let p: Marker = new Plain(); p is Plain`
+  evaluates to **false**, and `p as Plain` traps with `cast failure`. It is
+  not generics-specific — it fails for a plain class exactly as it does for a
+  specialized generic one.
+- **Not affected**: the same thing through a *base class* works, and works
+  precisely: with `class Cell<T> extends Base`, a `Cell<String>` held as
+  `Base` tests true for `Cell<String>` and false for `Cell<i32>`,
+  `Cell<f64>`, and `Cell<SomeOtherClass>` alike. So specialization identity
+  is available at runtime; only the interface path loses it.
+- **Worked around**: `zena:async`'s `AnyCompleter` is a base class rather
+  than the marker interface it wants to be, with a comment pointing here.
+  Anything else erasing to a common supertype and narrowing back has the
+  same choice forced on it.
+
 ### Self-hosted compiler cannot *call* a generic method on a class
 - **Found**: 2026-08-05 (wiring `wit-parser` into the package map; the
   self-hosted compiler could not build the WIT parser's own source)

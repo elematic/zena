@@ -1,85 +1,63 @@
 /**
  * zena:time — JS/non-WASI host entry (docs/design/async.md §4).
  *
- * A browser will not let the main thread block, and no mechanism
- * changes that: `Atomics.wait` throws there, and JSPI is not in every
- * engine (Safari has neither). So this entry does not try to wait. It
- * schedules a wake through the host and reports that it did not wait,
- * which unwinds the drain; the host then calls the module's
- * `__zena_drain` export when the deadline arrives and the drain resumes
- * where it stopped.
+ * A timer is not special here. Once a host can settle a future by handle
+ * (§4 Level 2), `sleep` is an ordinary host-async binding whose host side
+ * happens to be `setTimeout` — so this entry is six lines of registration
+ * and none of the machinery the WASI entry needs.
  *
- * That keeps one meaning for `drainMicrotasks()` on every target — run
- * until nothing more can happen *now* — with the clock as the only
- * thing that differs. WASI can wait, so its drain simply never unwinds.
+ * That machinery — the `Clock` interface, the timer queue, the `Parker`
+ * the drain loop consults — exists because WASI can genuinely *block*:
+ * its drain has to sort pending deadlines itself and sleep on the nearest
+ * one through `poll_oneoff`. A browser main thread cannot block at all
+ * (`Atomics.wait` throws there, and JSPI is not in every engine — Safari
+ * has neither), so it never wants any of that: the JS event loop already
+ * is the timer queue, and it already sorts by deadline. `time/queue.zena`
+ * is therefore reachable only from `time/wasi.zena`.
  *
- * The host supplies two primitives, both in `@zena-lang/runtime`'s
- * default imports. Time crosses the boundary as `f64` milliseconds
- * rather than `i64` nanoseconds so nothing here depends on BigInt
- * marshalling.
+ * A consequence worth knowing, unchanged from before: an async `main`
+ * returns before its timers have fired, so the value arrives later.
+ * `@zena-lang/runtime`'s `run()` drives that and hands back a promise.
  *
- * A consequence worth knowing: an async `main` returns before its
- * timers have fired, so the value arrives later. `@zena-lang/runtime`'s
- * `run()` drives that and hands back a promise.
- *
- * This inherits `setTimeout`'s web semantics deliberately, including
- * the >=4ms floor browsers impose once timeouts nest more than five
- * deep. Each wake schedules a fresh timeout, so long chains of very
- * short sleeps hit that floor; driving them from one shared interval
- * would avoid it if the granularity ever matters.
+ * This inherits `setTimeout`'s web semantics deliberately, including the
+ * >=4ms floor browsers impose once timeouts nest more than five deep.
  */
 import { Error } from 'zena:error';
 import { Future } from 'zena:async';
-import { Clock, installClock, sleep as sleepImpl, monotonicNs as nowImpl,
-         monotonicMs as nowMsImpl } from './queue.zena';
+import { pending } from 'zena:host-async';
 
+/** Milliseconds on a monotonic clock. `f64` rather than `i64` so nothing
+ * here depends on BigInt marshalling. */
 @external("time", "now_ms")
 declare function __time_now_ms(): f64;
 
-@external("time", "request_wake")
-declare function __time_request_wake(ms: f64): void;
+/** Starts a timer; the host completes `handle` when it elapses. */
+@external("time", "sleep_ms")
+declare function __time_sleep_ms(handle: i32, ms: f64): void;
 
-final class HostClock implements Clock {
-  new();
-
-  nowNs(): i64 {
-    return (__time_now_ms() * 1000000.0) as i64;
-  }
-
-  /**
-   * Never waits: asks the host to re-enter `__zena_drain` later and
-   * reports false so the drain unwinds in the meantime.
-   */
-  waitNs(ns: i64): boolean {
-    __time_request_wake((ns as f64) / 1000000.0);
-    return false;
-  }
-}
-
-let hostClock = new HostClock();
-var installed = false;
-
-let ensureClock = (): void => {
-  if (!installed) {
-    installClock(hostClock);
-    installed = true;
-  }
-};
-
-/** A future that completes after at least `ms` milliseconds. */
+/**
+ * A future that completes after at least `ms` milliseconds.
+ *
+ * "At least": the deadline is when the timer becomes *eligible*, and it
+ * completes through the microtask queue like every other future, so a
+ * busy queue can delay it further. `sleep(0)` still yields — it never
+ * completes synchronously, per the always-async rule.
+ */
 export let sleep = (ms: i32): Future<void> => {
-  ensureClock();
-  return sleepImpl(ms);
+  if (ms < 0) {
+    throw new Error('zena:time: sleep() needs a non-negative duration');
+  }
+  let p = pending<void>();
+  __time_sleep_ms(p.handle, ms as f64);
+  return p.future;
 };
 
 /** Nanoseconds on the monotonic clock. */
 export let monotonicNs = (): i64 => {
-  ensureClock();
-  return nowImpl();
+  return (__time_now_ms() * 1000000.0) as i64;
 };
 
 /** Milliseconds on the monotonic clock. */
 export let monotonicMs = (): f64 => {
-  ensureClock();
-  return nowMsImpl();
+  return __time_now_ms();
 };

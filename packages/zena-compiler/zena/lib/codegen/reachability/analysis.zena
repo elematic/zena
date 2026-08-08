@@ -753,12 +753,20 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     for (let unit in this.program.units) {
       let model = unit.model;
       let isEntry = this.program.entryPoint != null && unit.ast.path == (this.program.entryPoint as CompilationUnit).ast.path;
-      // The root set is `main` plus the entry unit's exports. Every
-      // other unit is a library: its globals are roots only if
+      // zena:host-async's exports are wasm exports too (async.md §4): a
+      // host calls them to settle a future, so nothing inside the
+      // program ever references them and RTA would drop them. Rooting
+      // them here rather than force-reaching a hardcoded list keeps the
+      // gate exact — the unit only exists when the program imports the
+      // module, so a program that does no host I/O links none of it.
+      let isHostBoundary = unit.ast.path == 'zena:host-async';
+      // The root set is `main` plus the exports of those two units.
+      // Every other unit is a library: its globals are roots only if
       // something reaches them. Queuing them all — which is what this
       // did — made the checkable traversal walk the entire stdlib, and
       // walking it instantiates.
-      if (!isEntry) {
+      let rootsExports = isEntry || isHostBoundary;
+      if (!rootsExports) {
         continue;
       }
       let gKeys = model.globalDeclarations.keys();
@@ -769,18 +777,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         
         if (decl is VariableDeclaration) {
           let vd = decl as VariableDeclaration;
-          isExported = isEntry && vd.exported;
+          isExported = rootsExports && vd.exported;
           if (isEntry && vd.pattern is IdentifierPattern && (vd.pattern as IdentifierPattern).name == "main") {
             isMain = true;
           }
         } else if (decl is FunctionDeclaration) {
           let fd = decl as FunctionDeclaration;
-          isExported = isEntry && fd.exported;
+          isExported = rootsExports && fd.exported;
           if (isEntry && fd.name.name == "main") {
             isMain = true;
           }
         } else if (decl is DeclareFunction) {
-          isExported = isEntry && (decl as DeclareFunction).exported;
+          isExported = rootsExports && (decl as DeclareFunction).exported;
         }
         
         if (isMain || isExported) {

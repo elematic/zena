@@ -75,9 +75,26 @@ This document tracks completed work and planned features. For project instructio
     parks on `poll_oneoff`; the host entry parks on two imports from
     `@zena-lang/runtime`. No `zena-cli` changes. `sleep` is what
     `Future<void>` was blocking.
-  - Next: A3 (external completions on a JS host). Its `__zena_drain`
-    export is also what would let `zena:time`'s host entry park on the
-    event loop via `setTimeout` instead of blocking.
+  - **A3 (external completions on a JS host) is done.** A JS host can
+    settle a Zena future from its own event loop, so `fetch` and friends
+    are now expressible: `zena:host-async` mints an i32 handle and keeps
+    the `Completer` behind it, the host calls `__zena_complete_<kind>`
+    and `__zena_drain` when its work finishes, and
+    `@zena-lang/runtime`'s `asyncImports` turns a promise-returning JS
+    function into an import Zena can await. The registry needs no type
+    tag — the completer's own specialized type is the tag — and the
+    completion exports exist only in programs that import the module, so
+    the JS target pays nothing for host I/O it does not do.
+    `zena:time`'s host entry became an ordinary host-async binding over
+    `setTimeout` in the process, leaving the `Clock`/timer-queue/`Parker`
+    machinery reachable only from the WASI entry, which is the target
+    that can actually block. `run()`/`runSync()` split so that a caller
+    who wants a value and a caller who wants a promise get different
+    functions.
+  - Next: fetch on the web playground — the "first real async I/O" A3
+    was aiming at — and post-v1 items (cancellation and structured
+    concurrency, combinators, the tokio-backed CLI, the WASI P3
+    backend).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running

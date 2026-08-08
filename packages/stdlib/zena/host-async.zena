@@ -1,0 +1,151 @@
+/**
+ * zena:host-async — futures a host settles from its own event loop
+ * (docs/design/async.md §4, Level 2).
+ *
+ * ## The shape
+ *
+ * A host cannot be handed a `Completer`: a GC reference means nothing to
+ * something that has to name the pending operation later, from outside
+ * the module. So the boundary currency is an **i32 handle**. `pending`
+ * mints one, keeps the completer on this side, and returns both — the
+ * handle to pass outward with the request, and the `Future` to await:
+ *
+ * ```zena
+ * @external("web", "fetch_text")
+ * declare function __fetch_text(handle: i32, url: String, len: i32): void;
+ *
+ * export let fetchText = (url: String): Future<String> => {
+ *   let p = pending<String>();
+ *   __fetch_text(p.handle, url, url.length);
+ *   return p.future;
+ * };
+ * ```
+ *
+ * When the operation finishes the host calls `__zena_complete_string`
+ * (or the sibling for its payload) and then `__zena_drain`. Those
+ * exports are this module's `complete*` functions, and they exist in a
+ * program exactly when it imports this module — importing it is the
+ * signal the compiler roots them on, so a program that does no host I/O
+ * links none of this.
+ *
+ * ## Why the registry needs no type tag
+ *
+ * `HashMap<i32, AnyCompleter>` really is just ID → completer. Erasing
+ * the payload type is what lets one map hold all of them, and getting it
+ * back is an ordinary downcast, which `ref.cast` checks: a handle
+ * registered for `String` and completed with an `i32` fails the `is`
+ * test, exactly, and gets a message naming both. The completer's own
+ * specialized type is the tag. (Erasing through an *interface* would not
+ * work — see the note on `AnyCompleter` in zena:async.)
+ *
+ * Registration is therefore a single generic function rather than one
+ * per payload type. Only *delivery* is per-type, and that is unavoidable
+ * — each one is a wasm export whose signature has to name the payload.
+ * The set is small and closed because it is bounded by what a host can
+ * produce at all: nothing, an integer, a double, or a string.
+ */
+import { AnyCompleter, Completer, Future } from 'zena:async';
+import { Error } from 'zena:error';
+import { HashMap } from 'zena:map';
+import { i32ToString } from 'zena:string-convert';
+
+/** A registered operation: the handle to hand outward, and the future to
+ * hand to Zena code. */
+export class Pending<T>(handle: i32, future: Future<T>)
+
+let slots = new HashMap<i32, AnyCompleter>();
+
+// Starts at 1 so 0 is never a live handle: hosts routinely use 0 as
+// "none", and a handle that doubles as a falsy value is a bug that only
+// shows up under load.
+var nextHandle = 1;
+
+/**
+ * Register an operation the host will complete, of any payload type.
+ *
+ * The future settles when the host calls the matching `complete*` export
+ * with this handle. Until then it is pending, and a drain that runs out
+ * of work with it still outstanding reports a deadlock.
+ */
+export let pending = <T>(): Pending<T> => {
+  let completer = new Completer<T>();
+  let handle = nextHandle;
+  nextHandle += 1;
+  slots[handle] = completer;
+  return new Pending<T>(handle, completer.future);
+};
+
+/** True while any registered operation is still outstanding. */
+export let hasPending = (): boolean => {
+  return slots.size > 0;
+};
+
+/**
+ * The completer for `handle`, removed from the registry.
+ *
+ * A handle settles exactly once, so this removes as it reads: a second
+ * completion for the same handle finds nothing and says so, rather than
+ * settling a future twice or quietly doing nothing.
+ */
+let take = (handle: i32): AnyCompleter => {
+  if (let (true, completer) = slots.get(handle)) {
+    slots.delete(handle);
+    return completer;
+  }
+  throw new Error('No host operation is pending for handle ' +
+      i32ToString(handle) + ' (already completed, or never registered)');
+};
+
+/** The error for a completion whose payload was the wrong type. */
+let wrongType = (handle: i32, delivered: String): Error => {
+  return new Error('Host completed handle ' + i32ToString(handle) +
+      ' with ' + delivered + ', which is not the type it was registered ' +
+      'for. The Zena binding and its host function disagree.');
+};
+
+/** Settles a handle registered as `pending<void>()`. */
+export let completeVoid = (handle: i32): void => {
+  let slot = take(handle);
+  if (!(slot is Completer<void>)) {
+    throw wrongType(handle, 'no value');
+  }
+  (slot as Completer<void>).complete();
+};
+
+/** Settles a handle registered as `pending<i32>()`. */
+export let completeI32 = (handle: i32, value: i32): void => {
+  let slot = take(handle);
+  if (!(slot is Completer<i32>)) {
+    throw wrongType(handle, 'an i32');
+  }
+  (slot as Completer<i32>).complete(value);
+};
+
+/** Settles a handle registered as `pending<f64>()`. */
+export let completeF64 = (handle: i32, value: f64): void => {
+  let slot = take(handle);
+  if (!(slot is Completer<f64>)) {
+    throw wrongType(handle, 'an f64');
+  }
+  (slot as Completer<f64>).complete(value);
+};
+
+/** Settles a handle registered as `pending<String>()`. */
+export let completeString = (handle: i32, value: String): void => {
+  let slot = take(handle);
+  if (!(slot is Completer<String>)) {
+    throw wrongType(handle, 'a String');
+  }
+  (slot as Completer<String>).complete(value);
+};
+
+/**
+ * Fails a pending handle, whatever payload it was registered for.
+ *
+ * One entry point rather than one per type, because rejecting needs no
+ * payload — `fail` is declared on the erased `AnyCompleter`, so this
+ * never has to know what the successful value would have been.
+ */
+export let completeError = (handle: i32, message: String): void => {
+  take(handle).fail(new Error(message));
+};

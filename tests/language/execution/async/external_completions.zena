@@ -1,0 +1,131 @@
+// @mode: run
+// @result: 456
+// The host-completion registry (async.md §4, Level 2): handles that
+// something outside the module settles.
+//
+// The registry imports nothing and knows nothing about a host, which is
+// what makes it testable here, under plain wasmtime with no event loop
+// at all — the complete* calls stand in for the host that normally makes
+// them, and are the same functions the compiler exports as
+// `__zena_complete_*`. The wiring to a real event loop is covered by
+// packages/runtime/src/test/host_async_test.ts.
+import { Future, drainMicrotasks } from 'zena:async';
+import {
+  Pending, pending, hasPending,
+  completeVoid, completeI32, completeF64, completeString, completeError,
+} from 'zena:host-async';
+import { Error } from 'zena:error';
+import { StringBuilder } from 'zena:string-builder';
+import { i32ToString } from 'zena:string-convert';
+
+var log = new StringBuilder();
+
+let awaitI32 = async (f: Future<i32>): Future<void> => {
+  log.append('i' + i32ToString(await f));
+};
+
+let awaitStr = async (f: Future<String>): Future<void> => {
+  log.append('s' + await f);
+};
+
+/** A failed completion must surface at the await, catchable there. */
+let awaitFailure = async (f: Future<void>): Future<void> => {
+  try {
+    await f;
+    log.append('!nothrow');
+  } catch (e) {
+    log.append('e' + e.message);
+  }
+};
+
+export let main = (): i32 => {
+  // One generic registration function, whatever the payload type.
+  let a = pending<i32>();
+  let b = pending<String>();
+  if (a.handle == b.handle) {
+    return 0 - 1;
+  }
+  if (!hasPending()) {
+    return 0 - 2;
+  }
+
+  awaitI32(a.future);
+  awaitStr(b.future);
+  // Completed in the opposite order to registration: nothing about a
+  // handle's position decides when it settles.
+  completeString(b.handle, 'ok');
+  completeI32(a.handle, 42);
+  drainMicrotasks();
+  if (!(log.toString() == 'soki42')) {
+    return 0 - 3;
+  }
+  if (hasPending()) {
+    return 0 - 4;
+  }
+
+  // Failure is payload-agnostic — one entry point settles a handle
+  // registered for any type — and resurfaces at the await as a throw.
+  let c = pending<void>();
+  awaitFailure(c.future);
+  completeError(c.handle, 'nope');
+  drainMicrotasks();
+  if (!(log.toString() == 'soki42enope')) {
+    return 0 - 5;
+  }
+
+  // The wrong payload for a handle throws rather than coercing. This is
+  // the check that needs no type tag: the completer's own specialized
+  // type is the tag, and `is` distinguishes the specializations exactly.
+  let d = pending<String>();
+  var mismatched = false;
+  try {
+    completeI32(d.handle, 1);
+  } catch (e) {
+    mismatched = true;
+  }
+  if (!mismatched) {
+    return 0 - 6;
+  }
+
+  // A handle settles exactly once; a second completion is an error, not
+  // a silent no-op. (The mismatch above consumed d, so it is gone too —
+  // a completion that names a handle is spent whether or not it fit.)
+  let e2 = pending<String>();
+  completeString(e2.handle, 'x');
+  var twice = false;
+  try {
+    completeString(e2.handle, 'y');
+  } catch (err) {
+    twice = true;
+  }
+  if (!twice) {
+    return 0 - 7;
+  }
+
+  // An unknown handle is an error too — there is no "unknown handle"
+  // fallback to hide a bridge bug.
+  var unknown = false;
+  try {
+    completeVoid(0);
+  } catch (err) {
+    unknown = true;
+  }
+  if (!unknown) {
+    return 0 - 8;
+  }
+
+  // Every kind registers and settles.
+  let v = pending<void>();
+  let f = pending<f64>();
+  var settled = 0;
+  v.future.onComplete(() => { settled += 1; }, (err) => {});
+  f.future.onComplete((x: f64) => { settled += 2; }, (err) => {});
+  completeVoid(v.handle);
+  completeF64(f.handle, 2.5);
+  drainMicrotasks();
+  if (settled != 3) {
+    return 0 - 9;
+  }
+
+  return 456;
+};

@@ -3,6 +3,57 @@ export interface ZenaImports {
   console?: Record<string, Function>;
   // Values may be `WebAssembly.Suspending` objects, not just functions.
   time?: Record<string, unknown>;
+  /**
+   * Promise-returning host functions, exposed to Zena as async imports
+   * (async.md §4, Level 2). Keyed by import module, then by name.
+   *
+   * Zena mints a handle and passes it out with the call:
+   *
+   * ```zena
+   * @external("web", "fetch_text")
+   * declare function __fetch_text(handle: i32, url: String, len: i32): void;
+   *
+   * export let fetchText = (url: String): Future<String> => {
+   *   let p = pending<String>();
+   *   __fetch_text(p.handle, url, url.length);
+   *   return p.future;
+   * };
+   * ```
+   *
+   * The function written here does *not* see the handle — it takes the
+   * remaining arguments and returns a promise, and `kind` says which
+   * payload the handle was registered for:
+   *
+   * ```ts
+   * let exports: WebAssembly.Exports;
+   * const instance = await instantiate(wasm, {
+   *   asyncImports: {
+   *     web: {
+   *       fetch_text: {
+   *         kind: 'string',
+   *         fn: (ref: unknown, len: number) =>
+   *           fetch(createStringReader(exports)(ref, len)).then((r) => r.text()),
+   *       },
+   *     },
+   *   },
+   * });
+   * exports = instance.exports;
+   * ```
+   *
+   * Wrapping them here rather than by hand is what keeps `run()` honest:
+   * these operations share the outstanding-work count with timers, so a
+   * program is not "finished" while one is in flight.
+   */
+  asyncImports?: Record<
+    string,
+    Record<
+      string,
+      {
+        kind: CompletionKind;
+        fn: (...args: any[]) => PromiseLike<unknown> | unknown;
+      }
+    >
+  >;
   [key: string]: any;
 }
 
@@ -216,61 +267,288 @@ export interface TimeHost {
 /**
  * The `time` host backing `zena:time` on a non-WASI host.
  *
- * `request_wake(ms)` schedules a `setTimeout` that calls the module's
- * `$asyncDrain` export. Zena's drain unwinds as soon as only future
- * deadlines remain, so nothing ever blocks — the only workable answer
- * on a browser main thread, where `Atomics.wait` throws and JSPI is not
- * universally available (Safari has neither).
+ * `sleep_ms` is an ordinary host-async operation: it settles the handle
+ * Zena minted once the timeout elapses, through exactly the same
+ * completion path `fetch` or any other import uses. Nothing blocks and
+ * nothing polls, which is the only workable answer on a browser main
+ * thread — and it means a timer needs no mechanism of its own.
+ *
+ * (WASI is the target that does need one, because it *can* block: its
+ * drain sorts pending deadlines and sleeps on the nearest through
+ * `poll_oneoff`. That machinery lives in `stdlib/zena/time/queue.zena`
+ * and is reachable only from the WASI entry.)
  *
  * Time crosses as f64 milliseconds so no BigInt marshalling is involved.
  *
  * This inherits `setTimeout`'s web semantics deliberately, including the
  * >=4ms floor browsers impose once timeouts nest more than five deep.
- * Each wake schedules a fresh timeout, so long chains of very short
- * sleeps hit that floor; one shared interval would avoid it if the
- * granularity ever matters.
  */
 export function createTimeHost(
   getExports?: () => WebAssembly.Exports | undefined,
+  work: PendingWork = createPendingWork(),
+  hostAsync: HostAsync = createHostAsync(getExports, work),
 ): TimeHost {
-  let outstanding = 0;
-  const waiters: Array<() => void> = [];
+  return {
+    imports: {
+      now_ms: (): number => performance.now(),
+      sleep_ms: (handle: number, ms: number): void => {
+        hostAsync.settle(
+          handle,
+          new Promise((resolve) => setTimeout(resolve, ms > 0 ? ms : 0)),
+          'void',
+        );
+      },
+    },
+    idle: work.idle,
+  };
+}
 
-  const settle = () => {
-    // A drain that re-armed a timer bumped `outstanding` again before we
-    // get here, so zero really does mean "no timer left anywhere".
-    if (outstanding === 0) {
-      for (const wake of waiters.splice(0)) {
-        wake();
+/**
+ * Outstanding host work, shared by every source that can settle a Zena
+ * future from the JS event loop.
+ *
+ * `run()` needs to know when a program is finished, and on a host that
+ * cannot block that is not something the module can report: `main`
+ * returns with work pending by design. What actually ends a program is
+ * the JS side running out of things that could still call back in — so
+ * the count lives here, and timers and host I/O share it. Two separate
+ * counters would let `run()` resolve while the other kind was still in
+ * flight.
+ */
+interface PendingWork {
+  /** Register one outstanding operation. */
+  enter(): void;
+  /** Retire one, after any re-entry into the module it caused. */
+  leave(): void;
+  /**
+   * Record a failure that happened while re-entering the module.
+   *
+   * Calling back into wasm from a timer or a promise handler means any
+   * throw lands on a stack no caller owns — it would surface as an
+   * unhandled rejection and the program would go on to fail later with
+   * something less informative (a drain that never settles reports a
+   * deadlock). Recording it here hands it to `run()`, which is the one
+   * place a caller is waiting. First failure wins; the module is not in
+   * a state where later ones say more.
+   */
+  fail(error: unknown): void;
+  /** Resolves once nothing is outstanding, or rejects with the first
+   * failure recorded above. */
+  idle(): Promise<void>;
+}
+
+function createPendingWork(): PendingWork {
+  let outstanding = 0;
+  let failure: {error: unknown} | null = null;
+  const waiters: Array<{
+    resolve: () => void;
+    reject: (e: unknown) => void;
+  }> = [];
+
+  const release = () => {
+    for (const waiter of waiters.splice(0)) {
+      if (failure) {
+        waiter.reject(failure.error);
+      } else {
+        waiter.resolve();
       }
     }
   };
 
   return {
-    imports: {
-      now_ms: (): number => performance.now(),
-      request_wake: (ms: number): void => {
-        outstanding += 1;
-        setTimeout(
-          () => {
-            try {
-              const drain = getExports?.()?.['__zena_drain'] as
-                | (() => void)
-                | undefined;
-              drain?.();
-            } finally {
-              outstanding -= 1;
-              settle();
-            }
-          },
-          ms > 0 ? ms : 0,
-        );
-      },
+    enter: () => {
+      outstanding += 1;
     },
-    idle: (): Promise<void> =>
-      outstanding === 0
-        ? Promise.resolve()
-        : new Promise<void>((resolve) => waiters.push(resolve)),
+    leave: () => {
+      outstanding -= 1;
+      // A drain that armed another timer or started more host work
+      // bumped the count again before we got here, so zero really does
+      // mean "nothing left anywhere".
+      if (outstanding === 0) {
+        release();
+      }
+    },
+    fail: (error: unknown) => {
+      failure ??= {error};
+      release();
+    },
+    idle: (): Promise<void> => {
+      if (failure) {
+        return Promise.reject(failure.error);
+      }
+      if (outstanding === 0) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve, reject) =>
+        waiters.push({resolve, reject}),
+      );
+    },
+  };
+}
+
+/** Ping the module's drain loop, if it has one. Modules that never
+ * reach `zena:async` do not export it, and pinging them is a no-op. */
+function drainModule(getExports?: () => WebAssembly.Exports | undefined) {
+  const drain = getExports?.()?.['__zena_drain'] as (() => void) | undefined;
+  drain?.();
+}
+
+/** The payload types a host completion can carry — the closed set of
+ * things a JS host can hand to wasm, which is why Zena needs one export
+ * per kind and no more. */
+export type CompletionKind = 'void' | 'i32' | 'f64' | 'string';
+
+export interface HostAsync {
+  /**
+   * Settle a Zena handle with the outcome of some JS work.
+   *
+   * The handle came from `pending<T>()` on the Zena side, which handed
+   * it out with the request. `kind` says which `__zena_complete_*`
+   * export to call, and must match the `T` the handle was registered
+   * for — if it does not, Zena throws naming both, rather than coercing.
+   *
+   * A rejection settles the handle as a failed future carrying the
+   * rejection's message, whatever `kind` says: failure needs no payload.
+   */
+  settle(
+    handle: number,
+    work: PromiseLike<unknown> | unknown,
+    kind: CompletionKind,
+  ): void;
+  /**
+   * Wrap a promise-returning function as a Zena host-async import.
+   *
+   * The wrapped function takes the handle as its first argument, which
+   * is the calling convention a Zena `@external` declaration is written
+   * to: `declare function fetchText(handle: i32, url: String): void`.
+   */
+  wrap<A extends unknown[]>(
+    fn: (...args: A) => PromiseLike<unknown> | unknown,
+    kind: CompletionKind,
+  ): (handle: number, ...args: A) => void;
+  /** Resolves once no host operation is outstanding. */
+  idle(): Promise<void>;
+}
+
+/**
+ * The JS half of `zena:host-async` (async.md §4, Level 2).
+ *
+ * When the work finishes, call the module's `__zena_complete_<kind>`
+ * export with the handle and the value, then `__zena_drain()`. That is
+ * the whole protocol — the handle the host was given already names the
+ * future, so nothing has to be looked up or asked back for.
+ *
+ * There are no imports here. Zena calls out to start an operation
+ * through whatever `@external` the binding declares; the host calls back
+ * in through the completion exports. Neither side polls the other.
+ */
+export function createHostAsync(
+  getExports?: () => WebAssembly.Exports | undefined,
+  work: PendingWork = createPendingWork(),
+): HostAsync {
+  let writeString: ((s: string) => unknown) | null = null;
+  const toZenaString = (s: string): unknown => {
+    if (!writeString) {
+      const exports = getExports?.();
+      if (!exports) {
+        throw new Error(
+          'host_async: cannot build a Zena string before instantiation',
+        );
+      }
+      writeString = createStringWriter(exports);
+    }
+    return writeString(s);
+  };
+
+  const completionExport = (name: string): Function => {
+    const fn = getExports?.()?.[name];
+    if (typeof fn !== 'function') {
+      throw new Error(
+        `host_async: the module does not export ${name}. ` +
+          'A module only exports the completion entry points if it ' +
+          "imports 'zena:host-async'.",
+      );
+    }
+    return fn;
+  };
+
+  const complete = (handle: number, value: unknown, kind: CompletionKind) => {
+    switch (kind) {
+      case 'void':
+        completionExport('__zena_complete_void')(handle);
+        return;
+      case 'i32':
+        completionExport('__zena_complete_i32')(handle, Number(value) | 0);
+        return;
+      case 'f64':
+        completionExport('__zena_complete_f64')(handle, Number(value));
+        return;
+      case 'string':
+        completionExport('__zena_complete_string')(
+          handle,
+          toZenaString(String(value)),
+        );
+        return;
+    }
+    throw new Error(`host_async: unknown completion kind '${kind}'`);
+  };
+
+  const fail = (handle: number, reason: unknown) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    completionExport('__zena_complete_error')(handle, toZenaString(message));
+  };
+
+  const settle = (
+    handle: number,
+    value: PromiseLike<unknown> | unknown,
+    kind: CompletionKind,
+  ) => {
+    work.enter();
+    Promise.resolve(value).then(
+      (v) => {
+        try {
+          complete(handle, v, kind);
+          drainModule(getExports);
+        } catch (e) {
+          // The module threw while we were settling it — a mismatched
+          // payload, a completion for a spent handle, or an error out of
+          // the resumed code. Hand it to run(); nobody owns this stack.
+          work.fail(e);
+        } finally {
+          work.leave();
+        }
+      },
+      (e) => {
+        try {
+          fail(handle, e);
+          drainModule(getExports);
+        } catch (inner) {
+          work.fail(inner);
+        } finally {
+          work.leave();
+        }
+      },
+    );
+  };
+
+  return {
+    settle,
+    wrap:
+      <A extends unknown[]>(
+        fn: (...args: A) => PromiseLike<unknown> | unknown,
+        kind: CompletionKind,
+      ) =>
+      (handle: number, ...args: A): void => {
+        try {
+          settle(handle, fn(...args), kind);
+        } catch (e) {
+          // A synchronous throw is the operation failing, not the host
+          // failing: report it through the handle like any rejection,
+          // rather than unwinding back into wasm.
+          settle(handle, Promise.reject(e), kind);
+        }
+      },
+    idle: work.idle,
   };
 }
 
@@ -281,38 +559,67 @@ export function createTimeImports(
   return createTimeHost(getExports).imports;
 }
 
+/** True if the compiler emitted the split entry, i.e. `main` is async. */
+export function isAsyncMain(instance: WebAssembly.Instance): boolean {
+  return (
+    typeof instance.exports['__zena_main_start'] === 'function' &&
+    typeof instance.exports['__zena_main_result'] === 'function'
+  );
+}
+
 /**
- * Run a Zena module's `main` to completion, including its timers.
+ * Run a synchronous `main` and return its value.
  *
- * On a host that cannot wait — every browser main thread — an async
- * `main` returns before its timers have fired, so the value arrives
- * later. This drives that: it starts the program, lets the event loop
- * deliver each `request_wake`, and resolves once no timer is left.
+ * Throws if `main` is async, rather than returning something that is
+ * only sometimes a promise: a caller that wants a value and a caller
+ * that wants a promise want different functions, and guessing which one
+ * this is from the module would make every call site defensive.
+ */
+export function runSync(
+  instance: WebAssembly.Instance,
+  ...args: unknown[]
+): unknown {
+  if (isAsyncMain(instance)) {
+    throw new Error(
+      'runSync(): this module\'s `main` is async, so its value is not ' +
+        'available synchronously — use run().',
+    );
+  }
+  const main = instance.exports['main'] as (...a: unknown[]) => unknown;
+  if (typeof main !== 'function') {
+    throw new Error('runSync(): the module has no `main` export');
+  }
+  return main(...args);
+}
+
+/**
+ * Run a Zena module's `main` to completion and resolve with its value.
  *
- * A module whose `main` is synchronous, or whose futures all settle
- * without a timer, resolves on the first turn — the split entry is used
- * whenever the compiler emitted one, so there is a single code path.
+ * Always returns a promise, whether or not `main` is async — a sync
+ * `main` simply resolves on the first turn.
+ *
+ * An async `main` needs this because on a host that cannot block — every
+ * browser main thread — it returns before its timers have fired and
+ * before any host I/O has come back. The compiler therefore splits it
+ * into `__zena_main_start` (run the body, park the future) and
+ * `__zena_main_result` (unwrap it), and this drives the pair: start the
+ * program, let the event loop deliver every wake and completion, and
+ * read the result once nothing is outstanding.
+ *
+ * `main` itself cannot be the promise-returning export: a wasm export
+ * returns a wasm value, and handing back a JS promise would need JSPI,
+ * which this design deliberately does not depend on.
  */
 export async function run(
   instance: WebAssembly.Instance,
   ...args: unknown[]
 ): Promise<unknown> {
   const exports = instance.exports;
-  const start = exports['__zena_main_start'] as
-    | ((...a: unknown[]) => void)
-    | undefined;
-  const result = exports['__zena_main_result'] as
-    | (() => unknown)
-    | undefined;
-
-  if (!start || !result) {
-    // Synchronous main, or a host that waits (WASI): one call suffices.
-    const main = exports['main'] as (...a: unknown[]) => unknown;
-    if (typeof main !== 'function') {
-      throw new Error('run(): the module has no `main` export');
-    }
-    return main(...args);
+  if (!isAsyncMain(instance)) {
+    return runSync(instance, ...args);
   }
+  const start = exports['__zena_main_start'] as (...a: unknown[]) => void;
+  const result = exports['__zena_main_result'] as () => unknown;
 
   start(...args);
   const idle = idleWaiters.get(exports as object);
@@ -379,20 +686,35 @@ export async function instantiate(
     },
   };
 
-  const timeHost = createTimeHost(() => instanceExports);
+  // One tracker for both: `run()` must not resolve while either a timer
+  // or a host operation could still call back into the module.
+  const pending = createPendingWork();
+  const hostAsync = createHostAsync(() => instanceExports, pending);
+  const timeHost = createTimeHost(() => instanceExports, pending, hostAsync);
   const defaultImports = {
     env: envImports,
     console: createConsoleImports(() => instanceExports),
     time: timeHost.imports,
   };
 
-  const imports = {
+  const {asyncImports, ...plainUserImports} = userImports;
+  const imports: Record<string, Record<string, unknown>> = {
     ...defaultImports,
-    ...userImports,
+    ...plainUserImports,
     env: {...defaultImports.env, ...userImports.env},
     console: {...defaultImports.console, ...userImports.console},
     time: {...defaultImports.time, ...userImports.time},
   };
+
+  // Promise-returning imports become handle-taking void imports, sharing
+  // the tracker above so `run()` waits for them.
+  for (const [module, fns] of Object.entries(asyncImports ?? {})) {
+    const wrapped: Record<string, unknown> = {...imports[module]};
+    for (const [name, spec] of Object.entries(fns)) {
+      wrapped[name] = hostAsync.wrap(spec.fn, spec.kind);
+    }
+    imports[module] = wrapped;
+  }
 
   // `time.sleep_ms` may be a WebAssembly.Suspending, which TypeScript's
   // ImportValue union does not yet describe.
@@ -401,12 +723,12 @@ export async function instantiate(
   if (wasm instanceof WebAssembly.Module) {
     const instance = await WebAssembly.instantiate(wasm, importObject);
     instanceExports = instance.exports;
-    idleWaiters.set(instanceExports, timeHost.idle);
+    idleWaiters.set(instanceExports, pending.idle);
     return instance;
   }
 
   const result = await WebAssembly.instantiate(wasm, importObject);
   instanceExports = result.instance.exports;
-  idleWaiters.set(instanceExports, timeHost.idle);
+  idleWaiters.set(instanceExports, pending.idle);
   return result;
 }

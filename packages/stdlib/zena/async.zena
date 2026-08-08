@@ -363,13 +363,43 @@ export class Future<T> {
 }
 
 /**
+ * A completer with its payload type erased.
+ *
+ * This exists so a collection can hold completers for different `T` —
+ * which is what `zena:host-async`'s handle registry is. A base class
+ * rather than an interface, deliberately and not by preference: a value
+ * held as an interface cannot be tested or downcast back to its concrete
+ * type today (`x is Plain` answers *false* through an interface
+ * reference, for generic and non-generic classes alike — see BUGS.md).
+ * Through a base class it works, and it distinguishes specializations
+ * exactly: a `Completer<String>` held as `AnyCompleter` tests true for
+ * `Completer<String>` and false for `Completer<i32>`, `Completer<f64>`,
+ * and `Completer<SomeOtherClass>` alike.
+ *
+ * That is what makes the registry need no type tag of its own. The
+ * completer's own specialized type *is* the tag, checked by the same
+ * `ref.cast` the language already emits.
+ *
+ * `fail` is declared here because failing needs no payload: a caller
+ * that only knows the erased completer can still reject it.
+ */
+export class AnyCompleter {
+  new();
+
+  /** Rejects the underlying future. Overridden by `Completer<T>`. */
+  fail(error: Error): void {
+    throw new Error('AnyCompleter.fail: not a completer');
+  }
+}
+
+/**
  * The boundary object: everything external — host I/O, timers, test
  * harnesses — completes futures through a Completer.
  */
-export class Completer<T> {
+export class Completer<T> extends AnyCompleter {
   future = new Future<T>();
 
-  new();
+  new() : super();
 
   complete(value: T): void {
     this.future.complete(value);

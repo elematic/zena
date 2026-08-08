@@ -293,40 +293,92 @@ avoid it if the granularity ever matters.
 
 ### Level 2 — external completions (JS host; later, custom Rust I/O)
 
-Real I/O means the host completes futures. The generic shape, on any
-host:
+Real I/O means the host completes futures. The shape, on any host:
 
-1. The module exports `__zena_complete(handle: i32, …payload)` and
-   `__zena_drain()`.
-2. A host-async import returns a handle immediately; Zena wraps it in
-   a `Completer` keyed by handle.
-3. When the host operation finishes, the host calls
-   `__zena_complete(handle, result)` then `__zena_drain()`.
+1. A host-async import takes a freshly minted handle; `zena:host-async`
+   keeps the `Completer` behind it and hands Zena code the `Future`.
+2. When the host operation finishes, the host calls
+   `__zena_complete_<kind>(handle, value)` — or
+   `__zena_complete_error(handle, message)` — and then `__zena_drain()`.
 
-On a **JS host** this is a five-line wrapper per import — the JS
-event loop is the parking mechanism, `promise.then(v => {
-complete(handle, v); drain(); })` is the completion path, and an
-async `main` simply returns with work pending while the embedder
-keeps the instance alive. **No JSPI required.** Our runtime library
-gains one small helper for wrapping Promise-returning imports.
+That is the whole protocol. **The handle the host was given already
+names the future**, so nothing has to be looked up, asked back for, or
+matched up: the completion says which operation finished and what it
+produced, in one call.
 
-On the **Rust CLI**, the same shape backed by tokio: host ops spawn
-onto a runtime keyed by handle, and a `zena_park()` import blocks
-until a completion is ready (then the CLI calls `__zena_complete` /
-`__zena_drain` back into the instance). This is the first point where
-zena-cli needs custom code, and it is confined to: one park import,
-the completion trampoline, and whatever I/O ops we choose to expose.
-It is _not_ needed for v1.
+**Implemented** on the JS host, and confirmed as designed. An earlier
+revision of this document had the module *pull* completions instead —
+the host would park a result, ping the drain, and a `Parker` would ask
+`next_ready()` which handle was ready and then for its payload. That was
+built and then removed. It was chosen to avoid a compiler change (an
+export has to be *reached* by RTA, and nothing in Zena calls a
+completion entry point), which is the wrong thing to optimise for in a
+language's own stdlib: it put a ready-queue and a peek/consume protocol
+in every host, to save rooting five functions.
+
+#### The registry needs no type tag
+
+`zena:host-async`'s registry is exactly `HashMap<i32, AnyCompleter>` —
+ID to completer — and registration is a single generic function,
+`pending<T>()`, for every payload type.
+
+That works because erasing the payload and narrowing back is checkable
+at runtime: a `Completer<String>` held as the erased base tests true for
+`Completer<String>` and false for `Completer<i32>`, `Completer<f64>`,
+and `Completer<SomeOtherClass>` alike. **The completer's own specialized
+type is the tag**, checked by the `ref.cast` the language already emits,
+so a host that completes a String handle with an i32 gets an error
+naming both rather than a coercion.
+
+One constraint fell out of building it and is worth recording, because
+it shapes any other erase-and-narrow design: this only works through a
+**base class**. Through an *interface*, `is` answers false and the cast
+traps, for plain and generic classes alike — see BUGS.md. `AnyCompleter`
+is a class for that reason and not by preference.
+
+Only *delivery* is per-payload-type, and unavoidably so: each entry
+point is a wasm export whose signature has to name the payload. The set
+is small and closed because it is bounded by what a host can hand to
+wasm at all — nothing, an integer, a double, or a string — plus one
+type-agnostic failure entry point, since rejecting needs no payload.
+
+#### Where the exports come from
+
+`__zena_complete_*` are the exported `complete*` functions of
+`zena:host-async`. Nothing inside a program references them — the host
+calls them — so RTA would drop them. It roots the exports of that one
+module the way it roots the entry point's, which makes the gate exact:
+the unit exists only when the program imports the module, so a program
+that does no host I/O links none of this and exports none of it. (There
+is a portable test asserting both halves of that.)
+
+#### Timers are not special
+
+Once a host can settle a future by handle, `sleep` is an ordinary
+host-async binding whose host side is `setTimeout`, and `zena:time`'s
+host entry is six lines with no mechanism of its own. The `Clock`
+interface, the timer queue and the `Parker` exist for the target that
+can genuinely *block*: WASI's drain sorts pending deadlines itself and
+sleeps on the nearest through `poll_oneoff`. `time/queue.zena` is
+reachable only from `time/wasi.zena`, and Level 1 above describes the
+WASI story.
+
+On the **Rust CLI**, the same shape backed by tokio: host ops spawn onto
+a runtime keyed by handle, and a `zena_park()` import blocks until a
+completion is ready, after which the CLI calls the completion exports
+back into the instance. This is the first point where zena-cli needs
+custom code, and it is confined to the park import and whatever I/O ops
+we choose to expose. It is _not_ needed for v1.
 
 ### The most generic host contract, stated once
 
 > A host that can instantiate the module and call `main` runs every
 > program whose futures complete internally. A host that can
-> additionally (a) call two exports (`__zena_complete`,
-> `__zena_drain`) when its own asynchronous work finishes and (b)
-> optionally provide a "park until something completes" import, runs
-> everything. Nothing else is assumed: no threads, no components, no
-> JS, no JSPI, no wasmtime-specific machinery.
+> additionally call the completion exports and `__zena_drain()` when its
+> own asynchronous work finishes, and optionally provide a "park until
+> something completes" import, runs everything. Nothing else is assumed:
+> no threads, no components, no JS, no JSPI, no wasmtime-specific
+> machinery.
 
 ### Non-goals and future backends
 
@@ -460,9 +512,40 @@ website served by a Zena server":
   land first: a sleep carries no value, and faking it with
   `Future<i32>` would have put a meaningless zero in the stdlib
   permanently.
-- **A3 — external completions on the JS host.** The
-  `__zena_complete`/`__zena_drain` exports + runtime-library Promise
-  wrapper; first real async I/O (fetch on the web playground).
+- **A3 — external completions on the JS host. Implemented**
+  (`zena:host-async` + `@zena-lang/runtime`'s `asyncImports`), as
+  designed — the host calls `__zena_complete_<kind>(handle, value)` and
+  then `__zena_drain()`, and the handle it was given names the future.
+  What the implementation settled:
+  - **The registry needs no type tag** (§4). `HashMap<i32, AnyCompleter>`
+    with one generic `pending<T>()`; the completer's own specialized type
+    is the tag. It has to erase through a base class rather than an
+    interface, because `is` and downcasts fail through an interface
+    reference (BUGS.md) — that constraint is worth knowing before
+    designing anything else that erases and narrows back.
+  - **The completion exports are gated on importing the module**, by
+    rooting `zena:host-async`'s exports in RTA. A program that does no
+    host I/O links and exports none of it, which matters because the JS
+    target is the size-sensitive one.
+  - **Timers stopped being special** (§4). `zena:time`'s host entry is
+    now an ordinary host-async binding over `setTimeout`; the `Clock`,
+    the timer queue and the `Parker` are reachable only from the WASI
+    entry, which is the target that can actually block. Two mechanisms
+    became one.
+  - **`run()` split into `run` / `runSync`.** `run()` always returns a
+    promise, `runSync()` returns the value and throws if `main` is async
+    rather than returning something that is only sometimes a promise.
+    `main` itself cannot be the promise-returning export — a wasm export
+    returns a wasm value, and handing back a JS promise needs JSPI,
+    which this design does not depend on.
+  - **Failures that happen while re-entering the module** — a mismatched
+    payload, a completion for a spent handle, a throw out of resumed
+    code — are recorded and surfaced through `run()`. They land on a
+    stack no caller owns, so without that they would be unhandled
+    rejections, and the program would go on to fail later with something
+    less informative (a drain that never settles reports a deadlock).
+  - Still to do: fetch on the web playground, which is what "first real
+    async I/O" meant. The bridge it needs is in place and covered.
 - **Await-in-try — done** (§6), the fast-follow to A1: resuming
   re-enters each enclosing `try` region, so a failed await is caught
   by the handler the user wrote.
@@ -563,3 +646,48 @@ input for async v1.)
    (Leaning: share, revisit with real I/O.)
 5. **`async gen`**: explicitly post-v1 (needs both resume values and
    the iterator protocol; design after streams).
+6. **Can the `Future` be elided when it is never observed?** Raised
+   because reducing promise allocation is a large, well-trodden win in
+   JS VMs, and nothing in this document had addressed it.
+
+   Where it stands today: §3 planned for the frame to *be* its
+   `Future<T>` — one allocation — and A1 deliberately traded that away,
+   so the frame *holds* one. Counting what an `await` of an async call
+   actually costs now:
+
+   1. the frame struct,
+   2. its `Future<T>`,
+   3. `Future`'s two eagerly-constructed `Array` fields (`#listeners`,
+      `#resumables`), each an object plus backing storage,
+   4. a `Box<T>` for the settled value (`#value: Box<T> | null`),
+   5. a `ResumeDelivery` (or `ValueDelivery`) microtask per settle.
+
+   Six to eight objects where the design said one. Most of that is not
+   the frame/future split at all — it is `Future`'s own shape, and the
+   cheapest wins are there and need no analysis: the two arrays are
+   empty in the overwhelmingly common case of a single waiter and could
+   start null or inline the first entry, and `Box<T>` exists only
+   because a `T | null` field cannot represent "resolved with null".
+
+   The interesting case is narrower and more tractable than general
+   escape analysis. In `let x = await g();` where `g` is async, the
+   future is awaited exactly once, by a statically known frame, and
+   never stored — so it is pure indirection: `g`'s frame could complete
+   into the caller's frame directly. That is the moral equivalent of
+   V8's promise-resolve fast path, and it is a targeted peephole on a
+   shape the split pass already recognises (it knows both frames), not
+   the whole-program escape analysis
+   [optimizations.md](optimizations.md) files under future work. Note
+   that under WASM GC there is no stack allocation to fall back on:
+   scalar replacement — deleting the object and promoting its fields —
+   is the only mechanism, as that document says.
+
+   Two things make it *not* a free win, and are why this is a question
+   rather than a plan. The always-async rule (§1.1) means the queue hop
+   must survive even if the future does not, so the peephole may remove
+   the allocation but not the suspension. And eager start means the
+   callee's frame is live before the caller decides to await it, so
+   "awaited exactly once, immediately" has to be proven, not assumed —
+   `let a = g(); …; await a;` is the same source shape with a different
+   answer. Wants measurement on a real async workload before any of it
+   is built; there is none yet.

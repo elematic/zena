@@ -602,6 +602,25 @@ export final class ModuleGenerator {
     if (asyncDrain != null) {
       exports.push(new WasmExport("__zena_drain", asyncDrain as WasmFunction));
     }
+
+    // __zena_complete_* — how a host settles a future it was handed a
+    // handle for (async.md §4, Level 2). Present exactly when the
+    // program imports zena:host-async, whose exports RTA roots for this
+    // reason; absent, and costing nothing, otherwise.
+    let completeEntries = [
+      ("__zena_complete_void", "completeVoid"),
+      ("__zena_complete_i32", "completeI32"),
+      ("__zena_complete_f64", "completeF64"),
+      ("__zena_complete_string", "completeString"),
+      ("__zena_complete_error", "completeError"),
+    ];
+    for (let entry in completeEntries) {
+      let (exportName, zenaName) = entry;
+      let f = wasm.getStdlibFunc('zena:host-async', zenaName);
+      if (f != null) {
+        exports.push(new WasmExport(exportName, f as WasmFunction));
+      }
+    }
     if (wasm.asyncMainStartFunc != null) {
       exports.push(new WasmExport("__zena_main_start", wasm.asyncMainStartFunc as WasmFunction));
     }
