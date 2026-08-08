@@ -1385,3 +1385,54 @@ found, returning false`, so the reachability pass is probably
   deferred to async A1 because of this).
 - **Workaround**: none clean; restructure to avoid calling methods on
   generic-typed fields/`this` across class boundaries in templates.
+
+### A resource's `this` escapes through a closure capture
+
+- **Found**: 2026-08-08 (reviewing what constrains `this` in a resource class)
+- **Severity**: high (silent; defeats the handle regime entirely)
+- **Details**: `this` inside a resource class's method is the bare class
+  type. That is unspellable, so `return this` is rejected under every
+  handle name — but a closure's type names nothing the spelling rule can
+  reject, so capturing `this` launders it out:
+
+  ```zena
+  resource class Handle {
+    escape(): () => i32 { return () => { this.bump(); return this.value(); }; }
+  }
+  let h = new Handle(1);   // Own<Handle>
+  let f = h.escape();      // live alias, no handle
+  let g = h.escape();      // and another
+  ```
+
+  Both closures mutate the resource, and neither is tracked. The design
+  already names the fix: `this` should be `Borrow<R>`, whose second-class
+  rules forbid closure capture. Those rules are specified in
+  ownership.md but **not implemented at all** — a `Borrow<R>` can also be
+  pushed into an `Array` and stored in a field with no diagnostic.
+- **Workaround**: none.
+
+### A resource class may extend an ordinary class, which leaks bare aliases
+
+- **Found**: 2026-08-08
+- **Severity**: high (silent)
+- **Details**: `isResource` is read from the declaration and never
+  inherited, and nothing checks the superclass. `resource class R extends
+  Plain` is accepted, and any method `Plain` declares sees `this` as a
+  bare, spellable `Plain`:
+
+  ```zena
+  class Plain { self(): Plain { return this; } }
+  resource class OnPlain extends Plain { … }
+  let r = new OnPlain();          // Own<OnPlain>
+  let leaked: Plain = r.self();   // bare, freely aliasable
+  ```
+
+  `Own<>`'s nominal distinctness does not help: the leak happens inside
+  the base method, where the type is spellable. The converse direction
+  (`class Sub extends R`) and resource-extends-resource are both
+  *accidentally* rejected — the extends clause is a type annotation, so
+  naming a resource class there trips "has no unwrapped form" and then
+  "Superclass must be a class type, got '<error>'". The advice to write
+  `Own<R>` as a superclass is nonsense, and it wrongly blocks
+  `resource class Derived extends Handle`.
+- **Workaround**: do not give a resource class an ordinary superclass.
