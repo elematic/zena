@@ -12,14 +12,12 @@
  * the batch instead of once per test. A five-line test used to cost
  * 0.385s and nearly all of it was the stdlib.
  *
- * The batch is **sliced** across worker processes rather than run as
- * one, because sharing a compiler is not monotonically cheaper: the
- * whole suite through a single compiler takes 49s, while eight slices
- * of it take 4.3s of wall time and — the surprise — only half the CPU
- * (31s against 65s). A compiler accumulates state per entry point, so
- * the amortised stdlib is a win and the accumulation is a loss, and
- * slices in the tens of tests sit near the bottom of that curve.
- * Workers are this same module re-invoked at `compileSlice`.
+ * Sharing is capped, not maximised: a compiler is replaced every
+ * `entriesPerCompiler` entry points, because sharing one is worth a lot
+ * and then worth nothing — see that constant for the measured curve.
+ * The batch is also **sliced** across worker processes, which is what
+ * makes the phase parallel; workers are this same module re-invoked at
+ * `compileSlice`.
  *
  * **Running** is one `zena-cli run` process per test (via
  * `zena:process`, bounded pool), because that is where traps and
@@ -205,6 +203,29 @@ let testTimeoutMs = 120000 as i64;
  * test — eight slices of the full suite take about four seconds.
  */
 let compileTimeoutMs = 600000 as i64;
+
+/**
+ * How many entry points share one `Compiler` before it is replaced.
+ *
+ * Sharing is worth a lot and then stops being worth anything. Compiling
+ * all 465 tests, varying only this, and timing the compile loop:
+ *
+ * | entries per compiler | 1  | 8  | 16 | 24 | 58 | 465 |
+ * | compile time (s)     | 28 | 19 | 19 | 19 | 22 | 30  |
+ *
+ * One compiler for everything is *worse than not sharing at all*, and
+ * the whole win is in by ~8. What a compiler accumulates per entry
+ * point — nominal types and type parameters in `SharedCheckerState`,
+ * nodes in its `ModelIndex`, and instantiations interned onto the
+ * stdlib's own generic types — is never collected while it lives, and
+ * past a couple of dozen entry points that outweighs the stdlib it
+ * saves re-checking. Rebuilding a compiler costs about 17ms.
+ *
+ * This is a cap, not a batch size: without it the batch size would be
+ * tests-per-worker, which grows with the suite, so the suite would get
+ * quietly slower per test as it grew.
+ */
+let entriesPerCompiler = 16;
 
 /** Why a test failed, or null if it passed. */
 let failureOf = (e: Expectation, res: ProcessResult): String | null => {
@@ -455,12 +476,23 @@ export let compileSlice = (): i32 => {
   let host = new FsHost();
   let packages = loadPackageMap(host, 'zena-packages.json');
   let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
-  let compiler = createCompiler(host, options);
+  var compiler = createCompiler(host, options);
 
   var previous: ProgramCheckResult | null = null;
+  var sinceFresh = 0;
   var pos = 0;
   for (let f in files) {
     if (pos % count == index) {
+      if (sinceFresh == entriesPerCompiler) {
+        // Nothing to dispose selectively: what a compiler accumulates
+        // includes instantiations interned onto the stdlib's own
+        // generic types, so the shared part is what the per-entry work
+        // grows. Replacing the whole compiler is the disposal.
+        compiler = createCompiler(host, options);
+        previous = null;
+        sinceFresh = 0;
+      }
+      sinceFresh += 1;
       // Clear the verdict before compiling, so that a test which has
       // started failing — or whose worker dies before reaching it —
       // cannot be run from the module a previous run left behind and

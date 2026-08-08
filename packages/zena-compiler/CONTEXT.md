@@ -103,15 +103,33 @@ test, which is where nearly all the cost was (a five-line test cost
 isolated, one `zena-cli run` process per test, because that is where
 traps and hangs live.
 
-The batch is sliced across as many worker processes as the pool has
-workers, because **sharing a compiler is not monotonically cheaper**:
-the whole suite through a single compiler takes 49s, while eight slices
-of it take 4.3s of wall time and only half the CPU (31s against 65s). A
-compiler accumulates per-entry-point state, so the amortised stdlib is a
-win and the accumulation is a loss, and slices in the tens of tests sit
-near the bottom of that curve. Whole suite: 33.6s → 21.2s with nothing
-cached, 3.5s → 7.7s on a repeat run — the repeat costs more because it
-genuinely recompiles all 465 rather than serving `zena-cli`'s cache.
+**Sharing a compiler is worth a lot, and then worth nothing.** Compiling
+all 465 tests in one process, varying only how many entry points share
+one `Compiler` and timing the compile loop:
+
+| entries per compiler | 1  | 8  | 16 | 24 | 58 | 465 |
+| -------------------- | -- | -- | -- | -- | -- | --- |
+| compile time (s)     | 28 | 19 | 19 | 19 | 22 | 30  |
+
+One compiler for the whole suite is _worse than not sharing at all_, and
+the whole win is in by about eight. What a compiler accumulates per
+entry point — nominal types and type parameters in `SharedCheckerState`,
+nodes in its `ModelIndex`, instantiations interned onto the stdlib's own
+generic types — is never collected while it lives, and past a couple of
+dozen entry points that outweighs the stdlib it saves re-checking. There
+is nothing to dispose selectively: the instantiations are interned onto
+the shared stdlib types themselves, so the shared part _is_ what the
+per-entry work grows. Replacing the compiler is the disposal, and it
+costs about 17ms.
+
+So the runner caps entries per compiler (`entriesPerCompiler`, 16) rather
+than letting the batch be however many tests a worker was handed —
+otherwise the suite would get quietly slower per test as it grew. The
+slicing across worker processes is for parallelism, and is what keeps the
+compile phase at 3.7s of wall time. Whole suite: 33.6s → 21.2s with
+nothing cached, 3.5s → 7.0s on a repeat run — the repeat costs more
+because it genuinely recompiles all 465 rather than serving `zena-cli`'s
+cache.
 
 Batching needed one compiler fix first, and it was not a codegen bug:
 generic instantiations are interned on the generic source, and the key
