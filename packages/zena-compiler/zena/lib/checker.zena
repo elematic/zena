@@ -3077,6 +3077,23 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
 };
 
 /**
+ * True if any of these type parameters carries a bound.
+ *
+ * Call sites use this to skip `applyAndCheckTypeArguments` entirely when
+ * there is nothing to check. Generic *function* calls did not run that
+ * pass at all until bounds started binding at the call, so running its
+ * default-application and arity paths there too would be new behaviour
+ * on every generic call in the program rather than the one check being
+ * added.
+ */
+let anyTypeParamConstrained = (typeParams: Array<TypeParameterType>): boolean => {
+  for (let p in typeParams) {
+    if (p.constraint != null) { return true; }
+  }
+  return false;
+};
+
+/**
  * Applies default type arguments and checks constraints.
  * Modifies `typeArgs` in place if defaults are applied.
  */
@@ -3134,7 +3151,8 @@ let applyAndCheckTypeArguments = (
       }
 
       if (!isAssignableTo(ctx, effectiveArg, expectedConstraint) &&
-          !satisfiesHashableConstraint(ctx, effectiveArg, expectedConstraint)) {
+          !satisfiesHashableConstraint(ctx, effectiveArg, expectedConstraint) &&
+          !satisfiesResourceConstraint(ctx, effectiveArg, expectedConstraint)) {
         ctx.error(
           "Type '" + typeToString(typeArgs[j]) + "' does not satisfy constraint '" +
             typeToString(expectedConstraint) + "' for type parameter '" + param.name + "'.",
@@ -3210,6 +3228,49 @@ let satisfiesHashableConstraint = (
     case ClassType as ct: { return ct.isCaseClass; }
     case _: { return false; }
   }
+};
+
+/**
+ * Special satisfaction rule for the well-known `Resource` interface from
+ * `zena:ownership`, which `resource class` conforms to without an
+ * `implements` clause — the same arrangement as case classes and
+ * `Hashable`.
+ *
+ * A nominal registration is not usable here: `zena:ownership` is
+ * deliberately out of the prelude, so a file declaring a resource class need
+ * not have `Resource` in scope, and there would be nothing to push onto its
+ * implements list. Recognizing the interface at the constraint check instead
+ * keeps the declaration site import-free.
+ *
+ * The bound may be written over the class or over a handle to it. `disown`
+ * spells its parameter `Own<T>`, so `T` infers to the bare class, but a
+ * hand-written `<T extends Resource>(x: T)` receives the handle — and the
+ * handle is the only form a caller can name. Both mean the same class, so
+ * both satisfy the bound. This mirrors the Hashable rule's treatment of a
+ * distinct type over a hashable target.
+ */
+let satisfiesResourceConstraint = (
+  ctx: CheckerContext,
+  arg: Type,
+  constraint: Type
+): boolean => {
+  if (!(constraint is InterfaceType)) {
+    return false;
+  }
+  let iface = constraint as InterfaceType;
+  if (iface.name != "Resource" || iface.sourcePath != "zena:ownership") {
+    return false;
+  }
+
+  // Look through `Own`/`Borrow`/`Unmanaged` to the class they wrap.
+  var t = arg;
+  while (isOwnershipWrapper(t)) {
+    let inner = ownershipHandleInner(t);
+    if (inner == null) { break; }
+    t = inner as Type;
+  }
+
+  return t is ClassType && (t as ClassType).isResource;
 };
 
 /**
@@ -13339,6 +13400,13 @@ let checkCallExpressionInner = (
             for (let typeArg in typeArguments) {
               typeArgs.push(resolveExplicitTypeArgument(ctx, typeArg));
             }
+            // A bound on a function's type parameter binds at the call, the
+            // same way it does for `new Box<String>()`. Without this the
+            // bound is documentation: the body is checked once against the
+            // parameter, so nothing else ever compares the argument to it.
+            if (anyTypeParamConstrained(typeParams)) {
+              applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
+            }
             // Substitute type parameters in params and return type.
             let subParams = new Array<Type>();
             for (let param in effectiveFt.parameters) {
@@ -13373,6 +13441,13 @@ let checkCallExpressionInner = (
                   new ErrorType() as Type;
                 };
             });
+            // Same check as the explicit-argument branch above. A parameter
+            // nothing could be inferred for is an ErrorType here, which
+            // satisfies every constraint, so an inference failure reports
+            // itself rather than arriving as a bogus constraint violation.
+            if (anyTypeParamConstrained(typeParams)) {
+              applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
+            }
             // Substitute type parameters in params and return type.
             let subParams = new Array<Type>();
             for (let param in effectiveFt.parameters) {

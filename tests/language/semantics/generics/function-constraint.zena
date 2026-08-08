@@ -1,0 +1,37 @@
+// @mode: check
+// A bound on a generic *function*'s type parameter is enforced at the call
+// site, the same way `new Box<String>()` is. Both spellings of a call have
+// to check it: explicit type arguments, and arguments inferred from the
+// values passed.
+interface Marker {
+  tag(): i32;
+}
+
+class Marked implements Marker {
+  new();
+  tag(): i32 { return 1; }
+}
+
+class Plain {
+  v: i32;
+  new(this.v);
+}
+
+let arrowBound = <T extends Marker>(x: T): i32 => x.tag();
+
+function fnBound<T extends Marker>(x: T): i32 { return x.tag(); }
+
+// Satisfying calls.
+let ok1 = arrowBound(new Marked());
+let ok2 = arrowBound<Marked>(new Marked());
+let ok3 = fnBound(new Marked());
+let ok4 = fnBound<Marked>(new Marked());
+
+// A type parameter may pass its own bound along.
+let relay = <U extends Marker>(x: U): i32 => arrowBound(x);
+
+// Violations, in both spellings and for both kinds of callee.
+let bad1 = arrowBound(new Plain(1));         // @error: does not satisfy constraint
+let bad2 = arrowBound<Plain>(new Plain(1));  // @error: does not satisfy constraint
+let bad3 = fnBound(new Plain(1));            // @error: does not satisfy constraint
+let bad4 = fnBound<Plain>(new Plain(1));     // @error: does not satisfy constraint

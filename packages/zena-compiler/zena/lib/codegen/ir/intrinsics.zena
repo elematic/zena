@@ -317,14 +317,12 @@ let resourceStateStruct = (cx: LoweringContext, value: i32): WasmStruct | null =
 /**
  * `resource.state` — read the lifecycle flag behind `disown`/`adopt`.
  *
- * A `T` with no flag reads as `owned`. This is CONTINGENT on every
- * class that can appear under `Own<…>` being a resource class, which
- * holds only because casting into `Own<C>` is prohibited outside
- * zena:ownership, so `new R(…)` on a resource class is the sole source
- * of an `Own`. When `Own<C>` over an ordinary class becomes producible,
- * this fold silently stops checking exclusivity — which is all such an
- * `Own` claims — and the injection predicate in specialization.zena
- * must widen to match. See ownership.md §"Disowning and adopting".
+ * A `T` with no flag reads as `owned`. Nothing should reach that: the
+ * `Resource` bound on `disown`/`adopt` admits exactly the classes the
+ * injection predicate in specialization.zena gives a field to, so the
+ * two sets are the same by construction rather than by coincidence.
+ * Keep them that way — widening one without the other reopens the case
+ * where a second `adopt` mints a second exclusive owner in silence.
  *
  * A bail would be the louder choice, and does not work: an
  * unspecialized `requireState_spec_anyref` is emitted (dead — its only

@@ -1,0 +1,42 @@
+// @mode: check
+// `Resource` is the bound naming the classes declared with the `resource`
+// modifier. A resource class satisfies it with no `implements` clause, the
+// way a case class satisfies `Hashable`, and an ordinary class does not.
+//
+// The bound is what makes `disown`/`adopt`'s domain the same set of classes
+// that codegen gives a lifecycle flag to. Without it the two sets agree only
+// by accident — see ownership.md §"Disowning and adopting".
+import {Own, Unmanaged, Disposable, Resource, disown, adopt} from 'zena:ownership';
+
+resource class Handle {
+  new();
+  :Disposable.dispose(): void {}
+}
+
+class Plain {
+  v: i32;
+  new(this.v);
+}
+
+let onlyResources = <T extends Resource>(x: T): i32 => 1;
+
+// A resource satisfies the bound whether it arrives as the class or as a
+// handle to it. A caller can only ever name the handle.
+let ok1 = onlyResources(new Handle());
+let ok2 = onlyResources<Own<Handle>>(new Handle());
+
+// The regime changes are themselves bounded, and accept a resource.
+let raw: Unmanaged<Handle> = disown(new Handle());
+let back: Own<Handle> = adopt(raw);
+
+// A constrained type parameter passes its own bound along.
+let relay = <U extends Resource>(x: U): i32 => onlyResources(x);
+
+// An ordinary class has no release obligation, so it is not a resource.
+let bad1 = onlyResources(new Plain(1));        // @error: does not satisfy constraint
+let bad2 = onlyResources<Plain>(new Plain(1)); // @error: does not satisfy constraint
+
+// Nothing is assignable to `Resource`: the handle is nominally distinct, so
+// it widens to no supertype. That is what stops a widening conversion from
+// discarding the permissions the handle carries.
+let held: Resource = new Handle();             // @error: Type mismatch

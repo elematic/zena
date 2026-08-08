@@ -52,6 +52,32 @@ export interface Disposable {
 }
 
 /**
+ * The classes declared with the `resource` modifier — those holding
+ * something the garbage collector cannot reclaim, and therefore carrying a
+ * release obligation.
+ *
+ * `resource class R` satisfies this without an `implements` clause, the way
+ * a case class satisfies `Hashable`. It exists to be **bounded against**:
+ * `disown` and `adopt` take a `T extends Resource` rather than any `T`,
+ * because moving a value between the affine and manually-managed regimes is
+ * only meaningful for something that has a disposal obligation to move.
+ *
+ * There is deliberately no way to *hold* one. Nothing is assignable to
+ * `Resource`, because the only reference to a resource a program can name is
+ * a handle — `Own<R>`, `Borrow<R>`, `Unmanaged<R>` — and those are nominally
+ * distinct types that assign to no supertype at all. That is what keeps a
+ * widening conversion from dropping the permissions the handle carries, and
+ * it is a property of the handles rather than of this interface: the same
+ * applies to every supertype, `Resource` or otherwise.
+ *
+ * Resource-ness is what this names; affineness is what `Own<T>` declares.
+ * They are separate properties — see ownership.md §"Resource-ness and
+ * affineness are different properties" — so this bound restricts neither
+ * `Own<T>` itself nor the ordinary classes it will eventually wrap.
+ */
+export interface Resource {}
+
+/**
  * The owning reference to a resource. Affine: it may be moved, returned or
  * stored, but not duplicated, and it is released when it leaves scope unmoved.
  *
@@ -113,18 +139,15 @@ enum ResourceState {
 /**
  * Reads the lifecycle flag off a resource object.
  *
- * An intrinsic rather than an ordinary field access because the callers
- * below are generic over an unbounded `T`, and a generic body cannot
- * name a member that only some instantiations have. After
+ * An intrinsic rather than an ordinary field access because a generic
+ * body cannot name a member that only some instantiations have. After
  * monomorphization `T` is concrete, which is what makes this lowerable
  * at all.
  *
- * A `T` carrying no flag reads as `Owned`. That holds today only because
- * every `Own` comes from `new R(…)` on a resource class — casting into
- * `Own<C>` is prohibited outside this library — so no flagless value can
- * reach here. It is contingent, not principled: see ownership.md
- * §"Disowning and adopting" for what has to change before `Own<C>` over
- * an ordinary class can be produced.
+ * A `T` carrying no flag reads as `Owned`, which the `Resource` bound on
+ * the callers makes unreachable: the flag is injected into exactly the
+ * classes that bound admits. The fold remains because there is nowhere
+ * to raise an error from — see ownership.md §"Disowning and adopting".
  */
 @intrinsic('resource.state')
 declare function __resourceState<T>(value: T): i32;
@@ -201,7 +224,7 @@ let requireState = <T>(value: T, expected: ResourceState, operation: String): vo
  * forgeable" — outside this file the same cast is a diagnostic, which is what
  * makes `disown` and `adopt` the only doors between the two regimes.
  */
-export function disown<T>(value: Own<T>): Unmanaged<T> {
+export function disown<T extends Resource>(value: Own<T>): Unmanaged<T> {
   requireState(value, ResourceState.Owned, "disown");
   __resourceSetState(value, ResourceState.Disowned as i32);
   return value as Unmanaged<T>;
@@ -228,7 +251,7 @@ export function disown<T>(value: Own<T>): Unmanaged<T> {
  * `adopt` cannot retract aliases. Aliasability is the point of the disowned
  * state, so the flag is the only defence here, by design.
  */
-export function adopt<T>(value: Unmanaged<T>): Own<T> {
+export function adopt<T extends Resource>(value: Unmanaged<T>): Own<T> {
   requireState(value, ResourceState.Disowned, "adopt");
   __resourceSetState(value, ResourceState.Owned as i32);
   return value as Own<T>;

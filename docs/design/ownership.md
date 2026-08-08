@@ -661,10 +661,17 @@ This is checked, not unsafe. Every resource carries an
   can be added if a caller wants the branch.
 
 The flag is a hidden struct field on every resource class, not a declared
-member: `disown` and `adopt` are generic over an unbounded `T`, so they reach
-it through intrinsic accessors that resolve the field once `T` is concrete.
-It has to live on the object rather than the handle because the handles are
-erased — see §"Where the runtime state lives".
+member: a generic body cannot name a member only some instantiations have, so
+`disown` and `adopt` reach it through intrinsic accessors that resolve the
+field once `T` is concrete. It has to live on the object rather than the
+handle because the handles are erased — see §"Where the runtime state lives".
+
+Both are bounded — `disown<T extends Resource>` — which is what makes their
+domain exactly the set of classes the field is injected into. Moving between
+the two regimes is only meaningful for something carrying a release
+obligation, so the bound also says something true: an ordinary class under
+`Own<C>` has no disposal duty to hand over. See §"`Resource` as a marker
+interface" for why that is a bound and not a supertype.
 
 Two racing adopters therefore do not double-free — the loser gets a clear error.
 What entering `Unmanaged<T>` gives up is **leak-freedom** and _compile-time_
@@ -1115,29 +1122,33 @@ The lifecycle flag itself is landed, so `adopt` does reject a second adopter
 and `disown` a second disowner. It is a hidden i32 struct field appended to
 every resource class, reached from `disown`/`adopt` through the
 `resource.state` / `resource.set_state` intrinsics. The intrinsics are what
-that costs: both functions are generic over an unbounded `T`, and a generic
-body cannot name a member only some instantiations have — after
-monomorphization `T` is concrete, which is what makes the accessors
-lowerable.
+that costs: a generic body cannot name a member only some instantiations
+have, and after monomorphization `T` is concrete, which is what makes the
+accessors lowerable.
 
-A `T` with no flag reads as `owned` and ignores writes. **That is contingent,
-not principled, and it must be revisited before `Own<C>` over an ordinary
-class becomes producible.** It is sound today only because the field is
-injected wherever the flag can be observed: `disown`/`adopt` accept any
-`Own<T>`, but the only way to obtain one is `new R(…)` on a resource class,
-since casting into `Own<C>` is what §"Handles are not forgeable" prohibits.
-The moment [uniqueness without release](#uniqueness-without-a-resource)
-supplies an `Own<C>` from a provably exclusive source, that stops holding —
-and the justification "an ordinary class has nothing to release" covers only
-double free, not exclusivity, which is the whole of what `Own<C>` claims
-there. A second `adopt` would then silently mint a second exclusive owner.
+The `Resource` bound on both functions is what ties the two halves together.
+Codegen injects the field where `isResource` holds; the bound admits exactly
+the same predicate; so a value reaching an accessor always carries a flag,
+by typing rather than by coincidence. Without it the sets agree only
+accidentally — `disown` would take any `Own<T>`, and the argument that no
+flagless value can reach it would rest on `new R(…)` being the only source of
+an `Own`, which stops being true the moment
+[uniqueness without release](#uniqueness-without-a-resource) supplies an
+`Own<C>` from a provably exclusive source. "An ordinary class has nothing to
+release" covers double free but not exclusivity, which is the whole of what
+`Own<C>` claims there, so a second `adopt` would have silently minted a second
+exclusive owner.
 
-The fix at that point is not to constrain `T`. Restricting `disown`/`adopt`
-to resources would block exactly the case the lattice is meant to grow into,
-and a `Resource` marker interface reintroduces the laundering upcast
-§"`Resource` as a marker interface" rejects. It is to widen the *injection*
-predicate from "is a resource class" to "can appear under `Own<…>`", which
-the reachability pass already knows.
+The accessors still fold to "always owned" for a flagless `T`, which is now
+unreachable rather than merely unreached. It stays a fold instead of a hard
+error because there is no way to raise one: `requireState` gets an
+unspecialized `anyref` instantiation that nothing calls — its only caller is
+its own value wrapper, itself reachable only from an `elem declare` list — and
+a bail on the missing field fails the build there.
+
+The bound restricts nothing the lattice is meant to grow into. `Own<C>` over
+an ordinary class stays legal; it is only regime changes that are limited to
+things with a release obligation, which is what a regime change moves.
 
 **O0 unblocks the most.** The whole handle lattice ships there with runtime-only
 enforcement of move discipline, which freezes the _signatures_ immediately:
@@ -1168,29 +1179,50 @@ Only the two that look like obvious directions and need arguing against.
 
 ### `Resource` as a marker interface
 
-Instead of a class modifier, declare `interface Resource extends Disposable` and
-let a class opt in by implementing it. This does not work, because affineness
-would enter the subtype lattice:
+Two different proposals travel under this name, and they have opposite answers.
 
-```zena
-class Descriptor implements Resource { … }   // Resource extends Disposable
+**As a bound, it is right, and it is what ships.** `Resource` is a marker
+interface that `resource class` satisfies with no `implements` clause, and
+`disown`/`adopt` take a `T extends Resource`. See §"Disowning and adopting".
 
-let d: Own<Descriptor> = fs.open(path);
-let x: Disposable = d;    // Descriptor <: Resource <: Disposable — a legal upcast
-```
+**As a replacement for the modifier, it does not work.** `resource` is not
+only a claim about a class's members; it changes how construction types its
+result. `new Descriptor(…)` yields an `Own<Descriptor>`, and the bare class
+name is not a spellable type at all. An interface cannot express either:
+implementing one does not change what `new` gives you, and a type that is
+already spellable does not stop being so because it gained a supertype. The
+modifier is a declaration-site rule about construction; the interface is a
+claim about membership in a set. Only the second is something a bound needs.
 
-That upcast launders the affineness away. `Disposable` is deliberately not
-affine, so an affine value would then sit in an unrestricted static type, freely
-aliasable, with nothing tracking it. Closing the hole means banning upcasts from
-a resource class to any non-affine supertype — at which point `Resource` no
-longer behaves like the language's other interfaces, and the modifier has been
-reinvented with extra machinery and a surprising subtyping rule.
+This section previously argued the stronger claim that a `Resource` interface
+would let affineness leak out through an upcast — `let x: Disposable = d`
+where `d: Own<Descriptor>`. **That argument is wrong**, and it is worth
+recording why, because the mistake is instructive.
 
-`Hashable` is not a counterexample. It is a real interface with a special
-satisfaction rule in the checker, but what it does is constrain _type arguments_
-(`K extends Hashable`); it does not change the structural rules governing values
-of the type. An interface is the right shape for "this type supports an
-operation" and the wrong shape for "this type may not be duplicated".
+The upcast does not typecheck, and never did. `Own<T>` is a distinct type
+alias, and a distinct alias is assignable only to the same-named distinct
+alias — not to its own target, and so not to any supertype of that target. To
+launder, you would first need a value of type `Descriptor`, which the
+resource-class rule makes unspellable. Neither step involves interfaces.
+
+More generally, an interface is not a special channel. Every reference type
+has supertypes; `let x: anyref = d` is the same escape with none of the
+machinery. What prevents all of them at once is the handle's nominal
+distinctness, and later the move rules that assignment of an `Own` must obey
+in any case. A design that closes the interface route and leaves the others
+open has not closed anything.
+
+The bound also never touches this question, because it constrains `T` rather
+than `Own<T>`. In `disown<T extends Resource>(value: Own<T>)` the inferred `T`
+is the bare class — a type the checker names internally and the user cannot
+write. The interface is never a target of assignment, and in fact nothing is
+assignable to it: `Resource` is inhabited by no expression.
+
+`Hashable` is the precedent, not a counterexample. It is a real interface with
+a special satisfaction rule in the checker, constraining _type arguments_
+without changing the rules governing values of the type — which is exactly the
+job here. `resource` conforming to `Resource` without an `implements` clause
+is the same arrangement as a case class conforming to `Hashable`.
 
 ### A pre-check HIR
 
