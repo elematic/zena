@@ -1,7 +1,8 @@
 export interface ZenaImports {
   env?: Record<string, Function>;
   console?: Record<string, Function>;
-  time?: Record<string, Function>;
+  // Values may be `WebAssembly.Suspending` objects, not just functions.
+  time?: Record<string, unknown>;
   [key: string]: any;
 }
 
@@ -202,64 +203,123 @@ export function createConsoleImports(
   };
 }
 
+/** Tracks pending timer wakes for one instance, so `run()` can tell
+ * when a program has finished. Keyed by the instance's exports. */
+const idleWaiters = new WeakMap<object, () => Promise<void>>();
+
+export interface TimeHost {
+  imports: Record<string, unknown>;
+  /** Resolves once no scheduled wake is outstanding. */
+  idle(): Promise<void>;
+}
+
 /**
- * Create the `time` imports backing `zena:time` on a non-WASI host.
+ * The `time` host backing `zena:time` on a non-WASI host.
  *
- * Two primitives, both synchronous: a monotonic reading and a blocking
- * wait. Time crosses as f64 milliseconds so no BigInt marshalling is
- * involved.
+ * `request_wake(ms)` schedules a `setTimeout` that calls the module's
+ * `$asyncDrain` export. Zena's drain unwinds as soon as only future
+ * deadlines remain, so nothing ever blocks — the only workable answer
+ * on a browser main thread, where `Atomics.wait` throws and JSPI is not
+ * universally available (Safari has neither).
  *
- * `sleep_ms` blocks the thread on purpose. Zena's drain loop parks
- * rather than yielding to an event loop, because the callback-driven
- * alternative needs the host to call back into wasm and only the entry
- * module's exports become wasm exports — a stdlib module cannot publish
- * that entry point yet. Blocking is also what the WASI target does, so a
- * program behaves identically under wasmtime and under Node.
+ * Time crosses as f64 milliseconds so no BigInt marshalling is involved.
  *
- * `Atomics.wait` is the only way to block a JS thread precisely. It is
- * available on Node's main thread and in workers, but throws on a
- * browser main thread — where blocking would freeze the tab anyway. We
- * surface that as a clear error rather than busy-waiting, which would
- * freeze it just as hard while looking like it worked.
+ * This inherits `setTimeout`'s web semantics deliberately, including the
+ * >=4ms floor browsers impose once timeouts nest more than five deep.
+ * Each wake schedules a fresh timeout, so long chains of very short
+ * sleeps hit that floor; one shared interval would avoid it if the
+ * granularity ever matters.
  */
-export function createTimeImports(): Record<string, Function> {
-  // A private, never-notified location: Atomics.wait on a value that
-  // never changes always runs the full timeout and returns 'timed-out'.
-  let waitBuffer: Int32Array | null = null;
-  const getWaitBuffer = (): Int32Array => {
-    if (waitBuffer === null) {
-      if (typeof SharedArrayBuffer === 'undefined') {
-        throw new Error(
-          'zena:time: sleep() needs SharedArrayBuffer to block this thread. ' +
-            'In a browser that means a cross-origin-isolated context, and ' +
-            'preferably a worker — blocking the main thread freezes the page.',
-        );
+export function createTimeHost(
+  getExports?: () => WebAssembly.Exports | undefined,
+): TimeHost {
+  let outstanding = 0;
+  const waiters: Array<() => void> = [];
+
+  const settle = () => {
+    // A drain that re-armed a timer bumped `outstanding` again before we
+    // get here, so zero really does mean "no timer left anywhere".
+    if (outstanding === 0) {
+      for (const wake of waiters.splice(0)) {
+        wake();
       }
-      waitBuffer = new Int32Array(new SharedArrayBuffer(4));
     }
-    return waitBuffer;
   };
 
   return {
-    now_ms: (): number => {
-      // performance.now() is monotonic where available; Date.now() is
-      // not, but is the only fallback and is adequate for timers.
-      return typeof performance !== 'undefined' && performance.now
-        ? performance.now()
-        : Date.now();
+    imports: {
+      now_ms: (): number => performance.now(),
+      request_wake: (ms: number): void => {
+        outstanding += 1;
+        setTimeout(
+          () => {
+            try {
+              const drain = getExports?.()?.['__zena_drain'] as
+                | (() => void)
+                | undefined;
+              drain?.();
+            } finally {
+              outstanding -= 1;
+              settle();
+            }
+          },
+          ms > 0 ? ms : 0,
+        );
+      },
     },
-    sleep_ms: (ms: number): void => {
-      if (!(ms > 0)) {
-        return;
-      }
-      const result = Atomics.wait(getWaitBuffer(), 0, 0, ms);
-      if (result === 'not-equal') {
-        // Cannot happen: index 0 is never written. Fail loudly rather
-        // than silently returning early from a sleep.
-        throw new Error('zena:time: sleep() woke unexpectedly');
-      }
-    },
+    idle: (): Promise<void> =>
+      outstanding === 0
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => waiters.push(resolve)),
   };
+}
+
+/** The `time` imports alone, for callers assembling their own object. */
+export function createTimeImports(
+  getExports?: () => WebAssembly.Exports | undefined,
+): Record<string, unknown> {
+  return createTimeHost(getExports).imports;
+}
+
+/**
+ * Run a Zena module's `main` to completion, including its timers.
+ *
+ * On a host that cannot wait — every browser main thread — an async
+ * `main` returns before its timers have fired, so the value arrives
+ * later. This drives that: it starts the program, lets the event loop
+ * deliver each `request_wake`, and resolves once no timer is left.
+ *
+ * A module whose `main` is synchronous, or whose futures all settle
+ * without a timer, resolves on the first turn — the split entry is used
+ * whenever the compiler emitted one, so there is a single code path.
+ */
+export async function run(
+  instance: WebAssembly.Instance,
+  ...args: unknown[]
+): Promise<unknown> {
+  const exports = instance.exports;
+  const start = exports['__zena_main_start'] as
+    | ((...a: unknown[]) => void)
+    | undefined;
+  const result = exports['__zena_main_result'] as
+    | (() => unknown)
+    | undefined;
+
+  if (!start || !result) {
+    // Synchronous main, or a host that waits (WASI): one call suffices.
+    const main = exports['main'] as (...a: unknown[]) => unknown;
+    if (typeof main !== 'function') {
+      throw new Error('run(): the module has no `main` export');
+    }
+    return main(...args);
+  }
+
+  start(...args);
+  const idle = idleWaiters.get(exports as object);
+  if (idle) {
+    await idle();
+  }
+  return result();
 }
 
 /**
@@ -319,10 +379,11 @@ export async function instantiate(
     },
   };
 
+  const timeHost = createTimeHost(() => instanceExports);
   const defaultImports = {
     env: envImports,
     console: createConsoleImports(() => instanceExports),
-    time: createTimeImports(),
+    time: timeHost.imports,
   };
 
   const imports = {
@@ -333,13 +394,19 @@ export async function instantiate(
     time: {...defaultImports.time, ...userImports.time},
   };
 
+  // `time.sleep_ms` may be a WebAssembly.Suspending, which TypeScript's
+  // ImportValue union does not yet describe.
+  const importObject = imports as unknown as WebAssembly.Imports;
+
   if (wasm instanceof WebAssembly.Module) {
-    const instance = await WebAssembly.instantiate(wasm, imports);
+    const instance = await WebAssembly.instantiate(wasm, importObject);
     instanceExports = instance.exports;
+    idleWaiters.set(instanceExports, timeHost.idle);
     return instance;
   }
 
-  const result = await WebAssembly.instantiate(wasm, imports);
+  const result = await WebAssembly.instantiate(wasm, importObject);
   instanceExports = result.instance.exports;
+  idleWaiters.set(instanceExports, timeHost.idle);
   return result;
 }

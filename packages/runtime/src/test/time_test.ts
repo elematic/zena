@@ -4,27 +4,32 @@
  * The WASI side is covered by tests/language/execution/async/, which
  * runs under wasmtime. This covers the other entry: the same Zena
  * program, compiled with --target host, parking on the runtime's
- * `time` imports instead of `poll_oneoff`. Behaving identically on both
- * is the point of making the host wait blocking rather than
- * callback-driven.
+ * `time` imports instead of `poll_oneoff`.
+ *
+ * The host never waits: its clock schedules a `setTimeout` that pings
+ * `__zena_drain`, and the drain unwinds in between. Both halves of that
+ * matter and both are asserted — the observable results match the WASI
+ * target exactly, and the JS event loop keeps running throughout.
  */
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
 
 import {compile} from './compile-zena.js';
-import {instantiate, createTimeImports} from '../index.js';
+import {instantiate, createTimeHost, run} from '../index.js';
 
-const run = async (source: string) => {
+const run_ = async (source: string) => {
   const wasm = compile(source);
   const result = await instantiate(wasm);
   const instance = (result as {instance?: WebAssembly.Instance}).instance ??
     (result as WebAssembly.Instance);
-  return instance.exports as {main: () => number};
+  // run() drives the split entry: start the program, let the event loop
+  // deliver each wake, then read the result.
+  return () => run(instance) as Promise<number>;
 };
 
 suite('Runtime - zena:time host integration', () => {
   test('timers complete in deadline order, not call order', async () => {
-    const exports = await run(`
+    const main = await run_(`
       import { Future, drainMicrotasks } from 'zena:async';
       import { sleep } from 'zena:time';
 
@@ -51,11 +56,11 @@ suite('Runtime - zena:time host integration', () => {
         return log;
       }
     `);
-    assert.strictEqual(exports.main(), 1234);
+    assert.strictEqual(await main(), 1234);
   });
 
   test('sleep(0) is still asynchronous', async () => {
-    const exports = await run(`
+    const main = await run_(`
       import { Future } from 'zena:async';
       import { sleep } from 'zena:time';
 
@@ -77,11 +82,11 @@ suite('Runtime - zena:time host integration', () => {
         return log;
       }
     `);
-    assert.strictEqual(exports.main(), 89);
+    assert.strictEqual(await main(), 89);
   });
 
   test('sleep actually waits', async () => {
-    const exports = await run(`
+    const main = await run_(`
       import { Future } from 'zena:async';
       import { sleep, monotonicMs } from 'zena:time';
 
@@ -93,7 +98,7 @@ suite('Runtime - zena:time host integration', () => {
       }
     `);
     const wallStart = Date.now();
-    const reported = exports.main();
+    const reported = await main();
     const wallElapsed = Date.now() - wallStart;
 
     // Lower bounds only. An upper bound would be flaky under load, and
@@ -105,25 +110,55 @@ suite('Runtime - zena:time host integration', () => {
     assert.ok(
       wallElapsed >= 45,
       `only ${wallElapsed}ms of wall clock passed for a 50ms sleep — ` +
-        'the host sleep did not block',
+        'the timer did not actually delay anything',
     );
   });
 
-  test('createTimeImports exposes a monotonic clock and a blocking wait', () => {
-    const imports = createTimeImports();
-    const now = imports['now_ms'] as () => number;
-    const sleepMs = imports['sleep_ms'] as (ms: number) => void;
+  test('the event loop keeps running while wasm sleeps', async () => {
+    const main = await run_(`
+      import { Future } from 'zena:async';
+      import { sleep } from 'zena:time';
 
-    const before = now();
-    sleepMs(20);
-    const after = now();
+      export async function main(): Future<i32> {
+        await sleep(80);
+        return 7;
+      }
+    `);
+
+    // The whole point: JS work scheduled during the sleep must run. If
+    // the host blocked instead of unwinding, this counter would stay 0.
+    let ticks = 0;
+    const interval = setInterval(() => {
+      ticks += 1;
+    }, 10);
+    const result = await main();
+    clearInterval(interval);
+
+    assert.strictEqual(result, 7);
     assert.ok(
-      after - before >= 15,
-      `clock advanced only ${after - before}ms across a 20ms sleep`,
+      ticks >= 2,
+      `the event loop ticked ${ticks} times during an 80ms sleep — ` +
+        'the host blocked instead of unwinding the drain',
     );
+  });
 
-    // Non-positive durations return immediately rather than throwing.
-    sleepMs(0);
-    sleepMs(-1);
+  test('createTimeHost reports idle only once wakes are delivered', async () => {
+    const host = createTimeHost(() => undefined);
+    const now = host.imports['now_ms'] as () => number;
+    const requestWake = host.imports['request_wake'] as (ms: number) => void;
+
+    assert.ok(typeof now() === 'number', 'now_ms must return a number');
+
+    // Idle immediately when nothing is scheduled.
+    await host.idle();
+
+    requestWake(30);
+    let settled = false;
+    const waiting = host.idle().then(() => {
+      settled = true;
+    });
+    assert.strictEqual(settled, false, 'idle resolved with a wake pending');
+    await waiting;
+    assert.strictEqual(settled, true);
   });
 });

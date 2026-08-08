@@ -11,21 +11,30 @@ import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 
 /**
- * Reading the monotonic clock, and blocking on it.
+ * Reading the monotonic clock, and waiting on it.
  *
- * Both operations are host primitives, and both are synchronous. A
- * callback-driven timer (JS `setTimeout` completing a `Completer`) would
- * be the more natural JS shape, but it needs the host to call back
- * *into* wasm, and only the entry module's exports become wasm exports —
- * a stdlib module cannot publish the entry point that would need. That
- * arrives with A3's `__zena_drain` export; until then a blocking park is
- * what both targets can express, and it keeps their semantics identical.
+ * `waitNs` reports which of two things it did, because not every host
+ * can wait. A WASI host blocks on `poll_oneoff` and returns true. A JS
+ * host cannot block — no browser will let the main thread stop — so it
+ * schedules a wake, returns false, and the drain unwinds; the host then
+ * calls the module's `__zena_drain` export when the deadline arrives and
+ * the drain picks up where it left off.
+ *
+ * This is the whole of the difference between the targets. The timer
+ * queue, the `Parker`, and the meaning of `drainMicrotasks()` — run
+ * until nothing more can happen *now* — are identical on both.
  */
 export interface Clock {
   /** Nanoseconds on a monotonic clock. Only differences are meaningful. */
   nowNs(): i64;
-  /** Block the whole module for `ns` nanoseconds. */
-  parkNs(ns: i64): void;
+  /**
+   * Wait `ns` nanoseconds.
+   *
+   * True: the wait happened, so the caller may proceed. False: the host
+   * cannot wait, and has instead arranged to re-enter the drain later —
+   * the caller must unwind without completing anything.
+   */
+  waitNs(ns: i64): boolean;
 }
 
 var clock: Clock | null = null;
@@ -79,7 +88,15 @@ class TimerQueue implements Parker {
     this.#nextSeq += 1;
   }
 
-  /** Wait for the earliest timer, complete it, and report progress. */
+  /**
+   * Complete the earliest timer if it is due, waiting for it first if
+   * the host can wait.
+   *
+   * The timer is left queued until it actually completes. On a host that
+   * cannot wait this method returns false with the timer still pending,
+   * which ends the drain; the host's later `__zena_drain` call re-enters
+   * here, finds the deadline passed, and completes it then.
+   */
   park(): boolean {
     if (this.#timers.length == 0) {
       return false;
@@ -96,6 +113,15 @@ class TimerQueue implements Parker {
       i += 1;
     }
     let timer = this.#timers[best];
+    let now = monotonicNs();
+    if (timer.deadlineNs > now) {
+      if (!currentClock().waitNs(timer.deadlineNs - now)) {
+        // The host scheduled a wake instead of waiting. Leave the timer
+        // queued and stop the drain; we resume via __zena_drain.
+        return false;
+      }
+    }
+    // Only now is the timer really due: remove it and settle it.
     // Shift the tail down rather than swapping with the last element:
     // a swap would scramble the insertion order `seq` exists to keep.
     var j = best;
@@ -104,11 +130,6 @@ class TimerQueue implements Parker {
       j += 1;
     }
     this.#timers.pop();
-
-    let now = monotonicNs();
-    if (timer.deadlineNs > now) {
-      currentClock().parkNs(timer.deadlineNs - now);
-    }
     timer.completer.complete();
     return true;
   }
@@ -130,10 +151,12 @@ var registered = false;
  * busy queue can delay it further. `sleep(0)` still yields — it never
  * completes synchronously, per the always-async rule.
  *
- * The wait happens inside `drainMicrotasks()`. Nothing runs while the
- * module is parked: this is cooperative single-threaded concurrency, so
- * a sleeping task does not let other *non-async* work proceed — it lets
- * other futures proceed.
+ * The wait happens inside `drainMicrotasks()`. On a host that can wait,
+ * that call does not return until every timer has fired. On one that
+ * cannot, it returns as soon as only future deadlines remain, and the
+ * host resumes it. Either way this is cooperative single-threaded
+ * concurrency: a sleeping task lets other *futures* proceed, not other
+ * Zena code.
  */
 export let sleep = (ms: i32): Future<void> => {
   if (!registered) {

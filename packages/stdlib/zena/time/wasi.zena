@@ -48,6 +48,8 @@ final class WasiClock implements Clock {
   }
 
   /**
+   * Blocks the module until the deadline, so this always returns true.
+   *
    * The WASI p1 `subscription` is 48 bytes and `event` is 32; the layout
    * written below is from the preview-1 ABI:
    *
@@ -58,7 +60,7 @@ final class WasiClock implements Clock {
    * `flags` 0 means the timeout is *relative*, which is what a sleep
    * wants — an absolute deadline would need SUBSCRIPTION_CLOCK_ABSTIME.
    */
-  parkNs(ns: i64): void {
+  waitNs(ns: i64): boolean {
     if (let (true, buf) = defaultAllocator.allocAligned(96, 8)) {
       let mem = Memory.default;
       let sub = buf;
@@ -85,7 +87,8 @@ final class WasiClock implements Clock {
       if (n != 1) {
         throw new Error('zena:time: poll_oneoff returned no event');
       }
-      return;
+      // WASI can genuinely wait, so the drain never has to unwind.
+      return true;
     }
     throw new Error('zena:time: out of memory arming a timer');
   }

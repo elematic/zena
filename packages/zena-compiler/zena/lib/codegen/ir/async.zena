@@ -290,6 +290,98 @@ let prepareAsyncMain = (wasm: WasmModule, pass: ReachabilityAnalysis): void => {
   // The export now names the wrapper; the ramp stays an ordinary
   // internal function that other code can still call directly.
   wasm.exportMap[key] = wrapper;
+
+  buildHostEntry(wasm, pass, ramp, valueOrThrowFn, drainFn, futVtOf(ramp));
+};
+
+/** The future type the ramp returns. */
+let futVtOf = (ramp: WasmFunction): ValType => {
+  if (ramp.signature.returns.length != 1) {
+    throw new Error('async main: ramp does not return its future');
+  }
+  return ramp.signature.returns[0];
+};
+
+/**
+ * The split entry a host that cannot wait needs (async.md §4).
+ *
+ * `main` above starts the body, drains, and unwraps in one call, which
+ * works wherever the clock can genuinely wait — the drain simply never
+ * unwinds, so by the time it returns the future has settled. A host
+ * that cannot wait unwinds the drain early, and unwrapping there would
+ * hit `valueOrThrow`'s deadlock case even though the program is fine
+ * and merely waiting on a timer.
+ *
+ * So such a host uses two calls instead of one: `$asyncMainStart` runs
+ * the body as far as it can and parks the future in a global, then —
+ * after `$asyncDrain` pings have carried it to completion —
+ * `$asyncMainResult` unwraps it. Neither needs a branch, which is why
+ * this is two functions rather than one with an `isCompleted` test.
+ *
+ * `main` is left exactly as it was, so WASI and zena-cli are unaffected
+ * and a standalone `wasmtime --invoke main` still runs to completion.
+ */
+let buildHostEntry = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis,
+  ramp: WasmFunction,
+  valueOrThrowFn: WasmFunction,
+  drainFn: WasmFunction,
+  futVt: ValType
+): void => {
+  // The in-flight future, so the two halves can find each other.
+  let slot = new WasmGlobal('$asyncMainFuture', '$asyncMainFuture',
+      futVt, true, null, null, ramp.model);
+  wasm.globals.push(slot);
+  let slotRef = new IrRefGlobal(slot);
+
+  // $asyncMainStart(params...) -> void
+  let startSig = wasm.getSignature(ramp.signature.params, new Array<ValType>(0));
+  let startFn = new WasmFunction(startSig, null, ramp.model);
+  startFn.name = 'main$asyncStart';
+  startFn.isAsyncMainWrapper = true;
+  wasm.addFunction(startFn);
+  pass.markFunctionReached(startFn);
+
+  let sb = new IrBuilder();
+  let sEntry = sb.newBlock();
+  let sParams = new Array<i32>();
+  for (let vt in ramp.signature.params) {
+    sParams.push(sb.blockParam(sEntry, vt));
+  }
+  sb.switchTo(sEntry);
+  let started = sb.callFunc(sb.addRef(new IrRefFunc(ramp)), sParams, futVt);
+  sb.emitVoid(IrOp.global_set, started, sb.addRef(slotRef));
+  sb.callFunc(sb.addRef(new IrRefFunc(drainFn)), new Array<i32>(0), null);
+  sb.retVoid();
+  mainWrapperBodies[startFn.uid] = sb.finish();
+  wasm.asyncMainStartFunc = startFn;
+
+  // $asyncMainResult() -> T
+  let resultSig = wasm.getSignature(new Array<ValType>(0),
+      valueOrThrowFn.signature.returns);
+  let resultFn = new WasmFunction(resultSig, null, ramp.model);
+  resultFn.name = 'main$asyncResult';
+  resultFn.isAsyncMainWrapper = true;
+  wasm.addFunction(resultFn);
+  pass.markFunctionReached(resultFn);
+
+  let rb = new IrBuilder();
+  let rEntry = rb.newBlock();
+  rb.switchTo(rEntry);
+  let stored = rb.emit(IrOp.global_get, futVt, -1, rb.addRef(slotRef));
+  let rArgs = new Array<i32>();
+  rArgs.push(stored);
+  if (valueOrThrowFn.signature.returns.length == 0) {
+    rb.callFunc(rb.addRef(new IrRefFunc(valueOrThrowFn)), rArgs, null);
+    rb.retVoid();
+  } else {
+    let v = rb.callFunc(rb.addRef(new IrRefFunc(valueOrThrowFn)), rArgs,
+        valueOrThrowFn.signature.returns[0]);
+    rb.ret(v);
+  }
+  mainWrapperBodies[resultFn.uid] = rb.finish();
+  wasm.asyncMainResultFunc = resultFn;
 };
 
 export let lowerAsyncMainWrapper = (

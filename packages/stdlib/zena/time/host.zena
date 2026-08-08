@@ -1,25 +1,32 @@
 /**
  * zena:time — JS/non-WASI host entry (docs/design/async.md §4).
  *
+ * A browser will not let the main thread block, and no mechanism
+ * changes that: `Atomics.wait` throws there, and JSPI is not in every
+ * engine (Safari has neither). So this entry does not try to wait. It
+ * schedules a wake through the host and reports that it did not wait,
+ * which unwinds the drain; the host then calls the module's
+ * `__zena_drain` export when the deadline arrives and the drain resumes
+ * where it stopped.
+ *
+ * That keeps one meaning for `drainMicrotasks()` on every target — run
+ * until nothing more can happen *now* — with the clock as the only
+ * thing that differs. WASI can wait, so its drain simply never unwinds.
+ *
  * The host supplies two primitives, both in `@zena-lang/runtime`'s
- * default imports: a monotonic clock reading and a blocking wait. Time
- * crosses the boundary as `f64` milliseconds rather than `i64`
- * nanoseconds so nothing here depends on BigInt marshalling.
+ * default imports. Time crosses the boundary as `f64` milliseconds
+ * rather than `i64` nanoseconds so nothing here depends on BigInt
+ * marshalling.
  *
- * Why a *blocking* wait, when `setTimeout` is the obvious JS answer: a
- * callback-driven timer needs the host to call back into wasm to settle
- * the `Completer`, and only the entry module's exports become wasm
- * exports — a stdlib module cannot publish that entry point. It arrives
- * with A3's `__zena_drain` export, and this module is where it will go.
- * Until then a blocking park is what both targets can express, and it
- * has the considerable virtue that a program behaves identically under
- * wasmtime and under Node.
+ * A consequence worth knowing: an async `main` returns before its
+ * timers have fired, so the value arrives later. `@zena-lang/runtime`'s
+ * `run()` drives that and hands back a promise.
  *
- * The cost is honest and worth stating: `drainMicrotasks()` blocks the
- * JS thread while a timer is pending, exactly as it blocks the module
- * under WASI. That is fine in Node and in a worker; on a browser main
- * thread it freezes the tab, which is why the runtime's implementation
- * refuses rather than busy-waiting when it cannot block properly.
+ * This inherits `setTimeout`'s web semantics deliberately, including
+ * the >=4ms floor browsers impose once timeouts nest more than five
+ * deep. Each wake schedules a fresh timeout, so long chains of very
+ * short sleeps hit that floor; driving them from one shared interval
+ * would avoid it if the granularity ever matters.
  */
 import { Error } from 'zena:error';
 import { Future } from 'zena:async';
@@ -29,8 +36,8 @@ import { Clock, installClock, sleep as sleepImpl, monotonicNs as nowImpl,
 @external("time", "now_ms")
 declare function __time_now_ms(): f64;
 
-@external("time", "sleep_ms")
-declare function __time_sleep_ms(ms: f64): void;
+@external("time", "request_wake")
+declare function __time_request_wake(ms: f64): void;
 
 final class HostClock implements Clock {
   new();
@@ -39,8 +46,13 @@ final class HostClock implements Clock {
     return (__time_now_ms() * 1000000.0) as i64;
   }
 
-  parkNs(ns: i64): void {
-    __time_sleep_ms((ns as f64) / 1000000.0);
+  /**
+   * Never waits: asks the host to re-enter `__zena_drain` later and
+   * reports false so the drain unwinds in the meantime.
+   */
+  waitNs(ns: i64): boolean {
+    __time_request_wake((ns as f64) / 1000000.0);
+    return false;
   }
 }
 

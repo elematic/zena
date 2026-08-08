@@ -255,31 +255,41 @@ the target distinction the compiler already has (`--target wasi` vs
 `--target host`), and the `Future`/`Completer`/executor core is
 target-independent.
 
-**Correction from the implementation.** The `setTimeout` shape above
-depends on "completing a `Completer` through the Level-2 exports" — so
-it is not actually available at Level 1, because the host has no way to
-call back into wasm until those exports exist. Only the entry module's
-exports become wasm exports, so `zena:time` cannot publish one itself.
+**Confirmed by the implementation, including the "no JSPI" call.**
+The `setTimeout` shape is what the host uses — but not by "completing a
+`Completer` through the Level-2 exports", because a host cannot call
+into wasm until an export exists for it. So Level 1 needed one piece of
+Level 2 after all: **`__zena_drain`**, which the compiler now
+synthesizes whenever `zena:async` is reached.
 
-The host entry therefore parks *synchronously* too, on an import pair
-(`time.now_ms`, `time.sleep_ms`) that `@zena-lang/runtime` provides;
-`sleep_ms` blocks with `Atomics.wait`. The conditionality is still
-confined to the one module, and less of it than expected: the timer
-queue is shared, and only the `Clock` differs. The `setTimeout` version
-becomes possible — and preferable — once A3 lands the drain export, and
-`time/host.zena` is where it goes.
+With it the host clock never waits. `time.request_wake(ms)` schedules a
+`setTimeout` and returns, `Clock.waitNs` reports `false`, and the drain
+unwinds; when the timeout fires the host calls `__zena_drain` and the
+drain resumes where it stopped. Nothing blocks, on any thread, with no
+JSPI and no `SharedArrayBuffer` — which matters because Safari has
+neither. (An earlier attempt did use JSPI; §"Non-goals" below was right
+to rule it out, for the availability reason exactly.)
 
-**Implemented** as described, with one refinement worth recording: the
-drain arm is a registered `Parker`, not a branch in the drain loop that
-knows about timers. `zena:async` exposes `interface Parker { park():
-boolean }` and `setParker`; `zena:time` registers itself on the first
-`sleep()`. `park()` returning false is what ends a drain, so a parker
-with nothing outstanding terminates the loop rather than spinning.
+The conditionality stays confined to the clock, and is smaller than
+expected: the timer queue, the `Parker`, and the meaning of
+`drainMicrotasks()` — *run until nothing more can happen now* — are
+shared. WASI's clock can genuinely wait, so its drain never unwinds and
+`main` still completes inside the call; a standalone
+`wasmtime --invoke main` is unaffected.
 
-Registration is lazy on purpose. A module-level binding whose value is
-never read is a dead-code-elimination target, and losing the
-registration would surface only as a drain that ended early — silently,
-and only when a timer happened to be pending.
+An async `main` on a non-blocking host does return before its timers
+fire, exactly as this document predicted. It is therefore split into
+`__zena_main_start` (run the body, park the future in a global) and
+`__zena_main_result` (unwrap it once the pings have carried it to
+completion). Two unconditional exports rather than one with an
+`isCompleted` branch, and `main` itself is left untouched.
+`@zena-lang/runtime`'s `run()` drives the pair and hands back a promise.
+
+This inherits `setTimeout`'s web semantics on purpose, including the
+>=4ms floor browsers impose once timeouts nest more than five deep.
+Each wake schedules a fresh timeout, so long chains of very short
+sleeps hit that floor; driving them from a single shared interval would
+avoid it if the granularity ever matters.
 
 ### Level 2 — external completions (JS host; later, custom Rust I/O)
 
@@ -433,32 +443,18 @@ website served by a Zena server":
   `@zena-lang/runtime`. Only the clock differs — `time/queue.zena`
   holds the timer queue and is shared.
 
-  **The host wait blocks, rather than being driven by `setTimeout`**,
-  which is a deliberate reversal of what this document assumed below.
-  A callback-driven timer needs the host to call back *into* wasm to
-  settle the `Completer`, and only the entry module's exports become
-  wasm exports — a stdlib module cannot publish that entry point. It
-  arrives with A3's `__zena_drain` export. Until then blocking is what
-  both targets can express, and it buys something worth having: a
-  program behaves identically under wasmtime and under Node, so the
-  same test asserts the same thing on both.
+  The host wait is a `setTimeout` that pings the module's
+  `__zena_drain` export. The host clock never waits: it schedules and
+  reports that it did not wait, so the drain unwinds and resumes when
+  the ping arrives. Nothing blocks on any thread — no JSPI, no
+  `SharedArrayBuffer` — which is what makes it work on a browser main
+  thread, Safari included.
 
-  The cost is stated plainly in the module: `drainMicrotasks()` blocks
-  the JS thread while a timer is pending, exactly as it blocks the
-  module under WASI. Fine in Node and in a worker; on a browser main
-  thread it would freeze the tab, so the runtime raises a clear error
-  when it cannot block properly rather than busy-waiting — which would
-  freeze it just as hard while looking like it worked.
-
-  The drain arm is a hook, not a special case: `zena:async` gained a
-  `Parker` interface and a `setParker`, and an empty queue now means
-  "ask the parker to wait" rather than "done". `zena:async` still has
-  no idea what a timer is — `zena:time` registers itself on the first
-  `sleep()`. One parker slot rather than a list, deliberately: waiting
-  on several sources means waiting on whichever is ready *first*,
-  which a loop over independent parkers gets wrong. A target with more
-  than one source registers a parker that knows how to wait on all of
-  them, which is what a host event loop already is.
+  An async `main` therefore returns before its timers fire on such a
+  host, so it is split into `__zena_main_start` and
+  `__zena_main_result`; `@zena-lang/runtime`'s `run()` drives the pair
+  and returns a promise. `main` itself is unchanged, so WASI and
+  `zena-cli` are untouched.
 
   Note that `sleep()` needed `Future<void>`, which is why that had to
   land first: a sleep carries no value, and faking it with
