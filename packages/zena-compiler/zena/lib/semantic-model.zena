@@ -37,6 +37,8 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
+import { Iterable, Iterator } from 'zena:iterator';
+import { IterableUtils } from 'zena:iterable-utils';
 import { console } from 'zena:console';
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, UnionType, typeToString, TypeId
@@ -794,12 +796,49 @@ export final class FunctionAdaptationDependency {
   new(this.node, this.source, this.target);
 }
 
+/**
+ * A set of types that iterates in the order they were added.
+ *
+ * Insertion order, not hash order. `Type.hashCode` is a process-global
+ * uid handed out at construction and never reset — it cannot be, since
+ * a long-lived compiler interns types across compiles, and restarting
+ * the sequence would collide fresh types with cached ones. So a
+ * `HashSet<Type>` iterates in an order that depends on how many types
+ * the process had already built, which is to say on how many modules
+ * were compiled before this one.
+ *
+ * That order reaches the emitted bytes: RTA walks this set to intern
+ * wasm types and register function-value wrappers, so compiling one
+ * file twice in a single process emitted two different (equally
+ * correct, equally sized) modules — a permuted type section, and
+ * whichever of two same-signature wrappers was registered first.
+ * The checker adds types during a deterministic AST walk, so insertion
+ * order is stable; hash order was the only thing that was not.
+ */
+export final class OrderedTypeSet with IterableUtils<Type> implements Iterable<Type> {
+  #seen = new HashSet<Type>();
+  #order = new Array<Type>();
+
+  new();
+
+  /** Adds `t` if it is not already present. Returns whether it was new. */
+  add(t: Type): boolean {
+    if (!this.#seen.add(t)) { return false; }
+    this.#order.push(t);
+    return true;
+  }
+
+  :Iterable.iterator(): Iterator<Type> {
+    return this.#order.:Iterable.iterator();
+  }
+}
+
 export final class SymbolDependencies {
   referencedSymbols = new HashSet<SymbolId>();
   referencedClassMethods = new HashSet<String>(); // Format: ClassSymbolId.methodName
   referencedInterfaceMembers = new HashSet<String>(); // Format: InterfaceSymbolId.memberName
   usedInterfaceAdaptations = new HashSet<String>(); // Format: ClassSymbolId::InterfaceSymbolId
-  referencedTypes = new HashSet<Type>();
+  referencedTypes = new OrderedTypeSet();
   closures = new Array<ClosureDependency>();
   functionAdaptations = new Array<FunctionAdaptationDependency>();
   var needsExceptionInfra = false;

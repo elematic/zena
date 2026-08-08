@@ -84,6 +84,7 @@ Each category has a runner written in Zena, in `zena/test/`:
 | ------------------------- | -------------------------------------------------------- |
 | `portable_syntax.zena`    | parse → AST vs. the `.ast.json` snapshot beside the test |
 | `portable_semantics.zena` | check → diagnostics vs. `@error:` / `@warning:`          |
+| `portable_execution.zena` | compile + run → vs. `@result:` / `@stdout:`              |
 
 `@error:` is matched **on line as well as message, one-for-one, and
 every error must be claimed**. A directive describes the line it sits
@@ -99,7 +100,6 @@ unclaimed errors suite-wide.
 not. It asserts the absence, so implementing the check fails the test
 and tells you to promote the directive — the marker retires itself
 instead of rotting. See BUGS.md for the six it currently marks.
-| `portable_execution.zena` | compile + run → vs. `@result:` / `@stdout:`              |
 
 They share `zena/test/portable-harness.zena` (directory discovery,
 `// @name: value` directive parsing, skip accounting). The execution
@@ -153,6 +153,22 @@ was the type argument's *name*, so two entry points that each declared a
 emitted an interface trampoline that downcast to the first's struct.
 `instantiationKeyOf` in `lib/types.zena` now keys nominal types by
 identity; `zena/test/type-instantiation_test.zena` guards it.
+
+**A module is emitted the same bytes wherever it falls in a batch**, and
+that had to be made true too. `Type.hashCode` is a process-global uid,
+so a `HashSet<Type>` iterates differently depending on how many types
+the process has built — and RTA walked `referencedTypes` to intern wasm
+types and register function-value wrappers. Compiling one file eight
+times in a process produced two modules of the same length and
+different content: a permuted type section, and whichever of two
+same-signature wrappers was registered first. Unlike `WasmType`'s uid
+the counter cannot be reset per compile, because a long-lived compiler
+interns semantic types across compiles; instead `referencedTypes` is an
+`OrderedTypeSet` that iterates in insertion order.
+`zena/test/codegen-determinism_test.zena` guards it, and needs a *run*
+of repeat compiles to do so — divergence is not monotonic in batch
+position, so a two-compile version of that test passed with the bug
+fully present.
 
 **Discovery has no allow-list.** A test runs because the file exists.
 The only way to hold one back is an explicit directive in the file:

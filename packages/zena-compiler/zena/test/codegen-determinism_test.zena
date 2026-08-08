@@ -1,0 +1,134 @@
+/**
+ * A module must be emitted the same bytes no matter what was compiled
+ * before it in the same process.
+ *
+ * This is not a nicety. The execution-test runner compiles many entry
+ * points per process, and `zena-cli` caches compiled modules by
+ * content, so a module whose bytes depend on its position in a batch
+ * invalidates a cache entry that nothing changed.
+ *
+ * It was false. `Type.hashCode` is a process-global uid handed out at
+ * construction, and `SymbolDependencies.referencedTypes` was a
+ * `HashSet<Type>`, so RTA walked it in an order that depended on how
+ * many types the process had already built. Two things followed the
+ * walk into the output: the order wasm types were interned (a permuted
+ * type section) and which of two same-signature function-value
+ * wrappers got registered first (`asciiUpperByte_valwrapper_$i32` on
+ * one compile, `asciiLowerByte_valwrapper_$i32` on the next). Same
+ * length every time, different content — which is how it came in as a
+ * bug report against `Compiler.invalidate`, the only other test that
+ * compared bytes across two compiles in one process.
+ *
+ * The uid cannot simply be reset per compile the way `WasmType`'s is: a
+ * long-lived compiler interns semantic types across compiles, so
+ * restarting the sequence would collide fresh types with cached ones.
+ * The fix is for the order not to reach the output — `referencedTypes`
+ * is an `OrderedTypeSet`, which iterates in the checker's insertion
+ * order.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { Array } from 'zena:array';
+import { CompilerHost } from '../lib/library-loader.zena';
+import {
+  Compiler, createCompiler, CompilerOptions, checkCompilation
+} from '../lib/compiler.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
+import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+
+let stdlibRoot = 'packages/stdlib/zena';
+
+class PlainHost implements CompilerHost {
+  new();
+  readFile(path: String): String {
+    if (path.startsWith('zena:')) {
+      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+}
+
+let newCompiler = (): Compiler => {
+  let host = new PlainHost();
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  return createCompiler(host, new CompilerOptions('zena-cli', stdlibRoot, packages));
+};
+
+/** Compiles to wasm with a fresh compiler, throwing on any check error. */
+let compileFresh = (path: String): ByteArray => {
+  let c = newCompiler();
+  let result = c.compile(path);
+  let checked = checkCompilation(result, null, false);
+  for (let diag in checked.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      throw new Error(`${path}: ${diag.message}`);
+    }
+  }
+  let entryAst = result.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) { entryUnit = unit; }
+    }
+  }
+  return new BinaryGenerator('zena-cli', false)
+    .generate(new Program(units, entryUnit))
+    .toByteArray();
+};
+
+/** Index of the first differing byte, or -1 when the two are equal. */
+let firstDiff = (a: ByteArray, b: ByteArray): i32 => {
+  if (a.length != b.length) { return 0; }
+  var i = 0;
+  while (i < a.length) {
+    if (a[i] != b[i]) { return i; }
+    i += 1;
+  }
+  return -1;
+};
+
+/**
+ * Reaches interface dispatch through generic stdlib instantiations and
+ * the `String.asciiLowerCase`/`asciiUpperCase` pair, which is where
+ * both symptoms showed.
+ */
+let target = 'tests/language/execution/arrays/extension_class.zena';
+
+/**
+ * How many times to compile it. Every compile leaves the process with
+ * more `Type` objects than the last, so each one is a different
+ * position in the batch — and the divergence was never monotonic in
+ * that position: with the bug present, compiles 2 and 7 differed from
+ * the first while 3, 4, 5, 6 and 8 matched it. A test that compiled
+ * `target` twice around three other modules — landing on position 5 —
+ * passed with the bug fully present. It takes a run of them to be sure.
+ */
+let repeats = 8;
+
+export let tests = suite('Codegen determinism', (): void => {
+  test('emits the same module whatever was compiled before it', (ctx: TestContext): void => {
+    let first = compileFresh(target);
+    var differing = new Array<i32>();
+    var i = 1;
+    while (i < repeats) {
+      let again = compileFresh(target);
+      if (firstDiff(first, again) >= 0) {
+        differing.push(i + 1);
+      }
+      i += 1;
+    }
+    isTrue(differing.length == 0,
+      `${target} is ${first.length} bytes on compile 1, and differs on ` +
+      `${differing.length} of the ${repeats - 1} compiles that follow it ` +
+      `in the same process`);
+  });
+});

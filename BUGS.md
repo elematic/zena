@@ -101,8 +101,21 @@ immediately trying to fix it (which can pollute the current task's context).
   index now does). The obstacle is that a field initializer cannot see
   the module, so every `WasmType` construction site would have to be
   handed one.
+- **Do not do the same to its sibling.** `_nextTypeUid` in
+  `lib/types.zena` is the identical shape one level up — a module-global
+  feeding `Type.uid`, which is `Type.hashCode` — but it must *not* be
+  reset per compile. A long-lived compiler interns semantic types across
+  compiles, so restarting that sequence would hand a fresh type the uid
+  of a cached one, which is the node-id collision of #209 again in a
+  different currency. The rule there is the other one: the order must
+  not reach the output. `SymbolDependencies.referencedTypes` was a
+  `HashSet<Type>` that RTA walked to intern wasm types and register
+  function-value wrappers, so a module's bytes depended on how many
+  modules preceded it in the process; it is an `OrderedTypeSet` now,
+  iterating in the checker's insertion order, and
+  `codegen-determinism_test.zena` guards it.
 
-### Codegen emits a spurious value-wrapper, and which one moves with hash order
+### Codegen emits a spurious value-wrapper
 
 - **Found**: 2026-08-07, while fixing the multi-entrypoint codegen bug
   below.
@@ -112,17 +125,18 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Details**: `String.asciiLowerCase`/`asciiUpperCase` call
   `asciiLowerByte`/`asciiUpperByte` **directly**
   (`if (lower) asciiLowerByte(b) else asciiUpperByte(b)`), so neither
-  needs a function-value wrapper. One is emitted anyway. Which of the two
-  it is depends on hash iteration order, so compiling the same source
-  twice in one process can emit `asciiUpperByte_valwrapper_$i32` the
-  first time and `asciiLowerByte_valwrapper_$i32` the fourth — same byte
-  count, different content. That is the only remaining source of
-  byte-nondeterminism across compilations in one process; it does not
-  affect a normal build, where each process compiles one module.
+  needs a function-value wrapper. One is emitted anyway.
 - **Fix**: `registerWrapper` in `codegen/reachability/visitor.zena` is
-  reached for an identifier that is only ever a direct callee. Registering
-  wrappers strictly from value uses would drop it, and with it the
-  nondeterminism.
+  reached for an identifier that is only ever a direct callee.
+  Registering wrappers strictly from value uses would drop it.
+- **Was also**: *which* of the two got the wrapper used to vary between
+  compiles in one process. Exactly one spurious registration happens
+  either way — `asciiUpperByte` gets no wrapper at all, despite
+  identical usage — and hash order decided which function it landed on.
+  Not a key collision: `FunctionValueWrapperKey` is
+  `(symbolId, signatureKey)` with both fields in `==`, so the two never
+  share a key. That half is fixed; see the `referencedTypes` note in the
+  entry above.
 
 ### The checker reports 17 diagnostics twice
 
