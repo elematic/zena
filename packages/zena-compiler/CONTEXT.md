@@ -84,6 +84,21 @@ Each category has a runner written in Zena, in `zena/test/`:
 | ------------------------- | -------------------------------------------------------- |
 | `portable_syntax.zena`    | parse → AST vs. the `.ast.json` snapshot beside the test |
 | `portable_semantics.zena` | check → diagnostics vs. `@error:` / `@warning:`          |
+
+`@error:` is matched **on line as well as message, one-for-one, and
+every error must be claimed**. A directive describes the line it sits
+on when there is code in front of it (`let a = x as i32; // @error: …`)
+and otherwise the next line that is neither blank nor a comment. Two
+directives need two errors; an error nothing describes fails the test.
+It used to match any diagnostic anywhere in the file, which let four
+directives in `invalid-casts.zena` pass against two unrelated errors
+while the messages they named had changed underneath them, and hid 58
+unclaimed errors suite-wide.
+
+`@missing-error:` records an error the language *should* report and does
+not. It asserts the absence, so implementing the check fails the test
+and tells you to promote the directive — the marker retires itself
+instead of rotting. See BUGS.md for the six it currently marks.
 | `portable_execution.zena` | compile + run → vs. `@result:` / `@stdout:`              |
 
 They share `zena/test/portable-harness.zena` (directory discovery,

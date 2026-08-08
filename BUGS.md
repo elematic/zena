@@ -124,31 +124,54 @@ immediately trying to fix it (which can pollute the current task's context).
   wrappers strictly from value uses would drop it, and with it the
   nondeterminism.
 
-### Portable semantics runner: `@error` directives are matched loosely enough to pass on the wrong error
+### The checker reports 17 diagnostics twice
 
-- **Found**: 2026-08-06, while adding inline-tuple alias tests.
-- **Severity**: medium — it does not break the compiler, but it silently
-  weakens every semantics test that declares an expected error.
-- **Details**: `runSemanticTest` in
-  `packages/zena-compiler/zena/test/portable_semantics.zena` matches each
-  `@error` directive by asking whether **any** diagnostic in the file
-  contains the message. It does not compare line numbers (the parsed
-  `expected.line` is used only in the failure text) and it does not
-  consume a matched diagnostic, unlike the warning matcher just below it,
-  which at least keeps a `matchedWarnings` array. Consequences:
-  - _N_ identical directives are all satisfied by **one** actual error.
-  - An error expected on line 10 passes if the only error is on line 40.
-  - Unexpected errors are ignored entirely whenever the file declares at
-    least one expected error — the "fail on any unexpected error" branch
-    runs only when `expectedErrors.length == 0`.
-- **Caught in the wild**: `semantics/type-system/inline_tuple_restrictions.zena`
-  carried seven directives while the checker only ever produced six
-  errors; the directive on `let bad6 = ok1();` had never once matched its
-  own line. Splitting positive cases into a file with _no_ directives is
-  the current workaround, since only that path is strict.
-- **Fix**: match on line as well as message, consume matched diagnostics,
-  and report unexpected errors even when some are expected. Expect
-  fallout: some existing tests are likely relying on the looseness.
+- **Found**: 2026-08-08, tightening the semantics runner's `@error`
+  matching. The loose matcher could not see them: one directive was
+  satisfied by either copy and the other copy went unclaimed, and
+  unclaimed errors were ignored.
+- **Severity**: low — the message is right, it is just emitted twice, at
+  the identical file, line and column.
+- **Where**: 17 sites across 10 semantics tests, listed by their doubled
+  `@error:` directives — `inline_tuple_restrictions.zena` (5),
+  `inline_tuple_alias_restrictions.zena` (3), `null-check-else.zena` (2),
+  and one each in `methods-and-inference.zena`,
+  `field-init-forward-ref.zena`, `immutable-field-init-required.zena`,
+  `cannot-override.zena`, `no-param-annotations.zena`,
+  `method-annotation-required.zena`, `invalid_inline_positions.zena`.
+  Two look like distinct causes: an inline-tuple position is reported
+  once per validation pass, and a class member is checked both on the
+  declaration and on the member.
+- **Note**: those tests now carry a directive per copy, so they record
+  what the compiler does. De-duplicating will fail them with
+  `Expected error ... but found none there`, which is the signal to
+  delete the second directive — not a regression.
+
+### Six type checks the semantics tests expected and the checker does not make
+
+- **Found**: 2026-08-08, tightening the semantics runner's `@error`
+  matching. Each of these had a directive that had been passing against
+  an unrelated error in the same file.
+- **Severity**: medium — they are real holes in the type system, and
+  they were being reported as covered.
+- **Missing**:
+  - `p1 != "hello"` where `p1` is a class instance is accepted, while
+    `p1 == 1` is rejected — `!=` is not checked the way `==` is
+    (`classes/operators/operator-eq.zena`).
+  - `42 == null` and `null != true` are accepted
+    (`operators/equality-type-check.zena`). Comparing a non-nullable
+    operand against `null` looks like the null-check idiom and skips the
+    incompatibility check.
+  - `arr["string"]` and `arr["key"] = 42` do not check the key against
+    the declared index-operator parameter type
+    (`classes/operators/operator-index.zena`, `operator-index-set.zena`).
+  - `Box<Box<i32>>` is not rejected for a function returning a
+    deduplicated generic union
+    (`generics/union-dedup-generic.zena`).
+- **Tracking**: each site carries a `// @missing-error:` directive,
+  which asserts the error is still *absent*. Implementing any of these
+  fails its test with a message saying to promote the directive to
+  `@error:`, so the marker retires itself.
 
 ### Default parameters are not applied to forward-referenced callees
 

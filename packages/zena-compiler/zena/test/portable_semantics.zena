@@ -16,7 +16,7 @@ import { console } from 'zena:console';
 import { readFile } from 'zena:fs';
 import { Array } from 'zena:array';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
-import { Diagnostic, DiagnosticSeverity, formatDiagnostic } from '../lib/diagnostics.zena';
+import { Diagnostic, DiagnosticSeverity, SourceSpan, formatDiagnostic } from '../lib/diagnostics.zena';
 import { createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
@@ -92,6 +92,42 @@ let filterBySeverity = (
   return matches;
 };
 
+let isBlankOrComment = (line: String): boolean => {
+  var i = 0;
+  while (i < line.length) {
+    let b = line.getByteAt(i);
+    if (b != 32 && b != 9 && b != 13) { break; }
+    i += 1;
+  }
+  if (i >= line.length) { return true; }
+  return i + 1 < line.length && line.getByteAt(i) == 47 && line.getByteAt(i + 1) == 47;
+};
+
+/**
+ * The line a directive written on `line` is talking about: its own line
+ * when there is code in front of the comment, and otherwise the next
+ * line that is neither blank nor a comment. Both spellings are in use —
+ *
+ *   let a = true as i32; // @error: Cannot cast
+ *
+ *   // @error: Inline tuple types can only appear in return types
+ *   type Bad = Array<inline (i32, i32)>;
+ *
+ * — and a directive separated from its subject by a blank line or an
+ * explanatory comment still means the statement it sits above.
+ */
+let annotatedLine = (lines: FixedArray<String>, line: i32): i32 => {
+  if (line - 1 >= 0 && line - 1 < lines.length && !isBlankOrComment(lines[line - 1])) {
+    return line;
+  }
+  var i = line;
+  while (i < lines.length) {
+    if (!isBlankOrComment(lines[i])) { return i + 1; }
+    i += 1;
+  }
+  return line;
+};
+
 /** Parse → scope → check the file, then match diagnostics against directives. */
 let runSemanticTest = (f: TestFile): void => {
   let expectedErrors = f.all('error');
@@ -121,24 +157,75 @@ let runSemanticTest = (f: TestFile): void => {
     }
   }
 
+  // Errors match one-for-one, on line as well as message, and every
+  // error must be claimed by a directive. All three matter: matching on
+  // message alone let four directives in `invalid-casts.zena` be
+  // satisfied by two unrelated errors while the messages they actually
+  // described had changed underneath them, and ignoring unclaimed
+  // errors hid 58 more across the suite.
   let errors = filterBySeverity(diagnostics, DiagnosticSeverity.Error);
+  let lines = f.source.split('\n');
+  let claimedErrors = new Array<boolean>(errors.length);
+  for (var i = 0; i < errors.length; i += 1) {
+    claimedErrors.push(false);
+  }
+
   for (let expected in expectedErrors) {
-    var matched = false;
-    for (let error in errors) {
-      if (error.message.contains(expected.value)) {
-        matched = true;
+    let want = annotatedLine(lines, expected.line);
+    var matchedIndex = -1;
+    for (var i = 0; i < errors.length; i += 1) {
+      if (claimedErrors[i]) { continue; }
+      if (!errors[i].message.contains(expected.value)) { continue; }
+      let loc = errors[i].location;
+      if (loc == null) { continue; }
+      let span = loc as SourceSpan;
+      // A diagnostic from another module has no line to compare against
+      // this file's directive — import-cycle errors are reported in the
+      // cycle member that evaluates first, never the entry — so there
+      // the message has to carry it alone.
+      if (span.file != f.path || span.line == want) {
+        matchedIndex = i;
         break;
       }
     }
-    if (!matched) {
+    if (matchedIndex < 0) {
       throw new Error(
-        `Expected error matching '${expected.value}' on line ${expected.line} but found none.\n` +
+        `Expected error matching '${expected.value}' on line ${want} but found none there.\n` +
         `Actual errors:\n${formatAll(errors, f.source)}\nFile: ${f.path}`);
+    }
+    claimedErrors[matchedIndex] = true;
+  }
+
+  // `@missing-error:` records an error the language ought to report and
+  // does not. It exists because tightening the matcher turned up six
+  // such directives that had been passing against an unrelated error,
+  // and deleting them would have destroyed the only record that the
+  // check is missing. It asserts the *absence*, so the day the checker
+  // learns the rule this test fails and says to promote the directive —
+  // the marker retires itself rather than rotting.
+  for (let missing in f.all('missing-error')) {
+    let want = annotatedLine(lines, missing.line);
+    for (var i = 0; i < errors.length; i += 1) {
+      let loc = errors[i].location;
+      if (loc == null) { continue; }
+      let span = loc as SourceSpan;
+      if (span.file == f.path && span.line == want &&
+          errors[i].message.contains(missing.value)) {
+        throw new Error(
+          `Line ${want} now reports '${missing.value}', which @missing-error: says ` +
+          `it cannot. The check has been implemented — promote the directive to ` +
+          `@error:.\nFile: ${f.path}`);
+      }
     }
   }
 
-  if (expectedErrors.length == 0 && errors.length > 0) {
-    throw new Error(`Unexpected errors:\n${formatAll(errors, f.source)}\nFile: ${f.path}`);
+  let unexpected = new Array<Diagnostic>(4);
+  for (var i = 0; i < errors.length; i += 1) {
+    if (!claimedErrors[i]) { unexpected.push(errors[i]); }
+  }
+  if (unexpected.length > 0) {
+    throw new Error(
+      `Unexpected errors:\n${formatAll(unexpected, f.source)}\nFile: ${f.path}`);
   }
 
   // Warnings match one-for-one: two `@warning:` directives require two
