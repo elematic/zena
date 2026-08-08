@@ -566,15 +566,40 @@ let substituteInType = (
 };
 
 /**
+ * Identity suffix for a nominal type, so that two same-named
+ * declarations never share a cache entry. Mirrors codegen's
+ * `getTypeKeyForSpecialization`: the declaring Symbol when there is
+ * one, else the TypeId. Both are copied onto every instantiation and
+ * substitution copy, so `Foo<i32>` keys the same however it was
+ * reached — unlike `Type.uid`, which is fresh per object.
+ */
+let nominalIdentity = (name: String, symbolId: SymbolId, typeId: TypeId): String =>
+  if (symbolId != noSymbolId) {
+    name + "#s" + i32ToString(symbolId as i32)
+  } else {
+    name + "#t" + i32ToString(typeId as i32)
+  };
+
+/**
  * Cache key for one type argument. A type parameter keys by identity
  * (name plus the base Type uid) at any nesting depth: same-named
  * parameters of different declarations are different parameters and
  * must not share a cached instantiation. This matters doubly because
  * instantiate* re-assigns the cached object's fields on every call, so
  * a key collision would not just return the wrong object, it would
- * mutate the shared one. Composite arms mirror typeToString and
- * recurse; anything that cannot embed a type parameter falls through
- * to typeToString.
+ * mutate the shared one.
+ *
+ * Nominal types key by identity for the same reason, and it is not
+ * hypothetical: the `instantiations` cache hangs off the generic
+ * source, and a generic source in the stdlib outlives any one entry
+ * point. Keying `class Item` as `"Item"` let two entry points sharing
+ * one `Compiler` collide on `Iterable`'s cache — the second got the
+ * first's `Iterable<Item>` object, complete with the `interfaceKey`
+ * codegen had already cached on it, and emitted an interface
+ * trampoline that downcast its receiver to the wrong struct.
+ *
+ * Composite arms mirror typeToString and recurse; anything that cannot
+ * embed a type parameter falls through to typeToString.
  */
 let instantiationKeyOf = (t: Type): String => match (t) {
   case TypeParameterType as tp: tp.name + "#" + i32ToString(tp.uid)
@@ -630,31 +655,42 @@ let instantiationKeyOf = (t: Type): String => match (t) {
     s + ")=>" + instantiationKeyOf(ft.returnType)
   }
   case ClassType as ct: {
+    let src = ct.genericSource ?? ct;
+    let base = nominalIdentity(ct.name, src.symbolId, src.id);
     if (ct.typeArguments != null) {
-      namedKey(ct.name, ct.typeArguments as Array<Type>)
+      namedKey(base, ct.typeArguments as Array<Type>)
     } else {
-      ct.name
+      base
     }
   }
   case InterfaceType as it: {
+    let src = it.genericSource ?? it;
+    let base = nominalIdentity(it.name, src.symbolId, src.id);
     if (it.typeArguments != null) {
-      namedKey(it.name, it.typeArguments as Array<Type>)
+      namedKey(base, it.typeArguments as Array<Type>)
     } else {
-      it.name
+      base
     }
   }
   case MixinType as mt: {
+    // MixinType carries no Symbol or TypeId; `sourcePath` plus the name
+    // is what `getMixinKey` already treats as a mixin's identity.
+    let src = mt.genericSource ?? mt;
+    let base = mt.name + "#m" + src.sourcePath;
     if (mt.typeArguments != null) {
-      namedKey(mt.name, mt.typeArguments as Array<Type>)
+      namedKey(base, mt.typeArguments as Array<Type>)
     } else {
-      mt.name
+      base
     }
   }
   case TypeAliasType as ta: {
+    // Aliases have no generic source to normalise through, so key by
+    // the declaring module — two aliases of one name cannot share it.
+    let base = ta.name + "#a" + ta.declaringModule;
     if (ta.typeArguments != null) {
-      namedKey(ta.name, ta.typeArguments as Array<Type>)
+      namedKey(base, ta.typeArguments as Array<Type>)
     } else {
-      ta.name
+      base
     }
   }
   case _: typeToString(t)

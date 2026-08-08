@@ -1,0 +1,123 @@
+/**
+ * Generic instantiations are cached on the generic source, and a
+ * generic source in the stdlib outlives any one entry point: the
+ * `Compiler` keeps its parse cache, and `checkCompilation` carries
+ * unchanged files' `CheckResult`s forward, so `zena:iterator`'s
+ * `Iterable` is literally the same object for every entry point
+ * compiled in one process.
+ *
+ * That makes the cache key load-bearing. It used to be the type
+ * argument's *name*, so two entry points that each declared a
+ * `class Item` collided: the second got the first's `Iterable<Item>`
+ * back — and `instantiate*` re-assigns the cached object's fields, so
+ * the collision also mutated the first's. Codegen had already cached
+ * an `interfaceKey` naming the first `Item` on that object, and the
+ * interface trampoline it emitted for the second entry point downcast
+ * its receiver to a struct the object was never allocated as
+ * (`wasm trap: cast failure`).
+ *
+ * These tests drive the type layer directly, since the collision is
+ * invisible from a single compile: one program has one `class Item`.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue, isFalse } from 'zena:assert';
+import { Array } from 'zena:array';
+import {
+  ClassType, InterfaceType, Type, TypeId, TypeParameterType,
+  instantiateClassType, instantiateInterfaceType
+} from '../lib/types.zena';
+import { SymbolId } from '../lib/scope/symbol.zena';
+
+/** A generic `interface Box<T>`, standing in for `Iterable<T>`. */
+let genericInterface = (id: i32, symId: i32, name: String): InterfaceType => {
+  let it = new InterfaceType(id as TypeId, symId as SymbolId, name);
+  let params = new Array<TypeParameterType>();
+  params.push(new TypeParameterType('T', null, null));
+  it.typeParameters = params;
+  return it;
+};
+
+/** A generic `class Holder<T>`. */
+let genericClass = (id: i32, symId: i32, name: String): ClassType => {
+  let ct = new ClassType(id as TypeId, symId as SymbolId, name);
+  let params = new Array<TypeParameterType>();
+  params.push(new TypeParameterType('T', null, null));
+  ct.typeParameters = params;
+  return ct;
+};
+
+let args = (t: Type): Array<Type> => {
+  let a = new Array<Type>();
+  a.push(t);
+  return a;
+};
+
+export let tests = suite('Generic instantiation caching', (): void => {
+  test('two same-named classes do not share an interface instantiation', (ctx: TestContext): void => {
+    // The two `class Item` declarations of two different entry points:
+    // same name, different declaring Symbol.
+    let itemA = new ClassType(101 as TypeId, 867 as SymbolId, 'Item');
+    let itemB = new ClassType(202 as TypeId, 902 as SymbolId, 'Item');
+    let iterable = genericInterface(1, 17, 'Iterable');
+
+    let a = instantiateInterfaceType(iterable, args(itemA));
+    let b = instantiateInterfaceType(iterable, args(itemB));
+
+    isFalse(a === b, 'Iterable<ItemA> and Iterable<ItemB> must be distinct types');
+    isTrue((a.typeArguments as Array<Type>)[0] === itemA, 'Iterable<ItemA> lost its type argument');
+    isTrue((b.typeArguments as Array<Type>)[0] === itemB, 'Iterable<ItemB> lost its type argument');
+  });
+
+  test('two same-named classes do not share a class instantiation', (ctx: TestContext): void => {
+    let itemA = new ClassType(101 as TypeId, 867 as SymbolId, 'Item');
+    let itemB = new ClassType(202 as TypeId, 902 as SymbolId, 'Item');
+    let holder = genericClass(2, 33, 'Holder');
+
+    let a = instantiateClassType(holder, args(itemA));
+    let b = instantiateClassType(holder, args(itemB));
+
+    isFalse(a === b, 'Holder<ItemA> and Holder<ItemB> must be distinct types');
+    isTrue((a.typeArguments as Array<Type>)[0] === itemA, 'Holder<ItemA> lost its type argument');
+  });
+
+  test('the same class still hits the cache', (ctx: TestContext): void => {
+    // Interning is the point of the cache; identity keying must not
+    // cost it. Instantiations of one class must still be one object,
+    // whether reached directly or through a previous instantiation.
+    let item = new ClassType(101 as TypeId, 867 as SymbolId, 'Item');
+    let iterable = genericInterface(1, 17, 'Iterable');
+
+    let first = instantiateInterfaceType(iterable, args(item));
+    let second = instantiateInterfaceType(iterable, args(item));
+    isTrue(first === second, 'Iterable<Item> must intern');
+  });
+
+  test('an instantiation used as a type argument keys by its generic source', (ctx: TestContext): void => {
+    // `Holder<Iterable<Item>>` must intern even though the inner
+    // `Iterable<Item>` is a fresh object each time it is built — the
+    // key normalises through `genericSource`, not `Type.uid`.
+    let item = new ClassType(101 as TypeId, 867 as SymbolId, 'Item');
+    let iterable = genericInterface(1, 17, 'Iterable');
+    let holder = genericClass(2, 33, 'Holder');
+
+    let inner1 = instantiateInterfaceType(iterable, args(item));
+    let outer1 = instantiateClassType(holder, args(inner1));
+    let inner2 = instantiateInterfaceType(iterable, args(item));
+    let outer2 = instantiateClassType(holder, args(inner2));
+
+    isTrue(outer1 === outer2, 'Holder<Iterable<Item>> must intern');
+  });
+
+  test('same-named classes from different declarations differ even without Symbols', (ctx: TestContext): void => {
+    // Synthesized types carry `noSymbolId`; the TypeId is then the
+    // only identity left, and it has to be enough.
+    let anonA = new ClassType(101 as TypeId, -1 as SymbolId, 'Item');
+    let anonB = new ClassType(202 as TypeId, -1 as SymbolId, 'Item');
+    let holder = genericClass(2, 33, 'Holder');
+
+    let a = instantiateClassType(holder, args(anonA));
+    let b = instantiateClassType(holder, args(anonB));
+    isFalse(a === b, 'symbol-less same-named classes must not share a cache entry');
+  });
+});
