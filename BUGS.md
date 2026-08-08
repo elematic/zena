@@ -84,26 +84,6 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
-### `Compiler.invalidate(path)` corrupts the codegen of the compile that follows it
-
-- **Found**: 2026-08-07, isolating why a batching probe failed.
-- **Severity**: high for any long-lived compiler — `invalidate` is how a
-  reused `Compiler` picks up a changed file, so an editor/daemon/watch
-  mode depends on it. Nothing in the build uses it today.
-- **Repro**: on a **fresh** `Compiler`, call `invalidate(p)` then
-  `compile(p)` for `tests/language/execution/arrays/extension_class.zena`
-  and run codegen. It fails with
-  `zir unsupported: interface vtable global not found @FixedArray_s186_u8.slice`.
-  Without the `invalidate` call the same file compiles clean. It is the
-  _first_ compile of the process, so this is not a cross-compile effect;
-  `invalidate` alone is enough. Over a 40-file run it takes out 20.
-- **Note**: this masqueraded as a multi-entrypoint bug. Two earlier
-  claims in this file were wrong and are withdrawn: compiling many entry
-  points in one process **does** work (40 of 40, fresh `Compiler` each),
-  and `multi-entrypoint-codegen_test.zena` is a real guard, not a lucky
-  ordering. Every failure attributed to position came from the probe
-  calling `invalidate`.
-
 ### `resetWasmTypeUids` is a module-global plus a reset
 
 - **Found**: 2026-08-07, turning on batch compilation.

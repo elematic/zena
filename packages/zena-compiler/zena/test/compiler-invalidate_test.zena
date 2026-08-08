@@ -1,0 +1,211 @@
+/**
+ * `Compiler.invalidate(path)` is how a long-lived compiler picks up a
+ * file that changed — an editor, a language server, a watch mode. It
+ * has to do two things: take effect, and change nothing else.
+ *
+ * It used to fail the second. `LibraryLoader.load` took the node id
+ * generator as a defaulted parameter, so a caller that omitted it got a
+ * fresh sequence starting at 1 — and `invalidate` and `refreshCache`
+ * both omitted it. Node ids key the semantic model, so re-parsing one
+ * file from 1 made its ids collide with ids already handed out to
+ * everything else in the cache. Compiling `extension_class.zena` after
+ * invalidating it put 2817 of 7156 nodes under two owners at once, and
+ * codegen then failed with `zir unsupported: interface vtable global
+ * not found`. Over a 40-file run it took out 20, and it looked enough
+ * like a batch-compilation bug to be filed as one twice.
+ *
+ * The generator now belongs to the loader, whose parse cache is exactly
+ * the set of files the ids must be unique across, so no caller can
+ * supply a mismatched one by omission.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { CompilerHost } from '../lib/library-loader.zena';
+import {
+  Compiler, createCompiler, CompilerOptions, checkCompilation, CompilationResult
+} from '../lib/compiler.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
+import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { NodeId, Node } from '../lib/ast.zena';
+import { walkEnter } from '../lib/visitor.zena';
+
+let stdlibRoot = 'packages/stdlib/zena';
+
+/** A file whose contents the test can change under the compiler. */
+class MutableHost implements CompilerHost {
+  overrides = new HashMap<String, String>();
+  new();
+
+  readFile(path: String): String {
+    if (let (true, source) = this.overrides.get(path)) {
+      return source;
+    }
+    if (path.startsWith('zena:')) {
+      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+}
+
+/** Every node id in the compilation, in file order. */
+let idsOf = (result: CompilationResult): Array<NodeId> => {
+  let ids = new Array<NodeId>();
+  for (let file in result.files) {
+    walkEnter(file.ast, (n: Node): void => { ids.push(n.id); });
+  }
+  return ids;
+};
+
+/** How many node ids are claimed by more than one file. */
+let collisionCount = (result: CompilationResult): i32 => {
+  let owner = new HashMap<NodeId, String>();
+  var collisions = 0;
+  for (let file in result.files) {
+    walkEnter(file.ast, (n: Node): void => {
+      if (let (true, first) = owner.get(n.id)) {
+        if (first != file.path) { collisions += 1; }
+      } else {
+        owner[n.id] = file.path;
+      }
+    });
+  }
+  return collisions;
+};
+
+let newCompiler = (host: MutableHost): Compiler => {
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  return createCompiler(host, new CompilerOptions('zena-cli', stdlibRoot, packages));
+};
+
+/** Compiles to wasm, throwing on any check error. */
+let compileToWasm = (c: Compiler, path: String): ByteArray => {
+  let result = c.compile(path);
+  let checked = checkCompilation(result, null, false);
+  for (let diag in checked.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      throw new Error(`${path}: ${diag.message}`);
+    }
+  }
+  let entryAst = result.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) { entryUnit = unit; }
+    }
+  }
+  return new BinaryGenerator('zena-cli', false)
+    .generate(new Program(units, entryUnit))
+    .toByteArray();
+};
+
+let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
+  if (a.length != b.length) { return false; }
+  var i = 0;
+  while (i < a.length) {
+    if (a[i] != b[i]) { return false; }
+    i += 1;
+  }
+  return true;
+};
+
+/**
+ * Reaches interface dispatch through a generic stdlib instantiation,
+ * which is where the colliding ids surfaced as a codegen failure.
+ */
+let heavyEntry = 'tests/language/execution/arrays/extension_class.zena';
+
+/** The file whose source the change tests rewrite under the compiler. */
+let mutableEntry = 'tests/language/execution/variables/local_let.zena';
+
+export let tests = suite('Compiler.invalidate', (): void => {
+  test('leaves node ids unique across files', (ctx: TestContext): void => {
+    let host = new MutableHost();
+    let c = newCompiler(host);
+    c.invalidate(heavyEntry);
+    let result = c.compile(heavyEntry);
+    isTrue(collisionCount(result) == 0,
+      `${collisionCount(result)} node ids are claimed by more than one file`);
+  });
+
+  test('parses the same nodes either way', (ctx: TestContext): void => {
+    // Not asserted: that a node keeps the same id. `invalidate` loads
+    // the file before `compile` loads the prelude, so the ids are
+    // handed out in a different order and every one of them differs.
+    // That is only a relabelling — which the emitted bytes below prove,
+    // by being identical — and pinning it would pin load order rather
+    // than anything the compiler owes a caller.
+    let plain = newCompiler(new MutableHost());
+    let expected = idsOf(plain.compile(heavyEntry));
+
+    let invalidated = newCompiler(new MutableHost());
+    invalidated.invalidate(heavyEntry);
+    let actual = idsOf(invalidated.compile(heavyEntry));
+
+    isTrue(actual.length == expected.length,
+      `${actual.length} nodes after invalidate, ${expected.length} without`);
+  });
+
+  test('emits the same module for an unchanged file', (ctx: TestContext): void => {
+    // The end-to-end statement of the bug: invalidating a file that did
+    // not change must be invisible, all the way to the bytes. This is
+    // what makes the differing ids above a relabelling and not a
+    // behaviour change.
+    let plain = compileToWasm(newCompiler(new MutableHost()), heavyEntry);
+    let c = newCompiler(new MutableHost());
+    c.invalidate(heavyEntry);
+    let after = compileToWasm(c, heavyEntry);
+    isTrue(bytesEqual(plain, after),
+      `invalidate changed the emitted module (${plain.length} bytes vs ${after.length})`);
+  });
+
+  test('picks up a file that changed', (ctx: TestContext): void => {
+    // The other half: not corrupting the compile is worthless if the
+    // new source is not what gets compiled.
+    let host = new MutableHost();
+    let c = newCompiler(host);
+
+    host.overrides[mutableEntry] = 'export let main = (): i32 => { return 1; };';
+    let first = compileToWasm(c, mutableEntry);
+
+    host.overrides[mutableEntry] = 'export let main = (): i32 => { return 2; };';
+    c.invalidate(mutableEntry);
+    let second = compileToWasm(c, mutableEntry);
+
+    isTrue(!bytesEqual(first, second),
+      'the compiler emitted the same module after the source changed');
+  });
+
+  test('a changed file that stops compiling reports its error', (ctx: TestContext): void => {
+    // A stale cache would keep reporting the old source as clean.
+    let host = new MutableHost();
+    let c = newCompiler(host);
+
+    host.overrides[mutableEntry] = 'export let main = (): i32 => { return 1; };';
+    let clean = checkCompilation(c.compile(mutableEntry), null, false);
+    var cleanErrors = 0;
+    for (let d in clean.diagnostics) {
+      if (d.severity == DiagnosticSeverity.Error) { cleanErrors += 1; }
+    }
+    isTrue(cleanErrors == 0, `expected no errors, got ${cleanErrors}`);
+
+    host.overrides[mutableEntry] = 'export let main = (): i32 => { return "not an i32"; };';
+    c.invalidate(mutableEntry);
+    let broken = checkCompilation(c.compile(mutableEntry), null, false);
+    var brokenErrors = 0;
+    for (let d in broken.diagnostics) {
+      if (d.severity == DiagnosticSeverity.Error) { brokenErrors += 1; }
+    }
+    isTrue(brokenErrors > 0, 'the compiler did not see the newly broken source');
+  });
+});
