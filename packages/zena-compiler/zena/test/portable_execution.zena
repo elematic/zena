@@ -3,11 +3,36 @@
  * `tests/language/execution/` is compiled and run, and its result is
  * matched against the `@result:` / `@stdout:` directive in the file.
  *
- * Each test runs in its own `zena-cli run` process (via `zena:process`,
- * bounded pool) so a trap or an infinite recursion takes down one test
- * rather than the runner. `zena-cli` caches compilation keyed on the
- * source, compiler and stdlib, so a repeat run only re-compiles what
- * actually changed — there is no staleness bookkeeping here.
+ * Compiling and running are separated, and only running is isolated.
+ *
+ * **Compiling** happens in this process's own compiler (the runner
+ * embeds it, so `../lib/...` is a plain import), batched: many entry
+ * points go through **one** `Compiler`, threading the incremental
+ * `ProgramCheckResult`, so the stdlib is parsed and checked once for
+ * the batch instead of once per test. A five-line test used to cost
+ * 0.385s and nearly all of it was the stdlib.
+ *
+ * The batch is **sliced** across worker processes rather than run as
+ * one, because sharing a compiler is not monotonically cheaper: the
+ * whole suite through a single compiler takes 49s, while eight slices
+ * of it take 4.3s of wall time and — the surprise — only half the CPU
+ * (31s against 65s). A compiler accumulates state per entry point, so
+ * the amortised stdlib is a win and the accumulation is a loss, and
+ * slices in the tens of tests sit near the bottom of that curve.
+ * Workers are this same module re-invoked at `compileSlice`.
+ *
+ * **Running** is one `zena-cli run` process per test (via
+ * `zena:process`, bounded pool), because that is where traps and
+ * infinite loops live and one must take down one test rather than the
+ * runner. Each worker is handed an already-emitted `.wasm`, so nothing
+ * is compiled twice.
+ *
+ * Every run recompiles every test — there is no compile cache here and
+ * so no way for a stale module to be reported as a pass. What a run
+ * does reuse, when a module comes out byte-identical, is the module
+ * file itself, purely so `zena-cli`'s wasmtime `.cwasm` beside it stays
+ * valid; a test's module is only ever run on the strength of a status
+ * file written by this run's compile phase.
  *
  * Discovery has no allow-list: a file runs because it exists. A file is
  * a test if it declares `@result:` or `@stdout:`; a file with neither is
@@ -17,6 +42,8 @@
  *
  * Usage (spawned by `run-wasmtime.js`, which grants `--allow-spawn`):
  *   portable_execution <zenaCli> <parallelism> [filter]
+ * and, re-invoked on itself for one slice of the compile phase:
+ *   portable_execution --invoke compileSlice <index> <count> [filter]
  */
 
 import { getArguments } from 'zena:cli';
@@ -24,8 +51,9 @@ import { console } from 'zena:console';
 import { Array } from 'zena:array';
 import { HashSet } from 'zena:set';
 import { StringBuilder } from 'zena:string-builder';
-import { parseI64 } from 'zena:string-convert';
+import { parseI64, i32ToString } from 'zena:string-convert';
 import { Process, ProcessResult, spawn } from 'zena:process';
+import { readFile, readFileBytes, writeFile, writeFileBytes, mkdir, exists, unlink } from 'zena:fs';
 import {
   Discovery,
   TestFile,
@@ -34,8 +62,25 @@ import {
   unescapeNewlines,
   unquote,
 } from './portable-harness.zena';
+import { CompilerHost } from '../lib/library-loader.zena';
+import {
+  Compiler, createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult
+} from '../lib/compiler.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
+import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
 
 let testsRoot = 'tests/language/execution';
+let stdlibRoot = 'packages/stdlib/zena';
+
+/**
+ * Where the compile phase leaves the modules the run phase executes.
+ * Under `zena/out`, which is git-ignored and which no wireit `output`
+ * glob claims — `build:tests` owns `zena/out/test-self` alone.
+ */
+let outRoot = 'packages/zena-compiler/zena/out/test-exec';
 
 /** ANSI SGR sequence (string literals have no escape for ESC). */
 let sgr = (code: String): String => {
@@ -128,13 +173,18 @@ let normalizeResult = (actual: String, expected: String): String => {
   return actual;
 };
 
-/** A test whose worker process has been started but not yet waited on. */
+/**
+ * A test whose worker process has been started but not yet waited on —
+ * or one that never started, because the compile phase emitted no
+ * module for it. Exactly one of `process` and `compileError` is set.
+ */
 class RunningTest {
   file: TestFile;
   expectation: Expectation;
-  process: Process;
+  process: Process | null;
+  compileError: String | null;
 
-  new(this.file, this.expectation, this.process);
+  new(this.file, this.expectation, this.process, this.compileError);
 }
 
 /**
@@ -148,6 +198,13 @@ class RunningTest {
  * this is a floor on the time it gets rather than an exact deadline.
  */
 let testTimeoutMs = 120000 as i64;
+
+/**
+ * How long a compile worker may take. Generous against the timeout
+ * above because a worker carries a whole slice of the suite, not one
+ * test — eight slices of the full suite take about four seconds.
+ */
+let compileTimeoutMs = 600000 as i64;
 
 /** Why a test failed, or null if it passed. */
 let failureOf = (e: Expectation, res: ProcessResult): String | null => {
@@ -178,7 +235,12 @@ let failureOf = (e: Expectation, res: ProcessResult): String | null => {
 
 /** Waits on a started test and prints its outcome. Returns whether it passed. */
 let report = (running: RunningTest): boolean => {
-  let failure = failureOf(running.expectation, running.process.waitFor(testTimeoutMs));
+  let compileError = running.compileError;
+  let failure = if (compileError != null) {
+    `did not compile:\n${compileError as String}`
+  } else {
+    failureOf(running.expectation, (running.process as Process).waitFor(testTimeoutMs))
+  };
   if (failure == null) {
     return true;
   }
@@ -212,6 +274,264 @@ let orphanedSupportModules = (d: Discovery): Array<TestFile> => {
     }
   }
   return orphans;
+};
+
+// ---------------------------------------------------------------------
+// Compile phase
+// ---------------------------------------------------------------------
+
+/** Reads sources for the compiler, mapping `zena:x` onto the stdlib. */
+class FsHost implements CompilerHost {
+  new();
+
+  readFile(path: String): String {
+    if (path.startsWith('zena:')) {
+      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+}
+
+/**
+ * Where a test's emitted module goes. `relPath` is unique within the
+ * category, so flattening its separators keeps the name unique without
+ * needing nested directories.
+ */
+let artifactBase = (relPath: String): String => {
+  let b = new StringBuilder();
+  b.append(outRoot);
+  b.append('/');
+  var i = 0;
+  while (i < relPath.length) {
+    let byte = relPath.getByteAt(i);
+    if (byte == 47) { // '/'
+      b.append('__');
+    } else {
+      b.appendByte(byte);
+    }
+    i += 1;
+  }
+  return b.toString();
+};
+
+let wasmPathOf = (relPath: String): String => `${artifactBase(relPath)}.wasm`;
+
+/**
+ * What the compile phase says about this test, this run: `ok`, or the
+ * diagnostics. Its *absence* is what makes a module from a previous run
+ * unusable, which is why the module itself is not deleted up front —
+ * see `emit` for why its mtime is worth preserving.
+ */
+let statusPathOf = (relPath: String): String => `${artifactBase(relPath)}.status`;
+
+let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
+  if (a.length != b.length) {
+    return false;
+  }
+  var i = 0;
+  while (i < a.length) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+};
+
+/**
+ * Writes a module only when its bytes changed. `zena-cli` caches the
+ * wasmtime-compiled form of a module in a `.cwasm` beside it and
+ * decides staleness by mtime, so rewriting an identical module would
+ * throw that away and make the run phase re-JIT all 465 — which costs
+ * more than the compile phase does. Skipping the write is not a
+ * compile cache: the module was compiled either way, and it is the
+ * status file, not this one, that says the result is from this run.
+ */
+let emit = (relPath: String, bytes: ByteArray): void => {
+  let path = wasmPathOf(relPath);
+  if (exists(path) && bytesEqual(readFileBytes(path), bytes)) {
+    return;
+  }
+  writeFileBytes(path, bytes);
+};
+
+/** The tests this run covers, in discovery order — the order slices index into. */
+let selectedTests = (filter: String): Array<TestFile> => {
+  let discovery = new Discovery();
+  collect(testsRoot, '', discovery, isExecutionTest);
+  let files = new Array<TestFile>(discovery.tests.length);
+  for (let f in discovery.tests) {
+    if (filter.length == 0 || f.relPath.contains(filter)) {
+      files.push(f);
+    }
+  }
+  return files;
+};
+
+/**
+ * Compiles one entry point on a shared compiler, threading `previous`
+ * so files whose source has not changed — the whole stdlib, every time
+ * after the first — carry their `CheckResult` forward instead of being
+ * re-checked. Returns the new check result to thread onward, or null
+ * if this entry failed; a failure is written to the test's `.err` file
+ * rather than raised, so one bad test costs one test rather than the
+ * rest of the slice.
+ */
+let compileOne = (
+  compiler: Compiler,
+  f: TestFile,
+  previous: ProgramCheckResult | null
+): ProgramCheckResult | null => {
+  return try {
+    let compResult = compiler.compile(f.path);
+    let checked = checkCompilation(compResult, previous, false);
+
+    let errors = new StringBuilder();
+    var hasError = false;
+    for (let diag in checked.diagnostics) {
+      if (diag.severity == DiagnosticSeverity.Error) {
+        if (hasError) { errors.append('\n'); }
+        hasError = true;
+        if (diag.location != null) {
+          let loc = diag.location as SourceSpan;
+          errors.append(`${loc.file}:${loc.line + 1}:${loc.column + 1} - ${diag.message}`);
+        } else {
+          errors.append(diag.message);
+        }
+      }
+    }
+    if (hasError) {
+      writeFile(statusPathOf(f.relPath), errors.toString());
+      // Still threaded: the check ran, and its per-file results are
+      // valid for every file that did check.
+      checked
+    } else {
+      let entryAst = compResult.entry.ast;
+      let units = new Array<CompilationUnit>();
+      var entryUnit: CompilationUnit | null = null;
+      for (let file in compResult.files) {
+        let res = checked.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+      let bytes = new BinaryGenerator('zena-cli', false)
+        .generate(new Program(units, entryUnit))
+        .toByteArray();
+      emit(f.relPath, bytes);
+      writeFile(statusPathOf(f.relPath), 'ok');
+      checked
+    }
+  } catch (e) {
+    // A throw out of the compiler is a compiler bug, not a test
+    // failure, but it still belongs to one test — name it and carry on.
+    writeFile(statusPathOf(f.relPath), `the compiler threw: ${e.message}`);
+    null
+  };
+};
+
+/**
+ * Worker entry point: compile every test whose position in discovery
+ * order is `index` mod `count`. Invoked as
+ * `zena-cli run --dir .::/ --invoke compileSlice <self.wasm> <index> <count> <filter>`.
+ */
+export let compileSlice = (): i32 => {
+  let args = getArguments();
+  if (args.length < 4) {
+    console.error('Usage: compileSlice <index> <count> <filter>');
+    return 1;
+  }
+  var index = 0;
+  var count = 1;
+  if (let (true, n) = parseI64(args[1])) { index = n as i32; }
+  if (let (true, n) = parseI64(args[2])) { count = n as i32; }
+  let filter = args[3];
+
+  let files = selectedTests(filter);
+  let host = new FsHost();
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
+  let compiler = createCompiler(host, options);
+
+  var previous: ProgramCheckResult | null = null;
+  var pos = 0;
+  for (let f in files) {
+    if (pos % count == index) {
+      // Clear the verdict before compiling, so that a test which has
+      // started failing — or whose worker dies before reaching it —
+      // cannot be run from the module a previous run left behind and
+      // reported as a pass. Only a status written by *this* run makes
+      // the module beside it usable.
+      let statusPath = statusPathOf(f.relPath);
+      if (exists(statusPath)) { unlink(statusPath); }
+      previous = compileOne(compiler, f, previous);
+    }
+    pos += 1;
+  }
+  return 0;
+};
+
+/**
+ * Runs the compile phase across `workers` processes and waits for all
+ * of them. Returns whether every worker exited cleanly; a worker that
+ * dies is not fatal on its own, since each of its tests then reports
+ * its own missing artifact, but it is worth saying so once.
+ */
+let runCompilePhase = (
+  zenaCli: String,
+  selfWasm: String,
+  workers: i32,
+  filter: String
+): boolean => {
+  if (!exists(outRoot)) {
+    mkdir(outRoot);
+  }
+  let running = new Array<Process>(workers);
+  var i = 0;
+  while (i < workers) {
+    let argv = new Array<String>(9);
+    argv.push(zenaCli);
+    argv.push('run');
+    // `.` canonicalises against the child's working directory, which
+    // is this process's — the repo root. So the slice sees the repo at
+    // `/` exactly as the orchestrator does, without either of us
+    // needing to know the absolute host path.
+    argv.push('--dir');
+    argv.push('.::/');
+    argv.push('--invoke');
+    argv.push('compileSlice');
+    argv.push(selfWasm);
+    argv.push(i32ToString(i));
+    argv.push(i32ToString(workers));
+    argv.push(filter);
+    running.push(spawn(argv));
+    i += 1;
+  }
+
+  var allOk = true;
+  var slowestNanos = 0 as i64;
+  for (let p in running) {
+    let res = p.waitFor(compileTimeoutMs);
+    if (res.wallNanos > slowestNanos) {
+      slowestNanos = res.wallNanos;
+    }
+    if (!res.succeeded()) {
+      allOk = false;
+      console.log(`${red}a compile worker failed${reset}`);
+      let detail = if (res.stderr.length > 0) { res.stderr } else { res.stdout };
+      for (let line in trim(detail).split('\n')) {
+        console.log(`  ${dim}${line}${reset}`);
+      }
+    }
+  }
+  console.log(
+    `${dim}compiled in ${(slowestNanos / (1000000 as i64)) as i32}ms ` +
+    `across ${workers} worker(s)${reset}`);
+  return allOk;
 };
 
 export let main = (): i32 => {
@@ -261,6 +581,14 @@ export let main = (): i32 => {
   if (filter.length > 0) {
     console.log(`${dim}(filter '${filter}': ${files.length} of ${discovery.tests.length} run)${reset}`);
   }
+
+  // Compile everything first, batched, before a single test runs. One
+  // slice per pool worker: the same processes would otherwise be idle
+  // waiting on compiles, and a slice is where sharing a compiler pays
+  // best (see the header).
+  let selfWasm = args[0];
+  let compileWorkers = if (parallelism < files.length) { parallelism } else { files.length };
+  runCompilePhase(zenaCli, selfWasm, compileWorkers, filter);
   console.log('');
 
   // Sliding-window pool: at most `parallelism` `zena-cli run` workers in
@@ -284,13 +612,30 @@ export let main = (): i32 => {
     let file = files[next];
     next += 1;
     let expectation = expectationOf(file);
+    let wasmPath = wasmPathOf(file.relPath);
+    let statusPath = statusPathOf(file.relPath);
+    let status = if (exists(statusPath)) { readFile(statusPath) } else { null };
+    if (status == null || status as String != 'ok' || !exists(wasmPath)) {
+      // Anything other than an `ok` written by this run's compile phase
+      // means this test has no module to run: it failed to compile, or
+      // its worker died before reaching it. Either way it failed, and
+      // says why.
+      let why = if (status != null && status as String != 'ok') {
+        status as String
+      } else {
+        'the compile phase left no verdict for this test ' +
+        '(its worker most likely died — look for a failed compile worker above)'
+      };
+      running.push(new RunningTest(file, expectation, null, why));
+      continue;
+    }
     let argv = new Array<String>(6);
     argv.push(zenaCli);
     argv.push('run');
     argv.push('--invoke');
     argv.push(expectation.invoke);
-    argv.push(file.path);
-    running.push(new RunningTest(file, expectation, spawn(argv)));
+    argv.push(wasmPath);
+    running.push(new RunningTest(file, expectation, spawn(argv), null));
   }
 
   // Worded exactly as `zena:test`'s runAndReport does, so this suite

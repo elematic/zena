@@ -93,15 +93,33 @@ own `zena-cli run` worker, with a bounded pool and a 120s per-test
 deadline (`waitFor`); `run-wasmtime.js` grants it `--allow-spawn` and
 sets the pool size (`ZENA_TEST_PARALLELISM`, else `min(cpus, 8)`).
 
-Cold, the whole execution suite is ~37s; warm, ~5s. Nearly all of the
-cold cost is the stdlib being parsed and checked once per test —
-compiling a five-line test takes 0.385s against 0.027s for a cache hit.
-Sharing one compiler across tests would cut that roughly in half — 40
-entry points take 2.8s through one shared compiler against 5.2s with a
-fresh one each — and it very nearly works: 200 execution tests compile
-through one shared compiler and 199 of them then run correctly. The one
-that does not (a miscompiled interface trampoline) is what blocks turning
-batching on. See BUGS.md.
+**The execution runner compiles in batches and runs in isolation.** It
+embeds the compiler (it imports `../lib/...` directly), so it compiles
+every test itself before running any, many entry points through **one**
+`Compiler` with the incremental `ProgramCheckResult` threaded — the
+stdlib is then parsed and checked once per batch rather than once per
+test, which is where nearly all the cost was (a five-line test cost
+0.385s to compile against 0.027s for a cache hit). Only _running_ is
+isolated, one `zena-cli run` process per test, because that is where
+traps and hangs live.
+
+The batch is sliced across as many worker processes as the pool has
+workers, because **sharing a compiler is not monotonically cheaper**:
+the whole suite through a single compiler takes 49s, while eight slices
+of it take 4.3s of wall time and only half the CPU (31s against 65s). A
+compiler accumulates per-entry-point state, so the amortised stdlib is a
+win and the accumulation is a loss, and slices in the tens of tests sit
+near the bottom of that curve. Whole suite: 33.6s → 21.2s with nothing
+cached, 3.5s → 7.7s on a repeat run — the repeat costs more because it
+genuinely recompiles all 465 rather than serving `zena-cli`'s cache.
+
+Batching needed one compiler fix first, and it was not a codegen bug:
+generic instantiations are interned on the generic source, and the key
+was the type argument's *name*, so two entry points that each declared a
+`class Item` shared `zena:iterator`'s `Iterable<Item>` and the second
+emitted an interface trampoline that downcast to the first's struct.
+`instantiationKeyOf` in `lib/types.zena` now keys nominal types by
+identity; `zena/test/type-instantiation_test.zena` guards it.
 
 **Discovery has no allow-list.** A test runs because the file exists.
 The only way to hold one back is an explicit directive in the file:

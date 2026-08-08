@@ -104,56 +104,30 @@ immediately trying to fix it (which can pollute the current task's context).
   ordering. Every failure attributed to position came from the probe
   calling `invalidate`.
 
-### One shared compiler across entry points miscompiles an interface trampoline
+### `Program` writes into `SemanticModel`s it does not own
 
-- **Found**: 2026-08-07, measuring shared-stdlib batch compilation.
-- **Severity**: blocking for batch compilation; invisible today, since
-  nothing shares a compiler across entry points.
-- **What works**: 200 execution tests compiled through **one** `Compiler`,
-  threading the incremental `ProgramCheckResult`, all 200 emit without
-  error, and it is about twice as fast as a fresh compiler per entry
-  (2.8s against 5.2s over 40). Running the 200 emitted modules, **199
-  produce their expected result**.
-- **The failure**: `execution/control-flow/for_in_custom_iterable.zena`
-  returns `6` when compiled alone and traps when compiled in the batch:
-
-  ```
-  wasm backtrace:
-    0: MyIterable_s4379_Iterable_s17_Item_s4233_:iterator_trampoline
-    1: main
-  ```
-
-  So a shared compiler can emit a bad interface trampoline. That is the
-  one thing to fix before batching can be turned on.
-
-- **Minimal repro — two files, and they collide on a class name**:
-
-  ```
-  c = createCompiler(...)
-  build(c, "execution/control-flow/for-in-destructure.zena", null)   // also declares `class Item`
-  build(c, "execution/control-flow/for_in_custom_iterable.zena", prev)  // traps when run
-  ```
-
-  The second file alone on its own compiler runs and returns 6. Preceded
-  by the first, on the same `Compiler` with the check result threaded, it
-  traps. Both files declare a `class Item`, and the bad trampoline names
-  `Item_s4233` — so the suspicion is state keyed by something that does
-  not separate two same-named classes from different entry points,
-  surviving on a shared `SemanticModel` (`zena:iterator`'s) from the
-  first compile into the second. The trap is a **cast failure**: the
-  trampoline downcasts its receiver to a struct the object was not
-  allocated as.
-
-- **Not the problem** (checked, so nobody re-checks it): the batch does
-  _not_ over-include. For a module that differs, both versions have the
-  same 604 functions — identical after normalising symbol ids — and are
-  the same size once the `name` section is stripped (57632 bytes each).
-  The whole ~400-byte delta is the debug name section, where a shared
-  compiler's higher symbol ids print an extra digit. What is left after
-  stripping is a type-section permutation with references consistently
-  renumbered, from the process-global `_nextTypeUid` feeding
-  `Type.hashCode` — cosmetic, but it does mean batch output is not
-  byte-reproducible against non-batch output.
+- **Found**: 2026-08-07, turning on batch compilation.
+- **Severity**: low today, blocking for a concurrent compiler.
+- **Details**: `Program`'s constructor does `u.model.program = this` and
+  `u.model.sourcePath = ...` for every unit (`lib/program.zena` ~line
+  48), and `ModuleGenerator.compile` repeats the first. Models are
+  shared across compiles whenever check results are carried forward —
+  which is exactly what batch compilation does — so the field belongs to
+  neither `Program`. Sequentially it is harmless, since each `Program`
+  is built and consumed before the next exists, but two in-flight
+  `Program`s would fight over it, and that is what an async or
+  incremental compiler needs.
+- **What it is for**: `SemanticModel.program` is read by ~13 getters,
+  and only as a fallback — "this node is not mine, ask the program which
+  model owns it". The index behind it (`nodeToModel`/`symbolToModel`) is
+  a property of the _check_, not of the compile: every `Program` over
+  the same check results computes the same one. `SharedCheckerState`
+  already has that lifetime, so hanging the index there and dropping the
+  back-pointer would fix the ownership and delete a per-compile walk
+  over every node in the program — currently paid 465 times over by the
+  execution suite. The ~113 codegen call sites keep the same shape.
+- **Same class of thing**: `resetWasmTypeUids` in `codegen/wasm.zena` is
+  still a module-global plus a reset, and is owed the same treatment.
 
 ### Codegen emits a spurious value-wrapper, and which one moves with hash order
 
