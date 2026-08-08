@@ -1,0 +1,955 @@
+# Component Emission
+
+## Status
+
+- **Status**: Proposed. Every load-bearing claim was verified against
+  `wasm-tools 1.252.0` / `wasmtime 46.0.0` on 2026-08-08
+- **Scope**: how Zena emits WebAssembly components from its own backend,
+  what the `--target` surface should be, and how p3's async timers land
+- **Relationship to [component-model.md](./component-model.md)**: that
+  document designs _bindgen_ — WIT → Zena symbols, and the marshaling
+  glue for rich types. This one covers **emission**, which is stage 6
+  there, listed after bindgen and the canonical ABI. Emission is
+  independent of both and should land first. Nothing here changes the
+  bindgen design.
+
+---
+
+## Overview
+
+Zena has a unified toolchain: one compiler, one CLI, `nix flake check`
+as CI. Component emission belongs inside `BinaryEmitter` alongside core
+module emission, not behind a shell-out to `wasm-tools`. Part 4
+describes the encoder; Part 1 establishes that the output shape is
+already understood, by building it by hand and running it.
+
+Emitting a component is not blocked on bindgen. Bindgen binds WIT
+symbols into Zena's type system and generates the marshaling glue for
+rich types; a component with flat-scalar imports needs neither. The
+WIT parser _is_ needed earlier than expected, but for encoding the
+component **type** section rather than for synthesizing Zena symbols —
+a distinct job (Part 4).
+
+WASI Preview 3 is reachable only through a component. A core module can
+import `wasi_snapshot_preview1` and nothing later: wasmtime rejects a p3
+import in a core module outright (1.9). There is no p3 core-module form
+to choose between, so the component target _is_ the WASI target. What a
+target names is the host, with the output form following from it, which
+puts the set at four: `js`, `zena-cli`, `freestanding` and `component`
+(Part 3).
+
+The immediate prize is non-blocking timers. p1 can read a clock but can
+only wait by blocking. p3's `wait-for`, lowered async, returns
+immediately and the host re-enters the guest through a callback when it
+fires. Zena's `Clock` interface already has the right shape for this, so
+it lands as a host driver rather than as new async semantics (Part 5).
+
+---
+
+## Part 1: Evidence
+
+Each of these was run end-to-end. Nothing below is inference.
+
+The inputs are components written by hand at the component level — the
+structure the compiler is meant to emit — assembled with `wasm-tools
+parse` and run under `wasmtime`. The two load-bearing ones (1.4, 1.7)
+are reproduced in full, so anything here can be re-run from this
+document.
+
+When the encoder lands, these become tests. The timer one should assert
+**CPU time as well as wall time**: a regression from a real sleep back to
+a blocking or spinning wait otherwise shows up only as a test that is
+slower than it should be.
+
+> **Not in question**: whether a component can contain a WasmGC core
+> module. Components accept any valid core Wasm; the boundary is defined
+> by the canonical ABI, not by what the module does internally. What that
+> costs us is marshaling between linear memory and GC types at the
+> boundary, which is bindgen's problem rather than emission's.
+> [component-model#525](https://github.com/WebAssembly/component-model/issues/525),
+> "Wasm GC Support in the Canonical ABI", is the pre-proposal that would
+> remove the marshaling; it is open, and being implemented in `wasm-tools`
+> and `wasmtime` by its author.
+
+### 1.1 Emitting the component ourselves
+
+A component written by hand at the component level, with explicit
+`canon lower` / `canon lift` and core-instance wiring around a core
+module importing p3 clocks:
+
+```wat
+(component
+  (core module $m
+    (import "clocks" "now" (func $now (result i64)))
+    (func (export "run") (result i64) …))
+  (import "wasi:clocks/monotonic-clock@0.3.0"
+    (instance $c (export "now" (func (result u64)))))
+  (alias export $c "now" (func $nowc))
+  (core func $nowl (canon lower (func $nowc)))
+  (core instance $ci (export "now" (func $nowl)))
+  (core instance $mi (instantiate $m (with "clocks" (instance $ci))))
+  (func $run (result u64) (canon lift (core func $mi "run")))
+  (export "run" (func $run)))
+```
+
+Parses, validates (`--features all`), and runs. **304 bytes total**,
+including the embedded core module — the component shell is ~150 bytes
+of sections.
+
+### 1.2 Minimal interface subsets
+
+`wasm-tools component new` on a single `import wasi:cli/stdout@0.2.8`
+produced a 447-line component transcribing `wasi:io/error`,
+`wasi:io/poll` and `wasi:io/streams` in full — every method of
+`input-stream` and `output-stream`, `pollable`, all of it.
+
+We do not have to do that. An import instance type is satisfied by any
+host instance with _at least_ those exports, so declaring only the parts
+we call validates and runs. Verified by declaring one method of
+`output-stream` and one function of `wasi:cli/stdout` (1.4).
+
+This is the largest cost reduction available to a direct encoder: 447
+lines become about twenty.
+
+### 1.3 Module structure without the shim
+
+`wasm-tools` produces components containing **three** core modules — the
+main module, a `wit-component-shim-module` holding a 15-entry funcref
+table and `call_indirect` trampolines, and a `wit-component-fixup`
+module. Some background, since this is surprising on first contact.
+
+**Why core modules at all, inside a component?** A component contains no
+executable code of its own. All code lives in core modules nested inside
+it; the component contributes types, instantiation, and the canonical
+`lift`/`lower` adapters that convert between component-level values and
+core-level ones. See the Component Model
+[Explainer](https://github.com/WebAssembly/component-model/blob/main/design/mvp/Explainer.md)
+and
+[Binary.md](https://github.com/WebAssembly/component-model/blob/main/design/mvp/Binary.md).
+
+**Where do they live, and who instantiates them?** All in one `.wasm`
+file, nested inside the component, instantiated by the component's own
+core-instance section in declaration order:
+
+```wat
+(core instance $wit-component-shim-instance (instantiate $wit-component-shim-module))
+(core instance $cm32p2|wasi:io/error@0.2 …)      ;; lowered imports, wired from the shim
+…
+(core instance $main (instantiate $main …))
+(core instance $fixup (instantiate $wit-component-fixup …))
+```
+
+**Why the shim exists.** Lowering an import that takes a `string` or
+`list` requires the guest's `memory` and `realloc` as canonical options,
+because that is where the lifted value gets written. But those live in
+the main module, and the main module cannot be instantiated until its
+imports — the lowered functions — already exist. That is a cycle, and it
+is not hypothetical:
+
+```wat
+(core func $fl (canon lower (func $fi) (memory $mem) (realloc $ra)))
+…
+(core instance $mi (instantiate $m (with "c" (instance $ci))))
+(alias core export $mi "memory" (core memory $mem))
+```
+
+```
+error: unknown core memory: failed to find name `$mem`
+```
+
+The shim breaks it with indirection: instantiate a module of
+`call_indirect` trampolines through an empty table, instantiate the main
+module against those, then instantiate a fixup module whose element
+segment fills the table with the real lowered functions.
+
+**Do all components need this?** No. It is a consequence of
+componentizing a module that is already finished. `wasm-tools` receives
+a core module that defines and exports its own memory, and has no
+license to change it, so indirection is the only move left. We are the
+compiler, and can put the memory somewhere reachable first:
+
+```wat
+(core module $memmod
+  (memory (export "memory") 1)
+  (func (export "realloc") (param i32 i32 i32 i32) (result i32) …))
+(core instance $memi (instantiate $memmod))
+(alias core export $memi "memory" (core memory $mem))
+(alias core export $memi "realloc" (core func $ra))
+(core func $wl (canon lower (func $wi) (memory $mem) (realloc $ra)))
+…
+(core instance $mi (instantiate $m (with "c" (instance $ci))
+                                   (with "mem" (instance $memi))))
+```
+
+The main module **imports** its memory instead of defining it, so
+nothing needs to exist before the lowering does. This avoids the shim and
+fixup modules entirely, and 1.4 confirms it end to end. The only
+compiler change is emitting a memory import rather than a memory
+definition, at `WasmModule.ensureMemory`.
+
+**Is anyone fixing it upstream?** Not as such, and there is no open issue
+proposing to remove the shim — for `wasm-tools` it is not removable,
+given the input it is handed. The two shim issues on record are closed
+housekeeping PRs ([#853](https://github.com/bytecodealliance/wasm-tools/pull/853),
+[#1851](https://github.com/bytecodealliance/wasm-tools/pull/1851)). The
+forward-looking item is component-model#525 above: GC support in the
+canonical ABI would remove most of the lowerings that need a memory in
+the first place.
+
+**How few core modules can we get away with?** One, or two. A component
+cannot define a core memory of its own —
+
+```wat
+(component
+  (core memory (;0;) 1))
+```
+
+```
+error: expected valid component field
+```
+
+— so a memory reaches the component only as the export of a core
+instance. That costs nothing in the export direction, because lifting
+happens after instantiation: a component that exports but imports
+nothing memory-carrying takes `memory` and `realloc` from the program
+module's own exports, and one core module is the whole component.
+
+```wat
+(component
+  (core module $m
+    (memory (export "memory") 1)
+    (global $bump (mut i32) (i32.const 1024))
+    (func $realloc (export "realloc")
+        (param $p i32) (param $olds i32) (param $align i32) (param $news i32)
+        (result i32)
+      (local $r i32)
+      (global.set $bump
+        (i32.and (i32.add (global.get $bump) (i32.sub (local.get $align) (i32.const 1)))
+                 (i32.sub (i32.const 0) (local.get $align))))
+      (local.set $r (global.get $bump))
+      (global.set $bump (i32.add (global.get $bump) (local.get $news)))
+      (if (local.get $p)
+        (then (memory.copy (local.get $r) (local.get $p) (local.get $olds))))
+      (local.get $r))
+    (data $msg "one core module, memory from main")
+    (func (export "greet") (result i32)
+      (local $s i32) (local $ret i32)
+      (local.set $s (call $realloc (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 33)))
+      (memory.init $msg (local.get $s) (i32.const 0) (i32.const 33))
+      (local.set $ret (call $realloc (i32.const 0) (i32.const 0) (i32.const 4) (i32.const 8)))
+      (i32.store (local.get $ret) (local.get $s))
+      (i32.store offset=4 (local.get $ret) (i32.const 33))
+      (local.get $ret)))
+  (core instance $mi (instantiate $m))
+  (alias core export $mi "memory" (core memory $mem))
+  (alias core export $mi "realloc" (core func $ra))
+  (func $greet (result string)
+    (canon lift (core func $mi "greet") (memory $mem) (realloc $ra)))
+  (export "greet" (func $greet)))
+```
+
+```
+$ wasmtime run --invoke 'greet()' e2.wasm
+"one core module, memory from main"
+```
+
+452 bytes, and the host read a guest-allocated string out of the guest's
+own memory.
+
+The second module appears when an import is lowered with memory options,
+and it brings a consequence for the allocator. The canonical `realloc`
+has to be a core function that already exists at the point of lowering,
+which is before the program module is instantiated — so it cannot be the
+program's own allocator. Two allocators handing out addresses in one
+memory is a bug waiting to happen, so the runtime module owns linear
+memory and the allocator, and the program module imports both:
+
+```wat
+  (core module $rt
+    (memory (export "memory") 1)
+    (global $bump (mut i32) (i32.const 1024))
+    (func $realloc (export "realloc") …))
+  (core instance $rti (instantiate $rt))
+  (alias core export $rti "memory" (core memory $mem))
+  (alias core export $rti "realloc" (core func $ra))
+  (core func $wl (canon lower (func $wi) (memory $mem) (realloc $ra)))
+  …
+  (core module $m
+    (import "mem" "memory" (memory 1))
+    (import "mem" "realloc" (func $alloc (param i32 i32 i32 i32) (result i32)))
+    (import "c" "write" (func $write (param i32 i32 i32 i32)))
+    (data $msg "written from memory the program allocated itself\n")
+    (func (export "run") (result i32)
+      (local $p i32) (local $ret i32)
+      (local.set $p (call $alloc (i32.const 0) (i32.const 0) (i32.const 1) (i32.const 49)))
+      (memory.init $msg (local.get $p) (i32.const 0) (i32.const 49))
+      (call $write (call $getout) (local.get $p) (i32.const 49) (i32.const 16))
+      …))
+  (func $run (result string)
+    (canon lift (core func $mi "run") (memory $mem) (realloc $ra)))
+```
+
+```
+$ wasmtime run --invoke 'run()' e3.wasm
+written from memory the program allocated itself
+"written from memory the program allocated itself"
+```
+
+One buffer, allocated by the runtime module's allocator, written by the
+program, read by the host twice — once through a lowered `list<u8>`
+argument and once through the lifted `string` result. The elided import
+types are those in 1.4.
+
+Putting `realloc` in the program module instead would mean the runtime
+module calling back into a function that does not exist yet, through a
+funcref table filled after instantiation. That is the shim, arrived at
+from the other direction.
+
+### 1.4 Native p2 stdio beside p3 clocks
+
+1.1–1.3 together. Note how little of `wasi:io/streams` is declared — one
+method — and that the main module imports its memory from `$memmod`:
+
+```wat
+(component
+  (type $t-err (instance (export "error" (type (sub resource)))))
+  (import "wasi:io/error@0.2.8" (instance $ioerr (type $t-err)))
+  (alias export $ioerr "error" (type $error))
+  (type $t-streams (instance
+    (alias outer 1 $error (type (;0;)))
+    (export (;1;) "error" (type (eq 0)))
+    (type (;2;) (own 1))
+    (type (;3;) (variant (case "last-operation-failed" 2) (case "closed")))
+    (export (;4;) "stream-error" (type (eq 3)))
+    (export (;5;) "output-stream" (type (sub resource)))
+    (type (;6;) (borrow 5))
+    (type (;7;) (list u8))
+    (type (;8;) (result (error 4)))
+    (type (;9;) (func (param "self" 6) (param "contents" 7) (result 8)))
+    (export "[method]output-stream.blocking-write-and-flush" (func (type 9)))))
+  (import "wasi:io/streams@0.2.8" (instance $io (type $t-streams)))
+  (alias export $io "output-stream" (type $os))
+  (type $t-stdout (instance
+    (alias outer 1 $os (type (;0;)))
+    (export (;1;) "output-stream" (type (eq 0)))
+    (type (;2;) (own 1))
+    (type (;3;) (func (result 2)))
+    (export "get-stdout" (func (type 3)))))
+  (import "wasi:cli/stdout@0.2.8" (instance $so (type $t-stdout)))
+  (type $t-clock (instance (export "now" (func (result u64)))))
+  (import "wasi:clocks/monotonic-clock@0.3.0" (instance $c (type $t-clock)))
+
+  ;; memory lives in its own core module, instantiated first
+  (core module $memmod
+    (memory (export "memory") 1)
+    (func (export "realloc") (param i32 i32 i32 i32) (result i32) (i32.const 1024)))
+  (core instance $memi (instantiate $memmod))
+  (alias core export $memi "memory" (core memory $mem))
+  (alias core export $memi "realloc" (core func $ra))
+
+  (alias export $so "get-stdout" (func $gsi))
+  (alias export $io "[method]output-stream.blocking-write-and-flush" (func $wi))
+  (alias export $c "now" (func $nowi))
+  (core func $gsl (canon lower (func $gsi)))
+  (core func $wl  (canon lower (func $wi) (memory $mem) (realloc $ra)))
+  (core func $nowl (canon lower (func $nowi)))
+  (core instance $ci
+    (export "get-stdout" (func $gsl))
+    (export "write" (func $wl))
+    (export "now" (func $nowl)))
+
+  (core module $m
+    (import "c" "get-stdout" (func $getout (result i32)))
+    (import "c" "write"      (func $write (param i32 i32 i32 i32)))
+    (import "c" "now"        (func $now (result i64)))
+    (import "mem" "memory" (memory 1))
+    (type $b (struct (field i64)))
+    (data $msg "native p2 stdio, no adapter, no shim\n")
+    (func (export "run") (result i64)
+      (memory.init $msg (i32.const 128) (i32.const 0) (i32.const 37))
+      (call $write (call $getout) (i32.const 128) (i32.const 37) (i32.const 16))
+      (struct.get $b 0 (struct.new $b (call $now)))))
+  (core instance $mi (instantiate $m (with "c" (instance $ci))
+                                     (with "mem" (instance $memi))))
+  (func $run (result u64) (canon lift (core func $mi "run")))
+  (export "run" (func $run)))
+```
+
+```
+$ wasmtime run -W gc=y,function-references=y -S p3=y --invoke "run()" out.wasm
+native p2 stdio, no adapter, no shim
+5650236
+```
+
+A resource handle, a `list<u8>` lowering, a variant carrying
+`own<error>`, and p2 and p3 interfaces in the same component.
+
+### 1.5 p3 imports go through the existing `@external`
+
+```wat
+(import "wasi:clocks/monotonic-clock@0.3.0" "now" (func $now (result i64)))
+```
+
+which is what a Zena `@external` already compiles to:
+
+```zena
+@external("wasi:clocks/monotonic-clock@0.3.0", "now")
+declare function monotonicNow(): u64;
+```
+
+So no new declaration syntax is needed to _name_ a p3 import, for any
+function whose canonical lowering is flat scalars: `u8`–`u64`,
+`s8`–`s64`, `f32`, `f64`, `bool`, `char`, `enum`, small `flags`.
+
+### 1.6 Async imports lower to a non-blocking call
+
+`wait-for: async func(how-long: duration)` under `canon lower … async`
+becomes core `(param i64) (result i32)`, and calling it returned **17** =
+`(subtask 1 << 4) | STARTED`. It handed back a subtask handle rather than
+blocking.
+
+Lowered _without_ `async` — which is what `component embed --dummy`
+generates — the same function becomes a plain blocking `(param i64)`.
+Both are legal; the choice is ours, and it is the difference between a
+sleep and a timer.
+
+The same asymmetry applies to exports: an `async` WIT function can be
+lifted synchronously, verified via `--dummy` on
+`doit: async func() -> u32`, which produced a plain `(func (result i32))`.
+`async` in a WIT signature therefore costs us nothing on its own. It is
+`stream<T>` and `future<T>` **values** that require the suspension
+transform.
+
+### 1.7 A callback-lifted export drives real timers
+
+The complete event-loop shape, and the structure C2 has to emit:
+
+```wat
+(component
+  (import "wasi:clocks/monotonic-clock@0.3.0"
+    (instance $c (export "wait-for" (func async (param "how-long" u64)))))
+  (alias export $c "wait-for" (func $wfi))
+  (core module $m
+    (import "c" "wait-for"         (func $wf    (param i64) (result i32)))
+    (import "c" "waitable-set.new" (func $wsnew (result i32)))
+    (import "c" "waitable.join"    (func $wjoin (param i32 i32)))
+    (import "c" "subtask.drop"     (func $sdrop (param i32)))
+    (import "c" "task.return"      (func $tret))
+    (global $ws (mut i32) (i32.const 0))
+    (global $sub (mut i32) (i32.const 0))
+    ;; returns a callback code: EXIT=0, WAIT=2 | (set << 4)
+    (func (export "run") (result i32)
+      (local $r i32)
+      (global.set $ws (call $wsnew))
+      (local.set $r (call $wf (i64.const 900000000)))  ;; 900ms
+      (if (i32.eq (i32.and (local.get $r) (i32.const 15)) (i32.const 0))
+        (then (call $tret) (return (i32.const 0))))    ;; RETURNED already
+      (global.set $sub (i32.shr_u (local.get $r) (i32.const 4)))
+      (call $wjoin (global.get $sub) (global.get $ws))
+      (i32.or (i32.const 2) (i32.shl (global.get $ws) (i32.const 4))))
+    ;; (event, waitable, code) -> callback code
+    (func (export "cb") (param i32 i32 i32) (result i32)
+      (call $sdrop (global.get $sub))
+      (call $tret)
+      (i32.const 0)))
+  (core func $wfl   (canon lower (func $wfi) async))
+  (core func $wsnew (canon waitable-set.new))
+  (core func $wjoin (canon waitable.join))
+  (core func $sdrop (canon subtask.drop))
+  (core func $tret  (canon task.return))
+  (core instance $ci
+    (export "wait-for" (func $wfl))
+    (export "waitable-set.new" (func $wsnew))
+    (export "waitable.join" (func $wjoin))
+    (export "subtask.drop" (func $sdrop))
+    (export "task.return" (func $tret)))
+  (core instance $mi (instantiate $m (with "c" (instance $ci))))
+  (alias core export $mi "run" (core func $runc))
+  (alias core export $mi "cb" (core func $cbc))
+  (func $run async (canon lift (core func $runc) async (callback $cbc)))
+  (export "run" (func $run)))
+```
+
+`run` starts the timer and hands the host back `WAIT | (set << 4)`
+instead of blocking; the host re-enters through `cb` when it fires, which
+drops the subtask and calls `task.return`.
+
+Measured: a **900 ms** timer completed in **0.919 s** wall with **47 ms**
+of user+sys — the process slept. At 200 ms, 0.245 s.
+
+Two syntax notes that cost time: the lifted export's own component type
+must be async (`(func $run async (canon lift … async (callback $cb)))`),
+and `(callback …)` takes a core func _index_, so the core export must be
+aliased first (`(alias core export $mi "cb" (core func $cbc))`).
+
+### 1.8 A p3 command component runs under `wasmtime run`
+
+Exporting the async `run` above as `wasi:cli/run@0.3.0`:
+
+```wat
+(func $run async (result (result)) (canon lift (core func $runc) async (callback $cbc)))
+(instance $runi (export "run" (func $run)))
+(export "wasi:cli/run@0.3.0" (instance $runi))
+```
+
+```
+$ wasmtime run -S p3=y p3cmd.wasm     # no --invoke
+real 0m0.456s   user 0m0.064s
+```
+
+So a Zena program that is a command compiles to a component exporting
+`wasi:cli/run@0.3.0`, and `wasmtime run` executes it directly, with the
+async event loop live through the callback. There is no separate
+"command module" to emit.
+
+### 1.9 A core module cannot reach p3
+
+```wat
+(module
+  (import "wasi:clocks/monotonic-clock@0.3.0" "now" (func $now (result i64)))
+  (func (export "_start") (drop (call $now))))
+```
+
+```
+$ wasmtime run -S p3=y,cli=y coretest.wasm
+Error: failed to instantiate "coretest.wasm"
+       unknown import: `wasi:clocks/monotonic-clock@0.3.0::now` has not been defined
+```
+
+WASI p1 is a core-module ABI: a flat set of `wasi_snapshot_preview1`
+function imports, which wasmtime still supplies to core modules. WASI p2
+and p3 are defined as WIT interfaces, and a core module has no way to
+name one. Emitting a component is therefore not one way to reach p3; it
+is the only way.
+
+### 1.10 What does not work
+
+**Custom `--adapt` stubs panic wit-component.** The obvious workaround
+for Part 2's blocker — supplying the `env` stack-trace imports from a
+hand-written stub module — crashes:
+
+```
+thread 'main' panicked at crates/wit-component/src/encoding.rs:2836:34:
+internal error: entered unreachable code
+```
+
+`--adapt` is for WASI-adapter-shaped modules only. A world declaring an
+import the core module never uses hits the same panic, which settles
+open question 4 in component-model.md: a dead-code-eliminated import must
+not stay in the emitted world. Both stop mattering once we emit
+components ourselves.
+
+---
+
+## Part 2: The blocker on the module side
+
+Every Zena module — including `export let main = (): i32 => 7;`, with
+nothing else in it — unconditionally imports:
+
+```wat
+(import "env" "formatStackTrace" (func (param anyref) (result externref)))
+(import "env" "captureStackTrace" (func (result externref)))
+```
+
+They come from `stdlib/zena/error.zena` and are not dead-code
+eliminated. `externref` and `anyref` have no Component Model
+representation, so they cannot be declared in a world, and per 1.10 they
+cannot be stubbed by an adapter either.
+
+**Fix**: make the hooks target-conditional, as `zena:console` already is
+— `error/stack-host.zena` keeps the two `@external` declarations,
+`error/stack-none.zena` returns `null` from both, and `error.zena`
+imports them from `'zena:error-stack'`. One file split, one manifest
+entry, one import line. The `js` and `zena-cli` targets keep the host
+hooks; the `component` target does not get stack traces until there is
+somewhere to put them.
+
+---
+
+## Part 3: Targets
+
+### What the target selects
+
+The target string does nothing in codegen. Grepped across the
+self-hosted compiler, its only consumer is `ModuleResolver`, selecting
+`virtual` entries in the stdlib manifest; `BinaryGenerator` and
+`ReachabilityAnalysis` take a `target` and never branch on it. A target
+is a choice of standard-library implementations and therefore of import
+set. Adding one is a manifest-and-stdlib exercise.
+
+### Import sets today
+
+Measured, `zena-cli build` on `export function main(): i32 { return 7; }`:
+
+| Target     | Imports                                                                                                                                               |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host`     | `console.log_i32`, `log_f32`, `log_string`, `info_string`, `warn_string`, `error_string`, `debug_string`; `env.captureStackTrace`, `formatStackTrace` |
+| `zena-cli` | `env.captureStackTrace`, `formatStackTrace`; `wasi_snapshot_preview1.fd_write`                                                                        |
+
+Both export `main` and the string helpers `$stringCreate`,
+`$stringSetByte`, `$stringGetByte`, `$stringGetLength`; `zena-cli` also
+exports `memory`.
+
+A program that calls `logString` imports exactly the same set as one
+that prints nothing. The import list is a property of the target, not of
+the program, for two reasons: `zena:console` is in the prelude
+(`lib/prelude.zena` binds `console` into every module) and the
+module-level `export let console = new WasiConsole()` is a root; and the
+stack-trace hooks of Part 2 are unconditional. So the floor today is
+nine imports on `host` and three on `zena-cli`, for a program that uses
+none of them.
+
+### WASI versus the Component Model
+
+The Component Model is a binary format, type system and ABI. WASI is a
+set of interfaces. They are separable in principle — a component can
+import a purely application-defined world and no WASI at all — but not
+in practice at the version boundary:
+
+| WASI    | Form                                       | Reachable from |
+| ------- | ------------------------------------------ | -------------- |
+| p1      | flat `wasi_snapshot_preview1` core imports | core module    |
+| p2 / p3 | WIT interfaces                             | component only |
+
+1.9 is the demonstration. Because there is no p3 core-module form, a
+separate "wasi" target and "component" target would always select the
+same thing, and the component target is the WASI target.
+
+### Three axes, one flag
+
+Three things vary between outputs:
+
+1. **Output form** — core module or component.
+2. **Host imports** — none, the JS runtime, `zena-cli`'s p1 and `env`
+   surface, or a WIT world.
+3. **String encoding** — how `String` is represented, and how it crosses
+   the boundary.
+
+The first two are not independent. p2 and p3 are reachable only from a
+component (1.9); the JS runtime's `console.log_string` and `zena-cli`'s
+`env` hooks are reachable only from a core module. A second flag would
+offer eight combinations, three of which cannot be built at all: a core
+module importing a WIT world, and a component importing either host
+runtime. The combination it would legitimately add — a component that
+imports nothing — is a `component` build whose world has no imports.
+**The target names the host; the output form follows from it.**
+
+String encoding is different: it varies _within_ a target, and it is the
+one that deserves its own flag.
+
+### Recommendation
+
+```
+--target  js | zena-cli | freestanding | component
+```
+
+| Target         | Output      | Imports                                                                         |
+| -------------- | ----------- | ------------------------------------------------------------------------------- |
+| `js`           | core module | `@zena-lang/runtime` — `console.*`, `time.*`, `env.*`; later JS string builtins |
+| `zena-cli`     | core module | WASI p1, plus the private `env.*` and `zena_process`                            |
+| `freestanding` | core module | none beyond what the program declares with `@external`                          |
+| `component`    | component   | WIT interfaces: p3 clocks, p2 stdio, application worlds                         |
+
+Four points this settles:
+
+- **No portable `wasip1` or `wasip2` target.** Zena has no users to keep
+  on an older preview, so a portable p1 target would be a second
+  supported surface bought with nothing. p1 does not disappear — it stays
+  as `zena-cli`'s private business, where the Rust embedder supplies it
+  through `wasmtime-wasi`. So the existing p1 standard library
+  (`zena:fs`, `zena:cli`, `zena:console`'s WASI variant) is kept, not
+  deleted; it just stops being something a portable program targets.
+- **A core-module host is not the same as a JS host**, and neither is
+  the same as no host. They differ in their whole import set, which is
+  exactly what a target is.
+- **The name is `freestanding`, not `core`.** Three of the four targets
+  emit core modules, so `core` would name the axis that does not
+  distinguish them. `freestanding` is the term of art for a target that
+  assumes no runtime beneath it.
+- **No `--emit` flag.** Output form follows from the target, so the flag
+  an earlier draft proposed is unnecessary. That draft also argued
+  against naming a target `component` on the grounds that it would be
+  ambiguous about which preview it meant. Dropping p1 and p2 as portable
+  targets removes the ambiguity and the argument with it.
+
+The remaining flags concern the world, not the target, and are needed
+only once a program declares its own (C3):
+
+- `--wit <dir>` — WIT package directory defining the world.
+- `--world <name>` — which world in it.
+
+### The freestanding target
+
+A module for a host that provides nothing: an embedder that instantiates
+Zena, calls an export, and offers no imports at all. Its import list
+contains only what the program itself declared with `@external`, which
+is what makes it a spectrum — the program spans it, rather than a flag.
+The floor is zero, and the ceiling is whatever the program writes down.
+
+The guarantee is structural rather than a matter of discipline. A target
+that has no `virtual` entry for `zena:console` cannot resolve
+`import {logString} from 'zena:console'`, and the program fails to
+compile. Nothing silently supplies a host import behind the program's
+back.
+
+Its exports are the general-purpose interop surface the measurement
+above already shows: `main`, and the string helpers `$stringCreate` /
+`$stringSetByte` / `$stringGetByte` / `$stringGetLength`, so a host can
+build and read Zena strings without knowing their layout. Array helpers
+are the obvious next addition, and the same reasoning applies to them.
+
+Two things stand between HEAD and a zero-import module, both measured
+above: the stack-trace hooks, which C0 splits out anyway, and the
+prelude's `console` binding.
+
+**Console on freestanding**: drop it from the prelude, so `console.log`
+is an unresolved name and a program that wants output declares its own
+`@external`. A no-op console is the tempting alternative and it is
+worse, because it compiles and then prints nothing. Making the binding
+lazy, so that an unused `console` is dead-code eliminated on every
+target, is worth doing on its own, but it is a size fix rather than a
+guarantee: it would leave the floor depending on what the optimizer
+managed rather than on what the target promises.
+
+### String encoding
+
+`String` is a view into a `ByteArray` with an `Encoding` of `WTF8` or
+`WTF16` (`stdlib/zena/string.zena`). The enum exists and nothing selects
+`WTF16`; literals are emitted as WTF-8 bytes. Three consumers will want
+a say:
+
+- The canonical ABI takes a `string-encoding` option — `utf8`, `utf16`,
+  `latin1+utf16` — on every lift and lower. Declaring `utf8` against
+  WTF-8 literals makes the boundary a copy; anything else transcodes.
+- A JS host wants UTF-16, and JS string builtins would make `String` an
+  `externref` rather than a GC byte array, which changes the
+  representation and not only the boundary.
+- A non-JS embedder reading `$stringGetByte` wants to know which it is
+  getting.
+
+So `--string-encoding utf8 | utf16`, defaulting per target and
+overridable, is a real flag rather than a hypothetical one. It is not
+needed before C3, where it becomes a canonical option; `latin1+utf16` is
+available in the ABI but not something we can produce without a Latin-1
+representation.
+
+### Where p2 still appears
+
+The `component` target imports **p2 stdio** alongside p3 clocks, because
+p3's `wasi:cli/stdout` is `write-via-stream: func(data: stream<u8>) ->
+future<…>` and streams need Track G. p2's `blocking-write-and-flush` is
+synchronous and available now. 1.4 is exactly this combination in one
+component.
+
+This is not a p2 target. It is one component importing the best
+available interface for each job, which is normal: worlds mix versions,
+and the mixture changes when Track G lands and stdio moves to p3.
+
+---
+
+## Part 4: The encoder
+
+For the component in 1.4 — the realistic target — the full section list
+is:
+
+| Section           | Contents                                                                                     |
+| ----------------- | -------------------------------------------------------------------------------------------- |
+| header            | `\0asm\0d\00\01\00`                                                                          |
+| component type    | one instance type per imported interface, minimal subset                                     |
+| import            | one per interface, referencing its type                                                      |
+| alias             | `alias export` per imported function and type                                                |
+| canon             | `canon lower` per import; `waitable-set.new`, `waitable.join`, `subtask.drop`, `task.return` |
+| core module       | the memory module, then the Zena module, embedded verbatim                                   |
+| core instance     | instantiate the memory module; synthesize the import instance; instantiate the main module   |
+| alias core export | pull `run` / `cb` back out of the main instance                                              |
+| canon             | `canon lift` per export, `async (callback …)` where needed                                   |
+| export            | the component's exports                                                                      |
+
+Every one of those is LEB128 and index vectors. `BinaryEmitter` already
+has the primitives, and none of this touches ZIR, lowering, or the type
+system. Two choices keep it small: minimal interface subsets (1.2) and
+the imported memory (1.3). The core module section holds two modules
+here, and one for a component that lowers nothing memory-carrying,
+against `wasm-tools`'s three plus a funcref table.
+
+### Where the WIT parser is used
+
+The component **type** section is a transcription of the WIT type graph
+— instance types, resource declarations, `alias outer` for shared types,
+variants, results, lists. Encoding it from resolved WIT is what
+`packages/wit-parser` was built to feed and has never been asked to do.
+
+This is not a contradiction of "emission is not blocked on bindgen". Two
+different jobs share the name:
+
+- **Type encoding** — resolved WIT → component type section. Needed as
+  soon as an import is more than flat scalars. Produces bytes.
+- **Bindgen** — WIT → Zena symbols a program can `import`, with
+  marshaling glue. That is component-model.md's design, and it is not
+  needed to emit a component.
+
+C1 hand-writes the few type encodings it needs — for clocks, which are
+flat scalars, that is none. C3 replaces them with the parser-driven
+encoder. Bindgen stays downstream of both.
+
+---
+
+## Part 5: Async timers
+
+### Why p3 clocks matter
+
+p1 can read a clock through `clock_time_get`, but the only way it can
+wait is `poll_oneoff`, and `stdlib/zena/time/wasi.zena` says so in its
+own comment:
+
+> Blocks the module until the deadline, so this always returns true.
+
+p3's `wait-for` and `wait-until` are `async`, and async-lowered they
+return immediately (1.6). That is a new capability rather than a nicer
+spelling of an existing one.
+
+### Why it unifies with the JS driver
+
+`zena:time`'s `Clock` interface already draws the right line:
+
+```zena
+/**
+ * … cannot wait, and has instead arranged to re-enter the drain later —
+ */
+waitNs(ns: i64): boolean;
+```
+
+`true` means "I blocked until the deadline"; `false` means "I scheduled a
+wake and the drain should unwind; you will be re-entered".
+
+| Driver                | `waitNs` | Re-entry                                 |
+| --------------------- | -------- | ---------------------------------------- |
+| `time/host.zena` (JS) | `false`  | host calls `__zena_drain`                |
+| `time/wasi.zena` (p1) | `true`   | it blocked                               |
+| **p3 component**      | `false`  | the lifted callback calls `__zena_drain` |
+
+The p3 timer is a third `Clock` on the existing `false` path —
+structurally the same driver as JS. No change to `queue.zena`'s
+park/drain loop.
+
+### What it costs in the compiler
+
+1. **Async-lowered imports.** A way to mark an `@external` as
+   `canon lower … async`. The Zena signature is unaffected; only the
+   lowering option changes.
+2. **The canon builtins as imports**: `waitable-set.new`,
+   `waitable.join`, `subtask.drop`, `task.return`. One `canon` entry and
+   one core import each; they are not WIT functions and need no types.
+3. **A callback-lifted entry export.** The compiler synthesizes the
+   `(event, waitable, code) -> i32` callback: look the waitable up in the
+   completer registry, resolve it, call `__zena_drain`, then return
+   `WAIT | (set << 4)` if work remains, or `task.return` and `EXIT` if
+   not.
+
+This is a new async **host driver**, in the same sense as the JS push
+driver, rather than new async semantics. It sits alongside
+[concurrency.md](./concurrency.md)'s Track G, and looks easier than the
+JSPI driver the implementation plan currently sequences first, because
+the push shape already matches.
+
+---
+
+## Part 6: The plan
+
+### C0 — unblock the module. Days.
+
+Split the stack-trace hooks out of `zena:error` (Part 2). Rename `host`
+to `js` and retire the unused `wasi` manifest key, keeping aliases. No
+emission work; this is the prerequisite for all of it.
+
+The same split delivers `--target freestanding`, since a module with no
+stack-trace imports and no prelude `console` is a module with no imports
+at all. It is a manifest entry and a prelude change on top of work C1
+needs regardless, and it is testable by assertion rather than by
+inspection: compile a program, and the import section is empty. Nine and
+three, from the measurement in Part 3, are the numbers it has to drive
+to zero.
+
+### C1 — the encoder, flat scalars only. Days to a week.
+
+Emit components from `BinaryEmitter` (Part 4), restricted to flat-scalar
+imports and exports, which need no memory, no realloc, and no type
+encoding beyond primitives. Ships `--target component` for a program
+whose only import is `wasi:clocks/monotonic-clock@0.3.0`. Verifiable as
+1.1 was.
+
+### C2 — async timers. Days.
+
+Async-lowered imports, the four canon builtins, and the synthesized
+callback export (Part 5), plus a `time/p3.zena` `Clock` returning
+`false`. `zena:time`'s `sleep` becomes non-blocking under WASI, on the
+same code path as JS. Tested as 1.7 was, asserting wall time against CPU
+time.
+
+### C3 — the type encoder, and stdio. Weeks.
+
+Wire `packages/wit-parser` to the component type section and add
+memory-carrying `canon lower` options over the imported-memory design
+(1.3). This is where the runtime module arrives, carrying linear memory
+and the allocator, and where `zena:memory` gains a variant whose
+`Allocator` delegates to the imported `realloc` instead of running a
+second `FreeListAllocator` over the same addresses. Lift options can
+still use an allocator exported by the program module — the constraint
+is on lowering — but one owner is worth more than that saving. Ships
+`zena:console` over p2 `wasi:cli/stdout`, which is what 1.4 ran, and
+`--wit` / `--world` for programs declaring their own world.
+
+Until C3 a component cannot print, which is the argument for reordering
+C2 and C3. C2 stays first because timers are the goal and can be tested
+on time rather than on output.
+
+### C4 — filesystem and CLI. Weeks.
+
+`zena:fs` and `zena:cli` over `wasi:filesystem/*` and
+`wasi:cli/environment` for the component target. Larger than stdio, same
+shape.
+
+### C5 — bindgen, per component-model.md. Months.
+
+Unchanged, and now strictly downstream: stages 0a–0d (`Result` ✅, narrow
+ints, `FixedArray<u8>`, `Disposable`) → first-class WIT imports →
+marshaling → p2 HTTP. Each stage becomes testable against a running
+component.
+
+### C6 — p3 streams. After Track G.
+
+`stream<T>` and `future<T>`, which move stdio to p3 and bring p3 HTTP.
+
+---
+
+## Open questions
+
+1. Surface syntax for marking an import async-lowered.
+   `@external.async("wasi:clocks/monotonic-clock@0.3.0", "wait-for")`, or
+   an options record on `@external`? The second generalizes better, since
+   `(memory)` and `(realloc)` options arrive in C3 regardless.
+2. Should `zena-cli` eventually run components rather than core modules?
+   wasmtime supports components natively, so the embedder could drop its
+   private `env.*` surface and become an ordinary component host. That
+   would collapse two targets into one, at the cost of the marshaling
+   that the core-module ABI currently avoids.
+3. Which `--string-encoding` each target defaults to, and whether the
+   JS-string-builtins path is a value of that flag or a separate one. It
+   changes `String`'s representation rather than only its encoding at
+   the boundary, which argues for separate.
+4. Does the C3 encoder aim directly at `wasi:http/proxy` for `wasmtime
+serve`? The measured p2 numbers in component-model.md — 79% of
+   functions are resource methods — argue for waiting for bindgen.
+
+## Related
+
+- [component-model.md](./component-model.md) — bindgen and marshaling.
+  This document front-runs its stage 6 and settles its open question 4.
+- [concurrency.md](./concurrency.md) — Track G. Part 5 adds a host driver
+  alongside it, and depends on it only for streams.
+- [console-wasi-strategy.md](./console-wasi-strategy.md) — the original
+  two-step `embed`/`new` sketch, superseded by Part 4.
+- [wit-parser.md](./wit-parser.md) — the parser, which C3 puts on the
+  build path as a type encoder.
+- [component-model#525](https://github.com/WebAssembly/component-model/issues/525)
+  — Wasm GC in the canonical ABI, which would remove the marshaling.

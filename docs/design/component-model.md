@@ -25,6 +25,24 @@
 So: parsing WIT is solved; **everything that turns a parsed WIT into a running
 component is unbuilt**, and this document is the missing design for that.
 
+> **Emission does not wait for any of this.** Stage 6 below lists component
+> emission after bindgen and the canonical ABI, which reads as "components come
+> last". [component-emission.md](./component-emission.md) shows, with verified
+> end-to-end runs, that it is independent of both and should land first — and
+> that we should emit components from `BinaryEmitter` rather than shelling out
+> to `wasm-tools`. Declaring only the interface subset we call turns
+> wit-component's 447-line transcription of `wasi:io` into about twenty lines,
+> and importing the memory from a separate core module removes the shim and
+> fixup modules it otherwise needs. WASI p3 is reachable _only_ through a
+> component — wasmtime rejects a p3 import in a core module — so the component
+> target is the WASI target, which is why that document proposes
+> `--target js | zena-cli | freestanding | component` and no portable p1 or p2
+> target at all.
+> It also settles open question 4: a DCE'd import must not stay in the world,
+> because leaving it in panics `wit-component`. Bindgen stays downstream; what
+> the WIT parser is needed for first is encoding the component _type_ section,
+> not synthesizing Zena symbols.
+
 ---
 
 ## Part 1: Three things people call "a handle"
