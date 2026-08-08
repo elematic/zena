@@ -304,6 +304,44 @@ are ordinary classes wrapped in `Own<T>`:
 Same wrapper, same checking, one extra premise in the second case. This is what
 [Parallelism](#parallelism) is built on.
 
+<a id="resource-ness-is-inherited"></a>
+
+### Resource-ness is inherited
+
+A resource class's supertype chain is entirely resource classes. Both
+directions of a mismatch are unsound, and in opposite ways.
+
+**An ordinary subclass of a resource** has a spellable bare type. `class Sub
+extends Descriptor` could be named, aliased and stored freely while naming an
+object with a release obligation — the unwrapped form the resource rule exists
+to prevent, reintroduced under a different name. Declare it `resource class
+Sub` instead; that is the only difference the rule asks for.
+
+**An ordinary superclass of a resource** is the subtler one, and the reason
+this is a rule about the whole chain rather than about the subclass. Inside its
+own methods, an ordinary class sees `this` as itself, and that type _is_
+spellable:
+
+```zena
+class Plain { self(): Plain { return this; } }
+resource class OnPlain extends Plain { … }
+
+let r = new OnPlain();          // Own<OnPlain>
+let leaked: Plain = r.self();   // bare, freely aliasable
+```
+
+The handle's nominal distinctness cannot help here. `Own<OnPlain>` is
+assignable to nothing, but the leak does not go through the handle at all — it
+happens inside `Plain`, below it, where the static type is an ordinary class
+that knows nothing about resources. There is no local fix in `Plain`, which is
+why the constraint has to be on the chain.
+
+The same reasoning is why a `Resource` supertype is safe where an arbitrary one
+is not: it declares no method that returns `this`, so there is nothing to leak
+through. Code reuse that would otherwise want an ordinary base class goes
+through composition, or through a mixin whose `on` clause admits resources —
+where `this` is a borrow and the second-class rules apply.
+
 ---
 
 ## Specification

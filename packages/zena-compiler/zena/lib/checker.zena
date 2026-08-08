@@ -7944,9 +7944,47 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   // Resolve superclass.
   if (cd.superClass != null) {
     let superAnn = cd.superClass as TypeAnnotation;
+    // An extends clause names a class, not a value, so a resource class is
+    // spellable here — this is the one annotation position where the bare
+    // form is what is meant. Without this the "no unwrapped form" rule fires
+    // and then reports "Superclass must be a class type, got '<error>'",
+    // advising an `Own<R>` superclass, which is not a thing.
+    ctx.resourceMentionOk = true;
     let superType = resolveTypeAnnotation(ctx, superAnn);
+    ctx.resourceMentionOk = false;
     match (superType) {
       case ClassType as st: {
+        // Resource-ness is inherited, and only from a resource. Both
+        // directions of a mismatch are unsound, in opposite ways:
+        //
+        // - An ordinary subclass of a resource has a spellable bare type,
+        //   so it would alias a resource with no handle at all.
+        // - An ordinary SUPERclass types `this` as itself inside its own
+        //   methods, and that type is spellable, so any method it declares
+        //   can hand a bare alias back out. `Own<>`'s distinctness cannot
+        //   help: the leak happens inside the base, below the handle.
+        //
+        // See ownership.md §"Resource-ness is inherited".
+        if (cd.isResource && !st.isResource) {
+          ctx.error(
+            "The resource class '" + className + "' cannot extend the " +
+            "ordinary class '" + st.name + "'. Inside its own methods '" +
+            st.name + "' sees a bare, freely aliasable reference, which " +
+            "would escape the handle. Make '" + st.name + "' a resource " +
+            "class, or share the code through composition.",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        } else if (!cd.isResource && st.isResource) {
+          ctx.error(
+            "'" + className + "' extends the resource class '" + st.name +
+            "', so it is a resource too and must say so: write 'resource " +
+            "class " + className + "'. Otherwise its own bare type would " +
+            "name a resource that nothing tracks.",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        }
         if (st.isFinal || st.isCaseClass) {
           ctx.error(
             "Cannot extend final class '" + st.name + "'." +
