@@ -52,6 +52,28 @@ export interface Disposable {
 }
 
 /**
+ * The lifecycle accessors, symbol-keyed and deliberately **not exported**.
+ *
+ * Symbols are the only way to give a member a name no other code can write:
+ * calling one requires naming the interface that declares the symbol, so
+ * leaving `OwnState` unexported puts `state`/`setState` out of reach
+ * everywhere except this file. Reading the flag is harmless; writing it
+ * would let anything move a resource between regimes without going through
+ * `disown`/`adopt`, which is the whole check.
+ *
+ * A separate interface rather than members on `Resource` because `static
+ * symbol` is an interface-only declaration — the same arrangement
+ * `Disposable` already uses.
+ */
+interface OwnState {
+  static symbol state;
+  static symbol setState;
+
+  :state(): i32;
+  :setState(v: i32): void;
+}
+
+/**
  * The classes declared with the `resource` modifier — those holding
  * something the garbage collector cannot reclaim, and therefore carrying a
  * release obligation.
@@ -74,8 +96,33 @@ export interface Disposable {
  * They are separate properties — see ownership.md §"Resource-ness and
  * affineness are different properties" — so this bound restricts neither
  * `Own<T>` itself nor the ordinary classes it will eventually wrap.
+ *
+ * **The root of every resource hierarchy.** A `resource class` with no
+ * explicit superclass extends this one, so the lifecycle flag has an
+ * ordinary in-language home rather than a field codegen injects, and
+ * `disown`/`adopt` read it with an ordinary method call rather than an
+ * intrinsic. Being the root is also what makes ownership.md
+ * §"Resource-ness is inherited" cheap to satisfy: single inheritance means
+ * a resource cannot also extend an ordinary class, so the rule that its
+ * chain is all resources is structural rather than a check.
+ *
+ * Declaring no method that returns `this` is load-bearing, not incidental.
+ * That is the whole reason an arbitrary superclass is unsafe for a resource
+ * and this one is not.
  */
-export interface Resource {}
+export resource abstract class Resource implements OwnState {
+  /**
+   * Where the resource is in its lifecycle. Private, so a subclass cannot
+   * move itself between regimes behind `disown`/`adopt`'s back.
+   *
+   * Zero-initialized by `struct.new_default`, which is why `Owned` must be
+   * 0 — a fresh resource is owned for free, with no constructor work.
+   */
+  var #state: i32 = 0;
+
+  :OwnState.state(): i32 { return this.#state; }
+  :OwnState.setState(v: i32): void { this.#state = v; }
+}
 
 /**
  * The owning reference to a resource. Affine: it may be moved, returned or
@@ -116,9 +163,8 @@ export opaque type Borrow<T> = T;
 export opaque type Unmanaged<T> = T;
 
 /**
- * A resource's position in its lifecycle, tracked by a hidden flag that
- * every resource object carries. See ownership.md §"Disowning and
- * adopting".
+ * A resource's position in its lifecycle, held in `Resource`'s private
+ * `#state`. See ownership.md §"Disowning and adopting".
  *
  * The numbering is load-bearing at one point: `Owned` must be 0, because
  * an instance is allocated with every field defaulted and nothing
@@ -135,26 +181,6 @@ enum ResourceState {
   Moved = 2,
   Dropped = 3,
 }
-
-/**
- * Reads the lifecycle flag off a resource object.
- *
- * An intrinsic rather than an ordinary field access because a generic
- * body cannot name a member that only some instantiations have. After
- * monomorphization `T` is concrete, which is what makes this lowerable
- * at all.
- *
- * A `T` carrying no flag reads as `Owned`, which the `Resource` bound on
- * the callers makes unreachable: the flag is injected into exactly the
- * classes that bound admits. The fold remains because there is nowhere
- * to raise an error from — see ownership.md §"Disowning and adopting".
- */
-@intrinsic('resource.state')
-declare function __resourceState<T>(value: T): i32;
-
-/** Writes the lifecycle flag. A no-op on a `T` that carries none. */
-@intrinsic('resource.set_state')
-declare function __resourceSetState<T>(value: T, state: i32): void;
 
 /**
  * Raised when a regime change is handed a resource in the wrong state:
@@ -184,13 +210,20 @@ let stateName = (state: i32): String => {
  * compile errors, the flag is what keeps a double disown or a second
  * adopter from silently minting a second owner.
  */
-let requireState = <T>(value: T, expected: ResourceState, operation: String): void => {
-  let actual = __resourceState(value);
+function requireState(value: Borrow<Resource>, expected: ResourceState, operation: String): void {
+  let actual = value.:OwnState.state();
   if (actual != expected as i32) {
     throw new ResourceStateError(operation, stateName(actual),
         stateName(expected as i32));
   }
-};
+}
+
+/**
+ * Writes the flag. Non-generic for the same reason as `requireState`.
+ */
+function setResourceState(value: Borrow<Resource>, state: i32): void {
+  value.:OwnState.setState(state);
+}
 
 /**
  * Leaves the affine regime: takes the owning handle and hands back an
@@ -225,8 +258,8 @@ let requireState = <T>(value: T, expected: ResourceState, operation: String): vo
  * makes `disown` and `adopt` the only doors between the two regimes.
  */
 export function disown<T extends Resource>(value: Own<T>): Unmanaged<T> {
-  requireState(value, ResourceState.Owned, "disown");
-  __resourceSetState(value, ResourceState.Disowned as i32);
+  requireState(value as Borrow<Resource>, ResourceState.Owned, "disown");
+  setResourceState(value as Borrow<Resource>, ResourceState.Disowned as i32);
   return value as Unmanaged<T>;
 }
 
@@ -252,7 +285,7 @@ export function disown<T extends Resource>(value: Own<T>): Unmanaged<T> {
  * state, so the flag is the only defence here, by design.
  */
 export function adopt<T extends Resource>(value: Unmanaged<T>): Own<T> {
-  requireState(value, ResourceState.Disowned, "adopt");
-  __resourceSetState(value, ResourceState.Owned as i32);
+  requireState(value as Borrow<Resource>, ResourceState.Disowned, "adopt");
+  setResourceState(value as Borrow<Resource>, ResourceState.Owned as i32);
   return value as Own<T>;
 }

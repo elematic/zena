@@ -2725,8 +2725,20 @@ export final class Parser {
       this.#consume(TokenType.LBrace, "Expected '{' before class body");
     }
     
+    // A resource class with no explicit superclass extends `Resource`, the
+    // root that holds the lifecycle flag. Synthesized here rather than in
+    // the checker so that everything downstream — scope resolution, member
+    // inheritance, vtable layout, the struct's field list — sees an ordinary
+    // extends clause and needs no special case. `Resource` is its own root
+    // and must not extend itself.
+    var effectiveSuper = superClass;
+    if (isResource && effectiveSuper == null && name.name != "Resource") {
+      effectiveSuper = new NamedTypeAnnotation(
+        "Resource", null, this.#makeLocation(startToken));
+    }
+
     return new ClassDeclaration(
-      name, typeParameters, caseParams, superClass, mixins, implementsList,
+      name, typeParameters, caseParams, effectiveSuper, mixins, implementsList,
       body, exported, isFinal, isAbstract, isExtension, isSealed,
       if (sealedVariants.length > 0) { sealedVariants } else { null },
       onType, isResource, this.#makeLocation(startToken)

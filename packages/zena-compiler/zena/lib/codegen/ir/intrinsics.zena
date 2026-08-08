@@ -14,7 +14,6 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { CallExpression, Expression } from '../../ast.zena';
 import { ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeRef, ValTypeRefNull, refTargetOf, WasmType } from '../wasm.zena';
-import { RESOURCE_STATE_FIELD, RESOURCE_STATE_OWNED } from '../codegen-utils.zena';
 import { Type, arrayElementType, isSignedNarrowIntType } from '../../types.zena';
 import { WasmModule, WasmFunction, WasmArray, WasmStruct, isValSubtype, asWasmArray } from '../wasm-module.zena';
 import { ValTypeI64, ValTypeF32, ValTypeF64 } from '../wasm.zena';
@@ -293,71 +292,8 @@ let lowerWasiWriteString = (cx: LoweringContext, call: CallExpression): i32 => {
   return cx.b.callFunc(cx.b.addRef(new IrRefFunc(helper)), args, null);
 };
 
-/**
- * The struct behind a lowered value, if it carries the resource
- * lifecycle field. Null covers both "not a struct" and "a struct with
- * no flag" — the two cases the accessors below fold away.
- */
-let resourceStateStruct = (cx: LoweringContext, value: i32): WasmStruct | null => {
-  let targetOpt = refTargetOf(cx.valueTypeOf(value));
-  if (targetOpt == null) {
-    return null;
-  }
-  let target = targetOpt as WasmType;
-  if (!(target is WasmStruct)) {
-    return null;
-  }
-  let st = target as WasmStruct;
-  if (st.fieldIndexByName(RESOURCE_STATE_FIELD) < 0) {
-    return null;
-  }
-  return st;
-};
 
-/**
- * `resource.state` — read the lifecycle flag behind `disown`/`adopt`.
- *
- * A `T` with no flag reads as `owned`. Nothing should reach that: the
- * `Resource` bound on `disown`/`adopt` admits exactly the classes the
- * injection predicate in specialization.zena gives a field to, so the
- * two sets are the same by construction rather than by coincidence.
- * Keep them that way — widening one without the other reopens the case
- * where a second `adopt` mints a second exclusive owner in silence.
- *
- * A bail would be the louder choice, and does not work: an
- * unspecialized `requireState_spec_anyref` is emitted (dead — its only
- * caller is its own value wrapper, reachable solely through an
- * elem-declare list) and would trip it.
- */
-let lowerResourceState = (cx: LoweringContext, call: CallExpression): i32 => {
-  let i32vt = new ValTypeI32() as ValType;
-  let value = lowerExpr(cx, call.args[0], null);
-  let stOpt = resourceStateStruct(cx, value);
-  if (stOpt == null) {
-    return cx.b.constI32(RESOURCE_STATE_OWNED, i32vt);
-  }
-  let fieldRef = cx.b.addRef(new IrRefField(stOpt as WasmStruct, RESOURCE_STATE_FIELD));
-  return cx.b.emit(IrOp.struct_get, i32vt, value, fieldRef);
-};
 
-/**
- * `resource.set_state` — write the lifecycle flag. On a `T` with no
- * flag the store vanishes, for the reason above; both operands are
- * still lowered, so their side effects survive.
- */
-let lowerResourceSetState = (cx: LoweringContext, call: CallExpression): i32 => {
-  let value = lowerExpr(cx, call.args[0], null);
-  let state = lowerExpr(cx, call.args[1], null);
-  let stOpt = resourceStateStruct(cx, value);
-  if (stOpt == null) {
-    return -1;
-  }
-  let fieldRef = cx.b.addRef(new IrRefField(stOpt as WasmStruct, RESOURCE_STATE_FIELD));
-  let pair = new Array<i32>();
-  pair.push(value);
-  pair.push(state);
-  return cx.b.emitVoid(IrOp.struct_set, cx.b.pushExtra(pair), fieldRef);
-};
 
 /**
  * The single name -> lowering router for call-position intrinsics.
@@ -382,8 +318,6 @@ export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpres
     case '__array_new_empty': lowerArrayNewDefault(cx, call)
     case '__byte_array_new': lowerArrayNewDefault(cx, call)
     case '__byte_array_copy': lowerByteArrayCopy(cx, call)
-    case 'resource.state': lowerResourceState(cx, call)
-    case 'resource.set_state': lowerResourceSetState(cx, call)
     case 'i32.div_s': lowerInstr(cx, call, IrOp.i32_div_s, new ValTypeI32())
     case 'i32.div_u': lowerInstr(cx, call, IrOp.i32_div_u, new ValTypeI32())
     case 'i64.div_s': lowerInstr(cx, call, IrOp.i64_div_s, new ValTypeI64())

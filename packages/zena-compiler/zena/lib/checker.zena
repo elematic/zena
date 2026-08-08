@@ -789,7 +789,11 @@ final class CheckerContext {
       for (let tp in tps) {
         var constraint: Type | null = null;
         if (tp.constraint != null) {
+          // A bound names a class, not a value, so a resource class is
+          // spellable here for the same reason it is in an extends clause.
+          this.resourceMentionOk = true;
           constraint = resolveTypeAnnotation(this, tp.constraint as TypeAnnotation, false);
+          this.resourceMentionOk = false;
         }
         let tpType = this.getOrCreateTypeParameter(tp, constraint, null);
         this.declareTypeName(tp.name, tpType);
@@ -1333,8 +1337,11 @@ final class CheckerContext {
           for (var i = 0; i < declarationParams.length; i += 1) {
             let param = declarationParams[i];
             if (param.constraint != null) {
+              // See the matching flag in the type-parameter loop above.
+              this.resourceMentionOk = true;
               tempTypeParams[i].constraint =
                 resolveTypeAnnotation(this, param.constraint as TypeAnnotation, false);
+              this.resourceMentionOk = false;
             }
             if (param.defaultType != null) {
               tempTypeParams[i].defaultType =
@@ -3254,11 +3261,15 @@ let satisfiesResourceConstraint = (
   arg: Type,
   constraint: Type
 ): boolean => {
-  if (!(constraint is InterfaceType)) {
+  // `Resource` is an ordinary class, so a bare resource class satisfies the
+  // bound by the normal subtype rule and never reaches here. What this rule
+  // exists for is the argument arriving as a *handle*: a caller can only
+  // name `Own<R>`, and a handle is a distinct alias that widens to nothing.
+  if (!(constraint is ClassType)) {
     return false;
   }
-  let iface = constraint as InterfaceType;
-  if (iface.name != "Resource" || iface.sourcePath != "zena:ownership") {
+  let root = constraint as ClassType;
+  if (root.name != "Resource" || root.sourcePath != "zena:ownership") {
     return false;
   }
 
@@ -3270,7 +3281,18 @@ let satisfiesResourceConstraint = (
     t = inner as Type;
   }
 
-  return t is ClassType && (t as ClassType).isResource;
+  // The handle may wrap a type parameter rather than a class: inside
+  // `disown<T extends Resource>(value: Own<T>)`, passing `value` on to
+  // another bounded generic infers `Own<T>`, and what carries the evidence
+  // is `T`'s own bound. The caller does this for a bare type argument; the
+  // unwrap above is what makes it necessary again here.
+  if (t is TypeParameterType) {
+    let tp = t as TypeParameterType;
+    if (tp.constraint == null) { return false; }
+    t = tp.constraint as Type;
+  }
+
+  return isAssignableTo(ctx, t, constraint);
 };
 
 /**
@@ -7891,7 +7913,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       let tp = tps[tpi];
       var constraint: Type | null = null;
       if (tp.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
       }
       var defaultT: Type | null = null;
       if (tp.defaultType != null) {
@@ -9122,8 +9148,21 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
             if (classType.constructorType != null) {
               checkMethodBody(ctx, classType, classType.constructorType as FunctionType, md);
             }
-            // Derived class constructors must call super().
-            if (classType.superType != null && md.superInitializer == null && !classType.isCaseClass) {
+            // Derived class constructors must call super() — except when the
+            // superclass is a root nobody wrote. A `resource class` with no
+            // extends clause is given `Resource` as its superclass, and
+            // `Resource` declares no constructor, so there is nothing for
+            // `super()` to call and requiring it would be an artifact of the
+            // desugaring rather than anything the author owes.
+            var superNeedsInit = classType.superType != null;
+            if (superNeedsInit) {
+              let st = classType.superType as ClassType;
+              if (st.constructorType == null && st.name == "Resource" &&
+                  st.sourcePath == "zena:ownership") {
+                superNeedsInit = false;
+              }
+            }
+            if (superNeedsInit && md.superInitializer == null && !classType.isCaseClass) {
               ctx.error(
                 "Constructors in derived classes must call super().",
                 DiagnosticCode.IncompatibleTypes,
@@ -9823,7 +9862,11 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
     for (let tp in tps) {
       var constraint: Type | null = null;
       if (tp.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
       }
       let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
@@ -9886,7 +9929,11 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           for (let tp in tps) {
             var constraint: Type | null = null;
             if (tp.constraint != null) {
+              // A bound names a class, not a value, so a resource class is
+              // spellable here — same reason as an extends clause.
+              ctx.resourceMentionOk = true;
               constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+              ctx.resourceMentionOk = false;
             }
             let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
             ctx.declareTypeName(tp.name, tpType);
@@ -10139,7 +10186,11 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
     for (let tp in tps) {
       var constraint: Type | null = null;
       if (tp.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
       }
       let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
@@ -10557,7 +10608,11 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
       let tp = tps[tpi];
       var constraint: Type | null = null;
       if (tp.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
         constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
       }
       let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
@@ -12796,7 +12851,11 @@ let checkFunctionExpression = (
         let tp = tps[tpi];
         var constraint: Type | null = null;
         if (tp.constraint != null) {
-          constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+          // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
+        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
         }
         let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
         ctx.declareTypeName(tp.name, tpType);

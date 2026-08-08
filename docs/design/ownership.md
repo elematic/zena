@@ -698,18 +698,19 @@ This is checked, not unsafe. Every resource carries an
   expected condition, so throwing is right; a `tryAdopt(): Result<Own<T>, …>`
   can be added if a caller wants the branch.
 
-The flag is a hidden struct field on every resource class, not a declared
-member: a generic body cannot name a member only some instantiations have, so
-`disown` and `adopt` reach it through intrinsic accessors that resolve the
-field once `T` is concrete. It has to live on the object rather than the
-handle because the handles are erased — see §"Where the runtime state lives".
+The flag is an ordinary private field on `Resource`, the root class every
+resource class extends, read and written through symbol-keyed accessors on an
+unexported interface — so no code outside `zena:ownership` can name them, and
+in particular nothing else can move a resource between regimes. It has to live
+on the object rather than the handle because the handles are erased — see
+§"Where the runtime state lives".
 
-Both are bounded — `disown<T extends Resource>` — which is what makes their
-domain exactly the set of classes the field is injected into. Moving between
-the two regimes is only meaningful for something carrying a release
-obligation, so the bound also says something true: an ordinary class under
-`Own<C>` has no disposal duty to hand over. See §"`Resource` as a marker
-interface" for why that is a bound and not a supertype.
+Both functions are bounded — `disown<T extends Resource>` — so their domain is
+exactly the classes that inherit the field. Moving between the two regimes is
+only meaningful for something carrying a release obligation, so the bound also
+says something true: an ordinary class under `Own<C>` has no disposal duty to
+hand over. See §"`Resource` as a marker interface" for why this is a bound as
+well as a supertype.
 
 Two racing adopters therefore do not double-free — the loser gets a clear error.
 What entering `Unmanaged<T>` gives up is **leak-freedom** and _compile-time_
@@ -1157,36 +1158,25 @@ already-released resource is not the clean error it is specified to be —
 nothing releases anything until implicit drop (O3).
 
 The lifecycle flag itself is landed, so `adopt` does reject a second adopter
-and `disown` a second disowner. It is a hidden i32 struct field appended to
-every resource class, reached from `disown`/`adopt` through the
-`resource.state` / `resource.set_state` intrinsics. The intrinsics are what
-that costs: a generic body cannot name a member only some instantiations
-have, and after monomorphization `T` is concrete, which is what makes the
-accessors lowerable.
+and `disown` a second disowner. It is a private `i32` on `Resource`, the root
+every resource class extends, reached through symbol-keyed accessors that are
+not exported.
 
-The `Resource` bound on both functions is what ties the two halves together.
-Codegen injects the field where `isResource` holds; the bound admits exactly
-the same predicate; so a value reaching an accessor always carries a flag,
-by typing rather than by coincidence. Without it the sets agree only
-accidentally — `disown` would take any `Own<T>`, and the argument that no
-flagless value can reach it would rest on `new R(…)` being the only source of
-an `Own`, which stops being true the moment
-[uniqueness without release](#uniqueness-without-a-resource) supplies an
-`Own<C>` from a provably exclusive source. "An ordinary class has nothing to
-release" covers double free but not exclusivity, which is the whole of what
-`Own<C>` claims there, so a second `adopt` would have silently minted a second
-exclusive owner.
+That shape is what removed the machinery an earlier version needed. When
+`Resource` was a marker interface the flag had to be a struct field codegen
+injected, reached from `disown`/`adopt` through two intrinsics — a generic
+body cannot name a member only some instantiations have. A bound can: with
+`T extends Resource` the member is nameable in the generic body, so the
+intrinsics, the injection pass and the constant-fold for a flagless `T` all
+went away, and the set of classes carrying a flag is the set the bound admits
+by construction rather than by coincidence.
 
-The accessors still fold to "always owned" for a flagless `T`, which is now
-unreachable rather than merely unreached. It stays a fold instead of a hard
-error because there is no way to raise one: `requireState` gets an
-unspecialized `anyref` instantiation that nothing calls — its only caller is
-its own value wrapper, itself reachable only from an `elem declare` list — and
-a bail on the missing field fails the build there.
-
-The bound restricts nothing the lattice is meant to grow into. `Own<C>` over
-an ordinary class stays legal; it is only regime changes that are limited to
-things with a release obligation, which is what a regime change moves.
+One wrinkle survives, and it is not specific to ownership: RTA emits an
+erased `anyref` specialization of an exported generic, and a method call on a
+type parameter cannot lower there. So the state accessors are reached through
+small **non-generic** helpers over `Borrow<Resource>` rather than called
+directly on `T`. The same constraint is why an exported generic function
+cannot call `hash`/`==` on its type parameter today.
 
 **O0 unblocks the most.** The whole handle lattice ships there with runtime-only
 enforcement of move discipline, which freezes the _signatures_ immediately:
@@ -1219,18 +1209,28 @@ Only the two that look like obvious directions and need arguing against.
 
 Two different proposals travel under this name, and they have opposite answers.
 
-**As a bound, it is right, and it is what ships.** `Resource` is a marker
-interface that `resource class` satisfies with no `implements` clause, and
-`disown`/`adopt` take a `T extends Resource`. See §"Disowning and adopting".
+**As a bound, it is right — and it ends up being a base class.** `Resource`
+is the root every `resource class` extends, and `disown`/`adopt` take a
+`T extends Resource`. A base class beats an interface here for two reasons
+that only became clear once the flag needed a home. It gives the flag an
+ordinary in-language field instead of one codegen injects, and the accessors
+ordinary methods instead of intrinsics. And single inheritance makes
+§"Resource-ness is inherited" structural rather than a check: a resource
+already has a root, so it cannot also extend an ordinary class.
+
+The thing an interface would have offered — anyone can implement it — is
+exactly what is not wanted. `resource` stays the only door in.
 
 **As a replacement for the modifier, it does not work.** `resource` is not
 only a claim about a class's members; it changes how construction types its
 result. `new Descriptor(…)` yields an `Own<Descriptor>`, and the bare class
-name is not a spellable type at all. An interface cannot express either:
-implementing one does not change what `new` gives you, and a type that is
-already spellable does not stop being so because it gained a supertype. The
-modifier is a declaration-site rule about construction; the interface is a
-claim about membership in a set. Only the second is something a bound needs.
+name is not a spellable type at all. Neither follows from having a supertype:
+inheriting does not change what `new` gives you, and a spellable type does not
+stop being spellable because it gained a base class. The modifier is a
+declaration-site rule about construction; the supertype is a claim about
+membership in a set. Only the second is something a bound needs — which is
+why `Resource` is both, and why the compiler inserts it rather than asking
+authors to write `extends Resource` themselves.
 
 This section previously argued the stronger claim that a `Resource` interface
 would let affineness leak out through an upcast — `let x: Disposable = d`
