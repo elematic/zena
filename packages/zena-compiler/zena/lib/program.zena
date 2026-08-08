@@ -1,7 +1,7 @@
 import { Module, VariableDeclaration, FunctionDeclaration, MixinDeclaration, DeclareFunction, IdentifierPattern, NodeId } from './ast.zena';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
-import { SemanticModel, ProgramInterface, SemanticModelProgramUnit } from './semantic-model.zena';
+import { SemanticModel, ModelIndex } from './semantic-model.zena';
 import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
 
@@ -14,7 +14,7 @@ export type CompilationUnit = {
  * An immutable snapshot of a single compilation state.
  * Encapsulates the compilation units and entry point.
  */
-export final class Program implements ProgramInterface {
+export final class Program {
   // This array maintains topological ordering guarantees from the compiler
   // pipeline, which is necessary for sequential WebAssembly code emission.
   // Although a tree walk (DFS) over a module dependency graph could derive
@@ -24,13 +24,29 @@ export final class Program implements ProgramInterface {
   unitsByPath = new HashMap<String, CompilationUnit>();
   entryPoint: CompilationUnit | null;
 
-  nodeToModel = new HashMap<NodeId, SemanticModel>();
-  symbolToModel = new HashMap<SymbolId, SemanticModel>();
+  /**
+   * Who owns each node and binding. Not built here: it belongs to the
+   * check that produced these models, which is also what lets a model
+   * be shared by every compile in a batch without any of them writing
+   * to it. A `Program` over models from more than one check — which
+   * the compiler never builds — would see only the first's.
+   */
+  var modelIndex = new ModelIndex();
+
   mixinDeclarations = new HashMap<String, MixinDeclaration>();
   exportedSymbols = new HashMap<String, Array<Symbol>>();
   exportedFunctions = new HashMap<String, Array<DeclareFunction>>();
 
   new(this.units, this.entryPoint = null) {
+    // Adopted from the check, never built here. The empty index the
+    // field initializer supplies stands in only for a `Program` over
+    // models that were never checked, which is a test fixture.
+    if (this.units.length > 0) {
+      let fromCheck = this.units[0].model.index;
+      if (fromCheck != null) {
+        this.modelIndex = fromCheck as ModelIndex;
+      }
+    }
     for (let u in this.units) {
       this.unitsByPath[u.ast.path] = u;
       var lastSlash = -1;
@@ -44,52 +60,7 @@ export final class Program implements ProgramInterface {
         let stdName = fileName.sliceBytes(0, fileName.length - 5);
         this.unitsByPath["zena:" + stdName] = u;
       }
-      u.model.sourcePath = u.ast.path;
-      u.model.program = this;
-
-      // 1. Populate nodeToModel map from all node tables
-      let ntKeys = u.model.nodeTypes.map.keys();
-      while (let (true, k) = ntKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let raKeys = u.model.recordAdaptations.map.keys();
-      while (let (true, k) = raKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let iaKeys = u.model.interfaceAdaptations.map.keys();
-      while (let (true, k) = iaKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let faKeys = u.model.functionAdaptations.map.keys();
-      while (let (true, k) = faKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let ucKeys = u.model.unionCallCalleeTypes.map.keys();
-      while (let (true, k) = ucKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let acKeys = u.model.originalArgCounts.map.keys();
-      while (let (true, k) = acKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let doKeys = u.model.defaultArgsOwners.map.keys();
-      while (let (true, k) = doKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let dpKeys = u.model.defaultArgParamNames.map.keys();
-      while (let (true, k) = dpKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let saKeys = u.model.staticAccesses.map.keys();
-      while (let (true, k) = saKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      let pKeys = u.model.parents.map.keys();
-      while (let (true, k) = pKeys.next()) { this.nodeToModel[k] = u.model; }
-
-      if (u.model.symbols != null) {
-        let symKeys = (u.model.symbols as SymbolMap).byNode.map.keys();
-        while (let (true, k) = symKeys.next()) {
-          this.nodeToModel[k] = u.model;
-        }
-      }
-
-      // 2. Populate symbolToModel map
-      let btKeys = u.model.bindingTypes.keys();
-      while (let (true, k) = btKeys.next()) { this.symbolToModel[k] = u.model; }
-
-      // 3. Precompute mixin declarations and export maps
+      // Precompute mixin declarations and export maps
       for (let stmt in u.ast.body) {
         match (stmt) {
           case MixinDeclaration as md: {
@@ -176,11 +147,4 @@ export final class Program implements ProgramInterface {
     }
   }
 
-  getUnits(): Array<SemanticModelProgramUnit> {
-    let result = new Array<SemanticModelProgramUnit>();
-    for (let u in this.units) {
-      result.push({ path: u.ast.path, model: u.model });
-    }
-    return result;
-  }
 }

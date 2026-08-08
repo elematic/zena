@@ -104,7 +104,7 @@ import {
   integerLiteralFits,
   promoteNumeric, typeToString, requiredParameterCount, makeTypeIdGenerator, typeContainsTypeParameter
 } from './types.zena';
-import { SemanticModel, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency } from './semantic-model.zena';
+import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
@@ -178,6 +178,14 @@ export final class SharedCheckerState {
    * declaredNominalTypes.
    */
   typeParameterTypes = new HashMap<String, Type>();
+
+  /**
+   * Which model owns each node and binding checked under this state.
+   * Lives here because that is a property of the check: every
+   * `Program` built over these `CheckResult`s would compute the same
+   * index, and the models outlive any one compile.
+   */
+  modelIndex = new ModelIndex();
 }
 
 /**
@@ -2074,6 +2082,14 @@ export let checkModule = (
       ctx.model.setBindingType(exInfo, valueType);
     }
   }
+
+  // The model is complete: claim its nodes and bindings in the shared
+  // index, so that any later compile over this result can find the
+  // owner of a node without a `Program` writing a back-pointer into a
+  // model it shares with every other compile in the batch.
+  ctx.model.sourcePath = ast.path;
+  ctx.model.index = state.modelIndex;
+  state.modelIndex.register(ctx.model);
 
   return new CheckResult(ctx.model, ctx.diagnostics.diagnostics);
 };

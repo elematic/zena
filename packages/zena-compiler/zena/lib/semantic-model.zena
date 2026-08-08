@@ -52,10 +52,114 @@ export type SemanticModelProgramUnit = {
   model: SemanticModel,
 };
 
-export interface ProgramInterface {
-  getUnits(): Array<SemanticModelProgramUnit>;
-  nodeToModel: HashMap<NodeId, SemanticModel>;
-  symbolToModel: HashMap<SymbolId, SemanticModel>;
+/**
+ * Which model owns each node and each binding.
+ *
+ * A model answers questions about its own file; a query about a node
+ * from another file — cross-module inlining, a generic instantiated
+ * from elsewhere — needs to find the model that owns it, and this is
+ * that map.
+ *
+ * It belongs to the *check*, not to a compile. Every `Program` built
+ * over the same `CheckResult`s would compute exactly the same index,
+ * so building it per compile made each compile walk every node in the
+ * program (which the execution suite then paid 465 times over), and
+ * left `Program` writing a back-pointer into `SemanticModel`s it
+ * shares with every other compile in the batch. `SharedCheckerState`
+ * holds one of these for exactly as long as the models it indexes
+ * live, and a model is registered once, when its check finishes.
+ */
+export final class ModelIndex {
+  nodeToModel = new HashMap<NodeId, SemanticModel>();
+  symbolToModel = new HashMap<SymbolId, SemanticModel>();
+
+  /**
+   * The model that currently speaks for each file.
+   *
+   * A cycle-driven re-check (`checkCompilation`'s second pass) replaces
+   * a file's model, and the superseded one must stop answering: its
+   * types were inferred before the back edge resolved, which is the
+   * whole reason for the second pass. Re-registering the replacement
+   * overwrites its claims node by node, but a node the first pass
+   * typed and the second did not would otherwise be left pointing at
+   * the dead model — so ownership is checked against this rather than
+   * assumed from the map. Missing is the right answer there; a
+   * superseded type is not.
+   */
+  currentByPath = new HashMap<String, SemanticModel>();
+
+  /** The live model owning `id`, or null if nothing current owns it. */
+  ownerOfNode(id: NodeId): SemanticModel | null {
+    if (let (true, m) = this.nodeToModel.get(id)) {
+      return this.#ifCurrent(m);
+    }
+    return null;
+  }
+
+  /** The live model owning the binding `id`, or null. */
+  ownerOfBinding(id: SymbolId): SemanticModel | null {
+    if (let (true, m) = this.symbolToModel.get(id)) {
+      return this.#ifCurrent(m);
+    }
+    return null;
+  }
+
+  #ifCurrent(m: SemanticModel): SemanticModel | null {
+    if (let (true, current) = this.currentByPath.get(m.sourcePath)) {
+      if (current != m) {
+        return null;
+      }
+    }
+    return m;
+  }
+
+  /**
+   * Claims every node and binding `model` knows about, and makes it the
+   * model for its file. Nodes are keyed by the AST, which the parse
+   * cache keeps stable across checks, so a re-check's claims land on
+   * the same keys and the latest check wins.
+   */
+  register(model: SemanticModel): void {
+    this.currentByPath[model.sourcePath] = model;
+
+    let ntKeys = model.nodeTypes.map.keys();
+    while (let (true, k) = ntKeys.next()) { this.nodeToModel[k] = model; }
+
+    let raKeys = model.recordAdaptations.map.keys();
+    while (let (true, k) = raKeys.next()) { this.nodeToModel[k] = model; }
+
+    let iaKeys = model.interfaceAdaptations.map.keys();
+    while (let (true, k) = iaKeys.next()) { this.nodeToModel[k] = model; }
+
+    let faKeys = model.functionAdaptations.map.keys();
+    while (let (true, k) = faKeys.next()) { this.nodeToModel[k] = model; }
+
+    let ucKeys = model.unionCallCalleeTypes.map.keys();
+    while (let (true, k) = ucKeys.next()) { this.nodeToModel[k] = model; }
+
+    let acKeys = model.originalArgCounts.map.keys();
+    while (let (true, k) = acKeys.next()) { this.nodeToModel[k] = model; }
+
+    let doKeys = model.defaultArgsOwners.map.keys();
+    while (let (true, k) = doKeys.next()) { this.nodeToModel[k] = model; }
+
+    let dpKeys = model.defaultArgParamNames.map.keys();
+    while (let (true, k) = dpKeys.next()) { this.nodeToModel[k] = model; }
+
+    let saKeys = model.staticAccesses.map.keys();
+    while (let (true, k) = saKeys.next()) { this.nodeToModel[k] = model; }
+
+    let pKeys = model.parents.map.keys();
+    while (let (true, k) = pKeys.next()) { this.nodeToModel[k] = model; }
+
+    if (model.symbols != null) {
+      let symKeys = (model.symbols as SymbolMap).byNode.map.keys();
+      while (let (true, k) = symKeys.next()) { this.nodeToModel[k] = model; }
+    }
+
+    let btKeys = model.bindingTypes.keys();
+    while (let (true, k) = btKeys.next()) { this.symbolToModel[k] = model; }
+  }
 }
 
 export final class RecordAdaptation {
@@ -81,7 +185,13 @@ export final class FunctionAdaptation {
 
 export final class SemanticModel {
   var typeIdGenerator: IdGenerator<TypeId> | null = null;
-  var program: ProgramInterface | null = null;
+  /**
+   * The index that can name the owner of a node this model does not
+   * own. Set once, when this model's check finishes; never by a
+   * compile, which is why two compiles over these models cannot fight
+   * over it.
+   */
+  var index: ModelIndex | null = null;
   var sourcePath: String = "";
 
   /**
@@ -109,12 +219,10 @@ export final class SemanticModel {
   getRecordAdaptation(node: Node): RecordAdaptation | null {
     let t = this.getRecordAdaptationDirect(node);
     if (t != null) return t;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getRecordAdaptationDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getRecordAdaptationDirect(node);
       }
     }
     return null;
@@ -153,12 +261,10 @@ export final class SemanticModel {
   getResolvedOverload(node: Node): FunctionType | null {
     let t = this.getResolvedOverloadDirect(node);
     if (t != null) return t;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getResolvedOverloadDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getResolvedOverloadDirect(node);
       }
     }
     return null;
@@ -174,12 +280,10 @@ export final class SemanticModel {
   getInterfaceAdaptation(node: Node): InterfaceAdaptation | null {
     let t = this.getInterfaceAdaptationDirect(node);
     if (t != null) return t;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getInterfaceAdaptationDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getInterfaceAdaptationDirect(node);
       }
     }
     return null;
@@ -204,12 +308,10 @@ export final class SemanticModel {
   getFunctionAdaptation(node: Node): FunctionAdaptation | null {
     let t = this.getFunctionAdaptationDirect(node);
     if (t != null) return t;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getFunctionAdaptationDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getFunctionAdaptationDirect(node);
       }
     }
     return null;
@@ -234,12 +336,10 @@ export final class SemanticModel {
   getUnionCallCalleeType(node: Node): UnionType | null {
     let t = this.getUnionCallCalleeTypeDirect(node);
     if (t != null) return t;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getUnionCallCalleeTypeDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getUnionCallCalleeTypeDirect(node);
       }
     }
     return null;
@@ -264,12 +364,10 @@ export final class SemanticModel {
   getOriginalArgCount(node: Node): i32 {
     let c = this.getOriginalArgCountDirect(node);
     if (c != -1) return c;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getOriginalArgCountDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getOriginalArgCountDirect(node);
       }
     }
     return -1;
@@ -294,12 +392,10 @@ export final class SemanticModel {
   getDefaultArgsOwner(node: Node): Type | null {
     let t = this.getDefaultArgsOwnerDirect(node);
     if (t != null) return t;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getDefaultArgsOwnerDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getDefaultArgsOwnerDirect(node);
       }
     }
     return null;
@@ -324,12 +420,10 @@ export final class SemanticModel {
   getDefaultArgParamNames(node: Node): Array<String> | null {
     let ns = this.getDefaultArgParamNamesDirect(node);
     if (ns != null) return ns;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getDefaultArgParamNamesDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getDefaultArgParamNamesDirect(node);
       }
     }
     return null;
@@ -353,12 +447,10 @@ export final class SemanticModel {
 
   isStaticAccess(node: Node): boolean {
     if (this.isStaticAccessDirect(node)) return true;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.isStaticAccessDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).isStaticAccessDirect(node);
       }
     }
     return false;
@@ -434,12 +526,10 @@ export final class SemanticModel {
   getParent(child: Node): Node | null {
     let p = this.getParentDirect(child);
     if (p != null) return p;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(child.id)) {
-        if (model != this) {
-          return model.getParentDirect(child);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(child.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getParentDirect(child);
       }
     }
     return null;
@@ -462,12 +552,10 @@ export final class SemanticModel {
   resolve(node: Node): Symbol | null {
     let sym = this.resolveDirect(node);
     if (sym != null) return sym;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.resolveDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).resolveDirect(node);
       }
     }
     return null;
@@ -501,12 +589,10 @@ export final class SemanticModel {
   getNodeType(node: Node): Type | null {
     let t = this.getNodeTypeDirect(node);
     if (t != null) return t;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.nodeToModel.get(node.id)) {
-        if (model != this) {
-          return model.getNodeTypeDirect(node);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getNodeTypeDirect(node);
       }
     }
     return null;
@@ -538,12 +624,10 @@ export final class SemanticModel {
   getBindingType(info: Symbol): Type | null {
     let t = this.getBindingTypeDirect(info);
     if (t != null) return t;
-    if (this.program != null) {
-      let prog = this.program as ProgramInterface;
-      if (let (true, model) = prog.symbolToModel.get(info.id)) {
-        if (model != this) {
-          return model.getBindingTypeDirect(info);
-        }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfBinding(info.id);
+      if (owner != null && owner as SemanticModel != this) {
+        return (owner as SemanticModel).getBindingTypeDirect(info);
       }
     }
     return null;

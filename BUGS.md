@@ -104,30 +104,23 @@ immediately trying to fix it (which can pollute the current task's context).
   ordering. Every failure attributed to position came from the probe
   calling `invalidate`.
 
-### `Program` writes into `SemanticModel`s it does not own
+### `resetWasmTypeUids` is a module-global plus a reset
 
 - **Found**: 2026-08-07, turning on batch compilation.
-- **Severity**: low today, blocking for a concurrent compiler.
-- **Details**: `Program`'s constructor does `u.model.program = this` and
-  `u.model.sourcePath = ...` for every unit (`lib/program.zena` ~line
-  48), and `ModuleGenerator.compile` repeats the first. Models are
-  shared across compiles whenever check results are carried forward —
-  which is exactly what batch compilation does — so the field belongs to
-  neither `Program`. Sequentially it is harmless, since each `Program`
-  is built and consumed before the next exists, but two in-flight
-  `Program`s would fight over it, and that is what an async or
-  incremental compiler needs.
-- **What it is for**: `SemanticModel.program` is read by ~13 getters,
-  and only as a fallback — "this node is not mine, ask the program which
-  model owns it". The index behind it (`nodeToModel`/`symbolToModel`) is
-  a property of the _check_, not of the compile: every `Program` over
-  the same check results computes the same one. `SharedCheckerState`
-  already has that lifetime, so hanging the index there and dropping the
-  back-pointer would fix the ownership and delete a per-compile walk
-  over every node in the program — currently paid 465 times over by the
-  execution suite. The ~113 codegen call sites keep the same shape.
-- **Same class of thing**: `resetWasmTypeUids` in `codegen/wasm.zena` is
-  still a module-global plus a reset, and is owed the same treatment.
+- **Severity**: low today — `ModuleGenerator.compile` calls the reset
+  first thing, and `multi-entrypoint-codegen_test.zena` guards that it
+  keeps doing so. Blocking for a concurrent compiler, where two module
+  passes in flight would share and restart one counter.
+- **Details**: `_nextWasmTypeUid` in `codegen/wasm.zena` is module
+  state, and `WasmType.uid` reads it from a field initializer. Since
+  `uid` is `hashCode`, it orders every hash container keyed by a
+  `WasmType`, and that order reaches the emitted bytes — which is why
+  the reset exists at all. State whose lifetime is the compile belongs
+  on the object with that lifetime (`WasmModule`, as #200 did for
+  codegen's class caches, or `SharedCheckerState` as the node→model
+  index now does). The obstacle is that a field initializer cannot see
+  the module, so every `WasmType` construction site would have to be
+  handed one.
 
 ### Codegen emits a spurious value-wrapper, and which one moves with hash order
 
