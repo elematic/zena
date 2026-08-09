@@ -662,6 +662,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (ret is ClassType) {
       this.registerAsyncFuture(ret as ClassType, model, true);
     }
+    // The async ramp and the async-main wrapper reach
+    // `zena:async.drainMicrotasks` through `getStdlibFunc`, so there is
+    // no call node for RTA to find it by — async.zena throws outright
+    // if it was not reached. Root it from the async function that
+    // implies it, rather than from every program.
+    this.queueStdlibFunction('zena:async', 'drainMicrotasks');
   }
 
   /**
@@ -1688,6 +1694,17 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 
                 for (let key in exports.keys()) {
                   if (let (true, exportSym) = exports.get(key)) {
+                    // `import * as ns` takes a reference to every
+                    // export, so each one is a root. This used to lean
+                    // on the target module's globals already having
+                    // been walked as checkable roots; once a library
+                    // unit is only visited when something reaches it,
+                    // the namespace object was built with nothing in
+                    // it and calling through it trapped on a null
+                    // reference.
+                    let exportTarget = (exportSym as Symbol).resolveTarget();
+                    this.pass.queueReferrer(new Referrer(true, exportTarget.id,
+                        -1, targetUnit.model, null, true));
                     if (this.pass.wasm.functionMap.has(exportSym.id)) {
                       let f = this.pass.wasm.functionMap[exportSym.id];
                       f.isReferenceTaken = true;

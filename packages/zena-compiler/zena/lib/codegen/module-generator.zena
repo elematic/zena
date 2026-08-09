@@ -233,6 +233,16 @@ export final class ModuleGenerator {
     
     var needsStartFunction = stringClass != null && wasm.stringLiterals.size > 0;
     for (let g in wasm.globals) {
+      // A namespace-import object is built in __start (one closure
+      // pair per exported function, exported globals by value), but it
+      // carries no initExpr to say so. It got a start function for
+      // free while some stdlib global always had a non-literal
+      // initializer; once a library unit is only walked when something
+      // reaches it, that stopped being true and the object stayed
+      // null.
+      if (g.namespaceImport != null) {
+        needsStartFunction = true;
+      }
       if (g.initExpr != null) {
         let isLiteral = match (g.initExpr as Expression) {
           case NumberLiteral: true

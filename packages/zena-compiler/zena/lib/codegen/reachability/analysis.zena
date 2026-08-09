@@ -664,6 +664,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     for (let unit in this.program.units) {
       let model = unit.model;
       let isEntry = this.program.entryPoint != null && unit.ast.path == (this.program.entryPoint as CompilationUnit).ast.path;
+      // The root set is `main` plus the entry unit's exports. Every
+      // other unit is a library: its globals are roots only if
+      // something reaches them. Queuing them all — which is what this
+      // did — made the checkable traversal walk the entire stdlib, and
+      // walking it instantiates.
+      if (!isEntry) {
+        continue;
+      }
       let gKeys = model.globalDeclarations.keys();
       while (let (true, id) = gKeys.next()) {
         let decl = model.globalDeclarations[id];

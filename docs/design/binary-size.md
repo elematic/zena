@@ -315,6 +315,50 @@ comment saying why.
 The snapshot churn is type renumbering only; function and global
 counts are identical in every snapshot.
 
+## 5. RTA now roots only the entry unit (fixed)
+
+The loop labelled "RTA Roots" queued **every global of every unit** —
+the whole stdlib — as a referrer, reachable for `main` and the entry
+unit's exports and checkable for everything else. That is not a root
+set; it is a whole-program walk, and a checkable walk still
+instantiates (see below).
+
+A library unit's globals are now roots only when something reaches
+them.
+
+| | before | after |
+| --- | ---: | ---: |
+| minimal | 10,457 | **8,540** |
+| array-sum | 15,947 | **13,928** |
+| types (minimal) | 3,400 (50) | 2,760 (29) |
+
+`return 42` now has **no imports, no memory, no data section and no
+start function** — 66 functions, all `String` and `FixedArray`, and
+nothing else.
+
+Three things had been leaning on the whole-program walk, each a real
+bug once it was gone:
+
+- `zena:async.drainMicrotasks` is resolved by name from the async ramp
+  (`getStdlibFunc`), so nothing rooted it. Rooted from the async
+  function that implies it — the same treatment template helpers got.
+- `import * as ns` built its namespace object from
+  `wasm.functionMap`, which is only populated for globals something
+  discovered. The import itself now roots every export it names.
+- a namespace-import global is initialized in `__start`, but carries
+  no `initExpr` to say so, so `needsStartFunction` missed it. It had a
+  start function for free as long as *some* stdlib global had a
+  non-literal initializer. Without one the object stayed null and
+  calling through it trapped.
+
+The last one is the shape to watch for: the whole-program walk was
+holding up correctness in places nothing had noticed, because
+something incidental was always true.
+
+Two snapshots lose two functions each — synthesized record-dispatch
+getters for a dispatch that only existed because the stdlib was being
+walked. Imports and every other function are unchanged.
+
 ## The ceiling, measured
 
 A spike (branch `spike-entry-only-rta-roots`, **not landable** — 68 of
@@ -625,8 +669,8 @@ budgets, to be moved DOWN only:
 
 | fixture | what it adds | bytes |
 | --- | --- | ---: |
-| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 10,457 |
-| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 15,947 |
+| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 8,540 |
+| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 13,928 |
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the second fixture.
