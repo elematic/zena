@@ -1,8 +1,10 @@
 # Binary size of a minimal program
 
-**Status**: 🚧 in progress. The name section is gated and the
-extension-class leak is closed (33,875 → 15,328 bytes). The remaining
-leaks are diagnosed below with measurements.
+**Status**: 🚧 in progress. **33,875 → 11,530 bytes** so far: the name
+section is gated, the extension-class leak is closed, and template
+helpers are rooted from the templates that need them. The remaining
+80 functions are `String` and four `FixedArray` specializations, held
+alive by one coupling described under "The keystone" below.
 
 The reference program throughout is the smallest thing Zena can
 compile:
@@ -237,7 +239,10 @@ finite and only grows, so it terminates.
 
 ## What is left, and why
 
-The 99 remaining functions, by origin (blame tree again):
+After the template fix, 80 functions remain — 21 `String` methods, 40
+across four `FixedArray` specializations, 6 `WasiConsole`, and the
+rest scaffolding. The blame tree at the 99-function point, which still
+explains all of it:
 
 ```
 R <phase:tInit>                    -> String_s247
@@ -276,6 +281,63 @@ Only **seven** instantiations now, and they explain everything left:
    traversals of stdlib globals (`console`, `none`). A checkable
    traversal is supposed to discover types without reaching code;
    `instantiateClassType` is not phase-gated, so it reaches.
+
+## The keystone: `hasInst` and the class vtable
+
+Everything still in the module traces back to a single coupling.
+
+`registerClassMethod` force-reaches every method it registers as soon
+as the class is instantiated. That is not gratuitous: the class vtable
+global is a `struct.new` over one `ref.func` per slot, **every**
+non-static, non-private, non-constructor method gets a slot, and
+`Pass 1.5` does its own `markFunctionReached` per slot. So the vtable
+would reach them all even if the force-reach were removed — and
+removing the force-reach alone breaks the self-compile immediately.
+
+The two have to move together:
+
+1. a method gets a class-vtable slot only if something can dispatch on
+   it through that vtable — i.e. the class has a superclass or a
+   subclass. `String` and `FixedArray<T>` are both `final` with no
+   superclass, so their class vtables (15 and 16 slots) can be empty.
+   Interface dispatch is unaffected: it goes through
+   `classInterfaceVTables`, built separately and gated on
+   `usedInterfaceAdaptations`.
+2. the force-reach goes, and every call site that relied on it has to
+   root its own callee.
+
+Step 2 is the work, and it is mechanical but wide, because
+**registering a method is not reaching it** (3a). Four sites that
+registered without reaching have already been found and fixed —
+`registerGenericMethodUse`, `discoverNodeTypes`' generic-method arm,
+`queuePrivateMethod`'s generic branch, and the method-node referrer in
+`processQueues`. Each surfaced only when the over-approximation that
+hid it was removed, one compile error at a time.
+
+### Why phase-gating instantiation is not the shortcut it looks like
+
+`instantiateClassType` is not phase-gated, so a *checkable* traversal —
+one whose whole purpose is to discover types without reaching code —
+instantiates. Tracing the seven surviving instantiations showed all
+three junk ones (`String`, `WasiConsole`, `None`) coming from checkable
+traversals of stdlib globals, which looks like a two-line fix.
+
+It is not. Gating it:
+
+- gained only 279 bytes on `minimal.zena` (`String` is re-instantiated
+  from a reachable traversal anyway, so its 21 methods and all four
+  array specializations stay),
+- **cost 1,523 bytes on `array-sum.zena`**, and
+- made `enums/string.zena` fail *only under the batched test runner* —
+  it passes standalone. That is order-dependence across entry points
+  sharing one `Compiler`, the same hazard as the batch-position
+  nondeterminism already documented in
+  `packages/zena-compiler/CONTEXT.md`.
+
+Built, measured, reverted. Phase-gating is probably still right, but it
+has to come *after* the keystone, not before it — while the force-reach
+is load-bearing, moving instantiation just moves which
+over-approximation fires.
 
 ## Measured dead ends
 
@@ -317,18 +379,20 @@ Interface dispatch does not need these: it goes through
 
 In dependency order:
 
-1. **Shrink the class vtable to genuinely-virtual slots**, and drop
-   the `hasInst` force-reach in the same change (see the dead ends
-   above). This is the largest remaining item: it is what keeps ~21
-   `String` methods and ~10 methods per array specialization alive in
-   a program that calls none of them.
+1. **The keystone** (above): shrink the class vtable to
+   genuinely-virtual slots and drop the `hasInst` force-reach in the
+   same change, rooting each call site that relied on it. Everything
+   below is either blocked on this or worth little without it.
 2. **Make instantiation per-specialization**, not per-generic — with
    the use-side gaps closed first, the way 3a closed them for generic
    methods. Worth roughly three of the four array specializations.
 3. **Do not instantiate `String` unconditionally.** It should follow
    from a string literal, a string-typed value, or a `+` on strings.
+   Removing the unconditional call alone is worth 134 bytes; `String`
+   is re-instantiated elsewhere until the keystone lands.
 4. **Phase-gate `instantiateClassType`** so a checkable traversal
-   cannot instantiate (`WasiConsole`, `None`).
+   cannot instantiate (`WasiConsole`, `None`) — *after* the keystone,
+   for the reasons measured above.
 5. **Separate struct layout from method registration** in
    `populateClassStructAndMethods`, so a discovered-only class can get
    its fields without its methods (2c). Blunt-skipping it does not
@@ -350,8 +414,8 @@ budgets, to be moved DOWN only:
 
 | fixture | what it adds | bytes |
 | --- | --- | ---: |
-| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 15,328 |
-| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 20,671 |
+| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 11,530 |
+| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 16,823 |
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the second fixture.
