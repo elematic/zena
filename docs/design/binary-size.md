@@ -397,6 +397,37 @@ with it, which the same work exposed: if `FixedArray<String>` exists
 then String values exist and its `contains` lowers to String's `==`.
 That held by accident while String was instantiated unconditionally.
 
+### Catching up is not only missing structs: erased field bakes
+
+The fixpoint surfaced a second ordering hole, found by CI on the
+wit-parser example and not by the compiler suite. When a struct is
+laid out, a field whose class type has no registration yet is baked as
+the `structref` fallback (`typeToValType`'s ClassType miss). Before
+this change that was self-consistent: the class stayed unregistered,
+every use of it went through the generic template's equally-erased
+signatures, and the module was uniformly imprecise but valid.
+
+The layout fixpoint populates more classes during Pass 1.05, each
+population queues more referrers, and a body that used to be walked in
+the *RTA-inactive* final drain — where `instantiateClassType` no-ops —
+now gets walked while RTA is still active. `JsonBuilder`'s constructor
+(`new Array<i32>()`) is exactly that: `Array<i32>` becomes properly
+instantiated *after* `JsonBuilder`'s struct baked `#stack` as
+`structref`, its `pop` gets a precise `ref null Array<i32>` receiver,
+and lowering fails receiver conformance —
+`zir unsupported: method receiver type` — half a compiler away from
+the bake that caused it.
+
+So the settle step re-resolves as well as re-populates: every field
+baked `structref` for a class-typed member is recorded
+(`ErasedFieldBake`), and once discovery settles,
+`refreshErasedFieldTypes` recomputes each one against the final
+registrations, in place. In place matters: inherited fields are shared
+`WasmField` instances between super- and subclass structs, and both
+must see the write. A field whose class still has no registration
+stays erased, which is the old consistent behavior. Byte-for-byte
+size-neutral on both fixtures.
+
 ## The one root that is left, and why it does not simply come out
 
 `return 42` is 8,540 bytes and 66 functions. **All of it hangs off one

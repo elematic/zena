@@ -15,13 +15,53 @@ import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, 
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
 
 /**
+ * A struct field whose class type was not yet registered when the
+ * struct was laid out, so its valtype was baked as the `structref`
+ * fallback. Discovery can register (and instantiate) the class AFTER
+ * that bake — a body walked late does exactly this — and then the
+ * class's method signatures are precise while the field is erased,
+ * which fails receiver conformance in lowering. Recorded at the bake
+ * site and re-resolved in place once discovery settles.
+ */
+final class ErasedFieldBake {
+  field: WasmField;
+  fieldType: Type;
+  new(this.field, this.fieldType);
+}
+
+/**
  * Specializer handles the monomorphization of generic classes and functions,
  * generating runtime specialized structures, vtables, and method wrappers.
  */
 export final class Specializer implements SpecializerInterface {
   pass: ReachabilityContext;
 
+  /** Fields baked erased before their class type existed; see ErasedFieldBake. */
+  #erasedFieldBakes = new Array<ErasedFieldBake>();
+
   new(this.pass);
+
+  /**
+   * Re-resolves fields that were baked as `structref` because their
+   * class type had no registration at layout time. Runs once discovery
+   * has fully settled — the same moment the settled layout pass
+   * catches structs that were instantiated late — so a field of a
+   * late-registered class agrees with that class's (now precise)
+   * method signatures. A field whose type still does not resolve stays
+   * erased, which is the pre-existing consistent-erasure behavior.
+   *
+   * Mutates the WasmField in place: inherited fields are shared
+   * instances between super- and subclass structs, and the write must
+   * be visible through both.
+   */
+  refreshErasedFieldTypes(): void {
+    for (let bake in this.#erasedFieldBakes) {
+      let valType = typeToValType(this.pass.wasm, bake.fieldType);
+      if (valType is ValTypeRef) {
+        bake.field.type = new ValTypeRefNull((valType as ValTypeRef).target);
+      }
+    }
+  }
 
   instantiateClassType(classType: ClassType, model: SemanticModel): void {
     if (!this.pass.isRtaActive) {
@@ -1493,7 +1533,16 @@ export final class Specializer implements SpecializerInterface {
           case ValTypeRef {target}: new ValTypeRefNull(target)
           case _: valType
         };
-        fields.push(new WasmField(fName, nullableValType, true));
+        let wf = new WasmField(fName, nullableValType, true);
+        // `structref` for a class-typed field means the class had no
+        // registration yet — discovery may still produce one, and then
+        // its method signatures would be precise while this field is
+        // erased. Remember the bake so it can be re-resolved once
+        // discovery settles.
+        if (valType is ValTypeStructRef && resolvedType is ClassType) {
+          this.#erasedFieldBakes.push(new ErasedFieldBake(wf, resolvedType));
+        }
+        fields.push(wf);
       }
     }
     for (let f in fields) {

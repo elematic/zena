@@ -1180,6 +1180,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // new class cannot get a struct, so becoming instantiated now is a
     // bug, and a named one.
     this.#layoutClassStructs(populated);
+    // Catching up is not only missing structs: a struct laid out early
+    // can hold a field baked `structref` for a class a later walk then
+    // registered — whose method signatures are precise, so the erased
+    // field fails receiver conformance in lowering. Re-resolve those
+    // fields against the settled registrations.
+    this.specializer.refreshErasedFieldTypes();
     this.instantiationClosed = true;
 
     this.isRtaActive = false;
