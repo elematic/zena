@@ -230,10 +230,13 @@ This produces stack traces like `ScopeBuilder.#processClassBody → Compiler.com
 instead of `wasm-function[2621]`. Use `wasm-tools dump -d main.wasm` to inspect
 specific bytecode offsets from the trace.
 
-When using the `CodeGenerator` API directly, pass `{debug: true}` in
-`CodegenOptions`. The test helpers (`compileAndInstantiate`, `compileAndRun`,
-`compileToWasm`) in `test/codegen/utils.ts` already enable `debug: true` by
-default, so test stack traces are always readable.
+The name section is **opt-in**: it is debug metadata, and for a small module
+the largest thing in it (9.9KB of a 34KB hello-world), so a plain `build`
+leaves it out. `-g` reaches the compiler as `ZENA_DEBUG_NAMES`; using
+`BinaryGenerator` directly, pass `debugNames = true` as its third argument.
+The compiler's own builds, the test wasms and the portable-execution runner
+all keep names, so their stack traces are always readable. See
+`docs/design/binary-size.md`.
 
 ### Node Version
 

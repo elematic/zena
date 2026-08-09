@@ -5,6 +5,13 @@ compiler.
 
 **Status**: ✅ Implemented (declaration-level DCE)
 
+> ⚠️ The sizes below were measured on the TypeScript bootstrap compiler,
+> which has since been deleted, and its `CodegenOptions`-based API no
+> longer exists. On the self-hosted compiler the same minimal program is
+> two orders of magnitude larger, for reasons that are not DCE's:
+> see [binary-size.md](binary-size.md) for the current measurements and
+> the reachability leaks behind them.
+
 ## Goals
 
 1. **Minimal Binary Size**: The emitted WASM should only include code that is

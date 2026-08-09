@@ -81,7 +81,11 @@ let failed = false;
 for (const [label, src, dest] of targets) {
   console.log(`Building ${label}...`);
   try {
-    execSync(`"${zenaCli}" build "${src}" -o "${dest}"`, {
+    // -g: keep the name section. A trapping test prints a wasmtime
+    // backtrace, and `wasm-function[4764]` is not a diagnosis —
+    // backtrace_test.zena asserts on the symbolized form. Test wasms
+    // are throwaway, so the section costs nothing here.
+    execSync(`"${zenaCli}" -g build "${src}" -o "${dest}"`, {
       stdio: 'inherit', // Show compiler output so errors surface immediately.
       cwd: repoRoot,
       env,

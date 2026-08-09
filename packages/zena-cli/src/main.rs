@@ -539,6 +539,16 @@ fn compile_to_cache(
         wasi_builder.inherit_stderr();
     }
 
+    // `-g` asks for a debuggable module: the compiler emits a name section
+    // only when told to, so traps symbolize instead of printing
+    // wasm-function[N]. Passed as an env var rather than an argv flag
+    // because the checked-in bootstrap compiler predates the flag and would
+    // mistake an unknown `-g` for the input filename; an unknown env var it
+    // simply ignores. `debug` already keys the compile cache above.
+    if debug {
+        wasi_builder.env("ZENA_DEBUG_NAMES", "1");
+    }
+
         let wasi = wasi_builder
             .inherit_env()
             .args(&compiler_args)

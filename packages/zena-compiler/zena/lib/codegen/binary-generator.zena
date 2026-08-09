@@ -11,14 +11,20 @@ import { ModuleGenerator } from './module-generator.zena';
 export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
   target: String;
   zirStats: boolean;
+  /**
+   * Emit the `name` custom section. Off by default: the section is
+   * pure debug metadata and, for a small program, the largest thing in
+   * the module — 9.9KB of a 34KB hello-world. `-g` turns it on.
+   */
+  debugNames: boolean;
 
   backendName(): String { return 'wasm'; }
 
-  new(this.target = "zena-cli", this.zirStats = false);
+  new(this.target = "zena-cli", this.zirStats = false, this.debugNames = false);
 
   generate(program: Program): ByteBuffer {
     let bb = new ByteBuffer();
-    let emitter = new BinaryEmitter(bb);
+    let emitter = new BinaryEmitter(bb, this.debugNames);
     let generator = new ModuleGenerator(program, emitter, this.target, this.zirStats);
     generator.compile();
     return bb;

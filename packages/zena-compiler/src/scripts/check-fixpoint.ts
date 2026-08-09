@@ -40,7 +40,7 @@ const stageC = join(pkgDir, stageCRel);
 const COMPILER_ENV = 'ZENA_COMPILER_WASM';
 
 const build = (out: string, compiler: string | null) =>
-  execFileSync(zenaCli, ['build', entry, '-o', out], {
+  execFileSync(zenaCli, ['-g', 'build', entry, '-o', out], {
     cwd: pkgDir,
     stdio: 'pipe',
     env: {

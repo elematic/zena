@@ -1,0 +1,129 @@
+/**
+ * A minimal program must compile to a small module.
+ *
+ * This is a **ratchet**, not a snapshot. `export function main(): i32
+ * { return 42; }` needs no strings, no collections, no allocation and
+ * makes no calls, so every byte in its module arrived without the
+ * program asking. The budget below only ever moves DOWN; raising it
+ * means something started being emitted that a program with no code in
+ * it does not need, and that is the bug.
+ *
+ * It exists because nothing was watching. `dce_test.zena` asserts only
+ * that two programs compile to the *same* length, which stays true
+ * while both triple. Between the TypeScript bootstrap's 175 bytes and
+ * this test being written, the same program reached 33,875 — a name
+ * section emitted unconditionally, plus the whole of `String`,
+ * `FixedArray`/`ImmutableArray` at four element types (including
+ * `HashMap`'s internal entry type, in a program with no map), and
+ * `WasiConsole`. The reachability leaks behind that are diagnosed in
+ * docs/design/binary-size.md and are not all fixed; the budget is set
+ * where the compiler actually is, so it holds the line while they are.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { Array } from 'zena:array';
+import { CompilerHost } from '../lib/library-loader.zena';
+import {
+  Compiler, createCompiler, CompilerOptions, checkCompilation
+} from '../lib/compiler.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
+import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { i32ToString } from 'zena:string-convert';
+
+let stdlibRoot = 'packages/stdlib/zena';
+
+class PlainHost implements CompilerHost {
+  new();
+  readFile(path: String): String {
+    if (path.startsWith('zena:')) {
+      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+}
+
+/** Compiles to wasm the way `zena-cli build` does — names off. */
+let compile = (path: String): ByteArray => {
+  let host = new PlainHost();
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  let c = createCompiler(host, new CompilerOptions('zena-cli', stdlibRoot, packages));
+  let result = c.compile(path);
+  let checked = checkCompilation(result, null, false);
+  for (let diag in checked.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      throw new Error(`${path}: ${diag.message}`);
+    }
+  }
+  let entryAst = result.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) { entryUnit = unit; }
+    }
+  }
+  return new BinaryGenerator('zena-cli', false)
+    .generate(new Program(units, entryUnit))
+    .toByteArray();
+};
+
+let target = 'packages/zena-compiler/test-files/minimal.zena';
+
+/**
+ * Ratchet it down as reachability improves. Do not raise it without
+ * recording why in docs/design/binary-size.md — the number moving up
+ * is the signal this test exists to give.
+ */
+let budget = 24500;
+
+export let tests = suite('Binary size', (): void => {
+  test('a minimal program stays within its byte budget', (ctx: TestContext): void => {
+    let bytes = compile(target);
+    isTrue(bytes.length <= budget,
+      `${target} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
+      `${i32ToString(budget)}-byte budget. Something is being emitted that a ` +
+      `program with no code in it does not need — see docs/design/binary-size.md.`);
+  });
+
+  test('the name section is opt-in', (ctx: TestContext): void => {
+    // Debug metadata, and for a small module the largest thing in it.
+    // `-g` (ZENA_DEBUG_NAMES) turns it on; the default must not.
+    let plain = compile(target);
+    let named = new BinaryGenerator('zena-cli', false, true)
+      .generate(programOf(target))
+      .toByteArray();
+    isTrue(named.length > plain.length,
+      `the debugNames build is ${i32ToString(named.length)} bytes and the ` +
+      `default is ${i32ToString(plain.length)} — the default is carrying a ` +
+      `name section it should not.`);
+  });
+});
+
+/** The `Program` for a path, for a second generate() over the same input. */
+let programOf = (path: String): Program => {
+  let host = new PlainHost();
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  let c = createCompiler(host, new CompilerOptions('zena-cli', stdlibRoot, packages));
+  let result = c.compile(path);
+  let checked = checkCompilation(result, null, false);
+  let entryAst = result.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) { entryUnit = unit; }
+    }
+  }
+  return new Program(units, entryUnit);
+};

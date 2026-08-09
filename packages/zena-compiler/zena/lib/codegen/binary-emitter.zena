@@ -58,8 +58,14 @@ export final class BinaryEmitter implements WasmEmitter {
   var currentBuffer: ByteBuffer | null = null;
   var currentLocals: Array<ValType> | null = null;
   functionsList = new Array<WasmFunction>();
+  /**
+   * Emit the `name` custom section. Debug metadata only, and by far the
+   * largest section of a small module — so it is opt-in (`-g`) rather
+   * than unconditional.
+   */
+  debugNames: boolean;
   
-  new(this.mainBuffer);
+  new(this.mainBuffer, this.debugNames = false);
 
   // Module lifecycle
   emitModuleStart(): void {
@@ -400,6 +406,9 @@ export final class BinaryEmitter implements WasmEmitter {
   }
 
   emitModuleEnd(): void {
+    if (!this.debugNames) {
+      return;
+    }
     let namedFuncs = new Array<WasmFunction>();
     for (let f in this.functionsList) {
       var name = f.name;
