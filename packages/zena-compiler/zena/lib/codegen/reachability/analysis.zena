@@ -129,6 +129,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    */
   tryCellStructs = new Array<WasmStruct>();
 
+  /**
+   * Interfaces something is actually packed into — recorded when a
+   * class-interface vtable global is built. Their fat-pointer and
+   * vtable structs are referenced from lowered pack sites, which run
+   * after layout and so are invisible to signature-driven type
+   * reachability, exactly like closure structs.
+   */
+  usedInterfaceTypes = new Array<InterfaceType>();
+
   var currentReachable = true;
 
   parsedClassMethodRefs = new HashMap<String, ParsedMethodRef>();
@@ -1146,6 +1155,22 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let tLayout3 = performance.start("codegen-discovery-layout");
     
     this.isRtaActive = false;
+
+    // The type section is recomputed here rather than accumulated.
+    // `markTypeReached` runs all through discovery, so `emittedTypes`
+    // otherwise ends up as "every type anything ever looked at" — for
+    // `return 42` that is 59 types and a third of the module, most of
+    // them interface member signatures reached through vtable structs
+    // of interfaces the program never mentions. Everything the emitted
+    // module can actually reference is rooted below, and
+    // closeReachedTypes takes the transitive closure; a type that is
+    // genuinely needed and missing is a loud wasm validation failure,
+    // not a silent miscompile.
+    this.reachedTypesSet.clear();
+    while (this.emittedTypes.length > 0) {
+      let ignored = this.emittedTypes.pop();
+    }
+
     
     if (this.wasm.stringClass != null) {
       if (let (true, info) = this.wasm.classInfos.get(getClassKey(this.wasm.stringClass as ClassType))) {
@@ -1161,11 +1186,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     
-    for (let cKey in this.instantiatedSpecializedClasses) {
-      if (let (true, info) = this.wasm.classInfos.get(cKey as ClassKey)) {
-        this.markTypeReached(info.structType);
-        this.markTypeReached(info.vtableStructType);
-      }
+    // Every class with codegen state, not just the instantiated ones:
+    // a lowered body can name a class struct in a cast or a field read
+    // without the module ever constructing one, and bodies are lowered
+    // after this point. Still bounded by what codegen knows about,
+    // rather than everything discovery ever touched.
+    for (let cPair in this.wasm.classInfos) {
+      this.markTypeReached(cPair.value.structType);
+      this.markTypeReached(cPair.value.vtableStructType);
     }
     
     for (let g in this.wasm.globals) {
@@ -1190,6 +1218,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.ensureAllHelperFunctionsReached();
     this.processQueues();
 
+    for (let iface in this.usedInterfaceTypes) {
+      let iName = getInterfaceKey(iface);
+      if (this.wasm.interfaceStructs.has(iName)) {
+        this.markTypeReached(this.wasm.interfaceStructs[iName]);
+      }
+      if (this.wasm.interfaceVTableStructs.has(iName)) {
+        this.markTypeReached(this.wasm.interfaceVTableStructs[iName]);
+      }
+    }
+
     for (let t in this.wasm.tags) {
       this.markTypeReached(t.signature);
     }
@@ -1204,6 +1242,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (isReached) {
         reachedList.push(f);
         this.markTypeReached(f.signature);
+        // The captured-variable environment is referenced from the
+        // lowered body, not from the signature.
+        if (f.contextStruct != null) {
+          this.markTypeReached(f.contextStruct as WasmStruct);
+        }
       }
     }
     this.wasm.functions = reachedList;
@@ -1244,6 +1287,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     for (let cell in this.tryCellStructs) {
       this.markTypeReached(cell);
+    }
+    // Boxed tuples and records: named from lowered bodies only.
+    for (let anon in this.wasm.anonymousStructs) {
+      this.markTypeReached(anon);
     }
     this.closeReachedTypes();
     this.wasm.types = this.emittedTypes;
@@ -1386,6 +1433,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           );
           this.wasm.globals.push(vtableGlobal);
           this.wasm.classInterfaceVTables[key] = vtableGlobal;
+          this.usedInterfaceTypes.push(iface);
           created = true;
         }
       }

@@ -753,6 +753,13 @@ export final class WasmModule {
   classInterfaceVTables = new HashMap<ClassInterfaceKey, WasmGlobal>();
   #signatureCache = new HashMap<SignatureKey, WasmSignature>();
   #structCache = new HashMap<StructKey, WasmStruct>();
+  /**
+   * Interned structs with no name — boxed tuples and records. Lowered
+   * bodies reference them directly and run after layout, so nothing in
+   * a signature roots them; RTA roots this list wholesale, like
+   * closure structs.
+   */
+  anonymousStructs = new Array<WasmStruct>();
   #arrayCache = new HashMap<ArrayKey, WasmArray>();
   usedInterfaceAdaptations = new HashMap<ClassInterfaceKey, boolean>();
   usedInterfaceMembers = new HashMap<InterfaceMemberKey, boolean>();
@@ -1008,6 +1015,9 @@ export final class WasmModule {
     let st = new WasmStruct(name, fields);
     this.types.push(st);
     this.#structCache[key] = st;
+    if (name == null) {
+      this.anonymousStructs.push(st);
+    }
     return st;
   }
 

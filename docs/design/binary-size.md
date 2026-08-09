@@ -282,6 +282,39 @@ Only **seven** instantiations now, and they explain everything left:
    traversal is supposed to discover types without reaching code;
    `instantiateClassType` is not phase-gated, so it reaches.
 
+## 4. The type section was accumulated, not computed (fixed)
+
+`markTypeReached` runs throughout discovery and appends to
+`emittedTypes`, and `wasm.types` is set from that list at the end. So
+the type section was *everything any pass ever looked at* — for
+`return 42`, 59 types and 4,204 of 11,530 bytes, mostly interface
+member signatures reached through the vtable structs of interfaces the
+program never mentions.
+
+It is now recomputed: the set is cleared at the start of the final
+layout pass and re-rooted from what the emitted module can actually
+reference — reached function signatures and their context structs,
+tags, imports, globals and their vtable inits, class structs that
+codegen knows about, record/adapted dispatches, closure structs, try
+cells, boxed tuples and records, and the interfaces something is
+genuinely packed into. `closeReachedTypes` takes it from there.
+
+| | before | after |
+| --- | ---: | ---: |
+| minimal | 11,530 | **10,457** |
+| array-sum | 16,790 | **15,947** |
+| types (minimal) | 4,204 (59) | 3,400 (50) |
+
+This one is safe to make aggressively: a type that is genuinely needed
+and missing is a wasm validation failure at compile time, not a silent
+miscompile. Getting it right meant naming the categories that lowering
+references without any signature mentioning them — five of them, each
+found by a distinct loud failure, and each now an explicit root with a
+comment saying why.
+
+The snapshot churn is type renumbering only; function and global
+counts are identical in every snapshot.
+
 ## The ceiling, measured
 
 A spike (branch `spike-entry-only-rta-roots`, **not landable** — 68 of
@@ -592,8 +625,8 @@ budgets, to be moved DOWN only:
 
 | fixture | what it adds | bytes |
 | --- | --- | ---: |
-| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 11,530 |
-| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 16,823 |
+| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 10,457 |
+| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 15,947 |
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the second fixture.
