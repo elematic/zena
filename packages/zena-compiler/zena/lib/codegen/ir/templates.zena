@@ -22,7 +22,7 @@ import {
   ClassCodegenInfo, WasmFunction, WasmGlobal, WasmSignature, WasmStruct,
   asWasmSignature, asWasmStruct, isValSubtype,
 } from '../wasm-module.zena';
-import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, templateConvertHelperName } from '../codegen-utils.zena';
 import { typeToValTypeWithSub } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
 import { lowerExpr } from './lowering.zena';
@@ -150,22 +150,7 @@ let templateOperandString = (cx: LoweringContext, expr: Expression): i32 => {
     cx.fail('untyped template operand');
   }
   let bt = baseType(tOpt as Type);
-  let helperName = match (bt) {
-    case I32Type: 'i32ToString'
-    case U32Type: 'u32ToString'
-    case I64Type: 'i64ToString'
-    case U64Type: 'u64ToString'
-    case F32Type: 'f32ToString'
-    case F64Type: 'f64ToString'
-    // The narrow types are already held in canonical 32-bit form, so
-    // they print through their promoted counterpart's helper.
-    case U8Type: 'u32ToString'
-    case U16Type: 'u32ToString'
-    case I8Type: 'i32ToString'
-    case I16Type: 'i32ToString'
-    case BooleanType: 'boolToString'
-    case _: ''
-  };
+  let helperName = templateConvertHelperName(tOpt as Type);
   if (helperName == '') {
     if (bt is ClassType && (bt as ClassType).name == 'String') {
       return value;

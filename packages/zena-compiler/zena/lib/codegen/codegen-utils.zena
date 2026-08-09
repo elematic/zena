@@ -1203,3 +1203,33 @@ export let parseI32WithHex = (s: String): (boolean, i32) => {
   let finalVal = if (isNeg) 0 - res else res;
   return (true, finalVal);
 };
+
+/**
+ * The `zena:string-convert` helper a template interpolation of type
+ * `t` lowers to, or `''` when the operand is already a String (or is
+ * not convertible).
+ *
+ * Shared by the lowering that emits the call (`ir/templates.zena`) and
+ * the reachability pass that must root it. Lowering looks the helper
+ * up by NAME through `getStdlibFunc`, so there is no call node for RTA
+ * to see — the two have to agree, and a disagreement shows up as
+ * `Invalid function call: function index < 0`.
+ */
+export let templateConvertHelperName = (t: Type): String => {
+  return match (baseType(t)) {
+    case I32Type: 'i32ToString'
+    case U32Type: 'u32ToString'
+    case I64Type: 'i64ToString'
+    case U64Type: 'u64ToString'
+    case F32Type: 'f32ToString'
+    case F64Type: 'f64ToString'
+    // Narrow types are held in canonical 32-bit form, so they print
+    // through their promoted counterpart's helper.
+    case U8Type: 'u32ToString'
+    case U16Type: 'u32ToString'
+    case I8Type: 'i32ToString'
+    case I16Type: 'i32ToString'
+    case BooleanType: 'boolToString'
+    case _: ''
+  };
+};

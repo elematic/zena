@@ -3,7 +3,7 @@ import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisito
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType } from '../../types.zena';
-import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral } from '../../ast.zena';
+import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction } from '../wasm-module.zena';
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeExternRef } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
@@ -13,7 +13,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -374,6 +374,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // like the explicit-constructor promotion.
       if (n is TaggedTemplateExpression) {
         this.registerTaggedTemplate(n as TaggedTemplateExpression, model);
+      }
+      if (n is TemplateLiteral) {
+        this.registerTemplateLiteral(n as TemplateLiteral, model, resolveType);
       }
       if (n is CallExpression) {
         // Plain identifier calls (module-level `let` functions,
@@ -742,6 +745,59 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
   }
 
+
+  /**
+   * Roots the helpers a template literal's lowering resolves BY NAME
+   * (`getStdlibFunc`) instead of through a call node: the per-operand
+   * `zena:string-convert` converter, and the `__concatN` /
+   * `String.fromParts` join. RTA cannot see those calls, so nothing
+   * else roots them — the pass used to compensate by reaching every
+   * numeric converter in every program, which is most of what a
+   * hello-world carried.
+   *
+   * `ir/templates.zena` decides the same two things from the same AST;
+   * the part count is `2 * expressions + 1` there and here, and the
+   * converter name comes from the shared `templateConvertHelperName`.
+   * A disagreement surfaces as `Invalid function call: function index
+   * < 0`, not as bad code.
+   */
+  registerTemplateLiteral(tpl: TemplateLiteral, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (tpl.expressions.length == 0) {
+      // Lowers to a plain string literal; no helper involved.
+      return;
+    }
+    for (let e in tpl.expressions) {
+      let t = model.getNodeType(e);
+      if (t == null) { continue; }
+      let name = templateConvertHelperName(resolveType(t as Type));
+      if (name == "") { continue; }
+      // By symbol, not by `getStdlibFunc`: the WasmFunction may not
+      // exist yet when this walk runs, and a null lookup here would
+      // silently leave the call unrooted.
+      this.queueStdlibFunction('zena:string-convert', name);
+    }
+    let partCount = tpl.expressions.length * 2 + 1;
+    if (partCount >= 2 && partCount <= 5) {
+      this.queueStdlibFunction('zena:string',
+          '__concat' + i32ToString(partCount));
+      return;
+    }
+    // Six or more parts join through String.fromParts over a
+    // FixedArray<String>, so both have to exist.
+    if (this.pass.wasm.stringClass != null) {
+      let sc = this.pass.wasm.stringClass as ClassType;
+      let scModel = this.pass.getClassModel(sc);
+      for (let md in this.pass.cha.findImplementingMethods(sc, 'fromParts')) {
+        this.pass.queueReferrer(new Referrer(false, noSymbolId,
+            (md as Node).id as i32,
+            this.pass.getNodeModel(md as Node, scModel), sc,
+            this.pass.currentReachable));
+      }
+      this.pass.typeLowerer.discoverType(new ArrayType(sc), model);
+    }
+  }
+
   /** Queues a specialization's private method (by name) as reachable. */
   queuePrivateMethod(classType: ClassType, methName: String,
       typeArguments: Array<Type> | null = null): void {
@@ -932,6 +988,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is TaggedTemplateExpression) {
         this.registerTaggedTemplate(n as TaggedTemplateExpression, model);
+      }
+      if (n is TemplateLiteral) {
+        this.registerTemplateLiteral(n as TemplateLiteral, model, resolveType);
       }
       if (n is ForInStatement) {
         let forIn = n as ForInStatement;
@@ -1578,16 +1637,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           if (this.pass.currentReachable) {
             this.pass.markFunctionReached(wasmFunc);
           }
-        }
-        if (pattern is IdentifierPattern) {
-          let name = (pattern as IdentifierPattern).name;
-          if (name == "i32ToString") { this.pass.wasm.i32ToStringFunc = wasmFunc; }
-          else if (name == "u32ToString") { this.pass.wasm.u32ToStringFunc = wasmFunc; }
-          else if (name == "i64ToString") { this.pass.wasm.i64ToStringFunc = wasmFunc; }
-          else if (name == "u64ToString") { this.pass.wasm.u64ToStringFunc = wasmFunc; }
-          else if (name == "f32ToString") { this.pass.wasm.f32ToStringFunc = wasmFunc; }
-          else if (name == "f64ToString") { this.pass.wasm.f64ToStringFunc = wasmFunc; }
-          else if (name == "boolToString") { this.pass.wasm.boolToStringFunc = wasmFunc; }
         }
       }
     }
