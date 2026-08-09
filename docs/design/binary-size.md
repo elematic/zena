@@ -422,15 +422,27 @@ Interface dispatch does not need these: it goes through
 
 In dependency order:
 
-1. **Make `recordReachedClassMember` per-specialization.** A member
-   reached on `Array<i32>` should not queue that member on every other
-   `Array<T>`. This is the prerequisite the keystone attempt found:
-   while the fan-out stands, rooting referrers costs more than vtable
-   pruning saves.
+1. ~~**Make `recordReachedClassMember` per-specialization.**~~ Done:
+   `queueReferrer` now records a member against the generic only when
+   the referrer's class type *is* the generic template. A referrer
+   against a concrete specialization names its own. Worth little on
+   its own (16,823 → 16,790) — it is a correctness fix and the
+   prerequisite, not a win.
 2. **The keystone** (above): shrink the class vtable to
    genuinely-virtual slots (keeping `==`/`hashCode`) and drop the
    `hasInst` force-reach in the same change, rooting each call site
-   that relied on it. Blocked on 1.
+   that relied on it.
+
+   With the fan-out fixed, re-measured: minimal 11,530 → **11,111**,
+   array-sum 16,790 → **17,160**, one test failing
+   (`Array<i32>.push` — no vtable slot, and the fan-out no longer
+   covers it either, so its call site must root it). Still a net wash,
+   so still not landed. The residual +370 on array-sum is the
+   accessor/method-node referrers reaching members that the referrer
+   names but the program never calls: a referrer is queued per
+   *member node*, while the checker's dependency records distinguish
+   `get#x` from `set#x`. Threading that distinction through is
+   probably what closes the gap.
 3. **Make instantiation per-specialization**, not per-generic — with
    the use-side gaps closed first, the way 3a closed them for generic
    methods. Worth roughly three of the four array specializations.

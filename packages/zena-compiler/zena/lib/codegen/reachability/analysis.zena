@@ -200,8 +200,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.reachableQueue.push(ref);
         if (!ref.isSymbol && ref.classType != null) {
           let ct = ref.classType as ClassType;
-          let lookupId = (ct.genericSource ?? ct).symbolId;
-          this.recordReachedClassMember(lookupId, ref.nodeId, ref.model, true);
+          // Only a referrer against the generic TEMPLATE is evidence
+          // about every specialization. One against a concrete
+          // specialization names its own, and fanning that out claims
+          // `Array<i32>.push` is used because `Array<String>.push` is
+          // — which emits a member on every instantiation as soon as
+          // one of them uses it.
+          if (!isConcrete(ct)) {
+            let lookupId = (ct.genericSource ?? ct).symbolId;
+            this.recordReachedClassMember(lookupId, ref.nodeId, ref.model, true);
+          }
         }
       }
     } else {
@@ -210,8 +218,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.checkableQueue.push(ref);
         if (!ref.isSymbol && ref.classType != null) {
           let ct = ref.classType as ClassType;
-          let lookupId = (ct.genericSource ?? ct).symbolId;
-          this.recordReachedClassMember(lookupId, ref.nodeId, ref.model, false);
+          if (!isConcrete(ct)) {
+            let lookupId = (ct.genericSource ?? ct).symbolId;
+            this.recordReachedClassMember(lookupId, ref.nodeId, ref.model, false);
+          }
         }
       }
     }
