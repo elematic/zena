@@ -1,6 +1,7 @@
 # Binary size of a minimal program
 
-**Status**: **33,875 → 39 bytes — the ideal module.** The name
+**Status**: **33,875 → 37 bytes — byte-identical to the hand-written
+ideal.** The name
 section is gated, the extension-class leak is closed, template helpers
 are rooted from the templates that need them, the type section is
 computed rather than accumulated, RTA roots only the entry unit,
@@ -609,6 +610,42 @@ enough to read whole, so a regression shows up as the exact
 type/function/export it added, not just a byte count. hello-string
 also dropped 7,392 → 7,354 (dead value-pairs for stdlib function
 declarations).
+
+## 10. Fall-through returns (fixed)
+
+The last two removable bytes were opcodes, not types: every body
+ended `return` + `unreachable` — the explicit return, then the filler
+the emitter appends because wasm validation resets to "reachable"
+after each block `end`. (The TYPE cannot be elided: `(func (export
+"main") (result i32) …)` is WAT sugar, and the binary format's
+function section entry IS a type index — the hand-written ideal
+assembles to the same one-entry type section.)
+
+An outermost `return` — no open frames — is now emitted LAZILY: its
+values are pushed and the opcode is written only if anything else
+follows. If nothing does, both the `return` and the filler are
+dropped, and the function falls through to its own `end` with the
+results on the stack. Every emission path flushes the pending return
+first, so a mid-function outermost return (a merge continuation
+follows it) still emits.
+
+```
+export function main(): i32 { return 42; }   →   37 bytes
+
+(module
+  (type (;0;) (func (result i32)))
+  (export "main" (func $main))
+  (func $main (type 0)
+    i32.const 42))
+```
+
+**Byte-identical to `wasm-tools parse` of the hand-written ideal.**
+Every function's tail shrinks, not just minimal's: hello-string
+7,354 → 7,270, array-sum 12,169 → 11,967, and the WAT snapshots lost
+82 lines of nothing but trailing `return`/`unreachable`. One test had
+been asserting its "impossible no-match path traps" against the tail
+filler; it now asserts against an exhaustive sealed match, which has
+a genuine mid-block trap.
 
 ## The ceiling, measured
 

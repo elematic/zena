@@ -320,8 +320,22 @@ export let tests = suite('zir backend', (): void => {
     // The type test and the guarded downcast for the as-binding.
     isTrue(result.contains('ref.test'));
     isTrue(result.contains('ref.cast'));
-    // The checker-proven-impossible no-match path traps.
-    isTrue(result.contains('unreachable'));
+    // This match has a wildcard arm, so it HAS no impossible path —
+    // the old `unreachable` assertion here was matching the
+    // function-tail filler, which outermost-return fall-through
+    // removed. The genuinely-impossible no-match path is asserted on
+    // an exhaustive sealed match, whose trap sits mid-block:
+    let sealedResult = compileWithZir(
+        'sealed class E {\n' +
+        '  case A(x: i32)\n' +
+        '  case B\n' +
+        '}\n' +
+        'let f = (e: E): i32 => match (e) {\n' +
+        '  case A {x}: x\n' +
+        '  case B: 2\n' +
+        '};\n' +
+        'export let main = (): i32 => f(new A(40)) + f(new B());');
+    isTrue(sealedResult.contains('unreachable'));
   });
 
   test('interface packing and vtable dispatch', (ctx: TestContext): void => {

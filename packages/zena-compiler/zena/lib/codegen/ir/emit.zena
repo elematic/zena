@@ -76,6 +76,16 @@ export final class ZirFunctionEmitter {
   streamed = new Array<boolean>();
   /** The streamed value currently on the stack, or -1. */
   var stackHead = -1;
+  /**
+   * A `return` at the outermost level (no open frames) is emitted
+   * LAZILY: its values are pushed, and the opcode is written only if
+   * anything else follows. If nothing does, the function falls
+   * through to its `end` with the results on the stack — dropping
+   * both the `return` and the trailing `unreachable` filler, which
+   * for `return 42` is the difference between 39 bytes and the
+   * 37-byte ideal module.
+   */
+  var #pendingTopReturn = false;
   /** The instruction currently being emitted (diagnostics). */
   var currentEmit = -1;
 
@@ -94,8 +104,14 @@ export final class ZirFunctionEmitter {
     // Every doTree leaf ends in a real terminator, but wasm validation
     // resets to "reachable" after each block/if/loop `end`, so control
     // structurally falls through to the function end with an empty
-    // stack. A trailing `unreachable` keeps result-typed functions valid.
-    if (this.func.signature.returns.length > 0) {
+    // stack. A trailing `unreachable` keeps result-typed functions
+    // valid — EXCEPT when the body's last emission was an outermost
+    // `return`, still pending here: dropping it leaves the results on
+    // the stack for the function's own `end`, which both returns them
+    // and keeps the fall-through valid.
+    if (this.#pendingTopReturn) {
+      this.#pendingTopReturn = false;
+    } else if (this.func.signature.returns.length > 0) {
       this.emitter.emitUnreachable();
     }
     this.emitter.emitFunctionEnd();
@@ -745,6 +761,7 @@ export final class ZirFunctionEmitter {
       count: i32): void {
     if (count > 0) {
       let y = exits[count - 1];
+      this.#flushPendingReturn();
       this.frames.push(new EmitFrame(y, false));
       this.emitter.emitBlock(new ValTypeVoid());
       this.#loopWithExits(x, inLoopMerge, exits, count - 1);
@@ -753,9 +770,11 @@ export final class ZirFunctionEmitter {
       this.#doTree(y);
       return;
     }
+    this.#flushPendingReturn();
     this.frames.push(new EmitFrame(x, true));
     this.emitter.emitLoop(new ValTypeVoid());
     this.#nodeWithin(x, inLoopMerge, inLoopMerge.length);
+    this.#flushPendingReturn();
     this.emitter.emitEnd();
     this.frames.pop();
   }
@@ -763,9 +782,11 @@ export final class ZirFunctionEmitter {
   #nodeWithin(x: i32, mergeChildren: Array<i32>, count: i32): void {
     if (count > 0) {
       let y = mergeChildren[count - 1];
+      this.#flushPendingReturn();
       this.frames.push(new EmitFrame(y, false));
       this.emitter.emitBlock(new ValTypeVoid());
       this.#nodeWithin(x, mergeChildren, count - 1);
+      this.#flushPendingReturn();
       this.emitter.emitEnd();
       this.frames.pop();
       this.#doTree(y);
@@ -780,7 +801,16 @@ export final class ZirFunctionEmitter {
     this.#emitTerminator(blk.insts[blk.insts.length - 1], x);
   }
 
+  /** Writes a deferred outermost `return` because something follows it. */
+  #flushPendingReturn(): void {
+    if (this.#pendingTopReturn) {
+      this.#pendingTopReturn = false;
+      this.emitter.emitReturn();
+    }
+  }
+
   #emitTerminator(inst: i32, from: i32): void {
+    this.#flushPendingReturn();
     let body = this.body;
     let op = body.op(inst);
     if (this.stackHead >= 0) {
@@ -802,7 +832,11 @@ export final class ZirFunctionEmitter {
       if (value >= 0) {
         this.#pushValue(value);
       }
-      this.emitter.emitReturn();
+      if (this.frames.length == 0) {
+        this.#pendingTopReturn = true;
+      } else {
+        this.emitter.emitReturn();
+      }
       return;
     }
     if (op == IrOp.ret_multi) {
@@ -811,7 +845,11 @@ export final class ZirFunctionEmitter {
       for (var k = 0; k < argc; k += 1) {
         this.#pushValue(body.extra[idx + 1 + k]);
       }
-      this.emitter.emitReturn();
+      if (this.frames.length == 0) {
+        this.#pendingTopReturn = true;
+      } else {
+        this.emitter.emitReturn();
+      }
       return;
     }
     if (op == IrOp.unreachable) {
@@ -900,6 +938,7 @@ export final class ZirFunctionEmitter {
   }
 
   #doBranch(from: i32, s: IrSuccessor): void {
+    this.#flushPendingReturn();
     this.#copyArgs(s);
     // Anything with an open frame (loop headers, merge nodes, loop
     // exits placed after their loop) brs to its label.
@@ -967,6 +1006,7 @@ export final class ZirFunctionEmitter {
   }
 
   #emitInst(inst: i32): void {
+    this.#flushPendingReturn();
     let body = this.body;
     let op = body.op(inst);
     this.currentEmit = inst;
