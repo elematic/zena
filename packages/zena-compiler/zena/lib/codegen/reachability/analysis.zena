@@ -1893,7 +1893,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // 1. Discover referenced types
     for (let t in deps.referencedTypes) {
       let resolved = resolveType(t);
-      this.typeLowerer.discoverType(resolved, model);
+      // A function-typed record is a SIGNATURE reference — the checker
+      // records a callee's type for a plain call too, and a call needs
+      // no closure struct. Genuine value uses of a named function are
+      // handled by the wrapper registration just below (and arrows in
+      // value position by the node walks), which mint the closure
+      // struct themselves.
+      if (resolved is FunctionType) {
+        this.typeLowerer.discoverSignatureType(resolved, model);
+      } else {
+        this.typeLowerer.discoverType(resolved, model);
+      }
       if (resolved is ClassType) {
         this.specializer.instantiateClassType(resolved as ClassType, model);
       } else if (resolved is FunctionType) {

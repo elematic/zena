@@ -1117,7 +1117,27 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       let t = model.getNodeType(n);
       if (t != null) {
         let resolved = resolveType(t);
-        typeLowerer.discoverType(resolved, model);
+        // A `function` declaration's own nodes — its name identifier
+        // and its FunctionExpression — carry the function's type, but
+        // they are not VALUE positions: a top-level `function` is
+        // never a closure, and a genuine value use (the identifier in
+        // an expression elsewhere, an arrow in value position) still
+        // discovers the closure struct at that site. Discovering the
+        // declaration's own type as a value minted a closure struct +
+        // erased impl signature per declared function, used as a
+        // value or not.
+        var isDeclarationSignature = false;
+        if (resolved is FunctionType) {
+          let parent = model.getParent(n);
+          if (parent != null && parent is FunctionDeclaration) {
+            isDeclarationSignature = true;
+          }
+        }
+        if (isDeclarationSignature) {
+          typeLowerer.discoverSignatureType(resolved, model);
+        } else {
+          typeLowerer.discoverType(resolved, model);
+        }
       }
       if (n is NewExpression) {
         let ne = n as NewExpression;
@@ -1754,7 +1774,13 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   discoverFunctionDeclaration(symId: SymbolId, funcDecl: FunctionDeclaration, moduleModel: SemanticModel): void {
     let funcType = moduleModel.getNodeType(funcDecl.func);
     if (funcType != null) {
-      this.pass.typeLowerer.discoverType(funcType, moduleModel);
+      // The declaration's own type is a SIGNATURE, not a value: a
+      // top-level `function` is never a closure, and a use of it as a
+      // value discovers the closure struct at the use site. Routing
+      // it through discoverType minted a closure struct + erased impl
+      // signature pair for every declared function, used-as-value or
+      // not — the last two types in `return 42`'s module.
+      this.pass.typeLowerer.discoverSignatureType(funcType, moduleModel);
     }
     this.#discoverFunctionBinding(
         funcDecl.name as Pattern, funcDecl.func, funcDecl.exported, moduleModel);

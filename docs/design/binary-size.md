@@ -1,14 +1,16 @@
 # Binary size of a minimal program
 
-**Status**: **33,875 → 53 bytes.** The name section is gated, the
-extension-class leak is closed, template helpers are rooted from the
-templates that need them, the type section is computed rather than
-accumulated, RTA roots only the entry unit, `String` is instantiated
-by evidence rather than unconditionally (section 7), and the type
-section is rooted on evidence rather than declaration (section 8).
-`return 42` is one signature, one function, one export, plus one stray
-closure-struct pair. The remaining structural work is the keystone
-(vtable slot pruning + force-reach removal), which is what
+**Status**: **33,875 → 39 bytes — the ideal module.** The name
+section is gated, the extension-class leak is closed, template helpers
+are rooted from the templates that need them, the type section is
+computed rather than accumulated, RTA roots only the entry unit,
+`String` is instantiated by evidence rather than unconditionally
+(section 7), the type section is rooted on evidence rather than
+declaration (section 8), and a function DECLARATION's type is a
+signature, not a value (section 9). `return 42` is exactly one
+signature, one function, one export — snapshot-tested as WAT
+(`minimal_program.snap`). The remaining structural work is the
+keystone (vtable slot pruning + force-reach removal), which is what
 `hello-string.zena`'s budget tracks.
 
 The reference program throughout is the smallest thing Zena can
@@ -559,16 +561,54 @@ steps:
 
 | | before | after |
 | --- | ---: | ---: |
-| minimal | 2,292 | **53** |
-| hello-string | — | 7,392 |
+| minimal | 2,292 | **53** (→ 39 after section 9) |
+| hello-string | — | 7,392 (→ 7,354) |
 | array-sum | 13,504 | **12,169** |
 
-53 bytes is the ideal module minus ~13 bytes: main's signature, one
-function, one export, plus one stray closure-struct pair minted for
-`main`'s own function type (a `function` declaration is never a
-closure, so even that could go). The failures this cut surfaced were
-all the loud kind — `Invalid WasmType index < 0` naming the struct —
-exactly the failure mode section 4 chose this design for.
+The failures this cut surfaced were all the loud kind — `Invalid
+WasmType index < 0` naming the struct — exactly the failure mode
+section 4 chose this design for.
+
+## 9. A declaration's type is a signature, not a value (fixed)
+
+53 bytes still carried one stray closure-struct pair (an erased impl
+signature + `{func, ctx}` struct), minted for `main`'s own function
+type. Three separate paths treated a `function` DECLARATION's type as
+a value position, each minting the pair for every declared function
+whether or not it is ever used as a value:
+
+- `discoverFunctionDeclaration` routed the declared type through
+  `discoverType` (the value path) instead of `discoverSignatureType`;
+- the full node walk discovered the declaration's own nodes — the
+  name identifier and the FunctionExpression — whose node types are
+  the function type (now gated on the parent being a
+  FunctionDeclaration);
+- the checker's `referencedTypes` records include a callee's function
+  type for a plain CALL, and `traverseDependencies` discovered every
+  one as a value. Function-typed records now go through
+  `discoverSignatureType`; genuine value uses are covered by the
+  wrapper registration beside it and by arrows in value position,
+  which mint the closure struct at the use site.
+
+```
+export function main(): i32 { return 42; }   →   39 bytes
+
+(module
+  (type (;0;) (func (result i32)))
+  (export "main" (func $main))
+  (func $main (type 0)
+    i32.const 42
+    return
+    unreachable))
+```
+
+One signature, one function, one export — 4.5× smaller than the
+deleted TypeScript bootstrap's 175 bytes. Snapshot-tested as WAT
+(`minimal_program.snap` in binary-size_test.zena): the module is small
+enough to read whole, so a regression shows up as the exact
+type/function/export it added, not just a byte count. hello-string
+also dropped 7,392 → 7,354 (dead value-pairs for stdlib function
+declarations).
 
 ## The ceiling, measured
 

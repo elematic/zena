@@ -21,8 +21,8 @@
  */
 
 import { suite, test, TestContext } from 'zena:test';
-import { isTrue } from 'zena:assert';
-import { readFile } from 'zena:fs';
+import { isTrue, equal } from 'zena:assert';
+import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import { Array } from 'zena:array';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
@@ -32,8 +32,29 @@ import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { i32ToString } from 'zena:string-convert';
+import { getEnv } from 'zena:cli';
+
+/** Mirrors codegen-wat_test's helper; UPDATE_SNAPSHOTS=1 regenerates. */
+let assertSnapshot = (name: String, content: String): void => {
+  let snapDir = 'packages/zena-compiler/test-files/snapshots';
+  if (!exists(snapDir)) {
+    mkdir(snapDir);
+  }
+  let snapFile = snapDir + '/' + name + '.snap';
+  if (getEnv("UPDATE_SNAPSHOTS") != null) {
+    writeFile(snapFile, content);
+    equal(content, content);
+  } else if (exists(snapFile)) {
+    let expected = readFile(snapFile);
+    equal(content, expected);
+  } else {
+    writeFile(snapFile, content);
+    equal(content, content);
+  }
+};
 
 let stdlibRoot = 'packages/stdlib/zena';
 
@@ -146,6 +167,16 @@ export let tests = suite('Binary size', (): void => {
       `${i32ToString(helloBudget)}-byte budget. Instantiating String is ` +
       `reaching more than a program with one literal uses — see ` +
       `docs/design/binary-size.md.`);
+  });
+
+  test('the minimal program WAT is exactly the ideal module', (ctx: TestContext): void => {
+    // A SNAPSHOT, unlike the byte budgets: the minimal module is small
+    // enough to read whole, and any regression shows up as the exact
+    // type/function/export it added. Regenerate with
+    // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry here means
+    // something reached code a program with no code in it cannot run.
+    assertSnapshot('minimal_program',
+        new WatGenerator('zena-cli', false).generate(programOf(target)));
   });
 
   test('a program with no strings exports no string helpers', (ctx: TestContext): void => {
