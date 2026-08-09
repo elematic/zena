@@ -8,6 +8,7 @@ import { WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo } f
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, isRefValType } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { HashMap } from 'zena:map';
+import { OrderedMap } from 'zena:ordered-map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
@@ -265,13 +266,15 @@ export final class TypeLowerer implements TypeLowererInterface {
         if (!found) {
           list.push(ct);
           if (let (true, reachedSet) = this.pass.reachedClassMembers.get(lookupId)) {
-            for (let nid in reachedSet) {
+            let rcKeys = reachedSet.keys();
+            while (let (true, nid) = rcKeys.next()) {
               this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, this.pass.currentReachable));
             }
           }
           if (this.pass.currentReachable) {
             if (let (true, reachedSet) = this.pass.reachedReachableClassMembers.get(lookupId)) {
-              for (let nid in reachedSet) {
+              let rrKeys = reachedSet.keys();
+              while (let (true, nid) = rrKeys.next()) {
                 this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, true));
               }
             }

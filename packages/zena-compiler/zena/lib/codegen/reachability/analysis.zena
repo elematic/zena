@@ -6,11 +6,12 @@ import { Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerat
 import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator } from '../../ast.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
+import { OrderedMap } from 'zena:ordered-map';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString, parseI32 } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
 import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef } from '../wasm.zena';
@@ -92,6 +93,27 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   instantiatedClasses = new HashSet<SymbolId>();
   instantiatedSpecializedClasses = new HashSet<String>();
   reachablyNamedClasses = new HashSet<String>();
+  /**
+   * Generic-source symbol ids of classes some DECLARED class extends —
+   * built at init from every unit's class declarations (and sealed
+   * variants, whose parent is extended by each case). A class can be
+   * dispatched through its class vtable only if a value of a
+   * supertype's static type can hold it: it has a superclass, or
+   * something declared extends it. `String` and `FixedArray<T>` are
+   * final with no superclass — nothing can virtually dispatch on them,
+   * so their vtables need no slots beyond `==`/`hashCode` (which
+   * HashMap and generic equality dispatch through the class vtable
+   * even on hierarchy-less classes).
+   */
+  extendedClassSymbols = new HashSet<SymbolId>();
+  /**
+   * Field members named by REACHABLE referrers whose synthesized
+   * get#/set# accessors may not be registered yet — populate creates
+   * them during layout, after the queues. Re-checked at the settle
+   * point; while registration force-reached every method this timing
+   * hole was invisible.
+   */
+  #pendingFieldAccessorReaches = new Array<ClassMethodKey>();
   reachablyNamedClosures = new HashSet<WasmStruct>();
   reachablyNamedAnonStructs = new HashSet<WasmStruct>();
   /**
@@ -127,8 +149,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   reachedSemanticTypes = new HashSet<String>();
   specializedInterfaces = new Array<InterfaceType>();
   specializedClassTypes = new HashMap<SymbolId, Array<ClassType>>();
-  reachedClassMembers = new HashMap<SymbolId, HashSet<i32>>();
-  reachedReachableClassMembers = new HashMap<SymbolId, HashSet<i32>>();
+  reachedClassMembers = new HashMap<SymbolId, OrderedMap<i32, boolean>>();
+  reachedReachableClassMembers = new HashMap<SymbolId, OrderedMap<i32, boolean>>();
 
   // Tracks for interface dispatches: which instantiated classes implement an interface
   instantiatedClassesByInterface = new HashMap<SymbolId, Array<ClassInterfacePair>>();
@@ -205,11 +227,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   recordReachedClassMember(classSymId: SymbolId, nodeId: i32, model: SemanticModel, isReachable: boolean): void {
     if (isReachable) {
       if (!this.reachedReachableClassMembers.has(classSymId)) {
-        this.reachedReachableClassMembers[classSymId] = new HashSet<i32>();
+        this.reachedReachableClassMembers[classSymId] = new OrderedMap<i32, boolean>();
       }
       let set = this.reachedReachableClassMembers[classSymId];
       if (!set.has(nodeId)) {
-        set.add(nodeId);
+        set[nodeId] = true;
         if (let (true, specList) = this.specializedClassTypes.get(classSymId)) {
           for (let specCt in specList) {
             this.queueReferrer(new Referrer(false, noSymbolId, nodeId, model, specCt, true));
@@ -218,11 +240,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     } else {
       if (!this.reachedClassMembers.has(classSymId)) {
-        this.reachedClassMembers[classSymId] = new HashSet<i32>();
+        this.reachedClassMembers[classSymId] = new OrderedMap<i32, boolean>();
       }
       let set = this.reachedClassMembers[classSymId];
       if (!set.has(nodeId)) {
-        set.add(nodeId);
+        set[nodeId] = true;
         if (let (true, specList) = this.specializedClassTypes.get(classSymId)) {
           for (let specCt in specList) {
             this.queueReferrer(new Referrer(false, noSymbolId, nodeId, model, specCt, false));
@@ -523,6 +545,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let rawClassType = this.getClassDeclType(classDecl, model);
         if (rawClassType != null) {
           let classType = rawClassType as ClassType;
+          if (classType.superType != null) {
+            let superCt = classType.superType as ClassType;
+            this.extendedClassSymbols.add((superCt.genericSource ?? superCt).symbolId);
+          }
+          if (classDecl.isSealed && classDecl.sealedVariants != null &&
+              (classDecl.sealedVariants as Array<SealedVariant>).length > 0) {
+            this.extendedClassSymbols.add((classType.genericSource ?? classType).symbolId);
+          }
           if (classType.name == "String" && classType.sourcePath == "zena:string") {
             this.wasm.stringClass = classType;
           } else if (classType.name == "TemplateStringsArray" && classType.sourcePath == "zena:template-strings-array") {
@@ -1021,8 +1051,25 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
-    // Pass 1.2: Resolve indices for all synthesized getters and setters
+    // Pass 1.2: Resolve indices for all synthesized getters and
+    // setters — over every REGISTERED method, not `wasm.functions`.
+    // Registration computes the backing index against the struct's
+    // fields, which populate pushes only after its member walk, so an
+    // early-registered getter carries -1 (an `unreachable` stub body)
+    // until this fixes it up. While every registered method of an
+    // instantiated class was force-reached, being in wasm.functions
+    // was equivalent to being registered; with reaching driven by use,
+    // a getter can be registered now and reached later.
+    let synthFixups = new Array<WasmFunction>();
     for (let f in this.wasm.functions) {
+      synthFixups.push(f);
+    }
+    for (let mPair in this.wasm.classMethods) {
+      for (let f in mPair.value) {
+        synthFixups.push(f);
+      }
+    }
+    for (let f in synthFixups) {
       if (f.classType != null) {
         let cType = f.classType as ClassType;
         if (!cType.isExtension) {
@@ -1169,6 +1216,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     performance.end(tQueues3);
     let tLayout3 = performance.start("codegen-discovery-layout");
     
+    // Field accessors named by reachable referrers before populate
+    // registered them: re-check now that populate has run, BEFORE the
+    // settle layout — the drain can reach bodies that instantiate.
+    this.currentReachable = true;
+    for (let pendingKey in this.#pendingFieldAccessorReaches) {
+      if (let (true, f) = this.wasm.classMethodMap.get(pendingKey)) {
+        this.markFunctionReached(f);
+      }
+    }
+    this.processQueues();
+
     // Discovery is settled. Catch layout up with anything the vtable
     // pass or the final drain instantiated, then CLOSE: from here a
     // new class cannot get a struct, so becoming instantiated now is a
@@ -1638,6 +1696,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.typeNamingSuppressed = wasSuppressed;
   }
 
+  /** See extendedClassSymbols: can anything dispatch through this class's vtable? */
+  classCanDispatchVirtually(ct: ClassType): boolean {
+    if (ct.superType != null) {
+      return true;
+    }
+    return this.extendedClassSymbols.has((ct.genericSource ?? ct).symbolId);
+  }
+
   /**
    * Whether `t` mentions the stdlib String class anywhere a value
    * could cross a boundary typed by `t`: directly, in a function
@@ -1997,6 +2063,34 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let subclasses = cha.findInstantiatedSubclasses(targetClassType as ClassType);
               for (let subCt in subclasses) {
                 list.push(subCt);
+              }
+            }
+            // The records are symbol-level, and findInstantiatedSubclasses
+            // sees only specializations that exist NOW — a member dep
+            // traversed before the receiver's specialization is
+            // instantiated queues nothing, and the edge is lost. While
+            // every method of an instantiated class was force-reached
+            // that never showed (JsonObject.size reads its
+            // OrderedMap's size before any OrderedMap is
+            // instantiated). Record the member against the generic;
+            // discovery and instantiation replay it per specialization.
+            let recMds = cha.findImplementingMethods(targetClassType as ClassType, mName);
+            if (recMds.length > 0) {
+              for (let md in recMds) {
+                let mdNode = md as Node;
+                this.nodeIdToNode[mdNode.id as i32] = mdNode;
+                this.nodeIdToModel[mdNode.id as i32] = this.getNodeModel(mdNode, targetModel);
+                this.recordReachedClassMember(classSymId, mdNode.id as i32,
+                    this.getNodeModel(mdNode, targetModel), this.currentReachable);
+              }
+            } else {
+              let recAcc = cha.findImplementingAccessor(targetClassType as ClassType, mName);
+              if (recAcc != null) {
+                let accNode = recAcc as Node;
+                this.nodeIdToNode[accNode.id as i32] = accNode;
+                this.nodeIdToModel[accNode.id as i32] = this.getNodeModel(accNode, targetModel);
+                this.recordReachedClassMember(classSymId, accNode.id as i32,
+                    this.getNodeModel(accNode, targetModel), this.currentReachable);
               }
             }
             for (let subCt in list) {
@@ -2618,6 +2712,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 }
                 let regF = specializer.registerClassMethod(ct, cd, methName, mDef, false, false, null, this.classModels[lookupId], null);
                 if (mixScope != null) { regF.privateScopeKey = mixScope as String; }
+                // A REACHABLE member referrer is the evidence that
+                // used to be implied by the vtable force-reach:
+                // registration alone is erased by layout()'s
+                // classMethodMap rebuild (binary-size.md §3a). Only
+                // for CONCRETE classes — a template referrer registers
+                // the unspecialized copy, and reaching that is
+                // 'non-concrete function reached'; the fan-out queues
+                // a concrete referrer per specialization.
+                if (ref.isReachable && isConcrete(ct)) {
+                  this.wasm.addFunction(regF);
+                  this.markFunctionReached(regF);
+                }
               } else if (node is AccessorDeclaration && ref.classType != null) {
                 let acc = node as AccessorDeclaration;
                 let ct = ref.classType as ClassType;
@@ -2638,10 +2744,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   if (acc.getter != null) {
                     let regG = specializer.registerClassMethod(ct, cd, "get#" + accName, acc, false, false, null, this.classModels[lookupId], null);
                     if (mixScope != null) { regG.privateScopeKey = mixScope as String; }
+                    if (ref.isReachable && isConcrete(ct)) {
+                      this.wasm.addFunction(regG);
+                      this.markFunctionReached(regG);
+                    }
                   }
                   if (acc.setter != null) {
                     let regS = specializer.registerClassMethod(ct, cd, "set#" + accName, acc.setter, false, false, null, this.classModels[lookupId], null);
                     if (mixScope != null) { regS.privateScopeKey = mixScope as String; }
+                    if (ref.isReachable && isConcrete(ct)) {
+                      this.wasm.addFunction(regS);
+                      this.markFunctionReached(regS);
+                    }
                   }
                 }
               } else if (node is FieldDefinition && ref.classType != null) {
@@ -2664,10 +2778,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   let getterKey = getClassMethodKey(cKey, "get#" + propName);
                   if (let (true, f) = this.wasm.classMethodMap.get(getterKey)) {
                     this.markFunctionReached(f);
+                  } else if (ref.isReachable) {
+                    this.#pendingFieldAccessorReaches.push(getterKey);
                   }
                   let setterKey = getClassMethodKey(cKey, "set#" + propName);
                   if (let (true, f) = this.wasm.classMethodMap.get(setterKey)) {
                     this.markFunctionReached(f);
+                  } else if (ref.isReachable) {
+                    this.#pendingFieldAccessorReaches.push(setterKey);
                   }
                 }
               }

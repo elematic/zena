@@ -143,7 +143,8 @@ export final class Specializer implements SpecializerInterface {
 
     // Propagate all reached members of the base class to this new instantiation
     if (let (true, reachedSet) = this.pass.reachedClassMembers.get(classId)) {
-      for (let memberNodeId in reachedSet) {
+      let rcKeys = reachedSet.keys();
+      while (let (true, memberNodeId) = rcKeys.next()) {
         let memberModel = if (this.pass.nodeIdToModel.has(memberNodeId)) {
           this.pass.nodeIdToModel[memberNodeId]
         } else {
@@ -153,7 +154,8 @@ export final class Specializer implements SpecializerInterface {
       }
     }
     if (let (true, reachedSet) = this.pass.reachedReachableClassMembers.get(classId)) {
-      for (let memberNodeId in reachedSet) {
+      let rrKeys = reachedSet.keys();
+      while (let (true, memberNodeId) = rrKeys.next()) {
         let memberModel = if (this.pass.nodeIdToModel.has(memberNodeId)) {
           this.pass.nodeIdToModel[memberNodeId]
         } else {
@@ -1143,8 +1145,23 @@ export final class Specializer implements SpecializerInterface {
       if (func.classDecl == null && cDecl != null) {
         func.classDecl = cDecl;
       }
+      // Registration is NOT reaching (binary-size.md §3a). The old
+      // force-reach here — every registered method of an instantiated
+      // class — was what the class vtable's all-methods slot list
+      // required; with slots pruned to dispatchable methods, reaching
+      // comes from the member referrers that name a method, and from
+      // Pass 1.5 for the methods that genuinely hold slots.
+      // CONSTRUCTORS keep it: they are never vtable-dispatched, and an
+      // instantiated class's ctor must exist for its `new` sites
+      // (instantiateClassType promotes ctors registered BEFORE
+      // instantiation; this covers ones registered after). So do
+      // MIXIN-SCOPED private members ("Scope::#name"): they are
+      // lexically bound with no referrer machinery naming them, and
+      // the private lookup in lowering falls back to the host's
+      // same-named member — a silent wrong answer, not a loud miss.
       let hasInst = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
-      if (!isGenericTemplate && hasInst) {
+      if (!isGenericTemplate && hasInst &&
+          (realMethName == "<constructor>" || realMethName.contains("::"))) {
         if (!this.pass.reachedFunctionsSet.has(func)) {
           this.#reachRegisteredMethod(func);
         }
@@ -1152,8 +1169,9 @@ export final class Specializer implements SpecializerInterface {
       return func;
     }
 
-    let hasInst = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
-    if (!isGenericTemplate && hasInst) {
+    let hasInstNew = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
+    if (!isGenericTemplate && hasInstNew &&
+        (realMethName == "<constructor>" || realMethName.contains("::"))) {
       this.#reachRegisteredMethod(wasmFunc);
     }
 
@@ -1441,7 +1459,20 @@ export final class Specializer implements SpecializerInterface {
     }
 
     if (vst.fields.length == 0) {
+      // A slot exists so something can dispatch through it. On a class
+      // with no superclass that nothing extends, nothing ever can —
+      // except `==`/`hashCode`, which HashMap and generic equality
+      // dispatch through the class vtable regardless of hierarchy.
+      // Every slot's function must be emitted (the vtable global is a
+      // struct.new over ref.funcs), so an unneeded slot is not one
+      // wasted field: it force-reaches an entire method. This is what
+      // kept every String method in a program whose only string is a
+      // literal it returns.
+      let keepAll = this.pass.classCanDispatchVirtually(ct);
       for (let methName in ctVtable) {
+        if (!keepAll && methName != "==" && methName != "hashCode") {
+          continue;
+        }
         vst.fields.push(new WasmField(methName, new ValTypeFuncRef(), false));
       }
     }

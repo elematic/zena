@@ -5,6 +5,7 @@ import { Type, ClassType, InterfaceType, FunctionType } from '../../types.zena';
 import { Node, InterfaceDeclaration, ImportDeclaration, VariableDeclaration, FunctionDeclaration, DeclareFunction } from '../../ast.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
+import { OrderedMap } from 'zena:ordered-map';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { SymbolId } from '../../scope/symbol.zena';
@@ -110,6 +111,8 @@ export interface ReachabilityContext {
    * declaration (all of classInfos) wildly over-approximates it.
    */
   reachablyNamedClasses: HashSet<String>;
+  extendedClassSymbols: HashSet<SymbolId>;
+  classCanDispatchVirtually(ct: ClassType): boolean;
   var typeNamingSuppressed: boolean;
   var inQueueWalk: boolean;
   /**
@@ -127,8 +130,15 @@ export interface ReachabilityContext {
   /** Anonymous (boxed tuple/record) structs named by reached code (same gate). */
   reachablyNamedAnonStructs: HashSet<WasmStruct>;
   specializedClassTypes: HashMap<SymbolId, Array<ClassType>>;
-  reachedClassMembers: HashMap<SymbolId, HashSet<i32>>;
-  reachedReachableClassMembers: HashMap<SymbolId, HashSet<i32>>;
+  /**
+   * Insertion-ordered (OrderedMap, values unused): these node-id sets
+   * are REPLAYED into the queues per specialization, so their
+   * iteration order becomes function emission order. Node ids are a
+   * relabelling across invalidate() — hashing by id made the same
+   * program emit differently after an invalidate that changed nothing.
+   */
+  reachedClassMembers: HashMap<SymbolId, OrderedMap<i32, boolean>>;
+  reachedReachableClassMembers: HashMap<SymbolId, OrderedMap<i32, boolean>>;
   currentReachable: boolean;
   classDecls: HashMap<SymbolId, Node>;
   classModels: HashMap<SymbolId, SemanticModel>;

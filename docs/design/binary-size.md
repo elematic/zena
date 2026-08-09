@@ -1,7 +1,8 @@
 # Binary size of a minimal program
 
 **Status**: **33,875 → 37 bytes — byte-identical to the hand-written
-ideal.** The name
+ideal — and the keystone is in** (section 11): hello-string 7,270 →
+1,926, array-sum 11,967 → 6,665. The name
 section is gated, the extension-class leak is closed, template helpers
 are rooted from the templates that need them, the type section is
 computed rather than accumulated, RTA roots only the entry unit,
@@ -750,6 +751,63 @@ merely discovering?" is answerable at every call site instead of
 depending on execution order. Everything else in this document —
 phase-gating, the keystone, per-specialization instantiation — is
 downstream of that.
+
+## 11. The keystone landed
+
+Sections below this one predate it and describe the earlier attempt
+(kept for the measurements); this is what shipped.
+
+**A vtable slot exists so something can dispatch through it.** A class
+can be virtually dispatched only if a value of a supertype's static
+type can hold it: it has a superclass, or something declared extends
+it (`extendedClassSymbols`, built at init from every declaration,
+sealed variants included). On a class with neither, every slot except
+`==`/`hashCode` — which HashMap and generic equality dispatch through
+the class vtable regardless of hierarchy — is dropped at slot
+materialization. `String` went from 15 slots to 2; each dropped slot
+un-forces an entire method.
+
+**And the force-reach went with it**, as the old attempt said it must.
+What replaced it:
+
+- **Member referrers reach what they register** (concrete classes,
+  reachable referrers) — registration alone is erased by `layout()`'s
+  `classMethodMap` rebuild.
+- **Constructors and mixin-scoped private members keep the
+  force-reach.** Ctors are never vtable-dispatched but every `new`
+  needs one. Mixin-scoped members (`Scope::#name`) are lexically bound
+  with no referrer machinery naming them — and the private lookup in
+  lowering FALLS BACK to the host's same-named member, so the miss is
+  a silent wrong answer (`mixins/private_accessors` returned the host's
+  getter from the mixin's method), not a loud failure. That fallback
+  deserves to die separately.
+- **Pass 1.2 resolves synthesized accessors over every REGISTERED
+  method**, not `wasm.functions` — an early-registered getter carries
+  backing index -1 (an `unreachable` stub body) until fixed up, and
+  membership in wasm.functions used to be equivalent to registration.
+- **Symbol-level member deps are recorded against the generic**
+  (`recordReachedClassMember` from `traverseDependencies`): the dep
+  fan-out only queued for specializations that existed at traversal
+  time, so a member dep walked before the receiver's specialization
+  was instantiated queued nothing and the edge was lost
+  (`JsonObject.size` reads its `OrderedMap`'s `size` before any
+  OrderedMap exists).
+- **Field accessors named before populate registers them** go on a
+  pending list re-checked at the settle point (`var(#x) x` getters are
+  created during layout, after the queues).
+- **The member replay sets are insertion-ordered** (OrderedMap, not
+  HashSet<i32>): their iteration order is now function emission order,
+  and node ids are a relabelling across `invalidate()` — id-hash order
+  made an unchanged file emit different bytes after an invalidate.
+
+| | before | after |
+| --- | ---: | ---: |
+| minimal | 37 | 37 |
+| hello-string | 7,270 | **1,926** (14 functions: main, the literal machinery, the four `$string*`, `String.==`/`hashCode`) |
+| array-sum | 11,967 | **6,665** |
+
+All four `FixedArray` specializations left hello-string entirely.
+Budgets ratchet to 37 / 2,000 / 6,700.
 
 ## The keystone: `hasInst` and the class vtable
 
