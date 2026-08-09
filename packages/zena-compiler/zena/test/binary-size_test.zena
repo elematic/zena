@@ -78,6 +78,24 @@ let compile = (path: String): ByteArray => {
 let target = 'packages/zena-compiler/test-files/minimal.zena';
 
 /**
+ * Whether the module's bytes contain `name` — a byte-substring scan,
+ * not an export-section parse. Export names are stored verbatim, so
+ * for these fixtures (whose sources never mention the helper names) a
+ * hit can only be the export entry; the miss direction is exact.
+ */
+let hasExport = (bytes: ByteArray, name: String): boolean => {
+  if (name.length == 0 || bytes.length < name.length) { return false; }
+  for (var i = 0; i <= bytes.length - name.length; i += 1) {
+    var matches = true;
+    for (var j = 0; j < name.length; j += 1) {
+      if (bytes[i + j] != name.getByteAt(j)) { matches = false; break; }
+    }
+    if (matches) { return true; }
+  }
+  return false;
+};
+
+/**
  * A step up from minimal: an array literal summed by a for-in loop, so
  * it genuinely needs an array type, its iterator, and
  * `Iterable`/`Iterator` dispatch. Minimal alone cannot notice a
@@ -87,12 +105,22 @@ let target = 'packages/zena-compiler/test-files/minimal.zena';
 let arrayTarget = 'packages/zena-compiler/test-files/array-sum.zena';
 
 /**
+ * Between the two: one string literal, returned. Needs the String
+ * class, the literal machinery, and the four $string* host-interop
+ * exports — but calls no String methods, so its budget tracks what
+ * instantiating String costs beyond the literal itself (today: every
+ * method, via the vtable force-reach — "The keystone" in the doc).
+ */
+let helloTarget = 'packages/zena-compiler/test-files/hello-string.zena';
+
+/**
  * Ratchet these down as reachability improves. Do not raise one
  * without recording why in docs/design/binary-size.md — the number
  * moving up is the signal this test exists to give.
  */
-let budget = 2400;
-let arrayBudget = 13600;
+let budget = 100;
+let arrayBudget = 12300;
+let helloBudget = 7500;
 
 export let tests = suite('Binary size', (): void => {
   test('a minimal program stays within its byte budget', (ctx: TestContext): void => {
@@ -109,6 +137,29 @@ export let tests = suite('Binary size', (): void => {
       `${arrayTarget} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
       `${i32ToString(arrayBudget)}-byte budget. A generic specialization is ` +
       `reaching more than the program uses — see docs/design/binary-size.md.`);
+  });
+
+  test('a returned string literal stays within its byte budget', (ctx: TestContext): void => {
+    let bytes = compile(helloTarget);
+    isTrue(bytes.length <= helloBudget,
+      `${helloTarget} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
+      `${i32ToString(helloBudget)}-byte budget. Instantiating String is ` +
+      `reaching more than a program with one literal uses — see ` +
+      `docs/design/binary-size.md.`);
+  });
+
+  test('a program with no strings exports no string helpers', (ctx: TestContext): void => {
+    // The $string* helpers exist to hand String values across the host
+    // boundary; a module with no String values has nothing to hand
+    // across, and every export is emitted code. A returned literal
+    // must have them (the host reads the result through
+    // $stringGetLength/$stringGetByte).
+    isTrue(!hasExport(compile(target), '$stringCreate'),
+      `${target} exports $stringCreate — a program with no strings is ` +
+      `carrying the String host-interop helpers.`);
+    isTrue(hasExport(compile(helloTarget), '$stringGetLength'),
+      `${helloTarget} does not export $stringGetLength — the host cannot ` +
+      `read the String this program returns.`);
   });
 
   test('the name section is opt-in', (ctx: TestContext): void => {

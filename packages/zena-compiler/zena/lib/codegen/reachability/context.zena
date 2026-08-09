@@ -101,6 +101,31 @@ export interface ReachabilityContext {
   var instantiationClosed: boolean;
   instantiatedSpecializedClasses: HashSet<String>;
   instantiatedClasses: HashSet<SymbolId>;
+  /**
+   * Class keys REACHED CODE NAMES — recorded by discoverType during a
+   * reachable traversal. A lowered body can reference a class struct
+   * in a cast, a type test, or a field read on a nullable reference
+   * without the module ever constructing a value, so instantiation
+   * alone under-approximates which structs the type section needs;
+   * declaration (all of classInfos) wildly over-approximates it.
+   */
+  reachablyNamedClasses: HashSet<String>;
+  var typeNamingSuppressed: boolean;
+  var inQueueWalk: boolean;
+  /**
+   * Closure structs reached code can reference: recorded where RTA
+   * mints one for a genuine value position (discoverType's
+   * FunctionType arm, wrappers, adaptations) under the same evidence
+   * gate as reachablyNamedClasses. The tail roots THESE rather than
+   * every closure struct ever interned — plumbing walks mint shapes
+   * nothing emitted refers to, each dragging its impl signature into
+   * the type section.
+   */
+  reachablyNamedClosures: HashSet<WasmStruct>;
+  noteClosureStruct(cs: WasmStruct): void;
+  noteCompositeType(t: Type): void;
+  /** Anonymous (boxed tuple/record) structs named by reached code (same gate). */
+  reachablyNamedAnonStructs: HashSet<WasmStruct>;
   specializedClassTypes: HashMap<SymbolId, Array<ClassType>>;
   reachedClassMembers: HashMap<SymbolId, HashSet<i32>>;
   reachedReachableClassMembers: HashMap<SymbolId, HashSet<i32>>;

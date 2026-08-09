@@ -1,6 +1,6 @@
 import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
-import { WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo } from '../wasm-module.zena';
+import { WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, RecordDispatchInfo, sortWasmFields } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, isVoidOrNeverType, typeToString, ThisType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType } from '../../types.zena';
 import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator } from '../../ast.zena';
@@ -91,6 +91,35 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   reachedReachableMembers = new HashSet<String>();
   instantiatedClasses = new HashSet<SymbolId>();
   instantiatedSpecializedClasses = new HashSet<String>();
+  reachablyNamedClasses = new HashSet<String>();
+  reachablyNamedClosures = new HashSet<WasmStruct>();
+  reachablyNamedAnonStructs = new HashSet<WasmStruct>();
+  /**
+   * Record/tuple SEMANTIC types named in-queue, resolved to their
+   * dispatch/struct at the settle point — resolving eagerly would call
+   * typeToValType before nested dispatches exist. Insertion-ordered
+   * array + key set: iteration order must not depend on Type.hashCode,
+   * which is a process-global uid (the batch-nondeterminism bug).
+   */
+  #namedCompositeTypes = new Array<Type>();
+  #namedCompositeKeys = new HashSet<String>();
+  /**
+   * True while the upfront import-declaration loops run: import
+   * plumbing discovers types for every unit in the program, which is
+   * not evidence that reached code names them — a body that uses an
+   * imported class names it through its own walk. Without this the
+   * reachablyNamedClasses set degenerates to "everything declared".
+   */
+  var typeNamingSuppressed = false;
+  /**
+   * True only while a queue referrer is being processed —
+   * currentReachable is accurately set per referrer there, and there
+   * alone. Everything else (init, layout, vtable passes, helper
+   * ensures) runs with whatever the last referrer left behind, which
+   * is exactly the ambient-phase hazard binary-size.md documents.
+   * Naming evidence is only collected when this is true.
+   */
+  var inQueueWalk = false;
   var isRtaActive = true;
   referencedInterfaceMembers = new HashSet<String>();
   referencedReachableInterfaceMembers = new HashSet<String>();
@@ -661,6 +690,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
 
     // Process all import declarations upfront for namespace objects and their closure trampolines
+    this.typeNamingSuppressed = true;
+    this.typeNamingSuppressed = true;
     for (let unit in this.program.units) {
       let mod = unit.ast;
       let model = unit.model;
@@ -670,6 +701,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
       }
     }
+    this.typeNamingSuppressed = false;
+    this.typeNamingSuppressed = false;
 
     // RTA Roots
     for (let unit in this.program.units) {
@@ -1177,28 +1210,37 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
 
     
-    if (this.wasm.stringClass != null) {
-      if (let (true, info) = this.wasm.classInfos.get(getClassKey(this.wasm.stringClass as ClassType))) {
-        this.markTypeReached(info.structType);
-        this.markTypeReached(info.vtableStructType);
-      }
-    }
-
-    if (this.wasm.templateStringsArrayClass != null) {
-      if (let (true, info) = this.wasm.classInfos.get(getClassKey(this.wasm.templateStringsArrayClass as ClassType))) {
-        this.markTypeReached(info.structType);
-        this.markTypeReached(info.vtableStructType);
-      }
-    }
-    
-    // Every class with codegen state, not just the instantiated ones:
-    // a lowered body can name a class struct in a cast or a field read
-    // without the module ever constructing one, and bodies are lowered
-    // after this point. Still bounded by what codegen knows about,
-    // rather than everything discovery ever touched.
+    // A class struct is emitted on EVIDENCE, not declaration: the
+    // class was instantiated (values exist), or reached code names the
+    // type — a cast, a type test, a field read on a nullable reference
+    // — recorded by discoverType during reachable traversal. This used
+    // to mark every entry in classInfos, and classInfos holds every
+    // DECLARED class (init pre-registers them all for circular
+    // definitions), which put 134 struct types in `return 42`'s module.
     for (let cPair in this.wasm.classInfos) {
-      this.markTypeReached(cPair.value.structType);
-      this.markTypeReached(cPair.value.vtableStructType);
+      let cKeyStr = cPair.key as String;
+      // Box specializations are kept whenever registered: the
+      // erased-== diamond (ir/equality.zena) ref_tests every
+      // registered-and-shaped Box<prim> it finds, and the unbox cast
+      // does the same for its target — both synthesized at lowering
+      // with no AST naming the Box. Bounded at the five primitive
+      // boxes, present only when something registered them.
+      var isBoxSpecialization = false;
+      if (this.wasm.boxClass != null) {
+        let ctOpt = cPair.value.structType.classType;
+        if (ctOpt != null) {
+          let ct = ctOpt as ClassType;
+          isBoxSpecialization = isConcrete(ct) &&
+              (ct.genericSource ?? ct).symbolId ==
+                  (this.wasm.boxClass as ClassType).symbolId;
+        }
+      }
+      if (this.instantiatedSpecializedClasses.has(cKeyStr) ||
+          this.reachablyNamedClasses.has(cKeyStr) ||
+          isBoxSpecialization) {
+        this.markTypeReached(cPair.value.structType);
+        this.markTypeReached(cPair.value.vtableStructType);
+      }
     }
     
     for (let g in this.wasm.globals) {
@@ -1268,34 +1310,65 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // the synthesized code (invalid wasm). Keep every dispatch's
     // types; dispatches are few and their getters are in the
     // functions list whenever the dispatch is usable at all.
+    // Resolve the record/tuple types reached code named into their
+    // dispatch fat pointers and interned structs, now that discovery
+    // has settled and every nested dispatch exists.
+    for (let compT in this.#namedCompositeTypes) {
+      if (compT is TupleType) {
+        let tup = compT as TupleType;
+        let tFields = new Array<WasmField>();
+        for (var ti = 0; ti < tup.elementTypes.length; ti += 1) {
+          tFields.push(new WasmField(i32ToString(ti), typeToValType(this.wasm, tup.elementTypes[ti]), false));
+        }
+        this.reachablyNamedAnonStructs.add(this.wasm.getStruct(null, tFields));
+      } else if (compT is FunctionType) {
+        this.reachablyNamedClosures.add(
+            getClosureStruct(this.wasm, compT as FunctionType));
+      }
+    }
+
+    // Dispatch types stay WHOLESALE for now, unlike the other roots:
+    // getRecordDispatch pushes the dispatch's vtable global
+    // unconditionally, the globals walk below force-reaches its getter
+    // functions, and the getters' bodies struct.get the concrete type
+    // — so an evidence gate here prunes types a getter that IS emitted
+    // still references (`struct_get owner references unemitted
+    // struct`). Gating these requires pruning unused dispatch GLOBALS
+    // first, which is its own change.
     for (let rd in this.wasm.recordDispatchInfos) {
       this.markTypeReached(rd.concreteType);
       this.markTypeReached(rd.fatPtrType);
       this.markTypeReached(rd.vtableType);
     }
-    // Adapted dispatches live in their own list and their synthesized
-    // getters are just as invisible to signature-driven reachability.
     for (let rd in this.wasm.adaptedDispatchInfos) {
       this.markTypeReached(rd.concreteType);
       this.markTypeReached(rd.fatPtrType);
       this.markTypeReached(rd.vtableType);
     }
-    // Closure structs are created on demand at genuine value positions
-    // (typeToValType's FunctionType arm, wrappers, adaptations — see
-    // discoverType, which no longer mints one per discovered
-    // FunctionType) but are referenced from lowered bodies, which run
-    // after layout and are invisible to signature-driven reachability.
-    // Root every created one; closeReachedTypes pulls in its impl
-    // signature through the struct's func field.
+    // Closure structs are referenced from lowered bodies, which run
+    // after layout and are invisible to signature-driven reachability
+    // — but "every closure struct ever interned" is not the root set:
+    // plumbing walks mint shapes nothing emitted refers to, each
+    // dragging its impl signature along. Root the ones RTA recorded
+    // evidence for; a lowering-time lookup of an unrecorded one is a
+    // loud index -1, not a silent miscompile.
+    // Membership comes from the evidence set, but ITERATION follows
+    // the interned map — a HashSet<WasmStruct> iterates in uid order,
+    // which is process-global state (the batch-nondeterminism bug).
     for (let pair in this.wasm.closureStructs) {
-      this.markTypeReached(pair.value);
+      if (this.reachablyNamedClosures.has(pair.value)) {
+        this.markTypeReached(pair.value);
+      }
     }
     for (let cell in this.tryCellStructs) {
       this.markTypeReached(cell);
     }
-    // Boxed tuples and records: named from lowered bodies only.
+    // Boxed tuples and records: named from lowered bodies only — of
+    // reached functions, whose walks recorded them.
     for (let anon in this.wasm.anonymousStructs) {
-      this.markTypeReached(anon);
+      if (this.reachablyNamedAnonStructs.has(anon)) {
+        this.markTypeReached(anon);
+      }
     }
     this.closeReachedTypes();
     this.wasm.types = this.emittedTypes;
@@ -1539,6 +1612,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * get a layout, and before this ran twice it silently did not.
    */
   #layoutClassStructs(populated: HashMap<ClassKey, boolean>): void {
+    // Layout populates EVERY known class (declared or not), and
+    // registering a class's methods discovers their signature types.
+    // That is representation plumbing, not reached code naming a type
+    // — without suppression here, reachablyNamedClasses degenerates to
+    // roughly everything declared, through whatever stale value
+    // currentReachable holds outside queue processing.
+    let wasSuppressed = this.typeNamingSuppressed;
+    this.typeNamingSuppressed = true;
     var round = true;
     while (round) {
       round = false;
@@ -1554,6 +1635,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         round = true;
       }
     }
+    this.typeNamingSuppressed = wasSuppressed;
   }
 
   /**
@@ -1647,6 +1729,27 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * String is instantiated as their prerequisite. Exceptions are, for
    * now, String evidence.
    */
+  /**
+   * Records a closure struct that emitted code can reference, under
+   * the same evidence gate as reachablyNamedClasses. See the interface
+   * doc; `force` is for sites that create a REACHED function whose
+   * synthesized body references the struct regardless of what walk
+   * discovered it (value wrappers, adaptations).
+   */
+  noteCompositeType(t: Type): void {
+    let key = getTypeUniqueKey(t) as String;
+    if (!this.#namedCompositeKeys.has(key)) {
+      this.#namedCompositeKeys.add(key);
+      this.#namedCompositeTypes.push(t);
+    }
+  }
+
+  noteClosureStruct(cs: WasmStruct): void {
+    if (this.inQueueWalk) {
+      this.reachablyNamedClosures.add(cs);
+    }
+  }
+
   noteExceptionInfra(model: SemanticModel): void {
     this.wasm.ensureExceptionInfra(model);
     if (this.wasm.stringClass != null) {
@@ -2131,7 +2234,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let paramType = ft.parameters[argIdx];
               if (paramType is FunctionType) {
                 let paramFt = paramType as FunctionType;
-                resolvedTargetStruct = getClosureStruct(this.wasm, paramFt);
+                let paramCs = getClosureStruct(this.wasm, paramFt);
+                resolvedTargetStruct = paramCs;
+                this.reachablyNamedClosures.add(paramCs);
                 
                 let paramValTypes = new Array<ValType>();
                 paramValTypes.push(new ValTypeStructRef()); // context
@@ -2163,8 +2268,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       };
 
       let actualClosureStruct = getClosureStruct(this.wasm, src);
+      this.reachablyNamedClosures.add(actualClosureStruct);
       if (resolvedTargetStruct == null) {
-        resolvedTargetStruct = getClosureStruct(this.wasm, tgt);
+        let tgtCs = getClosureStruct(this.wasm, tgt);
+        resolvedTargetStruct = tgtCs;
+        this.reachablyNamedClosures.add(tgtCs);
       }
       
       let adaptKey = getFunctionAdaptationKey(src, tgt);
@@ -2394,6 +2502,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           }
           let ref = refItem as Referrer;
           this.currentReachable = ref.isReachable;
+          this.inQueueWalk = true;
           let suffix = if (ref.classType != null) "@" + (getClassKey(ref.classType as ClassType) as String) else "";
           let key = (if (ref.isSymbol) "sym:" + i32ToString(ref.symId as i32) else "node:" + i32ToString(ref.nodeId)) + suffix;
 
@@ -2559,6 +2668,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             }
           }
         }
+        this.inQueueWalk = false;
         
         progress = false;
         this.currentReachable = true;

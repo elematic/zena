@@ -758,6 +758,8 @@ export final class WasmModule {
   vtables = new HashMap<ClassKey, Array<String>>();
   interfaceStructs = new HashMap<InterfaceKey, WasmStruct>();
   interfaceVTableStructs = new HashMap<InterfaceKey, WasmStruct>();
+  /** Where the single big rec group begins in `types`; set by layout(). */
+  var typeRecBlockStart = 0;
   classInterfaceVTables = new HashMap<ClassInterfaceKey, WasmGlobal>();
   #signatureCache = new HashMap<SignatureKey, WasmSignature>();
   #structCache = new HashMap<StructKey, WasmStruct>();
@@ -1528,6 +1530,16 @@ export final class WasmModule {
       }
     }
     
+    // zone1 = signatures referencing no nominal type: safe to emit as
+    // singleton rec groups before the one big group. Everything else
+    // (structs, arrays, and signatures that reference them) must land
+    // inside the big group — a nominal-referencing signature emitted
+    // as a singleton BEFORE the group cannot see into it, and the
+    // module fails validation with `type index out of bounds`. The
+    // boundary is recorded (typeRecBlockStart) rather than re-derived
+    // by scanning for the first struct: with evidence-ordered type
+    // marking, a nominal-referencing signature can precede the first
+    // struct in insertion order.
     let zone1 = new Array<WasmType>();
     let zone2 = new Array<WasmType>();
     
@@ -1557,6 +1569,23 @@ export final class WasmModule {
       this.#visitTypeForLayout(t, visited, sortedTypes);
     }
     this.types = sortedTypes;
+    // The boundary is scanned off the SORTED list rather than taken as
+    // zone1.length: `types` can contain duplicate entries (the
+    // generator/async split passes push types the reachability pass
+    // already emitted), the visit above deduplicates them, and a
+    // duplicate inside zone1 would otherwise shift the boundary past
+    // the first struct — emitting it as a singleton rec group whose
+    // forward references then fail validation.
+    var boundary = 0;
+    while (boundary < sortedTypes.length) {
+      let bt = sortedTypes[boundary];
+      if (bt is WasmSignature && !this.#referencesNominal(bt)) {
+        boundary += 1;
+      } else {
+        break;
+      }
+    }
+    this.typeRecBlockStart = boundary;
 
     for (var i = 0; i < this.types.length; i += 1) {
       let t = this.types[i];

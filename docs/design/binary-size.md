@@ -1,14 +1,15 @@
 # Binary size of a minimal program
 
-**Status**: 🚧 in progress. **33,875 → 2,292 bytes** so far: the name
-section is gated, the extension-class leak is closed, template helpers
-are rooted from the templates that need them, the type section is
-computed rather than accumulated, RTA roots only the entry unit, and
-`String` is instantiated by evidence (a literal, a constructor, a
-String-mentioning export) rather than unconditionally. `return 42` is
-now **one function and one export**; 2,257 of its 2,292 bytes are the
-type section, which is the remaining work (see "What the 2,292 bytes
-are").
+**Status**: **33,875 → 53 bytes.** The name section is gated, the
+extension-class leak is closed, template helpers are rooted from the
+templates that need them, the type section is computed rather than
+accumulated, RTA roots only the entry unit, `String` is instantiated
+by evidence rather than unconditionally (section 7), and the type
+section is rooted on evidence rather than declaration (section 8).
+`return 42` is one signature, one function, one export, plus one stray
+closure-struct pair. The remaining structural work is the keystone
+(vtable slot pruning + force-reach removal), which is what
+`hello-string.zena`'s budget tracks.
 
 The reference program throughout is the smallest thing Zena can
 compile:
@@ -502,17 +503,72 @@ structs — state built once, invalidated by late instantiation:
 `minimal` is one function (`main`, 8 bytes of code), one export, no
 imports, no memory, no data, no start function.
 
-## What the 2,292 bytes are
+## 8. The type section is rooted on evidence (fixed)
 
-2,257 bytes are the type section: 24 types for a function that needs
-one. They are interface member signatures and class structs pulled in
-by the final type-rooting walk in `analysis.zena`, which marks the
-struct and vtable struct of **every entry in `classInfos`** — and
-`classInfos` holds every *declared* class, because init pre-registers
-them all for circular-definition handling. The next cut is to root
-class structs from evidence (instantiated, or named by a reached
-signature or lowered body) rather than from declaration, the same
-move this document has now made four times.
+After section 7, `return 42` was 2,292 bytes of which 2,257 were type
+section — 218 individual types (134 class/vtable structs, ~74
+signatures, 4 arrays) for a program that needs one. Each came from a
+wholesale root in the final type-rooting walk:
+
+- **every `classInfos` entry's struct + vtable struct** — and
+  `classInfos` holds every *declared* class, because init pre-registers
+  them all for circular-definition handling;
+- **every closure struct ever interned** — each dragging its impl
+  signature through its `func` field (that was most of the 74);
+- **every anonymous boxed-tuple struct**, minted by `discoverType`
+  for every tuple type *any* walk sees.
+
+(Record-dispatch triples stay wholesale for now — deliberately.
+`getRecordDispatch` pushes the dispatch's vtable global
+unconditionally, the final globals walk force-reaches its getters, and
+the getters' bodies `struct.get` the concrete type, so gating only the
+TYPES yields an emitted getter referencing an unemitted struct.
+Pruning unused dispatch globals is the prerequisite, and its own
+change.)
+
+Each of the rest is now gated on evidence, with a named set recorded
+during traversal: `reachablyNamedClasses`, `reachablyNamedClosures`,
+`reachablyNamedAnonStructs` — "instantiated, or named by reached
+code". Getting the recording gate right was the whole job, in three
+steps:
+
+1. `currentReachable` alone is worthless: it is ambient state, and the
+   init import loops and the layout passes run with whatever the last
+   referrer left behind (usually `true`). Recording on it captured
+   roughly everything declared. **Evidence is only collected while a
+   queue referrer is actually being processed** (`inQueueWalk`), the
+   one place the flag is set per-referrer. This is a lite version of
+   plan step 0b, and the first piece of it to land.
+2. The dependency-record fast path skips the full node-type walk, so
+   **cast targets, local binding types, boxed tuple/record literals,
+   and class patterns** — types a body names with no signature or
+   record naming them — were invisible (organ seven of that walk's
+   disease). `registerInstantiations` now discovers all four. And the
+   recording happens BEFORE `discoverType`'s dedup
+   (`#recordTypeEvidence`): a type first discovered by a plumbing walk
+   early-returns on its later in-queue discovery, so recording inside
+   the arms never saw it. Composite resolution (closure interning,
+   tuple struct lookup) is deferred to the settle point, where every
+   nested dispatch exists.
+3. Two loweringtime syntheses reference Box structs no AST names: the
+   **unboxing cast** (`(erased as f64)` → ref.cast to `Box<f64>`) and
+   the **erased-`==` diamond**, which ref_tests every
+   registered-and-shaped `Box<prim>`. The cast is mirrored at RTA time
+   (`noteUnboxCast`); registered Box specializations are kept
+   wholesale — bounded at the five primitive boxes.
+
+| | before | after |
+| --- | ---: | ---: |
+| minimal | 2,292 | **53** |
+| hello-string | — | 7,392 |
+| array-sum | 13,504 | **12,169** |
+
+53 bytes is the ideal module minus ~13 bytes: main's signature, one
+function, one export, plus one stray closure-struct pair minted for
+`main`'s own function type (a `function` declaration is never a
+closure, so even that could go). The failures this cut surfaced were
+all the loud kind — `Invalid WasmType index < 0` naming the struct —
+exactly the failure mode section 4 chose this design for.
 
 ## The ceiling, measured
 

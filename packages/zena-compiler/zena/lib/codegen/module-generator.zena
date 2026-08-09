@@ -343,14 +343,16 @@ export final class ModuleGenerator {
 
     let tEmitOther = performance.start("codegen-emit-other");
     this.emitter.emitModuleStart();
-    var recBlockStart = -1;
-    for (var j = 0; j < wasm.types.length; j += 1) {
-      let t = wasm.types[j];
-      if (t is WasmStruct || t is WasmArray) {
-        recBlockStart = j;
-        break;
-      }
-    }
+    // The boundary comes from layout()'s zone split, NOT from scanning
+    // for the first struct: a signature that references a nominal type
+    // can precede the first struct in the final order, and emitting it
+    // as a singleton group before the big rec group makes its type
+    // reference unresolvable (`type index out of bounds`).
+    var recBlockStart = if (wasm.typeRecBlockStart < wasm.types.length) {
+      wasm.typeRecBlockStart
+    } else {
+      -1
+    };
 
     let recBlockEnd = wasm.types.length - 1;
 

@@ -2,10 +2,10 @@ import { collectValueExports } from '../lookup.zena';
 import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface, SpecializerInterface } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
-import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType } from '../../types.zena';
-import { Node, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral } from '../../ast.zena';
-import { WasmStruct, WasmField, WasmGlobal, WasmFunction } from '../wasm-module.zena';
-import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeExternRef } from '../wasm.zena';
+import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType, baseType } from '../../types.zena';
+import { Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, RecordPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral } from '../../ast.zena';
+import { WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo } from '../wasm-module.zena';
+import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, isRefValType } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -30,10 +30,76 @@ export final class TypeLowerer implements TypeLowererInterface {
 
   new(this.pass);
 
+  /**
+   * Records that in-queue-walked code names `t`, recursing into the
+   * component types the discovery arms would visit — the arms are
+   * behind the discovery dedup below, so they only ever see a type's
+   * FIRST discovery, which may have been a plumbing walk. Depth-bounded
+   * against self-referential aliases; the sets dedup re-recording.
+   */
+  #recordTypeEvidence(t: Type, model: SemanticModel, depth: i32): void {
+    if (depth > 12) { return; }
+    if (t is ClassType) {
+      let ct = t as ClassType;
+      this.pass.reachablyNamedClasses.add(getClassKey(ct) as String);
+      if (ct.typeArguments != null) {
+        for (let ta in (ct.typeArguments as Array<Type>)) {
+          this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, ta), model, depth + 1);
+        }
+      }
+    } else if (t is RecordType) {
+      let rec = t as RecordType;
+      for (let pair in rec.properties) {
+        this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, pair.value), model, depth + 1);
+      }
+      // Resolving the dispatch needs typeToValType over the field
+      // types, which throws for a nested record whose own dispatch is
+      // not created yet — and this runs BEFORE discovery on purpose.
+      // Save the semantic type; the settle step resolves it.
+      this.pass.noteCompositeType(rec);
+    } else if (t is TupleType) {
+      let tup = t as TupleType;
+      for (var i = 0; i < tup.elementTypes.length; i += 1) {
+        this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, tup.elementTypes[i]), model, depth + 1);
+      }
+      this.pass.noteCompositeType(tup);
+    } else if (t is InlineTupleType) {
+      for (let e in (t as InlineTupleType).elementTypes) {
+        this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, e), model, depth + 1);
+      }
+    } else if (t is UnionType) {
+      for (let m in (t as UnionType).types) {
+        this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, m), model, depth + 1);
+      }
+    } else if (t is TypeAliasType) {
+      this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, (t as TypeAliasType).target), model, depth + 1);
+    } else if (t is ArrayType) {
+      this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, (t as ArrayType).elementType), model, depth + 1);
+    } else if (t is FunctionType) {
+      let ft = t as FunctionType;
+      // Interning the closure struct here would compute its signature
+      // — typeToValType over params/returns — which throws for a
+      // record whose dispatch is not created yet. Defer, like records.
+      this.pass.noteCompositeType(eraseType(ft));
+      for (let pt in ft.parameters) {
+        this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, pt), model, depth + 1);
+      }
+      this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, ft.returnType), model, depth + 1);
+    }
+  }
+
   discoverType(rawT: Type | null, model: SemanticModel): void {
     if (rawT == null) { return; }
     let t = eraseTypeParameters(this.pass.wasm, rawT as Type);
     let typeStr = getTypeUniqueKey(t);
+    // Evidence is recorded BEFORE the dedup below: a type first
+    // discovered by a plumbing walk (imports, layout, helper ensures)
+    // early-returns on its later in-queue discovery, and recording
+    // only inside the arms would then never see it — the wit-parser
+    // and fs record structs failed with `index < 0` exactly this way.
+    if (this.pass.inQueueWalk) {
+      this.#recordTypeEvidence(t, model, 0);
+    }
     if (this.pass.currentReachable) {
       if (this.pass.reachedSemanticTypes.has(typeStr)) {
         return;
@@ -71,6 +137,9 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
       let st = this.pass.wasm.getStruct(null, fields);
       this.pass.markTypeReached(st);
+      if (this.pass.inQueueWalk) {
+        this.pass.reachablyNamedAnonStructs.add(st);
+      }
     } else if (t is InlineTupleType) {
       let tup = t as InlineTupleType;
       for (var i = 0; i < tup.elementTypes.length; i += 1) {
@@ -99,6 +168,7 @@ export final class TypeLowerer implements TypeLowererInterface {
       // type section per reached method, about half of it.
       let contextStruct = getClosureStruct(this.pass.wasm, eraseType(ft) as FunctionType);
       this.pass.markTypeReached(contextStruct);
+      this.pass.noteClosureStruct(contextStruct);
 
       if (ft.functionSymbolId != noSymbolId) {
         let specializer = this.pass.specializer;
@@ -165,6 +235,14 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
       let cKey = getClassKey(ct);
       let lookupId = (ct.genericSource ?? ct).symbolId;
+      // Reached code names this class: its struct can appear in a
+      // lowered cast, type test, or nullable field read even if no
+      // value is ever constructed, so the type section keeps it.
+      // Recorded BEFORE the already-registered early return — being in
+      // classInfos says the class is declared, not that it is used.
+      if (this.pass.inQueueWalk) {
+        this.pass.reachablyNamedClasses.add(cKey as String);
+      }
       if (this.pass.wasm.classInfos.has(cKey)) {
         return;
       }
@@ -337,6 +415,84 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * occurrences were in dependency-carrying METHOD bodies, forcing
    * per-occurrence inline construction in both backends.
    */
+  /**
+   * An unboxing cast — `(erased as f64)` — lowers to a ref.cast to
+   * `Box<target>`'s struct plus a field read (ir/operators.zena), but
+   * the AST names only the SCALAR target, so nothing else roots the
+   * Box specialization. Same for the erased-== diamond in
+   * ir/equality.zena. Mirror the lowering's decision here: a
+   * scalar-target cast whose operand is reference-typed roots
+   * Box<target>.
+   */
+  /**
+   * Discovers the class types a PATTERN tests — `case Foo {..}:`
+   * (ClassPattern, type on the name node) and the bare `case Foo:`
+   * (a plain Identifier resolving to a type symbol), recursing through
+   * the combining pattern kinds. Mirrors ir/patterns.zena's
+   * lowerPatternTest, which emits a ref.test/ref.cast per tested
+   * class; a class only ever named this way surfaced as
+   * `ref.test references unemitted struct` once the type section
+   * stopped carrying every declared class.
+   */
+  discoverPatternTypes(p: Node, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (p is ClassPattern) {
+      let cp = p as ClassPattern;
+      let t = model.getNodeType(cp.name);
+      if (t != null) {
+        this.pass.typeLowerer.discoverType(resolveType(t as Type), model);
+      }
+      for (let prop in cp.properties) {
+        this.discoverPatternTypes(prop.value, model, resolveType);
+      }
+    } else if (p is Identifier) {
+      let symOpt = model.resolveDeclaration(p as Identifier);
+      if (symOpt != null && (symOpt as Symbol).isType()) {
+        let t = model.getNodeType(p);
+        if (t != null) {
+          this.pass.typeLowerer.discoverType(resolveType(t as Type), model);
+        }
+      }
+    } else if (p is AsPattern) {
+      this.discoverPatternTypes((p as AsPattern).pattern, model, resolveType);
+    } else if (p is BindingPattern) {
+      this.discoverPatternTypes((p as BindingPattern).pattern, model, resolveType);
+    } else if (p is LogicalPattern) {
+      this.discoverPatternTypes((p as LogicalPattern).left, model, resolveType);
+      this.discoverPatternTypes((p as LogicalPattern).right, model, resolveType);
+    } else if (p is TuplePattern) {
+      for (let el in (p as TuplePattern).elements) {
+        if (el != null) {
+          this.discoverPatternTypes(el as Node, model, resolveType);
+        }
+      }
+    } else if (p is RecordPattern) {
+      for (let prop in (p as RecordPattern).properties) {
+        this.discoverPatternTypes(prop.value, model, resolveType);
+      }
+    }
+  }
+
+  noteUnboxCast(asN: AsExpression, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (this.pass.wasm.boxClass == null) { return; }
+    let tgtOpt = model.getNodeType(asN);
+    let srcOpt = model.getNodeType(asN.expression);
+    if (tgtOpt == null || srcOpt == null) { return; }
+    let semT = baseType(resolveType(tgtOpt as Type));
+    let dstVt = typeToValType(this.pass.wasm, semT);
+    let dstScalar = dstVt is ValTypeI32 || dstVt is ValTypeI64 ||
+        dstVt is ValTypeF32 || dstVt is ValTypeF64;
+    if (!dstScalar) { return; }
+    let srcVt = typeToValType(this.pass.wasm, resolveType(srcOpt as Type));
+    if (!isRefValType(srcVt)) { return; }
+    let typeArgs = new Array<Type>();
+    typeArgs.push(semT);
+    let boxCt = instantiateClassType(this.pass.wasm.boxClass as ClassType, typeArgs);
+    this.pass.typeLowerer.discoverType(boxCt, model);
+    this.pass.reachablyNamedClasses.add(getClassKey(boxCt) as String);
+  }
+
   registerLiterals(root: Node): void {
     walkEnter(root, (n: Node) => {
       if (n is StringLiteral) {
@@ -393,6 +549,51 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is TemplateLiteral) {
         this.registerTemplateLiteral(n as TemplateLiteral, model, resolveType);
+      }
+      // Cast/test targets and local binding types are the types a
+      // BODY names without any signature or dependency record naming
+      // them — a lowered `as` is a ref.cast to the target's struct,
+      // and a local is declared with its binding's valtype. The
+      // records are symbol-level (organ seven, after literals and
+      // instantiations); while every classInfos struct was emitted
+      // wholesale this was invisible, and pruning to evidence surfaced
+      // it as `Invalid WasmType index < 0` at emit.
+      if (n is AsExpression) {
+        let t = model.getNodeType(n);
+        if (t != null) {
+          this.pass.typeLowerer.discoverType(resolveType(t as Type), model);
+        }
+        this.noteUnboxCast(n as AsExpression, model, resolveType);
+      }
+      if (n is IsExpression) {
+        let t = model.getNodeType((n as IsExpression).typeAnnotation);
+        if (t != null) {
+          this.pass.typeLowerer.discoverType(resolveType(t as Type), model);
+        }
+      }
+      if (n is VariableDeclaration) {
+        let t = model.getNodeType((n as VariableDeclaration).pattern);
+        if (t != null) {
+          this.pass.typeLowerer.discoverType(resolveType(t as Type), model);
+        }
+      }
+      // A boxed tuple or record literal in expression position names
+      // its struct the same way a local does — organ seven, continued.
+      if (n is TupleLiteral || n is RecordLiteral) {
+        let t = model.getNodeType(n);
+        if (t != null) {
+          this.pass.typeLowerer.discoverType(resolveType(t as Type), model);
+        }
+      }
+      // Patterns test classes: `case Foo {..}:` and the bare
+      // `case Foo:` both lower to a ref.test/cast against Foo's
+      // struct (ir/patterns.zena) — body-named types with no record
+      // naming them.
+      if (n is MatchCase) {
+        this.discoverPatternTypes((n as MatchCase).pattern, model, resolveType);
+      }
+      if (n is LetPatternCondition) {
+        this.discoverPatternTypes((n as LetPatternCondition).pattern, model, resolveType);
       }
       if (n is CallExpression) {
         // Plain identifier calls (module-level `let` functions,
@@ -903,6 +1104,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     walkEnter(root, (n: Node) => {
       if (n is ThrowExpression || n is TryExpression) {
         this.pass.noteExceptionInfra(model);
+      }
+      if (n is AsExpression) {
+        this.noteUnboxCast(n as AsExpression, model, resolveType);
       }
       if (n is StringLiteral) {
         let sl = n as StringLiteral;
@@ -1458,7 +1662,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.pass.wasm.addFunction(wrapperFunc);
       this.pass.markFunctionReached(wrapperFunc);
       
-      getClosureStruct(this.pass.wasm, ft);
+      // The wrapper is force-reached above and its synthesized body
+      // references this struct, so the struct is needed regardless of
+      // which walk registered it.
+      this.pass.reachablyNamedClosures.add(
+          getClosureStruct(this.pass.wasm, ft));
     }
   }
 

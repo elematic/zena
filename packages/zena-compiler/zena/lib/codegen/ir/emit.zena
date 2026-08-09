@@ -1016,6 +1016,7 @@ export final class ZirFunctionEmitter {
       case IrOp.struct_get: {
         this.#pushValue(body.a[inst]);
         let field = this.#fieldRef(body.b[inst]);
+        this.#requireIndexed(field.owner, 'struct_get owner');
         this.emitter.emitStructGet(field.owner.index, this.#fieldIndexOf(field));
       }
       case IrOp.struct_set: {
@@ -1023,6 +1024,7 @@ export final class ZirFunctionEmitter {
         this.#pushValue(body.extra[pairIdx]);
         this.#pushValue(body.extra[pairIdx + 1]);
         let field = this.#fieldRef(body.b[inst]);
+        this.#requireIndexed(field.owner, 'struct_set owner');
         this.emitter.emitStructSet(field.owner.index, this.#fieldIndexOf(field));
       }
       case IrOp.ref_func: {
@@ -1133,13 +1135,48 @@ export final class ZirFunctionEmitter {
     return (ref as IrRefGlobal).target.index;
   }
 
+  /**
+   * Throws if `t` was never assigned a type-section index — writing
+   * its -1 produces a module the engine rejects with an opaque
+   * `invalid heap type` at a byte offset, far from the cause.
+   */
+  #requireIndexed(t: WasmType, what: String): void {
+    if (t.index < 0) {
+      let desc = if (t is WasmStruct) {
+        "struct " + ((t as WasmStruct).name ?? "unnamed")
+      } else if (t is WasmSignature) {
+        "signature"
+      } else if (t is WasmArray) {
+        "array"
+      } else {
+        "type"
+      };
+      throw new Error('zir emit: ' + what + ' references unemitted ' +
+          desc + ' [in ' + (this.func.name ?? '<anonymous>') + ']');
+    }
+  }
+
   /** The module index of the type-ref payload in slot b. */
   #typeIndexOf(inst: i32): i32 {
     let ref = this.body.refTable[this.body.b[inst]];
     if (!(ref is IrRefType)) {
       throw new Error('zir emit: ' + irOpName(this.body.op(inst)) + ' ref kind');
     }
-    return (ref as IrRefType).target.index;
+    let target = (ref as IrRefType).target;
+    if (target.index < 0) {
+      // Writing -1 here produces a module V8 rejects with an opaque
+      // `Unknown heap type` at a byte offset; name the type instead.
+      let desc = if (target is WasmStruct) {
+        "struct " + ((target as WasmStruct).name ?? "unnamed")
+      } else if (target is WasmSignature) {
+        "signature"
+      } else {
+        "type"
+      };
+      throw new Error('zir emit: ' + irOpName(this.body.op(inst)) +
+          ' references unemitted ' + desc + ' (index -1)');
+    }
+    return target.index;
   }
 
   #emitCallInst(inst: i32): void {
@@ -1187,7 +1224,10 @@ export final class ZirFunctionEmitter {
   #emitRefNullInst(inst: i32): void {
     let vt = this.body.resultType(inst) as ValType;
     match (vt) {
-      case ValTypeRefNull as r: { this.emitter.emitRefNull(r.target.index); }
+      case ValTypeRefNull as r: {
+        this.#requireIndexed(r.target, 'ref.null');
+        this.emitter.emitRefNull(r.target.index);
+      }
       case ValTypeAnyRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.any)); }
       case ValTypeEqRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.eq)); }
       case ValTypeStructRef: { this.emitter.emitRefNull(heapTypeToSigned(HeapType.struct)); }
@@ -1201,8 +1241,14 @@ export final class ZirFunctionEmitter {
     let body = this.body;
     this.#pushValue(body.a[inst]);
     match (body.typeTable[body.b[inst]]) {
-      case ValTypeRef as r: { this.emitter.emitRefCast(r.target.index); }
-      case ValTypeRefNull as rn: { this.emitter.emitRefCastNull(rn.target.index); }
+      case ValTypeRef as r: {
+        this.#requireIndexed(r.target, 'ref.cast');
+        this.emitter.emitRefCast(r.target.index);
+      }
+      case ValTypeRefNull as rn: {
+        this.#requireIndexed(rn.target, 'ref.cast null');
+        this.emitter.emitRefCastNull(rn.target.index);
+      }
       case ValTypeEqRef: { this.emitter.emitRefCastEqNull(); }
       case _: {
         throw new Error('zir emit: ref.cast target kind');
@@ -1214,8 +1260,14 @@ export final class ZirFunctionEmitter {
     let body = this.body;
     this.#pushValue(body.a[inst]);
     match (body.typeTable[body.b[inst]]) {
-      case ValTypeRef as r: { this.emitter.emitRefTest(r.target.index); }
-      case ValTypeRefNull as rn: { this.emitter.emitRefTestNull(rn.target.index); }
+      case ValTypeRef as r: {
+        this.#requireIndexed(r.target, 'ref.test');
+        this.emitter.emitRefTest(r.target.index);
+      }
+      case ValTypeRefNull as rn: {
+        this.#requireIndexed(rn.target, 'ref.test null');
+        this.emitter.emitRefTestNull(rn.target.index);
+      }
       case _: {
         throw new Error('zir emit: ref.test target kind');
       }
