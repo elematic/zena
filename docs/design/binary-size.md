@@ -359,6 +359,44 @@ Two snapshots lose two functions each — synthesized record-dispatch
 getters for a dispatch that only existed because the stdlib was being
 walked. Imports and every other function are unchanged.
 
+## 6. Instantiation is closed, and layout runs to a fixpoint (fixed)
+
+Struct layout (Pass 1.05) ran **once**, over whatever was in
+`classInfos` at that moment. But populating a class registers its
+methods, and that instantiates further classes; so did the
+class-interface vtable pass and the final queue drains, both of which
+run *after* layout. A class first instantiated in any of those never
+got its struct populated, and carried an empty layout into codegen.
+
+Nothing detected that. It surfaced much later and somewhere else —
+`string helper synthesis: $stringCreate layout`, `zir unsupported:
+operator dispatch` — with nothing pointing back at the instantiation
+that caused it. Every attempt in this document to make reachability
+more precise eventually hit one of those, from a different direction
+each time, because the over-approximations were what kept the ordering
+from mattering.
+
+Now:
+
+- **layout runs to a fixpoint** — `#layoutClassStructs` repeats until
+  no class is left unpopulated, since populating one can create
+  another;
+- it runs **again** once discovery has fully settled, catching
+  anything the vtable pass or the final drain instantiated;
+- and then **instantiation is closed**: `instantiateClassType` throws
+  `class instantiated after layout began: <key>` for a class that has
+  never been instantiated before.
+
+Size is unchanged — this is an invariant, not an optimisation. What it
+buys is that the next attempt at the String root fails *at the
+instantiation that is wrong*, naming the class, instead of somewhere
+downstream in scaffold synthesis.
+
+A specialization's concrete class type arguments are also instantiated
+with it, which the same work exposed: if `FixedArray<String>` exists
+then String values exist and its `contains` lowers to String's `==`.
+That held by accident while String was instantiated unconditionally.
+
 ## The one root that is left, and why it does not simply come out
 
 `return 42` is 8,540 bytes and 66 functions. **All of it hangs off one
@@ -394,23 +432,19 @@ removing it:
    `$string*` helpers. The right one is "does String's struct have
    fields" — a different answer at a different time.
 
-### The actual structural problem
+### The ordering problem is fixed; the root is not
 
-Instantiation can happen *during* a layout phase, and layout has
-already run. Every remaining over-approximation is load-bearing
-because it hides that: instantiate everything early enough and the
-ordering never shows.
+The ordering half is done (section 6 above): layout runs to a
+fixpoint, catches up after discovery settles, and instantiation is
+then closed with a named error.
 
-So the fix is not another gate. Either **instantiation closes before
-layout begins** — no `instantiateClassType` after Pass 1.05, with
-anything discovered later being a hard error rather than a silent
-late instantiation — or **layout becomes re-runnable**, so a class
-instantiated late still gets its struct populated. Until one of those
-is true, tightening reachability keeps producing a differently-shaped
-ordering bug.
-
-That is the last structural item. Everything below it in this document
-is downstream.
+With that in place the String gating gets one step further and stops
+in a new spot: `FixedArray<String>` is instantiated for a program with
+no strings, and gating String leaves its struct unpopulated —
+`string helper synthesis: String field layout`. The remaining question
+is narrower than it was, and it is the one worth asking next: **why
+does `classInfos` contain String with an unpopulated struct at all**,
+when layout now runs to a fixpoint over exactly that map.
 
 ## The ceiling, measured
 

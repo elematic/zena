@@ -36,6 +36,9 @@ export final class Specializer implements SpecializerInterface {
     if (this.pass.instantiatedSpecializedClasses.has(cKey)) {
       return;
     }
+    if (this.pass.instantiationClosed) {
+      throw new Error("class instantiated after layout began: " + cKey);
+    }
     this.pass.instantiatedSpecializedClasses.add(cKey);
     cha.registerInstantiatedClass(classType);
 
@@ -68,6 +71,21 @@ export final class Specializer implements SpecializerInterface {
       }
     }
     */
+
+    // A specialization's concrete class type arguments are
+    // instantiated with it: if `FixedArray<String>` exists then String
+    // values exist, and its `contains` lowers to String's `==`. While
+    // String was instantiated unconditionally this held by accident.
+    if (classType.typeArguments != null) {
+      for (let ta in (classType.typeArguments as Array<Type>)) {
+        if (ta is ClassType && isConcrete(ta as ClassType)) {
+          let taCt = ta as ClassType;
+          if (getClassKey(taCt) != getClassKey(classType)) {
+            this.instantiateClassType(taCt, this.pass.getClassModel(taCt));
+          }
+        }
+      }
+    }
 
     let unspecC = classType.genericSource ?? classType;
     let classId = unspecC.symbolId;

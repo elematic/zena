@@ -138,6 +138,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    */
   usedInterfaceTypes = new Array<InterfaceType>();
 
+  /**
+   * Set once struct layout begins. After that point a class that has
+   * never been instantiated cannot become instantiated: Pass 1.05
+   * populates every known class's struct exactly once, so a late
+   * arrival would carry an empty layout and fail somewhere further on
+   * — as `$stringCreate layout` and `operator dispatch` both did.
+   * Closing it turns that into a named error at the point of the bug.
+   */
+  var instantiationClosed = false;
+
   var currentReachable = true;
 
   parsedClassMethodRefs = new HashMap<String, ParsedMethodRef>();
@@ -832,14 +842,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
-    // Pass 1.05: Unified recursive class struct and vtable fields population (superclass first)
+    // Pass 1.05: Unified recursive class struct and vtable fields
+    // population (superclass first). Populating a class registers its
+    // methods, which can instantiate further classes — so this runs to
+    // a fixpoint, and only then is instantiation CLOSED. After that a
+    // class that has never been instantiated cannot become
+    // instantiated, because nothing would populate its struct: it
+    // would carry an empty layout and fail much further downstream
+    // (`$stringCreate layout`, `operator dispatch`) with nothing
+    // pointing back here.
     let populated = new HashMap<ClassKey, boolean>();
-    for (let cPair in this.wasm.classInfos) {
-      let ct = cPair.value.structType.classType;
-      if (ct != null) {
-        this.#populateClassStruct(ct as ClassType, populated);
-      }
-    }
+    this.#layoutClassStructs(populated);
 
     // Pass 1.1: Synthesize physical field getters/setters for virtual/inherited slots
     for (let cPair in this.wasm.classInfos) {
@@ -1162,6 +1175,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     performance.end(tQueues3);
     let tLayout3 = performance.start("codegen-discovery-layout");
     
+    // Discovery is settled. Catch layout up with anything the vtable
+    // pass or the final drain instantiated, then CLOSE: from here a
+    // new class cannot get a struct, so becoming instantiated now is a
+    // bug, and a named one.
+    this.#layoutClassStructs(populated);
+    this.instantiationClosed = true;
+
     this.isRtaActive = false;
 
     // The type section is recomputed here rather than accumulated.
@@ -1447,6 +1467,35 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     return created;
+  }
+
+
+  /**
+   * Populates every known class's struct and vtable slots, to a
+   * fixpoint: populating a class registers its methods, and that can
+   * instantiate further classes which then need laying out too.
+   *
+   * Called again once discovery has fully settled, immediately before
+   * instantiation is closed — a class first instantiated by the
+   * class-interface vtable pass or the final queue drain still has to
+   * get a layout, and before this ran twice it silently did not.
+   */
+  #layoutClassStructs(populated: HashMap<ClassKey, boolean>): void {
+    var round = true;
+    while (round) {
+      round = false;
+      let pending = new Array<ClassType>();
+      for (let cPair in this.wasm.classInfos) {
+        let ct = cPair.value.structType.classType;
+        if (ct != null && !populated.has(getClassKey(ct as ClassType))) {
+          pending.push(ct as ClassType);
+        }
+      }
+      for (let ct in pending) {
+        this.#populateClassStruct(ct, populated);
+        round = true;
+      }
+    }
   }
 
   ensureAllHelperFunctionsReached(): void {
