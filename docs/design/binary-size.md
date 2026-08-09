@@ -282,6 +282,57 @@ Only **seven** instantiations now, and they explain everything left:
    traversal is supposed to discover types without reaching code;
    `instantiateClassType` is not phase-gated, so it reaches.
 
+## The ceiling, measured
+
+A spike (branch `spike-entry-only-rta-roots`, **not landable** — 68 of
+470 execution tests fail) settles what is actually achievable:
+
+```
+export function main(): i32 { return 42; }   ->  2,887 bytes, ONE function
+```
+
+`main`, 8 bytes of code, one export. No imports, no memory, no data
+section, no start function. So nothing about wasm-GC, the language or
+the prelude forces a five-figure module; the 11,530 bytes on `main` are
+all reachability over-approximation.
+
+Three changes get there, each answering a "why is this here at all":
+
+| change | minimal | tests |
+| --- | ---: | --- |
+| baseline (PR #220) | 11,530 | 470/470 |
+| root only the entry unit | 9,562 | 465/470 |
+| + gate `String` and the `$string*` helpers on String existing | 2,887 | 402/470 |
+
+And what remains at 2,887 is **2,852 bytes of type section** — 33
+function-signature types for a function that needs one. They are
+interface member signatures, rooted through the interface vtable
+structs that Pass 0.8 populates for every declared interface in the
+program.
+
+### The 68 failures are all one shape
+
+Every one is code the compiler **synthesizes and resolves by name
+after RTA has finished**:
+
+- `zena:async.drainMicrotasks`, via `getStdlibFunc` from the async ramp
+- the `$string*` host-interop helpers, whose bodies are synthesized
+  against String's struct layout
+- namespace-import (`import * as ns`) members
+- array extension machinery reached through `Pass 1.5`'s vtable slots
+
+This is the same defect as the template helpers fixed in #219, and it
+has a general form worth stating: **anything the backend looks up by
+name is invisible to RTA, so it must be rooted explicitly by whatever
+construct implies it.** Every such lookup is a latent
+`function index < 0` or an invalid module the moment RTA gets more
+precise. `getStdlibFunc` has four call sites; `classMethodMap` lookups
+in lowering have many more.
+
+Until that contract is closed, RTA cannot be made precise without
+breaking codegen — which is exactly what the last three attempts in
+this document ran into from different directions.
+
 ## Why `String` is in the module at all
 
 It is worth stating plainly, because it is not a leak in the ordinary
@@ -475,7 +526,13 @@ Interface dispatch does not need these: it goes through
 
 In dependency order:
 
-0. **Make the traversal phase explicit rather than ambient.** Thread
+0a. **Close the by-name lookup contract.** Every backend lookup that
+   resolves a callee by name after RTA (`getStdlibFunc`, and the
+   synthesized-helper families) needs an explicit root from the
+   construct that implies it, as template helpers got in #219. This is
+   what makes all the later steps possible instead of merely smaller.
+
+0b. **Make the traversal phase explicit rather than ambient.** Thread
    it through `queueReferrer`/`instantiateClassType`/the visitor
    instead of reading `pass.currentReachable`, which survives between
    phases and is what makes every phase-gating attempt fail in a
