@@ -78,11 +78,21 @@ let compile = (path: String): ByteArray => {
 let target = 'packages/zena-compiler/test-files/minimal.zena';
 
 /**
- * Ratchet it down as reachability improves. Do not raise it without
- * recording why in docs/design/binary-size.md — the number moving up
- * is the signal this test exists to give.
+ * A step up from minimal: an array literal summed by a for-in loop, so
+ * it genuinely needs an array type, its iterator, and
+ * `Iterable`/`Iterator` dispatch. Minimal alone cannot notice a
+ * regression in generic specialization, because it specializes
+ * nothing.
  */
-let budget = 24500;
+let arrayTarget = 'packages/zena-compiler/test-files/array-sum.zena';
+
+/**
+ * Ratchet these down as reachability improves. Do not raise one
+ * without recording why in docs/design/binary-size.md — the number
+ * moving up is the signal this test exists to give.
+ */
+let budget = 15500;
+let arrayBudget = 21000;
 
 export let tests = suite('Binary size', (): void => {
   test('a minimal program stays within its byte budget', (ctx: TestContext): void => {
@@ -91,6 +101,14 @@ export let tests = suite('Binary size', (): void => {
       `${target} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
       `${i32ToString(budget)}-byte budget. Something is being emitted that a ` +
       `program with no code in it does not need — see docs/design/binary-size.md.`);
+  });
+
+  test('an array-literal sum stays within its byte budget', (ctx: TestContext): void => {
+    let bytes = compile(arrayTarget);
+    isTrue(bytes.length <= arrayBudget,
+      `${arrayTarget} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
+      `${i32ToString(arrayBudget)}-byte budget. A generic specialization is ` +
+      `reaching more than the program uses — see docs/design/binary-size.md.`);
   });
 
   test('the name section is opt-in', (ctx: TestContext): void => {

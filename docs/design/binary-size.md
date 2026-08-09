@@ -1,7 +1,8 @@
 # Binary size of a minimal program
 
-**Status**: 🚧 partially fixed — the name section is gated (below); the
-RTA leaks are diagnosed and measured but not yet fixed.
+**Status**: 🚧 in progress. The name section is gated and the
+extension-class leak is closed (33,875 → 15,328 bytes). The remaining
+leaks are diagnosed below with measurements.
 
 The reference program throughout is the smallest thing Zena can
 compile:
@@ -174,71 +175,146 @@ pass does layout and method registration together. Tried; it breaks the
 self-compile with `member not found @FixedArray_…[]$BoundedRange`. The
 two responsibilities have to be separated first.
 
-## What removing the extension rule is worth
+## 3. Removing the extension rule (fixed)
 
-Dropping `|| ct.isExtension` from both sites above and rebuilding:
+Dropping `|| ct.isExtension` from both sites in 2a, plus the three
+gaps it was masking:
 
 | | before | after |
 | --- | ---: | ---: |
-| total (with names) | 33,875 | 18,161 |
+| total (names off) | 23,994 | **15,328** |
 | functions | 227 | 99 |
 | code | 17,485 | 10,453 |
 | types | 4,854 | 4,258 |
 | globals | 730 (39) | 168 (18) |
 
-`return 42` still compiles and runs, and **464 of 470** execution tests
-pass. It is not landable as-is: the 6 failures are real gaps that the
-blanket force-reach was masking.
+Against the original 33,875-byte module that is a **55% cut**. All 470
+execution tests pass and the fixpoint holds.
+
+Removing the rule alone left 6 execution tests failing, in two
+families, each a real gap the blanket force-reach was hiding:
+
+### 3a. Registering a method is not the same as reaching it
+
+`WasmModule.layout()` **rebuilds** `classMethodMap` from
+`wasm.functions` — the list RTA has already pruned to reached
+functions. So a method that is registered but never reached is erased
+from the map before lowering looks it up, and lowering bails with
+`method not found`. Registration is not a durable act; reaching is.
+
+That is why `FixedArray<i32>.map_spec_i32` was registered (twice,
+observably) and still not found. Two things follow:
+
+- `registerInstantiations` — the walk taken when a function body has
+  checker dependency records, which is the common case — had **no
+  generic-method arm at all**. Only `discoverNodeTypes`, the full
+  walk, called `instantiateGenericMethod`. The records are
+  symbol-level: they name the method without its solved type
+  arguments, so the specialized slot the call site looks up is never
+  minted. This is the same disease as the string-literal and
+  generic-instantiation arms already documented on that method —
+  organ six. `registerGenericMethodUse` adds it.
+- Both walks now `markFunctionReached` the specialization they
+  instantiate, rather than only registering it.
+
+### 3b. Class-interface vtables needed a fixpoint, not one pass
+
+The class↔interface vtable global was allocated only for classes in
+`instantiatedSpecializedClasses`. An extension class never enters that
+set now, so `FixedArray<T>` lost the vtable its values genuinely
+dispatch through. The gate is relaxed for extension classes;
+`usedInterfaceAdaptations`, checked immediately below it, is the
+honest signal — it is recorded from real pack sites and gates each
+class-interface pair on its own.
+
+That exposed an ordering bug that had always been latent: "Pass 2"
+built these vtables **once**, and reaching an interface method's body
+can instantiate further classes — `FixedArray<T>.:iterator` returns an
+`ArrayIterator<T>` packed as `Iterator<T>` — which then need vtables
+of their own. Classes instantiated by the final queue drain never got
+one. Pass 2 and the drain now alternate to fixpoint; the pair set is
+finite and only grows, so it terminates.
+
+## What is left, and why
+
+The 99 remaining functions, by origin (blame tree again):
 
 ```
-arrays/extension-calls-zir.zena            method not found: FixedArray_s186_i32.map_spec_i32
-arrays/generic-method-primitive-mono.zena  method not found
-arrays/prelude-builtins-zir.zena           method not found
-classes/generic-declare-interface.zena     interface vtable global not found
-interfaces/sequence-array-index-trampoline.zena  interface vtable global not found
-records/tuple-array-in-method.zena         interface vtable global not found
+R <phase:tInit>                    -> String_s247
+C Csym:363  (zena:option `none`)   -> None_s353
+C Csym:849  (zena:console `console`) -> WasiConsole_s837
+R Rnode:1046@String_s247           -> FixedArray_s186_String_s247
+R Rnode:1046@String_s247           -> FixedArray_s186_u8
+R Rnode:1046@String_s247           -> FixedArray_s186_anyref
+R Rnode:1046@String_s247           -> FixedArray_s186_union_MapEntry_s414_anyref_anyref_null
 ```
 
-Both families are diagnosed:
+Only **seven** instantiations now, and they explain everything left:
 
-- **`method not found: FixedArray_s186_i32.map_spec_i32`** —
-  `registerInstantiations` (the path taken when a function body has
-  checker dependency records, which is the common case) has no
-  generic-method arm at all. Only `discoverNodeTypes`, the full-walk
-  path, calls `instantiateGenericMethod`. Today a generic method on an
-  extension class gets registered anyway because instantiation
-  registers *everything*; remove that and the missing arm is exposed.
-  The two walks are meant to be equivalent modulo cost, and this is a
-  place where they are not.
-- **`interface vtable global not found`** — the class↔interface vtable
-  global is allocated for instantiated classes only, and an extension
-  class that is never "instantiated" never gets one even though its
-  values genuinely flow through `Iterable`/`Sequence` dispatch.
-  Extension classes need an instantiation trigger tied to a *value*
-  existing (an `array.new` of that element type) rather than to the
-  type being mentioned.
+1. **`String` is instantiated unconditionally** (`analysis.zena`, the
+   `wasm.stringClass != null` block in `run`'s init phase). Every
+   program pays for `String` and, through 2b, for all ~21 of its
+   methods — `split`, `startsWith`, `asciiLowerCase`, … — whether or
+   not it has a string in it.
+2. **One instantiation of a generic instantiates all its known
+   siblings.** `instantiateClassType` marks `instantiatedClasses` by
+   the *generic's* symbol id and then instantiates every entry in
+   `specializedClassTypes` for it; `discoverType` gates on that same
+   per-generic flag. So `FixedArray<u8>`, genuinely needed by
+   `String`, drags in `FixedArray<String>`, `FixedArray<anyref>` and
+   `FixedArray<MapEntry|null>` — three specializations nothing uses,
+   at ~10 methods each.
+
+   Making this per-specialization is the correct RTA and is where the
+   next big cut is. Removing only the sibling loop is not enough
+   (15,328 → 15,134) because `discoverType`'s per-generic gate
+   re-instantiates each specialization as it is discovered; removing
+   both breaks the self-compile, for the same class of reason as 3a —
+   uses that currently rely on the over-approximation have to reach
+   their own specialization first. Measured and reverted.
+3. **`WasiConsole` and `None`** are instantiated from *checkable*
+   traversals of stdlib globals (`console`, `none`). A checkable
+   traversal is supposed to discover types without reaching code;
+   `instantiateClassType` is not phase-gated, so it reaches.
 
 ## Plan
 
 In dependency order:
 
-1. **Give `registerInstantiations` a generic-method arm**, matching
-   `discoverNodeTypes`. Independently correct, and a prerequisite.
-2. **Separate struct layout from method registration** in
+1. **Make instantiation per-specialization**, not per-generic — with
+   the use-side gaps closed first, the way 3a closed them for generic
+   methods. Worth roughly three of the four array specializations.
+2. **Do not instantiate `String` unconditionally.** It should follow
+   from a string literal, a string-typed value, or a `+` on strings.
+3. **Phase-gate `instantiateClassType`** so a checkable traversal
+   cannot instantiate (`WasiConsole`, `None`).
+4. **Separate struct layout from method registration** in
    `populateClassStructAndMethods`, so a discovered-only class can get
-   its fields without its methods (2c).
-3. **Give extension classes a value-based instantiation trigger** and
-   drop `|| ct.isExtension` from the two sites in 2a.
-4. **Prune interface vtables to referenced selectors.** RTA already
+   its fields without its methods (2c). Blunt-skipping it does not
+   work — tried, and it breaks the self-compile with `member not found
+   @FixedArray_…[]$BoundedRange`.
+5. **Prune interface vtables to referenced selectors.** RTA already
    tracks `referencedInterfaceMembers` / `usedInterfaceMembers`; the
    vtable struct shape should be built from that set rather than from
    every declared member. This is what makes 2b stop mattering: a
    selector nobody dispatches on should not occupy a slot, and then
    nothing forces its implementation to be emitted.
-5. **Register function-value wrappers from genuine value positions
+6. **Register function-value wrappers from genuine value positions
    only** — 7 remain for stdlib functions never used as values.
 
-A regression test belongs with this: `dce_test.zena` currently only
-asserts that two programs compile to the *same* length, which cannot
-notice the module tripling. An absolute budget on the reference
-program above would have caught every regression described here.
+## The ratchet
+
+`zena/test/binary-size_test.zena` holds two fixtures to absolute byte
+budgets, to be moved DOWN only:
+
+| fixture | what it adds | bytes |
+| --- | --- | ---: |
+| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 15,328 |
+| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 20,671 |
+
+Minimal alone cannot notice a regression in generic specialization,
+because it specializes nothing — hence the second fixture.
+
+`dce_test.zena` never caught any of this: it asserts only that two
+programs compile to the *same* length, which stays true while both
+triple.

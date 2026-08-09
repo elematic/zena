@@ -201,7 +201,7 @@ export final class TypeLowerer implements TypeLowererInterface {
         }
 
         let specializer = this.pass.specializer;
-        if (this.pass.isRtaActive && (this.pass.instantiatedClasses.has(lookupId) || ct.isExtension)) {
+        if (this.pass.isRtaActive && this.pass.instantiatedClasses.has(lookupId)) {
           specializer.instantiateClassType(ct, model);
         }
 
@@ -421,6 +421,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             this.queuePrivateMethod(classType as ClassType, pName, targs);
           }
         }
+      }
+      // PUBLIC generic methods monomorphize per solved type-argument
+      // list, exactly like the private ones handled above — and the
+      // dependency records name the method without its arguments, so
+      // on this walk the specialized slot the call site will look up
+      // (`map_spec_i32`) is never registered. Organ six. It went
+      // unnoticed for as long as an instantiated class registered
+      // every method it had.
+      if (n is MemberExpression) {
+        this.registerGenericMethodUse(n as MemberExpression, model, resolveType);
       }
       if (n is NewExpression) {
         let ne = n as NewExpression;
@@ -674,6 +684,61 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           }
         }
       }
+    }
+  }
+
+  /**
+   * Registers the monomorphized copy of a PUBLIC generic method named
+   * by a member expression, under the mangled slot name the call site
+   * will look up. Mirrors the generic-method branch of
+   * discoverNodeTypes' MemberExpression arm, for the walk that skips
+   * it. A non-generic member needs nothing here: the checker's
+   * dependency records already name it.
+   */
+  registerGenericMethodUse(mem: MemberExpression, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    let objType = model.getNodeType(mem.object);
+    if (objType == null) { return; }
+    let resolvedObj = resolveType(objType as Type);
+    if (!(resolvedObj is ClassType)) { return; }
+    let ct = resolvedObj as ClassType;
+    if (!isConcrete(ct)) { return; }
+    let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
+    if (!ct.members.has(propName)) { return; }
+    let mi = ct.members[propName];
+    if (!(mi is MethodInfo)) { return; }
+    let miType = (mi as MethodInfo).type;
+    if (!(miType is FunctionType)) { return; }
+    let declFt = miType as FunctionType;
+    if (declFt.typeParameters == null ||
+        (declFt.typeParameters as Array<TypeParameterType>).length == 0) {
+      return;
+    }
+    // The checker solved the arguments onto the member's node type;
+    // substitute them into the walking specialization's context, as
+    // the private-method arm does.
+    let useType = model.getNodeType(mem);
+    if (useType == null || !(useType is FunctionType)) { return; }
+    let rawArgs = (useType as FunctionType).typeArguments;
+    if (rawArgs == null || (rawArgs as Array<Type>).length == 0) { return; }
+    let typeArgs = new Array<Type>();
+    for (let a in (rawArgs as Array<Type>)) {
+      typeArgs.push(resolveType(a));
+    }
+    let unspecId = (ct.genericSource ?? ct).symbolId;
+    let cd = if (let (true, decl) = this.pass.classDecls.get(unspecId)) decl else null;
+    let targetModel = this.pass.getClassModel(ct);
+    for (let md in this.pass.cha.findImplementingMethods(ct, propName)) {
+      let fn = this.pass.specializer.instantiateGenericMethod(ct, cd, propName, md as Node,
+          typeArgs, this.pass.getNodeModel(md as Node, targetModel));
+      // Registering is not enough. `WasmModule.layout()` REBUILDS
+      // classMethodMap from `wasm.functions`, which RTA has already
+      // pruned to reached functions — so a registered-but-unreached
+      // specialization is erased from the map before lowering looks it
+      // up, and lowering bails with "method not found". Reaching it is
+      // what makes the registration survive. (This was invisible while
+      // instantiation reached every method a class had.)
+      this.pass.markFunctionReached(fn);
     }
   }
 
@@ -1068,7 +1133,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               if (isGenericMethod && methodTypeArgs != null) {
                 let unspecCdId = (ct.genericSource ?? ct).symbolId;
                 let cd = if (let (true, decl) = this.pass.classDecls.get(unspecCdId)) decl else null;
-                specializer.instantiateGenericMethod(ct, cd, propName, md as Node, methodTypeArgs as Array<Type>, this.pass.getNodeModel(md as Node, targetModel));
+                // Reach it, not merely register it — layout() rebuilds
+                // classMethodMap from the pruned function list. See
+                // registerGenericMethodUse.
+                this.pass.markFunctionReached(
+                  specializer.instantiateGenericMethod(ct, cd, propName, md as Node, methodTypeArgs as Array<Type>, this.pass.getNodeModel(md as Node, targetModel)));
               } else {
                 this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), ct, this.pass.currentReachable));
               }

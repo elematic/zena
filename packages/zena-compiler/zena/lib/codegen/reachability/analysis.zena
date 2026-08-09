@@ -1122,123 +1122,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     performance.end(tQueues2);
     let tLayout2 = performance.start("codegen-discovery-layout");
 
-    // Pass 2: Generate class-interface trampoline vtables
-    let classes = new Array<ClassType>();
-    let seenClassKeys = new HashMap<ClassKey, boolean>();
-    for (let cPair in this.wasm.classInfos) {
-      let cStruct = cPair.value.structType;
-      if (cStruct.classType != null) {
-        let cType = cStruct.classType as ClassType;
-        let cKey = getClassKey(cType);
-        if (!seenClassKeys.has(cKey)) {
-          seenClassKeys[cKey] = true;
-          classes.push(cType);
-        }
-      }
-    }
-    for (let pair in this.classDecls) {
-      let classDecl = pair.value;
-      let moduleModel = this.classModels[pair.key];
-      let ct = this.getClassDeclType(classDecl, moduleModel);
-      if (ct != null) {
-        let cKey = getClassKey(ct as ClassType);
-        if (!seenClassKeys.has(cKey)) {
-          seenClassKeys[cKey] = true;
-          classes.push(ct as ClassType);
-        }
-      }
-    }
-
-    for (let cType in classes) {
-      let isGenericTemplate = cType.typeParameters != null && 
-                              (cType.typeParameters as Array<TypeParameterType>).length > 0 && 
-                              (cType.typeArguments == null || !isConcrete(cType));
-      if (isGenericTemplate) {
-        continue;
-      }
-      let cName = getClassKey(cType);
-      if (!this.instantiatedSpecializedClasses.has(cName as String)) {
-        continue;
-      }
-      let allIfaces = this.cha.collectAllImplementedInterfaces(cType);
-      for (let iface in allIfaces) {
-        let iName = getInterfaceKey(iface);
-        let unspecCName = getClassKey(cType.genericSource ?? cType);
-        let unspecIName = getInterfaceKey(iface.genericSource ?? iface);
-        let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
-        
-        let key = getClassInterfaceKey(cName, iName);
-        if (this.wasm.usedInterfaceAdaptations.has(unspecKey)) {
-          if (this.wasm.classInterfaceVTables.has(key)) {
-            continue;
-          }
-          if (!this.wasm.interfaceVTableStructs.has(iName)) {
-            this.typeLowerer.discoverType(iface, this.getClassModel(cType));
-          }
-          let vst = this.wasm.interfaceVTableStructs[iName];
-          
-          var methods = new Array<WasmFunction>();
-          for (var i = 0; i < vst.fields.length; i += 1) {
-            let field = vst.fields[i];
-            var foundFunc: WasmFunction | null = null;
-            var currClass: ClassType | null = cType;
-            
-            while (currClass != null && foundFunc == null) {
-              let mKey = getClassMethodKey(getClassKey(currClass as ClassType), field.name as String);
-              if (this.wasm.classMethodMap.has(mKey)) {
-                foundFunc = this.wasm.classMethodMap[mKey];
-                break;
-              }
-              
-              let fName = field.name as String;
-              if (iface.members.has(fName)) {
-                let mi = iface.members[fName];
-                if (mi is MethodInfo) {
-                  let ft = (mi as MethodInfo).type as FunctionType;
-                  let itParams = getInterfaceTypeParameters(iface);
-                  let resolvedFt = substituteTypeParamsInCodegen(this.wasm, itParams, iface.typeArguments, ft) as FunctionType;
-                  let sigKey = getSignatureKey(resolvedFt);
-                  let mKeyWithSig = getClassMethodKey(getClassKey(currClass as ClassType), fName + sigKey);
-                  if (this.wasm.classMethodMap.has(mKeyWithSig)) {
-                    foundFunc = this.wasm.classMethodMap[mKeyWithSig];
-                    break;
-                  }
-                }
-              }
-              
-              currClass = (currClass as ClassType).superType;
-            }
-            
-            if (foundFunc != null) {
-              let targetFunc = foundFunc as WasmFunction;
-              let trampSig = getInterfaceMemberSignature(this.wasm, iface, field.name as String);
-              let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
-              trampFunc.name = getInterfaceTrampolineName(cName, iName, field.name as String);
-              trampFunc.interfaceTrampolineTarget = targetFunc;
-              this.wasm.addFunction(trampFunc);
-              this.markFunctionReached(trampFunc);
-              this.markFunctionReached(targetFunc);
-              methods.push(trampFunc);
-            } else {
-              throw new Error("Internal error: class " + (cName as String) + " does not implement interface method: " + (field.name as String));
-            }
-          }
-          
-          let vtableInit = new VTableInit(vst, methods);
-          let viName = getClassInterfaceVTableName(cName, iName);
-          let vtableGlobal = new WasmGlobal(
-            viName,
-            viName,
-            new ValTypeRef(vst),
-            false,
-            null,
-            vtableInit,
-            this.program.units[0].model
-          );
-          this.wasm.globals.push(vtableGlobal);
-          this.wasm.classInterfaceVTables[key] = vtableGlobal;
-        }
-      }
+    // Pass 2 and the queue drain feed each other; run them to fixpoint.
+    var vtRound = true;
+    while (vtRound) {
+      vtRound = this.#buildClassInterfaceVTables();
+      this.processQueues();
     }
     
     performance.end(tLayout2);
@@ -1350,6 +1238,149 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.closeReachedTypes();
     this.wasm.types = this.emittedTypes;
     performance.end(tLayout3);
+  }
+
+  /**
+   * Builds the class-interface trampoline vtable globals, returning
+   * whether it created any. Reaching an interface method's body can
+   * instantiate further classes (`FixedArray<T>.:iterator` returns an
+   * `ArrayIterator<T>` packed as `Iterator<T>`), and those need
+   * class-interface vtables of their own — so `run` alternates this
+   * with `processQueues` until neither adds anything, rather than
+   * building once and leaving the last round's classes without one.
+   * The pair set is finite and only ever grows, so this terminates.
+   */
+  #buildClassInterfaceVTables(): boolean {
+    var created = false;
+    // Pass 2: Generate class-interface trampoline vtables
+    let classes = new Array<ClassType>();
+    let seenClassKeys = new HashMap<ClassKey, boolean>();
+    for (let cPair in this.wasm.classInfos) {
+      let cStruct = cPair.value.structType;
+      if (cStruct.classType != null) {
+        let cType = cStruct.classType as ClassType;
+        let cKey = getClassKey(cType);
+        if (!seenClassKeys.has(cKey)) {
+          seenClassKeys[cKey] = true;
+          classes.push(cType);
+        }
+      }
+    }
+    for (let pair in this.classDecls) {
+      let classDecl = pair.value;
+      let moduleModel = this.classModels[pair.key];
+      let ct = this.getClassDeclType(classDecl, moduleModel);
+      if (ct != null) {
+        let cKey = getClassKey(ct as ClassType);
+        if (!seenClassKeys.has(cKey)) {
+          seenClassKeys[cKey] = true;
+          classes.push(ct as ClassType);
+        }
+      }
+    }
+
+    for (let cType in classes) {
+      let isGenericTemplate = cType.typeParameters != null && 
+                              (cType.typeParameters as Array<TypeParameterType>).length > 0 && 
+                              (cType.typeArguments == null || !isConcrete(cType));
+      if (isGenericTemplate) {
+        continue;
+      }
+      let cName = getClassKey(cType);
+      // An extension class has no `struct.new` — a value of it IS a
+      // value of its `on` type — so "instantiated" never becomes true
+      // for one now that mentioning the type no longer instantiates
+      // it, and gating here would deny `FixedArray<T>` the
+      // class-interface vtable its values genuinely dispatch through.
+      // `usedInterfaceAdaptations` just below is the honest signal:
+      // it is recorded from real pack sites, and gates each
+      // class-interface pair on its own.
+      if (!this.instantiatedSpecializedClasses.has(cName as String) &&
+          !cType.isExtension) {
+        continue;
+      }
+      let allIfaces = this.cha.collectAllImplementedInterfaces(cType);
+      for (let iface in allIfaces) {
+        let iName = getInterfaceKey(iface);
+        let unspecCName = getClassKey(cType.genericSource ?? cType);
+        let unspecIName = getInterfaceKey(iface.genericSource ?? iface);
+        let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
+        
+        let key = getClassInterfaceKey(cName, iName);
+        if (this.wasm.usedInterfaceAdaptations.has(unspecKey)) {
+          if (this.wasm.classInterfaceVTables.has(key)) {
+            continue;
+          }
+          if (!this.wasm.interfaceVTableStructs.has(iName)) {
+            this.typeLowerer.discoverType(iface, this.getClassModel(cType));
+          }
+          let vst = this.wasm.interfaceVTableStructs[iName];
+          
+          var methods = new Array<WasmFunction>();
+          for (var i = 0; i < vst.fields.length; i += 1) {
+            let field = vst.fields[i];
+            var foundFunc: WasmFunction | null = null;
+            var currClass: ClassType | null = cType;
+            
+            while (currClass != null && foundFunc == null) {
+              let mKey = getClassMethodKey(getClassKey(currClass as ClassType), field.name as String);
+              if (this.wasm.classMethodMap.has(mKey)) {
+                foundFunc = this.wasm.classMethodMap[mKey];
+                break;
+              }
+              
+              let fName = field.name as String;
+              if (iface.members.has(fName)) {
+                let mi = iface.members[fName];
+                if (mi is MethodInfo) {
+                  let ft = (mi as MethodInfo).type as FunctionType;
+                  let itParams = getInterfaceTypeParameters(iface);
+                  let resolvedFt = substituteTypeParamsInCodegen(this.wasm, itParams, iface.typeArguments, ft) as FunctionType;
+                  let sigKey = getSignatureKey(resolvedFt);
+                  let mKeyWithSig = getClassMethodKey(getClassKey(currClass as ClassType), fName + sigKey);
+                  if (this.wasm.classMethodMap.has(mKeyWithSig)) {
+                    foundFunc = this.wasm.classMethodMap[mKeyWithSig];
+                    break;
+                  }
+                }
+              }
+              
+              currClass = (currClass as ClassType).superType;
+            }
+            
+            if (foundFunc != null) {
+              let targetFunc = foundFunc as WasmFunction;
+              let trampSig = getInterfaceMemberSignature(this.wasm, iface, field.name as String);
+              let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
+              trampFunc.name = getInterfaceTrampolineName(cName, iName, field.name as String);
+              trampFunc.interfaceTrampolineTarget = targetFunc;
+              this.wasm.addFunction(trampFunc);
+              this.markFunctionReached(trampFunc);
+              this.markFunctionReached(targetFunc);
+              methods.push(trampFunc);
+            } else {
+              throw new Error("Internal error: class " + (cName as String) + " does not implement interface method: " + (field.name as String));
+            }
+          }
+          
+          let vtableInit = new VTableInit(vst, methods);
+          let viName = getClassInterfaceVTableName(cName, iName);
+          let vtableGlobal = new WasmGlobal(
+            viName,
+            viName,
+            new ValTypeRef(vst),
+            false,
+            null,
+            vtableInit,
+            this.program.units[0].model
+          );
+          this.wasm.globals.push(vtableGlobal);
+          this.wasm.classInterfaceVTables[key] = vtableGlobal;
+          created = true;
+        }
+      }
+    }
+    return created;
   }
 
   ensureAllHelperFunctionsReached(): void {
