@@ -359,6 +359,59 @@ Two snapshots lose two functions each — synthesized record-dispatch
 getters for a dispatch that only existed because the stdlib was being
 walked. Imports and every other function are unchanged.
 
+## The one root that is left, and why it does not simply come out
+
+`return 42` is 8,540 bytes and 66 functions. **All of it hangs off one
+root.** RTA instantiates `String` unconditionally at init, and creates
+and reaches the four `$string*` host-interop helpers unconditionally —
+and those helpers' bodies are synthesized against String's struct
+layout, so they require the class in turn. String's 21 methods mention
+`FixedArray`, which brings four specializations. That is the whole 66.
+
+Gating all three on a String actually existing (branch
+`spike-no-unconditional-string`, **not landable**):
+
+```
+export function main(): i32 { return 42; }   8,540 -> 2,292 bytes
+```
+
+One function — `main`, 8 bytes of code — one export, and 2,257 of the
+2,292 bytes are type section.
+
+It is not landable because each fix moves the failure rather than
+removing it:
+
+1. `FixedArray<String>` is instantiated for a program with no strings,
+   and its `contains` then cannot lower, because String has no `==`
+   reached. Instantiating a specialization's concrete class type
+   arguments restores consistency — but is not where the fan-out
+   starts.
+2. The fan-out starts in the class-interface vtable pass, which walked
+   every *declared* class and instantiated `FixedArray` at four element
+   types **during a layout phase** — after Pass 1.05 populated structs,
+   so a class first instantiated there never gets a layout.
+3. Which makes "was String instantiated" the wrong question for the
+   `$string*` helpers. The right one is "does String's struct have
+   fields" — a different answer at a different time.
+
+### The actual structural problem
+
+Instantiation can happen *during* a layout phase, and layout has
+already run. Every remaining over-approximation is load-bearing
+because it hides that: instantiate everything early enough and the
+ordering never shows.
+
+So the fix is not another gate. Either **instantiation closes before
+layout begins** — no `instantiateClassType` after Pass 1.05, with
+anything discovered later being a hard error rather than a silent
+late instantiation — or **layout becomes re-runnable**, so a class
+instantiated late still gets its struct populated. Until one of those
+is true, tightening reachability keeps producing a differently-shaped
+ordering bug.
+
+That is the last structural item. Everything below it in this document
+is downstream.
+
 ## The ceiling, measured
 
 A spike (branch `spike-entry-only-rta-roots`, **not landable** — 68 of
