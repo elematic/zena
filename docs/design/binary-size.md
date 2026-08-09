@@ -1,10 +1,14 @@
 # Binary size of a minimal program
 
-**Status**: 🚧 in progress. **33,875 → 11,530 bytes** so far: the name
-section is gated, the extension-class leak is closed, and template
-helpers are rooted from the templates that need them. The remaining
-80 functions are `String` and four `FixedArray` specializations, held
-alive by one coupling described under "The keystone" below.
+**Status**: 🚧 in progress. **33,875 → 2,292 bytes** so far: the name
+section is gated, the extension-class leak is closed, template helpers
+are rooted from the templates that need them, the type section is
+computed rather than accumulated, RTA roots only the entry unit, and
+`String` is instantiated by evidence (a literal, a constructor, a
+String-mentioning export) rather than unconditionally. `return 42` is
+now **one function and one export**; 2,257 of its 2,292 bytes are the
+type section, which is the remaining work (see "What the 2,292 bytes
+are").
 
 The reference program throughout is the smallest thing Zena can
 compile:
@@ -428,54 +432,87 @@ must see the write. A field whose class still has no registration
 stays erased, which is the old consistent behavior. Byte-for-byte
 size-neutral on both fixtures.
 
-## The one root that is left, and why it does not simply come out
+## 7. The String root is out (fixed)
 
-`return 42` is 8,540 bytes and 66 functions. **All of it hangs off one
-root.** RTA instantiates `String` unconditionally at init, and creates
-and reaches the four `$string*` host-interop helpers unconditionally —
-and those helpers' bodies are synthesized against String's struct
-layout, so they require the class in turn. String's 21 methods mention
-`FixedArray`, which brings four specializations. That is the whole 66.
+`return 42` was 8,540 bytes and 66 functions, and all of it hung off
+one root: RTA instantiated `String` unconditionally at init, and
+created and reached the four `$string*` host-interop helpers
+unconditionally — their bodies synthesized against String's struct
+layout, so they required the class in turn. String's 21 methods
+mention `FixedArray`, which brought four specializations. That was
+the whole 66.
 
-Gating all three on a String actually existing (branch
-`spike-no-unconditional-string`, **not landable**):
+Now instantiation follows evidence:
 
-```
-export function main(): i32 { return 42; }   8,540 -> 2,292 bytes
-```
+- **A string literal instantiates String** where the literal is
+  registered (`noteStringLiteral`) — every literal walk passes through
+  there, on either walk kind. A constructor call reaches it through
+  the normal graph, as any class. And **an entry-unit export whose
+  type mentions String** (`#typeMentionsString` — params, returns,
+  unions, tuples, records, type arguments) instantiates it too: the
+  host is entitled to build a String with `$stringCreate` and hand it
+  in, even if the guest never constructs one
+  (`export let identity = (s: String) => s;` — the runtime's
+  string-writer tests are exactly this shape). **Exception infra is
+  String evidence too** (`noteExceptionInfra`):
+  `ensureExceptionInfra` creates `$stringCreate`/`$stringSetByte` for
+  the host to build a String through — a created-but-unreached helper
+  is a dangling export, function index -1, an invalid module
+  (`default_param_try_expr.zena` found this) — and their bodies are
+  synthesized against String's layout and vtable. Making exception
+  paths not imply host String construction is a possible future
+  refinement. The unconditional init-time instantiation is gone.
+- **The `$string*` helpers follow the verdict**:
+  `ensureAllHelperFunctionsReached` creates and reaches them only when
+  `String` is in `instantiatedSpecializedClasses`, recording the
+  verdict as `wasm.stringClassIsInstantiated` for the module
+  generator, whose own late `ensureStringHelpers` call follows it too.
+  ("Does String's struct have fields" is no signal anymore — layout
+  populates every declared class's struct whether or not a value can
+  exist.)
+- **The class-interface vtable pass no longer walks every declared
+  class** — only classes codegen has state for. The declared-class
+  walk was what instantiated `FixedArray` at four element types for a
+  program that mentions none of them; `usedInterfaceAdaptations` is
+  only ever recorded against discovered classes, so the walk found
+  nothing the classInfos walk does not.
 
-One function — `main`, 8 bytes of code — one export, and 2,257 of the
-2,292 bytes are type section.
+Two catch-up gaps surfaced, both of the same shape section 6 fixed for
+structs — state built once, invalidated by late instantiation:
 
-It is not landable because each fix moves the failure rather than
-removing it:
+- **The erased-field bake** (section 6a): `JsonBuilder`-style structs
+  baked `structref` for a field of a class a later walk then
+  instantiated. Fixed by `refreshErasedFieldTypes` at the settle
+  point; found by CI's wit-parser example before this change landed.
+- **String's class vtable global**: `$stringCreate` is synthesized
+  against it, and a literal surfacing in a body walked late (array
+  bounds messages, in `array-sum`) instantiates String after Pass 1.5
+  has run. The settle point re-runs Pass 1.5 **for String alone**.
+  Other late-instantiated classes deliberately get no vtable global:
+  nothing dispatches through one (they never had one before either),
+  and building them for all late classes cost `array-sum` 13
+  functions and 9 globals — measured and reverted to the targeted
+  form.
 
-1. `FixedArray<String>` is instantiated for a program with no strings,
-   and its `contains` then cannot lower, because String has no `==`
-   reached. Instantiating a specialization's concrete class type
-   arguments restores consistency — but is not where the fan-out
-   starts.
-2. The fan-out starts in the class-interface vtable pass, which walked
-   every *declared* class and instantiated `FixedArray` at four element
-   types **during a layout phase** — after Pass 1.05 populated structs,
-   so a class first instantiated there never gets a layout.
-3. Which makes "was String instantiated" the wrong question for the
-   `$string*` helpers. The right one is "does String's struct have
-   fields" — a different answer at a different time.
+| | before | after |
+| --- | ---: | ---: |
+| minimal | 8,540 | **2,292** |
+| array-sum | 13,928 | **13,504** |
 
-### The ordering problem is fixed; the root is not
+`minimal` is one function (`main`, 8 bytes of code), one export, no
+imports, no memory, no data, no start function.
 
-The ordering half is done (section 6 above): layout runs to a
-fixpoint, catches up after discovery settles, and instantiation is
-then closed with a named error.
+## What the 2,292 bytes are
 
-With that in place the String gating gets one step further and stops
-in a new spot: `FixedArray<String>` is instantiated for a program with
-no strings, and gating String leaves its struct unpopulated —
-`string helper synthesis: String field layout`. The remaining question
-is narrower than it was, and it is the one worth asking next: **why
-does `classInfos` contain String with an unpopulated struct at all**,
-when layout now runs to a fixpoint over exactly that map.
+2,257 bytes are the type section: 24 types for a function that needs
+one. They are interface member signatures and class structs pulled in
+by the final type-rooting walk in `analysis.zena`, which marks the
+struct and vtable struct of **every entry in `classInfos`** — and
+`classInfos` holds every *declared* class, because init pre-registers
+them all for circular-definition handling. The next cut is to root
+class structs from evidence (instantiated, or named by a reached
+signature or lowered body) rather than from declaration, the same
+move this document has now made four times.
 
 ## The ceiling, measured
 
@@ -687,12 +724,11 @@ Three cuts that look obvious and are not. Each was built and measured;
 none is landable as written.
 
 - **Gate the unconditional `String` instantiation on a string literal
-  existing.** Worth 134 bytes (15,328 → 15,194), and wrong anyway — a
-  program can use `String` values with no literal in it. `String`'s
-  methods survive because `ensureAllHelperFunctionsReached` reaches
-  the string helpers unconditionally and reaching any `String` method
-  re-instantiates the class. The gate has to be "a string value can
-  exist", not "a literal was seen".
+  existing.** Worth 134 bytes (15,328 → 15,194) at the time, and wrong
+  as stated — a program can use `String` values with no literal in it.
+  The gate that landed (section 7) is "a string value can exist":
+  a literal, a constructor call through the normal graph, or an
+  entry-unit export whose type mentions String.
 - **Drop the sibling-propagation loop in `instantiateClassType`**
   (instantiating one specialization instantiates every known sibling).
   Worth 194 bytes on its own (15,328 → 15,134) because
@@ -756,10 +792,11 @@ In dependency order:
 3. **Make instantiation per-specialization**, not per-generic — with
    the use-side gaps closed first, the way 3a closed them for generic
    methods. Worth roughly three of the four array specializations.
-4. **Do not instantiate `String` unconditionally.** It should follow
-   from a string literal, a string-typed value, or a `+` on strings.
-   Removing the unconditional call alone is worth 134 bytes; `String`
-   is re-instantiated elsewhere until the keystone lands.
+4. ~~**Do not instantiate `String` unconditionally.**~~ Done
+   (section 7): instantiation follows a literal, a constructor call,
+   or a String-mentioning entry-unit export, and the `$string*`
+   helpers follow the verdict. Landed WITHOUT the keystone — the
+   entry-only roots (5) turned out to be the actual prerequisite.
 5. **Phase-gate `instantiateClassType`**, and fix the referrers that
    hardcode `isReachable = true` (`queueExplicitCtor`,
    `queuePrivateMethod`, the plain-identifier-call arm, the
@@ -787,8 +824,8 @@ budgets, to be moved DOWN only:
 
 | fixture | what it adds | bytes |
 | --- | --- | ---: |
-| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 8,540 |
-| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 13,928 |
+| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 2,292 |
+| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 13,504 |
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the second fixture.

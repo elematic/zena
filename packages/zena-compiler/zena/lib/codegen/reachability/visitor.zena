@@ -340,12 +340,28 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   registerLiterals(root: Node): void {
     walkEnter(root, (n: Node) => {
       if (n is StringLiteral) {
-        this.pass.wasm.registerStringLiteral((n as StringLiteral).value);
+        this.noteStringLiteral((n as StringLiteral).value);
       }
       if (n is TemplateElement) {
-        this.pass.wasm.registerStringLiteral((n as TemplateElement).cooked);
+        this.noteStringLiteral((n as TemplateElement).cooked);
       }
     });
+  }
+
+  /**
+   * Registers a string-literal payload AND instantiates `String`. A
+   * literal is the evidence that a String value exists in this program
+   * — the class is no longer instantiated unconditionally at init, so
+   * the evidence has to act here, where every literal passes through.
+   * `instantiateClassType` early-returns once it has happened.
+   */
+  noteStringLiteral(value: String): void {
+    this.pass.wasm.registerStringLiteral(value);
+    let sc = this.pass.wasm.stringClass;
+    if (sc != null) {
+      this.pass.specializer.instantiateClassType(
+          sc as ClassType, this.pass.getClassModel(sc as ClassType));
+    }
   }
 
   /**
@@ -886,11 +902,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
     walkEnter(root, (n: Node) => {
       if (n is ThrowExpression || n is TryExpression) {
-        this.pass.wasm.ensureExceptionInfra(model);
+        this.pass.noteExceptionInfra(model);
       }
       if (n is StringLiteral) {
         let sl = n as StringLiteral;
-        this.pass.wasm.registerStringLiteral(sl.value);
+        this.noteStringLiteral(sl.value);
       }
       let typeLowerer = this.pass.typeLowerer;
       let specializer = this.pass.specializer;
@@ -990,7 +1006,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is TemplateElement) {
         let tmplEl = n as TemplateElement;
-        this.pass.wasm.registerStringLiteral(tmplEl.cooked);
+        this.noteStringLiteral(tmplEl.cooked);
       }
       if (n is TaggedTemplateExpression) {
         this.registerTaggedTemplate(n as TaggedTemplateExpression, model);

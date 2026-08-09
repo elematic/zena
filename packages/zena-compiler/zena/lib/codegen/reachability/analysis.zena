@@ -2,7 +2,7 @@ import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
-import { Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, isVoidOrNeverType, typeToString, ThisType } from '../../types.zena';
+import { Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, isVoidOrNeverType, typeToString, ThisType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType } from '../../types.zena';
 import { Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, TaggedTemplateExpression, TemplateElement, SourceLocation, Expression, ThrowExpression, TryExpression, Module, ImportSpecifier, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator } from '../../ast.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
@@ -622,17 +622,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
-    if (this.wasm.stringClass != null) {
+    // The `$string*` four are host-interop exports letting an embedder
+    // build and read a guest String. Creating them here rooted String's
+    // constructor — and so the entire class — in every program, and
+    // their bodies are synthesized against String's struct layout, so
+    // they cannot exist for a module with no String at all. They are
+    // created from ensureAllHelperFunctionsReached instead, once RTA
+    // knows whether String was instantiated.
+    if (this.wasm.stringClass != null && this.wasm.stringLiterals.size > 0) {
       this.wasm.ensureStringHelpers(this.program.units[0].model);
-      this.markFunctionReached(this.wasm.stringCreateFunc as WasmFunction);
-      this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction);
-      this.markFunctionReached(this.wasm.stringGetByteFunc as WasmFunction);
-      this.markFunctionReached(this.wasm.stringGetLengthFunc as WasmFunction);
-      if (this.wasm.stringLiterals.size > 0) {
-        this.wasm.ensureStringLiteralHelpers(this.program.units[0].model);
-        this.markFunctionReached(this.wasm.stringFromSharedFunc as WasmFunction);
-        this.markFunctionReached(this.wasm.getStringLiteralFunc as WasmFunction);
-      }
+      this.wasm.ensureStringLiteralHelpers(this.program.units[0].model);
+      this.markFunctionReached(this.wasm.stringFromSharedFunc as WasmFunction);
+      this.markFunctionReached(this.wasm.getStringLiteralFunc as WasmFunction);
     }
 
     // Populate mixinToClasses mapping
@@ -706,6 +707,32 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         
         if (isMain || isExported) {
           this.queueReferrer(new Referrer(true, id, -1, model, null, true));
+          // An export whose type mentions String is boundary evidence
+          // that a String VALUE can exist: the host is entitled to
+          // build one with $stringCreate and hand it in, even if the
+          // guest never constructs a string itself
+          // (`export let identity = (s: String) => s;`).
+          if (this.wasm.stringClass != null) {
+            // The type hangs off different nodes per declaration kind;
+            // a VariableDeclaration's own node carries none, its
+            // pattern and init do.
+            var declType = model.getNodeType(decl);
+            if (declType == null && decl is VariableDeclaration) {
+              let vd = decl as VariableDeclaration;
+              declType = model.getNodeType(vd.pattern);
+              if (declType == null && vd.init != null) {
+                declType = model.getNodeType(vd.init as Node);
+              }
+            } else if (declType == null && decl is FunctionDeclaration) {
+              declType = model.getNodeType((decl as FunctionDeclaration).func);
+            }
+            if (declType != null &&
+                this.#typeMentionsString(declType as Type, 0)) {
+              let sClass = this.wasm.stringClass as ClassType;
+              this.specializer.instantiateClassType(
+                  sClass, this.getClassModel(sClass));
+            }
+          }
         } else {
           this.queueReferrer(new Referrer(true, id, -1, model, null, false));
         }
@@ -721,10 +748,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
-    if (this.wasm.stringClass != null) {
-      let sClass = this.wasm.stringClass as ClassType;
-      this.specializer.instantiateClassType(sClass, this.getClassModel(sClass));
-    }
+    // String is NOT instantiated here. Discovering the class — which
+    // every program does, through the prelude — is not evidence that a
+    // String value exists. A program that builds one reaches its
+    // constructor through the normal graph, and a string literal
+    // instantiates it below through the literal helpers.
     if (this.wasm.templateStringsArrayClass != null) {
       let tsaClass = this.wasm.templateStringsArrayClass as ClassType;
       this.specializer.instantiateClassType(tsaClass, this.getClassModel(tsaClass));
@@ -1028,74 +1056,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     this.currentReachable = true;
 
-    // Pass 1.5: Build class vtable globals
-    for (let cPair in this.wasm.classInfos) {
-      let cName = cPair.key;
-      let info = cPair.value;
-      if (info.vtableGlobal != null) {
-        continue;
-      }
-      if (info.vtableStructType != null) {
-        let vstVal = info.vtableStructType as WasmStruct;
-        let cType = vstVal.classType as ClassType;
-        let isGenericTemplate = cType.typeParameters != null && 
-                                (cType.typeParameters as Array<TypeParameterType>).length > 0 && 
-                                (cType.typeArguments == null || !isConcrete(cType));
-        if (isGenericTemplate) {
-          continue;
-        }
-        var methods = new Array<WasmFunction>();
-        let fields = vstVal.fields;
-        var newFields = new Array<WasmField>();
-        for (var i = 0; i < fields.length; i += 1) {
-          let field = fields[i];
-          var foundFunc: WasmFunction | null = null;
-          var currClass: ClassType | null = cType;
-          while (currClass != null && foundFunc == null) {
-            let key = getClassMethodKey(getClassKey(currClass as ClassType), field.name as String);
-            if (this.wasm.classMethodMap.has(key)) {
-              foundFunc = this.wasm.classMethodMap[key];
-              break;
-            }
-            currClass = (currClass as ClassType).superType;
-          }
-          if (foundFunc != null) {
-            newFields.push(field);
-            methods.push(foundFunc);
-          } else {
-            throw new Error("Internal error: class " + (cName as String) + " does not implement vtable method: " + (field.name as String));
-          }
-        }
-        while (vstVal.fields.length > 0) {
-          let ignored = vstVal.fields.pop();
-        }
-        for (var fIdx = 0; fIdx < newFields.length; fIdx += 1) {
-          vstVal.fields.push(newFields[fIdx]);
-        }
-
-        if (!this.instantiatedSpecializedClasses.has(cName as String)) {
-          continue;
-        }
-        
-        for (let m in methods) {
-          this.markFunctionReached(m);
-        }
-        
-        let vtableInit = new VTableInit(vstVal, methods);
-        let vName = getClassVTableName(cName);
-        let vtableGlobal = new WasmGlobal(
-          vName,
-          vName,
-          new ValTypeRef(vstVal),
-          false,
-          null,
-          vtableInit,
-          this.program.units[0].model
-        );
-        this.wasm.globals.push(vtableGlobal);
-        info.vtableGlobal = vtableGlobal;
-      }
-    }
+    this.#buildClassVTableGlobals();
 
     // Pass 1.25: Allocate singleton globals for unit variants
     for (let cPair in this.wasm.classInfos) {
@@ -1186,6 +1147,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // field fails receiver conformance in lowering. Re-resolve those
     // fields against the settled registrations.
     this.specializer.refreshErasedFieldTypes();
+    // And late-instantiated String needs its class vtable global,
+    // exactly as it needs its struct — $stringCreate is synthesized
+    // against it, and String can be instantiated as late as a literal
+    // in a body walked here.
+    if (this.wasm.stringClass != null) {
+      let sKey = getClassKey(this.wasm.stringClass as ClassType);
+      if (this.instantiatedSpecializedClasses.has(sKey as String)) {
+        this.#buildClassVTableGlobals(sKey);
+      }
+    }
     this.instantiationClosed = true;
 
     this.isRtaActive = false;
@@ -1332,6 +1303,92 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
+   * Pass 1.5: builds the class vtable global for every instantiated
+   * class that does not have one yet. Incremental — classes with a
+   * vtableGlobal are skipped. `onlyKey` restricts a re-run to one
+   * class: at the settle point it runs again for String alone, because
+   * $stringCreate is synthesized against String's vtable global and a
+   * literal in a body walked late instantiates String after the main
+   * pass. Other late-instantiated classes deliberately get NO vtable
+   * global — nothing dispatches through one (building them for all
+   * late classes cost array-sum 13 functions and 9 globals), and a
+   * dispatch that does need one fails loudly at its site.
+   */
+  #buildClassVTableGlobals(onlyKey: ClassKey | null = null): void {
+    for (let cPair in this.wasm.classInfos) {
+      let cName = cPair.key;
+      let info = cPair.value;
+      if (onlyKey != null && cName != (onlyKey as ClassKey)) {
+        continue;
+      }
+      if (info.vtableGlobal != null) {
+        continue;
+      }
+      if (info.vtableStructType != null) {
+        let vstVal = info.vtableStructType as WasmStruct;
+        let cType = vstVal.classType as ClassType;
+        let isGenericTemplate = cType.typeParameters != null && 
+                                (cType.typeParameters as Array<TypeParameterType>).length > 0 && 
+                                (cType.typeArguments == null || !isConcrete(cType));
+        if (isGenericTemplate) {
+          continue;
+        }
+        var methods = new Array<WasmFunction>();
+        let fields = vstVal.fields;
+        var newFields = new Array<WasmField>();
+        for (var i = 0; i < fields.length; i += 1) {
+          let field = fields[i];
+          var foundFunc: WasmFunction | null = null;
+          var currClass: ClassType | null = cType;
+          while (currClass != null && foundFunc == null) {
+            let key = getClassMethodKey(getClassKey(currClass as ClassType), field.name as String);
+            if (this.wasm.classMethodMap.has(key)) {
+              foundFunc = this.wasm.classMethodMap[key];
+              break;
+            }
+            currClass = (currClass as ClassType).superType;
+          }
+          if (foundFunc != null) {
+            newFields.push(field);
+            methods.push(foundFunc);
+          } else {
+            throw new Error("Internal error: class " + (cName as String) + " does not implement vtable method: " + (field.name as String));
+          }
+        }
+        while (vstVal.fields.length > 0) {
+          let ignored = vstVal.fields.pop();
+        }
+        for (var fIdx = 0; fIdx < newFields.length; fIdx += 1) {
+          vstVal.fields.push(newFields[fIdx]);
+        }
+
+        if (!this.instantiatedSpecializedClasses.has(cName as String)) {
+          continue;
+        }
+        
+        for (let m in methods) {
+          this.markFunctionReached(m);
+        }
+        
+        let vtableInit = new VTableInit(vstVal, methods);
+        let vName = getClassVTableName(cName);
+        let vtableGlobal = new WasmGlobal(
+          vName,
+          vName,
+          new ValTypeRef(vstVal),
+          false,
+          null,
+          vtableInit,
+          this.program.units[0].model
+        );
+        this.wasm.globals.push(vtableGlobal);
+        info.vtableGlobal = vtableGlobal;
+      }
+    }
+
+  }
+
+  /**
    * Builds the class-interface trampoline vtable globals, returning
    * whether it created any. Reaching an interface method's body can
    * instantiate further classes (`FixedArray<T>.:iterator` returns an
@@ -1357,18 +1414,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
       }
     }
-    for (let pair in this.classDecls) {
-      let classDecl = pair.value;
-      let moduleModel = this.classModels[pair.key];
-      let ct = this.getClassDeclType(classDecl, moduleModel);
-      if (ct != null) {
-        let cKey = getClassKey(ct as ClassType);
-        if (!seenClassKeys.has(cKey)) {
-          seenClassKeys[cKey] = true;
-          classes.push(ct as ClassType);
-        }
-      }
-    }
+    // Only classes codegen has state for (the classInfos walk above).
+    // This used to ALSO walk every declared class — and since a
+    // class's interfaces are collected transitively, that instantiated
+    // `FixedArray` at four element types for a program that mentions
+    // none of them. The classInfos set already contains every class a
+    // vtable could matter for: `usedInterfaceAdaptations`, checked
+    // per-pair below, is only ever recorded against discovered classes.
 
     for (let cType in classes) {
       let isGenericTemplate = cType.typeParameters != null && 
@@ -1504,6 +1556,111 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
+  /**
+   * Whether `t` mentions the stdlib String class anywhere a value
+   * could cross a boundary typed by `t`: directly, in a function
+   * type's parameters or return, through unions, tuples, records,
+   * arrays and alias targets, or in a class/interface's type ARGUMENTS
+   * (`Array<String>`). Class MEMBERS are not walked — a member's
+   * String is produced by code, which instantiates through its own
+   * body. Depth-bounded rather than seen-set-deduplicated: a set keyed
+   * by symbol would conflate specializations of one generic, and the
+   * types that reach an export boundary are shallow.
+   */
+  #typeMentionsString(t: Type, depth: i32): boolean {
+    if (depth > 12) {
+      return false;
+    }
+    return match (t) {
+      case ClassType as ct: {
+        if (ct.name == "String" && ct.sourcePath == "zena:string") {
+          true
+        } else {
+          var found = false;
+          if (ct.typeArguments != null) {
+            for (let ta in (ct.typeArguments as Array<Type>)) {
+              if (this.#typeMentionsString(ta, depth + 1)) { found = true; break; }
+            }
+          }
+          found
+        }
+      }
+      case InterfaceType as it: {
+        var found = false;
+        if (it.typeArguments != null) {
+          for (let ta in (it.typeArguments as Array<Type>)) {
+            if (this.#typeMentionsString(ta, depth + 1)) { found = true; break; }
+          }
+        }
+        found
+      }
+      case FunctionType as ft: {
+        var found = this.#typeMentionsString(ft.returnType, depth + 1);
+        if (!found) {
+          for (let p in ft.parameters) {
+            if (this.#typeMentionsString(p, depth + 1)) { found = true; break; }
+          }
+        }
+        found
+      }
+      case UnionType {types}: {
+        var found = false;
+        for (let m in types) {
+          if (this.#typeMentionsString(m, depth + 1)) { found = true; break; }
+        }
+        found
+      }
+      case TupleType {elementTypes}: {
+        var found = false;
+        for (let e in elementTypes) {
+          if (this.#typeMentionsString(e, depth + 1)) { found = true; break; }
+        }
+        found
+      }
+      case InlineTupleType {elementTypes}: {
+        var found = false;
+        for (let e in elementTypes) {
+          if (this.#typeMentionsString(e, depth + 1)) { found = true; break; }
+        }
+        found
+      }
+      case ArrayType {elementType}: this.#typeMentionsString(elementType, depth + 1)
+      case RecordType as rec: {
+        var found = false;
+        for (let pair in rec.properties) {
+          if (this.#typeMentionsString(pair.value, depth + 1)) { found = true; break; }
+        }
+        found
+      }
+      case TypeAliasType as alias: this.#typeMentionsString(alias.target, depth + 1)
+      case _: false
+    };
+  }
+
+  /**
+   * Ensures the exception infrastructure AND accounts for what it
+   * implies: `ensureExceptionInfra` creates `$stringCreate` and
+   * `$stringSetByte` (the host builds a String through them, e.g. for
+   * a stack-trace message), and a created-but-unreached helper is a
+   * dangling export — function index -1, an invalid module. Their
+   * bodies are synthesized against String's layout and vtable, so
+   * String is instantiated as their prerequisite. Exceptions are, for
+   * now, String evidence.
+   */
+  noteExceptionInfra(model: SemanticModel): void {
+    this.wasm.ensureExceptionInfra(model);
+    if (this.wasm.stringClass != null) {
+      let sClass = this.wasm.stringClass as ClassType;
+      this.specializer.instantiateClassType(sClass, this.getClassModel(sClass));
+      if (this.wasm.stringCreateFunc != null) {
+        this.markFunctionReached(this.wasm.stringCreateFunc as WasmFunction);
+      }
+      if (this.wasm.stringSetByteFunc != null) {
+        this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction);
+      }
+    }
+  }
+
   ensureAllHelperFunctionsReached(): void {
     for (let unit in this.program.units) {
       let mod = unit.ast;
@@ -1515,7 +1672,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
-    if (this.wasm.stringClass != null) {
+    // Gated on String being INSTANTIATED, not declared: the $string*
+    // helpers' bodies are synthesized against String's struct, and
+    // they exist to hand String values across the host boundary — a
+    // module with no String value has nothing to hand across.
+    if (this.wasm.stringClass != null &&
+        this.instantiatedSpecializedClasses.has(
+            getClassKey(this.wasm.stringClass as ClassType) as String)) {
+      this.wasm.stringClassIsInstantiated = true;
       this.wasm.ensureStringHelpers(this.program.units[0].model);
       if (this.wasm.stringCreateFunc != null) { this.markFunctionReached(this.wasm.stringCreateFunc as WasmFunction); }
       if (this.wasm.stringSetByteFunc != null) { this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction); }
@@ -1604,7 +1768,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
 
     if (deps.needsExceptionInfra) {
-      this.wasm.ensureExceptionInfra(model);
+      this.noteExceptionInfra(model);
     }
 
     // Enclosing locals assigned inside a `try` body live in heap cells,
