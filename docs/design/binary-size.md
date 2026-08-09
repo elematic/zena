@@ -277,29 +277,70 @@ Only **seven** instantiations now, and they explain everything left:
    traversal is supposed to discover types without reaching code;
    `instantiateClassType` is not phase-gated, so it reaches.
 
+## Measured dead ends
+
+Three cuts that look obvious and are not. Each was built and measured;
+none is landable as written.
+
+- **Gate the unconditional `String` instantiation on a string literal
+  existing.** Worth 134 bytes (15,328 → 15,194), and wrong anyway — a
+  program can use `String` values with no literal in it. `String`'s
+  methods survive because `ensureAllHelperFunctionsReached` reaches
+  the string helpers unconditionally and reaching any `String` method
+  re-instantiates the class. The gate has to be "a string value can
+  exist", not "a literal was seen".
+- **Drop the sibling-propagation loop in `instantiateClassType`**
+  (instantiating one specialization instantiates every known sibling).
+  Worth 194 bytes on its own (15,328 → 15,134) because
+  `discoverType`'s gate is keyed on the *generic's* symbol id and
+  re-instantiates each specialization as it is discovered. Removing
+  both breaks the self-compile.
+- **Drop the `hasInst` force-reach in `registerClassMethod`** (2b).
+  Breaks the self-compile immediately. It cannot move on its own: the
+  class vtable is a `struct.new` over one `ref.func` per slot and
+  every non-static, non-private, non-constructor method gets a slot,
+  so the vtable pass (`Pass 1.5`, which does its own
+  `markFunctionReached` per slot) would reach them all regardless.
+  The force-reach and the vtable's slot list have to shrink in the
+  same change.
+
+That last point is the shape of the remaining work: **a method should
+get a class-vtable slot only if it can actually be dispatched through
+that vtable** — the class has a superclass or a subclass. `String` and
+`FixedArray<T>` are both `final` with no superclass, and between them
+account for a 15-slot and four 16-slot vtables in the minimal module.
+Interface dispatch does not need these: it goes through
+`classInterfaceVTables`, built separately and gated on
+`usedInterfaceAdaptations`.
+
 ## Plan
 
 In dependency order:
 
-1. **Make instantiation per-specialization**, not per-generic — with
+1. **Shrink the class vtable to genuinely-virtual slots**, and drop
+   the `hasInst` force-reach in the same change (see the dead ends
+   above). This is the largest remaining item: it is what keeps ~21
+   `String` methods and ~10 methods per array specialization alive in
+   a program that calls none of them.
+2. **Make instantiation per-specialization**, not per-generic — with
    the use-side gaps closed first, the way 3a closed them for generic
    methods. Worth roughly three of the four array specializations.
-2. **Do not instantiate `String` unconditionally.** It should follow
+3. **Do not instantiate `String` unconditionally.** It should follow
    from a string literal, a string-typed value, or a `+` on strings.
-3. **Phase-gate `instantiateClassType`** so a checkable traversal
+4. **Phase-gate `instantiateClassType`** so a checkable traversal
    cannot instantiate (`WasiConsole`, `None`).
-4. **Separate struct layout from method registration** in
+5. **Separate struct layout from method registration** in
    `populateClassStructAndMethods`, so a discovered-only class can get
    its fields without its methods (2c). Blunt-skipping it does not
    work — tried, and it breaks the self-compile with `member not found
    @FixedArray_…[]$BoundedRange`.
-5. **Prune interface vtables to referenced selectors.** RTA already
+6. **Prune interface vtables to referenced selectors.** RTA already
    tracks `referencedInterfaceMembers` / `usedInterfaceMembers`; the
    vtable struct shape should be built from that set rather than from
    every declared member. This is what makes 2b stop mattering: a
    selector nobody dispatches on should not occupy a slot, and then
    nothing forces its implementation to be emitted.
-6. **Register function-value wrappers from genuine value positions
+7. **Register function-value wrappers from genuine value positions
    only** — 7 remain for stdlib functions never used as values.
 
 ## The ratchet
