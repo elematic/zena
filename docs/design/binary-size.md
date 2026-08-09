@@ -314,6 +314,49 @@ registered without reaching have already been found and fixed —
 `processQueues`. Each surfaced only when the over-approximation that
 hid it was removed, one compile error at a time.
 
+### The keystone was attempted, and it has a prerequisite
+
+Both halves were built. Measured, on top of 11,530 / 16,823:
+
+| step | minimal | array-sum | tests |
+| --- | ---: | ---: | --- |
+| vtable pruning + `==`/`hashCode` kept | 11,077 | 16,303 | 469/470 |
+| … + reach method-node referrers | 11,111 | **17,709** | 470/470 |
+| … + reach accessor referrers, drop force-reach | — | — | compiler traps |
+
+Three things came out of it, all worth keeping:
+
+- **Vtable pruning works.** Emptying the class vtable of a class that
+  is neither a subclass nor a superclass is safe — 470/470 — with one
+  exception found the hard way: `==` and `hashCode` must keep their
+  slots. Generic code and `HashMap`/`HashSet` dispatch those two
+  through the class vtable even on a class with no hierarchy, which is
+  why `populateClassStructAndMethods` pushes them unconditionally for
+  case classes. Everything else can go.
+- **A vtable slot was silently doing a second job.** With the slots
+  gone, `Array<i32>.push` stopped being emitted: it was reached only
+  because `Pass 1.5` reaches every slot. The call site never rooted it.
+  Two more register-without-reach sites fell out — the method-node
+  referrer and the accessor referrer in `processQueues`.
+- **And that is where it stops being a win.** Rooting those referrers
+  costs *more* than the vtable pruning saves: `array-sum` went from
+  16,303 to 17,709. The cause is `recordReachedClassMember`, which,
+  when a member is reached on one specialization, queues that member
+  for **every** known specialization of the class. Under the old
+  scheme those extra copies were merely registered and then pruned;
+  once referrers reach what they name, they are all emitted.
+
+So the real prerequisite is one level further down: **a member reached
+on `Array<i32>` is not evidence about `Array<String>`.** Until
+`recallReachedClassMember`'s fan-out is per-specialization, "reach what
+is referenced" is a worse approximation than "reach what is in the
+vtable", and the keystone cannot pay for itself. Reverted; the correct
+order is fan-out first, then the keystone, then phase-gating.
+
+Dropping the force-reach on top of all this traps the compiler with
+`wasm unreachable` rather than a clean bail, so it needs the first two
+in place before it can even be diagnosed.
+
 ### Why phase-gating instantiation is not the shortcut it looks like
 
 `instantiateClassType` is not phase-gated, so a *checkable* traversal —
@@ -379,32 +422,37 @@ Interface dispatch does not need these: it goes through
 
 In dependency order:
 
-1. **The keystone** (above): shrink the class vtable to
-   genuinely-virtual slots and drop the `hasInst` force-reach in the
-   same change, rooting each call site that relied on it. Everything
-   below is either blocked on this or worth little without it.
-2. **Make instantiation per-specialization**, not per-generic — with
+1. **Make `recordReachedClassMember` per-specialization.** A member
+   reached on `Array<i32>` should not queue that member on every other
+   `Array<T>`. This is the prerequisite the keystone attempt found:
+   while the fan-out stands, rooting referrers costs more than vtable
+   pruning saves.
+2. **The keystone** (above): shrink the class vtable to
+   genuinely-virtual slots (keeping `==`/`hashCode`) and drop the
+   `hasInst` force-reach in the same change, rooting each call site
+   that relied on it. Blocked on 1.
+3. **Make instantiation per-specialization**, not per-generic — with
    the use-side gaps closed first, the way 3a closed them for generic
    methods. Worth roughly three of the four array specializations.
-3. **Do not instantiate `String` unconditionally.** It should follow
+4. **Do not instantiate `String` unconditionally.** It should follow
    from a string literal, a string-typed value, or a `+` on strings.
    Removing the unconditional call alone is worth 134 bytes; `String`
    is re-instantiated elsewhere until the keystone lands.
-4. **Phase-gate `instantiateClassType`** so a checkable traversal
+5. **Phase-gate `instantiateClassType`** so a checkable traversal
    cannot instantiate (`WasiConsole`, `None`) — *after* the keystone,
    for the reasons measured above.
-5. **Separate struct layout from method registration** in
+6. **Separate struct layout from method registration** in
    `populateClassStructAndMethods`, so a discovered-only class can get
    its fields without its methods (2c). Blunt-skipping it does not
    work — tried, and it breaks the self-compile with `member not found
    @FixedArray_…[]$BoundedRange`.
-6. **Prune interface vtables to referenced selectors.** RTA already
+7. **Prune interface vtables to referenced selectors.** RTA already
    tracks `referencedInterfaceMembers` / `usedInterfaceMembers`; the
    vtable struct shape should be built from that set rather than from
    every declared member. This is what makes 2b stop mattering: a
    selector nobody dispatches on should not occupy a slot, and then
    nothing forces its implementation to be emitted.
-7. **Register function-value wrappers from genuine value positions
+8. **Register function-value wrappers from genuine value positions
    only** — 7 remain for stdlib functions never used as values.
 
 ## The ratchet
