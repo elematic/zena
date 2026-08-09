@@ -282,6 +282,59 @@ Only **seven** instantiations now, and they explain everything left:
    traversal is supposed to discover types without reaching code;
    `instantiateClassType` is not phase-gated, so it reaches.
 
+## Why `String` is in the module at all
+
+It is worth stating plainly, because it is not a leak in the ordinary
+sense. **RTA's root set is the whole program, not `main`'s closure.**
+
+`ReachabilityAnalysis.run` has a loop labelled "RTA Roots" that walks
+`program.units` — every stdlib module — and queues *every* global
+declaration in each one as a referrer. Only `main` and the entry
+unit's exports are queued reachable; the rest are queued **checkable**.
+Nothing is ever excluded.
+
+A checkable traversal is meant to discover types without reaching
+code. It does not hold to that:
+
+- `instantiateClassType` is not phase-gated at all, so walking a
+  checkable global instantiates whatever it constructs. That is
+  `zena:console`'s `console = new WasiConsole(..)`, `zena:option`'s
+  `none = new None()`, and a `zena:string-convert` body that builds a
+  `String`.
+- several walk-driven referrers hardcode `isReachable = true`
+  regardless of the phase they are walking in — `queueExplicitCtor`,
+  `queuePrivateMethod`, the plain-identifier-call arm, the
+  tagged-template tag. So a `new X()` in code nothing reaches still
+  reaches `X`'s constructor.
+
+Instantiating `String` then reaches all 21 of its methods (2b), one of
+which mentions `FixedArray<u8>`, and until recently that dragged in
+every other discovered `FixedArray` specialization too. That is the
+whole chain, and none of it starts from `main`.
+
+### The blocker is that the phase is ambient state
+
+The obvious fix — gate instantiation and those referrers on the
+current phase — was built. It does not work, and the reason matters
+more than the attempt:
+
+`currentReachable` is a mutable field on the pass, set while a
+referrer is being processed and simply *left there* afterwards.
+`ensureAllHelperFunctionsReached`, the layout passes and Pass 1.5 all
+run outside queue processing, and read whatever the last referrer
+happened to leave behind — usually `false`, since the checkable queue
+drains last. Gating on it there silently disables rooting that the
+module needs; the trivial program stopped compiling with a bare
+`thrown Wasm exception` and 7 reached functions.
+
+So the first move is not a gate. It is to stop representing the phase
+as ambient mutable state: make it an explicit parameter of the
+traversal (and of `instantiateClassType`), so that "am I reaching or
+merely discovering?" is answerable at every call site instead of
+depending on execution order. Everything else in this document —
+phase-gating, the keystone, per-specialization instantiation — is
+downstream of that.
+
 ## The keystone: `hasInst` and the class vtable
 
 Everything still in the module traces back to a single coupling.
@@ -422,6 +475,11 @@ Interface dispatch does not need these: it goes through
 
 In dependency order:
 
+0. **Make the traversal phase explicit rather than ambient.** Thread
+   it through `queueReferrer`/`instantiateClassType`/the visitor
+   instead of reading `pass.currentReachable`, which survives between
+   phases and is what makes every phase-gating attempt fail in a
+   different place. Prerequisite for 1 and everything after it.
 1. ~~**Make `recordReachedClassMember` per-specialization.**~~ Done:
    `queueReferrer` now records a member against the generic only when
    the referrer's class type *is* the generic template. A referrer
@@ -450,9 +508,12 @@ In dependency order:
    from a string literal, a string-typed value, or a `+` on strings.
    Removing the unconditional call alone is worth 134 bytes; `String`
    is re-instantiated elsewhere until the keystone lands.
-5. **Phase-gate `instantiateClassType`** so a checkable traversal
-   cannot instantiate (`WasiConsole`, `None`) — *after* the keystone,
-   for the reasons measured above.
+5. **Phase-gate `instantiateClassType`**, and fix the referrers that
+   hardcode `isReachable = true` (`queueExplicitCtor`,
+   `queuePrivateMethod`, the plain-identifier-call arm, the
+   tagged-template tag). Blocked on 0. Together these are what stop a
+   dead stdlib global from instantiating `String`, `WasiConsole` and
+   `None`.
 6. **Separate struct layout from method registration** in
    `populateClassStructAndMethods`, so a discovered-only class can get
    its fields without its methods (2c). Blunt-skipping it does not
