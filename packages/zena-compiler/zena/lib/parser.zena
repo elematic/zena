@@ -1,8 +1,8 @@
+import { StringTable } from 'zena:core';
 import { Token, TokenType, Tokenizer } from './tokenizer.zena';
 import { Diagnostic, DiagnosticCode, DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
 import { walkEnter } from './visitor.zena';
 import { registerSource } from './line-index.zena';
-import { StringInterner } from './string-interner.zena';
 import { 
   SourceLocation,
   Comment,
@@ -164,10 +164,10 @@ export final class Parser {
   #path: String;
 
   new(source: String, path: String, recover: boolean = false,
-      interner: StringInterner | null = null)
+      table: StringTable | null = null)
     : #source = source, #path = path, #recover = recover, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null, #errors = new Array<Diagnostic>(0), #completeness = ParseCompleteness.Complete
   {
-    let tokenizer = new Tokenizer(source, interner);
+    let tokenizer = new Tokenizer(source, table);
     this.#tokens = tokenizer.tokenize();
     this.#comments = tokenizer.getComments();
   }
@@ -4304,9 +4304,9 @@ export let assignNodeIds = (node: Node, idGen: IdGenerator<NodeId>): void => {
  * or unified graph-based compilers). If no generator is passed, each file's
  * nodes are numbered starting from 1 locally.
  */
-export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator(), interner: StringInterner | null = null): Module => {
+export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator(), table: StringTable | null = null): Module => {
   registerSource(path, source);
-  let parser = new Parser(source, path, false, interner);
+  let parser = new Parser(source, path, false, table);
   let mod = parser.parse();
   assignNodeIds(mod, nodeIdGenerator);
   mod.lastNodeId = (nodeIdGenerator.peek() - 1) as NodeId;
@@ -4321,9 +4321,9 @@ export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<N
  * is still being typed — completions, symbols, hover. Errors the parser
  * cannot recover from are still thrown, so a caller must handle both.
  */
-export let parseRecovering = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator(), interner: StringInterner | null = null): ParseResult => {
+export let parseRecovering = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator(), table: StringTable | null = null): ParseResult => {
   registerSource(path, source);
-  let parser = new Parser(source, path, true, interner);
+  let parser = new Parser(source, path, true, table);
   let mod = parser.parse();
   assignNodeIds(mod, nodeIdGenerator);
   mod.lastNodeId = (nodeIdGenerator.peek() - 1) as NodeId;

@@ -259,6 +259,37 @@ export final class String implements Hashable {
   }
 
   /**
+   * True if this string's bytes are exactly the bytes of `other` in
+   * `[start, end)`.
+   *
+   * For matching against a range of a larger string without slicing it out
+   * first — the inner loop of a string table, which asks "is the text I just
+   * scanned the string already in this slot?" once per probe. Going through
+   * `sliceBytes` and `==` instead would allocate a view per probe and re-do
+   * the bounds and hash checks that the caller has already settled.
+   *
+   * A range falling outside `other` does not match, rather than reading out
+   * of bounds — unlike `sliceBytes`, which clamps. Clamping would be wrong
+   * here: it would silently compare against a shorter range and could report
+   * a match the caller never asked about.
+   *
+   * SAFETY: as with `sliceBytes`, the offsets are bytes and are not required
+   * to fall on code point boundaries — this compares encoded bytes, so a
+   * range that splits a multi-byte sequence simply will not match any whole
+   * string.
+   */
+  regionEqualsBytes(other: String, start: i32, end: i32): boolean {
+    let length = this.#end - this.#start;
+    if (end - start != length) {
+      return false;
+    }
+    if (start < 0 || end > other.#end - other.#start) {
+      return false;
+    }
+    return this.#regionEquals(other, this.#start, other.#start + start, length);
+  }
+
+  /**
    * Returns true if this string starts with the given prefix.
    */
   startsWith(prefix: String): boolean {

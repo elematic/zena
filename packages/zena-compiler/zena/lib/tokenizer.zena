@@ -1,5 +1,4 @@
-import { StringInterner } from './string-interner.zena';
-import { StringReader, StringBuilder } from 'zena:core';
+import { StringReader, StringBuilder, StringTable } from 'zena:core';
 import { Comment } from './ast.zena';
 
 // ============================================================================
@@ -345,12 +344,8 @@ export final class Tokenizer {
   var #column: i32;
   var #lineStart: i32;
 
-  /** Where identifier names are interned; null keeps each slice. */
-  #interner: StringInterner | null;
-
-  new(source: String, interner: StringInterner | null = null)
-    : #reader = new StringReader(source),
-      #interner = interner,
+  new(source: String, table: StringTable | null = null)
+    : #reader = new StringReader(source, table),
       #tokens = new Array<Token>(64),
       #comments = new Array<Comment>(8),
       #templateStack = new Array<i32>(8),
@@ -515,10 +510,11 @@ export final class Tokenizer {
     if (keyword != null) {
       this.#addToken(keyword.type, keyword.text, startPos, startCol);
     } else {
-      let value = this.#reader.sliceFrom(start);
-      let interner = this.#interner;
-      let name = if (interner != null) interner.intern(value) else value;
-      this.#addToken(TokenType.Identifier, name, startPos, startCol);
+      // Interned when the reader has a table: a repeat identifier costs a
+      // probe against the source bytes and no allocation; the first
+      // occurrence of a spelling is copied once into the table.
+      this.#addToken(
+          TokenType.Identifier, this.#reader.internFrom(start), startPos, startCol);
     }
   }
 
@@ -1012,7 +1008,22 @@ export final class Tokenizer {
 // Convenience function
 // ============================================================================
 
-export let tokenize = (source: String): Array<Token> => {
-  let tokenizer = new Tokenizer(source);
+export let tokenize = (source: String, table: StringTable | null = null): Array<Token> => {
+  let tokenizer = new Tokenizer(source, table);
   return tokenizer.tokenize();
+};
+
+/**
+ * Primes `table` with Zena's keywords, so a keyword lexed out of source
+ * interns to the very String instance `KEYWORDS` is keyed by. The keyword
+ * lookup in `#scanIdentifier` then hits `==`'s reference-equal fast path
+ * against a key whose hash was cached the first time it was probed.
+ *
+ * Call this once per table, not once per tokenizer: re-priming is harmless
+ * but it is a lookup per keyword per file.
+ */
+export let primeKeywords = (table: StringTable): void => {
+  for (let keyword in KEYWORDS.keys()) {
+    table.prime(keyword);
+  }
 };

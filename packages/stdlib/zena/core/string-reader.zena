@@ -1,3 +1,7 @@
+import { StringTable } from './string-table.zena';
+
+export * from './string-table.zena';
+
 /**
  * StringReader - A cursor-based string parser that tracks byte positions.
  * 
@@ -14,12 +18,29 @@
  * }
  * let token = r.sliceFrom(start);  // Safe: positions from mark()
  * ```
+ *
+ * A reader may be given a `StringTable`, in which case `internFrom` and
+ * `internRange` return canonical instances for the text they cover — see
+ * `StringTable`, exported from this module. Several readers can share one
+ * table, so a parser run over many files reuses the identifiers it has
+ * already seen. Passing no table is not a special case to handle: the intern
+ * methods then behave exactly like `sliceFrom`/`sliceRange`, because strings
+ * have value semantics either way.
  */
 export final class StringReader {
   #source: String;
   var #pos: i32;
+  #table: StringTable | null;
 
-  new(source: String) : #source = source, #pos = 0;
+  new(source: String, table: StringTable | null = null)
+    : #source = source, #pos = 0, #table = table;
+
+  /** The string table this reader interns into, if any. */
+  table: StringTable | null {
+    get {
+      return this.#table;
+    }
+  }
 
   // === Position tracking ===
 
@@ -256,6 +277,38 @@ export final class StringReader {
    */
   sliceRange(start: i32, end: i32): String {
     return this.#source.sliceBytes(start, end);
+  }
+
+  /**
+   * Like `sliceFrom`, but returns the canonical instance from this reader's
+   * string table — or the plain slice if the reader has no table.
+   *
+   * Prefer this over `sliceFrom` for text a parser will compare or use as a
+   * map key later: identifiers, member names, object keys. It is worth
+   * nothing for text used once, such as a numeric literal, and worse than
+   * nothing for text that is nearly always distinct, such as string literal
+   * contents, which would fill the table with single-use entries.
+   */
+  internFrom(start: i32): String {
+    // Deliberately not delegating to `internRange`: this runs once per
+    // identifier, against a probe that is itself only tens of nanoseconds,
+    // so an extra call frame is not obviously free here.
+    let table = this.#table;
+    if (table == null) {
+      return this.#source.sliceBytes(start, this.#pos);
+    }
+    return table.internRange(this.#source, start, this.#pos);
+  }
+
+  /** Like `sliceRange`, but interned. See `internFrom`. */
+  internRange(start: i32, end: i32): String {
+    let table = this.#table;
+    if (table == null) {
+      return this.#source.sliceBytes(start, end);
+    }
+    // Matches against the source range in place, so a repeat identifier
+    // costs a probe and no allocation at all.
+    return table.internRange(this.#source, start, end);
   }
 
   // === Convenience parsing helpers ===
