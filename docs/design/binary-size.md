@@ -2,8 +2,11 @@
 
 **Status**: **33,875 → 37 bytes — byte-identical to the hand-written
 ideal — and the keystone is in** (section 11): hello-string 7,270 →
-**592**, array-sum 11,967 → 5,784, after sections 12–13 (signature
-contexts, string-boundary directions, equality by evidence). The name
+**532**, array-sum 11,967 → 5,625, after sections 12–14 (signature
+contexts, string-boundary directions, equality by evidence,
+constructors by demand). `zena build <file> -o out.wat` dumps any
+program's emitted WAT; minimal and hello-string are WAT-snapshot
+tested. The name
 section is gated, the extension-class leak is closed, template helpers
 are rooted from the templates that need them, the type section is
 computed rather than accumulated, RTA roots only the entry unit,
@@ -857,6 +860,49 @@ String's constructor), and the two read-side exports — plus ~330
 bytes of type section. The next named cuts: record-dispatch GLOBALS
 (section 8's caveat), and the literal machinery itself could
 specialize for single-literal programs.
+
+## 14. Constructors by demand
+
+`string_from_shared` builds its String with `struct.new` directly —
+yet every literal-only program shipped `String.<constructor>`, because
+instantiation PROMOTED every registered ctor. And the promoted ctor's
+reachable body walk was what dragged six dead class struct pairs
+(`Encoding`, `ImmutableArray<u8>`, the ranges…) into the type section.
+
+A ctor's evidence is a CONSTRUCTION SITE. `queueExplicitCtor` records
+demand against the generic (and its super chain, for `: super(...)`)
+and pends concrete keys for the settle drain; promotion and the
+registration force-reach both gate on the demand set. The
+construction sites, each found as a loud
+`constructor missing for <class>` (the bail now names the class):
+
+- `new` expressions — including resource `new`, whose node TYPE is
+  the opaque wrapper (`Own<C>`), so the demand comes from the CALLEE's
+  declared class;
+- range literals (`1..5` shares `new`'s construction tail with no
+  NewExpression);
+- map literals already had their own rooting.
+
+hello-string 592 → **532** (ctor gone, and with it the dead pairs);
+array-sum → 5,625.
+
+### Not yet: dead-field elimination
+
+String's struct still carries `#encoding` and `#hashCode` — written
+as zeros by `string_from_shared`, read by nothing in hello-string.
+Eliminating dead FIELDS needs per-field access tracking and index
+rebaking across every accessor, scaffold body, and host helper — a
+separate pass, listed here so the two i32s stop looking like an
+oversight.
+
+### Tooling
+
+`zena build <file> -o out.wat` emits the WAT text of exactly what the
+binary build would contain (the extension picks the emitter; the
+artifact caches like any build). `minimal_program.snap` and
+`hello_string_program.snap` hold the two fixtures' full WAT — small
+enough to read whole, so a regression names the exact
+function/type/export it added.
 
 ## The keystone: `hasInst` and the class vtable
 

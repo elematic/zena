@@ -111,6 +111,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * even on hierarchy-less classes).
    */
   extendedClassSymbols = new HashSet<SymbolId>();
+  /** Generic-source symbols with at least one `new` site; see queueExplicitCtor. */
+  ctorDemandedGenerics = new HashSet<SymbolId>();
   /**
    * Field members named by REACHABLE referrers whose synthesized
    * get#/set# accessors may not be registered yet — populate creates
@@ -327,6 +329,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
         this.reachedFunctionsSet.add(func);
         func.isReached = true;
+
         // A synthesized case-class == compares fields through the
         // equality diamond, which dispatches through class-vtable
         // ==/hashCode slots on erased fields. The eq/hash INTRINSICS
@@ -2802,8 +2805,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 // for CONCRETE classes — a template referrer registers
                 // the unspecialized copy, and reaching that is
                 // 'non-concrete function reached'; the fan-out queues
-                // a concrete referrer per specialization.
-                if (ref.isReachable && isConcrete(ct)) {
+                // a concrete referrer per specialization. NOT for
+                // constructors: their evidence is a `new` site (which
+                // pends them by key) — the checker's records name
+                // ctors for paths that never call one, and reaching
+                // here emitted a constructor in every literal-only
+                // String program.
+                if (ref.isReachable && isConcrete(ct) &&
+                    methName != "<constructor>") {
                   this.wasm.addFunction(regF);
                   this.markFunctionReached(regF);
                 }

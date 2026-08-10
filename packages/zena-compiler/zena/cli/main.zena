@@ -149,6 +149,17 @@ export let main = (): i32 => {
     // fatal error. ZENA_ZIR_STATS=1 prints the lowered count.
     let zirStats = getEnv("ZENA_ZIR_STATS") != null;
 
+    // `-o out.wat` emits the WAT text directly — the readable form of
+    // exactly what the binary build would contain, for inspecting a
+    // program's emitted shape (`zena build hello.zena -o hello.wat`).
+    if (outPath.endsWith(".wat")) {
+      let watOnly = new WatGenerator(target, zirStats);
+      writeFile(outPath, watOnly.generate(program));
+      performance.end(tCodegen);
+      console.log("Success: wrote " + outPath);
+      return 0;
+    }
+
     let generator = new BinaryGenerator(target, zirStats, debugNames);
     let wasmBytes = generator.generate(program).toByteArray();
     writeFileBytes(outPath, wasmBytes);

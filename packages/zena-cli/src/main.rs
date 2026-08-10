@@ -215,7 +215,8 @@ fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bo
     // the staleness decision, and the build scripts that call it are gated by
     // Wireit's own input tracking. Always compile rather than second-guessing
     // with mtime heuristics.
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, true, debug, target)?;
+    let wat = output.ends_with(".wat");
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, true, debug, target, wat)?;
     // Output directories like zena/out/ are gitignored, so a clean checkout
     // does not have them.
     if let Some(parent) = std::path::Path::new(output).parent() {
@@ -233,7 +234,7 @@ fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache
     // miss the cache must not change what the program appears to print.
     // On failure the captured text is replayed to stderr; `-v` streams
     // it live instead.
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, !verbose, no_cache, debug, None)?;
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, !verbose, no_cache, debug, None, false)?;
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args, debug, allow_spawn)
 }
 
@@ -352,6 +353,7 @@ fn compile_to_cache(
     no_cache: bool,
     debug: bool,
     target: Option<&str>,
+    wat: bool,
 ) -> Result<std::path::PathBuf> {
     let repo_root = repo_root()?;
     let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
@@ -390,6 +392,7 @@ fn compile_to_cache(
     debug.hash(&mut hasher);
     // The target changes the emitted bytes, so it must key the cache.
     target.hash(&mut hasher);
+    wat.hash(&mut hasher);
     // Identify the compiler by (mtime, len) rather than hashing all of its
     // bytes: reading tens of MiB on every invocation is measurable, and a
     // rebuilt-but-identical compiler only costs one spurious recompile.
@@ -457,7 +460,14 @@ fn compile_to_cache(
 
     let hash = hasher.finish();
     let file_name = abs_path.file_stem().unwrap_or_default().to_string_lossy();
-    let cached_wasm_name = format!("{}_{:x}.wasm", file_name, hash);
+    // A `.wat` output asks the compiler for the text form; the extension
+    // is how the compiler-side CLI picks the emitter, so it carries
+    // through the cache artifact name (and keys the hash below).
+    let cached_wasm_name = if wat {
+        format!("{}_{:x}.wat", file_name, hash)
+    } else {
+        format!("{}_{:x}.wasm", file_name, hash)
+    };
     let cached_wasm_path = cache_dir.join(&cached_wasm_name);
 
     let needs_compile = if no_cache {
@@ -1020,7 +1030,7 @@ fn run_internal_tool(
     debug: bool,
 ) -> Result<i32> {
     let src = repo_root()?.join(src_repo_rel);
-    let cached = compile_to_cache(&src.to_string_lossy(), verbose, false, false, true, false, debug, None)?;
+    let cached = compile_to_cache(&src.to_string_lossy(), verbose, false, false, true, false, debug, None, false)?;
     let engine = Engine::new(&base_config(debug))?;
     let cwasm = cwasm_path_for(&cached, debug);
     let module = load_or_compile_module(&engine, &cached, &cwasm)?;
@@ -1063,7 +1073,7 @@ fn run_single_test(
 ) -> Result<(TestStatus, String, String, Option<String>)> {
     let t_start = std::time::Instant::now();
     // Compile to cache (always capture compiler output during tests to prevent log flooding)
-    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false, debug, None)?;
+    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false, debug, None, false)?;
     let t_compile = t_start.elapsed();
 
     let t_load_start = std::time::Instant::now();

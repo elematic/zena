@@ -18,7 +18,6 @@ import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, 
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
-import { console } from 'zena:console';
 import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
 import { resolveImportedSymbolId } from './import-resolver.zena';
@@ -776,6 +775,17 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved);
         }
+        // A resource `new` TYPES as its wrapper — `Own<C>` is an
+        // OPAQUE type, so the arm above skips entirely — but it
+        // CONSTRUCTS the resource class the CALLEE names. The callee
+        // is the honest "constructed class" for every `new`.
+        let calleeSym = model.resolve(ne.callee);
+        if (calleeSym != null) {
+          let calleeT = model.getBindingTypeById((calleeSym as Symbol).resolveTarget().id);
+          if (calleeT != null && calleeT is ClassType) {
+            this.queueExplicitCtor(resolveType(calleeT as ClassType) as ClassType);
+          }
+        }
       }
       if (n is MapLiteral) {
         this.registerMapLiteral(n as MapLiteral, model, resolveType);
@@ -837,7 +847,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let re = n as RangeExpression;
         let reType = model.getNodeType(re);
         if (reType != null && reType is ClassType) {
-          specializer.instantiateClassType(resolveType(reType as ClassType) as ClassType, model);
+          let rangeCt = resolveType(reType as ClassType) as ClassType;
+          specializer.instantiateClassType(rangeCt, model);
+          // A range literal CONSTRUCTS its range class — same tail as
+          // `new` (lowering's #constructInstance) with no NewExpression.
+          this.queueExplicitCtor(rangeCt);
         }
       }
     });
@@ -853,6 +867,28 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * checkable state).
    */
   queueExplicitCtor(resolved: ClassType): void {
+    // A `new` site is the constructor's evidence. Declared ctors are
+    // walked as member referrers; SYNTHESIZED ctors (no `new(...)` in
+    // the class body, or registered after this walk) have no node —
+    // reach those by key at the settle drain. Blanket promotion at
+    // instantiation used to cover both, at the cost of emitting a
+    // constructor nothing calls (string literals build their String
+    // with struct.new directly).
+    // Record DEMAND against the generic (and its super chain, for the
+    // `: super(...)` calls): a `new` site whose type arguments resolve
+    // only at a later specialization still proves the generic's
+    // constructors are called. Instantiation promotes registered
+    // ctors for demanded generics; concrete sites also pend by key.
+    var demandCt: ClassType | null = resolved;
+    while (demandCt != null) {
+      let dc = demandCt as ClassType;
+      this.pass.ctorDemandedGenerics.add((dc.genericSource ?? dc).symbolId);
+      if (isConcrete(dc)) {
+        this.pass.notePendingMemberReach(
+            getClassMethodKey(getClassKey(dc), "<constructor>"));
+      }
+      demandCt = dc.superType;
+    }
     let ctorDeclId = ((resolved.genericSource ?? resolved)).symbolId;
     if (!this.pass.classDecls.has(ctorDeclId)) {
       return;
@@ -1282,6 +1318,17 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved);
         }
+        // A resource `new` TYPES as its wrapper — `Own<C>` is an
+        // OPAQUE type, so the arm above skips entirely — but it
+        // CONSTRUCTS the resource class the CALLEE names. The callee
+        // is the honest "constructed class" for every `new`.
+        let calleeSym = model.resolve(ne.callee);
+        if (calleeSym != null) {
+          let calleeT = model.getBindingTypeById((calleeSym as Symbol).resolveTarget().id);
+          if (calleeT != null && calleeT is ClassType) {
+            this.queueExplicitCtor(resolveType(calleeT as ClassType) as ClassType);
+          }
+        }
       }
       if (n is MapLiteral) {
         this.registerMapLiteral(n as MapLiteral, model, resolveType);
@@ -1331,7 +1378,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let re = n as RangeExpression;
         let reType = model.getNodeType(re);
         if (reType != null && reType is ClassType) {
-          specializer.instantiateClassType(resolveType(reType as ClassType) as ClassType, model);
+          let rangeCt = resolveType(reType as ClassType) as ClassType;
+          specializer.instantiateClassType(rangeCt, model);
+          // A range literal CONSTRUCTS its range class — same tail as
+          // `new` (lowering's #constructInstance) with no NewExpression.
+          this.queueExplicitCtor(rangeCt);
         }
       }
       if (n is Expression) {

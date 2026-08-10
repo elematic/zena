@@ -82,21 +82,21 @@ export final class Specializer implements SpecializerInterface {
     this.pass.instantiatedSpecializedClasses.add(cKey);
     cha.registerInstantiatedClass(classType);
 
-    // Constructors registered BEFORE the class was known instantiated
-    // (dependency-record processing is order-independent) were created
-    // into classMethodMap but never added as reachable functions —
-    // registerClassMethod gates addFunction on hasInst. Instantiation
-    // is what proves a constructor callable: promote any
-    // pre-registered constructor now. (The commented-out block below
-    // once did this for ALL methods; constructors are the ones whose
-    // loss breaks codegen with 'constructor not registered'.)
-    if (let (true, funcs) = this.pass.wasm.classMethods.get(cKey)) {
-      for (let func in funcs) {
-        if (func.methodName != null &&
-            (func.methodName as String) == "<constructor>" &&
-            !this.pass.reachedFunctionsSet.has(func)) {
-          this.pass.wasm.addFunction(func);
-          this.pass.markFunctionReached(func);
+    // Instantiation promotes constructors only for DEMANDED generics —
+    // ones with a `new` site somewhere (queueExplicitCtor records the
+    // demand; concrete sites also pend by key). Unconditional
+    // promotion emitted a constructor nothing calls in every
+    // literal-only String program — string_from_shared builds its
+    // String with struct.new directly.
+    if (this.pass.ctorDemandedGenerics.has((classType.genericSource ?? classType).symbolId)) {
+      if (let (true, funcs) = this.pass.wasm.classMethods.get(cKey)) {
+        for (let func in funcs) {
+          if (func.methodName != null &&
+              (func.methodName as String) == "<constructor>" &&
+              !this.pass.reachedFunctionsSet.has(func)) {
+            this.pass.wasm.addFunction(func);
+            this.pass.markFunctionReached(func);
+          }
         }
       }
     }
@@ -1170,7 +1170,9 @@ export final class Specializer implements SpecializerInterface {
       // same-named member — a silent wrong answer, not a loud miss.
       let hasInst = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
       if (!isGenericTemplate && hasInst &&
-          (realMethName == "<constructor>" || realMethName.contains("::"))) {
+          (realMethName.contains("::") ||
+           (realMethName == "<constructor>" &&
+            this.pass.ctorDemandedGenerics.has(((cType.genericSource ?? cType)).symbolId)))) {
         if (!this.pass.reachedFunctionsSet.has(func)) {
           this.#reachRegisteredMethod(func);
         }
@@ -1180,7 +1182,9 @@ export final class Specializer implements SpecializerInterface {
 
     let hasInstNew = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
     if (!isGenericTemplate && hasInstNew &&
-        (realMethName == "<constructor>" || realMethName.contains("::"))) {
+        (realMethName.contains("::") ||
+         (realMethName == "<constructor>" &&
+          this.pass.ctorDemandedGenerics.has(((cType.genericSource ?? cType)).symbolId)))) {
       this.#reachRegisteredMethod(wasmFunc);
     }
 
