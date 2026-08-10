@@ -2,6 +2,7 @@ import { Array } from 'zena:array';
 import { console } from 'zena:console';
 import { Error } from 'zena:error';
 import { i32ToString, parseF64 } from 'zena:string-convert';
+import { StringTable } from 'zena:string-reader';
 import { Token, TokenType, Tokenizer } from './tokenizer.zena';
 import { walkEnter } from './visitor.zena';
 import { 
@@ -124,10 +125,10 @@ export final class Parser {
   #source: String;
   #path: String;
   
-  new(source: String, path: String)
+  new(source: String, path: String, table: StringTable | null = null)
     : #source = source, #path = path, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null
   {
-    let tokenizer = new Tokenizer(source);
+    let tokenizer = new Tokenizer(source, table);
     this.#tokens = tokenizer.tokenize();
     this.#comments = tokenizer.getComments();
   }
@@ -3625,8 +3626,12 @@ export let assignNodeIds = (node: Node, idGen: IdGenerator<NodeId>): void => {
  * or unified graph-based compilers). If no generator is passed, each file's
  * nodes are numbered starting from 1 locally.
  */
-export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator()): Module => {
-  let parser = new Parser(source, path);
+export let parse = (
+    source: String,
+    path: String,
+    nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator(),
+    table: StringTable | null = null): Module => {
+  let parser = new Parser(source, path, table);
   let mod = parser.parse();
   assignNodeIds(mod, nodeIdGenerator);
   return mod;
