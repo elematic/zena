@@ -2,7 +2,7 @@
 
 **Status**: **33,875 → 37 bytes — byte-identical to the hand-written
 ideal — and the keystone is in** (section 11): hello-string 7,270 →
-**532**, array-sum 11,967 → 5,625, after sections 12–14 (signature
+**532**, array-sum 11,967 → 5,635, after sections 12–14 (signature
 contexts, string-boundary directions, equality by evidence,
 constructors by demand). `zena build <file> -o out.wat` dumps any
 program's emitted WAT; minimal and hello-string are WAT-snapshot
@@ -884,7 +884,24 @@ construction sites, each found as a loud
 - map literals already had their own rooting.
 
 hello-string 592 → **532** (ctor gone, and with it the dead pairs);
-array-sum → 5,625.
+array-sum → 5,635.
+
+### Late equality evidence: repair, not luck
+
+The `==`/`hashCode` slot decision bakes at each class's layout, but
+equality evidence can legitimately arrive later — array-sum's for-in
+machinery is walked in the vtable-fixpoint drains, after earlier
+classes already pruned their slots. That worked only because the
+specific pruned slots happened never to be dispatched. Now the pass
+records which classes pruned (`noteEqSlotPruned`), and at the settle
+point, if `equalityDispatchUsed` flipped after any pruning, it
+REPAIRS: re-adds the two slot fields to every pruned class's vtable
+struct, discards and rebuilds those classes' vtable globals, and
+drains the newly reached slot methods (rebuilding per pruned key —
+the all-classes builder would also create globals for
+late-instantiated classes Pass 1.5 deliberately skipped). Array-sum's
+5,625 → 5,635 is this repair being honest — those bytes are slots the
+evidence says could be dispatched.
 
 ### Not yet: dead-field elimination
 

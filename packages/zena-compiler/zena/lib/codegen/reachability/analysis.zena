@@ -14,7 +14,7 @@ import { i32ToString, parseI32 } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
 import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
-import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef } from '../wasm.zena';
+import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef, ValTypeFuncRef } from '../wasm.zena';
 import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer } from './specialization.zena';
@@ -96,8 +96,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   reachablyNamedClasses = new HashSet<String>();
   /** See ReachabilityVisitor.noteEqualityUse. */
   var equalityDispatchUsed = false;
-  /** Set when a class's ==/hashCode slots were dropped; guards the late-flip assert. */
-  var eqSlotsPruned = false;
+  /** Classes whose ==/hashCode slots were dropped while the equality
+   * flag was false — repaired at settle if the flag flips late. */
+  #eqPrunedClasses = new Array<ClassKey>();
   /**
    * Generic-source symbol ids of classes some DECLARED class extends —
    * built at init from every unit's class declarations (and sealed
@@ -114,13 +115,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   /** Generic-source symbols with at least one `new` site; see queueExplicitCtor. */
   ctorDemandedGenerics = new HashSet<SymbolId>();
   /**
-   * Field members named by REACHABLE referrers whose synthesized
-   * get#/set# accessors may not be registered yet — populate creates
-   * them during layout, after the queues. Re-checked at the settle
-   * point; while registration force-reached every method this timing
-   * hole was invisible.
+   * Members to reach BY MAP KEY at the settle point, once every
+   * registration has happened: field accessors named before populate
+   * creates them, synthesized case-class ==/hashCode (no AST node to
+   * find), demanded constructors, and String.== for the by-name
+   * lowering paths. While registration force-reached every method
+   * this timing hole was invisible.
    */
-  #pendingFieldAccessorReaches = new Array<ClassMethodKey>();
+  #pendingMemberReaches = new Array<ClassMethodKey>();
   reachablyNamedClosures = new HashSet<WasmStruct>();
   reachablyNamedAnonStructs = new HashSet<WasmStruct>();
   /**
@@ -132,14 +134,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    */
   #namedCompositeTypes = new Array<Type>();
   #namedCompositeKeys = new HashSet<String>();
-  /**
-   * True while the upfront import-declaration loops run: import
-   * plumbing discovers types for every unit in the program, which is
-   * not evidence that reached code names them — a body that uses an
-   * imported class names it through its own walk. Without this the
-   * reachablyNamedClasses set degenerates to "everything declared".
-   */
-  var typeNamingSuppressed = false;
+
   /**
    * True only while a queue referrer is being processed —
    * currentReachable is accurately set per referrer there, and there
@@ -744,8 +739,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
 
     // Process all import declarations upfront for namespace objects and their closure trampolines
-    this.typeNamingSuppressed = true;
-    this.typeNamingSuppressed = true;
     for (let unit in this.program.units) {
       let mod = unit.ast;
       let model = unit.model;
@@ -755,8 +748,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
       }
     }
-    this.typeNamingSuppressed = false;
-    this.typeNamingSuppressed = false;
 
     // RTA Roots
     for (let unit in this.program.units) {
@@ -1264,8 +1255,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Index loop: draining can push MORE pending reaches (reaching a
     // case class's == pends String.== for its string fields).
     var pendIdx = 0;
-    while (pendIdx < this.#pendingFieldAccessorReaches.length) {
-      let pendingKey = this.#pendingFieldAccessorReaches[pendIdx];
+    while (pendIdx < this.#pendingMemberReaches.length) {
+      let pendingKey = this.#pendingMemberReaches[pendIdx];
       pendIdx += 1;
       if (let (true, f) = this.wasm.classMethodMap.get(pendingKey)) {
         this.markFunctionReached(f);
@@ -1284,13 +1275,44 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // field fails receiver conformance in lowering. Re-resolve those
     // fields against the settled registrations.
     this.specializer.refreshErasedFieldTypes();
-    // The ==/hashCode slot decision is baked at each class's layout;
-    // an equality-dispatch use discovered after slots were already
-    // dropped would dispatch through a missing slot at runtime. Loud
-    // beats silent: name the gap if it ever happens.
-    if (this.equalityDispatchUsed && this.eqSlotsPruned) {
-      // Both can be true legitimately only if the flag was set before
-      // any pruning happened; the pruning site records the flag state.
+    // The ==/hashCode slot decision bakes at each class's layout, and
+    // equality evidence can legitimately arrive later — a body walked
+    // in the vtable-fixpoint drains (array-sum's for-in machinery
+    // does). Dispatching through a missing slot would be a silent
+    // wrong answer, so REPAIR: re-add the two slots to every class
+    // that pruned them, rebuild those classes' vtable globals, and
+    // drain the newly reached slot methods.
+    if (this.equalityDispatchUsed && this.#eqPrunedClasses.length > 0) {
+      for (let prunedKey in this.#eqPrunedClasses) {
+        if (let (true, prunedInfo) = this.wasm.classInfos.get(prunedKey)) {
+          let prunedVstOpt = prunedInfo.vtableStructType;
+          if (prunedVstOpt == null) { continue; }
+          let prunedVst = prunedVstOpt as WasmStruct;
+          var addedSlot = false;
+          for (let slotName in this.wasm.classVtable(prunedKey)) {
+            if (slotName != "==" && slotName != "hashCode") { continue; }
+            if (prunedVst.fieldIndexByName(slotName) >= 0) { continue; }
+            prunedVst.fields.push(new WasmField(slotName, new ValTypeFuncRef(), false));
+            addedSlot = true;
+          }
+          if (addedSlot && prunedInfo.vtableGlobal != null) {
+            let staleGlobal = prunedInfo.vtableGlobal as WasmGlobal;
+            let keptGlobals = new Array<WasmGlobal>();
+            for (let g in this.wasm.globals) {
+              if (g != staleGlobal) { keptGlobals.push(g); }
+            }
+            while (this.wasm.globals.length > 0) { this.wasm.globals.pop(); }
+            for (let g in keptGlobals) { this.wasm.globals.push(g); }
+            prunedInfo.vtableGlobal = null;
+          }
+        }
+      }
+      // Per-key rebuilds: the no-arg builder would also create globals
+      // for late-instantiated classes Pass 1.5 deliberately skipped.
+      for (let prunedKey in this.#eqPrunedClasses) {
+        this.#buildClassVTableGlobals(prunedKey);
+      }
+      this.processQueues();
     }
     // And late-instantiated String needs its class vtable global,
     // exactly as it needs its struct — $stringCreate is synthesized
@@ -1728,14 +1750,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * get a layout, and before this ran twice it silently did not.
    */
   #layoutClassStructs(populated: HashMap<ClassKey, boolean>): void {
-    // Layout populates EVERY known class (declared or not), and
-    // registering a class's methods discovers their signature types.
-    // That is representation plumbing, not reached code naming a type
-    // — without suppression here, reachablyNamedClasses degenerates to
-    // roughly everything declared, through whatever stale value
-    // currentReachable holds outside queue processing.
-    let wasSuppressed = this.typeNamingSuppressed;
-    this.typeNamingSuppressed = true;
     var round = true;
     while (round) {
       round = false;
@@ -1751,7 +1765,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         round = true;
       }
     }
-    this.typeNamingSuppressed = wasSuppressed;
   }
 
   /** Host-import boundary directions; see wasm.hostReadsStrings/hostWritesStrings. */
@@ -1882,13 +1895,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
   /** Deferred by-key member reach; drained with the field accessors at settle. */
   notePendingMemberReach(key: ClassMethodKey): void {
-    this.#pendingFieldAccessorReaches.push(key);
+    this.#pendingMemberReaches.push(key);
   }
 
   noteClosureStruct(cs: WasmStruct): void {
     if (this.inQueueWalk && this.currentReachable) {
       this.reachablyNamedClosures.add(cs);
     }
+  }
+
+  noteEqSlotPruned(key: ClassKey): void {
+    this.#eqPrunedClasses.push(key);
   }
 
   noteExceptionInfra(model: SemanticModel): void {
@@ -2871,13 +2888,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   if (let (true, f) = this.wasm.classMethodMap.get(getterKey)) {
                     this.markFunctionReached(f);
                   } else if (ref.isReachable) {
-                    this.#pendingFieldAccessorReaches.push(getterKey);
+                    this.#pendingMemberReaches.push(getterKey);
                   }
                   let setterKey = getClassMethodKey(cKey, "set#" + propName);
                   if (let (true, f) = this.wasm.classMethodMap.get(setterKey)) {
                     this.markFunctionReached(f);
                   } else if (ref.isReachable) {
-                    this.#pendingFieldAccessorReaches.push(setterKey);
+                    this.#pendingMemberReaches.push(setterKey);
                   }
                 }
               }
