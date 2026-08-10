@@ -164,13 +164,19 @@ export final class Specializer implements SpecializerInterface {
         this.pass.queueReferrer(new Referrer(false, noSymbolId, memberNodeId, memberModel, classType, true));
       }
     }
-    let eqMethod = cha.findImplementingMethod(classType, "==");
-    if (eqMethod != null) {
-      this.pass.queueReferrer(new Referrer(false, noSymbolId, (eqMethod as Node).id as i32, this.pass.getNodeModel(eqMethod as Node, unspecModel), classType, this.pass.currentReachable));
-    }
-    let hashMethod = cha.findImplementingMethod(classType, "hashCode");
-    if (hashMethod != null) {
-      this.pass.queueReferrer(new Referrer(false, noSymbolId, (hashMethod as Node).id as i32, this.pass.getNodeModel(hashMethod as Node, unspecModel), classType, this.pass.currentReachable));
+    // ==/hashCode referrers follow the same evidence as their slots:
+    // without erased equality anywhere, instantiation alone is not a
+    // reason to emit them. Direct `a == b` on concrete receivers
+    // reaches the operator through its own member records.
+    if (this.pass.equalityDispatchUsed) {
+      let eqMethod = cha.findImplementingMethod(classType, "==");
+      if (eqMethod != null) {
+        this.pass.queueReferrer(new Referrer(false, noSymbolId, (eqMethod as Node).id as i32, this.pass.getNodeModel(eqMethod as Node, unspecModel), classType, this.pass.currentReachable));
+      }
+      let hashMethod = cha.findImplementingMethod(classType, "hashCode");
+      if (hashMethod != null) {
+        this.pass.queueReferrer(new Referrer(false, noSymbolId, (hashMethod as Node).id as i32, this.pass.getNodeModel(hashMethod as Node, unspecModel), classType, this.pass.currentReachable));
+      }
     }
 
     if (classType.superType != null) {
@@ -726,10 +732,13 @@ export final class Specializer implements SpecializerInterface {
     this.pass.wasm.types.push(emptyStruct);
     this.pass.wasm.interfaceStructs[iKey] = emptyStruct;
 
-    // 2. Discover referenced types in members (fields, methods)
+    // 2. Discover referenced types in members (fields, methods) — as
+    // SIGNATURES: an interface method's function type is not a value,
+    // and value-routing it minted a closure struct + impl signature
+    // per member (22 of them from one Iterable-family interface).
     for (let pair in it.members) {
       let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, itParams, it.typeArguments, pair.value.type);
-      this.pass.typeLowerer.discoverType(resolvedType, sourceModel);
+      this.pass.typeLowerer.discoverSignatureType(resolvedType, sourceModel);
     }
 
     let keys = it.members.keys();
@@ -1469,9 +1478,22 @@ export final class Specializer implements SpecializerInterface {
       // kept every String method in a program whose only string is a
       // literal it returns.
       let keepAll = this.pass.classCanDispatchVirtually(ct);
+      // ==/hashCode slots exist for the equality diamond and the hash
+      // intrinsic, which dispatch them through the class vtable on
+      // ERASED receivers. A program with no erased equality use needs
+      // neither — but the decision is baked per class at layout, so a
+      // use discovered after pruning began throws (loud) rather than
+      // dispatching through a missing slot (silent).
+      let keepEq = this.pass.equalityDispatchUsed;
       for (let methName in ctVtable) {
-        if (!keepAll && methName != "==" && methName != "hashCode") {
-          continue;
+        if (!keepAll) {
+          if (methName != "==" && methName != "hashCode") {
+            continue;
+          }
+          if (!keepEq) {
+            this.pass.eqSlotsPruned = true;
+            continue;
+          }
         }
         vst.fields.push(new WasmField(methName, new ValTypeFuncRef(), false));
       }

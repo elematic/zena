@@ -10,7 +10,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { SymbolId } from '../../scope/symbol.zena';
 import { ValType, WasmType } from '../wasm.zena';
-import { MixinKey } from '../codegen-utils.zena';
+import { MixinKey, ClassMethodKey } from '../codegen-utils.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 
 /**
@@ -114,6 +114,8 @@ export interface ReachabilityContext {
   extendedClassSymbols: HashSet<SymbolId>;
   classCanDispatchVirtually(ct: ClassType): boolean;
   var typeNamingSuppressed: boolean;
+  var equalityDispatchUsed: boolean;
+  var eqSlotsPruned: boolean;
   var inQueueWalk: boolean;
   /**
    * Closure structs reached code can reference: recorded where RTA
@@ -169,6 +171,8 @@ export interface ReachabilityContext {
   queueReferrer(ref: Referrer): void;
   markFunctionReached(func: WasmFunction): void;
   noteExceptionInfra(model: SemanticModel): void;
+  notePendingMemberReach(key: ClassMethodKey): void;
+  noteHostImportSignature(ft: FunctionType): void;
   forceReachFunction(func: WasmFunction): void;
   traverseDependencies(deps: SymbolDependencies, model: SemanticModel, classType: ClassType | null, typeArguments: Array<Type> | null, node: Node | null): void;
   markTypeReached(t: WasmType | null): void;

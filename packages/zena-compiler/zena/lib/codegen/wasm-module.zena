@@ -875,6 +875,18 @@ export final class WasmModule {
    * every program declares String through the prelude.
    */
   var stringClassIsInstantiated = false;
+  /**
+   * Which DIRECTIONS the host boundary moves strings in. Writes = the
+   * host builds a guest String ($stringCreate/$stringSetByte): an
+   * entry-unit export takes a String(-containing) parameter, a
+   * reached host import returns one, or the exception infrastructure
+   * exists (the host builds trace messages). Reads = the host
+   * consumes one ($stringGetByte/$stringGetLength): an export returns
+   * a String, or a reached host import takes one. A program whose
+   * boundary only RETURNS a string ships only the read half.
+   */
+  var hostWritesStrings = false;
+  var hostReadsStrings = false;
   var stringCreateFunc: WasmFunction | null = null;
   var stringSetByteFunc: WasmFunction | null = null;
   var stringGetByteFunc: WasmFunction | null = null;
@@ -1309,6 +1321,7 @@ export final class WasmModule {
     this.globals.push(payloadGlobal);
     this.exceptionPayload = payloadGlobal;
 
+    this.hostWritesStrings = true;
     this.ensureStringCreate(model);
     this.ensureStringSetByte(model);
   }
@@ -1368,10 +1381,14 @@ export final class WasmModule {
   }
 
   ensureStringHelpers(model: SemanticModel): void {
-    this.ensureStringCreate(model);
-    this.ensureStringSetByte(model);
-    this.ensureStringGetByte(model);
-    this.ensureStringGetLength(model);
+    if (this.hostWritesStrings) {
+      this.ensureStringCreate(model);
+      this.ensureStringSetByte(model);
+    }
+    if (this.hostReadsStrings) {
+      this.ensureStringGetByte(model);
+      this.ensureStringGetLength(model);
+    }
   }
 
   ensureStringLiteralHelpers(model: SemanticModel): void {

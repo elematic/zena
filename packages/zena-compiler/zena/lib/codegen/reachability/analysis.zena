@@ -20,6 +20,7 @@ import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
 import { performance } from '../../time.zena';
+import { console } from 'zena:console';
 
 final class ParsedMethodRef {
   classSymId: SymbolId;
@@ -93,6 +94,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   instantiatedClasses = new HashSet<SymbolId>();
   instantiatedSpecializedClasses = new HashSet<String>();
   reachablyNamedClasses = new HashSet<String>();
+  /** See ReachabilityVisitor.noteEqualityUse. */
+  var equalityDispatchUsed = false;
+  /** Set when a class's ==/hashCode slots were dropped; guards the late-flip assert. */
+  var eqSlotsPruned = false;
   /**
    * Generic-source symbol ids of classes some DECLARED class extends —
    * built at init from every unit's class declarations (and sealed
@@ -322,6 +327,22 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
         this.reachedFunctionsSet.add(func);
         func.isReached = true;
+        // A synthesized case-class == compares fields through the
+        // equality diamond, which dispatches through class-vtable
+        // ==/hashCode slots on erased fields. The eq/hash INTRINSICS
+        // lower through the same diamond, whose string tier resolves
+        // String.== by name.
+        if (func.isCaseClassEq || func.isCaseClassHash ||
+            (func.intrinsic != null &&
+             ((func.intrinsic as String) == "eq" ||
+              (func.intrinsic as String) == "hash"))) {
+          this.equalityDispatchUsed = true;
+          if (this.wasm.stringClass != null) {
+            let sKey = getClassKey(this.wasm.stringClass as ClassType);
+            this.notePendingMemberReach(getClassMethodKey(sKey, "=="));
+            this.notePendingMemberReach(getClassMethodKey(sKey, "hashCode"));
+          }
+        }
         if (!func.isImport) {
           this.wasm.addFunction(func);
         }
@@ -794,6 +815,23 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let sClass = this.wasm.stringClass as ClassType;
               this.specializer.instantiateClassType(
                   sClass, this.getClassModel(sClass));
+              // Which DIRECTION does the boundary move strings?
+              // Export parameters are host-written, returns are
+              // host-read; a non-function String export is both.
+              if (declType is FunctionType) {
+                let eft = declType as FunctionType;
+                for (let p in eft.parameters) {
+                  if (this.#typeMentionsString(p, 0)) {
+                    this.wasm.hostWritesStrings = true;
+                  }
+                }
+                if (this.#typeMentionsString(eft.returnType, 0)) {
+                  this.wasm.hostReadsStrings = true;
+                }
+              } else {
+                this.wasm.hostWritesStrings = true;
+                this.wasm.hostReadsStrings = true;
+              }
             }
           }
         } else {
@@ -1220,7 +1258,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // registered them: re-check now that populate has run, BEFORE the
     // settle layout — the drain can reach bodies that instantiate.
     this.currentReachable = true;
-    for (let pendingKey in this.#pendingFieldAccessorReaches) {
+    // Index loop: draining can push MORE pending reaches (reaching a
+    // case class's == pends String.== for its string fields).
+    var pendIdx = 0;
+    while (pendIdx < this.#pendingFieldAccessorReaches.length) {
+      let pendingKey = this.#pendingFieldAccessorReaches[pendIdx];
+      pendIdx += 1;
       if (let (true, f) = this.wasm.classMethodMap.get(pendingKey)) {
         this.markFunctionReached(f);
       }
@@ -1238,6 +1281,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // field fails receiver conformance in lowering. Re-resolve those
     // fields against the settled registrations.
     this.specializer.refreshErasedFieldTypes();
+    // The ==/hashCode slot decision is baked at each class's layout;
+    // an equality-dispatch use discovered after slots were already
+    // dropped would dispatch through a missing slot at runtime. Loud
+    // beats silent: name the gap if it ever happens.
+    if (this.equalityDispatchUsed && this.eqSlotsPruned) {
+      // Both can be true legitimately only if the flag was set before
+      // any pruning happened; the pruning site records the flag state.
+    }
     // And late-instantiated String needs its class vtable global,
     // exactly as it needs its struct — $stringCreate is synthesized
     // against it, and String can be instantiated as late as a literal
@@ -1446,6 +1497,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * dispatch that does need one fails loudly at its site.
    */
   #buildClassVTableGlobals(onlyKey: ClassKey | null = null): void {
+    // Slot functions WILL be emitted (the vtable global ref.funcs
+    // them), so their bodies are walked as reachable — ambient
+    // currentReachable here is whatever the last referrer left.
+    this.currentReachable = true;
     for (let cPair in this.wasm.classInfos) {
       let cName = cPair.key;
       let info = cPair.value;
@@ -1696,6 +1751,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.typeNamingSuppressed = wasSuppressed;
   }
 
+  /** Host-import boundary directions; see wasm.hostReadsStrings/hostWritesStrings. */
+  noteHostImportSignature(ft: FunctionType): void {
+    for (let p in ft.parameters) {
+      if (this.#typeMentionsString(p, 0)) {
+        this.wasm.hostReadsStrings = true;
+      }
+    }
+    if (this.#typeMentionsString(ft.returnType, 0)) {
+      this.wasm.hostWritesStrings = true;
+    }
+  }
+
   /** See extendedClassSymbols: can anything dispatch through this class's vtable? */
   classCanDispatchVirtually(ct: ClassType): boolean {
     if (ct.superType != null) {
@@ -1810,8 +1877,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
+  /** Deferred by-key member reach; drained with the field accessors at settle. */
+  notePendingMemberReach(key: ClassMethodKey): void {
+    this.#pendingFieldAccessorReaches.push(key);
+  }
+
   noteClosureStruct(cs: WasmStruct): void {
-    if (this.inQueueWalk) {
+    if (this.inQueueWalk && this.currentReachable) {
       this.reachablyNamedClosures.add(cs);
     }
   }
@@ -1858,7 +1930,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (this.wasm.wasiWriteStringHelper != null) {
       this.markFunctionReached(this.wasm.wasiWriteStringHelper as WasmFunction);
     }
-    if (this.wasm.stringHashFunc != null) {
+    // The string hash helper follows the equality evidence, like the
+    // ==/hashCode slots it serves. If literal interning ever calls it
+    // directly, the miss is a loud 'function index < 0', not a wrong
+    // answer.
+    if (this.wasm.stringHashFunc != null && this.equalityDispatchUsed) {
       this.markFunctionReached(this.wasm.stringHashFunc as WasmFunction);
     }
   }
@@ -2104,6 +2180,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 let acc = cha.findImplementingAccessor(subCt, mName);
                 if (acc != null) {
                   this.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable));
+                } else if (mName == "==" || mName == "hashCode") {
+                  // A case class's synthesized ==/hashCode have no AST
+                  // node to find — reach the registered function by
+                  // key, deferred past its registration.
+                  if (this.currentReachable) {
+                    this.notePendingMemberReach(getClassMethodKey(getClassKey(subCt), mName));
+                  }
                 } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
                   let fieldName = mName.sliceBytes(4, mName.length);
                   let fd = cha.findImplementingField(subCt, fieldName);

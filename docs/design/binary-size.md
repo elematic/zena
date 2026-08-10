@@ -2,7 +2,8 @@
 
 **Status**: **33,875 → 37 bytes — byte-identical to the hand-written
 ideal — and the keystone is in** (section 11): hello-string 7,270 →
-1,926, array-sum 11,967 → 6,665. The name
+**592**, array-sum 11,967 → 5,784, after sections 12–13 (signature
+contexts, string-boundary directions, equality by evidence). The name
 section is gated, the extension-class leak is closed, template helpers
 are rooted from the templates that need them, the type section is
 computed rather than accumulated, RTA roots only the entry unit,
@@ -807,7 +808,55 @@ What replaced it:
 | array-sum | 11,967 | **6,665** |
 
 All four `FixedArray` specializations left hello-string entirely.
-Budgets ratchet to 37 / 2,000 / 6,700.
+Budgets ratcheted to 37 / 2,000 / 6,700 here, then to 37 / 600 /
+5,800 after sections 12–13.
+
+## 12. Signature contexts do not mint value machinery (fixed)
+
+Three paths treated SIGNATURES as value positions, each minting a
+closure struct + erased impl signature pair per member:
+`registerSpecializedInterface`'s member discovery (22 pairs from one
+Iterable-family interface), function-typed PARAMETERS of
+signature-routed types (`discoverSignatureType` now propagates the
+signature context instead of value-routing components), and the
+class-declaration walk's per-member types (method and accessor
+definitions now signature-route, like `function` declarations in
+section 9). Evidence recording also requires `currentReachable` again
+— reaching paths all set the phase flag properly now, including
+`#buildClassVTableGlobals`. hello-string 1,926 → 1,468.
+
+## 13. String boundary directions, and equality by evidence
+
+The four `$string*` helpers split by DIRECTION: writes
+(`$stringCreate`/`$stringSetByte` — an export takes a String
+parameter, a reached host import returns one, or exception infra
+exists) and reads (`$stringGetByte`/`$stringGetLength` — an export
+returns one, a host import takes one). `return "Hello World"` ships
+only the read half.
+
+And the `==`/`hashCode` slots — plus the entire equality/hash chain
+they force (String.==, #regionEquals, both hash helpers: 633 bytes in
+hello-string) — now follow `equalityDispatchUsed`, set by evidence
+during traversal: an `==`/`!=` whose operand is ERASED (the equality
+diamond dispatches slots on erased receivers), a case-class operand
+(its synthesized == dispatches its fields' == through slots — flagged
+at SIGHT, since the slot decisions bake at layout), or the `eq`/`hash`
+intrinsics (which lower through the diamond). Concrete class operands
+root their `==` operator DIRECTLY (`ir/operators.zena` resolves it by
+name — `T == T` in a template body has no record naming the
+specialization's operator), string-literal patterns root `String.==`
+(both the `LiteralPattern` and bare-literal forms; `stringPatternEq`
+resolves it by name), and synthesized case-class members — which have
+no AST node to find — reach by MAP KEY through a deferred drain that
+tolerates its own growth. hello-string 1,468 → **592**; array-sum →
+5,784.
+
+What remains in hello-string's 592 bytes: `main`, `__start`, the
+literal machinery (`get_string_literal`, `string_from_shared`,
+String's constructor), and the two read-side exports — plus ~330
+bytes of type section. The next named cuts: record-dispatch GLOBALS
+(section 8's caveat), and the literal machinery itself could
+specialize for single-literal programs.
 
 ## The keystone: `hasInst` and the class vtable
 

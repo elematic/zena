@@ -3,7 +3,7 @@ import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisito
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType, baseType } from '../../types.zena';
-import { Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, RecordPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral } from '../../ast.zena';
+import { Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo } from '../wasm-module.zena';
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, isRefValType } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
@@ -14,10 +14,11 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
+import { console } from 'zena:console';
 import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
 import { resolveImportedSymbolId } from './import-resolver.zena';
@@ -98,7 +99,7 @@ export final class TypeLowerer implements TypeLowererInterface {
     // early-returns on its later in-queue discovery, and recording
     // only inside the arms would then never see it — the wit-parser
     // and fs record structs failed with `index < 0` exactly this way.
-    if (this.pass.inQueueWalk) {
+    if (this.pass.inQueueWalk && this.pass.currentReachable) {
       this.#recordTypeEvidence(t, model, 0);
     }
     if (this.pass.currentReachable) {
@@ -241,7 +242,7 @@ export final class TypeLowerer implements TypeLowererInterface {
       // value is ever constructed, so the type section keeps it.
       // Recorded BEFORE the already-registered early return — being in
       // classInfos says the class is declared, not that it is used.
-      if (this.pass.inQueueWalk) {
+      if (this.pass.inQueueWalk && this.pass.currentReachable) {
         this.pass.reachablyNamedClasses.add(cKey as String);
       }
       if (this.pass.wasm.classInfos.has(cKey)) {
@@ -389,9 +390,15 @@ export final class TypeLowerer implements TypeLowererInterface {
     if (t is FunctionType) {
       let ft = t as FunctionType;
       for (let paramType in ft.parameters) {
-        this.discoverType(paramType, model);
+        // Signature context PROPAGATES: a function-typed parameter of
+        // a signature is still a signature component, not a value —
+        // its closure struct is pulled transitively by the reached
+        // function's own signature marking. Routing it through
+        // discoverType recorded a closure struct + impl signature per
+        // higher-order method a class-declaration walk visited.
+        this.discoverSignatureType(paramType, model);
       }
-      this.discoverType(ft.returnType, model);
+      this.discoverSignatureType(ft.returnType, model);
       return;
     }
     this.discoverType(rawT, model);
@@ -439,6 +446,32 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    */
   discoverPatternTypes(p: Node, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
+    if (p is StringLiteral) {
+      // `case "lit":` can be a BARE literal-expression pattern.
+      if (this.pass.wasm.stringClass != null) {
+        let bsc = this.pass.wasm.stringClass as ClassType;
+        this.pass.notePendingMemberReach(
+            getClassMethodKey(getClassKey(bsc), "=="));
+      }
+    }
+    if (p is LiteralPattern) {
+      // `case "lit":` lowers to a DIRECT call to String.== resolved by
+      // name (ir/patterns.zena stringPatternEq) — no call node for RTA.
+      if ((p as LiteralPattern).value is StringLiteral &&
+          this.pass.wasm.stringClass != null) {
+        let sc = this.pass.wasm.stringClass as ClassType;
+        let scModel = this.pass.getClassModel(sc);
+        for (let md in this.pass.cha.findImplementingMethods(sc, "==")) {
+          this.pass.queueReferrer(new Referrer(false, noSymbolId,
+              (md as Node).id as i32,
+              this.pass.getNodeModel(md as Node, scModel), sc, true));
+        }
+        // And by key, deferred: the node referrer depends on find/arm
+        // plumbing; the key lookup is what the lowering itself uses.
+        this.pass.notePendingMemberReach(
+            getClassMethodKey(getClassKey(sc), "=="));
+      }
+    }
     if (p is ClassPattern) {
       let cp = p as ClassPattern;
       let t = model.getNodeType(cp.name);
@@ -474,6 +507,83 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         this.discoverPatternTypes(prop.value, model, resolveType);
       }
     }
+  }
+
+  /**
+   * `==`/`!=` on ERASED operands lowers through the equality diamond
+   * (ir/equality.zena), which dispatches `==`/`hashCode` through the
+   * class vtable — the reason those two slots are kept even on
+   * hierarchy-less classes. A program with no erased equality (and no
+   * `hash` intrinsic use) needs neither slot; for `return
+   * "Hello World"` they carried String.==, #regionEquals, hashCode
+   * and both hash helpers — 633 bytes.
+   */
+  noteEqualityUse(bin: BinaryExpression, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (bin.operator != "==" && bin.operator != "!=") { return; }
+    let lt = model.getNodeType(bin.left);
+    let rt = model.getNodeType(bin.right);
+    var erased = false;
+    if (lt != null) {
+      let lr = resolveType(lt as Type);
+      let lv = typeToValType(this.pass.wasm, lr);
+      if (lv is ValTypeAnyRef || lv is ValTypeEqRef || lv is ValTypeStructRef) {
+        erased = true;
+      }
+      // A CONCRETE class operand lowers to a direct call of the
+      // class's `==` operator, resolved by name in ir/operators.zena —
+      // no call node, no dependency record (the template body says
+      // `T == T`). Root it from the use.
+      this.#rootEqOperator(lr, model);
+    }
+    if (rt != null) {
+      let rr = resolveType(rt as Type);
+      let rv = typeToValType(this.pass.wasm, rr);
+      if (rv is ValTypeAnyRef || rv is ValTypeEqRef || rv is ValTypeStructRef) {
+        erased = true;
+      }
+      this.#rootEqOperator(rr, model);
+    }
+    if (erased) {
+      this.pass.equalityDispatchUsed = true;
+    }
+  }
+
+  /** Roots `==` (and hashCode, its pair) on a concrete class operand. */
+  #rootEqOperator(rawT: Type, model: SemanticModel): void {
+    // Literal types (`"a" == x`) carry their base class.
+    let t = baseType(rawT);
+    var ct: ClassType | null = null;
+    if (t is ClassType && isConcrete(t as ClassType)) {
+      ct = t as ClassType;
+    } else if (t is UnionType) {
+      // `T | null` unions still compare through the member's ==.
+      for (let m in (t as UnionType).types) {
+        if (m is ClassType && isConcrete(m as ClassType)) { ct = m as ClassType; }
+      }
+    }
+    if (ct == null) { return; }
+    let cc = ct as ClassType;
+    // A case class's synthesized == dispatches its case-class FIELDS'
+    // == through their class-vtable slots — and those slot decisions
+    // bake at layout, before the reach-time flag flip would land.
+    // Seeing case-class equality IS the evidence; set it now, during
+    // the walk.
+    if (cc.isCaseClass) {
+      this.pass.equalityDispatchUsed = true;
+    }
+    let ccModel = this.pass.getClassModel(cc);
+    for (let md in this.pass.cha.findImplementingMethods(cc, "==")) {
+      this.pass.queueReferrer(new Referrer(false, noSymbolId,
+          (md as Node).id as i32,
+          this.pass.getNodeModel(md as Node, ccModel), cc,
+          this.pass.currentReachable));
+    }
+    // A case class's synthesized ==/hashCode have no AST node for the
+    // find above; they are registered functions. Reach them by key —
+    // deferred, since registration can postdate this walk.
+    this.pass.notePendingMemberReach(getClassMethodKey(getClassKey(cc), "=="));
+    this.pass.notePendingMemberReach(getClassMethodKey(getClassKey(cc), "hashCode"));
   }
 
   noteUnboxCast(asN: AsExpression, model: SemanticModel,
@@ -567,6 +677,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.typeLowerer.discoverType(resolveType(t as Type), model);
         }
         this.noteUnboxCast(n as AsExpression, model, resolveType);
+      }
+      if (n is BinaryExpression) {
+        this.noteEqualityUse(n as BinaryExpression, model, resolveType);
       }
       if (n is IsExpression) {
         let t = model.getNodeType((n as IsExpression).typeAnnotation);
@@ -1111,6 +1224,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is AsExpression) {
         this.noteUnboxCast(n as AsExpression, model, resolveType);
       }
+      if (n is BinaryExpression) {
+        this.noteEqualityUse(n as BinaryExpression, model, resolveType);
+      }
+      if (n is MatchCase) {
+        this.discoverPatternTypes((n as MatchCase).pattern, model, resolveType);
+      }
+      if (n is LetPatternCondition) {
+        this.discoverPatternTypes((n as LetPatternCondition).pattern, model, resolveType);
+      }
       if (n is StringLiteral) {
         let sl = n as StringLiteral;
         this.noteStringLiteral(sl.value);
@@ -1131,9 +1253,19 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         // value or not.
         var isDeclarationSignature = false;
         if (resolved is FunctionType) {
-          let parent = model.getParent(n);
-          if (parent != null && parent is FunctionDeclaration) {
+          // Method and accessor DEFINITIONS are signatures too: a
+          // class-declaration walk visits every member, and treating
+          // each member's function type as a value minted a closure
+          // struct per method — 22 of them for a walk of String.
+          if (n is MethodDefinition || n is AccessorDeclaration ||
+              n is FunctionDeclaration) {
             isDeclarationSignature = true;
+          } else {
+            let parent = model.getParent(n);
+            if (parent != null && (parent is FunctionDeclaration ||
+                parent is MethodDefinition || parent is AccessorDeclaration)) {
+              isDeclarationSignature = true;
+            }
           }
         }
         if (isDeclarationSignature) {
@@ -2041,7 +2173,26 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             this.pass.wasm.intrinsics[df.id] = dfIntrinsicName;
             if (dfIntrinsicName == "wasi_write_string") {
               this.registerWasiInfra(moduleModel);
+            } else if (dfIntrinsicName == "eq") {
+              // The eq intrinsic lowers through the equality diamond,
+              // whose string tier resolves String.== by name.
+              this.pass.equalityDispatchUsed = true;
+              if (this.pass.wasm.stringClass != null) {
+                let eqSc = this.pass.wasm.stringClass as ClassType;
+                this.pass.notePendingMemberReach(
+                    getClassMethodKey(getClassKey(eqSc), "=="));
+                this.pass.notePendingMemberReach(
+                    getClassMethodKey(getClassKey(eqSc), "hashCode"));
+              }
             } else if (dfIntrinsicName == "hash") {
+              // hash<T> dispatches hashCode through class vtables on
+              // erased receivers — the other equality-dispatch signal.
+              this.pass.equalityDispatchUsed = true;
+              if (this.pass.wasm.stringClass != null) {
+                let hSc = this.pass.wasm.stringClass as ClassType;
+                this.pass.notePendingMemberReach(
+                    getClassMethodKey(getClassKey(hSc), "hashCode"));
+              }
               this.registerStringHashHelper(moduleModel);
               this.pass.wasm.ensureHashInfra(moduleModel);
               this.pass.markFunctionReached(this.pass.wasm.stringHashFunc as WasmFunction);
@@ -2051,6 +2202,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     } else if (isExternal) {
       let funcType = moduleModel.getNodeType(decl) as FunctionType;
+      // A host import moves strings across the boundary too: the host
+      // READS String parameters it receives (console's log_string) and
+      // WRITES String returns it produces.
+      this.pass.noteHostImportSignature(funcType);
       let params = new Array<ValType>();
       for (let pt in funcType.parameters) {
         mapParamTypeToWasmParams(this.pass.wasm, pt, params);
