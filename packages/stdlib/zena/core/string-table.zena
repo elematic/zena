@@ -1,0 +1,248 @@
+
+// Part of `zena:core`, re-exported through `string-reader.zena`: interning
+// and reading text are a matched pair, the reader being what feeds
+// `internRange`.
+
+/**
+ * A set of unique strings: interning one returns the single canonical
+ * instance for its bytes, so equal strings become the *same* object.
+ *
+ * Strings have value semantics whether or not they are interned, so
+ * interning never changes what a program computes. What it changes is cost,
+ * and the costs it removes are mostly downstream of the parser rather than
+ * in it:
+ *
+ * - `String` caches its FNV hash in a field on first use. An interned
+ *   identifier is therefore hashed once for the life of the table, not once
+ *   per `HashMap<String, V>` probe — and a compiler probes scope and symbol
+ *   tables with the same identifier over and over.
+ * - `operator ==` returns early on reference equality, so comparing two
+ *   interned strings is a pointer compare instead of a byte loop.
+ * - One live `String` per *distinct* identifier instead of one per token.
+ *
+ * Interning is deliberately not perfect: `intern` is the only way in, and
+ * nothing stops an equal string from being produced by other means. Code may
+ * treat `===` as a fast path for equality, never as the definition of it.
+ *
+ * ## Sharing a table
+ *
+ * A table is an ordinary object, so several `StringReader`s — several whole
+ * parses — can share one and get cross-file reuse: the second file's `let`
+ * costs a lookup and no allocation. That is also why `intern` copies (see
+ * below): a table outliving the text it was filled from must not pin it.
+ */
+export final class StringTable {
+  /**
+   * Open addressing with linear probing, in two parallel arrays indexed by
+   * probe position: `#keys[i]` is the interned string in slot `i`, or null
+   * for an empty slot. Separate chaining would put a pointer chase between
+   * probe steps; here a miss touches a run of adjacent slots.
+   *
+   * `#hashes[i]` is the bucket hash of `#keys[i]`. Keeping it lets a probe
+   * reject a colliding slot without touching the candidate's bytes, and lets
+   * a resize re-place entries without rehashing them.
+   */
+  var #keys: FixedArray<String | null>;
+  var #hashes: FixedArray<i32>;
+  var #mask: i32;
+  var #count: i32 = 0;
+  /** Resize when `#count` reaches this: 3/4 of capacity. */
+  var #limit: i32;
+
+  new(capacity: i32 = 512)
+    : #keys = new FixedArray<String | null>(roundUpPow2(capacity), null),
+      #hashes = new FixedArray<i32>(roundUpPow2(capacity), 0),
+      #mask = roundUpPow2(capacity) - 1,
+      #limit = (roundUpPow2(capacity) >>> 2) * 3;
+
+  /** The number of distinct strings held. */
+  size: i32 {
+    get {
+      return this.#count;
+    }
+  }
+
+  /**
+   * Returns the canonical instance equal to `s`, adding a copy of it if this
+   * is the first sighting.
+   *
+   * The copy is what makes a long-lived table safe. Zena strings are views
+   * into a shared backing array, so interning a three-byte identifier sliced
+   * out of a source file would otherwise keep that whole file alive for as
+   * long as the table — and a table shared across a compilation would
+   * accumulate every file it ever saw. The copy costs one allocation per
+   * *distinct* string, never per occurrence, and leaves the canonical
+   * instance on tight storage that its own byte loops then walk.
+   *
+   * Use `prime` for strings that already own their storage permanently.
+   */
+  intern(s: String): String {
+    let h = bucketHash(s, s.length);
+    var i = h & this.#mask;
+    while (true) {
+      let candidate = this.#keys[i];
+      if (candidate == null) {
+        return this.#insert(s.copy(), h, i);
+      }
+      if (this.#hashes[i] == h && candidate == s) {
+        return candidate;
+      }
+      i = (i + 1) & this.#mask;
+    }
+  }
+
+  /**
+   * Returns the canonical instance for `source`'s bytes in `[start, end)`,
+   * without slicing that range out first.
+   *
+   * This is the form a scanner wants, and the reason it exists is that `intern`
+   * turns out to be dominated by neither hashing nor probing. Its cost is the
+   * per-probe `candidate == s`: a virtual call to `String.operator ==` that
+   * re-derives the length and consults the hash cache before reaching the byte
+   * compare, plus the throwaway view allocated to have something to pass it.
+   * Matching against the source range in place removes all of that from the
+   * hit path, which is every occurrence after the first.
+   */
+  internRange(source: String, start: i32, end: i32): String {
+    let h = bucketHashRange(source, start, end);
+    var i = h & this.#mask;
+    while (true) {
+      let candidate = this.#keys[i];
+      if (candidate == null) {
+        return this.#insert(source.sliceBytes(start, end).copy(), h, i);
+      }
+      if (this.#hashes[i] == h && candidate.regionEqualsBytes(source, start, end)) {
+        return candidate;
+      }
+      i = (i + 1) & this.#mask;
+    }
+  }
+
+  /**
+   * Interns `s` without copying it, making `s` itself canonical if it is new.
+   *
+   * For strings that already own their storage for the life of the program —
+   * literals, above all — where `intern`'s defensive copy would allocate a
+   * second permanent copy of bytes that were never going to be freed.
+   *
+   * Priming a table with a language's keywords before parsing is the
+   * motivating case, and it buys more than the avoided copies: a keyword
+   * lexed out of source then interns to the very object the keyword table is
+   * keyed by, so the keyword lookup that follows hits `==`'s reference-equal
+   * fast path against an already-hashed key.
+   */
+  prime(s: String): String {
+    let h = bucketHash(s, s.length);
+    var i = h & this.#mask;
+    while (true) {
+      let candidate = this.#keys[i];
+      if (candidate == null) {
+        return this.#insert(s, h, i);
+      }
+      if (this.#hashes[i] == h && candidate == s) {
+        return candidate;
+      }
+      i = (i + 1) & this.#mask;
+    }
+  }
+
+  /** Primes every string in `words`. See `prime`. */
+  primeAll(words: Array<String>): void {
+    for (var i = 0; i < words.length; i += 1) {
+      this.prime(words[i]);
+    }
+  }
+
+  /** True if a string equal to `s` has been interned. */
+  has(s: String): boolean {
+    let h = bucketHash(s, s.length);
+    var i = h & this.#mask;
+    while (true) {
+      let candidate = this.#keys[i];
+      if (candidate == null) {
+        return false;
+      }
+      if (this.#hashes[i] == h && candidate == s) {
+        return true;
+      }
+      i = (i + 1) & this.#mask;
+    }
+  }
+
+  #insert(owned: String, h: i32, slot: i32): String {
+    this.#keys[slot] = owned;
+    this.#hashes[slot] = h;
+    this.#count += 1;
+    if (this.#count >= this.#limit) {
+      this.#resize();
+    }
+    return owned;
+  }
+
+  #resize(): void {
+    let oldKeys = this.#keys;
+    let oldHashes = this.#hashes;
+    let capacity = (this.#mask + 1) * 2;
+    let keys = new FixedArray<String | null>(capacity, null);
+    let hashes = new FixedArray<i32>(capacity, 0);
+    let mask = capacity - 1;
+    for (var slot = 0; slot < oldKeys.length; slot += 1) {
+      let key = oldKeys[slot];
+      if (key != null) {
+        let h = oldHashes[slot];
+        var i = h & mask;
+        while (keys[i] != null) {
+          i = (i + 1) & mask;
+        }
+        keys[i] = key;
+        hashes[i] = h;
+      }
+    }
+    this.#keys = keys;
+    this.#hashes = hashes;
+    this.#mask = mask;
+    this.#limit = (capacity >>> 2) * 3;
+  }
+}
+
+/**
+ * The bucket hash: length, first byte, middle byte, last byte, mixed.
+ *
+ * Constant time, which is the point. A probe has to compare bytes to confirm
+ * a hit no matter what the hash is, so hashing every byte — FNV over the
+ * whole string, as `String.hashCode` does — makes a lookup two passes over
+ * the text where one would do. Four features separate short identifiers well
+ * enough; a collision is not an error, only an extra compare, and on a hit
+ * that compare was going to happen anyway.
+ *
+ * This is emphatically *not* `String.hashCode`: it is never stored on the
+ * string and never escapes this module. `HashMap` keeps using the FNV hash,
+ * which it must — this one is far too weak to key a general-purpose map,
+ * where a colliding pair costs a chain walk on every future lookup rather
+ * than one byte compare.
+ */
+let bucketHashRange = (source: String, start: i32, end: i32): i32 => {
+  let length = end - start;
+  if (length == 0) {
+    return 0x9E3779B1;
+  }
+  var h = length * 0x9E3779B1;
+  h = (h ^ source.getByteAt(start)) * 0x01000193;
+  h = (h ^ source.getByteAt(start + (length >>> 1))) * 0x01000193;
+  h = (h ^ source.getByteAt(end - 1)) * 0x01000193;
+  // Avalanche the high bits down: slots are chosen by the low bits, and
+  // without this step short strings sharing a first byte cluster together.
+  h = h ^ (h >>> 15);
+  return h * 0x2545F491;
+};
+
+/** `bucketHashRange` over the whole of `s`. */
+let bucketHash = (s: String, length: i32): i32 => bucketHashRange(s, 0, length);
+
+let roundUpPow2 = (n: i32): i32 => {
+  var c = 16;
+  while (c < n) {
+    c = c * 2;
+  }
+  return c;
+};

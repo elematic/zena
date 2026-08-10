@@ -225,6 +225,51 @@ export let tests = suite('String', () => {
     test('orders UTF-8 multi-byte characters by code point', () => {
       isTrue("café".compareTo("cafe") > 0);
       isTrue("α".compareTo("β") < 0);
+  suite('regionEqualsBytes', () => {
+    let source = "let alpha = beta;";
+
+    test('matches a range equal to the whole string', () => {
+      equal("alpha".regionEqualsBytes(source, 4, 9), true);
+    });
+
+    test('rejects a range of a different length', () => {
+      equal("alpha".regionEqualsBytes(source, 4, 8), false);
+      equal("alpha".regionEqualsBytes(source, 4, 10), false);
+    });
+
+    test('rejects an equal-length range with different bytes', () => {
+      equal("alpha".regionEqualsBytes("betas", 0, 5), false);
+    });
+
+    test('matches an empty string against an empty range', () => {
+      equal("".regionEqualsBytes(source, 3, 3), true);
+      equal("a".regionEqualsBytes(source, 3, 3), false);
+    });
+
+    test('compares against the receiver, not its backing array', () => {
+      // The receiver here is a slice, so its own offset must be honoured
+      // rather than the start of the array it shares.
+      let slice = source.sliceBytes(4, 9);
+      equal(slice.regionEqualsBytes("xxalphaxx", 2, 7), true);
+      equal(slice.regionEqualsBytes("xxbetaxxx", 2, 7), false);
+    });
+
+    test('does not match a range outside the other string', () => {
+      // Must return false rather than read out of bounds: the length check
+      // alone passes here, since the range is the right size.
+      equal("abc".regionEqualsBytes("xy", 5, 8), false);
+      equal("abc".regionEqualsBytes("xyzw", 2, 5), false);
+      equal("abc".regionEqualsBytes(source, -3, 0), false);
+      // Far enough out that reading it would trap, not merely read a
+      // neighbouring literal's bytes — so this fails loudly without the guard.
+      equal("abc".regionEqualsBytes("xy", 1000000, 1000003), false);
+    });
+
+    test('compares encoded bytes for multi-byte content', () => {
+      // "café" is five bytes in UTF-8, not four characters' worth.
+      let text = "café au lait";
+      equal("café".regionEqualsBytes(text, 0, 5), true);
+      equal("café".regionEqualsBytes(text, 0, 4), false);
     });
   });
 });

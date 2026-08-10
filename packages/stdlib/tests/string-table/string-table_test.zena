@@ -1,0 +1,209 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue, isFalse, same, notSame} from 'zena:assert';
+import {StringReader, StringTable} from 'zena:string-reader';
+import {StringBuilder} from 'zena:string-builder';
+import {HashMap} from 'zena:map';
+import {Array} from 'zena:array';
+
+/**
+ * Builds a String with the given content whose identity is guaranteed fresh,
+ * so `===` tests are about interning rather than about literal pooling.
+ */
+let fresh = (s: String): String => {
+  let b = new StringBuilder();
+  b.append(s);
+  return b.toString();
+};
+
+export let tests = suite('StringTable', () => {
+  suite('intern', () => {
+    test('returns an equal string', () => {
+      let t = new StringTable();
+      equal(t.intern(fresh('hello')), 'hello');
+    });
+
+    test('returns the same instance for equal bytes', () => {
+      let t = new StringTable();
+      let a = t.intern(fresh('identifier'));
+      let b = t.intern(fresh('identifier'));
+      same(a, b);
+    });
+
+    test('distinguishes different strings', () => {
+      let t = new StringTable();
+      let a = t.intern(fresh('alpha'));
+      let b = t.intern(fresh('beta'));
+      notSame(a, b);
+      equal(a, 'alpha');
+      equal(b, 'beta');
+    });
+
+    test('counts distinct strings only', () => {
+      let t = new StringTable();
+      t.intern(fresh('a'));
+      t.intern(fresh('a'));
+      t.intern(fresh('b'));
+      equal(t.size, 2);
+    });
+
+    test('handles the empty string', () => {
+      let t = new StringTable();
+      let a = t.intern(fresh(''));
+      let b = t.intern(fresh(''));
+      same(a, b);
+      equal(a.length, 0);
+      equal(t.size, 1);
+    });
+
+    test('does not confuse strings sharing first, last and length', () => {
+      // These four collide on every feature the bucket hash looks at except
+      // the middle byte, and 'axxb'/'ayyb' collide on that too — so the byte
+      // compare, not the hash, is what has to separate them.
+      let t = new StringTable();
+      let a = t.intern(fresh('axxb'));
+      let b = t.intern(fresh('ayyb'));
+      let c = t.intern(fresh('azzb'));
+      let d = t.intern(fresh('axyb'));
+      equal(t.size, 4);
+      equal(a, 'axxb');
+      equal(b, 'ayyb');
+      equal(c, 'azzb');
+      equal(d, 'axyb');
+      notSame(a, b);
+      notSame(a, d);
+    });
+
+    test('separates a prefix from the string it prefixes', () => {
+      let t = new StringTable();
+      let a = t.intern(fresh('foo'));
+      let b = t.intern(fresh('foobar'));
+      notSame(a, b);
+      equal(a, 'foo');
+      equal(b, 'foobar');
+    });
+
+    test('copies, so the interned string does not view the source', () => {
+      // A slice of a large source keeps the whole backing array alive. The
+      // canonical instance must own its bytes instead: a table shared across
+      // a compilation would otherwise pin every file it ever read.
+      let t = new StringTable();
+      let source = 'let alpha = 1; let beta = 2;';
+      let reader = new StringReader(source, t);
+      reader.skipBytes(4);
+      let interned = reader.internRange(4, 9);
+      equal(interned, 'alpha');
+      notSame(interned, source.sliceBytes(4, 9));
+      equal(interned.length, 5);
+    });
+
+    test('preserves multi-byte UTF-8 content', () => {
+      let t = new StringTable();
+      let a = t.intern(fresh('héllo'));
+      let b = t.intern(fresh('héllo'));
+      same(a, b);
+      equal(a, 'héllo');
+    });
+  });
+
+  suite('prime', () => {
+    test('makes the given instance canonical', () => {
+      let t = new StringTable();
+      let literal = 'let';
+      same(t.prime(literal), literal);
+      same(t.intern(fresh('let')), literal);
+    });
+
+    test('does not displace an already-interned string', () => {
+      let t = new StringTable();
+      let first = t.intern(fresh('while'));
+      same(t.prime('while'), first);
+      equal(t.size, 1);
+    });
+
+    test('primeAll primes a sequence', () => {
+      let t = new StringTable();
+      t.primeAll(['if', 'else', 'while']);
+      equal(t.size, 3);
+      isTrue(t.has('if'));
+      isTrue(t.has('while'));
+    });
+  });
+
+  suite('has', () => {
+    test('reports membership without inserting', () => {
+      let t = new StringTable();
+      isFalse(t.has('nope'));
+      equal(t.size, 0);
+      t.intern(fresh('yes'));
+      isTrue(t.has('yes'));
+      isFalse(t.has('no'));
+    });
+  });
+
+  suite('growth', () => {
+    test('keeps every entry canonical across resizes', () => {
+      // Starts well below the default capacity so the table resizes several
+      // times, then re-checks every string inserted before the first resize.
+      let t = new StringTable(16);
+      let names = new Array<String>();
+      for (var i = 0; i < 500; i += 1) {
+        let b = new StringBuilder();
+        b.append('name');
+        b.appendI32(i);
+        names.push(t.intern(b.toString()));
+      }
+      equal(t.size, 500);
+      for (var i = 0; i < 500; i += 1) {
+        let b = new StringBuilder();
+        b.append('name');
+        b.appendI32(i);
+        same(t.intern(b.toString()), names[i]);
+      }
+      equal(t.size, 500);
+    });
+  });
+
+  suite('interned strings as map keys', () => {
+    test('behave as values, not as identities', () => {
+      // The point of interning is that it is invisible: an interned string
+      // and an equal un-interned one must hit the same map entry.
+      let t = new StringTable();
+      let m = new HashMap<String, i32>();
+      m[t.intern(fresh('key'))] = 7;
+      equal(m.getOr(fresh('key'), 0), 7);
+      equal(m.getOr('key', 0), 7);
+    });
+  });
+
+  suite('StringReader interning', () => {
+    test('internFrom returns canonical instances', () => {
+      let t = new StringTable();
+      let a = new StringReader('foo bar', t);
+      a.skipBytes(0);
+      let start = a.mark();
+      a.skipBytes(3);
+      let first = a.internFrom(start);
+
+      let b = new StringReader('xxxxfoo', t);
+      b.skipBytes(4);
+      let second = b.internRange(4, 7);
+
+      same(first, second);
+      equal(first, 'foo');
+    });
+
+    test('a reader with no table still returns equal strings', () => {
+      let r = new StringReader('foo bar');
+      equal(r.internRange(0, 3), 'foo');
+      equal(r.table == null, true);
+    });
+
+    test('a shared table reuses entries across readers', () => {
+      let t = new StringTable();
+      new StringReader('alpha', t).internRange(0, 5);
+      new StringReader('alpha', t).internRange(0, 5);
+      new StringReader('beta', t).internRange(0, 4);
+      equal(t.size, 2);
+    });
+  });
+});
