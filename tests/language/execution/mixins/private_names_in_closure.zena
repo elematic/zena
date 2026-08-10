@@ -1,0 +1,47 @@
+// @mode: run
+// @result: 1230100
+// A closure written inside a mixin body is still inside the MIXIN
+// lexically, so its `#count` is the mixin's — the same field the
+// enclosing method sees, never the host's same-named private
+// (member-lookup.md §6). A closure's wasm function is registered by a
+// path that never sees a mixin, so its private scope has to come from
+// where its source text was written; deriving it from the enclosing
+// registration instead left it unset and the closure read the HOST's
+// #count.
+
+mixin Counter {
+  var #count: i32 = 0;
+  bump(): i32 {
+    let f = (): i32 => {
+      this.#count += 1;
+      return this.#count;
+    };
+    return f();
+  }
+  // A closure that OUTLIVES the call that made it resolves the same
+  // way: the scope is lexical, not a property of the caller.
+  makeBumper(): () => i32 {
+    return (): i32 => {
+      this.#count += 1;
+      return this.#count;
+    };
+  }
+}
+
+class Host with Counter {
+  var #count: i32 = 100;
+  new();
+  hostCount(): i32 {
+    return this.#count;
+  }
+}
+
+export let main = (): i32 => {
+  let h = new Host();
+  let a = h.bump();       // mixin #count 0 -> 1
+  let f = h.makeBumper();
+  let b = f();            // mixin #count 1 -> 2
+  let c = f();            // mixin #count 2 -> 3
+  let d = h.hostCount();  // host #count, untouched
+  return a * 1000000 + b * 100000 + c * 10000 + d;
+};

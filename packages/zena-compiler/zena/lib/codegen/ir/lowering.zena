@@ -51,7 +51,7 @@ import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignat
 import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
-import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
 import { lowerGeneratorRamp, lowerGeneratorNext } from './generators.zena';
@@ -4456,9 +4456,11 @@ export final class FunctionLowerer {
     if (isPrivate) {
       // Mixin-declared bodies resolve their privates under the
       // mixin's scope key ("<scope>::#name", registered per host
-      // class) — mixin privates are lexical to the mixin declaration
-      // and never alias a host's same-named private.
-      let mixScope = this.func.privateScopeKey;
+      // class) and under nothing else — mixin privates are lexical to
+      // the mixin declaration and never alias a host's same-named
+      // private. The walk is over the receiver's chain because the
+      // mixin may have been applied at an ancestor.
+      let mixScope = this.#mixinScope();
       if (mixScope != null) {
         let scopedName = (mixScope as String) + "::" + slotName;
         var applied: ClassType | null = ct;
@@ -4470,36 +4472,38 @@ export final class FunctionLowerer {
           }
           applied = applied.superType;
         }
-      }
-      // Private methods are lexically scoped and never virtual: they
-      // resolve ONLY against the class the code was written in — plus
-      // that class's own specializations (same canonical class), since
-      // specialized copies register under their specialized keys.
-      // Never against super- or subclasses: private names cannot be
-      // shared across a hierarchy.
-      let lexicalCt = this.#lexicalClassOf(member, ct);
-      let lexKey = getClassMethodKey(getClassKey(lexicalCt), slotName);
-      if (methodOpt == null) {
+        if (methodOpt == null) {
+          this.#bail('mixin private method not found');
+        }
+      } else {
+        // Private methods are lexically scoped and never virtual: they
+        // resolve ONLY against the class the code was written in — plus
+        // that class's own specializations (same canonical class), since
+        // specialized copies register under their specialized keys.
+        // Never against super- or subclasses: private names cannot be
+        // shared across a hierarchy.
+        let lexicalCt = this.#lexicalClassOf(member, ct);
+        let lexKey = getClassMethodKey(getClassKey(lexicalCt), slotName);
         if (let (true, m) = this.wasm.classMethodMap.get(lexKey)) {
           methodOpt = m;
         }
-      }
-      if (methodOpt == null) {
-        let lexCanonical = this.#canonicalKeyOf(lexicalCt);
-        var c: ClassType | null = ct;
-        while (c != null && methodOpt == null) {
-          let cc = c as ClassType;
-          if (this.#canonicalKeyOf(cc) == lexCanonical) {
-            let key = getClassMethodKey(getClassKey(cc), slotName);
-            if (let (true, m2) = this.wasm.classMethodMap.get(key)) {
-              methodOpt = m2;
+        if (methodOpt == null) {
+          let lexCanonical = this.#canonicalKeyOf(lexicalCt);
+          var c: ClassType | null = ct;
+          while (c != null && methodOpt == null) {
+            let cc = c as ClassType;
+            if (this.#canonicalKeyOf(cc) == lexCanonical) {
+              let key = getClassMethodKey(getClassKey(cc), slotName);
+              if (let (true, m2) = this.wasm.classMethodMap.get(key)) {
+                methodOpt = m2;
+              }
             }
+            c = cc.superType;
           }
-          c = cc.superType;
         }
-      }
-      if (methodOpt == null) {
-        this.#bail('private method not found');
+        if (methodOpt == null) {
+          this.#bail('private method not found');
+        }
       }
     }
     var currClass: ClassType | null = ct;
@@ -4916,6 +4920,33 @@ export final class FunctionLowerer {
   }
 
   /**
+   * The mixin private scope in force for this function, or null when
+   * its body was written in a class. When it is non-null, EVERY `#`
+   * access the body makes is the mixin's — a mixin body cannot name a
+   * host class's private (privacy is lexical, pinned by
+   * `mixins/mixin-base-private-field.zena`) — so the three private
+   * resolvers below treat the scoped name as the only answer and bail
+   * rather than fall back. Falling back is what silently bound the
+   * host's same-named member.
+   *
+   * Registration sets the key where it knows it; otherwise it is
+   * derived here from where the function's node was WRITTEN, which is
+   * the only thing that answers for closures inside mixin methods and
+   * for monomorphized copies of generic mixin methods (their
+   * registration paths never see a mixin).
+   */
+  #mixinScope(): String | null {
+    if (!this.func.privateScopeResolved) {
+      this.func.privateScopeResolved = true;
+      if (this.func.privateScopeKey == null && this.func.node != null) {
+        this.func.privateScopeKey =
+            mixinScopeOfNode(this.func.model, this.func.node as Node);
+      }
+    }
+    return this.func.privateScopeKey;
+  }
+
+  /**
    * Resolves a private member's mangled struct-field name by walking
    * the LEXICAL declaring chain — supertypes and generic sources —
    * since fields are stored under the DECLARING class's key (the
@@ -4924,15 +4955,19 @@ export final class FunctionLowerer {
    */
   #privateLookupName(st: WasmStruct, ct: ClassType, propName: String): String | null {
     // Functions compiled from a mixin body resolve privates under the
-    // mixin's scope key ("<Mixin>_This::#x") — mixin privates are
-    // lexical to the mixin declaration and never alias a host's
-    // same-named private (WasmFunction.privateScopeKey).
-    let mixScope = this.func.privateScopeKey;
+    // mixin's scope key ("<Mixin>_This@<path>::#x") and under nothing
+    // else — mixin privates are lexical to the mixin declaration and
+    // never alias a host's same-named private (#mixinScope). A miss
+    // here is not a reason to try the host's field; it means the name
+    // is a private ACCESSOR (the caller's next probe) or the field was
+    // never registered, and the caller bails.
+    let mixScope = this.#mixinScope();
     if (mixScope != null) {
       let scopedName = (mixScope as String) + "::" + propName;
       if (st.fieldIndexByName(scopedName) >= 0) {
         return scopedName;
       }
+      return null;
     }
     // Shared with the streaming backend: struct field names carry the
     // key of whatever class the struct was BUILT for, so the struct
@@ -4948,7 +4983,7 @@ export final class FunctionLowerer {
    * sources. Null when no such accessor is registered.
    */
   #resolvePrivateAccessor(ct: ClassType, lexicalCt: ClassType, accName: String): WasmFunction | null {
-    let mixScope = this.func.privateScopeKey;
+    let mixScope = this.#mixinScope();
     if (mixScope != null) {
       let scopedName = (mixScope as String) + "::" + accName;
       var applied: ClassType | null = ct;
@@ -4959,6 +4994,9 @@ export final class FunctionLowerer {
         }
         applied = applied.superType;
       }
+      // The scoped registration is the only one a mixin body may
+      // name; the lexical walk below would find the HOST's accessor.
+      return null;
     }
     var candidate: ClassType | null = lexicalCt;
     while (candidate != null) {

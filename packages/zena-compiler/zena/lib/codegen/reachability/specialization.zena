@@ -1164,10 +1164,13 @@ export final class Specializer implements SpecializerInterface {
       // instantiated class's ctor must exist for its `new` sites
       // (instantiateClassType promotes ctors registered BEFORE
       // instantiation; this covers ones registered after). So do
-      // MIXIN-SCOPED private members ("Scope::#name"): they are
-      // lexically bound with no referrer machinery naming them, and
-      // the private lookup in lowering falls back to the host's
-      // same-named member — a silent wrong answer, not a loud miss.
+      // MIXIN-SCOPED private members ("Scope::#name"): a mixin body
+      // names them lexically, and no referrer machinery names them by
+      // key, so nothing else reaches them. Lowering no longer falls
+      // back to a host's same-named member when the registration is
+      // missing — it bails — so dropping this force-reach would be a
+      // loud compile failure rather than a silent wrong answer, but it
+      // would still be a failure.
       let hasInst = this.pass.instantiatedSpecializedClasses.has(getClassKey(cType) as String);
       if (!isGenericTemplate && hasInst &&
           (realMethName.contains("::") ||

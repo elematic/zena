@@ -704,6 +704,45 @@ export let mixinScopeOfMember = (
   return null;
 };
 
+/**
+ * The private scope key of the mixin declaration a node sits inside
+ * LEXICALLY — null for nodes written in a class body or at top level.
+ *
+ * Privacy is a property of where the source text was written, not of
+ * which registration path produced a function, so this walks the AST
+ * parent chain rather than consulting the member-collection loops.
+ * That is what makes it answer for the functions those loops never
+ * name: a closure inside a mixin method, a monomorphized copy of a
+ * generic mixin method. Both used to reach lowering with no scope and
+ * silently bind the HOST class's same-named private.
+ *
+ * The walk stops at a ClassDeclaration — classes do not nest inside
+ * mixin bodies, so a class member's answer costs one step.
+ */
+export let mixinScopeOfNode = (model: SemanticModel, node: Node): String | null => {
+  var cur: Node | null = node;
+  while (cur != null) {
+    let c = cur as Node;
+    if (c is ClassDeclaration) { return null; }
+    if (c is MixinDeclaration) {
+      let sym = model.resolve(c);
+      if (sym == null) { return null; }
+      let mt = model.getBindingType(sym as Symbol);
+      if (mt == null || !(mt is MixinType)) { return null; }
+      // Read the key from the MixinType — it carries the declaration's
+      // source path, so two same-named mixins from different modules
+      // are different scopes. Never rederive it from the name.
+      let mtRoot = (mt as MixinType).genericSource ?? (mt as MixinType);
+      if (mtRoot.privateScopeKey != null) {
+        return mtRoot.privateScopeKey as String;
+      }
+      return (mt as MixinType).name + "_This";
+    }
+    cur = model.getParent(c);
+  }
+  return null;
+};
+
 export let collectMixinFields = (
   program: Program,
   model: SemanticModel,

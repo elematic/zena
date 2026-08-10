@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 2700
+// A GENERIC method declared in a mixin is monomorphized per solved
+// type-argument list, and each copy is still lexically inside the
+// mixin: its `#slot` is the mixin's (member-lookup.md §6). The
+// monomorphizing path registers the copy without going through the
+// mixin member-collection loop, so the copy used to carry no private
+// scope and read the HOST's #slot.
+
+mixin Box {
+  var #slot: i32 = 0;
+  put<T>(v: T): i32 {
+    this.#slot += 1;
+    return this.#slot;
+  }
+}
+
+class Host with Box {
+  var #slot: i32 = 700;
+  new();
+  hostSlot(): i32 {
+    return this.#slot;
+  }
+}
+
+export let main = (): i32 => {
+  let h = new Host();
+  h.put<i32>(1);              // mixin #slot 0 -> 1
+  let a = h.put<String>('x'); // a second copy, same mixin field: 1 -> 2
+  return a * 1000 + h.hostSlot();
+};

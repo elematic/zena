@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 111400
+// A private METHOD call from a closure inside a mixin body binds the
+// MIXIN's method, not the host's same-named one — the closure is
+// lexically inside the mixin declaration (member-lookup.md §6). Same
+// shape as private_methods.zena, with the call moved into a closure:
+// that alone used to switch the callee to the host's #word.
+
+mixin Greeter {
+  var #count: i32 = 0;
+  #word(): i32 {
+    this.#count += 1;
+    return 10 + this.#count;
+  }
+  greet(): i32 {
+    let f = (): i32 => this.#word();
+    return f();
+  }
+}
+
+class Loud with Greeter {
+  var #count: i32 = 500;
+  #word(): i32 {
+    return 900 + this.#count;
+  }
+  new();
+  shout(): i32 {
+    return this.#word();
+  }
+}
+
+export let main = (): i32 => {
+  let l = new Loud();
+  let a = l.greet();  // mixin #word -> mixin #count 0->1 -> 11
+  let b = l.shout();  // host #word -> 900 + host #count 500 -> 1400
+  return a * 10000 + b;
+};

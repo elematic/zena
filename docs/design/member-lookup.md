@@ -447,6 +447,27 @@ never virtual, always direct**.
   for their own private accesses. Pinned by
   `mixins/private_names.zena` and `mixins/private_methods.zena`.
 
+  The scope is a fact about **where the source text was written**, so
+  lowering derives it from the function's node (`mixinScopeOfNode`
+  walks the AST to the enclosing `MixinDeclaration`) rather than from
+  whichever path registered the function. Deriving it from
+  registration instead left it unset on every function a mixin's
+  member-collection loop does not name — a closure inside a mixin
+  method, a monomorphized copy of a generic mixin method — and those
+  bodies then read and wrote the HOST's same-named private. Pinned by
+  `mixins/private_names_in_closure.zena`,
+  `mixins/private_methods_in_closure.zena`,
+  `mixins/private_accessors_in_closure.zena` and
+  `mixins/private_names_generic_method.zena`.
+
+  A function that has a scope resolves `#name` under that scope and
+  **nowhere else**: a mixin body cannot name a host's private at all
+  (pinned by `mixins/mixin-base-private-field.zena`), so a scoped miss
+  is a compiler bug and lowering bails. It used to fall through to the
+  unscoped lookup, where the host's same-named member was waiting —
+  which is what made all four bugs above silent wrong answers instead
+  of loud failures.
+
 - **Private accessors** use the grouped form
   (`#name: T { get { ... } set(v) { ... } }`) and follow the same
   rules as private fields and methods: lexical to the declaring class

@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 4221100
+// A private ACCESSOR reached from a closure inside a mixin body binds
+// the MIXIN's get/set pair, not the host's same-named one — the
+// closure is lexically inside the mixin declaration
+// (member-lookup.md §6). Read and write take different resolvers, so
+// this exercises both, and a nested closure shows the scope is the
+// lexical one however deep the nesting goes.
+
+mixin M {
+  var #count: i32 = 0;
+  #doubled: i32 {
+    get { return this.#count * 2; }
+    set(v) { this.#count = v; }
+  }
+  viaAccessorClosure(): i32 {
+    let f = (): i32 => {
+      this.#doubled = 21;
+      return this.#doubled;
+    };
+    return f();
+  }
+  nested(): i32 {
+    let outer = (): i32 => {
+      let inner = (): i32 => this.#count;
+      return inner();
+    };
+    return outer();
+  }
+}
+
+class Host with M {
+  var #count: i32 = 100;
+  #doubled: i32 {
+    get { return 777; }
+    set(v) { this.#count = 999; }
+  }
+  new();
+  hostCount(): i32 {
+    return this.#count;
+  }
+}
+
+export let main = (): i32 => {
+  let h = new Host();
+  let a = h.viaAccessorClosure();  // mixin set -> #count 21, mixin get -> 42
+  let b = h.nested();              // the mixin's #count: 21
+  let c = h.hostCount();           // the host's, untouched: 100
+  return a * 100000 + b * 1000 + c;
+};

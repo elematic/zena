@@ -515,13 +515,21 @@ export final class WasmFunction implements Hashable {
   var isVtableSlotStub: boolean = false;
   /**
    * Set on functions compiled from a mixin declaration's body: the
-   * mixin's private scope key ("<Mixin>_This"). Private field
-   * accesses in such functions resolve to "<scope>::#name" struct
-   * fields — mixin privates are lexical to the mixin declaration and
-   * never alias a host class's same-named private. Null for
-   * functions written in a class body.
+   * mixin's private scope key ("<Mixin>_This@<path>"). Private
+   * accesses in such functions resolve to "<scope>::#name" — mixin
+   * privates are lexical to the mixin declaration and never alias a
+   * host class's same-named private. Null for functions written in a
+   * class body.
+   *
+   * Registration paths that know the scope set it directly; lowering
+   * derives it from the function's node otherwise
+   * (`mixinScopeOfNode`), which is what covers closures and
+   * monomorphized generic methods. `privateScopeResolved` marks the
+   * derivation as done, so a genuine null is not re-derived per
+   * access.
    */
   var privateScopeKey: String | null = null;
+  var privateScopeResolved: boolean = false;
   /** The target class struct for a synthesized field getter. */
   var getterStruct: WasmStruct | null = null;
   /** The index of the field in the class struct for the synthesized getter. */
