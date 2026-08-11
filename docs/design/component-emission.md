@@ -863,13 +863,17 @@ wake and the drain should unwind; you will be re-entered".
 
 | Driver                | `waitNs` | Re-entry                                 |
 | --------------------- | -------- | ---------------------------------------- |
-| `time/host.zena` (JS) | `false`  | host calls `__zena_drain`                |
 | `time/wasi.zena` (p1) | `true`   | it blocked                               |
 | **p3 component**      | `false`  | the lifted callback calls `__zena_drain` |
 
-The p3 timer is a third `Clock` on the existing `false` path —
-structurally the same driver as JS. No change to `queue.zena`'s
-park/drain loop.
+The p3 timer would be the **only** `Clock` on the `false` path. An
+earlier revision of this table listed `time/host.zena` (JS) there, and
+that is no longer true: A3 made the JS timer an ordinary host-async
+binding over `setTimeout`, so `time/host.zena` installs no `Clock` and
+never reaches `queue.zena` ([async.md](async.md) §4, "Timers are not
+special"). The path is unused rather than shared — still the right one
+to land on, and still no change to `queue.zena`'s park/drain loop, but
+p3 would be its first implementation.
 
 ### What it costs in the compiler
 

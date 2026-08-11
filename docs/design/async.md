@@ -303,6 +303,16 @@ shared. WASI's clock can genuinely wait, so its drain never unwinds and
 `main` still completes inside the call; a standalone
 `wasmtime --invoke main` is unaffected.
 
+**Superseded by A3 for the JS target.** "Timers are not special" below
+replaced this driver: `time/host.zena` installs no `Clock` and registers
+no `Parker`, and reaches `time/queue.zena` not at all. `Clock.waitNs`'s
+`false` arm therefore has no implementation in the tree today — the only
+`Clock` is `WasiClock`, which always returns `true`. The arm is kept
+because it is what a p3 clock wants
+([component-emission.md](component-emission.md)), not because anything
+uses it now. See
+[async-runtime-shape.md](async-runtime-shape.md), "Parking".
+
 An async `main` on a non-blocking host does return before its timers
 fire, exactly as this document predicted. It is therefore split into
 `__zena_main_start` (run the body, park the future in a global) and
@@ -746,3 +756,12 @@ input for async v1.)
    `let a = g(); …; await a;` is the same source shape with a different
    answer. Wants measurement on a real async workload before any of it
    is built; there is none yet.
+
+   _Taken up in_ [async-runtime-shape.md](async-runtime-shape.md), which
+   answers the cheap half outright — the two arrays, the `Box`, and the
+   per-settle delivery objects all fall out of one change to the
+   notification protocol — and sharpens the hedge above: eliding the
+   queue hop is observable whenever anything else is queued, so the rule
+   is unconditionally *elide the allocation, keep the hop*. That makes
+   the remaining work a multi-value ramp return rather than an escape
+   analysis.
