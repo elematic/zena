@@ -424,6 +424,211 @@ export let failedFuture = <T>(error: Error): Future<T> => {
   return f;
 };
 
+// ---------------------------------------------------------------------------
+// Combinators
+// ---------------------------------------------------------------------------
+//
+// Ordinary library code over `subscribe`, as async.md §2 says they would
+// be: no primitive, no compiler support, nothing the executor has to
+// know about. They are written with listener OBJECTS rather than
+// closures for the reason the module header gives — a closure created
+// inside generic code is not specialized per instantiation and fails to
+// lower — which is also why each carries its own small state class
+// instead of capturing one.
+//
+// Both are written against `subscribe` rather than as async functions
+// awaiting their inputs in turn, and the difference is semantic, not
+// stylistic: awaiting in sequence would wait on futures whose result
+// can no longer matter, so a rejected input would be reported only
+// after every input ahead of it settled — and never at all if one of
+// them never settles.
+
+/** Shared state for one `allOf` call: the slots values land in, how
+ * many are still outstanding, and the completer they all settle. */
+class AllState<T> {
+  completer = new Completer<Array<T>>();
+  /** One slot per input, filled at its input index as values arrive.
+   * `Box<T>` because a slot starts empty and `T` has no null. */
+  slots = new Array<Box<T> | null>();
+  var remaining = 0;
+  var settled = false;
+
+  new();
+
+  /**
+   * Subscribes to every input and hands back the combined future.
+   *
+   * This lives on the state class rather than in `allOf` itself
+   * because the listeners are interface implementations, and a
+   * specialized generic FUNCTION does not get the interface vtable for
+   * a class it instantiates ("interface vtable global not found") —
+   * whereas a generic class's own method does. Same reason as the
+   * closure restriction the module header describes: what works
+   * depends on where the generic code lives.
+   */
+  attach(futures: Array<Future<T>>): Future<Array<T>> {
+    this.remaining = futures.length;
+    if (futures.length == 0) {
+      this.settled = true;
+      this.completer.complete(new Array<T>());
+      return this.completer.future;
+    }
+    var i = 0;
+    while (i < futures.length) {
+      this.slots.push(null);
+      i += 1;
+    }
+    // Subscribing cannot deliver synchronously, so `remaining` and the
+    // slots above are necessarily in place before any listener runs.
+    // The cast on `this` is the raw-template-type gap in BUGS.md: in a
+    // generic class's own method `this` checks as `AllState`, not
+    // `AllState<T>`.
+    i = 0;
+    while (i < futures.length) {
+      futures[i].subscribe(new AllListener<T>(this as AllState<T>, i));
+      i += 1;
+    }
+    return this.completer.future;
+  }
+
+  /** Records one input's value; settles when the last one lands. */
+  report(index: i32, value: T): void {
+    if (this.settled) {
+      return;
+    }
+    this.slots[index] = new Box<T>(value);
+    this.remaining -= 1;
+    if (this.remaining == 0) {
+      this.settled = true;
+      let values = new Array<T>();
+      var i = 0;
+      while (i < this.slots.length) {
+        let slot = this.slots[i] as Box<T>;
+        values.push(slot.value);
+        i += 1;
+      }
+      this.completer.complete(values);
+    }
+  }
+
+  /** The first failure settles the whole thing; later ones are spent. */
+  reject(error: Error): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.completer.fail(error);
+  }
+}
+
+/** One input's subscription into an `AllState`, carrying the input
+ * index — which is what lets values be stored in input order when they
+ * arrive in another. */
+class AllListener<T> implements FutureListener<T> {
+  state: AllState<T>;
+  index: i32;
+  new(this.state, this.index);
+  onValue(value: T): void {
+    this.state.report(this.index, value);
+  }
+  onError(error: Error): void {
+    this.state.reject(error);
+  }
+}
+
+/**
+ * A future of every input's value, in **input order** regardless of the
+ * order they settle in — or of the first failure to arrive.
+ *
+ * The failure is reported as soon as it happens, without waiting for
+ * the other inputs: once one has failed no combined value can exist, so
+ * waiting could only delay the answer, and would hang outright if
+ * another input never settles. Inputs that settle after that are
+ * ignored — they lost a race that was already decided, which is not an
+ * error.
+ *
+ * With no inputs the result is an empty array. It still settles through
+ * the microtask queue like everything else (the always-async rule), so
+ * `allOf` never runs a continuation before its caller returns.
+ *
+ * Futures are eager, so the inputs are already running when they get
+ * here: this waits for them, it does not start them.
+ */
+export let allOf = <T>(futures: Array<Future<T>>): Future<Array<T>> => {
+  return new AllState<T>().attach(futures);
+};
+
+/** Shared state for one `raceOf` call: whoever settles first wins. */
+class RaceState<T> {
+  completer = new Completer<T>();
+  var settled = false;
+
+  new();
+
+  /** Subscribes every input to one shared listener. On the state class
+   * for the same reason `AllState.attach` is. */
+  attach(futures: Array<Future<T>>): Future<T> {
+    // One listener for every input: a race does not care which settled.
+    // `this` is cast for the same reason as in AllState.attach.
+    let listener = new RaceListener<T>(this as RaceState<T>);
+    var i = 0;
+    while (i < futures.length) {
+      futures[i].subscribe(listener);
+      i += 1;
+    }
+    return this.completer.future;
+  }
+
+  win(value: T): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.completer.complete(value);
+  }
+
+  lose(error: Error): void {
+    if (this.settled) {
+      return;
+    }
+    this.settled = true;
+    this.completer.fail(error);
+  }
+}
+
+/** One input's subscription into a `RaceState`. */
+class RaceListener<T> implements FutureListener<T> {
+  state: RaceState<T>;
+  new(this.state);
+  onValue(value: T): void {
+    this.state.win(value);
+  }
+  onError(error: Error): void {
+    this.state.lose(error);
+  }
+}
+
+/**
+ * A future settling as the **first input to settle** does — with its
+ * value, or with its failure. A failure wins a race exactly the way a
+ * value does; use it when the first answer is the answer, and note that
+ * the losers keep running (nothing here cancels them; that waits on
+ * cancellation).
+ *
+ * Throws on an empty array rather than returning a future. A race with
+ * nothing in it can never settle, and a future that never settles
+ * surfaces much later as a deadlock report naming the awaiting code, so
+ * the mistake is refused where it was made.
+ */
+export let raceOf = <T>(futures: Array<Future<T>>): Future<T> => {
+  if (futures.length == 0) {
+    throw new Error(
+      'raceOf: needs at least one future; a race with no inputs can ' +
+      'never settle');
+  }
+  return new RaceState<T>().attach(futures);
+};
+
 // Note: no generic `MaybeFuture<T> = T | Future<T>` alias — Zena
 // rejects unions mixing an unbounded type parameter with reference
 // types (T could be a primitive). Concrete unions like

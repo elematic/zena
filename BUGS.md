@@ -7,6 +7,64 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
+### A `static` method is unusable anywhere generics are involved
+- **Found**: 2026-08-11 (looking for somewhere to put `Future.all`, which is
+  the name `docs/design/async.md` §2 gives the combinator)
+- **Severity**: medium (a compiler *crash*, so it is loud; but it rules out
+  an entire declaration form on every generic class in the stdlib)
+- **Details**: A plain static on a plain class works —
+  `class Utils { new(); static answer(): i32 { return 42; } }` then
+  `Utils.answer()` returns 42. Adding generics at *either* end crashes the
+  compiler with a thrown Wasm exception out of `ReachabilityVisitor`:
+  - a **generic static** on a plain class — `static identity<A>(a: A): A`,
+    called as `Utils.identity(9)`;
+  - a **plain static** on a generic class — `class Holder<T>` with
+    `static answer(): i32`, called as `Holder.answer()`;
+  - and of course both together.
+- **Also**: a static that mentions the *class's* own `T` never binds it.
+  `class Holder<T> { static of(v: T): Holder<T> }` called as `Holder.of(7)`
+  reports `argument 'i32' is not assignable to parameter 'T'` — there is no
+  syntax that supplies the class's type argument at a static call. A static
+  carrying its *own* type parameter typechecks fine (it just crashes later).
+- **Worked around**: the combinators are top-level exported generic
+  functions (`allOf`, `raceOf`) rather than `Future.all` / `Future.race`,
+  matching `futureOf`/`failedFuture` beside them. `ImmutableArray.from`,
+  `FixedArray.from` and `StringBuilder.fromString` are declared in the
+  stdlib but have no call sites anywhere, which is why this went unnoticed.
+
+### A local live across a try holding both an `await` and a `return` miscompiles
+- **Found**: 2026-08-11 (writing the combinator tests; the shape is ordinary
+  async code, not anything the combinators need)
+- **Severity**: high (rejected at compile time, so it is loud — but it
+  refuses a perfectly reasonable program, and the shape is common)
+- **Details**: ZIR verification fails with
+  `%N in bX uses %M from bY, which does not dominate it` for
+  `main$…$AsyncFrame.step`. All four ingredients are needed:
+  ```zena
+  export async function main(): Future<i32> {
+    let won = 70;                                  // (1) bound BEFORE the try
+    try {
+      await failedFuture<i32>(new Error('lost'));  // (2) an await inside it
+      return 0 - 2;                                // (3) and a return inside it
+    } catch (e) {
+    }
+    return won;                                    // (4) used AFTER the try
+  }
+  ```
+  Drop the `return` at (3) and it compiles and runs; drop the local at (1)
+  and (4) and it compiles and runs. The first await is *not* required —
+  `let won = 70;` reproduces it as readily as `let won = await …`.
+- **Fragile to trigger**: a longer function with the same shape compiled
+  fine, so this is sensitive to surrounding SSA numbering rather than being
+  a clean syntactic rule. Treat the four ingredients as necessary, not
+  sufficient.
+- **Related**: PR #186 ([[try cells]]) fixed try-*body*-assigned locals, and
+  #196 fixed regions at every dispatch target. This is neither: the local is
+  never assigned inside the try, only read after it.
+- **Worked around**: `tests/language/execution/async/combinator_all.zena`
+  and `combinator_race.zena` push the try/catch into a small async helper
+  that returns from both arms, which has no local living across it.
+
 ### `is` and downcasts always fail through an interface-typed reference
 - **Found**: 2026-08-08 (designing zena:host-async's handle registry, which
   wanted to hold completers of different payload types in one map)

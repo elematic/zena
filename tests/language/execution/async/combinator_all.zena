@@ -1,0 +1,83 @@
+// @mode: run
+// @result: 123
+// `allOf` — a future of every value, in input order (async.md §2).
+//
+// Driven with bare Completers rather than a host, so this runs under
+// plain wasmtime with no event loop: the completes below stand in for
+// whatever would normally settle these futures.
+import { Future, Completer, allOf } from 'zena:async';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+
+/** Awaits `f` and reports how it settled. A helper rather than an
+ * inline try/catch because a local living across a try that holds both
+ * an `await` and a `return` miscompiles today (see BUGS.md) — nothing
+ * to do with the combinators under test. */
+let settlementOf = async (f: Future<Array<i32>>): Future<String> => {
+  try {
+    let values = await f;
+    return 'value';
+  } catch (e) {
+    return e.message;
+  }
+};
+
+export async function main(): Future<i32> {
+  // Values come back in INPUT order even though they settle in another.
+  let c1 = new Completer<i32>();
+  let c2 = new Completer<i32>();
+  let c3 = new Completer<i32>();
+  let futures = new Array<Future<i32>>();
+  futures.push(c1.future);
+  futures.push(c2.future);
+  futures.push(c3.future);
+  let combined = allOf(futures);
+  c3.complete(3);
+  c1.complete(1);
+  c2.complete(2);
+  let values = await combined;
+  if (!(values.length == 3)) {
+    return 0 - 1;
+  }
+  let ordered = values[0] * 100 + values[1] * 10 + values[2];
+  if (!(ordered == 123)) {
+    return 0 - 2;
+  }
+
+  // Nothing to wait for resolves with nothing in it.
+  let none = await allOf(new Array<Future<i32>>());
+  if (!(none.length == 0)) {
+    return 0 - 3;
+  }
+
+  // A reference payload works the same way — a different
+  // specialization, and the one whose empty slots are really null.
+  let s1 = new Completer<String>();
+  let s2 = new Completer<String>();
+  let strings = new Array<Future<String>>();
+  strings.push(s1.future);
+  strings.push(s2.future);
+  let joined = allOf(strings);
+  s2.complete('b');
+  s1.complete('a');
+  let words = await joined;
+  if (!(words[0] + words[1] == 'ab')) {
+    return 0 - 6;
+  }
+
+  // A failure settles the result AT ONCE, without waiting on futures
+  // that never settle at all: `slow` below is never completed, so
+  // awaiting the inputs one after another would deadlock here instead.
+  let slow = new Completer<i32>();
+  let doomed = new Completer<i32>();
+  let mixed = new Array<Future<i32>>();
+  mixed.push(slow.future);
+  mixed.push(doomed.future);
+  let failing = allOf(mixed);
+  doomed.fail(new Error('boom'));
+  if (!(await settlementOf(failing) == 'boom')) {
+    return 0 - 4;
+  }
+
+  return ordered;
+}

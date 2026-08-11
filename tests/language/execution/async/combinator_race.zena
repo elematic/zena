@@ -1,0 +1,70 @@
+// @mode: run
+// @result: 77
+// `raceOf` — the first future to settle, value or failure (async.md §2).
+import { Future, Completer, raceOf } from 'zena:async';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+
+/** Awaits `f` and reports how it settled, so the assertions below read
+ * as plain comparisons. A helper rather than an inline try/catch
+ * because a local living across a try that holds both an `await` and a
+ * `return` miscompiles today (see BUGS.md) — nothing to do with the
+ * combinators under test. */
+let settlementOf = async (f: Future<i32>): Future<String> => {
+  try {
+    let value = await f;
+    return 'value';
+  } catch (e) {
+    return e.message;
+  }
+};
+
+/** `raceOf` refuses an empty array by throwing, which is synchronous
+ * and so needs no async machinery to observe. */
+let emptyRaceRefused = (): boolean => {
+  try {
+    let never = raceOf(new Array<Future<i32>>());
+    return false;
+  } catch (e) {
+    return true;
+  }
+};
+
+export async function main(): Future<i32> {
+  // First to settle wins, whatever its position in the array. The
+  // loser settling afterwards is ignored rather than throwing
+  // "already completed" — losing a race is normal, not an error.
+  let a = new Completer<i32>();
+  let b = new Completer<i32>();
+  let pair = new Array<Future<i32>>();
+  pair.push(a.future);
+  pair.push(b.future);
+  let first = raceOf(pair);
+  b.complete(70);
+  a.complete(1);
+  let won = await first;
+  if (!(won == 70)) {
+    return 0 - 1;
+  }
+
+  // A failure wins a race exactly the way a value does.
+  let c = new Completer<i32>();
+  let d = new Completer<i32>();
+  let second = new Array<Future<i32>>();
+  second.push(c.future);
+  second.push(d.future);
+  let raced = raceOf(second);
+  d.fail(new Error('lost'));
+  c.complete(5);
+  if (!(await settlementOf(raced) == 'lost')) {
+    return 0 - 2;
+  }
+
+  // An empty race can never settle, so it is refused where the mistake
+  // is — at the call — rather than surfacing later as a deadlock.
+  if (!emptyRaceRefused()) {
+    return 0 - 3;
+  }
+
+  return won + 7;
+}

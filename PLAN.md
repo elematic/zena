@@ -91,10 +91,20 @@ This document tracks completed work and planned features. For project instructio
     that can actually block. `run()`/`runSync()` split so that a caller
     who wants a value and a caller who wants a promise get different
     functions.
+  - **Combinators: `allOf` and `raceOf` are done.** `allOf` gives a
+    future of every value in input order, or the first failure to
+    arrive — reported at once, without waiting on inputs whose result
+    can no longer matter. `raceOf` gives the first input to settle,
+    value or failure, and refuses an empty array rather than handing
+    back a future that can never settle. Both are ordinary library
+    code over `subscribe`, exactly as the design predicted: no
+    primitive and no compiler support. They are plain functions
+    rather than `Future.all`/`Future.race` because a `static` method
+    is unusable anywhere generics are involved (BUGS.md).
   - Next: fetch on the web playground — the "first real async I/O" A3
-    was aiming at — and post-v1 items (cancellation and structured
-    concurrency, combinators, the tokio-backed CLI, the WASI P3
-    backend).
+    was aiming at — `then`/`map`/`flatMap` (blocked on closures inside
+    generic code), and post-v1 items (cancellation and structured
+    concurrency, the tokio-backed CLI, the WASI P3 backend).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running

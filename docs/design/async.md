@@ -152,12 +152,38 @@ Two API stances, decided here:
   distinguishability rule as `await`'s union — `return fetchUser(id);`
   without an `await` forwards the future's result (and skips a
   suspension state doing it).
-- **Combinators are post-v1 and need no primitives.** `then`/`map`/
-  `flatMap`/`all`/`race` are ordinary async functions once the syntax
-  exists (`Future.all` is a ten-line async fn) — which is why v1's
-  public surface is only `await`, `onComplete`, `resolve`/`fail`, and
-  `Completer`. Non-async code that wants a callback uses
+- **Combinators need no primitives.** `then`/`map`/`flatMap`/`all`/
+  `race` are ordinary library code over `subscribe` — which is why
+  v1's core surface is only `await`, `onComplete`, `resolve`/`fail`,
+  and `Completer`. Non-async code that wants a callback uses
   `onComplete` directly.
+
+  `all` and `race` are **implemented**, as `allOf` and `raceOf` in
+  `zena:async`. Three things came out differently from the sketch
+  above:
+
+  - **They are plain functions, not statics.** This design said
+    `Future.all`; a `static` method is unusable anywhere generics are
+    involved (it crashes the compiler — BUGS.md), and `Future<T>` is
+    generic. `allOf`/`raceOf` sit beside `futureOf`/`failedFuture`,
+    which are the same shape. Renaming them to statics is a
+    two-line change if that bug is ever fixed.
+  - **They are not async functions.** Awaiting the inputs in
+    sequence would report a rejected input only after everything
+    ahead of it settled, and would hang outright if one of those
+    never settles — so both subscribe to every input at once and
+    settle a `Completer`. This is a semantic difference, not a
+    stylistic one, and it is what the tests pin.
+  - **`raceOf` throws on an empty array** rather than returning a
+    future. A race with no inputs can never settle, and an unsettled
+    future surfaces much later as a deadlock report naming the
+    awaiting code, so the mistake is refused where it was made.
+    `allOf` of nothing is an empty array, which is well-defined.
+
+  `then`/`map`/`flatMap` are still open, and they are the harder
+  half: each takes a user callback, so each needs a closure created
+  inside generic code, which does not lower today (the restriction
+  the `zena:async` header describes).
 
 ## 3. Compilation: the split pass grows a resume-value slot
 
@@ -549,10 +575,14 @@ website served by a Zena server":
 - **Await-in-try — done** (§6), the fast-follow to A1: resuming
   re-enters each enclosing `try` region, so a failed await is caught
   by the handler the user wrote.
+- **Combinators — `allOf` and `raceOf` are done** (§2). Ordinary
+  library code over `subscribe`, as designed: no primitive, no
+  compiler support, nothing the executor knows about. `then`/`map`/
+  `flatMap` wait on closures-in-generic-code.
 - **Post-v1** (each its own design conversation): cancellation +
-  structured concurrency (TaskGroup, from concurrency.md),
-  combinators (`Future.all`/`race`), Rust-CLI tokio I/O, WASI P3
-  backend, streams/`async gen`.
+  structured concurrency (TaskGroup, from concurrency.md) — which is
+  also what would let a race cancel its losers, Rust-CLI tokio I/O,
+  WASI P3 backend, streams/`async gen`.
 
 ## 6. Await-in-try (implemented)
 
