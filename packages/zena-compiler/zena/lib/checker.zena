@@ -2294,6 +2294,86 @@ let ownershipHandleName = (t: Type): String => {
   return (t as TypeAliasType).name;
 };
 
+/**
+ * Whether `t` is **second-class**: a value of it may not outlive the extent
+ * it was borrowed from, so it may not be stored in the heap or returned
+ * except to the caller that supplied the borrow it derives from.
+ *
+ * Only `Borrow<R>` is second-class, and only where there is an owner to
+ * outlive. Borrowing an unrestricted value is a no-op — `Borrow<i32>` is
+ * `i32`, `Borrow<String>` is `String` — so those instantiations carry no
+ * restrictions at all; see ownership.md §"`Borrow<T>` is the identity at
+ * unrestricted instantiations".
+ *
+ * A borrow of a bare type parameter *is* restricted. A generic body is
+ * checked against the worst case its bound permits, and an unbounded `T`
+ * permits a resource. The restriction is on the generic body only: at a
+ * call site `T` is substituted, so `read<i32>` is checked with the
+ * unrestricted `Borrow<i32>` and nothing applies.
+ */
+let isSecondClass = (t: Type): boolean => {
+  if (ownershipHandleName(t) != "Borrow") { return false; }
+  let inner = ownershipHandleInner(t);
+  if (inner == null) { return false; }
+  let i = inner as Type;
+  if (i is TypeParameterType) { return true; }
+  if (i is ClassType) { return (i as ClassType).isResource; }
+  return false;
+};
+
+/**
+ * The derivation rule for a returned second-class value: it must derive
+ * from exactly one borrow the function was handed. See ownership.md
+ * §"Derived borrows".
+ *
+ * A blanket ban on returning borrows would reject the cases that make
+ * borrows usable — field projection above all, since `f.name` on a
+ * borrowed `f` has to be a borrow itself. Elision is what admits them:
+ * with one borrow parameter the result is understood to borrow that
+ * parameter's source, so its extent is the *caller's* borrow scope, which
+ * already encloses this call. Returning is then not an escape.
+ *
+ * With no borrow parameter there is no such scope to name, and with two
+ * the signature does not say which one bounds the result. The ambiguous
+ * case is left an error rather than guessed; ownership.md records naming
+ * the source positionally as the alternative, still open.
+ *
+ * `borrowedReceiver` counts a method's `this` as a source, which is what
+ * it will be once a resource's methods take `this` as a borrow.
+ */
+let checkBorrowDerivation = (
+  ctx: CheckerContext,
+  paramTypes: Array<Type>,
+  returnType: Type,
+  borrowedReceiver: boolean,
+  loc: SourceLocation | null
+): void => {
+  if (!isSecondClass(returnType)) { return; }
+  var sources = if (borrowedReceiver) 1 else 0;
+  for (let p in paramTypes) {
+    if (isSecondClass(p)) { sources += 1; }
+  }
+  if (sources == 1) { return; }
+  let shown = typeToString(returnType);
+  if (sources == 0) {
+    ctx.error(
+      "Returning a '" + shown + "' with no borrow parameter to derive from. A borrow may " +
+      "not outlive the scope it was borrowed from, and this function has no borrow whose " +
+      "scope could bound the result.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return;
+  }
+  ctx.error(
+    `Which borrow the returned '${shown}' derives from is ambiguous: this function has ` +
+    `${sources} borrow parameters, and the result is bounded by the scope of ` +
+    "whichever one it borrows from.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+};
+
 let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean = false): Type => {
   let t = resolveTypeAnnotationInner(ctx, ann, allowInlineTuple);
   if (!allowInlineTuple) {
@@ -8590,6 +8670,18 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
 
           let methodType = checkMethodSignature(ctx, classType, md);
+
+          // The derivation rule for methods, checked here rather than in
+          // `checkMethodSignature` because that runs again for the body
+          // pass and would report every method twice. A resource's methods
+          // take `this` as a borrow, so the receiver is the source a
+          // projection like `f.name` derives from; counting it is what
+          // keeps the rule from rejecting the accessors that motivate
+          // borrows in the first place.
+          checkBorrowDerivation(
+            ctx, methodType.parameters, methodType.returnType,
+            classType.isResource, md.loc);
+
           if (ownMethodNames.has(methodName)) {
             let existingInfo = classType.members[methodName];
             let existing = existingInfo.type as FunctionType;
@@ -13237,6 +13329,8 @@ let checkFunctionExpression = (
     pi += 1;
   }
 
+  checkBorrowDerivation(ctx, paramTypes, finalRetType, false, fe.loc);
+
   let fnType = new FunctionType(paramTypes, paramNames, finalRetType);
   fnType.parameterSymbols = paramSymbols;
   fnType.typeParameters = resolvedTypeParams;
@@ -13255,6 +13349,23 @@ let checkFunctionExpression = (
     let capSyms = new Array<SymbolId>();
     for (let c in captureInfo.captures) {
       capSyms.push(c.id);
+      // A closure is a heap object: it may be returned, stored in a field
+      // or called long after the scope that lent the borrow has ended, so
+      // capturing a second-class value is exactly the escape the borrow
+      // rules exist to stop. ownership.md §"The two axes".
+      let decl = c.declaration;
+      if (decl != null) {
+        let declType = ctx.model.getNodeType(decl as Node);
+        if (declType != null && isSecondClass(declType as Type)) {
+          ctx.error(
+            "A '" + typeToString(declType as Type) + "' may not be captured by a closure. " +
+            "The closure can outlive the scope the borrow came from, and would then be " +
+            "holding a resource its owner has already released.",
+            DiagnosticCode.TypeMismatch,
+            fe.loc
+          );
+        }
+      }
     }
     ctx.exitClosureReferrer(fe, captureInfo.capturesThis, capSyms, captureInfo.mutableCaptures);
   }

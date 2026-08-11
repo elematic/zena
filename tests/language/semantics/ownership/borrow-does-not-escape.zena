@@ -1,0 +1,87 @@
+// @mode: check
+// A `Borrow<R>` is **second-class**: it may not outlive the extent it was
+// borrowed from. That is the one axis `Borrow` restricts — it is freely
+// duplicable, unlike `Own<R>` — and it is what makes a borrow safe without
+// any lifetime reasoning: the owner's scope provably encloses every use.
+// See ownership.md §"The two axes" and §"Derived borrows".
+//
+// The restrictions apply to a borrow of a *resource*. Borrowing an
+// unrestricted value has no owner to outlive, so `Borrow<i32>` is `i32` —
+// ownership.md §"`Borrow<T>` is the identity at unrestricted
+// instantiations". A borrow of a bare type parameter is restricted, because
+// a generic body is checked against the worst case its bound permits.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+
+resource class File {
+  name: String;
+  new(this.name);
+  :Disposable.dispose(): void {}
+}
+
+// ---------------------------------------------------------------------
+// Returning a borrow: the derivation rule
+// ---------------------------------------------------------------------
+
+// Exactly one borrow parameter, so the result derives from it. Returning
+// hands the borrow back into the caller's borrow scope, where it was
+// already valid — a wider extent than this frame, not an escape from it.
+let same = (f: Borrow<File>): Borrow<File> => f;
+
+// Field projection is the case that makes borrows usable at all: a borrow
+// of a place reachable from a borrowed value derives from that value.
+let named = (f: Borrow<File>): Borrow<File> => f;
+
+// A generic borrow is restricted the same way, and derives the same way.
+let read = <T>(b: Borrow<T>): Borrow<T> => b;
+
+// Zero borrow parameters: there is nothing for the result to derive from,
+// so the borrow would outlive every extent the callee can name. An `Own`
+// parameter is not a source — it is consumed by the call, and its scope
+// ends here.
+let fromOwn = (f: Own<File>): Borrow<File> => f; // @error: no borrow parameter to derive from
+
+// Two borrow parameters: which one the result derives from decides whose
+// scope bounds it, and the signature does not say. Rejected rather than
+// guessed.
+let pick = (a: Borrow<File>, b: Borrow<File>): Borrow<File> => a; // @error: derives from is ambiguous
+
+// A method of a resource class derives from its receiver: `this` is the
+// borrow, so an accessor returning a borrow of one of its own fields has
+// exactly one source and needs no parameter.
+resource class Dir {
+  entry: Own<File>;
+  new(this.entry);
+  borrowEntry(): Borrow<File> { return this.entry; }
+  :Disposable.dispose(): void {}
+}
+
+// An ordinary class has no borrowed receiver, so the same signature has
+// nothing to derive from.
+class Registry {
+  entry: Own<File>;
+  new(this.entry);
+  borrowEntry(): Borrow<File> { return this.entry; } // @error: no borrow parameter to derive from
+}
+
+// ---------------------------------------------------------------------
+// Capturing a borrow
+// ---------------------------------------------------------------------
+
+// A closure is a heap object: it may be returned, stored, or called after
+// the borrow's extent has ended, and the capture is what would let it read
+// a released resource.
+let captures = (f: Borrow<File>): i32 => {
+  let leak = (): String => f.name; // @error: may not be captured by a closure
+  return leak().length;
+};
+
+// Capturing an owner is fine — an `Own` is first-class.
+let capturesOwn = (f: Own<File>): i32 => {
+  let ok = (): String => f.name;
+  return ok().length;
+};
+
+export function main(): i32 {
+  let f = new File('a');
+  return same(f).name.length + named(f).name.length + captures(f) + capturesOwn(f);
+}
