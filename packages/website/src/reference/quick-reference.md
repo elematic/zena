@@ -1405,6 +1405,22 @@ let pi = Math.PI;
 let m = Math.max(3, 5);
 ```
 
+On a generic class, a static that names the class's type parameters has them
+bound at the call — inferred from the arguments where they determine them, and
+written on the class name where they don't.
+
+```zena
+class Boxed<T> {
+  item: T;
+  new(this.item);
+  static of(v: T): Boxed<T> { return new Boxed<T>(v); }
+  static empty(): Boxed<T> | null { return null; }
+}
+
+let b = Boxed.of(11);           // Boxed<i32>, inferred
+let e = Boxed<String>.empty();  // written: nothing else determines T
+```
+
 ### Modifiers
 
 `abstract` classes cannot be instantiated and may have abstract methods. `final`

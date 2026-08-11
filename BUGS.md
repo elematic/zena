@@ -7,31 +7,6 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
-### A `static` method is unusable anywhere generics are involved
-- **Found**: 2026-08-11 (looking for somewhere to put `Future.all`, which is
-  the name `docs/design/async.md` §2 gives the combinator)
-- **Severity**: medium (a compiler *crash*, so it is loud; but it rules out
-  an entire declaration form on every generic class in the stdlib)
-- **Details**: A plain static on a plain class works —
-  `class Utils { new(); static answer(): i32 { return 42; } }` then
-  `Utils.answer()` returns 42. Adding generics at *either* end crashes the
-  compiler with a thrown Wasm exception out of `ReachabilityVisitor`:
-  - a **generic static** on a plain class — `static identity<A>(a: A): A`,
-    called as `Utils.identity(9)`;
-  - a **plain static** on a generic class — `class Holder<T>` with
-    `static answer(): i32`, called as `Holder.answer()`;
-  - and of course both together.
-- **Also**: a static that mentions the *class's* own `T` never binds it.
-  `class Holder<T> { static of(v: T): Holder<T> }` called as `Holder.of(7)`
-  reports `argument 'i32' is not assignable to parameter 'T'` — there is no
-  syntax that supplies the class's type argument at a static call. A static
-  carrying its *own* type parameter typechecks fine (it just crashes later).
-- **Worked around**: the combinators are top-level exported generic
-  functions (`allOf`, `raceOf`) rather than `Future.all` / `Future.race`,
-  matching `futureOf`/`failedFuture` beside them. `ImmutableArray.from`,
-  `FixedArray.from` and `StringBuilder.fromString` are declared in the
-  stdlib but have no call sites anywhere, which is why this went unnoticed.
-
 ### A local live across a try holding both an `await` and a `return` miscompiles
 - **Found**: 2026-08-11 (writing the combinator tests; the shape is ordinary
   async code, not anything the combinators need)

@@ -2850,6 +2850,58 @@ class Container<T extends Box<V>, V> {
 }
 ```
 
+### Statics on a Generic Class
+
+A `static` takes no receiver, so a call to one names the class itself.
+When the class is generic, whether its type parameters need binding
+depends on whether the static's signature mentions them.
+
+A static that cannot name them is found through the bare class name:
+
+```zena
+class Holder<T> {
+  value: T;
+  new(this.value);
+  static describe(): String { return 'holder'; }
+}
+
+let d = Holder.describe();
+```
+
+A static that does name them has them bound at the call. The arguments
+determine them wherever they can, exactly as they do for `new`:
+
+```zena
+class Boxed<T> {
+  item: T;
+  new(this.item);
+  static of(v: T): Boxed<T> { return new Boxed<T>(v); }
+  static empty(): Boxed<T> | null { return null; }
+}
+
+let b = Boxed.of(11);          // Boxed<i32>
+```
+
+Where the arguments do not determine them, write them on the class name
+— the one place a class's own type arguments can be supplied to a member
+that has no receiver to read them from:
+
+```zena
+let e = Boxed<String>.empty(); // Boxed<String> | null
+```
+
+Leaving them out there is an error rather than an unbound `T`:
+
+```zena
+let e = Boxed.empty();
+// Cannot infer type argument 'T' for 'Boxed' from the arguments;
+// write 'Boxed<...>.empty(...)'.
+```
+
+A static may also carry type parameters of its own, on a generic class
+or a plain one; those are inferred from the arguments as for any generic
+function.
+
 ### `void` as a Type Argument
 
 `void` is a valid type argument. It is a **zero-width** type: a value of

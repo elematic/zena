@@ -2218,13 +2218,31 @@ export final class FunctionLowerer {
       this.#bail('static receiver kind');
     }
     let ct = eraseTypeParameters(this.wasm, resolved) as ClassType;
-    var name = getMemberPropertyName(
+    let propName = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
+    var name = propName;
     // Overload choice belongs to the checker; the recorded selection
     // reproduces the registered slot name. No record = no overloads.
     let chosenFt = this.func.model.getResolvedOverload(call);
     if (chosenFt != null) {
       name = name + getSignatureKey(chosenFt as FunctionType);
+    }
+    // A generic static registers one monomorphized copy per solved
+    // type-argument list, under a specialized slot name — exactly as a
+    // generic instance method does. Without this the walk finds the
+    // unspecialized registration and bails on its type parameters.
+    if (let (true, declInfo) = ct.members.get(propName)) {
+      if (declInfo.type is FunctionType) {
+        let declFt = declInfo.type as FunctionType;
+        if (declFt.typeParameters != null &&
+            (declFt.typeParameters as Array<TypeParameterType>).length > 0) {
+          let targs = this.#solvedCallTypeArguments(call);
+          if (targs == null) {
+            this.#bail('generic static call');
+          }
+          name = getSpecializedName(propName, targs as Array<Type>);
+        }
+      }
     }
     var foundOpt: WasmFunction | null = null;
     var curr: ClassType | null = ct;
@@ -2241,7 +2259,11 @@ export final class FunctionLowerer {
       this.#bail('static method not found');
     }
     let target = foundOpt as WasmFunction;
-    if (target.typeParameters != null || target.intrinsic != null) {
+    // A monomorphized copy keeps the declaration's type parameters
+    // alongside the arguments it was specialized at; only an
+    // UNspecialized generic is unlowerable here.
+    let unspecialized = target.typeParameters != null && target.typeArguments == null;
+    if (unspecialized || target.intrinsic != null) {
       this.#bail('static method shape');
     }
     let sig = target.signature;

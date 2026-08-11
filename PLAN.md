@@ -100,7 +100,9 @@ This document tracks completed work and planned features. For project instructio
     code over `subscribe`, exactly as the design predicted: no
     primitive and no compiler support. They are plain functions
     rather than `Future.all`/`Future.race` because a `static` method
-    is unusable anywhere generics are involved (BUGS.md).
+    was unusable anywhere generics were involved; that is fixed now
+    (statics on generic classes, §"Statics on a Generic Class" of the
+    language reference), so naming them as statics is open again.
   - Next: fetch on the web playground — the "first real async I/O" A3
     was aiming at — `then`/`map`/`flatMap` (blocked on closures inside
     generic code), and post-v1 items (cancellation and structured

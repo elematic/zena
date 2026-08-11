@@ -1,0 +1,66 @@
+// @mode: run
+// @result: 127
+
+// A static that carries its OWN type parameters, on a plain class.
+class Utils {
+  new();
+  static identity<A>(a: A): A { return a; }
+  static pick<A>(a: A, _b: A): A { return a; }
+}
+
+// A static on a GENERIC class that cannot name the class's parameter:
+// there is nothing to bind, so the class name alone finds it.
+class Holder<T> {
+  value: T;
+  new(this.value);
+  static answer(): i32 { return 42; }
+  static describe(): String { return 'holder'; }
+}
+
+// A static that DOES name the class's parameter. The arguments bind it
+// where they determine it, and `Holder2<i32>.` writes it where they
+// don't.
+class Boxed<T> {
+  item: T;
+  new(this.item);
+  static of(v: T): Boxed<T> { return new Boxed<T>(v); }
+  static pair(a: T, b: T): Boxed<T> { return new Boxed<T>(a); }
+}
+
+// Two parameters, and a static naming both of them.
+class Table<K, V> {
+  key: K;
+  value: V;
+  new(this.key, this.value);
+  static keyed(k: K, v: V): Table<K, V> { return new Table<K, V>(k, v); }
+}
+
+// A static field on a generic class is ONE cell however the class is
+// named — writing type arguments selects nothing about it.
+class Counted<T> {
+  item: T;
+  new(this.item);
+  static var count: i32 = 0;
+  static bump(): i32 { Counted.count += 1; return Counted.count; }
+}
+
+class SubCounted<T> extends Counted<T> {
+  new(v: T) : super(v);
+}
+
+export let main = (): i32 => {
+  let a = Utils.identity(9);              // 9
+  let b = Utils.pick(4, 5);               // 4
+  let c = Holder.answer();                // 42
+  let d = Holder.describe().length;       // 6
+  let e = Boxed.of(11).item;              // 11
+  let f = Boxed<i32>.of(30).item;         // 30
+  let g = Boxed.pair(6, 7).item;          // 6
+  let h = Table.keyed('k', 8).value;      // 8
+  let i = Table<String, i32>.keyed('k', 2).value; // 2
+  let j = Counted.bump();                 // 1
+  let k = Counted<String>.bump();         // 2 — the same cell
+  let l = SubCounted.bump();              // 3 — inherited, still the same cell
+  let m = Counted<i32>.count;             // 3 — a static field, written receiver
+  return a + b + c + d + e + f + g + h + i + j + k + l + m;
+};

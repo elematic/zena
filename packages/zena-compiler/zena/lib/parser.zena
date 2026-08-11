@@ -909,7 +909,7 @@ export final class Parser {
         var obj: Expression = ident;
         while (this.#match(TokenType.Dot)) {
           let prop = this.#parseIdentifier();
-          obj = new MemberExpression(obj, prop, false, false, null, this.#makeLocation(startToken));
+          obj = new MemberExpression(obj, prop, false, false, null, null, this.#makeLocation(startToken));
         }
         return obj;
       }
@@ -1571,26 +1571,37 @@ export final class Parser {
         let typeArguments = this.#parseTypeArguments();
         this.#consume(TokenType.LParen, "Expected '(' after type arguments");
         expr = this.#finishCall(expr, typeArguments, false, callStart);
+      } else if (this.#check(TokenType.Less) && expr is Identifier &&
+          this.#isGenericStaticReceiver()) {
+        // `Holder<i32>.of(7)` — a generic class named for its statics.
+        // The arguments belong to the class, so they ride on the member
+        // access rather than on the call: the call's own type arguments
+        // would be the static method's.
+        let typeArguments = this.#parseTypeArguments();
+        this.#consume(TokenType.Dot, "Expected '.' after type arguments");
+        let name = this.#parseIdentifier();
+        expr = new MemberExpression(expr, name, false, false, null, typeArguments,
+            this.#makeLocation(callStart));
       } else if (this.#match(TokenType.Dot)) {
         if (this.#match(TokenType.Colon)) {
           let propIdent = this.#peek();
           var symbolPath: Expression = this.#parseIdentifier();
           while (this.#match(TokenType.Dot)) {
             let prop = this.#parseIdentifier();
-            symbolPath = new MemberExpression(symbolPath, prop, false, false, null, this.#makeLocation(callStart));
+            symbolPath = new MemberExpression(symbolPath, prop, false, false, null, null, this.#makeLocation(callStart));
           }
           let property: Identifier = if (symbolPath is Identifier) {
             symbolPath as Identifier
           } else {
             (symbolPath as MemberExpression).property
           };
-          expr = new MemberExpression(expr, property, false, true, symbolPath, this.#makeLocation(callStart));
+          expr = new MemberExpression(expr, property, false, true, symbolPath, null, this.#makeLocation(callStart));
         } else if (this.#match(TokenType.Hash)) {
           // Private field access: obj.#field
           let hashToken = this.#previous();
           let fieldId = this.#parseIdentifier();
           let name = new Identifier("#" + fieldId.name, this.#makeLocation(hashToken));
-          expr = new MemberExpression(expr, name, false, false, null, this.#makeLocation(callStart));
+          expr = new MemberExpression(expr, name, false, false, null, null, this.#makeLocation(callStart));
         } else {
           let name = if (this.#isIdentifier()) {
             this.#parseIdentifier()
@@ -1598,7 +1609,7 @@ export final class Parser {
             let startToken = this.#peek();
             new Identifier("", this.#makeLocation(startToken))
           };
-          expr = new MemberExpression(expr, name, false, false, null, this.#makeLocation(callStart));
+          expr = new MemberExpression(expr, name, false, false, null, null, this.#makeLocation(callStart));
         }
       } else if (this.#match(TokenType.LBracket)) {
         let index = this.#parseExpression();
@@ -1611,10 +1622,10 @@ export final class Parser {
           let hashToken = this.#previous();
           let fieldId = this.#parseIdentifier();
           let name = new Identifier("#" + fieldId.name, this.#makeLocation(hashToken));
-          expr = new MemberExpression(expr, name, true, false, null, this.#makeLocation(callStart));
+          expr = new MemberExpression(expr, name, true, false, null, null, this.#makeLocation(callStart));
         } else {
           let name = this.#parseIdentifier();
-          expr = new MemberExpression(expr, name, true, false, null, this.#makeLocation(callStart));
+          expr = new MemberExpression(expr, name, true, false, null, null, this.#makeLocation(callStart));
         }
       } else if (this.#match(TokenType.QuestionLBracket)) {
         let index = this.#parseExpression();
@@ -1986,22 +1997,43 @@ export final class Parser {
   }
   
   #isGenericCall(): boolean {
-    // Scan <...> tracking depth. If balanced > is followed by (, it's a generic call.
+    let end = this.#genericArgumentsEnd();
+    return end >= 0 && this.#tokens[this.#current + end].kind == TokenType.LParen;
+  }
+
+  /**
+   * A balanced `<...>` followed by `.` and a name: the receiver of a
+   * static access on a generic class (`Holder<i32>.of`). Nothing else
+   * puts a `.` there, so this cannot steal a comparison — `a < b > .c`
+   * was never a parse.
+   */
+  #isGenericStaticReceiver(): boolean {
+    let end = this.#genericArgumentsEnd();
+    if (end < 0) { return false; }
+    return this.#tokens[this.#current + end].kind == TokenType.Dot &&
+        this.#isIdentifierKind(this.#tokens[this.#current + end + 1].kind);
+  }
+
+  /**
+   * Offset from the current `<` of the token just past the balanced
+   * `>`, or -1 if the angle brackets are not a type-argument list.
+   */
+  #genericArgumentsEnd(): i32 {
     var depth = 1;
     var i = 1; // skip the <
-    
+
     while (depth > 0) {
       let token = this.#tokens[this.#current + i];
-      if (token.kind == TokenType.EOF) { return false; }
-      if (token.kind == TokenType.Semi || token.kind == TokenType.Equals || 
-          token.kind == TokenType.LBrace || token.kind == TokenType.Plus || 
-          token.kind == TokenType.Minus || token.kind == TokenType.Star || 
-          token.kind == TokenType.Slash || token.kind == TokenType.Let || 
-          token.kind == TokenType.Var || token.kind == TokenType.If || 
+      if (token.kind == TokenType.EOF) { return -1; }
+      if (token.kind == TokenType.Semi || token.kind == TokenType.Equals ||
+          token.kind == TokenType.LBrace || token.kind == TokenType.Plus ||
+          token.kind == TokenType.Minus || token.kind == TokenType.Star ||
+          token.kind == TokenType.Slash || token.kind == TokenType.Let ||
+          token.kind == TokenType.Var || token.kind == TokenType.If ||
           token.kind == TokenType.While || token.kind == TokenType.For ||
-          token.kind == TokenType.Return || token.kind == TokenType.AmpersandAmpersand || 
+          token.kind == TokenType.Return || token.kind == TokenType.AmpersandAmpersand ||
           token.kind == TokenType.PipePipe) {
-        return false;
+        return -1;
       }
       if (token.kind == TokenType.Less) {
         depth = depth + 1;
@@ -2012,15 +2044,14 @@ export final class Parser {
       } else if (token.kind == TokenType.GreaterGreaterGreater) {
         depth = depth - 3;
       } else if (token.kind == TokenType.GreaterEquals) {
-        return false;
+        return -1;
       }
       i += 1;
     }
-    
-    let nextToken = this.#tokens[this.#current + i];
-    return depth == 0 && nextToken.kind == TokenType.LParen;
+
+    return if (depth == 0) i else -1;
   }
-  
+
   #parseTypeArguments(): Array<TypeAnnotation> {
     this.#consume(TokenType.Less, "Expected '<' before type arguments");
     let args = new Array<TypeAnnotation>(4);
@@ -2536,7 +2567,11 @@ export final class Parser {
   }
   
   #isIdentifier(): boolean {
-    let t = this.#peek().kind;
+    return this.#isIdentifierKind(this.#peek().kind);
+  }
+
+  /** Identifier, or one of the contextual keywords usable as a name. */
+  #isIdentifierKind(t: TokenType): boolean {
     return t == TokenType.Identifier
       || t == TokenType.From
       || t == TokenType.Type
@@ -2877,7 +2912,7 @@ export final class Parser {
           var symbolExpr: Expression = this.#parseIdentifier();
           while (this.#match(TokenType.Dot)) {
             let prop = this.#parseIdentifier();
-            symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(colStart));
+            symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, null, this.#makeLocation(colStart));
           }
           setterName = new SymbolPropertyName(symbolExpr, this.#makeLocation(colStart));
         } else {
@@ -2976,7 +3011,7 @@ export final class Parser {
       var symbolExpr: Expression = this.#parseIdentifier();
       while (this.#match(TokenType.Dot)) {
         let prop = this.#parseIdentifier();
-        symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(symStart));
+        symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, null, this.#makeLocation(symStart));
       }
       let symPropName = new SymbolPropertyName(symbolExpr, this.#makeLocation(symStart));
       
@@ -3454,7 +3489,7 @@ export final class Parser {
       var symbolExpr: Expression = this.#parseIdentifier();
       while (this.#match(TokenType.Dot)) {
         let prop = this.#parseIdentifier();
-        symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(symStart));
+        symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, null, this.#makeLocation(symStart));
       }
       let symPropName = new SymbolPropertyName(symbolExpr, this.#makeLocation(symStart));
       this.#consume(TokenType.LParen, "Expected '(' after symbol method name");
