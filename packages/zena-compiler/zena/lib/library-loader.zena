@@ -15,7 +15,8 @@ import {
   Module, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, Statement, makeNodeIdGenerator, IdGenerator, NodeId,
 } from './ast.zena';
 import { parse, parseRecovering, ParseCompleteness } from './parser.zena';
-import { StringInterner } from './string-interner.zena';
+import { primeKeywords } from './tokenizer.zena';
+import { StringTable } from 'zena:core';
 import { Diagnostic } from './diagnostics.zena';
 import { ModuleResolver, normalizePath } from './module-resolver.zena';
 import { ScopeResult } from './scope/scope-builder.zena';
@@ -163,6 +164,22 @@ export class SourceFileGraph(
 // ============================================================================
 
 /**
+ * The identifier table a loader parses through, or null when interning is off.
+ *
+ * Sized for a whole compilation rather than a file: the compiler's own build
+ * reaches a few thousand distinct identifiers across its module graph, so
+ * starting there costs one pair of arrays and saves every resize.
+ */
+let tableFor = (internStrings: boolean): StringTable | null => {
+  if (!internStrings) {
+    return null;
+  }
+  let table = new StringTable(4096);
+  primeKeywords(table);
+  return table;
+};
+
+/**
  * Loads, parses, and caches Zena libraries.
  *
  * The LibraryLoader is responsible for:
@@ -176,6 +193,13 @@ export class SourceFileGraph(
  *   let entry = loader.load("/path/to/main.zena");
  *   let graph = loader.computeGraph([entry]);
  */
+/** A fresh identifier table with the keywords already in it. */
+let primedTable = (): StringTable => {
+  let table = new StringTable(4096);
+  primeKeywords(table);
+  return table;
+};
+
 export class LibraryLoader {
   #host: CompilerHost;
   #resolver: ModuleResolver;
@@ -194,8 +218,16 @@ export class LibraryLoader {
    * colliding with everything already cached.
    */
   #nodeIdGenerator = makeNodeIdGenerator();
-  /** Identifier names of every library this loader parses; see `StringInterner`. */
-  #interner = new StringInterner();
+  /**
+   * The identifier table every parse this loader drives shares. The
+   * loader owns it for the same reason it owns the node id generator:
+   * the useful scope for interning is exactly the set of files it holds,
+   * so a name is copied once however many files mention it and every
+   * identifier of one spelling is one `String`. Primed with the
+   * keywords, so a lexed `return` interns to the very instance
+   * `KEYWORDS` is keyed by.
+   */
+  #table = primedTable();
 
   /**
    * The generator every node this loader's modules contain draws its id
@@ -281,14 +313,14 @@ export class LibraryLoader {
     var parseErrors: GrowableArray<Diagnostic> = new Array<Diagnostic>(0);
     var completeness = ParseCompleteness.Complete;
     let ast = if (this.#recover) {
-      let result = parseRecovering(source, path, this.#nodeIdGenerator, this.#interner);
+      let result = parseRecovering(source, path, this.#nodeIdGenerator, this.#table);
       parseErrors = result.diagnostics;
       completeness = result.completeness;
       result.ast
     } else {
       // Without recovery an incomplete parse throws, so reaching here at
       // all means the AST accounts for the whole file.
-      parse(source, path, this.#nodeIdGenerator, this.#interner)
+      parse(source, path, this.#nodeIdGenerator, this.#table)
     };
     this.parseTime = this.parseTime + performance.end(tParse);
 
