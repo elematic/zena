@@ -2281,6 +2281,29 @@ let wrapResourceInOwn = (ctx: CheckerContext, t: Type, loc: SourceLocation | nul
   return instantiateTypeAliasType(ot, args);
 };
 
+/**
+ * Wraps a resource class in `Borrow<…>` to type `this` inside its own
+ * methods. A resource has no unwrapped form, so `this` has to be *some*
+ * handle; `Own<R>` would be wrong, since the method did not receive
+ * ownership and must not release or move its receiver.
+ *
+ * Returns the bare type when `Borrow` does not resolve. In practice it
+ * always does, and not because files import it: a stdlib module's exported
+ * type names resolve without an import today (see BUGS.md), which is also
+ * why `wrapResourceInOwn`'s "add: import { Own }" diagnostic looks
+ * unreachable. The fallback is here so that tightening resolution
+ * degrades this to a bare `this` rather than a crash.
+ */
+let wrapResourceInBorrow = (ctx: CheckerContext, ct: ClassType): Type => {
+  let borrow = ctx.resolveTypeName("Borrow");
+  if (borrow == null || !(borrow is TypeAliasType)) { return ct as Type; }
+  let bt = borrow as TypeAliasType;
+  if (bt.typeParameters == null) { return ct as Type; }
+  let args = new Array<Type>();
+  args.push(ct as Type);
+  return instantiateTypeAliasType(bt, args);
+};
+
 let isOwnershipWrapper = (t: Type): boolean => {
   if (!(t is TypeAliasType)) { return false; }
   let ta = t as TypeAliasType;
@@ -7281,6 +7304,11 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       // In extension classes, 'this' resolves to the underlying type, not the extension class.
       if (cls.isExtension && cls.onType != null) {
         cls.onType as Type
+      } else if (cls.isResource) {
+        // A resource's `this` is a borrow: usable for anything a method
+        // does to its own receiver, and second-class, so it cannot be
+        // captured, stored or handed to something that takes ownership.
+        wrapResourceInBorrow(ctx, cls)
       } else {
         cc as Type
       }
@@ -13411,6 +13439,23 @@ let checkFunctionExpression = (
   }
   if (isClosure) {
     let captureInfo = analyzeCaptures(fe, ctx.model);
+
+    // `this` is captured as a receiver rather than as a captured symbol,
+    // so the loop below cannot see it. Capturing a resource's `this` is
+    // the leak the borrowed receiver exists to close: the closure outlives
+    // the call, and nothing about its type says it is holding a resource.
+    if (captureInfo.capturesThis && ctx.currentClass != null &&
+        (ctx.currentClass as ClassType).isResource) {
+      ctx.error(
+        "A 'Borrow<" + (ctx.currentClass as ClassType).name + ">' may not be captured by " +
+        "a closure, and a closure in a resource's method captures 'this'. The closure can " +
+        "outlive the call, and would then be holding a resource its owner has already " +
+        "released.",
+        DiagnosticCode.TypeMismatch,
+        fe.loc
+      );
+    }
+
     let capSyms = new Array<SymbolId>();
     for (let c in captureInfo.captures) {
       capSyms.push(c.id);

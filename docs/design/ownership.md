@@ -1164,10 +1164,18 @@ closure, may not be a field's type, a container's element type, a record
 field or a tuple element, and may not be returned unless it derives from
 exactly one borrow the function was handed. The two-or-more case in
 §"Derived borrows" is rejected rather than resolved; naming the source
-positionally is still open. A method counts its receiver as a source, which
-is what `this` becomes once a resource's methods take it as a borrow —
-without that, the accessor that motivates borrows at all would have nothing
-to derive from.
+positionally is still open.
+
+**`this` inside a resource's methods is a `Borrow<R>`**, which is what points
+those rules at the receiver. It has to be *some* handle — a resource has no
+unwrapped form, so a bare `this` is a reference the handle regime cannot see
+— and `Own<R>` would be wrong, since the method did not receive ownership and
+must not release or move its receiver. So a method's receiver is the one
+borrow it was handed: `self(): Borrow<R> { return this; }` derives from it and
+is legal, while capturing `this` in a closure, storing it in a container, or
+passing it where an `Own<R>` is expected are all rejected. Capture needed its
+own check, because `this` is captured as a receiver rather than as a captured
+symbol and the symbol-keyed rule cannot see it.
 
 The rules follow §"`Borrow<T>` is the identity at unrestricted
 instantiations": they apply to a borrow of a resource or of a bare type

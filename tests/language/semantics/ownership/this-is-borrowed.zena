@@ -1,0 +1,80 @@
+// @mode: check
+// `this` inside a resource class's method is a `Borrow<R>`.
+//
+// It has to be *some* handle: a resource has no unwrapped form, so a bare
+// `this` is a reference the handle regime cannot see, and every rule about
+// where a resource may travel is written in terms of handles. `Own<R>`
+// would be wrong -- the method did not receive ownership and must not
+// release or move the receiver -- which leaves the borrow, and with it the
+// second-class rules that stop `this` escaping the call.
+//
+// This is what closes the closure-capture leak recorded in BUGS.md: a
+// bare `this` was unspellable, so `return this` was already rejected under
+// every handle name, but a closure's type names nothing the spelling rule
+// could reject, and capturing `this` laundered a live alias out.
+import {Own, Borrow, Unmanaged, Disposable} from 'zena:ownership';
+
+resource class Counter {
+  var #n: i32;
+  name: String;
+  new(n: i32, this.name) : #n = n;
+
+  value(): i32 { return this.#n; }
+
+  // Reading and writing your own fields is the ordinary case and must
+  // keep working: a borrow may do anything but outlive its lender.
+  bump(by: i32): void { this.#n += by; }
+
+  // Calling another method on the receiver is a use, not an escape.
+  double(): void { this.bump(this.value()); }
+
+  // A projection derived from the receiver. The receiver is the one
+  // borrow this method was handed, so the result derives from it.
+  self(): Borrow<Counter> { return this; }
+
+  // Capturing the receiver is the leak. The closure is a heap object and
+  // can be called after the owner's scope has ended.
+  escape(): i32 {
+    let f = (): i32 => this.#n; // @error: may not be captured by a closure
+    return f();
+  }
+
+  // Storing the receiver reaches the same place by another route.
+  stash(): i32 {
+    let all = [this]; // @error: may not be stored
+    return all.length;
+  }
+
+  // A borrow is not an owner: the receiver cannot be handed to something
+  // that would take ownership of it, which is what makes `dispose` on
+  // `this` a question for receiver types rather than something a method
+  // can do by accident.
+  giveAway(): i32 { return consume(this); } // @error: not assignable
+
+  :Disposable.dispose(): void {}
+}
+
+let consume = (c: Own<Counter>): i32 => 0;
+let borrows = (c: Borrow<Counter>): i32 => 0;
+
+// An owner may still be borrowed at a call site: `Own<R>` coerces to
+// `Borrow<R>`, which is the whole point of the implicit borrow.
+let fromOutside = (c: Own<Counter>): i32 => borrows(c);
+
+// An ordinary class is untouched -- `this` there is the plain class type,
+// freely capturable and storable, because nothing owns it.
+class Plain {
+  var n: i32;
+  new(this.n);
+  escape(): i32 {
+    let f = (): i32 => this.n;
+    return f();
+  }
+  self(): Plain { return this; }
+}
+
+export function main(): i32 {
+  let c = new Counter(1, 'a');
+  c.double();
+  return c.value() + fromOutside(c) + new Plain(2).escape();
+}

@@ -105,6 +105,37 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### A stdlib module's exported type names resolve without an import
+
+- **Found**: 2026-08-10, typing a resource's `this` as `Borrow<R>`. I
+  added a check that `Borrow` is in scope wherever a resource class is
+  declared, and it never fired — including in files importing nothing at
+  all from `zena:ownership`.
+- **Severity**: medium. It is a silent fuzzy fallback of exactly the kind
+  the project avoids elsewhere: a name resolves by being *somewhere* in
+  the stdlib rather than by being brought into scope, so a typo or a
+  forgotten import can bind to an unrelated type instead of failing.
+- **Details**: not specific to ownership, and not an artifact of the
+  batching test runner — it reproduces in a standalone `zena-cli run`:
+
+  ```zena
+  export function main(): i32 {
+    let m: HashMap<String, i32> | null = null;   // no import of HashMap
+    return if (m == null) 0 else 1;              // compiles, runs, prints 0
+  }
+  ```
+
+  `CheckerContext.resolveTypeName` is `#materializeFromScope` then
+  `#resolveBuiltinOrPreludeType`, and one of the two is answering for
+  names that are neither in scope nor in the prelude.
+- **Consequence worth noting**: `wrapResourceInOwn`'s
+  "Add: import { Own } from 'zena:ownership';" diagnostic appears to be
+  unreachable for the same reason, and nothing tests it. The design
+  intent it encodes — `zena:ownership` is out of the prelude, so a file
+  that names a handle must import it — is not actually enforced.
+- **Workaround**: none needed today; imports are still written by
+  convention.
+
 ### `resetWasmTypeUids` is a module-global plus a reset
 
 - **Found**: 2026-08-07, turning on batch compilation.
@@ -1416,7 +1447,7 @@ found, returning false`, so the reachability pass is probably
 - **Workaround**: none clean; restructure to avoid calling methods on
   generic-typed fields/`this` across class boundaries in templates.
 
-### A resource's `this` escapes through a closure capture
+### RESOLVED: a resource's `this` escapes through a closure capture
 
 - **Found**: 2026-08-08 (reviewing what constrains `this` in a resource class)
 - **Severity**: high (silent; defeats the handle regime entirely)
@@ -1437,15 +1468,18 @@ found, returning false`, so the reachability pass is probably
   Both closures mutate the resource, and neither is tracked. The design
   already names the fix: `this` should be `Borrow<R>`, whose second-class
   rules forbid closure capture.
-- **Half of the fix has landed.** Those rules were specified in
-  ownership.md and implemented nowhere; they are now enforced — a
-  `Borrow<R>` may not be captured by a closure, stored in a field or in a
-  container, or returned without deriving from a borrow the function was
-  handed (`semantics/ownership/borrow-does-not-escape.zena`,
-  `borrow-is-not-stored.zena`). What remains is typing `this` as
-  `Borrow<R>` inside a resource's methods, which is what points the rules
-  at the receiver and closes this hole.
-- **Workaround**: none.
+- **Fixed** in two steps. First the second-class rules themselves, which
+  were specified in ownership.md and implemented nowhere: a `Borrow<R>`
+  may not be captured by a closure, stored in a field or a container, or
+  returned without deriving from a borrow the function was handed
+  (`semantics/ownership/borrow-does-not-escape.zena`,
+  `borrow-is-not-stored.zena`). Then, 2026-08-10, `this` inside a
+  resource's methods became a `Borrow<R>`, which points those rules at
+  the receiver — `semantics/ownership/this-is-borrowed.zena`.
+- **One part needed its own check**: `this` is captured as a receiver
+  rather than as a captured symbol, so the symbol-keyed capture rule
+  could not see it. `capturesThis` on a resource's method is rejected
+  explicitly.
 
 ### RESOLVED: a resource class may extend an ordinary class, which leaks bare aliases
 
