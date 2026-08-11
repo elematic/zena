@@ -61,12 +61,21 @@ immediately trying to fix it (which can pollute the current task's context).
   Anything else erasing to a common supertype and narrowing back has the
   same choice forced on it.
 
-### Self-hosted compiler cannot *call* a generic method on a class
+### RESOLVED: Self-hosted compiler cannot *call* a generic method on a class
+- **Fixed**: 2026-08-10, "Stop emitting a generic method at its own
+  erasure". A generic method was ALSO emitted unspecialized, with its
+  own type parameters erased to anyref — given a class-vtable slot and
+  force-reached per specialization of the class. The call site looks for
+  `identity_spec_i32`, so the erased body served nobody: it was dead in
+  every module that had it (80 such bodies in the compiler's own), and
+  it was what "method not found" found instead of a specialization. A
+  generic method now exists once per specialization and nowhere else,
+  and `classes/generic-method.zena` is no longer skipped.
 - **Found**: 2026-08-05 (wiring `wit-parser` into the package map; the
   self-hosted compiler could not build the WIT parser's own source)
 - **Severity**: medium (no longer blocks `packages/wit-parser`)
-- **Tests**: `tests/language/execution/classes/generic-method.zena`,
-  `@skip: self-hosted` (the deleted bootstrap compiler handled it).
+- **Tests**: `tests/language/execution/classes/generic-method.zena`
+  (unskipped), `generics/generic-method-specializations.zena`.
 - **Details**: *Calling* a generic public method fails in ZIR with
   `zir unsupported: method not found @Box_s787.run`. Declaring one is fine —
   `tests/language/execution/classes/generic-loop-member.zena` has `fold<R>(…)`

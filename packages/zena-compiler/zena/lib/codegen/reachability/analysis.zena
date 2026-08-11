@@ -2880,7 +2880,20 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 // constructed.
                 let genericStatic = mDef.isStatic &&
                     !this.#isMonomorphicStatic(mDef);
-                if (ref.isReachable && !genericStatic &&
+                // A GENERIC method registered with no type arguments is
+                // the body at the method's OWN erasure, and there is no
+                // such function: `map<R>` exists once per R, each with
+                // its own signature, minted by registerGenericMethodUse
+                // at the call site. Reaching the erased registration
+                // emitted one dead body per specialization of the class
+                // (80 `Array<X>.map` in the compiler's own module,
+                // referenced by nothing) — and each one built its result
+                // with `new Array<R>`, which is the only thing that ever
+                // made an ERASURE look constructible.
+                let isGenericAtErasure = regF.typeParameters != null &&
+                    (regF.typeParameters as Array<TypeParameterType>).length > 0 &&
+                    regF.typeArguments == null;
+                if (ref.isReachable && !genericStatic && !isGenericAtErasure &&
                     (isConcrete(ct) || this.#isMonomorphicStatic(mDef)) &&
                     methName != "<constructor>") {
                   // The statics' backing globals hang off reaching a

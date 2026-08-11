@@ -1,0 +1,77 @@
+// @mode: run
+// @result: 1219
+// A generic METHOD — one whose type parameter is its own, not its
+// class's — exists once per specialization and nowhere else. It gets
+// no class-vtable slot (a slot holds one `ref.func` of one signature)
+// and no body at its own erasure; `registerGenericMethodUse` mints one
+// per call site, at explicit and inferred type arguments alike.
+//
+// Emitting the erased body instead used to be the default: one dead
+// `map` per specialization of the class, each building its result with
+// `new Array<R>` — the only thing that ever made an erasure look like
+// a class values could have. A generic method whose body uses `eq` on
+// its own parameter could not be compiled at all while that was so.
+
+import { Array } from 'zena:array';
+import { Hashable } from 'zena:hashable';
+
+@intrinsic('eq')
+declare function equals<T>(a: T, b: T): boolean;
+
+class Bag<T extends Hashable> {
+  var #items = new Array<T>();
+  new();
+  add(item: T): void { this.#items.push(item); }
+
+  mapTo<R>(f: (item: T) => R): Array<R> {
+    let out = new Array<R>();
+    var i = 0;
+    while (i < this.#items.length) {
+      out.push(f(this.#items[i]));
+      i += 1;
+    }
+    return out;
+  }
+
+  /** `eq` on the METHOD's own type parameter, at two argument types. */
+  same<U extends Hashable>(a: U, b: U): boolean { return equals(a, b); }
+
+  holds(item: T): boolean {
+    var i = 0;
+    while (i < this.#items.length) {
+      if (equals(this.#items[i], item)) { return true; }
+      i += 1;
+    }
+    return false;
+  }
+}
+
+/** Subclassing is what gives the base's methods dispatchable slots. */
+final class CountingBag<T extends Hashable> extends Bag<T> {
+  new() : super();
+}
+
+export let main = (): i32 => {
+  let bag = new CountingBag<String>();
+  bag.add('aa');
+  bag.add('bbb');
+  var acc = 0;
+
+  // Two specializations of one generic method, explicit type argument.
+  let lengths = bag.mapTo<i32>((s: String) => s.length);
+  let long = bag.mapTo<boolean>((s: String) => s.length > 2);
+  acc += lengths[0] + lengths[1];        // 2 + 3
+  if (long[1] && !long[0]) { acc += 10; }
+
+  // Inferred type argument mints its own specialization.
+  let doubled = bag.mapTo((s: String) => s.length * 2);
+  acc += doubled[0];                     // 4
+
+  // `eq` inside a generic method, at two different type arguments.
+  if (bag.same<String>('a', 'a')) { acc += 100; }
+  if (!bag.same<i32>(1, 2)) { acc += 100; }
+
+  // ...and inside an ordinary method of the same class, inherited.
+  if (bag.holds('bbb') && !bag.holds('zz')) { acc += 1000; }
+  return acc;
+};

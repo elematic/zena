@@ -480,7 +480,12 @@ export final class Specializer implements SpecializerInterface {
           // Private methods are never virtual (member-lookup.md §6):
           // they get no vtable slot and are always called directly.
           let isPrivateMeth = methName.length > 0 && methName.sliceBytes(0, 1) == "#";
-          if (!found && methName != "<constructor>" && !isPrivateMeth) {
+          // Neither is a GENERIC method: a slot holds one `ref.func`
+          // of one signature, and a generic method has no single body
+          // — it exists once per specialization, each with its own.
+          let isGenericMeth = mDef.typeParameters != null &&
+              (mDef.typeParameters as Array<TypeParameter>).length > 0;
+          if (!found && methName != "<constructor>" && !isPrivateMeth && !isGenericMeth) {
             ctVtable.push(vtableMethName);
           }
         }
@@ -1348,7 +1353,10 @@ export final class Specializer implements SpecializerInterface {
             // Privates: no vtable slot (never virtual); mixin
             // privates register under the mixin's scope key.
             let isPrivateMeth = methName.length > 0 && methName.sliceBytes(0, 1) == "#";
-            if (!mDef.isStatic && !vtableSet.has(vtableMethName) && methName != "<constructor>" && !isPrivateMeth) {
+            // See above: a generic method has no single body to hold.
+            let isGenericMeth = mDef.typeParameters != null &&
+                (mDef.typeParameters as Array<TypeParameter>).length > 0;
+            if (!mDef.isStatic && !vtableSet.has(vtableMethName) && methName != "<constructor>" && !isPrivateMeth && !isGenericMeth) {
               ctVtable.push(vtableMethName);
               vtableSet.add(vtableMethName);
             }
