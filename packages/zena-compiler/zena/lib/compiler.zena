@@ -116,6 +116,21 @@ export final class CompilerOptions {
   /** Emit compiler timing diagnostics to stdout. */
   var time: boolean = false;
 
+  /**
+   * Intern identifiers into one table shared by every parse in this
+   * compilation. `ZENA_INTERN=1` turns it on.
+   *
+   * Off by default because it has not been shown to pay. It reliably costs
+   * 1%–8% of tokenizing; the downstream saving in scope and symbol lookups
+   * that should repay that did not reproduce across repeated runs, and a
+   * self-compile is neither measurably faster nor slower with it. See
+   * docs/design/string-interning.md for the numbers and for the case that
+   * has not been measured yet — a long-lived compiler, where one table would
+   * amortize across many checks instead of being built and dropped per
+   * compilation.
+   */
+  var internStrings: boolean = false;
+
   new(
     target: String,
     stdlibRoot: String,
@@ -662,7 +677,7 @@ export final class Compiler {
  */
 export let createCompiler = (host: CompilerHost, options: CompilerOptions): Compiler => {
   let resolver = buildResolver(options);
-  let loader = new LibraryLoader(host, resolver);
+  let loader = new LibraryLoader(host, resolver, options.internStrings);
   return new Compiler(host, options, resolver, loader);
 };
 

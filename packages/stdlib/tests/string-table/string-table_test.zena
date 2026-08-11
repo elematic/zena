@@ -105,6 +105,77 @@ export let tests = suite('StringTable', () => {
     });
   });
 
+  suite('maxLength', () => {
+    /** A string of `n` 'x' bytes. */
+    let long = (n: i32): String => {
+      let b = new StringBuilder();
+      for (var i = 0; i < n; i += 1) {
+        b.append('x');
+      }
+      return b.toString();
+    };
+
+    test('defaults to 128 bytes', () => {
+      equal(new StringTable().maxLength, 128);
+    });
+
+    test('interns a string of exactly maxLength', () => {
+      let t = new StringTable(16, 8);
+      same(t.intern(fresh('abcdefgh')), t.intern(fresh('abcdefgh')));
+      equal(t.size, 1);
+    });
+
+    test('declines one byte over', () => {
+      let t = new StringTable(16, 8);
+      let a = t.intern(fresh('abcdefghi'));
+      let b = t.intern(fresh('abcdefghi'));
+      equal(a, b);
+      notSame(a, b);
+      equal(t.size, 0);
+    });
+
+    test('returns an over-long string unchanged rather than copying it', () => {
+      // The point of declining is to store nothing and allocate nothing;
+      // returning a copy would pay half the cost for none of the benefit.
+      let t = new StringTable(16, 8);
+      let s = fresh('abcdefghij');
+      same(t.intern(s), s);
+    });
+
+    test('internRange declines over-long ranges', () => {
+      let t = new StringTable(16, 8);
+      let source = 'abcdefghij';
+      let a = t.internRange(source, 0, 10);
+      equal(a, 'abcdefghij');
+      equal(t.size, 0);
+      // ...and still interns a short range from the same source.
+      t.internRange(source, 0, 4);
+      equal(t.size, 1);
+    });
+
+    test('prime declines too, so intern can never miss a longer key', () => {
+      let t = new StringTable(16, 8);
+      t.prime('abcdefghi');
+      equal(t.size, 0);
+      isFalse(t.has('abcdefghi'));
+    });
+
+    test('has is false for an over-long string', () => {
+      let t = new StringTable(16, 8);
+      isFalse(t.has(long(200)));
+    });
+
+    test('a long document body does not fill the table', () => {
+      // The case the cap exists for: a parser that interns every scanned
+      // value, over an input whose values are long and mostly distinct.
+      let t = new StringTable(64, 32);
+      for (var i = 0; i < 50; i += 1) {
+        t.intern(long(64 + i));
+      }
+      equal(t.size, 0);
+    });
+  });
+
   suite('prime', () => {
     test('makes the given instance canonical', () => {
       let t = new StringTable();

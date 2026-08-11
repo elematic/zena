@@ -1,7 +1,7 @@
 /**
  * Does interning identifiers pay for itself?
  *
- * Five runners, because "is interning faster" is not one question and a
+ * Six runners, because "is interning faster" is not one question and a
  * single number would answer it dishonestly:
  *
  * 1. **Tokenize.** The cost, isolated. Interning adds a table probe per
@@ -16,19 +16,24 @@
  *    compared by pointer — earns back what runner 1 charges. Two map
  *    operations per identifier, which is a *floor* on what a checker does,
  *    not an estimate of it. A proxy, deliberately labelled as one.
- * 4. **Flag off.** What the feature costs callers who never enable it,
+ * 4. **Front end.** The real thing rather than a proxy: load, parse, scope
+ *    and check a whole program through one `Compiler`, which is the only
+ *    configuration where the table spans every file. Codegen is excluded
+ *    because interning cannot touch it and it is four fifths of a build —
+ *    including it would measure GC noise at five times the signal.
+ * 5. **Flag off.** What the feature costs callers who never enable it,
  *    measured within one build (see the runner for why not across two).
- * 5. **Lookup strategy.** Whether the table should hash every byte (FNV,
+ * 6. **Lookup strategy.** Whether the table should hash every byte (FNV,
  *    what `String.hashCode` does) or take the O(1) bucket hash the shipped
  *    table uses. `FnvStringTable` below exists only to be the control.
  *
- * Run against the compiler's own sources, which are a realistic
- * identifier-dense corpus:
+ * Run from the repository root, which is where the package map's paths
+ * resolve from:
  *
- *     zena-cli run zena/bench/interning.zena --dir .
+ *     zena-cli run packages/zena-compiler/zena/bench/interning.zena --dir .
  *
- * from `packages/zena-compiler`. An optional argument overrides the corpus
- * directory (default `zena/lib`). Findings as measured are recorded in
+ * An optional argument overrides the corpus directory (default
+ * `packages/zena-compiler/zena/lib`). Findings as measured are recorded in
  * docs/design/string-interning.md.
  */
 import {BenchRunner, BenchContext, reportToString} from 'zena:bench';
@@ -44,6 +49,10 @@ import {i32ToString} from 'zena:string-convert';
 import {parse} from '../lib/parser.zena';
 import {makeNodeIdGenerator} from '../lib/ast.zena';
 import {Token, TokenType, tokenize, primeKeywords} from '../lib/tokenizer.zena';
+import {CompilerHost} from '../lib/library-loader.zena';
+import {createCompiler, CompilerOptions, checkCompilation} from '../lib/compiler.zena';
+import {loadPackageMap} from '../lib/package-manifest.zena';
+import {stdlibIdToRelativeFile} from '../lib/module-resolver.zena';
 
 class Source {
   path: String;
@@ -223,6 +232,43 @@ let readersFor = (sources: Array<Source>, table: StringTable | null): Array<Stri
   return readers;
 };
 
+// ============================================================================
+// The front end, end to end
+// ============================================================================
+
+let stdlibRoot = 'packages/stdlib/zena';
+
+class PlainHost implements CompilerHost {
+  new();
+  readFile(path: String): String {
+    if (path.startsWith('zena:')) {
+      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+}
+
+/**
+ * Load, parse, scope and check `entry` and everything it imports, through a
+ * compiler built fresh for this sample.
+ *
+ * Fresh on purpose. A `Compiler` accumulates nominal types, model nodes and
+ * generic instantiations for as long as it lives and never collects them, so
+ * reusing one across samples would measure that growth rather than the
+ * option. It also has to be fresh for the option to mean anything: the table
+ * is built once, in the loader's constructor.
+ */
+let frontEnd = (entry: String, internStrings: boolean): i32 => {
+  let host = new PlainHost();
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
+  options.internStrings = internStrings;
+  let compiler = createCompiler(host, options);
+  let result = compiler.compile(entry);
+  let checked = checkCompilation(result, null, false);
+  return checked.diagnostics.length;
+};
+
 /** Interns every identifier in the corpus with the shipped table. */
 let internAllBucketHash = (identifiers: Array<String>): i32 => {
   let table = new StringTable(4096);
@@ -243,7 +289,7 @@ let internAllFnv = (identifiers: Array<String>): i32 => {
 
 export let main = (): i32 => {
   let args = getArguments();
-  let dir = if (args.length > 1) args[1] else 'zena/lib';
+  let dir = if (args.length > 1) args[1] else 'packages/zena-compiler/zena/lib';
   let sources = loadCorpus(dir);
   if (sources.length == 0) {
     console.log('no .zena sources found under ' + dir);
@@ -255,24 +301,55 @@ export let main = (): i32 => {
     bytes += s.text.length;
   }
 
-  // Corpus shape, so the numbers below can be read against something. The
-  // ratio of total to distinct identifiers is the whole premise: interning
-  // is worth doing exactly to the extent that it is far from 1.
+  // Corpus shape, so the numbers below can be read against something.
+  //
+  // Broken out by token category because the fraction that matters is not
+  // identifiers over identifiers. Interning charges its cost to the tokens
+  // the identifier scanner produces and to no others — every brace, operator,
+  // number and string literal in the file is scanned exactly as before — so
+  // the cost per *token* is diluted by however much of the stream is
+  // punctuation, and in this corpus that is most of it. Keywords are counted
+  // with the identifiers because they go through the same path: the scanner
+  // interns the text first and only then asks whether it is a keyword.
+  //
+  // The ratio of total to distinct identifiers is the other half of the
+  // premise: interning is worth doing exactly to the extent it is far from 1.
   let identifiers = new Array<String>();
   let uniqueIds = new StringTable(4096);
+  var totalTokens = 0;
+  var keywordTokens = 0;
+  var otherTokens = 0;
   for (let s in sources) {
     for (let t in tokenize(s.text)) {
+      totalTokens += 1;
       if (t.kind == TokenType.Identifier) {
         identifiers.push(t.value);
         uniqueIds.intern(t.value);
+      } else if ((t.kind as i32) < (TokenType.Identifier as i32)) {
+        // The enum lists every keyword before `Identifier`; anything below it
+        // came out of `#scanIdentifier` and was interned on the way.
+        keywordTokens += 1;
+      } else {
+        otherTokens += 1;
       }
     }
   }
+  let internedTokens = identifiers.length + keywordTokens;
   console.log(
     'corpus: ' + i32ToString(sources.length) + ' files, ' +
     i32ToString(bytes) + ' bytes, ' +
-    i32ToString(identifiers.length) + ' identifier tokens, ' +
-    i32ToString(uniqueIds.size) + ' distinct');
+    i32ToString(totalTokens) + ' tokens');
+  console.log(
+    '  through the intern path: ' + i32ToString(internedTokens) + ' (' +
+    i32ToString((internedTokens * 100 / totalTokens) as i32) + '% of tokens) = ' +
+    i32ToString(identifiers.length) + ' identifiers + ' +
+    i32ToString(keywordTokens) + ' keywords');
+  console.log(
+    '  scanned as before:       ' + i32ToString(otherTokens) +
+    ' (punctuation, operators, literals)');
+  console.log(
+    '  distinct identifiers:    ' + i32ToString(uniqueIds.size) +
+    ' (' + i32ToString((identifiers.length / uniqueIds.size) as i32) + ':1 reuse)');
   console.log('');
 
   // Tokenizing alone, where interning acts. Full parse allocates an AST an
@@ -331,6 +408,26 @@ export let main = (): i32 => {
     resolveAll(sources, table);
   });
   console.log(reportToString(resolveRunner.run()));
+
+  // The question the proxy above only gestures at: over a real compilation,
+  // does the checker hand back more than the tokenizer spent? One `Compiler`
+  // per sample, so the table spans the whole module graph — which is the only
+  // arrangement worth shipping, and the reason `LibraryLoader` owns it.
+  //
+  // The entry is the compiler's own CLI: the largest program on hand, and the
+  // one whose build time anyone actually waits on.
+  let frontEndEntry = 'packages/zena-compiler/zena/cli/main.zena';
+  let frontEndRunner = new BenchRunner('front end: load+parse+scope+check');
+  frontEndRunner.options.minSamples = 20;
+  frontEndRunner.options.timeBudgetMs = 120000.0;
+  frontEndRunner.options.horizons = ['1%'];
+  frontEndRunner.bench('no-intern', (_ctx: BenchContext) => {
+    frontEnd(frontEndEntry, false);
+  });
+  frontEndRunner.bench('intern-shared', (_ctx: BenchContext) => {
+    frontEnd(frontEndEntry, true);
+  });
+  console.log(reportToString(frontEndRunner.run()));
 
   // What the feature costs the callers who never enable it. The tokenizer
   // now reaches every identifier through `internFrom`, which tests a null

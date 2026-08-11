@@ -55,12 +55,41 @@ export final class StringTable {
   var #count: i32 = 0;
   /** Resize when `#count` reaches this: 3/4 of capacity. */
   var #limit: i32;
+  /**
+   * Strings longer than this, in bytes, are never interned: every entry
+   * point returns an equal string and stores nothing. See `maxLength`.
+   */
+  #maxLength: i32;
 
-  new(capacity: i32 = 512)
+  new(capacity: i32 = 512, maxLength: i32 = 128)
     : #keys = new FixedArray<String | null>(roundUpPow2(capacity), null),
       #hashes = new FixedArray<i32>(roundUpPow2(capacity), 0),
       #mask = roundUpPow2(capacity) - 1,
-      #limit = (roundUpPow2(capacity) >>> 2) * 3;
+      #limit = (roundUpPow2(capacity) >>> 2) * 3,
+      #maxLength = maxLength;
+
+  /**
+   * The longest string, in bytes, this table will intern.
+   *
+   * Interning is a bet that a string will be seen again, and it is paid for
+   * up front with a copy that then lives as long as the table. The bet is a
+   * good one for identifiers and keys, which are short and repeat constantly.
+   * It is a bad one for the long strings in the same input — a JSON document's
+   * text values, a Zena string literal, a WIT doc comment — which are mostly
+   * distinct, so each one interned is a permanent copy of bytes that will
+   * never be looked up again, and a byte compare on every collision with it.
+   *
+   * So the table simply declines. Over-long strings are returned equal but
+   * uninterned, which callers must already tolerate: interning is best-effort
+   * and `===` is only ever a fast path for equality, never the definition of
+   * it. `prime` declines too, so no key in the table is longer than this and
+   * `intern` can never miss one that is.
+   */
+  maxLength: i32 {
+    get {
+      return this.#maxLength;
+    }
+  }
 
   /** The number of distinct strings held. */
   size: i32 {
@@ -84,6 +113,9 @@ export final class StringTable {
    * Use `prime` for strings that already own their storage permanently.
    */
   intern(s: String): String {
+    if (s.length > this.#maxLength) {
+      return s;
+    }
     let h = bucketHash(s, s.length);
     var i = h & this.#mask;
     while (true) {
@@ -111,6 +143,9 @@ export final class StringTable {
    * hit path, which is every occurrence after the first.
    */
   internRange(source: String, start: i32, end: i32): String {
+    if (end - start > this.#maxLength) {
+      return source.sliceBytes(start, end);
+    }
     let h = bucketHashRange(source, start, end);
     var i = h & this.#mask;
     while (true) {
@@ -137,8 +172,13 @@ export final class StringTable {
    * lexed out of source then interns to the very object the keyword table is
    * keyed by, so the keyword lookup that follows hits `==`'s reference-equal
    * fast path against an already-hashed key.
+   *
+   * Declines over-long strings exactly as `intern` does; see `maxLength`.
    */
   prime(s: String): String {
+    if (s.length > this.#maxLength) {
+      return s;
+    }
     let h = bucketHash(s, s.length);
     var i = h & this.#mask;
     while (true) {
@@ -162,6 +202,9 @@ export final class StringTable {
 
   /** True if a string equal to `s` has been interned. */
   has(s: String): boolean {
+    if (s.length > this.#maxLength) {
+      return false;
+    }
     let h = bucketHash(s, s.length);
     var i = h & this.#mask;
     while (true) {
