@@ -1149,13 +1149,40 @@ of surface syntax.
 | **O3.5** | `affine T` type parameters + container opt-in                                                             | O2, A0's `where` bounds           | G, V           |
 | **O4**   | `isolated<T>`/`frozen<T>`/regions                                                                         | O2                                | V, A           |
 
-Implementation currently trails this document in four known places: the
+Implementation currently trails this document in five known places: the
 consuming receiver in §"Release consumes its receiver" needs receiver-type
 syntax (O0.1) and is not yet enforced, `Scoped<T>` is design-only, `disown`
-does not yet **consume** its argument (that waits on move checking, O2), and
-the `dropped` state is declared but never set, so adopting an
-already-released resource is not the clean error it is specified to be —
-nothing releases anything until implicit drop (O3).
+does not yet **consume** its argument (that waits on move checking, O2), the
+`dropped` state is declared but never set, so adopting an already-released
+resource is not the clean error it is specified to be — nothing releases
+anything until implicit drop (O3) — and the liveness rule in §"Borrows and
+suspension" is unenforced, so a borrow may still be held across an `await`
+and a generator may still take a borrow parameter.
+
+**Second-class-ness is enforced.** A `Borrow<R>` may not be captured by a
+closure, may not be a field's type, a container's element type, a record
+field or a tuple element, and may not be returned unless it derives from
+exactly one borrow the function was handed. The two-or-more case in
+§"Derived borrows" is rejected rather than resolved; naming the source
+positionally is still open. A method counts its receiver as a source, which
+is what `this` becomes once a resource's methods take it as a borrow —
+without that, the accessor that motivates borrows at all would have nothing
+to derive from.
+
+The rules follow §"`Borrow<T>` is the identity at unrestricted
+instantiations": they apply to a borrow of a resource or of a bare type
+parameter, and not at all to `Borrow<i32>`. Storage is checked on the
+*type* rather than on each assignment — once `Borrow<R>` cannot be a field's
+type or an element type there is no location left to hold one, so the stores
+that never name the type, like `xs.push(f)`, need no flow analysis to find.
+
+One gap remains, and it is the one §"Combinators: scopedness derives, and
+generics opt in" already describes: a generic container reaches that storage
+without naming a borrow, since `box<T>(x: T): FixedArray<T>` is checked with
+`T` unbound and the call binds `T` to a borrow afterwards. Closing it is the
+`scoped T` opt-in, deferred there by name;
+`semantics/ownership/borrow-is-not-stored.zena` carries it as a
+`@missing-error` so implementing the opt-in retires the marker.
 
 The lifecycle flag itself is landed, so `adopt` does reject a second adopter
 and `disown` a second disowner. It is a private `i32` on `Resource`, the root

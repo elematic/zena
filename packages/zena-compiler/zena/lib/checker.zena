@@ -2322,6 +2322,54 @@ let isSecondClass = (t: Type): boolean => {
 };
 
 /**
+ * Rejects a second-class type in a storage position — a field, a container
+ * element, a record field, a tuple element. See ownership.md §"The two
+ * axes", which spells the field case out: a field outlives any extent, so
+ * a borrow in one has outlived the scope that lent it.
+ *
+ * This is deliberately a rule about the *type* rather than about a
+ * particular assignment. Once `Borrow<R>` cannot be a field's type or a
+ * container's element type there is no storage location left that could
+ * hold one, so no flow analysis is needed to find the stores — including
+ * the ones that never name the type, like `xs.push(f)`.
+ *
+ * `where` names the storage in the diagnostic, and reads as both "may not
+ * be stored in <where>" and "<where> outlives every scope".
+ */
+let rejectSecondClassStorage = (
+  ctx: CheckerContext,
+  t: Type,
+  where: String,
+  loc: SourceLocation | null
+): void => {
+  if (!isSecondClass(t)) { return; }
+  ctx.error(
+    "A '" + typeToString(t) + "' may not be stored in " + where + ". A borrow may not " +
+    "outlive the scope it was borrowed from, and " + where + " outlives every scope one " +
+    "could have been lent for.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+};
+
+/**
+ * Every type argument of a class is a storage position, because the class
+ * is a heap object that outlives the scope constructing it. Applied where
+ * a class is instantiated rather than only where one is spelled, so
+ * `new Array<Borrow<File>>()` and a `T` inferred from a borrow argument
+ * are caught alike.
+ */
+let rejectSecondClassTypeArguments = (
+  ctx: CheckerContext,
+  typeArgs: Array<Type>,
+  loc: SourceLocation | null
+): void => {
+  for (let a in typeArgs) {
+    rejectSecondClassStorage(ctx, a, "a container", loc);
+  }
+};
+
+/**
  * The derivation rule for a returned second-class value: it must derive
  * from exactly one borrow the function was handed. See ownership.md
  * §"Derived borrows".
@@ -2444,6 +2492,13 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
         for (let typeArgument in typeArguments) {
           ctx.resourceMentionOk = argsMayBeResource;
           let resolvedArg = resolveTypeAnnotation(ctx, typeArgument, allowInlineTuple);
+          // A generic type is a heap object, so its arguments are storage:
+          // `Array<Borrow<File>>` is the array case of the field rule. The
+          // handles themselves are the exception -- `Borrow<File>` is the
+          // borrow, not something holding one.
+          if (!argsMayBeResource) {
+            rejectSecondClassStorage(ctx, resolvedArg, "a container", typeArgument.loc);
+          }
                     resolvedArgs.push(resolvedArg);
         }
       }
@@ -2603,6 +2658,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     var optionals: HashSet<String> | null = null;
     for (let prop in properties) {
       let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, allowInlineTuple);
+      rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
             props[prop.name.name] = resolved;
       if (prop.optional) {
         optionals ??= new HashSet<String>();
@@ -2616,6 +2672,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     var i = 0;
     while (i < elementTypes.length) {
       let resolved = resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple);
+      rejectSecondClassStorage(ctx, resolved, "a tuple", elementTypes[i].loc);
             elTypes.push(resolved);
       i += 1;
     }
@@ -3401,6 +3458,7 @@ let instantiateGenericClass = (
       i += 1;
     }
     applyAndCheckTypeArguments(ctx, params, typeArgs, loc);
+    rejectSecondClassTypeArguments(ctx, typeArgs, loc);
     return instantiateClassType(ct, typeArgs);
   }
 
@@ -3433,7 +3491,8 @@ let instantiateGenericClass = (
 
   // Apply missing default types and check constraints before instantiating.
   applyAndCheckTypeArguments(ctx, params, typeArgs, loc);
-  
+  rejectSecondClassTypeArguments(ctx, typeArgs, loc);
+
   // Create instantiated class type using factory function.
   return instantiateClassType(ct, typeArgs);
 };
@@ -7335,6 +7394,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       inferredElementType = firstType;
     }
 
+    // Inference reaches `Array<Borrow<R>>` with no one writing the type
+    // down, so the annotation-level check above is not enough on its own.
+    rejectSecondClassStorage(ctx, inferredElementType, "an array", loc);
+
     var faType = ctx.resolvePreludeType("FixedArray");
     if (ctx.currentClass != null && (ctx.currentClass as ClassType).name == "FixedArray") {
       faType = ctx.currentClass as Type;
@@ -8348,6 +8411,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       let cp = caseParams[cpi];
       let fieldName = cp.name.name;
       var fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
+      rejectSecondClassStorage(ctx, fieldType, "a field", cp.typeAnnotation.loc);
 
       // Optional case params get nullable field type
       if (cp.optional) {
@@ -8429,6 +8493,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         };
         var fieldType = if (fd.typeAnnotation != null) {
           let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
+          rejectSecondClassStorage(ctx, resolved, "a field", fd.loc);
           resolved
         } else {
           new ErrorType() as Type

@@ -177,6 +177,15 @@ immediately trying to fix it (which can pollute the current task's context).
   Two look like distinct causes: an inline-tuple position is reported
   once per validation pass, and a class member is checked both on the
   declaration and on the member.
+- **A third cause**, found 2026-08-10 adding the borrow storage rule: a
+  `type` alias's annotation is resolved twice, so *every* diagnostic
+  raised while resolving one is emitted twice. It is not particular to
+  any check — `type Slot = {file: File};` on a resource class reports
+  "has no unwrapped form" twice on the same line and column. It is why
+  `semantics/ownership/borrow-is-not-stored.zena` spells its record case
+  at a `let` rather than at a `type`: one directive there records the
+  rule, where an alias would have needed two directives recording this
+  bug instead.
 - **Note**: those tests now carry a directive per copy, so they record
   what the compiler does. De-duplicating will fail them with
   `Expected error ... but found none there`, which is the signal to
@@ -1427,13 +1436,25 @@ found, returning false`, so the reachability pass is probably
 
   Both closures mutate the resource, and neither is tracked. The design
   already names the fix: `this` should be `Borrow<R>`, whose second-class
-  rules forbid closure capture. Those rules are specified in
-  ownership.md but **not implemented at all** — a `Borrow<R>` can also be
-  pushed into an `Array` and stored in a field with no diagnostic.
+  rules forbid closure capture.
+- **Half of the fix has landed.** Those rules were specified in
+  ownership.md and implemented nowhere; they are now enforced — a
+  `Borrow<R>` may not be captured by a closure, stored in a field or in a
+  container, or returned without deriving from a borrow the function was
+  handed (`semantics/ownership/borrow-does-not-escape.zena`,
+  `borrow-is-not-stored.zena`). What remains is typing `this` as
+  `Borrow<R>` inside a resource's methods, which is what points the rules
+  at the receiver and closes this hole.
 - **Workaround**: none.
 
-### A resource class may extend an ordinary class, which leaks bare aliases
+### RESOLVED: a resource class may extend an ordinary class, which leaks bare aliases
 
+- **Fixed**: 2026-08-10. A resource class's supertype chain must be
+  resources, and a non-resource may not extend a resource; both
+  directions are now checked rather than falling out of the spelling
+  rule, so `resource class Derived extends Handle` works and inherits
+  `dispose`. `semantics/ownership/inheritance.zena` covers all three
+  cases.
 - **Found**: 2026-08-08
 - **Severity**: high (silent)
 - **Details**: `isResource` is read from the declaration and never

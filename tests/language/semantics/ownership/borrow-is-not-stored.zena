@@ -1,0 +1,78 @@
+// @mode: check
+// The other half of second-class-ness: a `Borrow<R>` may not be put in the
+// heap. A field, an array element or a record field outlives every scope a
+// borrow could have been lent for, so storing one there is exactly the
+// escape the rules exist to stop — ownership.md §"The two axes", which
+// spells the field case out: `var cache: Borrow<File>` is rejected because
+// a field outlives any extent.
+//
+// This is a rule about the type, not about a particular assignment. Once
+// `Borrow<File>` cannot be a field's type or a container's element type,
+// there is no storage location left that could hold one, so no flow
+// analysis is needed to find the stores.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+
+resource class File {
+  name: String;
+  new(this.name);
+  :Disposable.dispose(): void {}
+}
+
+// A field of an ordinary class outlives any borrow put in it.
+class Cache {
+  var slot: Borrow<File>; // @error: may not be stored
+  new(this.slot);
+}
+
+// A resource's own field is no different: `Dir` may outlive the scope that
+// lent it the borrow, whatever its own owner does.
+resource class Dir {
+  var peer: Borrow<File>; // @error: may not be stored
+  new(this.peer);
+  :Disposable.dispose(): void {}
+}
+
+// A container element is heap storage, spelled out.
+let boxed = (f: Borrow<File>): i32 => {
+  let xs = new Array<Borrow<File>>(); // @error: may not be stored
+  return xs.length;
+};
+
+// ...and inferred, which is the form that needs no one to write the type
+// down: the element type comes from the borrow itself.
+let inferred = (f: Borrow<File>): i32 => {
+  let xs = [f]; // @error: may not be stored
+  return xs.length;
+};
+
+// A record field is a field. Spelled at a `let` rather than at a `type`
+// alias only because an alias's annotation is resolved twice, so every
+// diagnostic inside one is reported twice — see BUGS.md, and note it is
+// not particular to this rule.
+let recorded = (f: Borrow<File>): i32 => {
+  let slot: {file: Borrow<File>} = {file: f}; // @error: may not be stored
+  return 0;
+};
+
+// The gap this rule does not close: a generic container reaches the same
+// storage without ever naming a borrow. `box` is checked with `T`
+// unbound, where `[x]` is an ordinary array of an ordinary value, and the
+// call binds `T` to a borrow after that check has passed. Closing it needs
+// the `scoped T` opt-in — the escape-axis twin of `affine T` — by which a
+// container declares that it may hold second-class elements and gives up
+// escaping itself. See ownership.md §"Combinators: scopedness derives, and
+// generics opt in", which is deferred by name.
+let box = <T>(x: T): FixedArray<T> => [x];
+let escapes = (f: Borrow<File>): i32 => box(f).length; // @missing-error: may not be stored
+
+// An owner may be stored anywhere: `Own<R>` is first-class, and affine
+// rather than second-class. Nothing here is restricted.
+class OwnerCache {
+  var slot: Own<File>;
+  new(this.slot);
+}
+
+export function main(): i32 {
+  let f = new File('a');
+  return boxed(f) + inferred(f) + new OwnerCache(f).slot.name.length;
+}
