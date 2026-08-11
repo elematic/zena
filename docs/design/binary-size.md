@@ -912,6 +912,42 @@ rebaking across every accessor, scaffold body, and host helper — a
 separate pass, listed here so the two i32s stop looking like an
 oversight.
 
+## 15. An erasure is not a specialization
+
+`Store<K, V>` named from inside generic code erases to
+`Store<anyref, anyref>`, and that erasure passes `isConcrete` — anyref
+is a type. RTA took it for a real specialization: a fan-out target for
+every reached member of the generic class, and, once instantiated, a
+class with a vtable global. A vtable global is a `struct.new` over one
+`ref.func` per slot, so an erased body of every method came with it,
+for a class no value can ever have.
+
+The mentions that fabricate one are not made by code that runs.
+`#linkSuperAndVT` names a subclass template's supertype; walking a
+generic class's own TEMPLATE (done to register its members and fan out
+a concrete referrer per specialization) names its field types. Neither
+is inside an emitted body. What IS: a generic method of a real
+specialization, lowered once at its erasure — `Array<TypeParameterType>`'s
+`map` genuinely runs `new Array<R>` as `new Array<anyref>`, and
+`Array<anyref>` genuinely needs a constructor. `walkingTemplateOf`
+separates them: erased mentions instantiate only from inside a queue
+walk that is not a template's.
+
+The dead bodies were the mild half. `hash`/`eq` dispatch on their
+operand's type and have nothing to dispatch on at anyref, so a generic
+class whose methods use those intrinsics could not be subclassed at
+all — the erased body that subclassing forced could not be lowered:
+
+```
+zir unsupported: eq operand type @Store_s868_anyref_anyref.matches
+```
+
+`subclassed-generic.zena` (a `Cell<T>` and a `Counted<T> extends
+Cell<T>`) 478 → **400**; `binary-size_test.zena` asserts no `_anyref.`
+method survives in it, and
+`tests/language/execution/generics/subclassed-generic-eq-hash.zena`
+runs the shape that used to fail to compile.
+
 ### Tooling
 
 `zena build <file> -o out.wat` emits the WAT text of exactly what the

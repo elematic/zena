@@ -985,6 +985,87 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
   };
 };
 
+/**
+ * Whether `t` names a type parameter anywhere — whether it is a
+ * mention made from INSIDE generic code, and so whether
+ * eraseTypeParameters would change it.
+ *
+ * It mirrors that function's traversal (including looking through a
+ * type alias with its arguments substituted, since the alias keeps an
+ * unsubstituted target) rather than reusing `isConcrete`, which is
+ * about the type itself: an erased `Store<anyref, anyref>` IS concrete
+ * — anyref is a type — and only where it came from says whether any
+ * value of it can exist.
+ */
+export let mentionsTypeParameter = (wasm: WasmModule, t: Type): boolean => {
+  return match (t) {
+    case TypeParameterType: true
+    case TypeAliasType as ta: {
+      let tps = ta.typeParameters;
+      let targs = ta.typeArguments;
+      if (tps != null && targs != null) {
+        return mentionsTypeParameter(wasm, substituteTypeParamsInCodegen(wasm,
+            tps as Array<TypeParameterType>, targs as Array<Type>, ta.target));
+      }
+      mentionsTypeParameter(wasm, ta.target)
+    }
+    case ArrayType {elementType}: mentionsTypeParameter(wasm, elementType)
+    case ClassType as ct: {
+      if (ct.typeArguments == null) { return false; }
+      for (let arg in ct.typeArguments as Array<Type>) {
+        if (mentionsTypeParameter(wasm, arg)) { return true; }
+      }
+      false
+    }
+    case InterfaceType as it: {
+      if (it.typeArguments == null) { return false; }
+      for (let arg in it.typeArguments as Array<Type>) {
+        if (mentionsTypeParameter(wasm, arg)) { return true; }
+      }
+      false
+    }
+    case MixinType as mt: {
+      if (mt.typeArguments == null) { return false; }
+      for (let arg in mt.typeArguments as Array<Type>) {
+        if (mentionsTypeParameter(wasm, arg)) { return true; }
+      }
+      false
+    }
+    case FunctionType as ft: {
+      for (let p in ft.parameters) {
+        if (mentionsTypeParameter(wasm, p)) { return true; }
+      }
+      mentionsTypeParameter(wasm, ft.returnType)
+    }
+    case UnionType {types}: {
+      for (let subT in types) {
+        if (mentionsTypeParameter(wasm, subT)) { return true; }
+      }
+      false
+    }
+    case TupleType {elementTypes}: {
+      for (let subT in elementTypes) {
+        if (mentionsTypeParameter(wasm, subT)) { return true; }
+      }
+      false
+    }
+    case InlineTupleType {elementTypes}: {
+      for (let subT in elementTypes) {
+        if (mentionsTypeParameter(wasm, subT)) { return true; }
+      }
+      false
+    }
+    case RecordType as rec: {
+      let keys = rec.properties.keys();
+      while (let (true, key) = keys.next()) {
+        if (mentionsTypeParameter(wasm, rec.properties[key])) { return true; }
+      }
+      false
+    }
+    case _: false
+  };
+};
+
 export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName: String): WasmSignature => {
   let key = getClassMethodKey(getClassKey(ct), fieldName);
   if (let (true, f) = wasm.classMethodMap.get(key)) {

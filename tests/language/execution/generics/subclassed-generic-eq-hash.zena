@@ -1,0 +1,60 @@
+// @mode: run
+// @result: 111111
+// A generic class whose methods use the `eq`/`hash` intrinsics can be
+// subclassed, and can be held in a field of another generic class.
+//
+// Both used to fail to COMPILE. Naming `Store<K, V>` from inside
+// generic code — linking a subclass template's supertype, or walking
+// the template of a class with a `Store<K, V>` field — discovered the
+// erasure `Store<anyref, anyref>` and treated it as a real
+// specialization. That gave it a class vtable global, and a vtable
+// global ref.funcs its slots, so an erased body of every method was
+// emitted. `eq`/`hash` dispatch on their operand's type and have
+// nothing to dispatch on at anyref:
+//
+//   zir unsupported: eq operand type @Store_s868_anyref_anyref.matches
+
+import { Hashable } from 'zena:hashable';
+
+@intrinsic('eq')
+declare function equals<T>(a: T, b: T): boolean;
+@intrinsic('hash')
+declare function hashOf<T>(value: T): i32;
+
+class Store<K extends Hashable, V> {
+  var #k: K;
+  var #v: V;
+  new(k: K, v: V) : #k = k, #v = v;
+  matches(other: K): boolean { return equals(this.#k, other); }
+  keyHash(): i32 { return hashOf(this.#k); }
+  value: V {
+    get { return this.#v; }
+  }
+}
+
+final class SubStore<K extends Hashable, V> extends Store<K, V> {
+  new(k: K, v: V) : super(k, v);
+  matchesSelf(other: K): boolean { return equals(other, other); }
+}
+
+/** A generic class holding one: the same erasure, named a second way. */
+class Holder<K extends Hashable, V> {
+  var #inner: Store<K, V>;
+  new(k: K, v: V) : #inner = new Store<K, V>(k, v);
+  hit(k: K): boolean { return this.#inner.matches(k); }
+}
+
+export function main(): i32 {
+  let sub = new SubStore<String, i32>('y', 2);
+  let holder = new Holder<i32, String>(7, 'v');
+  var acc = 0;
+  // The inherited method still compares by the CONCRETE key type:
+  // String content, not reference identity.
+  if (sub.matches('y')) { acc += 1; }
+  if (!sub.matches('n')) { acc += 10; }
+  if (sub.keyHash() == hashOf('y')) { acc += 100; }
+  if (sub.value == 2) { acc += 1000; }
+  if (holder.hit(7)) { acc += 10000; }
+  if (sub.matchesSelf('q')) { acc += 100000; }
+  return acc;
+}

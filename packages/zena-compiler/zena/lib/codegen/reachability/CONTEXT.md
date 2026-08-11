@@ -52,6 +52,33 @@ graph TD
 - Resolves dynamic overrides, locating the concrete `MethodDefinition`, `AccessorDeclaration`, or `FieldDefinition` that implements a virtual slot on a subclass.
 - Collects implementing interfaces transitively.
 
+## An Erasure Is Not a Specialization
+
+`typeToValType` maps a type parameter to `anyref`, so `Store<K, V>`
+named from inside generic code is discovered as `Store<anyref, anyref>`
+— which `isConcrete` accepts, because anyref is a type. It must not
+become a specialization: every value the mention stands for is some
+real specialization, discovered on its own, while believing in the
+erasure makes it a fan-out target for every reached member of the
+generic class and, once instantiated, gives it a class vtable global
+whose slots force-reach an erased body of every method.
+
+Two mentions fabricate one, and neither is made by code that runs:
+`#linkSuperAndVT` naming a subclass template's supertype, and the walk
+of a generic class's own template naming its field types. Erased
+mentions that ARE real come from inside an emitted body — a generic
+method of a real specialization is lowered once at its erasure, where
+`new Array<R>` really does construct an `Array<anyref>`.
+`walkingTemplateOf` (set per referrer in `processQueues`) is what tells
+them apart; `mentionsTypeParameter` in `type-mapping.zena` is what asks
+whether a mention was erased at all.
+
+The consequence was not only dead code: `hash`/`eq` dispatch on their
+operand's type and have nothing to dispatch on at anyref, so a generic
+class whose methods use those intrinsics could not be subclassed
+(`zir unsupported: eq operand type`). See §15 of
+`docs/design/binary-size.md`.
+
 ## Code Generation Pipeline Integration
 
 The reachability pass is run in [module-generator.zena](../module-generator.zena):

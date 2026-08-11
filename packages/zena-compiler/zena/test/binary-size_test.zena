@@ -135,6 +135,13 @@ let arrayTarget = 'packages/zena-compiler/test-files/array-sum.zena';
 let helloTarget = 'packages/zena-compiler/test-files/hello-string.zena';
 
 /**
+ * A generic class and a subclass of it. Subclassing is what makes the
+ * base's vtable slots dispatchable, so this is the fixture that
+ * notices an ERASURE being believed in as a class.
+ */
+let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zena';
+
+/**
  * Ratchet these down as reachability improves. Do not raise one
  * without recording why in docs/design/binary-size.md — the number
  * moving up is the signal this test exists to give.
@@ -167,6 +174,31 @@ export let tests = suite('Binary size', (): void => {
       `${i32ToString(helloBudget)}-byte budget. Instantiating String is ` +
       `reaching more than a program with one literal uses — see ` +
       `docs/design/binary-size.md.`);
+  });
+
+  test('a subclassed generic emits no erased specialization', (ctx: TestContext): void => {
+    // `Counted<T> extends Cell<T>` names `Cell<T>` from inside generic
+    // code — linking the subclass template's supertype — and the
+    // erasure `Cell<anyref>` IS `isConcrete`, so RTA took it for a
+    // real specialization. That gave it a class vtable global, and a
+    // vtable global ref.funcs its slots, so an erased body of every
+    // method came with it: `$Cell_s867_anyref.get` and `.put`, dead,
+    // in a 478-byte module that is 400 bytes without them.
+    //
+    // Dead code is the mild failure. The same fiction makes a generic
+    // class whose methods use the `eq`/`hash` intrinsics impossible to
+    // COMPILE once subclassed — the erased body has no operand type to
+    // dispatch on. See
+    // tests/language/execution/generics/subclassed-generic-eq-hash.zena.
+    let wat = new WatGenerator('zena-cli', false).generate(programOf(subclassedTarget));
+    isTrue(!wat.contains('_anyref.'),
+      `${subclassedTarget} emits a method on an erased class type. No value ` +
+      `can have that type — every value the mention stands for is a real ` +
+      `specialization, so the body is dead, and if it used eq/hash it would ` +
+      `not lower at all.`);
+    isTrue(wat.contains('_i32.get'),
+      `${subclassedTarget} does not emit Cell<i32>.get — the check above is ` +
+      `passing because nothing is being emitted at all.`);
   });
 
   test('the hello-string WAT names everything it ships', (ctx: TestContext): void => {

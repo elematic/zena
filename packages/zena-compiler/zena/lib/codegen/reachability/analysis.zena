@@ -144,6 +144,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * Naming evidence is only collected when this is true.
    */
   var inQueueWalk = false;
+
+  /** See ReachabilityContext.walkingTemplateOf. */
+  var walkingTemplateOf: ClassType | null = null;
   var isRtaActive = true;
   referencedInterfaceMembers = new HashSet<String>();
   referencedReachableInterfaceMembers = new HashSet<String>();
@@ -2718,6 +2721,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           let ref = refItem as Referrer;
           this.currentReachable = ref.isReachable;
           this.inQueueWalk = true;
+          this.walkingTemplateOf = if (ref.classType != null &&
+              !isConcrete(ref.classType as ClassType)) {
+            ref.classType
+          } else {
+            null
+          };
           let suffix = if (ref.classType != null) "@" + (getClassKey(ref.classType as ClassType) as String) else "";
           let key = (if (ref.isSymbol) "sym:" + i32ToString(ref.symId as i32) else "node:" + i32ToString(ref.nodeId)) + suffix;
 
@@ -2914,6 +2923,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           }
         }
         this.inQueueWalk = false;
+        this.walkingTemplateOf = null;
         
         progress = false;
         this.currentReachable = true;

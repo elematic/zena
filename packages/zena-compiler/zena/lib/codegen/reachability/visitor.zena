@@ -15,7 +15,7 @@ import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
 import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, mentionsTypeParameter, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -255,38 +255,63 @@ export final class TypeLowerer implements TypeLowererInterface {
       
       // Register specialized class struct & methods if generic instantiation
       if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0 && isConcrete(ct)) {
-        if (!this.pass.specializedClassTypes.has(lookupId)) {
-          this.pass.specializedClassTypes[lookupId] = new Array<ClassType>();
-        }
-        let list = this.pass.specializedClassTypes[lookupId];
-        var found = false;
-        for (let existing in list) {
-          if (getClassKey(existing) == getClassKey(ct)) { found = true; break; }
-        }
-        if (!found) {
-          list.push(ct);
-          if (let (true, reachedSet) = this.pass.reachedClassMembers.get(lookupId)) {
-            let rcKeys = reachedSet.keys();
-            while (let (true, nid) = rcKeys.next()) {
-              this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, this.pass.currentReachable));
-            }
+        // `Store<K, V>` erases to `Store<anyref, anyref>`, which IS
+        // concrete — anyref is a type — but whether any value can have
+        // that type depends on WHO named it:
+        //
+        //   - a generic method of a real specialization, lowered once
+        //     at its erasure, genuinely runs `new Array<R>` as
+        //     `new Array<anyref>`. Real: keep instantiating.
+        //   - a walk of a generic class's own TEMPLATE, or a layout or
+        //     linking pass outside any walk (`#linkSuperAndVT` names a
+        //     subclass template's supertype exactly this way), names a
+        //     type whose every value is some real specialization.
+        //     Fiction.
+        //
+        // A fiction must not become a specialization: that makes it a
+        // fan-out target for every reached member of the generic class
+        // and, once instantiated, gives it a class vtable global — and
+        // a vtable global ref.funcs its slots, so an erased body of
+        // every method gets emitted. Those bodies do not always lower:
+        // `hash`/`eq` dispatch on their operand's type and have nothing
+        // to dispatch on at anyref, which is what made a generic class
+        // whose methods use them impossible to subclass. Its struct is
+        // still registered below — erased signatures and fields refer
+        // to it.
+        let isErasedMention = mentionsTypeParameter(this.pass.wasm, rawT as Type) &&
+            (!this.pass.inQueueWalk || this.pass.walkingTemplateOf != null);
+        let specializer = this.pass.specializer;
+        if (!isErasedMention) {
+          if (!this.pass.specializedClassTypes.has(lookupId)) {
+            this.pass.specializedClassTypes[lookupId] = new Array<ClassType>();
           }
-          if (this.pass.currentReachable) {
-            if (let (true, reachedSet) = this.pass.reachedReachableClassMembers.get(lookupId)) {
-              let rrKeys = reachedSet.keys();
-              while (let (true, nid) = rrKeys.next()) {
-                this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, true));
+          let list = this.pass.specializedClassTypes[lookupId];
+          var found = false;
+          for (let existing in list) {
+            if (getClassKey(existing) == getClassKey(ct)) { found = true; break; }
+          }
+          if (!found) {
+            list.push(ct);
+            if (let (true, reachedSet) = this.pass.reachedClassMembers.get(lookupId)) {
+              let rcKeys = reachedSet.keys();
+              while (let (true, nid) = rcKeys.next()) {
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, this.pass.currentReachable));
+              }
+            }
+            if (this.pass.currentReachable) {
+              if (let (true, reachedSet) = this.pass.reachedReachableClassMembers.get(lookupId)) {
+                let rrKeys = reachedSet.keys();
+                while (let (true, nid) = rrKeys.next()) {
+                  this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, true));
+                }
               }
             }
           }
+
+          if (this.pass.isRtaActive && this.pass.instantiatedClasses.has(lookupId)) {
+            specializer.instantiateClassType(ct, model);
+          }
         }
-
-        let specializer = this.pass.specializer;
-        if (this.pass.isRtaActive && this.pass.instantiatedClasses.has(lookupId)) {
-          specializer.instantiateClassType(ct, model);
-        }
-
-
 
         if (this.pass.classDecls.has(lookupId)) {
           let classDecl = this.pass.classDecls[lookupId];

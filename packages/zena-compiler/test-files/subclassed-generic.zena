@@ -1,0 +1,27 @@
+// A generic class with one type parameter, and a subclass of it.
+// Subclassing is what makes the base's vtable slots dispatchable, so
+// every method the base has is emitted for every class type the
+// compiler believes exists — which is why this is the fixture that
+// notices the ERASURE `Cell<anyref>` being believed in. No value can
+// have that type: naming `Cell<T>` from inside generic code (linking
+// this subclass's supertype) is not evidence that one does.
+// `binary-size_test.zena` asserts the erased specialization is not
+// emitted.
+class Cell<T> {
+  var #value: T;
+  new(v: T) : #value = v;
+  get(): T { return this.#value; }
+  put(v: T): void { this.#value = v; }
+}
+
+final class Counted<T> extends Cell<T> {
+  var #reads: i32 = 0;
+  new(v: T) : super(v);
+  reads(): i32 { return this.#reads; }
+}
+
+export let main = (): i32 => {
+  let c = new Counted<i32>(41);
+  c.put(c.get() + 1);
+  return c.get() + c.reads();
+};
