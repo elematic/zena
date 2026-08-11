@@ -72,6 +72,21 @@ suite('language service API', () => {
     assert.deepStrictEqual(diagnostics, []);
   });
 
+  // A clean program must check clean all the way down. A warning in a
+  // module it merely imports is still reported, with that module's `file`
+  // and its line numbers — an embedder with one open document has nowhere
+  // sensible to put it, so it lands on the wrong file's last line.
+  test('a program awaiting zena:time reports nothing, in any file', () => {
+    const diagnostics = service.check(
+      PATH,
+      `import {sleep} from 'zena:time';\n` +
+        `export async function main() {\n` +
+        `  await sleep(1);\n` +
+        `}\n`,
+    );
+    assert.deepStrictEqual(diagnostics, []);
+  });
+
   test('reports hover type information', () => {
     const source = 'let greeting = 42;\nlet other = greeting;\n';
     const hover = service.hover(PATH, source.indexOf('greeting;') + 1, source);

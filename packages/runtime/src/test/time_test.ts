@@ -15,7 +15,12 @@ import {suite, test} from 'node:test';
 import assert from 'node:assert';
 
 import {compile} from './compile-zena.js';
-import {instantiate, createTimeHost, run} from '../index.js';
+import {
+  instantiate,
+  createTimeHost,
+  createStringReader,
+  run,
+} from '../index.js';
 
 const run_ = async (source: string) => {
   const wasm = compile(source);
@@ -57,6 +62,43 @@ suite('Runtime - zena:time host integration', () => {
       }
     `);
     assert.strictEqual(await main(), 1234);
+  });
+
+  // What an embedder with its own output pane does — the playground's
+  // worker being the one in this repo. It overrides `console`'s string
+  // methods and leaves every other import to instantiate(), which is the
+  // only way it gets `time` at all: a hand-rolled import object that
+  // forgets it fails to instantiate the moment a program calls sleep().
+  test('an embedder sees output from both sides of an await', async () => {
+    const wasm = compile(`
+      import { sleep } from 'zena:time';
+
+      export async function main() {
+        console.log('A');
+        await sleep(20);
+        console.log('B');
+      }
+    `);
+
+    const logs: string[] = [];
+    let exports: WebAssembly.Exports | undefined;
+    const result = await instantiate(wasm, {
+      console: {
+        log_string: (strRef: unknown, length: number) => {
+          logs.push(createStringReader(exports!)(strRef, length));
+        },
+      },
+    });
+    const instance =
+      (result as {instance?: WebAssembly.Instance}).instance ??
+      (result as WebAssembly.Instance);
+    exports = instance.exports;
+
+    // 'B' is on the far side of a timer, so it arrives because run()
+    // drives the event loop — not because main() returned.
+    assert.deepStrictEqual(logs, []);
+    await run(instance);
+    assert.deepStrictEqual(logs, ['A', 'B']);
   });
 
   test('sleep(0) is still asynchronous', async () => {

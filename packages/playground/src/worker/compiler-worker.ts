@@ -7,7 +7,7 @@
  * `@zena-lang/language-service`; the Wasm poking lives there.
  */
 
-import {createStringReader, createConsoleImports} from '@zena-lang/runtime';
+import {createStringReader, instantiate, run} from '@zena-lang/runtime';
 import {
   createLanguageService,
   createVirtualFileReader,
@@ -91,10 +91,25 @@ function withService(
 
 function check(request: CheckRequest): void {
   withService(request.id, (service) => {
-    const diagnostics = service.check(request.path, request.source);
+    const all = service.check(request.path, request.source);
+
+    // A check reports on every module it reached, not just this document,
+    // and a diagnostic from an imported module carries *that* module's
+    // line numbers. Placing one in the editor would pin it to whatever
+    // line of this document happened to be closest — so only the ones
+    // that belong here become markers, and an error somewhere else goes
+    // to the console pane, where it can say which file it came from.
+    const diagnostics = all.filter((d) => d.file === request.path);
+    for (const d of all) {
+      if (d.file !== request.path && d.severity === 'error') {
+        sendLog('error', `${d.file}:${d.line}:${d.column}: ${d.message}`);
+      }
+    }
     post({type: 'diagnostics', id: request.id, diagnostics});
 
-    if (request.run && !diagnostics.some((d) => d.severity === 'error')) {
+    // Gated on *all* errors: an error in an imported module fails the
+    // compile too, however far from this document it is.
+    if (request.run && !all.some((d) => d.severity === 'error')) {
       void runProgram(service, request.path, request.source);
     }
   });
@@ -130,6 +145,14 @@ function completions(request: CompletionsRequest): void {
  *
  * The program is a second, independent Wasm instance, and it needs its own
  * string reader: the strings it logs live in its heap, not the compiler's.
+ *
+ * The runtime's `instantiate` supplies the imports a host-target module
+ * expects — `env`, `console`, `time`, and the host-async completion
+ * plumbing behind them — and only `console`'s string methods are
+ * overridden here, to reach the pane instead of the worker's own console.
+ * `run` then drives the program to completion: an async `main` returns
+ * before its timers have fired, so its value (and its later output)
+ * arrives only once nothing is outstanding.
  */
 async function runProgram(
   service: ZenaLanguageService,
@@ -143,23 +166,27 @@ async function runProgram(
   }
 
   let programExports: WebAssembly.Exports | undefined;
-  const consoleImports = createConsoleImports(() => programExports);
+  let readString: ((strRef: unknown, length: number) => string) | undefined;
   const logToPane =
     (level: ConsoleLevel) => (strRef: unknown, length: number) => {
-      if (programExports) {
-        sendLog(level, createStringReader(programExports)(strRef, length));
+      if (!programExports) {
+        return;
       }
+      readString ??= createStringReader(programExports);
+      sendLog(level, readString(strRef, length));
     };
 
   try {
-    const {instance} = await WebAssembly.instantiate(bytes, {
+    const result = await instantiate(bytes, {
       console: {
-        ...consoleImports,
         log_string: logToPane('log'),
         error_string: logToPane('error'),
         warn_string: logToPane('warn'),
         info_string: logToPane('info'),
+        debug_string: logToPane('log'),
       },
+      // A host-target module still declares whatever WASI its stdlib
+      // reached; there is no filesystem or clock behind it in a worker.
       wasi_snapshot_preview1: {
         fd_write: () => 0,
         proc_exit: () => 0,
@@ -167,16 +194,11 @@ async function runProgram(
         environ_sizes_get: () => 0,
         clock_time_get: () => 0,
       },
-      env: {
-        getStackTrace: () => null,
-        captureStackTrace: () => null,
-        formatStackTrace: () => null,
-      },
     });
+    const instance = 'instance' in result ? result.instance : result;
     programExports = instance.exports;
 
-    const main = instance.exports.main;
-    if (typeof main !== 'function') {
+    if (typeof instance.exports.main !== 'function') {
       sendLog(
         'info',
         `Compiled, but there is nothing to run — export a \`main\` (exports: ${
@@ -186,9 +208,9 @@ async function runProgram(
       return;
     }
 
-    const result = main();
-    if (result !== undefined && result !== null && typeof result !== 'object') {
-      sendLog('info', `main() returned ${result}`);
+    const value = await run(instance);
+    if (value !== undefined && value !== null && typeof value !== 'object') {
+      sendLog('info', `main() returned ${value}`);
     }
   } catch (err) {
     sendLog('error', `Program error: ${errorMessage(err)}`);
