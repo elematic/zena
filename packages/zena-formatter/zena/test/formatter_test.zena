@@ -163,6 +163,31 @@ let tests = suite('formatter', () => {
     check('class method idempotent', second, result);
   });
 
+  test('formats a resource class', (t: TestContext) => {
+    // `resource` is a modifier the printer has to put back, and the
+    // `extends Resource` the parser synthesizes for it is one it has to
+    // leave off: printed, it would say an ordinary class extends a
+    // resource, which is an error rather than the same class again.
+    let input = "resource class File {\n  #fd: i32;\n}\n";
+    check('resource class', format(input), input);
+    let derived = "resource class Derived extends File {}\n";
+    check('resource subclass', format(derived), derived);
+    let abstractResource = "export resource abstract class Base {}\n";
+    check('abstract resource', format(abstractResource), abstractResource);
+  });
+
+  test('formats a declared receiver', (t: TestContext) => {
+    // The receiver leads the parameter list without being a parameter, so
+    // printing has to put it back — dropping it would silently turn a
+    // consuming method into a borrowing one.
+    let alone = format("resource class File {\n  dispose(this: Own<this>): void {}\n}\n");
+    check('receiver alone', alone,
+        "resource class File {\n  dispose(this: Own<this>): void {}\n}\n");
+    let withParams = format("resource class File {\n  into(this: Own<this>, n: i32): i32 {\n    return n;\n  }\n}\n");
+    check('receiver with params', withParams,
+        "resource class File {\n  into(this: Own<this>, n: i32): i32 {\n    return n;\n  }\n}\n");
+  });
+
   test('formats interface', (t: TestContext) => {
     let input = "interface Drawable {\n  draw(): void;\n}\n";
     let result = format(input);

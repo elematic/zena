@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 42
+
+// A declared receiver is a checking-time thing: the handles are erased, and
+// `this` is already every method's first argument, so a consuming method
+// lowers exactly like a borrowing one. What must hold at runtime is that the
+// receiver stays out of the parameter list — an argument shifted by one would
+// pass `scale` where `addend` belongs.
+//
+// See docs/design/ownership.md §"Release consumes its receiver".
+
+import { Own, Disposable } from 'zena:ownership';
+
+var released = 0;
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+
+  /** A consuming method is not always the release action, and takes args. */
+  intoSum(this: Own<this>, addend: i32, scale: i32): i32 {
+    return this.#fd * scale + addend;
+  }
+
+  :Disposable.dispose(this: Own<this>): void {
+    released += 1;
+  }
+}
+
+export function main(): i32 {
+  let f = new File(4);
+  let n = f.intoSum(2, 10);
+
+  let g = new File(1);
+  g.:Disposable.dispose();
+
+  return if (released == 1) n else 0;
+}

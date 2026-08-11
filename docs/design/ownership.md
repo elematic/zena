@@ -1149,10 +1149,9 @@ of surface syntax.
 | **O3.5** | `affine T` type parameters + container opt-in                                                             | O2, A0's `where` bounds           | G, V           |
 | **O4**   | `isolated<T>`/`frozen<T>`/regions                                                                         | O2                                | V, A           |
 
-Implementation currently trails this document in five known places: the
-consuming receiver in §"Release consumes its receiver" needs receiver-type
-syntax (O0.1) and is not yet enforced, `Scoped<T>` is design-only, `disown`
-does not yet **consume** its argument (that waits on move checking, O2), the
+Implementation currently trails this document in four known places: `Scoped<T>`
+is design-only, `disown` does not yet **consume** its argument (that waits on
+move checking, O2), the
 `dropped` state is declared but never set, so adopting an already-released
 resource is not the clean error it is specified to be — nothing releases
 anything until implicit drop (O3) — and the liveness rule in §"Borrows and
@@ -1166,8 +1165,9 @@ exactly one borrow the function was handed. The two-or-more case in
 §"Derived borrows" is rejected rather than resolved; naming the source
 positionally is still open.
 
-**`this` inside a resource's methods is a `Borrow<R>`**, which is what points
-those rules at the receiver. It has to be *some* handle — a resource has no
+**`this` inside a resource's methods is a `Borrow<R>` unless the method says
+otherwise**, which is what points those rules at the receiver. It has to be
+*some* handle — a resource has no
 unwrapped form, so a bare `this` is a reference the handle regime cannot see
 — and `Own<R>` would be wrong, since the method did not receive ownership and
 must not release or move its receiver. So a method's receiver is the one
@@ -1176,6 +1176,39 @@ is legal, while capturing `this` in a closure, storing it in a container, or
 passing it where an `Own<R>` is expected are all rejected. Capture needed its
 own check, because `this` is captured as a receiver rather than as a captured
 symbol and the symbol-keyed rule cannot see it.
+
+**Saying otherwise is what O0.1 adds.** A method may declare its receiver as
+its first parameter — `intoFd(this: Own<this>, scale: i32): i32` — and `this`
+in its body is then the owner, free to be moved on to something that takes
+ownership. The declaration is not a parameter: the receiver is implicit in
+every method already, so it is kept out of the parameter list rather than
+shifting every argument's position, and it lowers to nothing, since the
+handles are erased.
+
+Only `Own<this>` and `Borrow<this>` are receivers, and only on a resource
+class's instance method. `this` rather than the class written out is
+load-bearing under inheritance, as §"Release consumes its receiver" gives it;
+an ordinary class has no owning handle a caller could produce, so a receiver
+declared there could never be satisfied; and `Unmanaged<this>` is excluded for
+the reason `Unmanaged<R>` has no user-callable dispose — it is not an owner. A
+receiver is a class-member form, so an interface signature cannot declare one,
+which is the parse-level half of one interface signature not serving both
+populations.
+
+What the declaration buys is enforced at the call: **a consuming method is
+reachable only through an `Own<R>`**. Calling `dispose` on a `Borrow<R>` or an
+`Unmanaged<R>` is an error, and so is a borrowing method releasing its own
+receiver, since its `this` is a borrow like any other. That check holds
+before move checking does — the call is rejected on the handle's type, not on
+what a flow graph knows about it. An override may not change the receiver it
+inherits in either direction: a call through the base type must do the same
+thing to the object whichever override it reaches.
+
+A resource class's release action must therefore be the consuming form, which
+is the contract §Resource states. What is still missing is on the caller's
+side: after `d.:Disposable.dispose()` the compiler does not yet know `d` was
+moved, so a later use is unreported. That is move checking (O2), and it is the
+same gap `disown` has.
 
 The rules follow §"`Borrow<T>` is the identity at unrestricted
 instantiations": they apply to a borrow of a resource or of a bare type

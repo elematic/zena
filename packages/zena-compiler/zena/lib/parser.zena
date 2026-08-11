@@ -3135,6 +3135,22 @@ export final class Parser {
   
   #parseMethodBody(name: Node, typeParameters: Array<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isDeclare: boolean, isStatic: boolean, isGenerator: boolean, isAsync: boolean, decorators: Array<Decorator>, startToken: Token): MethodDefinition {
     this.#consume(TokenType.LParen, "Expected '(' after method name");
+
+    // An explicitly declared receiver: `dispose(this: Own<this>)`. It leads
+    // the parameter list but is not a parameter — the receiver is implicit in
+    // every method — so it is parsed here rather than in `#parseParameters`,
+    // which also keeps `this: T` out of arrow functions and top-level
+    // `function` declarations, where there is no receiver to declare.
+    var receiver: TypeAnnotation | null = null;
+    if (this.#check(TokenType.This) && this.#peek2().kind == TokenType.Colon) {
+      this.#advance(); // consume 'this'
+      this.#advance(); // consume ':'
+      receiver = this.#parseTypeAnnotation();
+      if (!this.#check(TokenType.RParen)) {
+        this.#consume(TokenType.Comma, "Expected ',' after receiver");
+      }
+    }
+
     let params = this.#parseParameters();
     this.#consume(TokenType.RParen, "Expected ')' after parameters");
     
@@ -3208,7 +3224,7 @@ export final class Parser {
           initListResult = combined;
         }
         
-        return new MethodDefinition(name, typeParameters, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, this.#makeLocation(startToken));
+        return new MethodDefinition(name, typeParameters, receiver, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, this.#makeLocation(startToken));
       } else {
         returnType = this.#parseTypeAnnotation();
       }
@@ -3232,7 +3248,7 @@ export final class Parser {
       thisInitResult = thisInits;
     }
     
-    return new MethodDefinition(name, typeParameters, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, this.#makeLocation(startToken));
+    return new MethodDefinition(name, typeParameters, receiver, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, this.#makeLocation(startToken));
   }
   
   #parseFieldInitializer(): FieldInitializer {

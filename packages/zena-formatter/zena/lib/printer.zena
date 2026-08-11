@@ -460,6 +460,7 @@ let printForInStatement = (stmt: ForInStatement): Doc => {
 let printClassDeclaration = (decl: ClassDeclaration): Doc => {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
+  if (decl.isResource) { parts.push(text('resource ')); }
   if (decl.isAbstract) { parts.push(text('abstract ')); }
   if (decl.isFinal) { parts.push(text('final ')); }
   if (decl.isSealed) { parts.push(text('sealed ')); }
@@ -484,9 +485,23 @@ let printClassDeclaration = (decl: ClassDeclaration): Doc => {
     parts.push(text(')'));
   }
 
-  if (decl.superClass != null) {
+  // A `resource class` with no written superclass is parsed as extending
+  // `Resource`, the root of every resource hierarchy. Printing that clause
+  // back would turn the class into an ordinary one extending a resource,
+  // which is an error rather than a different spelling of the same thing.
+  var superClass = decl.superClass;
+  if (decl.isResource && superClass != null) {
+    match (superClass as TypeAnnotation) {
+      case NamedTypeAnnotation {name}: {
+        if (name == 'Resource') { superClass = null; }
+      }
+      case _: {}
+    }
+  }
+
+  if (superClass != null) {
     parts.push(text(' extends '));
-    parts.push(printTypeAnnotation(decl.superClass as TypeAnnotation));
+    parts.push(printTypeAnnotation(superClass as TypeAnnotation));
   }
 
   if (decl.onType != null) {
@@ -643,6 +658,12 @@ let printMethodDefinition = (method: MethodDefinition): Doc => {
   }
 
   parts.push(text('('));
+  // A declared receiver leads the parameter list without being one of them.
+  if (method.receiver != null) {
+    parts.push(text('this: '));
+    parts.push(printTypeAnnotation(method.receiver as TypeAnnotation));
+    if (method.params.length > 0) { parts.push(text(', ')); }
+  }
   parts.push(printParams(method.params));
   parts.push(text(')'));
 

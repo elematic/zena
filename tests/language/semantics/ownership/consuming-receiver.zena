@@ -1,0 +1,103 @@
+// @mode: check
+
+// A resource's release action ends the object's life, so it takes the owner
+// rather than a borrow: `this: Own<this>` declares the receiver explicitly.
+// `Own<this>` rather than a written-out `Own<File>` is what makes it right
+// under inheritance — on a subclass it means `Own<Subclass>`.
+// See docs/design/ownership.md §"Release consumes its receiver".
+
+import { Own, Borrow, Unmanaged, Disposable } from 'zena:ownership';
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+
+  :Disposable.dispose(this: Own<this>): void {}
+
+  /** Every other method borrows: it does not end the object's life. */
+  fd(): i32 { return this.#fd; }
+
+  /** The borrowing receiver is the default, and may be spelled out. */
+  raw(this: Borrow<this>): i32 { return this.#fd; }
+
+  /** A consuming method need not be the release action. */
+  intoFd(this: Own<this>): i32 { return this.#fd; }
+
+  // A method that only borrows may not release what it was lent.
+  close(): void { this.:Disposable.dispose(); }  // @error: consumes its receiver
+}
+
+// An owner may release.
+let closes = (f: Own<File>): void => {
+  f.:Disposable.dispose();
+};
+
+// A borrow may not: it never had the object's life to end.
+let borrows = (f: Borrow<File>): void => {
+  f.:Disposable.dispose();  // @error: consumes its receiver
+};
+
+// Nor may an unmanaged handle — it is not an owner, which is why a disowned
+// resource is either scoped with `using` or adopted back.
+let unmanaged = (f: Unmanaged<File>): void => {
+  f.:Disposable.dispose();  // @error: consumes its receiver
+};
+
+// Inside a consuming method the receiver is the owner, so it may be handed on
+// to something that takes ownership — which `this` as a borrow may not.
+resource class Handoff {
+  new();
+  :Disposable.dispose(this: Own<this>): void { consumeHandoff(this); }
+  leaks(): void { consumeHandoff(this); }  // @error: not assignable
+}
+
+function consumeHandoff(h: Own<Handoff>): void {}
+
+// The receiver must be a handle over `this`. A written-out class name means
+// the wrong thing under inheritance, so it is not the way to spell it.
+resource class WrittenOut {
+  new();
+  :Disposable.dispose(this: Own<this>): void {}
+  eject(this: Own<WrittenOut>): i32 { return 0; }  // @error: 'Own<this>'
+}
+
+// `Unmanaged` is not a receiver: nothing is handed to a method through one.
+resource class Unmanaging {
+  new();
+  :Disposable.dispose(this: Own<this>): void {}
+  poke(this: Unmanaged<this>): void {}  // @error: 'Own<this>' or 'Borrow<this>'
+}
+
+// An ordinary class has no owning handle a caller could produce, so a
+// declared receiver there could never be satisfied.
+class Plain {
+  v: i32;
+  new(this.v);
+  eat(this: Own<this>): void {}  // @error: ordinary class
+}
+
+// A mixin is applied to classes it does not know, so what `this` is there is
+// not this declaration's to say.
+mixin Loggable {
+  log(this: Borrow<this>): void {}  // @error: mixin
+}
+
+// A static method has no receiver to declare.
+resource class Statics {
+  new();
+  :Disposable.dispose(this: Own<this>): void {}
+  static make(this: Borrow<this>): void {}  // @error: static method
+}
+
+// The receiver is part of the signature, so an override may not change it:
+// a call through the base type would otherwise move a receiver the override
+// only borrows, or borrow one it moves.
+resource class Strengthens extends File {
+  new() : super(1);
+  fd(this: Own<this>): i32 { return 0; }  // @error: part of the signature
+}
+
+resource class Weakens extends File {
+  new() : super(2);
+  intoFd(this: Borrow<this>): i32 { return 0; }  // @error: part of the signature
+}

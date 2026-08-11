@@ -129,9 +129,38 @@ export final class FieldInfo extends MemberInfo {
   ) : super(type, isAbstract, isStatic, isPrivate);
 }
 
+/**
+ * What a method does to the object it is called on.
+ *
+ * Nearly every method borrows its receiver, and says so by declaring nothing.
+ * A release action ends the object's life, so it declares `this: Own<this>`
+ * and may only be reached through the owner. See docs/design/ownership.md
+ * §"Release consumes its receiver".
+ */
+export enum ReceiverKind {
+  /** No receiver declared: borrowing, the default. */
+  Implicit,
+  /** `this: Borrow<this>` — the default, spelled out. */
+  Borrowing,
+  /** `this: Own<this>` — the method consumes what it is called on. */
+  Owning,
+  /** Declared, but not a receiver the language admits; already reported. */
+  Invalid,
+}
+
 export final class MethodInfo extends MemberInfo {
   // TODO: Move to MemberInfo
   var isFinal: boolean;
+
+  /**
+   * The receiver this method declared. Call sites read it to keep a
+   * consuming method out of reach of a borrow, and an override is checked
+   * against the one it inherits — a receiver is part of the signature.
+   */
+  var receiverKind: ReceiverKind = ReceiverKind.Implicit;
+
+  /** Whether this method consumes what it is called on. */
+  consumesReceiver(): boolean { return this.receiverKind == ReceiverKind.Owning; }
 
   new(
     // TODO: Make this FunctionType

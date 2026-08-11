@@ -10,7 +10,7 @@ import { Own, Disposable } from 'zena:ownership';
 resource class Descriptor {
   #handle: i32;
   new(handle: i32) : #handle = handle;
-  :Disposable.dispose(): void {}
+  :Disposable.dispose(this: Own<this>): void {}
 }
 
 let usesIt = (d: Own<Descriptor>): void => {};
@@ -19,6 +19,17 @@ let usesIt = (d: Own<Descriptor>): void => {};
 resource class Leaky {
   #handle: i32;
   new(handle: i32) : #handle = handle;
+}
+
+// Releasing ends the resource's life, so it takes the owner rather than a
+// borrow. That is part of the `resource class` contract rather than of
+// `Disposable`, whose ordinary implementers are aliasable and have no owner
+// to consume. See docs/design/ownership.md §"Release consumes its receiver".
+// @error: borrowing receiver
+resource class Borrowing {
+  #handle: i32;
+  new(handle: i32) : #handle = handle;
+  :Disposable.dispose(): void {}
 }
 
 // An ordinary class needs no dispose — it is not a resource.

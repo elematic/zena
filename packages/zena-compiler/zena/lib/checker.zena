@@ -96,6 +96,7 @@ import {
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
   UnionType as UnionT, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo,
+  ReceiverKind,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
   instantiateTypeAliasType, instantiateFunctionType, GenericNamedType,
@@ -331,6 +332,12 @@ final class CheckerContext {
 
   /** Whether we are currently checking an interface declaration body. */
   var #inInterface = false;
+
+  /**
+   * Whether the method being checked declared `this: Own<this>`, which makes
+   * `this` in its body the owner rather than a borrow.
+   */
+  var #owningReceiver = false;
 
   /**
    * Loop nesting depth (for break/continue validation).
@@ -1534,6 +1541,11 @@ final class CheckerContext {
     }
   }
 
+  /** Whether the method being checked consumes its receiver. */
+  owningReceiver: boolean { get { return this.#owningReceiver; } }
+
+  setOwningReceiver(v: boolean): void { this.#owningReceiver = v; }
+
   /** Enter an interface declaration context (for ThisType resolution). */
   enterInterface(): void { this.#inInterface = true; }
   /** Exit an interface declaration context. */
@@ -2440,6 +2452,123 @@ let checkBorrowDerivation = (
     `Which borrow the returned '${shown}' derives from is ambiguous: this function has ` +
     `${sources} borrow parameters, and the result is bounded by the scope of ` +
     "whichever one it borrows from.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+};
+
+/**
+ * Whether a receiver annotation is `<handle><this>` — `Own<this>` for the
+ * consuming receiver, `Borrow<this>` for the default spelled out.
+ *
+ * Matched on the annotation's syntax rather than on a resolved type. A
+ * receiver is a fixed grammatical form rather than an arbitrary type
+ * expression, and matching it by shape is what keeps `Own<this>` from being
+ * reachable through an alias that hides which handle was meant. The `Own`
+ * named here is the one `wrapResourceInOwn` resolves for `new`.
+ */
+let receiverHandleIs = (ann: TypeAnnotation, handle: String): boolean => {
+  match (ann) {
+    case NamedTypeAnnotation {name, typeArguments}: {
+      if (name != handle || typeArguments == null) { return false; }
+      let args = typeArguments as Array<TypeAnnotation>;
+      return args.length == 1 && args[0] is ThisTypeAnnotation;
+    }
+    case _: { return false; }
+  }
+};
+
+/**
+ * Whether `md` declares an owning receiver, so that `this` in its body is
+ * the owner rather than a borrow. Reports nothing: the body pass runs after
+ * the member pass has already validated the declaration, and a method whose
+ * receiver was rejected falls back to the borrowing default.
+ */
+let declaresOwningReceiver = (md: MethodDefinition): boolean => {
+  let r = md.receiver;
+  if (r == null) { return false; }
+  return receiverHandleIs(r as TypeAnnotation, "Own");
+};
+
+/**
+ * Validates a declared receiver and reports what it is.
+ *
+ * A receiver is only declarable where the handles reach: on a resource
+ * class's instance method. An ordinary class hands its methods a bare
+ * reference — nothing can produce an `Own<Plain>` to call a consuming method
+ * with — and a static method has no receiver at all. `Unmanaged<this>` is
+ * excluded for the reason ownership.md gives for `Unmanaged<R>` having no
+ * user-callable dispose: it is not an owner, so it cannot be handed the one
+ * receiver worth declaring.
+ *
+ * See docs/design/ownership.md §"Release consumes its receiver".
+ */
+let checkReceiverDeclaration = (
+  ctx: CheckerContext,
+  classType: ClassType,
+  md: MethodDefinition
+): ReceiverKind => {
+  let r = md.receiver;
+  if (r == null) { return ReceiverKind.Implicit; }
+  let ann = r as TypeAnnotation;
+  if (md.isStatic) {
+    ctx.error(
+      "A static method has no receiver to declare: it is called on the class rather " +
+      "than on an instance.",
+      DiagnosticCode.TypeMismatch,
+      md.loc
+    );
+    return ReceiverKind.Invalid;
+  }
+  if (!classType.isResource) {
+    ctx.error(
+      "Only a resource class's method may declare its receiver. '" + classType.name +
+      "' is an ordinary class, so its methods are called on a bare reference and no " +
+      "caller could produce a handle to satisfy a declared receiver.",
+      DiagnosticCode.TypeMismatch,
+      md.loc
+    );
+    return ReceiverKind.Invalid;
+  }
+  if (receiverHandleIs(ann, "Own")) { return ReceiverKind.Owning; }
+  if (receiverHandleIs(ann, "Borrow")) { return ReceiverKind.Borrowing; }
+  ctx.error(
+    "A receiver is declared as 'Own<this>' or 'Borrow<this>'. 'this' rather than '" +
+    classType.name + "' written out, because a subclass inherits this signature and " +
+    "its receiver is an owned subclass, not an owned '" + classType.name + "'.",
+    DiagnosticCode.TypeMismatch,
+    md.loc
+  );
+  return ReceiverKind.Invalid;
+};
+
+/**
+ * A method that consumes its receiver may only be reached through the owner.
+ *
+ * This is the payoff of declaring the receiver at all, and it holds before
+ * move checking does: releasing ends the object's life, and a borrow never
+ * had that life to end. It catches a resource's own methods too, since a
+ * borrowing method's `this` is a `Borrow<R>` — a method that only borrows
+ * cannot release what it was lent.
+ */
+let rejectConsumingThroughNonOwner = (
+  ctx: CheckerContext,
+  handle: Type,
+  inner: Type,
+  propName: String,
+  loc: SourceLocation | null
+): void => {
+  if (ownershipHandleName(handle) == "Own") { return; }
+  if (!(inner is ClassType)) { return; }
+  let ct = inner as ClassType;
+  if (!ct.members.has(propName)) { return; }
+  let member = ct.members[propName];
+  if (!(member is MethodInfo)) { return; }
+  if (!(member as MethodInfo).consumesReceiver()) { return; }
+  ctx.error(
+    "'" + propName + "' consumes its receiver, so it may only be called on an 'Own<" +
+    ct.name + ">'. Releasing ends the resource's life, and a '" + typeToString(handle) +
+    "' never had that life to end.",
     DiagnosticCode.TypeMismatch,
     loc
   );
@@ -7308,7 +7437,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         // A resource's `this` is a borrow: usable for anything a method
         // does to its own receiver, and second-class, so it cannot be
         // captured, stored or handed to something that takes ownership.
-        wrapResourceInBorrow(ctx, cls)
+        // A method that declared `this: Own<this>` was handed the owner
+        // instead, and may do all three — that is what declaring it buys.
+        if (ctx.owningReceiver) {
+          wrapResourceInOwn(ctx, cls as Type, loc)
+        } else {
+          wrapResourceInBorrow(ctx, cls)
+        }
       } else {
         cc as Type
       }
@@ -8742,6 +8877,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             );
           }
 
+          let receiverKind = checkReceiverDeclaration(ctx, classType, md);
+          let consumesReceiver = receiverKind == ReceiverKind.Owning;
+
           // Check final method override.
           if (classType.superType != null) {
             let superCt = classType.superType as ClassType;
@@ -8752,6 +8890,32 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                   if (mi.isFinal) {
                     ctx.error(
                       "Cannot override final method '" + methodName + "'.",
+                      DiagnosticCode.IncompatibleTypes,
+                      md.loc
+                    );
+                  }
+                  // The receiver is part of the signature, so an override may
+                  // not change it. A caller working through the base type
+                  // would otherwise move a receiver the override only
+                  // borrows, or borrow one it moves — and which happened
+                  // would depend on the static type at the call.
+                  if (receiverKind != ReceiverKind.Invalid &&
+                      mi.consumesReceiver() != consumesReceiver) {
+                    let inherited = if (mi.consumesReceiver()) {
+                      "consumes its receiver"
+                    } else {
+                      "borrows its receiver"
+                    };
+                    let here = if (consumesReceiver) {
+                      "consumes it"
+                    } else {
+                      "borrows it"
+                    };
+                    ctx.error(
+                      "'" + methodName + "' " + inherited + " in '" + superCt.name +
+                      "', and this override " + here + ". A receiver is part of the " +
+                      "signature: a call through '" + superCt.name + "' must do the same " +
+                      "thing to the object whichever override it reaches.",
                       DiagnosticCode.IncompatibleTypes,
                       md.loc
                     );
@@ -8816,13 +8980,15 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                   methodType.overloads = newOverloads;
                 }
 
-                classType.members[methodName] = new MethodInfo(
+                let overrideInfo = new MethodInfo(
                   methodType,
                   md.isAbstract,
                   md.isStatic,
                   isPrivate,
                   md.isFinal
                 );
+                overrideInfo.receiverKind = receiverKind;
+                classType.members[methodName] = overrideInfo;
                 ownMethodNames.add(methodName);
               } else {
                 // Overlap restriction (member-lookup.md §5.1): a
@@ -8860,13 +9026,15 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 ownMethodNames.add(methodName);
               }
             } else {
-              classType.members[methodName] = new MethodInfo(
+              let info = new MethodInfo(
                 methodType,
                 md.isAbstract, // isAbstract
                 md.isStatic,
                 isPrivate,
                 md.isFinal
               );
+              info.receiverKind = receiverKind;
+              classType.members[methodName] = info;
               ownMethodNames.add(methodName);
             }
           }
@@ -9501,13 +9669,34 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   if (cd.isResource && !cd.isAbstract) {
     if (!classType.members.has(":dispose")) {
       ctx.error(
-        "Resource class '" + className + "' must define ':Disposable.dispose(): void'. " +
+        "Resource class '" + className + "' must define " +
+        "':Disposable.dispose(this: Own<this>): void'. " +
         "A resource class always has a release action; a class that needs uniqueness " +
         "but has nothing to release should be an ordinary class used as 'Own<" +
         className + ">'.",
         DiagnosticCode.AbstractMethodNotImplemented,
         cd.loc
       );
+    } else {
+      // Release ends the object's life, so it takes the owner rather than a
+      // borrow. That is the resource-class contract rather than
+      // `Disposable`'s: an ordinary disposable is aliasable and has no owner
+      // to consume, so one interface signature cannot serve both. See
+      // ownership.md §"Release consumes its receiver".
+      let disposeMember = classType.members[":dispose"];
+      if (disposeMember is MethodInfo) {
+        let disposeInfo = disposeMember as MethodInfo;
+        if (disposeInfo.receiverKind != ReceiverKind.Invalid &&
+            !disposeInfo.consumesReceiver()) {
+          ctx.error(
+            "Resource class '" + className + "' releases through a borrowing receiver. " +
+            "Releasing ends the resource's life, so it takes the owner: write " +
+            "':Disposable.dispose(this: Own<this>): void'.",
+            DiagnosticCode.IncompatibleTypes,
+            cd.loc
+          );
+        }
+      }
     }
   }
 
@@ -9824,6 +10013,13 @@ let checkMethodBody = (
   let prevYieldType = ctx.yieldType;
   let prevAsyncValue = ctx.asyncValueType;
   let prevAsyncFuture = ctx.asyncFutureType;
+
+  // A declared `this: Own<this>` makes `this` the owner for the whole body,
+  // closures included — where capturing it is rejected anyway, since a
+  // resource's `this` may not be captured at all.
+  let prevOwningReceiver = ctx.owningReceiver;
+  ctx.setOwningReceiver(declaresOwningReceiver(md));
+
   if (md.isGenerator) {
     var yieldT: Type = new ErrorType();
     match (effectiveReturnType) {
@@ -10018,6 +10214,7 @@ let checkMethodBody = (
   ctx.setYieldType(prevYieldType);
   ctx.setAsyncValueType(prevAsyncValue);
   ctx.setAsyncFutureType(prevAsyncFuture);
+  ctx.setOwningReceiver(prevOwningReceiver);
   ctx.exitScope();
 };
 
@@ -10573,6 +10770,20 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             methDef.loc
           );
         } else {
+          // A mixin's method may not declare a receiver. Which handle `this`
+          // is depends on the class the mixin is applied to, so the answer
+          // is not this declaration's to give — and a mixin on a resource is
+          // ownership.md's own open question. Rejected rather than ignored:
+          // a silently dropped `Own<this>` would read as consuming.
+          if (methDef.receiver != null) {
+            ctx.error(
+              "A mixin's method may not declare a receiver: a mixin is applied to " +
+              "classes it does not know, so what 'this' is there is the host class's " +
+              "to say.",
+              DiagnosticCode.TypeMismatch,
+              methDef.loc
+            );
+          }
           let ft = checkMethodSignature(ctx, thisType, methDef);
           let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
           let mi = new MethodInfo(
@@ -11278,6 +11489,7 @@ let resolveMemberType = (
   // See docs/design/ownership.md §Handles.
   let handleInner = ownershipHandleInner(objectType);
   if (handleInner != null) {
+    rejectConsumingThroughNonOwner(ctx, objectType, handleInner as Type, propName, loc);
     return resolveMemberType(ctx, handleInner as Type, propName, loc);
   }
 
