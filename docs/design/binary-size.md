@@ -985,11 +985,44 @@ instantiated, and the rule is flat.
 
 What is left: 130 functions on erased classes remain in the compiler's
 module, a closed island referenced only by each other — kept alive by
-generic FUNCTION values (`some_spec_anyref`), which genuinely have one
-erased shape. And `getTypeKeyForSpecialization` still maps both a type
-parameter and the real `anyref` type to `"anyref"`, so `FixedArray<any>`
-(a template tag's values array) and `FixedArray<T>` share one class key,
-struct and method set. Both are worth separating next.
+generic FUNCTION values, whose erasure is real code.
+
+### Erasure has its own type now
+
+The two things that had to be separated were separated by giving
+erasure a type. `eraseTypeParameters` mapped a type parameter to
+`AnyRefType`, and the specialization key spelled that, an unsubstituted
+type parameter, and the REAL `anyref` type all "anyref" — so a
+program's own `Cell<anyref>` and codegen's erasure of `Cell<T>` were one
+class, one struct, one method set:
+
+```zena
+let stash = (v: anyref): Cell<anyref> => new Cell<anyref>(v);
+let wrap = <T>(v: T): Cell<T> => new Cell<T>(v);
+```
+
+Three `Cell` specializations before, four now
+(`Cell_s867_anyref` and `Cell_s867_erased` were the same one). See
+`ErasedType` in `types.zena`: codegen-internal, lowering to anyref
+because that IS a top-typed slot's representation, keyed "erased" so it
+stops being mistaken for the type of the same shape.
+
+That turns a guess into a fact. `containsErasedType` asks whether a type
+IS an erasure; the version before it had to ask which walk produced a
+mention. The two questions are now asked separately — a MENTION of an
+erasure never instantiates, a CONSTRUCTION inside an emitted body does
+and erases with it (`fill_spec_erased` runs `new Full<T>` as
+`new Full<erased>`), and a template's body constructs nothing because it
+is never emitted.
+
+**Erasure is a boundary representation, not a substitute for
+monomorphization, and cannot be one.** `Full<i32>` stores an i32 field
+where `Full<erased>` stores a reference: the erased form is a different
+struct, not a supertype. Values crossing the boundary are boxed, which
+is why `roundtrip<i32>(42, 7)` comes back 42. The only erased bodies
+that are not dead are the ones generic function VALUES need — one
+funcref shape per generic function — and `tests/language/execution/
+generics/erased-generic-chain.zena` pins that path.
 
 ### Tooling
 

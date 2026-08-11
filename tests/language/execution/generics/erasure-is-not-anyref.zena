@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 12
+// The erasure of a type parameter and the `anyref` TYPE are different
+// things that share a representation. A program can write, hold and
+// construct `Cell<anyref>`; `Cell<T>`'s erasure is a shape codegen
+// mints for the one body a generic function used as a value can have.
+//
+// Both used to key as "anyref", so they were one class — one struct,
+// one method set, one vtable. This program emits four `Cell`
+// specializations (anyref, erased, i32, String) and used to emit
+// three. See ErasedType in the compiler's types.zena.
+
+class Cell<T> {
+  value: T;
+  new(value: T) : value = value;
+}
+
+let stash = (v: anyref): Cell<anyref> => new Cell<anyref>(v);
+let wrap = <T>(v: T): Cell<T> => new Cell<T>(v);
+let unwrap = <T>(c: Cell<T>): T => c.value;
+
+export let main = (): i32 => {
+  let real = stash('a real anyref');
+  // Erasure is a BOUNDARY representation, not a substitute for
+  // monomorphization: `Cell<i32>` stores an i32 field where the erased
+  // form stores a reference, so a primitive crossing the boundary is
+  // boxed rather than reinterpreted.
+  let n = unwrap(wrap<i32>(9));
+  let s = unwrap(wrap<String>('xy'));
+  return n + s.length + (if (real.value == null) 0 else 1);
+};

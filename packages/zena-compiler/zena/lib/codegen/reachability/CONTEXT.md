@@ -68,9 +68,18 @@ dispatch on their operand's type.
 The mentions that fabricate one are plumbing, not code that runs:
 `#linkSuperAndVT` naming a subclass template's supertype, and the walk
 of a generic class's own template naming its field types.
-`mentionsTypeParameter` (in `type-mapping.zena`) is what asks whether a
-mention was erased; the erased class's struct is still registered,
-because erased signatures and fields refer to it.
+`containsErasedType` (in `codegen-utils.zena`) is what asks whether a
+type IS an erasure — `ErasedType` in `types.zena` is a distinct
+codegen-internal type, so this is a fact about the type rather than a
+guess about which walk produced the mention. The erased class's struct
+is still registered, because erased signatures and fields refer to it.
+
+CONSTRUCTION is the other question and has a different answer: the
+erasure of a generic FUNCTION is emitted and runs, so its `new Full<T>`
+really does build a `Full<erased>` and really does need that
+constructor. The `new`-expression arms erase what they construct unless
+`walkingTemplateOf` says the body being walked is a template's — those
+are never emitted, so they construct nothing.
 
 ## A Generic Method Exists Only Per Specialization
 

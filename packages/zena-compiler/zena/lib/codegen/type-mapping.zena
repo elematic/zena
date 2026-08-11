@@ -5,8 +5,7 @@ import {
   UnknownType, ErrorType, AnyRefType, EqRefType, NeverType, HoleType, 
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
-  RecordType, TupleType, MixinType
-} from '../types.zena';
+  RecordType, TupleType, MixinType, ErasedType} from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Node, Identifier, ThisExpression, Expression } from '../ast.zena';
 import { Symbol } from '../scope/symbol.zena';
@@ -483,7 +482,7 @@ let addTransitiveInterfaces = (
       if (i < tas.length) {
         allArgs.push(tas[i]);
       } else {
-        allArgs.push(new AnyRefType());
+        allArgs.push(new ErasedType());
       }
     }
   }
@@ -524,7 +523,7 @@ let addClassTransitiveInterfaces = (
         if (i < tas.length) {
           allArgs.push(tas[i]);
         } else {
-          allArgs.push(new AnyRefType());
+          allArgs.push(new ErasedType());
         }
       }
     }
@@ -555,7 +554,7 @@ let addTransitiveMixins = (
       if (i < tas.length) {
         allArgs.push(tas[i]);
       } else {
-        allArgs.push(new AnyRefType());
+        allArgs.push(new ErasedType());
       }
     }
   }
@@ -601,7 +600,7 @@ export let substituteTypeParamsInClassContext = (
         if (i < tas.length) {
           args.push(tas[i]);
         } else {
-          args.push(new AnyRefType());
+          args.push(new ErasedType());
         }
       }
     }
@@ -770,7 +769,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
 
 export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
   return match (t) {
-    case TypeParameterType: new AnyRefType()
+    case TypeParameterType: new ErasedType()
     case TypeAliasType as ta: {
       // Codegen wants representations, and a `distinct type` is nominally
       // distinct only to the checker — it shares its target's representation.
@@ -982,87 +981,6 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       newRec
     }
     case _: t
-  };
-};
-
-/**
- * Whether `t` names a type parameter anywhere — whether it is a
- * mention made from INSIDE generic code, and so whether
- * eraseTypeParameters would change it.
- *
- * It mirrors that function's traversal (including looking through a
- * type alias with its arguments substituted, since the alias keeps an
- * unsubstituted target) rather than reusing `isConcrete`, which is
- * about the type itself: an erased `Store<anyref, anyref>` IS concrete
- * — anyref is a type — and only where it came from says whether any
- * value of it can exist.
- */
-export let mentionsTypeParameter = (wasm: WasmModule, t: Type): boolean => {
-  return match (t) {
-    case TypeParameterType: true
-    case TypeAliasType as ta: {
-      let tps = ta.typeParameters;
-      let targs = ta.typeArguments;
-      if (tps != null && targs != null) {
-        return mentionsTypeParameter(wasm, substituteTypeParamsInCodegen(wasm,
-            tps as Array<TypeParameterType>, targs as Array<Type>, ta.target));
-      }
-      mentionsTypeParameter(wasm, ta.target)
-    }
-    case ArrayType {elementType}: mentionsTypeParameter(wasm, elementType)
-    case ClassType as ct: {
-      if (ct.typeArguments == null) { return false; }
-      for (let arg in ct.typeArguments as Array<Type>) {
-        if (mentionsTypeParameter(wasm, arg)) { return true; }
-      }
-      false
-    }
-    case InterfaceType as it: {
-      if (it.typeArguments == null) { return false; }
-      for (let arg in it.typeArguments as Array<Type>) {
-        if (mentionsTypeParameter(wasm, arg)) { return true; }
-      }
-      false
-    }
-    case MixinType as mt: {
-      if (mt.typeArguments == null) { return false; }
-      for (let arg in mt.typeArguments as Array<Type>) {
-        if (mentionsTypeParameter(wasm, arg)) { return true; }
-      }
-      false
-    }
-    case FunctionType as ft: {
-      for (let p in ft.parameters) {
-        if (mentionsTypeParameter(wasm, p)) { return true; }
-      }
-      mentionsTypeParameter(wasm, ft.returnType)
-    }
-    case UnionType {types}: {
-      for (let subT in types) {
-        if (mentionsTypeParameter(wasm, subT)) { return true; }
-      }
-      false
-    }
-    case TupleType {elementTypes}: {
-      for (let subT in elementTypes) {
-        if (mentionsTypeParameter(wasm, subT)) { return true; }
-      }
-      false
-    }
-    case InlineTupleType {elementTypes}: {
-      for (let subT in elementTypes) {
-        if (mentionsTypeParameter(wasm, subT)) { return true; }
-      }
-      false
-    }
-    case RecordType as rec: {
-      let keys = rec.properties.keys();
-      while (let (true, key) = keys.next()) {
-        if (mentionsTypeParameter(wasm, rec.properties[key])) { return true; }
-      }
-      false
-    }
-    case _: false
   };
 };
 
@@ -1368,6 +1286,9 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   case ErrorType: new ValTypeAnyRef()
   case TypeParameterType: new ValTypeAnyRef()
   case AnyRefType: new ValTypeAnyRef()
+  // An erased slot is a top-typed reference slot — that much erasure
+  // and `anyref` DO share; see ErasedType in types.zena for the rest.
+  case ErasedType: new ValTypeAnyRef()
   case EqRefType: new ValTypeEqRef()
   case TypeParameterType: new ValTypeAnyRef()
   case ThisType: new ValTypeAnyRef()

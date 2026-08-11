@@ -2,7 +2,7 @@ import { collectValueExports } from '../lookup.zena';
 import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface, SpecializerInterface } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
-import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType, baseType } from '../../types.zena';
+import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType, baseType , ErasedType} from '../../types.zena';
 import { Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo } from '../wasm-module.zena';
 import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, isRefValType } from '../wasm.zena';
@@ -14,7 +14,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName, containsErasedType } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, mentionsTypeParameter, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -255,32 +255,29 @@ export final class TypeLowerer implements TypeLowererInterface {
       
       // Register specialized class struct & methods if generic instantiation
       if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0 && isConcrete(ct)) {
-        // An ERASURE is not a specialization. `Store<K, V>` named
-        // from inside generic code is discovered as
-        // `Store<anyref, anyref>`, which IS concrete — anyref is a
-        // type, and a real one (`let x: anyref = "hi"`) — but the
-        // mention was made by `#linkSuperAndVT` naming a subclass
-        // template's supertype, or by the walk of a generic class's own
-        // template naming its field types. Every value either stands
-        // for is some real specialization, discovered on its own.
+        // An ERASURE is not a specialization. A mention of one is
+        // made by code that does not run: `#linkSuperAndVT` naming a
+        // subclass template's supertype, or the walk of a generic
+        // class's own template naming its field types. Every value
+        // either stands for is some real specialization, discovered on
+        // its own.
         //
-        // Believing in it made it a fan-out target for every reached
-        // member of the generic class and, once instantiated, gave it a
-        // class vtable global — and a vtable global ref.funcs its
-        // slots, so an erased body of every method got emitted. Those
-        // bodies do not always lower: `hash`/`eq` dispatch on their
-        // operand's type and have nothing to dispatch on at anyref,
-        // which is what made a generic class whose methods use them
-        // impossible to subclass.
+        // Believing a mention made it a fan-out target for every
+        // reached member of the generic class and, once instantiated,
+        // gave it a class vtable global — and a vtable global ref.funcs
+        // its slots, so an erased body of every method got emitted.
+        // Those bodies do not always lower: `hash`/`eq` dispatch on
+        // their operand's type and have nothing to dispatch on at
+        // anyref, which is what made a generic class whose methods use
+        // them impossible to subclass.
         //
-        // The rule is flat — no "unless a real erased body constructs
-        // one", because no real erased body exists: a generic METHOD is
-        // no longer emitted at its own erasure either (see
-        // `isGenericAtErasure` in analysis.zena), and those dead bodies
-        // were the only thing that ever constructed an erasure. The
-        // struct is still registered below; erased signatures and
+        // CONSTRUCTION is still evidence, and the erasure of a generic
+        // FUNCTION is real code: `fill_spec_erased` runs `new Full<T>`
+        // as `new Full<erased>`, and that instantiates through the
+        // `new` site (registerInstantiations), not through a mention.
+        // The struct is registered either way — erased signatures and
         // fields refer to it.
-        let isErasedMention = mentionsTypeParameter(this.pass.wasm, rawT as Type);
+        let isErasedMention = containsErasedType(ct as Type);
         let specializer = this.pass.specializer;
         if (!isErasedMention) {
           if (!this.pass.specializedClassTypes.has(lookupId)) {
@@ -816,7 +813,18 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let ne = n as NewExpression;
         let neType = model.getNodeType(ne);
         if (neType != null && neType is ClassType) {
-          let resolved = resolveType(neType as ClassType) as ClassType;
+          var resolved = resolveType(neType as ClassType) as ClassType;
+          // A body constructs what its EMISSION constructs. The erasure
+          // of a generic function is emitted and runs, so its
+          // `new Full<T>` really does build a `Full<erased>` and really
+          // does need that constructor ('constructor missing for
+          // Full_s867_erased'). A TEMPLATE's body is never emitted, so
+          // erasing there would fabricate a class instead of finding
+          // one — which is the whole difference between construction
+          // and the mere MENTION gated in discoverType.
+          if (!isConcrete(resolved) && this.pass.walkingTemplateOf == null) {
+            resolved = eraseTypeParameters(this.pass.wasm, resolved) as ClassType;
+          }
           specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved);
         }
@@ -1413,7 +1421,18 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let ne = n as NewExpression;
         let neType = model.getNodeType(ne);
         if (neType != null && neType is ClassType) {
-          let resolved = resolveType(neType as ClassType) as ClassType;
+          var resolved = resolveType(neType as ClassType) as ClassType;
+          // A body constructs what its EMISSION constructs. The erasure
+          // of a generic function is emitted and runs, so its
+          // `new Full<T>` really does build a `Full<erased>` and really
+          // does need that constructor ('constructor missing for
+          // Full_s867_erased'). A TEMPLATE's body is never emitted, so
+          // erasing there would fabricate a class instead of finding
+          // one — which is the whole difference between construction
+          // and the mere MENTION gated in discoverType.
+          if (!isConcrete(resolved) && this.pass.walkingTemplateOf == null) {
+            resolved = eraseTypeParameters(this.pass.wasm, resolved) as ClassType;
+          }
           specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved);
         }
@@ -2500,7 +2519,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
 let eraseType = (t: Type): Type => {
   return match (t) {
-    case TypeParameterType: new AnyRefType()
+    case TypeParameterType: new ErasedType()
     case FunctionType as ft: {
       let params = new Array<Type>();
       for (let p in ft.parameters) {

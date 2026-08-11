@@ -7,8 +7,7 @@ import {
   NullType, VoidType, ClassType, InterfaceType, ArrayType, RecordType,
   TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
   MixinType, MixinKey, instantiateClassType, TypeAliasType, ErrorType, HoleType, NeverType, ThisType,
-  AnyRefType, EqRefType, StringLiteralType, NumLiteralType, baseType
-} from '../types.zena';
+  AnyRefType, EqRefType, StringLiteralType, NumLiteralType, baseType, ErasedType} from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { String } from "zena:string";
@@ -193,6 +192,11 @@ export { typeContainsTypeParameter } from '../types.zena';
 export let isConcrete = (t: Type): boolean => {
   return match (t) {
     case TypeParameterType: false
+    // An ERASURE is concrete: `fill_spec_anyref` — the erasure of a
+    // generic function — is emitted, runs, and constructs `Full<erased>`
+    // for real (boxing anything primitive on the way in). What must not
+    // treat it as a specialization is a MENTION; see containsErasedType.
+    case ErasedType: true
     case UnknownType: false
     case ErrorType: false
     case HoleType: false
@@ -385,7 +389,15 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
       }
       String.fromParts(parts as array<String>)
     }
-    case TypeParameterType as tp: "anyref"
+    // A type parameter and its erasure key the SAME — a specialization
+    // named with `T` still standing and one named with `T` erased are
+    // the same physical shape, a top-typed slot — and both key APART
+    // from the real `anyref` type, which is a type a program can write
+    // and construct. Spelling all three "anyref" made an erasure pass
+    // `isConcrete` and gave RTA classes to build for types no value
+    // has; see ErasedType in types.zena.
+    case TypeParameterType as tp: "erased"
+    case ErasedType: "erased"
     case UnionType {types}: {
       let parts = new FixedArray<String>(1 + 2 * types.length, "");
       parts[0] = "union";
@@ -421,6 +433,67 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
     case NumLiteralType: "number"
     case ThisType: "this"
     case _: "unknown"
+  };
+};
+
+/**
+ * Whether `t` is, or contains, the erasure of a type parameter.
+ *
+ * This is the structural test that used to need context: an erasure and
+ * the real top type are now different types (ErasedType in types.zena),
+ * so "did this mention come from inside generic code" is a question
+ * about the type itself rather than about which walk produced it.
+ */
+export let containsErasedType = (t: Type): boolean => {
+  return match (t) {
+    case ErasedType: true
+    case ArrayType {elementType}: containsErasedType(elementType)
+    case ClassType as ct: {
+      if (ct.typeArguments == null) { return false; }
+      for (let arg in ct.typeArguments as Array<Type>) {
+        if (containsErasedType(arg)) { return true; }
+      }
+      false
+    }
+    case InterfaceType as it: {
+      if (it.typeArguments == null) { return false; }
+      for (let arg in it.typeArguments as Array<Type>) {
+        if (containsErasedType(arg)) { return true; }
+      }
+      false
+    }
+    case MixinType as mt: {
+      if (mt.typeArguments == null) { return false; }
+      for (let arg in mt.typeArguments as Array<Type>) {
+        if (containsErasedType(arg)) { return true; }
+      }
+      false
+    }
+    case UnionType {types}: {
+      for (let sub in types) {
+        if (containsErasedType(sub)) { return true; }
+      }
+      false
+    }
+    case TupleType {elementTypes}: {
+      for (let sub in elementTypes) {
+        if (containsErasedType(sub)) { return true; }
+      }
+      false
+    }
+    case InlineTupleType {elementTypes}: {
+      for (let sub in elementTypes) {
+        if (containsErasedType(sub)) { return true; }
+      }
+      false
+    }
+    case FunctionType as ft: {
+      for (let p in ft.parameters) {
+        if (containsErasedType(p)) { return true; }
+      }
+      containsErasedType(ft.returnType)
+    }
+    case _: false
   };
 };
 
@@ -537,7 +610,15 @@ export let getTypeKey = (type: Type): String => {
     case TupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
     case InlineTupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
     case UnionType: "union"
-    case TypeParameterType as tp: "anyref"
+    // A type parameter and its erasure key the SAME — a specialization
+    // named with `T` still standing and one named with `T` erased are
+    // the same physical shape, a top-typed slot — and both key APART
+    // from the real `anyref` type, which is a type a program can write
+    // and construct. Spelling all three "anyref" made an erasure pass
+    // `isConcrete` and gave RTA classes to build for types no value
+    // has; see ErasedType in types.zena.
+    case TypeParameterType as tp: "erased"
+    case ErasedType: "erased"
     case _: "unknown"
   };
 };

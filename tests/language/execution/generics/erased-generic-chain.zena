@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 44
+// A generic function calling a generic function: the inner call is
+// emitted once at its erasure (`fill_spec_erased`), which really runs
+// `new Full<T>` as `new Full<erased>` — so that constructor has to
+// exist. It is the one erased body that is not dead, and the reason
+// "an erasure is never instantiated" is a rule about MENTIONS and not
+// about construction.
+//
+// A primitive goes through the same path: `Full<i32>` stores an i32
+// field where `Full<erased>` stores a reference, so 42 is boxed
+// crossing the boundary rather than reinterpreted.
+
+class Full<T> { value: T; new(value: T) : value = value; }
+class Empty {}
+type Maybe<T> = Full<T> | Empty;
+
+let fill = <T>(value: T): Maybe<T> => new Full(value);
+let get = <T>(m: Maybe<T>, fallback: T): T =>
+    if (m is Full<T>) (m as Full<T>).value else fallback;
+let roundtrip = <T>(value: T, fallback: T): T => get(fill(value), fallback);
+
+export let main = (): i32 => {
+  // A PRIMITIVE through the same erased path: Full<i32> stores an i32
+  // field, Full<erased> stores a reference — different structs.
+  let n = roundtrip<i32>(42, 7);
+  let s = roundtrip<String>('ok', 'no');
+  return n + s.length;
+};

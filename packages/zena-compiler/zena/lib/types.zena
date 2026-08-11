@@ -86,6 +86,30 @@ export sealed class Type implements Hashable {
   case AnyRefType
   case EqRefType
 
+  /**
+   * The erasure of a type parameter — CODEGEN-INTERNAL, never produced
+   * by the checker and never written in source.
+   *
+   * It is deliberately NOT `anyref`. A type parameter's erasure and the
+   * real top type are different things that happen to share a wasm
+   * representation: `FixedArray<anyref>` is a type a program can write
+   * and construct, while `FixedArray<T>` erased is a shape used to give
+   * one funcref signature to a generic function used as a VALUE. While
+   * both spelled `anyref`, the specialization key could not tell them
+   * apart, so an erasure passed `isConcrete` and RTA built classes,
+   * vtables and method bodies for types no value can ever have — see
+   * docs/design/binary-size.md §15.
+   *
+   * Erasure is not a substitute for monomorphization and cannot be one:
+   * `Array<i32>` stores an i32 field where `Array<anyref>` stores a
+   * reference, so the erased form is a different struct, not a
+   * supertype. Anything reaching a value across an erased boundary
+   * boxes it. That is why `isConcrete` is FALSE here — an erasure is
+   * never a specialization — and why lowering an erased body is a
+   * compiler bug rather than a coverage gap.
+   */
+  case ErasedType
+
   // Literal types (narrower than their base type)
   case BoolLiteralType(value: boolean)
   case StringLiteralType(value: String)
@@ -1535,6 +1559,7 @@ export let typeToString = (t: Type): String => match (t) {
   case ErrorType: "<error>"
   case UnknownType: "unknown"
   case AnyRefType: "anyref"
+  case ErasedType: "erased"
   case EqRefType: "eqref"
   case BoolLiteralType {value}: if (value) "true" else "false"
   case StringLiteralType {value}: "'" + value + "'"
