@@ -14,7 +14,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, mentionsTypeParameter, findImplementedInterfaceTransitive } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -673,6 +673,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   registerInstantiations(root: Node, model: SemanticModel, resolveType: (t: Type) => Type,
       classType: ClassType | null): void {
     let specializer = this.pass.specializer;
+    // The body's own mixin scope, if it was written in a mixin: it
+    // decides which member a private name in this body refers to.
+    let bodyScope = mixinScopeOfNode(model, root);
     walkEnter(root, (n: Node) => {
       // Private-method calls are lexically bound and never virtual, so
       // the dependency records are their ONLY discovery edge when the
@@ -778,8 +781,24 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 targs = resolved;
               }
             }
-            this.queuePrivateMethod(classType as ClassType, pName, targs);
+            if (bodyScope != null) {
+              this.queueMixinPrivateMember(classType as ClassType,
+                  bodyScope as String, pName);
+            } else {
+              this.queuePrivateMethod(classType as ClassType, pName, targs);
+            }
           }
+        }
+      }
+      // A private name READ in a mixin body reaches that mixin's
+      // private ACCESSOR — the arm above only covers call position,
+      // and on this walk (dependency records present) nothing else
+      // looks at member expressions at all.
+      if (classType != null && bodyScope != null && n is MemberExpression) {
+        let pName = (n as MemberExpression).property.name;
+        if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
+          this.queueMixinPrivateMember(classType as ClassType,
+              bodyScope as String, pName);
         }
       }
       // PUBLIC generic methods monomorphize per solved type-argument
@@ -1233,6 +1252,58 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   /**
+   * Queues the mixin-scoped private member a mixin body names, as used
+   * by the host class the body is being compiled for.
+   *
+   * This is the referrer that mixin privates used to lack, and whose
+   * absence was covered by force-reaching every "::"-named member of
+   * every instantiated class. `scope` is the accessing body's own
+   * mixin scope key, and it decides WHICH member is meant: a private
+   * name in a mixin body is that mixin's, whatever same-named private
+   * the host or another mixin declares. Searching by name and taking
+   * the first hit (what the CHA member searches do) would find the
+   * host's, which is a different member entirely.
+   *
+   * The node referrer registers under the scoped name on its own —
+   * both the method and accessor arms of the referrer loop re-derive
+   * the scope from the member's declaration — so this only has to name
+   * the right declaration.
+   */
+  queueMixinPrivateMember(classType: ClassType, scope: String,
+      propName: String): void {
+    let declId = ((classType.genericSource ?? classType)).symbolId;
+    if (!this.pass.classDecls.has(declId)) {
+      return;
+    }
+    let cdNode = this.pass.classDecls[declId];
+    if (!(cdNode is ClassDeclaration)) {
+      return;
+    }
+    let cdModel = this.pass.classModels[declId];
+    let members = new Array<Node>();
+    let scopes = new Array<String>();
+    let seen = new HashMap<MixinKey, boolean>();
+    collectMixinMembers(this.pass.program, cdModel,
+        (cdNode as ClassDeclaration).mixins, members, seen, scopes);
+    for (var i = 0; i < members.length; i += 1) {
+      if (scopes[i] != scope) { continue; }
+      let member = members[i];
+      var name = "";
+      if (member is MethodDefinition) {
+        name = ctorMethodName(member as MethodDefinition);
+      } else if (member is AccessorDeclaration) {
+        name = accessorMemberName(member as AccessorDeclaration);
+      } else {
+        continue;
+      }
+      if (name != propName) { continue; }
+      this.pass.queueReferrer(new Referrer(false, noSymbolId,
+          member.id as i32, this.pass.getNodeModel(member, cdModel),
+          classType, true));
+    }
+  }
+
+  /**
    * TSA-cache global + tag reachability for one tagged template.
    * Shared by the full walk and the dependency-record skip path (the
    * records carry neither the cache global nor the tag reference —
@@ -1277,7 +1348,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   discoverNodeTypes(root: Node, model: SemanticModel, resolveType: (t: Type) => Type): void {
-
+    // The body's own mixin scope, if it was written in a mixin: it
+    // decides which member a private name in this body refers to.
+    let bodyScope = mixinScopeOfNode(model, root);
     walkEnter(root, (n: Node) => {
       if (n is ThrowExpression || n is TryExpression) {
         this.pass.noteExceptionInfra(model);
@@ -1616,7 +1689,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           } else if (resolvedObj is ClassType) {
             let ct = resolvedObj as ClassType;
             let targetModel = this.pass.getClassModel(ct);
-            
+
+            // A private name read in a mixin body is that mixin's
+            // member — method or accessor — and the CHA searches below
+            // would find the host's same-named one instead (they scan
+            // the class's own body first and match on name alone).
+            if (bodyScope != null && propName.length > 0 &&
+                propName.sliceBytes(0, 1) == "#") {
+              this.queueMixinPrivateMember(ct, bodyScope as String, propName);
+            }
+
             var isMethod = false;
             var isGenericMethod = false;
             var methodTypeArgs: Array<Type> | null = null;
@@ -2541,6 +2623,18 @@ let matchOverloadForImport = (t1: Type, t2: Type): boolean => {
   return false;
 };
 
+
+let accessorMemberName = (acc: AccessorDeclaration): String => {
+  return match (acc.name) {
+    case Identifier {name}: name
+    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+      case Identifier {name}: name
+      case MemberExpression {property}: property.name
+      case _: "<symbol>"
+    }
+    case _: ""
+  };
+};
 
 let ctorMethodName = (md: MethodDefinition): String => {
   return match (md.name) {

@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 4221900
+// A mixin private accessor with a SETTER. The existing coverage was
+// getter-only, which hid a registration bug: the referrer path that
+// reaches an accessor by declaration node registered it under the bare
+// name ("set##v") rather than the mixin's scoped one, minting a second
+// function under the name the HOST's accessor owns — with the host's
+// signature. Any mixin declaring a private accessor with a setter
+// failed to compile, used or not.
+
+mixin M {
+  var #n: i32 = 0;
+  #v: i32 {
+    get { return this.#n * 2; }
+    set(v) { this.#n = v; }
+  }
+  mwrite(): i32 {
+    this.#v = 21;
+    return this.#v;
+  }
+  mread(): i32 {
+    return this.#n;
+  }
+  // Never used: it must not be reached, and must not break the build.
+  #unused: i32 {
+    get { return 1; }
+    set(v) { this.#n = v + 1; }
+  }
+}
+
+class H with M {
+  var #n: i32 = 900;
+  #v: i32 {
+    get { return 777; }
+    set(v) { this.#n = 999; }
+  }
+  new();
+  hread(): i32 {
+    return this.#n;
+  }
+}
+
+export let main = (): i32 => {
+  let h = new H();
+  let a = h.mwrite();  // mixin set -> mixin #n 21, mixin get -> 42
+  let b = h.mread();   // the mixin's #n: 21
+  let c = h.hread();   // the host's, untouched: 900
+  return a * 100000 + b * 1000 + c;
+};

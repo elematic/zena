@@ -2867,8 +2867,21 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   let lookupId = (ct.genericSource ?? ct).symbolId;
                   let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
                   let mixScope = mixinScopeOfMember(this.program, this.classModels[lookupId], cd, node);
+                  // A mixin's PRIVATE accessor registers under the
+                  // mixin's scope key, exactly as the method arm above
+                  // and the member-collection loops do. Registering the
+                  // bare name here would mint an unscoped twin on the
+                  // host — a second function under the name the host's
+                  // own accessor owns — and leave the name the mixin
+                  // body actually looks up unregistered.
+                  let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
+                  let accPrefix = if (mixScope != null && isPrivateAcc) {
+                    (mixScope as String) + "::"
+                  } else {
+                    ""
+                  };
                   if (acc.getter != null) {
-                    let regG = specializer.registerClassMethod(ct, cd, "get#" + accName, acc, false, false, null, this.classModels[lookupId], null);
+                    let regG = specializer.registerClassMethod(ct, cd, accPrefix + "get#" + accName, acc, false, false, null, this.classModels[lookupId], null);
                     if (mixScope != null) { regG.privateScopeKey = mixScope as String; }
                     if (ref.isReachable && isConcrete(ct)) {
                       this.wasm.addFunction(regG);
@@ -2876,7 +2889,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     }
                   }
                   if (acc.setter != null) {
-                    let regS = specializer.registerClassMethod(ct, cd, "set#" + accName, acc.setter, false, false, null, this.classModels[lookupId], null);
+                    let regS = specializer.registerClassMethod(ct, cd, accPrefix + "set#" + accName, acc.setter, false, false, null, this.classModels[lookupId], null);
                     if (mixScope != null) { regS.privateScopeKey = mixScope as String; }
                     if (ref.isReachable && isConcrete(ct)) {
                       this.wasm.addFunction(regS);

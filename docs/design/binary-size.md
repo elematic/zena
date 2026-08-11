@@ -777,14 +777,30 @@ What replaced it:
 - **Member referrers reach what they register** (concrete classes,
   reachable referrers) — registration alone is erased by `layout()`'s
   `classMethodMap` rebuild.
-- **Constructors and mixin-scoped private members keep the
-  force-reach.** Ctors are never vtable-dispatched but every `new`
-  needs one. Mixin-scoped members (`Scope::#name`) are lexically bound
-  with no referrer machinery naming them — and the private lookup in
-  lowering FALLS BACK to the host's same-named member, so the miss is
-  a silent wrong answer (`mixins/private_accessors` returned the host's
-  getter from the mixin's method), not a loud failure. That fallback
-  deserves to die separately.
+- **Constructors keep the force-reach.** Ctors are never
+  vtable-dispatched but every `new` needs one.
+- **Mixin-scoped private members kept it too, and no longer do.**
+  `Scope::#name` members are lexically bound, and nothing named them,
+  so every one of them was emitted for every host class that applied
+  the mixin. They now get real referrers: a private name in a mixin
+  body queues the member THAT mixin declares, selected by the
+  accessing body's scope key rather than by a name-only search, on
+  both the full walk and the dependency-record walk. On a fixture with
+  one used and five dead mixin privates across three hosts, 1054 B →
+  439 B. Production code sees no change — `IterableUtils` is the only
+  mixin in the stdlib or compiler and it declares no privates — so
+  this is a rule made principled and a floor for mixin-heavy code, not
+  a win on today's binaries.
+
+  Two things had to be true first. The lookup had to stop falling back
+  to the host's same-named member, or a missing registration would be
+  a silent wrong answer rather than a loud one (member-lookup.md §6);
+  that landed separately. And the accessor arm of the referrer loop
+  had to register under the SCOPED name — it registered the bare one,
+  minting an unscoped twin with the host's signature, which made any
+  mixin declaring a private accessor **with a setter** fail to compile
+  outright, used or not. Only getter-only accessors were covered by a
+  test, which is why nobody had hit it.
 - **Pass 1.2 resolves synthesized accessors over every REGISTERED
   method**, not `wasm.functions` — an early-registered getter carries
   backing index -1 (an `unreachable` stub body) until fixed up, and

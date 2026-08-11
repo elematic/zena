@@ -460,6 +460,17 @@ never virtual, always direct**.
   `mixins/private_accessors_in_closure.zena` and
   `mixins/private_names_generic_method.zena`.
 
+  Reachability names them like any other member. A private name in a
+  mixin body queues a referrer for the member **that mixin** declares,
+  chosen by the accessing body's own scope key rather than by a
+  name-only search (the CHA searches scan the host's body first and
+  would find the host's same-named private, a different member). Both
+  the full walk and the dependency-record walk do this, since a private
+  read reaches an accessor and a private call reaches a method. Before
+  that, nothing named them at all, and RTA compensated by force-reaching
+  every `"::"`-named member of every instantiated class — so a mixin's
+  unused privates were emitted once per host class.
+
   A function that has a scope resolves `#name` under that scope and
   **nowhere else**: a mixin body cannot name a host's private at all
   (pinned by `mixins/mixin-base-private-field.zena`), so a scoped miss
