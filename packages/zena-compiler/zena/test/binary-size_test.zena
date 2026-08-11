@@ -199,6 +199,14 @@ export let tests = suite('Binary size', (): void => {
     isTrue(wat.contains('_i32.get'),
       `${subclassedTarget} does not emit Cell<i32>.get — the check above is ` +
       `passing because nothing is being emitted at all.`);
+    // And `Cell<T>.swap<U>` is never called, so the only body it could
+    // have is the one at U's erasure — which is not a function. One
+    // dead copy per specialization of the class is what emitting it
+    // cost, and each built its result through the erased class.
+    isTrue(!wat.contains('.swap'),
+      `${subclassedTarget} emits a body for the generic method swap<U>. A ` +
+      `generic method exists once per specialization, minted at the call ` +
+      `site; the unspecialized registration is not a function.`);
   });
 
   test('the hello-string WAT names everything it ships', (ctx: TestContext): void => {

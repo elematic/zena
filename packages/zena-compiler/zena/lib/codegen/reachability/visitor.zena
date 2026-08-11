@@ -255,31 +255,32 @@ export final class TypeLowerer implements TypeLowererInterface {
       
       // Register specialized class struct & methods if generic instantiation
       if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0 && isConcrete(ct)) {
-        // `Store<K, V>` erases to `Store<anyref, anyref>`, which IS
-        // concrete — anyref is a type — but whether any value can have
-        // that type depends on WHO named it:
+        // An ERASURE is not a specialization. `Store<K, V>` named
+        // from inside generic code is discovered as
+        // `Store<anyref, anyref>`, which IS concrete — anyref is a
+        // type, and a real one (`let x: anyref = "hi"`) — but the
+        // mention was made by `#linkSuperAndVT` naming a subclass
+        // template's supertype, or by the walk of a generic class's own
+        // template naming its field types. Every value either stands
+        // for is some real specialization, discovered on its own.
         //
-        //   - a generic method of a real specialization, lowered once
-        //     at its erasure, genuinely runs `new Array<R>` as
-        //     `new Array<anyref>`. Real: keep instantiating.
-        //   - a walk of a generic class's own TEMPLATE, or a layout or
-        //     linking pass outside any walk (`#linkSuperAndVT` names a
-        //     subclass template's supertype exactly this way), names a
-        //     type whose every value is some real specialization.
-        //     Fiction.
+        // Believing in it made it a fan-out target for every reached
+        // member of the generic class and, once instantiated, gave it a
+        // class vtable global — and a vtable global ref.funcs its
+        // slots, so an erased body of every method got emitted. Those
+        // bodies do not always lower: `hash`/`eq` dispatch on their
+        // operand's type and have nothing to dispatch on at anyref,
+        // which is what made a generic class whose methods use them
+        // impossible to subclass.
         //
-        // A fiction must not become a specialization: that makes it a
-        // fan-out target for every reached member of the generic class
-        // and, once instantiated, gives it a class vtable global — and
-        // a vtable global ref.funcs its slots, so an erased body of
-        // every method gets emitted. Those bodies do not always lower:
-        // `hash`/`eq` dispatch on their operand's type and have nothing
-        // to dispatch on at anyref, which is what made a generic class
-        // whose methods use them impossible to subclass. Its struct is
-        // still registered below — erased signatures and fields refer
-        // to it.
-        let isErasedMention = mentionsTypeParameter(this.pass.wasm, rawT as Type) &&
-            (!this.pass.inQueueWalk || this.pass.walkingTemplateOf != null);
+        // The rule is flat — no "unless a real erased body constructs
+        // one", because no real erased body exists: a generic METHOD is
+        // no longer emitted at its own erasure either (see
+        // `isGenericAtErasure` in analysis.zena), and those dead bodies
+        // were the only thing that ever constructed an erasure. The
+        // struct is still registered below; erased signatures and
+        // fields refer to it.
+        let isErasedMention = mentionsTypeParameter(this.pass.wasm, rawT as Type);
         let specializer = this.pass.specializer;
         if (!isErasedMention) {
           if (!this.pass.specializedClassTypes.has(lookupId)) {

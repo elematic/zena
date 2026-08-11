@@ -143,6 +143,8 @@ export final class Specializer implements SpecializerInterface {
               !this.pass.reachedFunctionsSet.has(func)) {
             this.pass.wasm.addFunction(func);
             this.pass.markFunctionReached(func);
+            // See #reachSuperConstructors: `: super(...)` calls it.
+            this.#reachSuperConstructors(classType);
           }
         }
       }
@@ -1237,6 +1239,38 @@ export final class Specializer implements SpecializerInterface {
   #reachRegisteredMethod(func: WasmFunction): void {
     this.pass.wasm.addFunction(func);
     this.pass.forceReachFunction(func);
+    if (func.methodName != null && (func.methodName as String) == "<constructor>" &&
+        func.classType != null) {
+      this.#reachSuperConstructors(func.classType as ClassType);
+    }
+  }
+
+  /**
+   * A constructor drags its super chain's constructors with it: a
+   * `: super(...)` lowers to a DIRECT call of the superclass's ctor,
+   * resolved through `classMethodMap` — which `layout()` rebuilds from
+   * REACHED functions only, so a super ctor that was merely registered
+   * is gone by lowering (`zir unsupported: super constructor not
+   * found`).
+   *
+   * This used to hold by accident: every class a subclass could name
+   * was instantiated, so every super ctor was promoted on its own.
+   * Instantiating on evidence broke the tie for the one shape where
+   * the two halves disagree — a subclass whose class is instantiated
+   * extending one whose class is not.
+   *
+   * Pending keys rather than direct reaches: the super's ctor may not
+   * be registered yet when the subclass's is, and the settle drain
+   * resolves by key after registration has finished.
+   */
+  #reachSuperConstructors(ct: ClassType): void {
+    var curr: ClassType | null = ct.superType;
+    while (curr != null) {
+      let superCt = curr as ClassType;
+      this.pass.notePendingMemberReach(
+          getClassMethodKey(getClassKey(superCt), "<constructor>"));
+      curr = superCt.superType;
+    }
   }
 
   populateClassStructAndMethods(ct: ClassType, cd: Node | null, sourceModel: SemanticModel): void {

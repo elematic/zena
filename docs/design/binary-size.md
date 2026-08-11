@@ -930,39 +930,66 @@ oversight.
 
 ## 15. An erasure is not a specialization
 
-`Store<K, V>` named from inside generic code erases to
-`Store<anyref, anyref>`, and that erasure passes `isConcrete` — anyref
-is a type. RTA took it for a real specialization: a fan-out target for
-every reached member of the generic class, and, once instantiated, a
+A type parameter lowers to `anyref`, so `Store<K, V>` named from inside
+generic code is discovered as `Store<anyref, anyref>` — and that passes
+`isConcrete`, because anyref is a type, and a real one (`let x: anyref =
+"hi"`). RTA took the erasure for a real specialization: a fan-out target
+for every reached member of the generic class, and, once instantiated, a
 class with a vtable global. A vtable global is a `struct.new` over one
-`ref.func` per slot, so an erased body of every method came with it,
-for a class no value can ever have.
-
-The mentions that fabricate one are not made by code that runs.
-`#linkSuperAndVT` names a subclass template's supertype; walking a
-generic class's own TEMPLATE (done to register its members and fan out
-a concrete referrer per specialization) names its field types. Neither
-is inside an emitted body. What IS: a generic method of a real
-specialization, lowered once at its erasure — `Array<TypeParameterType>`'s
-`map` genuinely runs `new Array<R>` as `new Array<anyref>`, and
-`Array<anyref>` genuinely needs a constructor. `walkingTemplateOf`
-separates them: erased mentions instantiate only from inside a queue
-walk that is not a template's.
+`ref.func` per slot, so an erased body of every method came with it, for
+a class no value can ever have.
 
 The dead bodies were the mild half. `hash`/`eq` dispatch on their
 operand's type and have nothing to dispatch on at anyref, so a generic
-class whose methods use those intrinsics could not be subclassed at
-all — the erased body that subclassing forced could not be lowered:
+class whose methods use those intrinsics could not be SUBCLASSED at all
+— subclassing is what makes the base's slots dispatchable:
 
 ```
 zir unsupported: eq operand type @Store_s868_anyref_anyref.matches
 ```
 
-`subclassed-generic.zena` (a `Cell<T>` and a `Counted<T> extends
-Cell<T>`) 478 → **400**; `binary-size_test.zena` asserts no `_anyref.`
-method survives in it, and
-`tests/language/execution/generics/subclassed-generic-eq-hash.zena`
-runs the shape that used to fail to compile.
+The mentions that fabricate an erasure are made by plumbing, not by code
+that runs: `#linkSuperAndVT` naming a subclass template's supertype, and
+the walk of a generic class's own template naming its field types.
+Neither is evidence that a value exists, so neither instantiates now.
+
+### The generic method behind it
+
+That rule wants to be flat, and could not be at first: `Array<T>.map<R>`
+is emitted with the METHOD's own parameter erased, and its `new Array<R>`
+constructs an `Array<anyref>` that genuinely needs a constructor. Which
+raises the question the fix turned on — who calls that body?
+
+Nobody. In the compiler's own module, all **80** `Array<X>.map` bodies
+were referenced by nothing: not called, not `ref.func`'d, not exported.
+The one real `.map` call site in the compiler (`checker.zena:13531`)
+resolves to `map_spec_Type`, minted per call site by
+`registerGenericMethodUse`. A generic method has no single body — it has
+one per specialization, each with its own signature — so it cannot hold
+a class-vtable slot either, and the unspecialized registration is not a
+function to reach. Both now say so.
+
+That is also what `zir unsupported: method not found` was: the call site
+looked for `identity_spec_i32` and found the erased body sitting in its
+place. `classes/generic-method.zena` is unskipped, and a generic method
+whose body uses `eq` on its own parameter compiles for the first time.
+
+With no erased body left to construct one, an erasure is never
+instantiated, and the rule is flat.
+
+| | before | after |
+|---|---|---|
+| `subclassed-generic.zena` | 478 B | **400 B** |
+| compiler's own module | 3,241,046 B / 15,284 funcs | **3,219,326 B / 15,184 funcs** |
+| minimal / hello-string / array-sum | 37 / 532 / 5,635 | unchanged |
+
+What is left: 130 functions on erased classes remain in the compiler's
+module, a closed island referenced only by each other — kept alive by
+generic FUNCTION values (`some_spec_anyref`), which genuinely have one
+erased shape. And `getTypeKeyForSpecialization` still maps both a type
+parameter and the real `anyref` type to `"anyref"`, so `FixedArray<any>`
+(a template tag's values array) and `FixedArray<T>` share one class key,
+struct and method set. Both are worth separating next.
 
 ### Tooling
 
