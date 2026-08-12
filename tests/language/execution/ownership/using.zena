@@ -1,0 +1,238 @@
+// @mode: run
+// @result: 0
+
+// `using` releases on every path leaving the enclosing block: normal exit,
+// early `return`, `break`/`continue`, and exception unwind — in reverse
+// declaration order. See docs/design/ownership.md §`using`.
+
+import { Disposable } from 'zena:ownership';
+import { Error } from 'zena:error';
+import { Array } from 'zena:array';
+import { i32ToString } from 'zena:string-convert';
+import { console } from 'zena:console';
+
+/** Records the order releases happen in, so ordering is observable. */
+class Log {
+  entries = new Array<i32>();
+  new();
+  add(id: i32): void { this.entries.push(id); }
+  render(): String {
+    var s = '';
+    for (let e in this.entries) { s = s + i32ToString(e); }
+    return s;
+  }
+}
+
+class Guard implements Disposable {
+  #log: Log;
+  #id: i32;
+  new(log: Log, id: i32) : #log = log, #id = id;
+  :Disposable.dispose(): void { this.#log.add(this.#id); }
+}
+
+let assertEq = (actual: String, expected: String, what: String): void => {
+  if (actual != expected) {
+    console.log(what + ': expected "' + expected + '" but got "' + actual + '"');
+    throw new Error(what);
+  }
+};
+
+/** Normal exit releases at the end of the block. */
+let normalExit = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    using a = new Guard(log, 1);
+    log.add(9);
+  };
+  run();
+  assertEq(log.render(), '91', 'normal exit');
+};
+
+/** Reverse declaration order, innermost first. */
+let reverseOrder = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    using a = new Guard(log, 1);
+    using b = new Guard(log, 2);
+    using c = new Guard(log, 3);
+  };
+  run();
+  assertEq(log.render(), '321', 'reverse order');
+};
+
+/** An early `return` leaves every open region. */
+let earlyReturn = (): void => {
+  let log = new Log();
+  let run = (): i32 => {
+    using a = new Guard(log, 1);
+    using b = new Guard(log, 2);
+    return 7;
+  };
+  let v = run();
+  if (v != 7) { throw new Error('early return: wrong value'); }
+  assertEq(log.render(), '21', 'early return');
+};
+
+/** The returned value is computed before anything is released. */
+let returnValueBeforeRelease = (): void => {
+  let log = new Log();
+  let run = (): i32 => {
+    using a = new Guard(log, 1);
+    log.add(8);
+    return log.entries.length;
+  };
+  let v = run();
+  if (v != 1) { throw new Error('return value: expected 1, got ' + i32ToString(v)); }
+  assertEq(log.render(), '81', 'value before release');
+};
+
+/**
+ * `break` leaves the regions opened inside the loop, and no others: two
+ * iterations each release the inner guard (i=0 falls out of the block, i=1
+ * breaks), while the outer one waits for the enclosing block.
+ */
+let breakOutOfLoop = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    using outer = new Guard(log, 1);
+    var i = 0;
+    while (i < 3) {
+      using inner = new Guard(log, 2);
+      if (i == 1) { break; }
+      i += 1;
+    }
+    log.add(9);
+  };
+  run();
+  assertEq(log.render(), '2291', 'break');
+};
+
+/** `continue` releases the iteration's region before jumping. */
+let continueInLoop = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    var i = 0;
+    while (i < 3) {
+      using g = new Guard(log, 2);
+      i += 1;
+      continue;
+    }
+  };
+  run();
+  assertEq(log.render(), '222', 'continue');
+};
+
+/** Exception unwind releases, then keeps propagating. */
+let unwind = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    using a = new Guard(log, 1);
+    using b = new Guard(log, 2);
+    throw new Error('boom');
+  };
+  var caught = false;
+  try {
+    run();
+  } catch (e) {
+    caught = true;
+  };
+  if (!caught) { throw new Error('unwind: exception did not propagate'); }
+  assertEq(log.render(), '21', 'unwind');
+};
+
+/** The unbound form: scope-bound, nothing to name. */
+let unbound = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    using new Guard(log, 5);
+    log.add(9);
+  };
+  run();
+  assertEq(log.render(), '95', 'unbound');
+};
+
+/** A release that overrides its base runs the subclass's. */
+class Base implements Disposable {
+  #log: Log;
+  new(log: Log) : #log = log;
+  log: Log { get { return this.#log; } }
+  :Disposable.dispose(): void { this.#log.add(1); }
+}
+
+class Derived extends Base {
+  new(log: Log) : super(log);
+  :Disposable.dispose(): void { this.log.add(2); }
+}
+
+let virtualDispose = (): void => {
+  let log = new Log();
+  let run = (b: Base): void => {
+    using g = b;
+  };
+  run(new Derived(log));
+  assertEq(log.render(), '2', 'virtual dispose');
+};
+
+/** A nested block scopes its own region and releases at its own `}`. */
+let nestedBlock = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    using outer = new Guard(log, 1);
+    if (log.entries.length == 0) {
+      using inner = new Guard(log, 2);
+      log.add(7);
+    }
+    log.add(9);
+  };
+  run();
+  assertEq(log.render(), '7291', 'nested block');
+};
+
+/**
+ * A `dispose` that throws releases ONCE and propagates.
+ *
+ * This is what forces the release to sit outside its own protected
+ * region: a copy on the normal path would be inside it, so a throwing
+ * release would land in its own handler and run a second time.
+ * `Disposable` says implementations must not throw, but nothing
+ * enforces that, and the shape must not depend on it.
+ */
+class ThrowingGuard implements Disposable {
+  #log: Log;
+  new(log: Log) : #log = log;
+  :Disposable.dispose(): void {
+    this.#log.add(1);
+    throw new Error('from dispose');
+  }
+}
+
+let throwingDispose = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    using g = new ThrowingGuard(log);
+    log.add(9);
+  };
+  var caught = false;
+  try {
+    run();
+  } catch (e) {
+    caught = true;
+  };
+  if (!caught) { throw new Error('throwing dispose: did not propagate'); }
+  assertEq(log.render(), '91', 'throwing dispose runs once');
+};
+
+export function main(): i32 {
+  normalExit();
+  reverseOrder();
+  earlyReturn();
+  returnValueBeforeRelease();
+  breakOutOfLoop();
+  continueInLoop();
+  unwind();
+  unbound();
+  virtualDispose();
+  nestedBlock();
+  throwingDispose();
+  return 0;
+}

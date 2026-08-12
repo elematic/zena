@@ -10,7 +10,7 @@
  */
 import { Array } from 'zena:array';
 import {
-  getClassKey, getClassPrivateFieldKey,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey,
 } from '../codegen-utils.zena';
 import { HashMap } from 'zena:map';
 import { String } from 'zena:string';
@@ -19,7 +19,7 @@ import {
   Expression, ForStatement, Identifier, IfExpression, IfStatement,
   LetPatternCondition, LiteralPattern, MatchExpression, Node,
   Statement, ThrowExpression, TryExpression, TupleLiteral,
-  TuplePattern, VariableDeclaration, WhileStatement,
+  TuplePattern, UsingStatement, VariableDeclaration, WhileStatement,
   ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral,
   BinaryExpression, CallExpression, ForInStatement, IdentifierPattern,
   IndexExpression, MemberExpression, AwaitExpression, YieldStatement,
@@ -36,14 +36,14 @@ import {
   WasmType, isRefValType, refTargetOf,
 } from '../wasm.zena';
 import {
-  ClassCodegenInfo, WasmArray, WasmGlobal, WasmTag, asWasmArray,
+  ClassCodegenInfo, WasmArray, WasmFunction, WasmGlobal, WasmTag, asWasmArray,
   asWasmStruct, isValSubtype,
 } from '../wasm-module.zena';
 import {
   eraseTypeParameters, findImplementedInterfaceTransitive,
   typeToValTypeWithSub,
 } from '../type-mapping.zena';
-import { IrOp, IrRefField, IrRefGlobal, IrRefTag } from './ir.zena';
+import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, returnSlotVt, throwStmt, varDecl } from './lowering.zena';
 import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState,
@@ -207,6 +207,14 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
     }
     cx.precellBindings(body);
     for (var i = 0; i < body.length - 1; i += 1) {
+      if (body[i] is UsingStatement) {
+        // A `using` scopes the rest of its block, so in a value block it
+        // would have to scope the tail expression that supplies the
+        // arm's value — the region would have to carry a result out
+        // through its join. It does not yet, so this is loud rather
+        // than a release that runs at the wrong time.
+        bail(cx, 'using in a value-producing block');
+      }
       lowerStmt(cx, body[i]);
       if (!cx.reachable) {
         return -1;
@@ -637,41 +645,14 @@ let finishProtectedArm = (cx: LoweringContext, scope: FinallyScope,
  * global, because the finalizer may itself throw and catch, and that
  * overwrites the global before the rethrow reads it.
  */
-let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
-  let finalizer = expr.finalizer as Node;
+let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
+    isVoid: boolean, resultVt: ValType | null,
+    lowerProtected: (scope: FinallyScope, resultVar: i32,
+        saved: HashMap<SymbolId, i32>) => void,
+    lowerFinalizer: () => void): i32 => {
   if (cx.wasm.exceptionTag == null || cx.wasm.exceptionPayload == null) {
     bail(cx, 'exception infra missing');
   }
-  if (inSuspensionBody(cx) && containsSuspension(expr as Node)) {
-    // The dispatch rides wasm locals — the exit code, the parked
-    // result, the saved payload — and a local does not survive a
-    // suspension. Celling them the way RTA cells try-assigned
-    // locals is what would lift this.
-    bail(cx, 'suspension inside a try with a finalizer');
-  }
-  let nodeType = cx.func.model.getNodeType(expr);
-  if (nodeType == null) {
-    bail(cx, 'untyped try expression');
-  }
-  let isVoid = isVoidOrNeverType(nodeType as Type);
-  let resultVt = if (!isVoid) {
-    let vt = typeToValTypeWithSub(cx.wasm, nodeType as Type, cx.func);
-    cx.requireSupported(vt, 'try result type');
-    vt
-  } else {
-    null
-  };
-
-  // Mirrors for every enclosing local the region or the finalizer
-  // assigns — the same variables a plain try/catch uses, for the same
-  // reason: a handler edge carries the values live at its try's
-  // entry, so the dispatch reads the live ones back out instead.
-  let bodyAssigned = cx.assignedEnvSyms(expr.body as Node);
-  let mirrored = cx.assignedEnvSyms(expr.body as Node);
-  if (expr.handler != null) {
-    cx.appendAssignedEnvSyms((expr.handler as CatchClause).body as Node, mirrored);
-  }
-  cx.appendAssignedEnvSyms(finalizer, mirrored);
   let ownedVars = new Array<SymbolId>();
   for (let symId in mirrored) {
     if (cx.tryVars.has(symId)) { continue; }
@@ -701,30 +682,7 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   // ---- the protected part ------------------------------------------
   cx.finallyScopes.push(scope);
   cx.b.switchTo(protectedB);
-  if (expr.handler == null) {
-    let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
-    finishProtectedArm(cx, scope, resultVar, bodyValue);
-  } else {
-    let handler = expr.handler as CatchClause;
-    let bodyB = cx.b.newBlock();
-    let catchB = cx.b.newBlock();
-    cx.b.tryBr(cx.b.addRef(new IrRefTag(tag)), bodyB, noValues(),
-        catchB, noValues());
-
-    cx.b.switchTo(bodyB);
-    let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
-    finishProtectedArm(cx, scope, resultVar, bodyValue);
-
-    cx.env = cx.copyOf(saved);
-    cx.reachable = true;
-    cx.b.switchTo(catchB);
-    for (let symId in bodyAssigned) {
-      cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
-    }
-    bindCatchParam(cx, handler);
-    let catchValue = lowerValueNode(cx, handler.body as Node, isVoid, resultVt);
-    finishProtectedArm(cx, scope, resultVar, catchValue);
-  }
+  lowerProtected(scope, resultVar, saved);
   cx.finallyScopes.pop();
 
   // ---- the region's handler edge ------------------------------------
@@ -744,7 +702,7 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   for (let symId in mirrored) {
     cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
   }
-  lowerValueNode(cx, finalizer, true, null);
+  lowerFinalizer();
   // The mirrors this try owns go out of scope here: an exit replayed
   // below belongs to whatever encloses this try. An enclosing try's
   // stay live — its handler is still reachable.
@@ -841,6 +799,76 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   cx.b.switchTo(contB);
   cx.reachable = true;
   return if (resultVar >= 0) cx.b.varGet(resultVar) else -1;
+};
+
+/**
+ * `try` with a finalizer, in value or statement position — the shape
+ * above, with the protected part being the body (and its `catch`, which
+ * nests INSIDE the region in its own try_br so a handler that throws
+ * still runs the finalizer) and the finalizer being the written block.
+ */
+let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
+  let finalizer = expr.finalizer as Node;
+  if (inSuspensionBody(cx) && containsSuspension(expr as Node)) {
+    // The dispatch rides wasm locals — the exit code, the parked
+    // result, the saved payload — and a local does not survive a
+    // suspension. Celling them the way RTA cells try-assigned
+    // locals is what would lift this.
+    bail(cx, 'suspension inside a try with a finalizer');
+  }
+  let nodeType = cx.func.model.getNodeType(expr);
+  if (nodeType == null) {
+    bail(cx, 'untyped try expression');
+  }
+  let isVoid = isVoidOrNeverType(nodeType as Type);
+  let resultVt = if (!isVoid) {
+    let vt = typeToValTypeWithSub(cx.wasm, nodeType as Type, cx.func);
+    cx.requireSupported(vt, 'try result type');
+    vt
+  } else {
+    null
+  };
+
+  // Mirrors for every enclosing local the region or the finalizer
+  // assigns — the same variables a plain try/catch uses, for the same
+  // reason: a handler edge carries the values live at its try's
+  // entry, so the dispatch reads the live ones back out instead.
+  let bodyAssigned = cx.assignedEnvSyms(expr.body as Node);
+  let mirrored = cx.assignedEnvSyms(expr.body as Node);
+  if (expr.handler != null) {
+    cx.appendAssignedEnvSyms((expr.handler as CatchClause).body as Node, mirrored);
+  }
+  cx.appendAssignedEnvSyms(finalizer, mirrored);
+
+  let tag = cx.wasm.exceptionTag as WasmTag;
+  return lowerFinallyRegion(cx, mirrored, isVoid, resultVt,
+      (scope, resultVar, saved) => {
+        if (expr.handler == null) {
+          let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
+          finishProtectedArm(cx, scope, resultVar, bodyValue);
+          return;
+        }
+        let handler = expr.handler as CatchClause;
+        let bodyB = cx.b.newBlock();
+        let catchB = cx.b.newBlock();
+        cx.b.tryBr(cx.b.addRef(new IrRefTag(tag)), bodyB, noValues(),
+            catchB, noValues());
+
+        cx.b.switchTo(bodyB);
+        let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
+        finishProtectedArm(cx, scope, resultVar, bodyValue);
+
+        cx.env = cx.copyOf(saved);
+        cx.reachable = true;
+        cx.b.switchTo(catchB);
+        for (let symId in bodyAssigned) {
+          cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
+        }
+        bindCatchParam(cx, handler);
+        let catchValue = lowerValueNode(cx, handler.body as Node, isVoid, resultVt);
+        finishProtectedArm(cx, scope, resultVar, catchValue);
+      },
+      () => { lowerValueNode(cx, finalizer, true, null); });
 };
 
 /**
@@ -947,6 +975,147 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
     cx.tryVars.delete(symId);
   }
   return cx.finishMerge(m, saved);
+};
+
+/**
+ * The class whose `:dispose` releases a value of type `t`.
+ *
+ * A handle is erased, so `Own<Descriptor>` releases through
+ * `Descriptor`'s member; the checker has already established that one
+ * exists, and that a `Borrow<R>` never reaches here.
+ */
+let disposeOwnerClass = (cx: LoweringContext, t: Type): ClassType => {
+  let base = baseType(t);
+  if (!(base is ClassType)) {
+    bail(cx, 'using operand is not a class');
+  }
+  return base as ClassType;
+};
+
+/**
+ * Emits one release: `value.:Disposable.dispose()`.
+ *
+ * Dispatch follows the ordinary method-call rule rather than a shortcut —
+ * an overridden `:dispose` reached through a base-typed binding has to
+ * run the subclass's release, and a `resource class` hierarchy is exactly
+ * where that happens.
+ */
+let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void => {
+  let ct = ownerClass;
+  let cKey = getClassKey(ct);
+  let infoOpt = if (let (true, info) = cx.wasm.classInfos.get(cKey)) info else null;
+  if (infoOpt == null) {
+    bail(cx, 'using receiver class not discovered');
+  }
+  let classInfo = infoOpt as ClassCodegenInfo;
+
+  var methodOpt: WasmFunction | null = null;
+  var curr: ClassType | null = ct;
+  while (curr != null && methodOpt == null) {
+    var g: ClassType | null = curr;
+    while (g != null && methodOpt == null) {
+      let key = getClassMethodKey(getClassKey(g as ClassType), ':dispose');
+      if (let (true, m) = cx.wasm.classMethodMap.get(key)) {
+        methodOpt = m;
+      }
+      g = (g as ClassType).genericSource;
+    }
+    curr = (curr as ClassType).superType;
+  }
+  if (methodOpt == null) {
+    // The checker required the member, so this means RTA pruned it —
+    // the dependency `checkUsingStatement` records is what roots it.
+    bail(cx, 'using dispose method not found');
+  }
+  let method = methodOpt as WasmFunction;
+  let sig = method.signature;
+  if (sig.params.length != 1) {
+    bail(cx, 'using dispose arity');
+  }
+
+  let receiver = cx.conformToSlot(value, sig.params[0], 'dispose receiver type');
+  let args = new Array<i32>();
+  args.push(receiver);
+
+  if (!cx.exactValues.has(value) &&
+      cx.memberProvidedBySubclass(classInfo, ':dispose')) {
+    if (cx.vtableSlotIndex(classInfo, ':dispose') < 0) {
+      bail(cx, 'overridden dispose without vtable slot');
+    }
+    cx.lowerVtableCall(receiver, classInfo, ':dispose', sig, args, null);
+    return;
+  }
+  cx.b.callFunc(cx.b.addRef(new IrRefFunc(method)), args, null);
+};
+
+/**
+ * A `using` statement and everything after it in its block.
+ *
+ * The rest of the block is the region the binding is live over, so it is
+ * lowered here rather than by the caller's loop: `using` is not a
+ * statement that finishes, it is a statement that scopes what follows.
+ * Nested `using`s recurse, which is what makes releases run in reverse
+ * declaration order without a list to reverse.
+ *
+ * The release is a `finally`, and shares its lowering: one copy, in a
+ * dispatch block OUTSIDE the region, reached by normal completion, the
+ * handler edge, and every `return`/`break`/`continue` that leaves.
+ * Putting the copy on the normal path INSIDE the region instead would
+ * be wrong rather than merely fatter — a `dispose` that threw would
+ * land in its own handler and release a second time. `dispose` is
+ * specified not to throw (ownership.md §Disposable), but nothing
+ * enforces that, and this shape does not depend on it.
+ *
+ * The value is acquired BEFORE the region opens: a release is owed only
+ * once acquisition has succeeded.
+ */
+export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
+    rest: Array<Statement>, restStart: i32, restEnd: i32): void => {
+  let declType = cx.substitutedNodeType(stmt.init);
+  if (declType == null) {
+    bail(cx, 'untyped using initializer');
+  }
+  let ownerClass = disposeOwnerClass(cx, declType as Type);
+
+  for (var k = restStart; k < restEnd; k += 1) {
+    if (inSuspensionBody(cx) && containsSuspension(rest[k] as Node)) {
+      // Same reason `try`/`finally` bails: the dispatch rides wasm
+      // locals, and a local does not survive a suspension.
+      bail(cx, 'suspension inside a using region');
+    }
+  }
+
+  let value = lowerExpr(cx, stmt.init, null);
+  if (stmt.pattern != null) {
+    let pat = stmt.pattern as Node;
+    if (!(pat is IdentifierPattern)) {
+      bail(cx, 'using destructuring pattern');
+    }
+    let symOpt = cx.func.model.resolveDeclaration(pat as IdentifierPattern);
+    if (symOpt == null) {
+      bail(cx, 'using binding symbol');
+    }
+    cx.bindPatternSym(symOpt as Symbol, value);
+  }
+
+  let mirrored = new Array<SymbolId>();
+  for (var k = restStart; k < restEnd; k += 1) {
+    cx.appendAssignedEnvSyms(rest[k] as Node, mirrored);
+  }
+
+  lowerFinallyRegion(cx, mirrored, true, null,
+      (scope, resultVar, saved) => {
+        for (var i = restStart; i < restEnd; i += 1) {
+          if (!cx.reachable) { break; }
+          if (rest[i] is UsingStatement) {
+            lowerUsingRegion(cx, rest[i] as UsingStatement, rest, i + 1, restEnd);
+            break;
+          }
+          lowerStmt(cx, rest[i]);
+        }
+        finishProtectedArm(cx, scope, resultVar, -1);
+      },
+      () => { emitDispose(cx, value, ownerClass); });
 };
 
 export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {

@@ -1,0 +1,55 @@
+// @mode: check
+
+// `using` gives deterministic release to any Disposable. It is the mechanism
+// for the non-affine population — a lock guard, a tracing span, a transaction
+// — which are ordinary classes that stay freely aliasable and are released by
+// an explicit `using` rather than by implicit drop.
+// See docs/design/ownership.md §`using`.
+
+import { Disposable } from 'zena:ownership';
+
+class Guard implements Disposable {
+  var released: boolean = false;
+  new();
+  :Disposable.dispose(): void { this.released = true; }
+}
+
+class Plain {
+  new();
+}
+
+let bound = (): boolean => {
+  using g = new Guard();
+  return g.released;
+};
+
+// A binding is optional: `using _ = foo()` is a workaround for a syntax gap
+// other languages have, and `using` being a keyword means Zena does not need
+// it.
+let unbound = (): i32 => {
+  using new Guard();
+  return 0;
+};
+
+let annotated = (): void => {
+  using g: Guard = new Guard();
+};
+
+let notDisposable = (): void => {
+  // @error: has no ':dispose()' member
+  using p = new Plain();
+};
+
+let unboundNotDisposable = (): void => {
+  // @error: has no ':dispose()' member
+  using new Plain();
+};
+
+// A using binding is released when it leaves scope, so it cannot be
+// reassigned — which is why `using` declares the binding itself and there is
+// no `let`/`var` to choose between. See docs/design/ownership.md §`using`.
+let reassigned = (): void => {
+  using g = new Guard();
+  // @error: Cannot assign
+  g = new Guard();
+};

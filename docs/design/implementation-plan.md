@@ -146,8 +146,13 @@ A.
   signatures, so Track W's bindgen (component-model.md Part 8 stage 3) can
   proceed on O0 without waiting for O2, and `fs.open(): Result<Own<Descriptor>,
 Error>` becomes writable.
-- **O0.5 — `using`** and the scope-exit cleanup lowering (`try`/`finally` on all
-  exit paths). Same codegen O3 reuses, reached from the easier side.
+- **O0.5 — `using`** and the scope-exit cleanup lowering (release on all exit
+  paths). Same codegen O3 reuses, reached from the easier side. **Landed**:
+  both forms parse, the checker requires `:dispose()` by member key, and
+  lowering releases on normal exit, `return`, `break`/`continue` and exception
+  unwind, in reverse declaration order. The release shares `try`/`finally`'s
+  region — emitted once, in a dispatch outside the region — so the two nest
+  through each other and a throwing `dispose` cannot release twice.
 - **O1 — the checker flow graph.** TypeScript-style flow nodes as a
   `SemanticModel`-style side table. Independently justified: fixes the narrowing
   soundness bug in BUGS.md, generalizes the hand-rolled `definitelyExits`

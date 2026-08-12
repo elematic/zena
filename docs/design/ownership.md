@@ -737,7 +737,7 @@ Three uses:
 `using` composes directly, since `Unmanaged<T>` is `Disposable`:
 
 ```zena
-using let raw = disown(f);   // deterministic release at scope exit
+using raw = disown(f);   // deterministic release at scope exit
 ```
 
 <a id="using"></a>
@@ -754,18 +754,35 @@ using file = openConfig(path);
 ```
 
 Semantics: reverse declaration order at scope exit; runs on normal exit, early
-return, `break`/`continue`, and exception unwind. It desugars to `try`/`finally`.
+return, `break`/`continue`, and exception unwind — exactly what a
+`try`/`finally` wrapping the rest of the block would do. It compiles to the
+same protected region `finally` compiles to; there is no source-level rewrite,
+so the AST a `using` produces is a `using`.
+
+**`using` declares the binding itself** — there is no `let` or `var` in front
+of the name. It could not declare a mutable one: the release targets the value
+bound at the declaration, so a rebound name would release a stale value and
+leak the new one. Every language with the construct lands in the same place —
+C#'s using variable is read-only, Java's try-with-resources resource is
+implicitly final, JavaScript's `using` binding cannot be assigned to. With no
+mutability to choose, `let` would be a keyword that never varies, so both
+`using let x = …` and `using var x = …` are rejected rather than accepted as
+synonyms.
 
 A binding is optional. `using _ = foo()` is a workaround for a syntax gap in
 other languages and should not be inherited; `using` is a keyword, so a bare
-expression form is unambiguous:
+expression form is unambiguous — a name followed by `=` or `:` binds, anything
+else is the expression form:
 
 ```zena
-using acquire(lock);           // scope-bound, nothing to name
-using let file = open(path);   // bound
+using acquire(lock);        // scope-bound, nothing to name
+using file = open(path);    // bound
 ```
 
-It composes with refutable pattern conditions as a binding modifier:
+It composes with refutable pattern conditions as a binding modifier. The `let`
+is back here, and is not an inconsistency: in the statement form `using` IS the
+declaration keyword, while here it modifies the `let`-condition the language
+already has, which is what supplies the pattern.
 
 ```zena
 if (using let Ok(file) = openConfig(path)) {
@@ -1158,6 +1175,54 @@ anything until implicit drop (O3) — and the liveness rule in §"Borrows and
 suspension" is unenforced, so a borrow may still be held across an `await`
 and a generator may still take a borrow parameter.
 
+**`using` is implemented, and it is where the scope-exit lowering lives.**
+Both forms parse, the checker requires the value to carry `:dispose()` — by
+member key rather than by nominal conformance, so a `using` needs no import —
+and lowering releases on every path out of the enclosing block: falling off the
+end, `return`, `break`/`continue`, and exception unwind. Several bindings in one
+block nest, which gives reverse declaration order without a list to reverse, and
+a returned value is computed before anything is released.
+
+**The release IS a `finally`, and shares its lowering.** The sharing is at
+lowering, not in the source: `lowerTryFinally` is split into a reusable region
+and a thin `try` wrapper, and `using` supplies the other two pieces — the
+protected part is the rest of the block, the finalizer is the dispose call. No
+`TryExpression` is synthesized and nothing rewrites the AST, so the tree a
+`using` produces is a `using`, and diagnostics and the language service see
+what was written.
+
+That is deliberate rather than incidental. A synthesized `try`/`finally` would
+have to name `Disposable` to spell the release, and `zena:ownership` is out of
+the prelude, so it would make every `using` import-dependent — the same reason
+the checker matches `:dispose()` by member key.
+
+The region both reach: the release is emitted **once**, in a dispatch block
+outside the region, and normal completion, the handler edge, and each
+`return`/`break`/`continue` leaving the region park an exit code and branch
+there, to be replayed after the release has run.
+
+One copy outside the region is a correctness requirement, not a size choice.
+A copy on the normal path would sit *inside* the region, so a `dispose` that
+threw would land in its own handler and release a second time.
+[`Disposable`](#disposable) says implementations must not throw, but nothing
+enforces that, and the shape does not depend on it —
+`execution/ownership/using.zena` pins the throwing case.
+
+Sharing the mechanism is also what makes nesting work without new rules: an
+exit replayed at one dispatch re-enters the scope list truncated, so nested
+releases run inside-out, and a `using` and a `try`/`finally` nest through each
+other for free.
+
+That is the machinery O3 reuses. What O3 adds is not new codegen but new
+*obligations*: the releases an implicit drop contributes come from move
+checking rather than from a `using` the programmer wrote.
+
+One gap remains, loud rather than silent: a `using` inside a value-producing
+block — a `match` or `if` arm whose tail expression supplies the arm's value —
+bails, since the region would have to carry a result out to the arm's join.
+A function body's value tail *is* handled, by lowering it where a `return`
+would go.
+
 **Second-class-ness is enforced.** A `Borrow<R>` may not be captured by a
 closure, may not be a field's type, a container's element type, a record
 field or a tuple element, and may not be returned unless it derives from
@@ -1393,7 +1458,7 @@ overloading on the receiver. Instead, once disowned a resource is either scoped
 with `using` or adopted back:
 
 ```zena
-using let raw = disown(f);   // released at scope exit
+using raw = disown(f);   // released at scope exit
 let f2 = adopt(raw);         // or take it back; drops normally
 ```
 
@@ -1491,7 +1556,7 @@ checker, the same way `Hashable` is. Adopting `opaque` should fold that special
 case into the general rule and re-declare the handles as
 `opaque type Own<T> = T` and so on.
 
-## Open questions## Open questions
+## Open questions
 
 1. Multi-borrow returns: reject, or name the source parameter?
 2. `try`/`catch` and the branch-join rule: a runtime drop flag inside `try`
@@ -1540,7 +1605,7 @@ case into the general rule and re-declare the handles as
 - [filesystem.md](./filesystem.md) — WASI descriptors
 - [concurrency.md](./concurrency.md) — parallelism; the vocabulary to reconcile
 - [equality.md](./equality.md) — member-level `where` bounds, which O3.5 uses
-- [exceptions.md](./exceptions.md) — `try`/`finally`, the desugaring target
+- [exceptions.md](./exceptions.md) — `try`/`finally`, whose region `using` shares
 - [self-hosted-compiler.md](./self-hosted-compiler.md) — `SemanticModel` side tables
 - [ir.md](./ir.md) — ZIR, the post-type CFG+SSA IR
 - [implementation-plan.md](./implementation-plan.md) — plan of record

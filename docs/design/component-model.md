@@ -793,8 +793,8 @@ them and they block nothing in Track G.
 Stage 5 (ownership) is the one exception: it is a genuine language expansion, so
 it lands self-hosted-only under implementation-plan.md's rule 2, and it touches
 the checker and the front end. It is still largely independent of Track G — the
-scope-exit lowering desugars to `try`/`finally`, which exists today and owes
-nothing to the split pass. The single real coupling is who drops resources held
+scope-exit release shares `try`/`finally`'s lowering, which exists today and
+owes nothing to the split pass. The single real coupling is who drops resources held
 in a cancelled task's state machine, which needs G1.
 
 The tracks converge at stage 8. Note that implementation-plan.md puts JSPI
@@ -955,7 +955,7 @@ canonical-ABI sides that remain unbuilt.
 - [capabilities.md](./capabilities.md) — capability values; reconciled in Part 2
 - [ownership.md](./ownership.md) — the unified resource-management plan (Part 6)
 - [filesystem.md](./filesystem.md) — the original `Disposable`/`using` sketch
-- [exceptions.md](./exceptions.md) — `try`/`finally`, which `using` desugars to
+- [exceptions.md](./exceptions.md) — `try`/`finally`, whose lowering `using` shares
 - [concurrency.md](./concurrency.md) — async/CPS (prerequisite for p3 only), and
   `isolated<T>`/`frozen<T>`/`borrow`, the ownership machinery affine types
   would share (Part 6)

@@ -1921,6 +1921,37 @@ class ValidationError extends Error {
 }
 ```
 
+## Resource Management
+
+### `using`
+
+`using` releases a `Disposable` when it leaves the enclosing block — on every
+path out, including `return`, `break`/`continue`, and exception unwind.
+
+```zena
+import { Disposable } from 'zena:ownership';
+
+class Lock implements Disposable {
+  :Disposable.dispose(): void { release(this.handle); }
+}
+
+let update = (): void => {
+  using guard = acquire(lock);
+  // … use guard …
+};   // released here
+
+// Several in one block release in reverse declaration order
+using a = open('a');
+using b = open('b');   // b first
+
+// A binding is optional
+using acquire(lock);
+```
+
+`dispose` implementations must be idempotent and must not throw — they run on
+unwind paths. `using` declares the binding itself — no `let` or `var`, since a
+rebound name would release a stale value and leak the new one.
+
 ## Host Imports
 
 Use `declare` with `@external` to import functions from the host environment.

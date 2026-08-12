@@ -21,7 +21,7 @@ import {
   SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
   TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression,
   // Statements
-  Statement, VariableDeclaration, FunctionDeclaration, ExpressionStatement, BlockStatement,
+  Statement, VariableDeclaration, UsingStatement, FunctionDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
@@ -273,6 +273,7 @@ let printStatement = (stmt: Statement): Doc => {
 
 let printStatementInner = (stmt: Statement): Doc => match (stmt) {
   case VariableDeclaration {}: printVariableDeclaration(stmt as VariableDeclaration)
+  case UsingStatement {}: printUsingStatement(stmt as UsingStatement)
   case FunctionDeclaration {}: printFunctionDeclaration(stmt as FunctionDeclaration)
   case ExpressionStatement {expression}: concat(docs2(printExpression(expression), text(';')))
   case BlockStatement {}: printBlockStatement(stmt as BlockStatement)
@@ -321,6 +322,23 @@ let printVariableDeclaration = (decl: VariableDeclaration): Doc => {
   }
   parts.push(text(' = '));
   parts.push(printExpression(decl.init));
+  parts.push(text(';'));
+  return group(concat(parts));
+};
+
+/** `using name: T = init;`, or the unbound `using init;`. */
+let printUsingStatement = (stmt: UsingStatement): Doc => {
+  let parts = new Array<Doc>();
+  parts.push(text('using '));
+  if (stmt.pattern != null) {
+    parts.push(printPattern(stmt.pattern as Pattern));
+    if (stmt.typeAnnotation != null) {
+      parts.push(text(': '));
+      parts.push(printTypeAnnotation(stmt.typeAnnotation as TypeAnnotation));
+    }
+    parts.push(text(' = '));
+  }
+  parts.push(printExpression(stmt.init));
   parts.push(text(';'));
   return group(concat(parts));
 };

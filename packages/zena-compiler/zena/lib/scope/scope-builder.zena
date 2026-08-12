@@ -15,7 +15,7 @@ import {
   SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
   TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression,
   // Statements
-  VariableDeclaration, FunctionDeclaration, ExpressionStatement, BlockStatement,
+  VariableDeclaration, UsingStatement, FunctionDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
@@ -471,6 +471,29 @@ export final class ScopeBuilder {
           }
           case _: {
             this.#declarePattern(pattern, kind, stmt);
+          }
+        }
+      }
+      case UsingStatement {pattern, typeAnnotation, init}: {
+        // Same order as a `let`: the initializer is processed before the
+        // name is declared, so the name is not visible in its own
+        // initializer. The unbound form declares nothing.
+        this.#processExpression(init);
+        if (typeAnnotation != null) {
+          this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+        }
+        if (pattern != null) {
+          let pat = pattern as Pattern;
+          match (pat) {
+            case IdentifierPattern {name} as ident: {
+              this.#current.declare(name, false, ident, this.#modulePath);
+              let sym = this.#current.getLocal(name) as Symbol;
+              this.#symbols.record(ident, sym);
+              this.#allVariables.push(sym);
+            }
+            case _: {
+              this.#declarePattern(pat, "let", stmt);
+            }
           }
         }
       }

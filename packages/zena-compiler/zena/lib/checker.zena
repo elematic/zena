@@ -66,7 +66,7 @@ import {
   ThrowExpression, TryExpression, AwaitExpression, RangeExpression, PipelineExpression,
   PipePlaceholder,
   // Statements
-  Statement, VariableDeclaration, FunctionDeclaration, ExpressionStatement, BlockStatement,
+  Statement, VariableDeclaration, UsingStatement, FunctionDeclaration, ExpressionStatement, BlockStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
@@ -5942,6 +5942,9 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     case VariableDeclaration {kind, pattern, typeAnnotation, init, loc}: {
       checkVariableDeclaration(ctx, kind, pattern, typeAnnotation, init, loc);
     }
+    case UsingStatement {pattern, typeAnnotation, init, loc}: {
+      checkUsingStatement(ctx, pattern, typeAnnotation, init, loc);
+    }
     case FunctionDeclaration {name as namePat, func}: {
       // A `function` is a `let` binding of a function value that happens to
       // be spelled with its name in front, so it checks the same way.
@@ -6531,6 +6534,121 @@ let checkVariableDeclaration = (
 
   // Bind the declared names in the pattern.
   bindPattern(ctx, pattern, declType);
+};
+
+/**
+ * `using let file = open(path);` and the unbound `using acquire(lock);`.
+ *
+ * The value must be a `Disposable` — something carrying the symbol-keyed
+ * `:dispose()` member. The interface is matched structurally, by the member
+ * key, rather than by a nominal conformance check: `zena:ownership` is
+ * deliberately out of the prelude, so requiring `Disposable` to be in scope
+ * at every `using` would make the statement import-dependent. This is the
+ * same arrangement `resource class` uses to require the member without an
+ * `implements` clause.
+ *
+ * A `Borrow<R>` is rejected: a borrow never releases what it points at, so
+ * disposing through one would release a resource someone else still owns.
+ */
+let checkUsingStatement = (
+  ctx: CheckerContext,
+  pattern: Pattern | null,
+  typeAnnotation: TypeAnnotation | null,
+  init: Expression,
+  loc: SourceLocation | null
+): void => {
+  let expectedType = if (typeAnnotation != null) {
+    resolveTypeAnnotation(ctx, typeAnnotation as TypeAnnotation)
+  } else {
+    null
+  };
+
+  let initType = checkExpression(ctx, init, expectedType);
+  var declType = initType;
+  if (expectedType != null) {
+    if (!isAssignableTo(ctx, initType, expectedType)) {
+      ctx.error(
+        `Type mismatch: '${typeToString(initType)}' is not assignable to '${typeToString(expectedType)}'.`,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
+    declType = expectedType;
+  }
+
+  requireDisposable(ctx, declType, loc);
+
+  if (pattern != null) {
+    let pat = pattern as Pattern;
+    if (isRefutableDeclarationPattern(pat)) {
+      ctx.error(
+        "Refutable pattern in variable declaration; use `if (let ...)` or `while (let ...)` for patterns that may not match.",
+        DiagnosticCode.TypeMismatch,
+        pat.loc
+      );
+    }
+    bindPattern(ctx, pat, declType);
+  }
+};
+
+/**
+ * Reports unless `t` carries `:dispose()`, and records the dependency that
+ * roots it.
+ *
+ * Recording matters as much as reporting: the call is synthesized by
+ * lowering rather than written in the source, so nothing in the AST names
+ * the method and RTA would prune it. This is the same `referencedClassMethods`
+ * entry an explicit `value.:Disposable.dispose()` would leave behind.
+ */
+let requireDisposable = (ctx: CheckerContext, t: Type, loc: SourceLocation | null): void => {
+  if (t is ErrorType) { return; }
+
+  if (ownershipHandleName(t) == "Borrow") {
+    ctx.error(
+      "'using' cannot release a 'Borrow<" + typeToString(ownershipHandleInner(t) ?? t) +
+      "'>: a borrow is temporary access to something another party owns, and " +
+      "never releases what it points at.",
+      DiagnosticCode.IncompatibleTypes,
+      loc
+    );
+    return;
+  }
+
+  // A handle is erased, so its members are the resource's members.
+  var target = unwrapAliases(t);
+  while (isOwnershipWrapper(target)) {
+    let inner = ownershipHandleInner(target);
+    if (inner == null) { break; }
+    target = unwrapAliases(inner as Type);
+  }
+
+  let hasDispose = match (target) {
+    case ClassType as ct: ct.members.has(":dispose")
+    case InterfaceType as it: it.members.has(":dispose")
+    case _: false
+  };
+
+  if (!hasDispose) {
+    ctx.error(
+      "'using' requires a Disposable, but '" + typeToString(t) +
+      "' has no ':dispose()' member. Implement 'Disposable' from " +
+      "'zena:ownership', which declares the symbol-keyed release method " +
+      "'using' calls at scope exit.",
+      DiagnosticCode.IncompatibleTypes,
+      loc
+    );
+    return;
+  }
+
+  if (target is ClassType) {
+    let ct = target as ClassType;
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      let classSymId = (ct.genericSource ?? ct).symbolId;
+      deps.referencedSymbols.add(classSymId);
+      deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".:dispose");
+    }
+  }
 };
 
 let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {

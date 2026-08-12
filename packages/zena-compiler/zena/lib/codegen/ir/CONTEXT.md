@@ -83,6 +83,13 @@ parameter.
   region and re-enter itself if it threw. `cx.finallyScopes` is what
   routes the early exits, and truncating it at each dispatch is what
   makes nested finalizers run inside-out.
+  **`using` is the region's second client**, through the same
+  `lowerFinallyRegion` — it supplies the rest of the block as the
+  protected part and the `dispose` call as the finalizer, with no
+  `TryExpression` synthesized and no AST rewriting. So a change here
+  moves resource release too, and the reverse: `try`/`finally`'s
+  snapshot plus the "emitted exactly once" WAT invariant are what say
+  the shared region still emits what it did.
 - **A split pass must re-enter try regions at _every_ dispatch target.**
   Both suspension passes route every edge into a dispatch target through
   a dispatcher that sits outside all user regions, so a target inside a

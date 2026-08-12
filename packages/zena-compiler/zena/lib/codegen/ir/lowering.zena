@@ -18,7 +18,7 @@ import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
 import { parseF64, parseI32, i32ToString } from 'zena:string-convert';
 import {
-  Node, Statement, Expression, FunctionExpression, BlockStatement,
+  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement,
   ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement,
   WhileStatement, ExpressionStatement, VariableDeclaration,
   BinaryExpression, UnaryExpression, AssignmentExpression, Identifier,
@@ -76,8 +76,8 @@ import {
 import {
   lowerFor, lowerForIn, lowerIf, lowerIfExpression,
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
-  lowerLetCondition, lowerMatch, lowerTryExpression, lowerValueNode,
-  lowerWhile,
+  lowerLetCondition, lowerMatch, lowerTryExpression, lowerUsingRegion,
+  lowerValueNode, lowerWhile,
 } from './control-flow.zena';
 
 // ZirUnsupported now lives in lowering-context.zena (imported above):
@@ -1066,8 +1066,28 @@ export final class FunctionLowerer {
         }
       }
       let bodyCount = if (tailExpr != null) stmts.length - 1 else stmts.length;
+      var usingInBody = false;
       for (var si = 0; si < bodyCount; si += 1) {
-        this.#lowerStatement(stmts[si]);
+        if (stmts[si] is UsingStatement) {
+          usingInBody = true;
+        }
+      }
+      if (usingInBody && tailExpr != null) {
+        // A value tail under an open `using` region has to be evaluated
+        // where a `return` would be — inside the region, before the
+        // release — or it would read a resource that is already gone.
+        // Spelling it as a return is what puts it there, and reuses the
+        // one path that already knows what a return owes.
+        let withReturn = new Array<Statement>();
+        for (var si = 0; si < bodyCount; si += 1) {
+          withReturn.push(stmts[si]);
+        }
+        withReturn.push(new ReturnStatement(tailExpr as Expression,
+            (tailExpr as Expression).loc) as Statement);
+        this.#lowerStatementList(withReturn, 0);
+        tailExpr = null;
+      } else {
+        this.#lowerStatementList(stmts, 0, bodyCount);
       }
       if (tailExpr != null && this.#cx().reachable) {
         let tailValue = this.#lowerExpressionCtx(
@@ -1865,6 +1885,28 @@ export final class FunctionLowerer {
 
   // -- Statements ------------------------------------------------------
 
+  /**
+   * Lowers `body[start..]`, giving a `using` the rest of the list.
+   *
+   * `using` scopes what follows it, so the tail of the block belongs to
+   * its region rather than to this loop — which is why this returns as
+   * soon as it hands one over.
+   */
+  #lowerStatementList(body: Array<Statement>, start: i32, end: i32 = -1): void {
+    let last = if (end < 0) body.length else end;
+    for (var i = start; i < last; i += 1) {
+      if (!this.#cx().reachable) {
+        return;
+      }
+      let s = body[i];
+      if (s is UsingStatement) {
+        lowerUsingRegion(this.#cx(), s as UsingStatement, body, i + 1, last);
+        return;
+      }
+      this.#lowerStatement(s);
+    }
+  }
+
   #lowerStatement(stmt: Statement): void {
     if (!this.#cx().reachable) {
       // Statically dead statements after return/break/continue: skip.
@@ -1875,9 +1917,14 @@ export final class FunctionLowerer {
         // Cells for self/forward-referencing closure bindings exist
         // before any statement runs (see precellBindings).
         this.#cx().precellBindings(body);
-        for (let s in body) {
-          this.#lowerStatement(s);
-        }
+        this.#lowerStatementList(body, 0);
+      }
+      case UsingStatement as us: {
+        // A `using` outside a block — `if (c) using acquire(l);` — scopes
+        // nothing after it, so the region is empty and the release runs
+        // immediately. Inside a block, #lowerStatementList gets there
+        // first and hands it the rest of the block.
+        lowerUsingRegion(this.#cx(), us, new Array<Statement>(0), 0, 0);
       }
       case ExpressionStatement {expression}: {
         if (expression is ThrowExpression) {

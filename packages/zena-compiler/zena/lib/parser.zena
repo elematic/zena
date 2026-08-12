@@ -29,6 +29,7 @@ import {
   UnaryExpression,
   AssignmentExpression,
   VariableDeclaration,
+  UsingStatement,
   FunctionDeclaration,
   ExpressionStatement,
   BlockStatement,
@@ -561,6 +562,11 @@ export final class Parser {
       return this.#parseFunctionDeclaration(exported, topLevel, startToken);
     }
 
+    // `using` bindings, bound or not
+    if (this.#match(TokenType.Using)) {
+      return this.#parseUsingStatement(startToken);
+    }
+
     // Variable declarations
     if (this.#match(TokenType.Let)) {
       return this.#parseVariableDeclaration('let', exported, startToken);
@@ -662,6 +668,55 @@ export final class Parser {
     return this.#parseExpressionStatement();
   }
   
+  /**
+   * `using file = open(path);` or the unbound `using acquire(lock);`.
+   *
+   * `using` declares the binding itself — no `let`. It cannot declare a
+   * mutable one, so there is no mutability left for `let`/`var` to choose
+   * between: the release targets the value bound here, and a rebound name
+   * would release a stale value and leak the new one. Every language with
+   * this construct reaches the same place (C#'s using variable is
+   * read-only, Java's try-with-resources resource is implicitly final,
+   * JavaScript's `using` binding cannot be assigned to).
+   *
+   * `using` is a keyword, so the unbound form needs no placeholder binding —
+   * `using _ = foo()` is a workaround for a syntax gap other languages have
+   * and this one does not. Telling the two forms apart is one token of
+   * lookahead: a name followed by `=` or `:` binds, anything else is the
+   * expression form. See docs/design/ownership.md §`using`.
+   */
+  #parseUsingStatement(startToken: Token): UsingStatement {
+    var pattern: Pattern | null = null;
+    var typeAnnotation: TypeAnnotation | null = null;
+
+    if (this.#check(TokenType.Var)) {
+      throw this.#error("A 'using' binding is released when it leaves scope, so it cannot be reassigned: write 'using " + this.#peek2().value + " = ...'.");
+    }
+    if (this.#check(TokenType.Let)) {
+      throw this.#error("'using' already declares the binding; write 'using " + this.#peek2().value + " = ...' rather than 'using let'.");
+    }
+
+    if (this.#check(TokenType.Identifier) &&
+        (this.#peek2().kind == TokenType.Equals ||
+         this.#peek2().kind == TokenType.Colon)) {
+      pattern = this.#parsePattern(true);
+      if (this.#match(TokenType.Colon)) {
+        typeAnnotation = this.#parseTypeAnnotation();
+      }
+      this.#consume(TokenType.Equals, "Expected '=' after the name of a 'using' binding");
+    }
+
+    let init = this.#parseExpression();
+
+    if (this.#check(TokenType.Semi)) {
+      this.#advance();
+    } else if (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      this.#consume(TokenType.Semi, "Expected ';' after using statement");
+    }
+
+    return new UsingStatement(pattern, typeAnnotation, init, this.#makeLocation(startToken));
+  }
+
   #parseVariableDeclaration(kind: String, exported: boolean, startToken: Token): VariableDeclaration {
     // Parse pattern (for now just identifier)
     let pattern = this.#parsePattern(true);
