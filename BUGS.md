@@ -202,6 +202,154 @@ immediately trying to fix it (which can pollute the current task's context).
   feature behaves — and it is the same shared-storage question that made
   `static var stored: Array<T>` an error on a generic class.
 - **Workaround**: put the static on the host class.
+### A generic class cannot receive a `Future<T>`, by any spelling
+
+- **Found**: 2026-08-11, rewriting `zena:async` so waiters read the
+  settled value out of the future instead of being handed it
+  (`docs/design/async-runtime-shape.md`). A pulling waiter has to hold the
+  future it reads; every way of giving it one fails.
+- **Severity**: medium. All four are loud — three are compile-time bails,
+  one is a checker error — but together they rule out an ordinary shape,
+  and the workaround is obscure enough that the next person will rediscover
+  it the same slow way.
+- **Details**: with `W<T>` a generic class that wants a `Future<T>`:
+
+  1. **As a constructor parameter** — `class W<T> { f: Future<T>; new(this.f); }`
+     constructed from a generic context bails with
+     `zir unsupported: constructor argument type @W_sNNN_i32`. Note the
+     same shape with an ordinary generic class *does* lower:
+     `class Holder<T>` as a constructor parameter is fine, and
+     `AllListener<T>(state: AllState<T>, index: i32)` was fine before this
+     change. `Future<T>` specifically is not, which points at its
+     specialization arriving through the async RTA path
+     (`registerAsyncFuture`) rather than the ordinary one, so the
+     parameter's valtype and the argument's valtype are not the same
+     specialization.
+  2. **As a nullable field assigned afterwards** — `var f: Future<T> | null`
+     then `w.f = someFuture` is rejected by the checker twice: the
+     assignment reports `'Future<T>' is not assignable to 'Future | null'`,
+     and reading it back with `this.f as Future<T>` reports
+     `Cannot cast type 'Future | null' to 'Future<T>': the target's type
+     arguments are not supplied by the source`. This is the raw-template
+     type gap meeting `checkTypeParameterCast`.
+  3. **Captured in a closure** — a generic function that closes over its
+     `Future<T>` parameter bails with
+     `zir unsupported: celled capture @f_spec_i32`.
+  4. **Handed over as `this`** — a generic class passing itself to another
+     generic class fails either way. Without a cast the checker reports
+     `argument 'Node' is not assignable to parameter 'Node<T>'`; with
+     `this as Node<T>` the compiler throws
+     `registerSpecializedClass called for Node-like: Node id=84`. Reduced:
+
+     ```zena
+     class Node<T> {
+       v: T;
+       new(this.v);
+       wrap(cb: (x: T) => void): Wrap<T> {
+         return new Wrap<T>(this as Node<T>, cb);   // crashes
+       }
+     }
+     class Wrap<T> {
+       n: Node<T>;
+       cb: (x: T) => void;
+       new(this.n, this.cb);
+     }
+     ```
+
+     Note `AllState.attach` does `new AllListener<T>(this as AllState<T>, i)`
+     and works, so this is not `this as C<T>` alone — the reduction above
+     adds a closure-typed field, and that combination is what crashes.
+- **Worked around**: the future travels in an **initialized**
+  `Array<Future<T>>` field, pushed after construction — none of the four
+  paths above. `zena:async`'s combinator waiters avoid it entirely by
+  carrying an `i32` index into a list the shared state already holds.
+  Both are in `packages/stdlib/zena/async.zena`, commented in place.
+- **Fix**: (1) is the one worth chasing first — if `Future<T>`'s
+  async-path specialization is not being unified with the ordinary one,
+  that is likely to surface elsewhere as generics and async mix more.
+
+### Symbol-keyed members resolve by name, so an unexported symbol is not private
+
+- **Found**: 2026-08-11, asking whether `Future.result()` could be hidden
+  from user code by keying it with a symbol private to `zena:async`
+  (`docs/design/async-runtime-shape.md`).
+- **Severity**: high. Not a miscompile — it silently voids an access-control
+  guarantee the stdlib already relies on, and the language reference states
+  the opposite. `docs/design/classes.md` §9.4: "Visibility is controlled via
+  standard `export` rules. If you don't export the symbol, outside modules
+  cannot call or implement the method." `packages/stdlib/zena/ownership.zena`
+  puts it more strongly: "Symbols are the only way to give a member a name no
+  other code can write."
+- **Details**: a symbol-keyed member is registered and resolved under the
+  symbol's **source name**, with no reference to the declaring symbol's
+  identity. `getMemberPropertyName` returns `":" + name`
+  (`packages/zena-compiler/zena/lib/ast.zena:685`), and the class member is
+  registered under the same string
+  (`packages/zena-compiler/zena/lib/checker.zena:8650`). `SymbolType` does
+  carry a fresh id per declaration (`checker.zena:11086`), so identities exist
+  — nothing compares them.
+
+  Two reproducers. Given a library with an unexported symbol:
+
+  ```zena
+  // lib.zena
+  symbol secret;
+
+  export class Holder {
+    var :secret: i32;
+    new(v: i32) { this.:secret = v; }
+    reveal(): i32 { return this.:secret; }
+  }
+  ```
+
+  A consumer reaches it by declaring a same-named symbol of its own:
+
+  ```zena
+  // app.zena — compiles; `main` returns 41
+  import { Holder } from './lib.zena';
+  symbol secret;
+  export let main = (): i32 => {
+    let h = new Holder(41);
+    return h.:secret;
+  };
+  ```
+
+  and also without declaring any symbol at all:
+
+  ```zena
+  // app2.zena — also compiles
+  import { Holder } from './lib.zena';
+  export let main = (): i32 => {
+    let h = new Holder(41);
+    return h.:secret;
+  };
+  ```
+
+  So the access side does not even require the symbol to resolve to a binding
+  in scope. The existing semantics test
+  (`tests/language/semantics/symbols/symbol-properties.zena`) does not catch
+  this: its `this.:otherSym` case errors because the class has no `":otherSym"`
+  member at all, not because the symbols differ.
+- **Consequence for ownership**: `zena:ownership` keeps the resource lifecycle
+  flag behind an unexported `interface OwnState { static symbol state;
+  static symbol setState; }`, and comments that writing it "would let anything
+  move a resource between regimes without going through `disown`/`adopt`,
+  which is the whole check". The qualified access form takes the same
+  name-based path (`checker.zena:8650` reads `property.name` out of a
+  `MemberExpression` symbol path), so `r.:setState(0)` from any module should
+  reach it. **Not confirmed by execution** — the only compiler binary
+  available when this was filed predates `resource class` and cannot parse the
+  test — so verify against a current build before relying on the severity.
+- **Verified on**: the two reproducers above were compiled and run
+  (`main` returns 41) with a `cli.wasm` built from `3f70f53c`.
+  `getMemberPropertyName` is byte-identical between that commit and current
+  `main`, and the member-key construction is the same name-based path, so the
+  behavior is expected to be unchanged; it has not been re-run against a
+  compiler built from `main`.
+- **Fix**: record the resolved symbol's `SymbolType` id alongside the member
+  and compare identities at access, instead of comparing the mangled string.
+  Also make the access side require the symbol to resolve to a binding in
+  scope — `app2.zena` above should not compile under any rule.
 
 ### A stdlib module's exported type names resolve without an import
 

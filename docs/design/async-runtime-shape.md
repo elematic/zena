@@ -17,10 +17,61 @@ run-to-completion, FIFO microtasks, always-async delivery, one-level
 adoption, and the host contract all stand exactly as
 [async.md](async.md) describes them.
 
+## Status
+
+Landed with this document: the pull protocol (one `Task`, four types
+deleted, no per-settle allocation), inline-first waiter storage,
+`tryComplete`/`tryFail`, combinators rewritten to read their inputs, and
+the symbol-keyed reads.
+
+Not landed, in the order the plan below gives them: hole-initialized
+fields (so `#value` is still a `Box<T>`), the intrusive queue, removing
+`state`/`isCompleted`, deleting `Completer`, the `Parker` hook, and the
+multi-value ramp.
+
+Line references below are to `ea7837e3`, the commit before this change,
+since the point of most of them is what the code looked like going in.
+
+### What the implementation settled
+
+Four things came out differently from the sketch, all forced rather than
+chosen, and all recorded in BUGS.md:
+
+- **A library waiter cannot hold a `Future<T>`.** Four spellings fail —
+  constructor parameter, nullable field, closure capture, and handing
+  over `this` — so `zena:async`'s own waiters reach their future through
+  an `i32` index into a list the shared state already holds, or through
+  a one-element `Array<Future<T>>` filled after construction. The
+  compiler-synthesized frame is unaffected: it spills the awaited future
+  like any other live value, which is what makes pull cheap for the case
+  that matters and awkward for the case that does not.
+- **`onComplete` is a free function**, `onComplete(f, onValue, onError)`,
+  for the same reason: as an argument `f` is an ordinary `Future<T>`,
+  while `this` inside `Future<T>`'s own method is the raw template type.
+  It joins `futureOf`/`allOf`/`raceOf`, which are free functions for
+  their own reasons.
+- **`:failure()` exists beside `:result()`.** A zero-width `T` does not
+  lower in an inline-tuple lane, so `Future<void>.result()` bails
+  ("method result type"), and `Future<void>` is what `sleep` returns.
+  The library's waiters therefore read the tag and the value separately.
+  That is exactly the separable-tag shape this document argues against —
+  tolerable only because both members are private to the module. It
+  retires when void lanes lower.
+- **`runFuture(f)` is the public way to get a value out.** Drain, then
+  unwrap. It cannot answer before the queue has run, so it gives
+  synchronous code a value without giving it a way to observe _when_
+  something settled. The async tests use it where they previously called
+  `valueOrThrow`.
+
+`state` and `isCompleted` are still public. Retiring them is the
+remaining half of the argument below, and it is separable: the ordering
+tests currently assert "not settled yet" by polling, and would need
+rewriting to trace-based assertions first.
+
 ## Allocation accounting
 
 `let x = await g()`, where `g` is an async function that suspends once,
-allocates eight objects on today's `main`:
+allocated eight objects before this change:
 
 | #   | Object                                   | Source                        |
 | --- | ---------------------------------------- | ----------------------------- |
@@ -141,6 +192,45 @@ This is a place where Zena can be cheaper than JS rather than merely as
 cheap: `Promise.all` must keep its own results array precisely because a
 `Promise` has no readable settled value.
 
+### Push-only, considered
+
+Push does not _inherently_ cost an allocation, and the reason is worth
+recording because it is the one argument that could overturn the
+direction above. The value is produced at settle time and consumed one
+queue hop later, so it has to live somewhere in between; `ValueDelivery`
+is one answer, but a **preallocated typed slot on the waiter** is
+another, and it allocates nothing. That is what [async.md](async.md) §3
+originally specified — a `$resume` frame field "written by the completion
+path" — before A1 replaced it with pull.
+
+So an allocation-free push-only design exists. Its costs are elsewhere:
+
+- **The waiter interface goes generic again.** Writing a typed value into
+  the waiter needs a typed call, so a frame needs one implementation and
+  one vtable per _distinct awaited type_ in the function. Given that
+  duplicated generic instantiations are where Zena's binary size actually
+  goes ([binary-size.md](binary-size.md)), that is the real bill.
+- **It reintroduces a per-frame error slot.** Under pull a rejected future
+  re-throws at the resume point and unwinds into the existing
+  failure-capture region; [async.md](async.md) §5 notes this made failure
+  propagation free and that await-in-try "needed no change to the error
+  path at all — a per-frame error slot would have". Push must stash the
+  error for `step()` to rethrow.
+- **It does not remove `#value` from the future.** `let a = g(); …;
+await a;` subscribes to an already-settled future, so the value must be
+  retained for late subscribers regardless. Push removes the public
+  accessor, not the storage — and symbol-keying removes the public
+  accessor at no cost at all.
+- **Combinators get worse**, per the section above: a pushed value arrives
+  with nowhere to go, so `AllState` keeps its slots array and its boxes.
+
+Worth noting V8 does push and does allocate for it — a `PromiseReaction`
+per handler plus a reaction job task carrying the argument. The
+preallocated-slot trick is unavailable there because JS handlers are
+arbitrary closures rather than compiler-synthesized frames. Zena has the
+frames and could take it; the generic waiter interface is what makes it
+not worth taking.
+
 ## Waiter storage
 
 With one untyped waiter type, storage has two workable shapes.
@@ -200,49 +290,91 @@ list, `Task` should be an interface.
 
 ## `Future`'s public surface
 
-The read that pull requires is the one part of `Future` that cannot be
-removed. Everything that makes it _read_ as an implementation API can be.
+Pull needs a read of the settled value. It does not need a _public_ one,
+and the difference turns out to be the whole API question.
 
 ```zena
+/** Not exported: keys the runtime's own read of a settled future. */
+symbol result;
+
 export class Future<T> {
-  /** The settled result. Resolved: (Resolved, value, null).
-   *  Rejected: (Rejected, _, error). Pending: (Pending, _, null). */
-  result(): inline (FutureState, T, Error | null);
+  /** The settled result. Traps if this future is still pending —
+   *  unreachable by construction, since the only way to reach this is to
+   *  be a task the future itself scheduled. */
+  :result(): inline (true, T, _) | inline (false, _, Error);
 
   /** `t.run()` from the microtask queue once this future settles. */
   subscribe(t: Task): void;
+
+  /** Settle, or report that someone else already did. */
+  tryComplete(value: T): boolean;
+  tryFail(error: Error): boolean;
+
+  /** The callback bridge for non-async code. */
+  onComplete(onValue: (value: T) => void, onError: (error: Error) => void): void;
 }
 ```
 
-Two methods, replacing `state`, `isCompleted`, `valueOrThrow`,
-`onComplete`, `subscribe`, `subscribeResumable`, `complete`, and `fail`.
-Four changes get there:
+`:result()` is keyed by a symbol `zena:async` does not export, so no
+other module can name it. That is the same device `zena:map` uses for
+`MapEntry`'s link field and `zena:ownership` uses for its lifecycle
+accessors, and it costs nothing: a top-level symbol keying a method on a
+concrete class is an ordinary direct call, not an interface dispatch
+(the vtable-index language in [classes.md](classes.md) §9.4 is about
+interface protocol methods). The compiler is inside the boundary
+trivially — the transform already resolves members by string, so
+`'valueOrThrow'` becomes `':result'`.
 
-**Multi-value result rather than an accessor pair.** Three wasm stack
-slots, no allocation, and the value cannot be obtained without its tag.
-`if (let (Resolved, v, _) = f.result())` makes the guard structural — the
-same discipline `Iterator.next()` already establishes, including the
-"unspecified when the tag says otherwise" convention
-([multi-return-values.md](multi-return-values.md)). A two-slot variant,
-`inline (true, T) | inline (false, Error | null)` with a null error
-meaning pending, is tighter and conflates two cases that are never
-distinguished at a resume point; either is defensible.
+**This is what makes the surface JS-shaped without paying for it.** With
+the read hidden, user code cannot observe a settled value synchronously
+and cannot ask whether a future has settled — the properties
+[§Completion state](#why-hiding-completion-state-is-worth-it) argues for
+— while the runtime keeps zero-allocation pull delivery. A public `Task`
+would be useless to user code, since a user-written waiter could read
+nothing, so `subscribe` and `Task` are effectively internal too and the
+public surface is `onComplete` plus the constructors and combinators.
+That is close to the minimum, and it is reversible in the safe
+direction: exporting the symbol later is one word, retracting it is not.
+
+**Prerequisite, and it is not currently satisfied.** Symbol-keyed members
+resolve by the symbol's source _name_, with no comparison of the
+declaring symbol's identity, so an unexported symbol is not actually
+private today — see BUGS.md, "Symbol-keyed members resolve by name". Two
+reproducers are filed there. This design assumes that fix; until it
+lands, `:result()` is a convention rather than a boundary. Nothing else
+here depends on it.
+
+Four further changes get to the shape above:
+
+**A tagged inline union rather than an accessor pair.** The tag has to be
+inseparable from the payload, which is exactly the argument
+[result-option.md](result-option.md) makes for keeping `Result`'s boolean:
+holes are only observable in reference slots, so separate `value: T` and
+`error: Error | null` fields would let an unset numeric `T` read as a
+silent `0`. Three lanes, not two, for the same reason that document
+gives — lane merging assigns one wasm valtype per lane, and `T` and
+`Error` share one only if they share a representation. This is precisely
+the `Result<T, Error>` shape, and `:result()` should be spelled as that
+alias once `type Result<T, E> = inline …` is legal (it is not yet:
+"inline tuple types can only appear in function return types").
 
 **No `isCompleted` on the read side.** Branching on pending-ness is the
-affordance that produces schedule-dependent behavior, and nothing needs
-it. The combinators' "have I settled already" guard belongs to the write
-side as `tryComplete(): boolean` / `tryFail(): boolean`, which is what
-`raceOf` actually wants; that also retires `AllState.settled`,
-`RaceState.settled`, and the double-settle throw.
+affordance that produces schedule-dependent behavior. The combinators'
+"have I settled already" guard belongs to the write side as
+`tryComplete`/`tryFail`, which is what `raceOf` actually wants; that also
+retires `AllState.settled`, `RaceState.settled`, and the double-settle
+throw.
 
-**No throw in `result()`.** Deadlock is a property of the executor —
-queue empty, nothing outstanding, root future still pending — not of any
-individual future. Detecting it in the drain loop rather than in
-`valueOrThrow` (`async.zena:288`) puts it where the information is, makes
-it one check with one message instead of a check per resume point, and
-removes a generic `Error` construction from every `Future<T>`
-instantiation. Pending at a resume point is then unreachable by
-construction, so `result()` traps there rather than throwing.
+**No throw in `:result()`, and no completion query for the drain.**
+Deadlock is a property of the executor — queue empty, nothing
+outstanding, root future still pending — not of any individual future.
+Detecting it in the drain loop rather than in `valueOrThrow`
+(`async.zena:288`) puts it where the information is, makes it one check
+with one message instead of a check per resume point, and removes a
+generic `Error` construction from every `Future<T>` instantiation. The
+drain needs no read at all: the entry wrapper subscribes a one-field
+sentinel `Task` to the root future, and deadlock is "nothing left to do
+and the sentinel never ran".
 
 **No `complete`/`fail` on `Future`.** See below.
 
@@ -251,6 +383,45 @@ resume point, emitted by the transform as a compare-and-branch into one
 shared non-generic helper. That is strictly smaller than today, where
 `valueOrThrow` is a generic class method monomorphized per instantiation
 even though nothing it does depends on `T`.
+
+### Why hiding completion state is worth it
+
+The hazard JS avoids is narrower than "reading the value": it is
+_branching on completion_. Given a way to ask, `if (f.isCompleted) fast()
+else await f` becomes writable — two code paths where one runs only under
+a scheduling accident, and where making something settle a tick earlier
+silently switches which. Promises pay the always-async cost precisely to
+guarantee one path, and an observable completion state hands that
+guarantee back at the observation site after buying it at the callback
+site. JS also has a second reason that does not apply here: without
+blocking, a synchronous read is only usable when you already know the
+promise settled, which you can only know by having awaited it.
+
+Reading the payload, by contrast, is useful and is not the hazard — Rust
+exposes it (`Poll::Ready(v)`), C# exposes `.Status`/`.Result`, Java
+exposes `isDone()`/`getNow()`. JS and Dart are the outliers. Symbol-keying
+the read takes the benefit (zero-allocation pull, combinators with no
+storage of their own) and declines the hazard, rather than trading one
+for the other.
+
+### Typestate, and why ownership is not the tool
+
+The stricter thing to want is that `value` be unreachable _until_ the
+future settles, checked statically. That is typestate, and `Own<T>` is
+not it: affine types encode "at most once", not "only in this state". A
+consuming `take(this: Own<this>): Result<T, Error>` would enforce
+read-once, which is wrong here — multiple awaiters are legal and late
+subscribers must still read. And WasmGC cannot change an object's runtime
+type, so `Pending<T>` → `Settled<T>` cannot be a narrowing of the same
+reference; the transition would have to produce a new value, which is a
+different object model.
+
+What the language does have is pattern narrowing over tagged inline
+unions, which is typestate encoded in a _value_ rather than in an object:
+the payload is unreachable without matching the tag, and the compiler
+enforces that much. The symbol closes the remaining gap — not by making a
+premature read ill-typed, but by making it unwritable outside the module
+that cannot perform one.
 
 ## `Completer<T>`'s removal
 
@@ -327,6 +498,44 @@ the sugar entirely.
 The parker blocks; it does not poll. `poll_oneoff` is a real sleep
 (`time/wasi.zena:63`) despite the name, and nothing in this design polls
 futures.
+
+### Blocking is sound where it happens, and unmarked everywhere else
+
+Blocking at the top of the drain is correct by construction:
+`drainMicrotasks` runs the queue to empty _before_ it parks
+(`async.zena:139`–`148`), and `TimerQueue.park` is reached only from
+there. When the module blocks, nothing is runnable, so nothing is
+starved.
+
+Blocking anywhere else stops the world, and nothing marks it. `zena:fs`
+imports `fd_read`, `fd_write` and `path_open` — ordinary synchronous WASI
+p1 calls, callable from inside an async function, during which no frame
+runs, no timer fires and no completion is processed. This is not unsound,
+but it is the point at which "async" stops meaning anything, and the
+cause is the stackless choice: with stackful coroutines a single task can
+block, while with stackless frames blocking is always global. A function
+that suspends and a function that blocks the world are indistinguishable
+at the call site, and the language has no way to say which is which.
+Naming that distinction is a separate design question; it is recorded
+here because parking is where it surfaces.
+
+**One live footgun.** `setParker` replaces any previous parker
+(`async.zena:115`–`118`), and `zena:time` registers on first use.
+[async.md](async.md) §4 argues for a single slot deliberately — waiting on
+several sources means waiting on whichever is ready _first_, which a loop
+over independent parkers gets wrong — and that reasoning is right, but
+the mechanism does not enforce its own premise. The second module to
+register silently disables the first, and the symptom is a timer that
+never fires or a completion that never arrives. Only one caller exists
+today, so it is latent; WASI sockets would make it real. `poll_oneoff`
+takes an array of subscriptions, so the shape that matches the argument is
+one WASI parker other modules _contribute subscriptions to_. Failing
+that, `setParker` should throw on a second registration rather than
+overwrite.
+
+Under p3 none of this arises: blocking would serialize concurrent
+component tasks the host could otherwise interleave, and returning WAIT
+costs nothing.
 
 It exists because the executor needs a way to say "nothing to run, but
 not done". That can end three ways: the host re-enters through
@@ -424,13 +633,19 @@ next one works against.
    binding. Deletes four types and every per-settle allocation.
 3. **Inline the first waiter.** Stdlib only. Deletes the two eager
    arrays and their backing.
-4. **`result()`, `tryComplete`, deadlock detection in the drain, delete
+4. **`:result()`, `tryComplete`, deadlock detection in the drain, delete
    `Completer`.** Stdlib plus the transform's resume-point emission.
 5. **`Parker` to a hook.** Stdlib only.
 6. **Multi-value ramp.** Compiler.
 
 Steps 2, 3, and 5 need no compiler changes and account for most of the
 allocation reduction.
+
+Two prerequisites sit outside this list and are not on its critical path.
+Symbol identity (BUGS.md) has to be fixed before `:result()`'s privacy is
+real, though the member works either way. Hole-initialized fields are what
+step 1 needs, and every other step lands without them — the `Box` simply
+survives until they do.
 
 ## Risks
 
@@ -447,12 +662,20 @@ allocation reduction.
   Small today; larger the longer it waits.
 - **`raceOf`'s shared listener** must become one node per input before
   the intrusive list can land.
+- **Symbol privacy is assumed, not held.** Until BUGS.md's symbol-identity
+  bug is fixed, `:result()` is unwritable-by-convention only. The design
+  does not otherwise depend on it, so this delays the guarantee rather
+  than the work.
 
 ## Open
 
-- Whether `result()` returns three slots or the two-slot tagged union.
-- Whether an enforced read/write split is wanted once `Completer` is
-  gone, and whether `opaque type` or ownership is the tool.
+- Whether an enforced read/write split for `complete`/`fail` is wanted
+  once `Completer` is gone. Symbol-keying is the same device again and
+  the cheapest answer; [opaque-types.md](opaque-types.md) and ownership
+  are the heavier ones.
 - Whether frame sinking is worth the entry-segment duplication. Wants a
   measurement on a real async workload, which does not exist yet — the
   same gap [async.md](async.md) §8.6 notes.
+- Whether the language should distinguish "suspends this frame" from
+  "blocks the whole module" at the type level, per §Parking. Out of scope
+  here; it becomes urgent when WASI I/O grows beyond timers.

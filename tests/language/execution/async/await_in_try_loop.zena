@@ -7,7 +7,7 @@
 //    region),
 //  - a throw raised BEFORE any suspension in the try body, which must
 //    still be caught by the same handler.
-import { Future, Completer, drainMicrotasks, futureOf } from 'zena:async';
+import { Future, Completer, drainMicrotasks, futureOf, runFuture } from 'zena:async';
 
 /** Two suspensions in one region; the second one fails. */
 let twoAwaits = async (a: Completer<i32>, b: Completer<i32>): Future<i32> => {
@@ -59,7 +59,7 @@ export let main = (): i32 => {
   drainMicrotasks();
   b.fail(new Error('nope'));
   drainMicrotasks();
-  if (!f1.isCompleted || f1.valueOrThrow() != -1) {
+  if (!f1.isCompleted || runFuture(f1) != -1) {
     return -1;
   }
 
@@ -70,14 +70,14 @@ export let main = (): i32 => {
   c.complete(5);
   d.complete(6);
   drainMicrotasks();
-  if (!f2.isCompleted || f2.valueOrThrow() != 11) {
+  if (!f2.isCompleted || runFuture(f2) != 11) {
     return -2;
   }
 
   // Loop of 4 suspensions inside the region => 1+2+3+4 = 10.
   let f3 = loopInTry(4);
   drainMicrotasks();
-  if (!f3.isCompleted || f3.valueOrThrow() != 10) {
+  if (!f3.isCompleted || runFuture(f3) != 10) {
     return -3;
   }
 
@@ -85,7 +85,7 @@ export let main = (): i32 => {
   let e = new Completer<i32>();
   let f4 = throwsFirst(e);
   drainMicrotasks();
-  if (!f4.isCompleted || f4.valueOrThrow() != 7) {
+  if (!f4.isCompleted || runFuture(f4) != 7) {
     return -4;
   }
 

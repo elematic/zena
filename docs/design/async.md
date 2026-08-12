@@ -132,6 +132,14 @@ class Completer<T> {      // the host/manual bridge
 I/O, timers, test harnesses — completes futures through it. There is
 no other way in, which is what makes the host contract small (§4).
 
+**The shipped surface differs from this sketch.** Waiters pull rather
+than being pushed to, so there is one untyped `Task` protocol instead of
+`Microtask`/`Resumable`/`FutureListener`; the settled-value reads are
+symbol-keyed and private to `zena:async`; `onComplete` is a free
+function; and `runFuture(f)` is how synchronous code gets a value out.
+[async-runtime-shape.md](async-runtime-shape.md) has the current shape
+and the reasoning.
+
 Two API stances, decided here:
 
 - **Chaining yes, silent flattening no.** Completing with a future is

@@ -15,7 +15,7 @@
  *  - step(): the state machine, the same dispatcher-loop shape as a
  *    generator's next(), with three differences (§3):
  *      1. Suspensions park rather than yield: `frame.$state = pc`,
- *         register the frame on the awaited future as a `Resumable`,
+ *         register the frame on the awaited future as a `Task`,
  *         and plain-`return`.
  *      2. Resume values are not passed in. The awaited future is an
  *         ordinary value live across the suspension, so it already has
@@ -37,7 +37,7 @@
  *
  * Deviation from §3 worth naming: the design has the frame *be* its
  * `Future<T>` (one allocation). Here the frame *holds* one and
- * *implements* `Resumable`. Making a synthesized struct a true
+ * *implements* `Task`. Making a synthesized struct a true
  * subclass of the specialized `Future<T>` means inheriting its vtable
  * and layout through RTA; the extra allocation buys that complexity
  * back, and the observable semantics are identical.
@@ -152,26 +152,26 @@ let futureInstantiationOf = (wasm: WasmModule, func: WasmFunction): ClassType =>
 };
 
 /**
- * The `Resumable` interface, read off `Future<T>.subscribeResumable`'s
+ * The `Task` interface, read off `Future<T>.subscribe`'s
  * parameter. Deriving it from the future rather than looking it up by
  * name keeps the pass free of a well-known-type registry: every async
  * function already resolves its own `Future<T>`.
  */
 let resumableInterfaceOf = (futureType: ClassType): InterfaceType => {
-  if (!futureType.members.has('subscribeResumable')) {
-    throw new Error('zena:async Future has no subscribeResumable member');
+  if (!futureType.members.has('subscribe')) {
+    throw new Error('zena:async Future has no subscribe member');
   }
-  let mi = futureType.members['subscribeResumable'];
+  let mi = futureType.members['subscribe'];
   if (!(mi is MethodInfo)) {
-    throw new Error('subscribeResumable is not a method');
+    throw new Error('subscribe is not a method');
   }
   let ft = (mi as MethodInfo).type;
   if (!(ft is FunctionType)) {
-    throw new Error('subscribeResumable has no function type');
+    throw new Error('subscribe has no function type');
   }
   let params = (ft as FunctionType).parameters;
   if (params.length != 1 || !(params[0] is InterfaceType)) {
-    throw new Error('subscribeResumable does not take a Resumable');
+    throw new Error('subscribe does not take a Task');
   }
   return params[0] as InterfaceType;
 };
@@ -197,7 +197,7 @@ let methodOf = (
 
 /**
  * Called by ModuleGenerator between RTA and wasm.layout(): everything
- * an async function needs (frame struct, step() function, Resumable
+ * an async function needs (frame struct, step() function, Task
  * trampoline and vtable global) must exist before indices lock.
  */
 export let prepareAsyncFunctions = (
@@ -246,7 +246,7 @@ let prepareAsyncMain = (wasm: WasmModule, pass: ReachabilityAnalysis): void => {
   }
   let futureType = futureInstantiationOf(wasm, ramp);
   let fKey = getClassKey(futureType);
-  let valueOrThrowFn = methodOf(wasm, fKey, 'valueOrThrow', 'async main');
+  let valueOrThrowFn = methodOf(wasm, fKey, ':valueOrThrow', 'async main');
   let drainOpt = wasm.getStdlibFunc('zena:async', 'drainMicrotasks');
   if (drainOpt == null) {
     throw new Error('async main: zena:async drainMicrotasks was not reached');
@@ -563,29 +563,29 @@ let prepareOne = (
   wasm.addFunction(stepFunc);
   pass.markFunctionReached(stepFunc);
 
-  // The frame implements Resumable: resume() steps the machine. One
+  // The frame implements Task: run() steps the machine. One
   // vtable per frame, whatever the function awaits.
   let iface = resumableInterfaceOf(futureType);
   pass.typeLowerer.discoverType(iface as Type, func.model);
   let iKey = getInterfaceKey(iface);
   if (!wasm.interfaceStructs.has(iKey) ||
       !wasm.interfaceVTableStructs.has(iKey)) {
-    throw new Error('async Resumable interface was not materialized: ' + name);
+    throw new Error('async Task interface was not materialized: ' + name);
   }
   let fatPtr = wasm.interfaceStructs[iKey];
   let vst = wasm.interfaceVTableStructs[iKey];
-  wasm.usedInterfaceMembers[getInterfaceMemberKey(iKey, 'resume')] = true;
-  let slotSig = getInterfaceMemberSignature(wasm, iface, 'resume');
+  wasm.usedInterfaceMembers[getInterfaceMemberKey(iKey, 'run')] = true;
+  let slotSig = getInterfaceMemberSignature(wasm, iface, 'run');
 
   let frameKey = frameName as ClassKey;
   let methods = new Array<WasmFunction>();
   for (let field in vst.fields) {
-    if ((field.name as String) != 'resume') {
-      throw new Error('unexpected Resumable vtable member: ' +
+    if ((field.name as String) != 'run') {
+      throw new Error('unexpected Task vtable member: ' +
           (field.name as String));
     }
     let tramp = new WasmFunction(slotSig, null, func.model);
-    tramp.name = getInterfaceTrampolineName(frameKey, iKey, 'resume');
+    tramp.name = getInterfaceTrampolineName(frameKey, iKey, 'run');
     tramp.interfaceTrampolineTarget = stepFunc;
     wasm.addFunction(tramp);
     pass.markFunctionReached(tramp);
@@ -1103,7 +1103,7 @@ let buildStepBody = (
       let st = rawInst(body, IrOp.struct_set, -1, stIdx, stateRef);
       rebuilt.push(st);
       body.instBlock[st] = blockId;
-      // Park this frame on the awaited future as a Resumable. The
+      // Park this frame on the awaited future as a Task. The
       // library schedules it on the microtask queue when the future
       // settles — or immediately, if it already had (the always-async
       // rule still costs one queue hop).

@@ -9,7 +9,7 @@
 // them, and are the same functions the compiler exports as
 // `__zena_complete_*`. The wiring to a real event loop is covered by
 // packages/runtime/src/test/host_async_test.ts.
-import { Future, drainMicrotasks } from 'zena:async';
+import { Future, onComplete, drainMicrotasks } from 'zena:async';
 import {
   Pending, pending, hasPending,
   completeVoid, completeI32, completeF64, completeString, completeError,
@@ -118,8 +118,8 @@ export let main = (): i32 => {
   let v = pending<void>();
   let f = pending<f64>();
   var settled = 0;
-  v.future.onComplete(() => { settled += 1; }, (err) => {});
-  f.future.onComplete((x: f64) => { settled += 2; }, (err) => {});
+  onComplete(v.future, () => { settled += 1; }, (err) => {});
+  onComplete(f.future, (x: f64) => { settled += 2; }, (err) => {});
   completeVoid(v.handle);
   completeF64(f.handle, 2.5);
   drainMicrotasks();

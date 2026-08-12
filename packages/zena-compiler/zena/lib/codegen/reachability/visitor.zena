@@ -1006,31 +1006,31 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // Whether THIS function is that main is not knowable here, so
       // reach both pieces for any async function: two small stdlib
       // entries, and no way to be wrong about it later.
-      this.queuePrivateMethod(futureType, 'valueOrThrow');
+      this.queuePrivateMethod(futureType, ':valueOrThrow');
       this.queueStdlibFunction('zena:async', 'drainMicrotasks');
     } else {
-      this.queuePrivateMethod(futureType, 'valueOrThrow');
-      this.queuePrivateMethod(futureType, 'subscribeResumable');
+      this.queuePrivateMethod(futureType, ':valueOrThrow');
+      this.queuePrivateMethod(futureType, 'subscribe');
     }
-    this.registerResumableInterface(futureType, model);
+    this.registerTaskInterface(futureType, model);
   }
 
   /**
-   * The frame implements `Resumable`, so its vtable struct must carry
+   * The frame implements `Task`, so its vtable struct must carry
    * a `resume` slot. Nothing in user code references the interface, so
    * mark it used HERE — by the time the split pass runs, the vtable
    * struct's fields are already fixed.
    *
-   * The interface is read off `subscribeResumable`'s parameter rather
+   * The interface is read off `subscribe`'s parameter rather
    * than looked up by name: every async function resolves its own
    * `Future<T>` anyway, so this needs no well-known-type registry.
    */
-  registerResumableInterface(futureType: ClassType,
+  registerTaskInterface(futureType: ClassType,
       model: SemanticModel): void {
-    if (!futureType.members.has('subscribeResumable')) {
+    if (!futureType.members.has('subscribe')) {
       return;
     }
-    let mi = futureType.members['subscribeResumable'];
+    let mi = futureType.members['subscribe'];
     if (!(mi is MethodInfo)) {
       return;
     }
@@ -1046,9 +1046,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     this.pass.typeLowerer.discoverType(iface as Type, model);
     let iKey = getInterfaceKey(iface.genericSource ?? iface);
     this.pass.wasm.usedInterfaceMembers[
-        getInterfaceMemberKey(iKey, 'resume')] = true;
+        getInterfaceMemberKey(iKey, 'run')] = true;
     this.pass.addReferencedInterfaceMember(
-        i32ToString((iface.genericSource ?? iface).id as i32) + '.resume');
+        i32ToString((iface.genericSource ?? iface).id as i32) + '.run');
   }
 
   /**

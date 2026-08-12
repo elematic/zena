@@ -1,32 +1,68 @@
 /**
  * zena:async — Future<T>, Completer<T>, and the microtask executor
- * (docs/design/async.md §2).
+ * (docs/design/async.md §2, docs/design/async-runtime-shape.md).
  *
- * Deliberately ordinary Zena: no async/gen syntax appears here, so
- * both compilers compile this module. The `async`/`await` surface
- * (self-hosted only) lowers onto these types; until then — and from
- * non-async code always — they are used directly via callbacks.
+ * Deliberately ordinary Zena: no async/gen syntax appears here, so this
+ * module compiles with no bootstrapping problem. The `async`/`await`
+ * surface lowers onto these types; from non-async code they are used
+ * directly via callbacks.
  *
  * Semantics pinned here:
- * - A future settles exactly once; settling twice throws.
+ * - A future settles exactly once; settling twice throws (`tryComplete`
+ *   / `tryFail` report it instead, for callers racing on purpose).
  * - Callbacks always run from the FIFO microtask queue, never
  *   synchronously inside complete()/fail()/onComplete() — the
  *   "always async" rule, so completion order is deterministic and
  *   re-entrancy surprises are impossible.
- * - completeWith() is one-level, statically-typed adoption: when the
- *   inner future settles, this one settles with the same value or
- *   failure. There is no runtime "value or future?" test and no
- *   recursive unwrapping.
  *
- * Implementation note (compiler limitation worked around, loud when
- * hit): no closures are created inside generic code here — RTA does
- * not yet specialize closure implementations per instantiation
- * ("non-concrete function reached"). Deliveries are objects
- * implementing Microtask/FutureListener instead.
+ * **Waiters pull.** There is one notification protocol, `Task`, and it
+ * carries no type parameter: a settling future schedules its waiters and
+ * each reads the settled result back with `:result()`. The alternative —
+ * pushing the value to a typed listener — needs an object per waiter per
+ * settle to carry the value across the queue hop, and makes the waiter
+ * interface generic in the awaited type, so one async frame would need
+ * an implementation per type it awaits. Pulling costs one field on a
+ * waiter (the future it waits on, which a frame already spills anyway)
+ * and allocates nothing at all when a future settles.
+ *
+ * The reads are keyed by symbols this module does not export, so a
+ * future tells user code nothing synchronously: subscribing is the only
+ * way to observe one, and `runFuture` the only way to unwrap one from
+ * synchronous code. (Not yet enforced — BUGS.md, "Symbol-keyed members
+ * resolve by name".)
+ *
+ * Implementation note (compiler limitations worked around, loud when
+ * hit): no closures are created inside generic code here — RTA does not
+ * yet specialize closure implementations per instantiation
+ * ("non-concrete function reached") — and a generic class cannot receive
+ * a `Future<T>` by any direct spelling, so waiters reach theirs by index
+ * or through a one-element array (BUGS.md, "A generic class cannot
+ * receive a `Future<T>`").
  */
 import { Array } from 'zena:array';
 import { Box } from 'zena:box';
 import { Error } from 'zena:error';
+
+/**
+ * The runtime's own reads of a settled future, keyed by symbols this
+ * module does not export so that no other module can name them
+ * (docs/design/classes.md §9.4). User code observes a future by
+ * subscribing to it, never by asking it what it holds — the affordance
+ * that lets code branch on scheduling is the one worth withholding
+ * (docs/design/async-runtime-shape.md, "Why hiding completion state is
+ * worth it").
+ *
+ * The compiler is inside this boundary trivially: the split pass
+ * resolves members by string, so it names `:valueOrThrow` directly.
+ *
+ * **This is not enforced yet.** Symbol-keyed members resolve by the
+ * symbol's source name, so a determined caller can still write
+ * `f.:valueOrThrow()` — see BUGS.md, "Symbol-keyed members resolve by
+ * name". Nothing here depends on the fix; it makes the boundary real.
+ */
+symbol result;
+symbol failure;
+symbol valueOrThrow;
 
 /** A future is Pending until it settles as Resolved or Rejected. */
 export enum FutureState {
@@ -36,16 +72,25 @@ export enum FutureState {
 }
 
 // ---------------------------------------------------------------------------
-// The executor: a FIFO microtask queue of runnable tasks.
+// The executor: a FIFO queue of runnable tasks.
 // ---------------------------------------------------------------------------
 
-/** One queued unit of work. */
-export interface Microtask {
+/**
+ * One unit of queued work.
+ *
+ * The same type serves every role: a suspended async frame (the split
+ * pass synthesizes an implementation per async function), a callback
+ * bridge, a combinator's subscription, and a bare closure. Because a
+ * waiter reads the settled value out of the future rather than being
+ * handed it, this needs no type parameter, so one implementation per
+ * frame serves every await site in a function whatever it awaits.
+ */
+export interface Task {
   run(): void;
 }
 
 /** Wraps a plain callback for non-generic callers. */
-class ClosureMicrotask implements Microtask {
+class ClosureTask implements Task {
   cb: () => void;
   new(this.cb);
   run(): void {
@@ -54,11 +99,11 @@ class ClosureMicrotask implements Microtask {
   }
 }
 
-class MicrotaskQueue {
-  #items = new Array<Microtask>();
+class TaskQueue {
+  #items = new Array<Task>();
   var #head = 0;
 
-  schedule(task: Microtask): void {
+  schedule(task: Task): void {
     this.#items.push(task);
   }
 
@@ -78,7 +123,7 @@ class MicrotaskQueue {
   }
 }
 
-let queue = new MicrotaskQueue();
+let queue = new TaskQueue();
 
 /**
  * A source of completions that arrive from outside the queue, and that
@@ -109,6 +154,11 @@ export interface Parker {
  * while the second was already ready). When a target has more than one
  * source, it registers one parker that knows how to wait on all of
  * them — which is exactly what a host event loop already is.
+ *
+ * The mechanism does not enforce that premise: a second registration
+ * silently replaces the first, which would strand whatever the first
+ * one was waiting on. Only `zena:time`'s WASI entry registers today —
+ * see async-runtime-shape.md, "Parking".
  */
 var parker: Parker | null = null;
 
@@ -118,13 +168,13 @@ export let setParker = (p: Parker): void => {
 };
 
 /** Enqueue a task on the microtask queue. */
-export let scheduleTask = (task: Microtask): void => {
+export let scheduleTask = (task: Task): void => {
   queue.schedule(task);
 };
 
 /** Enqueue a callback on the microtask queue. */
 export let scheduleMicrotask = (cb: () => void): void => {
-  queue.schedule(new ClosureMicrotask(cb));
+  queue.schedule(new ClosureTask(cb));
 };
 
 /**
@@ -151,75 +201,16 @@ export let drainMicrotasks = (): void => {
 // Future / Completer
 // ---------------------------------------------------------------------------
 
-/** What a future notifies when it settles; exactly one method runs. */
-interface FutureListener<A> {
-  onValue(value: A): void;
-  onError(error: Error): void;
-}
-
-/** A listener built from a pair of callbacks (Future.onComplete). */
-class CallbackListener<A> implements FutureListener<A> {
-  valueCb: (value: A) => void;
-  errorCb: (error: Error) => void;
-  new(this.valueCb, this.errorCb);
-  onValue(value: A): void {
-    let f = this.valueCb;
-    f(value);
-  }
-  onError(error: Error): void {
-    let f = this.errorCb;
-    f(error);
-  }
-}
-
-/**
- * A suspended async computation waiting on a future.
- *
- * Compiler-synthesized async frames implement this: `resume()` runs
- * the next segment of the frame's state machine. The frame reads the
- * settled value out of the future itself (`valueOrThrow`), so this
- * interface carries no type parameter and one implementation serves
- * every await site in a function, whatever it awaits.
- */
-export interface Resumable {
-  resume(): void;
-}
-
-/** Queued resumption of one suspended frame. */
-class ResumeDelivery implements Microtask {
-  frame: Resumable;
-  new(this.frame);
-  run(): void {
-    this.frame.resume();
-  }
-}
-
-/** Queued delivery of a settled value to one listener. */
-class ValueDelivery<A> implements Microtask {
-  listener: FutureListener<A>;
-  value: A;
-  new(this.listener, this.value);
-  run(): void {
-    this.listener.onValue(this.value);
-  }
-}
-
-/** Queued delivery of a failure to one listener. */
-class ErrorDelivery<A> implements Microtask {
-  listener: FutureListener<A>;
-  error: Error;
-  new(this.listener, this.error);
-  run(): void {
-    this.listener.onError(this.error);
-  }
-}
-
 export class Future<T> {
   var #state = FutureState.Pending;
   var #value: Box<T> | null = null;
   var #error: Error | null = null;
-  #listeners: Array<FutureListener<T>> = new Array<FutureListener<T>>();
-  #resumables: Array<Resumable> = new Array<Resumable>();
+  /** The single waiter, which is the overwhelmingly common case: an
+   * awaited future has exactly one frame parked on it. */
+  var #waiter: Task | null = null;
+  /** Waiters beyond the first. Null until a second one arrives, so an
+   * ordinary future allocates no list and no backing storage. */
+  var #more: Array<Task> | null = null;
 
   new();
 
@@ -236,45 +227,69 @@ export class Future<T> {
   }
 
   /**
-   * Low-level subscription: exactly one of the callbacks runs, from
-   * the microtask queue, once this future settles (immediately
-   * scheduled if it already has). This is the bridge for non-async
-   * code and the primitive async frames register through.
+   * The settled result: `(true, value, _)` or `(false, _, error)`.
+   *
+   * Throws if this future is still pending. At an async resume point
+   * that cannot happen — the frame only runs once its future has
+   * settled — so reaching it means the queue drained with work still
+   * parked and nothing left that could complete it: a deadlock
+   * (async.md §4).
    */
-  onComplete(onValue: (value: T) => void, onError: (error: Error) => void): void {
-    this.subscribe(new CallbackListener<T>(onValue, onError));
-  }
-
-  /** Object form of onComplete; async frames use this directly. */
-  subscribe(listener: FutureListener<T>): void {
-    if (this.#state == FutureState.Resolved) {
-      let stored = this.#value as Box<T>;
-      scheduleTask(new ValueDelivery<T>(listener, stored.value));
-      return;
-    }
+  :result(): inline (true, T, _) | inline (false, _, Error) {
     if (this.#state == FutureState.Rejected) {
-      scheduleTask(new ErrorDelivery<T>(listener, this.#error as Error));
-      return;
+      return (false, _, this.#error as Error);
     }
-    this.#listeners.push(listener);
+    if (this.#state == FutureState.Pending) {
+      throw new Error(
+        'Deadlock: the microtask queue is empty but this future is ' +
+        'still pending, and no external completion source exists');
+    }
+    let stored = this.#value as Box<T>;
+    return (true, stored.value, _);
   }
 
   /**
-   * Registers a suspended async frame: `r.resume()` runs from the
-   * microtask queue once this future settles (scheduled immediately if
-   * it already has — the always-async rule holds here too, so a frame
-   * awaiting a completed future still yields one queue hop).
+   * The stored failure, or null if this future resolved.
    *
-   * This is what the A1 `await` transform emits. It is deliberately
-   * untyped in T: the frame reads the settled value back with
-   * valueOrThrow() when it resumes.
+   * `result()` says the same thing and says it better — the tag cannot
+   * be separated from the payload there. This exists because a
+   * zero-width `T` does not lower in an inline-tuple lane, so
+   * `Future<void>.result()` bails ("method result type"), and the
+   * library's own waiters have to work at every `T`. Retire it when
+   * void lanes lower.
    */
-  subscribeResumable(r: Resumable): void {
+  :failure(): Error | null {
     if (this.#state == FutureState.Pending) {
-      this.#resumables.push(r);
+      throw new Error(
+        'Deadlock: the microtask queue is empty but this future is ' +
+        'still pending, and no external completion source exists');
+    }
+    return this.#error;
+  }
+
+  /**
+   * Registers a waiter: `t.run()` runs from the microtask queue once
+   * this future settles (scheduled immediately if it already has — the
+   * always-async rule holds here too, so a frame awaiting a completed
+   * future still yields one queue hop).
+   *
+   * This is what the `await` transform emits. It is deliberately
+   * untyped in T: the waiter reads the settled result back with
+   * `result()` when it runs.
+   */
+  subscribe(t: Task): void {
+    if (!(this.#state == FutureState.Pending)) {
+      scheduleTask(t);
       return;
     }
-    scheduleTask(new ResumeDelivery(r));
+    if (this.#waiter == null) {
+      this.#waiter = t;
+      return;
+    }
+    if (this.#more == null) {
+      this.#more = new Array<Task>();
+    }
+    (this.#more as Array<Task>).push(t);
   }
 
   /**
@@ -284,16 +299,16 @@ export class Future<T> {
    * failed await propagate as an ordinary exception: it unwinds into
    * step()'s failure-capture region and rejects the frame's own
    * future, with no separate error slot to thread (async.md §3).
+   *
+   * Reads the fields directly rather than going through `result()`:
+   * this is the hot path, once per await, and rethrowing the error arm
+   * would need the both-arms narrowing `CallbackTask` works around.
    */
-  valueOrThrow(): T {
+  :valueOrThrow(): T {
     if (this.#state == FutureState.Rejected) {
       throw this.#error as Error;
     }
     if (this.#state == FutureState.Pending) {
-      // At an async resume point this cannot happen — the frame only
-      // runs once its future has settled. Reaching it means the
-      // microtask queue drained with work still parked and nothing
-      // left that could complete it: a deadlock (async.md §4).
       throw new Error(
         'Deadlock: the microtask queue is empty but this future is ' +
         'still pending, and no external completion source exists');
@@ -304,60 +319,64 @@ export class Future<T> {
 
   /** Settles this future with a value. Throws if already settled. */
   complete(value: T): void {
-    if (!(this.#state == FutureState.Pending)) {
+    if (!this.tryComplete(value)) {
       throw new Error('Future already completed');
+    }
+  }
+
+  /** Settles this future with a value, reporting whether it won.
+   * False means someone else settled it first, which is not an error
+   * for a caller racing on purpose. */
+  tryComplete(value: T): boolean {
+    if (!(this.#state == FutureState.Pending)) {
+      return false;
     }
     this.#state = FutureState.Resolved;
     this.#value = new Box<T>(value);
-    // Index loop, not for-in: the bootstrap compiler cannot yet
-    // lower for-in over an Array field inside a generic class.
-    var i = 0;
-    while (i < this.#listeners.length) {
-      scheduleTask(new ValueDelivery<T>(this.#listeners[i], value));
-      i += 1;
-    }
-    this.#clearListeners();
-    this.#scheduleResumables();
+    this.#notify();
+    return true;
   }
 
   /** Settles this future with a failure. Throws if already settled. */
   fail(error: Error): void {
-    if (!(this.#state == FutureState.Pending)) {
+    if (!this.tryFail(error)) {
       throw new Error('Future already completed');
+    }
+  }
+
+  /** Settles this future with a failure, reporting whether it won. */
+  tryFail(error: Error): boolean {
+    if (!(this.#state == FutureState.Pending)) {
+      return false;
     }
     this.#state = FutureState.Rejected;
     this.#error = error;
-    var i = 0;
-    while (i < this.#listeners.length) {
-      scheduleTask(new ErrorDelivery<T>(this.#listeners[i], error));
-      i += 1;
-    }
-    this.#clearListeners();
-    this.#scheduleResumables();
+    this.#notify();
+    return true;
   }
 
-  // NOTE: completeWith (one-level adoption, async.md §2) is part of
-  // the designed API but is deferred to A1: implementing it today
-  // trips two compiler gaps in generic templates (closures are not
-  // specialized per instantiation, and `this`/generic-typed fields
-  // check as the raw template type, which then fails ZIR lowering).
-  // The A1 transform work has to solve both for frames anyway.
-
-  #clearListeners(): void {
-    while (this.#listeners.length > 0) {
-      this.#listeners.pop();
+  /**
+   * Moves every waiter onto the queue and drops the list.
+   *
+   * Allocates nothing: the waiters were registered as themselves, so
+   * there is no delivery object to mint, and the overflow list is
+   * dropped rather than cleared.
+   */
+  #notify(): void {
+    let w = this.#waiter;
+    if (w != null) {
+      this.#waiter = null;
+      scheduleTask(w as Task);
     }
-  }
-
-  /** Moves every parked frame onto the queue and drops the list. */
-  #scheduleResumables(): void {
-    var i = 0;
-    while (i < this.#resumables.length) {
-      scheduleTask(new ResumeDelivery(this.#resumables[i]));
-      i += 1;
-    }
-    while (this.#resumables.length > 0) {
-      this.#resumables.pop();
+    let m = this.#more;
+    if (m != null) {
+      let list = m as Array<Task>;
+      this.#more = null;
+      var i = 0;
+      while (i < list.length) {
+        scheduleTask(list[i]);
+        i += 1;
+      }
     }
   }
 }
@@ -410,6 +429,95 @@ export class Completer<T> extends AnyCompleter {
   }
 }
 
+/**
+ * A waiter built from a pair of callbacks (`onComplete`).
+ *
+ * Holding the future it reads is what a pulling waiter needs, and three
+ * separate compiler limits stand between here and the obvious spellings
+ * (all filed in BUGS.md under "A generic class cannot receive a
+ * `Future<T>`"): a `Future<T>` constructor parameter fails to lower, a
+ * `Future<T> | null` field cannot be read back at `Future<T>`, and a
+ * generic function cannot capture one in a closure. An **initialized**
+ * `Array<Future<T>>` field is none of those, so the future arrives by
+ * `push` after construction. Capacity 1 rather than the default 8.
+ */
+class CallbackTask<T> implements Task {
+  holder = new Array<Future<T>>(1);
+  valueCb: (value: T) => void;
+  errorCb: (error: Error) => void;
+  new(this.valueCb, this.errorCb);
+  run(): void {
+    let f = this.holder[0];
+    // `:failure()` + `:valueOrThrow()` rather than `:result()`: this
+    // class specializes at `T = void` too, and a zero-width lane does
+    // not lower in an inline tuple.
+    let e = f.:failure();
+    if (e == null) {
+      let ok = this.valueCb;
+      ok(f.:valueOrThrow());
+      return;
+    }
+    let bad = this.errorCb;
+    bad(e as Error);
+  }
+}
+
+/** Hosts the waiter construction: a specialized generic FUNCTION cannot
+ * construct a class that implements an interface, whereas a generic
+ * class's own method can — the same restriction `AllState.attach`
+ * exists for. */
+class CallbackAttach<T> {
+  new();
+  attach(
+    f: Future<T>,
+    onValue: (value: T) => void,
+    onError: (error: Error) => void
+  ): void {
+    let t = new CallbackTask<T>(onValue, onError);
+    t.holder.push(f);
+    f.subscribe(t);
+  }
+}
+
+/**
+ * Low-level subscription: exactly one of the callbacks runs, from the
+ * microtask queue, once `f` settles (immediately scheduled if it
+ * already has). This is the bridge for non-async code.
+ *
+ * A free function rather than a method on `Future<T>`, and not by
+ * preference: a pulling waiter has to hold the future it reads, and a
+ * generic class cannot hand `this` to another generic class — without a
+ * cast the checker sees the raw template type, and with one codegen
+ * crashes (BUGS.md). As an argument `f` is an ordinary `Future<T>` and
+ * neither happens. It sits beside `futureOf`/`allOf`/`raceOf`, which are
+ * free functions for their own reasons.
+ */
+export let onComplete = <T>(
+  f: Future<T>,
+  onValue: (value: T) => void,
+  onError: (error: Error) => void
+): void => {
+  new CallbackAttach<T>().attach(f, onValue, onError);
+};
+
+/**
+ * Runs the executor to a standstill and returns `f`'s value, throwing
+ * its failure.
+ *
+ * The public way to get a value out of a future from synchronous code,
+ * and deliberately the only one: it cannot answer before the queue has
+ * run, so there is no way to observe whether something settled "early".
+ * If `f` is still pending once nothing more can happen, that is a
+ * deadlock and it throws saying so.
+ *
+ * Top-level only — a driver, a test, `main`. Calling it from inside a
+ * task would re-enter the drain and break run-to-completion.
+ */
+export let runFuture = <T>(f: Future<T>): T => {
+  drainMicrotasks();
+  return f.:valueOrThrow();
+};
+
 /** An already-resolved future. */
 export let futureOf = <T>(value: T): Future<T> => {
   let f = new Future<T>();
@@ -430,11 +538,11 @@ export let failedFuture = <T>(error: Error): Future<T> => {
 //
 // Ordinary library code over `subscribe`, as async.md §2 says they would
 // be: no primitive, no compiler support, nothing the executor has to
-// know about. They are written with listener OBJECTS rather than
-// closures for the reason the module header gives — a closure created
-// inside generic code is not specialized per instantiation and fails to
-// lower — which is also why each carries its own small state class
-// instead of capturing one.
+// know about. They are written with waiter OBJECTS rather than closures
+// for the reason the module header gives — a closure created inside
+// generic code is not specialized per instantiation and fails to lower —
+// which is also why each carries its own small state class instead of
+// capturing one.
 //
 // Both are written against `subscribe` rather than as async functions
 // awaiting their inputs in turn, and the difference is semantic, not
@@ -442,16 +550,17 @@ export let failedFuture = <T>(error: Error): Future<T> => {
 // can no longer matter, so a rejected input would be reported only
 // after every input ahead of it settled — and never at all if one of
 // them never settles.
+//
+// Because waiters pull, neither combinator stores the values it is
+// waiting for: the inputs hold them, in input order, and `allOf` reads
+// them back once the last one lands.
 
-/** Shared state for one `allOf` call: the slots values land in, how
- * many are still outstanding, and the completer they all settle. */
+/** Shared state for one `allOf` call: the inputs, how many are still
+ * outstanding, and the future they all settle. */
 class AllState<T> {
-  completer = new Completer<Array<T>>();
-  /** One slot per input, filled at its input index as values arrive.
-   * `Box<T>` because a slot starts empty and `T` has no null. */
-  slots = new Array<Box<T> | null>();
+  result = new Future<Array<T>>();
+  inputs = new Array<Future<T>>();
   var remaining = 0;
-  var settled = false;
 
   new();
 
@@ -459,7 +568,7 @@ class AllState<T> {
    * Subscribes to every input and hands back the combined future.
    *
    * This lives on the state class rather than in `allOf` itself
-   * because the listeners are interface implementations, and a
+   * because the waiters are interface implementations, and a
    * specialized generic FUNCTION does not get the interface vtable for
    * a class it instantiates ("interface vtable global not found") —
    * whereas a generic class's own method does. Same reason as the
@@ -469,70 +578,71 @@ class AllState<T> {
   attach(futures: Array<Future<T>>): Future<Array<T>> {
     this.remaining = futures.length;
     if (futures.length == 0) {
-      this.settled = true;
-      this.completer.complete(new Array<T>());
-      return this.completer.future;
+      this.result.complete(new Array<T>());
+      return this.result;
     }
     var i = 0;
     while (i < futures.length) {
-      this.slots.push(null);
+      this.inputs.push(futures[i]);
       i += 1;
     }
     // Subscribing cannot deliver synchronously, so `remaining` and the
-    // slots above are necessarily in place before any listener runs.
+    // inputs above are necessarily in place before any waiter runs.
     // The cast on `this` is the raw-template-type gap in BUGS.md: in a
     // generic class's own method `this` checks as `AllState`, not
     // `AllState<T>`.
     i = 0;
     while (i < futures.length) {
-      futures[i].subscribe(new AllListener<T>(this as AllState<T>, i));
+      futures[i].subscribe(new AllWaiter<T>(this as AllState<T>, i));
       i += 1;
     }
-    return this.completer.future;
+    return this.result;
   }
 
-  /** Records one input's value; settles when the last one lands. */
-  report(index: i32, value: T): void {
-    if (this.settled) {
+  /** Counts one input in; on the last, reads every input's value back
+   * in input order. No slot array and no box per value: the inputs are
+   * the storage. */
+  report(): void {
+    if (this.result.isCompleted) {
       return;
     }
-    this.slots[index] = new Box<T>(value);
     this.remaining -= 1;
     if (this.remaining == 0) {
-      this.settled = true;
       let values = new Array<T>();
       var i = 0;
-      while (i < this.slots.length) {
-        let slot = this.slots[i] as Box<T>;
-        values.push(slot.value);
+      while (i < this.inputs.length) {
+        values.push(this.inputs[i].:valueOrThrow());
         i += 1;
       }
-      this.completer.complete(values);
+      this.result.complete(values);
     }
   }
 
   /** The first failure settles the whole thing; later ones are spent. */
   reject(error: Error): void {
-    if (this.settled) {
-      return;
-    }
-    this.settled = true;
-    this.completer.fail(error);
+    this.result.tryFail(error);
   }
 }
 
-/** One input's subscription into an `AllState`, carrying the input
- * index — which is what lets values be stored in input order when they
- * arrive in another. */
-class AllListener<T> implements FutureListener<T> {
+/** One input's subscription into an `AllState`.
+ *
+ * Carries the input's index rather than the future itself: a pulling
+ * waiter needs to reach its future, and `Future<T>` cannot be a generic
+ * class's constructor parameter (BUGS.md), but the state already holds
+ * every input in order, so an index reaches it. */
+class AllWaiter<T> implements Task {
   state: AllState<T>;
   index: i32;
   new(this.state, this.index);
-  onValue(value: T): void {
-    this.state.report(this.index, value);
-  }
-  onError(error: Error): void {
-    this.state.reject(error);
+  run(): void {
+    let f = this.state.inputs[this.index];
+    // `:failure()` for the reason CallbackTask documents.
+    let e = f.:failure();
+    if (e == null) {
+      this.state.report();
+      return;
+    }
+    this.state.reject(e as Error);
   }
 }
 
@@ -560,51 +670,54 @@ export let allOf = <T>(futures: Array<Future<T>>): Future<Array<T>> => {
 
 /** Shared state for one `raceOf` call: whoever settles first wins. */
 class RaceState<T> {
-  completer = new Completer<T>();
-  var settled = false;
+  result = new Future<T>();
+  inputs = new Array<Future<T>>();
 
   new();
 
-  /** Subscribes every input to one shared listener. On the state class
-   * for the same reason `AllState.attach` is. */
+  /** Subscribes every input. On the state class for the same reason
+   * `AllState.attach` is. */
   attach(futures: Array<Future<T>>): Future<T> {
-    // One listener for every input: a race does not care which settled.
-    // `this` is cast for the same reason as in AllState.attach.
-    let listener = new RaceListener<T>(this as RaceState<T>);
     var i = 0;
     while (i < futures.length) {
-      futures[i].subscribe(listener);
+      this.inputs.push(futures[i]);
       i += 1;
     }
-    return this.completer.future;
+    // One waiter per input rather than one shared between them: a
+    // pulling waiter has to know which future to read, and a race does
+    // not otherwise care which settled. `this` is cast for the same
+    // reason as in AllState.attach.
+    i = 0;
+    while (i < futures.length) {
+      futures[i].subscribe(new RaceWaiter<T>(this as RaceState<T>, i));
+      i += 1;
+    }
+    return this.result;
   }
 
   win(value: T): void {
-    if (this.settled) {
-      return;
-    }
-    this.settled = true;
-    this.completer.complete(value);
+    this.result.tryComplete(value);
   }
 
   lose(error: Error): void {
-    if (this.settled) {
-      return;
-    }
-    this.settled = true;
-    this.completer.fail(error);
+    this.result.tryFail(error);
   }
 }
 
-/** One input's subscription into a `RaceState`. */
-class RaceListener<T> implements FutureListener<T> {
+/** One input's subscription into a `RaceState`, by index for the same
+ * reason `AllWaiter` carries one. */
+class RaceWaiter<T> implements Task {
   state: RaceState<T>;
-  new(this.state);
-  onValue(value: T): void {
-    this.state.win(value);
-  }
-  onError(error: Error): void {
-    this.state.lose(error);
+  index: i32;
+  new(this.state, this.index);
+  run(): void {
+    let f = this.state.inputs[this.index];
+    let e = f.:failure();
+    if (e == null) {
+      this.state.win(f.:valueOrThrow());
+      return;
+    }
+    this.state.lose(e as Error);
   }
 }
 

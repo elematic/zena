@@ -10,7 +10,7 @@
 // that split load-bearing: the assignment happens, then the body parks,
 // and the handler runs only after the frame has been off the stack.
 import {
-  Future, FutureState, Completer, drainMicrotasks,
+  Future, FutureState, Completer, drainMicrotasks, runFuture,
 } from 'zena:async';
 
 // Assign, suspend, then fail: the handler must still see the value
@@ -48,7 +48,7 @@ export let main = (): i32 => {
   let f = acrossSuspension(bad);
   bad.fail(new Error('nope'));
   drainMicrotasks();
-  if (f.state == FutureState.Resolved && f.valueOrThrow() == 8) {
+  if (f.state == FutureState.Resolved && runFuture(f) == 8) {
     score += 10;
   }
 
@@ -57,7 +57,7 @@ export let main = (): i32 => {
   let g = acrossSuspension(good);
   good.complete(1);
   drainMicrotasks();
-  if (g.state == FutureState.Resolved && g.valueOrThrow() == 99) {
+  if (g.state == FutureState.Resolved && runFuture(g) == 99) {
     score += 12;
   }
 
@@ -65,7 +65,7 @@ export let main = (): i32 => {
   let h = recovers(h0);
   h0.complete(5);
   drainMicrotasks();
-  if (h.state == FutureState.Resolved && h.valueOrThrow() == 6) {
+  if (h.state == FutureState.Resolved && runFuture(h) == 6) {
     score += 20;
   }
 

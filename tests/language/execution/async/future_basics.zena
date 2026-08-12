@@ -6,13 +6,13 @@
 // vtableGlobalIndex), so execution is self-hosted only. Pins the
 // always-async rule (callbacks never run before drain), FIFO order,
 // and the failure path.
-import { Future, Completer, futureOf, drainMicrotasks } from 'zena:async';
+import { Future, Completer, futureOf, onComplete, drainMicrotasks } from 'zena:async';
 
 var log = 0;
 
 export let main = (): i32 => {
   let c = new Completer<i32>();
-  c.future.onComplete(
+  onComplete(c.future, 
     (v: i32) => {
       log = log * 10 + v;
     },
@@ -22,7 +22,7 @@ export let main = (): i32 => {
   );
   // Already-resolved future: callback still waits for the queue.
   let ready = futureOf(2);
-  ready.onComplete(
+  onComplete(ready, 
     (v: i32) => {
       log = log * 10 + v;
     },
@@ -46,7 +46,7 @@ export let main = (): i32 => {
   // Failure path.
   let failing = new Completer<i32>();
   var failed = 0;
-  failing.future.onComplete(
+  onComplete(failing.future, 
     (v: i32) => {
       failed = -1;
     },

@@ -18,7 +18,7 @@
 // Covering resume blocks alone passes the first and fails the second,
 // which is why await_in_try_loop.zena — a loop awaiting `futureOf`,
 // which never fails, and throwing nothing — passed either way.
-import { Future, Completer, drainMicrotasks, futureOf } from 'zena:async';
+import { Future, Completer, drainMicrotasks, futureOf, runFuture } from 'zena:async';
 
 /** Throws from the loop body, after the suspension. */
 let throwsAfterAwait = async (n: i32): Future<i32> => {
@@ -76,7 +76,7 @@ export let main = (): i32 => {
   // awaiting. Caught => 103.
   let f1 = throwsAfterAwait(10);
   drainMicrotasks();
-  if (!f1.isCompleted || f1.valueOrThrow() != 103) {
+  if (!f1.isCompleted || runFuture(f1) != 103) {
     return -1;
   }
 
@@ -84,7 +84,7 @@ export let main = (): i32 => {
   // reaching the await. Caught => 102.
   let f2 = throwsBeforeAwait(10);
   drainMicrotasks();
-  if (!f2.isCompleted || f2.valueOrThrow() != 102) {
+  if (!f2.isCompleted || runFuture(f2) != 102) {
     return -2;
   }
 
@@ -93,7 +93,7 @@ export let main = (): i32 => {
   let f3 = awaitFailsInLoop(c);
   c.fail(new Error('rejected'));
   drainMicrotasks();
-  if (!f3.isCompleted || f3.valueOrThrow() != 100) {
+  if (!f3.isCompleted || runFuture(f3) != 100) {
     return -3;
   }
 
