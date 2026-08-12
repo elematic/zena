@@ -7,7 +7,7 @@ import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import { String } from 'zena:string';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import {
-  assertFunctionUses, assertNoAllocation,
+  assertFunctionUses, assertFunctionUsesTimes, assertNoAllocation,
 } from './wat-invariants.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 import { getEnv } from 'zena:cli';
@@ -105,6 +105,43 @@ export let tests = suite('zir backend', (): void => {
     assertNoAllocation(result, '$main',
         'a try-assigned local is mirrored into a wasm local, not boxed');
     assertSnapshot('zir_try_local_mirror', result);
+  });
+
+  test('a finalizer is emitted once for every way out of the try', (ctx: TestContext): void => {
+    // Four exits leave this region — the body's normal completion, the
+    // `return`, the `break`, and the exception the handler edge
+    // catches — and each of them owes the finalizer. They are routed
+    // through ONE copy of it rather than getting a copy each: the
+    // marker constant appears exactly once. Emitting a copy per edge
+    // would also be wrong, not just fat, because the copy on the
+    // normal path would sit INSIDE the protected region and rerun
+    // itself if it threw.
+    let result = compileWithZir(
+        'export let main = (): i32 => {\n' +
+        '  var n = 0;\n' +
+        '  var i = 0;\n' +
+        '  while (i < 3) {\n' +
+        '    i += 1;\n' +
+        '    try {\n' +
+        '      if (i == 1) { break; }\n' +
+        '      if (i == 2) { return 5; }\n' +
+        '      n += 1;\n' +
+        '    } finally {\n' +
+        '      n += 987654;\n' +
+        '    }\n' +
+        '  }\n' +
+        '  return n;\n' +
+        '};');
+    let usesTry = new Array<String>();
+    usesTry.push('try_table');
+    assertFunctionUses(result, '$main', usesTry,
+        'the fixture is supposed to compile a protected region');
+    assertFunctionUsesTimes(result, '$main', 'i32.const 987654', 1,
+        'every exit out of a finally region runs one shared copy of ' +
+        'the finalizer');
+    assertNoAllocation(result, '$main',
+        'a finally region parks its exit in wasm locals, not on the heap');
+    assertSnapshot('zir_try_finally', result);
   });
 
   test('while loop with break and continue', (ctx: TestContext): void => {

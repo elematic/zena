@@ -71,6 +71,18 @@ parameter.
   `try` body assigns. Every site that stores a new SSA value for a
   symbol into `env` must call `noteVarWrite` — a missed one leaves the
   handler reading a stale value, and nothing else will catch it.
+- **A `finally` is emitted once, and outside its own region.** Every
+  way out of the protected part — normal completion, the handler edge,
+  `return`/`break`/`continue` — parks an exit code in a variable and
+  branches to one dispatch block, which runs the finalizer and then
+  replays that exit (exceptions.md, "Finally Compilation"). The
+  dispatch lands outside the region because the `try_br`'s handler edge
+  is one of its predecessors and the emitter streams that past the
+  `end` of the `try_table`. Emitting a copy per exit edge instead is
+  not merely fatter: the copy on the normal path would sit INSIDE the
+  region and re-enter itself if it threw. `cx.finallyScopes` is what
+  routes the early exits, and truncating it at each dispatch is what
+  makes nested finalizers run inside-out.
 - **A split pass must re-enter try regions at _every_ dispatch target.**
   Both suspension passes route every edge into a dispatch target through
   a dispatcher that sits outside all user regions, so a target inside a

@@ -73,6 +73,39 @@ export final class LoopCtx {
 }
 
 /**
+ * A `try` region with a finalizer, while its protected part lowers.
+ *
+ * The finalizer is emitted ONCE, in `dispatch`, which every way out of
+ * the region reaches: normal completion, the region's handler edge,
+ * and each `return`/`break`/`continue` that leaves it. `codeVar` says
+ * which — the dispatch replays it after the finalizer has run (see
+ * `lowerTryFinally`). Innermost scope last; an exit replayed at one
+ * dispatch re-enters this list truncated, so nested finalizers run
+ * inside-out with no duplicated code.
+ */
+export final class FinallyScope {
+  /** The block holding the finalizer and the exit replay. */
+  dispatch: i32;
+  /** Holds a `finallyExit*` code: which exit the dispatch must replay. */
+  codeVar: i32;
+  /**
+   * `cx.loops.length` on entry. A `break`/`continue` whose target loop
+   * was opened before that leaves this region and owes the finalizer;
+   * one opened inside the region does not.
+   */
+  loopDepth: i32;
+  /** Holds the returned value; allocated by the first `return` out. */
+  var returnVar = -1;
+  /** False when nothing completes the protected part normally (every
+   * path threw or left) — then the try has no continuation at all. */
+  var exitsNormally = false;
+  var exitsByReturn = false;
+  var exitsByBreak = false;
+  var exitsByContinue = false;
+  new(this.dispatch, this.codeVar, this.loopDepth);
+}
+
+/**
  * The lazily-materialized join point of a value-producing control-flow
  * expression (if/try/match) or a merging statement. Arms br to it with
  * the tracked symbols' current values (plus the arm's result in value
@@ -980,6 +1013,16 @@ export final class LoweringContext {
    * wants the same "last value written" the outer one does.
    */
   tryVars = new HashMap<SymbolId, i32>();
+
+  /**
+   * The `finally` regions enclosing the statement being lowered,
+   * innermost last. Non-empty means an exit out of one of them —
+   * `return` always, `break`/`continue` when their loop was opened
+   * outside — must run finalizers instead of branching to its target,
+   * which `returnThroughFinally`/`breakThroughFinally`/
+   * `continueThroughFinally` (control-flow.zena) arrange.
+   */
+  finallyScopes = new Array<FinallyScope>();
 
   /**
    * Mirrors a newly stored value into the symbol's try variable, when

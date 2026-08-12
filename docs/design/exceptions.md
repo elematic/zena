@@ -129,11 +129,49 @@ end
 
 ### Finally Compilation
 
-1. Execute the `try` body, store result in local
-2. If successful, run `finally`, then branch to done
-3. If exception caught, save payload, run `finally`, then either:
-   - Execute catch handler (if present)
-   - Rethrow (if no catch handler)
+The finalizer is emitted **once**. Every way out of the protected part
+parks what it was doing in an exit-code local and branches to one
+dispatch block, which runs the finalizer and then replays that exit
+(`lowerTryFinally`, `codegen/ir/control-flow.zena`):
+
+```
+protector:  try_br(tag, protectedB, ehB)
+protectedB: [inner try_br(tag, bodyB, catchB) when there is a catch]
+            body/handler; completing normally parks the value and the
+            NORMAL code; return/break/continue park theirs
+ehB:        payloadVar = <payload global>; park THROW
+dispatch:   <the finalizer>, then replay the code — fall through, ret,
+            br to the loop's exit or continue target, or restore the
+            payload global and rethrow
+```
+
+Three things fall out of that shape:
+
+- **The dispatch sits outside the region.** `ehB` is the `try_br`'s
+  handler edge, which the emitter streams past the `end` of the
+  `try_table`, so a block it branches to is never inside. A finalizer
+  that throws therefore leaves rather than re-entering itself. This is
+  also why there is one copy and not one per exit edge — a copy on the
+  normal path would sit inside the region.
+- **A `catch` handler nests inside the region**, in its own `try_br`,
+  so a handler that throws still runs the finalizer.
+- **The payload rides a local, not the global.** The finalizer may
+  itself throw and catch, which overwrites the global before the
+  rethrow would read it.
+
+`return`, `break` and `continue` reach the dispatch because lowering
+keeps a stack of open finalizers (`cx.finallyScopes`); an exit replayed
+at one dispatch re-enters that stack truncated, so nested finalizers
+run inside-out with no duplicated code. A `break`/`continue` whose loop
+was opened *inside* the region does not leave it and owes nothing,
+which `FinallyScope.loopDepth` is what distinguishes.
+
+**Not yet supported**: an `await` or `yield` inside a `finally`-protected
+region. The dispatch rides wasm locals and a local does not survive a
+suspension; ZIR bails loudly (`suspension inside a try with a
+finalizer`) rather than miscompiling it. Celling those the way RTA
+already cells try-assigned locals in a `gen`/`async` body is what would
+lift it.
 
 ## Alternative Designs Considered
 

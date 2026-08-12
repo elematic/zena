@@ -17,6 +17,7 @@
 import { String } from 'zena:string';
 import { Array } from 'zena:array';
 import { isTrue, fail } from 'zena:assert';
+import { i32ToString } from 'zena:string-convert';
 
 /**
  * The text of one function definition: from `(func $name` up to the
@@ -54,6 +55,23 @@ export let assertFunctionUses = (wat: String, name: String,
     if (!body.contains(op)) {
       fail(name + ' never emits `' + op + '`: ' + why);
     }
+  }
+};
+
+/**
+ * `name` must exist and its body must contain `op` exactly `times`.
+ * A count is what catches code that is emitted per exit edge when it
+ * is supposed to be emitted once (or the other way round) — presence
+ * alone would pass either way.
+ */
+export let assertFunctionUsesTimes = (wat: String, name: String,
+    op: String, times: i32, why: String): void => {
+  let body = watFunction(wat, name);
+  isTrue(body.length > 0, 'no function ' + name + ' in the emitted module');
+  let seen = body.split(op).length - 1;
+  if (seen != times) {
+    fail(name + ' emits `' + op + '` ' + i32ToString(seen) + ' time(s), ' +
+        'expected ' + i32ToString(times) + ': ' + why);
   }
 };
 

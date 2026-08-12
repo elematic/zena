@@ -1,0 +1,80 @@
+// @mode: run
+// @result: 42
+//
+// A finalizer runs whether the body completes or throws, and on the
+// throwing path the exception keeps propagating past it.
+
+import { Error } from 'zena:error';
+
+let log = (s: String, add: String): String => s + add;
+
+let normalPath = (): String => {
+  var trace = '';
+  try {
+    trace = log(trace, 'body,');
+  } finally {
+    trace = log(trace, 'fin,');
+  };
+  return log(trace, 'after');
+};
+
+let throwingPath = (): String => {
+  var trace = '';
+  try {
+    try {
+      trace = log(trace, 'body,');
+      throw new Error('boom');
+    } finally {
+      trace = log(trace, 'fin,');
+    };
+    trace = log(trace, 'unreachable,');
+  } catch (e) {
+    trace = log(trace, 'caught,');
+  };
+  return log(trace, 'after');
+};
+
+// The finalizer sees what the body assigned before it threw — the
+// handler edge carries entry values, so this only works because the
+// assignment is mirrored.
+let assignedBeforeThrow = (): i32 => {
+  var n = 1;
+  var seen = 0;
+  try {
+    try {
+      n = 7;
+      throw new Error('boom');
+    } finally {
+      seen = n;
+    };
+  } catch (e) {
+  };
+  return seen;
+};
+
+// The exception carries its own payload past the finalizer, even
+// though the finalizer catches an unrelated exception of its own.
+let payloadSurvivesFinalizer = (): String => {
+  var caught = 'none';
+  try {
+    try {
+      throw new Error('outer');
+    } finally {
+      try {
+        throw new Error('inner');
+      } catch (inner) {
+      };
+    };
+  } catch (e) {
+    caught = e.message;
+  };
+  return caught;
+};
+
+export let main = (): i32 => {
+  if (normalPath() != 'body,fin,after') { return 1; }
+  if (throwingPath() != 'body,fin,caught,after') { return 2; }
+  if (assignedBeforeThrow() != 7) { return 3; }
+  if (payloadSurvivesFinalizer() != 'outer') { return 4; }
+  return 42;
+};

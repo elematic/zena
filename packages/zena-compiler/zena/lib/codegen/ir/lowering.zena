@@ -74,6 +74,7 @@ import {
 } from './operators.zena';
 import {
   lowerFor, lowerForIn, lowerIf, lowerIfExpression,
+  breakThroughFinally, continueThroughFinally, returnThroughFinally,
   lowerLetCondition, lowerMatch, lowerTryExpression, lowerValueNode,
   lowerWhile,
 } from './control-flow.zena';
@@ -1885,8 +1886,15 @@ export final class FunctionLowerer {
         this.#lowerVariableDeclaration(vd);
       }
       case ReturnStatement {argument}: {
+        // A `return` inside a `finally`-protected region leaves that
+        // region, so it owes every finalizer between here and the
+        // function's exit: returnThroughFinally parks it at the
+        // innermost dispatch, which replays it once the finalizer has
+        // run (and re-enters this on the way out of the next one).
         if (argument == null) {
-          this.b.retVoid();
+          if (!returnThroughFinally(this.#cx(), -1)) {
+            this.b.retVoid();
+          }
         } else if (this.#isZeroWidthExpr(argument as Expression) &&
             this.func.signature.returns.length == 0) {
           // `return this.value;` where T = void: the operand exists in
@@ -1895,14 +1903,26 @@ export final class FunctionLowerer {
           // so a `never`-typed operand — a throw — in a value-returning
           // function keeps its existing path.)
           this.#lowerExpression(argument as Expression);
-          this.b.retVoid();
+          if (!returnThroughFinally(this.#cx(), -1)) {
+            this.b.retVoid();
+          }
         } else if (!this.presplitAsync &&
             this.func.signature.returns.length > 1) {
+          if (this.#cx().finallyScopes.length > 0) {
+            // One variable per result would park these too; nothing
+            // needs it yet.
+            this.#bail('multi-value return through a finalizer');
+          }
           this.#lowerMultiReturn(argument as Expression);
         } else {
           let ctx = this.#returnSlotVt();
           let value = this.#lowerExpressionCtx(argument as Expression, ctx);
-          this.#emitCheckedRet(value);
+          // The operand may have left the function itself (a `throw`
+          // as the operand); #emitCheckedRet checks for that, and
+          // parking the return has to check for it too.
+          if (this.#cx().reachable && !returnThroughFinally(this.#cx(), value)) {
+            this.#emitCheckedRet(value);
+          }
         }
         this.#cx().reachable = false;
       }
@@ -1933,16 +1953,22 @@ export final class FunctionLowerer {
         if (this.#cx().loops.length == 0) {
           this.#bail('break outside loop');
         }
-        let loop = this.#cx().loops[this.#cx().loops.length - 1];
-        this.b.br(loop.exit, this.#envValues(loop.carried));
+        // Leaves any `finally` region opened inside this loop, and so
+        // owes its finalizer before it reaches the exit.
+        if (!breakThroughFinally(this.#cx())) {
+          let loop = this.#cx().loops[this.#cx().loops.length - 1];
+          this.b.br(loop.exit, this.#envValues(loop.carried));
+        }
         this.#cx().reachable = false;
       }
       case ContinueStatement {}: {
         if (this.#cx().loops.length == 0) {
           this.#bail('continue outside loop');
         }
-        let loop = this.#cx().loops[this.#cx().loops.length - 1];
-        this.b.br(loop.continueTarget, this.#envValues(loop.carried));
+        if (!continueThroughFinally(this.#cx())) {
+          let loop = this.#cx().loops[this.#cx().loops.length - 1];
+          this.b.br(loop.continueTarget, this.#envValues(loop.carried));
+        }
         this.#cx().reachable = false;
       }
       case _: {
@@ -5635,6 +5661,9 @@ export final class FunctionLowerer {
   hostOptionalHit(expr: Expression, recv: i32): i32 {
     return this.#lowerOptionalHit(expr, recv);
   }
+  returnSlotVt(): ValType | null {
+    return this.#returnSlotVt();
+  }
 
   #lowerStringLiteral(lit: StringLiteral): i32 {
     return lowerStringLiteral(this.#cx(), lit);
@@ -6592,6 +6621,11 @@ export let lowerExpr = (cx: LoweringContext, e: Expression, want: ValType | null
 /** True while lowering a presplit `gen`/`async` body. */
 export let inSuspensionBody = (cx: LoweringContext): boolean =>
     hostOf(cx).inSuspensionBody();
+
+/** The slot a `return` value conforms to, or null in a void (or
+ * multi-value) function. */
+export let returnSlotVt = (cx: LoweringContext): ValType | null =>
+    hostOf(cx).returnSlotVt();
 
 /** Adaptation-free expression lowering (see #lowerExpressionDispatch). */
 export let lowerExprRaw = (cx: LoweringContext, e: Expression): i32 =>

@@ -1,0 +1,57 @@
+// @mode: run
+// @result: 42
+//
+// A `finally` region inside an async body. The region holds no
+// suspension point, so its dispatch variables — the exit code, the
+// parked result, the saved payload — are ordinary wasm locals that
+// never have to survive an await. (An `await` INSIDE the region is
+// rejected at compile time; see exceptions.md.)
+
+import { Future, Completer, drainMicrotasks } from 'zena:async';
+import { Error } from 'zena:error';
+
+let guarded = async (c: Completer<i32>): Future<i32> => {
+  var n = 0;
+  try {
+    n = 1;
+  } finally {
+    n += 40;
+  }
+  let x = await c.future;
+  return n + x;
+};
+
+// The finalizer also runs when the region throws, before the async
+// body's own handler sees the exception.
+let throwingRegion = async (c: Completer<i32>): Future<i32> => {
+  var n = 0;
+  try {
+    try {
+      throw new Error('boom');
+    } finally {
+      n += 7;
+    }
+  } catch (e) {
+    n += 100;
+  }
+  let x = await c.future;
+  return n + x;
+};
+
+export let main = (): i32 => {
+  let c = new Completer<i32>();
+  let a = guarded(c);
+  c.complete(1);
+  drainMicrotasks();
+  if (!a.isCompleted) { return 0 - 2; }
+  if (a.valueOrThrow() != 42) { return 0 - 3; }
+
+  let d = new Completer<i32>();
+  let b = throwingRegion(d);
+  d.complete(0);
+  drainMicrotasks();
+  if (!b.isCompleted) { return 0 - 4; }
+  if (b.valueOrThrow() != 107) { return 0 - 5; }
+
+  return 42;
+};

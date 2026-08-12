@@ -476,6 +476,34 @@ immediately trying to fix it (which can pollute the current task's context).
   or move the definition into the compiler". A note in
   `docs/design/bootstrapping.md` would be the cheap fix.
 
+### A `for` loop whose body never falls through fails ZIR verification
+
+- **Found**: 2026-08-12 (writing the `finally` execution tests; the shape
+  turned up as a test fixture, not as anything `finally` introduced)
+- **Severity**: medium (rejected at compile time, so it is loud, but the
+  program is perfectly ordinary)
+- **Details**: a C-style `for` whose body always leaves — an unconditional
+  `break`, `continue`, `return` or `throw` at the end of it — leaves the
+  update block with no predecessors, and `verifyIr` rejects the function
+  with `bN is unreachable from the entry block`. No `try` is involved:
+
+  ```zena
+  export let main = (): i32 => {
+    var n = 0;
+    for (var i = 0; i < 5; i += 1) {
+      n += 1;
+      break;
+    }
+    return n;
+  };
+  ```
+
+  `lowerFor` creates the update block up front and branches to it from the
+  end of the body; when the body ends unreachable, nothing does. Either the
+  update block should not be created, or the verifier's reachability check
+  should run after a dead-block prune.
+- **Workaround**: make the exit conditional, or use `while`.
+
 ### zena-cli cannot compile files outside the repository root
 
 - **Found**: 2026-08-06 (repointing the nix flake's `zena` command at

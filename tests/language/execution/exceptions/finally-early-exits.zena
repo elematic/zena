@@ -1,0 +1,119 @@
+// @mode: run
+// @result: 42
+//
+// return, break and continue all leave a finally-protected region, so
+// each runs the finalizer before it reaches its target.
+
+import { Error } from 'zena:error';
+
+// The value is parked before the finalizer runs, so a later
+// assignment to the same local does not change what comes back.
+let returnBeforeFinalizer = (): i32 => {
+  var n = 5;
+  try {
+    n = 7;
+    return n;
+  } finally {
+    n = 9;
+  };
+};
+
+// A return in the finalizer replaces the pending one.
+let returnInFinalizer = (): i32 => {
+  try {
+    return 1;
+  } finally {
+    return 2;
+  };
+};
+
+// A return in the finalizer also replaces a pending exception.
+let returnInFinalizerSwallowsThrow = (): i32 => {
+  try {
+    throw new Error('boom');
+  } finally {
+    return 3;
+  };
+};
+
+let breakThroughFinally = (): i32 => {
+  var n = 0;
+  for (var i = 0; i < 5; i += 1) {
+    try {
+      if (i == 2) { break; }
+      n += 1;
+    } finally {
+      n += 10;
+    };
+  }
+  return n;
+};
+
+let continueThroughFinally = (): i32 => {
+  var n = 0;
+  for (var i = 0; i < 3; i += 1) {
+    try {
+      if (i == 1) { continue; }
+      n += 1;
+    } finally {
+      n += 10;
+    };
+  }
+  return n;
+};
+
+// A loop opened INSIDE the region is left without leaving the region:
+// its break owes nothing, and the finalizer still runs once, after.
+let breakInsideRegion = (): i32 => {
+  var n = 0;
+  try {
+    for (var i = 0; i < 5; i += 1) {
+      if (i == 2) { break; }
+      n += 1;
+    }
+  } finally {
+    n += 10;
+  };
+  return n;
+};
+
+// A return out of a while loop inside the region.
+let returnFromLoopInRegion = (): i32 => {
+  var seen = 0;
+  let inner = (): i32 => {
+    var i = 0;
+    try {
+      while (i < 10) {
+        if (i == 3) { return i; }
+        i += 1;
+      }
+      return -1;
+    } finally {
+      seen = 100;
+    };
+  };
+  let r = inner();
+  return r + seen;
+};
+
+// A reference-typed return value rides the same parking variable.
+let returnRefThroughFinally = (): String => {
+  var trace = '';
+  try {
+    return 'parked';
+  } finally {
+    trace = 'ran';
+  };
+};
+
+export let main = (): i32 => {
+  if (returnBeforeFinalizer() != 7) { return 1; }
+  if (returnInFinalizer() != 2) { return 2; }
+  if (returnInFinalizerSwallowsThrow() != 3) { return 3; }
+  if (breakThroughFinally() != 32) { return 4; }
+  if (continueThroughFinally() != 32) { return 5; }
+  if (breakInsideRegion() != 12) { return 6; }
+  if (returnFromLoopInRegion() != 103) { return 7; }
+  if (returnRefThroughFinally() != 'parked') { return 8; }
+  return 42;
+};

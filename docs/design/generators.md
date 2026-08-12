@@ -410,8 +410,11 @@ the whole difficulty and one of which turned out not to bind:
   That still drags in a second protocol method on `Iterator` (taxing
   every iterator), a behavior for yield-inside-finally, and generator
   finalization semantics. But it never justified banning `try`/`catch`:
-  it is an argument about **`finally` on abandonment**, and ZIR does not
-  lower `finally` at all yet. C# forbids `yield` in `catch` for cousin
+  it is an argument about **`finally` on abandonment**, which is a
+  protocol question and not a lowering one — ZIR lowers `finally`
+  (exceptions.md), though it bails on a `yield` inside a protected
+  region for the same reason async bails on an `await` there. C#
+  forbids `yield` in `catch` for cousin
   reasons; having the region construction, we don't need to.
 
 So the standing restriction is narrower than "no yield in try": there is

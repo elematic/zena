@@ -636,7 +636,10 @@ dominates precisely the part of that body it heads.
 `finally` semantics on _abandonment_ (a pending try's future is
 dropped) remain coupled to cancellation and are decided there — same
 one-place answer promised in generators.md §6, which generators then
-inherit. Note that ZIR does not lower `finally` at all yet.
+inherit. ZIR lowers `finally` (exceptions.md, "Finally Compilation"),
+but bails on an `await` inside a protected region: the dispatch that
+replays the region's exit rides wasm locals, and a local does not
+survive a suspension.
 
 ## 7. Errors: plain `Error`, everywhere
 

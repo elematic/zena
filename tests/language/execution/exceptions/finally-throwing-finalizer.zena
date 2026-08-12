@@ -1,0 +1,91 @@
+// @mode: run
+// @result: 42
+//
+// A finalizer that throws. It runs exactly once — the copy that runs
+// sits outside its own protected region, so its exception leaves
+// rather than re-entering the finalizer — and it replaces whatever
+// was pending.
+
+import { Error } from 'zena:error';
+
+// Replaces the body's exception.
+let replacesPendingThrow = (): String => {
+  var runs = 0;
+  var caught = 'none';
+  try {
+    try {
+      throw new Error('body');
+    } finally {
+      runs += 1;
+      throw new Error('finalizer');
+    };
+  } catch (e) {
+    caught = e.message;
+  };
+  return caught + ',' + (if (runs == 1) 'once' else 'repeated');
+};
+
+// Throws on the normal path too, and again only once.
+let throwsOnNormalPath = (): String => {
+  var runs = 0;
+  var caught = 'none';
+  try {
+    try {
+      runs += 0;
+    } finally {
+      runs += 1;
+      throw new Error('finalizer');
+    };
+  } catch (e) {
+    caught = e.message;
+  };
+  return caught + ',' + (if (runs == 1) 'once' else 'repeated');
+};
+
+// Replaces a pending return.
+let replacesPendingReturn = (): i32 => {
+  var caught = 0;
+  let inner = (): i32 => {
+    try {
+      return 1;
+    } finally {
+      throw new Error('finalizer');
+    };
+  };
+  try {
+    let r = inner();
+    return r;
+  } catch (e) {
+    caught = 5;
+  };
+  return caught;
+};
+
+// Replaces a pending break: the loop never sees the exit.
+// (The break is conditional because an unconditional one as a `for`
+// body's last statement fails ZIR verification — see BUGS.md.)
+let replacesPendingBreak = (): i32 => {
+  var iterations = 0;
+  var caught = 0;
+  try {
+    for (var i = 0; i < 5; i += 1) {
+      iterations += 1;
+      try {
+        if (i == 1) { break; }
+      } finally {
+        if (i == 1) { throw new Error('finalizer'); }
+      };
+    }
+  } catch (e) {
+    caught = 5;
+  };
+  return iterations + caught;
+};
+
+export let main = (): i32 => {
+  if (replacesPendingThrow() != 'finalizer,once') { return 1; }
+  if (throwsOnNormalPath() != 'finalizer,once') { return 2; }
+  if (replacesPendingReturn() != 5) { return 3; }
+  if (replacesPendingBreak() != 7) { return 4; }
+  return 42;
+};

@@ -1,0 +1,170 @@
+// @mode: run
+// @result: 42
+//
+// try/catch/finally, and finalizers nested inside one another.
+
+import { Error } from 'zena:error';
+
+// The handler runs first, the finalizer after it.
+let order = (): String => {
+  var trace = '';
+  try {
+    trace = trace + 'body,';
+    throw new Error('boom');
+  } catch (e) {
+    trace = trace + 'catch,';
+  } finally {
+    trace = trace + 'fin,';
+  };
+  return trace + 'after';
+};
+
+// Nothing thrown: the handler is skipped, the finalizer is not.
+let orderWithoutThrow = (): String => {
+  var trace = '';
+  try {
+    trace = trace + 'body,';
+  } catch (e) {
+    trace = trace + 'catch,';
+  } finally {
+    trace = trace + 'fin,';
+  };
+  return trace + 'after';
+};
+
+// A handler that throws still owes the finalizer, and its exception
+// propagates out.
+let throwingHandler = (): String => {
+  var trace = '';
+  try {
+    try {
+      throw new Error('one');
+    } catch (e) {
+      trace = trace + 'catch,';
+      throw new Error('two');
+    } finally {
+      trace = trace + 'fin,';
+    };
+  } catch (e2) {
+    trace = trace + e2.message;
+  };
+  return trace;
+};
+
+// Nested finalizers run inside-out on the way out of a return.
+let nestedOnReturn = (): String => {
+  var trace = '';
+  let inner = (): i32 => {
+    try {
+      try {
+        return 1;
+      } finally {
+        trace = trace + 'inner,';
+      };
+    } finally {
+      trace = trace + 'outer,';
+    };
+  };
+  let r = inner();
+  return trace + (if (r == 1) 'ret1' else 'wrong');
+};
+
+// Nested finalizers run inside-out on the way out of a throw, too.
+let nestedOnThrow = (): String => {
+  var trace = '';
+  try {
+    try {
+      try {
+        throw new Error('boom');
+      } finally {
+        trace = trace + 'inner,';
+      };
+    } finally {
+      trace = trace + 'outer,';
+    };
+  } catch (e) {
+    trace = trace + 'caught';
+  };
+  return trace;
+};
+
+// The value of a try/finally expression is the body's; the finalizer
+// contributes nothing.
+let valuePosition = (): i32 => {
+  var side = 0;
+  let v = try {
+    41
+  } finally {
+    side = 1;
+  };
+  return v + side;
+};
+
+// The finalizer's own assignments are visible after the try.
+let finalizerAssignmentEscapes = (): i32 => {
+  var n = 1;
+  try {
+    n = 2;
+  } finally {
+    n = n + 10;
+  };
+  return n;
+};
+
+// A finalizer whose tail is an `if` without an `else`. The finalizer
+// is checked in a void context, so the tail types as `void` rather
+// than `i32 | void` — the latter has no wasm value type.
+let ifTailedFinalizer = (): i32 => {
+  var n = 0;
+  try {
+    n = 1;
+  } finally {
+    if (n == 1) { n = 9; }
+  };
+  return n;
+};
+
+// A reference-typed value in value position rides the same parking
+// variable as an i32 one.
+let refValuePosition = (): String => {
+  var side = 0;
+  let s = try {
+    'kept'
+  } finally {
+    side = 1;
+  };
+  return s + (if (side == 1) '!' else '?');
+};
+
+// A finalizer inside a method, reading and writing `this`.
+class Counter {
+  var n: i32 = 0;
+  bump(): i32 {
+    try {
+      this.n += 1;
+      return this.n;
+    } finally {
+      this.n += 10;
+    };
+  }
+}
+
+let inMethod = (): i32 => {
+  let c = new Counter();
+  let r = c.bump();
+  return r * 100 + c.n;
+};
+
+export let main = (): i32 => {
+  if (order() != 'body,catch,fin,after') { return 1; }
+  if (orderWithoutThrow() != 'body,fin,after') { return 2; }
+  if (throwingHandler() != 'catch,fin,two') { return 3; }
+  if (nestedOnReturn() != 'inner,outer,ret1') { return 4; }
+  if (nestedOnThrow() != 'inner,outer,caught') { return 5; }
+  if (valuePosition() != 42) { return 6; }
+  if (finalizerAssignmentEscapes() != 12) { return 7; }
+  if (ifTailedFinalizer() != 9) { return 8; }
+  if (refValuePosition() != 'kept!') { return 9; }
+  if (inMethod() != 111) { return 10; }
+  return 42;
+};

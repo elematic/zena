@@ -8093,7 +8093,12 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       ctx.exitScope();
     }
     if (finalizer != null) {
-      checkMatchCaseBody(ctx, finalizer as Node, null);
+      // Void context, not `null`: the finalizer's value is discarded,
+      // and checkMatchCaseBody passes the expected type down to the
+      // block's TAIL statement. With no expectation there, a tail
+      // `if` without an `else` types as `T | void` — which has no
+      // wasm value type, so lowering it in a void context bails.
+      checkMatchCaseBody(ctx, finalizer as Node, new VoidType());
     }
     ctx.exitTry();
     if (deps != null && (ctx.yieldType != null || ctx.asyncFutureType != null)) {

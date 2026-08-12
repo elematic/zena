@@ -22,8 +22,10 @@ import {
   TuplePattern, VariableDeclaration, WhileStatement,
   ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral,
   BinaryExpression, CallExpression, ForInStatement, IdentifierPattern,
-  IndexExpression, MemberExpression,
+  IndexExpression, MemberExpression, AwaitExpression, YieldStatement,
+  FunctionExpression, FunctionDeclaration, ClassDeclaration,
 } from '../../ast.zena';
+import { walk } from '../../visitor.zena';
 import {
   ArrayType, ClassType, InterfaceType, Type, VoidType, baseType,
   isVoidOrNeverType, arrayElementType, isSignedNarrowIntType,
@@ -42,10 +44,10 @@ import {
   typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefGlobal, IrRefTag } from './ir.zena';
-import { inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, throwStmt, varDecl } from './lowering.zena';
+import { inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, returnSlotVt, throwStmt, varDecl } from './lowering.zena';
 import {
-  LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported,
-  noValues, oneValue, twoValues,
+  FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState,
+  ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
 import {
   branchUnless, lowerPatternBindings, lowerPatternTest, patternBinds,
@@ -466,11 +468,388 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
 };
 
 /**
+ * Binds a catch clause's parameter to the in-flight exception, read
+ * out of the payload global at the top of the handler block.
+ */
+let bindCatchParam = (cx: LoweringContext, handler: CatchClause): void => {
+  if (handler.param == null) {
+    return;
+  }
+  let paramIdent = handler.param as Identifier;
+  let symOpt = cx.func.model.resolveDeclaration(paramIdent);
+  if (symOpt == null) {
+    bail(cx, 'catch parameter symbol');
+  }
+  let payloadG = cx.wasm.exceptionPayload as WasmGlobal;
+  let gRef = cx.b.addRef(new IrRefGlobal(payloadG));
+  var payload = cx.b.emit(IrOp.global_get, payloadG.type, -1, gRef);
+  if (payloadG.type is ValTypeRefNull) {
+    let t = refTargetOf(payloadG.type) as WasmType;
+    payload = cx.b.emit(IrOp.ref_as_non_null,
+        new ValTypeRef(t) as ValType, payload, -1);
+  }
+  cx.bindPatternSym(symOpt as Symbol, payload);
+};
+
+/**
+ * True when `node` contains a suspension point belonging to the
+ * enclosing `async`/`gen` body. A nested function body has its own.
+ */
+let containsSuspension = (node: Node): boolean => {
+  let hits = new Array<Node>();
+  walk(node, (n: Node): boolean => {
+    if (n is FunctionExpression || n is FunctionDeclaration ||
+        n is ClassDeclaration) {
+      return false;
+    }
+    if (n is AwaitExpression || n is YieldStatement) {
+      hits.push(n);
+      return false;
+    }
+    return true;
+  }, (n: Node): void => {});
+  return hits.length > 0;
+};
+
+// `FinallyScope.codeVar` values: which exit the dispatch must replay.
+let finallyExitNormal = 0;
+let finallyExitReturn = 1;
+let finallyExitBreak = 2;
+let finallyExitContinue = 3;
+let finallyExitThrow = 4;
+
+/** Parks `code` as the pending exit and branches to the dispatch. */
+let parkExit = (cx: LoweringContext, scope: FinallyScope, code: i32): void => {
+  let i32vt = new ValTypeI32() as ValType;
+  cx.b.varSet(scope.codeVar, cx.b.constI32(code, i32vt));
+  cx.b.br(scope.dispatch, noValues());
+  cx.reachable = false;
+};
+
+/**
+ * Routes a `return` out through the innermost pending finalizer, or
+ * returns false when there is none and the caller should just return.
+ * `value` is -1 for a valueless return; the value is conformed to the
+ * return slot HERE, so replaying it is a bare `ret`.
+ */
+export let returnThroughFinally = (cx: LoweringContext, value: i32): boolean => {
+  if (cx.finallyScopes.length == 0) {
+    return false;
+  }
+  let scope = cx.finallyScopes[cx.finallyScopes.length - 1];
+  if (value >= 0) {
+    if (scope.returnVar < 0) {
+      let slot = returnSlotVt(cx);
+      if (slot == null) {
+        bail(cx, 'return value through a finalizer without a return slot');
+      }
+      scope.returnVar = cx.b.newVar(slot as ValType);
+    }
+    cx.b.varSet(scope.returnVar, cx.conformToSlot(value,
+        cx.b.body.varTypes[scope.returnVar], 'return through a finalizer'));
+  }
+  scope.exitsByReturn = true;
+  parkExit(cx, scope, finallyExitReturn);
+  return true;
+};
+
+/**
+ * The innermost finalizer a `break`/`continue` here owes, or null.
+ * A loop opened INSIDE the region is left without leaving the region,
+ * and `loopDepth` is what tells the two apart.
+ */
+let finallyForLoopExit = (cx: LoweringContext): FinallyScope | null => {
+  if (cx.finallyScopes.length == 0) {
+    return null;
+  }
+  let scope = cx.finallyScopes[cx.finallyScopes.length - 1];
+  return if (scope.loopDepth >= cx.loops.length) scope else null;
+};
+
+/** Routes a `break` out through pending finalizers; false when none. */
+export let breakThroughFinally = (cx: LoweringContext): boolean => {
+  let scope = finallyForLoopExit(cx);
+  if (scope == null) {
+    return false;
+  }
+  let s = scope as FinallyScope;
+  s.exitsByBreak = true;
+  parkExit(cx, s, finallyExitBreak);
+  return true;
+};
+
+/** Routes a `continue` out through pending finalizers; false when none. */
+export let continueThroughFinally = (cx: LoweringContext): boolean => {
+  let scope = finallyForLoopExit(cx);
+  if (scope == null) {
+    return false;
+  }
+  let s = scope as FinallyScope;
+  s.exitsByContinue = true;
+  parkExit(cx, s, finallyExitContinue);
+  return true;
+};
+
+/** An arm of the protected part that completed normally: park the
+ * value and join the dispatch. */
+let finishProtectedArm = (cx: LoweringContext, scope: FinallyScope,
+    resultVar: i32, value: i32): void => {
+  if (!cx.reachable) {
+    return;
+  }
+  if (resultVar >= 0) {
+    cx.b.varSet(resultVar, cx.conformToSlot(value,
+        cx.b.body.varTypes[resultVar], 'try arm type'));
+  }
+  scope.exitsNormally = true;
+  parkExit(cx, scope, finallyExitNormal);
+};
+
+/**
+ * `try` with a finalizer, in value or statement position.
+ *
+ * The finalizer is emitted ONCE. Every way out of the protected part
+ * parks what it was doing in `codeVar` and branches to a single
+ * dispatch block, which runs the finalizer and then replays it:
+ *
+ * ```
+ * protector:  try_br(tag, protectedB, ehB)
+ * protectedB: [inner try_br(tag, bodyB, catchB) when there is a catch]
+ *             body/handler; completing normally parks the value and
+ *             the NORMAL code; return/break/continue park theirs
+ * ehB:        payloadVar = <payload global>; park THROW
+ * dispatch:   <the finalizer>, then replay codeVar — fall through,
+ *             ret, br to the loop's exit/continue target, or restore
+ *             the payload global and rethrow
+ * ```
+ *
+ * The dispatch must sit OUTSIDE the region, or a finalizer that threw
+ * would re-enter itself, and it does: `ehB` is the try_br's handler
+ * edge, which the emitter streams past the `end` of the try_table, so
+ * a block it branches to is never inside. That is also the reason
+ * there is one copy and not one per exit edge — a copy on the normal
+ * path would sit inside the region.
+ *
+ * A `catch` handler nests INSIDE this region, in its own try_br, so a
+ * handler that throws still runs the finalizer.
+ *
+ * The in-flight payload rides a variable rather than staying in the
+ * global, because the finalizer may itself throw and catch, and that
+ * overwrites the global before the rethrow reads it.
+ */
+let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
+  let finalizer = expr.finalizer as Node;
+  if (cx.wasm.exceptionTag == null || cx.wasm.exceptionPayload == null) {
+    bail(cx, 'exception infra missing');
+  }
+  if (inSuspensionBody(cx) && containsSuspension(expr as Node)) {
+    // The dispatch rides wasm locals — the exit code, the parked
+    // result, the saved payload — and a local does not survive a
+    // suspension. Celling them the way RTA cells try-assigned
+    // locals is what would lift this.
+    bail(cx, 'suspension inside a try with a finalizer');
+  }
+  let nodeType = cx.func.model.getNodeType(expr);
+  if (nodeType == null) {
+    bail(cx, 'untyped try expression');
+  }
+  let isVoid = isVoidOrNeverType(nodeType as Type);
+  let resultVt = if (!isVoid) {
+    let vt = typeToValTypeWithSub(cx.wasm, nodeType as Type, cx.func);
+    cx.requireSupported(vt, 'try result type');
+    vt
+  } else {
+    null
+  };
+
+  // Mirrors for every enclosing local the region or the finalizer
+  // assigns — the same variables a plain try/catch uses, for the same
+  // reason: a handler edge carries the values live at its try's
+  // entry, so the dispatch reads the live ones back out instead.
+  let bodyAssigned = cx.assignedEnvSyms(expr.body as Node);
+  let mirrored = cx.assignedEnvSyms(expr.body as Node);
+  if (expr.handler != null) {
+    cx.appendAssignedEnvSyms((expr.handler as CatchClause).body as Node, mirrored);
+  }
+  cx.appendAssignedEnvSyms(finalizer, mirrored);
+  let ownedVars = new Array<SymbolId>();
+  for (let symId in mirrored) {
+    if (cx.tryVars.has(symId)) { continue; }
+    let vt = cx.bindingValType(symId);
+    let varId = cx.b.newVar(vt);
+    cx.b.varSet(varId, cx.conformToSlot(cx.env[symId], vt, 'try var type'));
+    cx.tryVars[symId] = varId;
+    ownedVars.push(symId);
+  }
+
+  let tag = cx.wasm.exceptionTag as WasmTag;
+  let payloadG = cx.wasm.exceptionPayload as WasmGlobal;
+  let i32vt = new ValTypeI32() as ValType;
+  let codeVar = cx.b.newVar(i32vt);
+  let resultVar = if (resultVt != null) cx.b.newVar(resultVt as ValType) else -1;
+  let payloadVar = cx.b.newVar(payloadG.type);
+
+  let dispatchB = cx.b.newBlock();
+  let scope = new FinallyScope(dispatchB, codeVar, cx.loops.length);
+  let protectedB = cx.b.newBlock();
+  let ehB = cx.b.newBlock();
+  cx.b.tryBr(cx.b.addRef(new IrRefTag(tag)), protectedB, noValues(),
+      ehB, noValues());
+
+  let saved = cx.copyEnv();
+
+  // ---- the protected part ------------------------------------------
+  cx.finallyScopes.push(scope);
+  cx.b.switchTo(protectedB);
+  if (expr.handler == null) {
+    let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
+    finishProtectedArm(cx, scope, resultVar, bodyValue);
+  } else {
+    let handler = expr.handler as CatchClause;
+    let bodyB = cx.b.newBlock();
+    let catchB = cx.b.newBlock();
+    cx.b.tryBr(cx.b.addRef(new IrRefTag(tag)), bodyB, noValues(),
+        catchB, noValues());
+
+    cx.b.switchTo(bodyB);
+    let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
+    finishProtectedArm(cx, scope, resultVar, bodyValue);
+
+    cx.env = cx.copyOf(saved);
+    cx.reachable = true;
+    cx.b.switchTo(catchB);
+    for (let symId in bodyAssigned) {
+      cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
+    }
+    bindCatchParam(cx, handler);
+    let catchValue = lowerValueNode(cx, handler.body as Node, isVoid, resultVt);
+    finishProtectedArm(cx, scope, resultVar, catchValue);
+  }
+  cx.finallyScopes.pop();
+
+  // ---- the region's handler edge ------------------------------------
+  cx.env = cx.copyOf(saved);
+  cx.reachable = true;
+  cx.b.switchTo(ehB);
+  let ehPayloadRef = cx.b.addRef(new IrRefGlobal(payloadG));
+  cx.b.varSet(payloadVar,
+      cx.b.emit(IrOp.global_get, payloadG.type, -1, ehPayloadRef));
+  cx.b.varSet(codeVar, cx.b.constI32(finallyExitThrow, i32vt));
+  cx.b.br(dispatchB, noValues());
+
+  // ---- the finalizer, once ------------------------------------------
+  cx.env = cx.copyOf(saved);
+  cx.reachable = true;
+  cx.b.switchTo(dispatchB);
+  for (let symId in mirrored) {
+    cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
+  }
+  lowerValueNode(cx, finalizer, true, null);
+  // The mirrors this try owns go out of scope here: an exit replayed
+  // below belongs to whatever encloses this try. An enclosing try's
+  // stay live — its handler is still reachable.
+  for (let symId in ownedVars) {
+    cx.tryVars.delete(symId);
+  }
+  if (!cx.reachable) {
+    // The finalizer left on its own — returned, broke, or threw. What
+    // was pending is discarded, which is what the language says.
+    return -1;
+  }
+
+  // ---- replay -------------------------------------------------------
+  // Only the exits that actually occurred get an arm, so a plain
+  // try/finally with no early exit is one br_if against a rethrow.
+  let code = cx.b.varGet(codeVar);
+  // No continuation when nothing completed the protected part
+  // normally: every path through it threw or left, so the try is the
+  // end of its own control flow and the caller stops lowering here.
+  let contB = if (scope.exitsNormally) cx.b.newBlock() else -1;
+  var elseB = cx.b.newBlock();
+  if (contB >= 0) {
+    cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, code,
+            cx.b.constI32(finallyExitNormal, i32vt)),
+        contB, noValues(), elseB, noValues());
+  } else {
+    cx.b.br(elseB, noValues());
+  }
+
+  if (scope.exitsByReturn) {
+    cx.b.switchTo(elseB);
+    let armB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, code,
+            cx.b.constI32(finallyExitReturn, i32vt)),
+        armB, noValues(), nextB, noValues());
+    cx.b.switchTo(armB);
+    let value = if (scope.returnVar >= 0) cx.b.varGet(scope.returnVar) else -1;
+    if (!returnThroughFinally(cx, value)) {
+      if (value >= 0) {
+        cx.b.ret(value);
+      } else {
+        cx.b.retVoid();
+      }
+    }
+    elseB = nextB;
+  }
+
+  if (scope.exitsByBreak || scope.exitsByContinue) {
+    if (cx.loops.length == 0) {
+      bail(cx, 'loop exit through a finalizer outside a loop');
+    }
+  }
+  if (scope.exitsByBreak) {
+    cx.b.switchTo(elseB);
+    let armB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, code,
+            cx.b.constI32(finallyExitBreak, i32vt)),
+        armB, noValues(), nextB, noValues());
+    cx.b.switchTo(armB);
+    if (!breakThroughFinally(cx)) {
+      let loop = cx.loops[cx.loops.length - 1];
+      cx.b.br(loop.exit, cx.envValues(loop.carried));
+    }
+    elseB = nextB;
+  }
+  if (scope.exitsByContinue) {
+    cx.b.switchTo(elseB);
+    let armB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, code,
+            cx.b.constI32(finallyExitContinue, i32vt)),
+        armB, noValues(), nextB, noValues());
+    cx.b.switchTo(armB);
+    if (!continueThroughFinally(cx)) {
+      let loop = cx.loops[cx.loops.length - 1];
+      cx.b.br(loop.continueTarget, cx.envValues(loop.carried));
+    }
+    elseB = nextB;
+  }
+
+  // Whatever is left is the in-flight exception: put the payload back
+  // where a handler expects it and rethrow.
+  cx.b.switchTo(elseB);
+  let rethrowRef = cx.b.addRef(new IrRefGlobal(payloadG));
+  cx.b.emitVoid(IrOp.global_set, cx.b.varGet(payloadVar), rethrowRef);
+  cx.b.throwWithTag(noValues(), cx.b.addRef(new IrRefTag(tag)));
+
+  if (contB < 0) {
+    cx.reachable = false;
+    return -1;
+  }
+  cx.b.switchTo(contB);
+  cx.reachable = true;
+  return if (resultVar >= 0) cx.b.varGet(resultVar) else -1;
+};
+
+/**
  * try/catch, in value or statement position. The protector block
  * ends with try_br: normal flow enters the body; an exception thrown
  * anywhere in the body's dynamic extent lands at the catch block
  * with the payload in the exception global (streaming-compatible).
- * Both arms join like an if-expression. Finalizers bail.
+ * Both arms join like an if-expression. A finalizer takes the
+ * separate shape in `lowerTryFinally`.
  *
  * Enclosing locals the body ASSIGNS cannot ride the protected edge —
  * it carries the state at try entry, so the handler would not see an
@@ -485,7 +864,7 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
  */
 export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 => {
   if (expr.finalizer != null) {
-    bail(cx, 'try finalizer');
+    return lowerTryFinally(cx, expr);
   }
   if (expr.handler == null) {
     bail(cx, 'try without handler');
@@ -555,22 +934,7 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
   for (let symId in bodyAssigned) {
     cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
   }
-  if (handler.param != null) {
-    let paramIdent = handler.param as Identifier;
-    let symOpt = cx.func.model.resolveDeclaration(paramIdent);
-    if (symOpt == null) {
-      bail(cx, 'catch parameter symbol');
-    }
-    let payloadG = cx.wasm.exceptionPayload as WasmGlobal;
-    let gRef = cx.b.addRef(new IrRefGlobal(payloadG));
-    var payload = cx.b.emit(IrOp.global_get, payloadG.type, -1, gRef);
-    if (payloadG.type is ValTypeRefNull) {
-      let t = refTargetOf(payloadG.type) as WasmType;
-      payload = cx.b.emit(IrOp.ref_as_non_null,
-          new ValTypeRef(t) as ValType, payload, -1);
-    }
-    cx.bindPatternSym(symOpt as Symbol, payload);
-  }
+  bindCatchParam(cx, handler);
   let catchValue = lowerValueNode(cx, handler.body as Node, isVoid, resultVt);
   if (cx.reachable) {
     cx.mergeArm(m, catchValue, 'try arm type');
