@@ -1,25 +1,22 @@
 import { String } from 'zena:string';
-
-/** Opaque host-side stack-trace handle. */
-distinct type StackRef = anyref;
-
-@external("env", "captureStackTrace")
-declare function __captureStackTrace(): StackRef;
-
-@external("env", "formatStackTrace")
-declare function __formatStackTrace(stack: StackRef): String | null;
+// Target-conditional: the `env` host hooks where the host has them, null
+// where it does not. `Error` is in the prelude, so this is the one import
+// a program cannot drop by writing less code — and the hooks trade in
+// `anyref`/`externref`, which a component cannot declare. See
+// docs/design/component-emission.md, Part 2.
+import { StackRef, captureStackTrace, formatStackTrace } from 'zena:error-stack';
 
 export class Error {
   message: String;
-  #stackTrace: StackRef;
+  #stackTrace: StackRef | null;
 
-  new(message: String) : message = message, #stackTrace = __captureStackTrace() {}
+  new(message: String) : message = message, #stackTrace = captureStackTrace() {}
 
   getStackTrace(): String | null {
     if (this.#stackTrace == null) {
       return null;
     }
-    return __formatStackTrace(this.#stackTrace);
+    return formatStackTrace(this.#stackTrace);
   }
 }
 

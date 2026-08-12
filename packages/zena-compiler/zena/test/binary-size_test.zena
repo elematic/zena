@@ -69,10 +69,10 @@ class PlainHost implements CompilerHost {
 }
 
 /** Compiles to wasm the way `zena-cli build` does — names off. */
-let compile = (path: String): ByteArray => {
+let compile = (path: String, target: String = 'zena-cli'): ByteArray => {
   let host = new PlainHost();
   let packages = loadPackageMap(host, 'zena-packages.json');
-  let c = createCompiler(host, new CompilerOptions('zena-cli', stdlibRoot, packages));
+  let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
   let result = c.compile(path);
   let checked = checkCompilation(result, null, false);
   for (let diag in checked.diagnostics) {
@@ -91,7 +91,7 @@ let compile = (path: String): ByteArray => {
       if (file.ast.path == entryAst.path) { entryUnit = unit; }
     }
   }
-  return new BinaryGenerator('zena-cli', false)
+  return new BinaryGenerator(target, false)
     .generate(new Program(units, entryUnit))
     .toByteArray();
 };
@@ -115,6 +115,55 @@ let hasExport = (bytes: ByteArray, name: String): boolean => {
   }
   return false;
 };
+
+/**
+ * The number of entries in the module's import section, or 0 when it has
+ * none. A real section walk rather than a byte scan: an import's module
+ * and field names are the host surface this asserts about, so a miss has
+ * to mean "no import", not "the name I guessed is spelled differently".
+ */
+let importCount = (bytes: ByteArray): i32 => {
+  // magic (4) + version (4), then (id: u8, size: uleb128, payload).
+  var pos = 8;
+  while (pos < bytes.length) {
+    let id = bytes[pos];
+    pos += 1;
+    var size = 0;
+    var shift = 0;
+    while (pos < bytes.length) {
+      let b = bytes[pos];
+      pos += 1;
+      size = size | ((b & 0x7f) << shift);
+      shift += 7;
+      if ((b & 0x80) == 0) {
+        break;
+      }
+    }
+    if (id == 2) {
+      // The payload opens with the vector length, in the same encoding.
+      var count = 0;
+      var cshift = 0;
+      var cpos = pos;
+      while (cpos < bytes.length) {
+        let b = bytes[cpos];
+        cpos += 1;
+        count = count | ((b & 0x7f) << cshift);
+        cshift += 7;
+        if ((b & 0x80) == 0) {
+          break;
+        }
+      }
+      return count;
+    }
+    pos += size;
+  }
+  return 0;
+};
+
+/**
+ * Constructs an `Error`, which is what links the stack-trace hooks.
+ */
+let errorTarget = 'packages/zena-compiler/test-files/error-construct.zena';
 
 /**
  * A step up from minimal: an array literal summed by a for-in loop, so
@@ -240,6 +289,27 @@ export let tests = suite('Binary size', (): void => {
     isTrue(hasExport(compile(helloTarget), '$stringGetLength'),
       `${helloTarget} does not export $stringGetLength — the host cannot ` +
       `read the String this program returns.`);
+  });
+
+  test('freestanding imports nothing the program did not ask for', (ctx: TestContext): void => {
+    // The floor a target promises, asserted rather than inspected.
+    // `freestanding` has no host beneath it, so its import list holds
+    // only what the program itself declared with `@external` — and
+    // this program declares none. Constructing an `Error` is the case
+    // that used to make that impossible: the stack-trace hooks were
+    // unconditional, and take `anyref`/`externref`, which no component
+    // and no hostless embedder can supply. See
+    // docs/design/component-emission.md, Part 2.
+    equal(importCount(compile(errorTarget, 'freestanding')), 0,
+      `${errorTarget} imports something on the freestanding target. A ` +
+      `target with no host must import only what the program declared.`);
+    equal(importCount(compile(target, 'freestanding')), 0,
+      `${target} imports something on the freestanding target.`);
+    // The same program on a target that HAS the hooks still links them:
+    // this is a target-conditional implementation, not a deletion.
+    equal(importCount(compile(errorTarget, 'zena-cli')), 2,
+      `${errorTarget} does not import the two stack-trace hooks on ` +
+      `zena-cli, whose host supplies them.`);
   });
 
   test('the name section is opt-in', (ctx: TestContext): void => {
