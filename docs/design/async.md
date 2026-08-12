@@ -389,6 +389,28 @@ sleeps on the nearest through `poll_oneoff`. `time/queue.zena` is
 reachable only from `time/wasi.zena`, and Level 1 above describes the
 WASI story.
 
+The p3 clock (`time/p3.zena`) is a third `Clock` on the non-blocking
+side: it arms `wait-for` and returns `false` like the JS entry, and the
+host re-enters through the component's callback. That leaves exactly one
+blocking driver, and it is **slated for removal**. Blocking is only
+unobservable on `zena-cli` because timers are the one thing that can
+settle a future there; a second source — p1 fd readiness, a host-async
+binding, a process future — would be starved by a drain that sleeps on
+the nearest deadline. What keeps it alive is that zena-cli calls `main`
+once and never re-enters, so an async `main` there depends on the drain
+running everything to completion before it returns.
+
+Removing it is therefore not a stdlib change but a host one, and the
+destination is the component target rather than a second driver over
+zena-cli's private `env.*` surface: a p3 host already does the blocking
+on its own threads and hands the guest a subtask, which is the thread
+pool such a driver would otherwise reimplement. When that lands, the
+`Parker`, the boolean on `Clock.waitNs` and `drainMicrotasks()`'s park
+loop go together, and the drain becomes what it already is on JS — run
+every runnable microtask, then return, as the host's re-entry point
+rather than an API a program calls. See
+[component-emission.md](./component-emission.md), open question 2.
+
 On the **Rust CLI**, the same shape backed by tokio: host ops spawn onto
 a runtime keyed by handle, and a `zena_park()` import blocks until a
 completion is ready, after which the CLI calls the completion exports

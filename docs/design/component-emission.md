@@ -997,6 +997,39 @@ component.
    private `env.*` surface and become an ordinary component host. That
    would collapse two targets into one, at the cost of the marshaling
    that the core-module ABI currently avoids.
+
+   **Direction settled, timing open.** Yes, and it is how the last
+   blocking wait leaves the language: `time/wasi.zena` is the one driver
+   that stops the module, and the alternative to a component host is a
+   thread pool and a completion queue behind zena-cli's `env.*` surface
+   — which is what a p3 host already is, over a surface we intend to
+   delete. zena-cli's p1 is already implemented on top of wasmtime's p2
+   (`-S preview2=y` is the default), so the host is async-capable
+   underneath; what blocks the guest is p1's ABI, where the call simply
+   does not return.
+
+   Two things gate it, and both point at C3 first:
+   - **Everything but timers needs the type encoder.** `wait-for` was
+     reachable in C2 because its whole signature is flat scalars.
+     `readFile`, argv and stdout move strings, lists and records across
+     the canonical ABI, and that is true of a zena-cli-specific world
+     just as much as of WASI's. p3's filesystem is genuinely async — 21
+     `async func`s, most returning `result<T, error-code>` rather than
+     streams — so it needs C3's types and async imports that _return_
+     something, but not Track G.
+   - **The cost lands on the compiler.** It is the most
+     performance-sensitive Zena program we have, it does heavy file I/O
+     and string work, and today it hands GC references straight across
+     `env.*`. As a component it copies through linear memory at every
+     crossing until
+     [component-model#525](https://github.com/WebAssembly/component-model/issues/525)
+     lands. Measure the self-compile before committing.
+
+   Until then the blocking clock stays as it is. It is not observable on
+   zena-cli — timers are the only thing that settles a future there, and
+   the drain parks only once nothing else can run — and an interim
+   re-entry loop over `env.*` would be built to be thrown away.
+
 3. Which `--string-encoding` each target defaults to, and whether the
    JS-string-builtins path is a value of that flag or a separate one. It
    changes `String`'s representation rather than only its encoding at
