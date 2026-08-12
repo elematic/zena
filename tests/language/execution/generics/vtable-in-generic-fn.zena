@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 7
+// @skip: a body specialized on its own type parameter does not get the
+// interface vtable for a class it instantiates — "zir unsupported:
+// interface vtable global not found @make_spec_i32". A generic class's
+// own method does, which is why zena:async's combinators route
+// construction through AllState/RaceState. See BUGS.md.
+
+interface Runnable {
+  run(): i32;
+}
+
+class W<T> implements Runnable {
+  v: T;
+  new(this.v);
+  run(): i32 { return 7; }
+}
+
+/** A generic FUNCTION instantiating a class that implements an
+ * interface. */
+function make<A>(v: A): Runnable {
+  return new W<A>(v);
+}
+
+export function main(): i32 {
+  let r = make<i32>(1);
+  return r.run();
+}

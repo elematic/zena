@@ -1,11 +1,11 @@
 // @mode: run
 // @result: 123
-// `allOf` — a future of every value, in input order (async.md §2).
+// `Future.all` — a future of every value, in input order (async.md §2).
 //
 // Driven with bare Completers rather than a host, so this runs under
 // plain wasmtime with no event loop: the completes below stand in for
 // whatever would normally settle these futures.
-import { Future, Completer, allOf } from 'zena:async';
+import { Future, Completer } from 'zena:async';
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 
@@ -31,7 +31,7 @@ export async function main(): Future<i32> {
   futures.push(c1.future);
   futures.push(c2.future);
   futures.push(c3.future);
-  let combined = allOf(futures);
+  let combined = Future.all(futures);
   c3.complete(3);
   c1.complete(1);
   c2.complete(2);
@@ -45,7 +45,7 @@ export async function main(): Future<i32> {
   }
 
   // Nothing to wait for resolves with nothing in it.
-  let none = await allOf(new Array<Future<i32>>());
+  let none = await Future.all(new Array<Future<i32>>());
   if (!(none.length == 0)) {
     return 0 - 3;
   }
@@ -57,7 +57,7 @@ export async function main(): Future<i32> {
   let strings = new Array<Future<String>>();
   strings.push(s1.future);
   strings.push(s2.future);
-  let joined = allOf(strings);
+  let joined = Future.all(strings);
   s2.complete('b');
   s1.complete('a');
   let words = await joined;
@@ -73,7 +73,7 @@ export async function main(): Future<i32> {
   let mixed = new Array<Future<i32>>();
   mixed.push(slow.future);
   mixed.push(doomed.future);
-  let failing = allOf(mixed);
+  let failing = Future.all(mixed);
   doomed.fail(new Error('boom'));
   if (!(await settlementOf(failing) == 'boom')) {
     return 0 - 4;

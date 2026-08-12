@@ -7,7 +7,7 @@
 // never have to survive an await. (An `await` INSIDE the region is
 // rejected at compile time; see exceptions.md.)
 
-import { Future, Completer, drainMicrotasks } from 'zena:async';
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
 import { Error } from 'zena:error';
 
 let guarded = async (c: Completer<i32>): Future<i32> => {
@@ -44,14 +44,14 @@ export let main = (): i32 => {
   c.complete(1);
   drainMicrotasks();
   if (!a.isCompleted) { return 0 - 2; }
-  if (a.valueOrThrow() != 42) { return 0 - 3; }
+  if (runFuture(a) != 42) { return 0 - 3; }
 
   let d = new Completer<i32>();
   let b = throwingRegion(d);
   d.complete(0);
   drainMicrotasks();
   if (!b.isCompleted) { return 0 - 4; }
-  if (b.valueOrThrow() != 107) { return 0 - 5; }
+  if (runFuture(b) != 107) { return 0 - 5; }
 
   return 42;
 };

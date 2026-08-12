@@ -202,218 +202,36 @@ immediately trying to fix it (which can pollute the current task's context).
   feature behaves — and it is the same shared-storage question that made
   `static var stored: Array<T>` an error on a generic class.
 - **Workaround**: put the static on the host class.
-### A generic static's body cannot reach any generic construct
 
-- **Found**: 2026-08-12, renaming `zena:async`'s combinators onto `Future`
-  now that statics on a generic class work (`869b6218`..`e4ea8a51`).
-- **Severity**: high. It lands on the first real use of the feature the
-  statics work just enabled — a static factory that builds something is
-  the main reason to want one — and it blocks the `Future.all` /
-  `Future.race` rename `docs/design/async.md` §2 has been holding for.
-  Loud, at least: two lowering bails, no wrong answers.
-- **Details**: a static with its own type parameter bails when its body
-  **constructs a generic class**:
+### A body specialized on its own type parameter cannot instantiate an interface implementation
 
-  ```
-  zir unsupported: class not discovered @Future_s923.all_spec_i32
-  ```
-
-  and, if that construction is moved into a module-private generic free
-  function and the static merely calls it, bails again on the **call**:
+- **Found**: 2026-08-12, checking which of `zena:async`'s shapes were
+  still forced now that `86e63185` and the statics commits have landed.
+  The restriction predates that work — it is why the combinators route
+  construction through `AllState`/`RaceState` — but it had never been
+  filed on its own.
+- **Severity**: medium. Loud (a lowering bail, no wrong answers), but it
+  dictates code structure: any generic factory that returns an interface
+  has to be a method on some generic class, so the class exists to host
+  the method rather than to hold anything.
+- **Details**: a generic FUNCTION, or a `static` with its own type
+  parameter, that constructs a class implementing an interface bails:
 
   ```
-  zir unsupported: generic call @Future_s923.all_spec_i32
+  zir unsupported: interface vtable global not found @make_spec_i32
   ```
 
-  So the static's monomorphized body reaches neither a generic class nor
-  a generic function; delegation is not a workaround. Reproduced on
-  `Future.all<A>` (builds `AllState<A>`), `Future.race<A>`
-  (`RaceState<A>`) and `Future.onComplete<A>` (`CallbackAttach<A>`).
-
-  `Future.of<A>` and `Future.failed<A>` build a `Future<A>` and did
-  **not** fail, which is what makes the rule visible: they only survive
-  because those tests construct a `Future` by another path
-  (`Completer<T>`'s field initializer). A program whose only `Future`
-  came from `Future.of` should hit the same bail.
-
-  `e4ea8a51`'s message anticipates the shape — "registering the
-  unspecialized one lowers the body at the erasure, where `new Array<A>`
-  is an `Array<anyref>` nothing ever constructed" — and notes it had not
-  surfaced because `identity` returns its argument rather than building
-  anything. This is that case surfacing. The three stdlib `from`
-  factories converted in the same commit are unaffected for the same
-  reason `Future.of` is: `Array`, `ImmutableArray` and `FixedArray` are
-  constructed all over.
-- **Status**: the rename was written, hit this, and was reverted;
-  `allOf`/`raceOf`/`futureOf`/`failedFuture`/`onComplete` stay free
-  functions until it is fixed. Reinstating them is the two-line change
-  async.md §2 always said it was.
-
-### A generic class field typed by a later-declared generic class miscompiles
-
-- **Found**: 2026-08-11, rewriting `zena:async` so waiters read the settled
-  value out of the future instead of being handed it
-  (`docs/design/async-runtime-shape.md`).
-- **Severity**: medium. Loud — a lowering bail, not a wrong answer — but
-  the trigger is source ORDER, so it looks like an arbitrary rejection of a
-  perfectly ordinary shape, and moving one declaration makes it vanish.
-- **Details**: a generic class with a field typed by another generic class
-  **declared later in the same file** bails with
-  `zir unsupported: identifier type shift @Waiter_sNNN_i32.<constructor>`.
-  Reordering the two declarations is the whole difference:
-
-  ```zena
-  interface Runnable { run(): void; }
-
-  class Waiter<T> implements Runnable {   // fails here, compiles if
-    state: S<T>;                          // S is declared ABOVE Waiter
-    index: i32;
-    new(this.state, this.index);
-    run(): void {}
-  }
-
-  class S<T> {
-    new();
-    attach(): Runnable { return new Waiter<T>(this as S<T>, 0); }
-  }
-  ```
-
-  Not about the field's type beyond its being a later-declared generic
-  class: the same file with `Future<T>` in place of `S<T>` behaves
-  identically, and a `Future<T>` constructor parameter on its own lowers
-  fine (both with and without the class implementing an interface). Not
-  about the interface either — a generic interface fails the same way.
-  `zena:async`'s own `AllState`/`AllWaiter` pair works because `AllState`
-  happens to be declared first.
-- **Corrects an earlier filing.** This entry previously claimed "a generic
-  class cannot receive a `Future<T>` by any spelling" and listed a
-  `Future<T>` constructor parameter as the first symptom. That was wrong —
-  the reduction that supposedly showed it compiles cleanly. Declaration
-  order was the variable I had not controlled for.
-- **Not fixed by PR #232** (verified against a compiler built from its
-  head).
-
-### `this as C<T>` into a generic class with a closure field crashes the compiler
-
-- **Found**: 2026-08-11, same work.
-- **Severity**: medium. A thrown compiler exception rather than a
-  diagnostic, and there is no way to write the call at all: without the
-  cast the checker rejects it.
-- **Details**: a generic class handing itself to another generic class that
-  has a **closure-typed field** throws
-  `registerSpecializedClass called for Node-like: Node id=84`. Independent
-  of declaration order (both orders throw), which is what distinguishes it
-  from the entry above.
-
-  ```zena
-  class Node<T> {
-    v: T;
-    new(this.v);
-    wrap(cb: (x: T) => void): Wrap<T> {
-      return new Wrap<T>(this as Node<T>, cb);   // throws
-    }
-  }
-  class Wrap<T> {
-    n: Node<T>;
-    cb: (x: T) => void;
-    new(this.n, this.cb);
-  }
-  ```
-
-  Dropping the cast is not an alternative: `argument 'Node' is not
-  assignable to parameter 'Node<T>'`, the raw-template-type gap.
-- **Related**: a generic function that captures its own parameter in a
-  closure bails with `zir unsupported: celled capture @f_spec_i32`. That
-  one is already described in `zena:async`'s module header as "no closures
-  are created inside generic code here".
-- **Worked around**: `zena:async`'s callback waiter takes the future
-  through a one-element `Array<Future<T>>` filled after construction, and
-  its combinator waiters carry an `i32` index instead.
-- **Not fixed by PR #232** (verified against a compiler built from its
-  head).
-
-### Symbol-keyed members resolve by name, so an unexported symbol is not private
-
-- **Found**: 2026-08-11, asking whether `Future.result()` could be hidden
-  from user code by keying it with a symbol private to `zena:async`
-  (`docs/design/async-runtime-shape.md`).
-- **Severity**: high. Not a miscompile — it silently voids an access-control
-  guarantee the stdlib already relies on, and the language reference states
-  the opposite. `docs/design/classes.md` §9.4: "Visibility is controlled via
-  standard `export` rules. If you don't export the symbol, outside modules
-  cannot call or implement the method." `packages/stdlib/zena/ownership.zena`
-  puts it more strongly: "Symbols are the only way to give a member a name no
-  other code can write."
-- **Details**: a symbol-keyed member is registered and resolved under the
-  symbol's **source name**, with no reference to the declaring symbol's
-  identity. `getMemberPropertyName` returns `":" + name`
-  (`packages/zena-compiler/zena/lib/ast.zena:685`), and the class member is
-  registered under the same string
-  (`packages/zena-compiler/zena/lib/checker.zena:8650`). `SymbolType` does
-  carry a fresh id per declaration (`checker.zena:11086`), so identities exist
-  — nothing compares them.
-
-  Two reproducers. Given a library with an unexported symbol:
-
-  ```zena
-  // lib.zena
-  symbol secret;
-
-  export class Holder {
-    var :secret: i32;
-    new(v: i32) { this.:secret = v; }
-    reveal(): i32 { return this.:secret; }
-  }
-  ```
-
-  A consumer reaches it by declaring a same-named symbol of its own:
-
-  ```zena
-  // app.zena — compiles; `main` returns 41
-  import { Holder } from './lib.zena';
-  symbol secret;
-  export let main = (): i32 => {
-    let h = new Holder(41);
-    return h.:secret;
-  };
-  ```
-
-  and also without declaring any symbol at all:
-
-  ```zena
-  // app2.zena — also compiles
-  import { Holder } from './lib.zena';
-  export let main = (): i32 => {
-    let h = new Holder(41);
-    return h.:secret;
-  };
-  ```
-
-  So the access side does not even require the symbol to resolve to a binding
-  in scope. The existing semantics test
-  (`tests/language/semantics/symbols/symbol-properties.zena`) does not catch
-  this: its `this.:otherSym` case errors because the class has no `":otherSym"`
-  member at all, not because the symbols differ.
-- **Consequence for ownership**: `zena:ownership` keeps the resource lifecycle
-  flag behind an unexported `interface OwnState { static symbol state;
-  static symbol setState; }`, and comments that writing it "would let anything
-  move a resource between regimes without going through `disown`/`adopt`,
-  which is the whole check". The qualified access form takes the same
-  name-based path (`checker.zena:8650` reads `property.name` out of a
-  `MemberExpression` symbol path), so `r.:setState(0)` from any module should
-  reach it. **Not confirmed by execution** — the only compiler binary
-  available when this was filed predates `resource class` and cannot parse the
-  test — so verify against a current build before relying on the severity.
-- **Verified on**: the two reproducers above were compiled and run
-  (`main` returns 41) with a `cli.wasm` built from `3f70f53c`.
-  `getMemberPropertyName` is byte-identical between that commit and current
-  `main`, and the member-key construction is the same name-based path, so the
-  behavior is expected to be unchanged; it has not been re-run against a
-  compiler built from `main`.
-- **Fix**: record the resolved symbol's `SymbolType` id alongside the member
-  and compare identities at access, instead of comparing the mangled string.
-  Also make the access side require the symbol to resolve to a binding in
-  scope — `app2.zena` above should not compile under any rule.
+  A generic CLASS's own method doing the same thing lowers fine. So what
+  works depends on where the generic code lives, not on what it does.
+  Test: `execution/generics/vtable-in-generic-fn.zena` (`@skip`ped, so
+  it self-retires).
+- **Not the same bug as** "A generic static's body cannot reach any
+  generic construct" (RESOLVED below). That one was RTA walking a
+  generic method's body with its type parameters still open; this one
+  survives it — verified by inlining `RaceState.attach` into
+  `Future.race` after the fix and getting this bail.
+- **Workaround**: host the construction on a generic class's method, as
+  `AllState.attach` and `RaceState.attach` do.
 
 ### A stdlib module's exported type names resolve without an import
 
@@ -1839,21 +1657,25 @@ found, returning false`, so the reachability pass is probably
 ### Generic templates: `this` and generic-typed fields check as the raw template type
 
 - **Found**: 2026-08-05 (writing zena:async's completeWith)
-- **Severity**: medium (bootstrap/self-hosted divergence; downstream
-  ZIR bail "identifier type shift" even when casts appease the checker)
+- **Severity**: low, since 2026-08-12 — a required cast, not a blocker.
+  Was medium while the cast did not lower.
 - **Details**: Inside a generic class's methods, the self-hosted
   checker types `this` and reads of fields whose declared type
   mentions a type parameter (e.g. `owner: Future<A>`) as the RAW
   template type ("Future", no arguments). Passing them where the
   instantiated type is expected fails ("argument 'Future' is not
-  assignable to parameter 'Future<V>'"); `as`-casts silence the
-  checker but the recorded node types still fail ZIR lowering with
-  "identifier type shift" in the specialized copy. The bootstrap
-  compiler substitutes correctly. Blocks mutually-generic patterns
-  like Future<V> + AdoptListener<V> (zena:async's completeWith is
-  deferred to async A1 because of this).
-- **Workaround**: none clean; restructure to avoid calling methods on
-  generic-typed fields/`this` across class boundaries in templates.
+  assignable to parameter 'Future<V>'"). The bootstrap compiler
+  substitutes correctly.
+- **Workaround**: `this as C<T>` at the use site. This entry previously
+  said casts only deferred the failure to a ZIR "identifier type shift"
+  bail, so there was no clean workaround. That half was the
+  forward-referenced-generic-class bug below, fixed by `86e63185`: the
+  cast now lowers. `zena:async` uses it in `Future.onComplete`,
+  `AllState.attach` and `RaceState.attach`, all three of which
+  previously had to be restructured around it.
+- **Remaining**: the cast should not be needed. It is also unchecked —
+  nothing stops `this as C<Wrong>` in a template, where the checker has
+  no argument to compare against.
 
 ### RESOLVED: a resource's `this` escapes through a closure capture
 

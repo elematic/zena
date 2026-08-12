@@ -1,0 +1,21 @@
+// @mode: check
+
+// `Future`'s settled reads are keyed by symbols `zena:async` does not
+// export, which is what makes the surface JS-shaped: user code cannot
+// observe a value synchronously, nor ask whether a future has settled.
+// Declaring a symbol of the same name here does not reach them
+// (docs/design/async-runtime-shape.md, "Future's public surface").
+import { Future, Completer } from 'zena:async';
+
+symbol valueOrThrow;
+symbol result;
+symbol failure;
+
+let test = (c: Completer<i32>, f: Future<i32>): void => {
+  // The public surface: subscribe, or unwrap from a driver.
+  f.onComplete((v: i32) => {}, (e) => {});
+
+  let forgedValue: i32 = f.:valueOrThrow(); // @error: different symbol
+  let forgedFailure = f.:failure(); // @error: different symbol
+  let forgedResult = f.:result(); // @error: different symbol
+};

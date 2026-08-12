@@ -1,7 +1,7 @@
 // @mode: run
 // @result: 77
-// `raceOf` — the first future to settle, value or failure (async.md §2).
-import { Future, Completer, raceOf } from 'zena:async';
+// `Future.race` — the first future to settle, value or failure (async.md §2).
+import { Future, Completer } from 'zena:async';
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 
@@ -19,11 +19,11 @@ let settlementOf = async (f: Future<i32>): Future<String> => {
   }
 };
 
-/** `raceOf` refuses an empty array by throwing, which is synchronous
+/** `Future.race` refuses an empty array by throwing, which is synchronous
  * and so needs no async machinery to observe. */
 let emptyRaceRefused = (): boolean => {
   try {
-    let never = raceOf(new Array<Future<i32>>());
+    let never = Future.race(new Array<Future<i32>>());
     return false;
   } catch (e) {
     return true;
@@ -39,7 +39,7 @@ export async function main(): Future<i32> {
   let pair = new Array<Future<i32>>();
   pair.push(a.future);
   pair.push(b.future);
-  let first = raceOf(pair);
+  let first = Future.race(pair);
   b.complete(70);
   a.complete(1);
   let won = await first;
@@ -53,7 +53,7 @@ export async function main(): Future<i32> {
   let second = new Array<Future<i32>>();
   second.push(c.future);
   second.push(d.future);
-  let raced = raceOf(second);
+  let raced = Future.race(second);
   d.fail(new Error('lost'));
   c.complete(5);
   if (!(await settlementOf(raced) == 'lost')) {

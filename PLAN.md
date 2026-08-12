@@ -91,10 +91,10 @@ This document tracks completed work and planned features. For project instructio
     that can actually block. `run()`/`runSync()` split so that a caller
     who wants a value and a caller who wants a promise get different
     functions.
-  - **Combinators: `allOf` and `raceOf` are done.** `allOf` gives a
+  - **Combinators: `Future.all` and `Future.race` are done.** `Future.all` gives a
     future of every value in input order, or the first failure to
     arrive — reported at once, without waiting on inputs whose result
-    can no longer matter. `raceOf` gives the first input to settle,
+    can no longer matter. `Future.race` gives the first input to settle,
     value or failure, and refuses an empty array rather than handing
     back a future that can never settle. Both are ordinary library
     code over `subscribe`, exactly as the design predicted: no

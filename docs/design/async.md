@@ -135,10 +135,12 @@ no other way in, which is what makes the host contract small (§4).
 **The shipped surface differs from this sketch.** Waiters pull rather
 than being pushed to, so there is one untyped `Task` protocol instead of
 `Microtask`/`Resumable`/`FutureListener`; the settled-value reads are
-symbol-keyed and private to `zena:async`; `onComplete` is a free
-function; and `runFuture(f)` is how synchronous code gets a value out.
-[async-runtime-shape.md](async-runtime-shape.md) has the current shape
-and the reasoning.
+symbol-keyed and private to `zena:async`; `onComplete` takes a pair of
+callbacks rather than one tagged-tuple callback; the statics are
+`of`/`failed` rather than `resolve`/`fail` (which are the settling
+operations); and `runFuture(f)` is how synchronous code gets a value
+out. [async-runtime-shape.md](async-runtime-shape.md) has the current
+shape and the reasoning.
 
 Two API stances, decided here:
 
@@ -166,27 +168,29 @@ Two API stances, decided here:
   and `Completer`. Non-async code that wants a callback uses
   `onComplete` directly.
 
-  `all` and `race` are **implemented**, as `allOf` and `raceOf` in
-  `zena:async`. Three things came out differently from the sketch
+  `all` and `race` are **implemented**, as `Future.all` and
+  `Future.race` in `zena:async`, alongside `Future.of` and
+  `Future.failed`. Two things came out differently from the sketch
   above:
 
-  - **They are plain functions, not statics.** This design said
-    `Future.all`; a `static` method is unusable anywhere generics are
-    involved (it crashes the compiler — BUGS.md), and `Future<T>` is
-    generic. `allOf`/`raceOf` sit beside `futureOf`/`failedFuture`,
-    which are the same shape. Renaming them to statics is a
-    two-line change if that bug is ever fixed.
+  - **Each static declares its own type parameter.** A static is
+    outside its class's generic scope, so the signature is
+    `static all<A>(futures: Array<Future<A>>): Future<Array<A>>`, not
+    one written in the class's `T`. They shipped as free functions
+    first — `allOf`/`raceOf`/`futureOf`/`failedFuture` — because a
+    generic static's body could reach no generic construct; fixed in
+    `86e63185`.
   - **They are not async functions.** Awaiting the inputs in
     sequence would report a rejected input only after everything
     ahead of it settled, and would hang outright if one of those
     never settles — so both subscribe to every input at once and
     settle a `Completer`. This is a semantic difference, not a
     stylistic one, and it is what the tests pin.
-  - **`raceOf` throws on an empty array** rather than returning a
+  - **`Future.race` throws on an empty array** rather than returning a
     future. A race with no inputs can never settle, and an unsettled
     future surfaces much later as a deadlock report naming the
     awaiting code, so the mistake is refused where it was made.
-    `allOf` of nothing is an empty array, which is well-defined.
+    `Future.all` of nothing is an empty array, which is well-defined.
 
   `then`/`map`/`flatMap` are still open, and they are the harder
   half: each takes a user callback, so each needs a closure created
@@ -615,7 +619,7 @@ website served by a Zena server":
 - **Await-in-try — done** (§6), the fast-follow to A1: resuming
   re-enters each enclosing `try` region, so a failed await is caught
   by the handler the user wrote.
-- **Combinators — `allOf` and `raceOf` are done** (§2). Ordinary
+- **Combinators — `Future.all` and `Future.race` are done** (§2). Ordinary
   library code over `subscribe`, as designed: no primitive, no
   compiler support, nothing the executor knows about. `then`/`map`/
   `flatMap` wait on closures-in-generic-code.

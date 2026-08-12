@@ -28,16 +28,14 @@
  * The reads are keyed by symbols this module does not export, so a
  * future tells user code nothing synchronously: subscribing is the only
  * way to observe one, and `runFuture` the only way to unwrap one from
- * synchronous code. (Not yet enforced — BUGS.md, "Symbol-keyed members
- * resolve by name".)
+ * synchronous code. Symbols compare by identity, so a same-named symbol
+ * declared elsewhere does not reach them.
  *
- * Implementation note (compiler limitations worked around, loud when
+ * Implementation note (compiler limitation worked around, loud when
  * hit): no closures are created inside generic code here — RTA does not
  * yet specialize closure implementations per instantiation
- * ("non-concrete function reached") — and a generic class cannot receive
- * a `Future<T>` by any direct spelling, so waiters reach theirs by index
- * or through a one-element array (BUGS.md, "A generic class cannot
- * receive a `Future<T>`").
+ * ("non-concrete function reached") — which is why the combinators are
+ * written with waiter objects rather than callbacks.
  */
 import { Array } from 'zena:array';
 import { Box } from 'zena:box';
@@ -55,10 +53,9 @@ import { Error } from 'zena:error';
  * The compiler is inside this boundary trivially: the split pass
  * resolves members by string, so it names `:valueOrThrow` directly.
  *
- * **This is not enforced yet.** Symbol-keyed members resolve by the
- * symbol's source name, so a determined caller can still write
- * `f.:valueOrThrow()` — see BUGS.md, "Symbol-keyed members resolve by
- * name". Nothing here depends on the fix; it makes the boundary real.
+ * Enforced by symbol identity, not by name: declaring `symbol
+ * valueOrThrow` in another module does not reach these
+ * (`tests/language/semantics/async/private-settled-read.zena`).
  */
 symbol result;
 symbol failure;
@@ -293,6 +290,22 @@ export class Future<T> {
   }
 
   /**
+   * Low-level subscription: exactly one of the callbacks runs, from the
+   * microtask queue, once this future settles (scheduled immediately if
+   * it already has). This is the bridge for non-async code.
+   */
+  onComplete(
+    onValue: (value: T) => void,
+    onError: (error: Error) => void
+  ): void {
+    // `this as Future<T>`: inside a generic class's own method `this`
+    // types as the raw template `Future`, so the cast is what names the
+    // instantiation. Same idiom as `AllState.attach` below.
+    this.subscribe(
+      new CallbackTask<T>(this as Future<T>, onValue, onError));
+  }
+
+  /**
    * The settled value, or a throw of the stored failure.
    *
    * Async frames call this at each resume point, which is what makes a
@@ -379,6 +392,71 @@ export class Future<T> {
       }
     }
   }
+
+  // -------------------------------------------------------------------
+  // Constructors and combinators
+  // -------------------------------------------------------------------
+  //
+  // Each static declares its OWN type parameter `A`: a static is outside
+  // its class's generic scope, so `T` does not name anything here.
+
+  /** An already-resolved future. */
+  static of<A>(value: A): Future<A> {
+    let f = new Future<A>();
+    f.complete(value);
+    return f;
+  }
+
+  /** An already-failed future. */
+  static failed<A>(error: Error): Future<A> {
+    let f = new Future<A>();
+    f.fail(error);
+    return f;
+  }
+
+  /**
+   * A future of every input's value, in **input order** regardless of
+   * the order they settle in — or of the first failure to arrive.
+   *
+   * The failure is reported as soon as it happens, without waiting for
+   * the other inputs: once one has failed no combined value can exist,
+   * so waiting could only delay the answer, and would hang outright if
+   * another input never settles. Inputs that settle after that are
+   * ignored — they lost a race that was already decided, which is not
+   * an error.
+   *
+   * With no inputs the result is an empty array. It still settles
+   * through the microtask queue like everything else (the always-async
+   * rule), so `all` never runs a continuation before its caller
+   * returns.
+   *
+   * Futures are eager, so the inputs are already running when they get
+   * here: this waits for them, it does not start them.
+   */
+  static all<A>(futures: Array<Future<A>>): Future<Array<A>> {
+    return new AllState<A>().attach(futures);
+  }
+
+  /**
+   * A future settling as the **first input to settle** does — with its
+   * value, or with its failure. A failure wins a race exactly the way a
+   * value does; use it when the first answer is the answer, and note
+   * that the losers keep running (nothing here cancels them; that waits
+   * on cancellation).
+   *
+   * Throws on an empty array rather than returning a future. A race
+   * with nothing in it can never settle, and a future that never
+   * settles surfaces much later as a deadlock report naming the
+   * awaiting code, so the mistake is refused where it was made.
+   */
+  static race<A>(futures: Array<Future<A>>): Future<A> {
+    if (futures.length == 0) {
+      throw new Error(
+        'Future.race: needs at least one future; a race with no inputs ' +
+        'can never settle');
+    }
+    return new RaceState<A>().attach(futures);
+  }
 }
 
 /**
@@ -432,22 +510,17 @@ export class Completer<T> extends AnyCompleter {
 /**
  * A waiter built from a pair of callbacks (`onComplete`).
  *
- * Holding the future it reads is what a pulling waiter needs, and three
- * separate compiler limits stand between here and the obvious spellings
- * (all filed in BUGS.md under "A generic class cannot receive a
- * `Future<T>`"): a `Future<T>` constructor parameter fails to lower, a
- * `Future<T> | null` field cannot be read back at `Future<T>`, and a
- * generic function cannot capture one in a closure. An **initialized**
- * `Array<Future<T>>` field is none of those, so the future arrives by
- * `push` after construction. Capacity 1 rather than the default 8.
+ * Holding the future it reads is what a pulling waiter needs: the future
+ * hands a waiter nothing, so the waiter keeps the reference it reads back
+ * through.
  */
 class CallbackTask<T> implements Task {
-  holder = new Array<Future<T>>(1);
+  future: Future<T>;
   valueCb: (value: T) => void;
   errorCb: (error: Error) => void;
-  new(this.valueCb, this.errorCb);
+  new(this.future, this.valueCb, this.errorCb);
   run(): void {
-    let f = this.holder[0];
+    let f = this.future;
     // `:failure()` + `:valueOrThrow()` rather than `:result()`: this
     // class specializes at `T = void` too, and a zero-width lane does
     // not lower in an inline tuple.
@@ -461,44 +534,6 @@ class CallbackTask<T> implements Task {
     bad(e as Error);
   }
 }
-
-/** Hosts the waiter construction: a specialized generic FUNCTION cannot
- * construct a class that implements an interface, whereas a generic
- * class's own method can — the same restriction `AllState.attach`
- * exists for. */
-class CallbackAttach<T> {
-  new();
-  attach(
-    f: Future<T>,
-    onValue: (value: T) => void,
-    onError: (error: Error) => void
-  ): void {
-    let t = new CallbackTask<T>(onValue, onError);
-    t.holder.push(f);
-    f.subscribe(t);
-  }
-}
-
-/**
- * Low-level subscription: exactly one of the callbacks runs, from the
- * microtask queue, once `f` settles (immediately scheduled if it
- * already has). This is the bridge for non-async code.
- *
- * A free function rather than a method on `Future<T>`, and not by
- * preference: a pulling waiter has to hold the future it reads, and a
- * generic class cannot hand `this` to another generic class — without a
- * cast the checker sees the raw template type, and with one codegen
- * crashes (BUGS.md). As an argument `f` is an ordinary `Future<T>` and
- * neither happens. It sits beside `futureOf`/`allOf`/`raceOf`, which are
- * free functions for their own reasons.
- */
-export let onComplete = <T>(
-  f: Future<T>,
-  onValue: (value: T) => void,
-  onError: (error: Error) => void
-): void => {
-  new CallbackAttach<T>().attach(f, onValue, onError);
-};
 
 /**
  * Runs the executor to a standstill and returns `f`'s value, throwing
@@ -516,20 +551,6 @@ export let onComplete = <T>(
 export let runFuture = <T>(f: Future<T>): T => {
   drainMicrotasks();
   return f.:valueOrThrow();
-};
-
-/** An already-resolved future. */
-export let futureOf = <T>(value: T): Future<T> => {
-  let f = new Future<T>();
-  f.complete(value);
-  return f;
-};
-
-/** An already-failed future. */
-export let failedFuture = <T>(error: Error): Future<T> => {
-  let f = new Future<T>();
-  f.fail(error);
-  return f;
 };
 
 // ---------------------------------------------------------------------------
@@ -567,13 +588,15 @@ class AllState<T> {
   /**
    * Subscribes to every input and hands back the combined future.
    *
-   * This lives on the state class rather than in `allOf` itself
-   * because the waiters are interface implementations, and a
-   * specialized generic FUNCTION does not get the interface vtable for
-   * a class it instantiates ("interface vtable global not found") —
-   * whereas a generic class's own method does. Same reason as the
-   * closure restriction the module header describes: what works
-   * depends on where the generic code lives.
+   * This lives on the state class rather than in `Future.all` itself
+   * because the waiters are interface implementations, and a body
+   * specialized on its OWN type parameter does not get the interface
+   * vtable for a class it instantiates ("interface vtable global not
+   * found") — whereas a generic class's own method does. That covers a
+   * generic free function and a static alike; inlining this into
+   * `Future.race` was tried after the statics landed and bails. Same
+   * reason as the closure restriction the module header describes:
+   * what works depends on where the generic code lives.
    */
   attach(futures: Array<Future<T>>): Future<Array<T>> {
     this.remaining = futures.length;
@@ -626,10 +649,9 @@ class AllState<T> {
 
 /** One input's subscription into an `AllState`.
  *
- * Carries the input's index rather than the future itself: a pulling
- * waiter needs to reach its future, and `Future<T>` cannot be a generic
- * class's constructor parameter (BUGS.md), but the state already holds
- * every input in order, so an index reaches it. */
+ * Carries the input's index rather than the future itself. Either works
+ * and both are one field; the index is what `report` would need anyway,
+ * since `all` has to keep every input to read the values back in order. */
 class AllWaiter<T> implements Task {
   state: AllState<T>;
   index: i32;
@@ -646,50 +668,25 @@ class AllWaiter<T> implements Task {
   }
 }
 
-/**
- * A future of every input's value, in **input order** regardless of the
- * order they settle in — or of the first failure to arrive.
- *
- * The failure is reported as soon as it happens, without waiting for
- * the other inputs: once one has failed no combined value can exist, so
- * waiting could only delay the answer, and would hang outright if
- * another input never settles. Inputs that settle after that are
- * ignored — they lost a race that was already decided, which is not an
- * error.
- *
- * With no inputs the result is an empty array. It still settles through
- * the microtask queue like everything else (the always-async rule), so
- * `allOf` never runs a continuation before its caller returns.
- *
- * Futures are eager, so the inputs are already running when they get
- * here: this waits for them, it does not start them.
- */
-export let allOf = <T>(futures: Array<Future<T>>): Future<Array<T>> => {
-  return new AllState<T>().attach(futures);
-};
-
-/** Shared state for one `raceOf` call: whoever settles first wins. */
+/** Shared state for one `Future.race` call: whoever settles first wins. */
 class RaceState<T> {
   result = new Future<T>();
-  inputs = new Array<Future<T>>();
 
   new();
 
   /** Subscribes every input. On the state class for the same reason
    * `AllState.attach` is. */
   attach(futures: Array<Future<T>>): Future<T> {
-    var i = 0;
-    while (i < futures.length) {
-      this.inputs.push(futures[i]);
-      i += 1;
-    }
     // One waiter per input rather than one shared between them: a
     // pulling waiter has to know which future to read, and a race does
-    // not otherwise care which settled. `this` is cast for the same
-    // reason as in AllState.attach.
-    i = 0;
+    // not otherwise care which settled. Unlike `AllState`, nothing here
+    // needs the inputs afterwards — the winner's waiter carries the one
+    // future anyone will read — so a race keeps no input list. `this`
+    // is cast for the same reason as in AllState.attach.
+    var i = 0;
     while (i < futures.length) {
-      futures[i].subscribe(new RaceWaiter<T>(this as RaceState<T>, i));
+      futures[i].subscribe(
+        new RaceWaiter<T>(this as RaceState<T>, futures[i]));
       i += 1;
     }
     return this.result;
@@ -704,14 +701,14 @@ class RaceState<T> {
   }
 }
 
-/** One input's subscription into a `RaceState`, by index for the same
- * reason `AllWaiter` carries one. */
+/** One input's subscription into a `RaceState`, holding the input it
+ * reads. */
 class RaceWaiter<T> implements Task {
   state: RaceState<T>;
-  index: i32;
-  new(this.state, this.index);
+  future: Future<T>;
+  new(this.state, this.future);
   run(): void {
-    let f = this.state.inputs[this.index];
+    let f = this.future;
     let e = f.:failure();
     if (e == null) {
       this.state.win(f.:valueOrThrow());
@@ -720,27 +717,6 @@ class RaceWaiter<T> implements Task {
     this.state.lose(e as Error);
   }
 }
-
-/**
- * A future settling as the **first input to settle** does — with its
- * value, or with its failure. A failure wins a race exactly the way a
- * value does; use it when the first answer is the answer, and note that
- * the losers keep running (nothing here cancels them; that waits on
- * cancellation).
- *
- * Throws on an empty array rather than returning a future. A race with
- * nothing in it can never settle, and a future that never settles
- * surfaces much later as a deadlock report naming the awaiting code, so
- * the mistake is refused where it was made.
- */
-export let raceOf = <T>(futures: Array<Future<T>>): Future<T> => {
-  if (futures.length == 0) {
-    throw new Error(
-      'raceOf: needs at least one future; a race with no inputs can ' +
-      'never settle');
-  }
-  return new RaceState<T>().attach(futures);
-};
 
 // Note: no generic `MaybeFuture<T> = T | Future<T>` alias — Zena
 // rejects unions mixing an unbounded type parameter with reference

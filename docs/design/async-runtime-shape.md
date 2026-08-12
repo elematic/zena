@@ -34,34 +34,50 @@ since the point of most of them is what the code looked like going in.
 
 ### What the implementation settled
 
-Four things came out differently from the sketch, all forced rather than
-chosen, and all recorded in BUGS.md:
+The sketch below is now the shipped shape. It was not, at first: four
+compiler bugs stood between them, all filed from this work and all fixed
+by `86e63185` and the statics commits `869b6218`..`e4ea8a51`. What the
+detours cost is worth recording, because each one had produced a piece
+of API that looked like a design decision:
 
-- **A library waiter cannot hold a `Future<T>`.** Four spellings fail —
-  constructor parameter, nullable field, closure capture, and handing
-  over `this` — so `zena:async`'s own waiters reach their future through
-  an `i32` index into a list the shared state already holds, or through
-  a one-element `Array<Future<T>>` filled after construction. The
-  compiler-synthesized frame is unaffected: it spills the awaited future
-  like any other live value, which is what makes pull cheap for the case
-  that matters and awkward for the case that does not.
-- **`onComplete` is a free function**, `onComplete(f, onValue, onError)`,
-  for the same reason: as an argument `f` is an ordinary `Future<T>`,
-  while `this` inside `Future<T>`'s own method is the raw template type.
-  It joins `futureOf`/`allOf`/`raceOf`, which are free functions for
-  their own reasons.
+- **A library waiter could not hold a `Future<T>`.** Constructor
+  parameter, nullable field, closure capture and handing over `this` all
+  failed, so waiters reached their future through an `i32` index or a
+  one-element `Array<Future<T>>` filled after construction. One cause: a
+  forward-referenced generic class silently dropped its type arguments.
+  Waiters now take the future directly, which also lets `Future.race`
+  drop the input list it kept solely so its waiters could find their
+  input — an `Array` plus its backing store per race.
+- **`onComplete` is a method**, as sketched. It was a free function
+  taking the future as an argument, because `this` inside `Future<T>`'s
+  own method checks as the raw template `Future`. That part is still
+  true, but `this as Future<T>` now lowers, so the cast is the whole
+  cost (BUGS.md, "Generic templates: `this` and generic-typed fields
+  check as the raw template type" — still open, downgraded).
+- **The combinators are statics**: `Future.all`, `Future.race`,
+  `Future.of`, `Future.failed`, the names [async.md](async.md) §2 asked
+  for. They were free functions because a generic static's body could
+  reach no generic construct — the first real use of statics-on-a-generic
+  -class hit it.
 - **`:failure()` exists beside `:result()`.** A zero-width `T` does not
   lower in an inline-tuple lane, so `Future<void>.result()` bails
   ("method result type"), and `Future<void>` is what `sleep` returns.
   The library's waiters therefore read the tag and the value separately.
   That is exactly the separable-tag shape this document argues against —
   tolerable only because both members are private to the module. It
-  retires when void lanes lower.
+  retires when void lanes lower. **This is the one that is still open**,
+  and the only place the shipped code diverges from the sketch.
 - **`runFuture(f)` is the public way to get a value out.** Drain, then
   unwrap. It cannot answer before the queue has run, so it gives
   synchronous code a value without giving it a way to observe _when_
   something settled. The async tests use it where they previously called
   `valueOrThrow`.
+
+The general lesson is the one worth keeping: every one of these produced
+a plausible-sounding justification for a worse API. "A pulling waiter
+has to hold its future, and an argument is the only way to receive one"
+reads like a design constraint. It was a bug, and it had already been
+written into three doc comments as though it were permanent.
 
 `state` and `isCompleted` are still public. Retiring them is the
 remaining half of the argument below, and it is separable: the ordering
@@ -185,7 +201,7 @@ combinator listener gains one field and loses one allocation per settle.
 `AllState` keeps `slots: Array<Box<T> | null>` and allocates a `Box` per
 input (`async.zena:452`, `:499`) because pushed values arrive with
 nowhere to go. Under pull the inputs already hold their own values, in
-input order, so `allOf` counts down and reads the inputs on the last
+input order, so `Future.all` counts down and reads the inputs on the last
 settle. The slots array and the N boxes go away.
 
 This is a place where Zena can be cheaper than JS rather than merely as
@@ -263,9 +279,10 @@ Two constraints on the intrusive version, both real:
    before it is committed to. The transform binds to `Resumable`
    reflectively off `subscribeResumable`'s signature
    (`codegen/ir/async.zena:160`), so that lookup changes either way.
-2. `raceOf` subscribes **one shared listener** to every input
-   (`async.zena:573`). A node can belong to one intrusive list, so race
-   needs one node per input, as `allOf` already has.
+2. `Future.race` subscribed **one shared listener** to every input
+   (`async.zena:573`), and a node can belong to only one intrusive list.
+   Resolved on the way in: race now allocates a waiter per input, as
+   `Future.all` already did.
 
 Recommendation: ship the inline-first shape, which is unconditional, and
 treat the intrusive list as a follow-up gated on the subclassing
@@ -312,6 +329,13 @@ export class Future<T> {
 
   /** The callback bridge for non-async code. */
   onComplete(onValue: (value: T) => void, onError: (error: Error) => void): void;
+
+  /** Constructors and combinators. Each declares its own `A`: a static
+   *  is outside its class's generic scope. */
+  static of<A>(value: A): Future<A>;
+  static failed<A>(error: Error): Future<A>;
+  static all<A>(futures: Array<Future<A>>): Future<Array<A>>;
+  static race<A>(futures: Array<Future<A>>): Future<A>;
 }
 ```
 
@@ -336,13 +360,15 @@ public surface is `onComplete` plus the constructors and combinators.
 That is close to the minimum, and it is reversible in the safe
 direction: exporting the symbol later is one word, retracting it is not.
 
-**Prerequisite, and it is not currently satisfied.** Symbol-keyed members
-resolve by the symbol's source _name_, with no comparison of the
-declaring symbol's identity, so an unexported symbol is not actually
-private today — see BUGS.md, "Symbol-keyed members resolve by name". Two
-reproducers are filed there. This design assumes that fix; until it
-lands, `:result()` is a convention rather than a boundary. Nothing else
-here depends on it.
+**This rests on symbol identity, which now holds.** When the design was
+written it did not: symbol-keyed members resolved by the symbol's source
+_name_, with no comparison of the declaring symbol's identity, so any
+module could reach `:result()` by declaring a symbol of the same name.
+That was filed from this work and fixed in `86e63185`; access now
+compares identity, and
+`tests/language/semantics/async/private-settled-read.zena` pins it for
+these three members specifically — a module declaring its own `symbol
+valueOrThrow` gets "different symbol" on all of them.
 
 Four further changes get to the shape above:
 
@@ -361,7 +387,7 @@ alias once `type Result<T, E> = inline …` is legal (it is not yet:
 **No `isCompleted` on the read side.** Branching on pending-ness is the
 affordance that produces schedule-dependent behavior. The combinators'
 "have I settled already" guard belongs to the write side as
-`tryComplete`/`tryFail`, which is what `raceOf` actually wants; that also
+`tryComplete`/`tryFail`, which is what `Future.race` actually wants; that also
 retires `AllState.settled`, `RaceState.settled`, and the double-settle
 throw.
 
@@ -641,11 +667,11 @@ next one works against.
 Steps 2, 3, and 5 need no compiler changes and account for most of the
 allocation reduction.
 
-Two prerequisites sit outside this list and are not on its critical path.
-Symbol identity (BUGS.md) has to be fixed before `:result()`'s privacy is
-real, though the member works either way. Hole-initialized fields are what
-step 1 needs, and every other step lands without them — the `Box` simply
-survives until they do.
+One prerequisite sits outside this list and is not on its critical path:
+hole-initialized fields, which step 1 needs and every other step lands
+without — the `Box` simply survives until they do. Symbol identity was
+the other, and it landed in `86e63185`, so `:result()`'s privacy is real
+rather than conventional.
 
 ## Risks
 
@@ -660,12 +686,9 @@ survives until they do.
 - **Deleting `Completer`** is a stdlib API break for any code holding
   one, including `zena:host-async` and `@zena-lang/runtime`'s fixtures.
   Small today; larger the longer it waits.
-- **`raceOf`'s shared listener** must become one node per input before
-  the intrusive list can land.
-- **Symbol privacy is assumed, not held.** Until BUGS.md's symbol-identity
-  bug is fixed, `:result()` is unwritable-by-convention only. The design
-  does not otherwise depend on it, so this delays the guarantee rather
-  than the work.
+- **`Future.race`'s shared listener** had to become one node per input
+  before the intrusive list could land. Done: race subscribes a
+  `RaceWaiter` per input, each holding the input it reads.
 
 ## Open
 
