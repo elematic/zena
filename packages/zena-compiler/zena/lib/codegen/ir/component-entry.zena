@@ -1,0 +1,129 @@
+/**
+ * The component target's async entry point.
+ *
+ * A callback-lifted export does not run to completion. It returns a
+ * *code* saying either "done" or "wake me on this waitable set", and the
+ * host re-enters through a callback when something in that set fires.
+ * That is the difference between a timer and a sleep: while the guest
+ * waits, the process is not inside it.
+ *
+ * The two halves live in different places, because they need different
+ * things:
+ *
+ * - The callback is `zena:time`'s own `componentResume`, exported
+ *   directly. It has to reach the timer queue and the completer
+ *   registry, which is Zena code, so synthesizing it here would mean
+ *   rebuilding in IR what the standard library already says.
+ * - The entry is synthesized here, because it has to call `main`, and
+ *   nothing in the standard library can name a program's `main`.
+ *
+ * The entry is two calls: run the program, then ask the driver what to
+ * do next. Everything else — arming the wait, dropping the subtask,
+ * calling `task.return` — is in `time/p3.zena`.
+ *
+ * See docs/design/component-emission.md, Part 5.
+ */
+
+import { HashMap } from 'zena:map';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import { ValType, ValTypeI32 } from '../wasm.zena';
+import { IrBody } from './ir.zena';
+import { IrBuilder } from './builder.zena';
+import { IrRefFunc } from './ir.zena';
+import { ReachabilityAnalysis } from '../reachability/analysis.zena';
+import { ExportKey } from '../codegen-utils.zena';
+
+/** Bodies for the synthesized entry, by function uid. */
+var entryBodies = new HashMap<i32, IrBody>();
+
+/**
+ * The stdlib module supplying the driver. It is a path id rather than a
+ * name id because `zena:time` is a virtual module: the component target
+ * resolves it to this file, and no other target has it.
+ */
+let driverModule = 'zena:time/p3.zena';
+
+/**
+ * Build the async entry, if this program links a driver that needs one.
+ *
+ * "Needs one" is decided by reachability, not by a flag: `componentPoll`
+ * is reached exactly when the program pulled in the p3 clock, which
+ * happens when it uses `zena:time`. A program that never sleeps gets the
+ * synchronous lift and none of this.
+ */
+export let prepareComponentEntry = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis
+): void => {
+  entryBodies = new HashMap<i32, IrBody>();
+
+  let poll = wasm.getStdlibFunc(driverModule, 'componentPoll');
+  let resume = wasm.getStdlibFunc(driverModule, 'componentResume');
+  if (poll == null || resume == null) {
+    return;
+  }
+
+  let key = 'main' as ExportKey;
+  if (!wasm.exportMap.has(key)) {
+    throw new Error(
+      'The component target linked the p3 async driver into a program ' +
+      'with no main to drive.'
+    );
+  }
+  let main = wasm.exportMap[key];
+  if (main.signature.params.length != 0) {
+    throw new Error(
+      'The component target cannot drive a main that takes parameters.'
+    );
+  }
+  if (main.signature.returns.length != 0) {
+    // The lifted entry is `async func()`, and its result would have to
+    // travel through `task.return` long after main returned. Rather
+    // than stash it somewhere and hope, say so: a component whose
+    // program sleeps returns nothing today.
+    throw new Error(
+      'A program that sleeps on the component target must declare ' +
+      '`main(): void`. The entry is lifted async, and an async lift ' +
+      'returns its result through task.return after the event loop ' +
+      'finishes, which is not where main returned it.'
+    );
+  }
+
+  let entrySig = wasm.getSignature(new Array<ValType>(0), i32Results());
+  let entry = new WasmFunction(entrySig, null, main.model);
+  entry.name = 'main$componentRun';
+  entry.isComponentEntry = true;
+  wasm.addFunction(entry);
+  pass.markFunctionReached(entry);
+
+  let b = new IrBuilder();
+  let block = b.newBlock();
+  b.switchTo(block);
+  b.callFunc(b.addRef(new IrRefFunc(main)), new Array<i32>(0), null);
+  let code = b.callFunc(b.addRef(new IrRefFunc(poll as WasmFunction)),
+      new Array<i32>(0), new ValTypeI32());
+  b.ret(code);
+  entryBodies[entry.uid] = b.finish();
+
+  wasm.componentEntryFunc = entry;
+  wasm.componentCallbackFunc = resume as WasmFunction;
+  pass.markFunctionReached(resume as WasmFunction);
+};
+
+let i32Results = (): Array<ValType> => {
+  let results = new Array<ValType>();
+  results.push(new ValTypeI32());
+  return results;
+};
+
+export let lowerComponentEntry = (
+  wasm: WasmModule,
+  func: WasmFunction
+): IrBody => {
+  if (let (true, body) = entryBodies.get(func.uid)) {
+    return body;
+  }
+  throw new Error('the component entry was not prepared');
+};

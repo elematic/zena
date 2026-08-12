@@ -29,7 +29,9 @@ import {
 import { i32ToString } from 'zena:string-convert';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc, ComponentFuncType,
-  ComponentValType, noComponentResult, isKebabName, toKebabName
+  ComponentCanonBuiltin, ComponentValType, noComponentResult, isKebabName,
+  toKebabName, canonNamespace, isKnownCanonBuiltin, componentEntryExport,
+  componentCallbackExport
 } from './component-emitter.zena';
 
 /** Look through type aliases (`type`, `distinct type`) to the type itself. */
@@ -113,8 +115,18 @@ let paramName = (declared: FunctionType, index: i32): String => {
   return "a" + i32ToString(index);
 };
 
-/** The component-level signature of a function, or a loud failure. */
-let signatureOf = (func: WasmFunction, what: String): ComponentFuncType => {
+/**
+ * The component-level signature of a function, or a loud failure.
+ *
+ * `isAsync` is part of the *type*, not just the lowering: the canonical
+ * `async` option is only legal against a function type that is itself
+ * async, which is the format saying the two cannot disagree.
+ */
+let signatureOf = (
+  func: WasmFunction,
+  what: String,
+  isAsync: boolean = false
+): ComponentFuncType => {
   let declared = declaredTypeOf(func, what);
   let paramTypes = new Array<i32>();
   let paramNames = new Array<String>();
@@ -134,6 +146,24 @@ let signatureOf = (func: WasmFunction, what: String): ComponentFuncType => {
     paramNames.push(paramName(declared, i));
   }
   var result = noComponentResult;
+  if (isAsync) {
+    // An async-lowered call returns a *subtask handle*, packed with a
+    // status — that is the core signature the canonical ABI hands the
+    // guest, and it has nothing to do with the WIT function's own
+    // result. The declaration says `i32` because that is what the call
+    // evaluates to in Zena; the interface type says nothing, because a
+    // WIT function that returns something under an async lowering
+    // delivers it through the subtask, which needs C6's futures.
+    if (!(underlying(declared.returnType) is I32Type)) {
+      throw new Error(
+        "The async-lowered import '" + nameOf(func) + "' must be declared " +
+          "to return i32, the packed subtask handle the canonical ABI " +
+          "hands back. It returns '" + typeToString(declared.returnType) +
+          "'."
+      );
+    }
+    return new ComponentFuncType(paramTypes, paramNames, result, true);
+  }
   if (!(underlying(declared.returnType) is VoidType)) {
     result = componentTypeOf(declared.returnType);
     if (result < 0) {
@@ -146,7 +176,7 @@ let signatureOf = (func: WasmFunction, what: String): ComponentFuncType => {
       );
     }
   }
-  return new ComponentFuncType(paramTypes, paramNames, result);
+  return new ComponentFuncType(paramTypes, paramNames, result, isAsync);
 };
 
 /**
@@ -169,6 +199,41 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
     }
     let interfaceName = module as String;
     let fieldName = field as String;
+    // The canonical builtins: functions the ABI itself provides, with
+    // no interface to import them from and no type to declare. The core
+    // module still imports them, so they need a namespace.
+    if (interfaceName == canonNamespace) {
+      if (!isKnownCanonBuiltin(fieldName)) {
+        throw new Error(
+          "'" + fieldName + "' is not a canonical builtin this compiler " +
+            "can emit. Known: waitable-set.new, waitable-set.drop, " +
+            "waitable.join, subtask.drop, task.return."
+        );
+      }
+      var builtinResult = noComponentResult;
+      if (fieldName == "task.return") {
+        // `task.return` carries the lifted task's result, so its type
+        // comes from what the declaration takes, not from what it
+        // returns.
+        let declared = declaredTypeOf(f, "import");
+        if (declared.parameters.length == 1) {
+          builtinResult = componentTypeOf(declared.parameters[0]);
+          if (builtinResult < 0) {
+            throw new Error(
+              "task.return takes '" +
+                typeToString(declared.parameters[0]) +
+                "', which is not a flat scalar."
+            );
+          }
+        } else if (declared.parameters.length > 1) {
+          throw new Error(
+            "task.return takes at most one value, the lifted task's result."
+          );
+        }
+      }
+      shape.builtins.push(new ComponentCanonBuiltin(fieldName, builtinResult));
+      continue;
+    }
     if (!interfaceName.contains(":")) {
       throw new Error(
         "The component target cannot import '" + fieldName + "' from '" +
@@ -187,13 +252,36 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
     }
     shape.imports.push(
       new ComponentImportFunc(interfaceName, fieldName,
-          signatureOf(f, "import")));
+          signatureOf(f, "import", f.importIsAsync), f.importIsAsync));
+  }
+
+  // The async entry, where the program links a driver that needs one.
+  // It replaces `main` rather than joining it: `main` on its own would
+  // return before the timers it armed have fired, and lifting both
+  // would offer the host two entry points that mean different things.
+  let entry = wasm.componentEntryFunc;
+  if (entry != null) {
+    let callback = wasm.componentCallbackFunc;
+    if (callback == null) {
+      throw new Error(
+        "The component target has an async entry with no callback to " +
+        "re-enter it through."
+      );
+    }
+    shape.exports.push(new ComponentExportFunc(
+      componentEntryExport, "run",
+      new ComponentFuncType(new Array<i32>(), new Array<String>(),
+          noComponentResult, true),
+      componentCallbackExport));
   }
 
   let exportKeys = wasm.exportMap.keys();
   while (let (true, key) = exportKeys.next()) {
     let f = wasm.exportMap[key];
     let coreName = key as String;
+    if (entry != null && coreName == "main") {
+      continue;
+    }
     let exportName = toKebabName(coreName);
     if (exportName == "") {
       throw new Error(

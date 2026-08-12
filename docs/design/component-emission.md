@@ -2,8 +2,14 @@
 
 ## Status
 
-- **Status**: Proposed. Every load-bearing claim was verified against
-  `wasm-tools 1.252.0` / `wasmtime 46.0.0` on 2026-08-08
+- **Status**: Implemented through C2. `--target component` emits
+  components, and `zena:time`'s `sleep` is a p3 timer on that target: a
+  300 ms sleep costs 310 ms of wall time and 20 ms of CPU. C3 onward
+  (the WIT type encoder, stdio, filesystem, bindgen, streams) is
+  unbuilt. Every load-bearing claim was verified against
+  `wasm-tools 1.252.0` / `wasmtime 46.0.0` on 2026-08-08; the
+  corrections that building it turned up are marked **Correction**
+  below.
 - **Scope**: how Zena emits WebAssembly components from its own backend,
   what the `--target` surface should be, and how p3's async timers land
 - **Relationship to [component-model.md](./component-model.md)**: that
@@ -474,6 +480,30 @@ The complete event-loop shape, and the structure C2 has to emit:
 instead of blocking; the host re-enters through `cb` when it fires, which
 drops the subtask and calls `task.return`.
 
+**Correction.** The `(i32.and … 15) (i32.const 0)` test above is
+commented "RETURNED already" and is not: the low four bits are a
+`CallState`, and `0` is `STARTING` while `RETURNED` is `2`. The branch
+never ran here — a 900 ms timer does not complete inside its own
+lowering — so the reference was right by never taking it. It matters in
+the callback, which is delivered **more than once**: a subtask reports
+`STARTED` before it reports `RETURNED`, and dropping one that has not
+resolved traps with `cannot drop a subtask which has not yet resolved`.
+Anything short of `RETURNED` has to go straight back to waiting.
+
+Two more the running code needed, neither visible in a single-timer
+reference:
+
+- **The waitable set is a handle too.** Leaving it alive at
+  `task.return` fails the run with `resource not present`, and dropping
+  it while a subtask is still joined fails with `resource has children`.
+  Drop the subtask, then the set, then return.
+- **At most one `wait-for` in flight.** The drain runs more than once
+  before the host takes over — once inside the program, once in the
+  entry — and a `Clock.waitNs` that arms unconditionally leaves the
+  first subtask orphaned in the set, owned and never dropped. The
+  second wait is also the one that traps the drop, since the handle the
+  driver remembers is no longer the handle that fired.
+
 Measured: a **900 ms** timer completed in **0.919 s** wall with **47 ms**
 of user+sys — the process slept. At 200 ms, 0.245 s.
 
@@ -589,6 +619,15 @@ Measured, `zena-cli build` on `export function main(): i32 { return 7; }`:
 Both export `main` and the string helpers `$stringCreate`,
 `$stringSetByte`, `$stringGetByte`, `$stringGetLength`; `zena-cli` also
 exports `memory`.
+
+**Correction.** Those numbers predate the dead-code-elimination work of
+docs/design/binary-size.md. Re-measured on the same program: the floor
+is **zero** on both, and the export list is `main` alone — 37 bytes.
+What the table describes is a program that _constructs an `Error`_,
+which reaches the stack-trace hooks through the constructor; that is
+still two imports on a target whose host has them, and zero on
+`freestanding` since C0 split them out. The rest of the section stands:
+the floor is a property of the target rather than of the program.
 
 A program that calls `logString` imports exactly the same set as one
 that prints nothing. The import list is a property of the target, not of
@@ -856,7 +895,7 @@ the push shape already matches.
 
 ## Part 6: The plan
 
-### C0 — unblock the module. Days.
+### C0 — unblock the module. **Done.**
 
 Split the stack-trace hooks out of `zena:error` (Part 2). Rename `host`
 to `js` and retire the unused `wasi` manifest key, keeping aliases. No
@@ -870,7 +909,7 @@ inspection: compile a program, and the import section is empty. Nine and
 three, from the measurement in Part 3, are the numbers it has to drive
 to zero.
 
-### C1 — the encoder, flat scalars only. Days to a week.
+### C1 — the encoder, flat scalars only. **Done.**
 
 Emit components from `BinaryEmitter` (Part 4), restricted to flat-scalar
 imports and exports, which need no memory, no realloc, and no type
@@ -878,13 +917,32 @@ encoding beyond primitives. Ships `--target component` for a program
 whose only import is `wasi:clocks/monotonic-clock@0.3.0`. Verifiable as
 1.1 was.
 
-### C2 — async timers. Days.
+### C2 — async timers. **Done.**
 
-Async-lowered imports, the four canon builtins, and the synthesized
-callback export (Part 5), plus a `time/p3.zena` `Clock` returning
-`false`. `zena:time`'s `sleep` becomes non-blocking under WASI, on the
-same code path as JS. Tested as 1.7 was, asserting wall time against CPU
-time.
+Async-lowered imports, the canon builtins, and the callback-lifted
+entry (Part 5), plus a `time/p3.zena` `Clock` returning `false`.
+`zena:time`'s `sleep` is non-blocking under WASI, on the same code path
+as JS. Tested as 1.7 was, asserting wall time against CPU time: 310 ms
+wall, 20 ms CPU, for a 300 ms sleep.
+
+Five builtins rather than four — `waitable-set.drop` joins the list, per
+the corrections in 1.7. The callback is `zena:time`'s own
+`componentResume`, exported and named by the lift, rather than
+synthesized: it has to reach the timer queue and the completer registry,
+which is Zena code. What the compiler does synthesize is the _entry_,
+because that has to call `main`, and nothing in the standard library can
+name a program's `main`.
+
+Two restrictions the shape imposes, both loud at compile time:
+
+- A program that links the p3 driver must declare `main(): void`. The
+  lifted entry is `async func()`, and an async lift delivers its result
+  through `task.return` after the event loop finishes, which is not
+  where `main` returned it.
+- An async-lowered import declares its Zena return as `i32`, the packed
+  subtask handle, and its WIT type carries no result. A WIT function
+  that returns something under an async lowering delivers it through the
+  subtask, which needs C6's futures.
 
 ### C3 — the type encoder, and stdio. Weeks.
 
@@ -924,10 +982,16 @@ component.
 
 ## Open questions
 
-1. Surface syntax for marking an import async-lowered.
-   `@external.async("wasi:clocks/monotonic-clock@0.3.0", "wait-for")`, or
-   an options record on `@external`? The second generalizes better, since
-   `(memory)` and `(realloc)` options arrive in C3 regardless.
+1. ~~Surface syntax for marking an import async-lowered.~~ **Settled
+   provisionally**: a third `@external` argument holding a
+   comma-separated option list, `@external("wasi:clocks/…", "wait-for",
+"async")`. It is the options record in the cheapest spelling the
+   grammar already accepts — decorator arguments are string literals —
+   and it generalizes to whatever C3 needs. If the options record
+   arrives as real syntax later, this is what it replaces. A second
+   namespace came with it: `@external("canon", "waitable-set.new")`
+   names a canonical builtin, which is a function with no interface to
+   be imported from and no type to declare.
 2. Should `zena-cli` eventually run components rather than core modules?
    wasmtime supports components natively, so the embedder could drop its
    private `env.*` surface and become an ordinary component host. That

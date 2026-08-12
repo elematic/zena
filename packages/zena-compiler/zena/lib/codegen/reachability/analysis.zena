@@ -767,7 +767,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // them here rather than force-reaching a hardcoded list keeps the
       // gate exact — the unit only exists when the program imports the
       // module, so a program that does no host I/O links none of it.
-      let isHostBoundary = unit.ast.path == 'zena:host-async';
+      // `zena:time`'s p3 entry is a host boundary in the same sense: the
+      // component's event loop calls `componentPoll` and
+      // `componentResume` from outside the program, so nothing inside it
+      // references them. Only the component target resolves `zena:time`
+      // to this file, so no other target links any of it.
+      let isHostBoundary = unit.ast.path == 'zena:host-async' ||
+          unit.ast.path == 'zena:time/p3.zena';
       // The root set is `main` plus the exports of those two units.
       // Every other unit is a library: its globals are roots only if
       // something reaches them. Queuing them all — which is what this

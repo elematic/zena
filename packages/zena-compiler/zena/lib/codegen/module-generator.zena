@@ -7,6 +7,7 @@ import { ByteBuffer } from 'zena:byte-buffer';
 import { ReachabilityAnalysis } from './reachability/analysis.zena';
 import { prepareGenerators } from './ir/generators.zena';
 import { prepareAsyncFunctions } from './ir/async.zena';
+import { prepareComponentEntry } from './ir/component-entry.zena';
 import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending, parseI64OrU64Literal } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -34,7 +35,9 @@ import { verifyIr } from './ir/verifier.zena';
 import { runGvn } from './ir/gvn.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
-import { ComponentShape } from './component-emitter.zena';
+import {
+  ComponentShape, componentEntryExport, componentCallbackExport
+} from './component-emitter.zena';
 import { buildComponentShape } from './component-shape.zena';
 import { targetEmitsComponent } from '../targets.zena';
 
@@ -349,6 +352,13 @@ export final class ModuleGenerator {
     prepareAsyncFunctions(wasm, pass);
     performance.end(tAsync);
 
+    // The component target's async entry, synthesized only where the
+    // program links a driver that needs one. Before layout(), like the
+    // passes above, because it adds a function.
+    if (targetEmitsComponent(this.target)) {
+      prepareComponentEntry(wasm, pass);
+    }
+
     wasm.layout();
     performance.end(tLayout);
 
@@ -631,6 +641,14 @@ export final class ModuleGenerator {
       if (f != null) {
         exports.push(new WasmExport(exportName, f as WasmFunction));
       }
+    }
+    if (wasm.componentEntryFunc != null) {
+      exports.push(new WasmExport(componentEntryExport,
+          wasm.componentEntryFunc as WasmFunction));
+    }
+    if (wasm.componentCallbackFunc != null) {
+      exports.push(new WasmExport(componentCallbackExport,
+          wasm.componentCallbackFunc as WasmFunction));
     }
     if (wasm.asyncMainStartFunc != null) {
       exports.push(new WasmExport("__zena_main_start", wasm.asyncMainStartFunc as WasmFunction));

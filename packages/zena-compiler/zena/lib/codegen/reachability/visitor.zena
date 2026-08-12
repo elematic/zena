@@ -2318,6 +2318,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     var isExternal = false;
     var externalModule = "";
     var externalName = "";
+    var externalAsync = false;
     for (let dec in decl.decorators) {
       if (dec.name == "intrinsic") {
         if (dec.args.length == 1) {
@@ -2327,12 +2328,28 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           throw new Error("Intrinsic decorator must have exactly one argument");
         }
       } else if (dec.name == "external") {
-        if (dec.args.length == 2) {
+        if (dec.args.length == 2 || dec.args.length == 3) {
           externalModule = dec.args[0].value;
           externalName = dec.args[1].value;
           isExternal = true;
+          // A third argument is the import's canonical options, comma
+          // separated. `async` is the only one today; the rest of the
+          // canonical option space (memory, realloc, string-encoding) is
+          // the compiler's business rather than the program's, because
+          // only the compiler knows where the memory lives.
+          if (dec.args.length == 3) {
+            for (let option in dec.args[2].value.split(",")) {
+              if (option == "async") {
+                externalAsync = true;
+              } else if (option != "") {
+                throw new Error(
+                  "Unknown @external option '" + option + "' on '" +
+                  decl.name.name + "' (expected 'async')");
+              }
+            }
+          }
         } else {
-          throw new Error("External decorator must have exactly two arguments");
+          throw new Error("External decorator must have two or three arguments");
         }
       }
     }
@@ -2412,6 +2429,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         importFunc.isImport = true;
         importFunc.importModule = externalModule;
         importFunc.importName = externalName;
+        importFunc.importIsAsync = externalAsync;
         importFunc.name = decl.name.name + "_raw_import";
         this.pass.wasm.functionImports.push(importFunc);
 
@@ -2428,6 +2446,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         wasmFunc.isImport = true;
         wasmFunc.importModule = externalModule;
         wasmFunc.importName = externalName;
+        wasmFunc.importIsAsync = externalAsync;
         this.pass.wasm.functionImports.push(wasmFunc);
         this.pass.wasm.functionMap[sym.id] = wasmFunc;
       }

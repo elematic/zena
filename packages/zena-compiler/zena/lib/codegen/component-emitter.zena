@@ -104,6 +104,40 @@ export final class ComponentImportFunc {
   new(this.interfaceName, this.fieldName, this.signature, this.lowerAsync = false);
 }
 
+/**
+ * The core-module import namespace that means "these are canonical
+ * builtins, not a WIT interface". A builtin is a function the canonical
+ * ABI itself provides — creating a waitable set, dropping a subtask —
+ * so it has no interface to be imported from and no type to declare.
+ * The core module still imports them like anything else, which is why
+ * they need a namespace to be imported *from*.
+ */
+export let canonNamespace = "canon";
+
+/**
+ * The core export names of the async entry and its callback. Internal
+ * to the toolchain: the component exports the entry under its own name
+ * ("run"), and the callback is not exported at the component level at
+ * all — the host reaches it only through the lift's `callback` option.
+ */
+export let componentEntryExport = "__zena_component_run";
+export let componentCallbackExport = "__zena_component_callback";
+
+/**
+ * One canonical builtin the core module imports. `name` is both the
+ * builtin's spelling in the Component Model and the core import's field
+ * name.
+ */
+export final class ComponentCanonBuiltin {
+  name: String;
+  /** Only `task.return` carries one; it is the lifted task's result. */
+  result: i32;
+
+  // -1 is `noComponentResult`, spelled out: a default initializer
+  // cannot name a module-level binding.
+  new(this.name, this.result = -1);
+}
+
 /** One core-module export lifted to a component export. */
 export final class ComponentExportFunc {
   /** The core module's export name. */
@@ -111,13 +145,27 @@ export final class ComponentExportFunc {
   /** The component's export name, kebab-case. */
   exportName: String;
   signature: ComponentFuncType;
+  /**
+   * The core export to lift as this function's callback, or the empty
+   * string.
+   *
+   * A callback-lifted export does not run to completion: it returns a
+   * code telling the host either that it is done, or which waitable set
+   * to wake it on. The host re-enters through the callback when
+   * something in that set fires. That is what makes a timer a timer
+   * rather than a sleep — the process is not inside the guest while it
+   * waits. See docs/design/component-emission.md 1.7.
+   */
+  callbackCoreName: String;
 
-  new(this.coreName, this.exportName, this.signature);
+  new(this.coreName, this.exportName, this.signature,
+      this.callbackCoreName = "");
 }
 
 /** The imports and exports a component wraps a core module in. */
 export final class ComponentShape {
   imports = new Array<ComponentImportFunc>();
+  builtins = new Array<ComponentCanonBuiltin>();
   exports = new Array<ComponentExportFunc>();
 
   new();
@@ -204,15 +252,11 @@ let writeExternName = (buffer: ByteBuffer, name: String): void => {
   writeName(buffer, name);
 };
 
-/** `functype ::= 0x40 ps:vec(<labelvaltype>) rs:<resultlist>` */
-let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => {
-  buffer.writeByte(0x40);
-  buffer.writeULEB128(signature.paramTypes.length);
-  for (var i = 0; i < signature.paramTypes.length; i += 1) {
-    writeName(buffer, signature.paramNames[i]);
-    buffer.writeByte(signature.paramTypes[i]);
-  }
-  if (signature.result == noComponentResult) {
+/**
+ * `resultlist`: one unnamed result, or the empty vector of named ones.
+ */
+let writeResultList = (buffer: ByteBuffer, result: i32): void => {
+  if (result == noComponentResult) {
     // The other arm of `resultlist`: a vector of NAMED results, which
     // the format still carries and which is empty here. The count byte
     // is not optional — dropping it reads the next declaration's `0x40`
@@ -221,9 +265,43 @@ let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => 
     buffer.writeByte(0x00);
   } else {
     buffer.writeByte(0x00); // one result, unnamed
-    buffer.writeByte(signature.result);
+    buffer.writeByte(result);
   }
 };
+
+/**
+ * `functype ::= 0x40 ps:vec(<labelvaltype>) rs:<resultlist>`, and `0x43`
+ * for the async form — a distinct type, not a flag on the same one.
+ */
+let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => {
+  buffer.writeByte(if (signature.isAsync) 0x43 else 0x40);
+  buffer.writeULEB128(signature.paramTypes.length);
+  for (var i = 0; i < signature.paramTypes.length; i += 1) {
+    writeName(buffer, signature.paramNames[i]);
+    buffer.writeByte(signature.paramTypes[i]);
+  }
+  writeResultList(buffer, signature.result);
+};
+
+/**
+ * The canonical-builtin opcodes this emitter knows. They are the four
+ * the async event loop needs: create a set to wait on, put a subtask in
+ * it, hand a completed subtask back, and deliver the task's result.
+ * Everything else in the builtin space belongs to resources, streams
+ * and futures, which are C5 and C6.
+ */
+let canonBuiltinOpcode = (name: String): i32 => {
+  if (name == "waitable-set.new") { return 0x1f; }
+  if (name == "waitable-set.drop") { return 0x22; }
+  if (name == "waitable.join") { return 0x23; }
+  if (name == "subtask.drop") { return 0x0d; }
+  if (name == "task.return") { return 0x09; }
+  return -1;
+};
+
+/** Whether `name` is a canonical builtin this emitter can encode. */
+export let isKnownCanonBuiltin = (name: String): boolean =>
+    canonBuiltinOpcode(name) >= 0;
 
 /** One imported WIT interface and the functions the program calls on it. */
 final class ImportedInterface {
@@ -367,16 +445,53 @@ export let emitComponent = (
       }
     }
     writeSection(out, ComponentSectionId.Canon as i32, lowers);
+  }
 
-    // --- core instance: one per interface, holding its lowered funcs ------
+  // --- canon: the canonical builtins ---------------------------------------
+  // Not WIT functions: they have no interface, no import and no declared
+  // type, only an opcode. `task.return` is the one that carries
+  // anything, and what it carries is the lifted task's own result.
+  if (shape.builtins.length > 0) {
+    let builtins = new ByteBuffer();
+    builtins.writeULEB128(shape.builtins.length);
+    for (let b in shape.builtins) {
+      let opcode = canonBuiltinOpcode(b.name);
+      if (opcode < 0) {
+        throw new Error("Unknown canonical builtin '" + b.name + "'");
+      }
+      builtins.writeByte(opcode);
+      if (b.name == "task.return") {
+        writeResultList(builtins, b.result);
+        builtins.writeULEB128(0); // no canonical options
+      }
+    }
+    writeSection(out, ComponentSectionId.Canon as i32, builtins);
+  }
+
+  // --- core instance: one per interface, plus one for the builtins --------
+  // The module imports each of these under the namespace it named in
+  // `@external`, so the instance an argument is bound to is chosen by
+  // that name rather than by position.
+  if (groups.length > 0 || shape.builtins.length > 0) {
     let coreInstances = new ByteBuffer();
-    coreInstances.writeULEB128(groups.length);
+    coreInstances.writeULEB128(
+        groups.length + (if (shape.builtins.length > 0) 1 else 0));
     var loweredIndex = 0;
     for (let group in groups) {
       coreInstances.writeByte(0x01); // from inline exports
       coreInstances.writeULEB128(group.funcs.length);
       for (let f in group.funcs) {
         writeName(coreInstances, f.fieldName);
+        coreInstances.writeByte(0x00); // core sort: func
+        coreInstances.writeULEB128(loweredIndex);
+        loweredIndex += 1;
+      }
+    }
+    if (shape.builtins.length > 0) {
+      coreInstances.writeByte(0x01);
+      coreInstances.writeULEB128(shape.builtins.length);
+      for (let b in shape.builtins) {
+        writeName(coreInstances, b.name);
         coreInstances.writeByte(0x00); // core sort: func
         coreInstances.writeULEB128(loweredIndex);
         loweredIndex += 1;
@@ -393,13 +508,19 @@ export let emitComponent = (
   instantiate.writeULEB128(1);
   instantiate.writeByte(0x00); // instantiate
   instantiate.writeULEB128(0); // module index 0
-  instantiate.writeULEB128(groups.length);
+  instantiate.writeULEB128(
+      groups.length + (if (shape.builtins.length > 0) 1 else 0));
   for (var i = 0; i < groups.length; i += 1) {
     // The argument name is the core module's import module name, which
     // is the interface string itself.
     writeName(instantiate, groups[i].name);
     instantiate.writeByte(0x12); // core sort: instance
     instantiate.writeULEB128(i);
+  }
+  if (shape.builtins.length > 0) {
+    writeName(instantiate, canonNamespace);
+    instantiate.writeByte(0x12);
+    instantiate.writeULEB128(groups.length);
   }
   writeSection(out, ComponentSectionId.CoreInstance as i32, instantiate);
 
@@ -408,18 +529,57 @@ export let emitComponent = (
   }
 
   // The instantiated module is the last core instance: one per imported
-  // interface, then this one.
-  let programInstance = groups.length;
+  // interface, then the builtins', then this one.
+  let programInstance = groups.length + (if (shape.builtins.length > 0) 1 else 0);
+
+  // The core function index space: the lowered imports, then the
+  // builtins, then everything aliased back out of the program instance.
+  var coreFuncIndex = 0;
+  for (let group in groups) {
+    coreFuncIndex += group.funcs.length;
+  }
+  coreFuncIndex += shape.builtins.length;
+  let firstExportCoreFunc = coreFuncIndex;
+
+  // Every distinct callback, aliased after the exports so a lift can
+  // name one. Distinct: several exports may share one callback, and
+  // aliasing it twice would be two core functions where one will do.
+  let callbackNames = new Array<String>();
+  for (let e in shape.exports) {
+    if (e.callbackCoreName != "") {
+      var seen = false;
+      for (let name in callbackNames) {
+        if (name == e.callbackCoreName) { seen = true; }
+      }
+      if (!seen) { callbackNames.push(e.callbackCoreName); }
+    }
+  }
+
+  let callbackCoreIndex = (name: String): i32 => {
+    for (var i = 0; i < callbackNames.length; i += 1) {
+      if (callbackNames[i] == name) {
+        return firstExportCoreFunc + shape.exports.length + i;
+      }
+    }
+    throw new Error("No alias emitted for callback '" + name + "'");
+  };
 
   // --- alias: pull each exported core function out of the instance --------
   let exportAliases = new ByteBuffer();
-  exportAliases.writeULEB128(shape.exports.length);
+  exportAliases.writeULEB128(shape.exports.length + callbackNames.length);
   for (let e in shape.exports) {
     exportAliases.writeByte(0x00); // sort: core
     exportAliases.writeByte(0x00); // core sort: func
     exportAliases.writeByte(0x01); // target: core instance export
     exportAliases.writeULEB128(programInstance);
     writeName(exportAliases, e.coreName);
+  }
+  for (let name in callbackNames) {
+    exportAliases.writeByte(0x00);
+    exportAliases.writeByte(0x00);
+    exportAliases.writeByte(0x01);
+    exportAliases.writeULEB128(programInstance);
+    writeName(exportAliases, name);
   }
   writeSection(out, ComponentSectionId.Alias as i32, exportAliases);
 
@@ -434,18 +594,23 @@ export let emitComponent = (
   // --- canon: lift each export --------------------------------------------
   // The component-level type index continues after the instance types.
   let firstExportType = groups.length;
-  // The core function index continues after the lowered imports.
-  var firstExportCoreFunc = 0;
-  for (let group in groups) {
-    firstExportCoreFunc += group.funcs.length;
-  }
   let lifts = new ByteBuffer();
   lifts.writeULEB128(shape.exports.length);
   for (var i = 0; i < shape.exports.length; i += 1) {
+    let e = shape.exports[i];
     lifts.writeByte(0x00); // canon lift
     lifts.writeByte(0x00);
     lifts.writeULEB128(firstExportCoreFunc + i);
-    lifts.writeULEB128(0); // no canonical options
+    if (e.callbackCoreName == "") {
+      lifts.writeULEB128(0); // no canonical options
+    } else {
+      // The callback form takes both options together: the lifted
+      // function is async, and this is what the host re-enters through.
+      lifts.writeULEB128(2);
+      lifts.writeByte(0x06); // async
+      lifts.writeByte(0x07); // callback
+      lifts.writeULEB128(callbackCoreIndex(e.callbackCoreName));
+    }
     lifts.writeULEB128(firstExportType + i);
   }
   writeSection(out, ComponentSectionId.Canon as i32, lifts);

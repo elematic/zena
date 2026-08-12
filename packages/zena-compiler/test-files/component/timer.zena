@@ -1,0 +1,16 @@
+// A p3 timer: the process sleeps, and the guest is not running while it
+// does. `sleep` arms `wasi:clocks/monotonic-clock@0.3.0`'s `wait-for`,
+// which is lowered async and returns a subtask handle rather than
+// waiting; the drain then unwinds and the host re-enters the component
+// through its callback when the timer fires.
+//
+// The test asserts CPU time as well as wall time. A regression from a
+// real timer back to a blocking or spinning wait shows up only as a
+// test that burns a core, which a wall-clock assertion cannot see.
+import { sleep } from 'zena:time';
+import { drainMicrotasks } from 'zena:async';
+
+export function main(): void {
+  sleep(300);
+  drainMicrotasks();
+}

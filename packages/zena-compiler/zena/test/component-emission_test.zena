@@ -121,6 +121,23 @@ let sectionPayload = (bytes: ByteArray, id: i32): ByteArray => {
   return newByteArray(0);
 };
 
+/**
+ * Whether an export-section payload names `name`. The payload is names
+ * and indices only, and an export name is length-prefixed, so a
+ * byte-substring hit inside one of these is the name itself.
+ */
+let containsName = (payload: ByteArray, name: String): boolean => {
+  if (payload.length < name.length) { return false; }
+  for (var i = 0; i <= payload.length - name.length; i += 1) {
+    var matches = true;
+    for (var j = 0; j < name.length; j += 1) {
+      if (payload[i + j] != name.getByteAt(j)) { matches = false; break; }
+    }
+    if (matches) { return true; }
+  }
+  return false;
+};
+
 let idsToString = (ids: Array<i32>): String => {
   var out = "";
   for (let id in ids) {
@@ -155,6 +172,37 @@ export let tests = suite('Component emission', (): void => {
     let ids = sectionIds(compileFor(`${fixtures}/clock.zena`, 'component'));
     equal(idsToString(ids), '7,10,6,8,2,1,2,6,7,8,11',
       `clock.zena emitted sections ${idsToString(ids)}`);
+  });
+
+  test('a p3 timer adds a canon section for the builtins', (ctx: TestContext): void => {
+    // The same sequence as clock.zena with one addition: a second canon
+    // section, holding the canonical builtins. They are not WIT
+    // functions — no interface, no import, no declared type, only an
+    // opcode — so they cannot ride in the lowering section beside the
+    // imports they sit next to in the core module.
+    let ids = sectionIds(compileFor(`${fixtures}/timer.zena`, 'component'));
+    equal(idsToString(ids), '7,10,6,8,8,2,1,2,6,7,8,11',
+      `timer.zena emitted sections ${idsToString(ids)}`);
+  });
+
+  test('the async entry replaces main', (ctx: TestContext): void => {
+    // A program that sleeps is entered through the callback-lifted
+    // `run`: it hands control back to the host while the timer runs and
+    // is re-entered when it fires. Lifting `main` as well would offer
+    // the host two entry points that mean different things — and the
+    // one it would reach for returns before the timers it armed have
+    // fired.
+    let exportSection = sectionPayload(
+        compileFor(`${fixtures}/timer.zena`, 'component'), 11);
+    isTrue(containsName(exportSection, 'run'),
+      'the timer component does not export `run`');
+    isTrue(!containsName(exportSection, 'main'),
+      'the timer component still exports `main` beside its async entry');
+    // The synchronous case is unchanged: no driver, no async entry.
+    let plain = sectionPayload(
+        compileFor(`${fixtures}/clock.zena`, 'component'), 11);
+    isTrue(containsName(plain, 'main'),
+      'a component with no async driver does not export `main`');
   });
 
   test('a component with no imports carries no import machinery', (ctx: TestContext): void => {

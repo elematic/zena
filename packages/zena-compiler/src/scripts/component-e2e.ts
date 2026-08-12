@@ -45,6 +45,17 @@ interface Invocation {
   invoke: string;
   /** The exact line wasmtime must print. */
   expect: string;
+  /** Milliseconds the call must take at least. */
+  minWallMs?: number;
+  /**
+   * The most CPU the call may burn, as a fraction of its wall time.
+   *
+   * This is the assertion the timer fixture exists for. A regression
+   * from a real timer back to a blocking or spinning wait keeps the wall
+   * time and shows up only as a test that eats a core, so wall time
+   * alone would not notice it.
+   */
+  maxCpuFraction?: number;
 }
 
 interface Fixture {
@@ -80,6 +91,21 @@ const FIXTURES: Fixture[] = [
     // returns at all means the host satisfied a p3 import, which a core
     // module cannot even declare.
     invocations: [{invoke: 'main()', expect: '*'}],
+  },
+  {
+    name: 'timer',
+    wasi: ['p3=y'],
+    // The entry is lifted async with a callback, so `run` is the
+    // component's name for it rather than `main`. It returns nothing:
+    // the guest hands control back to the host while the timer runs.
+    invocations: [
+      {
+        invoke: 'run()',
+        expect: '()',
+        minWallMs: 250,
+        maxCpuFraction: 0.5,
+      },
+    ],
   },
 ];
 
@@ -133,15 +159,23 @@ for (const fixture of FIXTURES) {
   }
   console.log(`  ${GREEN}✓${NC} validates`);
 
-  for (const {invoke, expect} of fixture.invocations) {
-    const args = ['run', '-W', 'gc=y,function-references=y'];
+  for (const {
+    invoke,
+    expect,
+    minWallMs,
+    maxCpuFraction,
+  } of fixture.invocations) {
+    const flags = ['-W', 'gc=y,function-references=y,exceptions=y'];
     for (const feature of fixture.wasi) {
-      args.push('-S', feature);
+      flags.push('-S', feature);
     }
-    args.push('--invoke', invoke, out);
-    const run = spawnSync('wasmtime', args, {encoding: 'utf8'});
+    // Through `time -p` (POSIX, so the format is fixed) rather than
+    // spawnSync directly: Node reports no CPU time for a child, and CPU
+    // time is what tells a timer apart from a spin.
+    const command = `time -p wasmtime run ${flags.join(' ')} --invoke '${invoke}' '${out}'`;
+    const run = spawnSync('bash', ['-c', command], {encoding: 'utf8'});
     if (run.error) {
-      fail(`wasmtime not runnable: ${run.error.message}`);
+      fail(`could not run wasmtime: ${run.error.message}`);
       break;
     }
     if (run.status !== 0) {
@@ -153,7 +187,35 @@ for (const fixture of FIXTURES) {
       fail(`${invoke} returned ${actual}, expected ${expect}`);
       continue;
     }
-    console.log(`  ${GREEN}✓${NC} ${invoke} => ${actual}`);
+
+    const timed = (name: string): number => {
+      const match = run.stderr.match(new RegExp(`^${name} +([0-9.]+)$`, 'm'));
+      if (!match) {
+        throw new Error(`no '${name}' line in \n${run.stderr}`);
+      }
+      return Number(match[1]) * 1000;
+    };
+    let timing = '';
+    if (minWallMs !== undefined || maxCpuFraction !== undefined) {
+      const wall = timed('real');
+      const cpu = timed('user') + timed('sys');
+      timing = ` (${wall.toFixed(0)}ms wall, ${cpu.toFixed(0)}ms cpu)`;
+      if (minWallMs !== undefined && wall < minWallMs) {
+        fail(
+          `${invoke} took ${wall}ms, expected at least ${minWallMs}ms — ` +
+            `it did not wait`,
+        );
+        continue;
+      }
+      if (maxCpuFraction !== undefined && cpu > wall * maxCpuFraction) {
+        fail(
+          `${invoke} burned ${cpu}ms of CPU over ${wall}ms of wall time — ` +
+            `the guest waited by running rather than by yielding to the host`,
+        );
+        continue;
+      }
+    }
+    console.log(`  ${GREEN}✓${NC} ${invoke} => ${actual}${timing}`);
   }
 }
 
