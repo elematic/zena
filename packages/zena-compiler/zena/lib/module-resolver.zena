@@ -193,11 +193,19 @@ export final class ModuleResolver {
         let moduleExport = exports[moduleName];
 
         // Resolve virtual modules (target-conditional) to their entry file.
+        // A module with no entry for the current target is not available
+        // there, and says so: falling through would resolve to a default
+        // entry file that does not exist, and report a missing file
+        // instead of a missing capability.
         if (moduleExport.virtual != null) {
           let virtual = moduleExport.virtual as HashMap<String, String>;
           if (let (true, entryPath) = virtual.get(this.#target)) {
             return makeCanonicalFilePath(packageName, entryPath, config);
           }
+          throw new Error(
+            "Module '" + packageName + ":" + moduleName +
+              "' is not available on target '" + this.#target + "'"
+          );
         }
 
         // Modules with an explicit entry file resolve to it.

@@ -1,13 +1,20 @@
 import { HashMap } from 'zena:map';
+import { targetHasConsole } from './targets.zena';
 
 // Build the standard prelude map (module specifier → imported names).
 // The compiler injects these into every file automatically.
 // Explicit strings to import are used to limit namespace pollution.
 // Note: Some primitive types (i32, f64, Array) are injected as language built-ins
 // during scope resolution, so they don't need to be explicitly imported.
-export let getStandardPrelude = (): HashMap<String, FixedArray<String>> => {
+//
+// The prelude is per-target, because it is an import list like any other.
+// `console` is the entry that varies: a target with no host to print to
+// (`freestanding`, `component`) does not bind it, so `console.log` is an
+// unresolved name there rather than a call that compiles and prints
+// nothing. See docs/design/component-emission.md, Part 3.
+export let getStandardPrelude = (target: String): HashMap<String, FixedArray<String>> => {
   let prelude = new HashMap<String, FixedArray<String>>();
-  
+
   prelude["zena:string"] = ["String"];
   prelude["zena:error"] = ["Error", "IndexOutOfBoundsError", "unreachable"];
   prelude["zena:option"] = ["Option", "Some", "None", "some", "none"];
@@ -16,7 +23,9 @@ export let getStandardPrelude = (): HashMap<String, FixedArray<String>> => {
   prelude["zena:immutable-array"] = ["ImmutableArray"];
   prelude["zena:fixed-array"] = ["FixedArray"];
   prelude["zena:growable-array"] = ["Array"];
-  prelude["zena:console"] = ["console"];
+  if (targetHasConsole(target)) {
+    prelude["zena:console"] = ["console"];
+  }
   prelude["zena:map"] = ["Map", "HashMap"];
   prelude["zena:box"] = ["Box"];
   prelude["zena:string-convert"] = [

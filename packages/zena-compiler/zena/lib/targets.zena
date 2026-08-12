@@ -1,0 +1,85 @@
+// Compilation targets.
+//
+// A target names the *host* a program is compiled for, and the output form
+// follows from it. There is no separate flag for "core module or
+// component": WASI p2 and p3 are WIT interfaces and reachable only from a
+// component, while the JS runtime's `console.*` and `zena-cli`'s `env.*`
+// hooks are reachable only from a core module — so three of the eight
+// combinations a second flag would offer cannot be built at all.
+//
+// See docs/design/component-emission.md, Part 3.
+//
+//   js            core module, `@zena-lang/runtime` imports
+//   zena-cli      core module, WASI p1 plus zena-cli's private `env.*`
+//   freestanding  core module, nothing beyond what the program declares
+//                 with `@external`
+//   component     component, WIT interfaces (p3 clocks, application worlds)
+//
+// What a target selects is a set of standard-library implementations, and
+// therefore an import set: `ModuleResolver` picks the `virtual` entry
+// named by the target, and a module with no entry for it does not resolve.
+// That is what makes `freestanding`'s floor structural rather than a
+// matter of discipline — nothing can supply a host import behind the
+// program's back.
+
+import { Array } from 'zena:array';
+import { String } from 'zena:string';
+
+/** The targets a program can be built for, in `--target`'s own spelling. */
+export let targetNames = (): FixedArray<String> =>
+    ["js", "zena-cli", "freestanding", "component"];
+
+/**
+ * Legacy spellings still accepted by `--target`. `host` predates `js`;
+ * `wasi` is what the stdlib manifest called zena-cli's p1 entries before
+ * p1 became zena-cli's private business rather than a portable target.
+ */
+let legacyTargetNames = (): FixedArray<String> => ["host", "wasi"];
+
+/** Whether `target` is a target name the compiler knows. */
+export let isKnownTarget = (target: String): boolean => {
+  for (let t in targetNames()) {
+    if (t == target) {
+      return true;
+    }
+  }
+  for (let t in legacyTargetNames()) {
+    if (t == target) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/** `--target`'s accepted spellings, for an error message. */
+export let knownTargetsDescription = (): String => {
+  var out = "";
+  for (let t in targetNames()) {
+    if (out != "") {
+      out = out + ", ";
+    }
+    out = out + "'" + t + "'";
+  }
+  for (let t in legacyTargetNames()) {
+    out = out + ", '" + t + "' (legacy)";
+  }
+  return out;
+};
+
+/**
+ * Whether the target's output is a component rather than a core module.
+ * A component is the only form that can reach WASI p2 or p3.
+ */
+export let targetEmitsComponent = (target: String): boolean =>
+    target == "component";
+
+/**
+ * Whether the prelude binds `console` for this target.
+ *
+ * Listed positively: a new hostless target gets no console until someone
+ * writes one for it, which is the right default. A no-op console would be
+ * worse than an unresolved name — it compiles and then prints nothing.
+ */
+export let targetHasConsole = (target: String): boolean =>
+    target == "js" || target == "host" || target == "wasi" ||
+    target == "zena-cli";

@@ -151,11 +151,32 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
 
   // Virtual module: console → per-target entry file. The implementation
   // files live under console/ and are not importable by name.
+  //
+  // `freestanding` and `component` have no entry on purpose: a target
+  // that cannot print must fail to resolve `zena:console` rather than
+  // quietly link a no-op that compiles and then prints nothing.
   let consoleVirtual = new HashMap<String, String>();
   consoleVirtual["host"] = "console/host.zena";
+  consoleVirtual["js"] = "console/host.zena";
   consoleVirtual["wasi"] = "console/wasi.zena";
   consoleVirtual["zena-cli"] = "console/wasi.zena";
   exports["console"] = new ModuleExport(consoleVirtual);
+
+  // Virtual module: error-stack → the `Error` stack-trace hooks. The host
+  // hooks trade in `anyref`/`externref`, which have no Component Model
+  // representation, so a component (and a freestanding module, which has
+  // no host to call) gets the null implementation instead. Every module
+  // pulls this in through `zena:error`, so it is the one import that a
+  // target cannot opt out of by writing less code — see
+  // docs/design/component-emission.md, Part 2.
+  let errorStackVirtual = new HashMap<String, String>();
+  errorStackVirtual["host"] = "error/stack-host.zena";
+  errorStackVirtual["js"] = "error/stack-host.zena";
+  errorStackVirtual["wasi"] = "error/stack-host.zena";
+  errorStackVirtual["zena-cli"] = "error/stack-host.zena";
+  errorStackVirtual["freestanding"] = "error/stack-none.zena";
+  errorStackVirtual["component"] = "error/stack-none.zena";
+  exports["error-stack"] = new ModuleExport(errorStackVirtual);
 
   // Virtual module: process → host process spawning. Only wasi-family
   // targets can compile it, and only the zena-cli host links real
@@ -170,6 +191,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // clock differs (poll_oneoff vs a host import). See async.md §4.
   let timeVirtual = new HashMap<String, String>();
   timeVirtual["host"] = "time/host.zena";
+  timeVirtual["js"] = "time/host.zena";
   timeVirtual["wasi"] = "time/wasi.zena";
   timeVirtual["zena-cli"] = "time/wasi.zena";
   exports["time"] = new ModuleExport(timeVirtual);

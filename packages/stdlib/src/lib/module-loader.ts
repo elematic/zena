@@ -8,7 +8,14 @@ const pkgRoot = path.resolve(__dirname, '..');
 const stdlibDir = path.resolve(pkgRoot, 'zena');
 const manifestPath = path.resolve(pkgRoot, 'stdlib-manifest.json');
 
-export type Target = 'host' | 'wasi';
+export type Target =
+  | 'js'
+  | 'zena-cli'
+  | 'freestanding'
+  | 'component'
+  // Legacy spellings: 'host' predates 'js', 'wasi' predates 'zena-cli'.
+  | 'host'
+  | 'wasi';
 
 interface ModuleEntry {
   /** Entry file relative to zena/. Defaults to `<name>.zena`. */
