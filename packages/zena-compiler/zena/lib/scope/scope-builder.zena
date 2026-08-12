@@ -32,7 +32,7 @@ import {
   FieldDefinition, FieldInitializer, MatchCase, PropertyAssignment,
   SpreadElement, LetPatternCondition, SetterInfo, SuperInitializer,
   CaseClassParam, SealedVariant, PropertySignature, MethodSignature,
-  AccessorSignature, CatchClause
+  AccessorSignature, CatchClause, SymbolPropertyName
 } from '../ast.zena';
 import { walkChildren } from '../visitor.zena';
 import { Symbol, SymbolId, makeSymbolIdGenerator } from './symbol.zena';
@@ -761,9 +761,17 @@ export final class ScopeBuilder {
           this.#processExpression(arg);
         }
       }
-      case MemberExpression {object}: {
+      case MemberExpression {object, isSymbolAccess, symbolPath}: {
         this.#processExpression(object);
         // property is resolved against the object's type during checking.
+        // A SYMBOL key is different: `x.:sym` names a symbol binding, and
+        // `x.:Iface.sym` names the interface that declares it. Resolving
+        // that path is what makes an unexported symbol unreachable —
+        // without it, `x.:sym` compiled in a module that declares no `sym`
+        // at all, so "don't export the symbol" controlled nothing.
+        if (isSymbolAccess && symbolPath != null) {
+          this.#processExpression(symbolPath as Expression);
+        }
       }
       case IndexExpression {object, index}: {
         this.#processExpression(object);
@@ -891,10 +899,36 @@ export final class ScopeBuilder {
   }
 
   /**
+   * Resolve the symbol a `:sym`-keyed member declaration names.
+   *
+   * The declaring side needs the reference for the same reason the access
+   * side does: the member key is the mangled string `":" + name`, so the
+   * only thing that can tell one module's `symbol secret` from another's
+   * is which binding the reference resolved to.
+   */
+  #processSymbolKeyedName(member: Node): void {
+    var nameNode: Node | null = null;
+    match (member) {
+      case FieldDefinition as fd: { nameNode = fd.name; }
+      case MethodDefinition as md: { nameNode = md.name; }
+      case AccessorDeclaration as acc: { nameNode = acc.name; }
+      case _: {}
+    }
+    if (nameNode == null) { return; }
+    match (nameNode as Node) {
+      case SymbolPropertyName {symbolRef}: {
+        this.#processExpression(symbolRef);
+      }
+      case _: {}
+    }
+  }
+
+  /**
    * Process class body members.
    */
   #processClassBody(members: Array<Node>): void {
     for (let member in members) {
+      this.#processSymbolKeyedName(member);
       match (member) {
         case MethodDefinition as md: {
           // Process method parameter and return type annotations.

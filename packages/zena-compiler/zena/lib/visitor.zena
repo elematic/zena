@@ -116,8 +116,19 @@ export let walkChildren = (node: Node, enter: (n: Node) => boolean, leave: (n: N
       }
 
       // -- Member Access --
-      case MemberExpression {object}: {
+      case MemberExpression {object, symbolPath}: {
         walk(object, enter, leave);
+        // A symbol key is a real subtree — the `sym` of `x.:sym`, or the
+        // `Iface.sym` of `x.:Iface.sym` — and nothing walked it. So
+        // `assignNodeIds` never reached those nodes and they all kept the
+        // default id, which collapsed every symbol path in a module onto
+        // one entry of any node-keyed map: the reference map answered
+        // every `x.:sym` with whichever symbol was recorded last.
+        // (`property` stays unwalked, as for an ordinary member access;
+        // for the unqualified form it IS this node.)
+        if (symbolPath != null) {
+          walk(symbolPath as Node, enter, leave);
+        }
       }
       case IndexExpression {object, index}: {
         walk(object, enter, leave);

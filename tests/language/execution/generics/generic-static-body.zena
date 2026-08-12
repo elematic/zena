@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 70
+
+// A generic static's body reaching other generic code — the first real use
+// of a static that declares its own type parameters, since a static factory
+// that BUILDS something is the main reason to want one.
+//
+// Its body was walked with its parameters still open: `new State<B>` inside
+// `Box.make<B>` stayed `State<B>`, erased to `State<anyref>`, and the
+// `State<i32>` the call actually needs was never discovered — lowering then
+// bailed `class not discovered` on the specialization it had been handed.
+// Delegating instead of constructing only moved the bail to `generic call`,
+// so both shapes are pinned here.
+
+class State<A> {
+  v: A;
+  new(this.v);
+  get(): A { return this.v; }
+}
+
+/** Constructed only from inside a generic static. */
+let build = <C>(v: C): State<C> => new State<C>(v);
+
+class Box<A> {
+  v: A;
+  new(this.v);
+
+  /** Constructs a generic class directly. */
+  static made<B>(v: B): State<B> {
+    return new State<B>(v);
+  }
+
+  /** Delegates to a generic free function instead. */
+  static delegated<B>(v: B): State<B> {
+    return build<B>(v);
+  }
+}
+
+export function main(): i32 {
+  let direct = Box.made<i32>(40);
+  let indirect = Box.delegated<i32>(30);
+  return direct.get() + indirect.get();
+}

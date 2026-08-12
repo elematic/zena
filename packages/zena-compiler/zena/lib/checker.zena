@@ -48,6 +48,7 @@ import { isValidIntrinsic } from './intrinsics.zena';
 import { console } from 'zena:console';
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { OrderedMap } from 'zena:ordered-map';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
@@ -179,6 +180,20 @@ export final class SharedCheckerState {
    * declaredNominalTypes.
    */
   typeParameterTypes = new HashMap<String, Type>();
+
+  /**
+   * The canonical `SymbolType` per `symbol` declaration, keyed by
+   * "<source path>#<byte offset>" — the same key, for the same reason,
+   * as `typeParameterTypes`: a dependency module is checked more than
+   * once in a compilation, and symbol id spaces restart per parse, so an
+   * id-keyed cache mints a second identity for one declaration.
+   *
+   * A symbol's whole purpose is to be an identity distinct from its
+   * name. Two identities for one declaration would make a member and the
+   * accesses to it disagree about which symbol keyed it, inside the one
+   * module that indisputably may reach it: the declaring one.
+   */
+  declaredSymbolTypes = new HashMap<String, Type>();
 
   /**
    * Which model owns each node and binding checked under this state.
@@ -923,6 +938,28 @@ final class CheckerContext {
   }
 
   /**
+   * The one `SymbolType` for a `symbol` declaration, for the whole
+   * compilation — same reasoning as `getOrCreateTypeParameter` and
+   * `declaredNominalTypes`. A symbol exists to be an identity distinct
+   * from its name; minting a fresh one per checking pass would make a
+   * member and an access to it disagree about which symbol keyed it,
+   * inside the very module that declares both.
+   */
+  canonicalSymbolType(decl: Node, name: String): Type {
+    var key = "id:" + i32ToString(decl.id as i32);
+    if (decl.loc != null) {
+      let loc = decl.loc as SourceLocation;
+      key = (loc.path ?? "") + "#" + i32ToString(loc.start);
+    }
+    if (let (true, existing) = this.#sharedState.declaredSymbolTypes.get(key)) {
+      return existing;
+    }
+    let created = new SymbolType(this.freshTypeId(), name) as Type;
+    this.#sharedState.declaredSymbolTypes[key] = created;
+    return created;
+  }
+
+  /**
    * Declare a type name in the module (outermost) scope. Used for sealed
    * variant types that need to be visible outside the class scope.
    */
@@ -1231,6 +1268,40 @@ final class CheckerContext {
    * Create a Type from a Symbol's declaration node.
    * Sets all boolean flags immediately from the AST.
    */
+  /**
+   * The canonical `TypeParameterType`s a nominal declaration declares,
+   * from the AST alone.
+   *
+   * A shell materialized on demand (a forward reference within a module,
+   * or a cyclic import's back edge) is the object every reference to that
+   * declaration sees, including references resolved BEFORE the declaring
+   * pass runs. Without its type parameters, `resolveTypeAnnotation` finds
+   * `typeParameters == null`, skips instantiation, and silently DROPS the
+   * arguments the source wrote: `S<T>` came back as the raw `S`, whose
+   * codegen erasure is `S<anyref>` — a struct nothing constructs. So a
+   * class whose field named a generic class declared later in the same
+   * file failed to lower, and moving the declaration up fixed it.
+   *
+   * Constraints and defaults are deliberately NOT resolved here: they can
+   * name types whose own materialization is in progress. The declaring
+   * pass resolves them and fills them into these same objects — the
+   * location-keyed cache in `getOrCreateTypeParameter` is what makes them
+   * the same objects, which is also what makes substitution (an identity
+   * comparison) match later.
+   */
+  #declaredTypeParameters(
+      declared: Array<TypeParameter> | null): Array<TypeParameterType> | null {
+    if (declared == null) {
+      return null;
+    }
+    let tps = declared as Array<TypeParameter>;
+    let params = new Array<TypeParameterType>(tps.length);
+    for (let tp in tps) {
+      params.push(this.getOrCreateTypeParameter(tp, null, null));
+    }
+    return params;
+  }
+
   #materializeType(info: Symbol): Type | null {
     let decl = info.declaration;
     if (decl == null) {
@@ -1270,6 +1341,7 @@ final class CheckerContext {
         }
         ct.isExtension = cd.isExtension;
         ct.isResource = cd.isResource;
+        ct.typeParameters = this.#declaredTypeParameters(cd.typeParameters);
         // Pre-register forward variant names for sealed classes.
         if (cd.isSealed && cd.sealedVariants != null) {
           let variants = cd.sealedVariants as Array<SealedVariant>;
@@ -1302,11 +1374,13 @@ final class CheckerContext {
         let it = new InterfaceType(typeId, symbolId, id.name.name);
         let isPrelude = this.filePath.startsWith("zena:");
         if (isPrelude) { this.#sharedState.preludeTypes[id.name.name] = it; }
+        it.typeParameters = this.#declaredTypeParameters(id.typeParameters);
         return it;
       }
       case MixinDeclaration as md: {
         let mt = new MixinType(md.name.name);
         mt.sourcePath = this.filePath;
+        mt.typeParameters = this.#declaredTypeParameters(md.typeParameters);
         return mt;
       }
       case SealedVariant as sv: {
@@ -1989,6 +2063,37 @@ export let checkModule = (
       case _: {} // Non-declaration statements handled in Phase 2.
     }
     ri += 1;
+  }
+
+  // === Phase 1b: Record symbol-keyed members' symbol identities ===
+  // After Phase 1, so a `symbol` declared BELOW the class that keys a
+  // member by it is already bound: which symbol names a member must not
+  // depend on where in the file it was declared.
+  for (let stmt in ast.body) {
+    match (stmt) {
+      case ClassDeclaration as cd: {
+        let t = ctx.resolveTypeName(cd.name.name);
+        if (t != null && (t as Type) is ClassType) {
+          recordSymbolKeyedMemberIdentities(
+              ctx, ((t as Type) as ClassType).members, cd.body);
+        }
+      }
+      case InterfaceDeclaration as id: {
+        let t = ctx.resolveTypeName(id.name.name);
+        if (t != null && (t as Type) is InterfaceType) {
+          recordSymbolKeyedMemberIdentities(
+              ctx, ((t as Type) as InterfaceType).members, id.body);
+        }
+      }
+      case MixinDeclaration as md: {
+        let t = ctx.resolveTypeName(md.name.name);
+        if (t != null && (t as Type) is MixinType) {
+          recordSymbolKeyedMemberIdentities(
+              ctx, ((t as Type) as MixinType).members, md.body);
+        }
+      }
+      case _: {}
+    }
   }
 
   // === Phase 2: Main Checking Phase ===
@@ -11234,13 +11339,12 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
 let checkSymbolDeclaration = (ctx: CheckerContext, sd: SymbolDeclaration): void => {
   let name = sd.name.name;
 
-  let symbolType = new SymbolType(ctx.freshTypeId(), name);
-
   // Declare in value namespace.
   let info = ctx.model.resolveDeclaration(sd);
-  if (info != null) {
-    ctx.declareBinding(info as Symbol, symbolType);
+  if (info == null) {
+    return;
   }
+  ctx.declareBinding(info as Symbol, ctx.canonicalSymbolType(sd as Node, name));
 };
 
 // ============================================================================
@@ -11441,6 +11545,190 @@ let checkNewExpression = (
 // Member Expression
 // ============================================================================
 
+/**
+ * The symbol a `:sym` member key names, when the key is an unqualified
+ * symbol reference. Null for the qualified `:Iface.sym` form, whose name
+ * lives on the interface rather than in a symbol binding.
+ */
+let resolveSymbolKeyBinding = (
+    ctx: CheckerContext, path: Expression): SymbolType | null => {
+  if (!(path is Identifier)) {
+    return null;
+  }
+  let t = ctx.resolveIdentifier(path as Node);
+  if (t == null) {
+    return null;
+  }
+  if (!((t as Type) is SymbolType)) {
+    return null;
+  }
+  return (t as Type) as SymbolType;
+};
+
+/**
+ * The unqualified symbol reference a member's name node carries, or null
+ * for a name-keyed member or the qualified `:Iface.sym` form.
+ */
+let unqualifiedSymbolRefOf = (nameNode: Node): Expression | null => {
+  if (!(nameNode is SymbolPropertyName)) {
+    return null;
+  }
+  let ref = (nameNode as SymbolPropertyName).symbolRef;
+  if (ref is Identifier) {
+    return ref;
+  }
+  return null;
+};
+
+/**
+ * Records, on each symbol-keyed member a declaration body declares, the
+ * identity of the symbol that named it.
+ *
+ * Run as one pass over the body rather than at each member-registration
+ * site: the same key is registered from a dozen places (fields, methods,
+ * accessors, and their `get#`/`set#` companions), and every one of them
+ * would otherwise have to remember to carry the symbol along.
+ */
+let recordSymbolKeyedMemberIdentities = (
+    ctx: CheckerContext,
+    members: OrderedMap<String, MemberInfo>,
+    body: Array<Node>): void => {
+  for (let member in body) {
+    var nameNode: Node | null = null;
+    match (member) {
+      case FieldDefinition as fd: { nameNode = fd.name; }
+      case MethodDefinition as md: { nameNode = md.name; }
+      case AccessorDeclaration as ad: { nameNode = ad.name; }
+      case _: {}
+    }
+    if (nameNode == null) { continue; }
+    let ref = unqualifiedSymbolRefOf(nameNode as Node);
+    if (ref == null) { continue; }
+    let sym = resolveSymbolKeyBinding(ctx, ref as Expression);
+    if (sym == null) { continue; }
+    let id = (sym as SymbolType).id as i32;
+    let key = ":" + ((ref as Expression) as Identifier).name;
+    let candidates = new Array<String>();
+    candidates.push(key);
+    candidates.push("get#" + key);
+    candidates.push("set#" + key);
+    for (let candidate in candidates) {
+      if (let (true, info) = members.get(candidate)) {
+        info.symbolTypeId = id;
+      }
+    }
+  }
+};
+
+/**
+ * The symbol id recorded for `propName` on `receiverType`, searching the
+ * class's ancestors and the interfaces in scope; -1 when the member is
+ * not found or carries no recorded symbol (see `MemberInfo.symbolTypeId`,
+ * which fails open on purpose).
+ */
+let declaredSymbolIdOfMember = (receiverType: Type, propName: String): i32 => {
+  var current: Type = receiverType;
+  var guard = 0;
+  while (guard < 64) {
+    guard += 1;
+    match (current) {
+      case ClassType as ct: {
+        if (let (true, info) = ct.members.get(propName)) {
+          if (info.symbolTypeId >= 0) { return info.symbolTypeId; }
+        }
+        for (let iface in ct.implementsList) {
+          if (let (true, ii) = iface.members.get(propName)) {
+            if (ii.symbolTypeId >= 0) { return ii.symbolTypeId; }
+          }
+        }
+        if (ct.superType == null) { return -1; }
+        current = ct.superType as Type;
+      }
+      case InterfaceType as it: {
+        if (let (true, info) = it.members.get(propName)) {
+          if (info.symbolTypeId >= 0) { return info.symbolTypeId; }
+        }
+        for (let ext in it.extendsList) {
+          if (let (true, ei) = ext.members.get(propName)) {
+            if (ei.symbolTypeId >= 0) { return ei.symbolTypeId; }
+          }
+        }
+        return -1;
+      }
+      case _: { return -1; }
+    }
+  }
+  return -1;
+};
+
+/**
+ * A symbol-keyed access names a symbol, and must be able to SEE it.
+ *
+ * `classes.md` §9.4 says visibility follows the ordinary export rules —
+ * "if you don't export the symbol, outside modules cannot call or
+ * implement the method" — and `zena:ownership` relies on exactly that to
+ * keep the resource lifecycle flag unwritable. Nothing enforced it:
+ * member keys are the mangled string `":" + name` on both sides, so a
+ * consumer reached a private symbol-keyed member by writing its name,
+ * with no symbol of its own declared anywhere.
+ *
+ * Both spellings are checked here. `x.:sym` must resolve to a symbol
+ * binding in scope; `x.:Iface.sym` must resolve the interface that
+ * declares the symbol, which is what an unexported interface withholds.
+ */
+let checkSymbolKeyAccess = (
+    ctx: CheckerContext,
+    path: Expression,
+    propName: String,
+    receiverType: Type,
+    loc: SourceLocation | null): void => {
+  match (path) {
+    case Identifier as ident: {
+      let sym = resolveSymbolKeyBinding(ctx, ident as Expression);
+      if (sym == null) {
+        ctx.error(
+          "Cannot find symbol '" + ident.name + "' for member '" + propName +
+          "'. A symbol-keyed member can only be named where its symbol is " +
+          "in scope.",
+          DiagnosticCode.SymbolNotFound,
+          loc
+        );
+        return;
+      }
+      // The symbol resolved — but to WHICH one? Two modules may each
+      // declare `symbol secret`, and the mangled key ":secret" is the
+      // same string for both. Identity is the only thing that separates
+      // a module's own member from the one it is reaching into.
+      let declared = declaredSymbolIdOfMember(receiverType, propName);
+      if (declared >= 0 && declared != ((sym as SymbolType).id as i32)) {
+        ctx.error(
+          "Member '" + propName + "' is keyed by a different symbol '" +
+          ident.name + "' than the one in scope here. Import the symbol " +
+          "that declares it, if it is exported.",
+          DiagnosticCode.PrivateAccess,
+          loc
+        );
+      }
+    }
+    case MemberExpression {object}: {
+      // `:Iface.sym` — the qualifier is what has to be visible.
+      if (object is Identifier) {
+        let qualifier = object as Identifier;
+        if (ctx.resolveTypeReference(qualifier as Node, qualifier.name) == null &&
+            ctx.resolveIdentifier(qualifier as Node) == null) {
+          ctx.error(
+            "Cannot find name '" + qualifier.name + "' declaring member '" +
+            propName + "'.",
+            DiagnosticCode.SymbolNotFound,
+            loc
+          );
+        }
+      }
+    }
+    case _: {}
+  }
+};
+
 let checkMemberExpression = (
   ctx: CheckerContext,
   expr: MemberExpression,
@@ -11534,6 +11822,11 @@ let checkMemberExpression = (
     }
     case NullType: { isNullable = true; }
     case _: {}
+  }
+
+  if (isSymbolAccess && expr.symbolPath != null) {
+    checkSymbolKeyAccess(
+        ctx, expr.symbolPath as Expression, propName, receiverType, loc);
   }
 
   // Private access is lexical-only (docs/design/member-lookup.md §6):

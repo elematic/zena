@@ -493,6 +493,76 @@ immediately trying to fix it (which can pollute the current task's context).
   files (the flake wrapper keeps ZENA_COMPILER_WASM pointing at the
   installed compiler).
 
+### RESOLVED: a forward-referenced generic class dropped its type arguments
+
+- **Filed on** PR #236's branch as two entries — "A generic class field typed
+  by a later-declared generic class miscompiles" (`identifier type shift`)
+  and "`this as C<T>` into a generic class with a closure field crashes the
+  compiler". They are one bug, and neither is about closures or `as`.
+- **Fixed**: 2026-08-12. A forward reference materializes a SHELL for the
+  declaration before the declaring pass runs, and the shell carried no type
+  parameters. `resolveTypeAnnotation` skips instantiation when
+  `typeParameters == null`, so it silently DROPPED the arguments the source
+  wrote: `S<T>` came back as the raw `S`, whose codegen erasure is
+  `S<anyref>` — a struct nothing constructs. `#materializeType` now fills a
+  class's, interface's and mixin's own type parameters from the AST, the way
+  the `TypeAliasDeclaration` arm beside it already did. Constraints stay
+  unresolved there on purpose; the declaring pass fills them into the same
+  location-keyed objects.
+- **The reported crash was a landmine, not this bug.** `specialization.zena`
+  carried a debug `throw` from 091c5172 (2026-07-20) firing for any class
+  named `Node` or ending in `Node`, and the reduction's class was `Node`.
+  Deleted. Renamed, that reduction failed with this bug instead.
+- **Pinned by**: `tests/language/execution/generics/forward-referenced-generic-class.zena`.
+
+### RESOLVED: a generic static's body could not reach any generic construct
+
+- **Filed on** PR #236's branch. `Box.make<B>` bailed `class not discovered`
+  when its body constructed a generic class, and `generic call` when it
+  delegated to a generic free function instead.
+- **Fixed**: 2026-08-12. RTA's `resolveType` substituted a function's OWN
+  type arguments only when the node was a `FunctionExpression`. A generic
+  METHOD is a `MethodDefinition`, so its body was walked with its parameters
+  still open — `new State<B>` stayed `State<B>`, erased to `State<anyref>`,
+  and the `State<i32>` the call needs was never discovered. Lowering then
+  bailed on the specialization it had just been handed.
+- **Not** fixed by #232/#237: verified against a compiler built from #237's
+  head, which contains all of #232's commits.
+- **Pinned by**: `tests/language/execution/generics/generic-static-body.zena`.
+
+### RESOLVED: symbol-keyed members resolved by name, so an unexported symbol was not private
+
+- **Filed on** PR #236's branch. `docs/design/classes.md` §9.4 promises that
+  an unexported symbol puts a member out of reach, and `zena:ownership`
+  relies on it for the resource lifecycle flag. Nothing enforced it.
+- **Fixed**: 2026-08-12, in three parts, because the hole had three layers:
+  - **The visitor never walked a member expression's `symbolPath`**, so
+    `assignNodeIds` never reached those nodes and every symbol path in a
+    module kept the default node id. Any node-keyed map collapsed them onto
+    one entry: the reference map answered every `x.:sym` with whichever
+    symbol was recorded last. This is a latent hazard beyond symbols — a
+    subtree of the AST had no ids at all.
+  - **Nothing resolved the symbol**, on either side. The scope builder now
+    processes the access's `symbolPath` and a member declaration's
+    `symbolRef`, so naming a member requires its symbol to be in scope.
+  - **The member key is the mangled string `":" + name`**, which cannot tell
+    two same-named symbols apart. `MemberInfo.symbolTypeId` records the
+    declaring symbol's identity and the access compares it. It fails OPEN
+    (-1) rather than guessing, since an inherited member copied into a
+    subtype's table loses the record.
+- Also made `SymbolType` canonical per declaration (location-keyed, like
+  `typeParameterTypes`): a dependency module is checked more than once and
+  symbol id spaces restart per parse, so an id-keyed cache minted a second
+  identity for one declaration.
+- **Still name-keyed**: the qualified `:Iface.sym` form. `static symbol`
+  inside an interface mints no `SymbolType` at all, so there is no identity
+  to compare; its privacy is the interface's — the qualifier must resolve,
+  which is what `zena:ownership`'s unexported `OwnState` relies on.
+- **Pinned by**: `tests/language/semantics/symbols/private-symbol/` (both
+  forged-symbol and no-symbol-at-all) and
+  `tests/language/execution/symbols/cross-module/` (the exported symbol must
+  still work).
+
 ### RESOLVED: an unresolved name in a `case` pattern silently became a catch-all
 
 - **Fixed**: 2026-08-06 by b5cc02fa, "Report unresolved names in patterns

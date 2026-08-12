@@ -1,0 +1,65 @@
+// @mode: run
+// @result: 70
+
+// A generic class whose MEMBER TYPES name a generic class declared LATER in
+// the same file. Source order is the whole trigger: moving `State` above
+// `Waiter` made every shape here compile.
+//
+// A forward reference materializes a shell for the declaration before the
+// declaring pass runs. The shell had no type parameters, so
+// `resolveTypeAnnotation` skipped instantiation and silently dropped the
+// arguments the source wrote — `State<T>` came back as the raw `State`, which
+// codegen erases to `State<anyref>`. The constructor then had a parameter
+// typed `State<i32>` storing into a field slot typed `State<anyref>`
+// (`zir unsupported: identifier type shift`), and `let w = h.wrap()` bound a
+// call returning the erasure (`zir unsupported: binding value type`).
+
+interface Runnable {
+  run(): i32;
+}
+
+class Waiter<T> implements Runnable {
+  state: State<T>;
+  index: i32;
+  new(this.state, this.index);
+  // Reads the later-declared class through the field, which is the slot
+  // whose type was erased.
+  run(): i32 { return this.index; }
+}
+
+// A closure-typed field is its own path to the same drop, so it is pinned
+// here too: `this as Holder<T>` into a later-declared class holding one.
+class Wrapped<T> {
+  holder: Holder<T>;
+  cb: (x: T) => T;
+  new(this.holder, this.cb);
+}
+
+class Holder<T> {
+  value: T;
+  new(this.value);
+  wrap(cb: (x: T) => T): Wrapped<T> {
+    return new Wrapped<T>(this as Holder<T>, cb);
+  }
+}
+
+class State<T> {
+  value: T;
+  new(this.value);
+  attach(index: i32): Runnable {
+    return new Waiter<T>(this as State<T>, index);
+  }
+}
+
+export function main(): i32 {
+  let s = new State<i32>(40);
+  let r = s.attach(2);
+
+  let h = new Holder<i32>(28);
+  let w = h.wrap((x: i32) => x);
+
+  // `s.value` and `w.holder.value` both read a `T` field at T = i32 through
+  // a reference the generic code stored, which only types out if the class
+  // really was specialized rather than erased.
+  return s.value + r.run() + w.cb(w.holder.value);
+}

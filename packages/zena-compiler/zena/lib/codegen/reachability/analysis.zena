@@ -1982,14 +1982,32 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let ctParams: Array<TypeParameterType> | null = if (classType != null) getClassTypeParameters(classType as ClassType) else null;
     let ctArgs: Array<Type> | null = if (classType != null) (classType as ClassType).typeArguments else null;
 
+    // A function's OWN type parameters, when this walk is of one
+    // monomorphization of it. Both node shapes that carry them count: a
+    // generic arrow (`FunctionExpression`) and a generic METHOD, which
+    // is a `MethodDefinition`. Only the arrow was recognized, so a
+    // generic method's body was walked with its parameters still open —
+    // `new State<B>` inside `Box.make<B>` stayed `State<B>`, was erased
+    // to `State<anyref>`, and the `State<i32>` the call really needs was
+    // never discovered. Lowering then bailed "class not discovered" on
+    // the specialization it had just been handed.
+    let ownTypeParams = if (node == null || typeArguments == null) {
+      null
+    } else {
+      let nodeT = model.getNodeType(node as Node);
+      if (nodeT != null && (nodeT as Type) is FunctionType) {
+        ((nodeT as Type) as FunctionType).typeParameters
+      } else {
+        null
+      }
+    };
+
     let resolveType = (t: Type): Type => {
       var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
-      if (typeArguments != null && node != null && node is FunctionExpression) {
-        let fe = node as FunctionExpression;
-        let ft = model.getNodeType(fe) as FunctionType;
-        if (ft.typeParameters != null) {
-          res = substituteTypeParamsInCodegen(this.wasm, ft.typeParameters as Array<TypeParameterType>, typeArguments as Array<Type>, res);
-        }
+      if (ownTypeParams != null) {
+        res = substituteTypeParamsInCodegen(
+            this.wasm, ownTypeParams as Array<TypeParameterType>,
+            typeArguments as Array<Type>, res);
       }
       return res;
     };
