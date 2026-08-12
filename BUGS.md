@@ -138,6 +138,35 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### A mixin's `static` members are declared and then unreachable
+
+- **Found**: 2026-08-11, while rejecting static fields typed by a generic
+  class's `T`. Checking whether the same rule was needed for mixins turned
+  up that mixin statics do not work at all.
+- **Severity**: low. Nothing in the stdlib or the compiler declares one, so
+  this is a hole rather than a regression.
+- **Details**: the checker accepts the declaration and then rejects every
+  way of naming it. Not specific to generics — a plain mixin does the same:
+
+  ```zena
+  mixin Pool {
+    static var items: i32 = 0;
+    static size(): i32 { return Pool.items; }
+    //                          ^ Property access not supported on type 'Pool'.
+  }
+  ```
+
+  `checkMixinDeclaration` registers a `FieldInfo`/`MethodInfo` carrying
+  `fd.isStatic` into `mixinType.members`, so the member exists; what is
+  missing is static access *through a mixin name* in
+  `checkMemberExpression`, which handles `ClassType` receivers only.
+- **Open question worth settling first**: whether a mixin static should be
+  one cell on the mixin, or one per host class that mixes it in. Mixins are
+  copied into their hosts, so the second is closer to how the rest of the
+  feature behaves — and it is the same shared-storage question that made
+  `static var stored: Array<T>` an error on a generic class.
+- **Workaround**: put the static on the host class.
+
 ### A stdlib module's exported type names resolve without an import
 
 - **Found**: 2026-08-10, typing a resource's `this` as `Borrow<R>`. I

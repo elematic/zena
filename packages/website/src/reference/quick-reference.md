@@ -1421,6 +1421,10 @@ let b = Boxed.of(11);           // Boxed<i32>, inferred
 let e = Boxed<String>.empty();  // written: nothing else determines T
 ```
 
+A static *field* is one cell however many types the class is used at, so it
+cannot be typed by the class's type parameter — `static var stored: Array<T>`
+is an error. Static methods are fine: there is a copy of one per instantiation.
+
 ### Modifiers
 
 `abstract` classes cannot be instantiated and may have abstract methods. `final`

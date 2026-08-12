@@ -2902,6 +2902,27 @@ A static may also carry type parameters of its own, on a generic class
 or a plain one; those are inferred from the arguments as for any generic
 function.
 
+Static **storage** is the exception, and it is why the class's type
+arguments select nothing about a static field. A static method naming
+`T` works because there is a copy of it per instantiation; a static
+field is one cell however many types the class is used at, so it cannot
+be typed by `T`:
+
+```zena
+class Cache<T> {
+  item: T;
+  new(this.item);
+  static var hits: i32 = 0;                       // one counter, shared
+  static var stored: Array<T> = new Array<T>();
+  // Static field 'stored' cannot use the class's type parameter 'T'.
+}
+```
+
+Because the storage is shared, `Cache<i32>.hits` and `Cache<String>.hits`
+are the same counter, and so is `Cache.hits`. Writing type arguments
+before the dot is how you supply a static *method*'s missing `T`; on a
+static field there is nothing for them to choose.
+
 ### `void` as a Type Argument
 
 `void` is a valid type argument. It is a **zero-width** type: a value of

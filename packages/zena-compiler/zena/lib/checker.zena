@@ -8877,6 +8877,32 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
         }
 
+        // A static belongs to the class itself, so there is one cell
+        // however many types the class is used at — and no `T` for that
+        // cell to be typed by. A static METHOD naming `T` is fine: it is
+        // monomorphized per instantiation, one copy per solved argument
+        // list. Storage cannot be, so this is the one place a class's
+        // type parameters are out of scope inside its own body.
+        if (fd.isStatic && classType.typeParameters != null) {
+          for (let tp in classType.typeParameters as Array<TypeParameterType>) {
+            let one = new Array<TypeParameterType>();
+            one.push(tp);
+            if (mentionsTypeParams(fieldType, one)) {
+              ctx.error(
+                "Static field '" + fieldName + "' cannot use the class's type " +
+                "parameter '" + tp.name + "'. A static belongs to '" + className +
+                "' itself, so there is one of it no matter how many types the " +
+                "class is used at, and no '" + tp.name + "' for it to hold. Make " +
+                "it an instance field, or give it a type that does not mention '" +
+                tp.name + "'.",
+                DiagnosticCode.IncompatibleTypes,
+                fd.loc
+              );
+              break;
+            }
+          }
+        }
+
         // Extension classes cannot have instance fields.
         if (cd.isExtension && !fd.isStatic && !fd.isDeclare) {
           ctx.error(

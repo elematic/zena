@@ -1,0 +1,54 @@
+// @mode: check
+
+// A static belongs to the class itself, so there is one cell however
+// many types the class is used at. A static METHOD naming `T` is fine —
+// it is monomorphized per instantiation — but storage cannot be.
+
+class Cache<T> {
+  item: T;
+  new(this.item);
+
+  // @error: Static field 'stored' cannot use the class's type parameter 'T'
+  static var stored: Array<T> = new Array<T>();
+
+  // @error: Static field 'latest' cannot use the class's type parameter 'T'
+  static var latest: T | null = null;
+
+  // A static field that names nothing is one cell, which is exactly
+  // what it should be.
+  static var hits: i32 = 0;
+
+  // An instance field may of course use it.
+  other: T | null = null;
+
+  // A static METHOD may name it: one copy per instantiation.
+  static of(v: T): Cache<T> { return new Cache<T>(v); }
+
+  // As may a static that carries its own parameters.
+  static wrap<A>(a: A): Array<A> { let r = new Array<A>(); r.push(a); return r; }
+}
+
+class Table<K, V> {
+  key: K;
+  value: V;
+  new(this.key, this.value);
+
+  // The second parameter counts as much as the first.
+  // @error: Static field 'lastValue' cannot use the class's type parameter 'V'
+  static var lastValue: V | null = null;
+
+  // Nested inside another generic still mentions it.
+  // @error: Static field 'pairs' cannot use the class's type parameter 'K'
+  static var pairs: Array<Array<K>> = new Array<Array<K>>();
+}
+
+// A non-generic class is unaffected.
+class Plain {
+  new();
+  static var count: i32 = 0;
+  static bump(): i32 { Plain.count += 1; return Plain.count; }
+}
+
+export let main = (): i32 => {
+  return Plain.bump() + Cache.of(1).item + Cache.hits;
+};
