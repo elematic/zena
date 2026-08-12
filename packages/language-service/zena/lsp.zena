@@ -28,7 +28,7 @@ import {
   CompilationResult, typeToString, SemanticModel, SourceFile, CheckResult,
   findMemberExpressionAtOffset, resolveObjectType
 } from 'zena-compiler:compiler';
-import { parse as parseSource } from 'zena-compiler:parser';
+import { parse as parseSource, ParseCompleteness } from 'zena-compiler:parser';
 import { Type, ClassType, InterfaceType, FunctionType, MemberInfo, FieldInfo, MethodInfo } from 'zena-compiler:types';
 import { PackageConfig, stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
 import { getStandardPrelude } from 'zena-compiler:prelude';
@@ -871,7 +871,20 @@ export class LanguageService {
       // Type-check all modules, carrying forward unchanged results.
       let checkResult = checkCompilation(result, this.#cachedCheckResult);
       this.#cachedCheckResult = checkResult;
-      checkResult.diagnostics
+
+      // Recovering from a parse error does not excuse it. The file was
+      // analyzed anyway, so report what the parser had to work around
+      // ahead of what the checker went on to find.
+      let diagnostics = new Array<Diagnostic>(checkResult.diagnostics.length);
+      for (let sf in result.files) {
+        for (let parseError in sf.parseErrors) {
+          diagnostics.push(parseError);
+        }
+      }
+      for (let diagnostic in checkResult.diagnostics) {
+        diagnostics.push(diagnostic);
+      }
+      diagnostics
     } catch (e) {
       let msg = "Compiler error: " + (e as Error).message;
       let arr = new Array<Diagnostic>();
@@ -891,6 +904,17 @@ export class LanguageService {
     let wasmBytes = try {
       this.#compiler.invalidate(path);
       let compResult = this.#compiler.compile(path);
+
+      // A recovered AST holds stand-ins where the user has not finished
+      // typing, so it must not reach codegen. Check here rather than
+      // below: parse errors are not in the checker's diagnostics, so the
+      // error scan that follows would report none.
+      for (let file in compResult.files) {
+        if (file.completeness != ParseCompleteness.Complete) {
+          return null;
+        }
+      }
+
       let checkResult = checkCompilation(compResult, this.#cachedCheckResult, false);
       this.#cachedCheckResult = checkResult;
 
@@ -1604,6 +1628,11 @@ export let createLanguageService = (stdlibRoot: String): LanguageService => {
   let host = new LspHost(stdlibRoot);
   let packages = new HashMap<String, PackageConfig>();
   let options = new CompilerOptions("host", stdlibRoot, packages);
+  // Source in an editor is source mid-edit: recover from what can be
+  // recovered from, so an unfinished import still yields an AST to
+  // answer completions and symbols against. The errors are still
+  // reported — check() folds them in with the rest.
+  options.recoverFromParseErrors = true;
   let compiler = createCompiler(host, options);
   let ls = new LanguageService(host, compiler);
   ls.preloadStdlib();

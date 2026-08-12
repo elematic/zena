@@ -631,15 +631,21 @@ export final class ScopeBuilder {
         this.#processClassBody(body);
         this.#exitScope();
       }
-      case ImportDeclaration {imports}: {
+      case ImportDeclaration {moduleSpecifier, imports}: {
         // Declare imported names into the current scope.
         // The actual bindings come from the imported module's exports.
-        for (let spec in imports) {
-          let localName = spec.local.name;
-          // Imports go in both namespaces (we don't know yet if it's
-          // a type or value — that's resolved during import wiring).
-          this.#current.declare(localName, false, spec, this.#modulePath);
-          this.#symbols.record(spec, this.#current.getLocal(localName) as Symbol);
+        //
+        // An import whose specifier has not been typed yet (the parser
+        // leaves it empty) can never be wired to a module, so its names
+        // stay undeclared and read as ordinary unresolved identifiers.
+        if (moduleSpecifier.value != "") {
+          for (let spec in imports) {
+            let localName = spec.local.name;
+            // Imports go in both namespaces (we don't know yet if it's
+            // a type or value — that's resolved during import wiring).
+            this.#current.declare(localName, false, spec, this.#modulePath);
+            this.#symbols.record(spec, this.#current.getLocal(localName) as Symbol);
+          }
         }
       }
       case BreakStatement: {}

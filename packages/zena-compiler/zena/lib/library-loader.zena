@@ -15,7 +15,8 @@ import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
 import { Module, Statement, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, NodeId, makeNodeIdGenerator } from './ast.zena';
-import { parse } from './parser.zena';
+import { parse, parseRecovering, ParseCompleteness } from './parser.zena';
+import { Diagnostic } from './diagnostics.zena';
 import { ModuleResolver, ResolvedModule, normalizePath } from './module-resolver.zena';
 import { ScopeResult } from './scope/scope-builder.zena';
 import { performance } from './time.zena';
@@ -91,6 +92,20 @@ export class SourceFile {
    */
   var scopeResult: ScopeResult | null = null;
 
+  /**
+   * Errors the parser recovered from, empty unless the loader was told
+   * to recover. A file lands here with a usable AST *and* real errors:
+   * whoever reports diagnostics has to include these.
+   */
+  var parseErrors = new Array<Diagnostic>(0);
+
+  /**
+   * What this file's AST is fit for. Ask this rather than inferring it
+   * from `parseErrors` — the parser owns the answer, and it is the one
+   * thing that changes as recovery grows to cover more of the grammar.
+   */
+  var completeness = ParseCompleteness.Complete;
+
   new(
     this.path: String,
     this.isStdlib: boolean,
@@ -154,8 +169,16 @@ export class LibraryLoader {
   var loadTime: f64 = 0.0;
   var parseTime: f64 = 0.0;
 
-  new(host: CompilerHost, resolver: ModuleResolver)
-    : #host = host, #resolver = resolver, #cache = new HashMap<String, SourceFile>();
+  /**
+   * Whether to recover from the parse errors recovery covers, keeping a
+   * partial AST, instead of letting them abort the load. The errors are
+   * still reported — they land on `SourceFile.parseErrors`. Editors want
+   * this; a build does not.
+   */
+  #recover: boolean;
+
+  new(host: CompilerHost, resolver: ModuleResolver, recover: boolean = false)
+    : #host = host, #resolver = resolver, #recover = recover, #cache = new HashMap<String, SourceFile>();
 
   /**
    * Load a library by its canonical path.
@@ -186,11 +209,24 @@ export class LibraryLoader {
     this.loadTime = this.loadTime + performance.end(tLoad);
 
     let tParse = performance.start("parse");
-    let ast = parse(source, path, this.#nodeIdGenerator);
+    var parseErrors = new Array<Diagnostic>(0);
+    var completeness = ParseCompleteness.Complete;
+    let ast = if (this.#recover) {
+      let result = parseRecovering(source, path, this.#nodeIdGenerator);
+      parseErrors = result.diagnostics;
+      completeness = result.completeness;
+      result.ast
+    } else {
+      // Without recovery an incomplete parse throws, so reaching here at
+      // all means the AST accounts for the whole file.
+      parse(source, path, this.#nodeIdGenerator)
+    };
     this.parseTime = this.parseTime + performance.end(tParse);
 
     // Cache the record BEFORE resolving imports to handle circular imports.
     let record = new SourceFile(path, isStdlib, packageName, source, ast, version ?? "");
+    record.parseErrors = parseErrors;
+    record.completeness = completeness;
     this.#cache[path] = record;
 
     // Resolve and recursively load imports.
@@ -198,23 +234,32 @@ export class LibraryLoader {
     while (i < ast.body.length) {
       let stmt = ast.body[i];
       match (stmt) {
+        // An empty specifier is the parser's stand-in for one that has not
+        // been typed yet (see #missingModuleSpecifier). There is nothing to
+        // resolve, so the declaration contributes no dependency.
         case ImportDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
-          let resolved = this.#resolver.resolve(specifier, path);
-          record.imports[specifier] = resolved.path;
-          this.load(resolved.path, null);
+          if (specifier != "") {
+            let resolved = this.#resolver.resolve(specifier, path);
+            record.imports[specifier] = resolved.path;
+            this.load(resolved.path, null);
+          }
         }
         case ExportAllDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
-          let resolved = this.#resolver.resolve(specifier, path);
-          record.imports[specifier] = resolved.path;
-          this.load(resolved.path, null);
+          if (specifier != "") {
+            let resolved = this.#resolver.resolve(specifier, path);
+            record.imports[specifier] = resolved.path;
+            this.load(resolved.path, null);
+          }
         }
         case ExportFromDeclaration {moduleSpecifier}: {
           let specifier = moduleSpecifier.value;
-          let resolved = this.#resolver.resolve(specifier, path);
-          record.imports[specifier] = resolved.path;
-          this.load(resolved.path, null);
+          if (specifier != "") {
+            let resolved = this.#resolver.resolve(specifier, path);
+            record.imports[specifier] = resolved.path;
+            this.load(resolved.path, null);
+          }
         }
         case _: {}
       }

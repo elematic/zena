@@ -116,6 +116,15 @@ export final class CompilerOptions {
   /** Emit compiler timing diagnostics to stdout. */
   var time: boolean = false;
 
+  /**
+   * Keep a partial AST for source the parser can recover from, instead
+   * of letting the error abort the compilation. The errors still get
+   * reported, on `SourceFile.parseErrors`; this only decides whether the
+   * rest of the file is still analyzed. Tools that answer questions
+   * about source being typed want it on, builds want it off.
+   */
+  var recoverFromParseErrors: boolean = false;
+
   new(
     target: String,
     stdlibRoot: String,
@@ -662,7 +671,7 @@ export final class Compiler {
  */
 export let createCompiler = (host: CompilerHost, options: CompilerOptions): Compiler => {
   let resolver = buildResolver(options);
-  let loader = new LibraryLoader(host, resolver);
+  let loader = new LibraryLoader(host, resolver, options.recoverFromParseErrors);
   return new Compiler(host, options, resolver, loader);
 };
 

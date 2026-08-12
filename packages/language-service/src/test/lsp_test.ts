@@ -1090,6 +1090,26 @@ export let main = (): void => {
     assert.strictEqual(loggedMessage, 'Hello from test main');
   });
 
+  test('compileToWasm: refuses to emit code from a recovered parse', () => {
+    // Recovery exists so the editor can answer questions mid-edit; it is
+    // not a licence to build. The checker never sees parse errors, so
+    // without an explicit completeness check this emits a module built
+    // from an import the user had not finished typing.
+    const src = `import { console } from 'zena:console'
+export let main = (): void => {
+  console.log('Hello');
+};`;
+    const wasmRef = lsp.exports.compileToWasm(
+      lsp.writeString('/main.zena'),
+      lsp.writeString(src),
+    );
+    assert.strictEqual(
+      wasmRef,
+      null,
+      'Expected no Wasm from a file with a recovered parse error',
+    );
+  });
+
   test('getCompletions: returns keywords, builtins, and scope symbols', () => {
     const src = 'let foo = 42;\nlet bar = "hello";\n';
     const filePath = '/test.zena';
@@ -1128,6 +1148,44 @@ export let main = (): void => {
     assert.ok(
       labels.includes('bar'),
       'Completions should include scope variable "bar"',
+    );
+  });
+
+  test('an import being typed still analyzes the rest of the file', () => {
+    // The parser recovers from an import with no module specifier, so the
+    // file is analyzed rather than collapsing to a single parse error —
+    // but the error itself is still reported.
+    const src = 'import {Map} from \nlet foo = 42;\n';
+    const filePath = '/test.zena';
+
+    const diags = checkSource(lsp, src, filePath);
+    assert.ok(
+      !diags.some((d) => d.message.startsWith('Compiler error:')),
+      `Expected recovery, not a bail-out: ${diags.map((d) => d.message).join(', ')}`,
+    );
+    assert.ok(
+      diags.some((d) => d.message === 'Expected string literal'),
+      `Expected the recovered parse error to be reported, got: ${diags.map((d) => d.message).join(', ')}`,
+    );
+
+    const completionsRef = lsp.exports.getCompletions(
+      lsp.writeString(filePath),
+      src.length,
+    );
+    assert.ok(completionsRef, 'Expected completions array reference');
+
+    const count = lsp.exports.getCompletionCount(completionsRef);
+    const labels: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = lsp.exports.getCompletionItem(completionsRef, i);
+      const strRef = lsp.exports.getCompletionLabel(item);
+      const len = lsp.exports.$stringGetLength(strRef);
+      labels.push(lsp.readString(strRef, len));
+    }
+
+    assert.ok(
+      labels.includes('foo'),
+      'Completions should see symbols declared below the incomplete import',
     );
   });
 

@@ -3,6 +3,7 @@ import { console } from 'zena:console';
 import { Error } from 'zena:error';
 import { i32ToString, parseF64 } from 'zena:string-convert';
 import { Token, TokenType, Tokenizer } from './tokenizer.zena';
+import { Diagnostic, DiagnosticCode, DiagnosticSeverity, SourceSpan } from './diagnostics.zena';
 import { walkEnter } from './visitor.zena';
 import { 
   SourceLocation,
@@ -114,6 +115,37 @@ import {
   SymbolPropertyName
 } from './ast.zena';
 
+/**
+ * How much of the source an AST accounts for. Callers branch on this
+ * rather than inferring it from the diagnostic list or from whether the
+ * parse threw.
+ *
+ * Codegen requires `Complete`. Completions, document symbols and hover
+ * work on `Recovered`: every node in that AST came from the source, and
+ * the stand-ins are the ones the diagnostics point at.
+ *
+ * Add a third case when the parser first returns from an error it cannot
+ * recover from instead of throwing. Callers already branch, so only the
+ * parser and this enum change then.
+ */
+export enum ParseCompleteness {
+  /** Nothing was missing. */
+  Complete,
+  /** Source was missing where the user is still typing, and the AST
+   *  holds stand-ins for it. */
+  Recovered
+}
+
+/**
+ * The AST from a recovering parse, what it is fit for, and the errors
+ * recovered from along the way.
+ */
+export type ParseResult = {
+  ast: Module,
+  completeness: ParseCompleteness,
+  diagnostics: Array<Diagnostic>
+};
+
 export final class Parser {
   var #tokens: Array<Token>;
   var #comments: Array<Comment>;
@@ -121,20 +153,41 @@ export final class Parser {
   var #extraGreaters: i32;
   var #destructParamCounter: i32;
   var #combinedTypeAnnotation: RecordTypeAnnotation | null;
+  #errors: Array<Diagnostic>;
+  var #completeness: ParseCompleteness;
+  #recover: boolean;
   #source: String;
   #path: String;
-  
-  new(source: String, path: String)
-    : #source = source, #path = path, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null
+
+  new(source: String, path: String, recover: boolean = false)
+    : #source = source, #path = path, #recover = recover, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null, #errors = new Array<Diagnostic>(0), #completeness = ParseCompleteness.Complete
   {
     let tokenizer = new Tokenizer(source);
     this.#tokens = tokenizer.tokenize();
     this.#comments = tokenizer.getComments();
   }
-    
+
+  /**
+   * The errors the last `parse()` recovered from, in source order. Only
+   * ever populated when the parser was told to recover — otherwise the
+   * first one is thrown as it happens, and there is no second.
+   */
+  recoveredErrors: Array<Diagnostic> {
+    get {
+      return this.#errors;
+    }
+  }
+
+  /** What the AST from the last `parse()` is fit to be used for. */
+  completeness: ParseCompleteness {
+    get {
+      return this.#completeness;
+    }
+  }
+
   parse(): Module {
     let body = new Array<Statement>(16);
-    
+
     // Parse imports at the top of the file
     while (this.#check(TokenType.Import) || this.#check(TokenType.From)) {
       if (this.#check(TokenType.From) && this.#peek2().kind != TokenType.String) {
@@ -142,7 +195,7 @@ export final class Parser {
       }
       body.push(this.#parseImportDeclaration());
     }
-    
+
     while (!this.#isAtEnd()) {
       let stmt = this.#parseStatement(true);
       body.push(stmt);
@@ -169,15 +222,21 @@ export final class Parser {
       } else {
         this.#parseImportSpecifiers()
       };
-      this.#consume(TokenType.From, "Expected 'from'");
-      let moduleSpecifier = this.#parseStringLiteralNode();
-      this.#consume(TokenType.Semi, "Expected ';'");
+      // `import {Map}` with the `from` clause not typed yet.
+      if (!this.#consumeOrRecover(TokenType.From, "Expected 'from'")) {
+        return new ImportDeclaration(this.#missingModuleSpecifier(), imports, this.#makeLocation(startToken));
+      }
+      let moduleSpecifier = this.#parseModuleSpecifier();
+      this.#consumeOrRecover(TokenType.Semi, "Expected ';'");
       return new ImportDeclaration(moduleSpecifier, imports, this.#makeLocation(startToken));
     }
-    
+
     if (this.#match(TokenType.From)) {
       let moduleSpecifier = this.#parseStringLiteralNode();
-      this.#consume(TokenType.Import, "Expected 'import'");
+      // `from 'zena:map'` with the import clause not typed yet.
+      if (!this.#consumeOrRecover(TokenType.Import, "Expected 'import'")) {
+        return new ImportDeclaration(moduleSpecifier, new Array<ImportSpecifier>(0), this.#makeLocation(startToken));
+      }
       let imports = if (this.#check(TokenType.Star)) {
         let starToken = this.#advance();
         this.#consume(TokenType.As, "Expected 'as' after '*'.");
@@ -189,17 +248,20 @@ export final class Parser {
       } else {
         this.#parseImportSpecifiers()
       };
-      this.#consume(TokenType.Semi, "Expected ';'");
+      this.#consumeOrRecover(TokenType.Semi, "Expected ';'");
       return new ImportDeclaration(moduleSpecifier, imports, this.#makeLocation(startToken));
     }
-    
+
     throw this.#error('Expected import declaration.');
   }
-  
+
   #parseImportSpecifiers(): Array<ImportSpecifier> {
-    this.#consume(TokenType.LBrace, "Expected '{'");
     let imports = new Array<ImportSpecifier>(4);
-    if (!this.#check(TokenType.RBrace)) {
+    // `import` with the specifier list not typed yet.
+    if (!this.#consumeOrRecover(TokenType.LBrace, "Expected '{'")) {
+      return imports;
+    }
+    if (!this.#check(TokenType.RBrace) && !this.#atSpecifierListEnd()) {
       let startToken = this.#peek();
       let imported = this.#parseIdentifier();
       var local = imported;
@@ -207,7 +269,7 @@ export final class Parser {
         local = this.#parseIdentifier();
       }
       imports.push(new ImportSpecifier(imported, local, this.#makeLocation(startToken)));
-      while (this.#match(TokenType.Comma) && !this.#check(TokenType.RBrace)) {
+      while (this.#match(TokenType.Comma) && !this.#check(TokenType.RBrace) && !this.#atSpecifierListEnd()) {
         let startToken2 = this.#peek();
         let imported2 = this.#parseIdentifier();
         var local2 = imported2;
@@ -217,13 +279,64 @@ export final class Parser {
         imports.push(new ImportSpecifier(imported2, local2, this.#makeLocation(startToken2)));
       }
     }
-    this.#consume(TokenType.RBrace, "Expected '}'");
+    // `import {Map` with the list still open at the end of a line.
+    this.#consumeOrRecover(TokenType.RBrace, "Expected '}'");
     return imports;
   }
-  
+
+  /**
+   * Parse the module specifier of an import, recovering from one that
+   * has not been typed yet. This is where the user's cursor sits when
+   * they ask what modules exist, so it has to yield a node either way.
+   */
+  #parseModuleSpecifier(): StringLiteral {
+    if (!this.#check(TokenType.String) && this.#atLineBreak()) {
+      this.#recoverableError("Expected string literal");
+      return this.#missingModuleSpecifier();
+    }
+    return this.#parseStringLiteralNode();
+  }
+
+  /**
+   * A stand-in for a module specifier that has not been typed yet,
+   * located where it would go. The empty value is what marks it missing:
+   * no real specifier is empty, so import wiring skips it instead of
+   * trying to resolve it.
+   */
+  #missingModuleSpecifier(): StringLiteral {
+    let token = this.#peek();
+    return new StringLiteral("", new SourceLocation(
+      token.line, token.column, token.start, token.start, this.#path));
+  }
+
+  /**
+   * True when the last token consumed ended its line — the next token is
+   * on a later line, or there is none. Import recovery keys off this: a
+   * declaration still being typed runs out at a line break, while one
+   * that is malformed within a single line is still an error.
+   */
+  #atLineBreak(): boolean {
+    if (this.#isAtEnd()) {
+      return true;
+    }
+    if (this.#current == 0) {
+      return false;
+    }
+    return this.#peek().line > this.#previous().line;
+  }
+
+  /**
+   * True when a specifier list has run out mid-typing. A line break alone
+   * is not enough — import lists are routinely written across several
+   * lines — so the next token must also be unable to name an import.
+   */
+  #atSpecifierListEnd(): boolean {
+    return this.#atLineBreak() && !this.#isIdentifier();
+  }
+
   #parseStringLiteralNode(): StringLiteral {
     let token = this.#consume(TokenType.String, "Expected string literal");
-    return new StringLiteral(token.value, null);
+    return new StringLiteral(token.value, this.#makeLocation(token));
   }
   
   // ==========================================================================
@@ -311,7 +424,58 @@ export final class Parser {
     
     return new Error(header + message + " (got '" + token.value + "')\n" + sourceLine + "\n" + caret);
   }
-  
+
+  /**
+   * Consume `type`, treating its absence at the end of a line as
+   * recoverable rather than fatal. Returns whether the token was there,
+   * so the caller can supply whatever the grammar needed it for.
+   *
+   * Calling this, rather than `#consume`, is the whole of what makes a
+   * point in the grammar recoverable — nothing about the error itself
+   * says so. "Expected ';'" is recoverable inside an import being typed
+   * and fatal after a `let`, so the position decides, not the message.
+   */
+  #consumeOrRecover(type: TokenType, message: String): boolean {
+    if (this.#check(type)) {
+      this.#advance();
+      return true;
+    }
+    if (this.#atLineBreak()) {
+      this.#recoverableError(message);
+      return false;
+    }
+    throw this.#error(message);
+  }
+
+  /**
+   * Report an error at a point the parser knows how to recover from.
+   *
+   * A parser not constructed to recover throws, as `#consume` would
+   * have. One that was collects the error as a diagnostic and continues,
+   * leaving the caller an AST and the full list of what is wrong with
+   * it. The source is invalid either way; only the reporting differs.
+   */
+  #recoverableError(message: String): void {
+    if (!this.#recover) {
+      throw this.#error(message);
+    }
+    this.#completeness = ParseCompleteness.Recovered;
+    let token = this.#peek();
+    this.#errors.push(new Diagnostic(
+      DiagnosticCode.ExpectedToken,
+      message,
+      DiagnosticSeverity.Error,
+      new SourceSpan(
+        this.#path,
+        token.start,
+        token.end - token.start,
+        token.line,
+        token.column
+      )
+    ));
+  }
+
+
   #makeLocation(startToken: Token): SourceLocation {
     let endToken = this.#previous();
     return new SourceLocation(
@@ -3657,4 +3821,23 @@ export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<N
   let mod = parser.parse();
   assignNodeIds(mod, nodeIdGenerator);
   return mod;
+};
+
+/**
+ * Parse, recovering from the errors that recovery covers instead of
+ * throwing them, and report those as diagnostics alongside the AST.
+ *
+ * This is for tools that have to say something useful about source that
+ * is still being typed — completions, symbols, hover. Errors the parser
+ * cannot recover from are still thrown, so a caller must handle both.
+ */
+export let parseRecovering = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator()): ParseResult => {
+  let parser = new Parser(source, path, true);
+  let mod = parser.parse();
+  assignNodeIds(mod, nodeIdGenerator);
+  return {
+    ast: mod,
+    completeness: parser.completeness,
+    diagnostics: parser.recoveredErrors
+  };
 };

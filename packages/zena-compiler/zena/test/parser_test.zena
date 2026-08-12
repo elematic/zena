@@ -1,7 +1,8 @@
 import { suite, test, TestContext } from 'zena:test';
-import { equal, isTrue, isFalse } from 'zena:assert';
+import { equal, isTrue, isFalse, throws, greater } from 'zena:assert';
 import { Array } from 'zena:array';
-import { parse, Parser } from '../lib/parser.zena';
+import { parse, parseRecovering, Parser } from '../lib/parser.zena';
+import { SourceSpan } from '../lib/diagnostics.zena';
 import { 
   Module, 
   Statement, 
@@ -21,7 +22,9 @@ import {
   ClassDeclaration,
   TypeAnnotation,
   NamedTypeAnnotation,
-  CallExpression
+  CallExpression,
+  ImportDeclaration,
+  SourceLocation
 } from '../lib/ast.zena';
 
 // ============================================================================
@@ -398,6 +401,129 @@ export let tests = suite('Parser', (): void => {
       equal(call2.args.length, 2);
       equal((call2.args[0] as Identifier).name, 'x');
       equal((call2.args[1] as Identifier).name, '');
+    });
+
+    // ========================================================================
+    // Incomplete imports
+    //
+    // An import being typed is the completion point for module specifiers
+    // and imported names, so each prefix has to yield an AST. Recovering
+    // does not excuse the error: `parse` still throws it, and
+    // `parseRecovering` reports it as a diagnostic beside the AST.
+    // ========================================================================
+
+    test('should recover from a bare import keyword', (ctx: TestContext): void => {
+      let result = parseRecovering('import ', 'test.zena');
+
+      equal(result.ast.body.length, 1);
+      let decl = result.ast.body[0] as ImportDeclaration;
+      equal(decl.imports.length, 0);
+      equal(decl.moduleSpecifier.value, '');
+      greater(result.diagnostics.length, 0);
+    });
+
+    test('should recover from an unclosed import specifier list', (ctx: TestContext): void => {
+      let result = parseRecovering('import {Map', 'test.zena');
+
+      equal(result.ast.body.length, 1);
+      let decl = result.ast.body[0] as ImportDeclaration;
+      equal(decl.imports.length, 1);
+      equal(decl.imports[0].imported.name, 'Map');
+      equal(decl.moduleSpecifier.value, '');
+      equal(result.diagnostics[0].message, "Expected '}'");
+    });
+
+    test('should recover from an import with no from clause', (ctx: TestContext): void => {
+      let result = parseRecovering('import {Map}', 'test.zena');
+
+      equal(result.ast.body.length, 1);
+      let decl = result.ast.body[0] as ImportDeclaration;
+      equal(decl.imports.length, 1);
+      equal(decl.imports[0].local.name, 'Map');
+      equal(decl.moduleSpecifier.value, '');
+      equal(result.diagnostics[0].message, "Expected 'from'");
+    });
+
+    test('should recover from an import with no module specifier', (ctx: TestContext): void => {
+      let result = parseRecovering('import {Map} from', 'test.zena');
+
+      equal(result.ast.body.length, 1);
+      let decl = result.ast.body[0] as ImportDeclaration;
+      equal(decl.imports.length, 1);
+      equal(decl.moduleSpecifier.value, '');
+      equal(result.diagnostics[0].message, 'Expected string literal');
+    });
+
+    test('should recover from an import missing only its semicolon', (ctx: TestContext): void => {
+      // The completion point for module specifiers: the editor has
+      // auto-closed the quote, but the statement is not finished.
+      let result = parseRecovering("import {Map} from 'zena:map'\nlet x = 1;", 'test.zena');
+
+      equal(result.ast.body.length, 2);
+      let decl = result.ast.body[0] as ImportDeclaration;
+      equal(decl.moduleSpecifier.value, 'zena:map');
+      equal(result.diagnostics.length, 1);
+      equal(result.diagnostics[0].message, "Expected ';'");
+    });
+
+    test('should recover from an incomplete import above other statements', (ctx: TestContext): void => {
+      let result = parseRecovering('import {Map} from \nlet x = 1;', 'test.zena');
+
+      equal(result.ast.body.length, 2);
+      let decl = result.ast.body[0] as ImportDeclaration;
+      equal(decl.moduleSpecifier.value, '');
+      let vdecl = result.ast.body[1] as VariableDeclaration;
+      equal((vdecl.init as NumberLiteral).raw, '1');
+    });
+
+    test('should recover from an incomplete flipped import', (ctx: TestContext): void => {
+      let result = parseRecovering("from 'zena:map' import", 'test.zena');
+
+      equal(result.ast.body.length, 1);
+      let decl = result.ast.body[0] as ImportDeclaration;
+      equal(decl.imports.length, 0);
+      equal(decl.moduleSpecifier.value, 'zena:map');
+      equal(result.diagnostics[0].message, "Expected '{'");
+    });
+
+    test('should report an incomplete import at the token it stopped on', (ctx: TestContext): void => {
+      let result = parseRecovering('import {Map} from \nlet x = 1;', 'test.zena');
+
+      let span = result.diagnostics[0].location as SourceSpan;
+      equal(span.file, 'test.zena');
+      equal(span.line, 2);
+    });
+
+    test('should still throw an incomplete import from a plain parse', (ctx: TestContext): void => {
+      // Recovery is opt-in. A build gets the error it has always gotten.
+      throws((): void => {
+        parse('import {Map} from \nlet x = 1;', 'test.zena');
+      });
+      throws((): void => {
+        parse("import {Map} from 'zena:map'\nlet x = 1;", 'test.zena');
+      });
+    });
+
+    test('should locate the module specifier of a complete import', (ctx: TestContext): void => {
+      let mod = parse("import {Map} from 'zena:map';", 'test.zena');
+
+      let decl = mod.body[0] as ImportDeclaration;
+      equal(decl.moduleSpecifier.value, 'zena:map');
+      isTrue(decl.moduleSpecifier.loc != null);
+      // The location spans the quotes: `'zena:map'` starts at offset 18.
+      equal((decl.moduleSpecifier.loc as SourceLocation).start, 18);
+    });
+
+    test('should still reject a malformed import on one line', (ctx: TestContext): void => {
+      // Recovery is for a statement being typed, not for a typo mid-line:
+      // `from` here sits on the same line as the specifier list. Neither
+      // entry point can make sense of it.
+      throws((): void => {
+        parse("import {Map from 'zena:map';", 'test.zena');
+      });
+      throws((): void => {
+        parseRecovering("import {Map from 'zena:map';", 'test.zena');
+      });
     });
   });
 });
