@@ -202,71 +202,135 @@ immediately trying to fix it (which can pollute the current task's context).
   feature behaves — and it is the same shared-storage question that made
   `static var stored: Array<T>` an error on a generic class.
 - **Workaround**: put the static on the host class.
-### A generic class cannot receive a `Future<T>`, by any spelling
+### A generic static's body cannot reach any generic construct
 
-- **Found**: 2026-08-11, rewriting `zena:async` so waiters read the
-  settled value out of the future instead of being handed it
-  (`docs/design/async-runtime-shape.md`). A pulling waiter has to hold the
-  future it reads; every way of giving it one fails.
-- **Severity**: medium. All four are loud — three are compile-time bails,
-  one is a checker error — but together they rule out an ordinary shape,
-  and the workaround is obscure enough that the next person will rediscover
-  it the same slow way.
-- **Details**: with `W<T>` a generic class that wants a `Future<T>`:
+- **Found**: 2026-08-12, renaming `zena:async`'s combinators onto `Future`
+  now that statics on a generic class work (`869b6218`..`e4ea8a51`).
+- **Severity**: high. It lands on the first real use of the feature the
+  statics work just enabled — a static factory that builds something is
+  the main reason to want one — and it blocks the `Future.all` /
+  `Future.race` rename `docs/design/async.md` §2 has been holding for.
+  Loud, at least: two lowering bails, no wrong answers.
+- **Details**: a static with its own type parameter bails when its body
+  **constructs a generic class**:
 
-  1. **As a constructor parameter** — `class W<T> { f: Future<T>; new(this.f); }`
-     constructed from a generic context bails with
-     `zir unsupported: constructor argument type @W_sNNN_i32`. Note the
-     same shape with an ordinary generic class *does* lower:
-     `class Holder<T>` as a constructor parameter is fine, and
-     `AllListener<T>(state: AllState<T>, index: i32)` was fine before this
-     change. `Future<T>` specifically is not, which points at its
-     specialization arriving through the async RTA path
-     (`registerAsyncFuture`) rather than the ordinary one, so the
-     parameter's valtype and the argument's valtype are not the same
-     specialization.
-  2. **As a nullable field assigned afterwards** — `var f: Future<T> | null`
-     then `w.f = someFuture` is rejected by the checker twice: the
-     assignment reports `'Future<T>' is not assignable to 'Future | null'`,
-     and reading it back with `this.f as Future<T>` reports
-     `Cannot cast type 'Future | null' to 'Future<T>': the target's type
-     arguments are not supplied by the source`. This is the raw-template
-     type gap meeting `checkTypeParameterCast`.
-  3. **Captured in a closure** — a generic function that closes over its
-     `Future<T>` parameter bails with
-     `zir unsupported: celled capture @f_spec_i32`.
-  4. **Handed over as `this`** — a generic class passing itself to another
-     generic class fails either way. Without a cast the checker reports
-     `argument 'Node' is not assignable to parameter 'Node<T>'`; with
-     `this as Node<T>` the compiler throws
-     `registerSpecializedClass called for Node-like: Node id=84`. Reduced:
+  ```
+  zir unsupported: class not discovered @Future_s923.all_spec_i32
+  ```
 
-     ```zena
-     class Node<T> {
-       v: T;
-       new(this.v);
-       wrap(cb: (x: T) => void): Wrap<T> {
-         return new Wrap<T>(this as Node<T>, cb);   // crashes
-       }
-     }
-     class Wrap<T> {
-       n: Node<T>;
-       cb: (x: T) => void;
-       new(this.n, this.cb);
-     }
-     ```
+  and, if that construction is moved into a module-private generic free
+  function and the static merely calls it, bails again on the **call**:
 
-     Note `AllState.attach` does `new AllListener<T>(this as AllState<T>, i)`
-     and works, so this is not `this as C<T>` alone — the reduction above
-     adds a closure-typed field, and that combination is what crashes.
-- **Worked around**: the future travels in an **initialized**
-  `Array<Future<T>>` field, pushed after construction — none of the four
-  paths above. `zena:async`'s combinator waiters avoid it entirely by
-  carrying an `i32` index into a list the shared state already holds.
-  Both are in `packages/stdlib/zena/async.zena`, commented in place.
-- **Fix**: (1) is the one worth chasing first — if `Future<T>`'s
-  async-path specialization is not being unified with the ordinary one,
-  that is likely to surface elsewhere as generics and async mix more.
+  ```
+  zir unsupported: generic call @Future_s923.all_spec_i32
+  ```
+
+  So the static's monomorphized body reaches neither a generic class nor
+  a generic function; delegation is not a workaround. Reproduced on
+  `Future.all<A>` (builds `AllState<A>`), `Future.race<A>`
+  (`RaceState<A>`) and `Future.onComplete<A>` (`CallbackAttach<A>`).
+
+  `Future.of<A>` and `Future.failed<A>` build a `Future<A>` and did
+  **not** fail, which is what makes the rule visible: they only survive
+  because those tests construct a `Future` by another path
+  (`Completer<T>`'s field initializer). A program whose only `Future`
+  came from `Future.of` should hit the same bail.
+
+  `e4ea8a51`'s message anticipates the shape — "registering the
+  unspecialized one lowers the body at the erasure, where `new Array<A>`
+  is an `Array<anyref>` nothing ever constructed" — and notes it had not
+  surfaced because `identity` returns its argument rather than building
+  anything. This is that case surfacing. The three stdlib `from`
+  factories converted in the same commit are unaffected for the same
+  reason `Future.of` is: `Array`, `ImmutableArray` and `FixedArray` are
+  constructed all over.
+- **Status**: the rename was written, hit this, and was reverted;
+  `allOf`/`raceOf`/`futureOf`/`failedFuture`/`onComplete` stay free
+  functions until it is fixed. Reinstating them is the two-line change
+  async.md §2 always said it was.
+
+### A generic class field typed by a later-declared generic class miscompiles
+
+- **Found**: 2026-08-11, rewriting `zena:async` so waiters read the settled
+  value out of the future instead of being handed it
+  (`docs/design/async-runtime-shape.md`).
+- **Severity**: medium. Loud — a lowering bail, not a wrong answer — but
+  the trigger is source ORDER, so it looks like an arbitrary rejection of a
+  perfectly ordinary shape, and moving one declaration makes it vanish.
+- **Details**: a generic class with a field typed by another generic class
+  **declared later in the same file** bails with
+  `zir unsupported: identifier type shift @Waiter_sNNN_i32.<constructor>`.
+  Reordering the two declarations is the whole difference:
+
+  ```zena
+  interface Runnable { run(): void; }
+
+  class Waiter<T> implements Runnable {   // fails here, compiles if
+    state: S<T>;                          // S is declared ABOVE Waiter
+    index: i32;
+    new(this.state, this.index);
+    run(): void {}
+  }
+
+  class S<T> {
+    new();
+    attach(): Runnable { return new Waiter<T>(this as S<T>, 0); }
+  }
+  ```
+
+  Not about the field's type beyond its being a later-declared generic
+  class: the same file with `Future<T>` in place of `S<T>` behaves
+  identically, and a `Future<T>` constructor parameter on its own lowers
+  fine (both with and without the class implementing an interface). Not
+  about the interface either — a generic interface fails the same way.
+  `zena:async`'s own `AllState`/`AllWaiter` pair works because `AllState`
+  happens to be declared first.
+- **Corrects an earlier filing.** This entry previously claimed "a generic
+  class cannot receive a `Future<T>` by any spelling" and listed a
+  `Future<T>` constructor parameter as the first symptom. That was wrong —
+  the reduction that supposedly showed it compiles cleanly. Declaration
+  order was the variable I had not controlled for.
+- **Not fixed by PR #232** (verified against a compiler built from its
+  head).
+
+### `this as C<T>` into a generic class with a closure field crashes the compiler
+
+- **Found**: 2026-08-11, same work.
+- **Severity**: medium. A thrown compiler exception rather than a
+  diagnostic, and there is no way to write the call at all: without the
+  cast the checker rejects it.
+- **Details**: a generic class handing itself to another generic class that
+  has a **closure-typed field** throws
+  `registerSpecializedClass called for Node-like: Node id=84`. Independent
+  of declaration order (both orders throw), which is what distinguishes it
+  from the entry above.
+
+  ```zena
+  class Node<T> {
+    v: T;
+    new(this.v);
+    wrap(cb: (x: T) => void): Wrap<T> {
+      return new Wrap<T>(this as Node<T>, cb);   // throws
+    }
+  }
+  class Wrap<T> {
+    n: Node<T>;
+    cb: (x: T) => void;
+    new(this.n, this.cb);
+  }
+  ```
+
+  Dropping the cast is not an alternative: `argument 'Node' is not
+  assignable to parameter 'Node<T>'`, the raw-template-type gap.
+- **Related**: a generic function that captures its own parameter in a
+  closure bails with `zir unsupported: celled capture @f_spec_i32`. That
+  one is already described in `zena:async`'s module header as "no closures
+  are created inside generic code here".
+- **Worked around**: `zena:async`'s callback waiter takes the future
+  through a one-element `Array<Future<T>>` filled after construction, and
+  its combinator waiters carry an `i32` index instead.
+- **Not fixed by PR #232** (verified against a compiler built from its
+  head).
 
 ### Symbol-keyed members resolve by name, so an unexported symbol is not private
 
