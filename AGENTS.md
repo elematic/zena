@@ -420,3 +420,6 @@ When adding or modifying language features, update:
 2. `packages/website/src/docs/quick-reference.md`
 
 Design documents live in `docs/design/`. See the directory listing for topics.
+
+All prose — design docs, commit messages, PR descriptions, comments —
+follows `docs/writing-style.md`. Read it before writing any of these.
