@@ -1,0 +1,471 @@
+// Component emission.
+//
+// Wraps an emitted core module in a WebAssembly component: the component
+// contributes types, instantiation, and the canonical `lift`/`lower`
+// adapters that convert between component-level values and core-level
+// ones, while every instruction still lives in the core module nested
+// inside it.
+//
+// This is the whole of the `component` target's output side. It is
+// deliberately a *wrapper* rather than a second backend: nothing here
+// touches ZIR, lowering, or the type system, and the core module it
+// embeds is byte-for-byte the one the other targets emit.
+//
+// Restricted, for now, to functions whose canonical lowering is flat
+// scalars — `u8`-`u64`, `s8`-`s64`, `f32`, `f64`, `bool`. Those need no
+// memory, no `realloc` and no type encoding beyond primitives, which is
+// what keeps this file to one core module and no shim. Strings, lists
+// and records arrive with the WIT type encoder; see
+// docs/design/component-emission.md, Parts 4 and 6.
+//
+// The binary format is the Component Model's `Binary.md`. Section ids
+// differ from core wasm's and are listed in `ComponentSectionId` below.
+
+import { ByteBuffer } from 'zena:byte-buffer';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { String } from 'zena:string';
+import { i32ToString } from 'zena:string-convert';
+
+/**
+ * Component section ids. A component's sections are a different space
+ * from a core module's: `1` is a nested core module, not a type section.
+ */
+export enum ComponentSectionId {
+  CoreModule = 1,
+  CoreInstance = 2,
+  CoreType = 3,
+  Component = 4,
+  Instance = 5,
+  Alias = 6,
+  Type = 7,
+  Canon = 8,
+  Start = 9,
+  Import = 10,
+  Export = 11,
+  Value = 12
+}
+
+/**
+ * Component-level primitive value types. These are the `primvaltype`
+ * encodings, and they are what a flat-scalar import or export is made
+ * of. `void` is not among them: a function with no result encodes the
+ * absence rather than a type.
+ */
+export enum ComponentValType {
+  Bool = 0x7f,
+  S8 = 0x7e,
+  U8 = 0x7d,
+  S16 = 0x7c,
+  U16 = 0x7b,
+  S32 = 0x7a,
+  U32 = 0x79,
+  S64 = 0x78,
+  U64 = 0x77,
+  F32 = 0x76,
+  F64 = 0x75
+}
+
+/** `NO_RESULT` in a signature's `result` field: the function returns nothing. */
+export let noComponentResult = -1;
+
+/** A function signature at the component level. */
+export final class ComponentFuncType {
+  /** Parameter types, as `ComponentValType` opcodes. */
+  paramTypes: Array<i32>;
+  /** Parameter names, already kebab-case. Same length as `paramTypes`. */
+  paramNames: Array<String>;
+  /** The result type, or `noComponentResult`. */
+  result: i32;
+  /**
+   * Whether the WIT function is `async`. An async function lowered
+   * without `async` blocks; lowered with it, the call returns a subtask
+   * handle instead of waiting. The signature is the same either way —
+   * see docs/design/component-emission.md 1.6.
+   */
+  isAsync: boolean;
+
+  new(this.paramTypes, this.paramNames, this.result, this.isAsync = false);
+}
+
+/**
+ * One function imported from a WIT interface. The core module imports it
+ * as `(import "<interfaceName>" "<fieldName>")`, which is what a Zena
+ * `@external("wasi:clocks/monotonic-clock@0.3.0", "now")` already
+ * compiles to.
+ */
+export final class ComponentImportFunc {
+  interfaceName: String;
+  fieldName: String;
+  signature: ComponentFuncType;
+  /** Whether to lower the call with the `async` canonical option. */
+  lowerAsync: boolean;
+
+  new(this.interfaceName, this.fieldName, this.signature, this.lowerAsync = false);
+}
+
+/** One core-module export lifted to a component export. */
+export final class ComponentExportFunc {
+  /** The core module's export name. */
+  coreName: String;
+  /** The component's export name, kebab-case. */
+  exportName: String;
+  signature: ComponentFuncType;
+
+  new(this.coreName, this.exportName, this.signature);
+}
+
+/** The imports and exports a component wraps a core module in. */
+export final class ComponentShape {
+  imports = new Array<ComponentImportFunc>();
+  exports = new Array<ComponentExportFunc>();
+
+  new();
+}
+
+// ============================================================================
+// Names
+// ============================================================================
+
+/**
+ * Whether `name` is a valid Component Model kebab-case name: words of
+ * `[a-z][a-z0-9]*` joined by single `-`. Import and export names, and
+ * parameter names, are all checked by the format itself, so producing an
+ * invalid one is a hard error rather than a cosmetic slip.
+ */
+export let isKebabName = (name: String): boolean => {
+  if (name.length == 0) {
+    return false;
+  }
+  var wordStart = true;
+  for (var i = 0; i < name.length; i += 1) {
+    let c = name.getByteAt(i);
+    let isLower = c >= 97 && c <= 122; // a-z
+    let isDigit = c >= 48 && c <= 57; // 0-9
+    if (c == 45) { // '-'
+      if (wordStart) {
+        return false; // empty word: leading or doubled '-'
+      }
+      wordStart = true;
+    } else if (wordStart) {
+      if (!isLower) {
+        return false; // a word must open with a lowercase letter
+      }
+      wordStart = false;
+    } else if (!isLower && !isDigit) {
+      return false;
+    }
+  }
+  return !wordStart; // a trailing '-' leaves an empty word
+};
+
+/**
+ * A Zena identifier as a Component Model name: `camelCase` becomes
+ * `camel-case`. Zena identifiers cannot contain `-`, so a conversion is
+ * the only way a Zena name can reach the boundary at all.
+ *
+ * Returns the empty string when the identifier has no valid rendering
+ * (it starts with `_` or a digit, say). Callers decide what to do about
+ * that; nothing here invents a name.
+ */
+export let toKebabName = (identifier: String): String => {
+  let lowered = identifier.asciiLowerCase();
+  var out = "";
+  for (var i = 0; i < identifier.length; i += 1) {
+    let c = identifier.getByteAt(i);
+    if (c >= 65 && c <= 90 && i > 0) { // A-Z, not leading
+      out = out + "-";
+    }
+    out = out + lowered.sliceBytes(i, i + 1);
+  }
+  if (!isKebabName(out)) {
+    return "";
+  }
+  return out;
+};
+
+// ============================================================================
+// Encoding
+// ============================================================================
+
+let writeName = (buffer: ByteBuffer, name: String): void => {
+  buffer.writeULEB128(name.length);
+  for (var i = 0; i < name.length; i += 1) {
+    buffer.writeByte(name.getByteAt(i));
+  }
+};
+
+/**
+ * An import or export name: a `0x00` discriminant (the name carries no
+ * `implements` clause) followed by the name itself.
+ */
+let writeExternName = (buffer: ByteBuffer, name: String): void => {
+  buffer.writeByte(0x00);
+  writeName(buffer, name);
+};
+
+/** `functype ::= 0x40 ps:vec(<labelvaltype>) rs:<resultlist>` */
+let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => {
+  buffer.writeByte(0x40);
+  buffer.writeULEB128(signature.paramTypes.length);
+  for (var i = 0; i < signature.paramTypes.length; i += 1) {
+    writeName(buffer, signature.paramNames[i]);
+    buffer.writeByte(signature.paramTypes[i]);
+  }
+  if (signature.result == noComponentResult) {
+    // The other arm of `resultlist`: a vector of NAMED results, which
+    // the format still carries and which is empty here. The count byte
+    // is not optional — dropping it reads the next declaration's `0x40`
+    // as a result count.
+    buffer.writeByte(0x01);
+    buffer.writeByte(0x00);
+  } else {
+    buffer.writeByte(0x00); // one result, unnamed
+    buffer.writeByte(signature.result);
+  }
+};
+
+/** One imported WIT interface and the functions the program calls on it. */
+final class ImportedInterface {
+  name: String;
+  funcs = new Array<ComponentImportFunc>();
+  new(this.name);
+}
+
+/**
+ * Group imports by interface, preserving first-appearance order. The
+ * order is the emitted index order, so it must not depend on hash
+ * iteration — a module's bytes are a function of its source, not of the
+ * uid counter (see `resetWasmTypeUids`).
+ */
+let groupByInterface = (
+  imports: Array<ComponentImportFunc>
+): Array<ImportedInterface> => {
+  let groups = new Array<ImportedInterface>();
+  for (let imp in imports) {
+    var found: ImportedInterface | null = null;
+    for (let g in groups) {
+      if (g.name == imp.interfaceName) {
+        found = g;
+      }
+    }
+    if (found == null) {
+      let group = new ImportedInterface(imp.interfaceName);
+      group.funcs.push(imp);
+      groups.push(group);
+    } else {
+      (found as ImportedInterface).funcs.push(imp);
+    }
+  }
+  return groups;
+};
+
+let writeSection = (out: ByteBuffer, id: i32, payload: ByteBuffer): void => {
+  if (payload.length == 0) {
+    return;
+  }
+  out.writeByte(id);
+  out.writeULEB128(payload.length);
+  out.writeBuffer(payload);
+};
+
+/**
+ * Emit a component wrapping `coreModule`.
+ *
+ * The section order below is the order a validator reads them in, and
+ * each one's indices refer only to what came before:
+ *
+ *   type          one instance type per imported interface
+ *   import        one per interface, referencing its type
+ *   alias         one per imported function, out of its instance
+ *   canon         `canon lower` per imported function
+ *   core instance one synthesized instance per interface, holding the
+ *                 lowered core functions under their field names
+ *   core module   the Zena module, embedded verbatim
+ *   core instance instantiate it against those
+ *   alias         pull each lifted export back out of the instance
+ *   type          one functype per export
+ *   canon         `canon lift` per export
+ *   export        the component's exports
+ */
+export let emitComponent = (
+  coreModule: ByteBuffer,
+  shape: ComponentShape
+): ByteBuffer => {
+  let out = new ByteBuffer();
+  // Magic, then version 0x000d and layer 0x0001 — the layer is what
+  // distinguishes a component from a core module.
+  out.writeU32(0x6D736100);
+  out.writeU32(0x0001000D);
+
+  let groups = groupByInterface(shape.imports);
+
+  // --- type: one instance type per imported interface ---------------------
+  if (groups.length > 0) {
+    let types = new ByteBuffer();
+    types.writeULEB128(groups.length);
+    for (let group in groups) {
+      types.writeByte(0x42); // instance type
+      // Two declarations per function: its type, then its export.
+      types.writeULEB128(group.funcs.length * 2);
+      for (var i = 0; i < group.funcs.length; i += 1) {
+        types.writeByte(0x01); // instancedecl: type
+        writeFuncType(types, group.funcs[i].signature);
+        types.writeByte(0x04); // instancedecl: export
+        writeExternName(types, group.funcs[i].fieldName);
+        types.writeByte(0x01); // externdesc: func
+        // Index within the instance type's own type space: the i-th
+        // function's type is the i-th type declared here.
+        types.writeULEB128(i);
+      }
+    }
+    writeSection(out, ComponentSectionId.Type as i32, types);
+
+    // --- import: one instance per interface -------------------------------
+    let imports = new ByteBuffer();
+    imports.writeULEB128(groups.length);
+    for (var i = 0; i < groups.length; i += 1) {
+      writeExternName(imports, groups[i].name);
+      imports.writeByte(0x05); // externdesc: instance
+      imports.writeULEB128(i); // the instance type declared above
+    }
+    writeSection(out, ComponentSectionId.Import as i32, imports);
+
+    // --- alias: each imported function out of its instance ----------------
+    let aliases = new ByteBuffer();
+    var aliasCount = 0;
+    for (let group in groups) {
+      aliasCount += group.funcs.length;
+    }
+    aliases.writeULEB128(aliasCount);
+    for (var i = 0; i < groups.length; i += 1) {
+      for (let f in groups[i].funcs) {
+        aliases.writeByte(0x01); // sort: func
+        aliases.writeByte(0x00); // target: instance export
+        aliases.writeULEB128(i);
+        writeName(aliases, f.fieldName);
+      }
+    }
+    writeSection(out, ComponentSectionId.Alias as i32, aliases);
+
+    // --- canon: lower each imported function ------------------------------
+    let lowers = new ByteBuffer();
+    lowers.writeULEB128(aliasCount);
+    var funcIndex = 0;
+    for (let group in groups) {
+      for (let f in group.funcs) {
+        lowers.writeByte(0x01); // canon lower
+        lowers.writeByte(0x00);
+        lowers.writeULEB128(funcIndex);
+        if (f.lowerAsync) {
+          lowers.writeULEB128(1); // one canonical option
+          lowers.writeByte(0x06); // async
+        } else {
+          lowers.writeULEB128(0);
+        }
+        funcIndex += 1;
+      }
+    }
+    writeSection(out, ComponentSectionId.Canon as i32, lowers);
+
+    // --- core instance: one per interface, holding its lowered funcs ------
+    let coreInstances = new ByteBuffer();
+    coreInstances.writeULEB128(groups.length);
+    var loweredIndex = 0;
+    for (let group in groups) {
+      coreInstances.writeByte(0x01); // from inline exports
+      coreInstances.writeULEB128(group.funcs.length);
+      for (let f in group.funcs) {
+        writeName(coreInstances, f.fieldName);
+        coreInstances.writeByte(0x00); // core sort: func
+        coreInstances.writeULEB128(loweredIndex);
+        loweredIndex += 1;
+      }
+    }
+    writeSection(out, ComponentSectionId.CoreInstance as i32, coreInstances);
+  }
+
+  // --- core module: the Zena module, verbatim -----------------------------
+  writeSection(out, ComponentSectionId.CoreModule as i32, coreModule);
+
+  // --- core instance: instantiate it against the synthesized instances ----
+  let instantiate = new ByteBuffer();
+  instantiate.writeULEB128(1);
+  instantiate.writeByte(0x00); // instantiate
+  instantiate.writeULEB128(0); // module index 0
+  instantiate.writeULEB128(groups.length);
+  for (var i = 0; i < groups.length; i += 1) {
+    // The argument name is the core module's import module name, which
+    // is the interface string itself.
+    writeName(instantiate, groups[i].name);
+    instantiate.writeByte(0x12); // core sort: instance
+    instantiate.writeULEB128(i);
+  }
+  writeSection(out, ComponentSectionId.CoreInstance as i32, instantiate);
+
+  if (shape.exports.length == 0) {
+    return out;
+  }
+
+  // The instantiated module is the last core instance: one per imported
+  // interface, then this one.
+  let programInstance = groups.length;
+
+  // --- alias: pull each exported core function out of the instance --------
+  let exportAliases = new ByteBuffer();
+  exportAliases.writeULEB128(shape.exports.length);
+  for (let e in shape.exports) {
+    exportAliases.writeByte(0x00); // sort: core
+    exportAliases.writeByte(0x00); // core sort: func
+    exportAliases.writeByte(0x01); // target: core instance export
+    exportAliases.writeULEB128(programInstance);
+    writeName(exportAliases, e.coreName);
+  }
+  writeSection(out, ComponentSectionId.Alias as i32, exportAliases);
+
+  // --- type: one functype per export --------------------------------------
+  let exportTypes = new ByteBuffer();
+  exportTypes.writeULEB128(shape.exports.length);
+  for (let e in shape.exports) {
+    writeFuncType(exportTypes, e.signature);
+  }
+  writeSection(out, ComponentSectionId.Type as i32, exportTypes);
+
+  // --- canon: lift each export --------------------------------------------
+  // The component-level type index continues after the instance types.
+  let firstExportType = groups.length;
+  // The core function index continues after the lowered imports.
+  var firstExportCoreFunc = 0;
+  for (let group in groups) {
+    firstExportCoreFunc += group.funcs.length;
+  }
+  let lifts = new ByteBuffer();
+  lifts.writeULEB128(shape.exports.length);
+  for (var i = 0; i < shape.exports.length; i += 1) {
+    lifts.writeByte(0x00); // canon lift
+    lifts.writeByte(0x00);
+    lifts.writeULEB128(firstExportCoreFunc + i);
+    lifts.writeULEB128(0); // no canonical options
+    lifts.writeULEB128(firstExportType + i);
+  }
+  writeSection(out, ComponentSectionId.Canon as i32, lifts);
+
+  // --- export --------------------------------------------------------------
+  // Component function indices: the aliased imports come first, then the
+  // lifted exports.
+  var firstExportFunc = 0;
+  for (let group in groups) {
+    firstExportFunc += group.funcs.length;
+  }
+  let exports = new ByteBuffer();
+  exports.writeULEB128(shape.exports.length);
+  for (var i = 0; i < shape.exports.length; i += 1) {
+    writeExternName(exports, shape.exports[i].exportName);
+    exports.writeByte(0x01); // sort: func
+    exports.writeULEB128(firstExportFunc + i);
+    exports.writeByte(0x00); // no ascribed type
+  }
+  writeSection(out, ComponentSectionId.Export as i32, exports);
+
+  return out;
+};

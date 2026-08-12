@@ -1,0 +1,210 @@
+// What a component wraps around the core module: which WIT interfaces it
+// imports, which core exports it lifts, and the component-level types of
+// both.
+//
+// Read off the same `WasmModule` the core module was emitted from, so
+// the two cannot disagree about what exists: the import list is
+// `functionImports` in emission order, and the export list is the
+// program's own exports (`exportMap`) — the synthesized host-interop
+// helpers ($stringCreate and friends, __zena_drain) stay core-module
+// exports, because they exist for an embedder that instantiates the core
+// module directly and have no component-level meaning.
+//
+// Types come from the *Zena* signature rather than the wasm one. A wasm
+// `i32` is `s32`, `u32`, `u8`, `bool` and four more, and an import's
+// declared type has to match what the host actually exports — so
+// throwing away the Zena type and re-deriving it from the lowered form
+// would be a guess. See docs/design/component-emission.md, Part 4.
+
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { String } from 'zena:string';
+import { WasmModule, WasmFunction } from './wasm-module.zena';
+import { Node } from '../ast.zena';
+import {
+  Type, FunctionType, TypeAliasType, I32Type, U32Type, I64Type, U64Type,
+  F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, BooleanType, VoidType,
+  typeToString
+} from '../types.zena';
+import { i32ToString } from 'zena:string-convert';
+import {
+  ComponentShape, ComponentImportFunc, ComponentExportFunc, ComponentFuncType,
+  ComponentValType, noComponentResult, isKebabName, toKebabName
+} from './component-emitter.zena';
+
+/** Look through type aliases (`type`, `distinct type`) to the type itself. */
+let underlying = (t: Type): Type => match (t) {
+  case TypeAliasType as alias: underlying(alias.target)
+  case _: t
+};
+
+/**
+ * The component-level type of a Zena parameter or result type, or -1 if
+ * it has none. Only flat scalars have one today: everything else needs
+ * the canonical ABI's memory options, which is C3.
+ */
+let componentTypeOf = (t: Type): i32 => match (underlying(t)) {
+  case I32Type: ComponentValType.S32 as i32
+  case U32Type: ComponentValType.U32 as i32
+  case I64Type: ComponentValType.S64 as i32
+  case U64Type: ComponentValType.U64 as i32
+  case F32Type: ComponentValType.F32 as i32
+  case F64Type: ComponentValType.F64 as i32
+  case U8Type: ComponentValType.U8 as i32
+  case U16Type: ComponentValType.U16 as i32
+  case I8Type: ComponentValType.S8 as i32
+  case I16Type: ComponentValType.S16 as i32
+  case BooleanType: ComponentValType.Bool as i32
+  case _: -1
+};
+
+/** The `FunctionType` a function was declared with. */
+let declaredTypeOf = (func: WasmFunction, what: String): FunctionType => {
+  let node = func.node;
+  if (node == null) {
+    throw new Error(
+      "The component target cannot " + what + " '" + nameOf(func) +
+        "': it has no declaration to read a signature from."
+    );
+  }
+  let t = func.model.getNodeType(node as Node);
+  if (t == null || !(t is FunctionType)) {
+    throw new Error(
+      "The component target cannot " + what + " '" + nameOf(func) +
+        "': its declaration has no function type."
+    );
+  }
+  return t as FunctionType;
+};
+
+let nameOf = (func: WasmFunction): String => {
+  let n = func.name;
+  if (n != null) {
+    return n as String;
+  }
+  let m = func.methodName;
+  if (m != null) {
+    return m as String;
+  }
+  return "<unnamed>";
+};
+
+/**
+ * A parameter's name at the component level. Zena identifiers are
+ * camelCase and cannot contain `-`, while the Component Model's names
+ * are kebab-case, so the identifier is converted. Where it has no valid
+ * rendering, the position stands in: parameter names take no part in
+ * import subtyping — a component importing `wait-for` with the
+ * parameter named `how-longx` links against a host declaring
+ * `how-long` — so the name is documentation, and only its *shape* is
+ * load-bearing.
+ */
+let paramName = (declared: FunctionType, index: i32): String => {
+  let names = declared.parameterNames;
+  if (names != null) {
+    let list = names as Array<String>;
+    if (index < list.length) {
+      let kebab = toKebabName(list[index]);
+      if (kebab != "") {
+        return kebab;
+      }
+    }
+  }
+  return "a" + i32ToString(index);
+};
+
+/** The component-level signature of a function, or a loud failure. */
+let signatureOf = (func: WasmFunction, what: String): ComponentFuncType => {
+  let declared = declaredTypeOf(func, what);
+  let paramTypes = new Array<i32>();
+  let paramNames = new Array<String>();
+  for (var i = 0; i < declared.parameters.length; i += 1) {
+    let mapped = componentTypeOf(declared.parameters[i]);
+    if (mapped < 0) {
+      throw new Error(
+        "The component target cannot " + what + " '" + nameOf(func) +
+          "': parameter " + i32ToString(i) + " has type '" +
+          typeToString(declared.parameters[i]) +
+          "', which is not a flat scalar. Only u8-u64, i8-i64, f32, f64 " +
+          "and boolean cross the boundary today; richer types need the " +
+          "canonical ABI's memory options (docs/design/component-emission.md)."
+      );
+    }
+    paramTypes.push(mapped);
+    paramNames.push(paramName(declared, i));
+  }
+  var result = noComponentResult;
+  if (!(underlying(declared.returnType) is VoidType)) {
+    result = componentTypeOf(declared.returnType);
+    if (result < 0) {
+      throw new Error(
+        "The component target cannot " + what + " '" + nameOf(func) +
+          "': it returns '" + typeToString(declared.returnType) +
+          "', which is not a flat scalar. Only u8-u64, i8-i64, f32, f64 " +
+          "and boolean cross the boundary today; richer types need the " +
+          "canonical ABI's memory options (docs/design/component-emission.md)."
+      );
+    }
+  }
+  return new ComponentFuncType(paramTypes, paramNames, result);
+};
+
+/**
+ * The shape of the component wrapping `wasm`'s core module.
+ *
+ * Throws rather than dropping anything it cannot represent. A dropped
+ * import would produce a component that fails to instantiate against a
+ * host that has the function, and a dropped export would produce one
+ * silently missing the entry point the program wrote — both worse than
+ * a compile error naming the function.
+ */
+export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
+  let shape = new ComponentShape();
+
+  for (let f in wasm.functionImports) {
+    let module = f.importModule;
+    let field = f.importName;
+    if (module == null || field == null) {
+      continue;
+    }
+    let interfaceName = module as String;
+    let fieldName = field as String;
+    if (!interfaceName.contains(":")) {
+      throw new Error(
+        "The component target cannot import '" + fieldName + "' from '" +
+          interfaceName + "': a component imports WIT interfaces, and '" +
+          interfaceName + "' is a core-module import namespace. Name a WIT " +
+          "interface, as in @external(\"wasi:clocks/monotonic-clock@0.3.0\", " +
+          "\"now\")."
+      );
+    }
+    if (!isKebabName(fieldName)) {
+      throw new Error(
+        "The component target cannot import '" + fieldName + "' from '" +
+          interfaceName + "': '" + fieldName + "' is not a kebab-case name, " +
+          "so no WIT interface can export it."
+      );
+    }
+    shape.imports.push(
+      new ComponentImportFunc(interfaceName, fieldName,
+          signatureOf(f, "import")));
+  }
+
+  let exportKeys = wasm.exportMap.keys();
+  while (let (true, key) = exportKeys.next()) {
+    let f = wasm.exportMap[key];
+    let coreName = key as String;
+    let exportName = toKebabName(coreName);
+    if (exportName == "") {
+      throw new Error(
+        "The component target cannot export '" + coreName +
+          "': it has no kebab-case rendering, and every component export " +
+          "name is kebab-case."
+      );
+    }
+    shape.exports.push(
+      new ComponentExportFunc(coreName, exportName, signatureOf(f, "export")));
+  }
+
+  return shape;
+};

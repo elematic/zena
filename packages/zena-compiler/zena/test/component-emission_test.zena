@@ -1,0 +1,229 @@
+/**
+ * `--target component` emits a WebAssembly component.
+ *
+ * The structure is asserted here, on the bytes; that the result
+ * validates and runs is asserted by `scripts/component-e2e.js`, which
+ * needs `wasm-tools` and `wasmtime` and so belongs outside the unit
+ * suite. Both matter: a component that validates but wraps the wrong
+ * module would pass one and not the other.
+ *
+ * See docs/design/component-emission.md.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue, equal, throws } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { newByteArray } from 'zena:byte-array';
+import { Array } from 'zena:array';
+import { CompilerHost } from '../lib/library-loader.zena';
+import {
+  createCompiler, CompilerOptions, checkCompilation
+} from '../lib/compiler.zena';
+import { loadPackageMap } from '../lib/package-manifest.zena';
+import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { i32ToString } from 'zena:string-convert';
+import {
+  isKebabName, toKebabName
+} from '../lib/codegen/component-emitter.zena';
+
+let stdlibRoot = 'packages/stdlib/zena';
+let fixtures = 'packages/zena-compiler/test-files/component';
+
+class PlainHost implements CompilerHost {
+  new();
+  readFile(path: String): String {
+    if (path.startsWith('zena:')) {
+      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+}
+
+let compileFor = (path: String, target: String): ByteArray => {
+  let host = new PlainHost();
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
+  let result = c.compile(path);
+  let checked = checkCompilation(result, null, false);
+  for (let diag in checked.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      throw new Error(`${path}: ${diag.message}`);
+    }
+  }
+  let entryAst = result.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in result.files) {
+    let res = checked.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) { entryUnit = unit; }
+    }
+  }
+  return new BinaryGenerator(target, false)
+    .generate(new Program(units, entryUnit))
+    .toByteArray();
+};
+
+/**
+ * The section ids of a component or core module, in order. Both formats
+ * are an 8-byte preamble followed by (id, size, payload) triples; only
+ * the meaning of the ids differs.
+ */
+let sectionIds = (bytes: ByteArray): Array<i32> => {
+  let ids = new Array<i32>();
+  var pos = 8;
+  while (pos < bytes.length) {
+    ids.push(bytes[pos] as i32);
+    pos += 1;
+    var size = 0;
+    var shift = 0;
+    while (pos < bytes.length) {
+      let b = bytes[pos];
+      pos += 1;
+      size = size | ((b & 0x7f) << shift);
+      shift += 7;
+      if ((b & 0x80) == 0) { break; }
+    }
+    pos += size;
+  }
+  return ids;
+};
+
+/** The payload of the first section with `id`, or an empty array. */
+let sectionPayload = (bytes: ByteArray, id: i32): ByteArray => {
+  var pos = 8;
+  while (pos < bytes.length) {
+    let sectionId = bytes[pos];
+    pos += 1;
+    var size = 0;
+    var shift = 0;
+    while (pos < bytes.length) {
+      let b = bytes[pos];
+      pos += 1;
+      size = size | ((b & 0x7f) << shift);
+      shift += 7;
+      if ((b & 0x80) == 0) { break; }
+    }
+    if (sectionId == id) {
+      let payload = newByteArray(size);
+      for (var i = 0; i < size; i += 1) {
+        payload[i] = bytes[pos + i];
+      }
+      return payload;
+    }
+    pos += size;
+  }
+  return newByteArray(0);
+};
+
+let idsToString = (ids: Array<i32>): String => {
+  var out = "";
+  for (let id in ids) {
+    if (out != "") { out = out + ","; }
+    out = out + i32ToString(id);
+  }
+  return out;
+};
+
+export let tests = suite('Component emission', (): void => {
+  test('the output is a component, not a core module', (ctx: TestContext): void => {
+    // Same magic, and then version 0x000d with layer 0x0001 where a
+    // core module has version 1. The layer is the whole difference to a
+    // reader deciding which format it is holding.
+    let bytes = compileFor(`${fixtures}/clock.zena`, 'component');
+    equal(bytes[0], 0x00);
+    equal(bytes[1], 0x61);
+    equal(bytes[2], 0x73);
+    equal(bytes[3], 0x6d);
+    equal(bytes[4], 0x0d, 'component version low byte');
+    equal(bytes[5], 0x00);
+    equal(bytes[6], 0x01, 'component layer low byte');
+    equal(bytes[7], 0x00);
+  });
+
+  test('an imported WIT interface produces the full section sequence', (ctx: TestContext): void => {
+    // type (the instance type) / import / alias / canon lower / core
+    // instance (the lowered functions) / core module / core instance
+    // (instantiate) / alias (the core export) / type / canon lift /
+    // export. Order is not cosmetic: each section's indices refer only
+    // to what came before it.
+    let ids = sectionIds(compileFor(`${fixtures}/clock.zena`, 'component'));
+    equal(idsToString(ids), '7,10,6,8,2,1,2,6,7,8,11',
+      `clock.zena emitted sections ${idsToString(ids)}`);
+  });
+
+  test('a component with no imports carries no import machinery', (ctx: TestContext): void => {
+    // No instance type, no import, no lowering, no synthesized instance
+    // — just the module, its instantiation, and the lifted export. This
+    // is the one-core-module case: a component that imports nothing
+    // memory-carrying needs no second module.
+    let ids = sectionIds(
+        compileFor('packages/zena-compiler/test-files/minimal.zena', 'component'));
+    equal(idsToString(ids), '1,2,6,7,8,11',
+      `minimal.zena emitted sections ${idsToString(ids)}`);
+  });
+
+  test('the component embeds the core module verbatim', (ctx: TestContext): void => {
+    // Emission is a wrapper, not a second backend: the module inside the
+    // component is the same module the compiler emits for a hostless
+    // core-module target, byte for byte. If these ever diverge, some
+    // target knowledge has leaked into codegen, where the design says
+    // there is none.
+    let component = compileFor(`${fixtures}/scalars.zena`, 'component');
+    let core = compileFor(`${fixtures}/scalars.zena`, 'freestanding');
+    let embedded = sectionPayload(component, 1);
+    equal(embedded.length, core.length,
+      `the embedded core module is ${i32ToString(embedded.length)} bytes and ` +
+      `the freestanding module is ${i32ToString(core.length)}`);
+    for (var i = 0; i < core.length; i += 1) {
+      if (embedded[i] != core[i]) {
+        throw new Error(
+          `the embedded core module differs from the freestanding module at ` +
+          `byte ${i32ToString(i)}`);
+      }
+    }
+  });
+
+  test('a core-module import namespace is rejected', (ctx: TestContext): void => {
+    // `env` is not a WIT interface, and no host can satisfy it through
+    // a component's import. Emitting one anyway would produce a
+    // component that nothing can instantiate, which is a worse failure
+    // than not compiling.
+    throws((): void => {
+      compileFor(`${fixtures}/env-import.zena`, 'component');
+    }, 'an @external in the `env` namespace compiled for the component target');
+  });
+
+  test('an export that is not a flat scalar is rejected', (ctx: TestContext): void => {
+    // A String crosses as a list<u8> through linear memory, which needs
+    // the canonical ABI's memory options. Until those land the export
+    // cannot be lifted, and the compiler says so by name rather than
+    // dropping it.
+    throws((): void => {
+      compileFor(`${fixtures}/string-export.zena`, 'component');
+    }, 'a String-returning export compiled for the component target');
+  });
+
+  test('Zena identifiers become kebab-case names', (ctx: TestContext): void => {
+    // Every name in a component — imports, exports, parameters — is
+    // kebab-case, and a Zena identifier cannot contain `-`, so the
+    // conversion is the only way one reaches the boundary.
+    equal(toKebabName('addNarrow'), 'add-narrow');
+    equal(toKebabName('main'), 'main');
+    equal(toKebabName('nextBig'), 'next-big');
+    equal(toKebabName('x2'), 'x2');
+    // A leading capital would open a word with `-`, and a leading `_`
+    // is not a letter: neither has a valid rendering, and nothing here
+    // invents one.
+    equal(toKebabName('_private'), '');
+    isTrue(isKebabName('wasi:clocks') == false, 'a `:` is not kebab-case');
+    isTrue(isKebabName('wait-for'), 'wait-for is kebab-case');
+    isTrue(isKebabName('wait--for') == false, 'a doubled dash is an empty word');
+    isTrue(isKebabName('wait-') == false, 'a trailing dash is an empty word');
+  });
+});

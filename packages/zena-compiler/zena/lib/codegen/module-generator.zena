@@ -34,6 +34,9 @@ import { verifyIr } from './ir/verifier.zena';
 import { runGvn } from './ir/gvn.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
+import { ComponentShape } from './component-emitter.zena';
+import { buildComponentShape } from './component-shape.zena';
+import { targetEmitsComponent } from '../targets.zena';
 
 export final class ModuleGenerator {
   program: Program;
@@ -41,6 +44,14 @@ export final class ModuleGenerator {
   target: String;
   /** ZENA_ZIR_STATS=1: report the per-module lowered-function count. */
   zirStats: boolean;
+  /**
+   * What a component would wrap this module in — its WIT imports and
+   * lifted exports — collected on a target that emits one, and null
+   * otherwise. `BinaryGenerator` reads it after `compile()`; it is
+   * derived from the same `WasmModule` the module was emitted from, so
+   * the two cannot disagree about what exists.
+   */
+  var componentShape: ComponentShape | null = null;
 
   new(this.program, this.emitter, this.target = "zena-cli", this.zirStats = false);
 
@@ -717,5 +728,9 @@ export final class ModuleGenerator {
 
     this.emitter.emitModuleEnd();
     performance.end(tEmitOther2);
+
+    if (targetEmitsComponent(this.target)) {
+      this.componentShape = buildComponentShape(wasm);
+    }
   }
 }
