@@ -1,5 +1,5 @@
 // @mode: run
-// @result: 127
+// @result: 92
 
 // A static that carries its OWN type parameters, on a plain class.
 class Utils {
@@ -8,8 +8,8 @@ class Utils {
   static pick<A>(a: A, _b: A): A { return a; }
 }
 
-// A static on a GENERIC class that cannot name the class's parameter:
-// there is nothing to bind, so the class name alone finds it.
+// A static on a GENERIC class. It is outside the class's generic scope,
+// so the class name alone finds it — there is nothing to bind.
 class Holder<T> {
   value: T;
   new(this.value);
@@ -17,26 +17,33 @@ class Holder<T> {
   static describe(): String { return 'holder'; }
 }
 
-// A static that DOES name the class's parameter. The arguments bind it
-// where they determine it, and `Holder2<i32>.` writes it where they
-// don't.
+// A static that needs a type parameter declares its own. Its arguments
+// solve it, exactly as a generic function's do.
 class Boxed<T> {
   item: T;
   new(this.item);
-  static of(v: T): Boxed<T> { return new Boxed<T>(v); }
-  static pair(a: T, b: T): Boxed<T> { return new Boxed<T>(a); }
+  static of<A>(v: A): Boxed<A> { return new Boxed<A>(v); }
+  static pair<A>(a: A, _b: A): Boxed<A> { return new Boxed<A>(a); }
 }
 
-// Two parameters, and a static naming both of them.
+// Where the arguments do not determine it, it is written at the call —
+// the same syntax any generic function uses.
+class Empty<T> {
+  item: T;
+  new(this.item);
+  static none<A>(): Empty<A> | null { return null; }
+}
+
+// Two parameters of its own.
 class Table<K, V> {
   key: K;
   value: V;
   new(this.key, this.value);
-  static keyed(k: K, v: V): Table<K, V> { return new Table<K, V>(k, v); }
+  static keyed<A, B>(k: A, v: B): Table<A, B> { return new Table<A, B>(k, v); }
 }
 
-// A static field on a generic class is ONE cell however the class is
-// named — writing type arguments selects nothing about it.
+// A static field on a generic class names no `T`, so it is one cell —
+// and the class name is the only way to reach it.
 class Counted<T> {
   item: T;
   new(this.item);
@@ -54,13 +61,11 @@ export let main = (): i32 => {
   let c = Holder.answer();                // 42
   let d = Holder.describe().length;       // 6
   let e = Boxed.of(11).item;              // 11
-  let f = Boxed<i32>.of(30).item;         // 30
-  let g = Boxed.pair(6, 7).item;          // 6
-  let h = Table.keyed('k', 8).value;      // 8
-  let i = Table<String, i32>.keyed('k', 2).value; // 2
-  let j = Counted.bump();                 // 1
-  let k = Counted<String>.bump();         // 2 — the same cell
-  let l = SubCounted.bump();              // 3 — inherited, still the same cell
-  let m = Counted<i32>.count;             // 3 — a static field, written receiver
-  return a + b + c + d + e + f + g + h + i + j + k + l + m;
+  let f = Boxed.pair(6, 7).item;          // 6
+  let g = Table.keyed('k', 8).value;      // 8
+  let h = if (Empty.none<String>() == null) 1 else 0;  // 1
+  let i = Counted.bump();                 // 1
+  let j = SubCounted.bump();              // 2 — inherited, the same cell
+  let k = Counted.count;                  // 2
+  return a + b + c + d + e + f + g + h + i + j + k;
 };

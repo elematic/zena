@@ -138,6 +138,33 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Active Bugs
 
+### `static` on an accessor is dropped by the parser
+
+- **Found**: 2026-08-11, writing the rule that a static may not name its
+  class's type parameters. The accessor arm of that rule never fired.
+- **Severity**: low. Nothing declares a static accessor today.
+- **Details**: `parser.zena` builds every `AccessorDeclaration` with
+  `isStatic` hardcoded to `false`, so `static` in front of one parses and
+  is then silently discarded. The accessor registers as an *instance*
+  member; naming it through the class still passes the checker and fails
+  in lowering:
+
+  ```zena
+  class Plain {
+    static var n: i32 = 5;
+    static doubled: i32 { get { return Plain.n * 2; } }
+  }
+  Plain.doubled;   // zir unsupported: static member not found
+  ```
+
+  Two things are wrong: the parser drops the modifier, and static access
+  to an instance member is not diagnosed. The second is the one that
+  turns a parse bug into a codegen failure.
+- **Note**: `rejectClassTypeParamsInStatic` already has the accessor arm,
+  so the type-parameter rule starts working the moment `isStatic` is
+  plumbed through. It is untested until then.
+- **Workaround**: use a static method.
+
 ### A mixin's `static` members are declared and then unreachable
 
 - **Found**: 2026-08-11, while rejecting static fields typed by a generic

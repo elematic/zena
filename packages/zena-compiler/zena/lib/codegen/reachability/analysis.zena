@@ -12,7 +12,7 @@ import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString, parseI32 } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
-import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, mentionsTypeParameter } from '../type-mapping.zena';
+import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef, ValTypeFuncRef } from '../wasm.zena';
 import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair } from './context.zena';
@@ -319,13 +319,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   markFunctionReached(func: WasmFunction): void {
     if (this.currentReachable) {
       if (!this.reachedFunctionsSet.has(func)) {
-        // A STATIC can be exempt: it takes no receiver, so a copy on
-        // the template is a whole function rather than half of one —
-        // `Holder.answer()` names it with no way to spell arguments.
-        // What decides that it IS exempt is the caller;
-        // `#isTemplateStaticWithoutTypeParams` is the rule, and it
-        // holds out any static whose signature names the class's type
-        // parameters. This only widens what may be reached.
+        // A STATIC is exempt: it takes no receiver and cannot name the
+        // class's type parameters, so a copy on the template is a whole
+        // function rather than half of one — `Holder.answer()` names it
+        // with no way to spell arguments.
         if (func.classType != null && !isConcrete(func.classType as ClassType) &&
             !func.isStatic) {
           throw new Error("non-concrete function reached: " + (if (func.name != null) func.name as String else "<null>"));
@@ -2712,17 +2709,19 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
-   * Is this a static that a generic class's TEMPLATE can carry — one
-   * whose signature names none of the class's type parameters, so the
-   * single copy registered on the template is the only copy there is?
-   * Conservative when the member cannot be found: the instantiation
-   * path is always correct, the template path only sometimes.
+   * Is this a static the class TEMPLATE can carry? A static cannot name
+   * the class's type parameters, so one that declares none of its own
+   * has exactly one copy and the template holds it. One that DOES
+   * declare its own is monomorphized per solved argument list, like a
+   * generic function, and must not also be lowered at the erasure —
+   * `Array.from<A>`'s body constructs an `Array<A>`, which at the
+   * erasure is an `Array<anyref>` nothing ever instantiated.
    */
-  #isTemplateStaticWithoutTypeParams(ct: ClassType, mDef: MethodDefinition,
-      methName: String): boolean {
+  #isMonomorphicStatic(mDef: MethodDefinition): boolean {
     if (!mDef.isStatic) { return false; }
-    if (!ct.members.has(methName)) { return false; }
-    return !mentionsTypeParameter(this.wasm, ct.members[methName].type);
+    let tps = mDef.typeParameters;
+    if (tps == null) { return true; }
+    return tps.length == 0;
   }
 
   processQueues(): void {
@@ -2867,17 +2866,31 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 // ctors for paths that never call one, and reaching
                 // here emitted a constructor in every literal-only
                 // String program.
-                // A static on a generic class is the one exception to
-                // the concreteness rule, and only when its signature
-                // cannot mention the class's type parameters:
-                // `Holder.answer()` names the template because there is
-                // nothing to bind. A static that DOES name them
-                // (`Array.from(seq: Sequence<T>): Array<T>`) is not
-                // this — the call site binds them, and it reaches
-                // through that instantiation like any other member.
-                if (ref.isReachable &&
-                    (isConcrete(ct) || this.#isTemplateStaticWithoutTypeParams(ct, mDef, methName)) &&
+                // A static is the one exception to the concreteness
+                // rule. It cannot name the class's type parameters, so
+                // there is exactly one copy of it and the template
+                // carries it: `Holder.answer()` has nothing to bind.
+                //
+                // A static that declares its OWN parameters is the
+                // opposite case and is held out entirely: its copies are
+                // the monomorphizations, which the call site looks up by
+                // specialized name. Registering the unspecialized one
+                // too lowers its body at the erasure, where
+                // `new Array<A>` is an `Array<anyref>` nothing ever
+                // constructed.
+                let genericStatic = mDef.isStatic &&
+                    !this.#isMonomorphicStatic(mDef);
+                if (ref.isReachable && !genericStatic &&
+                    (isConcrete(ct) || this.#isMonomorphicStatic(mDef)) &&
                     methName != "<constructor>") {
+                  // The statics' backing globals hang off reaching a
+                  // static, not off instantiating the class — a generic
+                  // class whose statics are all anyone uses is never
+                  // instantiated, and its counter still has to exist.
+                  if (mDef.isStatic && cd != null && cd is ClassDeclaration) {
+                    specializer.discoverStaticFields(
+                        ct, cd as ClassDeclaration, this.classModels[lookupId]);
+                  }
                   this.wasm.addFunction(regF);
                   this.markFunctionReached(regF);
                 }

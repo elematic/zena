@@ -3636,101 +3636,49 @@ let mentionsTypeParams = (t: Type, params: Array<TypeParameterType>): boolean =>
 };
 
 /**
- * Bind a generic class's type parameters at a static access written
- * with them: `Holder<i32>.of(7)`. The class name in receiver position
- * is the only place a static can be handed the class's own arguments —
- * it takes no receiver value to read them off.
+ * A static is outside its class's generic scope. It belongs to the class
+ * itself, of which there is one however many types the class is used at,
+ * so there is no `T` for it to be written in terms of — and a static must
+ * not acquire a copy per type argument merely by mentioning one.
+ *
+ * A static that needs a type parameter declares its own:
+ * `static of<A>(v: A): Boxed<A>`, solved from the arguments or written at
+ * the call like any generic function's. The test is identity-based, so a
+ * static's own parameters never match — only the class's do.
  */
-let instantiateStaticReceiver = (
+let rejectClassTypeParamsInStatic = (
   ctx: CheckerContext,
-  ct: ClassType,
-  explicitTypeArgs: Array<TypeAnnotation>,
+  classType: ClassType,
+  t: Type,
+  kind: String,
+  name: String,
   loc: SourceLocation | null
-): ClassType => {
-  let generic = ct.genericSource ?? ct;
-  let declared = generic.typeParameters;
-  if (declared == null || (declared as Array<TypeParameterType>).length == 0) {
+): void => {
+  if (classType.typeParameters == null) { return; }
+  for (let tp in classType.typeParameters as Array<TypeParameterType>) {
+    let one = new Array<TypeParameterType>();
+    one.push(tp);
+    if (!mentionsTypeParams(t, one)) { continue; }
+    let advice = if (kind == "field") {
+      "Make it an instance field, or give it a type that does not mention '" +
+      tp.name + "'."
+    } else if (kind == "method") {
+      "Give the method its own type parameter instead: 'static " + name +
+      "<" + tp.name + ">(...)'."
+    } else {
+      "An accessor cannot take type parameters; make it a method with its " +
+      "own, or an instance accessor."
+    };
     ctx.error(
-      "'" + ct.name + "' is not generic, so it takes no type arguments here.",
-      DiagnosticCode.ArgumentCountMismatch,
+      "Static " + kind + " '" + name + "' cannot use the class's type " +
+      "parameter '" + tp.name + "'. A static belongs to '" + classType.name +
+      "' itself, so there is one of it no matter how many types the class " +
+      "is used at. " + advice,
+      DiagnosticCode.IncompatibleTypes,
       loc
     );
-    return ct;
+    return;
   }
-  let params = declared as Array<TypeParameterType>;
-  let typeArgs = new Array<Type>();
-  for (let ann in explicitTypeArgs) {
-    typeArgs.push(resolveExplicitTypeArgument(ctx, ann));
-  }
-  applyAndCheckTypeArguments(ctx, params, typeArgs, loc);
-  rejectSecondClassTypeArguments(ctx, typeArgs, loc);
-  return instantiateClassType(generic, typeArgs);
-};
-
-/**
- * Solve a generic class's type parameters from the arguments of a call
- * to one of its statics, for the receiver written without them:
- * `Holder.of(7)` is `Holder<i32>.of(7)`.
- *
- * A static that never names the class's parameters (`Holder.answer()`)
- * needs no instantiation and is left on the class itself — there is one
- * copy of it, and no arguments to spell. One that names them but that
- * the arguments do not determine (`Holder.empty(): Holder<T>`) is an
- * error naming the form that fixes it, rather than an unbound `T`
- * escaping into the caller.
- *
- * Returns the signature seen through the solved arguments, and records
- * the instantiated class as the receiver's type.
- */
-let bindStaticClassTypeArguments = (
-  ctx: CheckerContext,
-  call: CallExpression,
-  ft: FunctionType,
-  argTypes: Array<Type>
-): FunctionType => {
-  let callee = call.callee;
-  if (!(callee is MemberExpression)) { return ft; }
-  let mem = callee as MemberExpression;
-  // Written arguments already bound the class in checkMemberExpression.
-  if (mem.typeArguments != null) { return ft; }
-  if (!ctx.model.isStaticAccessDirect(mem as Node)) { return ft; }
-  let objectType = ctx.model.getNodeType(mem.object);
-  if (objectType == null || !(objectType is ClassType)) { return ft; }
-  let ct = objectType as ClassType;
-  if (ct.typeArguments != null) { return ft; }
-  let declared = ct.typeParameters;
-  if (declared == null || (declared as Array<TypeParameterType>).length == 0) {
-    return ft;
-  }
-  let params = declared as Array<TypeParameterType>;
-  if (!mentionsTypeParams(ft, params)) { return ft; }
-
-  let inferred = new HashMap<String, Type>();
-  for (var i = 0; i < argTypes.length && i < ft.parameters.length; i += 1) {
-    inferTypeArg(ft.parameters[i], argTypes[i], inferred);
-  }
-  let typeArgs = new Array<Type>();
-  for (let param in params) {
-    if (let (true, solved) = inferred.get(param.name)) {
-      typeArgs.push(solved);
-    } else if (param.defaultType != null) {
-      typeArgs.push(param.defaultType as Type);
-    } else {
-      ctx.error(
-        "Cannot infer type argument '" + param.name + "' for '" + ct.name +
-        "' from the arguments; write '" + ct.name + "<...>." +
-        mem.property.name + "(...)'.",
-        DiagnosticCode.TypeMismatch,
-        call.loc
-      );
-      return ft;
-    }
-  }
-  applyAndCheckTypeArguments(ctx, params, typeArgs, call.loc);
-  rejectSecondClassTypeArguments(ctx, typeArgs, call.loc);
-  let instantiated = instantiateClassType(ct, typeArgs);
-  ctx.setNodeType(mem.object, instantiated);
-  return substituteTypeParams(params, typeArgs, ft) as FunctionType;
 };
 
 /**
@@ -8877,30 +8825,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
         }
 
-        // A static belongs to the class itself, so there is one cell
-        // however many types the class is used at — and no `T` for that
-        // cell to be typed by. A static METHOD naming `T` is fine: it is
-        // monomorphized per instantiation, one copy per solved argument
-        // list. Storage cannot be, so this is the one place a class's
-        // type parameters are out of scope inside its own body.
-        if (fd.isStatic && classType.typeParameters != null) {
-          for (let tp in classType.typeParameters as Array<TypeParameterType>) {
-            let one = new Array<TypeParameterType>();
-            one.push(tp);
-            if (mentionsTypeParams(fieldType, one)) {
-              ctx.error(
-                "Static field '" + fieldName + "' cannot use the class's type " +
-                "parameter '" + tp.name + "'. A static belongs to '" + className +
-                "' itself, so there is one of it no matter how many types the " +
-                "class is used at, and no '" + tp.name + "' for it to hold. Make " +
-                "it an instance field, or give it a type that does not mention '" +
-                tp.name + "'.",
-                DiagnosticCode.IncompatibleTypes,
-                fd.loc
-              );
-              break;
-            }
-          }
+        if (fd.isStatic) {
+          rejectClassTypeParamsInStatic(
+              ctx, classType, fieldType, "field", fieldName, fd.loc);
         }
 
         // Extension classes cannot have instance fields.
@@ -9139,6 +9066,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
           let methodType = checkMethodSignature(ctx, classType, md);
 
+          if (md.isStatic) {
+            rejectClassTypeParamsInStatic(
+                ctx, classType, methodType, "method", methodName, md.loc);
+          }
+
           // The derivation rule for methods, checked here rather than in
           // `checkMethodSignature` because that runs again for the body
           // pass and would report every method twice. A resource's methods
@@ -9262,7 +9194,12 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           case _: "<unknown>"
         };
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-        
+
+        if (acc.isStatic) {
+          rejectClassTypeParamsInStatic(
+              ctx, classType, accType, "accessor", accName, acc.loc);
+        }
+
         // Getter creates get#accName method.
         if (acc.getter != null) {
           let getterName = "get#" + accName;
@@ -11548,26 +11485,6 @@ let checkMemberExpression = (
     }
   }
   ctx.model.setStaticAccess(expr, isStatic);
-
-  // `Holder<i32>.of` — the receiver names a generic class and supplies
-  // its arguments. Instantiate before the lookup, so the static is seen
-  // through them, and record the instantiation as the OBJECT's type:
-  // reachability and lowering both take the class off the object.
-  let writtenTypeArgs = expr.typeArguments;
-  if (writtenTypeArgs != null) {
-    if (!isStatic || !(objectType is ClassType)) {
-      ctx.error(
-        "Type arguments before '.' name a generic class for a static access; this receiver is not a class name.",
-        DiagnosticCode.TypeMismatch,
-        loc
-      );
-    } else {
-      let instantiated = instantiateStaticReceiver(
-          ctx, objectType as ClassType, writtenTypeArgs as Array<TypeAnnotation>, loc);
-      objectType = instantiated;
-      ctx.setNodeType(object, instantiated);
-    }
-  }
 
   let propName = getMemberPropertyName(isSymbolAccess, property.name);
 
@@ -14096,12 +14013,6 @@ let checkCallExpressionInner = (
           argTypes.push(checkExpression(ctx, args[i], expectedParamType));
         }
       }
-
-      // A static on a generic class binds the CLASS's type parameters
-      // at the call: `Holder.of(7)` solves them from the arguments the
-      // way `new Holder(7)` does, so the explicit `Holder<i32>.of(7)`
-      // is only needed when the arguments do not determine them.
-      effectiveFt = bindStaticClassTypeArguments(ctx, call, effectiveFt, argTypes);
 
       // Overload resolution
       let {overloads} = ft;

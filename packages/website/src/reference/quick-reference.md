@@ -1405,25 +1405,26 @@ let pi = Math.PI;
 let m = Math.max(3, 5);
 ```
 
-On a generic class, a static that names the class's type parameters has them
-bound at the call — inferred from the arguments where they determine them, and
-written on the class name where they don't.
+A `static` belongs to the class itself, so a generic class's type parameters
+are out of scope inside one. A static that needs a type parameter declares its
+own, solved from the arguments or written at the call like any generic
+function's.
 
 ```zena
 class Boxed<T> {
   item: T;
   new(this.item);
-  static of(v: T): Boxed<T> { return new Boxed<T>(v); }
-  static empty(): Boxed<T> | null { return null; }
+  static of<A>(v: A): Boxed<A> { return new Boxed<A>(v); }
+  static none<A>(): Boxed<A> | null { return null; }
 }
 
-let b = Boxed.of(11);           // Boxed<i32>, inferred
-let e = Boxed<String>.empty();  // written: nothing else determines T
+let b = Boxed.of(11);          // Boxed<i32>, solved from the argument
+let e = Boxed.none<String>();  // written: nothing else determines A
 ```
 
-A static *field* is one cell however many types the class is used at, so it
-cannot be typed by the class's type parameter — `static var stored: Array<T>`
-is an error. Static methods are fine: there is a copy of one per instantiation.
+Static storage is one cell shared by every use of the class, and there is no
+way to write a class's type arguments in expression position — a static never
+varies with them.
 
 ### Modifiers
 

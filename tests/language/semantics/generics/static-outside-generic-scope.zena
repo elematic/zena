@@ -1,0 +1,66 @@
+// @mode: check
+
+// A static belongs to the class itself, of which there is one however
+// many types the class is used at. So the class's type parameters are
+// out of scope for every static — field, method and accessor alike. A
+// static that needs one declares its own.
+
+class Cache<T> {
+  item: T;
+  new(this.item);
+
+  // @error: Static field 'stored' cannot use the class's type parameter 'T'
+  static var stored: Array<T> = new Array<T>();
+
+  // @error: Static field 'latest' cannot use the class's type parameter 'T'
+  static var latest: T | null = null;
+
+  // @error: Static method 'of' cannot use the class's type parameter 'T'
+  static of(v: T): Cache<T> { return new Cache<T>(v); }
+
+  // A parameter alone is enough; so is a return type alone.
+  // @error: Static method 'nothing' cannot use the class's type parameter 'T'
+  static nothing(): Cache<T> | null { return null; }
+
+  // A static field that names nothing is one cell, which is right.
+  static var hits: i32 = 0;
+
+  // An instance field may of course use it.
+  other: T | null = null;
+
+  // A static may declare its OWN parameter, which is not the class's.
+  static make<A>(v: A): Cache<A> { return new Cache<A>(v); }
+
+  // Including one that happens to be spelled the same way.
+  static shadow<T>(v: T): Cache<T> { return new Cache<T>(v); }
+}
+
+class Table<K, V> {
+  key: K;
+  value: V;
+  new(this.key, this.value);
+
+  // The second parameter counts as much as the first.
+  // @error: Static field 'lastValue' cannot use the class's type parameter 'V'
+  static var lastValue: V | null = null;
+
+  // Nested inside another generic still mentions it.
+  // @error: Static field 'pairs' cannot use the class's type parameter 'K'
+  static var pairs: Array<Array<K>> = new Array<Array<K>>();
+
+  // A static ACCESSOR would be rejected the same way — it has nowhere
+  // to put a type parameter of its own — but the rule cannot be tested
+  // yet: the parser drops `static` on an accessor, so one never reaches
+  // the check. See BUGS.md.
+}
+
+// A non-generic class is unaffected.
+class Plain {
+  new();
+  static var count: i32 = 0;
+  static bump(): i32 { Plain.count += 1; return Plain.count; }
+}
+
+export let main = (): i32 => {
+  return Plain.bump() + Cache.make(1).item + Cache.hits;
+};

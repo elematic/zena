@@ -2852,76 +2852,50 @@ class Container<T extends Box<V>, V> {
 
 ### Statics on a Generic Class
 
-A `static` takes no receiver, so a call to one names the class itself.
-When the class is generic, whether its type parameters need binding
-depends on whether the static's signature mentions them.
-
-A static that cannot name them is found through the bare class name:
-
-```zena
-class Holder<T> {
-  value: T;
-  new(this.value);
-  static describe(): String { return 'holder'; }
-}
-
-let d = Holder.describe();
-```
-
-A static that does name them has them bound at the call. The arguments
-determine them wherever they can, exactly as they do for `new`:
+A `static` belongs to the class itself, of which there is one however
+many types the class is used at. Its type parameters are therefore out
+of scope inside a static — field, method and accessor alike:
 
 ```zena
 class Boxed<T> {
   item: T;
   new(this.item);
-  static of(v: T): Boxed<T> { return new Boxed<T>(v); }
-  static empty(): Boxed<T> | null { return null; }
+  static of(v: T): Boxed<T> { ... }
+  // Static method 'of' cannot use the class's type parameter 'T'.
 }
-
-let b = Boxed.of(11);          // Boxed<i32>
 ```
 
-Where the arguments do not determine them, write them on the class name
-— the one place a class's own type arguments can be supplied to a member
-that has no receiver to read them from:
+A static that needs a type parameter declares its own, and it is solved
+or written exactly as any generic function's is:
 
 ```zena
-let e = Boxed<String>.empty(); // Boxed<String> | null
-```
-
-Leaving them out there is an error rather than an unbound `T`:
-
-```zena
-let e = Boxed.empty();
-// Cannot infer type argument 'T' for 'Boxed' from the arguments;
-// write 'Boxed<...>.empty(...)'.
-```
-
-A static may also carry type parameters of its own, on a generic class
-or a plain one; those are inferred from the arguments as for any generic
-function.
-
-Static **storage** is the exception, and it is why the class's type
-arguments select nothing about a static field. A static method naming
-`T` works because there is a copy of it per instantiation; a static
-field is one cell however many types the class is used at, so it cannot
-be typed by `T`:
-
-```zena
-class Cache<T> {
+class Boxed<T> {
   item: T;
   new(this.item);
-  static var hits: i32 = 0;                       // one counter, shared
-  static var stored: Array<T> = new Array<T>();
-  // Static field 'stored' cannot use the class's type parameter 'T'.
+  static of<A>(v: A): Boxed<A> { return new Boxed<A>(v); }
+  static none<A>(): Boxed<A> | null { return null; }
+}
+
+let b = Boxed.of(11);            // Boxed<i32>, solved from the argument
+let e = Boxed.none<String>();    // written: nothing else determines A
+```
+
+A static that names no type parameter at all is reached through the bare
+class name, and static storage is one cell shared by every use of the
+class:
+
+```zena
+class Counted<T> {
+  item: T;
+  new(this.item);
+  static var count: i32 = 0;
+  static bump(): i32 { Counted.count += 1; return Counted.count; }
 }
 ```
 
-Because the storage is shared, `Cache<i32>.hits` and `Cache<String>.hits`
-are the same counter, and so is `Cache.hits`. Writing type arguments
-before the dot is how you supply a static *method*'s missing `T`; on a
-static field there is nothing for them to choose.
+There is no way to write a class's type arguments in expression
+position — `Counted<i32>.bump()` is not a form. A static never varies
+with them, so there would be nothing for them to select.
 
 ### `void` as a Type Argument
 

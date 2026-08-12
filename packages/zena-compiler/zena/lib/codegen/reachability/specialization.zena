@@ -63,6 +63,53 @@ export final class Specializer implements SpecializerInterface {
     }
   }
 
+  /**
+   * Create the globals backing a class's static fields. One global per
+   * field, named for the class rather than any specialization, because a
+   * static cannot name the class's type parameters and so does not vary
+   * with them.
+   *
+   * Driven by reaching a static, NOT by instantiating the class: a
+   * generic class whose statics are all anyone uses is never
+   * instantiated, and its counter still has to exist.
+   */
+  discoverStaticFields(classType: ClassType, cd: ClassDeclaration,
+      model: SemanticModel): void {
+    for (let member in cd.body) {
+      if (!(member is FieldDefinition)) { continue; }
+      let fd = member as FieldDefinition;
+      if (!fd.isStatic) { continue; }
+      let fieldName = match (fd.name) {
+        case Identifier {name}: name
+        case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+          case Identifier {name}: name
+          case MemberExpression {property}: property.name
+          case _: "<symbol>"
+        }
+        case _: ""
+      };
+      if (fieldName == "") { continue; }
+      let name = cd.name.name + "_" + fieldName;
+      // One global per class, not per specialization: two instantiations
+      // of a generic class share the cell, and reaching a static can now
+      // get here without any instantiation at all.
+      var already = false;
+      for (let existing in this.pass.wasm.globals) {
+        if (existing.name == name) { already = true; }
+      }
+      if (already) { continue; }
+      let fType = if (classType.members.has(fieldName)) {
+        classType.members[fieldName].type
+      } else {
+        model.getNodeType(fd)
+      };
+      let vType = typeToValType(this.pass.wasm, fType as Type);
+      let initExp: Expression | null = if (fd.value != null) { fd.value as Expression } else { null };
+      this.pass.wasm.globals.push(
+          new WasmGlobal(name, fieldName, vType, true, initExp, null, model));
+    }
+  }
+
   instantiateClassType(classType: ClassType, model: SemanticModel): void {
     if (!this.pass.isRtaActive) {
       return;
@@ -190,35 +237,7 @@ export final class Specializer implements SpecializerInterface {
 
     if (classDecl != null && classDecl is ClassDeclaration) {
       let cd = classDecl as ClassDeclaration;
-      // Discover static fields
-      for (let member in cd.body) {
-        if (member is FieldDefinition) {
-          let fd = member as FieldDefinition;
-          if (fd.isStatic) {
-            let fieldName = match (fd.name) {
-              case Identifier {name}: name
-              case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-                case Identifier {name}: name
-                case MemberExpression {property}: property.name
-                case _: "<symbol>"
-              }
-              case _: ""
-            };
-            if (fieldName != "") {
-              let fType = if (classType.members.has(fieldName)) {
-                classType.members[fieldName].type
-              } else {
-                model.getNodeType(fd)
-              };
-              let vType = typeToValType(this.pass.wasm, fType as Type);
-              let name = cd.name.name + "_" + fieldName;
-              let initExp: Expression | null = if (fd.value != null) { fd.value as Expression } else { null };
-              let wasmGlobal = new WasmGlobal(name, fieldName, vType, true, initExp, null, model);
-              this.pass.wasm.globals.push(wasmGlobal);
-            }
-          }
-        }
-      }
+      this.discoverStaticFields(classType, cd, model);
 
       // Check if there is an explicit constructor
       var hasExplicitCtor = false;
