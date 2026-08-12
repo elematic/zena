@@ -4582,14 +4582,14 @@ export final class FunctionLowerer {
       args.push(value);
     }
     if (sig.returns.length > 1) {
-      if (isVirtual) {
-        this.#bail('virtual multi-value method');
-      }
       for (let r in sig.returns) {
         this.#requireSupported(r, 'method result type');
       }
-      let multiRef = this.b.addRef(new IrRefFunc(method));
-      let projs = this.b.callFuncMulti(multiRef, args, sig.returns);
+      let projs = if (isVirtual) {
+        this.#cx().lowerVtableCallMulti(receiver, classInfo, slotName, sig, args)
+      } else {
+        this.b.callFuncMulti(this.b.addRef(new IrRefFunc(method)), args, sig.returns)
+      };
       let outs = multiOut as Array<i32>;
       for (let p in projs) {
         outs.push(p);

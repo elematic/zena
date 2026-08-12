@@ -541,6 +541,22 @@ export final class LoweringContext {
   lowerVtableCall(receiver: i32, classInfo: ClassCodegenInfo,
       slotName: String, sig: WasmSignature, args: Array<i32>,
       resultType: ValType | null): i32 {
+    let slot = this.#vtableSlotCallee(receiver, classInfo, slotName, sig);
+    return this.b.callRef(slot, args, resultType);
+  }
+
+  /** lowerVtableCall for multi-value slot signatures: same slot load,
+   * callRefMulti's projection contract. */
+  lowerVtableCallMulti(receiver: i32, classInfo: ClassCodegenInfo,
+      slotName: String, sig: WasmSignature, args: Array<i32>): Array<i32> {
+    let slot = this.#vtableSlotCallee(receiver, classInfo, slotName, sig);
+    return this.b.callRefMulti(slot, args, sig.returns);
+  }
+
+  /** The vtable slot of an already-lowered receiver, cast to the
+   * resolved method's exact signature — the callee value for call_ref. */
+  #vtableSlotCallee(receiver: i32, classInfo: ClassCodegenInfo,
+      slotName: String, sig: WasmSignature): i32 {
     let structType = classInfo.structType;
     let vtStruct = classInfo.vtableStructType as WasmStruct;
     let vtFieldVt = this.fieldValType(structType, '<vtable>');
@@ -558,9 +574,8 @@ export final class LoweringContext {
     let slotRaw = this.b.emit(IrOp.struct_get, slotVt, vt,
         this.b.addRef(new IrRefField(vtStruct, slotName)));
     let sigVt: ValType = new ValTypeRef(sig);
-    let slot = this.b.emit(IrOp.ref_cast, sigVt, slotRaw,
+    return this.b.emit(IrOp.ref_cast, sigVt, slotRaw,
         this.b.internType(sigVt));
-    return this.b.callRef(slot, args, resultType);
   }
 
   fieldValType(owner: WasmStruct, name: String): ValType {

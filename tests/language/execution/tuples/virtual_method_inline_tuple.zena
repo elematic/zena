@@ -1,0 +1,69 @@
+// @mode: run
+// @result: 0
+
+// Virtual (vtable-dispatched) methods returning inline tuples: the
+// receiver's static type has an overriding subclass, so the call goes
+// through the class vtable and must still produce multi-value results.
+
+class Base {
+  new();
+
+  pair(): inline (i32, i32) {
+    return (1, 2);
+  }
+
+  step(limit: i32, n: i32): inline (true, i32) | inline (false, _) {
+    if (n < limit) {
+      return (true, n + 1);
+    }
+    return (false, _);
+  }
+}
+
+class Derived extends Base {
+  new() : super();
+
+  pair(): inline (i32, i32) {
+    return (10, 20);
+  }
+
+  step(limit: i32, n: i32): inline (true, i32) | inline (false, _) {
+    if (n < limit) {
+      return (true, n + 2);
+    }
+    return (false, _);
+  }
+}
+
+let sumPair = (obj: Base): i32 => {
+  let (a, b) = obj.pair();
+  return a + b;
+};
+
+let countSteps = (obj: Base, limit: i32): i32 => {
+  var n = 0;
+  var steps = 0;
+  while (let (true, next) = obj.step(limit, n)) {
+    n = next;
+    steps += 1;
+  }
+  return steps;
+};
+
+export let main = (): i32 => {
+  if (sumPair(new Base()) != 3) { return 1; }
+  if (sumPair(new Derived()) != 30) { return 2; }
+
+  // if-let over a virtual union-tuple return.
+  let d: Base = new Derived();
+  if (let (true, v) = d.step(10, 0)) {
+    if (v != 2) { return 3; }
+  } else {
+    return 4;
+  }
+
+  if (countSteps(new Base(), 6) != 6) { return 5; }
+  if (countSteps(new Derived(), 6) != 3) { return 6; }
+
+  return 0;
+};
