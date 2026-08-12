@@ -11,7 +11,7 @@ import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, containsErasedType } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
 
 /**
@@ -344,6 +344,7 @@ export final class Specializer implements SpecializerInterface {
     let ctVtable = this.pass.wasm.classVtable(cKey);
 
     let ctParams = getClassTypeParameters(ct);
+    let isErasedClass = containsErasedType(ct as Type);
 
     // 1. Pre-register empty structs
     let structName = cKey as String;
@@ -395,7 +396,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
-    if (ct.isCaseClass) {
+    if (ct.isCaseClass && !isErasedClass) {
       var hasEq = false;
       var hasHash = false;
       for (let existing in ctVtable) {
@@ -423,6 +424,19 @@ export final class Specializer implements SpecializerInterface {
     let specIfaces = cha.collectAllImplementedInterfaces(ct);
     for (let iface in specIfaces) {
       typeLowerer.discoverType(iface, sourceModel);
+    }
+
+    // An ERASURE gets a struct and nothing else. Erased signatures and
+    // fields name the struct, so it has to exist — but no value is ever
+    // of the erased class, so no method on it can be called. Registering
+    // them anyway put one dead body per method per erased class in every
+    // module (87 in the compiler's own, referenced by nothing), and gave
+    // the vtable slots an erased body of every method to force-reach —
+    // which is what fails to lower when a method uses `hash`/`eq`, since
+    // those dispatch on their operand's type.
+    if (isErasedClass) {
+      this.populateClassStructAndMethods(ct, classDecl, sourceModel);
+      return;
     }
 
     // 4. Populate VTable slots and structs
@@ -1335,7 +1349,9 @@ export final class Specializer implements SpecializerInterface {
     }
 
     let cdDecl = if (cd != null && cd is ClassDeclaration) cd as ClassDeclaration else null;
-    if (cdDecl != null) {
+    // An erasure gets a struct and no methods — see registerSpecializedClass.
+    let isErasedCt = containsErasedType(ct as Type);
+    if (cdDecl != null && !isErasedCt) {
       let mixinMembers = new Array<Node>();
       let mixinScopes = new Array<String>();
       let seenMixins = new HashMap<MixinKey, boolean>();
@@ -1509,7 +1525,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
-    if ((cdDecl != null || ct.isCaseClass || (cd != null && cd is SealedVariant)) && !ct.isExtension) {
+    if ((cdDecl != null || ct.isCaseClass || (cd != null && cd is SealedVariant)) && !ct.isExtension && !isErasedCt) {
       let wasmFunc = this.registerClassMethod(ct, cd, "<constructor>", null, false, false, null, sourceModel);
       if (wasmFunc.classDecl == null) {
         wasmFunc.classDecl = cd;

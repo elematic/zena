@@ -728,28 +728,15 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   // template's type parameters and the solved arguments; every type
   // query routes through substituteTypeParamsInFunctionContext, so
   // they lower like plain functions. A generic with no solved
-  // arguments is an ERASED vtable copy: its type parameters mean
-  // anyref, so synthesize that solution and let the same substitution
-  // machinery run — restored even on bail, since streaming
-  // re-generates this function from the same object.
-  if (func.typeParameters != null && func.typeArguments == null) {
-    let erasedArgs = new Array<Type>();
-    for (let tp in (func.typeParameters as Array<TypeParameterType>)) {
-      erasedArgs.push(new ErasedType());
-    }
-    func.typeArguments = erasedArgs;
-    let erasedLowerer = new FunctionLowerer(wasm, func);
-    let result = try {
-      erasedLowerer.lower()
-    } catch (e) {
-      func.typeArguments = null;
-      throw e
-    };
-    func.typeArguments = null;
-    return result;
-  }
+  // arguments used to be lowered at its erasure here — nothing is
+  // registered at an erasure now (reachability/CONTEXT.md), so reaching
+  // this with an unsolved generic is a reachability bug, not a shape to
+  // synthesize a solution for.
   if (func.typeParameters == null && func.typeArguments != null) {
     throw new ZirUnsupported("function shape");
+  }
+  if (func.typeParameters != null && func.typeArguments == null) {
+    throw new ZirUnsupported("generic function at its erasure");
   }
   if (func.isClosure) {
     if (func.contextStruct == null) {

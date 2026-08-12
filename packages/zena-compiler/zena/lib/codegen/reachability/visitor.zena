@@ -181,7 +181,7 @@ export final class TypeLowerer implements TypeLowererInterface {
             resolvedArgs.push(arg);
           }
         }
-        let isSpecialized = resolvedArgs.length > 0;
+        let isSpecialized = resolvedArgs.length > 0 && noOpenTypeParameters(resolvedArgs);
         if (isSpecialized && this.pass.wasm.genericFunctions.has(targetSymId)) {
           specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
         }
@@ -271,12 +271,12 @@ export final class TypeLowerer implements TypeLowererInterface {
         // anyref, which is what made a generic class whose methods use
         // them impossible to subclass.
         //
-        // CONSTRUCTION is still evidence, and the erasure of a generic
-        // FUNCTION is real code: `fill_spec_erased` runs `new Full<T>`
-        // as `new Full<erased>`, and that instantiates through the
-        // `new` site (registerInstantiations), not through a mention.
-        // The struct is registered either way — erased signatures and
-        // fields refer to it.
+        // Nothing is emitted at an erasure, so nothing constructs one
+        // either: the erasure of a generic FUNCTION is no longer
+        // specialized (noOpenTypeParameters, below), which was the only
+        // thing that ran `new Full<T>` as `new Full<erased>`. The STRUCT
+        // is still registered — erased signatures and fields name it —
+        // and registerSpecializedClass stops there for an erasure.
         let isErasedMention = containsErasedType(ct as Type);
         let specializer = this.pass.specializer;
         if (!isErasedMention) {
@@ -1869,7 +1869,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 }
               }
             }
-            let isSpecialized = resolvedArgs.length > 0;
+            let isSpecialized = resolvedArgs.length > 0 && noOpenTypeParameters(resolvedArgs);
             if (isSpecialized && targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
               this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
             } else if (targetSymId != noSymbolId && this.pass.wasm.functionMap.has(targetSymId)) {
@@ -1908,7 +1908,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         resolvedArgs.push(arg);
       }
     }
-    let isSpecialized = resolvedArgs.length > 0;
+    let isSpecialized = resolvedArgs.length > 0 && noOpenTypeParameters(resolvedArgs);
     if (isSpecialized && targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
       this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
     }
@@ -2015,7 +2015,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         resolvedArgs.push(arg);
       }
     }
-    let isSpecialized = resolvedArgs.length > 0;
+    let isSpecialized = resolvedArgs.length > 0 && noOpenTypeParameters(resolvedArgs);
     if (isSpecialized && targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
       this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
     }
@@ -2516,6 +2516,25 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     this.pass.wasm.wasiWriteStringIndex = 1;
   }
 }
+
+/**
+ * Whether a specialization's type arguments are all closed.
+ *
+ * A generic function named from inside another generic's body carries
+ * its type parameters verbatim — `fill<T>(v)` inside `outer<T>`. That
+ * is not a call site, it is the template of one: every value it stands
+ * for belongs to some `fill<i32>` a real call site names. Specializing
+ * it anyway emits a body per generic function per module, at arguments
+ * nothing supplies — dead code, and the arguments key as "erased"
+ * (getTypeKeyForSpecialization), so the body is one that cannot lower
+ * `hash`/`eq`, which dispatch on their operand's type.
+ */
+let noOpenTypeParameters = (args: Array<Type>): boolean => {
+  for (let a in args) {
+    if (a is TypeParameterType) { return false; }
+  }
+  return true;
+};
 
 let eraseType = (t: Type): Type => {
   return match (t) {

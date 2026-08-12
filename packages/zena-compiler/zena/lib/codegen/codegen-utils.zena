@@ -192,10 +192,11 @@ export { typeContainsTypeParameter } from '../types.zena';
 export let isConcrete = (t: Type): boolean => {
   return match (t) {
     case TypeParameterType: false
-    // An ERASURE is concrete: `fill_spec_anyref` — the erasure of a
-    // generic function — is emitted, runs, and constructs `Full<erased>`
-    // for real (boxing anything primitive on the way in). What must not
-    // treat it as a specialization is a MENTION; see containsErasedType.
+    // An erasure is concrete in the sense this predicate asks about: it
+    // is a type, and a slot can hold it. It is NOT something to emit
+    // code for — nothing is ever registered at an erasure now (see
+    // containsErasedType and registerSpecializedClass), so callers that
+    // mean "should this get a body?" must ask that instead.
     case ErasedType: true
     case UnknownType: false
     case ErrorType: false
@@ -447,6 +448,12 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
 export let containsErasedType = (t: Type): boolean => {
   return match (t) {
     case ErasedType: true
+    // A type parameter still standing and its erasure key the SAME
+    // (getTypeKeyForSpecialization), so `Array<T>` and `Array<erased>`
+    // ARE one class — `Array_s777_erased`. They must classify the same
+    // here too: a mention carrying a bare `T` is an erasure that has
+    // not been spelled yet, not a specialization.
+    case TypeParameterType: true
     case ArrayType {elementType}: containsErasedType(elementType)
     case ClassType as ct: {
       if (ct.typeArguments == null) { return false; }

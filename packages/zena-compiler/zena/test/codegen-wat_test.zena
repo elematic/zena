@@ -372,5 +372,28 @@ export let tests = suite('WatGenerator', (): void => {
     
     assertSnapshot('console_target_zena_cli', result);
   });
+
+  // Nothing is emitted at an erasure. A generic named from inside
+  // another generic's body carries that body's type parameters, which
+  // key as "erased" (getTypeKeyForSpecialization) — specializing on
+  // them emitted a body per generic per module at arguments no call
+  // site supplies (87 in the compiler's own module), and those bodies
+  // cannot lower `hash`/`eq`, which dispatch on their operand's type.
+  //
+  // Module-wide on purpose: an erased body is named for the erasure it
+  // belongs to, so no single function is the one to scope this to. The
+  // erased STRUCT may still appear — erased signatures and fields name
+  // it — so this asserts on the two shapes an erased FUNCTION name
+  // takes: `fill_spec_erased` and `Full_s867_erased.<constructor>`.
+  test('no function is emitted at an erasure', (ctx: TestContext): void => {
+    let result = compileAndGenerateWat(`
+      class Full<T> { value: T; new(value: T) : value = value; }
+      function fill<T>(value: T): Full<T> { return new Full(value); }
+      function outer<T>(v: T): T { return fill<T>(v).value; }
+      export let main = (): i32 => outer<i32>(42) + (if (outer<boolean>(true)) 2 else 0);
+    `);
+    equal(result.contains('_spec_erased'), false);
+    equal(result.contains('_erased.'), false);
+  });
 });
 

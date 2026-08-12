@@ -11,7 +11,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString, parseI32 } from 'zena:string-convert';
-import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName } from '../codegen-utils.zena';
+import { getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, matchOverload, collectMixinMembers, mixinScopeOfMember, getMemberRootClass, getClassPrivateFieldKey, MixinKey, InterfaceKey, ExportKey, ExportGlobalKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, FunctionAdaptationKey, getTypeUniqueKey, findMixinDeclaration, getMixinKeyFromSymbol, getClosureSpecializationKey, ClosureSpecializationKey, isConcrete, ClassInterfaceKey, getSpecializedName, containsErasedType } from '../codegen-utils.zena';
 import { typeToValType, getClosureStruct, getInterfaceMemberSignature, getClassMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeEqRef, ValTypeExternRef, ValTypeFuncRef } from '../wasm.zena';
@@ -1650,10 +1650,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // per-pair below, is only ever recorded against discovered classes.
 
     for (let cType in classes) {
-      let isGenericTemplate = cType.typeParameters != null && 
-                              (cType.typeParameters as Array<TypeParameterType>).length > 0 && 
+      let isGenericTemplate = cType.typeParameters != null &&
+                              (cType.typeParameters as Array<TypeParameterType>).length > 0 &&
                               (cType.typeArguments == null || !isConcrete(cType));
-      if (isGenericTemplate) {
+      // An ERASURE passes `isConcrete` (an erased slot IS a type) but is
+      // no more dispatchable than a template: it has a struct and no
+      // methods, so there is nothing to put in a trampoline slot.
+      if (isGenericTemplate || containsErasedType(cType as Type)) {
         continue;
       }
       let cName = getClassKey(cType);
@@ -2835,7 +2838,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 visitor.registerInstantiations(node, model, resolver,
                     if (ref.classType != null) ref.classType as ClassType else null);
               }
-              if (node is MethodDefinition && ref.classType != null) {
+              // A referrer whose class is an ERASURE registers nothing:
+              // the erasure has a struct and no methods, and every value
+              // it stands for belongs to some real specialization that
+              // queues its own referrer.
+              let refClassIsErasure = ref.classType != null &&
+                  containsErasedType(ref.classType as Type);
+              if (node is MethodDefinition && ref.classType != null && !refClassIsErasure) {
                 let mDef = node as MethodDefinition;
                 let ct = ref.classType as ClassType;
                 let cKey = getClassKey(ct);
@@ -2907,7 +2916,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   this.wasm.addFunction(regF);
                   this.markFunctionReached(regF);
                 }
-              } else if (node is AccessorDeclaration && ref.classType != null) {
+              } else if (node is AccessorDeclaration && ref.classType != null && !refClassIsErasure) {
                 let acc = node as AccessorDeclaration;
                 let ct = ref.classType as ClassType;
                 let cKey = getClassKey(ct);

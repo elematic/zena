@@ -74,12 +74,39 @@ codegen-internal type, so this is a fact about the type rather than a
 guess about which walk produced the mention. The erased class's struct
 is still registered, because erased signatures and fields refer to it.
 
-CONSTRUCTION is the other question and has a different answer: the
-erasure of a generic FUNCTION is emitted and runs, so its `new Full<T>`
-really does build a `Full<erased>` and really does need that
-constructor. The `new`-expression arms erase what they construct unless
-`walkingTemplateOf` says the body being walked is a template's — those
-are never emitted, so they construct nothing.
+Nothing is emitted at an erasure, including the erasure of a generic
+FUNCTION. `fill<T>(v)` named from inside `outer<T>`'s body is not a call
+site, it is the template of one: every value it stands for belongs to
+some `fill<i32>` a real call site names. `noOpenTypeParameters`
+(`visitor.zena`) refuses to specialize on arguments that are still bare
+type parameters, so `fill_spec_erased` is never minted, and with it goes
+the only thing that ever ran `new Full<T>` as `new Full<erased>`.
+
+`walkingTemplateOf` does not cover this and structurally cannot: it is
+`ClassType | null`, set only for a non-concrete class referrer, so it is
+always null while walking a generic top-level function.
+
+So `registerSpecializedClass` stops after the struct for an erasure — no
+vtable slots, no methods, no constructor — `#buildClassInterfaceVTables`
+skips it (an erasure passes `isConcrete` but has nothing to put in a
+trampoline slot), and a member referrer whose class is an erasure
+registers nothing. The struct itself is still registered, because erased
+signatures and fields name it.
+
+The two halves check each other. Mint an erased function specialization
+without the class half and lowering fails loudly — `constructor missing
+for Full_s867_erased @fill_spec_erased` — instead of emitting a dead
+body that happens not to be called. In the compiler's own module this
+removed 87 functions (15,155 → 15,068), every one of them unreferenced
+from any non-erased body.
+
+A trap when measuring this: `getTypeKeyForSpecialization` maps a bare
+`TypeParameterType` and an `ErasedType` to the SAME key, `"erased"`. So
+`fill_spec_erased` may have been minted with a raw `T` and never an
+`ErasedType` at all, and a `containsErasedType` probe will not see it.
+`Array<T>` and `Array<erased>` are likewise one class,
+`Array_s777_erased` — which is why `containsErasedType` answers true for
+a bare type parameter too.
 
 ## A Generic Method Exists Only Per Specialization
 
