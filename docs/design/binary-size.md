@@ -1033,6 +1033,87 @@ artifact caches like any build). `minimal_program.snap` and
 enough to read whole, so a regression names the exact
 function/type/export it added.
 
+## 16. Inherited methods are re-emitted per subclass
+
+When RTA instantiates a concrete class, it registers a body for every
+reached member under that class's key — including members declared on
+an ancestor. This program:
+
+```zena
+class Base<T> {
+  #node: Node<T> | null;
+  #find(): Node<T> | null { return this.#node; }
+  size(): i32 { ... }
+}
+final class Derived<T> extends Base<T> {}
+// new Derived<i32>() ... d.size()
+```
+
+emits four method bodies where two would do:
+
+```
+$Base_s890_i32.size    $Derived_s891_i32.size     — identical bodies
+$Base_s890_i32.#find   $Derived_s891_i32.#find    — identical bodies, same type index
+```
+
+The pairs are identical by construction, not by luck. A method body can
+only mention type parameters in scope at its declaration site — the
+declaring class's chain — and restricted to those parameters, the
+subclass's substitution context is exactly the resolved base
+instantiation's. The receiver parameter is already typed by the
+declaring class (`getMemberRootClass`), so both copies of `#find` above
+even share a wasm type index. The duplication compounds: every
+instantiated level of a hierarchy carries its own full set of reached
+bodies, and the base's set is force-reached by its vtable global even
+when every call goes through the subclass.
+
+### Sharing by declaring-class instantiation
+
+The fix is a keying change in registration, not a dedup pass over
+emitted bodies: register an inherited member under its *declaring
+class's resolved instantiation* (`Derived<i32>` resolves `#find` to
+`Base_s890_i32.#find`) instead of minting a copy under the
+instantiating class. The cases that genuinely need a distinct copy then
+fall out of the key itself:
+
+- An override is a different declaration — it registers under the
+  subclass because the subclass is its declaring class.
+- A subclass that binds the base's generics differently
+  (`extends Base<String>` vs `extends Base<i32>`) resolves to a
+  different instantiation of the declaring class, so a distinct copy is
+  minted exactly when the substitution context differs.
+- Mixin members stay per-host copies: a mixin body's `this` maps to the
+  host class, so those bodies differ by design.
+
+Devirtualization does not depend on the per-subclass copies.
+`resolveDevirtualizedMethod` (lowering-context.zena) walks the
+receiver's super chain and takes the first `classMethodMap` hit,
+refusing when a reached subclass overrides the member — remove the
+subclass copies and the walk finds the base copy one hop later.
+
+Private members are the contained first slice: they are lexically
+scoped and can never be overridden, so a subclass-keyed copy of a
+private method is never needed. That copy is also where the
+signature-vs-body substitution bug lived (an inherited private method's
+signature was substituted with the subclass's own type parameters,
+which are different symbols from the declaring class's — fixed in
+`registerClassMethod` by using the same `substituteTypeParamsInClassContext`
+the body lowering uses).
+`tests/language/execution/classes/private-generic-return-subclass.zena`
+and its `-nonnull` sibling pin the shape and are the natural fixtures:
+with sharing, the `Derived.#find` copy stops existing at all.
+
+The touch points are the registration and lookup sites that key by the
+instantiating class today: vtable slot population (point the slot at
+the declaring-class instantiation's function), `queuePrivateMethod` and
+the private-call lowering (resolve to the declaring class's
+instantiation), and `WasmModule.layout()`'s rebuild of
+`classMethodMap` from reached functions (a shared body is reached
+once, not once per subclass). Synthesized accessors are safe to share:
+a base field keeps its index in a subtype struct, so the
+`getterStruct`/`getterFieldIndex` pair computed for the declaring class
+is correct for every subclass receiver.
+
 ## The keystone: `hasInst` and the class vtable
 
 Everything still in the module traces back to a single coupling.
@@ -1231,6 +1312,13 @@ In dependency order:
    nothing forces its implementation to be emitted.
 8. **Register function-value wrappers from genuine value positions
    only** — 7 remain for stdlib functions never used as values.
+9. **Key inherited members by declaring-class instantiation**
+   (section 16), so a subclass reuses `Base_i32.size` instead of
+   minting an identical `Derived_i32.size`. Start with private
+   members — never overridable, so never legitimately copied — then
+   vtable slot population. Distinct copies remain only where the key
+   genuinely differs: overrides, different generic bindings of the
+   base, mixin members.
 
 ## The ratchet
 
