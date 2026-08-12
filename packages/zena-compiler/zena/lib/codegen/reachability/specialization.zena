@@ -12,7 +12,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, containsErasedType } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, substituteTypeParamsInClassContext, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
 
 /**
  * A struct field whose class type was not yet registered when the
@@ -1016,7 +1016,14 @@ export final class Specializer implements SpecializerInterface {
     }
 
     if (methodTypeNode != null && cType != null) {
-      methodTypeNode = substituteTypeParamsInCodegen(this.pass.wasm, getClassTypeParameters(cType), cType.typeArguments, methodTypeNode as Type);
+      // Full class-context substitution, not just cType's own params:
+      // a member found up the super chain (an inherited private
+      // method, a synthesized accessor for an inherited field) has a
+      // type written in terms of the DECLARING class's type
+      // parameters, which are different symbols from cType's. The
+      // body is lowered under the same context, so the signature must
+      // substitute with it too or the two disagree about what T is.
+      methodTypeNode = substituteTypeParamsInClassContext(this.pass.wasm, cType, methodTypeNode as Type);
       if (methodTypeArgs != null && methodTypeNode is FunctionType) {
         let fType = methodTypeNode as FunctionType;
         if (fType.typeParameters != null) {

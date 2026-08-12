@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 5
+
+// Non-nullable variant of private-generic-return-subclass.zena: the
+// same shape fails with `#find(): Node<T>` too, so the bug is not
+// about `| null` — it is the type-parameter substitution of a private
+// method's return type when re-emitted for a subclass.
+
+class Node<T> {
+  value: T;
+  new(this.value: T);
+}
+
+class Base<T> {
+  #node: Node<T>;
+  new(v: T) : #node = new Node<T>(v);
+
+  #find(): Node<T> {
+    return this.#node;
+  }
+
+  first(): T {
+    let n = this.#find();
+    return n.value;
+  }
+}
+
+final class Derived<T> extends Base<T> {
+  new(v: T) : super(v);
+  tag(): i32 { return 4; }
+}
+
+export let main = (): i32 => {
+  let d = new Derived<i32>(1);
+  return d.first() + d.tag();
+};

@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 5
+
+// A #private method on a generic class whose return type mentions the
+// class's type parameter, called through a subclass. Private methods
+// are non-virtual and re-emitted under the subclass's key; the return
+// type must be substituted with the same T as the body, or the return
+// lowering sees two different concrete structs ("return requires
+// conversion @Derived.#find").
+
+class Node<T> {
+  value: T;
+  new(this.value: T);
+}
+
+class Base<T> {
+  #node: Node<T> | null;
+  new() : #node = null;
+
+  #find(): Node<T> | null {
+    return this.#node;
+  }
+
+  size(): i32 {
+    let n = this.#find();
+    if (n != null) { return 1; }
+    return 0;
+  }
+}
+
+final class Derived<T> extends Base<T> {
+  tag(): i32 { return 5; }
+}
+
+export let main = (): i32 => {
+  let d = new Derived<i32>();
+  return d.size() + d.tag();
+};
