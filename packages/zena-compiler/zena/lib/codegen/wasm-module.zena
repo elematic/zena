@@ -512,11 +512,14 @@ export final class WasmFunction implements Hashable {
    */
   var isAsyncMainWrapper: boolean = false;
   /**
-   * The synthesized `main$componentRun`: calls main, then asks the p3
-   * driver for the callback code. Its body lives in
-   * ir/component-entry.zena rather than in any source file.
+   * A function the component target synthesizes to sit between the
+   * canonical ABI and a Zena one: `main$componentRun`, which calls main
+   * and then asks the p3 driver for the callback code, and the
+   * `$componentExport` wrappers, which convert a signature's strings to
+   * and from linear memory. Their bodies live in
+   * ir/component-adapters.zena rather than in any source file.
    */
-  var isComponentEntry: boolean = false;
+  var isComponentAdapter: boolean = false;
   /**
    * Set on body-less functions that exist only to occupy a vtable
    * slot. A class's vtable struct declares one exactly-typed funcref
@@ -909,6 +912,18 @@ export final class WasmModule {
    */
   var hostWritesStrings = false;
   var hostReadsStrings = false;
+  /**
+   * The same evidence for the component target: a String crosses one of
+   * this module's exports, so `zena:canonical-abi` is rooted and the
+   * lifts carry the memory options.
+   *
+   * Separate from the two above because the boundaries are different.
+   * The `$string*` helpers hand a String to an embedder holding the core
+   * module; a component's host never sees the core module, and its
+   * strings cross as bytes in linear memory. Setting both would emit
+   * four exports a component cannot call.
+   */
+  var componentMovesStrings = false;
   var stringCreateFunc: WasmFunction | null = null;
   var stringSetByteFunc: WasmFunction | null = null;
   var stringGetByteFunc: WasmFunction | null = null;
@@ -927,6 +942,20 @@ export final class WasmModule {
    */
   var componentEntryFunc: WasmFunction | null = null;
   var componentCallbackFunc: WasmFunction | null = null;
+  /**
+   * The `$componentExport` wrapper for each export whose signature
+   * carries a `string`, keyed by the export's own name. An export with
+   * only flat scalars has none and is lifted directly; the map is empty
+   * for every other target.
+   */
+  var componentExportWrappers = new HashMap<ExportKey, WasmFunction>();
+  /**
+   * `zena:canonical-abi`'s allocator and its `post-return`, exported
+   * from the core module under the names the canonical options use.
+   * Present exactly when something in the component moves a `string`.
+   */
+  var componentReallocFunc: WasmFunction | null = null;
+  var componentPostReturnFunc: WasmFunction | null = null;
   var stringGetLengthFunc: WasmFunction | null = null;
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();

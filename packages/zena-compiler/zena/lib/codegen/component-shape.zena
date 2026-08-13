@@ -22,16 +22,17 @@ import { String } from 'zena:string';
 import { WasmModule, WasmFunction } from './wasm-module.zena';
 import { Node } from '../ast.zena';
 import {
-  Type, FunctionType, TypeAliasType, I32Type, U32Type, I64Type, U64Type,
-  F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, BooleanType, VoidType,
-  typeToString
+  Type, FunctionType, TypeAliasType, ClassType, I32Type, U32Type, I64Type,
+  U64Type, F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, BooleanType,
+  VoidType, typeToString
 } from '../types.zena';
 import { i32ToString } from 'zena:string-convert';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc, ComponentFuncType,
   ComponentCanonBuiltin, ComponentValType, noComponentResult, isKebabName,
   toKebabName, canonNamespace, isKnownCanonBuiltin, componentEntryExport,
-  componentCallbackExport
+  componentCallbackExport, componentTypeNeedsMemory,
+  componentSignatureNeedsMemory
 } from './component-emitter.zena';
 
 /** Look through type aliases (`type`, `distinct type`) to the type itself. */
@@ -41,27 +42,56 @@ let underlying = (t: Type): Type => match (t) {
 };
 
 /**
- * The component-level type of a Zena parameter or result type, or -1 if
- * it has none. Only flat scalars have one today: everything else needs
- * the canonical ABI's memory options, which is C3.
+ * Whether `t` is the standard library's `String`, compared by identity
+ * against the class the module already found rather than by name. A
+ * program is free to declare a `String` of its own, and it does not
+ * cross the boundary as `string`.
  */
-let componentTypeOf = (t: Type): i32 => match (underlying(t)) {
-  case I32Type: ComponentValType.S32 as i32
-  case U32Type: ComponentValType.U32 as i32
-  case I64Type: ComponentValType.S64 as i32
-  case U64Type: ComponentValType.U64 as i32
-  case F32Type: ComponentValType.F32 as i32
-  case F64Type: ComponentValType.F64 as i32
-  case U8Type: ComponentValType.U8 as i32
-  case U16Type: ComponentValType.U16 as i32
-  case I8Type: ComponentValType.S8 as i32
-  case I16Type: ComponentValType.S16 as i32
-  case BooleanType: ComponentValType.Bool as i32
-  case _: -1
+let isStringType = (wasm: WasmModule, t: Type): boolean => {
+  let stringClass = wasm.stringClass;
+  if (stringClass == null) {
+    return false;
+  }
+  let u = underlying(t);
+  if (!(u is ClassType)) {
+    return false;
+  }
+  return (u as ClassType).symbolId == (stringClass as ClassType).symbolId;
+};
+
+/**
+ * The component-level type of a Zena parameter or result type, or -1 if
+ * it has none.
+ *
+ * The flat scalars need nothing but their opcode. `String` is the one
+ * type beyond them so far, and it is a different kind of thing: the
+ * component-level value is bytes in linear memory, so a signature
+ * carrying one also carries the canonical options and a synthesized
+ * wrapper to do the copying. Everything else still waits on C3's type
+ * encoder.
+ */
+export let componentTypeOf = (wasm: WasmModule, t: Type): i32 => {
+  if (isStringType(wasm, t)) {
+    return ComponentValType.String as i32;
+  }
+  return match (underlying(t)) {
+    case I32Type: ComponentValType.S32 as i32
+    case U32Type: ComponentValType.U32 as i32
+    case I64Type: ComponentValType.S64 as i32
+    case U64Type: ComponentValType.U64 as i32
+    case F32Type: ComponentValType.F32 as i32
+    case F64Type: ComponentValType.F64 as i32
+    case U8Type: ComponentValType.U8 as i32
+    case U16Type: ComponentValType.U16 as i32
+    case I8Type: ComponentValType.S8 as i32
+    case I16Type: ComponentValType.S16 as i32
+    case BooleanType: ComponentValType.Bool as i32
+    case _: -1
+  };
 };
 
 /** The `FunctionType` a function was declared with. */
-let declaredTypeOf = (func: WasmFunction, what: String): FunctionType => {
+export let declaredTypeOf = (func: WasmFunction, what: String): FunctionType => {
   let node = func.node;
   if (node == null) {
     throw new Error(
@@ -115,6 +145,40 @@ let paramName = (declared: FunctionType, index: i32): String => {
   return "a" + i32ToString(index);
 };
 
+/** What the boundary carries so far, for the message that says it does not. */
+let crossesToday = (): String =>
+    "Only u8-u64, i8-i64, f32, f64, boolean and String cross the boundary " +
+    "today; richer types need C3's type encoder " +
+    "(docs/design/component-emission.md).";
+
+/**
+ * A `string` can be lifted but not yet lowered, and the reason is
+ * structural rather than a missing case.
+ *
+ * Lifting happens after instantiation, so an export takes its memory and
+ * `realloc` from the program module's own exports. A lowered *import*
+ * has to exist before the module is instantiated — it is one of the
+ * module's imports — so its memory has to come from somewhere that
+ * exists earlier, which means a second core module owning linear memory
+ * and the allocator. See docs/design/component-emission.md 1.3; it is
+ * what C3 builds for stdio.
+ */
+let checkMemoryDirection = (
+  mapped: i32,
+  func: WasmFunction,
+  what: String
+): void => {
+  if (what == "import" && componentTypeNeedsMemory(mapped)) {
+    throw new Error(
+      "The component target cannot import '" + nameOf(func) +
+        "': it carries a string, and lowering one needs a memory that " +
+        "exists before the program module is instantiated. Exports can " +
+        "carry strings today; imports wait on the runtime memory module " +
+        "(docs/design/component-emission.md 1.3)."
+    );
+  }
+};
+
 /**
  * The component-level signature of a function, or a loud failure.
  *
@@ -123,6 +187,7 @@ let paramName = (declared: FunctionType, index: i32): String => {
  * async, which is the format saying the two cannot disagree.
  */
 let signatureOf = (
+  wasm: WasmModule,
   func: WasmFunction,
   what: String,
   isAsync: boolean = false
@@ -131,17 +196,15 @@ let signatureOf = (
   let paramTypes = new Array<i32>();
   let paramNames = new Array<String>();
   for (var i = 0; i < declared.parameters.length; i += 1) {
-    let mapped = componentTypeOf(declared.parameters[i]);
+    let mapped = componentTypeOf(wasm, declared.parameters[i]);
     if (mapped < 0) {
       throw new Error(
         "The component target cannot " + what + " '" + nameOf(func) +
           "': parameter " + i32ToString(i) + " has type '" +
-          typeToString(declared.parameters[i]) +
-          "', which is not a flat scalar. Only u8-u64, i8-i64, f32, f64 " +
-          "and boolean cross the boundary today; richer types need the " +
-          "canonical ABI's memory options (docs/design/component-emission.md)."
+          typeToString(declared.parameters[i]) + "'. " + crossesToday()
       );
     }
+    checkMemoryDirection(mapped, func, what);
     paramTypes.push(mapped);
     paramNames.push(paramName(declared, i));
   }
@@ -165,16 +228,15 @@ let signatureOf = (
     return new ComponentFuncType(paramTypes, paramNames, result, true);
   }
   if (!(underlying(declared.returnType) is VoidType)) {
-    result = componentTypeOf(declared.returnType);
+    result = componentTypeOf(wasm, declared.returnType);
     if (result < 0) {
       throw new Error(
         "The component target cannot " + what + " '" + nameOf(func) +
-          "': it returns '" + typeToString(declared.returnType) +
-          "', which is not a flat scalar. Only u8-u64, i8-i64, f32, f64 " +
-          "and boolean cross the boundary today; richer types need the " +
-          "canonical ABI's memory options (docs/design/component-emission.md)."
+          "': it returns '" + typeToString(declared.returnType) + "'. " +
+          crossesToday()
       );
     }
+    checkMemoryDirection(result, func, what);
   }
   return new ComponentFuncType(paramTypes, paramNames, result, isAsync);
 };
@@ -217,7 +279,7 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
         // returns.
         let declared = declaredTypeOf(f, "import");
         if (declared.parameters.length == 1) {
-          builtinResult = componentTypeOf(declared.parameters[0]);
+          builtinResult = componentTypeOf(wasm, declared.parameters[0]);
           if (builtinResult < 0) {
             throw new Error(
               "task.return takes '" +
@@ -252,7 +314,7 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
     }
     shape.imports.push(
       new ComponentImportFunc(interfaceName, fieldName,
-          signatureOf(f, "import", f.importIsAsync), f.importIsAsync));
+          signatureOf(wasm, f, "import", f.importIsAsync), f.importIsAsync));
   }
 
   // The async entry, where the program links a driver that needs one.
@@ -290,8 +352,28 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
           "name is kebab-case."
       );
     }
+    let signature = signatureOf(wasm, f, "export");
+    // An export carrying a string is lifted through its wrapper rather
+    // than directly: the canonical ABI hands the guest a pointer and a
+    // length, and the Zena function takes a String. The wrapper is what
+    // the two have in common, and it is synthesized before layout —
+    // absent here means the synth pass and this disagree about which
+    // signatures carry one, which is a compiler bug rather than a
+    // program error.
+    var lifted = coreName;
+    if (let (true, wrapper) = wasm.componentExportWrappers.get(key)) {
+      let wrapperName = wrapper.name;
+      if (wrapperName == null) {
+        throw new Error("The component export wrapper for '" + coreName +
+            "' has no name to alias it by.");
+      }
+      lifted = wrapperName as String;
+    } else if (componentSignatureNeedsMemory(signature)) {
+      throw new Error("The component export '" + coreName +
+          "' carries a string with no wrapper synthesized for it.");
+    }
     shape.exports.push(
-      new ComponentExportFunc(coreName, exportName, signatureOf(f, "export")));
+      new ComponentExportFunc(lifted, exportName, signature));
   }
 
   return shape;

@@ -11,12 +11,16 @@
 // touches ZIR, lowering, or the type system, and the core module it
 // embeds is byte-for-byte the one the other targets emit.
 //
-// Restricted, for now, to functions whose canonical lowering is flat
-// scalars — `u8`-`u64`, `s8`-`s64`, `f32`, `f64`, `bool`. Those need no
-// memory, no `realloc` and no type encoding beyond primitives, which is
-// what keeps this file to one core module and no shim. Strings, lists
-// and records arrive with the WIT type encoder; see
-// docs/design/component-emission.md, Parts 4 and 6.
+// The types that cross are the flat scalars — `u8`-`u64`, `s8`-`s64`,
+// `f32`, `f64`, `bool` — plus `string` on exports. The scalars need no
+// memory, no `realloc` and no type encoding beyond primitives; a string
+// needs the first two, and takes them from the program module's own
+// exports, which is what keeps this file to one core module and no
+// shim. A string on an *import* is the case that cannot: its lowering
+// has to exist before the module is instantiated, so its memory has to
+// come from a second core module. That, and lists and records, arrive
+// with the WIT type encoder; see docs/design/component-emission.md,
+// Parts 1.3, 4 and 6.
 //
 // The binary format is the Component Model's `Binary.md`. Section ids
 // differ from core wasm's and are listed in `ComponentSectionId` below.
@@ -63,8 +67,19 @@ export enum ComponentValType {
   S64 = 0x78,
   U64 = 0x77,
   F32 = 0x76,
-  F64 = 0x75
+  F64 = 0x75,
+  /**
+   * The one non-scalar type so far. It is a single byte like the rest,
+   * but it is not like the rest: a `string` is bytes in linear memory,
+   * so every signature mentioning one drags in the canonical options —
+   * a memory to put them in and a `realloc` to place them with.
+   */
+  String = 0x73
 }
+
+/** Whether `t` needs the canonical ABI's memory options to cross. */
+export let componentTypeNeedsMemory = (t: i32): boolean =>
+    t == (ComponentValType.String as i32);
 
 /** `NO_RESULT` in a signature's `result` field: the function returns nothing. */
 export let noComponentResult = -1;
@@ -124,6 +139,26 @@ export let componentEntryExport = "__zena_component_run";
 export let componentCallbackExport = "__zena_component_callback";
 
 /**
+ * The core exports the canonical options name, when a signature carries
+ * anything that lives in linear memory.
+ *
+ * They are `zena:canonical-abi`'s, exported under the names
+ * `wit-component` and `wit-bindgen` use for the same two functions, so
+ * a component of ours reads the way every other one does.
+ */
+export let componentReallocExport = "cabi_realloc";
+export let componentPostReturnExport = "cabi_post_return";
+/** The core module's memory export, which the emitter aliases back out. */
+export let componentMemoryExport = "memory";
+
+/**
+ * The standard library module holding the guest side of the canonical
+ * ABI. Only the component target's prelude loads it, so its presence in
+ * the program is itself the target check.
+ */
+export let canonicalAbiModule = "zena:canonical-abi";
+
+/**
  * One canonical builtin the core module imports. `name` is both the
  * builtin's spelling in the Component Model and the core import's field
  * name.
@@ -137,6 +172,27 @@ export final class ComponentCanonBuiltin {
   // cannot name a module-level binding.
   new(this.name, this.result = -1);
 }
+
+/**
+ * Whether lifting or lowering `signature` needs the canonical ABI's
+ * memory options — true as soon as a `string` is anywhere in it, in
+ * either direction. Arguments are written into guest memory before the
+ * call and results are read out of it after, and both are the guest
+ * allocator's business.
+ */
+export let componentSignatureNeedsMemory = (
+  signature: ComponentFuncType
+): boolean => {
+  if (componentTypeNeedsMemory(signature.result)) {
+    return true;
+  }
+  for (let p in signature.paramTypes) {
+    if (componentTypeNeedsMemory(p)) {
+      return true;
+    }
+  }
+  return false;
+};
 
 /** One core-module export lifted to a component export. */
 export final class ComponentExportFunc {
@@ -160,6 +216,22 @@ export final class ComponentExportFunc {
 
   new(this.coreName, this.exportName, this.signature,
       this.callbackCoreName = "");
+
+  /** Whether lifting this export needs a memory and a `realloc`. */
+  needsMemory(): boolean {
+    return componentSignatureNeedsMemory(this.signature);
+  }
+
+  /**
+   * Whether the host must call `post-return` after reading the result.
+   *
+   * Only a result needs one: it is allocated by the guest during the
+   * call and nothing else can say when the host has finished copying it
+   * out. Arguments are the host's own buffers.
+   */
+  needsPostReturn(): boolean {
+    return componentTypeNeedsMemory(this.signature.result);
+  }
 }
 
 /** The imports and exports a component wraps a core module in. */
@@ -564,9 +636,34 @@ export let emitComponent = (
     throw new Error("No alias emitted for callback '" + name + "'");
   };
 
+  // A `string` anywhere in a signature means the canonical options: the
+  // memory the bytes live in, and the allocator that placed them. Both
+  // come out of the program module's own exports, which is why one core
+  // module is still the whole component — lifting happens after
+  // instantiation, so nothing has to exist before the module does. An
+  // *import* carrying a string is the case that cannot do this, because
+  // its lowering has to exist before the module is instantiated; see
+  // docs/design/component-emission.md 1.3.
+  var needsMemory = false;
+  var needsPostReturn = false;
+  for (let e in shape.exports) {
+    if (e.needsMemory()) { needsMemory = true; }
+    if (e.needsPostReturn()) { needsPostReturn = true; }
+  }
+  let reallocCoreFunc = firstExportCoreFunc + shape.exports.length +
+      callbackNames.length;
+  let postReturnCoreFunc = reallocCoreFunc + 1;
+
   // --- alias: pull each exported core function out of the instance --------
   let exportAliases = new ByteBuffer();
-  exportAliases.writeULEB128(shape.exports.length + callbackNames.length);
+  var aliasTotal = shape.exports.length + callbackNames.length;
+  if (needsMemory) {
+    aliasTotal += 2; // realloc, then the memory itself
+  }
+  if (needsPostReturn) {
+    aliasTotal += 1;
+  }
+  exportAliases.writeULEB128(aliasTotal);
   for (let e in shape.exports) {
     exportAliases.writeByte(0x00); // sort: core
     exportAliases.writeByte(0x00); // core sort: func
@@ -580,6 +677,30 @@ export let emitComponent = (
     exportAliases.writeByte(0x01);
     exportAliases.writeULEB128(programInstance);
     writeName(exportAliases, name);
+  }
+  if (needsMemory) {
+    // The core function index space continues past the callbacks, so
+    // realloc and post-return are aliased in that order to match
+    // `reallocCoreFunc` above.
+    exportAliases.writeByte(0x00);
+    exportAliases.writeByte(0x00);
+    exportAliases.writeByte(0x01);
+    exportAliases.writeULEB128(programInstance);
+    writeName(exportAliases, componentReallocExport);
+    if (needsPostReturn) {
+      exportAliases.writeByte(0x00);
+      exportAliases.writeByte(0x00);
+      exportAliases.writeByte(0x01);
+      exportAliases.writeULEB128(programInstance);
+      writeName(exportAliases, componentPostReturnExport);
+    }
+    // Core memories have an index space of their own, so this is memory
+    // 0 whatever the functions did.
+    exportAliases.writeByte(0x00);
+    exportAliases.writeByte(0x02); // core sort: memory
+    exportAliases.writeByte(0x01);
+    exportAliases.writeULEB128(programInstance);
+    writeName(exportAliases, componentMemoryExport);
   }
   writeSection(out, ComponentSectionId.Alias as i32, exportAliases);
 
@@ -601,15 +722,33 @@ export let emitComponent = (
     lifts.writeByte(0x00); // canon lift
     lifts.writeByte(0x00);
     lifts.writeULEB128(firstExportCoreFunc + i);
-    if (e.callbackCoreName == "") {
-      lifts.writeULEB128(0); // no canonical options
-    } else {
+    var optionCount = 0;
+    if (e.callbackCoreName != "") {
+      optionCount += 2; // async, and the callback to re-enter through
+    }
+    if (e.needsMemory()) {
+      optionCount += 2; // the memory, and the realloc that fills it
+    }
+    if (e.needsPostReturn()) {
+      optionCount += 1;
+    }
+    lifts.writeULEB128(optionCount);
+    if (e.callbackCoreName != "") {
       // The callback form takes both options together: the lifted
       // function is async, and this is what the host re-enters through.
-      lifts.writeULEB128(2);
       lifts.writeByte(0x06); // async
       lifts.writeByte(0x07); // callback
       lifts.writeULEB128(callbackCoreIndex(e.callbackCoreName));
+    }
+    if (e.needsMemory()) {
+      lifts.writeByte(0x03); // memory
+      lifts.writeULEB128(0); // the one aliased above
+      lifts.writeByte(0x04); // realloc
+      lifts.writeULEB128(reallocCoreFunc);
+    }
+    if (e.needsPostReturn()) {
+      lifts.writeByte(0x05); // post-return
+      lifts.writeULEB128(postReturnCoreFunc);
     }
     lifts.writeULEB128(firstExportType + i);
   }

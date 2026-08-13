@@ -247,14 +247,53 @@ export let tests = suite('Component emission', (): void => {
     }, 'an @external in the `env` namespace compiled for the component target');
   });
 
-  test('an export that is not a flat scalar is rejected', (ctx: TestContext): void => {
-    // A String crosses as a list<u8> through linear memory, which needs
-    // the canonical ABI's memory options. Until those land the export
-    // cannot be lifted, and the compiler says so by name rather than
-    // dropping it.
+  test('a string on an import is rejected', (ctx: TestContext): void => {
+    // The asymmetry is structural rather than a missing case. An export
+    // takes its memory from the program module, which exists by the time
+    // anything is lifted; a lowered import has to exist before the
+    // program module is instantiated, so its memory has to come from
+    // somewhere earlier. That is the runtime module, and it is C3.
     throws((): void => {
-      compileFor(`${fixtures}/string-export.zena`, 'component');
-    }, 'a String-returning export compiled for the component target');
+      compileFor(`${fixtures}/string-import.zena`, 'component');
+    }, 'a String-taking import compiled for the component target');
+  });
+
+  test('a string export is lifted through a wrapper, with memory options',
+      (ctx: TestContext): void => {
+    // The canonical ABI calls a `string`-taking export with a pointer and
+    // a length; the Zena function takes a String. The wrapper is what has
+    // the signature the ABI expects, and the lift names it rather than
+    // the program's own function.
+    let bytes = compileFor(`${fixtures}/strings.zena`, 'component');
+    let coreExports = sectionPayload(sectionPayload(bytes, 1), 7);
+    isTrue(containsName(coreExports, 'greet$componentExport'),
+      'the core module does not export a wrapper for `greet`');
+    isTrue(containsName(coreExports, 'cabi_realloc'),
+      'the core module does not export the canonical allocator');
+    isTrue(containsName(coreExports, 'cabi_post_return'),
+      'the core module does not export post-return');
+    isTrue(containsName(coreExports, 'memory'),
+      'the core module does not export its memory');
+    // The wrapper is a core export only: the component still exports the
+    // name the program wrote.
+    let componentExports = sectionPayload(bytes, 11);
+    isTrue(containsName(componentExports, 'greet'),
+      'the component does not export `greet`');
+    isTrue(!containsName(componentExports, 'greet$componentExport'),
+      'the wrapper leaked out as a component export');
+  });
+
+  test('a component moving no strings links none of the marshaling',
+      (ctx: TestContext): void => {
+    // `zena:canonical-abi` is in the component target's prelude, so it is
+    // loaded for every program. Reachability is what keeps it out: the
+    // allocator and the copy loops are rooted only when a String
+    // actually crosses an export, so the timer and clock components are
+    // emitted exactly as they were before any of this existed.
+    let coreExports = sectionPayload(
+        sectionPayload(compileFor(`${fixtures}/clock.zena`, 'component'), 1), 7);
+    isTrue(!containsName(coreExports, 'cabi_realloc'),
+      'a component with no strings still links the canonical allocator');
   });
 
   test('Zena identifiers become kebab-case names', (ctx: TestContext): void => {

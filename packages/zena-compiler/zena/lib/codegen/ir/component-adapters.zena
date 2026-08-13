@@ -1,0 +1,300 @@
+/**
+ * The functions the component target synthesizes to sit between the
+ * canonical ABI and the program: the async entry, and one wrapper per
+ * export whose signature carries a string.
+ *
+ * ## The async entry
+ *
+ * A callback-lifted export does not run to completion. It returns a
+ * *code* saying either "done" or "wake me on this waitable set", and the
+ * host re-enters through a callback when something in that set fires.
+ * That is the difference between a timer and a sleep: while the guest
+ * waits, the process is not inside it.
+ *
+ * The two halves live in different places, because they need different
+ * things:
+ *
+ * - The callback is `zena:time`'s own `componentResume`, exported
+ *   directly. It has to reach the timer queue and the completer
+ *   registry, which is Zena code, so synthesizing it here would mean
+ *   rebuilding in IR what the standard library already says.
+ * - The entry is synthesized here, because it has to call `main`, and
+ *   nothing in the standard library can name a program's `main`.
+ *
+ * The entry is two calls: run the program, then ask the driver what to
+ * do next. Everything else — arming the wait, dropping the subtask,
+ * calling `task.return` — is in `time/p3.zena`.
+ *
+ * ## The export wrappers
+ *
+ * A component-level `string` is a pointer and a length into linear
+ * memory; a Zena `String` is a view over a garbage-collected byte
+ * array. So `greet(name: String): String` cannot be lifted directly —
+ * the canonical ABI would call it with two `i32`s and expect one back.
+ * The wrapper is the function that has the signature the ABI expects:
+ * it converts each argument, calls the program's function, and converts
+ * the result.
+ *
+ * Both conversions are `zena:canonical-abi`'s, which is Zena, for the
+ * same reason the callback is: allocating and copying is something the
+ * standard library already says, and rebuilding it in `IrBuilder` would
+ * be saying it worse. What is synthesized here is only the shape —
+ * which arguments to convert and in what order — because that is per
+ * export and no source file can name a program's exports.
+ *
+ * A single `string` result is returned indirectly: it flattens to two
+ * core values, one more than a lifted function may return, so the
+ * wrapper returns the address of an 8-byte area holding the pair. That
+ * is `stringResultArea`'s job, and `cabiPostReturn` frees it once the
+ * host has read it out.
+ *
+ * See docs/design/component-emission.md, Parts 4 and 5.
+ */
+
+import { HashMap } from 'zena:map';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import { ValType, ValTypeI32 } from '../wasm.zena';
+import { IrBody } from './ir.zena';
+import { IrBuilder } from './builder.zena';
+import { IrRefFunc } from './ir.zena';
+import { ReachabilityAnalysis } from '../reachability/analysis.zena';
+import { ExportKey } from '../codegen-utils.zena';
+import { String } from 'zena:string';
+import { canonicalAbiModule, ComponentValType } from '../component-emitter.zena';
+import { componentTypeOf, declaredTypeOf } from '../component-shape.zena';
+
+/** Bodies for the synthesized entry, by function uid. */
+var entryBodies = new HashMap<i32, IrBody>();
+
+/**
+ * The stdlib module supplying the driver. It is a path id rather than a
+ * name id because `zena:time` is a virtual module: the component target
+ * resolves it to this file, and no other target has it.
+ */
+let driverModule = 'zena:time/p3.zena';
+
+/**
+ * Build the async entry, if this program links a driver that needs one.
+ *
+ * "Needs one" is decided by reachability, not by a flag: `componentPoll`
+ * is reached exactly when the program pulled in the p3 clock, which
+ * happens when it uses `zena:time`. A program that never sleeps gets the
+ * synchronous lift and none of this.
+ */
+export let prepareComponentEntry = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis
+): void => {
+  entryBodies = new HashMap<i32, IrBody>();
+
+  let poll = wasm.getStdlibFunc(driverModule, 'componentPoll');
+  let resume = wasm.getStdlibFunc(driverModule, 'componentResume');
+  if (poll == null || resume == null) {
+    return;
+  }
+
+  let key = 'main' as ExportKey;
+  if (!wasm.exportMap.has(key)) {
+    throw new Error(
+      'The component target linked the p3 async driver into a program ' +
+      'with no main to drive.'
+    );
+  }
+  let main = wasm.exportMap[key];
+  if (main.signature.params.length != 0) {
+    throw new Error(
+      'The component target cannot drive a main that takes parameters.'
+    );
+  }
+  if (main.signature.returns.length != 0) {
+    // The lifted entry is `async func()`, and its result would have to
+    // travel through `task.return` long after main returned. Rather
+    // than stash it somewhere and hope, say so: a component whose
+    // program sleeps returns nothing today.
+    throw new Error(
+      'A program that sleeps on the component target must declare ' +
+      '`main(): void`. The entry is lifted async, and an async lift ' +
+      'returns its result through task.return after the event loop ' +
+      'finishes, which is not where main returned it.'
+    );
+  }
+
+  let entrySig = wasm.getSignature(new Array<ValType>(0), i32Results());
+  let entry = new WasmFunction(entrySig, null, main.model);
+  entry.name = 'main$componentRun';
+  entry.isComponentAdapter = true;
+  wasm.addFunction(entry);
+  pass.markFunctionReached(entry);
+
+  let b = new IrBuilder();
+  let block = b.newBlock();
+  b.switchTo(block);
+  b.callFunc(b.addRef(new IrRefFunc(main)), new Array<i32>(0), null);
+  let code = b.callFunc(b.addRef(new IrRefFunc(poll as WasmFunction)),
+      new Array<i32>(0), new ValTypeI32());
+  b.ret(code);
+  entryBodies[entry.uid] = b.finish();
+
+  wasm.componentEntryFunc = entry;
+  wasm.componentCallbackFunc = resume as WasmFunction;
+  pass.markFunctionReached(resume as WasmFunction);
+};
+
+let i32Results = (): Array<ValType> => {
+  let results = new Array<ValType>();
+  results.push(new ValTypeI32());
+  return results;
+};
+
+/**
+ * Wrap every export whose signature carries a `string`, and pick up the
+ * two core functions the canonical options name.
+ *
+ * Runs whether or not the entry above was built: a program can export
+ * `greet` without ever sleeping. An export of only flat scalars gets no
+ * wrapper and is lifted directly, so a component that moves no strings
+ * is emitted exactly as it was before this existed.
+ */
+export let prepareComponentExports = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis
+): void => {
+  let fromMemory = wasm.getStdlibFunc(canonicalAbiModule, 'stringFromMemory');
+  let resultArea = wasm.getStdlibFunc(canonicalAbiModule, 'stringResultArea');
+  let realloc = wasm.getStdlibFunc(canonicalAbiModule, 'cabiRealloc');
+  let postReturn = wasm.getStdlibFunc(canonicalAbiModule, 'cabiPostReturn');
+
+  let exportKeys = wasm.exportMap.keys();
+  while (let (true, key) = exportKeys.next()) {
+    let f = wasm.exportMap[key];
+    let coreName = key as String;
+    if (wasm.componentEntryFunc != null && coreName == 'main') {
+      // Replaced by the async entry, which returns a callback code and
+      // takes nothing. Wrapping it would wrap a function that is not
+      // lifted.
+      continue;
+    }
+    let declared = declaredTypeOf(f, 'export');
+    var carriesString = false;
+    for (let p in declared.parameters) {
+      if (componentTypeOf(wasm, p) == (ComponentValType.String as i32)) {
+        carriesString = true;
+      }
+    }
+    let resultIsString =
+        componentTypeOf(wasm, declared.returnType) ==
+        (ComponentValType.String as i32);
+    if (!carriesString && !resultIsString) {
+      continue;
+    }
+    if (fromMemory == null || resultArea == null || realloc == null ||
+        postReturn == null) {
+      throw new Error(
+        "The component target cannot export '" + coreName +
+        "': it carries a string, and zena:canonical-abi was not linked. " +
+        'That module is loaded by this target\'s prelude and rooted by ' +
+        'reachability when a string crosses an export, so this is a ' +
+        'compiler bug rather than a program error.'
+      );
+    }
+    if (declared.parameters.length != f.signature.params.length) {
+      // Every export is a top-level function, so the declared parameters
+      // and the core ones line up one for one. A receiver or a captured
+      // environment would break that, and silently wrap the wrong
+      // argument.
+      throw new Error(
+        "The component target cannot export '" + coreName +
+        "': its declaration and its core signature disagree about how " +
+        'many parameters it takes.'
+      );
+    }
+
+    // The core signature the canonical ABI will call: each string
+    // becomes a pointer and a length, everything else stays as the core
+    // module already has it, and a string result becomes the address of
+    // the return area.
+    let params = new Array<ValType>();
+    let stringAt = new Array<boolean>();
+    for (var i = 0; i < declared.parameters.length; i += 1) {
+      if (componentTypeOf(wasm, declared.parameters[i]) ==
+          (ComponentValType.String as i32)) {
+        stringAt.push(true);
+        params.push(new ValTypeI32());
+        params.push(new ValTypeI32());
+      } else {
+        stringAt.push(false);
+        params.push(f.signature.params[i]);
+      }
+    }
+    let returns = if (resultIsString) {
+      i32Results()
+    } else {
+      f.signature.returns
+    };
+
+    let wrapper = new WasmFunction(
+        wasm.getSignature(params, returns), null, f.model);
+    wrapper.name = coreName + '$componentExport';
+    wrapper.isComponentAdapter = true;
+    wasm.addFunction(wrapper);
+    pass.markFunctionReached(wrapper);
+
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    let core = new Array<i32>();
+    for (let vt in params) {
+      core.push(b.blockParam(entry, vt));
+    }
+    b.switchTo(entry);
+
+    let args = new Array<i32>();
+    var at = 0;
+    for (var i = 0; i < stringAt.length; i += 1) {
+      if (stringAt[i]) {
+        let pair = new Array<i32>();
+        pair.push(core[at]);
+        pair.push(core[at + 1]);
+        args.push(b.callFunc(b.addRef(new IrRefFunc(fromMemory as WasmFunction)),
+            pair, f.signature.params[i]));
+        at += 2;
+      } else {
+        args.push(core[at]);
+        at += 1;
+      }
+    }
+
+    let callResult = if (f.signature.returns.length == 1) {
+      f.signature.returns[0]
+    } else {
+      null
+    };
+    let called = b.callFunc(b.addRef(new IrRefFunc(f)), args, callResult);
+    if (resultIsString) {
+      let one = new Array<i32>();
+      one.push(called);
+      b.ret(b.callFunc(b.addRef(new IrRefFunc(resultArea as WasmFunction)),
+          one, new ValTypeI32()));
+    } else if (callResult == null) {
+      b.retVoid();
+    } else {
+      b.ret(called);
+    }
+    entryBodies[wrapper.uid] = b.finish();
+    wasm.componentExportWrappers[key] = wrapper;
+
+    wasm.componentReallocFunc = realloc as WasmFunction;
+    wasm.componentPostReturnFunc = postReturn as WasmFunction;
+  }
+};
+
+export let lowerComponentAdapter = (
+  wasm: WasmModule,
+  func: WasmFunction
+): IrBody => {
+  if (let (true, body) = entryBodies.get(func.uid)) {
+    return body;
+  }
+  throw new Error('the component entry was not prepared');
+};

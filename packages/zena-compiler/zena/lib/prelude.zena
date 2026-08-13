@@ -1,5 +1,5 @@
 import { HashMap } from 'zena:map';
-import { targetHasConsole } from './targets.zena';
+import { targetHasConsole, targetEmitsComponent } from './targets.zena';
 
 // Build the standard prelude map (module specifier → imported names).
 // The compiler injects these into every file automatically.
@@ -31,6 +31,16 @@ export let getStandardPrelude = (target: String): HashMap<String, FixedArray<Str
   prelude["zena:string-convert"] = [
     "i32ToString", "i64ToString", "f64ToString", "parseI32", "parseI64", "parseF64"
   ];
+  if (targetEmitsComponent(target)) {
+    // Loaded, and bound under no name. The component target synthesizes
+    // wrappers that call these, and a module the compiler generates
+    // calls into has to be in the graph before reachability runs — but
+    // a program never names them itself, so binding them would be
+    // namespace pollution with nothing on the other end. Reachability
+    // decides whether any of it is emitted: a component that moves no
+    // strings links none of it.
+    prelude["zena:canonical-abi"] = new FixedArray<String>(0, "");
+  }
 
   return prelude;
 };

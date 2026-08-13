@@ -20,6 +20,8 @@ import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
 import { performance } from '../../time.zena';
+import { canonicalAbiModule } from '../component-emitter.zena';
+import { targetEmitsComponent } from '../../targets.zena';
 import { console } from 'zena:console';
 
 final class ParsedMethodRef {
@@ -445,6 +447,49 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
+  /**
+   * Root `zena:canonical-abi`, the component target's string marshaling.
+   *
+   * Its functions are reached from nowhere inside the program: two of
+   * them are called only by wrappers the compiler synthesizes after this
+   * pass, and `cabiRealloc` is called only by the host, through the
+   * lift's canonical options. So RTA has to be told, the same way
+   * `zena:host-async` is.
+   *
+   * The gate is that a String actually crosses an export, which the root
+   * loop above has just finished deciding — a component that moves no
+   * strings links neither these nor the allocator behind them, and stays
+   * as small as the timer components in binary-size_test. Only the
+   * component target resolves this module at all, so no other target
+   * reaches this branch with a unit to root.
+   */
+  #rootCanonicalAbi(): void {
+    if (!this.wasm.componentMovesStrings) {
+      return;
+    }
+    let prog = this.program;
+    if (prog == null || !prog.unitsByPath.has(canonicalAbiModule)) {
+      return;
+    }
+    let unit = prog.unitsByPath[canonicalAbiModule];
+    let model = unit.model;
+    let gKeys = model.globalDeclarations.keys();
+    while (let (true, id) = gKeys.next()) {
+      let decl = model.globalDeclarations[id];
+      var isExported = false;
+      if (decl is VariableDeclaration) {
+        isExported = (decl as VariableDeclaration).exported;
+      } else if (decl is FunctionDeclaration) {
+        isExported = (decl as FunctionDeclaration).exported;
+      } else if (decl is DeclareFunction) {
+        isExported = (decl as DeclareFunction).exported;
+      }
+      if (isExported) {
+        this.queueReferrer(new Referrer(true, id, -1, model, null, true));
+      }
+    }
+  }
+
   #linkSuperAndVT(ct: ClassType, model: SemanticModel, linkedClasses: HashMap<ClassKey, boolean>): void {
     let ctKey = getClassKey(ct);
     if (linkedClasses.has(ctKey)) { return; }
@@ -832,10 +877,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let sClass = this.wasm.stringClass as ClassType;
               this.specializer.instantiateClassType(
                   sClass, this.getClassModel(sClass));
-              // Which DIRECTION does the boundary move strings?
-              // Export parameters are host-written, returns are
-              // host-read; a non-function String export is both.
-              if (declType is FunctionType) {
+              if (targetEmitsComponent(this.target)) {
+                // A component's boundary is not the core module's. The
+                // `$string*` four exist for an embedder holding the core
+                // module directly, and nothing inside a component can
+                // reach them — its strings cross through the canonical
+                // ABI instead, which is `zena:canonical-abi`'s job and
+                // wants a flag of its own.
+                this.wasm.componentMovesStrings = true;
+              } else if (declType is FunctionType) {
+                // Which DIRECTION does the boundary move strings?
+                // Export parameters are host-written, returns are
+                // host-read; a non-function String export is both.
                 let eft = declType as FunctionType;
                 for (let p in eft.parameters) {
                   if (this.#typeMentionsString(p, 0)) {
@@ -875,6 +928,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let tsaClass = this.wasm.templateStringsArrayClass as ClassType;
       this.specializer.instantiateClassType(tsaClass, this.getClassModel(tsaClass));
     }
+
+    this.#rootCanonicalAbi();
 
     this.ensureAllHelperFunctionsReached();
 

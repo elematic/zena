@@ -7,7 +7,7 @@ import { ByteBuffer } from 'zena:byte-buffer';
 import { ReachabilityAnalysis } from './reachability/analysis.zena';
 import { prepareGenerators } from './ir/generators.zena';
 import { prepareAsyncFunctions } from './ir/async.zena';
-import { prepareComponentEntry } from './ir/component-entry.zena';
+import { prepareComponentEntry, prepareComponentExports } from './ir/component-adapters.zena';
 import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending, parseI64OrU64Literal } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -36,7 +36,8 @@ import { runGvn } from './ir/gvn.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
 import {
-  ComponentShape, componentEntryExport, componentCallbackExport
+  ComponentShape, componentEntryExport, componentCallbackExport,
+  componentReallocExport, componentPostReturnExport
 } from './component-emitter.zena';
 import { buildComponentShape } from './component-shape.zena';
 import { targetEmitsComponent } from '../targets.zena';
@@ -352,11 +353,14 @@ export final class ModuleGenerator {
     prepareAsyncFunctions(wasm, pass);
     performance.end(tAsync);
 
-    // The component target's async entry, synthesized only where the
-    // program links a driver that needs one. Before layout(), like the
-    // passes above, because it adds a function.
+    // The component target's adapters: the async entry, synthesized only
+    // where the program links a driver that needs one, and a wrapper per
+    // export carrying a string. Before layout(), like the passes above,
+    // because they add functions. The entry comes first — it decides
+    // whether `main` is still an export to wrap.
     if (targetEmitsComponent(this.target)) {
       prepareComponentEntry(wasm, pass);
+      prepareComponentExports(wasm, pass);
     }
 
     wasm.layout();
@@ -649,6 +653,32 @@ export final class ModuleGenerator {
     if (wasm.componentCallbackFunc != null) {
       exports.push(new WasmExport(componentCallbackExport,
           wasm.componentCallbackFunc as WasmFunction));
+    }
+    // The wrappers, and the two functions the canonical options name.
+    // They are core-module exports and not component ones: the component
+    // aliases them back out to build its lifts, and nothing outside sees
+    // them.
+    // Walked through `exportMap` rather than over the wrapper map's own
+    // keys, so the order is the one the user exports are already in: a
+    // hash map's iteration order is stable for a given set of keys, but
+    // tying the two together is what makes it obviously so.
+    let wrapperKeys = wasm.exportMap.keys();
+    while (let (true, wrapperKey) = wrapperKeys.next()) {
+      if (let (true, wrapper) = wasm.componentExportWrappers.get(wrapperKey)) {
+        let wrapperName = wrapper.name;
+        if (wrapperName == null) {
+          throw new Error('a component export wrapper has no name');
+        }
+        exports.push(new WasmExport(wrapperName as String, wrapper));
+      }
+    }
+    if (wasm.componentReallocFunc != null) {
+      exports.push(new WasmExport(componentReallocExport,
+          wasm.componentReallocFunc as WasmFunction));
+    }
+    if (wasm.componentPostReturnFunc != null) {
+      exports.push(new WasmExport(componentPostReturnExport,
+          wasm.componentPostReturnFunc as WasmFunction));
     }
     if (wasm.asyncMainStartFunc != null) {
       exports.push(new WasmExport("__zena_main_start", wasm.asyncMainStartFunc as WasmFunction));

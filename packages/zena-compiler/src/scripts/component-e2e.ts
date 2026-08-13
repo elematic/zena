@@ -85,6 +85,25 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'strings',
+    wasi: [],
+    // The first type that is not a flat scalar: bytes in linear memory,
+    // lifted through the canonical options and a synthesized wrapper.
+    // `main()` is here to prove the scalar path still works alongside.
+    invocations: [
+      {invoke: 'main()', expect: '0'},
+      // Host writes, guest reads.
+      {invoke: 'measure("hello")', expect: '5'},
+      // Guest writes, host reads — a literal, so the bytes come out of
+      // the shared string segment rather than being built.
+      {invoke: 'shout()', expect: '"HELLO FROM A COMPONENT"'},
+      // Both directions, with an allocation between them.
+      {invoke: 'greet("world")', expect: '"hello, world"'},
+      // Length zero: the pointer half of the pair is never dereferenced.
+      {invoke: 'nothing()', expect: '""'},
+    ],
+  },
+  {
     name: 'clock',
     wasi: ['p3=y'],
     // A real monotonic reading, so the value is not predictable; that it
