@@ -104,7 +104,8 @@ import {
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, baseType,
   integerLiteralFits,
-  promoteNumeric, typeToString, requiredParameterCount, makeTypeIdGenerator, typeContainsTypeParameter
+  promoteNumeric, typeToString, requiredParameterCount, makeTypeIdGenerator, typeContainsTypeParameter,
+  isOwnershipWrapper, ownershipHandleName, ownershipHandleInner
 , ErasedType} from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency } from './semantic-model.zena';
 import {
@@ -2350,22 +2351,6 @@ let checkAliasTargetInlineTuples = (
  * Resolve a type annotation AST node to a Type.
  */
 /**
- * The three ownership wrappers from `zena:ownership`. A `resource class` may
- * only be named as a type argument of one of these — see
- * docs/design/ownership.md §"Resource-ness and affineness are different
- * properties".
- */
-/** The resource type behind a handle, or null if `t` is not a handle. */
-let ownershipHandleInner = (t: Type): Type | null => {
-  if (!isOwnershipWrapper(t)) { return null; }
-  let args = (t as TypeAliasType).typeArguments;
-  if (args == null) { return null; }
-  let a = args as Array<Type>;
-  if (a.length != 1) { return null; }
-  return a[0];
-};
-
-/**
  * Wraps a bare resource-class type in `Own<…>`. Constructing a resource
  * produces the owning reference: without this, the inferred type of
  * `let d = new Descriptor(…)` would be bare `Descriptor`, which is not a
@@ -2419,19 +2404,6 @@ let wrapResourceInBorrow = (ctx: CheckerContext, ct: ClassType): Type => {
   let args = new Array<Type>();
   args.push(ct as Type);
   return instantiateTypeAliasType(bt, args);
-};
-
-let isOwnershipWrapper = (t: Type): boolean => {
-  if (!(t is TypeAliasType)) { return false; }
-  let ta = t as TypeAliasType;
-  if (!ta.isDistinct) { return false; }
-  return ta.name == "Own" || ta.name == "Borrow" || ta.name == "Unmanaged";
-};
-
-/** The name of the handle `t` is, or "" if it is not one. */
-let ownershipHandleName = (t: Type): String => {
-  if (!isOwnershipWrapper(t)) { return ""; }
-  return (t as TypeAliasType).name;
 };
 
 /**

@@ -5,7 +5,7 @@
 // early `return`, `break`/`continue`, and exception unwind — in reverse
 // declaration order. See docs/design/ownership.md §`using`.
 
-import { Disposable } from 'zena:ownership';
+import { Disposable, Own } from 'zena:ownership';
 import { Error } from 'zena:error';
 import { Array } from 'zena:array';
 import { i32ToString } from 'zena:string-convert';
@@ -222,6 +222,35 @@ let throwingDispose = (): void => {
   assertEq(log.render(), '91', 'throwing dispose runs once');
 };
 
+/**
+ * A resource is an ordinary `using` target. Resource-ness is about what the
+ * garbage collector cannot reclaim; `using` only asks for `:dispose()`, so a
+ * resource that carries one releases here like anything else — it is neither
+ * rejected nor silently skipped. Once implicit drop lands an `Own<R>` is
+ * released at scope exit anyway, which makes the `using` redundant rather
+ * than wrong: disposal is idempotent.
+ */
+resource class Handle implements Disposable {
+  #log: Log;
+  var closed: boolean = false;
+  new(log: Log) : #log = log;
+  :Disposable.dispose(this: Own<this>): void {
+    if (this.closed) { return; }
+    this.closed = true;
+    this.#log.add(1);
+  }
+}
+
+let resourceRelease = (): void => {
+  let log = new Log();
+  let run = (): void => {
+    using h = new Handle(log);
+    log.add(9);
+  };
+  run();
+  assertEq(log.render(), '91', 'resource released by using');
+};
+
 export function main(): i32 {
   normalExit();
   reverseOrder();
@@ -234,5 +263,6 @@ export function main(): i32 {
   virtualDispose();
   nestedBlock();
   throwingDispose();
+  resourceRelease();
   return 0;
 }

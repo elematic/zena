@@ -10,7 +10,7 @@
  */
 import { Array } from 'zena:array';
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases,
 } from '../codegen-utils.zena';
 import { HashMap } from 'zena:map';
 import { String } from 'zena:string';
@@ -29,6 +29,7 @@ import { walk } from '../../visitor.zena';
 import {
   ArrayType, ClassType, InterfaceType, Type, VoidType, baseType,
   isVoidOrNeverType, arrayElementType, isSignedNarrowIntType,
+  isOwnershipWrapper, ownershipHandleInner,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -985,7 +986,17 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
  * exists, and that a `Borrow<R>` never reaches here.
  */
 let disposeOwnerClass = (cx: LoweringContext, t: Type): ClassType => {
-  let base = baseType(t);
+  // Peel the handle the way the checker did when it found the `:dispose`.
+  // Neither `baseType` nor `unwrapAliases` gets here: the handles are
+  // *generic* aliases, so `Own<T> = T` has the bare type parameter as its
+  // target and following it lands on `T` rather than on the resource.
+  var target = t;
+  while (isOwnershipWrapper(target)) {
+    let inner = ownershipHandleInner(target);
+    if (inner == null) { break; }
+    target = inner as Type;
+  }
+  let base = unwrapAliases(target);
   if (!(base is ClassType)) {
     bail(cx, 'using operand is not a class');
   }

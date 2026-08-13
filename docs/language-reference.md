@@ -3921,10 +3921,9 @@ let update = (): void => {
 };   // guard.:Disposable.dispose() runs here
 ```
 
-Release runs on **every** path leaving the block — falling off the end, an
-early `return`, a `break` or `continue` out of an enclosing loop, and
-exception unwind — and multiple `using` bindings in one block release in
-reverse declaration order:
+Release runs on **every** path leaving the block — an early `return`, a
+`break` or `continue` out of an enclosing loop, and exception unwind — and
+multiple `using` bindings in one block release in reverse declaration order:
 
 ```zena
 using a = open('a');
@@ -3934,29 +3933,33 @@ using b = open('b');   // b is released first
 A returned value is computed before anything is released, so `return
 guard.read()` still reads a live resource.
 
-A binding is optional. `using` is a keyword, so the unbound form is
-unambiguous and there is no need for a placeholder name:
+A binding is optional:
 
 ```zena
 using acquire(lock);        // scope-bound, nothing to name
 using file = open(path);    // bound
 ```
 
-`using` declares the binding itself — there is no `let` or `var`. It could not
-declare a mutable one: the release targets the value bound here, so a rebound
-name would release a stale value and leak the new one. Both `using let x = …`
-and `using var x = …` are rejected, each pointing at the plain form.
+`using` is an immutable declaration: it declares the binding itself, and both
+`using let x = …` and `using var x = …` are rejected.
 
 Two obligations on `dispose` implementations, neither checked by the compiler:
 it must be **idempotent**, since a value may be disposed more than once, and it
 must **not throw**, since it runs on unwind paths where a second exception
 would displace the one being propagated.
 
-`using` does not require the value to be a resource. A resource class — one
-holding something the garbage collector cannot reclaim — is released by
-implicit drop rather than by `using`; `using` is the mechanism for ordinary
-disposables such as a lock guard, a tracing span, or a transaction. See
-[docs/design/ownership.md](design/ownership.md).
+`using` takes any `Disposable`, resource or not. A resource — a value holding
+something the garbage collector cannot reclaim — carries `:dispose()` like
+anything else, so `using` releases it normally rather than rejecting it or
+skipping it. Once implicit drop lands a resource is also released when its
+owning handle leaves scope, which makes a `using` on one redundant rather than
+wrong: disposal is idempotent, so the second release does nothing.
+
+A `Borrow<R>` is rejected. A borrow is temporary access to something another
+party owns, and never releases what it points at.
+
+`using` earns its keep on ordinary disposables — a lock guard, a tracing span,
+a transaction. See [docs/design/ownership.md](design/ownership.md).
 
 ## 13. Compilation
 

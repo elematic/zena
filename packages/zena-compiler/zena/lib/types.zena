@@ -1049,6 +1049,43 @@ export final class TypeAliasType(
   var resolving: boolean = false;
 }
 
+/**
+ * Whether `t` is one of the three ownership handles from `zena:ownership`.
+ * A `resource class` may only be named as a type argument of one of these —
+ * see docs/design/ownership.md §"Resource-ness and affineness are different
+ * properties".
+ */
+export let isOwnershipWrapper = (t: Type): boolean => {
+  if (!(t is TypeAliasType)) { return false; }
+  let ta = t as TypeAliasType;
+  if (!ta.isDistinct) { return false; }
+  return ta.name == "Own" || ta.name == "Borrow" || ta.name == "Unmanaged";
+};
+
+/** The name of the handle `t` is, or "" if it is not one. */
+export let ownershipHandleName = (t: Type): String => {
+  if (!isOwnershipWrapper(t)) { return ""; }
+  return (t as TypeAliasType).name;
+};
+
+/**
+ * The resource type behind a handle, or null if `t` is not a handle.
+ *
+ * This reads `typeArguments` rather than following `target`, and the
+ * difference is load-bearing: the handles are *generic* aliases, so
+ * `Own<T> = T` has the bare type parameter as its target. Walking `target`
+ * — which is what `unwrapAliases` does — lands on `T` rather than on the
+ * resource, so a caller that wants the class must come through here.
+ */
+export let ownershipHandleInner = (t: Type): Type | null => {
+  if (!isOwnershipWrapper(t)) { return null; }
+  let args = (t as TypeAliasType).typeArguments;
+  if (args == null) { return null; }
+  let a = args as Array<Type>;
+  if (a.length != 1) { return null; }
+  return a[0];
+};
+
 export let typeContainsTypeParameter = (t: Type): boolean => {
   return match (t) {
     case TypeParameterType: true
