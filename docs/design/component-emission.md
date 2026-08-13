@@ -2,10 +2,12 @@
 
 ## Status
 
-- **Status**: Implemented through C2. `--target component` emits
-  components, and `zena:time`'s `sleep` is a p3 timer on that target: a
-  300 ms sleep costs 310 ms of wall time and 20 ms of CPU. C3 onward
-  (the WIT type encoder, stdio, filesystem, bindgen, streams) is
+- **Status**: Implemented through C2, and C3's export half. `--target
+  component` emits components; `zena:time`'s `sleep` is a p3 timer on
+  that target, a 300 ms sleep costing 310 ms of wall time and 20 ms of
+  CPU; and `string` crosses an export in both directions
+  (`greet("world")` → `"hello, world"`). The rest of C3 — the WIT type
+  encoder, memory-carrying lowerings, and stdio — and C4 onward are
   unbuilt. Every load-bearing claim was verified against
   `wasm-tools 1.252.0` / `wasmtime 46.0.0` on 2026-08-08; the
   corrections that building it turned up are marked **Correction**
@@ -772,6 +774,14 @@ needed before C3, where it becomes a canonical option; `latin1+utf16` is
 available in the ABI but not something we can produce without a Latin-1
 representation.
 
+C3.1 takes the default and does not encode it: a lift with no
+string-encoding option is `utf8`, and the conversions copy a String's
+bytes verbatim. That is right for every string a component can build,
+because a WTF-16 String comes from JS interop and the `js` target is not
+this one — but it is an assumption the flag would make checkable rather
+than assumed, and `String` exposes no public `encoding` to check it
+against today.
+
 ### Where p2 still appears
 
 The `component` target imports **p2 stdio** alongside p3 clocks, because
@@ -800,7 +810,7 @@ is:
 | canon             | `canon lower` per import; `waitable-set.new`, `waitable.join`, `subtask.drop`, `task.return` |
 | core module       | the memory module, then the Zena module, embedded verbatim                                   |
 | core instance     | instantiate the memory module; synthesize the import instance; instantiate the main module   |
-| alias core export | pull `run` / `cb` back out of the main instance                                              |
+| alias core export | pull `run` / `cb` back out of the main instance, plus `cabi_realloc`, `cabi_post_return` and `memory` where a `string` crosses |
 | canon             | `canon lift` per export, `async (callback …)` where needed                                   |
 | export            | the component's exports                                                                      |
 
@@ -964,6 +974,61 @@ is on lowering — but one owner is worth more than that saving. Ships
 Until C3 a component cannot print, which is the argument for reordering
 C2 and C3. C2 stays first because timers are the goal and can be tested
 on time rather than on output.
+
+C3 splits along the line 1.3 draws, and the first part is **done**:
+
+#### C3.1 — `string` on exports. **Done.**
+
+The direction that needs no second core module. Lifting happens after
+instantiation, so an export takes `memory` and `realloc` from the
+program module's own exports and one core module is still the whole
+component.
+
+The marshaling is `zena:canonical-abi`, a standard library module: a
+`cabiRealloc` over `zena:memory`'s free list, the two string
+conversions, and a `cabiPostReturn` that frees what a result allocated.
+Written in Zena for the reason the p3 callback is — allocating and
+copying is something the standard library already says. What the
+compiler synthesizes is one wrapper per string-carrying export, in
+`ir/component-adapters.zena`, because only it can name a program's
+exports. A single `string` result is returned indirectly, since it
+flattens to two core values and a lifted function may return one.
+
+The module is loaded by the component target's prelude and bound under
+no name, and reachability roots it only when a String actually crosses
+an export — so a component that moves no strings links neither it nor
+the allocator, and the timer and clock components are emitted exactly as
+they were.
+
+Two things it settles that the plan above did not say:
+
+- **A `string` import is not a smaller version of this.** It is the
+  case 1.3 describes: the lowering has to exist before the module is
+  instantiated, so its memory cannot come from the module. The
+  compiler rejects one by name, pointing here.
+- **A component's string boundary is not the core module's.** The
+  `$string*` exports let an embedder holding the core module build and
+  read a guest String; a component's host never sees the core module.
+  Conflating the two emitted four exports nothing could call, so the
+  evidence flag is now the component's own. Two of the four survive on
+  the component target, forced by `ensureExceptionInfra`, which couples
+  the exception tag to `$stringCreate` for reasons nothing records —
+  worth untangling, and not here.
+
+#### C3.2 — the WIT type encoder.
+
+Instance types, resources, `own`/`borrow`, records, variants, results,
+lists, `alias outer`, driven from `packages/wit-parser`'s resolved AST
+rather than hand-written. Plus `--wit` / `--world`. Testable on its own,
+by round-tripping an emitted component's types back through
+`wasm-tools component wit`.
+
+#### C3.3 — imported memory, and stdio.
+
+The runtime core module, `WasmModule.ensureMemory` emitting an import
+rather than a definition, the allocator delegating to the imported
+`realloc`, memory-carrying `canon lower`, and `zena:console` over p2
+`wasi:cli/stdout`. This is where a component can print.
 
 ### C4 — filesystem and CLI. Weeks.
 
