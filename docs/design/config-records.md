@@ -231,6 +231,43 @@ be implemented only if meaningful-absence use cases accumulate.
 
 ## 6. Alternatives considered
 
+- **Consumption-site filling.** Build the partial record as-is and
+  apply defaults where the record is *read* — colocating the filling
+  in the consumer instead of at every construction site. The runtime
+  mechanics exist: every record value today is a fat pointer whose
+  vtable identifies its concrete shape, so an adapted vtable for
+  (partial shape → default-bearing type) could synthesize getters for
+  absent fields that return the default constant — a per-(shape, type)
+  cost instead of a per-call-site cost, with no branching at reads.
+  Rejected on three grounds:
+
+  1. Partial records become first-class values, which is observable
+     absence: equality and hashing across present-sets, spread of a
+     partial value, and what a read sees before "consumption" (once
+     the value is stored or passed, every access site is a consumption
+     site) all need answers. That is presence polymorphism —
+     row-types.md §3.4/§10 defers it as too heavy — reintroduced as
+     the semantics of every config record. Under construction-site
+     filling a partial record never exists as a value.
+  2. It welds config records to the dispatch representation as the
+     row-types plan retires it. `struct.get` takes a static field
+     index, so polymorphic-shape access is vtable dispatch or
+     per-shape specialization, nothing in between (row-types.md §7.1).
+     The vtable form keeps every config read a `call_ref` and hands
+     constructors a heap-allocated bag, defeating argument explosion
+     and single-shot construction on the hottest path; the
+     specialization form is up to 2^n bodies per consumer across
+     present-sets, on the compiler's known instantiation-pressure
+     axis.
+  3. The colocation benefit already holds at the source level —
+     defaults are declared once, on the type, under either scheme.
+     What repeats per construction site is only constant operands (an
+     immediate, or a ref to an interned constant), and identical
+     filled literals may be shared under value semantics if that ever
+     matters. Late binding of defaults pays off when callers must not
+     recompile as defaults change — a separate-compilation/ABI
+     pressure a whole-program compiler does not have.
+
 - **Defaults on the interned structural type.** Rejected: either
   defaults join the interning key (aliases of one shape become
   distinct types, breaking structural typing) or they don't (two
