@@ -247,7 +247,13 @@ heavier feature than v1 should carry. Interim position:
   rejected in v1 with a pointer to the existential form.
 
 Full presence polymorphism (rows over `label: present|absent`) is listed
-as future work (§10).
+as future work (§10). Concrete presence on *specific* fields is a
+lighter feature than that, and
+[record-presence.md](record-presence.md) proposes it: a presence
+bitmask in one full-width struct per record type (no per-present-set
+shapes, so the monomorphization concern above does not apply), with
+`inline (boolean, T)` accessors on the dispatch path. Row variables
+over optionality remain future work.
 
 ### 3.5 Default-bearing record types (config records)
 

@@ -1,0 +1,205 @@
+# Presence-Optional Record Fields
+
+Status: **Proposed** (2026-08)
+
+This document designs true presence for optional record fields: a
+record typed `{url: String, timeout?: i32}` may or may not *have*
+`timeout`, absence is observable, and the consumer supplies defaults
+at destructuring. It is the semantic model
+[row-types.md](row-types.md) §3.4 deferred as presence polymorphism
+and [config-records.md](config-records.md) §5 worked around with
+type-level constant defaults. Two representation choices make it
+tractable now: a **presence bitmask** in a single full-width struct,
+and **`inline (boolean, T)`** as the accessor shape on the dispatch
+path.
+
+## 1. Motivation
+
+Config records place defaults on the type, which serves shared option
+bags but cannot express callee-owned defaults: an adapter that
+conditionally sets a field or leaves the decision to the callee needs
+absence to *flow through it*. With presence, the destructured
+parameter with field defaults — already parsed and compiled today,
+with the defaults inert — becomes the natural signature-visible
+spelling of consumer defaults:
+
+```zena
+let fetch = ({url: String, timeout: i32 = 30_000, retries: i32 = 3})
+    => ...;
+
+fetch({url: '/api'});                 // defaults applied in the callee
+fetch({url: '/api', timeout: 5});     // presence flows, not values
+
+// The adapter that motivated this: conditionally set, or defer.
+function go(timeout: i32): Response {
+  var opts: FetchOpts = {url: '/api'};
+  if (timeout > 0) { opts = {...opts, timeout: timeout}; }
+  return fetch(opts);                 // absent timeout reaches fetch
+}
+```
+
+Argument explosion and escape analysis can compile presence away where
+the literal or the flow is visible; they are optimizations over these
+semantics, not part of them.
+
+## 2. Representation: one struct, full width, a mask
+
+Every cost previously attributed to presence came from treating each
+present-set as a distinct shape: 2^n struct types, per-present-set
+specialization, (shape × type) adaptation. The mask collapses them.
+
+A record type with optional fields compiles to **one wasm struct**:
+
+- a slot for every field, optional or not, in the existing canonical
+  sorted order;
+- one `$present: i32` field; bit *i* corresponds to the *i*-th
+  optional field in sorted order (canonical per interned type);
+- absent slots hold the zero value of their type; optional reference
+  fields use nullable slots internally regardless of the declared
+  type — the mask guards every read, so the placeholder never
+  escapes. This is compatible with the post-M4 non-null-field flip:
+  only optional slots stay nullable, by design rather than by
+  limitation.
+
+`{url: 'x'}` and `{url: 'x', timeout: 5}` checked against
+`{url: String, timeout?: i32}` build the *same* struct type with
+different mask constants. More than 32 optional fields is a compile
+error initially (widen to i64, then a second word, if ever needed).
+
+Primitives are why the mask exists at all: `0` is a valid `i32`, so
+absence cannot be a sentinel. For reference fields a null-sentinel
+encoding could drop the mask bit, but the uniform mask keeps `?`
+orthogonal to nullability (`timeout?: i32 | null` is expressible) and
+keeps equality and patterns one code path.
+
+## 3. Typing
+
+- **Assignability**: a source may omit a target's optional fields
+  (restores the rule the self-hosted port lost; the checker's
+  `RecordType.optionalProperties` is already plumbed). A required
+  field satisfies an optional field of the same name and type; the
+  reverse fails.
+- **Identity**: optionality is part of the type.
+  `{timeout: i32}` and `{timeout?: i32}` are different types — the
+  interning key and `typesEqual` must both incorporate it (today both
+  ignore it; with `?` rejected that is unobservable, but it is a
+  latent bug this work fixes).
+- **Coercion**: a required-shape value flowing into an optional-typed
+  position builds the wider struct (projection plus mask). The copy
+  is unconditionally legal only under the records-are-value-types
+  decision (records-and-tuples.md §3.1, step V0) — one more reason V0
+  precedes this. Contextually-typed literals build the target shape
+  directly and need no copy.
+- **Access**: `opts.timeout` on an optional field is a compile error;
+  presence must be consumed through a pattern (§4) or the `??` sugar:
+  `opts.timeout ?? 30_000` compiles to the guarded read and has type
+  `i32`. (This makes the row-types §5.2 access rule real; today the
+  checker does not guard it.)
+
+## 4. Patterns are the presence API
+
+The pattern grammar already distinguishes the two consumption modes;
+presence gives the existing rules their meaning instead of adding
+forms:
+
+- **Irrefutable, with default** — `let {timeout = 30_000} = opts;` —
+  compiles to mask-test, `struct.get`, select. This is the existing
+  "optional requires a default" rule, now with live semantics.
+- **Refutable, without default** — `if (let {timeout} = opts) {...}`
+  and `match` arms — an optional field named without a default makes
+  the pattern *refutable*: the test is the mask bit, the binding is
+  the field read. What is currently a bypass hole in the
+  requires-default check (the `checkPattern` path never consults
+  optionality) becomes the intended behavior of refutable positions.
+- Exhaustiveness over presence follows the composite rules
+  (pattern-exhaustiveness-composite.md): `case {timeout}` and
+  `case {}` cover an optional field.
+
+On the closed/direct representation all of this is inline mask
+arithmetic — no calls. On the **dispatch path** (fat pointers, and the
+future explicit existential), the vtable getter for an optional field
+has the multi-value signature `() -> inline (boolean, T)` — the
+`Map.get`/`Iterator.next` shape — and an adapted vtable for a concrete
+shape lacking the field returns `(false, zero)`. Virtual multi-value
+calls already work in ZIR (`lowerVtableCallMulti`), so this is a
+signature variant on existing machinery, not new machinery.
+
+## 5. Semantics that follow
+
+- **Equality and hashing**: masks compare first, then present fields;
+  hashing mixes the mask. Consequently absent is observably distinct
+  from present-with-the-default-value: `{} != {timeout: 30_000}`.
+  This is the point of presence — the config-records model erases
+  exactly this distinction, which is why the two features are
+  complements, not rivals (§7).
+- **Spread**: `{...opts, x: 1}` copies mask bits for optional fields;
+  setting an optional field that is absent in the source is presence
+  extension within the same type. An *unset* form (remove a field /
+  clear a bit — the analogue of JS `delete` in immutable clothing) is
+  deliberately deferred; destructure-and-rebuild covers it.
+- **Destructured parameters**: `({timeout: i32 = 30_000})` types the
+  parameter as `{timeout?: i32}` and applies the default in the
+  prologue. The defaults are visible in the signature — this is the
+  named-parameters-with-defaults form, owned by the callee.
+
+## 6. Cost model and optimizations
+
+The unoptimized floor: one i32 field per optional-bearing record, one
+mask-test branch (or select) per defaulted read. Everything cheaper is
+an optimization over unchanged semantics:
+
+- A literal argument makes the mask a compile-time constant; under
+  inlining/explosion (records-and-tuples.md Phase 7, the M3 fixpoint
+  loop) the branches fold and the default inlines at the call site —
+  the config-records lowering re-derived, per call site, where the
+  compiler can see it.
+- Exploded signatures carry the mask (or its known bits) as scalars.
+- Escape analysis is *not* required for correctness anywhere; the V0
+  value-semantics decision already licenses the representation
+  changes.
+
+## 7. Relation to config records
+
+The two features answer different questions and compose:
+
+- **Config records** (defaults on the alias, filling at construction)
+  answer "this bag has a canonical default configuration" — the
+  shared-type story, zero runtime cost, absence erased.
+- **Presence** answers "the consumer decides, and absence must flow" —
+  callee-owned defaults, adapters, and any case where
+  set-to-default and unset differ.
+
+A field is one or the other (`?` with `=` in a type remains an
+error). If presence ships first, the config-records constructor form
+remains the type-level complement for shared bags; if experience
+shows presence covers the config story well enough, config records
+can stay shelved — the designs are separable on purpose.
+
+## 8. Implementation plan
+
+Ordered, each stage green under the full suite and fixpoint:
+
+1. **Checker semantics**: optionality in interning and `typesEqual`;
+   assignability with omission; the access restriction and `??`
+   sugar typing; requires-default confined to irrefutable positions,
+   refutable presence patterns typed.
+2. **Representation and literals**: mask field in layout, constant
+   masks at `struct.new`, nullable internal slots for optional refs;
+   required→optional projection.
+3. **Patterns**: mask tests in `patternRefutable`/`lowerPatternTest`,
+   guarded binds with defaults in `lowerPatternBindings` (the
+   AssignmentPattern seams from the destructuring-defaults repair are
+   the insertion points).
+4. **Equality/hash synthesizers**: mask-aware per-shape `==` and
+   `hashCode`.
+5. **Dispatch path**: multi-value optional getters and
+   `(false, zero)` adapted vtables.
+6. **Destructured parameters**: derive `{f?: T}` parameter types from
+   defaulted patterns; prologue defaults become live. Portable tests
+   throughout; the three deleted optional-field semantics tests
+   return as execution tests.
+
+No stage needs presence polymorphism in the type system (row
+variables over optionality stay future work, row-types.md §10), and
+none needs the M5 template work — the mask is per-type data, not
+per-shape code.

@@ -406,17 +406,18 @@ present holding `null`). The three forms:
 {retries: i32?}      // always present; may be null (boxing for primitives)
 ```
 
-Presence-optional fields are presence polymorphism, deferred by
-row-types.md §3.4/§10; as of this writing the implementation is
-front-end only (the checker rejects every literal that omits the
-field, and no runtime representation of absence exists), so `?` in
-record types is rejected with a clear diagnostic until the feature is
-built. When it is built, the planned runtime representation is a
-vtable accessor returning `inline (boolean, T)` — present-flag plus
-value, the same multi-value shape as `Map.get` and `Iterator.next` —
-which represents absent primitives without boxing or sentinel values.
-Config records are expected to absorb most demand for `?`; it should
-be implemented only if meaningful-absence use cases accumulate.
+As of this writing the implementation of `?` is front-end only (the
+checker rejects every literal that omits the field, and no runtime
+representation of absence exists), so `?` in record types is rejected
+with a clear diagnostic until the feature is built. The full design
+for building it is [record-presence.md](record-presence.md): one
+full-width struct with a presence bitmask (no per-present-set shapes),
+patterns as the presence API, and `inline (boolean, T)` accessors on
+the dispatch path. Presence gives *callee-owned* defaults —
+destructured parameters whose field defaults are live, with absence
+flowing through adapters — which covers the use cases this document's
+type-level defaults cannot; the two designs are deliberately
+separable, and record-presence.md §7 records how they relate.
 
 ## 6. Alternatives considered
 
