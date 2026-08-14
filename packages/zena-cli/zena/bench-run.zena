@@ -60,11 +60,11 @@ class BenchVariant {
 }
 
 let numberOf = (v: JsonValue, fallback: f64): f64 => {
-  return if (v is Box<f64>) { (v as Box<f64>).value } else { fallback };
+  return if (v is Box<f64>) { v.value } else { fallback };
 };
 
 let stringOf = (v: JsonValue, fallback: String): String => {
-  return if (v is String) { v as String } else { fallback };
+  return if (v is String) { v } else { fallback };
 };
 
 /** Directory part of a path ('.' when there is no '/'). */
@@ -226,7 +226,7 @@ export let main = (): i32 => {
     console.error('bench-run: config is not a JSON object');
     return 1;
   }
-  let root = parsed as JsonObject;
+  let root = parsed;
 
   var suite = stringOf(root['suite'], '');
   if (suite.length == 0) {
@@ -239,14 +239,14 @@ export let main = (): i32 => {
   let options = new BenchOptions();
   let optionsVal = root['options'];
   if (optionsVal is JsonObject) {
-    let o = optionsVal as JsonObject;
+    let o = optionsVal;
     options.minSamples = numberOf(o['minSamples'], options.minSamples as f64) as i32;
     options.extraSamples = numberOf(o['extraSamples'], options.extraSamples as f64) as i32;
     options.warmupRuns = numberOf(o['warmupRuns'], options.warmupRuns as f64) as i32;
     options.timeBudgetMs = numberOf(o['timeBudgetMs'], options.timeBudgetMs);
     let horizonsVal = o['horizons'];
     if (horizonsVal is JsonArray) {
-      let hs = horizonsVal as JsonArray;
+      let hs = horizonsVal;
       if (hs.length > 0) {
         let specs = new FixedArray<String>(hs.length, '0%');
         var h = 0;
@@ -265,7 +265,7 @@ export let main = (): i32 => {
     console.error('bench-run: config needs a `variants` array');
     return 1;
   }
-  let specs = variantsVal as JsonArray;
+  let specs = variantsVal;
   var vi = 0;
   while (vi < specs.length) {
     let specVal = specs[vi];
@@ -274,7 +274,7 @@ export let main = (): i32 => {
       console.error('bench-run: variant entries must be objects');
       return 1;
     }
-    let spec = specVal as JsonObject;
+    let spec = specVal;
     let name = stringOf(spec['name'], '');
     if (name.length == 0) {
       console.error('bench-run: every variant needs a `name`');
@@ -289,7 +289,7 @@ export let main = (): i32 => {
 
     let commandVal = spec['command'];
     if (commandVal is JsonArray) {
-      let cmd = commandVal as JsonArray;
+      let cmd = commandVal;
       let argv = new Array<String>();
       var ci = 0;
       while (ci < cmd.length) {

@@ -111,7 +111,7 @@ let withComments = (node: Node, doc: Doc): Doc => {
 
   // Leading comments
   if (leading != null) {
-    let arr = leading as Array<Comment>;
+    let arr = leading;
     var i: i32 = 0;
     while (i < arr.length) {
       parts.push(printComment(arr[i]));
@@ -124,7 +124,7 @@ let withComments = (node: Node, doc: Doc): Doc => {
 
   // Trailing comments (use lineSuffix so they stick to end of line)
   if (trailing != null) {
-    let arr = trailing as Array<Comment>;
+    let arr = trailing;
     var j: i32 = 0;
     while (j < arr.length) {
       parts.push(lineSuffix(concat(docs2(text(' '), printComment(arr[j])))));
@@ -146,7 +146,7 @@ let printEmptyBody = (node: Node, spaceBeforeOpen: boolean): Doc => {
     if (spaceBeforeOpen) { return text(' {}'); }
     return text('{}');
   }
-  let arr = inner as Array<Comment>;
+  let arr = inner;
   let commentDocs = new Array<Doc>();
   var i: i32 = 0;
   while (i < arr.length) {
@@ -185,7 +185,7 @@ let printModule = (module: Module): Doc => {
   // File-level leading comments (attached to Module by blank-line heuristic)
   let fileComments = currentCommentMap.getLeading(module);
   if (fileComments != null) {
-    let arr = fileComments as Array<Comment>;
+    let arr = fileComments;
     var fi: i32 = 0;
     while (fi < arr.length) {
       parts.push(printComment(arr[fi]));
@@ -201,7 +201,7 @@ let printModule = (module: Module): Doc => {
   if (module.body.length == 0) {
     let inner = currentCommentMap.getInner(module);
     if (inner != null) {
-      let arr = inner as Array<Comment>;
+      let arr = inner;
       var di: i32 = 0;
       while (di < arr.length) {
         parts.push(printComment(arr[di]));
@@ -272,30 +272,30 @@ let printStatement = (stmt: Statement): Doc => {
 };
 
 let printStatementInner = (stmt: Statement): Doc => match (stmt) {
-  case VariableDeclaration {}: printVariableDeclaration(stmt as VariableDeclaration)
-  case UsingStatement {}: printUsingStatement(stmt as UsingStatement)
-  case FunctionDeclaration {}: printFunctionDeclaration(stmt as FunctionDeclaration)
+  case VariableDeclaration {}: printVariableDeclaration(stmt)
+  case UsingStatement {}: printUsingStatement(stmt)
+  case FunctionDeclaration {}: printFunctionDeclaration(stmt)
   case ExpressionStatement {expression}: concat(docs2(printExpression(expression), text(';')))
-  case BlockStatement {}: printBlockStatement(stmt as BlockStatement)
-  case ReturnStatement {}: printReturnStatement(stmt as ReturnStatement)
+  case BlockStatement {}: printBlockStatement(stmt)
+  case ReturnStatement {}: printReturnStatement(stmt)
   case YieldStatement {argument}: concat(docs3(text('yield '), printExpression(argument), text(';')))
   case BreakStatement {}: text('break;')
   case ContinueStatement {}: text('continue;')
-  case IfStatement {}: printIfStatement(stmt as IfStatement)
-  case WhileStatement {}: printWhileStatement(stmt as WhileStatement)
-  case ForStatement {}: printForStatement(stmt as ForStatement)
-  case ForInStatement {}: printForInStatement(stmt as ForInStatement)
-  case ClassDeclaration {}: printClassDeclaration(stmt as ClassDeclaration)
-  case InterfaceDeclaration {}: printInterfaceDeclaration(stmt as InterfaceDeclaration)
-  case EnumDeclaration {}: printEnumDeclaration(stmt as EnumDeclaration)
-  case MixinDeclaration {}: printMixinDeclaration(stmt as MixinDeclaration)
-  case TypeAliasDeclaration {}: printTypeAliasDeclaration(stmt as TypeAliasDeclaration)
-  case ImportDeclaration {}: printImportDeclaration(stmt as ImportDeclaration)
+  case IfStatement {}: printIfStatement(stmt)
+  case WhileStatement {}: printWhileStatement(stmt)
+  case ForStatement {}: printForStatement(stmt)
+  case ForInStatement {}: printForInStatement(stmt)
+  case ClassDeclaration {}: printClassDeclaration(stmt)
+  case InterfaceDeclaration {}: printInterfaceDeclaration(stmt)
+  case EnumDeclaration {}: printEnumDeclaration(stmt)
+  case MixinDeclaration {}: printMixinDeclaration(stmt)
+  case TypeAliasDeclaration {}: printTypeAliasDeclaration(stmt)
+  case ImportDeclaration {}: printImportDeclaration(stmt)
   case ExportAllDeclaration {moduleSpecifier}: {
     concat(docs3(text('export * from '), printExpression(moduleSpecifier), text(';')))
   }
-  case ExportFromDeclaration {}: printExportFromDeclaration(stmt as ExportFromDeclaration)
-  case DeclareFunction {}: printDeclareFunction(stmt as DeclareFunction)
+  case ExportFromDeclaration {}: printExportFromDeclaration(stmt)
+  case DeclareFunction {}: printDeclareFunction(stmt)
   case SymbolDeclaration {name, exported}: {
     let parts = new Array<Doc>();
     if (exported) { parts.push(text('export ')); }
@@ -419,7 +419,7 @@ let printIfStatement = (stmt: IfStatement): Doc => {
     let alt = stmt.alternate as Statement;
     parts.push(text(' else '));
     match (alt) {
-      case IfStatement {}: { parts.push(printIfStatement(alt as IfStatement)); }
+      case IfStatement {}: { parts.push(printIfStatement(alt)); }
       case _: { parts.push(printStatement(alt)); }
     }
   }
@@ -509,7 +509,7 @@ let printClassDeclaration = (decl: ClassDeclaration): Doc => {
   // which is an error rather than a different spelling of the same thing.
   var superClass = decl.superClass;
   if (decl.isResource && superClass != null) {
-    match (superClass as TypeAnnotation) {
+    match (superClass) {
       case NamedTypeAnnotation {name}: {
         if (name == 'Resource') { superClass = null; }
       }
@@ -519,7 +519,7 @@ let printClassDeclaration = (decl: ClassDeclaration): Doc => {
 
   if (superClass != null) {
     parts.push(text(' extends '));
-    parts.push(printTypeAnnotation(superClass as TypeAnnotation));
+    parts.push(printTypeAnnotation(superClass));
   }
 
   if (decl.onType != null) {
@@ -630,9 +630,9 @@ let printCaseClassParam = (param: CaseClassParam): Doc => {
 
 let printClassMember = (member: Node): Doc => {
   let doc = match (member) {
-    case FieldDefinition {}: printFieldDefinition(member as FieldDefinition)
-    case MethodDefinition {}: printMethodDefinition(member as MethodDefinition)
-    case AccessorDeclaration {}: printAccessorDeclaration(member as AccessorDeclaration)
+    case FieldDefinition {}: printFieldDefinition(member)
+    case MethodDefinition {}: printMethodDefinition(member)
+    case AccessorDeclaration {}: printAccessorDeclaration(member)
     case _: text('/* unknown member */')
   };
   return withComments(member, doc);
@@ -733,7 +733,7 @@ let printMethodDefinition = (method: MethodDefinition): Doc => {
     match (body) {
       case BlockStatement {}: {
         parts.push(text(' '));
-        parts.push(printBlockStatement(body as BlockStatement));
+        parts.push(printBlockStatement(body));
       }
       case _: {
         parts.push(text(' '));
@@ -821,14 +821,14 @@ let printInterfaceMember = (member: Node): Doc => {
       let parts = new Array<Doc>();
       parts.push(text((name as Identifier).name));
       if (typeParameters != null) {
-        parts.push(printTypeParams(typeParameters as Array<TypeParameter>));
+        parts.push(printTypeParams(typeParameters));
       }
       parts.push(text('('));
       parts.push(printParams(params));
       parts.push(text(')'));
       if (returnType != null) {
         parts.push(text(': '));
-        parts.push(printTypeAnnotation(returnType as TypeAnnotation));
+        parts.push(printTypeAnnotation(returnType));
       }
       parts.push(text(';'));
       concat(parts)
@@ -1033,41 +1033,41 @@ let printExpression = (expr: Expression): Doc => {
 let printExpressionInner = (expr: Expression): Doc => match (expr) {
   case Identifier {name}: text(name)
   case NumberLiteral {raw}: text(raw)
-  case StringLiteral {}: printStringLiteral(expr as StringLiteral)
+  case StringLiteral {}: printStringLiteral(expr)
   case BooleanLiteral {value}: if (value) { text('true') } else { text('false') }
   case NullLiteral {}: text('null')
   case ThisExpression {}: text('this')
   case SuperExpression {}: text('super')
   case PipePlaceholder {}: text('_')
-  case BinaryExpression {}: printBinaryExpression(expr as BinaryExpression)
-  case UnaryExpression {}: printUnaryExpression(expr as UnaryExpression)
-  case AssignmentExpression {}: printAssignmentExpression(expr as AssignmentExpression)
-  case MemberExpression {}: printMemberExpression(expr as MemberExpression)
-  case IndexExpression {}: printIndexExpression(expr as IndexExpression)
-  case CallExpression {}: printCallExpression(expr as CallExpression)
-  case NewExpression {}: printNewExpression(expr as NewExpression)
-  case FunctionExpression {}: printFunctionExpression(expr as FunctionExpression)
-  case ArrayLiteral {}: printArrayLiteral(expr as ArrayLiteral)
-  case RecordLiteral {}: printRecordLiteral(expr as RecordLiteral)
-  case TupleLiteral {}: printTupleLiteral(expr as TupleLiteral)
-  case MapLiteral {}: printMapLiteral(expr as MapLiteral)
+  case BinaryExpression {}: printBinaryExpression(expr)
+  case UnaryExpression {}: printUnaryExpression(expr)
+  case AssignmentExpression {}: printAssignmentExpression(expr)
+  case MemberExpression {}: printMemberExpression(expr)
+  case IndexExpression {}: printIndexExpression(expr)
+  case CallExpression {}: printCallExpression(expr)
+  case NewExpression {}: printNewExpression(expr)
+  case FunctionExpression {}: printFunctionExpression(expr)
+  case ArrayLiteral {}: printArrayLiteral(expr)
+  case RecordLiteral {}: printRecordLiteral(expr)
+  case TupleLiteral {}: printTupleLiteral(expr)
+  case MapLiteral {}: printMapLiteral(expr)
   case AsExpression {expression, typeAnnotation}: {
     concat(docs3(printExpression(expression), text(' as '), printTypeAnnotation(typeAnnotation)))
   }
   case IsExpression {expression, typeAnnotation}: {
     concat(docs3(printExpression(expression), text(' is '), printTypeAnnotation(typeAnnotation)))
   }
-  case RangeExpression {}: printRangeExpression(expr as RangeExpression)
-  case PipelineExpression {}: printPipelineExpression(expr as PipelineExpression)
-  case TemplateLiteral {}: printTemplateLiteral(expr as TemplateLiteral)
+  case RangeExpression {}: printRangeExpression(expr)
+  case PipelineExpression {}: printPipelineExpression(expr)
+  case TemplateLiteral {}: printTemplateLiteral(expr)
   case TaggedTemplateExpression {tag, quasi}: {
     concat(docs2(printExpression(tag), printTemplateLiteral(quasi)))
   }
-  case MatchExpression {}: printMatchExpression(expr as MatchExpression)
-  case IfExpression {}: printIfExpression(expr as IfExpression)
+  case MatchExpression {}: printMatchExpression(expr)
+  case IfExpression {}: printIfExpression(expr)
   case ThrowExpression {argument}: concat(docs2(text('throw '), printExpression(argument)))
   case AwaitExpression {argument}: concat(docs2(text('await '), printExpression(argument)))
-  case TryExpression {}: printTryExpression(expr as TryExpression)
+  case TryExpression {}: printTryExpression(expr)
 };
 
 // ============================================================================
@@ -1677,8 +1677,8 @@ let printTryExpression = (expr: TryExpression): Doc => {
 let printPattern = (pat: Pattern): Doc => match (pat) {
   case BindingPattern {kind, pattern}: concat(docs3(text(kind), text(' '), printPattern(pattern)))
   case IdentifierPattern {name}: text(name)
-  case RecordPattern {}: printRecordPattern(pat as RecordPattern)
-  case TuplePattern {}: printTuplePattern(pat as TuplePattern)
+  case RecordPattern {}: printRecordPattern(pat)
+  case TuplePattern {}: printTuplePattern(pat)
   case AsPattern {pattern, name}: {
     concat(docs3(printNode(pattern), text(' as '), text(name.name)))
   }
@@ -1734,7 +1734,7 @@ let printTuplePattern = (pattern: TuplePattern): Doc => {
   while (i < pattern.elements.length) {
     let elem = pattern.elements[i];
     if (elem != null) {
-      elemDocs.push(printNode(elem as Node));
+      elemDocs.push(printNode(elem));
     } else {
       elemDocs.push(text('_'));
     }
@@ -1752,7 +1752,7 @@ let printTypeAnnotation = (ann: TypeAnnotation): Doc => match (ann) {
     let parts = new Array<Doc>();
     parts.push(text(name));
     if (typeArguments != null) {
-      let tas = typeArguments as Array<TypeAnnotation>;
+      let tas = typeArguments;
       if (tas.length > 0) {
         parts.push(text('<'));
         parts.push(join(text(', '), mapTypeAnnotations(tas)));
@@ -1876,7 +1876,7 @@ let printCondition = (node: Node): Doc => match (node) {
 
 /// Generic Node printer — dispatches to the right sub-printer.
 let printNode = (node: Node): Doc => match (node) {
-  case Module {}: printModule(node as Module)
+  case Module {}: printModule(node)
   // Expressions
   case Identifier {}: printExpression(node as Expression)
   case NumberLiteral {}: printExpression(node as Expression)
