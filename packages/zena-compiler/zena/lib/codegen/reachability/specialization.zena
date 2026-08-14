@@ -772,10 +772,15 @@ export final class Specializer implements SpecializerInterface {
     // SIGNATURES: an interface method's function type is not a value,
     // and value-routing it minted a closure struct + impl signature
     // per member (22 of them from one Iterable-family interface).
+    // Registration plumbing, so no name evidence (see
+    // registerClassMethod).
+    let savedSuppress = this.pass.suppressNameEvidence;
+    this.pass.suppressNameEvidence = true;
     for (let pair in it.members) {
       let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, itParams, it.typeArguments, pair.value.type);
       this.pass.typeLowerer.discoverSignatureType(resolvedType, sourceModel);
     }
+    this.pass.suppressNameEvidence = savedSuppress;
 
     let keys = it.members.keys();
     while (let (true, key) = keys.next()) {
@@ -1104,7 +1109,15 @@ export final class Specializer implements SpecializerInterface {
       }
     }
     if (methodTypeNode != null) {
+      // A registration's signature is plumbing, not evidence: the
+      // member may never be reached, and a reached body records its
+      // own evidence when it is walked. Without the suppression, a
+      // registered-but-unreached `slice(range)` kept four Range
+      // structs in a module whose only code is an index loop.
+      let savedSuppress = this.pass.suppressNameEvidence;
+      this.pass.suppressNameEvidence = true;
       this.pass.typeLowerer.discoverSignatureType(methodTypeNode as Type, model);
+      this.pass.suppressNameEvidence = savedSuppress;
     }
 
     let params = new Array<ValType>();

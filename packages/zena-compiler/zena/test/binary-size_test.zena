@@ -196,8 +196,8 @@ let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zen
  * moving up is the signal this test exists to give.
  */
 let budget = 37;
-let arrayBudget = 240;
-let helloBudget = 600;
+let arrayBudget = 180;
+let helloBudget = 480;
 
 export let tests = suite('Binary size', (): void => {
   test('a minimal program stays within its byte budget', (ctx: TestContext): void => {
@@ -246,6 +246,13 @@ export let tests = suite('Binary size', (): void => {
     isTrue(!wat.contains('String_'),
       `${arrayTarget} emits String machinery in a program with no strings — ` +
       `a phantom FixedArray<String> specialization is being instantiated.`);
+    // The Range classes are named only by FixedArray.slice's SIGNATURE,
+    // and slice is registered, never reached — a registered member's
+    // signature is plumbing, not evidence. A reached body re-records
+    // its own evidence when it is walked.
+    isTrue(!wat.contains('Range'),
+      `${arrayTarget} carries Range structs named only by the signature ` +
+      `of a registered-but-unreached member.`);
   });
 
   test('a subclassed generic emits no erased specialization', (ctx: TestContext): void => {
