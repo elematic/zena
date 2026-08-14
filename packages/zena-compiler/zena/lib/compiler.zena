@@ -33,7 +33,7 @@ import {
   SourceFileGraph
 } from './library-loader.zena';
 import { buildStdlibConfig, loadPackageMap } from './package-manifest.zena';
-import { getStandardPrelude } from './prelude.zena';
+import { getStandardPrelude, getTargetRuntimeModules } from './prelude.zena';
 import { Symbol, SymbolId, makeSymbolIdGenerator } from './scope/symbol.zena';
 import { Scope, ScopeKind } from './scope/scope.zena';
 import { ScopeBuilder, ScopeResult, ModuleExports as ScopeModuleExports, UnresolvedName } from './scope/scope-builder.zena';
@@ -313,6 +313,13 @@ export final class Compiler {
     // Load the entry point and all transitive dependencies.
     let entry = this.#loader.load(entryPoint, version);
     entries.push(entry);
+
+    // The target's own runtime modules, after the entry so that they
+    // cannot shift its symbol ids — see getTargetRuntimeModules.
+    for (let specifier in getTargetRuntimeModules(this.#resolver.target)) {
+      let resolved = this.#resolver.resolve(specifier, "");
+      entries.push(this.#loader.load(resolved.path, null));
+    }
 
     // Compute topological order.
     let graph = this.#loader.computeGraph(entries);

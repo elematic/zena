@@ -101,6 +101,14 @@ const FIXTURES: Fixture[] = [
       {invoke: 'greet("world")', expect: '"hello, world"'},
       // Length zero: the pointer half of the pair is never dereferenced.
       {invoke: 'nothing()', expect: '""'},
+      // An empty string *argument* is the dangerous one. The host lowers
+      // it through `cabiRealloc(0, 0, 1, 0)`, which returns `align` — an
+      // aligned address that was never allocated. Releasing the argument
+      // buffer on `ptr != 0` rather than `len > 0` would hand that to
+      // `free`, which would walk into a block header that is not there;
+      // `greet` then allocates for its result out of the corrupted list.
+      {invoke: 'greet("")', expect: '"hello, "'},
+      {invoke: 'measure("")', expect: '0'},
     ],
   },
   {

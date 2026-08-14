@@ -31,16 +31,31 @@ export let getStandardPrelude = (target: String): HashMap<String, FixedArray<Str
   prelude["zena:string-convert"] = [
     "i32ToString", "i64ToString", "f64ToString", "parseI32", "parseI64", "parseF64"
   ];
-  if (targetEmitsComponent(target)) {
-    // Loaded, and bound under no name. The component target synthesizes
-    // wrappers that call these, and a module the compiler generates
-    // calls into has to be in the graph before reachability runs — but
-    // a program never names them itself, so binding them would be
-    // namespace pollution with nothing on the other end. Reachability
-    // decides whether any of it is emitted: a component that moves no
-    // strings links none of it.
-    prelude["zena:canonical-abi"] = new FixedArray<String>(0, "");
-  }
-
   return prelude;
+};
+
+/**
+ * Modules a target links whether or not the program names them.
+ *
+ * Not a prelude: the prelude is the list of names bound into every file,
+ * and these bind nothing. They are here because the compiler
+ * synthesizes calls into them, and a module it generates calls into has
+ * to be in the graph before reachability runs. Reachability still
+ * decides whether any of it is emitted — a component that moves no
+ * strings links none of `zena:canonical-abi`.
+ *
+ * Loaded **after** the entry point, and that ordering is load-bearing.
+ * RTA roots a module's exports by iterating `globalDeclarations`, a map
+ * keyed by symbol id, and symbol ids are handed out as modules are
+ * loaded. A module loaded before the entry shifts the entry's ids and
+ * so permutes the order its exports are discovered in, which permutes
+ * the emitted type section. Loading afterwards leaves the program's own
+ * bytes exactly as they were — which is what lets the component target
+ * embed the same core module a hostless build emits.
+ */
+export let getTargetRuntimeModules = (target: String): FixedArray<String> => {
+  if (targetEmitsComponent(target)) {
+    return ["zena:canonical-abi"];
+  }
+  return new FixedArray<String>(0, "");
 };

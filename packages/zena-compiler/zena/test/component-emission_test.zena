@@ -23,11 +23,13 @@ import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { i32ToString } from 'zena:string-convert';
 import {
   isKebabName, toKebabName
 } from '../lib/codegen/component-emitter.zena';
+import { assertFunctionUsesTimes } from './wat-invariants.zena';
 
 let stdlibRoot = 'packages/stdlib/zena';
 let fixtures = 'packages/zena-compiler/test-files/component';
@@ -42,7 +44,8 @@ class PlainHost implements CompilerHost {
   }
 }
 
-let compileFor = (path: String, target: String): ByteArray => {
+/** The compiled program, ready for whichever generator wants it. */
+let programFor = (path: String, target: String): Program => {
   let host = new PlainHost();
   let packages = loadPackageMap(host, 'zena-packages.json');
   let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
@@ -64,10 +67,21 @@ let compileFor = (path: String, target: String): ByteArray => {
       if (file.ast.path == entryAst.path) { entryUnit = unit; }
     }
   }
-  return new BinaryGenerator(target, false)
-    .generate(new Program(units, entryUnit))
-    .toByteArray();
+  return new Program(units, entryUnit);
 };
+
+let compileFor = (path: String, target: String): ByteArray =>
+  new BinaryGenerator(target, false)
+    .generate(programFor(path, target))
+    .toByteArray();
+
+/**
+ * The core module's WAT. The component wrapper has no WAT form — it is
+ * not core wasm — so this is the module nested inside it, which is where
+ * the synthesized wrappers live.
+ */
+let watFor = (path: String, target: String): String =>
+  new WatGenerator(target, false).generate(programFor(path, target));
 
 /**
  * The section ids of a component or core module, in order. Both formats
@@ -281,6 +295,32 @@ export let tests = suite('Component emission', (): void => {
       'the component does not export `greet`');
     isTrue(!containsName(componentExports, 'greet$componentExport'),
       'the wrapper leaked out as a component export');
+  });
+
+  test('a wrapper releases every argument buffer it is handed',
+      (ctx: TestContext): void => {
+    // The host lowers a `string` argument through the *lifted*
+    // function's `realloc`, so the bytes come out of the guest's own
+    // allocator and are the guest's to free. `post-return` is handed the
+    // return area and cannot reach them, so a wrapper that does not
+    // release leaks a block per call — invisible to the end-to-end
+    // script, which invokes each export once.
+    //
+    // Counted rather than merely present: one release per string
+    // argument, so a second copy would be a double free and none would
+    // be the leak.
+    let wat = watFor(`${fixtures}/strings.zena`, 'component');
+    assertFunctionUsesTimes(wat, '$greet$componentExport',
+      'call $releaseStringArgument', 1,
+      'the argument buffer is the guest\'s to free');
+    assertFunctionUsesTimes(wat, '$measure$componentExport',
+      'call $releaseStringArgument', 1,
+      'a string argument is released whatever the result type');
+    // A result carries no buffer of the guest's to release on the way
+    // in: it is allocated during the call and freed by post-return.
+    assertFunctionUsesTimes(wat, '$shout$componentExport',
+      'call $releaseStringArgument', 0,
+      'an export taking no string has nothing to release');
   });
 
   test('a component moving no strings links none of the marshaling',

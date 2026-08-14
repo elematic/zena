@@ -162,9 +162,11 @@ export let prepareComponentExports = (
   pass: ReachabilityAnalysis
 ): void => {
   let fromMemory = wasm.getStdlibFunc(canonicalAbiModule, 'stringFromMemory');
+  let release = wasm.getStdlibFunc(canonicalAbiModule, 'releaseStringArgument');
   let resultArea = wasm.getStdlibFunc(canonicalAbiModule, 'stringResultArea');
   let realloc = wasm.getStdlibFunc(canonicalAbiModule, 'cabiRealloc');
   let postReturn = wasm.getStdlibFunc(canonicalAbiModule, 'cabiPostReturn');
+  var wrapped = false;
 
   let exportKeys = wasm.exportMap.keys();
   while (let (true, key) = exportKeys.next()) {
@@ -189,13 +191,13 @@ export let prepareComponentExports = (
     if (!carriesString && !resultIsString) {
       continue;
     }
-    if (fromMemory == null || resultArea == null || realloc == null ||
-        postReturn == null) {
+    if (fromMemory == null || release == null || resultArea == null ||
+        realloc == null || postReturn == null) {
       throw new Error(
         "The component target cannot export '" + coreName +
         "': it carries a string, and zena:canonical-abi was not linked. " +
-        'That module is loaded by this target\'s prelude and rooted by ' +
-        'reachability when a string crosses an export, so this is a ' +
+        'That module is one of this target\'s runtime modules and is rooted ' +
+        'by reachability when a string crosses an export, so this is a ' +
         'compiler bug rather than a program error.'
       );
     }
@@ -249,6 +251,15 @@ export let prepareComponentExports = (
     }
     b.switchTo(entry);
 
+    // Convert each argument, and release the buffer it came in as soon
+    // as it has been copied. The bytes were allocated out of the guest's
+    // own `realloc` when the host lowered them, so they are the guest's
+    // to free, and `post-return` cannot reach them — it is handed the
+    // return area and nothing else.
+    //
+    // Released here rather than after the call so that a program that
+    // throws does not leak them: the wrapper is straight-line, and an
+    // exception leaves it without running anything below.
     let args = new Array<i32>();
     var at = 0;
     for (var i = 0; i < stringAt.length; i += 1) {
@@ -258,6 +269,11 @@ export let prepareComponentExports = (
         pair.push(core[at + 1]);
         args.push(b.callFunc(b.addRef(new IrRefFunc(fromMemory as WasmFunction)),
             pair, f.signature.params[i]));
+        let toRelease = new Array<i32>();
+        toRelease.push(core[at]);
+        toRelease.push(core[at + 1]);
+        b.callFunc(b.addRef(new IrRefFunc(release as WasmFunction)),
+            toRelease, null);
         at += 2;
       } else {
         args.push(core[at]);
@@ -283,7 +299,12 @@ export let prepareComponentExports = (
     }
     entryBodies[wrapper.uid] = b.finish();
     wasm.componentExportWrappers[key] = wrapper;
+    wrapped = true;
+  }
 
+  // Module-wide, not per-export: the canonical options name one
+  // allocator and one post-return however many exports carry a string.
+  if (wrapped) {
     wasm.componentReallocFunc = realloc as WasmFunction;
     wasm.componentPostReturnFunc = postReturn as WasmFunction;
   }
