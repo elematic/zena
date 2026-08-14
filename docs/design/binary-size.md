@@ -2,11 +2,12 @@
 
 **Status**: **33,875 → 37 bytes — byte-identical to the hand-written
 ideal — and the keystone is in** (section 11): hello-string 7,270 →
-**532**, array-sum 11,967 → 5,635, after sections 12–14 (signature
+**532**, array-sum 11,967 → **217**, after sections 12–14 (signature
 contexts, string-boundary directions, equality by evidence,
-constructors by demand). `zena build <file> -o out.wat` dumps any
-program's emitted WAT; minimal and hello-string are WAT-snapshot
-tested. The name
+constructors by demand) and section 17 (a for-in over an array roots
+no iterator protocol). `zena build <file> -o out.wat` dumps any
+program's emitted WAT; minimal, hello-string and array-sum are
+WAT-snapshot tested. The name
 section is gated, the extension-class leak is closed, template helpers
 are rooted from the templates that need them, the type section is
 computed rather than accumulated, RTA roots only the entry unit,
@@ -1143,6 +1144,73 @@ registered without a declaration node. A side effect worth keeping:
 subclass that merely inherits, so a call through a base-typed receiver
 devirtualizes in cases that used to dispatch through the vtable.
 
+## 17. A for-in over an array roots no iterator protocol
+
+`lowerForIn` compiles a for-in whose iterable is a bare array,
+`FixedArray`, `ImmutableArray` or `Array` to an index loop —
+`array.len`/`array.get`, no `:iterator` call, no `ArrayIterator`, no
+`Iterable` dispatch. Reachability rooted the whole protocol anyway,
+from two places: the checker registered an `Iterable` adaptation on
+every class-typed for-in iterable (picked up by both the adaptation
+walk and the dependency records), and RTA's own `ForInStatement` arm
+queued `:iterator` implementations, recorded
+`Iterable.:iterator`/`Iterator.next` as used interface members, and —
+for a bare array iterable — instantiated `FixedArray<elem>` outright.
+
+For array-sum that rooting was 94% of the module. The chain, verified
+in the emitted WAT: the instantiation's sibling propagation brings
+`FixedArray<u8>` and `FixedArray<String>` in alongside the `i32`
+specialization; the adaptation is keyed on the UNSPECIALIZED
+(class, interface) pair, so the i32 loop's evidence unlocked
+class-interface vtables for all three; `#buildClassInterfaceVTables`
+force-reaches every slot of `Iterable`'s vtable per specialization
+(`contains`/`all`/`some`/`find`); and `FixedArray<String>.contains`
+compares elements with `==`, which dragged the whole String
+equality/hash chain into a program with no strings.
+
+Both sides now mirror `lowerForIn`'s dispatch
+(`forInLowersToIndexLoop`, one copy in the checker and one in RTA):
+fast-path iterables register no adaptation and root no protocol. The
+filter includes the type-argument requirement, and a mismatch fails
+loudly — a class the filter calls fast that lowering iterator-paths is
+a missing-method error at lowering, never a silent fallback.
+
+What the fast path DOES still need is the value's type, and losing the
+protocol exposed that nothing else supplied it: the machinery's method
+signatures were the only thing keeping the raw wasm array emitted. An
+index-loop for-in references it directly (`array.new_fixed`,
+`array.get`) with no reached signature ever naming it. So
+`#recordTypeEvidence` treats an extension's substituted `on` type as
+evidence of its own — an extension VALUE is its representation — and
+records an array type as a named composite, resolved at the settle
+drain with the same `typeToValType` derivation lowering uses
+(deferred like records: computing the element ValType during evidence
+recording can run before a record element's dispatch exists). Each
+gap surfaced as a loud `array.new_fixed references unemitted type`,
+which now names the function it is in.
+
+| | before | after |
+| --- | ---: | ---: |
+| array-sum | 3,647 B / 45 funcs | **217 B / 1 func** |
+| compiler's own module (fixed input, `-g`) | 3,463,511 B / 16,613 funcs | **2,899,290 B / 13,347 funcs** |
+| minimal / hello-string | 37 / 532 | unchanged |
+
+The compiler's 16% is the same leak at scale: its sources are full of
+for-in loops over arrays, and every one seeded the `Iterable`
+adaptation for whatever element type it iterated.
+
+The eq-slot repair's honest 10 bytes (section 13) vanish with the
+evidence that triggered them. The budget ratchets 5,800 → 240 — 5,800
+had gone stale; the module was already at 3,647 before this change,
+improved by the erasure work among others, with the budget never
+moved. The module is now small enough to read whole, so it is
+WAT-snapshot tested like minimal and hello-string, and an invariant
+test asserts no `ArrayIterator`, no interface trampoline, and no
+String machinery in its module. What remains in the 217 bytes past
+`main` and the array type: the struct/vtable pairs of six classes the
+prelude walk names (`FixedArray<i32>`, `ImmutableArray<i32>`, the
+ranges) — empty, dead, and the next visible cut.
+
 ## The keystone: `hasInst` and the class vtable
 
 Everything still in the module traces back to a single coupling.
@@ -1351,16 +1419,20 @@ In dependency order:
 
 ## The ratchet
 
-`zena/test/binary-size_test.zena` holds two fixtures to absolute byte
-budgets, to be moved DOWN only:
+`zena/test/binary-size_test.zena` holds three fixtures to absolute
+byte budgets, to be moved DOWN only:
 
-| fixture | what it adds | bytes |
-| --- | --- | ---: |
-| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 2,292 |
-| `test-files/array-sum.zena` | an array literal summed by a for-in loop: array type, iterator, `Iterable`/`Iterator` dispatch | 13,504 |
+| fixture | what it adds | bytes | budget |
+| --- | --- | ---: | ---: |
+| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 37 | 37 |
+| `test-files/array-sum.zena` | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) | 217 | 240 |
+| `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports | 532 | 600 |
 
 Minimal alone cannot notice a regression in generic specialization,
-because it specializes nothing — hence the second fixture.
+because it specializes nothing — hence the other two. A budget left
+slack goes stale the other way: array-sum's sat at 5,800 while the
+module shrank to 3,647 underneath it, and a 2KB regression would have
+passed unseen.
 
 `dce_test.zena` never caught any of this: it asserts only that two
 programs compile to the *same* length, which stays true while both
