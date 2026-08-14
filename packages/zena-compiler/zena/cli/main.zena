@@ -72,6 +72,9 @@ export let main = (): i32 => {
   // unknown `-g` as the input filename); `-g` here serves direct
   // invocations of the compiler.
   var debugNames = getEnv("ZENA_DEBUG_NAMES") != null;
+  // Unnecessary-cast warnings: opt-in via env var, like -g, so the
+  // checked-in bootstrap never needs to know the flag exists.
+  let warnUnnecessaryCasts = getEnv("ZENA_WARN_UNNECESSARY_CASTS") != null;
   for (var i = 1; i < args.length; i += 1) {
     if (args[i] == "-o" && i + 1 < args.length) {
       outPath = args[i + 1];
@@ -111,7 +114,7 @@ export let main = (): i32 => {
   try {
     let compResult = compiler.compile(filename);
 
-    let checkResults = checkCompilation(compResult, null, false);
+    let checkResults = checkCompilation(compResult, null, false, warnUnnecessaryCasts);
     let diagnostics = checkResults.diagnostics;
     var hasError = false;
     for (let diag in diagnostics) {
@@ -123,6 +126,13 @@ export let main = (): i32 => {
           console.error("Error: " + diag.message);
         }
         hasError = true;
+      } else if (warnUnnecessaryCasts && diag.severity == DiagnosticSeverity.Warning) {
+        if (diag.location != null) {
+          let loc = diag.location as SourceSpan;
+          console.error(loc.file + ":" + i32ToString(loc.line) + ":" + i32ToString(loc.column) + " - Warning: " + diag.message);
+        } else {
+          console.error("Warning: " + diag.message);
+        }
       }
     }
     
