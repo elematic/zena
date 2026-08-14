@@ -196,7 +196,7 @@ let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zen
  * moving up is the signal this test exists to give.
  */
 let budget = 37;
-let arrayBudget = 180;
+let arrayBudget = 150;
 let helloBudget = 480;
 
 export let tests = suite('Binary size', (): void => {
@@ -253,6 +253,14 @@ export let tests = suite('Binary size', (): void => {
     isTrue(!wat.contains('Range'),
       `${arrayTarget} carries Range structs named only by the signature ` +
       `of a registered-but-unreached member.`);
+    // The wrapper classes are extensions: a value of one IS the raw
+    // wasm array, so their placeholder structs can never be values and
+    // nothing emitted references them.
+    isTrue(!wat.contains('ImmutableArray'),
+      `${arrayTarget} carries ImmutableArray machinery no code names.`);
+    isTrue(!wat.contains('FixedArray'),
+      `${arrayTarget} carries FixedArray's placeholder struct — an ` +
+      `extension value is the raw array, so the struct is unreferenceable.`);
   });
 
   test('a subclassed generic emits no erased specialization', (ctx: TestContext): void => {

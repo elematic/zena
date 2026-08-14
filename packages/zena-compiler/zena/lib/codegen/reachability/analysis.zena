@@ -1392,9 +1392,22 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   (this.wasm.boxClass as ClassType).symbolId;
         }
       }
-      if (this.instantiatedSpecializedClasses.has(cKeyStr) ||
+      // An EXTENSION class's struct is a placeholder: a value of the
+      // class IS its representation type (typeToValType returns the
+      // onType), so no cast, test, field read or signature can ever
+      // name the struct — being named or instantiated keeps the
+      // class's METHODS reachable, not this pair of dead types.
+      var isExtensionPlaceholder = false;
+      {
+        let ctOpt = cPair.value.structType.classType;
+        if (ctOpt != null && (ctOpt as ClassType).isExtension) {
+          isExtensionPlaceholder = true;
+        }
+      }
+      if (!isExtensionPlaceholder &&
+          (this.instantiatedSpecializedClasses.has(cKeyStr) ||
           this.reachablyNamedClasses.has(cKeyStr) ||
-          isBoxSpecialization) {
+          isBoxSpecialization)) {
         this.markTypeReached(cPair.value.structType);
         this.markTypeReached(cPair.value.vtableStructType);
       }

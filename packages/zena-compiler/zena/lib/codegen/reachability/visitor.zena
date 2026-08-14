@@ -398,10 +398,22 @@ export final class TypeLowerer implements TypeLowererInterface {
       // Reached, not just created: an array VALUE can exist with no
       // reached signature mentioning the type — a literal iterated by
       // an index loop is array.new_fixed and array.get, both of which
-      // reference the type index directly.
-      this.pass.markTypeReached(this.pass.wasm.getArray(elemValType, true));
+      // reference the type index directly. Under registration
+      // (suppressNameEvidence) the mention is a signature's, not a
+      // value's, and a reached signature's types are kept structurally.
+      if (this.pass.suppressNameEvidence) {
+        this.pass.wasm.getArray(elemValType, true);
+      } else {
+        this.pass.markTypeReached(this.pass.wasm.getArray(elemValType, true));
+      }
 
       if (isConcrete(at)) {
+        // The wrapper classes must be REGISTERED — member lookup on an
+        // array-typed receiver resolves through them — but discovering
+        // an array type is not reached code naming them, so their
+        // placeholder structs are not name evidence.
+        let savedSuppress = this.pass.suppressNameEvidence;
+        this.pass.suppressNameEvidence = true;
         let faClass = this.pass.findPreludeClass("FixedArray");
         if (faClass != null) {
           let typeArgs = new Array<Type>();
@@ -414,6 +426,7 @@ export final class TypeLowerer implements TypeLowererInterface {
           typeArgs.push(at.elementType);
           this.discoverType(instantiateClassType(iaClass as ClassType, typeArgs), model);
         }
+        this.pass.suppressNameEvidence = savedSuppress;
       }
     }
   }
@@ -898,15 +911,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           // tuple literals — would otherwise first materialize during
           // lowering, after layout locked the type section.
           this.pass.typeLowerer.discoverType(resolved, model);
-          if (resolved is ArrayType) {
-            let iaClass = this.pass.findPreludeClass("ImmutableArray");
-            if (iaClass != null) {
-              let typeArgs = new Array<Type>();
-              typeArgs.push((resolved as ArrayType).elementType);
-              let instantiated = instantiateClassType(iaClass as ClassType, typeArgs);
-              specializer.instantiateClassType(instantiated, model);
-            }
-          }
+          // No unconditional ImmutableArray<elem> instantiation here:
+          // a literal LOWERS to array.new_fixed of the raw array —
+          // there is no constructor call — and a program that names
+          // ImmutableArray (an `as` cast, a `from` call) discovers it
+          // through that mention like any other class.
         }
       }
       if (n is TupleLiteral) {
@@ -1516,18 +1525,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let alType = model.getNodeType(al);
 
         if (alType != null) {
-          let resolved = resolveType(alType as Type);
-
-          if (resolved is ArrayType) {
-            let resolvedArr = resolved as ArrayType;
-            let iaClass = this.pass.findPreludeClass("ImmutableArray");
-            if (iaClass != null) {
-              let typeArgs = new Array<Type>();
-              typeArgs.push(resolvedArr.elementType);
-              let instantiated = instantiateClassType(iaClass as ClassType, typeArgs);
-              specializer.instantiateClassType(instantiated, model);
-            }
-          }
+          // Discover the literal's type (the raw array roots itself as
+          // a composite; a class type roots normally). The
+          // unconditional ImmutableArray<elem> instantiation that used
+          // to live here is gone — see the record-path arm.
+          this.pass.typeLowerer.discoverType(resolveType(alType as Type), model);
         }
       }
       if (n is RangeExpression) {
