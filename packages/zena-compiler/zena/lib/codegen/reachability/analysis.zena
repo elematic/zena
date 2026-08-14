@@ -20,7 +20,7 @@ import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
 import { performance } from '../../time.zena';
-import { canonicalAbiModule } from '../component-emitter.zena';
+import { componentAbiModule } from '../component-emitter.zena';
 import { targetEmitsComponent } from '../../targets.zena';
 import { console } from 'zena:console';
 
@@ -448,7 +448,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
-   * Root `zena:canonical-abi`, the component target's string marshaling.
+   * Root `zena:component-abi`, the component target's string marshaling.
    *
    * Its functions are reached from nowhere inside the program: two of
    * them are called only by wrappers the compiler synthesizes after this
@@ -463,15 +463,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * component target resolves this module at all, so no other target
    * reaches this branch with a unit to root.
    */
-  #rootCanonicalAbi(): void {
+  #rootComponentAbi(): void {
     if (!this.wasm.componentMovesStrings) {
       return;
     }
     let prog = this.program;
-    if (prog == null || !prog.unitsByPath.has(canonicalAbiModule)) {
+    if (prog == null || !prog.unitsByPath.has(componentAbiModule)) {
       return;
     }
-    let unit = prog.unitsByPath[canonicalAbiModule];
+    let unit = prog.unitsByPath[componentAbiModule];
     let model = unit.model;
     let gKeys = model.globalDeclarations.keys();
     while (let (true, id) = gKeys.next()) {
@@ -882,7 +882,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 // `$string*` four exist for an embedder holding the core
                 // module directly, and nothing inside a component can
                 // reach them — its strings cross through the canonical
-                // ABI instead, which is `zena:canonical-abi`'s job and
+                // ABI instead, which is `zena:component-abi`'s job and
                 // wants a flag of its own.
                 this.wasm.componentMovesStrings = true;
               } else if (declType is FunctionType) {
@@ -929,7 +929,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.specializer.instantiateClassType(tsaClass, this.getClassModel(tsaClass));
     }
 
-    this.#rootCanonicalAbi();
+    this.#rootComponentAbi();
 
     this.ensureAllHelperFunctionsReached();
 

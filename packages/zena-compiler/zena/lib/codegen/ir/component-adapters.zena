@@ -35,7 +35,7 @@
  * it converts each argument, calls the program's function, and converts
  * the result.
  *
- * Both conversions are `zena:canonical-abi`'s, which is Zena, for the
+ * Both conversions are `zena:component-abi`'s, which is Zena, for the
  * same reason the callback is: allocating and copying is something the
  * standard library already says, and rebuilding it in `IrBuilder` would
  * be saying it worse. What is synthesized here is only the shape —
@@ -62,7 +62,7 @@ import { IrRefFunc } from './ir.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import { ExportKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
-import { canonicalAbiModule, ComponentValType } from '../component-emitter.zena';
+import { componentAbiModule, ComponentValType } from '../component-emitter.zena';
 import { componentTypeOf, declaredTypeOf } from '../component-shape.zena';
 
 /** Bodies for the synthesized entry, by function uid. */
@@ -161,11 +161,11 @@ export let prepareComponentExports = (
   wasm: WasmModule,
   pass: ReachabilityAnalysis
 ): void => {
-  let fromMemory = wasm.getStdlibFunc(canonicalAbiModule, 'stringFromMemory');
-  let release = wasm.getStdlibFunc(canonicalAbiModule, 'releaseStringArgument');
-  let resultArea = wasm.getStdlibFunc(canonicalAbiModule, 'stringResultArea');
-  let realloc = wasm.getStdlibFunc(canonicalAbiModule, 'cabiRealloc');
-  let postReturn = wasm.getStdlibFunc(canonicalAbiModule, 'cabiPostReturn');
+  let fromMemory = wasm.getStdlibFunc(componentAbiModule, 'stringFromMemory');
+  let release = wasm.getStdlibFunc(componentAbiModule, 'releaseStringArgument');
+  let resultArea = wasm.getStdlibFunc(componentAbiModule, 'stringResultArea');
+  let realloc = wasm.getStdlibFunc(componentAbiModule, 'cabiRealloc');
+  let postReturn = wasm.getStdlibFunc(componentAbiModule, 'cabiPostReturn');
   var wrapped = false;
 
   let exportKeys = wasm.exportMap.keys();
@@ -195,7 +195,7 @@ export let prepareComponentExports = (
         realloc == null || postReturn == null) {
       throw new Error(
         "The component target cannot export '" + coreName +
-        "': it carries a string, and zena:canonical-abi was not linked. " +
+        "': it carries a string, and zena:component-abi was not linked. " +
         'That module is one of this target\'s runtime modules and is rooted ' +
         'by reachability when a string crosses an export, so this is a ' +
         'compiler bug rather than a program error.'

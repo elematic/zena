@@ -984,7 +984,7 @@ instantiation, so an export takes `memory` and `realloc` from the
 program module's own exports and one core module is still the whole
 component.
 
-The marshaling is `zena:canonical-abi`, a standard library module: a
+The marshaling is `zena:component-abi`, a standard library module: a
 `cabiRealloc` over `zena:memory`'s free list, the two string
 conversions, and a `cabiPostReturn` that frees what a result allocated.
 Written in Zena for the reason the p3 callback is — allocating and
