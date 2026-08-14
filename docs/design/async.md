@@ -341,9 +341,13 @@ avoid it if the granularity ever matters.
 
 ### Level 2 — external completions (JS host; later, custom Rust I/O)
 
-Real I/O means the host completes futures. The shape, on any host:
+Real I/O means the host completes futures. The shape, for a JS host
+(`zena:js` is virtual and resolves only on the JS-hosted targets — the
+protocol assumes an embedder with an event loop that calls back into
+the module's exports; WASI p1 parks instead, and the component
+target's futures ride the canonical ABI's waitables):
 
-1. A host-async import takes a freshly minted handle; `zena:host-async`
+1. A host-async import takes a freshly minted handle; `zena:js`
    keeps the `Completer` behind it and hands Zena code the `Future`.
 2. When the host operation finishes, the host calls
    `__zena_complete_<kind>(handle, value)` — or
@@ -366,7 +370,7 @@ in every host, to save rooting five functions.
 
 #### The registry needs no type tag
 
-`zena:host-async`'s registry is exactly `HashMap<i32, AnyCompleter>` —
+`zena:js`'s registry is exactly `HashMap<i32, AnyCompleter>` —
 ID to completer — and registration is a single generic function,
 `pending<T>()`, for every payload type.
 
@@ -396,12 +400,12 @@ payload.
 #### Where the exports come from
 
 `__zena_complete_*` are the exported `complete*` functions of
-`zena:host-async`. Nothing inside a program references them — the host
+`zena:js`. Nothing inside a program references them — the host
 calls them — so RTA would drop them. It roots the exports of that one
 module the way it roots the entry point's, which makes the gate exact:
 the unit exists only when the program imports the module, so a program
-that does no host I/O links none of this and exports none of it. (There
-is a portable test asserting both halves of that.)
+that does no host I/O links none of this and exports none of it. (The
+runtime suite's host_async_test asserts both halves of that.)
 
 #### Timers are not special
 
@@ -586,7 +590,7 @@ website served by a Zena server":
   `Future<i32>` would have put a meaningless zero in the stdlib
   permanently.
 - **A3 — external completions on the JS host. Implemented**
-  (`zena:host-async` + `@zena-lang/runtime`'s `asyncImports`), as
+  (`zena:js` + `@zena-lang/runtime`'s `asyncImports`), as
   designed — the host calls `__zena_complete_<kind>(handle, value)` and
   then `__zena_drain()`, and the handle it was given names the future.
   What the implementation settled:
@@ -597,7 +601,7 @@ website served by a Zena server":
     reference (BUGS.md) — that constraint is worth knowing before
     designing anything else that erases and narrows back.
   - **The completion exports are gated on importing the module**, by
-    rooting `zena:host-async`'s exports in RTA. A program that does no
+    rooting `zena:js`'s exports in RTA. A program that does no
     host I/O links and exports none of it, which matters because the JS
     target is the size-sensitive one.
   - **Timers stopped being special** (§4). `zena:time`'s host entry is

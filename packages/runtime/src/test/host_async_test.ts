@@ -1,15 +1,16 @@
 /**
- * zena:host-async — futures a JS host settles (docs/design/async.md §4,
- * Level 2).
+ * zena:js host-async — futures a JS host settles (docs/design/async.md
+ * §4, Level 2).
  *
- * This is the only place the Level-2 path can be tested: it needs a host
- * with an event loop of its own, which is exactly what the portable
- * tests under tests/language/execution/async/ do not have. Those cover
- * the registry itself (`external_completions.zena`), driving it with no
- * host at all; this covers the boundary — the `__zena_complete_*`
- * exports, and the outstanding-work accounting `run()` depends on.
+ * This is the only place the Level-2 path can be tested: `zena:js` is
+ * virtual and resolves only on the JS-hosted targets, so the portable
+ * suite (which runs under wasmtime) cannot import it. Everything lives
+ * here — the registry's own semantics (driven through the
+ * `__zena_complete_*` exports, exactly as a host drives them) and the
+ * boundary: payload marshaling and the outstanding-work accounting
+ * `run()` depends on.
  *
- * Every test here goes through `run()` rather than calling `main`,
+ * The async tests go through `run()` rather than calling `main`,
  * because on a host that cannot block an async `main` returns before its
  * host work has finished. That is the whole point of the split entry.
  */
@@ -65,13 +66,56 @@ const ECHO_BINDING = `
   };
 `;
 
-suite('Runtime - zena:host-async', () => {
+suite('Runtime - zena:js host-async', () => {
+  test('the registry is exact: unknown, spent, and mismatched handles throw', async () => {
+    // Driven synchronously through the completion exports, the way a
+    // host drives them. Each entry point is the module's own complete*
+    // function, so what is under test is the registry's semantics:
+    // exactly-once settlement, no unknown-handle fallback, and the
+    // completer's specialized type as the payload tag.
+    const wasm = compile(`
+      import { Future } from 'zena:async';
+      import { pending } from 'zena:js';
+
+      export function mintI32(): i32 {
+        let p = pending<i32>();
+        return p.handle;
+      }
+
+      export function mintString(): i32 {
+        let p = pending<String>();
+        return p.handle;
+      }
+    `);
+    const result = await instantiate(wasm, {});
+    const instance =
+      (result as {instance?: WebAssembly.Instance}).instance ??
+      (result as WebAssembly.Instance);
+    const exports = instance.exports as Record<string, Function>;
+
+    // Handles start at 1, so 0 is never live — and an unknown handle is
+    // an error, not a silent no-op that would hide a bridge bug.
+    assert.throws(() => exports.__zena_complete_void(0));
+
+    // A handle settles exactly once.
+    const spent = exports.mintI32() as number;
+    exports.__zena_complete_i32(spent, 5);
+    assert.throws(() => exports.__zena_complete_i32(spent, 5));
+
+    // The wrong payload throws rather than coercing — and the mismatch
+    // consumed the handle: a completion that names a handle spends it
+    // whether or not it fit.
+    const mismatched = exports.mintString() as number;
+    assert.throws(() => exports.__zena_complete_i32(mismatched, 1));
+    assert.throws(() => exports.__zena_complete_void(mismatched));
+  });
+
   test('a host promise settles the future the module awaits', async () => {
     let read: (ref: unknown, len: number) => string;
     const hostedModule = await hosted(
       `
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
       ${ECHO_BINDING}
 
       export async function main(): Future<i32> {
@@ -100,7 +144,7 @@ suite('Runtime - zena:host-async', () => {
     const withHostAsync = await hosted(
       `
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
       ${ECHO_BINDING}
 
       export async function main(): Future<i32> {
@@ -152,7 +196,7 @@ suite('Runtime - zena:host-async', () => {
     const hostedModule = await hosted(
       `
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
 
       @external("test", "later_void")
       declare function __later_void(handle: i32): void;
@@ -195,7 +239,7 @@ suite('Runtime - zena:host-async', () => {
     const box = {weight: 21};
     const wasm = compile(`
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
 
       distinct type HostBox = anyref;
 
@@ -237,7 +281,7 @@ suite('Runtime - zena:host-async', () => {
     const hostedModule = await hosted(
       `
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
 
       @external("test", "confused")
       declare function __confused(handle: i32): void;
@@ -257,7 +301,7 @@ suite('Runtime - zena:host-async', () => {
     const hostedModule = await hosted(
       `
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
       import { Error } from 'zena:error';
       ${ECHO_BINDING}
 
@@ -291,7 +335,7 @@ suite('Runtime - zena:host-async', () => {
     const hostedModule = await hosted(
       `
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
       import { StringBuilder } from 'zena:string-builder';
       ${ECHO_BINDING}
 
@@ -334,7 +378,7 @@ suite('Runtime - zena:host-async', () => {
     const hostedModule = await hosted(
       `
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
       import { sleep } from 'zena:time';
       import { StringBuilder } from 'zena:string-builder';
       ${ECHO_BINDING}
@@ -384,7 +428,7 @@ suite('Runtime - zena:host-async', () => {
     const hostedModule = await hosted(
       `
       import { Future } from 'zena:async';
-      import { pending } from 'zena:host-async';
+      import { pending } from 'zena:js';
       ${ECHO_BINDING}
 
       export async function main(): Future<i32> {

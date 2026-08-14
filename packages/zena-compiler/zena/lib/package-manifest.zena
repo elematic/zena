@@ -136,7 +136,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   let publicModules = [
     "array", "array-iterator", "assert", "async", "benchmark", "box", "byte-array",
     "byte-buffer", "cli", "component-abi", "error", "fixed-array", "fs",
-    "growable-array", "iterable-utils", "growable-array-iterator", "hashable", "host-async",
+    "growable-array", "iterable-utils", "growable-array-iterator", "hashable",
     "immutable-array", "iterator", "json", "map", "ordered-map",
     "math", "memory", "option", "ownership", "range", "regex", "result", "sequence",
     "set", "string", "string-builder", "string-convert",
@@ -184,6 +184,16 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   processVirtual["wasi"] = "process/wasi.zena";
   processVirtual["zena-cli"] = "process/wasi.zena";
   exports["process"] = new ModuleExport(processVirtual);
+
+  // Virtual module: js → JavaScript-host interop, currently the
+  // host-async completion registry. Only the JS-hosted targets have an
+  // embedder that pushes completions back in through the module's
+  // exports: WASI p1 blocks in a parker and the component target's
+  // futures ride the canonical ABI's waitables, so neither resolves it.
+  let jsVirtual = new HashMap<String, String>();
+  jsVirtual["host"] = "js/index.zena";
+  jsVirtual["js"] = "js/index.zena";
+  exports["js"] = new ModuleExport(jsVirtual);
 
   // Virtual module: fetch → HTTP over the host's own fetch(). Only the
   // JS-hosted targets have one, so only they resolve it; a WASI or

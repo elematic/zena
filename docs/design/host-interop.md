@@ -224,10 +224,16 @@ signature shapes anyway.
 ## Generic JS interop
 
 Status: **planned** (2026-08), after anyref handles. A lowering layer
-that lets Zena code reach host objects without per-API runtime code:
+that lets Zena code reach host objects without per-API runtime code.
+Its home module, `zena:js`, already exists — virtual, resolving only
+on the JS-hosted targets, and currently holding the host-async
+completion registry (the machinery formerly named `zena:host-async`,
+which turned out to be JS-specific once WASI p1 parked synchronously
+and the component target's futures rode the canonical ABI's
+waitables). The selector layer adds to it:
 
 ```zena
-// zena:js (sketch)
+// zena:js (sketch of the selector layer)
 let statusSel = selector('status');
 let textSel = selector('text');
 

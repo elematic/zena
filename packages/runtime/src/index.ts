@@ -437,7 +437,7 @@ export interface HostAsync {
 }
 
 /**
- * The JS half of `zena:host-async` (async.md §4, Level 2).
+ * The JS half of `zena:js` (async.md §4, Level 2).
  *
  * When the work finishes, call the module's `__zena_complete_<kind>`
  * export with the handle and the value, then `__zena_drain()`. That is
@@ -472,7 +472,7 @@ export function createHostAsync(
       throw new Error(
         `host_async: the module does not export ${name}. ` +
           'A module only exports the completion entry points if it ' +
-          "imports 'zena:host-async'.",
+          "imports 'zena:js'.",
       );
     }
     return fn;

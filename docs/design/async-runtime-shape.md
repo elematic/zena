@@ -456,7 +456,7 @@ that cannot perform one.
 allocation and one extra class on every host-async operation and every
 combinator, plus the `AnyCompleter` base and its vtable
 (`async.zena:386`). Folding the write side into `Future` and renaming
-`AnyCompleter` to `AnyFuture` leaves `zena:host-async`'s registry
+`AnyCompleter` to `AnyFuture` leaves `zena:js`'s registry
 unchanged in shape and removes an object from every asynchronous
 operation in the language.
 
@@ -684,7 +684,7 @@ rather than conventional.
   a zero value rather than a laundered one, so it should be admissible,
   but the rule needs reading before the syntax is added.
 - **Deleting `Completer`** is a stdlib API break for any code holding
-  one, including `zena:host-async` and `@zena-lang/runtime`'s fixtures.
+  one, including `zena:js` and `@zena-lang/runtime`'s fixtures.
   Small today; larger the longer it waits.
 - **`Future.race`'s shared listener** had to become one node per input
   before the intrusive list could land. Done: race subscribes a
