@@ -10,8 +10,8 @@ let matchOverloadForImport = (fnType: Type, expectedType: Type): boolean => {
   if (!(fnType is FunctionType) || !(expectedType is FunctionType)) {
     return false;
   }
-  let targetFn = fnType as FunctionType;
-  let expFn = expectedType as FunctionType;
+  let targetFn = fnType;
+  let expFn = expectedType;
   if (targetFn.parameters.length != expFn.parameters.length) {
     return false;
   }
@@ -25,7 +25,7 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
       if (u.model == model || u.ast.path == model.sourcePath) {
         for (let stmt in u.ast.body) {
           if (stmt is ImportDeclaration) {
-            let imp = stmt as ImportDeclaration;
+            let imp = stmt;
             for (let s in imp.imports) {
               if (s == spec || s.imported.name == spec.imported.name) {
                 parentNode = imp;
@@ -41,14 +41,14 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
   if (parentNode == null || !(parentNode is ImportDeclaration)) {
     return noSymbolId;
   }
-  let importDecl = parentNode as ImportDeclaration;
+  let importDecl = parentNode;
   let specifier = importDecl.moduleSpecifier.value;
   
   var canonicalPath = specifier;
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
     let referrer = model.getParent(importDecl);
     if (referrer != null && referrer is Module) {
-      let mod = referrer as Module;
+      let mod = referrer;
       let dir = dirName(mod.path);
       canonicalPath = normalizePath(dir + "/" + specifier);
     }
@@ -80,7 +80,7 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
     null
   };
   if (listOpt != null) {
-    let list = listOpt as Array<Symbol>;
+    let list = listOpt;
     var fallback: Symbol | null = null;
     for (let sym in list) {
       if (expectedType == null) {
@@ -88,15 +88,15 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
       }
       let declNode = sym.declaration;
       if (declNode != null) {
-        let nodeType = targetUnit.model.getNodeType(declNode as Node);
-        if (nodeType != null && matchOverloadForImport(nodeType as Type, expectedType as Type)) {
+        let nodeType = targetUnit.model.getNodeType(declNode);
+        if (nodeType != null && matchOverloadForImport(nodeType, expectedType)) {
           return sym.id;
         }
       }
       if (fallback == null) { fallback = sym; }
     }
     if (fallback != null) {
-      return (fallback as Symbol).id;
+      return fallback.id;
     }
   }
   
