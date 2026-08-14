@@ -399,8 +399,10 @@ function drainModule(getExports?: () => WebAssembly.Exports | undefined) {
 
 /** The payload types a host completion can carry — the closed set of
  * things a JS host can hand to wasm, which is why Zena needs one export
- * per kind and no more. */
-export type CompletionKind = 'void' | 'i32' | 'f64' | 'string';
+ * per kind and no more. `extern` delivers a JS object by reference: the
+ * value crosses uncopied into the wasm GC heap, and the engine's
+ * unified garbage collector owns its lifetime from there. */
+export type CompletionKind = 'void' | 'i32' | 'f64' | 'string' | 'extern';
 
 export interface HostAsync {
   /**
@@ -493,6 +495,9 @@ export function createHostAsync(
           toZenaString(String(value)),
         );
         return;
+      case 'extern':
+        completionExport('__zena_complete_extern')(handle, value);
+        return;
     }
     throw new Error(`host_async: unknown completion kind '${kind}'`);
   };
@@ -566,18 +571,14 @@ export interface WebHost {
  * The `web` host backing `zena:fetch` on a JS host.
  *
  * `fetch_start` runs the host's own `fetch()` and settles the handle
- * with an id naming the `Response`, which stays here until
- * `response_text` reads its body — so a non-2xx status is a normal
- * completion the Zena side inspects, exactly like the web, and only
- * "no response at all" (network error, CORS refusal, no `fetch()` on
- * this host) fails the future. Keeping the response on this side of
- * the boundary is also what a streamed body will want: the stream
- * stays here, and reads cross one completion at a time.
- *
- * `response_drop` releases an entry without reading it — the Zena
- * side's `Response.dispose()`. A response neither read nor disposed is
- * retired with the instance: the registry lives in this closure, so it
- * cannot outlive the program that filled it.
+ * with the `Response` object itself, as an `extern` completion — so a
+ * non-2xx status is a normal completion the Zena side inspects, exactly
+ * like the web, and only "no response at all" (network error, CORS
+ * refusal, no `fetch()` on this host) fails the future. Zena holds the
+ * reference in its GC heap and passes it back to `response_status` and
+ * `response_text`; the engine's unified garbage collector releases the
+ * object when the Zena side drops it, so there is no registry here and
+ * nothing to dispose.
  */
 export function createWebHost(
   getExports?: () => WebAssembly.Exports | undefined,
@@ -596,35 +597,18 @@ export function createWebHost(
     return readString(ref, len);
   };
 
-  let nextResponseId = 1;
-  const responses = new Map<number, Response>();
-  const responseOf = (id: number): Response => {
-    const response = responses.get(id);
-    if (!response) {
-      throw new Error(`zena:fetch: no response with id ${id}`);
-    }
-    return response;
-  };
-
   return {
     imports: {
-      fetch_start: hostAsync.wrap(async (ref: unknown, len: number) => {
-        const response = await globalThis.fetch(readZena(ref, len));
-        const id = nextResponseId++;
-        responses.set(id, response);
-        return id;
-      }, 'i32'),
-      response_status: (id: number): number => responseOf(id).status,
-      response_text: hostAsync.wrap((id: number) => {
-        const response = responseOf(id);
-        responses.delete(id);
-        return response.text();
-      }, 'string'),
-      // Zena's Response.dispose() guards against double release, so an
-      // unknown id here is not an error worth distinguishing.
-      response_drop: (id: number): void => {
-        responses.delete(id);
-      },
+      fetch_start: hostAsync.wrap(
+        (ref: unknown, len: number) => globalThis.fetch(readZena(ref, len)),
+        'extern',
+      ),
+      response_status: (response: unknown): number =>
+        (response as Response).status,
+      response_text: hostAsync.wrap(
+        (response: unknown) => (response as Response).text(),
+        'string',
+      ),
     },
     idle: work.idle,
   };

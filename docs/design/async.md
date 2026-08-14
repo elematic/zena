@@ -387,8 +387,11 @@ is a class for that reason and not by preference.
 Only *delivery* is per-payload-type, and unavoidably so: each entry
 point is a wasm export whose signature has to name the payload. The set
 is small and closed because it is bounded by what a host can hand to
-wasm at all — nothing, an integer, a double, or a string — plus one
-type-agnostic failure entry point, since rejecting needs no payload.
+wasm at all — nothing, an integer, a double, a string, or a reference
+to one of its own objects (`__zena_complete_extern`, which registers as
+`pending<anyref>()`; see host-interop.md, "Host object handles") — plus
+one type-agnostic failure entry point, since rejecting needs no
+payload.
 
 #### Where the exports come from
 
@@ -623,29 +626,24 @@ website served by a Zena server":
     `fetch()`) fails the future, caught around the `await`. WASI and
     component builds fail at import resolution rather than linking an
     import no host provides (the component's HTTP is `wasi:http`, §4.1).
-    The lowering is two host-async completions: `fetch` settles with an
-    id naming the response object, which stays on the host until
-    `text()`'s completion consumes it. Keeping the body on the host
-    behind an id is also the structure a streamed read needs — the
-    stream stays there, and chunks would cross one completion at a
-    time, once streams exist (post-v1, with headers riding along).
+    The lowering is two host-async completions: `fetch` settles with a
+    reference to the host's response object (`__zena_complete_extern`;
+    host-interop.md, "Host object handles"), and `text()`'s completion
+    reads its body. The body stays on the host until it is read, which
+    is also the structure a streamed read needs — the stream stays
+    there, and chunks would cross one completion at a time, once
+    streams exist (post-v1, with headers riding along).
     `@zena-lang/runtime` supplies the `web.*` imports by default from
     the host's own `fetch()`, sharing the outstanding-work count
     `run()` waits on — which is what puts fetch in the playground with
     no playground changes at all. As on the web, a body reads once:
     a second `text()` throws rather than handing back an empty body.
-    `Response` implements `Disposable` — reading and disposing are one
-    obligation, so `text()` consumes the host entry and `dispose()`
-    releases it unread, idempotently, with `status`/`ok` outliving both
-    (they were copied over when the response arrived). It is
-    deliberately *not* a `resource` class: that regime would put a
-    release obligation on every casual `fetch()` once move checking
-    lands, and the web's own `Response` carries none. A status-only
-    caller writes `using response = await fetch(url);` — which compiles
-    today because no suspension follows the `using`; the body-reading
-    case needs no `using` because `text()` is the release. (`using`
-    around a later `await` is the known suspension-inside-a-region
-    lowering bail, and lifts with it.)
+    `Response` carries no release obligation: the reference lives in
+    the WasmGC heap, so the engine's unified garbage collector frees
+    the host object when the `Response` dies. (An earlier version kept
+    the response on the host behind an `i32` id, which brought a
+    registry and a `Disposable` implementation with it; the reference
+    completion deleted both.)
 - **Await-in-try — done** (§6), the fast-follow to A1: resuming
   re-enters each enclosing `try` region, so a failed await is caught
   by the handler the user wrote.

@@ -114,6 +114,7 @@ suite('Runtime - zena:host-async', () => {
       '__zena_complete_i32',
       '__zena_complete_f64',
       '__zena_complete_string',
+      '__zena_complete_extern',
       '__zena_complete_error',
     ];
     for (const name of names) {
@@ -184,6 +185,49 @@ suite('Runtime - zena:host-async', () => {
       },
     );
     assert.strictEqual(await hostedModule.main(), 43);
+  });
+
+  test('an extern completion delivers the host object itself', async () => {
+    // The host resolves with one of its own objects. Zena holds it as an
+    // anyref and later passes it back out through a plain import, which
+    // must receive the same object — the engine round-trips the
+    // reference, nothing is copied and no id registry is involved.
+    const box = {weight: 21};
+    const wasm = compile(`
+      import { Future } from 'zena:async';
+      import { pending } from 'zena:host-async';
+
+      distinct type HostBox = anyref;
+
+      @external("test", "acquire_box")
+      declare function __acquire_box(handle: i32): void;
+      @external("test", "box_weight")
+      declare function __box_weight(box: HostBox): i32;
+
+      export async function main(): Future<i32> {
+        let p = pending<anyref>();
+        __acquire_box(p.handle);
+        let box = (await p.future) as HostBox;
+        return __box_weight(box) + __box_weight(box);
+      }
+    `);
+    const result = await instantiate(wasm, {
+      test: {
+        box_weight: (received: unknown): number => {
+          assert.strictEqual(received, box);
+          return (received as {weight: number}).weight;
+        },
+      },
+      asyncImports: {
+        test: {
+          acquire_box: {kind: 'extern', fn: () => Promise.resolve(box)},
+        },
+      },
+    });
+    const instance =
+      (result as {instance?: WebAssembly.Instance}).instance ??
+      (result as WebAssembly.Instance);
+    assert.strictEqual(await run(instance), 42);
   });
 
   test('completing a handle with the wrong payload type is loud', async () => {

@@ -12,7 +12,8 @@
 import { Future, drainMicrotasks } from 'zena:async';
 import {
   Pending, pending, hasPending,
-  completeVoid, completeI32, completeF64, completeString, completeError,
+  completeVoid, completeI32, completeF64, completeString, completeExtern,
+  completeError,
 } from 'zena:host-async';
 import { Error } from 'zena:error';
 import { StringBuilder } from 'zena:string-builder';
@@ -125,6 +126,32 @@ export let main = (): i32 => {
   drainMicrotasks();
   if (settled != 3) {
     return 0 - 9;
+  }
+
+  // The extern kind registers as `pending<anyref>()` and delivers the
+  // reference unconverted — here a Zena value stands in for the host
+  // object a JS embedder would hand across.
+  let g = pending<anyref>();
+  var delivered = false;
+  g.future.onComplete((r: anyref) => {
+    delivered = (r as String) == 'the host object';
+  }, (err) => {});
+  completeExtern(g.handle, 'the host object' as anyref);
+  drainMicrotasks();
+  if (!delivered) {
+    return 0 - 10;
+  }
+
+  // A handle registered for another payload refuses a reference.
+  let h = pending<i32>();
+  var externMismatch = false;
+  try {
+    completeExtern(h.handle, 'x' as anyref);
+  } catch (err) {
+    externMismatch = true;
+  }
+  if (!externMismatch) {
+    return 0 - 11;
   }
 
   return 456;

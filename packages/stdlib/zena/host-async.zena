@@ -42,7 +42,15 @@
  * per payload type. Only *delivery* is per-type, and that is unavoidable
  * — each one is a wasm export whose signature has to name the payload.
  * The set is small and closed because it is bounded by what a host can
- * produce at all: nothing, an integer, a double, or a string.
+ * produce at all: nothing, an integer, a double, a string, or a
+ * reference to one of its own objects.
+ *
+ * The reference kind registers as `pending<anyref>()` — one canonical
+ * payload type, because the check above is exact and the host-side
+ * `complete` export can name only one. A binding that wants a typed
+ * handle casts the awaited anyref to its own distinct type; the
+ * engine's unified garbage collector owns the object's lifetime, so
+ * holding it imposes no release obligation.
  */
 import { AnyCompleter, Completer, Future } from 'zena:async';
 import { Error } from 'zena:error';
@@ -137,6 +145,16 @@ export let completeString = (handle: i32, value: String): void => {
     throw wrongType(handle, 'a String');
   }
   (slot as Completer<String>).complete(value);
+};
+
+/** Settles a handle registered as `pending<anyref>()` with a reference
+ * to a host object. */
+export let completeExtern = (handle: i32, value: anyref): void => {
+  let slot = take(handle);
+  if (!(slot is Completer<anyref>)) {
+    throw wrongType(handle, 'a host reference');
+  }
+  (slot as Completer<anyref>).complete(value);
 };
 
 /**

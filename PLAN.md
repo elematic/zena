@@ -108,12 +108,11 @@ This document tracks completed work and planned features. For project instructio
     API follows the web's: `fetch(url): Future<Response>`, with
     `status`/`ok` on the response and `text(): Future<String>` reading
     the body — a 404 is a normal completion, and only "no response at
-    all" fails the future. The response object stays on the host behind
-    an id until `text()` consumes it, which is also the structure a
-    streamed body needs later. `Response` implements `Disposable` (not
-    `resource` — no obligation on casual callers): `text()` consumes
-    the host entry, `dispose()` releases it unread, and a status-only
-    caller can `using response = await fetch(url);` today.
+    all" fails the future. The host's response object crosses as a
+    garbage-collected reference (host-interop.md, "Host object
+    handles"), so `Response` carries no release obligation and the
+    body stays on the host until `text()` reads it — also the
+    structure a streamed body needs later.
     `@zena-lang/runtime` supplies the backing `web.*` imports by
     default from the host's own `fetch()`, which puts it in the
     playground with no playground changes. WASI and component builds

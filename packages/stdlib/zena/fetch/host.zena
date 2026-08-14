@@ -8,12 +8,15 @@
  * failure. The future fails only when there is no response at all: a
  * network error, a CORS refusal, a host with no fetch().
  *
- * Both halves are ordinary host-async operations: `fetch` completes
- * with an id naming the host-side response object, and `text()` is a
- * second completion that consumes it. Keeping the response on the host
- * behind an id — rather than copying everything over eagerly — is also
- * the structure a streamed body needs later: the host side holds the
- * stream, and reads cross one chunk at a time.
+ * The host's response object crosses the boundary as a reference
+ * (docs/design/host-interop.md, "Host object handles"): `fetch`
+ * completes with the object itself, held here as an opaque anyref the
+ * engine's unified garbage collector owns. A `Response` therefore
+ * carries no release obligation — when it dies, the host object is
+ * collectable — and `text()` is a second host-async completion against
+ * the same reference. Keeping the body on the host until it is read is
+ * also the structure a streamed body needs later: the host side holds
+ * the stream, and reads cross one chunk at a time.
  *
  * The host side inherits fetch()'s web semantics deliberately, CORS
  * included: in a browser, a request only succeeds where the page could
@@ -22,27 +25,24 @@
 import { Error } from 'zena:error';
 import { Future } from 'zena:async';
 import { pending } from 'zena:host-async';
-import { Disposable } from 'zena:ownership';
 import { String } from 'zena:string';
 
-/** Starts a GET of `url`; the host completes `handle` with a response
- * id once headers have arrived. */
+/** Opaque reference to the host's own response object. */
+distinct type JsResponse = anyref;
+
+/** Starts a GET of `url`; the host completes `handle` with a reference
+ * to its response object once headers have arrived. */
 @external("web", "fetch_start")
 declare function __fetch_start(handle: i32, url: String, len: i32): void;
 
-/** The HTTP status of the host-side response named by `id`. */
+/** The HTTP status of the host response. */
 @external("web", "response_status")
-declare function __response_status(id: i32): i32;
+declare function __response_status(response: JsResponse): i32;
 
-/** Reads the body of the response named by `id`; the host completes
- * `handle` with the decoded text and releases the response. */
+/** Reads the body of the host response; the host completes `handle`
+ * with the decoded text. */
 @external("web", "response_text")
-declare function __response_text(handle: i32, id: i32): void;
-
-/** Releases the response named by `id` without reading it. The host
- * tolerates an id that was already consumed. */
-@external("web", "response_drop")
-declare function __response_drop(id: i32): void;
+declare function __response_text(handle: i32, response: JsResponse): void;
 
 /**
  * An HTTP response: the status, and a one-shot handle on the body.
@@ -50,22 +50,14 @@ declare function __response_drop(id: i32): void;
  * The body lives on the host until `text()` reads it, so reading is
  * asynchronous and — as on the web — allowed once: a second `text()`
  * throws rather than handing back an empty body.
- *
- * A response whose body is never read holds its host-side entry until
- * the program ends. `dispose()` releases it early, so a status-only
- * caller can write `using response = await fetch(url);` and hold
- * nothing. (`status`/`ok` were copied over when the response arrived
- * and outlive disposal.) Reading and disposing are one obligation:
- * `text()` consumes the entry, after which `dispose()` is a no-op —
- * and disposal is idempotent, per the `Disposable` contract.
  */
-export class Response implements Disposable {
+export class Response {
   /** The HTTP status code. */
   status: i32;
-  #id: i32;
-  var #consumed: boolean = false;
+  #response: JsResponse;
+  var #bodyUsed: boolean = false;
 
-  new(this.status, id: i32) : #id = id;
+  new(this.status, response: JsResponse) : #response = response;
 
   /** True for a 2xx status, exactly like the web's `Response.ok`. */
   ok: boolean {
@@ -76,23 +68,14 @@ export class Response implements Disposable {
 
   /** The response body, decoded as text. */
   text(): Future<String> {
-    if (this.#consumed) {
+    if (this.#bodyUsed) {
       throw new Error(
-        'zena:fetch: the response body has already been read or disposed');
+        'zena:fetch: the response body has already been read');
     }
-    this.#consumed = true;
+    this.#bodyUsed = true;
     let p = pending<String>();
-    __response_text(p.handle, this.#id);
+    __response_text(p.handle, this.#response);
     return p.future;
-  }
-
-  /** Releases the host-side response without reading the body. */
-  :Disposable.dispose(): void {
-    if (this.#consumed) {
-      return;
-    }
-    this.#consumed = true;
-    __response_drop(this.#id);
   }
 }
 
@@ -105,8 +88,8 @@ export class Response implements Disposable {
  * completion; check `ok` or `status`.
  */
 export let fetch = async (url: String): Future<Response> => {
-  let p = pending<i32>();
+  let p = pending<anyref>();
   __fetch_start(p.handle, url, url.length);
-  let id = await p.future;
-  return new Response(__response_status(id), id);
+  let response = (await p.future) as JsResponse;
+  return new Response(__response_status(response), response);
 };

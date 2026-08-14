@@ -161,40 +161,40 @@ This makes N+2 host function calls for a string of N bytes, which is slower than
 
 ## Host object handles
 
-Status: **planned** (2026-08). Each host API currently adds custom
-binding code to `@zena-lang/runtime` — `zena:fetch` alone added a
-response registry, three imports, and a disposal path — and that cost
-recurs with every API. The plan is two steps: host objects cross as
-garbage-collected references instead of registry ids (this section),
-and a generic call layer works over those references so most future
-bindings add no runtime JS at all (next section).
+Status: **implemented** (2026-08). Host objects cross the boundary as
+garbage-collected references instead of registry ids; the generic call
+layer that works over those references (next section) is still
+planned, and is what removes the remaining per-API runtime JS.
 
-### Registry ids today
+### Registry ids before
 
-`zena:fetch` keeps the JS `Response` on the host in a
-`Map<number, Response>` and hands Zena an `i32` id;
-`response_status(id)` and `response_text(handle, id)` look it up, and
-`Response` implements `Disposable` solely so an entry whose body is
-never read can be released early. The id exists because the async
-completion path can only deliver `void`/`i32`/`f64`/`String` payloads
+`zena:fetch` kept the JS `Response` on the host in a
+`Map<number, Response>` and handed Zena an `i32` id;
+`response_status(id)` and `response_text(handle, id)` looked it up, and
+`Response` implemented `Disposable` solely so an entry whose body was
+never read could be released early. The id existed because the async
+completion path could only deliver `void`/`i32`/`f64`/`String` payloads
 ([async.md](async.md) §4, "the closed set of things a JS host can hand
-to wasm"): the object cannot cross at completion time, so a name for it
-crosses instead — and the name brings a registry, a lifetime, and a
+to wasm"): the object could not cross at completion time, so a name for
+it crossed instead — and the name brought a registry, a lifetime, and a
 disposal obligation with it.
 
 ### Anyref handles and the `extern` completion kind
 
-Zena already holds host objects directly: `zena:error-stack` keeps a JS
+Zena already held host objects directly: `zena:error-stack` keeps a JS
 stack handle as `distinct type StackRef = anyref`, received through an
 ordinary import return. The JS object lives inside the WasmGC heap
 behind `any.convert_extern`, and the engine's unified garbage collector
 frees it when the Zena struct that holds it dies.
 
-The missing piece is delivering such a reference *asynchronously*: one
+The missing piece was delivering such a reference *asynchronously*: one
 new completion kind, `__zena_complete_extern(handle, ref)`, beside the
-four existing ones, with `pending<T>()` instantiated at a
-distinct-anyref type on the Zena side. With it, `fetch` completes with
-the response object itself:
+four existing ones. A reference-carrying operation registers as
+`pending<anyref>()` — one canonical payload type, not one per binding,
+because the registry's type check is exact (`Completer<anyref>` is the
+tag) and the single `extern` export can name only one payload type. A
+binding casts the awaited `anyref` to its own distinct type. With it,
+`fetch` completes with the response object itself:
 
 - `Response` holds `distinct type JsResponse = anyref` instead of an
   `i32` id.
@@ -213,10 +213,13 @@ tracking and implicit disposal land ([ownership.md](ownership.md)).
 `zena:fetch` is already a virtual module, so the two entries can
 differ in lifecycle while sharing the API surface.
 
-Import and completion signatures should declare nullable `externref`
-and convert inside, for the same reason `$stringGetByte` does: V8's
-wasm-into-JS inlining triggers only for nullable `externref` (see the
-Kummerow notes under "Strings" above).
+One optimization remains open: import and completion signatures still
+declare `anyref` (the compiler wraps only single-GC-ref *returns* in an
+externref shim), while V8's wasm-into-JS inlining triggers only for
+nullable `externref` (see the Kummerow notes under "Strings" above).
+Moving the reference-carrying signatures to nullable `externref` with
+conversions inside belongs to the generic layer below, which fixes the
+signature shapes anyway.
 
 ## Generic JS interop
 
@@ -515,8 +518,8 @@ This adds complexity for a GC-native language. We will revisit when WASI Preview
 
 ## Future Work
 
-- [ ] Anyref host object handles + the `extern` completion kind (see
-      "Host object handles" above; replaces `zena:fetch`'s id registry)
+- [x] Anyref host object handles + the `extern` completion kind (see
+      "Host object handles" above; replaced `zena:fetch`'s id registry)
 - [ ] Generic JS interop layer over interned selectors (see "Generic JS
       interop" above)
 - [ ] Per-receiver access control for the interop allowlist
