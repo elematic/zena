@@ -2,16 +2,17 @@
 
 ## Status
 
-- **Status**: Implemented through C2, and most of C3. `--target
-component` emits components; `zena:time`'s `sleep` is a p3 timer on
-  that target, a 300 ms sleep costing 310 ms of wall time and 20 ms of
-  CPU; `string` crosses an export in both directions
-  (`greet("world")` → `"hello, world"`); the WIT type encoder
-  round-trips through `wasm-tools component wit`; and a memory-using
-  program gets the two-core-module shape of 1.3, its memory imported
-  from the runtime memory module. The rest of C3 — memory-carrying
-  `canon lower`, stdio, and the encoder wired to the emitter — and C4
-  onward are unbuilt. Every load-bearing claim was verified against
+- **Status**: C3 is implemented. `--target component` emits
+  components; `zena:time`'s `sleep` is a p3 timer on that target, a
+  300 ms sleep costing 310 ms of wall time and 20 ms of CPU; `string`
+  crosses an export in both directions (`greet("world")` →
+  `"hello, world"`); the WIT type encoder round-trips through
+  `wasm-tools component wit` and drives every imported interface's
+  types; a memory-using program gets the two-core-module shape of 1.3;
+  and **a component prints** — `zena:console` over p2 stdio, the
+  write's lowering carrying the canonical memory options. Open in C3's
+  orbit: `--wit`/`--world` for programs declaring their own world.
+  C4 onward is unbuilt. Every load-bearing claim was verified against
   `wasm-tools 1.252.0` / `wasmtime 46.0.0` on 2026-08-08; the
   corrections that building it turned up are marked **Correction**
   below.
@@ -976,7 +977,9 @@ is on lowering — but one owner is worth more than that saving. Ships
 
 Until C3 a component cannot print, which is the argument for reordering
 C2 and C3. C2 stays first because timers are the goal and can be tested
-on time rather than on output.
+on time rather than on output. (C3 delivered: `console.log` on the
+component target writes through p2 stdio, and the e2e suite asserts the
+printed lines.)
 
 C3 splits along the line 1.3 draws, and the first part is **done**:
 
@@ -1052,7 +1055,13 @@ The emitter now consumes the encoder for every imported interface:
 `wit-imports.zena` renders the shape's `@external` imports as a WIT
 document — one interface per namespace, grouped into nested packages,
 a synthetic world importing them — and `emitComponent`'s import front
-matter is the encoder's `EncodedWorld.pieces` verbatim. For a
+matter is the encoder's pieces verbatim. The encoder reaches codegen as
+an _injected closure_ (`BinaryGenerator.importEncoder`, set by the
+drivers), not an import: codegen defines mirror classes for the pieces
+and never links the WIT parser, so hosts that never emit a component —
+the language service compiles the same codegen sources — do not carry
+it. (Concretely: linking wit-parser into the LSP graph tripped a latent
+ZIR lowering bail in `IterableUtils.all`; see BUGS.md.) For a
 flat-scalar interface the bytes come out identical to the hand-written
 ones (verified by direct comparison on every fixture), so the change is
 what becomes possible: when an interface's true WIT is richer than a
@@ -1066,7 +1075,7 @@ Still open here: `--wit` / `--world` on real compiles, world-level
 `use` and type definitions, `include`, cross-document packages, and
 fixed-length lists. `future` and `stream` refuse loudly until C6.
 
-#### C3.3 — imported memory, and stdio. **Memory done; stdio open.**
+#### C3.3 — imported memory, and stdio. **Done.**
 
 The runtime core module, the program module importing its memory rather
 than defining it, the allocator delegating to the imported `realloc`,
@@ -1107,10 +1116,36 @@ Three decisions worth recording:
   the target-free structural model; `ensureMemory` still only records
   that a memory exists.
 
-Still open here: memory-carrying `canon lower` (the import-side
-adapters mirroring C3.1's export wrappers), and `zena:console` over
-`wasi:cli/stdout` — whose instance types are what C3.2's encoder is
-for.
+The stdio half is built on top of that. The compiler carries the real
+WIT for `wasi:io/error`, `wasi:io/streams`, `wasi:cli/stdout` and
+`wasi:cli/stderr` at 0.2.8 (`wasi-interfaces.zena`) — a Zena
+declaration is core-shaped and cannot spell `own` or `list<u8>`, so for
+these interfaces the baked source substitutes for the derived document,
+the encoder emits the true instance types (`wasi:io/error` arrives
+transitively, through `use`), and the flattening metadata decides which
+lowerings carry `(memory 0) (realloc ...)` — the write does, the
+`get-stdout` does not. When a lowering needs them, the runtime memory
+module and its two aliases move ahead of the lowering section; when
+none does, they stay put and every existing component keeps its bytes.
+
+`zena:console`'s component entry does its own marshaling — copy the
+bytes in, call the stream in ≤4096-byte chunks, check the result
+discriminant, free — because the imports are declared core-shaped and
+the standard library already says allocation and copying well. The
+stream handles are fetched once and kept; dropping an `own` handle
+waits on the `resource.drop` builtin, which nothing here needs yet.
+
+One deliberate asymmetry: `console` is _importable_ on the component
+target, not a prelude binding. A prelude module loads with the entry
+and would shift symbol ids for every component build, breaking "the
+component embeds the same core module a hostless build emits" for
+programs that never print — the ordered-`globalDeclarations` fix is
+what would let it join the prelude.
+
+**Correction** (wit-parser): a bare `use error.{...}` inside a nested
+package fails to resolve ("interface not found in package") — the
+resolver looks in the main package. The baked WIT spells its uses
+package-qualified; fixing the resolver retires the workaround.
 
 ### C4 — filesystem and CLI. Weeks.
 

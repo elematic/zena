@@ -32,6 +32,9 @@ import {
   ComponentShape, ComponentImportFunc, ComponentFuncType, noComponentResult,
   EncodedImports, EncodedImportPiece
 } from './component-emitter.zena';
+import {
+  knownWasiPackagesWit, isKnownWasiInterface, isKnownWasiPackage
+} from './wasi-interfaces.zena';
 
 /** The WIT spelling of a flat-scalar component value type opcode. */
 let scalarWitName = (opcode: i32): String => {
@@ -139,10 +142,28 @@ export let deriveImportsWit = (shape: ComponentShape): String => {
   let sb = new StringBuilder();
   sb.append("package zena:derived;\n\n");
 
+  // Interfaces whose real WIT the compiler carries are not derived —
+  // their package blocks are appended whole, and the world imports
+  // them by name like any other.
+  var anyKnown = false;
+  for (let name in interfaceNames) {
+    if (isKnownWasiInterface(name)) { anyKnown = true; }
+  }
+  if (anyKnown) {
+    sb.append(knownWasiPackagesWit()).append("\n");
+  }
+
   let renderedPackages = new Array<String>();
   for (let name in interfaceNames) {
+    if (isKnownWasiInterface(name)) { continue; }
     let path = splitInterfaceName(name);
     let packageKey = path.packageName + "@" + path.version;
+    if (anyKnown && isKnownWasiPackage(packageKey)) {
+      throw new Error(
+        "The component target cannot import '" + name + "': its package " +
+          "is one the compiler carries real WIT for, and this interface " +
+          "is not in it.");
+    }
     var rendered = false;
     for (let p in renderedPackages) {
       if (p == packageKey) { rendered = true; }
@@ -157,6 +178,7 @@ export let deriveImportsWit = (shape: ComponentShape): String => {
     sb.append(" {\n");
     // Every interface of this package, in first-appearance order.
     for (let other in interfaceNames) {
+      if (isKnownWasiInterface(other)) { continue; }
       let otherPath = splitInterfaceName(other);
       if (otherPath.packageName + "@" + otherPath.version != packageKey) {
         continue;

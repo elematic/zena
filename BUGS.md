@@ -333,6 +333,7 @@ member expression itself is a tracked narrowing subject.
   this reason.
 
 ### `static` on an accessor is dropped by the parser
+
 ### `IterableUtils.all` fails to lower in some module graphs
 
 - **Found**: 2026-08-14, adding `wit-parser` to the language service's
@@ -354,6 +355,7 @@ member expression itself is a tracked narrowing subject.
   CLI graph (target `zena-cli`) after the 2026-08-14 bootstrap
   re-baseline. Graph- and target-dependent, which smells like the
   erased-versus-specialized closure-slot family.
+
 - **Workaround**: codegen takes the WIT import encoder as an injected
   closure (`BinaryGenerator.importEncoder`) instead of importing
   `wit-parser`, which keeps the parser out of the LSP graph. Fixing the
@@ -365,7 +367,7 @@ member expression itself is a tracked narrowing subject.
 - **Severity**: low. Either half alone works, and the fix is dropping
   one of them.
 - **Details**: a constructor `this` parameter with a default, on a field
-  that also has an initializer, bails every *caller* of the constructor:
+  that also has an initializer, bails every _caller_ of the constructor:
 
   ```zena
   final class Meta {
@@ -379,6 +381,7 @@ member expression itself is a tracked narrowing subject.
   default and it compiles and runs. The bail names the calling function,
   not the class, which makes the source of the failure hard to find —
   the reproduction above was bisected out of a five-hundred-line module.
+
 - **Workaround**: don't initialize a field twice; the parameter default
   is the one that can express both spellings.
 

@@ -45,6 +45,8 @@ interface Invocation {
   invoke: string;
   /** The exact line wasmtime must print. */
   expect: string;
+  /** Lines the program itself must have printed, in order, before it. */
+  expectOutput?: string[];
   /** Milliseconds the call must take at least. */
   minWallMs?: number;
   /**
@@ -109,6 +111,43 @@ const FIXTURES: Fixture[] = [
       // `greet` then allocates for its result out of the corrupted list.
       {invoke: 'greet("")', expect: '"hello, "'},
       {invoke: 'measure("")', expect: '0'},
+    ],
+  },
+  {
+    name: 'print',
+    wasi: [],
+    // The first component that prints: `zena:console` over p2
+    // `wasi:cli/stdout` and `wasi:io/streams`, with the write's
+    // lowering carrying the canonical memory options and the bytes
+    // landing in the runtime memory module's pages. Two stdout lines,
+    // because the second proves the delegated free list survived the
+    // first; the stderr line proves the two streams are distinct.
+    invocations: [
+      {
+        invoke: 'main()',
+        expect: '0',
+        expectOutput: [
+          'hello from a component',
+          'the free list survived the first write',
+        ],
+      },
+    ],
+  },
+  {
+    name: 'timer-print',
+    wasi: ['p3=y'],
+    // Both WASI generations in one component: the sleep is a p3
+    // async-lowered import, the prints are p2 stdio, and the second
+    // line is written after the host re-entered through the async
+    // callback — the combination 1.4 verified by hand, as a regression
+    // test.
+    invocations: [
+      {
+        invoke: 'run()',
+        expect: '()',
+        expectOutput: ['before the sleep', 'after the sleep'],
+        minWallMs: 40,
+      },
     ],
   },
   {
@@ -189,6 +228,7 @@ for (const fixture of FIXTURES) {
   for (const {
     invoke,
     expect,
+    expectOutput,
     minWallMs,
     maxCpuFraction,
   } of fixture.invocations) {
@@ -213,6 +253,23 @@ for (const fixture of FIXTURES) {
     if (expect !== '*' && actual !== expect) {
       fail(`${invoke} returned ${actual}, expected ${expect}`);
       continue;
+    }
+    if (expectOutput) {
+      const lines = run.stdout.split('\n');
+      let from = 0;
+      let missing = false;
+      for (const wanted of expectOutput) {
+        const found = lines.indexOf(wanted, from);
+        if (found < 0) {
+          fail(`${invoke} did not print '${wanted}':\n${run.stdout}`);
+          missing = true;
+          break;
+        }
+        from = found + 1;
+      }
+      if (missing) {
+        continue;
+      }
     }
 
     const timed = (name: string): number => {

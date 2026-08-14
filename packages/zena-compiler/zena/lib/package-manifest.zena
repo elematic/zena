@@ -151,9 +151,9 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // Virtual module: console → per-target entry file. The implementation
   // files live under console/ and are not importable by name.
   //
-  // `freestanding` and `component` have no entry on purpose: a target
-  // that cannot print must fail to resolve `zena:console` rather than
-  // quietly link a no-op that compiles and then prints nothing.
+  // `freestanding` has no entry on purpose: a target that cannot print
+  // must fail to resolve `zena:console` rather than quietly link a
+  // no-op that compiles and then prints nothing.
   // Virtual module: memory → the linear-memory allocator. One
   // implementation everywhere but the component target, where the
   // memory belongs to the runtime memory module and the allocator
@@ -174,6 +174,13 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   consoleVirtual["js"] = "console/host.zena";
   consoleVirtual["wasi"] = "console/wasi.zena";
   consoleVirtual["zena-cli"] = "console/wasi.zena";
+  // The component entry prints over p2 stdio. It is importable, not in
+  // the prelude: a prelude module loads with the entry and would shift
+  // symbol ids for every component build, breaking "the component
+  // embeds the same core module a hostless build emits" for programs
+  // that never print. The ordered-globalDeclarations fix is what would
+  // let it join the prelude.
+  consoleVirtual["component"] = "console/component.zena";
   exports["console"] = new ModuleExport(consoleVirtual);
 
   // Virtual module: error-stack → the `Error` stack-trace hooks. The host

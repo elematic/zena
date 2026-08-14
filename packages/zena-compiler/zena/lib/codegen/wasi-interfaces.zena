@@ -1,0 +1,80 @@
+/**
+ * The WASI interfaces the standard library imports, as WIT source.
+ *
+ * A Zena `@external` declaration is core-shaped — handles and pointers
+ * are `i32`s — so it cannot say what a WIT interface's types really
+ * are. For the interfaces the standard library itself binds, the real
+ * WIT lives here and substitutes for the derived document
+ * (`wit-imports.zena`): the encoder emits the true instance types, and
+ * the flattening metadata decides which lowerings carry the canonical
+ * memory options.
+ *
+ * Only the declarations the standard library reaches are spelled out —
+ * the encoder emits whole interfaces, so anything listed is part of
+ * the component's import surface, and a minimal subset is a smaller
+ * contract for a host to satisfy (design 1.2). The p2 version is
+ * 0.2.8, the one 1.4's evidence ran against `wasmtime 46`.
+ *
+ * Where this goes next: out of compiler source. These are excerpts of
+ * upstream WASI WIT, and the honest home for them is `.wit` files
+ * vendored beside the standard library — the distributed CLI already
+ * ships the stdlib directory, and the compiler already reads it
+ * through `CompilerHost`, so the same path serves every host the
+ * compiler runs on. The injected encoder (`makeImportEncoder`) is
+ * built by the drivers, which hold the host, so feeding it file
+ * contents instead of this string is plumbing, not design; a
+ * user-supplied world (`--wit`/`--world`, the open C3 item) then
+ * overrides or extends the vendored set through the same door. Baked
+ * text is the v0 that keeps the set small and the build hermetic while
+ * there are four interfaces; it should not outlive `--wit`.
+ *
+ * `wasi:clocks` is not here: its functions are flat scalars, so the
+ * derived document already says everything true about them, and
+ * `zena:time`'s declarations keep working unchanged on hosts that
+ * serve other 0.3.x versions... which is to say, the baked list should
+ * stay as short as the standard library allows.
+ */
+
+import { String } from 'zena:string';
+
+/**
+ * The package blocks for every known interface, spliced into the
+ * derived document when any of them is imported.
+ */
+export let knownWasiPackagesWit = (): String => `package wasi:io@0.2.8 {
+  interface error {
+    resource error;
+  }
+  interface streams {
+    use wasi:io/error@0.2.8.{error};
+    variant stream-error {
+      last-operation-failed(error),
+      closed,
+    }
+    resource output-stream {
+      blocking-write-and-flush: func(contents: list<u8>) -> result<_, stream-error>;
+    }
+  }
+}
+package wasi:cli@0.2.8 {
+  interface stdout {
+    use wasi:io/streams@0.2.8.{output-stream};
+    get-stdout: func() -> output-stream;
+  }
+  interface stderr {
+    use wasi:io/streams@0.2.8.{output-stream};
+    get-stderr: func() -> output-stream;
+  }
+}
+`;
+
+/** The interfaces the blocks above declare, by qualified name. */
+export let isKnownWasiInterface = (name: String): boolean =>
+  name == "wasi:io/error@0.2.8" ||
+  name == "wasi:io/streams@0.2.8" ||
+  name == "wasi:cli/stdout@0.2.8" ||
+  name == "wasi:cli/stderr@0.2.8";
+
+/** The packages the blocks above declare, as `ns:pkg@version` keys. */
+export let isKnownWasiPackage = (packageKey: String): boolean =>
+  packageKey == "wasi:io@0.2.8" || packageKey == "wasi:cli@0.2.8";

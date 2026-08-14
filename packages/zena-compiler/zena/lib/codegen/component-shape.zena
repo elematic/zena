@@ -34,6 +34,7 @@ import {
   componentCallbackExport, componentTypeNeedsMemory,
   componentSignatureNeedsMemory, componentRuntimeNamespace
 } from './component-emitter.zena';
+import { isKnownWasiInterface } from './wasi-interfaces.zena';
 import { EncodedImports } from './component-emitter.zena';
 
 /** Look through type aliases (`type`, `distinct type`) to the type itself. */
@@ -315,6 +316,22 @@ export let buildComponentShape = (
           "interface, as in @external(\"wasi:clocks/monotonic-clock@0.3.0\", " +
           "\"now\")."
       );
+    }
+    // An interface the compiler carries real WIT for: the declaration
+    // is core-shaped (handles and pointers as i32s) and says nothing
+    // about the WIT types, so no signature is derived from it. The
+    // field may be a resource path like `[method]r.f`, which is not
+    // kebab-case and does not have to be. Whether the field exists,
+    // and whether its lowering needs the memory options, is settled
+    // against the parsed WIT in `encodeImportTypes`.
+    if (isKnownWasiInterface(module)) {
+      let imp = new ComponentImportFunc(module, field,
+          new ComponentFuncType(new Array<i32>(), new Array<String>(),
+              noComponentResult, f.importIsAsync),
+          f.importIsAsync);
+      imp.witProvided = true;
+      shape.imports.push(imp);
+      continue;
     }
     if (!isKebabName(field)) {
       throw new Error(
