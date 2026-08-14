@@ -132,14 +132,14 @@ export let prepareComponentEntry = (
   let block = b.newBlock();
   b.switchTo(block);
   b.callFunc(b.addRef(new IrRefFunc(main)), new Array<i32>(0), null);
-  let code = b.callFunc(b.addRef(new IrRefFunc(poll as WasmFunction)),
+  let code = b.callFunc(b.addRef(new IrRefFunc(poll)),
       new Array<i32>(0), new ValTypeI32());
   b.ret(code);
   entryBodies[entry.uid] = b.finish();
 
   wasm.componentEntryFunc = entry;
-  wasm.componentCallbackFunc = resume as WasmFunction;
-  pass.markFunctionReached(resume as WasmFunction);
+  wasm.componentCallbackFunc = resume;
+  pass.markFunctionReached(resume);
 };
 
 let i32Results = (): Array<ValType> => {
@@ -267,12 +267,12 @@ export let prepareComponentExports = (
         let pair = new Array<i32>();
         pair.push(core[at]);
         pair.push(core[at + 1]);
-        args.push(b.callFunc(b.addRef(new IrRefFunc(fromMemory as WasmFunction)),
+        args.push(b.callFunc(b.addRef(new IrRefFunc(fromMemory)),
             pair, f.signature.params[i]));
         let toRelease = new Array<i32>();
         toRelease.push(core[at]);
         toRelease.push(core[at + 1]);
-        b.callFunc(b.addRef(new IrRefFunc(release as WasmFunction)),
+        b.callFunc(b.addRef(new IrRefFunc(release)),
             toRelease, null);
         at += 2;
       } else {
@@ -290,7 +290,7 @@ export let prepareComponentExports = (
     if (resultIsString) {
       let one = new Array<i32>();
       one.push(called);
-      b.ret(b.callFunc(b.addRef(new IrRefFunc(resultArea as WasmFunction)),
+      b.ret(b.callFunc(b.addRef(new IrRefFunc(resultArea)),
           one, new ValTypeI32()));
     } else if (callResult == null) {
       b.retVoid();
