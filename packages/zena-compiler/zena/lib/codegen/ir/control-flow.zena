@@ -19,7 +19,7 @@ import {
 } from '../../ast.zena';
 import {
   ArrayType, ClassType, InterfaceType, Type, VoidType, baseType,
-  isVoidOrNeverType, arrayElementType, isSignedNarrowIntType,
+  isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
   isOwnershipWrapper, ownershipHandleInner,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
@@ -195,6 +195,15 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
       throwStmt(cx, node);
       return -1;
     }
+    if (node is CallExpression) {
+      // A never-returning call as an arm ends it the same way a bare
+      // throw does. Statement lowering closes the block after the call.
+      let t = cx.func.model.getNodeType(node);
+      if (t != null && t is NeverType) {
+        lowerStmt(cx, new ExpressionStatement(node, node.loc));
+        return -1;
+      }
+    }
     let value = lowerExpr(cx, node, ctxVt);
     return if (isVoid) -1 else value;
   }
@@ -244,6 +253,14 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
         throwStmt(cx, lastExpr);
         return -1;
       }
+      if (lastExpr is CallExpression) {
+        // A never-returning call in tail position: same as a throw.
+        let t = cx.func.model.getNodeType(lastExpr);
+        if (t != null && t is NeverType) {
+          lowerStmt(cx, last);
+          return -1;
+        }
+      }
       let value = lowerExpr(cx, lastExpr, ctxVt);
       return if (isVoid) -1 else value;
     }
@@ -259,7 +276,7 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
     }
     bail(cx, 'value block tail');
   }
-  return cx.fail('value arm kind');
+  cx.fail('value arm kind');
 };
 
 /**

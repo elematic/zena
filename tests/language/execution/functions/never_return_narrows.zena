@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 12
+
+// A function declared `never` cannot return; a statement-position call
+// to one ends the path like a `throw`. The guard narrows `x` for the
+// code after, and a `never` call in tail position satisfies the
+// missing-return check.
+
+import { Error } from 'zena:error';
+
+class Box {
+  v: i32;
+  new(this.v);
+}
+
+let refuse = (msg: String): never => {
+  throw new Error(msg);
+};
+
+let read = (x: Box | null): i32 => {
+  if (x == null) {
+    refuse("no box");
+  }
+  return x.v;
+};
+
+let tail = (c: boolean): i32 => {
+  if (c) {
+    return 5;
+  }
+  refuse("tail position");
+};
+
+export let main = (): i32 => {
+  var total = read(new Box(7)) + tail(true);
+  // The thrown path is a real throw and stays catchable.
+  try {
+    total += tail(false);
+  } catch (e) {
+    // unchanged
+  }
+  return total;
+};

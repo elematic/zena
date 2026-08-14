@@ -6287,17 +6287,26 @@ let typesEqual = (a: Type, b: Type): boolean => {
  *   if (x == null) { return; }
  *   // x is now non-null here
  */
-let exprDefinitelyExits = (expr: Expression): boolean => {
+let exprDefinitelyExits = (expr: Expression, model: SemanticModel | null = null): boolean => {
   return match (expr) {
     case ThrowExpression {}: true
+    case CallExpression as call: {
+      // A call to a never-returning function ends the path like a
+      // `throw`; the type is only known when a model is provided.
+      if (model == null) { false }
+      else {
+        let t = model.getNodeType(call);
+        t != null && t is NeverType
+      }
+    }
     case MatchExpression {cases}: {
       if (cases.length == 0) { return false; }
       var allExit = true;
       for (let c in cases) {
         let caseExits = if (c.body is Statement) {
-          branchDefinitelyExits(c.body as Statement)
+          branchDefinitelyExits(c.body as Statement, model)
         } else {
-          exprDefinitelyExits(c.body as Expression)
+          exprDefinitelyExits(c.body as Expression, model)
         };
         if (!caseExits) { allExit = false; }
       }
@@ -6305,16 +6314,16 @@ let exprDefinitelyExits = (expr: Expression): boolean => {
     }
     case IfExpression {consequent, alternate}: {
       let consExits = if (consequent is Statement) {
-        branchDefinitelyExits(consequent)
+        branchDefinitelyExits(consequent, model)
       } else {
-        exprDefinitelyExits(consequent as Expression)
+        exprDefinitelyExits(consequent as Expression, model)
       };
       let altExits = if (alternate == null) {
         false
       } else if (alternate is Statement) {
-        branchDefinitelyExits(alternate)
+        branchDefinitelyExits(alternate, model)
       } else {
-        exprDefinitelyExits(alternate as Expression)
+        exprDefinitelyExits(alternate as Expression, model)
       };
       consExits && altExits
     }
@@ -6322,19 +6331,19 @@ let exprDefinitelyExits = (expr: Expression): boolean => {
   };
 };
 
-let branchDefinitelyExits = (stmt: Statement): boolean => {
+let branchDefinitelyExits = (stmt: Statement, model: SemanticModel | null = null): boolean => {
   return match (stmt) {
     case ReturnStatement {}: true
     case BreakStatement {}: true
     case ContinueStatement {}: true
-    case ExpressionStatement {expression}: exprDefinitelyExits(expression)
+    case ExpressionStatement {expression}: exprDefinitelyExits(expression, model)
     case BlockStatement {body}: {
       if (body.length == 0) { false }
-      else { branchDefinitelyExits(body[body.length - 1]) }
+      else { branchDefinitelyExits(body[body.length - 1], model) }
     }
     case IfStatement {consequent, alternate}: {
       if (alternate == null) { false }
-      else { branchDefinitelyExits(consequent) && branchDefinitelyExits(alternate) }
+      else { branchDefinitelyExits(consequent, model) && branchDefinitelyExits(alternate, model) }
     }
     case _: false
   };
@@ -7016,7 +7025,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       while (i < body.length) {
         let stmtNode = body[i];
         checkStatement(ctx, stmtNode);
-        if (branchDefinitelyExits(stmtNode) && i < body.length - 1) {
+        if (branchDefinitelyExits(stmtNode, ctx.model) && i < body.length - 1) {
           ctx.error(
             "Unreachable code detected.",
             DiagnosticCode.UnreachableCode,
@@ -15433,7 +15442,7 @@ let checkFunctionExpression = (
         // If it lacks a guaranteed return, a conforming trailing
         // expression (checked against the return type above) is the
         // function's result.
-        if (!(retType is VoidType) && !branchDefinitelyExits(block) &&
+        if (!(retType is VoidType) && !branchDefinitelyExits(block, ctx.model) &&
             !tailConforms) {
           ctx.error(
             "A function with a non-void declared return type must return a value.",

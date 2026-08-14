@@ -108,7 +108,7 @@ export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i
   if (fromPartsOpt == null) {
     cx.fail('String.fromParts missing');
   }
-  let fromParts = fromPartsOpt as WasmFunction;
+  let fromParts = fromPartsOpt;
   let fsig = fromParts.signature;
   if (fsig.returns.length != 1 || fsig.params.length != 1) {
     cx.fail('fromParts shape');
@@ -146,8 +146,8 @@ let templateOperandString = (cx: LoweringContext, expr: Expression): i32 => {
   if (tOpt == null) {
     cx.fail('untyped template operand');
   }
-  let bt = baseType(tOpt as Type);
-  let helperName = templateConvertHelperName(tOpt as Type);
+  let bt = baseType(tOpt);
+  let helperName = templateConvertHelperName(tOpt);
   if (helperName == '') {
     if (bt is ClassType && bt.name == 'String') {
       return value;
@@ -158,7 +158,7 @@ let templateOperandString = (cx: LoweringContext, expr: Expression): i32 => {
   if (helperOpt == null) {
     cx.fail('template helper missing');
   }
-  let helper = helperOpt as WasmFunction;
+  let helper = helperOpt;
   let sig = helper.signature;
   if (sig.params.length != 1 || sig.returns.length != 1) {
     cx.fail('template helper shape');
@@ -184,23 +184,23 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   if (tsaClassOpt == null) {
     cx.fail('template strings array class missing');
   }
-  let tsaKey = getClassKey(tsaClassOpt as ClassType);
+  let tsaKey = getClassKey(tsaClassOpt);
   let tsaInfoOpt = if (let (true, info) = cx.wasm.classInfos.get(tsaKey)) info else null;
   if (tsaInfoOpt == null) {
     cx.fail('template strings array struct missing');
   }
-  let tsaInfo = tsaInfoOpt as ClassCodegenInfo;
+  let tsaInfo = tsaInfoOpt;
   let tsaStruct = tsaInfo.structType;
   let stringClassOpt = cx.wasm.stringClass;
   if (stringClassOpt == null) {
     cx.fail('string class missing');
   }
-  let stringKey = getClassKey(stringClassOpt as ClassType);
+  let stringKey = getClassKey(stringClassOpt);
   let strInfoOpt = if (let (true, info) = cx.wasm.classInfos.get(stringKey)) info else null;
   if (strInfoOpt == null) {
     cx.fail('string struct missing');
   }
-  let stringStruct = (strInfoOpt as ClassCodegenInfo).structType;
+  let stringStruct = strInfoOpt.structType;
   let stringsArr = cx.wasm.getArray(
       new ValTypeRefNull(stringStruct) as ValType, true);
   let gOpt = if (cx.wasm.templateLiteralGlobals.has(expr)) {
@@ -211,7 +211,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   if (gOpt == null) {
     cx.fail('tagged template global missing');
   }
-  let g = gOpt as WasmGlobal;
+  let g = gOpt;
 
   // Lazy init: build the TSA on first evaluation, cache it.
   let cached = cx.b.emit(IrOp.global_get, g.type, -1,
@@ -324,7 +324,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   if (symOpt == null) {
     cx.fail('tagged template tag unresolved');
   }
-  let resolved = (symOpt as Symbol).resolveTarget();
+  let resolved = symOpt.resolveTarget();
   let callArgs = twoValues(tsa, values);
   if (let (true, target) = cx.wasm.functionMap.get(resolved.id)) {
     let sig = target.signature;
@@ -344,7 +344,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   if (structOpt == null) {
     cx.fail('tagged template tag kind');
   }
-  let closureStruct = structOpt as WasmStruct;
+  let closureStruct = structOpt;
   if (closureStruct.fields.length != 2) {
     cx.fail('tagged template tag kind');
   }
@@ -352,7 +352,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   if (sigOpt == null) {
     cx.fail('tagged template tag kind');
   }
-  let csig = sigOpt as WasmSignature;
+  let csig = sigOpt;
   if (csig.params.length != 3 || csig.returns.length > 1) {
     cx.fail('tagged template tag shape');
   }

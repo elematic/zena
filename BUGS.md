@@ -325,6 +325,26 @@ and (4) and it compiles and runs. The first await is _not_ required —
   loud error.
 - **Workaround**: declare a function in the entry that delegates
   (`component-memory.zena` does this, with a note).
+### A never-typed call as an operand fails lowering
+
+- **Found**: 2026-08-14, adopting `never` on the codegen bail helpers
+  (it was an `Index out of bounds` crash then; now a loud
+  `ZirUnsupported` naming the callee).
+- **Severity**: low — statement position, match/if value arms and
+  value-block tails all lower correctly (they end the path like a
+  `throw`). What remains is a never call as a plain operand:
+  ```zena
+  let refuse = (msg: String): never => { throw new Error(msg); };
+  let x = refuse("no");          // bails: never call in value position
+  let y = 1 + refuse("no");      // likewise
+  ```
+  The checker accepts these (`never` is a bottom type), and they are
+  all dead code by construction. The full fix is the
+  throw-expression treatment: terminate the block after the call and
+  park the consumer in a dead block.
+- **Workaround**: none needed in practice — put the call in statement
+  or arm position, or use an i32-returning wrapper (`cx.failValue`,
+  `#bailValue`) where an operand is unavoidable.
 
 ### A nullable member null-tested after `is`-narrowing fails ZIR lowering
 

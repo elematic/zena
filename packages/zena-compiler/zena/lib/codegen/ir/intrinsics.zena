@@ -62,7 +62,7 @@ let lowerInstr = (cx: LoweringContext, call: CallExpression, op: IrOp, resultVt:
     let c = lowerExpr(cx, call.args[1], null);
     return cx.b.binary(op, resultVt, a, c);
   }
-  return cx.fail('intrinsic arity');
+  cx.fail('intrinsic arity');
 };
 
 /** Lowers `e` and requires an array-typed value: (value, its array). */
@@ -72,7 +72,7 @@ let arrayOperand = (cx: LoweringContext, e: Expression): (i32, WasmArray) => {
   if (arrOpt == null) {
     cx.fail('array builtin receiver');
   }
-  return (value, arrOpt as WasmArray);
+  return (value, arrOpt);
 };
 
 /** Lowers `e` and requires an i32 value (indexes, offsets, lengths). */
@@ -195,7 +195,7 @@ let newResultArray = (cx: LoweringContext, call: CallExpression): (ValType, Wasm
   if (arrTypeOpt == null) {
     cx.fail('array builtin result type');
   }
-  return (resultVt, arrTypeOpt as WasmArray);
+  return (resultVt, arrTypeOpt);
 };
 
 /** __array_new: array.new with an explicit init value. */
@@ -283,7 +283,7 @@ let lowerWasiWriteString = (cx: LoweringContext, call: CallExpression): i32 => {
   if (helperOpt == null) {
     cx.fail('wasi write helper missing');
   }
-  let helper = helperOpt as WasmFunction;
+  let helper = helperOpt;
   let sig = helper.signature;
   let args = new Array<i32>();
   let fd = lowerExpr(cx, call.args[0], sig.params[0]);
@@ -381,7 +381,7 @@ export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpres
       lowerHashIntrinsic(cx, call)
     }
     case _: {
-      cx.fail('intrinsic ' + name)
+      cx.failValue('intrinsic ' + name)
     }
   };
 };
