@@ -46,14 +46,12 @@ export let substituteTypeParamsInCodegen = (
   if (typeParams == null || typeArgs == null || typeParams.length == 0 || typeArgs.length == 0) {
     return t;
   }
-  let params = typeParams;
-  let args = typeArgs;
   return match (t) {
     case TypeParameterType as tp: {
       var found: Type | null = null;
-      for (var i = 0; i < params.length; i += 1) {
-        if (params[i] === tp && i < args.length) {
-          found = args[i];
+      for (var i = 0; i < typeParams.length; i += 1) {
+        if (typeParams[i] === tp && i < typeArgs.length) {
+          found = typeArgs[i];
           break;
         }
       }
@@ -63,7 +61,7 @@ export let substituteTypeParamsInCodegen = (
       t
     }
     case ArrayType {elementType}: {
-      let sub = substituteTypeParamsInCodegen(wasm, params, args, elementType);
+      let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, elementType);
       if (sub == elementType) {
         return t;
       }
@@ -73,7 +71,7 @@ export let substituteTypeParamsInCodegen = (
       let newElems = new Array<Type>(elementTypes.length);
       var elemsChanged = false;
       for (let el in elementTypes) {
-        let sub = substituteTypeParamsInCodegen(wasm, params, args, el);
+        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, el);
         newElems.push(sub);
         if (sub != el) {
           elemsChanged = true;
@@ -88,7 +86,7 @@ export let substituteTypeParamsInCodegen = (
       let newElems = new Array<Type>(elementTypes.length);
       var elemsChanged = false;
       for (let el in elementTypes) {
-        let sub = substituteTypeParamsInCodegen(wasm, params, args, el);
+        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, el);
         newElems.push(sub);
         if (sub != el) {
           elemsChanged = true;
@@ -103,7 +101,7 @@ export let substituteTypeParamsInCodegen = (
       let newTypes = new Array<Type>(types.length);
       var typesChanged = false;
       for (let ut in types) {
-        let sub = substituteTypeParamsInCodegen(wasm, params, args, ut);
+        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, ut);
         newTypes.push(sub);
         if (sub != ut) {
           typesChanged = true;
@@ -120,7 +118,7 @@ export let substituteTypeParamsInCodegen = (
       let keys = rec.properties.keys();
       while (let (true, key) = keys.next()) {
         let original = rec.properties[key];
-        let sub = substituteTypeParamsInCodegen(wasm, params, args, original);
+        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, original);
         newProps[key] = sub;
         if (sub != original) {
           propsChanged = true;
@@ -137,13 +135,13 @@ export let substituteTypeParamsInCodegen = (
       let newParams = new Array<Type>(ft.parameters.length);
       var paramsChanged = false;
       for (let p in ft.parameters) {
-        let sub = substituteTypeParamsInCodegen(wasm, params, args, p);
+        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, p);
         newParams.push(sub);
         if (sub != p) {
           paramsChanged = true;
         }
       }
-      let newRet = substituteTypeParamsInCodegen(wasm, params, args, ft.returnType);
+      let newRet = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, ft.returnType);
       var retChanged = newRet != ft.returnType;
       
       var argsChanged = false;
@@ -151,7 +149,7 @@ export let substituteTypeParamsInCodegen = (
       if (ft.typeArguments != null) {
         newArgs = new Array<Type>((ft.typeArguments as Array<Type>).length);
         for (let arg in (ft.typeArguments as Array<Type>)) {
-          let sub = substituteTypeParamsInCodegen(wasm, params, args, arg);
+          let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
           newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -194,7 +192,7 @@ export let substituteTypeParamsInCodegen = (
         let srcArgs = ta.typeArguments as Array<Type>;
         let acc = new Array<Type>(srcArgs.length);
         for (let arg in srcArgs) {
-          let sub = substituteTypeParamsInCodegen(wasm, params, args, arg);
+          let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
           acc.push(sub);
           if (sub != arg) { changed = true; }
         }
@@ -205,7 +203,7 @@ export let substituteTypeParamsInCodegen = (
       let newTarget = if (ta.resolving) {
         ta.target
       } else {
-        substituteTypeParamsInCodegen(wasm, params, args, ta.target)
+        substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, ta.target)
       };
       if (newTarget != ta.target) { changed = true; }
       if (!changed) { return ta; }
@@ -225,7 +223,7 @@ export let substituteTypeParamsInCodegen = (
         for (let arg in (ct.typeArguments as Array<Type>)) {
           ctArgsVal.push(arg);
         }
-      } else if (params != null && args != null && ctParams != null) {
+      } else if (typeParams != null && typeArgs != null && ctParams != null) {
         hasArgs = true;
         for (let param in ctParams) {
           ctArgsVal.push(param as Type);
@@ -235,7 +233,7 @@ export let substituteTypeParamsInCodegen = (
         let newArgs = new Array<Type>(ctArgsVal.length);
         var argsChanged = false;
         for (let arg in ctArgsVal) {
-          let sub = substituteTypeParamsInCodegen(wasm, params, args, arg);
+          let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
           newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -274,8 +272,8 @@ export let substituteTypeParamsInCodegen = (
         } else {
           0
         };
-        let combinedParams = new Array<TypeParameterType>(ctParamsLen + params.length);
-        let combinedArgs = new Array<Type>(ctParamsLen + args.length);
+        let combinedParams = new Array<TypeParameterType>(ctParamsLen + typeParams.length);
+        let combinedArgs = new Array<Type>(ctParamsLen + typeArgs.length);
         if (ctParams != null) {
           for (let p in ctParams) {
             combinedParams.push(p);
@@ -284,10 +282,10 @@ export let substituteTypeParamsInCodegen = (
             combinedArgs.push(a);
           }
         }
-        for (let p in params) {
+        for (let p in typeParams) {
           combinedParams.push(p);
         }
-        for (let a in args) {
+        for (let a in typeArgs) {
           combinedArgs.push(a);
         }
 
@@ -350,7 +348,7 @@ export let substituteTypeParamsInCodegen = (
         for (let arg in (it.typeArguments as Array<Type>)) {
           itArgsVal.push(arg);
         }
-      } else if (params != null && args != null && itParams != null) {
+      } else if (typeParams != null && typeArgs != null && itParams != null) {
         hasArgs = true;
         for (let param in itParams) {
           itArgsVal.push(param as Type);
@@ -360,7 +358,7 @@ export let substituteTypeParamsInCodegen = (
         let newArgs = new Array<Type>(itArgsVal.length);
         var argsChanged = false;
         for (let arg in itArgsVal) {
-          let sub = substituteTypeParamsInCodegen(wasm, params, args, arg);
+          let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
           newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -383,10 +381,10 @@ export let substituteTypeParamsInCodegen = (
             combinedArgs.push(a);
           }
         }
-        for (let p in params) {
+        for (let p in typeParams) {
           combinedParams.push(p);
         }
-        for (let a in args) {
+        for (let a in typeArgs) {
           combinedArgs.push(a);
         }
         let newExtends = new Array<InterfaceType>(it.extendsList.length);
@@ -410,7 +408,7 @@ export let substituteTypeParamsInCodegen = (
         for (let arg in (mt.typeArguments as Array<Type>)) {
           mtArgsVal.push(arg);
         }
-      } else if (params != null && args != null && mtParams != null) {
+      } else if (typeParams != null && typeArgs != null && mtParams != null) {
         hasArgs = true;
         for (let param in mtParams) {
           mtArgsVal.push(param as Type);
@@ -419,7 +417,7 @@ export let substituteTypeParamsInCodegen = (
       if (hasArgs && mtArgsVal.length > 0) {
         let newArgs = new Array<Type>(mtArgsVal.length);
         for (let arg in mtArgsVal) {
-          newArgs.push(substituteTypeParamsInCodegen(wasm, params, args, arg));
+          newArgs.push(substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg));
         }
         let inst = new MixinType(mt.name);
         inst.typeParameters = mtParams;
@@ -435,10 +433,10 @@ export let substituteTypeParamsInCodegen = (
             combinedArgs.push(a);
           }
         }
-        for (let p in params) {
+        for (let p in typeParams) {
           combinedParams.push(p);
         }
-        for (let a in args) {
+        for (let a in typeArgs) {
           combinedArgs.push(a);
         }
         if (mt.onType != null) {
@@ -547,10 +545,9 @@ let addTransitiveMixins = (
   
   let mtParams = mt.typeParameters;
   if (mtParams != null && mt.typeArguments != null) {
-    let tps = mtParams;
     let tas = mt.typeArguments as Array<Type>;
-    for (var i = 0; i < tps.length; i += 1) {
-      allParams.push(tps[i]);
+    for (var i = 0; i < mtParams.length; i += 1) {
+      allParams.push(mtParams[i]);
       if (i < tas.length) {
         allArgs.push(tas[i]);
       } else {
@@ -584,19 +581,17 @@ export let substituteTypeParamsInClassContext = (
     return t;
   }
 
-  let ct = classType;
-  let subs = wasm.substitutionsFor(ct);
+  let subs = wasm.substitutionsFor(classType);
   if (subs.params == null || subs.args == null) {
     let params = new Array<TypeParameterType>();
     let args = new Array<Type>();
     
     // 1. Add class's own type arguments
-    let ctParams = getClassTypeParameters(ct);
-    if (ctParams != null && ct.typeArguments != null) {
-      let tps = ctParams;
-      let tas = ct.typeArguments as Array<Type>;
-      for (var i = 0; i < tps.length; i += 1) {
-        params.push(tps[i]);
+    let ctParams = getClassTypeParameters(classType);
+    if (ctParams != null && classType.typeArguments != null) {
+      let tas = classType.typeArguments as Array<Type>;
+      for (var i = 0; i < ctParams.length; i += 1) {
+        params.push(ctParams[i]);
         if (i < tas.length) {
           args.push(tas[i]);
         } else {
@@ -607,11 +602,11 @@ export let substituteTypeParamsInClassContext = (
     
     // 2. Add implements list and superType recursively
     let seen = new HashMap<String, boolean>();
-    addClassTransitiveInterfaces(wasm, ct, params, args, seen);
+    addClassTransitiveInterfaces(wasm, classType, params, args, seen);
     
     // 3. Add mixins transitively
     let seenMixins = new HashMap<String, boolean>();
-    addClassTransitiveMixins(ct, params, args, seenMixins);
+    addClassTransitiveMixins(classType, params, args, seenMixins);
     
     subs.params = params;
     subs.args = args;
@@ -623,7 +618,7 @@ export let substituteTypeParamsInClassContext = (
   }
 
   let substituted = substituteTypeParamsInCodegen(wasm, subs.params as Array<TypeParameterType>, subs.args as Array<Type>, t);
-  let result = mapMixinThisInType(ct, substituted);
+  let result = mapMixinThisInType(classType, substituted);
   cacheVal[t] = result;
   return result;
 };
@@ -688,8 +683,7 @@ export let substituteTypeParamsInFunctionContext = (wasm: WasmModule, wasmFuncti
     wasmFunction.codegenSubstCache = fresh;
     cache = fresh;
   }
-  let cacheVal = cache;
-  if (let (true, hit) = cacheVal.get(t)) {
+  if (let (true, hit) = cache.get(t)) {
     return hit;
   }
 
@@ -704,7 +698,7 @@ export let substituteTypeParamsInFunctionContext = (wasm: WasmModule, wasmFuncti
     substituted = substituteTypeParamsInCodegen(wasm, tps, tas, substituted);
   }
 
-  cacheVal[t] = substituted;
+  cache[t] = substituted;
   return substituted;
 };
 
@@ -1049,11 +1043,10 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
       ft = substituteTypeParamsInClassContext(wasm, erasedCt, rawFt) as FunctionType;
     }
     if (ft != null) {
-      let fType = ft;
-      for (let p in fType.parameters) {
+      for (let p in ft.parameters) {
         mapParamTypeToWasmParams(wasm, p, params);
       }
-      mapReturnTypeToWasmResults(wasm, fType.returnType, returns);
+      mapReturnTypeToWasmResults(wasm, ft.returnType, returns);
     }
     return wasm.getSignature(params, returns);
   }
@@ -1061,28 +1054,25 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
 
 let getWasmTypeKey = (target: WasmType): String => {
   if (target is WasmStruct) {
-    let s = target;
-    if (s.name != null) {
-      return s.name as String;
+    if (target.name != null) {
+      return target.name as String;
     }
     var structKey = "struct_anon_";
-    for (let f in s.fields) {
+    for (let f in target.fields) {
       structKey = structKey + (if (f.name == null) "null" else f.name as String) + "_" + (if (f.isMutable) "mut_" else "imm_") + getValTypeKey(f.type) + "_";
     }
     return structKey;
   }
   if (target is WasmArray) {
-    let a = target;
-    return "array_" + (if (a.isMutable) "mut_" else "imm_") + getValTypeKey(a.elementType);
+    return "array_" + (if (target.isMutable) "mut_" else "imm_") + getValTypeKey(target.elementType);
   }
   if (target is WasmSignature) {
-    let sig = target;
     var s = "sig_";
-    for (let p in sig.params) {
+    for (let p in target.params) {
       s = s + getValTypeKey(p) + "_";
     }
     s = s + "returns_";
-    for (let ret in sig.returns) {
+    for (let ret in target.returns) {
       s = s + getValTypeKey(ret) + "_";
     }
     return s;
@@ -1451,16 +1441,14 @@ export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: 
     return;
   }
   if (type is InlineTupleType) {
-    let tupleType = type;
-    for (let el in tupleType.elementTypes) {
+    for (let el in type.elementTypes) {
       returns.push(typeToValType(wasm, el));
     }
     return;
   }
   if (type is UnionType) {
-    let unionType = type;
     var hasVoid = false;
-    for (let t in unionType.types) {
+    for (let t in type.types) {
       if (t is VoidType) {
         hasVoid = true;
       }
@@ -1468,7 +1456,7 @@ export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: 
     if (hasVoid) {
       return;
     }
-    if (mapUnionOfInlineTuplesToWasmResults(wasm, unionType, returns)) {
+    if (mapUnionOfInlineTuplesToWasmResults(wasm, type, returns)) {
       return;
     }
   }

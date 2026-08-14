@@ -37,11 +37,10 @@ let matchTypes = (t1: Type, t2: Type): boolean => {
     }
     case ClassType as ct1: {
       if (t2 is ClassType) {
-        let ct2 = t2;
-        if (ct1.name != ct2.name) { return false; }
-        if (ct1.typeArguments != null && ct2.typeArguments != null) {
+        if (ct1.name != t2.name) { return false; }
+        if (ct1.typeArguments != null && t2.typeArguments != null) {
           let args1 = ct1.typeArguments as Array<Type>;
-          let args2 = ct2.typeArguments as Array<Type>;
+          let args2 = t2.typeArguments as Array<Type>;
           if (args1.length != args2.length) { return false; }
           var i = 0;
           while (i < args1.length) {
@@ -55,11 +54,10 @@ let matchTypes = (t1: Type, t2: Type): boolean => {
     }
     case InterfaceType as it1: {
       if (t2 is InterfaceType) {
-        let it2 = t2;
-        if (it1.name != it2.name) { return false; }
-        if (it1.typeArguments != null && it2.typeArguments != null) {
+        if (it1.name != t2.name) { return false; }
+        if (it1.typeArguments != null && t2.typeArguments != null) {
           let args1 = it1.typeArguments as Array<Type>;
-          let args2 = it2.typeArguments as Array<Type>;
+          let args2 = t2.typeArguments as Array<Type>;
           if (args1.length != args2.length) { return false; }
           var i = 0;
           while (i < args1.length) {
@@ -79,14 +77,12 @@ let matchTypes = (t1: Type, t2: Type): boolean => {
 
 let matchOverload = (t1: Type, t2: Type): boolean => {
   if (t1 is FunctionType && t2 is FunctionType) {
-    let ft1 = t1;
-    let ft2 = t2;
-    if (ft1.parameters.length != ft2.parameters.length) {
+    if (t1.parameters.length != t2.parameters.length) {
       return false;
     }
     var i = 0;
-    while (i < ft1.parameters.length) {
-      if (!matchTypes(ft1.parameters[i], ft2.parameters[i])) {
+    while (i < t1.parameters.length) {
+      if (!matchTypes(t1.parameters[i], t2.parameters[i])) {
         return false;
       }
       i += 1;
@@ -140,10 +136,9 @@ export let collectValueExports = (program: Program, unit: CompilationUnit, resul
     match (stmt) {
       case VariableDeclaration {pattern, exported}: {
         if (exported && pattern is IdentifierPattern) {
-          let ident = pattern;
-          let sym = unit.model.resolveDeclaration(ident);
+          let sym = unit.model.resolveDeclaration(pattern);
           if (sym != null) {
-            result[ident.name] = sym;
+            result[pattern.name] = sym;
           }
         }
       }

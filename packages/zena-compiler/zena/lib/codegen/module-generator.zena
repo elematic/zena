@@ -110,8 +110,7 @@ export final class ModuleGenerator {
       let moduleNode = u.ast;
       for (let stmt in moduleNode.body) {
         if (stmt is EnumDeclaration) {
-          let ed = stmt;
-          for (let member in ed.members) {
+          for (let member in stmt.members) {
             if (member.initializer != null && member.initializer is StringLiteral) {
               let sl = member.initializer as StringLiteral;
               wasm.registerStringLiteral(sl.value);
@@ -293,14 +292,12 @@ export final class ModuleGenerator {
         let moduleModel = g.model;
         let parentNode = moduleModel.getParent(spec);
         if (parentNode != null && parentNode is ImportDeclaration) {
-          let importDecl = parentNode;
-          let specifier = importDecl.moduleSpecifier.value;
+          let specifier = parentNode.moduleSpecifier.value;
           var canonicalPath = specifier;
           if (specifier.startsWith("./") || specifier.startsWith("../")) {
-            let referrer = moduleModel.getParent(importDecl);
+            let referrer = moduleModel.getParent(parentNode);
             if (referrer != null && referrer is Module) {
-              let mod = referrer;
-              let dir = dirName(mod.path);
+              let dir = dirName(referrer.path);
               canonicalPath = normalizePath(dir + "/" + specifier);
             }
           }
@@ -391,36 +388,33 @@ export final class ModuleGenerator {
     let emitTypeAtIndex = (idx: i32): void => {
       let t = wasm.types[idx];
       if (t is WasmSignature) {
-        let sig = t;
         this.emitter.emitFunctionTypeStart(idx);
         
-        this.emitter.emitFunctionTypeParamsStart(sig.params.length);
-        for (let param in sig.params) {
+        this.emitter.emitFunctionTypeParamsStart(t.params.length);
+        for (let param in t.params) {
           this.emitter.emitFunctionTypeParam(param);
         }
         
-        this.emitter.emitFunctionTypeResultsStart(sig.returns.length);
-        for (let ret in sig.returns) {
+        this.emitter.emitFunctionTypeResultsStart(t.returns.length);
+        for (let ret in t.returns) {
           this.emitter.emitFunctionTypeResult(ret);
         }
         
         this.emitter.emitFunctionTypeEnd();
       } else if (t is WasmStruct) {
-        let st = t;
         let superIdx =
-          if (st.superStruct != null) (st.superStruct as WasmStruct).index 
+          if (t.superStruct != null) (t.superStruct as WasmStruct).index 
           else -1;
-        this.emitter.emitStructTypeStart(idx, st.name, superIdx);
+        this.emitter.emitStructTypeStart(idx, t.name, superIdx);
         
-        this.emitter.emitStructTypeFieldsStart(st.fields.length);
-        for (let field in st.fields) {
+        this.emitter.emitStructTypeFieldsStart(t.fields.length);
+        for (let field in t.fields) {
           this.emitter.emitStructTypeField(field.type, field.isMutable);
         }
         
         this.emitter.emitStructTypeEnd();
       } else if (t is WasmArray) {
-        let arr = t;
-        this.emitter.emitArrayType(idx, arr.elementType, arr.isMutable);
+        this.emitter.emitArrayType(idx, t.elementType, t.isMutable);
       }
     };
 

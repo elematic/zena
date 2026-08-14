@@ -134,9 +134,8 @@ let nameOf = (func: WasmFunction): String => {
 let paramName = (declared: FunctionType, index: i32): String => {
   let names = declared.parameterNames;
   if (names != null) {
-    let list = names;
-    if (index < list.length) {
-      let kebab = toKebabName(list[index]);
+    if (index < names.length) {
+      let kebab = toKebabName(names[index]);
       if (kebab != "") {
         return kebab;
       }
@@ -259,21 +258,19 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
     if (module == null || field == null) {
       continue;
     }
-    let interfaceName = module;
-    let fieldName = field;
     // The canonical builtins: functions the ABI itself provides, with
     // no interface to import them from and no type to declare. The core
     // module still imports them, so they need a namespace.
-    if (interfaceName == canonNamespace) {
-      if (!isKnownCanonBuiltin(fieldName)) {
+    if (module == canonNamespace) {
+      if (!isKnownCanonBuiltin(field)) {
         throw new Error(
-          "'" + fieldName + "' is not a canonical builtin this compiler " +
+          "'" + field + "' is not a canonical builtin this compiler " +
             "can emit. Known: waitable-set.new, waitable-set.drop, " +
             "waitable.join, subtask.drop, task.return."
         );
       }
       var builtinResult = noComponentResult;
-      if (fieldName == "task.return") {
+      if (field == "task.return") {
         // `task.return` carries the lifted task's result, so its type
         // comes from what the declaration takes, not from what it
         // returns.
@@ -293,27 +290,27 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
           );
         }
       }
-      shape.builtins.push(new ComponentCanonBuiltin(fieldName, builtinResult));
+      shape.builtins.push(new ComponentCanonBuiltin(field, builtinResult));
       continue;
     }
-    if (!interfaceName.contains(":")) {
+    if (!module.contains(":")) {
       throw new Error(
-        "The component target cannot import '" + fieldName + "' from '" +
-          interfaceName + "': a component imports WIT interfaces, and '" +
-          interfaceName + "' is a core-module import namespace. Name a WIT " +
+        "The component target cannot import '" + field + "' from '" +
+          module + "': a component imports WIT interfaces, and '" +
+          module + "' is a core-module import namespace. Name a WIT " +
           "interface, as in @external(\"wasi:clocks/monotonic-clock@0.3.0\", " +
           "\"now\")."
       );
     }
-    if (!isKebabName(fieldName)) {
+    if (!isKebabName(field)) {
       throw new Error(
-        "The component target cannot import '" + fieldName + "' from '" +
-          interfaceName + "': '" + fieldName + "' is not a kebab-case name, " +
+        "The component target cannot import '" + field + "' from '" +
+          module + "': '" + field + "' is not a kebab-case name, " +
           "so no WIT interface can export it."
       );
     }
     shape.imports.push(
-      new ComponentImportFunc(interfaceName, fieldName,
+      new ComponentImportFunc(module, field,
           signatureOf(wasm, f, "import", f.importIsAsync), f.importIsAsync));
   }
 
