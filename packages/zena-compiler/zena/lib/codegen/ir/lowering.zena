@@ -74,10 +74,10 @@ import {
   isUnsignedNode, lowerAs, lowerBinary, lowerUnary, mapBinaryOp,
 } from './operators.zena';
 import {
-  lowerFor, lowerForIn, lowerIf, lowerIfExpression,
+  declScopeDrop, lowerFor, lowerForIn, lowerIf, lowerIfExpression,
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
-  lowerLetCondition, lowerMatch, lowerTryExpression, lowerUsingRegion,
-  lowerValueNode, lowerWhile,
+  lowerLetCondition, lowerMatch, lowerScopeDropRegion, lowerTryExpression,
+  lowerUsingRegion, lowerValueNode, lowerWhile,
 } from './control-flow.zena';
 
 // ZirUnsupported now lives in lowering-context.zena (imported above):
@@ -1062,7 +1062,13 @@ export final class FunctionLowerer {
       let bodyCount = if (tailExpr != null) stmts.length - 1 else stmts.length;
       var usingInBody = false;
       for (var si = 0; si < bodyCount; si += 1) {
-        if (stmts[si] is UsingStatement) {
+        let s = stmts[si];
+        if (s is UsingStatement) {
+          usingInBody = true;
+        }
+        if (s is VariableDeclaration && declScopeDrop(this.#cx(), s)) {
+          // An implicit-drop binding opens a region exactly like a
+          // `using`, so a value tail needs the same return spelling.
           usingInBody = true;
         }
       }
@@ -1878,6 +1884,12 @@ export final class FunctionLowerer {
       let s = body[i];
       if (s is UsingStatement) {
         lowerUsingRegion(this.#cx(), s, body, i + 1, last);
+        return;
+      }
+      if (s is VariableDeclaration && declScopeDrop(this.#cx(), s)) {
+        // An implicit-drop binding scopes the rest of its block the way
+        // `using` does (ownership.md §Implicit drop).
+        lowerScopeDropRegion(this.#cx(), s, body, i + 1, last);
         return;
       }
       this.#lowerStatement(s);

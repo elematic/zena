@@ -904,6 +904,21 @@ routes — `execution/ownership/lifecycle-flag.zena` reaches its double
 Inserting `dispose()` when an owned value leaves scope unmoved is what turns
 affine (_at most_ once) into leak-free. Four parts:
 
+**Landed: the scope-exit half.** A simple-`let` `Own<resource>` binding that
+nothing moves, reassigns, captures or escapes is released at its block's
+exit — normal completion, `return`, `break`/`continue`, and unwind — through
+the same shared finally region `using` compiles to, in reverse declaration
+order via the regions' nesting. The checker decides per declaration
+(`exitOwnScope`; a use position must be affirmatively classified as a borrow,
+so anything unrecognized leaves the binding alone and leaks as before) and
+records the verdict in `SemanticModel.scopeExitDrops`; lowering routes a
+flagged declaration into `lowerScopeDropRegion`, `using`'s twin. Not yet
+released: conditionally-moved bindings (the branch-join rule below),
+bindings in value-producing blocks (the region cannot carry a result out),
+parameters, and anything in a generator or `async` body (part 4's
+cancellation table). `execution/ownership/implicit-drop.zena` pins the
+behavior; the release-timing note now lives in the language reference.
+
 1. **Unwind paths.** Every scope holding a live resource needs cleanup on
    exception propagation. `finally` makes this expressible; it is still real
    codegen with code-size cost.
@@ -1251,11 +1266,12 @@ of surface syntax.
 
 Implementation currently trails this document in three known places:
 `Scoped<T>` is design-only, the
-`dropped` state is declared but never set, so adopting an already-released
-resource is not the clean error it is specified to be — nothing releases
-anything until implicit drop (O3) — and the liveness rule in §"Borrows and
-suspension" is unenforced, so a borrow may still be held across an `await`
-and a generator may still take a borrow parameter.
+`dropped` state is declared but never set — the implicit-drop and `using`
+release glue calls `:dispose()` without touching the flag, so adopting an
+already-released resource is not the clean error it is specified to be —
+and the liveness rule in §"Borrows and suspension" is unenforced, so a
+borrow may still be held across an `await` and a generator may still take a
+borrow parameter.
 
 **`using` is implemented, and it is where the scope-exit lowering lives.**
 Both forms parse, the checker requires the value to carry `:dispose()` — by

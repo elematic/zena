@@ -212,6 +212,20 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
         // than a release that runs at the wrong time.
         bail(cx, 'using in a value-producing block');
       }
+      if (body[i] is VariableDeclaration &&
+          declScopeDrop(cx, body[i] as VariableDeclaration)) {
+        if (isVoid) {
+          // A void block (a try body, a statement arm) takes the region
+          // like any statement list.
+          lowerScopeDropRegion(cx, body[i] as VariableDeclaration,
+              body, i + 1, body.length);
+          return -1;
+        }
+        // A value block has the same carried-result gap `using` bails
+        // on above — but an implicit drop is the compiler's own
+        // insertion, so it is skipped (the binding leaks, exactly as
+        // the language did before implicit drop) rather than made loud.
+      }
       lowerStmt(cx, body[i]);
       if (!cx.reachable) {
         return -1;
@@ -1076,6 +1090,77 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
           if (!cx.reachable) { break; }
           if (rest[i] is UsingStatement) {
             lowerUsingRegion(cx, rest[i] as UsingStatement, rest, i + 1, restEnd);
+            break;
+          }
+          if (rest[i] is VariableDeclaration &&
+              declScopeDrop(cx, rest[i] as VariableDeclaration)) {
+            lowerScopeDropRegion(cx, rest[i] as VariableDeclaration,
+                rest, i + 1, restEnd);
+            break;
+          }
+          lowerStmt(cx, rest[i]);
+        }
+        finishProtectedArm(cx, scope, resultVar, -1);
+      },
+      () => { emitDispose(cx, value, ownerClass); });
+};
+
+/** Whether the checker marked this declaration for release at scope exit. */
+export let declScopeDrop = (cx: LoweringContext, vd: VariableDeclaration): boolean => {
+  return cx.func.model.hasScopeExitDrop(vd.pattern as Node);
+};
+
+/**
+ * An implicit-drop declaration and everything after it in its block:
+ * `using` without the keyword. The checker marked the binding as an
+ * owned resource nothing moves, reassigns, captures or escapes
+ * (ownership.md §Implicit drop), so the rest of the block is the region
+ * the value is live over, and the release is the same shared finally
+ * region `using` compiles to — one dispose, outside the region, reached
+ * by normal completion, the handler edge, and every early exit.
+ */
+export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
+    rest: Array<Statement>, restStart: i32, restEnd: i32): void => {
+  let declType = cx.substitutedNodeType(vd.init);
+  if (declType == null) {
+    bail(cx, 'untyped implicit-drop binding');
+  }
+  let ownerClass = disposeOwnerClass(cx, declType);
+
+  for (var k = restStart; k < restEnd; k += 1) {
+    if (inSuspensionBody(cx) && containsSuspension(rest[k] as Node)) {
+      // Same reason `using` bails here: the dispatch rides wasm locals,
+      // and a local does not survive a suspension.
+      bail(cx, 'suspension inside an implicit-drop region');
+    }
+  }
+
+  varDecl(cx, vd);
+  let symOpt = cx.func.model.resolveDeclaration(vd.pattern as Node);
+  if (symOpt == null) {
+    bail(cx, 'implicit-drop binding symbol');
+  }
+  let syms = new Array<SymbolId>();
+  syms.push(symOpt.id);
+  let value = cx.envValues(syms)[0];
+
+  let mirrored = new Array<SymbolId>();
+  for (var k = restStart; k < restEnd; k += 1) {
+    cx.appendAssignedEnvSyms(rest[k] as Node, mirrored);
+  }
+
+  lowerFinallyRegion(cx, mirrored, true, null,
+      (scope, resultVar, saved) => {
+        for (var i = restStart; i < restEnd; i += 1) {
+          if (!cx.reachable) { break; }
+          if (rest[i] is UsingStatement) {
+            lowerUsingRegion(cx, rest[i] as UsingStatement, rest, i + 1, restEnd);
+            break;
+          }
+          if (rest[i] is VariableDeclaration &&
+              declScopeDrop(cx, rest[i] as VariableDeclaration)) {
+            lowerScopeDropRegion(cx, rest[i] as VariableDeclaration,
+                rest, i + 1, restEnd);
             break;
           }
           lowerStmt(cx, rest[i]);

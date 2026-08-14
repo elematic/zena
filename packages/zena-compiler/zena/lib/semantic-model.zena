@@ -151,6 +151,9 @@ export final class ModelIndex {
     let saKeys = model.staticAccesses.map.keys();
     while (let (true, k) = saKeys.next()) { this.nodeToModel[k] = model; }
 
+    let sdKeys = model.scopeExitDrops.map.keys();
+    while (let (true, k) = sdKeys.next()) { this.nodeToModel[k] = model; }
+
     let pKeys = model.parents.map.keys();
     while (let (true, k) = pKeys.next()) { this.nodeToModel[k] = model; }
 
@@ -453,6 +456,39 @@ export final class SemanticModel {
       let owner = (this.index as ModelIndex).ownerOfNode(node.id);
       if (owner != null && owner != this) {
         return owner.isStaticAccessDirect(node);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Declarations (keyed by their IdentifierPattern node) whose binding
+   * the compiler releases at scope exit: an `Own` of a resource class
+   * that is never moved, reassigned, captured or otherwise escaped.
+   * The checker decides (ownership.md §Implicit drop); ZIR lowering
+   * materializes the release through the shared finally region. The
+   * verdict is overwritten on a re-check, so stale trues cannot
+   * survive a pass that reached a different conclusion.
+   */
+  #scopeExitDrops = new NodeMap<boolean>();
+
+  setScopeExitDrop(node: Node, drop: boolean): void {
+    this.#scopeExitDrops[node] = drop;
+  }
+
+  hasScopeExitDropDirect(node: Node): boolean {
+    if (let (true, d) = this.#scopeExitDrops.get(node)) {
+      return d;
+    }
+    return false;
+  }
+
+  hasScopeExitDrop(node: Node): boolean {
+    if (this.hasScopeExitDropDirect(node)) return true;
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.hasScopeExitDropDirect(node);
       }
     }
     return false;
@@ -773,6 +809,7 @@ export final class SemanticModel {
   defaultArgsOwners: NodeMap<Type> { get { return this.#defaultArgsOwners; } }
   defaultArgParamNames: NodeMap<Array<String>> { get { return this.#defaultArgParamNames; } }
   staticAccesses: NodeMap<boolean> { get { return this.#staticAccesses; } }
+  scopeExitDrops: NodeMap<boolean> { get { return this.#scopeExitDrops; } }
   parents: NodeMap<Node> { get { return this.#parents; } }
   bindingTypes: HashMap<SymbolId, Type> { get { return this.#bindingTypes; } }
 }

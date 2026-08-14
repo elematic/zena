@@ -303,6 +303,34 @@ final class CheckerContext {
   #everAssignedSymbols = new HashSet<i32>();
 
   /**
+   * Bindings some move consumed, anywhere. Implicit drop skips them: a
+   * moved binding's value belongs to whoever it was moved to.
+   */
+  #everMovedSymbols = new HashSet<i32>();
+
+  /**
+   * Bindings implicit drop must leave alone even though no move was
+   * recorded: captured by a closure, or used in a position the
+   * classifier does not recognize as a borrow. The default is
+   * undroppable — a use position must be affirmatively safe — so an
+   * unclassified escape leaks (the status quo) rather than releasing a
+   * value someone else still holds.
+   */
+  #undroppableSymbols = new HashSet<i32>();
+
+  markUndroppable(id: SymbolId): void {
+    this.#undroppableSymbols.add(id as i32);
+  }
+
+  /**
+   * Scope frames of implicit-drop candidates: `Own<resource>` bindings
+   * declared by simple `let`s in a statement block. Pushed per block;
+   * popping decides each candidate's verdict and records it on the
+   * declaration for lowering.
+   */
+  #ownScopeStack = new Array<Array<OwnDropCandidate>>();
+
+  /**
    * Flow-type results at join nodes, keyed by (join id, symbol id) and
    * shared across queries — a reference after N sequential joins would
    * otherwise recompute each of them per reference, which is quadratic
@@ -549,6 +577,11 @@ final class CheckerContext {
   }
 
   exitClosureReferrer(fe: FunctionExpression, capturesThis: boolean, captures: Array<SymbolId>, mutableCaptures: HashSet<SymbolId>): void {
+    // A captured binding escapes its scope's timeline — the closure can
+    // run after the scope ends — so it is never implicitly dropped.
+    for (let capId in captures) {
+      this.markUndroppable(capId);
+    }
     if (this.#dependencyStack.length > 1) {
       let deps = this.#dependencyStack.pop();
       let parentDeps = this.#dependencyStack[this.#dependencyStack.length - 1];
@@ -1884,6 +1917,7 @@ final class CheckerContext {
    * the back-edge check in exitFlowLoop.
    */
   recordFlowMove(id: SymbolId, name: String, loc: SourceLocation | null): void {
+    this.#everMovedSymbols.add(id as i32);
     let node = new FlowMove(this.#currentFlow, id, name, loc);
     node.id = this.newFlowId();
     if (this.#flowExceptionTargets.length > 0) {
@@ -1894,6 +1928,57 @@ final class CheckerContext {
       loopMoves.push(node);
     }
     this.#currentFlow = node;
+  }
+
+  // --- Implicit drop (ownership.md §Implicit drop) ---
+
+  enterOwnScope(): void {
+    this.#ownScopeStack.push(new Array<OwnDropCandidate>());
+  }
+
+  /** A simple-`let` `Own<resource>` declaration in the current block. */
+  registerOwnCandidate(sym: Symbol, patternNode: Node, resource: ClassType): void {
+    if (this.#ownScopeStack.length == 0) { return; }
+    this.#ownScopeStack[this.#ownScopeStack.length - 1]
+      .push(new OwnDropCandidate(sym, patternNode, resource));
+  }
+
+  /**
+   * Decide the closing block's candidates. A candidate is released at
+   * scope exit only when nothing moved it, nothing reassigned it,
+   * nothing captured it, and every use the block contains sits in a
+   * position the classifier affirms as a borrow — anything else leaves
+   * the binding alone. The verdict overwrites on a re-check.
+   */
+  exitOwnScope(scopeNode: Node): void {
+    if (this.#ownScopeStack.length == 0) { return; }
+    let frame = this.#ownScopeStack[this.#ownScopeStack.length - 1];
+    this.#ownScopeStack.pop();
+    if (frame.length == 0) { return; }
+    let ids = new HashSet<i32>();
+    for (let c in frame) { ids.add(c.sym.id as i32); }
+    classifyOwnUses(this, scopeNode, ids);
+    for (let c in frame) {
+      let id = c.sym.id as i32;
+      let drop = !this.#everMovedSymbols.has(id) &&
+        !this.#everAssignedSymbols.has(id) &&
+        !this.#undroppableSymbols.has(id);
+      this.model.setScopeExitDrop(c.node, drop);
+      if (drop) {
+        // The release call is synthesized by lowering, so nothing in
+        // the AST names `:dispose` — root it the way `using` does. The
+        // release region is a try_table, so the module needs the
+        // exception infrastructure even if no source `try` appears.
+        let deps = this.currentDependencies();
+        if (deps != null) {
+          deps.needsExceptionInfra = true;
+          let classSymId = (c.resource.genericSource ?? c.resource).symbolId;
+          deps.referencedSymbols.add(classSymId);
+          deps.referencedClassMethods.add(
+            i32ToString(classSymId as i32) + ".:dispose");
+        }
+      }
+    }
   }
 
   /**
@@ -3450,11 +3535,79 @@ let rejectConsumingThroughNonOwner = (
  * produced by an expression has no binding left behind to misuse.
  */
 let recordArgumentMove = (ctx: CheckerContext, arg: Expression, paramType: Type): void => {
-  if (ownershipHandleName(paramType) != "Own") { return; }
   if (!(arg is Identifier)) { return; }
   let info = ctx.model.resolve(arg);
   if (info == null) { return; }
-  ctx.recordFlowMove(info.id, info.name, arg.loc);
+  let handle = ownershipHandleName(paramType);
+  if (handle == "Own") {
+    ctx.recordFlowMove(info.id, info.name, arg.loc);
+    return;
+  }
+  if (handle == "") {
+    // Not a handle-typed sink. An owned argument that lands in one — an
+    // interface adaptation, an erased generic slot — escapes without a
+    // recorded move, so implicit drop must leave the binding alone.
+    let at = ctx.model.getNodeType(arg);
+    if (at != null && ownershipHandleName(at) == "Own") {
+      ctx.markUndroppable(info.id);
+    }
+  }
+  // Borrow / Unmanaged sinks are borrows; nothing to record.
+};
+
+/**
+ * An `Own<resource>` declared by a simple `let` in a block: a candidate
+ * for release at that block's exit, pending exitOwnScope's verdict.
+ */
+final class OwnDropCandidate {
+  sym: Symbol;
+  node: Node;
+  resource: ClassType;
+  new(this.sym, this.node, this.resource);
+}
+
+/**
+ * Mark drop candidates whose block contains a use the allowlist does
+ * not affirm as a borrow. The default is unsafe: only positions the
+ * checker fully understands — a member-access receiver, a call or
+ * `new` argument (each argument's sink was already classified by
+ * recordArgumentMove), a comparison or `is` operand, a discarded
+ * expression statement, a match discriminant, a declaration or
+ * assignment (both covered by the flow machinery) — keep a candidate
+ * droppable. Anything else leaves the binding alone, which leaks
+ * exactly as the language did before implicit drop.
+ */
+let classifyOwnUses = (ctx: CheckerContext, scope: Node, ids: HashSet<i32>): void => {
+  walkEnter(scope, (n: Node): void => {
+    if (!(n is Identifier)) { return; }
+    let info = ctx.model.resolve(n);
+    if (info == null) { return; }
+    let id = info.id;
+    if (!ids.has(id as i32)) { return; }
+    let parentOpt = ctx.model.getParent(n);
+    if (parentOpt == null) {
+      ctx.markUndroppable(id);
+      return;
+    }
+    let parent = parentOpt;
+    var safe = false;
+    match (parent) {
+      case MemberExpression as me: { safe = me.object.id == n.id; }
+      case CallExpression: { safe = true; }
+      case NewExpression: { safe = true; }
+      case BinaryExpression as be: {
+        safe = be.operator == "==" || be.operator == "!=" ||
+          be.operator == "===" || be.operator == "!==";
+      }
+      case IsExpression: { safe = true; }
+      case ExpressionStatement: { safe = true; }
+      case MatchExpression as mx: { safe = mx.discriminant.id == n.id; }
+      case VariableDeclaration: { safe = true; }
+      case AssignmentExpression: { safe = true; }
+      case _: {}
+    }
+    if (!safe) { ctx.markUndroppable(id); }
+  });
 };
 
 /**
@@ -6710,6 +6863,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     }
     case BlockStatement {body}: {
       ctx.enterScope();
+      ctx.enterOwnScope();
       prescanPendingFunctions(ctx, body);
       var i = 0;
       while (i < body.length) {
@@ -6725,6 +6879,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
         }
         i += 1;
       }
+      ctx.exitOwnScope(stmt);
       ctx.exitScope();
     }
     case ReturnStatement {argument, loc}: {
@@ -7291,6 +7446,27 @@ let checkVariableDeclaration = (
 
   // Bind the declared names in the pattern.
   bindPattern(ctx, pattern, declType);
+
+  // A simple `let` holding an owned resource is an implicit-drop
+  // candidate: released at its block's exit unless something moves,
+  // reassigns, captures or escapes it (exitOwnScope decides). Not in a
+  // generator or async body: the release region rides wasm locals,
+  // which do not survive a suspension — those drops are the
+  // cancellation table's chapter of ownership.md §Implicit drop.
+  if (kind == "let" && pattern is IdentifierPattern &&
+      ctx.yieldType == null && ctx.asyncValueType == null &&
+      ownershipHandleName(declType) == "Own") {
+    let innerOpt = ownershipHandleInner(declType);
+    if (innerOpt != null && innerOpt is ClassType) {
+      let resource = innerOpt as ClassType;
+      if (resource.isResource) {
+        let symOpt = ctx.model.resolveDeclaration(pattern);
+        if (symOpt != null) {
+          ctx.registerOwnCandidate(symOpt, pattern as Node, resource);
+        }
+      }
+    }
+  }
 
   // An initializer of type `never` cannot complete.
   if (initType is NeverType) {
@@ -11180,12 +11356,14 @@ let checkMethodBody = (
   // Check body.
   match (md.body as Node) {
     case BlockStatement as block: {
+      ctx.enterOwnScope();
       prescanPendingFunctions(ctx, block.body);
       var j = 0;
       while (j < block.body.length) {
         checkStatement(ctx, block.body[j]);
         j = j + 1;
       }
+      ctx.exitOwnScope(block as Node);
     }
     case Expression as bodyExpr: {
       let bodyType = checkExpression(ctx, bodyExpr, effectiveReturnType);
@@ -12733,9 +12911,6 @@ let checkMemberExpression = (
       var shares = false;
       var r: ClassType | null = receiverType;
       while (r != null && !shares) {
-        // Casts: compound while conditions DO narrow now (flow-graph
-        // narrowing), but the checked-in bootstrap predates that, so
-        // the casts stay until a reseed.
         if (r.canonical() == lexicalCanonical) {
           shares = true;
         }
@@ -14803,6 +14978,7 @@ let checkFunctionExpression = (
       // return type as context, so statement-position expressions
       // (a match with value arms) type as values, not void.
       var tailConforms = false;
+      ctx.enterOwnScope();
       prescanPendingFunctions(ctx, block.body);
       let tailIndex = if (!needsInference && !(retType is VoidType) &&
           block.body.length > 0 &&
@@ -14831,6 +15007,7 @@ let checkFunctionExpression = (
         }
         j = j + 1;
       }
+      ctx.exitOwnScope(block as Node);
       // After checking block body, infer return type from collected types.
       if (needsInference) {
         let inferred = ctx.inferredReturnTypes;

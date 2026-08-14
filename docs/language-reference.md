@@ -3957,15 +3957,44 @@ would displace the one being propagated.
 `using` takes any `Disposable`, resource or not. A resource — a value holding
 something the garbage collector cannot reclaim — carries `:dispose()` like
 anything else, so `using` releases it normally rather than rejecting it or
-skipping it. Once implicit drop lands a resource is also released when its
-owning handle leaves scope, which makes a `using` on one redundant rather than
-wrong: disposal is idempotent, so the second release does nothing.
+skipping it.
 
 A `Borrow<R>` is rejected. A borrow is temporary access to something another
 party owns, and never releases what it points at.
 
 `using` earns its keep on ordinary disposables — a lock guard, a tracing span,
 a transaction. See [docs/design/ownership.md](design/ownership.md).
+
+### Implicit drop
+
+An owned resource is released when its binding's block exits, without a
+`using`:
+
+```zena
+let f = open(path);   // f: Own<File>
+read(f);              // a borrow: f stays live
+                      // f.:Disposable.dispose() runs here
+```
+
+The release runs on every path out of the block — falling off the end,
+`return`, `break`/`continue`, and exception unwind — after a returned value
+is computed, and in reverse declaration order when several bindings release
+at one exit. A `using` on a resource is therefore redundant rather than
+wrong: disposal is idempotent, so the second release does nothing.
+
+The compiler releases a binding only when it still owns the value at every
+exit. A binding is left alone when anything moves it (a call taking
+`Own<R>`, `disown`, a consuming method, rebinding), reassigns it, captures
+it in a closure, or uses it in a position the compiler does not recognize
+as a borrow — and, for now, when it was declared in a value-producing
+block, a generator, or an `async` body. Left alone means what it always
+meant before implicit drop: the value leaks unless something else releases
+it. A conditional move also leaves the binding alone for now; releasing on
+the non-moving branch is the branch-join rule, which lands separately.
+
+Release timing is observable when `dispose` has effects: a resource
+declared in an inner block releases at that block's `}`, before the code
+after it runs.
 
 ## 13. Compilation
 

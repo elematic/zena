@@ -1,0 +1,112 @@
+// @mode: run
+// @result: 6154
+// Implicit drop (ownership.md §Implicit drop): an `Own` of a resource
+// class bound by a simple `let`, never moved, reassigned, captured or
+// escaped, is released when its block exits — on the normal path, on an
+// early return, and on exception unwind, in reverse declaration order,
+// through the same shared finally region `using` compiles to.
+import { Own, Borrow, Unmanaged, Disposable, disown } from 'zena:ownership';
+import { Error } from 'zena:error';
+
+var released = 0;
+var order = 0;
+
+resource class Res {
+  tag: i32;
+  new(this.tag);
+  value(): i32 { return this.tag; }
+  :Disposable.dispose(this: Own<this>): void {
+    released += 1;
+    order = order * 10 + this.tag;
+  }
+}
+
+function consume(r: Own<Res>): void {}
+function look(r: Borrow<Res>): i32 { return r.value(); }
+
+/** Two locals, borrow-only uses: both release, in reverse order. */
+let normalExit = (): i32 => {
+  order = 0;
+  let a = new Res(1);
+  let b = new Res(2);
+  look(a);
+  look(b);
+  return order;         // still 0 here: releases run after the return
+};
+
+/** An early return releases through the region like `using` does. */
+let earlyReturn = (c: boolean): i32 => {
+  let a = new Res(3);
+  if (c) {
+    return look(a);
+  }
+  return 0;
+};
+
+/** Unwind releases before the catch observes the count. */
+let unwindReleases = (): i32 => {
+  let before = released;
+  try {
+    let a = new Res(4);
+    look(a);
+    throw new Error("boom");
+  } catch (e) {
+    return released - before;
+  }
+  return -1;
+};
+
+/** A moved binding is the callee's to release; the scope leaves it. */
+let movedNotReleased = (): i32 => {
+  let before = released;
+  let a = new Res(5);
+  consume(a);
+  return released - before;   // consume never disposes: 0 new releases
+};
+
+/** A captured binding may outlive the block; it is left alone. */
+let capturedNotReleased = (): i32 => {
+  let before = released;
+  let a = new Res(6);
+  let read = () => look(a);
+  read();
+  return released - before;
+};
+
+/** A disowned binding moved into the unmanaged regime is left alone. */
+let disownedNotReleased = (): i32 => {
+  let before = released;
+  let a = new Res(7);
+  let raw: Unmanaged<Res> = disown(a);
+  look2(raw);
+  return released - before;
+};
+
+function look2(r: Unmanaged<Res>): i32 { return r.value(); }
+
+/** An inner block's resource releases at the inner exit. */
+let innerBlockTiming = (): i32 => {
+  order = 0;
+  if (true) {
+    let a = new Res(8);
+    look(a);
+  }
+  // The inner block has exited, so the release already ran.
+  return order;
+};
+
+export function main(): i32 {
+  // normalExit returns 0 (releases happen after its return), and the
+  // two releases land in reverse order: order == 21 afterwards.
+  var score = 0;
+  if (normalExit() == 0 && order == 21 && released == 2) { score += 1; }
+  let r1 = earlyReturn(true);
+  if (r1 == 3 && released == 3) { score += 2; }
+  if (unwindReleases() == 1) { score += 4; }
+  if (movedNotReleased() == 0) { score += 8; }
+  if (capturedNotReleased() == 0) { score += 16; }
+  if (disownedNotReleased() == 0) { score += 32; }
+  if (innerBlockTiming() == 8) { score += 64; }
+  // score should be 127; scale so partial sums are unambiguous.
+  return score * 48 + 58;
+}
