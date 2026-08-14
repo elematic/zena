@@ -489,9 +489,8 @@ export final class Compiler {
         while (i < namesToImport.length) {
           let name = namesToImport[i];
           
-          let expOpt = if (let (true, val) = exports.get(name)) { val } else { null };
-          if (expOpt != null) {
-            let info = expOpt;
+          let info = if (let (true, val) = exports.get(name)) { val } else { null };
+          if (info != null) {
             if (info.isValue()) {
               scope.inject(name, info);
             }
@@ -1478,8 +1477,7 @@ export let checkCompilation = (
   let allSignatures = new HashMap<String, HashMap<String, Type>>();
 
   let sharedState = if (previous != null) {
-    let prev = previous;
-    prev.sharedState
+    previous.sharedState
   } else {
     new SharedCheckerState()
   };
@@ -1491,9 +1489,8 @@ export let checkCompilation = (
   // source text changed or that are new.
   let mustCheck = new HashSet<String>();
   if (previous != null) {
-    let prev = previous;
     for (let file in result.files) {
-      if (!prev.sources.has(file.path) || prev.sources[file.path] != file.source) {
+      if (!previous.sources.has(file.path) || previous.sources[file.path] != file.source) {
         mustCheck.add(file.path);
       }
     }
@@ -1551,12 +1548,11 @@ export let checkCompilation = (
     let inRecheckClosure = recheckPaths != null
       && recheckPaths.has(file.path);
     if (previous != null && !mustCheck.has(file.path) && !inRecheckClosure) {
-      let prev = previous;
-      if (prev.sources.has(file.path) && prev.results.has(file.path)) {
-        allResults[file.path] = prev.results[file.path];
+      if (previous.sources.has(file.path) && previous.results.has(file.path)) {
+        allResults[file.path] = previous.results[file.path];
         allSources[file.path] = file.source;
-        if (prev.exportSignatures.has(file.path)) {
-          allSignatures[file.path] = prev.exportSignatures[file.path];
+        if (previous.exportSignatures.has(file.path)) {
+          allSignatures[file.path] = previous.exportSignatures[file.path];
         }
         continue;
       }
@@ -1599,9 +1595,8 @@ export let checkCompilation = (
       // affected names. A dependent is only invalidated if at least one
       // of the names it imports from this file actually changed type.
       if (previous != null && reverseDeps.has(file.path)) {
-        let prev = previous;
-        let oldSig = if (prev.exportSignatures.has(file.path)) {
-          prev.exportSignatures[file.path]
+        let oldSig = if (previous.exportSignatures.has(file.path)) {
+          previous.exportSignatures[file.path]
         } else {
           new HashMap<String, Type>()  // new file — all names are "changed"
         };
@@ -1643,9 +1638,8 @@ export let checkCompilation = (
   // particular) is checked exactly once. First-pass diagnostics of
   // re-checked files are superseded wholesale by their second result.
   if (recheckPaths != null) {
-    let recheck = recheckPaths;
     for (let file in result.files) {
-      if (recheck.has(file.path)) {
+      if (recheckPaths.has(file.path)) {
         let second = checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths);
         allResults[file.path] = second;
         if (file.scopeResult != null) {
@@ -1699,11 +1693,10 @@ export let findMemberExpressionAtOffset = (root: Node, offset: i32): MemberExpre
   var found: MemberExpression | null = null;
   walk(root, (node: Node): boolean => {
     if (node is MemberExpression) {
-      let me = node;
-      if (me.loc != null) {
-        let loc = me.loc as SourceLocation;
+      if (node.loc != null) {
+        let loc = node.loc as SourceLocation;
         if (offset >= loc.start && offset <= loc.end + 1) {
-          found = me;
+          found = node;
           return true;
         }
       }
@@ -1788,20 +1781,18 @@ export let resolveObjectType = (
   // (carry-forward scenario).
   match (object as Node) {
     case Identifier {name, loc as objLoc}: {
-      let maybeInfo = model.resolve(object);
-      if (maybeInfo != null) {
-        let sym = maybeInfo;
+      let sym = model.resolve(object);
+      if (sym != null) {
         let bindingType = model.getBindingType(sym);
         if (bindingType != null) { return bindingType; }
       }
       if (scopeResult != null) {
         let symInfo = scopeResult.rootScope.resolve(name);
         if (symInfo != null) {
-          let s = symInfo;
-          let bindingType = model.getBindingType(s);
+          let bindingType = model.getBindingType(symInfo);
           if (bindingType != null) { return bindingType; }
-          if (s.declaration != null) {
-            let declType = model.getNodeType(s.declaration as Node);
+          if (symInfo.declaration != null) {
+            let declType = model.getNodeType(symInfo.declaration as Node);
             if (declType != null) { return declType; }
           }
         }
@@ -1809,8 +1800,7 @@ export let resolveObjectType = (
       let nodeType = model.getNodeType(object);
       if (nodeType != null) { return nodeType; }
       if (sharedState != null) {
-        let state = sharedState;
-        if (let (true, pv) = state.preludeValues.get(name)) {
+        if (let (true, pv) = sharedState.preludeValues.get(name)) {
           return pv;
         }
       }
@@ -1827,8 +1817,7 @@ export let resolveObjectType = (
       // use getNodeType if the object's start differs from the parent's.
       if (object.loc != null && parentLoc != null) {
         let oLoc = object.loc as SourceLocation;
-        let pLoc = parentLoc;
-        if (oLoc.start != pLoc.start) {
+        if (oLoc.start != parentLoc.start) {
           return model.getNodeType(object);
         }
       }
@@ -1893,13 +1882,12 @@ let findMemberInClass = (
   // Get the source file from the compiler's loader cache.
   let sourceFile = compiler.getSourceFile(filePath);
   if (sourceFile == null) { return null; }
-  let sf = sourceFile;
 
   // Find the ClassDeclaration in the file's AST.
   var classDecl: ClassDeclaration | null = null;
   var si = 0;
-  while (si < sf.ast.body.length) {
-    match (sf.ast.body[si]) {
+  while (si < sourceFile.ast.body.length) {
+    match (sourceFile.ast.body[si]) {
       case ClassDeclaration as cd: {
         if (cd.name.name == sourceClass.name) {
           classDecl = cd;
@@ -1911,11 +1899,10 @@ let findMemberInClass = (
   }
 
   if (classDecl == null) { return null; }
-  let cd = classDecl;
 
   // Check case class params first (e.g., `class Point(x: f64, y: f64)`).
-  if (cd.caseParams != null) {
-    let params = cd.caseParams as Array<CaseClassParam>;
+  if (classDecl.caseParams != null) {
+    let params = classDecl.caseParams as Array<CaseClassParam>;
     var pi = 0;
     while (pi < params.length) {
       if (params[pi].name.name == memberName) {
@@ -1930,8 +1917,8 @@ let findMemberInClass = (
 
   // Search class body for FieldDefinition or MethodDefinition.
   var bi = 0;
-  while (bi < cd.body.length) {
-    match (cd.body[bi]) {
+  while (bi < classDecl.body.length) {
+    match (classDecl.body[bi]) {
       case FieldDefinition as fd: {
         let fieldName = match (fd.name) {
           case Identifier {name}: name

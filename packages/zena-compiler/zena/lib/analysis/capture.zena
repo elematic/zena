@@ -99,9 +99,8 @@ let isCapturedBeforeInit = (s: Symbol, func: FunctionExpression, model: Semantic
   // initializer.
   var curr: Node = func;
   while (true) {
-    let parentOpt = model.getParent(curr);
-    if (parentOpt == null) { return false; }
-    let parent = parentOpt;
+    let parent = model.getParent(curr);
+    if (parent == null) { return false; }
     match (parent) {
       case VariableDeclaration {pattern}: {
         match (pattern) {
@@ -152,9 +151,8 @@ export let analyzeTryBodyAssignments = (tryBody: Node, model: SemanticModel): Ar
   let seen = new HashSet<SymbolId>();
   walkEnter(tryBody, (n: Node): void => {
     if (!(n is AssignmentExpression)) { return; }
-    let assign = n;
-    if (!(assign.left is Identifier)) { return; }
-    let symOpt = model.resolve(assign.left as Identifier);
+    if (!(n.left is Identifier)) { return; }
+    let symOpt = model.resolve(n.left as Identifier);
     if (symOpt == null) { return; }
     // Lowering asks `isCelled` about the resolve TARGET, so the set has
     // to be keyed the same way.
@@ -178,14 +176,13 @@ export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): C
       case Identifier as ident: {
         let sym = model.resolve(ident);
         if (sym != null && isLocalSymbol(sym, model)) {
-          let s = sym;
-          if (!isDeclaredInClosure(s, func, model)) {
-            if (!seen.has(s.id)) {
-              seen.add(s.id);
-              info.captures.push(s);
+          if (!isDeclaredInClosure(sym, func, model)) {
+            if (!seen.has(sym.id)) {
+              seen.add(sym.id);
+              info.captures.push(sym);
             }
-            if (isCapturedBeforeInit(s, func, model)) {
-              info.mutableCaptures.add(s.id);
+            if (isCapturedBeforeInit(sym, func, model)) {
+              info.mutableCaptures.add(sym.id);
             }
           }
         }
@@ -198,13 +195,12 @@ export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): C
           let ident = assign.left as Identifier;
           let sym = model.resolve(ident);
           if (sym != null && isLocalSymbol(sym, model)) {
-            let s = sym;
-            if (!isDeclaredInClosure(s, func, model)) {
-              if (!seen.has(s.id)) {
-                seen.add(s.id);
-                info.captures.push(s);
+            if (!isDeclaredInClosure(sym, func, model)) {
+              if (!seen.has(sym.id)) {
+                seen.add(sym.id);
+                info.captures.push(sym);
               }
-              info.mutableCaptures.add(s.id);
+              info.mutableCaptures.add(sym.id);
             }
           }
         }
