@@ -278,10 +278,13 @@ let s = new Server({ port: 8080 });   // host and tls filled statically
 - The escape hatch when "explicitly set to the default" must be
   distinguishable from "absent" is a nullable field or true `?` (§3.4).
 
-Open design point: defaults make the type declaration carry _values_
-(evaluated where? — restrict to constant expressions initially), and
-they interact with `with`-update and destructuring defaults; spelled out
-at implementation time. Status: proposal, wanted for the config story.
+The full design is [config-records.md](config-records.md), which
+resolves the points this sketch left open: defaults attach to the
+annotation rather than the interned structural type (so identity,
+assignability and interning are untouched), default expressions are
+restricted to constants and notionally evaluated per omission site,
+and the interactions with `?`, spread/`with`, destructuring defaults
+and argument explosion are specified there. Status: plan of record.
 
 ## 4. Value-level spread: extension and update
 

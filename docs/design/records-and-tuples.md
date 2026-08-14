@@ -289,6 +289,14 @@ let point2d: {x: i32, y: i32} = point3d;  // ✅ OK - z is ignored
 
 ### 5.2 Optional Fields
 
+> **Revision note:** the option-bag-with-defaults pattern shown here is
+> superseded by default-bearing record types
+> ([config-records.md](config-records.md)): defaults move from the
+> destructuring site into the record type annotation, and the built
+> record always has the full shape. `?` remains for fields whose
+> _absence is meaningful_, per the restrictions in
+> [row-types.md](row-types.md) §3.4.
+
 Optional fields allow callers to omit fields entirely. This is the "option bag" pattern.
 
 ```zena

@@ -124,10 +124,12 @@ Per row-types.md §9, refined:
   adoption on it.
 - **A2 — value-level ops**: disjoint extension spread, `with` update,
   rest patterns and typed `...rest` (record + tuple).
-- **A3 — default-bearing config records** (row-types.md §3.5): can go
-  **first** in this track — independent of A0/A1, addresses the
-  config-ergonomics pain directly, full payoff (immutable fields via
-  option-bag constructors) arrives with M4 single-shot construction.
+- **A3 — default-bearing config records** (design:
+  [config-records.md](config-records.md), sketched in row-types.md
+  §3.5): can go **first** in this track — independent of A0/A1,
+  addresses the config-ergonomics pain directly, full payoff
+  (immutable fields via option-bag constructors) arrives with M4
+  single-shot construction — M4 is complete, so nothing blocks it.
 
 ## Track O — ownership and resource management (adopted 2026-08-06)
 
