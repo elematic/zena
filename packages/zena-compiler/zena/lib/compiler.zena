@@ -461,7 +461,7 @@ export final class Compiler {
     while (changed) {
       changed = false;
       for (let lib in files) {
-        if (only != null && !(only as HashSet<String>).has(lib.path)) {
+        if (only != null && !only.has(lib.path)) {
           continue;
         }
         if (lib.scopeResult != null) {
@@ -491,7 +491,7 @@ export final class Compiler {
           
           let expOpt = if (let (true, val) = exports.get(name)) { val } else { null };
           if (expOpt != null) {
-            let info = expOpt as Symbol;
+            let info = expOpt;
             if (info.isValue()) {
               scope.inject(name, info);
             }
@@ -553,8 +553,8 @@ export final class Compiler {
           let specifier = moduleSpecifier.value;
           if (lib.imports.has(specifier)) {
             let depLib = this.#loader.get(lib.imports[specifier]);
-            if (depLib != null && (depLib as SourceFile).scopeResult != null) {
-              let depExports = ((depLib as SourceFile).scopeResult as ScopeResult).exports;
+            if (depLib != null && depLib.scopeResult != null) {
+              let depExports = (depLib.scopeResult as ScopeResult).exports;
               var k = 0;
               while (k < imports.length) {
                 let spec = imports[k];
@@ -570,8 +570,8 @@ export final class Compiler {
                   }
                 } else if (exp != null) {
                   let localSym = result.rootScope.getLocal(spec.local.name);
-                  if (localSym != null && (localSym as Symbol).importTarget != exp as Symbol) {
-                    (localSym as Symbol).importTarget = exp as Symbol;
+                  if (localSym != null && localSym.importTarget != exp) {
+                    localSym.importTarget = exp;
                     changed = true;
                   }
                 }
@@ -584,8 +584,8 @@ export final class Compiler {
           let specifier = moduleSpecifier.value;
           if (lib.imports.has(specifier)) {
             let depLib = this.#loader.get(lib.imports[specifier]);
-            if (depLib != null && (depLib as SourceFile).scopeResult != null) {
-              let depExports = ((depLib as SourceFile).scopeResult as ScopeResult).exports;
+            if (depLib != null && depLib.scopeResult != null) {
+              let depExports = (depLib.scopeResult as ScopeResult).exports;
               for (let key in depExports.keys()) {
                 if (let (true, info) = depExports.get(key)) {
                   rebuilt[key] = info;
@@ -598,8 +598,8 @@ export final class Compiler {
           let specifier = moduleSpecifier.value;
           if (lib.imports.has(specifier)) {
             let depLib = this.#loader.get(lib.imports[specifier]);
-            if (depLib != null && (depLib as SourceFile).scopeResult != null) {
-              let depExports = ((depLib as SourceFile).scopeResult as ScopeResult).exports;
+            if (depLib != null && depLib.scopeResult != null) {
+              let depExports = (depLib.scopeResult as ScopeResult).exports;
               var m = 0;
               while (m < specifiers.length) {
                 let spec = specifiers[m];
@@ -609,7 +609,7 @@ export final class Compiler {
                     this.#recordUnresolved(result, spec.imported.name, spec);
                   }
                 } else {
-                  rebuilt[spec.local.name] = exp as Symbol;
+                  rebuilt[spec.local.name] = exp;
                 }
                 m = m + 1;
               }
@@ -628,7 +628,7 @@ export final class Compiler {
       for (let key in rebuilt.keys()) {
         let cur = if (let (true, c) = result.exports.get(key)) { c } else { null };
         let next = if (let (true, n) = rebuilt.get(key)) { n } else { null };
-        if (cur == null || cur as Symbol != next as Symbol) {
+        if (cur == null || cur != next as Symbol) {
           same = false;
         }
       }
@@ -732,12 +732,12 @@ let computeExportSignature = (
     if (exp.isValue()) {
       let scopeInfo = rootScope.getLocal(name);
       let bt = if (scopeInfo != null) {
-        model.getBindingType(scopeInfo as Symbol)
+        model.getBindingType(scopeInfo)
       } else {
         null
       };
       if (bt != null) {
-        sig["v:" + name] = bt as Type;
+        sig["v:" + name] = bt;
       }
     }
     
@@ -752,14 +752,14 @@ let computeExportSignature = (
       } else {
         let scopeInfo = rootScope.getLocal(name);
         if (scopeInfo != null) {
-          model.getBindingType(scopeInfo as Symbol)
+          model.getBindingType(scopeInfo)
         } else {
           null
         }
       };
       
       if (t != null) {
-        sig["t:" + name] = t as Type;
+        sig["t:" + name] = t;
       }
     }
   }
@@ -1478,7 +1478,7 @@ export let checkCompilation = (
   let allSignatures = new HashMap<String, HashMap<String, Type>>();
 
   let sharedState = if (previous != null) {
-    let prev = previous as ProgramCheckResult;
+    let prev = previous;
     prev.sharedState
   } else {
     new SharedCheckerState()
@@ -1491,7 +1491,7 @@ export let checkCompilation = (
   // source text changed or that are new.
   let mustCheck = new HashSet<String>();
   if (previous != null) {
-    let prev = previous as ProgramCheckResult;
+    let prev = previous;
     for (let file in result.files) {
       if (!prev.sources.has(file.path) || prev.sources[file.path] != file.source) {
         mustCheck.add(file.path);
@@ -1549,9 +1549,9 @@ export let checkCompilation = (
     // Symbols and miss (models resolve bindings by Symbol identity, and a
     // re-loaded module's rebuilt scope mints fresh Symbols).
     let inRecheckClosure = recheckPaths != null
-      && (recheckPaths as HashSet<String>).has(file.path);
+      && recheckPaths.has(file.path);
     if (previous != null && !mustCheck.has(file.path) && !inRecheckClosure) {
-      let prev = previous as ProgramCheckResult;
+      let prev = previous;
       if (prev.sources.has(file.path) && prev.results.has(file.path)) {
         allResults[file.path] = prev.results[file.path];
         allSources[file.path] = file.source;
@@ -1577,13 +1577,13 @@ export let checkCompilation = (
           let bt = checkResult.model.getExportType(name);
           let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
           if (t != null) {
-            sharedState.preludeTypes[name] = t as Type;
+            sharedState.preludeTypes[name] = t;
           }
         }
         if (exp.isValue()) {
           let t = checkResult.model.getBindingType(exp);
           if (t != null) {
-            sharedState.preludeValues[name] = t as Type;
+            sharedState.preludeValues[name] = t;
           }
         }
       }
@@ -1599,7 +1599,7 @@ export let checkCompilation = (
       // affected names. A dependent is only invalidated if at least one
       // of the names it imports from this file actually changed type.
       if (previous != null && reverseDeps.has(file.path)) {
-        let prev = previous as ProgramCheckResult;
+        let prev = previous;
         let oldSig = if (prev.exportSignatures.has(file.path)) {
           prev.exportSignatures[file.path]
         } else {
@@ -1643,7 +1643,7 @@ export let checkCompilation = (
   // particular) is checked exactly once. First-pass diagnostics of
   // re-checked files are superseded wholesale by their second result.
   if (recheckPaths != null) {
-    let recheck = recheckPaths as HashSet<String>;
+    let recheck = recheckPaths;
     for (let file in result.files) {
       if (recheck.has(file.path)) {
         let second = checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths);
@@ -1699,7 +1699,7 @@ export let findMemberExpressionAtOffset = (root: Node, offset: i32): MemberExpre
   var found: MemberExpression | null = null;
   walk(root, (node: Node): boolean => {
     if (node is MemberExpression) {
-      let me = node as MemberExpression;
+      let me = node;
       if (me.loc != null) {
         let loc = me.loc as SourceLocation;
         if (offset >= loc.start && offset <= loc.end + 1) {
@@ -1736,7 +1736,7 @@ export let resolveMemberDefinition = (
   if (node == null) { return null; }
 
   // Check if it's a MemberExpression and the offset is on the property.
-  match (node as Node) {
+  match (node) {
     case MemberExpression {object, property, loc}: {
       // Verify the offset is actually on the property identifier,
       // not on the object expression.
@@ -1755,7 +1755,7 @@ export let resolveMemberDefinition = (
       let objType = resolveObjectType(object, model, scopeResult, loc, ast, null);
       if (objType == null) { return null; }
 
-      match (objType as Type) {
+      match (objType) {
         case ClassType as ct: {
           return findMemberInClass(ct, property.name, compiler);
         }
@@ -1790,14 +1790,14 @@ export let resolveObjectType = (
     case Identifier {name, loc as objLoc}: {
       let maybeInfo = model.resolve(object);
       if (maybeInfo != null) {
-        let sym = maybeInfo as Symbol;
+        let sym = maybeInfo;
         let bindingType = model.getBindingType(sym);
         if (bindingType != null) { return bindingType; }
       }
       if (scopeResult != null) {
         let symInfo = scopeResult.rootScope.resolve(name);
         if (symInfo != null) {
-          let s = symInfo as Symbol;
+          let s = symInfo;
           let bindingType = model.getBindingType(s);
           if (bindingType != null) { return bindingType; }
           if (s.declaration != null) {
@@ -1809,7 +1809,7 @@ export let resolveObjectType = (
       let nodeType = model.getNodeType(object);
       if (nodeType != null) { return nodeType; }
       if (sharedState != null) {
-        let state = sharedState as SharedCheckerState;
+        let state = sharedState;
         if (let (true, pv) = state.preludeValues.get(name)) {
           return pv;
         }
@@ -1827,7 +1827,7 @@ export let resolveObjectType = (
       // use getNodeType if the object's start differs from the parent's.
       if (object.loc != null && parentLoc != null) {
         let oLoc = object.loc as SourceLocation;
-        let pLoc = parentLoc as SourceLocation;
+        let pLoc = parentLoc;
         if (oLoc.start != pLoc.start) {
           return model.getNodeType(object);
         }
@@ -1893,7 +1893,7 @@ let findMemberInClass = (
   // Get the source file from the compiler's loader cache.
   let sourceFile = compiler.getSourceFile(filePath);
   if (sourceFile == null) { return null; }
-  let sf = sourceFile as SourceFile;
+  let sf = sourceFile;
 
   // Find the ClassDeclaration in the file's AST.
   var classDecl: ClassDeclaration | null = null;
@@ -1911,7 +1911,7 @@ let findMemberInClass = (
   }
 
   if (classDecl == null) { return null; }
-  let cd = classDecl as ClassDeclaration;
+  let cd = classDecl;
 
   // Check case class params first (e.g., `class Point(x: f64, y: f64)`).
   if (cd.caseParams != null) {

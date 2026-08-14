@@ -195,7 +195,7 @@ export final class ScopeBuilder {
   new(modulePath: String, preludeScope: Scope | null = null, symbolIdGenerator: IdGenerator<SymbolId> | null = null)
     : #modulePath = modulePath {
     if (symbolIdGenerator != null) {
-      this.#symbolIdGenerator = symbolIdGenerator as IdGenerator<SymbolId>;
+      this.#symbolIdGenerator = symbolIdGenerator;
     }
     this.#current = new Scope(ScopeKind.Module, preludeScope, this.#symbolIdGenerator);
   }
@@ -449,7 +449,7 @@ export final class ScopeBuilder {
 
         // Process the type annotation for type reference recording.
         if (typeAnnotation != null) {
-          this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+          this.#processTypeAnnotation(typeAnnotation);
         }
 
         // Declare the variable name(s).
@@ -480,10 +480,10 @@ export final class ScopeBuilder {
         // initializer. The unbound form declares nothing.
         this.#processExpression(init);
         if (typeAnnotation != null) {
-          this.#processTypeAnnotation(typeAnnotation as TypeAnnotation);
+          this.#processTypeAnnotation(typeAnnotation);
         }
         if (pattern != null) {
-          let pat = pattern as Pattern;
+          let pat = pattern;
           match (pat) {
             case IdentifierPattern {name} as ident: {
               this.#current.declare(name, false, ident, this.#modulePath);
@@ -516,12 +516,12 @@ export final class ScopeBuilder {
           case LetPatternCondition {pattern, init}: {
             this.#processExpression(init);
             this.#enterScope(ScopeKind.Block);
-            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#declarePattern(pattern, "let", test);
             this.#processStatement(consequent);
             this.#exitScope();
             if (alternate != null) {
               this.#enterScope(ScopeKind.Block);
-              this.#processStatement(alternate as Statement);
+              this.#processStatement(alternate);
               this.#exitScope();
             }
           }
@@ -529,7 +529,7 @@ export final class ScopeBuilder {
             this.#processNode(test);
             this.#processStatement(consequent);
             if (alternate != null) {
-              this.#processStatement(alternate as Statement);
+              this.#processStatement(alternate);
             }
           }
         }
@@ -539,7 +539,7 @@ export final class ScopeBuilder {
           case LetPatternCondition {pattern, init}: {
             this.#processExpression(init);
             this.#enterScope(ScopeKind.Block);
-            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#declarePattern(pattern, "let", test);
             this.#processStatement(body);
             this.#exitScope();
           }
@@ -644,7 +644,7 @@ export final class ScopeBuilder {
         }
         // Traverse `with` clause so mixin names are linked in the ReferenceMap.
         if (on != null) {
-          this.#processTypeAnnotation(on as TypeAnnotation);
+          this.#processTypeAnnotation(on);
         }
         if (mixins != null) {
           for (let mixin in mixins) {
@@ -718,7 +718,7 @@ export final class ScopeBuilder {
       case FunctionExpression {typeParameters, params, returnType, body}: {
         this.#enterScope(ScopeKind.Function);
         if (typeParameters != null) {
-          let tps = typeParameters as Array<TypeParameter>;
+          let tps = typeParameters;
           this.#declareTypeParameters(tps);
         }
         for (let param in params) {
@@ -799,7 +799,7 @@ export final class ScopeBuilder {
         // without it, `x.:sym` compiled in a module that declares no `sym`
         // at all, so "don't export the symbol" controlled nothing.
         if (isSymbolAccess && symbolPath != null) {
-          this.#processExpression(symbolPath as Expression);
+          this.#processExpression(symbolPath);
         }
       }
       case IndexExpression {object, index}: {
@@ -855,12 +855,12 @@ export final class ScopeBuilder {
           case LetPatternCondition {pattern, init}: {
             this.#processExpression(init);
             this.#enterScope(ScopeKind.Block);
-            this.#declarePattern(pattern, "let", test as LetPatternCondition);
+            this.#declarePattern(pattern, "let", test);
             this.#processNode(consequent);
             this.#exitScope();
             if (alternate != null) {
               this.#enterScope(ScopeKind.Block);
-              this.#processNode(alternate as Node);
+              this.#processNode(alternate);
               this.#exitScope();
             }
           }
@@ -916,8 +916,8 @@ export final class ScopeBuilder {
    */
   #processNode(node: Node): void {
     match (node) {
-      case Expression: { this.#processExpression(node as Expression); }
-      case Statement: { this.#processStatement(node as Statement); }
+      case Expression: { this.#processExpression(node); }
+      case Statement: { this.#processStatement(node); }
       case LetPatternCondition {pattern, init}: {
         this.#processExpression(init);
         // The pattern introduces bindings visible in the then-branch.
@@ -944,7 +944,7 @@ export final class ScopeBuilder {
       case _: {}
     }
     if (nameNode == null) { return; }
-    match (nameNode as Node) {
+    match (nameNode) {
       case SymbolPropertyName {symbolRef}: {
         this.#processExpression(symbolRef);
       }
@@ -1148,13 +1148,13 @@ export final class ScopeBuilder {
 
   #declarePatternBindings(node: Node): void {
     match (node) {
-      case Pattern: { this.#declarePattern(node as Pattern, "let", node); }
+      case Pattern: { this.#declarePattern(node, "let", node); }
       case Identifier as ident: {
         if (ident.name != "_") {
           let resolved = this.#current.resolve(ident.name);
           var isTypePattern = false;
           if (resolved != null) {
-            if ((resolved as Symbol).isType()) {
+            if (resolved.isType()) {
               isTypePattern = true;
             }
           }
@@ -1180,13 +1180,13 @@ export final class ScopeBuilder {
 
   #declarePatternNode(node: Node, kind: String, declaration: Node): void {
     match (node) {
-      case Pattern: { this.#declarePattern(node as Pattern, kind, declaration); }
+      case Pattern: { this.#declarePattern(node, kind, declaration); }
       case Identifier as ident: {
         if (ident.name != "_") {
           let resolved = this.#current.resolve(ident.name);
           var isTypePattern = false;
           if (resolved != null) {
-            if ((resolved as Symbol).isType()) {
+            if (resolved.isType()) {
               isTypePattern = true;
             }
           }
@@ -1258,7 +1258,7 @@ export final class ScopeBuilder {
           this.#unresolvedNames.push(new UnresolvedName(name, ann));
         }
         if (typeArguments != null) {
-          let args = typeArguments as Array<TypeAnnotation>;
+          let args = typeArguments;
           for (let arg in args) {
             this.#processTypeAnnotation(arg);
           }
