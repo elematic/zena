@@ -1190,15 +1190,15 @@ exceeds number of declared memories`. Reaching any linear-memory
   whose same-function half is fixed by the checker flow graph)
 - **Severity**: medium (type-checks clean, can trap at runtime; needs a
   closure to reassign a captured narrowed `var`)
-- **Details**: The flow graph is per function body, so two halves of the
-  closure interaction escape it. A narrowing established in an enclosing
-  function is kept when read inside a nested closure — the walk reaches the
-  closure's own FlowStart and cannot see whether the enclosing function
-  assigned between establishment and the closure running. And an
-  assignment inside a closure to a captured `var` is invisible to the
-  enclosing function's graph, so a narrowing there survives a
-  `xs.forEach(() => { x = null; })` between guard and use. (Inside a loop
-  body the pre-scan does catch closure assignments, deliberately.)
+- **Details**: The flow graph walk crosses a closure boundary at the
+  closure's CREATION site (FlowStart.enclosing), so a captured binding's
+  type inside the closure reflects what held where the closure was
+  written — not what holds when it runs; an assignment after creation is
+  invisible. And an assignment inside a closure to a captured `var` is
+  invisible to the enclosing function's graph, so a narrowing there
+  survives a `xs.forEach(() => { x = null; })` between guard and use.
+  (Inside a loop body the pre-scan does catch closure assignments,
+  deliberately.)
   TypeScript has the same holes. The capture pass
   (`analysis/capture.zena`) already computes `mutableCaptures`, which is
   the ingredient a conservative fix would use.
@@ -1474,45 +1474,6 @@ found, returning false`, so the reachability pass is probably
   MethodInfo path; `setResolvedOverload` is only called from call and
   index resolution). Spec is context-sensitive resolution with an
   ambiguity error when no context exists (member-lookup.md §7/§9.3).
-
-### Self-hosted checker does not narrow a loop var through a compound while condition
-
-- **Found**: 2026-07-22
-- **Severity**: low (forces redundant casts; bootstrap accepts the code)
-- **Workaround**: cast inside the loop body (`(r as ClassType).x`).
-- **Details**: The bootstrap checker narrows `r` in the body of
-  `while (r != null && !done) { r.member; r = r.next; }` for
-  `var r: T | null`; the self-hosted checker reports "Object may be
-  null", a checker divergence. Hit in checker.zena's private-access
-  receiver walk (see the "no narrowing through compound while"
-  comment there).
-
-### Checker does not narrow after calls to never-returning functions
-
-- **Found**: 2026-07-21
-- **Severity**: low (ergonomics; forces redundant casts)
-- **Workaround**: inline `throw`, or keep an `as` cast after the guard.
-- **Details**: An inline `throw` in a guard branch narrows the guarded
-  binding afterward, but a call to a function declared `: never` does
-  not terminate control flow for narrowing purposes:
-
-  ```zena
-  let bail = (msg: String): never => { throw new Error(msg); };
-
-  let f = (b: Box | null): i32 => {
-    if (b == null) { throw new Error('x'); }
-    return b.x;                      // OK: narrowed
-  };
-  let g = (b: Box | null): i32 => {
-    if (b == null) { bail('x'); }
-    return b.x;                      // Error: "Object may be null"
-  };
-  ```
-
-  The ZIR lowering code is full of `#bail(...): never` guards followed
-  by `as` casts that would all disappear if never-returning calls were
-  treated like throw for reachability/narrowing. Both compilers agree
-  (checked with the bootstrap checker).
 
 ### Host mutations after a read-only capture are invisible to the closure
 

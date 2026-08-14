@@ -584,6 +584,12 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
         parseF64((expr.expression as NumberLiteral).raw), dstVt);
   }
   let value = lowerExpr(cx, expr.expression, null);
+  if (value < 0) {
+    // A zero-width operand (a read the checker typed `never` or
+    // `void`) has no value to cast; bail loudly rather than index the
+    // value table with the sentinel.
+    bail(cx, 'as operand produced no value');
+  }
   let srcVt = cx.valueTypeOf(value);
   if (valTypeEquals(srcVt, dstVt)) {
     // Same wasm type, but possibly a different narrow width: `x as u8`

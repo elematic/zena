@@ -1,0 +1,71 @@
+// @mode: check
+// Narrowing computed on the flow graph. These are the capabilities the
+// lexical narrowing stack could not express: compound loop conditions,
+// expression-position `&&` chains, narrowing by assignment, the guard's
+// inversion after a loop, and termination through `never`-returning
+// calls. No errors expected except where marked.
+import { Error } from 'zena:error';
+
+class Node {
+  var value: i32 = 0;
+  next: Node | null = null;
+  new();
+}
+
+let mkNode = (): Node | null => null;
+
+// A compound while condition narrows the loop variable in the body
+// (BUGS.md "no narrowing through compound while").
+let compoundWhile = (start: Node | null, limit: i32): i32 => {
+  var r = start;
+  var n = 0;
+  while (r != null && n < limit) {
+    n += r.value;
+    r = r.next;
+  }
+  return n;
+};
+
+// The if-expression narrows through `&&` the way the statement does.
+let ternaryAnd = (a: Node | null, b: Node | null): i32 =>
+  if (a != null && b != null) a.value + b.value else 0;
+
+// An assignment narrows to what was assigned: after storing a value
+// that cannot be null, the binding is not null.
+let assignmentNarrows = (): i32 => {
+  var x: Node | null = null;
+  x = new Node();
+  return x.value;
+};
+
+// ...and re-widens when the stored value may be null again.
+let assignmentWidens = (): i32 => {
+  var x: Node | null = new Node();
+  x = mkNode();
+  return x.value;  // @error: Object may be null when accessing 'value'.
+};
+
+// Leaving `while (x == null)` means the condition was false: the guard's
+// inversion holds after the loop, whatever the body assigned.
+let loopUntilNonNull = (): i32 => {
+  var x: Node | null = null;
+  while (x == null) {
+    x = mkNode();
+  }
+  return x.value;
+};
+
+// A call that returns `never` ends the path, so the guard's inversion
+// holds afterwards (BUGS.md "never-returning functions").
+let bail = (msg: String): never => {
+  throw new Error(msg);
+};
+
+let neverTerminates = (x: Node | null): i32 => {
+  if (x == null) {
+    bail("required");
+  }
+  return x.value;
+};
+
+export let main = (): i32 => 0;

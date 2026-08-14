@@ -51,12 +51,12 @@ import { HashMap } from 'zena:map';
 import { OrderedMap } from 'zena:ordered-map';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import {
-  FlowNode, FlowStart, FlowAssign, FlowMove, FlowJoin, FlowUnreachable,
-  NarrowEntry, FlowBodyState
+  FlowNode, FlowStart, FlowAssign, FlowMove, FlowNarrowings, FlowJoin,
+  FlowUnreachable, FlowBodyState
 } from './analysis/flow.zena';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
-import { parseI32, i32ToString } from 'zena:string-convert';
+import { parseI32, i32ToString, i64ToString } from 'zena:string-convert';
 import { walkEnter } from './visitor.zena';
 import {
   Node, Module, SourceLocation,
@@ -291,20 +291,51 @@ final class CheckerContext {
    * adding a defaulted parameter makes those call sites fail arity checking.
    */
   var resourceMentionOk: boolean = false;
-  #narrowings = new Array<HashMap<SymbolId, NarrowEntry>>();
 
   /**
-   * Narrowed types for member paths (for example, "symbolId.inner").
-   * Only immutable field paths are eligible for these narrowings.
+   * Bindings and member paths some FlowNarrowings node has ever
+   * mentioned, and bindings some FlowAssign has ever stored to. These
+   * gate the flow-type walk: a reference to a binding no condition ever
+   * narrowed and no assignment could re-type takes its declared type
+   * with no graph traversal at all, which is nearly every reference.
    */
-  #memberPathNarrowings = new Array<HashMap<String, NarrowEntry>>();
+  #everNarrowedSymbols = new HashSet<i32>();
+  #everNarrowedPaths = new HashSet<String>();
+  #everAssignedSymbols = new HashSet<i32>();
+
+  /**
+   * Flow-type results at join nodes, keyed by (join id, symbol id) and
+   * shared across queries — a reference after N sequential joins would
+   * otherwise recompute each of them per reference, which is quadratic
+   * over a body. The graph only mutates behind a query at a loop's back
+   * edge, so exitFlowLoop invalidates exactly the entries written while
+   * the loop was open, via the write log.
+   */
+  #flowTypeMemo = new HashMap<i64, Type>();
+  #flowTypeMemoLog = new Array<i64>();
+  #flowLoopMemoMarks = new Array<i32>();
+
+  /** The path walk's memo, keyed "<join id>|<path>"; #pathVeto included. */
+  #flowPathMemo = new HashMap<String, Type>();
+  #flowPathMemoLog = new Array<String>();
+  #flowPathMemoLogIds = new Array<i32>();
+  #flowLoopPathMemoMarks = new Array<i32>();
+
+  /**
+   * The FlowStart id of the body each binding was declared in. A walk
+   * that reaches that node has seen everything that could narrow the
+   * binding, so it stops there instead of continuing into the enclosing
+   * body's graph — only captured bindings look outward.
+   */
+  #bindingBodyStart = new HashMap<i32, i32>();
 
   // --- Control-flow graph (analysis/flow.zena) ---
   //
-  // Built alongside the checker's forward walk: assignments, joins and
-  // loop headers advance #currentFlow, and a narrowing captures it as
-  // its establishment point. Reads on mutable bindings then validate
-  // the narrowing with a backward walk (see narrowingStillValid).
+  // Built alongside the checker's forward walk: assignments, moves,
+  // narrowings and joins advance #currentFlow. A reference's type is
+  // the declared type refined by a backward walk from here
+  // (flowTypeOfBinding / flowTypeOfPath), and move checking walks the
+  // same nodes (findLiveMove).
 
   /** The flow node reflecting the checker's current position. */
   var #currentFlow: FlowNode = new FlowStart();
@@ -361,12 +392,6 @@ final class CheckerContext {
   /** Mint for FlowNode ids; per-context, so graphs stay deterministic. */
   var #nextFlowId: i32 = 0;
 
-  /**
-   * Symbols seen while resolving identifiers and building path keys,
-   * so a member-path narrowing can find its root binding's mutability
-   * from the "s<id>" prefix of its key.
-   */
-  #symbolsById = new HashMap<SymbolId, Symbol>();
 
   /**
    * The current function's expected return type, or null if not in a function.
@@ -598,8 +623,6 @@ final class CheckerContext {
     
     // Initialize with module-level scope.
     this.#typeScopes.push(new HashMap<String, Type>());
-    this.#narrowings.push(new HashMap<SymbolId, NarrowEntry>());
-    this.#memberPathNarrowings.push(new HashMap<String, NarrowEntry>());
 
     // Module-level control flow. The field defaults exist only to keep
     // the fields non-nullable; mint real ids so nodes never compare
@@ -676,14 +699,10 @@ final class CheckerContext {
    */
   enterScope(): void {
     this.#typeScopes.push(new HashMap<String, Type>());
-    this.#narrowings.push(new HashMap<SymbolId, NarrowEntry>());
-    this.#memberPathNarrowings.push(new HashMap<String, NarrowEntry>());
   }
 
   exitScope(): void {
     this.#typeScopes.pop();
-    this.#narrowings.pop();
-    this.#memberPathNarrowings.pop();
   }
 
   // --- Value binding (via SemanticModel + Symbol) ---
@@ -694,6 +713,7 @@ final class CheckerContext {
    */
   declareBinding(info: Symbol, t: Type): void {
     this.model.setBindingType(info, t);
+    this.#bindingBodyStart[info.id as i32] = this.#currentFlowStart.id;
     // A binding declared while a loop is open is fresh every iteration,
     // which exempts its moves from the back-edge rule in exitFlowLoop.
     for (let declared in this.#flowLoopDeclared) {
@@ -745,29 +765,10 @@ final class CheckerContext {
       deps.referencedSymbols.add(resolvedSym.id);
     }
 
-    var i = this.#narrowings.length - 1;
-    while (i >= 0) {
-      let narrowing = this.#narrowings[i];
-      if (let (true, entry) = narrowing.get(si.id)) {
-        if (!si.isMutable || this.narrowingStillValid(entry)) {
-          return entry.type;
-        }
-        // Invalidated by an assignment on some path; an outer frame
-        // may hold an older, still-valid narrowing.
-      }
-      i = i - 1;
-    }
-
-    // Fall back to member path narrowings (using identifier key "s" + symbol.id).
-    let pathKey = "s" + i32ToString(si.id as i32);
-    let pathNarrowing = this.resolveNarrowedMemberPath(pathKey);
-    if (pathNarrowing != null) {
-      return pathNarrowing;
-    }
-
-    // Fall back to the binding type stored by the checker.
+    // The binding's declared type, refined by the flow graph: the
+    // nearest narrowing or assignment on the way back to the entry.
     let bt = this.model.getBindingType(si);
-    if (bt != null) { return bt as Type; }
+    if (bt != null) { return this.flowTypeOfBinding(si, bt as Type); }
 
     // Check dependency models in case this binding came from an import.
     let models = this.#depModels;
@@ -1771,6 +1772,7 @@ final class CheckerContext {
   recordFlowAssignment(id: SymbolId, assignedType: Type | null): void {
     let node = new FlowAssign(this.#currentFlow, id, assignedType);
     node.id = this.newFlowId();
+    this.#everAssignedSymbols.add(id as i32);
     if (this.#flowExceptionTargets.length > 0) {
       this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
         .add(node);
@@ -1791,6 +1793,8 @@ final class CheckerContext {
     this.#flowLoopExits.push(exit);
     this.#flowLoopMoves.push(new Array<FlowMove>());
     this.#flowLoopDeclared.push(new HashSet<i32>());
+    this.#flowLoopMemoMarks.push(this.#flowTypeMemoLog.length);
+    this.#flowLoopPathMemoMarks.push(this.#flowPathMemoLog.length);
     this.#currentFlow = head;
     return head;
   }
@@ -1829,6 +1833,36 @@ final class CheckerContext {
       }
     }
     head.add(this.#currentFlow);
+    // The back edge just changed what flows into the header. Only
+    // results at joins created inside the loop (id >= the header's) can
+    // have traversed the incomplete header — a join created before the
+    // loop cannot have it among its ancestors — so only those entries
+    // written while the loop was open are deleted. The log is not
+    // truncated: entries kept here may still belong to an enclosing
+    // loop's window, whose exit re-scans its own range.
+    if (this.#flowLoopMemoMarks.length > 0) {
+      let mark = this.#flowLoopMemoMarks[this.#flowLoopMemoMarks.length - 1];
+      this.#flowLoopMemoMarks.pop();
+      var li = mark;
+      while (li < this.#flowTypeMemoLog.length) {
+        let key = this.#flowTypeMemoLog[li];
+        if ((key / (4294967296 as i64)) as i32 >= head.id) {
+          this.#flowTypeMemo.delete(key);
+        }
+        li += 1;
+      }
+    }
+    if (this.#flowLoopPathMemoMarks.length > 0) {
+      let pmark = this.#flowLoopPathMemoMarks[this.#flowLoopPathMemoMarks.length - 1];
+      this.#flowLoopPathMemoMarks.pop();
+      var pli = pmark;
+      while (pli < this.#flowPathMemoLog.length) {
+        if (this.#flowPathMemoLogIds[pli] >= head.id) {
+          this.#flowPathMemo.delete(this.#flowPathMemoLog[pli]);
+        }
+        pli += 1;
+      }
+    }
     exit.add(afterTest);
     if (exit.antecedents.length == 0) {
       this.#currentFlow = this.#flowUnreachable;
@@ -1893,6 +1927,10 @@ final class CheckerContext {
       match (node) {
         case FlowStart: {}
         case FlowUnreachable: {}
+        case FlowNarrowings as nw: {
+          // A narrowing does not change liveness.
+          pending.push(nw.antecedent);
+        }
         case FlowMove as mv: {
           if ((mv.symbolId as i32) == (id as i32)) { return mv; }
           pending.push(mv.antecedent);
@@ -1955,13 +1993,19 @@ final class CheckerContext {
    * Install fresh flow state for a nested body (function, method,
    * accessor). Returns the enclosing state for exitBodyFlow.
    */
-  enterBodyFlow(): FlowBodyState {
+  enterBodyFlow(sharesThis: boolean): FlowBodyState {
     let saved = new FlowBodyState(
       this.#currentFlow, this.#currentFlowStart, this.#flowLoopHeads,
       this.#flowLoopExits, this.#flowExceptionTargets,
       this.#flowLoopMoves, this.#flowLoopDeclared);
     let start = new FlowStart();
     start.id = this.newFlowId();
+    // A nested body's walk may continue at its creation site: the
+    // narrowings that held where the closure was written are what its
+    // captures see. (Deferred execution can invalidate them — the
+    // pre-graph behavior, kept.)
+    start.enclosing = saved.current;
+    start.sharesThis = sharesThis;
     this.#currentFlow = start;
     this.#currentFlowStart = start;
     this.#flowLoopHeads = new Array<FlowJoin>();
@@ -1982,147 +2026,475 @@ final class CheckerContext {
     this.#flowLoopDeclared = saved.loopDeclared;
   }
 
-  rememberSymbol(si: Symbol): void {
-    this.#symbolsById[si.id] = si;
-  }
-
-  /**
-   * Whether a narrowing established at `entry.at` still holds at the
-   * current flow position. Walks backward over every path from here to
-   * the establishment point:
-   *
-   *   - reaching `entry.at` ends a path cleanly;
-   *   - an assignment to the narrowing's root binding ends it cleanly
-   *     when the assigned type still satisfies the narrowing (identifier
-   *     narrowings only — a path narrowing dies with any root
-   *     assignment), and invalidates otherwise;
-   *   - reaching this body's own FlowStart means the establishment does
-   *     not dominate the reference (a loop that may run zero times), so
-   *     the narrowing is invalid;
-   *   - reaching a different FlowStart means the narrowing came from an
-   *     enclosing function; the graph cannot see that far, so the
-   *     narrowing is (unsoundly, as before) kept.
-   *
-   * Loops make the graph cyclic; the visited set both terminates the
-   * walk and keeps it linear.
-   */
-  narrowingStillValid(entry: NarrowEntry): boolean {
-    let visited = new HashSet<i32>();
-    let pending = new Array<FlowNode>();
-    pending.push(this.#currentFlow);
-    while (pending.length > 0) {
-      let node = pending.pop() as FlowNode;
-      if (node.id == entry.at.id) { continue; }
-      if (visited.has(node.id)) { continue; }
-      visited.add(node.id);
-      match (node) {
-        case FlowStart: {
-          if (node.id == entry.startAt.id) { return false; }
-          // A different body's entry: the narrowing was established in
-          // an enclosing function. Keep it, matching the pre-flow-graph
-          // behavior for captured bindings.
-        }
-        case FlowUnreachable: {}
-        case FlowAssign as assign: {
-          if ((assign.symbolId as i32) == (entry.rootSymbolId as i32)) {
-            if (entry.isPath) { return false; }
-            let at = assign.assignedType;
-            if (at == null) { return false; }
-            if (!isAssignableTo(this, at as Type, entry.type)) {
-              return false;
-            }
-            // The assignment re-establishes the narrowing; this path
-            // is clean.
-          } else {
-            pending.push(assign.antecedent);
-          }
-        }
-        case FlowMove as mv: {
-          // A move does not change the binding's type.
-          pending.push(mv.antecedent);
-        }
-        case FlowJoin as join: {
-          for (let a in join.antecedents) {
-            pending.push(a);
-          }
-        }
-      }
-    }
-    return true;
-  }
-
-  /**
-   * Look up a NarrowEntry's usability at the current position: entries
-   * on immutable bindings are always valid (nothing can assign them),
-   * mutable ones consult the flow graph.
-   */
-  #narrowEntryUsable(entry: NarrowEntry): boolean {
-    if ((entry.rootSymbolId as i32) < 0) { return true; }
-    if (let (true, si) = this.#symbolsById.get(entry.rootSymbolId)) {
-      if (!si.isMutable) { return true; }
-      return this.narrowingStillValid(entry);
-    }
-    // Unknown root: nothing recorded an assignable binding, so treat as
-    // immutable (the pre-flow-graph behavior).
-    return true;
-  }
-
   // --- Narrowing ---
 
   /**
-   * Narrow a binding's type within the current scope.
-   * Keyed by Symbol.id for identity-based precision.
+   * Attach a FlowNarrowings node carrying `ns` to the current flow. The
+   * maps come from the condition engine (getNarrowedTypesFromCondition)
+   * and hold the types that follow on the guarded path. An empty result
+   * attaches nothing.
    */
-  narrowBinding(info: Symbol, t: Type): void {
-    this.rememberSymbol(info);
-    this.narrowBindingById(info.id, t);
+  pushFlowNarrowings(ns: ConditionNarrowings): void {
+    if (ns.bindings.size == 0 && ns.paths.size == 0) { return; }
+    let node = new FlowNarrowings(this.#currentFlow, ns.bindings, ns.paths);
+    node.id = this.newFlowId();
+    for (let bkey in ns.bindings.keys()) {
+      this.#everNarrowedSymbols.add(bkey as i32);
+    }
+    for (let pkey in ns.paths.keys()) {
+      this.#everNarrowedPaths.add(pkey);
+    }
+    this.#currentFlow = node;
   }
 
-  narrowBindingById(id: SymbolId, t: Type): void {
-    let top = this.#narrowings[this.#narrowings.length - 1];
-    top[id] = new NarrowEntry(
-      t, this.#currentFlow, this.#currentFlowStart, id, false);
+  /** pushFlowNarrowings for a single member path. */
+  pushFlowPathNarrowing(path: String, t: Type): void {
+    let ns = new ConditionNarrowings();
+    ns.paths[path] = t;
+    this.pushFlowNarrowings(ns);
   }
 
-  narrowMemberPath(path: String, t: Type): void {
-    let top = this.#memberPathNarrowings[this.#memberPathNarrowings.length - 1];
-    top[path] = new NarrowEntry(
-      t, this.#currentFlow, this.#currentFlowStart,
-      pathRootSymbolId(path), true);
+  /**
+   * The type of a binding at the current position: the declared type
+   * refined along the flow path — the nearest narrowing that mentions
+   * the binding, an assignment's stored type, unions at joins. The
+   * ever-sets keep this from walking at all for the common un-narrowed
+   * binding; assignment re-typing is consulted only for union-typed
+   * mutable bindings, the one shape where a store can change what a
+   * read sees.
+   */
+  flowTypeOfBinding(si: Symbol, declared: Type): Type {
+    let id = si.id as i32;
+    let pathKey = "s" + i32ToString(id);
+    let narrowed = this.#everNarrowedSymbols.has(id) ||
+      this.#everNarrowedPaths.has(pathKey);
+    let assigned = si.isMutable && this.#everAssignedSymbols.has(id) &&
+      declared is UnionT;
+    if (!narrowed && !assigned) { return declared; }
+    this.#walkCycleMin = 2147483647;
+    this.#walkBudget = 100000;
+    let r = this.#walkBindingType(
+      this.#currentFlow, si.id, pathKey, declared, new Array<i32>());
+    if (r == null) { return declared; }
+    // A narrowing can only narrow. A join can manufacture something
+    // wider — a statically-false `x == null` arm narrows a
+    // non-nullable binding to `null`, and the branches union — and the
+    // declared type is the ceiling that discards it.
+    if (!isAssignableTo(this, r as Type, declared)) { return declared; }
+    return r as Type;
   }
 
-  resolveNarrowedMemberPath(path: String): Type | null {
-    for (var i = this.#memberPathNarrowings.length - 1; i >= 0; i -= 1) {
-      if (let (true, entry) = this.#memberPathNarrowings[i].get(path)) {
-        if (this.#narrowEntryUsable(entry)) {
-          return entry.type;
+  /**
+   * The stack index of the shallowest in-progress join a cycle has
+   * referenced during the current walk (a lowlink). A join whose
+   * evaluation saw cycles only back to itself is a fixpoint — a
+   * completed loop's header — and its result is memoizable; one whose
+   * cycles reach an ancestor is provisional and is not.
+   */
+  var #walkCycleMin: i32 = 2147483647;
+
+  /**
+   * Per-query step budget: a safety net against walk pathologies. With
+   * the provisional cache below it should not trip in practice;
+   * exhaustion cuts the walk off at "no narrowing" — always sound — and
+   * forces the lowlink below any depth so nothing above the cut is
+   * memoized.
+   */
+  var #walkBudget: i32 = 0;
+
+  /**
+   * Provisional results: joins evaluated under an in-progress loop
+   * header (their lowlink points at an ancestor). They are stable while
+   * that ancestor is still being evaluated — the graph and the stack
+   * below it are frozen — which is exactly what stops a run of
+   * sequential joins inside a loop body from being re-explored
+   * exponentially. Each entry is bucketed by its lowlink; when the join
+   * at stack depth d pops, buckets >= d are purged.
+   */
+  #taintedBindingMemo = new HashMap<i64, Type>();
+  #taintedBindingBuckets = new Array<Array<i64>>();
+  #taintedPathMemo = new HashMap<String, Type>();
+  #taintedPathBuckets = new Array<Array<String>>();
+
+  #purgeTaintedFrom(depth: i32): void {
+    var b = depth;
+    while (b < this.#taintedBindingBuckets.length) {
+      for (let bKey in this.#taintedBindingBuckets[b]) {
+        this.#taintedBindingMemo.delete(bKey);
+      }
+      this.#taintedBindingBuckets[b] = new Array<i64>();
+      b += 1;
+    }
+    var pb = depth;
+    while (pb < this.#taintedPathBuckets.length) {
+      for (let pKey in this.#taintedPathBuckets[pb]) {
+        this.#taintedPathMemo.delete(pKey);
+      }
+      this.#taintedPathBuckets[pb] = new Array<String>();
+      pb += 1;
+    }
+  }
+
+  #taintedBucketAdd(depth: i32, bindingKey: i64): void {
+    while (this.#taintedBindingBuckets.length <= depth) {
+      this.#taintedBindingBuckets.push(new Array<i64>());
+    }
+    this.#taintedBindingBuckets[depth].push(bindingKey);
+  }
+
+  #taintedPathBucketAdd(depth: i32, pathKey: String): void {
+    while (this.#taintedPathBuckets.length <= depth) {
+      this.#taintedPathBuckets.push(new Array<String>());
+    }
+    this.#taintedPathBuckets[depth].push(pathKey);
+  }
+
+  /**
+   * The walk behind flowTypeOfBinding. Chains descend iteratively;
+   * recursion happens only at joins, whose result is the union of their
+   * antecedents'. A null return is a cycle contribution (a loop back
+   * edge reached its own header) and is skipped by the join above it —
+   * the optimistic reading is sound because a loop that changes the
+   * binding declares that with the unknown-type assignments recorded at
+   * its header. Join results computed without touching an in-progress
+   * cycle are memoized for the duration of one query.
+   */
+  #walkBindingType(
+    from: FlowNode,
+    symId: SymbolId,
+    pathKey: String,
+    declared: Type,
+    inProgress: Array<i32>
+  ): Type | null {
+    var n = from;
+    while (true) {
+      if (this.#walkBudget <= 0) {
+        this.#walkCycleMin = -1;
+        return declared;
+      }
+      this.#walkBudget -= 1;
+      match (n) {
+        case FlowNarrowings as nw: {
+          if (let (true, t) = nw.bindings.get(symId)) { return t; }
+          if (let (true, pt) = nw.paths.get(pathKey)) { return pt; }
+          n = nw.antecedent;
         }
-        // Invalidated; an outer frame may hold an older, still-valid
-        // entry for the same path, so keep scanning.
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) == (symId as i32)) {
+            // The stored type is clamped to the declared type at the
+            // recording site, so it is returned as-is here.
+            let at = assign.assignedType;
+            if (at != null) { return at; }
+            return declared;
+          }
+          n = assign.antecedent;
+        }
+        case FlowMove as mv: {
+          n = mv.antecedent;
+        }
+        case FlowStart as st: {
+          // The declaring body's entry has seen everything that could
+          // narrow the binding; only a capture keeps looking outward.
+          if (let (true, bodyId) = this.#bindingBodyStart.get(symId as i32)) {
+            if (bodyId == st.id) { return declared; }
+          } else {
+            return declared;
+          }
+          let enc = st.enclosing;
+          if (enc == null) { return declared; }
+          // Crossing into the enclosing body is computed once per key:
+          // the enclosing flow is frozen at the closure's creation, so
+          // the answer there never changes (modulo loop back edges,
+          // which the log invalidation covers).
+          let crossKey = (st.id as i64) * 4294967296 + (symId as i32 as i64);
+          if (let (true, cm) = this.#flowTypeMemo.get(crossKey)) { return cm; }
+          let outerMin = this.#walkCycleMin;
+          this.#walkCycleMin = 2147483647;
+          let sub = this.#walkBindingType(
+            enc as FlowNode, symId, pathKey, declared, inProgress);
+          let myMin = this.#walkCycleMin;
+          if (sub != null && myMin >= inProgress.length) {
+            this.#flowTypeMemo[crossKey] = sub as Type;
+            this.#flowTypeMemoLog.push(crossKey);
+          }
+          this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+          return sub;
+        }
+        case FlowUnreachable: {
+          return declared;
+        }
+        case FlowJoin as join: {
+          let memoKey = (join.id as i64) * 4294967296 + (symId as i32 as i64);
+          if (let (true, m) = this.#flowTypeMemo.get(memoKey)) { return m; }
+          if (let (true, tm) = this.#taintedBindingMemo.get(memoKey)) { return tm; }
+          var pi = 0;
+          var cycled = false;
+          while (pi < inProgress.length) {
+            if (inProgress[pi] == join.id) {
+              if (pi < this.#walkCycleMin) { this.#walkCycleMin = pi; }
+              cycled = true;
+            }
+            pi += 1;
+          }
+          if (cycled) { return null; }
+          let depth = inProgress.length;
+          inProgress.push(join.id);
+          // Lowlink accounting: cycles seen under THIS join, kept apart
+          // from what the siblings already saw.
+          let outerMin = this.#walkCycleMin;
+          this.#walkCycleMin = 2147483647;
+          let results = new Array<Type>();
+          var sawCycle = false;
+          for (let a in join.antecedents) {
+            let r = this.#walkBindingType(
+              a, symId, pathKey, declared, inProgress);
+            if (r == null) {
+              sawCycle = true;
+            } else {
+              var dup = false;
+              for (let existing in results) {
+                if (typesEqual(existing, r as Type)) { dup = true; }
+              }
+              if (!dup) { results.push(r as Type); }
+            }
+          }
+          let myMin = this.#walkCycleMin;
+          inProgress.pop();
+          // Anything provisional that depended on this join dies with
+          // its evaluation.
+          this.#purgeTaintedFrom(depth);
+          if (results.length == 0) {
+            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+            if (sawCycle) { return null; }
+            return declared;
+          }
+          // Two distinct narrowings meeting (an `is A` arm and an
+          // `is B` arm whose else diverged) merge to the declared type:
+          // member lookup cannot see through an A | B union of
+          // subclasses, so the union would reject code the un-narrowed
+          // type accepts.
+          let kept = this.#dropSubsumed(results);
+          let result = if (kept.length == 1) { kept[0] } else { declared };
+          if (myMin >= depth) {
+            // Cycles, if any, pointed only at this join: it is a
+            // completed loop header and this is its fixpoint.
+            this.#flowTypeMemo[memoKey] = result;
+            this.#flowTypeMemoLog.push(memoKey);
+            this.#walkCycleMin = outerMin;
+          } else {
+            // Provisional under an in-progress ancestor: cached until
+            // that ancestor pops. A negative lowlink is the budget
+            // cut's mark — those results are not cached at all.
+            if (myMin >= 0) {
+              this.#taintedBindingMemo[memoKey] = result;
+              this.#taintedBucketAdd(myMin, memoKey);
+            }
+            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+          }
+          return result;
+        }
       }
     }
-    return null;
+  }
+
+  /**
+   * The narrowed type of a member path at the current position, or null
+   * when it is not narrowed. Any assignment to the path's root binding
+   * on some incoming path un-narrows it (the object was replaced), so a
+   * join only keeps the narrowing when every reachable antecedent
+   * carries one; cycle contributions are skipped as in the binding
+   * walk. `#pathVeto` is the un-narrowed marker inside the walk, so it
+   * can be told apart from a cycle.
+   */
+  #pathVeto: Type = new ErrorType();
+
+  /**
+   * Drop union members another member already covers: a join of an
+   * assignment-narrowed subtype with the declared supertype is the
+   * supertype, not a two-member union member lookups cannot see
+   * through.
+   */
+  #dropSubsumed(results: Array<Type>): Array<Type> {
+    if (results.length < 2) { return results; }
+    let kept = new Array<Type>();
+    var i = 0;
+    while (i < results.length) {
+      var subsumed = false;
+      var j = 0;
+      while (j < results.length) {
+        if (j != i && isAssignableTo(this, results[i], results[j]) &&
+            !isAssignableTo(this, results[j], results[i])) {
+          subsumed = true;
+        }
+        j += 1;
+      }
+      if (!subsumed) { kept.push(results[i]); }
+      i += 1;
+    }
+    if (kept.length == 0) { return results; }
+    return kept;
+  }
+
+  flowTypeOfPath(path: String): Type | null {
+    if (!this.#everNarrowedPaths.has(path)) { return null; }
+    this.#walkCycleMin = 2147483647;
+    this.#walkBudget = 100000;
+    let r = this.#walkPathType(
+      this.#currentFlow, path, pathRootSymbolId(path), new Array<i32>());
+    if (r == null) { return null; }
+    let rt = r as Type;
+    // Identity via uid: Type equality is structural, and any ErrorType
+    // would otherwise look like the veto marker.
+    if (rt.uid == this.#pathVeto.uid) { return null; }
+    return rt;
+  }
+
+  #walkPathType(
+    from: FlowNode,
+    path: String,
+    rootId: SymbolId,
+    inProgress: Array<i32>
+  ): Type | null {
+    var n = from;
+    while (true) {
+      if (this.#walkBudget <= 0) {
+        this.#walkCycleMin = -1;
+        return this.#pathVeto;
+      }
+      this.#walkBudget -= 1;
+      match (n) {
+        case FlowNarrowings as nw: {
+          if (let (true, t) = nw.paths.get(path)) { return t; }
+          n = nw.antecedent;
+        }
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) == (rootId as i32)) {
+            return this.#pathVeto;
+          }
+          n = assign.antecedent;
+        }
+        case FlowMove as mv: {
+          n = mv.antecedent;
+        }
+        case FlowStart as st: {
+          // A rooted path stops at its root's declaring body the way a
+          // binding walk does. A `this`-rooted path stops where `this`
+          // stops: at a method or accessor root — only a closure that
+          // shares its `this` keeps looking outward.
+          if ((rootId as i32) >= 0) {
+            if (let (true, bodyId) = this.#bindingBodyStart.get(rootId as i32)) {
+              if (bodyId == st.id) { return this.#pathVeto; }
+            } else {
+              return this.#pathVeto;
+            }
+          } else {
+            if (!st.sharesThis) { return this.#pathVeto; }
+          }
+          let enc = st.enclosing;
+          if (enc == null) { return this.#pathVeto; }
+          let crossKey = i32ToString(st.id) + "|" + path;
+          if (let (true, cm) = this.#flowPathMemo.get(crossKey)) { return cm; }
+          let outerMin = this.#walkCycleMin;
+          this.#walkCycleMin = 2147483647;
+          let sub = this.#walkPathType(enc as FlowNode, path, rootId, inProgress);
+          let myMin = this.#walkCycleMin;
+          if (sub != null && myMin >= inProgress.length) {
+            this.#flowPathMemo[crossKey] = sub as Type;
+            this.#flowPathMemoLog.push(crossKey);
+            this.#flowPathMemoLogIds.push(st.id);
+          }
+          this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+          return sub;
+        }
+        case FlowUnreachable: {
+          return null;
+        }
+        case FlowJoin as join: {
+          let memoKey = i32ToString(join.id) + "|" + path;
+          if (let (true, m) = this.#flowPathMemo.get(memoKey)) { return m; }
+          if (let (true, tm) = this.#taintedPathMemo.get(memoKey)) { return tm; }
+          var pi = 0;
+          var cycled = false;
+          while (pi < inProgress.length) {
+            if (inProgress[pi] == join.id) {
+              if (pi < this.#walkCycleMin) { this.#walkCycleMin = pi; }
+              cycled = true;
+            }
+            pi += 1;
+          }
+          if (cycled) { return null; }
+          let depth = inProgress.length;
+          inProgress.push(join.id);
+          let outerMin = this.#walkCycleMin;
+          this.#walkCycleMin = 2147483647;
+          let results = new Array<Type>();
+          var vetoed = false;
+          for (let a in join.antecedents) {
+            let r = this.#walkPathType(a, path, rootId, inProgress);
+            if (r != null) {
+              let rt = r as Type;
+              if (rt.uid == this.#pathVeto.uid) {
+                vetoed = true;
+              } else {
+                var dup = false;
+                for (let existing in results) {
+                  if (typesEqual(existing, rt)) { dup = true; }
+                }
+                if (!dup) { results.push(rt); }
+              }
+            }
+          }
+          let myMin = this.#walkCycleMin;
+          inProgress.pop();
+          this.#purgeTaintedFrom(depth);
+          var result: Type | null = null;
+          if (vetoed) {
+            result = this.#pathVeto;
+          } else if (results.length == 1) {
+            result = results[0];
+          } else if (results.length > 1) {
+            // As in the binding walk: distinct narrowings meeting means
+            // the path is no longer usefully narrowed.
+            let kept = this.#dropSubsumed(results);
+            result = if (kept.length == 1) { kept[0] } else { this.#pathVeto };
+          }
+          if (result == null) {
+            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+            return null;
+          }
+          if (myMin >= depth) {
+            this.#flowPathMemo[memoKey] = result as Type;
+            this.#flowPathMemoLog.push(memoKey);
+            this.#flowPathMemoLogIds.push(join.id);
+            this.#walkCycleMin = outerMin;
+          } else {
+            if (myMin >= 0) {
+              this.#taintedPathMemo[memoKey] = result as Type;
+              this.#taintedPathBucketAdd(myMin, memoKey);
+            }
+            this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
+          }
+          return result;
+        }
+      }
+    }
   }
 
   isExpressionNarrowed(expr: Expression): boolean {
-    let key = getMemberPathKey(this, expr);
-    if (key == null) { return false; }
-    
     match (expr) {
       case Identifier: {
         let sym = this.model.resolve(expr);
         if (sym == null) { return false; }
         let si = sym as Symbol;
-        var i = this.#narrowings.length - 1;
-        while (i >= 0) {
-          if (this.#narrowings[i].has(si.id)) { return true; }
-          i -= 1;
-        }
-        if (this.resolveNarrowedMemberPath(key as String) != null) { return true; }
-        return false;
+        let bt = this.model.getBindingType(si);
+        if (bt == null) { return false; }
+        let ft = this.flowTypeOfBinding(si, bt as Type);
+        return !typesEqual(ft, bt as Type);
       }
       case _: {
-        return this.resolveNarrowedMemberPath(key as String) != null;
+        let key = getMemberPathKey(this, expr);
+        if (key == null) { return false; }
+        return this.flowTypeOfPath(key as String) != null;
       }
     }
   }
@@ -4294,7 +4666,11 @@ let instantiateGenericClass = (
   if (ctorOpt == null) { return ct; }
   let ctor = ctorOpt as FunctionType;
 
-  // Build a map from type param names to inferred types.
+  // Build a map from type param names to inferred types. The `new`
+  // checking re-checks every argument against the instantiated
+  // signature afterwards, so this inference pass leaves the flow where
+  // it found it (see the call pre-pass for why that matters).
+  let preInferFlow = ctx.currentFlow;
   let inferred = new HashMap<String, Type>();
   var ai = 0;
   while (ai < args.length && ai < ctor.parameters.length) {
@@ -4303,6 +4679,7 @@ let instantiateGenericClass = (
     inferTypeArg(paramType, argType, inferred);
     ai += 1;
   }
+  ctx.setFlow(preInferFlow);
 
   // Build typeArguments array from inferred map.
   let typeArgs = new Array<Type>();
@@ -5818,7 +6195,6 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
       if (info == null) {
         return null;
       }
-      ctx.rememberSymbol(info as Symbol);
       return "s" + i32ToString((info as Symbol).id as i32);
     }
     case ThisExpression: {
@@ -6070,19 +6446,6 @@ final class ConditionNarrowings {
     paths = new HashMap<String, Type>();
 }
 
-let applyNarrowings = (ctx: CheckerContext, ns: ConditionNarrowings): void => {
-  for (let id in ns.bindings.keys()) {
-    if (let (true, t) = ns.bindings.get(id)) {
-      ctx.narrowBindingById(id, t);
-    }
-  }
-  for (let path in ns.paths.keys()) {
-    if (let (true, t) = ns.paths.get(path)) {
-      ctx.narrowMemberPath(path, t);
-    }
-  }
-};
-
 let mergeNarrowings = (ctx: CheckerContext, dest: ConditionNarrowings, src: ConditionNarrowings): void => {
   for (let id in src.bindings.keys()) {
     if (let (true, t) = src.bindings.get(id)) {
@@ -6141,10 +6504,12 @@ let getNarrowedTypesFromCondition = (
       if (operator == "&&") {
         if (truthValue) {
           let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, true);
-          ctx.enterScope();
-          applyNarrowings(ctx, leftNarrowings);
+          // The right side is analyzed under the left's narrowings: a
+          // temporary node on the flow, removed by restoring.
+          let savedFlow = ctx.currentFlow;
+          ctx.pushFlowNarrowings(leftNarrowings);
           let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, true);
-          ctx.exitScope();
+          ctx.setFlow(savedFlow);
 
           mergeNarrowings(ctx, result, leftNarrowings);
           mergeNarrowings(ctx, result, rightNarrowings);
@@ -6162,10 +6527,10 @@ let getNarrowedTypesFromCondition = (
           intersectNarrowings(ctx, result, leftNarrowings, rightNarrowings);
         } else {
           let leftNarrowings = getNarrowedTypesFromCondition(ctx, left, false);
-          ctx.enterScope();
-          applyNarrowings(ctx, leftNarrowings);
+          let savedFlow = ctx.currentFlow;
+          ctx.pushFlowNarrowings(leftNarrowings);
           let rightNarrowings = getNarrowedTypesFromCondition(ctx, right, false);
-          ctx.exitScope();
+          ctx.setFlow(savedFlow);
 
           mergeNarrowings(ctx, result, leftNarrowings);
           mergeNarrowings(ctx, result, rightNarrowings);
@@ -6257,13 +6622,11 @@ let getNarrowedTypesFromCondition = (
 };
 
 let applyTrueNarrowingFromCondition = (ctx: CheckerContext, condition: Expression): void => {
-  let narrowings = getNarrowedTypesFromCondition(ctx, condition, true);
-  applyNarrowings(ctx, narrowings);
+  ctx.pushFlowNarrowings(getNarrowedTypesFromCondition(ctx, condition, true));
 };
 
 let applyFalseNarrowingFromCondition = (ctx: CheckerContext, condition: Expression): void => {
-  let narrowings = getNarrowedTypesFromCondition(ctx, condition, false);
-  applyNarrowings(ctx, narrowings);
+  ctx.pushFlowNarrowings(getNarrowedTypesFromCondition(ctx, condition, false));
 };
 
 let extractIsPathNarrowing = (
@@ -6293,12 +6656,6 @@ let extractIsPathNarrowing = (
     }
   }
 };
-
-enum NullGuardAssignKind {
-  NotAnAssignment,
-  AssignsNonNull,
-  AssignsMaybeNull
-}
 
 /**
  * Every symbol assigned anywhere under `node`, deduplicated. Loops
@@ -6340,83 +6697,6 @@ let recordLoopAssignments = (ctx: CheckerContext, node: Node): void => {
   }
 };
 
-/**
- * True if `node` contains, anywhere inside it (expression positions,
- * nested statements), an assignment to the variable identified by
- * targetId.
- */
-let containsAssignmentToVariable = (ctx: CheckerContext, node: Node, targetId: SymbolId): boolean => {
-  var found = false;
-  walkEnter(node, (n: Node): void => {
-    if (n is AssignmentExpression) {
-      let ae = n as AssignmentExpression;
-      if (ae.left is Identifier) {
-        let info = ctx.model.resolve(ae.left);
-        if (info != null && (info as Symbol).id == targetId) {
-          found = true;
-        }
-      }
-    }
-  });
-  return found;
-};
-
-/**
- * Classifies a top-level statement of a null-guard body with respect to
- * assignments to the variable identified by targetId. A plain
- * `x = value;` statement is classified by the checked type of `value`
- * (the outermost assignment stores last, so it governs even if `value`
- * contains further assignments to x). Any OTHER statement containing an
- * assignment to x — in an expression position or nested control flow —
- * is conservatively AssignsMaybeNull: it may run conditionally or leave
- * x null.
- */
-let classifyNullGuardAssignment = (ctx: CheckerContext, stmt: Statement, targetId: SymbolId): NullGuardAssignKind => {
-  if (stmt is ExpressionStatement) {
-    let expression = (stmt as ExpressionStatement).expression;
-    if (expression is AssignmentExpression) {
-      let ae = expression as AssignmentExpression;
-      if (ae.left is Identifier) {
-        let info = ctx.model.resolve(ae.left);
-        if (info != null && (info as Symbol).id == targetId) {
-          let vt = ctx.model.getNodeType(ae.value);
-          if (vt != null && !isNullableType(vt as Type) && !(vt is NullType)) {
-            return NullGuardAssignKind.AssignsNonNull;
-          }
-          return NullGuardAssignKind.AssignsMaybeNull;
-        }
-      }
-    }
-  }
-  if (containsAssignmentToVariable(ctx, stmt, targetId)) {
-    return NullGuardAssignKind.AssignsMaybeNull;
-  }
-  return NullGuardAssignKind.NotAnAssignment;
-};
-
-/**
- * Check if a statement (or block) definitely assigns a NON-NULL value to
- * a variable identified by its Symbol id. Used to detect patterns like:
- *   if (x == null) { x = value; }
- * for post-if narrowing — sound only when `value` cannot itself be null,
- * and only for assignments at the top level of the guarded block (nested
- * or expression-position assignments may not run on every path, so they
- * defeat the narrowing). When several top-level assignments exist, the
- * last one governs.
- */
-let bodyAssignsToVariable = (ctx: CheckerContext, stmt: Statement, targetId: SymbolId): boolean => {
-  if (stmt is BlockStatement) {
-    var state = NullGuardAssignKind.NotAnAssignment;
-    for (let s in (stmt as BlockStatement).body) {
-      let c = classifyNullGuardAssignment(ctx, s, targetId);
-      if (c != NullGuardAssignKind.NotAnAssignment) {
-        state = c;
-      }
-    }
-    return state == NullGuardAssignKind.AssignsNonNull;
-  }
-  return classifyNullGuardAssignment(ctx, stmt, targetId) == NullGuardAssignKind.AssignsNonNull;
-};
 let unwrapAliases = (t: Type): Type => {
   var curr = t;
   while (curr is TypeAliasType) {
@@ -6482,7 +6762,13 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       bindPattern(ctx, namePat as Pattern, funcType);
     }
     case ExpressionStatement {expression}: {
-      checkExpression(ctx, expression, new VoidType());
+      let exprType = checkExpression(ctx, expression, new VoidType());
+      // An expression of type `never` — a call to a never-returning
+      // function — ends the path, so the guard that led here inverts
+      // for the code after, like an inline `throw`.
+      if (exprType is NeverType) {
+        ctx.markFlowUnreachable();
+      }
     }
     case BlockStatement {body}: {
       ctx.enterScope();
@@ -6637,54 +6923,28 @@ case _: {
 
           let preBranchFlow = ctx.currentFlow;
 
-          // Consequent body with TRUE narrowings
+          // Consequent body with TRUE narrowings on its flow path.
           ctx.enterScope();
           applyTrueNarrowingFromCondition(ctx, testExpr);
           checkStatement(ctx, consequent);
           ctx.exitScope();
           let trueEnd = ctx.currentFlow;
 
-          // Alternate body with FALSE narrowings
+          // The false path carries the inverse narrowings whether or
+          // not an `else` is written: not entering the consequent means
+          // the condition was false. This is what makes narrowing after
+          // a definitely-exiting branch, and after `if (x == null)
+          // { x = value; }`, fall out of the join below — the exiting
+          // branch's end is unreachable and drops out, and the
+          // assignment's stored type rides the true path.
           ctx.setFlow(preBranchFlow);
+          applyFalseNarrowingFromCondition(ctx, testExpr);
           if (alternate != null) {
             ctx.enterScope();
-            applyFalseNarrowingFromCondition(ctx, testExpr);
             checkStatement(ctx, alternate as Statement);
             ctx.exitScope();
           }
-
-          // Join the branches BEFORE the post-if narrowings below, so
-          // their establishment point dominates the code they cover.
           ctx.mergeFlow(trueEnd, ctx.currentFlow);
-
-          // Narrowing past definite exits:
-          // If the consequent always exits and there is no else branch,
-          // the inverse narrowing holds for subsequent code.
-          if (alternate == null && branchDefinitelyExits(consequent)) {
-            applyFalseNarrowingFromCondition(ctx, testExpr);
-          }
-
-          // If the alternate always exits, the regular narrowing holds.
-          if (alternate != null && branchDefinitelyExits(alternate as Statement)) {
-            applyTrueNarrowingFromCondition(ctx, testExpr);
-          }
-
-          // Narrowing via assignment in null-guard body:
-          // `if (x == null) { x = value; }` → x is non-null after
-          if (alternate == null && !branchDefinitelyExits(consequent)) {
-            let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
-            if (guardInfo != null && isEqualNull) {
-              let si = guardInfo as Symbol;
-              let origType = guardOrigType as Type;
-              if (bodyAssignsToVariable(ctx, consequent, si.id)) {
-                ctx.narrowBinding(si, subtractNullFromType(origType));
-              }
-            }
-            let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
-            if (guardPathKey != null && pathIsEqualNull) {
-              // Path assignment checking not yet implemented
-            }
-          }
         }
       }
     }
@@ -6713,35 +6973,20 @@ case _: {
           let testType = checkExpression(ctx, testExpr, null);
           let afterTest = ctx.currentFlow;
           validateConditionType(ctx, testType, testExpr);
-          let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
-          let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
+          // The body runs under the condition's narrowings — the full
+          // engine, so compound conditions narrow too — and leaving the
+          // loop normally means the condition was false, so the exit
+          // edge carries the inverse.
+          applyTrueNarrowingFromCondition(ctx, testExpr);
           ctx.enterLoop();
-          if (guardInfo != null || guardPathKey != null) {
-            ctx.enterScope();
-            if (guardInfo != null) {
-              let si = guardInfo as Symbol;
-              let origType = guardOrigType as Type;
-              if (isEqualNull) {
-                ctx.narrowBinding(si, new NullType());
-              } else {
-                ctx.narrowBinding(si, subtractNullFromType(origType));
-              }
-            } else {
-              let pathKey = guardPathKey as String;
-              let origType = guardPathOrigType as Type;
-              if (pathIsEqualNull) {
-                ctx.narrowMemberPath(pathKey, new NullType());
-              } else {
-                ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
-              }
-            }
-            checkStatement(ctx, body);
-            ctx.exitScope();
-          } else {
-            checkStatement(ctx, body);
-          }
+          checkStatement(ctx, body);
           ctx.exitLoop();
-          ctx.exitFlowLoop(afterTest);
+          let bodyEnd = ctx.currentFlow;
+          ctx.setFlow(afterTest);
+          applyFalseNarrowingFromCondition(ctx, testExpr);
+          let falseExit = ctx.currentFlow;
+          ctx.setFlow(bodyEnd);
+          ctx.exitFlowLoop(falseExit);
         }
       }
     }
@@ -6764,12 +7009,21 @@ case _: {
       // after the first" — conservative for narrowing.
       ctx.enterFlowLoop();
       recordLoopAssignments(ctx, stmt);
+      var afterTest = ctx.currentFlow;
+      var falseExit = ctx.currentFlow;
       if (test != null) {
         let testExpr = test as Expression;
         let testType = checkExpression(ctx, testExpr, null);
         validateConditionType(ctx, testType, testExpr);
+        afterTest = ctx.currentFlow;
+        applyTrueNarrowingFromCondition(ctx, testExpr);
+        // The exit means the test was false.
+        let inBody = ctx.currentFlow;
+        ctx.setFlow(afterTest);
+        applyFalseNarrowingFromCondition(ctx, testExpr);
+        falseExit = ctx.currentFlow;
+        ctx.setFlow(inBody);
       }
-      let afterTest = ctx.currentFlow;
       if (update != null) {
         let updateExpr = update as Expression;
         checkExpression(ctx, updateExpr, null);
@@ -6777,7 +7031,7 @@ case _: {
       ctx.enterLoop();
       checkStatement(ctx, body);
       ctx.exitLoop();
-      ctx.exitFlowLoop(afterTest);
+      ctx.exitFlowLoop(falseExit);
       ctx.exitScope();
     }
     case BreakStatement {loc}: {
@@ -7110,6 +7364,11 @@ let checkVariableDeclaration = (
 
   // Bind the declared names in the pattern.
   bindPattern(ctx, pattern, declType);
+
+  // An initializer of type `never` cannot complete.
+  if (initType is NeverType) {
+    ctx.markFlowUnreachable();
+  }
 };
 
 /**
@@ -7649,20 +7908,24 @@ let checkIfBranchNode = (ctx: CheckerContext, node: Node, expectedType: Type | n
   if (node is BlockStatement) {
     let b = node as BlockStatement;
     ctx.enterScope();
-    // Check all statements except the last
-    for (let statement in b.body) {
-      checkStatement(ctx, statement);
-    }
-    // The type of the block is the type of the last expression statement
+    // Check all statements except the last; the last is the block's
+    // value when it is an expression statement. Checking it exactly
+    // once matters beyond cost: a re-check runs downstream of the
+    // first check's flow nodes, and when a branch diverges that flow
+    // proves the guard's inverse, so the re-check would overwrite the
+    // recorded types with the dead-path view.
     var resultType: Type = new VoidType();
-    if (b.body.length > 0) {
-      let lastStmt = b.body[b.body.length - 1];
-      if (lastStmt is ExpressionStatement) {
-        let es = lastStmt as ExpressionStatement;
+    var i = 0;
+    while (i < b.body.length) {
+      let statement = b.body[i];
+      let isLast = i == b.body.length - 1;
+      if (isLast && statement is ExpressionStatement) {
+        let es = statement as ExpressionStatement;
         resultType = checkExpression(ctx, es.expression, expectedType);
       } else {
-        checkStatement(ctx, lastStmt);
+        checkStatement(ctx, statement);
       }
+      i += 1;
     }
     ctx.exitScope();
     return resultType;
@@ -8106,14 +8369,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           loc
         );
       }
-      // Narrow the binding to non-null. The flow assignment is recorded
-      // first, so the narrowing's establishment point sits after it.
+      // The assignment's stored type is the narrowing: a later read
+      // walks back to this flow node and sees the non-null type.
       match (left) {
         case Identifier: {
           let info = ctx.model.resolve(left);
           if (info != null) {
             ctx.recordFlowAssignment((info as Symbol).id, nonNullType);
-            ctx.narrowBinding(info as Symbol, nonNullType);
           }
         }
         case _: {}
@@ -8157,14 +8419,25 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       recordArgumentMove(ctx, value, leftType);
     }
 
-    // Record the store on the flow graph: this is what invalidates (or,
-    // when the stored type still satisfies it, re-establishes) any
-    // narrowing of the binding.
+    // Record the store on the flow graph: a later read walks back to
+    // it and takes the stored type. Clamped to the declared type here,
+    // once, so the walk never re-checks assignability. Structural types
+    // are stored ADAPTED — the value in the slot has the declared
+    // type's representation, not the source expression's — so they
+    // keep the declared type.
     match (left) {
       case Identifier: {
         let info = ctx.model.resolve(left);
         if (info != null) {
-          ctx.recordFlowAssignment((info as Symbol).id, effectiveType);
+          let structural = effectiveType is RecordT ||
+            effectiveType is TupleT || effectiveType is InlineTupleT;
+          let stored = if (!structural &&
+              isAssignableTo(ctx, effectiveType, leftType)) {
+            effectiveType
+          } else {
+            leftType
+          };
+          ctx.recordFlowAssignment((info as Symbol).id, stored);
         }
       }
       case _: {}
@@ -8292,96 +8565,19 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let testType = checkExpression(ctx, testExpr, null);
         validateConditionType(ctx, testType, testExpr);
 
-        // Extract null-guard narrowing from the condition.
-        let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
-        let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
-
-        var isInfo: Symbol | null = null;
-        var isTargetType: Type | null = null;
-        var isOrigType: Type | null = null;
-        var isPathKey: String | null = null;
-        var isPathTargetType: Type | null = null;
-        var isPathOrigType: Type | null = null;
-        if (guardInfo == null && guardPathKey == null) {
-          let (info, target, orig) = extractIsNarrowing(ctx, testExpr);
-          isInfo = info;
-          isTargetType = target;
-          isOrigType = orig;
-          if (isInfo == null) {
-            let (pathKey, pathTarget, pathOrig) = extractIsPathNarrowing(ctx, testExpr);
-            isPathKey = pathKey;
-            isPathTargetType = pathTarget;
-            isPathOrigType = pathOrig;
-          }
-        }
-
+        // The same condition engine the if-statement uses: each branch
+        // is checked under its narrowings on the flow, so `&&` chains
+        // and path guards narrow in expression position too.
         let preBranchFlow = ctx.currentFlow;
-
-        // Check consequent with narrowing applied.
-        if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
-          ctx.enterScope();
-        }
-        if (guardInfo != null) {
-          let si = guardInfo as Symbol;
-          let origType = guardOrigType as Type;
-          if (isEqualNull) {
-            ctx.narrowBinding(si, new NullType());
-          } else {
-            ctx.narrowBinding(si, subtractNullFromType(origType));
-          }
-        } else if (guardPathKey != null) {
-          let pathKey = guardPathKey as String;
-          let origType = guardPathOrigType as Type;
-          if (pathIsEqualNull) {
-            ctx.narrowMemberPath(pathKey, new NullType());
-          } else {
-            ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
-          }
-        } else if (isInfo != null) {
-          ctx.narrowBinding(isInfo as Symbol, isTargetType as Type);
-        } else if (isPathKey != null) {
-          ctx.narrowMemberPath(isPathKey as String, isPathTargetType as Type);
-        }
+        applyTrueNarrowingFromCondition(ctx, testExpr);
         let consType = checkIfBranchNode(ctx, consequent, expectedType);
-        if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
-          ctx.exitScope();
-        }
         let trueEnd = ctx.currentFlow;
-        ctx.setFlow(preBranchFlow);
 
-        // Check alternate with inverse narrowing applied.
+        ctx.setFlow(preBranchFlow);
+        applyFalseNarrowingFromCondition(ctx, testExpr);
         var altType: Type = new VoidType();
         if (alternate != null) {
-          if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
-            ctx.enterScope();
-          }
-          if (guardInfo != null) {
-            let si = guardInfo as Symbol;
-            let origType = guardOrigType as Type;
-            if (isEqualNull) {
-              ctx.narrowBinding(si, subtractNullFromType(origType));
-            } else {
-              ctx.narrowBinding(si, new NullType());
-            }
-          } else if (guardPathKey != null) {
-            let pathKey = guardPathKey as String;
-            let origType = guardPathOrigType as Type;
-            if (pathIsEqualNull) {
-              ctx.narrowMemberPath(pathKey, subtractNullFromType(origType));
-            } else {
-              ctx.narrowMemberPath(pathKey, new NullType());
-            }
-          } else if (isInfo != null) {
-            let narrowed = subtractTypeFromUnion(isOrigType as Type, isTargetType as Type);
-            ctx.narrowBinding(isInfo as Symbol, narrowed);
-          } else if (isPathKey != null) {
-            let narrowed = subtractTypeFromUnion(isPathOrigType as Type, isPathTargetType as Type);
-            ctx.narrowMemberPath(isPathKey as String, narrowed);
-          }
           altType = checkIfBranchNode(ctx, alternate as Node, expectedType);
-          if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
-            ctx.exitScope();
-          }
         }
         ctx.mergeFlow(trueEnd, ctx.currentFlow);
 
@@ -10568,7 +10764,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
           ctx.enterScope();
           let prevReturnType = ctx.returnType;
           ctx.setReturnType(accType);
-          let prevFlowState = ctx.enterBodyFlow();
+          let prevFlowState = ctx.enterBodyFlow(false);
           var gi = 0;
           while (gi < getterBlock.body.length) {
             checkStatement(ctx, getterBlock.body[gi]);
@@ -10590,7 +10786,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               if (paramInfo != null) {
                 ctx.declareBinding(paramInfo as Symbol, accType);
               }
-              let prevFlowState = ctx.enterBodyFlow();
+              let prevFlowState = ctx.enterBodyFlow(false);
               for (let stmt in si.body.body) {
                 checkStatement(ctx, stmt);
               }
@@ -11041,7 +11237,7 @@ let checkMethodBody = (
   // resource's `this` may not be captured at all.
   let prevOwningReceiver = ctx.owningReceiver;
   ctx.setOwningReceiver(declaresOwningReceiver(md));
-  let prevFlowState = ctx.enterBodyFlow();
+  let prevFlowState = ctx.enterBodyFlow(false);
 
   if (md.isGenerator) {
     var yieldT: Type = new ErrorType();
@@ -11928,7 +12124,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           ctx.enterScope();
           let prevReturnType = ctx.returnType;
           ctx.setReturnType(accType);
-          let prevFlowState = ctx.enterBodyFlow();
+          let prevFlowState = ctx.enterBodyFlow(false);
           var gi = 0;
           while (gi < getterBlock.body.length) {
             checkStatement(ctx, getterBlock.body[gi]);
@@ -11948,7 +12144,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
               if (paramInfo != null) {
                 ctx.declareBinding(paramInfo as Symbol, accType);
               }
-              let prevFlowState = ctx.enterBodyFlow();
+              let prevFlowState = ctx.enterBodyFlow(false);
               for (let stmt in si.body.body) {
                 checkStatement(ctx, stmt);
               }
@@ -12567,7 +12763,7 @@ let checkMemberExpression = (
 
   let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
   let narrowedPathType = if (pathKey != null) {
-    ctx.resolveNarrowedMemberPath(pathKey as String)
+    ctx.flowTypeOfPath(pathKey as String)
   } else {
     null
   };
@@ -12643,9 +12839,9 @@ let checkMemberExpression = (
       var shares = false;
       var r: ClassType | null = receiverType as ClassType;
       while (r != null && !shares) {
-        // Casts: the self-hosted checker does not narrow the loop
-        // var through a compound while condition (bootstrap does) —
-        // see BUGS.md "no narrowing through compound while".
+        // Casts: compound while conditions DO narrow now (flow-graph
+        // narrowing), but the checked-in bootstrap predates that, so
+        // the casts stay until a reseed.
         if ((r as ClassType).canonical() == lexicalCanonical) {
           shares = true;
         }
@@ -13206,13 +13402,11 @@ let checkBinaryExpression = (
   // For && and ||, handle short-circuit evaluation and narrowing.
   if (operator == "&&") {
     let leftType = checkExpression(ctx, left, null);
-    // The right operand runs conditionally: join its flow with the
-    // skip path so an assignment inside it invalidates on both.
+    // The right operand runs conditionally, under the left's
+    // narrowings; the join with the skip path un-narrows afterwards.
     let preRight = ctx.currentFlow;
-    ctx.enterScope();
     applyTrueNarrowingFromCondition(ctx, left);
     let rightType = checkExpression(ctx, right, null);
-    ctx.exitScope();
     ctx.mergeFlow(preRight, ctx.currentFlow);
     // && returns the type of the right operand (if left is truthy).
     return rightType;
@@ -13220,10 +13414,8 @@ let checkBinaryExpression = (
   if (operator == "||") {
     let leftType = checkExpression(ctx, left, null);
     let preRight = ctx.currentFlow;
-    ctx.enterScope();
     applyFalseNarrowingFromCondition(ctx, left);
     let rightType = checkExpression(ctx, right, null);
-    ctx.exitScope();
     ctx.mergeFlow(preRight, ctx.currentFlow);
     // || returns union of both types.
     let types = new Array<Type>();
@@ -13826,7 +14018,7 @@ let checkMatchExpr = (
     if (discPath != null && isImmutableDisc) {
       let narrowedType = getNarrowedTypeFromPattern(ctx, matchCase.pattern);
       if (narrowedType != null) {
-        ctx.narrowMemberPath(discPath as String, narrowedType as Type);
+        ctx.pushFlowPathNarrowing(discPath as String, narrowedType as Type);
       }
     }
 
@@ -14712,7 +14904,8 @@ let checkFunctionExpression = (
   ctx.setAsyncValueType(newAsyncValue);
   ctx.setAsyncFutureType(if (isAsync) { declaredFutureType } else { null });
   ctx.setTryDepth(0);
-  let prevFlowState = ctx.enterBodyFlow();
+  // Arrows share `this` with the body they were written in.
+  let prevFlowState = ctx.enterBodyFlow(true);
 
   // Check the body.
   match (body) {
@@ -15107,6 +15300,11 @@ let checkCallExpressionInner = (
       // Evaluate argument types once for overload resolution. Arguments at or
       // beyond callerArgCount are previously-spliced defaults: use their
       // declared parameter type instead of re-checking them in caller scope.
+      // The main argument loop below re-checks every argument against the
+      // selected signature, so this pass must leave the flow where it
+      // found it — otherwise the re-check would run downstream of this
+      // pass's flow nodes and see a different (post-argument) state.
+      let preArgsFlow = ctx.currentFlow;
       let argTypes = new Array<Type>();
       for (var i = 0; i < args.length; i += 1) {
         if (i >= callerArgCount && i < ft.parameters.length) {
@@ -15120,6 +15318,7 @@ let checkCallExpressionInner = (
           argTypes.push(checkExpression(ctx, args[i], expectedParamType));
         }
       }
+      ctx.setFlow(preArgsFlow);
 
       // Overload resolution
       let {overloads} = ft;

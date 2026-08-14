@@ -1,5 +1,6 @@
 import { Array } from 'zena:array';
 import { HashSet } from 'zena:set';
+import { HashMap } from 'zena:map';
 import { Type } from '../types.zena';
 import { SymbolId } from '../scope/symbol.zena';
 import { SourceLocation } from '../ast.zena';
@@ -25,14 +26,28 @@ import { SourceLocation } from '../ast.zena';
  * through loop back edges, so structural equality must not be reachable.
  */
 export sealed class FlowNode {
-  case FlowStart, FlowAssign, FlowMove, FlowJoin, FlowUnreachable
+  case FlowStart, FlowAssign, FlowMove, FlowNarrowings, FlowJoin,
+    FlowUnreachable
 
   /** Unique within one CheckerContext; minted by the checker. */
   var id: i32 = 0;
 }
 
-/** Entry of a function body (or of the module's top level). */
+/**
+ * Entry of a function body (or of the module's top level). `enclosing`
+ * is the flow at the closure's creation site in the enclosing body, so
+ * a walk can keep going for a captured binding — a closure sees the
+ * narrowings that held where it was written.
+ */
 export final class FlowStart extends FlowNode {
+  var enclosing: FlowNode | null = null;
+
+  /**
+   * Whether this body shares `this` with its enclosing body (a closure
+   * inside a method does; a method, accessor or top-level body starts a
+   * fresh `this`). A `this`-rooted path walk stops where `this` stops.
+   */
+  var sharesThis: boolean = false;
   new() : super();
 }
 
@@ -72,6 +87,21 @@ export final class FlowMove extends FlowNode {
 }
 
 /**
+ * The narrowings a condition (or match pattern) establishes on the path
+ * it guards: what the checker's condition engine computed for one
+ * branch, attached to that branch's entry. A backward walk takes the
+ * nearest node mentioning its binding or path — composition of nested
+ * guards is already baked in, because the engine computes each map from
+ * the types that held where the condition sits.
+ */
+export final class FlowNarrowings extends FlowNode {
+  antecedent: FlowNode;
+  bindings: HashMap<SymbolId, Type>;
+  paths: HashMap<String, Type>;
+  new(this.antecedent, this.bindings, this.paths) : super();
+}
+
+/**
  * A merge point: the end of an `if`, a loop header, a `match` join, the
  * short-circuit join of `&&`/`||`/`??`, or a `catch` entry (whose
  * antecedents include every assignment in the protected body). Loop
@@ -106,27 +136,3 @@ export final class FlowBodyState {
       this.exceptionTargets, this.loopMoves, this.loopDeclared);
 }
 
-/**
- * A narrowing recorded by the checker: the narrowed type plus where the
- * narrowing was established. `at` is the establishing flow node; `startAt`
- * is the FlowStart of the function that established it, which lets a
- * validity walk distinguish "reached this function's entry without passing
- * the establishment — not dominated, invalid" from "the narrowing came
- * from an enclosing function — out of this graph's scope".
- *
- * `rootSymbolId` is the binding whose assignments can invalidate the
- * narrowing: the narrowed symbol itself for identifier narrowings, the
- * path's root binding for member-path narrowings, and `noSymbolId` when
- * no binding can be assigned (a `this`-rooted path). `isPath` selects the
- * invalidation rule: any assignment to the root kills a path narrowing,
- * while an identifier narrowing survives an assignment whose type still
- * satisfies it.
- */
-export final class NarrowEntry {
-  type: Type;
-  at: FlowNode;
-  startAt: FlowNode;
-  rootSymbolId: SymbolId;
-  isPath: boolean;
-  new(this.type, this.at, this.startAt, this.rootSymbolId, this.isPath);
-}

@@ -157,10 +157,14 @@ Error>` becomes writable.
   alongside the checker's walk (`analysis/flow.zena`). Independently
   justified; commits us to nothing about ownership. **Landed**: the graph,
   and assignment-aware narrowing validity on it — the narrowing soundness
-  bug formerly in BUGS.md is fixed (ownership.md §"Landed: the graph, and
-  narrowing validity on it"). Still on the old recursion:
-  `definitelyExits` and unreachable-code reporting; move checking (O2)
-  and mutable-field narrowing build on the graph from here.
+  bug formerly in BUGS.md is fixed, and condition narrowing is now
+  computed on the graph as well — the lexical narrowing stack is gone,
+  compound loop conditions and expression-position `&&` narrow, an
+  assignment narrows to what it stored, and `never`-returning calls end
+  a path (ownership.md §"Landed: the graph, and narrowing on it").
+  Still on the old recursion: `definitelyExits` and
+  unreachable-code reporting; mutable-field narrowing builds on the
+  graph from here.
 - **O2 — affine move checking** on O1, with the meet-plus-edge-drops join rule.
   Upgrades O0's runtime detection to compile time; **no signature changes**.
   **Landed** for local bindings: moves are flow nodes (`Own`-parameter

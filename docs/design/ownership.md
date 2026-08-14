@@ -1136,7 +1136,7 @@ bug is structurally impossible rather than patched case by case.
 `semantics/type-narrowing/assignment_invalidates_narrowing.zena` carries
 this example and its variants.
 
-### Landed: the graph, and narrowing validity on it
+### Landed: the graph, and narrowing on it
 
 The checker builds the graph as it walks. `analysis/flow.zena` holds the
 nodes — start, assignment, join, unreachable — and the checker advances a
@@ -1148,27 +1148,48 @@ the skip path, and a `try` body's assignments feed the catch entry. Each
 body gets a fresh start node, saved and restored around nested functions
 the way return context is.
 
-The first consumer is narrowing validity. A narrowing records the flow
-node its guard established it at; a read on a mutable binding walks
-backward from the reference over every path to that node. An assignment
-whose checked type still satisfies the narrowing re-establishes it, any
-other assignment to the binding invalidates, and reaching the body's own
-start node without passing the establishment invalidates too — that is a
-loop that may run zero times. A member-path narrowing dies with any
-assignment to its root binding. Because a loop body is checked before its
-back edge exists, entering a loop pre-scans it for assigned symbols and
-records them at the header as unknown-type stores; the guard's own
-narrowing sits after the header, so `while (x != null)` still narrows its
-body while a narrowing carried in from outside dies where it should.
-Immutable bindings take none of these walks — nothing can assign them, so
-their narrowings are valid by construction, which keeps the common case
-free and the behavioral change scoped to `var`.
+Narrowing is assignment-aware by construction: an assignment on any
+path re-types the binding to what it stored, so a narrowing an
+assignment no longer satisfies is simply not the type the walk
+computes. A member-path narrowing dies with any assignment to its root
+binding. Because a loop body is checked before its back edge exists,
+entering a loop pre-scans it for assigned symbols and records them at
+the header as unknown-type stores; the guard's own narrowing sits after
+the header, so `while (x != null)` still narrows its body while a
+narrowing carried in from outside dies where it should.
 
-Still hand-rolled, deliberately: the conditions themselves (the stack
-establishes, the graph only validates), `definitelyExits`, and
-unreachable-code reporting. Moving those onto the graph is mechanical now
-that it exists. Not covered: a `var` captured and assigned by a closure
-(BUGS.md "Narrowing of a closure-captured `var` is not invalidated").
+Condition narrowing is computed on the graph. The lexical
+narrowing stack is gone: each branch entry attaches a node carrying the
+maps the condition engine produced for it, and a reference's type is the
+declared type refined by a backward walk — the nearest narrowing that
+mentions the binding or path, an assignment's stored type, unions at
+joins. That one change is what made these uniform:
+
+- The if-expression narrows exactly as the if-statement does, `&&`
+  chains included; the duplicated single-guard logic it carried is
+  deleted.
+- `while` and `for` conditions narrow through the full engine (compound
+  conditions included), and leaving a loop normally applies the
+  condition's inverse — `while (x == null) { … }` proves `x` non-null
+  after.
+- An assignment narrows to what it stored, which subsumes the
+  hand-rolled `if (x == null) { x = value; }` analysis. Structural
+  types are the exception: a record is stored adapted, so it keeps the
+  declared type.
+- A branch that cannot complete — `return`, `throw`, a call typed
+  `never` — drops out of the join, so inverse narrowing after an
+  early exit needs no special case.
+
+Two deliberate meets at joins: a result is clamped to the declared type
+(a statically-false `x == null` arm would otherwise widen a
+non-nullable binding to `T | null` through the union), and two distinct
+narrowings meeting (an `is A` arm and an `is B` arm whose `else`
+diverged) merge to the declared type, because member lookup cannot see
+through a union of subclasses.
+
+Still hand-rolled: `definitelyExits` and unreachable-code reporting.
+Not covered: a `var` captured and assigned by a closure (BUGS.md
+"Narrowing of a closure-captured `var` is not invalidated").
 
 ### Narrowing mutable fields
 
