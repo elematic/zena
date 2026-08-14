@@ -10,8 +10,18 @@ immediately trying to fix it (which can pollute the current task's context).
 ### A local live across a try holding both an `await` and a `return` miscompiles
 - **Found**: 2026-08-11 (writing the combinator tests; the shape is ordinary
   async code, not anything the combinators need)
-- **Severity**: high (rejected at compile time, so it is loud — but it
-  refuses a perfectly reasonable program, and the shape is common)
+- **Severity**: high, and NOT reliably loud (updated 2026-08-13): the
+  same four ingredients can instead compile and then *silently skip the
+  handler* — a throw inside the try escaped `catch (e)` and surfaced as
+  an unhandled `WebAssembly.Exception` out of `main`. Seen writing the
+  `zena:fetch` body-reads-once test (`await fetch(url)`, then
+  `let first = await response.text()`, then a try whose second `text()`
+  throws): minimal versions of that shape still fail verify loudly, but
+  the longer real function slipped past the verifier and mis-ran. "A
+  longer function with the same shape compiled fine" below was this,
+  observed from the other side — compiling was not the good outcome.
+  The workaround is therefore load-bearing for correctness, not just
+  for getting past the verifier.
 - **Details**: ZIR verification fails with
   `%N in bX uses %M from bY, which does not dominate it` for
   `main$…$AsyncFrame.step`. All four ingredients are needed:

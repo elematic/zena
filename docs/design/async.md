@@ -615,21 +615,25 @@ website served by a Zena server":
     rejections, and the program would go on to fail later with something
     less informative (a drain that never settles reports a deadlock).
   - **Fetch is implemented** — the "first real async I/O". `zena:fetch`
-    is a virtual module for the JS-hosted targets whose one binding,
-    `fetchText(url): Future<String>`, is six lines over `pending<T>()`,
-    exactly like `zena:time`'s host entry; WASI and component builds
-    fail at import resolution rather than linking an import no host
-    provides (the component's HTTP is `wasi:http`, §4.1).
-    `@zena-lang/runtime` supplies the `web.fetch_text` import by
-    default, backed by the host's own `fetch()` and sharing the
-    outstanding-work count `run()` waits on — which is what puts fetch
-    in the playground with no playground changes at all. A non-2xx
-    status fails the future (a 404's error page delivered as a value is
-    almost never what the caller wanted), as does a host with no
-    `fetch()` — instantiation still succeeds there, so "no network on
-    this host" is an ordinary catchable failure, not an error in
-    unrelated code. Richer responses (status, headers, streamed bodies)
-    wait on streams, post-v1.
+    is a virtual module for the JS-hosted targets, and its API follows
+    the web's: `fetch(url): Future<Response>`, where `Response` carries
+    `status`/`ok` and reads its body separately with
+    `text(): Future<String>` — a 404 is a normal completion, and only
+    "no response at all" (network error, CORS refusal, a host with no
+    `fetch()`) fails the future, caught around the `await`. WASI and
+    component builds fail at import resolution rather than linking an
+    import no host provides (the component's HTTP is `wasi:http`, §4.1).
+    The lowering is two host-async completions: `fetch` settles with an
+    id naming the response object, which stays on the host until
+    `text()`'s completion consumes it. Keeping the body on the host
+    behind an id is also the structure a streamed read needs — the
+    stream stays there, and chunks would cross one completion at a
+    time, once streams exist (post-v1, with headers riding along).
+    `@zena-lang/runtime` supplies the `web.*` imports by default from
+    the host's own `fetch()`, sharing the outstanding-work count
+    `run()` waits on — which is what puts fetch in the playground with
+    no playground changes at all. As on the web, a body reads once:
+    a second `text()` throws rather than handing back an empty body.
 - **Await-in-try — done** (§6), the fast-follow to A1: resuming
   re-enters each enclosing `try` region, so a failed await is caught
   by the handler the user wrote.

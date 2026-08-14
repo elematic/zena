@@ -4,8 +4,8 @@ export interface ZenaImports {
   // Values may be `WebAssembly.Suspending` objects, not just functions.
   time?: Record<string, unknown>;
   /** The imports behind `zena:fetch`. Supplied by default from the
-   * host's own `fetch()`; override to intercept or stub network access
-   * (tests do). */
+   * host's own `fetch()`; replace them to reroute network access
+   * (stubbing `globalThis.fetch` is usually easier — the tests do). */
   web?: Record<string, unknown>;
   /**
    * Promise-returning host functions, exposed to Zena as async imports
@@ -14,12 +14,12 @@ export interface ZenaImports {
    * Zena mints a handle and passes it out with the call:
    *
    * ```zena
-   * @external("web", "fetch_text")
-   * declare function __fetch_text(handle: i32, url: String, len: i32): void;
+   * @external("db", "lookup")
+   * declare function __lookup(handle: i32, key: String, len: i32): void;
    *
-   * export let fetchText = (url: String): Future<String> => {
+   * export let lookup = (key: String): Future<String> => {
    *   let p = pending<String>();
-   *   __fetch_text(p.handle, url, url.length);
+   *   __lookup(p.handle, key, key.length);
    *   return p.future;
    * };
    * ```
@@ -32,11 +32,11 @@ export interface ZenaImports {
    * let exports: WebAssembly.Exports;
    * const instance = await instantiate(wasm, {
    *   asyncImports: {
-   *     web: {
-   *       fetch_text: {
+   *     db: {
+   *       lookup: {
    *         kind: 'string',
    *         fn: (ref: unknown, len: number) =>
-   *           fetch(createStringReader(exports)(ref, len)).then((r) => r.text()),
+   *           database.get(createStringReader(exports)(ref, len)),
    *       },
    *     },
    *   },
@@ -565,16 +565,18 @@ export interface WebHost {
 /**
  * The `web` host backing `zena:fetch` on a JS host.
  *
- * `fetch_text` is an ordinary host-async operation over the host's own
- * `fetch()`: settle the handle with the response body, or fail it — a
- * non-2xx status fails rather than resolves, because a 404's error page
- * delivered as a value is almost never what the caller wanted. Browser
- * semantics (CORS included) pass through untouched.
+ * `fetch_start` runs the host's own `fetch()` and settles the handle
+ * with an id naming the `Response`, which stays here until
+ * `response_text` reads its body — so a non-2xx status is a normal
+ * completion the Zena side inspects, exactly like the web, and only
+ * "no response at all" (network error, CORS refusal, no `fetch()` on
+ * this host) fails the future. Keeping the response on this side of
+ * the boundary is also what a streamed body will want: the stream
+ * stays here, and reads cross one completion at a time.
  *
- * A host with no `fetch()` still instantiates: the import exists, and
- * calling it settles the handle as a failure saying so. That keeps
- * "this host cannot reach the network" an ordinary failed future the
- * program can catch, not an instantiation error in unrelated code.
+ * A response whose body is never read is retired with the instance:
+ * the registry lives in this closure, so it cannot outlive the program
+ * that filled it.
  */
 export function createWebHost(
   getExports?: () => WebAssembly.Exports | undefined,
@@ -593,20 +595,28 @@ export function createWebHost(
     return readString(ref, len);
   };
 
+  let nextResponseId = 1;
+  const responses = new Map<number, Response>();
+  const responseOf = (id: number): Response => {
+    const response = responses.get(id);
+    if (!response) {
+      throw new Error(`zena:fetch: no response with id ${id}`);
+    }
+    return response;
+  };
+
   return {
     imports: {
-      fetch_text: hostAsync.wrap(async (ref: unknown, len: number) => {
-        const url = readZena(ref, len);
-        if (typeof globalThis.fetch !== 'function') {
-          throw new Error(`zena:fetch: this host has no fetch(): ${url}`);
-        }
-        const response = await globalThis.fetch(url);
-        if (!response.ok) {
-          throw new Error(
-            `zena:fetch: GET ${url} failed: ` +
-              `${response.status} ${response.statusText}`,
-          );
-        }
+      fetch_start: hostAsync.wrap(async (ref: unknown, len: number) => {
+        const response = await globalThis.fetch(readZena(ref, len));
+        const id = nextResponseId++;
+        responses.set(id, response);
+        return id;
+      }, 'i32'),
+      response_status: (id: number): number => responseOf(id).status,
+      response_text: hostAsync.wrap((id: number) => {
+        const response = responseOf(id);
+        responses.delete(id);
         return response.text();
       }, 'string'),
     },

@@ -2,43 +2,87 @@
  * zena:fetch — HTTP requests over the host's own fetch()
  * (docs/design/async.md §4, Level 2).
  *
- * An HTTP request is an ordinary host-async operation: this module mints
- * a handle, hands it out with the URL, and the host settles it with the
- * response body once its fetch() resolves. There is no mechanism here —
- * the six lines of registration are the same shape as `zena:time`'s
- * host entry, because once a host can settle a future by handle,
- * nothing about I/O is special.
+ * The API follows the web's: `fetch(url)` resolves with a `Response`
+ * whose `status`/`ok` the caller inspects, and whose body is read
+ * separately with `text()` — a 404 is a normal completion, not a
+ * failure. The future fails only when there is no response at all: a
+ * network error, a CORS refusal, a host with no fetch().
  *
- * Only hosts with a JS event loop resolve this module (the `host`/`js`
- * targets); a WASI or component build fails at import resolution rather
- * than linking something that cannot work. The component target's HTTP
- * story is `wasi:http`, which arrives with the component track
- * (async.md §4.1) — this module is the playground-and-browser entry.
+ * Both halves are ordinary host-async operations: `fetch` completes
+ * with an id naming the host-side response object, and `text()` is a
+ * second completion that consumes it. Keeping the response on the host
+ * behind an id — rather than copying everything over eagerly — is also
+ * the structure a streamed body needs later: the host side holds the
+ * stream, and reads cross one chunk at a time.
  *
  * The host side inherits fetch()'s web semantics deliberately, CORS
  * included: in a browser, a request only succeeds where the page could
  * have made it itself.
  */
+import { Error } from 'zena:error';
 import { Future } from 'zena:async';
 import { pending } from 'zena:host-async';
 import { String } from 'zena:string';
 
-/** Starts a GET of `url`; the host completes `handle` with the body. */
-@external("web", "fetch_text")
-declare function __fetch_text(handle: i32, url: String, len: i32): void;
+/** Starts a GET of `url`; the host completes `handle` with a response
+ * id once headers have arrived. */
+@external("web", "fetch_start")
+declare function __fetch_start(handle: i32, url: String, len: i32): void;
+
+/** The HTTP status of the host-side response named by `id`. */
+@external("web", "response_status")
+declare function __response_status(id: i32): i32;
+
+/** Reads the body of the response named by `id`; the host completes
+ * `handle` with the decoded text and releases the response. */
+@external("web", "response_text")
+declare function __response_text(handle: i32, id: i32): void;
 
 /**
- * The body of a successful GET of `url`, decoded as text.
+ * An HTTP response: the status, and a one-shot handle on the body.
  *
- * The future fails — an ordinary failed future, caught with
- * `try`/`catch` around the `await` — if the request cannot be made
- * (network error, CORS refusal, a host with no fetch()) or if the
- * response status is not 2xx. The failure's message names the URL and,
- * for a status failure, the status itself: a 404's error page is almost
- * never what the caller wanted delivered as a value.
+ * The body lives on the host until `text()` reads it, so reading is
+ * asynchronous and — as on the web — allowed once: a second `text()`
+ * throws rather than handing back an empty body.
  */
-export let fetchText = (url: String): Future<String> => {
-  let p = pending<String>();
-  __fetch_text(p.handle, url, url.length);
-  return p.future;
+export class Response {
+  /** The HTTP status code. */
+  status: i32;
+  #id: i32;
+  var #bodyUsed: boolean = false;
+
+  new(this.status, id: i32) : #id = id;
+
+  /** True for a 2xx status, exactly like the web's `Response.ok`. */
+  ok: boolean {
+    get {
+      return this.status >= 200 && this.status < 300;
+    }
+  }
+
+  /** The response body, decoded as text. */
+  text(): Future<String> {
+    if (this.#bodyUsed) {
+      throw new Error('zena:fetch: the response body has already been read');
+    }
+    this.#bodyUsed = true;
+    let p = pending<String>();
+    __response_text(p.handle, this.#id);
+    return p.future;
+  }
+}
+
+/**
+ * GET `url`, resolving with the `Response` once headers arrive.
+ *
+ * Fails — an ordinary failed future, caught with `try`/`catch` around
+ * the `await` — only when there is no response: a network error, a
+ * CORS refusal, a host with no fetch(). A non-2xx status is a normal
+ * completion; check `ok` or `status`.
+ */
+export let fetch = async (url: String): Future<Response> => {
+  let p = pending<i32>();
+  __fetch_start(p.handle, url, url.length);
+  let id = await p.future;
+  return new Response(__response_status(id), id);
 };
