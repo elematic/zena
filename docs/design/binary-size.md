@@ -1425,8 +1425,8 @@ byte budgets, to be moved DOWN only:
 | fixture | what it adds | bytes | budget |
 | --- | --- | ---: | ---: |
 | `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 37 | 37 |
-| `test-files/array-sum.zena` | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) | 217 | 240 |
-| `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports | 532 | 600 |
+| `test-files/array-sum.zena` | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) | 119 | 130 |
+| `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports | 399 | 420 |
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the other two. A budget left

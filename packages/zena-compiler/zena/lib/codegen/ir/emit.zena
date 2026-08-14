@@ -69,13 +69,34 @@ export final class ZirFunctionEmitter {
   frames = new Array<EmitFrame>();
   /**
    * Stack-scheduled values (ir.md §12, first step): used exactly
-   * once, by the IMMEDIATELY next instruction in the block, as its
-   * FIRST value operand — such a value stays on the wasm stack with
-   * no local, no set/get round-trip, and no nullable-local re-assert.
+   * once, by the next emitting instruction in the block, as one of a
+   * LEADING run of its value operands whose producers sit immediately
+   * before it in operand order — such values stay on the wasm stack
+   * with no local, no set/get round-trip, and no nullable-local
+   * re-assert. `[1, 2, 3]` is three constants streamed straight into
+   * array.new_fixed; `a * b` streams both operands.
    */
   streamed = new Array<boolean>();
-  /** The streamed value currently on the stack, or -1. */
-  var stackHead = -1;
+  /**
+   * Streamed values currently on the wasm stack, in push order, and
+   * how many of them the consuming instruction has already claimed
+   * through #pushValue. Claims run bottom-up — the scheduler only
+   * streams a LEADING operand run, so operand order is push order —
+   * and the queue resets once every pending value is claimed.
+   */
+  pendingStreamed = new Array<i32>();
+  var claimedStreamed = 0;
+  /**
+   * Rematerialized constants: a numeric constant or ref.null gets no
+   * local and emits NOTHING at its definition — every #pushValue of it
+   * emits the constant inline instead. A local.get and an i32.const
+   * are the same size, so each use is free and each definition saves
+   * the local declaration and its local.set — and, unlike streaming,
+   * rematerialization is immune to GVN sharing a constant across uses
+   * (the shared `1` of an array literal and its loop increment). Edge
+   * args keep their locals: #planMoves copies locals, not values.
+   */
+  remat = new Array<boolean>();
   /**
    * A `return` at the outermost level (no open frames) is emitted
    * LAZILY: its values are pushed, and the opcode is written only if
@@ -126,8 +147,10 @@ export final class ZirFunctionEmitter {
       this.localOf.push(-1);
       this.tempOf.push(-1);
       this.streamed.push(false);
+      this.remat.push(false);
       i += 1;
     }
+    this.#planRemat();
     this.#scheduleStack();
     let entryParams = body.blocks[0].params;
     if (entryParams.length != paramCount) {
@@ -151,7 +174,8 @@ export final class ZirFunctionEmitter {
     this.#coalesceCopies();
     i = 0;
     while (i < body.instCount()) {
-      if (body.producesValue(i) && this.localOf[i] < 0 && !this.streamed[i]) {
+      if (body.producesValue(i) && this.localOf[i] < 0 &&
+          !this.streamed[i] && !this.remat[i]) {
         let r = this.#classOf[i];
         if (this.localOf[r] >= 0) {
           this.localOf[i] = this.localOf[r];
@@ -371,7 +395,7 @@ export final class ZirFunctionEmitter {
 
     let tryUnion = (arg: i32, param: i32): void => {
       if (arg < 0 || arg >= count || !body.producesValue(arg) ||
-          streamed[arg]) {
+          streamed[arg] || this.remat[arg]) {
         return;
       }
       let ra = find(arg);
@@ -550,6 +574,37 @@ export final class ZirFunctionEmitter {
    * Everything is verified again at emission time — a violated
    * schedule throws rather than emitting misordered stack code.
    */
+  /**
+   * Marks rematerializable constants (see `remat`). A constant used as
+   * a branch/edge ARGUMENT is exempt: edge copies (#planMoves,
+   * #copyArgs) move locals, so their sources need one.
+   */
+  #planRemat(): void {
+    let body = this.body;
+    let count = body.instCount();
+    for (var i = 0; i < count; i += 1) {
+      let op = body.op(i);
+      if (op == IrOp.const_i32 || op == IrOp.const_i64 ||
+          op == IrOp.const_f32 || op == IrOp.const_f64 ||
+          op == IrOp.ref_null) {
+        this.remat[i] = true;
+      }
+    }
+    for (let blk in body.blocks) {
+      if (blk.insts.length == 0) { continue; }
+      let term = blk.insts[blk.insts.length - 1];
+      if (!isIrTerminator(body.op(term))) { continue; }
+      for (let s in body.successors(term)) {
+        for (var ai = 0; ai < s.argCount; ai += 1) {
+          let arg = body.extra[s.argStart + ai];
+          if (arg >= 0 && arg < count) {
+            this.remat[arg] = false;
+          }
+        }
+      }
+    }
+  }
+
   #scheduleStack(): void {
     let body = this.body;
     let count = body.instCount();
@@ -567,27 +622,57 @@ export final class ZirFunctionEmitter {
       }
     }
     for (let blk in body.blocks) {
-      for (var k = 0; k + 1 < blk.insts.length; k += 1) {
-        let producer = blk.insts[k];
-        if (!body.producesValue(producer) || useCount[producer] != 1) {
-          continue;
-        }
-        if (body.op(producer) == IrOp.mv_get) {
-          continue;
-        }
-        // The consumer is the next instruction that EMITS code.
-        let j = this.#nextEmittingIndex(blk.insts, k + 1);
-        if (j < 0) {
-          continue;
-        }
-        let consumer = blk.insts[j];
-        if (!this.#streamsFirstOperand(body.op(consumer))) {
-          continue;
-        }
-        let consumerOps = new Array<i32>();
-        body.appendValueOperands(consumer, consumerOps);
-        if (consumerOps.length > 0 && consumerOps[0] == producer) {
-          this.streamed[producer] = true;
+      let insts = blk.insts;
+      for (var j = 0; j < insts.length; j += 1) {
+        let consumer = insts[j];
+        let cop = body.op(consumer);
+        if (cop == IrOp.nop || cop == IrOp.mv_get) { continue; }
+        if (!this.#streamsFirstOperand(cop)) { continue; }
+        let ops = new Array<i32>();
+        body.appendValueOperands(consumer, ops);
+        if (ops.length == 0) { continue; }
+        // A LEADING run of operands streams when its producers are
+        // exactly the emitting instructions immediately before the
+        // consumer, in operand order — their values then sit on the
+        // stack in push order, deepest first, and the consumer's
+        // remaining operand pushes land above them. The run must
+        // start at ops[0]: streamed values are the DEEPEST pushes, so
+        // only the leading operands can be streamed. Terminators are
+        // capped at one — their later "operands" can be branch args
+        // with copy semantics, which are not pushed.
+        let maxPrefix = if (isIrTerminator(cop)) 1 else ops.length;
+        var prefixLen = if (maxPrefix < ops.length) maxPrefix else ops.length;
+        while (prefixLen > 0) {
+          var ok = true;
+          var scan = j;
+          var oi = prefixLen - 1;
+          while (oi >= 0) {
+            var p = scan - 1;
+            // Rematerialized constants emit nothing at their site, so
+            // they are invisible to emission adjacency, like nops.
+            while (p >= 0 && (body.op(insts[p]) == IrOp.nop ||
+                body.op(insts[p]) == IrOp.mv_get ||
+                this.remat[insts[p]])) {
+              p -= 1;
+            }
+            if (p < 0) { ok = false; break; }
+            let producer = insts[p];
+            if (producer != ops[oi] || !body.producesValue(producer) ||
+                useCount[producer] != 1 ||
+                body.op(producer) == IrOp.mv_get) {
+              ok = false;
+              break;
+            }
+            scan = p;
+            oi -= 1;
+          }
+          if (ok) {
+            for (var s = 0; s < prefixLen; s += 1) {
+              this.streamed[ops[s]] = true;
+            }
+            break;
+          }
+          prefixLen -= 1;
         }
       }
     }
@@ -676,18 +761,29 @@ export final class ZirFunctionEmitter {
 
   /** Loads a value at its declared IR type. */
   #pushValue(inst: i32): void {
-    if (inst == this.stackHead) {
-      // Already on the stack from the previous instruction, at its
-      // declared IR type — no local, no re-assert.
-      this.stackHead = -1;
+    if (this.claimedStreamed < this.pendingStreamed.length &&
+        this.pendingStreamed[this.claimedStreamed] == inst) {
+      // Already on the stack from a preceding instruction, at its
+      // declared IR type — no local, no re-assert. Claims run
+      // bottom-up: the consumer's operand order is the push order.
+      this.claimedStreamed += 1;
+      if (this.claimedStreamed == this.pendingStreamed.length) {
+        while (this.pendingStreamed.length > 0) {
+          let ignored = this.pendingStreamed.pop();
+        }
+        this.claimedStreamed = 0;
+      }
       return;
     }
-    if (this.stackHead >= 0) {
-      throw new Error('zir emit: stack schedule violated (pushed %' +
-          i32ToString(inst) + ' over pending %' +
-          i32ToString(this.stackHead) + ' [' +
-          irOpName(this.body.op(this.stackHead)) + '] in ' +
-          irOpName(this.body.op(this.currentEmit)) + ')');
+    // A non-pending push while pendings are unclaimed is fine: a later
+    // streamed producer pushes its own operands ABOVE the earlier
+    // pending values and consumes them itself, netting one value on
+    // top — the pending prefix below is untouched. Only claiming out
+    // of order or reading a streamed value that is not pending (the
+    // localOf < 0 error below) is a schedule violation.
+    if (this.remat[inst]) {
+      this.#emitConstInline(inst);
+      return;
     }
     if (this.localOf[inst] < 0) {
       throw new Error('zir emit: streamed value %' + i32ToString(inst) +
@@ -696,6 +792,26 @@ export final class ZirFunctionEmitter {
     this.emitter.emitLocalGet(this.localOf[inst]);
     if (this.#storedNullable(inst)) {
       this.emitter.emitRefAsNonNull();
+    }
+  }
+
+  /** Emits a rematerialized constant at its use site. */
+  #emitConstInline(inst: i32): void {
+    let body = this.body;
+    let op = body.op(inst);
+    if (op == IrOp.const_i32) {
+      this.emitter.emitI32Const(body.a[inst]);
+    } else if (op == IrOp.const_i64) {
+      this.emitter.emitI64Const(body.constI64[body.a[inst]]);
+    } else if (op == IrOp.const_f32) {
+      this.emitter.emitF32Const(body.constF64[body.a[inst]]);
+    } else if (op == IrOp.const_f64) {
+      this.emitter.emitF64Const(body.constF64[body.a[inst]]);
+    } else if (op == IrOp.ref_null) {
+      this.#emitRefNullInst(inst);
+    } else {
+      throw new Error('zir emit: %' + i32ToString(inst) +
+          ' marked remat but is not a constant');
     }
   }
 
@@ -813,17 +929,28 @@ export final class ZirFunctionEmitter {
     this.#flushPendingReturn();
     let body = this.body;
     let op = body.op(inst);
-    if (this.stackHead >= 0) {
-      // ret / ret_multi / throw / br_if push their first decoded
-      // operand first, through #pushValue, which consumes a matching
-      // stack head. Anything else with a pending head is a schedule
-      // violation.
+    if (this.claimedStreamed < this.pendingStreamed.length) {
+      // ret / ret_multi / throw / br_if push their leading decoded
+      // operands first, through #pushValue, which claims pending
+      // values in order. Anything else with pending values is a
+      // schedule violation.
       let operands = new Array<i32>();
       body.appendValueOperands(inst, operands);
-      if (operands.length == 0 || operands[0] != this.stackHead ||
-          !this.#streamsFirstOperand(op)) {
+      let pendingCount = this.pendingStreamed.length - this.claimedStreamed;
+      var ok = this.#streamsFirstOperand(op) &&
+          operands.length >= pendingCount;
+      if (ok) {
+        for (var pi = 0; pi < pendingCount; pi += 1) {
+          if (operands[pi] !=
+              this.pendingStreamed[this.claimedStreamed + pi]) {
+            ok = false;
+          }
+        }
+      }
+      if (!ok) {
         throw new Error('zir emit: streamed value %' +
-            i32ToString(this.stackHead) + ' left on stack at terminator');
+            i32ToString(this.pendingStreamed[this.claimedStreamed]) +
+            ' left on stack at terminator');
       }
     }
     this.currentEmit = inst;
@@ -1006,6 +1133,9 @@ export final class ZirFunctionEmitter {
   }
 
   #emitInst(inst: i32): void {
+    // A rematerialized constant emits at each USE (#emitConstInline),
+    // nothing at its definition.
+    if (this.remat[inst]) { return; }
     this.#flushPendingReturn();
     let body = this.body;
     let op = body.op(inst);
@@ -1159,7 +1289,7 @@ export final class ZirFunctionEmitter {
     }
     if (body.producesValue(inst)) {
       if (this.streamed[inst]) {
-        this.stackHead = inst;
+        this.pendingStreamed.push(inst);
       } else {
         this.emitter.emitLocalSet(this.localOf[inst]);
       }
