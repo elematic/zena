@@ -185,9 +185,8 @@ let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => 
   if (ft is ValTypeF64) {
     return cx.b.binary(IrOp.f64_eq, i32vt, a, b2);
   }
-  let targetOpt = refTargetOf(ft);
-  if (targetOpt != null && targetOpt is WasmStruct) {
-    let fieldStruct = targetOpt;
+  let fieldStruct = refTargetOf(ft);
+  if (fieldStruct != null && fieldStruct is WasmStruct) {
     var eqFunc: WasmFunction | null = null;
     if (isStringStruct(cx, fieldStruct)) {
       eqFunc = stringEqFunc(cx);
@@ -233,9 +232,8 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
   // Fresh binding: the narrowing state after the bail/return chain
   // above over-narrows `ft` (see BUGS.md narrowing entries).
   let ftRef: ValType = f.type;
-  let targetOpt = refTargetOf(ftRef);
-  if (targetOpt != null && targetOpt is WasmStruct) {
-    let fieldStruct = targetOpt;
+  let fieldStruct = refTargetOf(ftRef);
+  if (fieldStruct != null && fieldStruct is WasmStruct) {
     var hashFunc: WasmFunction | null = null;
     if (isStringStruct(cx, fieldStruct) && cx.wasm.stringHashFunc != null) {
       hashFunc = cx.wasm.stringHashFunc;
@@ -266,11 +264,10 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
           if (resolvedOpt == null || infoOpt2 == null) {
             bail(cx, 'case hash field dispatch');
           }
-          let ci = infoOpt2;
-          if (cx.vtableSlotIndex(ci, 'hashCode') < 0) {
+          if (cx.vtableSlotIndex(infoOpt2, 'hashCode') < 0) {
             bail(cx, 'case hash field dispatch');
           }
-          hashVtInfo = ci;
+          hashVtInfo = infoOpt2;
           hashSlotSig = resolvedOpt.signature;
         }
       }
@@ -292,10 +289,9 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
 
       cx.b.switchTo(callB);
       let called = if (hashSlotSig != null) {
-        let hsig = hashSlotSig;
         let nonNullV = cx.stripNonNull(v);
         cx.lowerVtableCall(nonNullV, hashVtInfo as ClassCodegenInfo,
-            'hashCode', hsig, oneValue(nonNullV), hsig.returns[0])
+            'hashCode', hashSlotSig, oneValue(nonNullV), hashSlotSig.returns[0])
       } else {
         callUnary(cx, hashFunc as WasmFunction, v)
       };
@@ -462,17 +458,16 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
   let stringClassOpt = cx.wasm.stringClass;
   if (stringClassOpt != null) {
     let sKey = getClassKey(stringClassOpt);
-    var sStructOpt: WasmStruct | null = null;
+    var sStruct: WasmStruct | null = null;
     if (let (true, info) = cx.wasm.classInfos.get(sKey)) {
-      sStructOpt = info.structType;
+      sStruct = info.structType;
     }
-    var eqFuncOpt: WasmFunction | null = null;
+    var eqFunc: WasmFunction | null = null;
     if (let (true, f) = cx.wasm.classMethodMap.get(
         getClassMethodKey(sKey, '=='))) {
-      eqFuncOpt = f;
+      eqFunc = f;
     }
-    if (sStructOpt != null && eqFuncOpt != null) {
-      let sStruct = sStructOpt;
+    if (sStruct != null && eqFunc != null) {
       let strVt = new ValTypeRef(sStruct) as ValType;
       let lIsS = cx.b.emit(IrOp.ref_test, i32vt, left,
           cx.b.internType(strVt));
@@ -483,7 +478,6 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
       let afterStrB = cx.b.newBlock();
       cx.b.brIf(bothS, strB, noValues(), afterStrB, noValues());
       cx.b.switchTo(strB);
-      let eqFunc = eqFuncOpt;
       let lS = cx.b.emit(IrOp.ref_cast, strVt, left,
           cx.b.internType(strVt));
       let rS = cx.b.emit(IrOp.ref_cast, strVt, right,
@@ -516,14 +510,13 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
       let typeArgs = new Array<Type>();
       typeArgs.push(t);
       let boxCt = instantiateClassType(boxClassOpt, typeArgs);
-      var boxStructOpt: WasmStruct | null = null;
+      var boxStruct: WasmStruct | null = null;
       if (let (true, info) = cx.wasm.classInfos.get(getClassKey(boxCt))) {
-        boxStructOpt = info.structType;
+        boxStruct = info.structType;
       }
-      if (boxStructOpt == null) {
+      if (boxStruct == null) {
         continue;
       }
-      let boxStruct = boxStructOpt;
       if (boxStruct.fields.length < 2 || boxStruct.fields[1].name == null) {
         continue;
       }
@@ -702,11 +695,10 @@ export let lowerHashIntrinsic = (cx: LoweringContext, call: CallExpression): i32
     }
     hc = hc.superType;
   }
-  let infoOpt = if (let (true, info) = cx.wasm.classInfos.get(getClassKey(ctV))) info else null;
-  if (resolvedOpt == null || infoOpt == null) {
+  let ci = if (let (true, info) = cx.wasm.classInfos.get(getClassKey(ctV))) info else null;
+  if (resolvedOpt == null || ci == null) {
     bail(cx, 'hash operand type');
   }
-  let ci = infoOpt;
   if (cx.vtableSlotIndex(ci, 'hashCode') < 0) {
     bail(cx, 'hash operand type');
   }

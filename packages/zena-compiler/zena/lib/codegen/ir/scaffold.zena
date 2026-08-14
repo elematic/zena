@@ -36,16 +36,15 @@ let stringLayoutOf = (wasm: WasmModule): StringLayout => {
     throw new Error('string helper synthesis: String class not found');
   }
   let key = getClassKey(stringClass);
-  var stOpt: WasmStruct | null = null;
+  var st: WasmStruct | null = null;
   var vt: WasmGlobal | null = null;
   if (let (true, info) = wasm.classInfos.get(key)) {
-    stOpt = info.structType;
+    st = info.structType;
     vt = info.vtableGlobal;
   }
-  if (stOpt == null) {
+  if (st == null) {
     throw new Error('string helper synthesis: String struct not found');
   }
-  let st = stOpt;
   var data: String | null = null;
   var start: String | null = null;
   var end: String | null = null;
@@ -365,13 +364,12 @@ let synthWasiWriteString = (wasm: WasmModule, func: WasmFunction): IrBody => {
   args.push(i32c(b, 0));
   args.push(i32c(b, 1));
   args.push(i32c(b, 8));
-  let fw = fdWrite;
-  let resultType = if (fw.signature.returns.length == 1) {
-    fw.signature.returns[0]
+  let resultType = if (fdWrite.signature.returns.length == 1) {
+    fdWrite.signature.returns[0]
   } else {
     null
   };
-  b.callFunc(b.addRef(new IrRefFunc(fw)), args, resultType);
+  b.callFunc(b.addRef(new IrRefFunc(fdWrite)), args, resultType);
   // errno intentionally ignored, mirroring streaming's drop.
   b.retVoid();
   return b.finish();
@@ -386,11 +384,10 @@ let synthWasiWriteString = (wasm: WasmModule, func: WasmFunction): IrBody => {
  */
 let synthStringFromShared = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let lay = stringLayoutOf(wasm);
-  let sharedOpt = wasm.sharedStringsGlobal;
-  if (sharedOpt == null) {
+  let shared = wasm.sharedStringsGlobal;
+  if (shared == null) {
     throw new Error('string_from_shared: shared strings global missing');
   }
-  let shared = sharedOpt;
   let b = new IrBuilder();
   let params = entryOf(b, func);
   let args = new Array<i32>();
@@ -430,14 +427,12 @@ let synthStringFromShared = (wasm: WasmModule, func: WasmFunction): IrBody => {
  * streaming's if-chain shape.
  */
 let synthGetStringLiteral = (wasm: WasmModule, func: WasmFunction): IrBody => {
-  let arrGlobalOpt = wasm.stringLiteralsArrayGlobal;
+  let arrGlobal = wasm.stringLiteralsArrayGlobal;
   let arrTypeOpt = wasm.stringArrayType;
-  let sfsOpt = wasm.stringFromSharedFunc;
-  if (arrGlobalOpt == null || arrTypeOpt == null || sfsOpt == null) {
+  let sfs = wasm.stringFromSharedFunc;
+  if (arrGlobal == null || arrTypeOpt == null || sfs == null) {
     throw new Error('get_string_literal: literal infrastructure missing');
   }
-  let arrGlobal = arrGlobalOpt;
-  let sfs = sfsOpt;
   if (sfs.signature.returns.length != 1) {
     throw new Error('get_string_literal: string_from_shared shape');
   }
@@ -495,11 +490,10 @@ let synthGetStringLiteral = (wasm: WasmModule, func: WasmFunction): IrBody => {
       let lo = work.pop();
       b.switchTo(blk);
       if (hi - lo == 1) {
-        let locOpt = if (let (true, l) = wasm.stringLiteralLocations.get(byId[lo])) l else null;
-        if (locOpt == null) {
+        let loc = if (let (true, l) = wasm.stringLiteralLocations.get(byId[lo])) l else null;
+        if (loc == null) {
           throw new Error('get_string_literal: literal location missing');
         }
-        let loc = locOpt;
         let callArgs = new Array<i32>();
         callArgs.push(i32c(b, loc.offset));
         callArgs.push(i32c(b, loc.length));

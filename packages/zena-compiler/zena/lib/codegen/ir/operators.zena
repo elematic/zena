@@ -129,10 +129,9 @@ let requireScalarNode = (cx: LoweringContext, expr: Expression): void => {
   if (bt == null) {
     bail(cx, 'untyped operand');
   }
-  let btVal = bt;
-  let ok = btVal is I32Type || btVal is I64Type || btVal is U32Type ||
-      btVal is U64Type || btVal is F32Type || btVal is F64Type ||
-      btVal is BooleanType || isNarrowIntType(btVal);
+  let ok = bt is I32Type || bt is I64Type || bt is U32Type ||
+      bt is U64Type || bt is F32Type || bt is F64Type ||
+      bt is BooleanType || isNarrowIntType(bt);
   if (ok) {
     return;
   }
@@ -140,11 +139,11 @@ let requireScalarNode = (cx: LoweringContext, expr: Expression): void => {
   // enums foremost — operate as their representation, exactly as
   // streaming compiles them. Signedness stays name-driven: only
   // u32/u64 (isUnsignedNode) pick the _u operator variants.
-  let vt = typeToValTypeWithSub(cx.wasm, btVal, cx.func);
+  let vt = typeToValTypeWithSub(cx.wasm, bt, cx.func);
   let reprOk = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
       vt is ValTypeF64;
   if (!reprOk) {
-    bail(cx, 'operand type ' + typeToString(btVal));
+    bail(cx, 'operand type ' + typeToString(bt));
   }
 };
 
@@ -315,9 +314,8 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   // call when devirtualizable, else bail (streaming dispatches
   // virtually there). String concat and String equality are the
   // dominant users.
-  let leftBaseOpt = substitutedBaseType(cx, bin.left);
-  if (leftBaseOpt != null) {
-    let leftBase = leftBaseOpt;
+  let leftBase = substitutedBaseType(cx, bin.left);
+  if (leftBase != null) {
     if (leftBase is ClassType) {
       let opMember = if (bin.operator == "!=") "==" else bin.operator;
       let leftCt = eraseTypeParameters(cx.wasm, leftBase) as ClassType;
@@ -336,10 +334,9 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   // streaming's runtime type-dispatch diamond — identity, then
   // null, then String content, then boxed-primitive unwraps.
   if ((bin.operator == "==" || bin.operator == "!=") &&
-      leftBaseOpt != null) {
-    let lb = leftBaseOpt;
-    if (lb is TypeParameterType || lb is AnyRefType ||
-        lb is EqRefType) {
+      leftBase != null) {
+    if (leftBase is TypeParameterType || leftBase is AnyRefType ||
+        leftBase is EqRefType) {
       let left = lowerExpr(cx, bin.left, null);
       let right = lowerExpr(cx, bin.right, null);
       if (!isRefValType(cx.valueTypeOf(left)) ||
@@ -360,15 +357,15 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   // compares by identity while `String | null` keeps bailing (its
   // non-null member owns an ==).
   if ((bin.operator == "==" || bin.operator == "!=") &&
-      leftBaseOpt != null &&
-      refIdentityEqType(leftBaseOpt)) {
+      leftBase != null &&
+      refIdentityEqType(leftBase)) {
     var left = lowerExpr(cx, bin.left, null);
     var right = lowerExpr(cx, bin.right, null);
     if (!isRefValType(cx.valueTypeOf(left)) ||
         !isRefValType(cx.valueTypeOf(right))) {
       bail(cx, 'identity compare on non-refs');
     }
-    left = cx.unwrapFatPointer(leftBaseOpt, left);
+    left = cx.unwrapFatPointer(leftBase, left);
     let rBase = substitutedBaseType(cx, bin.right);
     if (rBase != null) {
       right = cx.unwrapFatPointer(rBase, right);
@@ -416,22 +413,21 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     // Mixed numeric operands promote to the wider type, mirroring
     // streaming's table: f64 wins; f32 wins unless the other side
     // is i64 (then f64); i64 wins over i32.
-    var targetOpt: ValType | null = null;
+    var target: ValType | null = null;
     if (leftType is ValTypeF64 || rightType is ValTypeF64) {
-      targetOpt = new ValTypeF64();
+      target = new ValTypeF64();
     } else if (leftType is ValTypeF32 || rightType is ValTypeF32) {
-      targetOpt = if (leftType is ValTypeI64 || rightType is ValTypeI64) {
+      target = if (leftType is ValTypeI64 || rightType is ValTypeI64) {
         new ValTypeF64()
       } else {
         new ValTypeF32()
       };
     } else if (leftType is ValTypeI64 || rightType is ValTypeI64) {
-      targetOpt = new ValTypeI64();
+      target = new ValTypeI64();
     }
-    if (targetOpt == null) {
+    if (target == null) {
       bail(cx, 'mixed operand types');
     }
-    let target = targetOpt;
     left = scalarConvert(cx, left, target);
     right = scalarConvert(cx, right, target);
     leftType = target;
@@ -518,13 +514,12 @@ let normalizeNarrow = (cx: LoweringContext, value: i32, target: Type | null): i3
   if (target == null) {
     return value;
   }
-  let t = target;
-  if (!isNarrowIntType(t)) {
+  if (!isNarrowIntType(target)) {
     return value;
   }
-  let bits = narrowIntBits(t);
+  let bits = narrowIntBits(target);
   let vt = new ValTypeI32() as ValType;
-  if (isUnsignedIntType(t)) {
+  if (isUnsignedIntType(target)) {
     let mask = if (bits == 8) 255 else 65535;
     return cx.b.binary(IrOp.i32_and, vt, value, cx.b.constI32(mask, vt));
   }

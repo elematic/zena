@@ -88,10 +88,9 @@ export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i
       tpl.quasis[tpl.quasis.length - 1].loc)));
 
   if (parts.length >= 2 && parts.length <= 5) {
-    let concatOpt = cx.wasm.getStdlibFunc(
+    let concat = cx.wasm.getStdlibFunc(
         'zena:string', '__concat' + i32ToString(parts.length));
-    if (concatOpt != null) {
-      let concat = concatOpt;
+    if (concat != null) {
       let sig = concat.signature;
       if (sig.returns.length != 1 || sig.params.length != parts.length) {
         cx.fail('concat helper shape');
@@ -288,9 +287,8 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   let calleeType = cx.func.model.getNodeType(expr.tag);
   var valueType: Type = new AnyRefType();
   if (calleeType != null && calleeType is FunctionType) {
-    let ft = calleeType;
-    if (ft.parameters.length >= 2) {
-      let vp = baseType(ft.parameters[1]);
+    if (calleeType.parameters.length >= 2) {
+      let vp = baseType(calleeType.parameters[1]);
       // The receiver casts are checker-unnecessary but load-bearing: a
       // nullable member null-tested on an is-narrowed binding fails ZIR
       // lowering without them (BUGS.md "nullable member null-tested

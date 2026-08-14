@@ -304,9 +304,8 @@ export final class LoweringContext {
     let bt = baseType(t);
     var isSelf = bt is ThisType;
     if (!isSelf && bt is ClassType) {
-      let ct = bt;
-      if (ct.name.length >= 5 &&
-          ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
+      if (bt.name.length >= 5 &&
+          bt.name.sliceBytes(bt.name.length - 5, bt.name.length) == "_This") {
         isSelf = true;
       }
     }
@@ -706,11 +705,10 @@ export final class LoweringContext {
    */
   unwrapFatPointerValue(value: i32): i32 {
     let vt = this.valueTypeOf(value);
-    let stOpt = asWasmStruct(vt);
-    if (stOpt == null) {
+    let st = asWasmStruct(vt);
+    if (st == null) {
       return value;
     }
-    let st = stOpt;
     for (let pair in this.wasm.interfaceStructs) {
       if (pair.value == st) {
         return this.fatPointerInstance(st, value);
@@ -740,11 +738,10 @@ export final class LoweringContext {
     if (base is UnionType) {
       // A nullable fat pointer (`Shape | null`) unwraps behind a null
       // guard: null stays null and compares like any null reference.
-      let ut = base;
       var nonNull: Type | null = null;
       var nonNullCount = 0;
       var nullCount = 0;
-      for (let m in ut.types) {
+      for (let m in base.types) {
         if (m is NullType) {
           nullCount += 1;
         } else {
@@ -828,9 +825,8 @@ export final class LoweringContext {
       leftCt: ClassType): i32 {
     let fromValue = this.classTypeOfValue(left);
     let recvCt = if (fromValue != null) fromValue else leftCt;
-    let methodOpt = this.resolveDevirtualizedMethod(recvCt, opMember);
-    if (methodOpt != null) {
-      let method = methodOpt;
+    let method = this.resolveDevirtualizedMethod(recvCt, opMember);
+    if (method != null) {
       let sig = method.signature;
       if (sig.params.length != 2 || sig.returns.length != 1) {
         this.fail('operator method shape');
@@ -899,9 +895,8 @@ export final class LoweringContext {
     }
     walkEnter(node, (n: Node): void => {
       if (n is AssignmentExpression) {
-        let ae = n;
-        if (ae.left is Identifier) {
-          let sym = this.func.model.resolve(ae.left);
+        if (n.left is Identifier) {
+          let sym = this.func.model.resolve(n.left);
           if (sym != null) {
             let resolved = sym.resolveTarget();
             // Celled bindings mutate their heap cell, not the env
@@ -1080,16 +1075,14 @@ export final class LoweringContext {
   precellBindings(body: Array<Statement>): void {
     for (let stmt in body) {
       if (!(stmt is VariableDeclaration)) { continue; }
-      let vd = stmt;
-      var pat = vd.pattern;
+      var pat = stmt.pattern;
       if (pat is BindingPattern) {
         pat = pat.pattern;
       }
       if (!(pat is IdentifierPattern)) { continue; }
-      if (!(vd.init is FunctionExpression)) { continue; }
-      let symOpt = this.func.model.resolveDeclaration(pat);
-      if (symOpt == null) { continue; }
-      let sym = symOpt;
+      if (!(stmt.init is FunctionExpression)) { continue; }
+      let sym = this.func.model.resolveDeclaration(pat);
+      if (sym == null) { continue; }
       if (!this.isCelled(sym.id) || this.env.has(sym.id)) { continue; }
       let bindingType = this.func.model.getBindingType(sym);
       if (bindingType == null) { continue; }

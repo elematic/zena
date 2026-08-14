@@ -247,11 +247,10 @@ let prepareAsyncMain = (wasm: WasmModule, pass: ReachabilityAnalysis): void => {
   let futureType = futureInstantiationOf(wasm, ramp);
   let fKey = getClassKey(futureType);
   let valueOrThrowFn = methodOf(wasm, fKey, ':valueOrThrow', 'async main');
-  let drainOpt = wasm.getStdlibFunc('zena:async', 'drainMicrotasks');
-  if (drainOpt == null) {
+  let drainFn = wasm.getStdlibFunc('zena:async', 'drainMicrotasks');
+  if (drainFn == null) {
     throw new Error('async main: zena:async drainMicrotasks was not reached');
   }
-  let drainFn = drainOpt;
 
   let wrapperSig = wasm.getSignature(ramp.signature.params,
       valueOrThrowFn.signature.returns);
@@ -422,13 +421,12 @@ let prepareOne = (
   let futureType = futureInstantiationOf(wasm, func);
   pass.typeLowerer.discoverType(futureType as Type, func.model);
   let fKey = getClassKey(futureType);
-  let futureInfoOpt =
+  let futureInfo =
       if (let (true, info) = wasm.classInfos.get(fKey)) info else null;
-  if (futureInfoOpt == null) {
+  if (futureInfo == null) {
     throw new Error('async Future instantiation was not materialized: ' +
         funcDisplayName(func));
   }
-  let futureInfo = futureInfoOpt;
   let futureStruct = futureInfo.structType;
 
   let name = funcDisplayName(func);

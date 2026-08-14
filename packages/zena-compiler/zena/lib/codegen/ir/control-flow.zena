@@ -77,9 +77,8 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
   if (!(pat is TuplePattern)) {
     bail(cx, 'let-condition pattern');
   }
-  let tp = pat;
   let values = multiSource(cx, lpc.init);
-  if (values.length != tp.elements.length) {
+  if (values.length != pat.elements.length) {
     bail(cx, 'let-condition arity');
   }
   var cond = values[0];
@@ -90,7 +89,7 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
   // invert. Literal `true` and plain bindings take the flag as-is.
   // The `let` is explicit here, so the element is a LiteralPattern; the
   // bare-literal form is still accepted for patterns built elsewhere.
-  var first = tp.elements[0];
+  var first = pat.elements[0];
   if (first != null && first is LiteralPattern) {
     first = first.value;
   }
@@ -104,14 +103,14 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
   let vts = new Array<ValType>();
   let patterns = new Array<Node>();
   let patternValues = new Array<i32>();
-  for (var i = 0; i < tp.elements.length; i += 1) {
-    let el = tp.elements[i];
+  for (var i = 0; i < pat.elements.length; i += 1) {
+    let el = pat.elements[i];
     if (el == null || el is LiteralPattern || el is BooleanLiteral ||
         el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
       continue;
     }
-    let symOpt = cx.func.model.resolveDeclaration(el);
-    if (symOpt == null) {
+    let sym = cx.func.model.resolveDeclaration(el);
+    if (sym == null) {
       // Nested destructuring elements defer to the taken block,
       // where their tests can branch to the not-taken side.
       if (patternBinds(cx, el) ||
@@ -121,7 +120,6 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
       }
       continue;
     }
-    let sym = symOpt;
     let bindingType = cx.func.model.getBindingType(sym);
     if (bindingType == null) {
       bail(cx, 'untyped binding');
@@ -348,15 +346,14 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
     let saved = cx.copyEnv();
     cx.b.switchTo(thenB);
     if (letBinds != null) {
-      let binds = letBinds;
-      let needsFail = letBindsNeedFail(cx, binds);
+      let needsFail = letBindsNeedFail(cx, letBinds);
       var failB = mergeB;
       if (needsFail) {
         // The merge takes args; pattern tests branch argless, so a
         // trampoline forwards the (unmodified) env.
         failB = cx.b.newBlock();
       }
-      applyLetBinds(cx, binds, failB);
+      applyLetBinds(cx, letBinds, failB);
       if (needsFail) {
         let resumeB = cx.b.newBlock();
         cx.b.br(resumeB, noValues());
@@ -581,9 +578,8 @@ export let breakThroughFinally = (cx: LoweringContext): boolean => {
   if (scope == null) {
     return false;
   }
-  let s = scope;
-  s.exitsByBreak = true;
-  parkExit(cx, s, finallyExitBreak);
+  scope.exitsByBreak = true;
+  parkExit(cx, scope, finallyExitBreak);
   return true;
 };
 
@@ -593,9 +589,8 @@ export let continueThroughFinally = (cx: LoweringContext): boolean => {
   if (scope == null) {
     return false;
   }
-  let s = scope;
-  s.exitsByContinue = true;
-  parkExit(cx, s, finallyExitContinue);
+  scope.exitsByContinue = true;
+  parkExit(cx, scope, finallyExitContinue);
   return true;
 };
 
@@ -1014,31 +1009,29 @@ let disposeOwnerClass = (cx: LoweringContext, t: Type): ClassType => {
 let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void => {
   let ct = ownerClass;
   let cKey = getClassKey(ct);
-  let infoOpt = if (let (true, info) = cx.wasm.classInfos.get(cKey)) info else null;
-  if (infoOpt == null) {
+  let classInfo = if (let (true, info) = cx.wasm.classInfos.get(cKey)) info else null;
+  if (classInfo == null) {
     bail(cx, 'using receiver class not discovered');
   }
-  let classInfo = infoOpt;
 
-  var methodOpt: WasmFunction | null = null;
+  var method: WasmFunction | null = null;
   var curr: ClassType | null = ct;
-  while (curr != null && methodOpt == null) {
+  while (curr != null && method == null) {
     var g: ClassType | null = curr;
-    while (g != null && methodOpt == null) {
+    while (g != null && method == null) {
       let key = getClassMethodKey(getClassKey(g), ':dispose');
       if (let (true, m) = cx.wasm.classMethodMap.get(key)) {
-        methodOpt = m;
+        method = m;
       }
       g = g.genericSource;
     }
     curr = curr.superType;
   }
-  if (methodOpt == null) {
+  if (method == null) {
     // The checker required the member, so this means RTA pruned it —
     // the dependency `checkUsingStatement` records is what roots it.
     bail(cx, 'using dispose method not found');
   }
-  let method = methodOpt;
   let sig = method.signature;
   if (sig.params.length != 1) {
     bail(cx, 'using dispose arity');
@@ -1163,15 +1156,14 @@ export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
   cx.loops.push(new LoopCtx(header, exitB, carried));
   cx.b.switchTo(bodyB);
   if (letBinds != null) {
-    let binds = letBinds;
-    let needsFail = letBindsNeedFail(cx, binds);
+    let needsFail = letBindsNeedFail(cx, letBinds);
     var failB = exitB;
     if (needsFail) {
       // The exit takes carried args; tests branch argless — forward
       // through a trampoline.
       failB = cx.b.newBlock();
     }
-    applyLetBinds(cx, binds, failB);
+    applyLetBinds(cx, letBinds, failB);
     if (needsFail) {
       let resumeB = cx.b.newBlock();
       cx.b.br(resumeB, noValues());
@@ -1359,9 +1351,8 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
       iter = cx.slotCallSingle(packed, ':iterator');
     }
   } else if (resolved is InterfaceType) {
-    let it = resolved;
     let recv = lowerExpr(cx, stmt.iterable, null);
-    if (it.name == 'Iterator') {
+    if (resolved.name == 'Iterator') {
       iter = recv;
     } else {
       iter = cx.slotCallSingle(recv, ':iterator');
@@ -1481,8 +1472,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   } else {
     let resolved = cx.resolveSelfType(iterableType);
     if (resolved is ClassType) {
-      let ct = resolved;
-      var canonical = ct;
+      var canonical = resolved;
       while (canonical.genericSource != null) {
         canonical = canonical.genericSource as ClassType;
       }
@@ -1491,11 +1481,11 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
         isFixed = true;
       } else if (canonical.name == 'Array') {
         isArray = true;
-        arrayCt = ct;
+        arrayCt = resolved;
       }
-      if ((isFixed || isArray) && ct.typeArguments != null &&
-          (ct.typeArguments as Array<Type>).length > 0) {
-        elemType = (ct.typeArguments as Array<Type>)[0];
+      if ((isFixed || isArray) && resolved.typeArguments != null &&
+          (resolved.typeArguments as Array<Type>).length > 0) {
+        elemType = (resolved.typeArguments as Array<Type>)[0];
       }
     }
   }
