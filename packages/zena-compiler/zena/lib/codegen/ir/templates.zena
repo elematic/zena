@@ -243,8 +243,9 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
       cx.b.pushArgList(rawParts),
       cx.b.addRef(new IrRefType(stringsArr)));
   let tsaArgs = new Array<i32>();
-  if (tsaInfo.vtableGlobal != null) {
-    let vtG = tsaInfo.vtableGlobal as WasmGlobal;
+  let {vtableGlobal} = tsaInfo;
+  if (vtableGlobal != null) {
+    let vtG = vtableGlobal;
     tsaArgs.push(cx.b.emit(IrOp.global_get, vtG.type, -1,
         cx.b.addRef(new IrRefGlobal(vtG))));
   } else {
@@ -286,7 +287,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   // Interpolated values, typed by the tag's second parameter.
   let calleeType = cx.func.model.getNodeType(expr.tag);
   var valueType: Type = new AnyRefType();
-  if (calleeType != null && calleeType is FunctionType) {
+  if (calleeType is FunctionType) {
     if (calleeType.parameters.length >= 2) {
       let vp = baseType(calleeType.parameters[1]);
       // The receiver casts are checker-unnecessary but load-bearing: a

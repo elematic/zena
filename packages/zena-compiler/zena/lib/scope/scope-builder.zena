@@ -83,8 +83,9 @@ export final class SymbolMap {
      */
     record(node: Node, info: Symbol): void {
       this.#byNode[node] = info;
-      if (node.loc != null) {
-        this.#byOffset[(node.loc as SourceLocation).start] = info;
+      let loc = node.loc;
+      if (loc != null) {
+        this.#byOffset[loc.start] = info;
       }
     }
 
@@ -213,8 +214,9 @@ export final class ScopeBuilder {
         if (exp.declaration == sym.declaration) return true;
       }
     }
-    if (sym.declaration != null && sym.declaration is Parameter) {
-      let param = sym.declaration as Parameter;
+    let {declaration} = sym;
+    if (declaration is Parameter) {
+      let param = declaration;
       if (let (true, parent) = this.#parents.get(param)) {
         match (parent) {
           case MethodDefinition {body}: { return body == null; }
@@ -792,8 +794,9 @@ export final class ScopeBuilder {
           if (param.typeAnnotation != null) {
             this.#processTypeAnnotation(param.typeAnnotation);
           }
-          if (param.defaultValue != null) {
-            this.#processExpression(param.defaultValue as Expression);
+          let {defaultValue} = param;
+          if (defaultValue != null) {
+            this.#processExpression(defaultValue);
           }
         }
         if (returnType != null) {
@@ -1037,15 +1040,17 @@ export final class ScopeBuilder {
             if (param.typeAnnotation != null) {
               this.#processTypeAnnotation(param.typeAnnotation);
             }
-            if (param.defaultValue != null) {
-              this.#processExpression(param.defaultValue as Expression);
+            let {defaultValue} = param;
+            if (defaultValue != null) {
+              this.#processExpression(defaultValue);
             }
           }
           if (md.returnType != null) {
             this.#processTypeAnnotation(md.returnType);
           }
-          if (md.initializerList != null) {
-            for (let init in md.initializerList as Array<Node>) {
+          let {initializerList} = md;
+          if (initializerList != null) {
+            for (let init in initializerList) {
               match (init) {
                 case FieldInitializer {value}: {
                   this.#processExpression(value);
@@ -1079,7 +1084,7 @@ export final class ScopeBuilder {
           }
           if (acc.setter != null) {
             let setter = acc.setter as SetterInfo;
-            let param = setter.param;
+            let {param} = setter;
             this.#enterScope(ScopeKind.Function);
             this.#current.declare(param.name, false, param, this.#modulePath);
             this.#symbols.record(param, this.#current.getLocal(param.name) as Symbol);
@@ -1111,8 +1116,9 @@ export final class ScopeBuilder {
       match (member) {
         case MethodSignature as ms: {
           this.#enterScope(ScopeKind.Function);
-          if (ms.typeParameters != null) {
-            let tps = ms.typeParameters as Array<TypeParameter>;
+          let {typeParameters} = ms;
+          if (typeParameters != null) {
+            let tps = typeParameters;
             this.#declareTypeParameters(tps);
           }
           for (let param in ms.params) {
@@ -1296,8 +1302,9 @@ export final class ScopeBuilder {
     this.#symbols.record(param.name, sym); // Bind Identifier as well for LSP Hover
     this.#allVariables.push(sym);
     // For destructured params, also declare the pattern bindings (x, y, etc.).
-    if (param.pattern != null) {
-      this.#declarePattern(param.pattern as Pattern, "let", param);
+    let {pattern} = param;
+    if (pattern != null) {
+      this.#declarePattern(pattern, "let", param);
     }
   }
 
@@ -1390,8 +1397,9 @@ export final class ScopeBuilder {
   }
 
   #exitScope(): void {
-    if (this.#current.parent != null) {
-      this.#current = this.#current.parent as Scope;
+    let parent = this.#current.parent;
+    if (parent != null) {
+      this.#current = parent;
     }
   }
 }

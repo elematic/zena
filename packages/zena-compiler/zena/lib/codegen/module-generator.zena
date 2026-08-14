@@ -111,9 +111,9 @@ export final class ModuleGenerator {
       for (let stmt in moduleNode.body) {
         if (stmt is EnumDeclaration) {
           for (let member in stmt.members) {
-            if (member.initializer != null && member.initializer is StringLiteral) {
-              let sl = member.initializer as StringLiteral;
-              wasm.registerStringLiteral(sl.value);
+            let initializer = member.initializer;
+            if (initializer is StringLiteral) {
+              wasm.registerStringLiteral(initializer.value);
             }
           }
         }
@@ -122,7 +122,7 @@ export final class ModuleGenerator {
 
 
     let tLayout = performance.start("codegen-layout");
-    let stringClass = wasm.stringClass;
+    let {stringClass} = wasm;
     if (stringClass != null) {
       if (wasm.stringLiterals.size > 0) {
         wasm.registerStringLiteral(""); // Ensure empty string is in stringLiterals
@@ -239,8 +239,9 @@ export final class ModuleGenerator {
         }
 
         wasm.ensureStringLiteralHelpers(this.program.units[0].model);
-        if (wasm.stringLiteralsArrayGlobal != null) {
-          (wasm.stringLiteralsArrayGlobal as WasmGlobal).initArraySize = wasm.stringLiterals.size;
+        let {stringLiteralsArrayGlobal} = wasm;
+        if (stringLiteralsArrayGlobal != null) {
+          stringLiteralsArrayGlobal.initArraySize = wasm.stringLiterals.size;
         }
       }
     }
@@ -257,8 +258,9 @@ export final class ModuleGenerator {
       if (g.namespaceImport != null) {
         needsStartFunction = true;
       }
-      if (g.initExpr != null) {
-        let isLiteral = match (g.initExpr as Expression) {
+      let {initExpr} = g;
+      if (initExpr != null) {
+        let isLiteral = match (initExpr) {
           case NumberLiteral: true
           case BooleanLiteral: true
           case _: false
@@ -287,16 +289,17 @@ export final class ModuleGenerator {
     }
     // Pre-discover functions whose references are taken by namespace imports
     for (let g in wasm.globals) {
-      if (g.namespaceImport != null) {
-        let spec = g.namespaceImport as ImportSpecifier;
+      let {namespaceImport} = g;
+      if (namespaceImport != null) {
+        let spec = namespaceImport;
         let moduleModel = g.model;
         let parentNode = moduleModel.getParent(spec);
-        if (parentNode != null && parentNode is ImportDeclaration) {
+        if (parentNode is ImportDeclaration) {
           let specifier = parentNode.moduleSpecifier.value;
           var canonicalPath = specifier;
           if (specifier.startsWith("./") || specifier.startsWith("../")) {
             let referrer = moduleModel.getParent(parentNode);
-            if (referrer != null && referrer is Module) {
+            if (referrer is Module) {
               let dir = dirName(referrer.path);
               canonicalPath = normalizePath(dir + "/" + specifier);
             }
@@ -457,11 +460,12 @@ export final class ModuleGenerator {
     this.emitter.emitImportSectionStart(
         wasm.functionImports.length + (if (memoryImported) 1 else 0));
     for (let f in wasm.functionImports) {
-      if (f.importModule != null && f.importName != null) {
+      let {importModule} = f;
+      if (importModule != null && f.importName != null) {
         if (f.signature.index < 0) {
           throw new Error("Function import " + (if (f.name != null) f.name as String else "<unnamed>") + " has unassigned signature index (-1)!");
         }
-        this.emitter.emitFunctionImport(f.importModule as String, f.importName as String, f.signature.index);
+        this.emitter.emitFunctionImport(importModule, f.importName as String, f.signature.index);
       }
     }
     if (memoryImported) {
@@ -498,10 +502,11 @@ export final class ModuleGenerator {
       this.emitter.emitGlobal(g.type, g.isMutable);
       
       var emitted = false;
-      if (g.initExpr != null) {
-        match (g.initExpr as Expression) {
+      let {initExpr} = g;
+      if (initExpr != null) {
+        match (initExpr) {
           case NumberLiteral {raw}: {
-             let type = g.type;
+             let {type} = g;
              if (type is ValTypeI32 ) {
                 if (let (true, val) = parseI32(raw)) {
                   this.emitter.emitI32Const(val);
@@ -553,7 +558,8 @@ export final class ModuleGenerator {
         }
         let structType = structTypeOpt;
         for (let field in structType.fields) {
-          if (field.name != null && (field.name as String) == "<vtable>") {
+          let {name} = field;
+          if (name != null && name == "<vtable>") {
             if (vtableGlobalOpt == null) {
               throw new Error("Singleton vtable not found for class: " + cType.name);
             }
@@ -576,7 +582,7 @@ export final class ModuleGenerator {
       }
       
       if (!emitted) {
-        let type = g.type;
+        let {type} = g;
         if (type is ValTypeI32) {
           this.emitter.emitI32Const(0);
         } else if (type is ValTypeI64) {
@@ -612,17 +618,21 @@ export final class ModuleGenerator {
     }
 
     // Export synthesized runtime string helpers if present
-    if (wasm.stringCreateFunc != null) {
-      exports.push(new WasmExport("$stringCreate", wasm.stringCreateFunc as WasmFunction));
+    let {stringCreateFunc} = wasm;
+    if (stringCreateFunc != null) {
+      exports.push(new WasmExport("$stringCreate", stringCreateFunc));
     }
-    if (wasm.stringSetByteFunc != null) {
-      exports.push(new WasmExport("$stringSetByte", wasm.stringSetByteFunc as WasmFunction));
+    let {stringSetByteFunc} = wasm;
+    if (stringSetByteFunc != null) {
+      exports.push(new WasmExport("$stringSetByte", stringSetByteFunc));
     }
-    if (wasm.stringGetByteFunc != null) {
-      exports.push(new WasmExport("$stringGetByte", wasm.stringGetByteFunc as WasmFunction));
+    let {stringGetByteFunc} = wasm;
+    if (stringGetByteFunc != null) {
+      exports.push(new WasmExport("$stringGetByte", stringGetByteFunc));
     }
-    if (wasm.stringGetLengthFunc != null) {
-      exports.push(new WasmExport("$stringGetLength", wasm.stringGetLengthFunc as WasmFunction));
+    let {stringGetLengthFunc} = wasm;
+    if (stringGetLengthFunc != null) {
+      exports.push(new WasmExport("$stringGetLength", stringGetLengthFunc));
     }
 
     // __zena_drain — the re-entry point for a host that cannot wait
@@ -654,13 +664,15 @@ export final class ModuleGenerator {
         exports.push(new WasmExport(exportName, f));
       }
     }
-    if (wasm.componentEntryFunc != null) {
+    let {componentEntryFunc} = wasm;
+    if (componentEntryFunc != null) {
       exports.push(new WasmExport(componentEntryExport,
-          wasm.componentEntryFunc as WasmFunction));
+          componentEntryFunc));
     }
-    if (wasm.componentCallbackFunc != null) {
+    let {componentCallbackFunc} = wasm;
+    if (componentCallbackFunc != null) {
       exports.push(new WasmExport(componentCallbackExport,
-          wasm.componentCallbackFunc as WasmFunction));
+          componentCallbackFunc));
     }
     // The wrappers, and the two functions the canonical options name.
     // They are core-module exports and not component ones: the component
@@ -683,19 +695,23 @@ export final class ModuleGenerator {
     // `cabi_realloc` is not exported when the memory is imported: the
     // canonical options name the runtime memory module's own realloc,
     // which is the allocator this module already delegates to.
-    if (wasm.componentReallocFunc != null && !memoryImported) {
+    let {componentReallocFunc} = wasm;
+    if (componentReallocFunc != null && !memoryImported) {
       exports.push(new WasmExport(componentReallocExport,
-          wasm.componentReallocFunc as WasmFunction));
+          componentReallocFunc));
     }
-    if (wasm.componentPostReturnFunc != null) {
+    let {componentPostReturnFunc} = wasm;
+    if (componentPostReturnFunc != null) {
       exports.push(new WasmExport(componentPostReturnExport,
-          wasm.componentPostReturnFunc as WasmFunction));
+          componentPostReturnFunc));
     }
-    if (wasm.asyncMainStartFunc != null) {
-      exports.push(new WasmExport("__zena_main_start", wasm.asyncMainStartFunc as WasmFunction));
+    let {asyncMainStartFunc} = wasm;
+    if (asyncMainStartFunc != null) {
+      exports.push(new WasmExport("__zena_main_start", asyncMainStartFunc));
     }
-    if (wasm.asyncMainResultFunc != null) {
-      exports.push(new WasmExport("__zena_main_result", wasm.asyncMainResultFunc as WasmFunction));
+    let {asyncMainResultFunc} = wasm;
+    if (asyncMainResultFunc != null) {
+      exports.push(new WasmExport("__zena_main_result", asyncMainResultFunc));
     }
     
     // Compute total exports = functions + globals + tags
@@ -735,8 +751,9 @@ export final class ModuleGenerator {
     }
     this.emitter.emitExportSectionEnd();
 
-    if (wasm.startFunction != null) {
-      let sf = wasm.startFunction as WasmFunction;
+    let {startFunction} = wasm;
+    if (startFunction != null) {
+      let sf = startFunction;
       this.emitter.emitStartSection(sf.index);
     }
 

@@ -101,10 +101,10 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
   // The `let` is explicit here, so the element is a LiteralPattern; the
   // bare-literal form is still accepted for patterns built elsewhere.
   var first = pat.elements[0];
-  if (first != null && first is LiteralPattern) {
+  if (first is LiteralPattern) {
     first = first.value;
   }
-  if (first != null && first is BooleanLiteral) {
+  if (first is BooleanLiteral) {
     if (!first.value) {
       cond = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
     }
@@ -394,7 +394,8 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
     bail(cx, 'if-let');
   }
 
-  if (stmt.alternate == null) {
+  let alternate = stmt.alternate;
+  if (alternate == null) {
     let mergeSyms = cx.assignedEnvSyms(stmt.consequent);
     let thenB = cx.b.newBlock();
     let mergeB = cx.b.newBlock();
@@ -442,7 +443,6 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
     return;
   }
 
-  let alternate = stmt.alternate as Statement;
   let mergeSyms = cx.assignedEnvSyms(stmt.consequent);
   cx.appendAssignedEnvSyms(alternate, mergeSyms);
   let thenB = cx.b.newBlock();
@@ -549,10 +549,10 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
  * out of the payload global at the top of the handler block.
  */
 let bindCatchParam = (cx: LoweringContext, handler: CatchClause): void => {
-  if (handler.param == null) {
+  let paramIdent = handler.param;
+  if (paramIdent == null) {
     return;
   }
-  let paramIdent = handler.param as Identifier;
   let symOpt = cx.func.model.resolveDeclaration(paramIdent);
   if (symOpt == null) {
     bail(cx, 'catch parameter symbol');
@@ -883,12 +883,12 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   let tag = cx.wasm.exceptionTag as WasmTag;
   return lowerFinallyRegion(cx, mirrored, isVoid, resultVt,
       (scope, resultVar, saved) => {
-        if (expr.handler == null) {
+        let handler = expr.handler;
+        if (handler == null) {
           let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
           finishProtectedArm(cx, scope, resultVar, bodyValue);
           return;
         }
-        let handler = expr.handler as CatchClause;
         let bodyB = cx.b.newBlock();
         let catchB = cx.b.newBlock();
         cx.b.tryBr(cx.b.addRef(new IrRefTag(tag)), bodyB, noValues(),
@@ -1126,8 +1126,9 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
   let ownerClass = disposeOwnerClass(cx, declType);
 
   let value = lowerExpr(cx, stmt.init, null);
-  if (stmt.pattern != null) {
-    let pat = stmt.pattern as Node;
+  let pattern = stmt.pattern;
+  if (pattern != null) {
+    let pat = pattern as Node;
     if (!(pat is IdentifierPattern)) {
       bail(cx, 'using destructuring pattern');
     }
@@ -1300,11 +1301,13 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   }
 
   let carried = new Array<SymbolId>();
-  if (stmt.test != null) {
-    cx.appendAssignedEnvSyms(stmt.test as Node, carried);
+  let test = stmt.test;
+  if (test != null) {
+    cx.appendAssignedEnvSyms(test, carried);
   }
-  if (stmt.update != null) {
-    cx.appendAssignedEnvSyms(stmt.update as Node, carried);
+  let update = stmt.update;
+  if (update != null) {
+    cx.appendAssignedEnvSyms(update, carried);
   }
   cx.appendAssignedEnvSyms(stmt.body, carried);
 
@@ -1614,7 +1617,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
     if (infoOpt == null) {
       bail(cx, 'for-in Array not discovered');
     }
-    let structType = infoOpt.structType;
+    let {structType} = infoOpt;
     if (!isValSubtype(cx.valueTypeOf(iterable),
         new ValTypeRefNull(structType) as ValType)) {
       bail(cx, 'for-in receiver struct mismatch');

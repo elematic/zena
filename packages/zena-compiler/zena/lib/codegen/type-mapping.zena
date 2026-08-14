@@ -147,9 +147,10 @@ export let substituteTypeParamsInCodegen = (
       
       var argsChanged = false;
       var newArgs: Array<Type> | null = null;
-      if (ft.typeArguments != null) {
-        newArgs = new Array<Type>((ft.typeArguments as Array<Type>).length);
-        for (let arg in (ft.typeArguments as Array<Type>)) {
+      let {typeArguments} = ft;
+      if (typeArguments != null) {
+        newArgs = new Array<Type>(typeArguments.length);
+        for (let arg in typeArguments) {
           let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
           newArgs.push(sub);
           if (sub != arg) {
@@ -189,8 +190,9 @@ export let substituteTypeParamsInCodegen = (
       // substitution matches by identity, so no capture is possible here.
       var changed = false;
       var newArgs: Array<Type> | null = null;
-      if (ta.typeArguments != null) {
-        let srcArgs = ta.typeArguments as Array<Type>;
+      let {typeArguments} = ta;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
         let acc = new Array<Type>(srcArgs.length);
         for (let arg in srcArgs) {
           let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
@@ -219,9 +221,10 @@ export let substituteTypeParamsInCodegen = (
       var hasArgs = false;
       let ctArgsVal = new Array<Type>();
       let ctParams = getClassTypeParameters(ct);
-      if (ct.typeArguments != null) {
+      let {typeArguments} = ct;
+      if (typeArguments != null) {
         hasArgs = true;
-        for (let arg in (ct.typeArguments as Array<Type>)) {
+        for (let arg in typeArguments) {
           ctArgsVal.push(arg);
         }
       } else if (typeParams != null && typeArgs != null && ctParams != null) {
@@ -290,8 +293,9 @@ export let substituteTypeParamsInCodegen = (
           combinedArgs.push(a);
         }
 
-        if (ct.superType != null) {
-          inst.superType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, ct.superType as Type) as ClassType;
+        let {superType} = ct;
+        if (superType != null) {
+          inst.superType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, superType as Type) as ClassType;
         }
         for (let impl in ct.implementsList) {
           inst.implementsList.push(substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, impl) as InterfaceType);
@@ -327,8 +331,9 @@ export let substituteTypeParamsInCodegen = (
         inst.sealedVariants = ct.sealedVariants;
         inst.declaredFields = ct.declaredFields;
         inst.forwardVariantNames = ct.forwardVariantNames;
-        if (ct.onType != null) {
-          inst.onType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, ct.onType as Type);
+        let {onType} = ct;
+        if (onType != null) {
+          inst.onType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, onType);
         }
         inst.sourcePath = ct.sourcePath;
         // Register only after the instantiation is fully built: a
@@ -344,9 +349,10 @@ export let substituteTypeParamsInCodegen = (
       var hasArgs = false;
       let itArgsVal = new Array<Type>();
       let itParams = getInterfaceTypeParameters(it);
-      if (it.typeArguments != null) {
+      let {typeArguments} = it;
+      if (typeArguments != null) {
         hasArgs = true;
-        for (let arg in (it.typeArguments as Array<Type>)) {
+        for (let arg in typeArguments) {
           itArgsVal.push(arg);
         }
       } else if (typeParams != null && typeArgs != null && itParams != null) {
@@ -404,9 +410,10 @@ export let substituteTypeParamsInCodegen = (
       var hasArgs = false;
       let mtArgsVal = new Array<Type>();
       let mtParams = mt.typeParameters;
-      if (mt.typeArguments != null) {
+      let {typeArguments} = mt;
+      if (typeArguments != null) {
         hasArgs = true;
-        for (let arg in (mt.typeArguments as Array<Type>)) {
+        for (let arg in typeArguments) {
           mtArgsVal.push(arg);
         }
       } else if (typeParams != null && typeArgs != null && mtParams != null) {
@@ -440,8 +447,9 @@ export let substituteTypeParamsInCodegen = (
         for (let a in typeArgs) {
           combinedArgs.push(a);
         }
-        if (mt.onType != null) {
-          inst.onType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, mt.onType as Type);
+        let {onType} = mt;
+        if (onType != null) {
+          inst.onType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, onType);
         }
         for (let m in mt.mixins) {
           let subM = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, m);
@@ -473,8 +481,9 @@ let addTransitiveInterfaces = (
   
   let genericSource = it.genericSource ?? it;
   let itParams = getInterfaceTypeParameters(it);
-  if (genericSource.typeParameters != null && it.typeArguments != null && itParams != null) {
-    let tps = genericSource.typeParameters as Array<TypeParameterType>;
+  let {typeParameters} = genericSource;
+  if (typeParameters != null && it.typeArguments != null && itParams != null) {
+    let tps = typeParameters;
     let tas = it.typeArguments as Array<Type>;
     for (var i = 0; i < tps.length; i += 1) {
       allParams.push(tps[i]);
@@ -507,15 +516,17 @@ let addClassTransitiveInterfaces = (
       addTransitiveInterfaces(wasm, resolved, allParams, allArgs, seen);
     }
   }
-  if (ct.superType != null) {
-    let superCt = ct.superType as ClassType;
+  let {superType} = ct;
+  if (superType != null) {
+    let superCt = superType;
     let superResolved = substituteTypeParamsInCodegen(wasm, ctParams, ct.typeArguments, superCt) as ClassType;
     
     // Add superclass's own type parameters
     let genericSource = superResolved.genericSource ?? superResolved;
     let superCtParams = getClassTypeParameters(superResolved);
-    if (genericSource.typeParameters != null && superResolved.typeArguments != null && superCtParams != null) {
-      let tps = genericSource.typeParameters as Array<TypeParameterType>;
+    let {typeParameters} = genericSource;
+    if (typeParameters != null && superResolved.typeArguments != null && superCtParams != null) {
+      let tps = typeParameters;
       let tas = superResolved.typeArguments as Array<Type>;
       for (var i = 0; i < tps.length; i += 1) {
         allParams.push(tps[i]);
@@ -571,8 +582,9 @@ let addClassTransitiveMixins = (
   for (let m in ct.mixins) {
     addTransitiveMixins(m, allParams, allArgs, seen);
   }
-  if (ct.superType != null) {
-    addClassTransitiveMixins(ct.superType as ClassType, allParams, allArgs, seen);
+  let {superType} = ct;
+  if (superType != null) {
+    addClassTransitiveMixins(superType, allParams, allArgs, seen);
   }
 };
 
@@ -693,8 +705,9 @@ export let substituteTypeParamsInFunctionContext = (wasm: WasmModule, wasmFuncti
     substituted = substituteTypeParamsInClassContext(wasm, wasmFunction.classType, substituted);
   }
 
-  if (wasmFunction.typeParameters != null && wasmFunction.typeArguments != null) {
-    let tps = wasmFunction.typeParameters as Array<TypeParameterType>;
+  let {typeParameters} = wasmFunction;
+  if (typeParameters != null && wasmFunction.typeArguments != null) {
+    let tps = typeParameters;
     let tas = wasmFunction.typeArguments as Array<Type>;
     substituted = substituteTypeParamsInCodegen(wasm, tps, tas, substituted);
   }
@@ -792,8 +805,9 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       new ArrayType(sub)
     }
     case ClassType as ct: {
-      if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0) {
-        let args = ct.typeArguments as Array<Type>;
+      let {typeArguments} = ct;
+      if (typeArguments != null && typeArguments.length > 0) {
+        let args = typeArguments;
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
@@ -805,8 +819,9 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
 
         let inst = new ClassType(ct.id, ct.symbolId, ct.name);
         inst.typeArguments = newArgs;
-        if (ct.superType != null) {
-          inst.superType = eraseTypeParameters(wasm, ct.superType as Type) as ClassType;
+        let {superType} = ct;
+        if (superType != null) {
+          inst.superType = eraseTypeParameters(wasm, superType as Type) as ClassType;
         }
         inst.members = ct.members;
         inst.typeParameters = ct.typeParameters;
@@ -852,8 +867,9 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       }
     }
     case InterfaceType as it: {
-      if (it.typeArguments != null && (it.typeArguments as Array<Type>).length > 0) {
-        let args = it.typeArguments as Array<Type>;
+      let {typeArguments} = it;
+      if (typeArguments != null && typeArguments.length > 0) {
+        let args = typeArguments;
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
@@ -902,8 +918,9 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       inst
     }
     case MixinType as mt: {
-      if (mt.typeArguments != null && (mt.typeArguments as Array<Type>).length > 0) {
-        let args = mt.typeArguments as Array<Type>;
+      let {typeArguments} = mt;
+      if (typeArguments != null && typeArguments.length > 0) {
+        let args = typeArguments;
         let newArgs = new Array<Type>();
         var changed = false;
         for (let arg in args) {
@@ -1055,8 +1072,9 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
 
 let getWasmTypeKey = (target: WasmType): String => {
   if (target is WasmStruct) {
-    if (target.name != null) {
-      return target.name as String;
+    let {name} = target;
+    if (name != null) {
+      return name;
     }
     var structKey = "struct_anon_";
     for (let f in target.fields) {
@@ -1186,7 +1204,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   case NumLiteralType as num: typeToValType(wasm, baseType(num))
   case StringLiteralType: {
     var stringStruct: WasmStruct | null = null;
-    let stringClass = wasm.stringClass;
+    let {stringClass} = wasm;
     if (stringClass != null) {
       let key = getClassKey(stringClass);
       if (let (true, stringInfo) = wasm.classInfos.get(key)) {
@@ -1627,9 +1645,10 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
       if (resolvedCt.name.length >= 5 && resolvedCt.name.sliceBytes(resolvedCt.name.length - 5, resolvedCt.name.length) == "_This") {
         ct as Type
       } else {
-        if (resolvedCt.typeArguments != null) {
+        let {typeArguments} = resolvedCt;
+        if (typeArguments != null) {
           let newArgs = new Array<Type>();
-          for (let arg in (resolvedCt.typeArguments as Array<Type>)) {
+          for (let arg in typeArguments) {
             newArgs.push(mapMixinThisInType(ct, arg));
           }
           let inst = new ClassType(resolvedCt.id, resolvedCt.symbolId, resolvedCt.name);

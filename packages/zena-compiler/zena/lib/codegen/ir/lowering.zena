@@ -345,9 +345,9 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
   let target = func.interfaceTrampolineTarget as WasmFunction;
   let b = new IrBuilder();
   let params = synthEntryParams(b, func);
-  if (target.intrinsic != null) {
-    let iname = target.intrinsic as String;
-    if (iname == 'array.len') {
+  let {intrinsic} = target;
+  if (intrinsic != null) {
+    if (intrinsic == 'array.len') {
       let recv = castToConcreteRef(b, params[0], target.signature.params[0]);
       let len = b.emit(IrOp.array_len, new ValTypeI32(), recv, -1);
       b.ret(len);
@@ -355,11 +355,11 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
     }
     // Array element access through an interface (FixedArray/ImmutableArray
     // as Sequence): inline the op, like every direct call site does.
-    if (iname == 'array.get' || iname == 'array.set') {
+    if (intrinsic == 'array.get' || intrinsic == 'array.set') {
       let arrType = asWasmArray(target.signature.params[0]);
       if (arrType != null) {
         let recv = castToConcreteRef(b, params[0], target.signature.params[0]);
-        if (iname == 'array.get') {
+        if (intrinsic == 'array.get') {
           // Packed i8 elements read unsigned as i32; the erased slot is i32.
           if (arrType.elementType is ValTypeI8) {
             let value = b.emit(IrOp.array_get_u, new ValTypeI32(), recv, params[1]);
@@ -554,10 +554,10 @@ let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
  * target, streaming's generateClosureTrampolineBody.
  */
 let synthesizeClosureTrampoline = (func: WasmFunction): IrBody => {
-  if (func.closureTrampolineTarget == null) {
+  let target = func.closureTrampolineTarget;
+  if (target == null) {
     throw new ZirUnsupported('closure trampoline without target');
   }
-  let target = func.closureTrampolineTarget as WasmFunction;
   if (func.signature.params.length != target.signature.params.length + 1) {
     throw new ZirUnsupported('closure trampoline shape');
   }
@@ -585,10 +585,10 @@ let synthesizeClosureTrampoline = (func: WasmFunction): IrBody => {
 };
 
 let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
-  if (func.closureWrapperTarget == null) {
+  let target = func.closureWrapperTarget;
+  if (target == null) {
     throw new ZirUnsupported('closure wrapper without target');
   }
-  let target = func.closureWrapperTarget as WasmFunction;
   if (func.signature.params.length != target.signature.params.length + 1) {
     throw new ZirUnsupported('closure wrapper shape');
   }
@@ -703,7 +703,7 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     if (func.isFunctionAdaptation) {
       return lowerFunctionAdaptation(wasm, func);
     }
-    if (func.name != null && (func.name as String) == '__start') {
+    if (func.name == '__start') {
       let lowerer = new FunctionLowerer(wasm, func);
       return lowerer.lowerStart();
     }
@@ -1031,8 +1031,9 @@ export final class FunctionLowerer {
       }
       // Destructuring parameters bind their pattern from the same
       // value once the entry block is current (below).
-      if (p.pattern != null) {
-        patternParams.push(p.pattern as Node);
+      let {pattern} = p;
+      if (pattern != null) {
+        patternParams.push(pattern as Node);
         patternValues.push(value);
       } else if (sym == null) {
         this.#bail('unresolved parameter');
@@ -1288,7 +1289,7 @@ export final class FunctionLowerer {
     var canonicalPath = parentNode.moduleSpecifier.value;
     if (canonicalPath.startsWith('./') || canonicalPath.startsWith('../')) {
       let referrer = moduleModel.getParent(parentNode);
-      if (referrer != null && referrer is Module) {
+      if (referrer is Module) {
         canonicalPath = normalizePath(
             dirName(referrer.path) + '/' + canonicalPath);
       }
@@ -1359,14 +1360,15 @@ export final class FunctionLowerer {
   lowerStart(): IrBody {
     let entry = this.b.newBlock();
     this.b.switchTo(entry);
-    if (this.wasm.sharedStringsGlobal != null) {
+    let {sharedStringsGlobal} = this.wasm;
+    if (sharedStringsGlobal != null) {
       let byteArr = this.wasm.getByteArrayType();
       let zero = this.b.constI32(0, new ValTypeI32());
       let len = this.b.constI32(this.wasm.sharedStringsLength, new ValTypeI32());
       let bytes = this.b.arrayNewData(zero, len, this.wasm.sharedStringsDataIdx,
           this.b.addRef(new IrRefType(byteArr)),
           new ValTypeRef(byteArr) as ValType);
-      let g = this.wasm.sharedStringsGlobal as WasmGlobal;
+      let g = sharedStringsGlobal;
       this.b.emitVoid(IrOp.global_set, bytes,
           this.b.addRef(new IrRefGlobal(g)));
     }
@@ -1394,7 +1396,7 @@ export final class FunctionLowerer {
 
   /** One unit's non-literal global initializers, streaming's order. */
   #lowerUnitGlobalInits(unit: CompilationUnit): void {
-    let model = unit.model;
+    let {model} = unit;
     for (let stmt in unit.ast.body) {
       if (stmt is VariableDeclaration) {
         if (stmt.pattern is IdentifierPattern) {
@@ -1468,12 +1470,12 @@ export final class FunctionLowerer {
     if (ct.isExtension) {
       this.#bail('extension constructor');
     }
-    let classDecl = this.func.classDecl;
+    let {classDecl} = this.func;
     // Sealed-class variants (`case Lit(...)`) declare via a
     // SealedVariant node: no class body, so no local field defaults —
     // inherited initializers run in the base constructor via super.
     var cdOpt: ClassDeclaration | null = null;
-    if (classDecl != null && classDecl is ClassDeclaration) {
+    if (classDecl is ClassDeclaration) {
       cdOpt = classDecl;
     } else if (classDecl == null || !(classDecl is SealedVariant)) {
       this.#bail('constructor declaration shape');
@@ -1582,15 +1584,16 @@ export final class FunctionLowerer {
         this.b.callFunc(fr, this.#oneArg(params[0]), null);
       }
     }
-    if (ct.constructorType != null) {
-      let ctorType = ct.constructorType as FunctionType;
-      if (ctorType.parameterNames != null) {
-        let names = ctorType.parameterNames as Array<String>;
+    let {constructorType} = ct;
+    if (constructorType != null) {
+      let ctorType = constructorType;
+      let {parameterNames} = ctorType;
+      if (parameterNames != null) {
         for (var pi = 0; pi < ctorType.parameters.length; pi += 1) {
-          if (pi + 1 >= params.length || pi >= names.length) {
+          if (pi + 1 >= params.length || pi >= parameterNames.length) {
             this.#bail('case constructor arity');
           }
-          let pName = names[pi];
+          let pName = parameterNames[pi];
           var lookupName = pName;
           if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
             lookupName = getClassPrivateFieldKey(getClassKey(ct), pName);
@@ -1615,7 +1618,7 @@ export final class FunctionLowerer {
     for (let member in cd.body) {
       if (member is FieldDefinition) {
         if (member.value != null && !member.isStatic) {
-          // Streaming skips (not bails) non-identifier field names here.
+          // Streaming skips (not bails) non-identifier field parameterNames here.
           if (member.name is Identifier) {
             this.#storeCtorField(ct, structType,
                 (member.name as Identifier).name, member.value as Expression);
@@ -1684,7 +1687,7 @@ export final class FunctionLowerer {
     if (ct.isExtension) {
       this.#bail('extension constructor');
     }
-    let classDecl = this.func.classDecl;
+    let {classDecl} = this.func;
     if (classDecl == null || !(classDecl is ClassDeclaration)) {
       this.#bail('constructor declaration shape');
     }
@@ -1705,8 +1708,9 @@ export final class FunctionLowerer {
     this.#mixinFieldDefaults(ct, structType, classDecl, true);
 
     // 2. Initializer list (includes desugared this.x params).
-    if (md.initializerList != null) {
-      for (let init in md.initializerList as Array<Node>) {
+    let {initializerList} = md;
+    if (initializerList != null) {
+      for (let init in initializerList) {
         if (init is FieldInitializer) {
           this.#storeCtorField(ct, structType, init.field.name, init.value);
         } else {
@@ -1716,8 +1720,9 @@ export final class FunctionLowerer {
     }
 
     // 3. Super-initializer.
-    if (md.superInitializer != null) {
-      let si = md.superInitializer as SuperInitializer;
+    let {superInitializer} = md;
+    if (superInitializer != null) {
+      let si = superInitializer as SuperInitializer;
       if (ct.superType == null) {
         this.#bail('super without superclass');
       }
@@ -2424,10 +2429,10 @@ export final class FunctionLowerer {
     if (ftNode == null || !(ftNode is FunctionType)) {
       return null;
     }
-    if (ftNode.typeArguments == null) {
+    let raw = ftNode.typeArguments;
+    if (raw == null) {
       return null;
     }
-    let raw = ftNode.typeArguments as Array<Type>;
     if (raw.length == 0) {
       return null;
     }
@@ -2604,13 +2609,15 @@ export final class FunctionLowerer {
       let n = sct.name;
       if (sct.isMixinIntermediate ||
           (n.length >= 5 && n.sliceBytes(n.length - 5, n.length) == "_This")) {
-        if (this.func.classType != null) {
-          srcType = this.func.classType as ClassType;
+        let {classType} = this.func;
+        if (classType != null) {
+          srcType = classType;
         }
       }
     }
-    if (this.func.classType != null) {
-      let ct = this.func.classType as ClassType;
+    let {classType} = this.func;
+    if (classType != null) {
+      let ct = classType;
       srcType = substituteTypeParamsInClassContext(this.wasm, ct, srcType);
       tgtType = substituteTypeParamsInClassContext(this.wasm, ct, tgtType);
     }
@@ -3101,7 +3108,7 @@ export final class FunctionLowerer {
       // which also makes two references of one function compare
       // unequal by identity.
       let identT = this.#substitutedNodeType(ident);
-      if (identT != null && identT is FunctionType) {
+      if (identT is FunctionType) {
         let isSpecialized = identT.typeArguments != null &&
             (identT.typeArguments as Array<Type>).length > 0;
         let keyName = if (isSpecialized) {
@@ -3405,11 +3412,12 @@ export final class FunctionLowerer {
     if (classInfo == null) {
       this.#bail('class not discovered');
     }
-    let structType = classInfo.structType;
+    let {structType} = classInfo;
     new ValTypeRef(structType);
 
-    if (classInfo.singletonGlobal != null) {
-      let singleton = classInfo.singletonGlobal as WasmGlobal;
+    let {singletonGlobal} = classInfo;
+    if (singletonGlobal != null) {
+      let singleton = singletonGlobal;
       let globalRef = this.b.addRef(new IrRefGlobal(singleton));
       let sv = this.b.emit(IrOp.global_get, singleton.type, -1, globalRef);
       this.#cx().exactValues.add(sv);
@@ -3459,13 +3467,14 @@ export final class FunctionLowerer {
   /** struct.new_default plus the vtable store: a default-initialized
    * instance, ready for its constructor call. */
   #instanceShell(classInfo: ClassCodegenInfo): i32 {
-    let structType = classInfo.structType;
+    let {structType} = classInfo;
     let resultVt: ValType = new ValTypeRef(structType);
     let typeRef = this.b.addRef(new IrRefType(structType));
     let inst = this.b.emit(IrOp.struct_new_default, resultVt, -1, typeRef);
     this.#cx().exactValues.add(inst);
-    if (classInfo.vtableGlobal != null) {
-      let vtGlobal = classInfo.vtableGlobal as WasmGlobal;
+    let {vtableGlobal} = classInfo;
+    if (vtableGlobal != null) {
+      let vtGlobal = vtableGlobal;
       let vtRef = this.b.addRef(new IrRefGlobal(vtGlobal));
       let vtValue = this.b.emit(IrOp.global_get, vtGlobal.type, -1, vtRef);
       let fieldRef = this.b.addRef(new IrRefField(structType, '<vtable>'));
@@ -3608,7 +3617,8 @@ export final class FunctionLowerer {
     if (member.object is SuperExpression) {
       return this.#lowerSuperWrite(assign, member);
     }
-    if (assign.operator != null && (assign.operator as String) == '??') {
+    let {operator} = assign;
+    if (operator == '??') {
       return this.#lowerMemberNullishAssign(assign, member);
     }
     // Interface receivers write through the set# vtable slot.
@@ -3632,11 +3642,11 @@ export final class FunctionLowerer {
     let receiver = this.#lowerExpression(member.object);
     let receiverCt = this.#receiverClass(receiver, member);
     let target = this.#resolveMemberTarget(member, receiverCt);
-    if (target.fieldName == null) {
+    let {fieldName} = target;
+    if (fieldName == null) {
       return this.#lowerSetterWrite(assign, member, receiver, receiverCt,
           target.getter as WasmFunction, target.vtSlot != null);
     }
-    let fieldName = target.fieldName as String;
     // Setter-side override checks (the read-side resolve checked get#):
     // neither a redefined setter between receiver and declarer nor a
     // transitive-subclass setter may exist for a direct struct.set.
@@ -3894,9 +3904,10 @@ export final class FunctionLowerer {
     // enum "namespace" identifier itself is never lowered.
     if (objectType != null && baseType(objectType) is RecordType) {
       let rt = baseType(objectType) as RecordType;
-      if (rt.enumDeclaration != null) {
+      let {enumDeclaration} = rt;
+      if (enumDeclaration != null) {
         return this.#lowerEnumMember(
-            rt.enumDeclaration as EnumDeclaration, member);
+            enumDeclaration as EnumDeclaration, member);
       }
       return this.#lowerRecordRead(rt, member);
     }
@@ -4373,14 +4384,15 @@ export final class FunctionLowerer {
         new ValTypeRefNull(target.owner) as ValType)) {
       this.#bail('member receiver struct mismatch');
     }
-    if (target.vtSlot != null) {
+    let {vtSlot} = target;
+    if (vtSlot != null) {
       let vgetter = target.getter as WasmFunction;
       let vsig = vgetter.signature;
       if (vsig.returns.length != 1) {
         this.#bail('getter shape');
       }
       let vresult = this.#lowerVtableCall(receiver,
-          target.vtInfo as ClassCodegenInfo, target.vtSlot as String,
+          target.vtInfo as ClassCodegenInfo, vtSlot,
           vsig, this.#oneArg(receiver), vsig.returns[0]);
       return this.#reassertNonNull(vresult, this.#exprValType(member));
     }
@@ -4713,9 +4725,10 @@ export final class FunctionLowerer {
     // Intrinsic methods inline as instructions, exactly like their
     // call-position forms — streaming routes them through the same
     // per-name generators (the marker receiver carries no value).
-    if (method.intrinsic != null) {
+    let {intrinsic} = method;
+    if (intrinsic != null) {
       return lowerIntrinsic(this.#cx(),
-          method.intrinsic as String, call);
+          intrinsic, call);
     }
     if (method.isStatic ||
         (method.typeParameters != null && method.typeArguments == null)) {
@@ -5240,7 +5253,7 @@ export final class FunctionLowerer {
     if (classInfo == null) {
       this.#bail('receiver class not discovered');
     }
-    let structType = classInfo.structType;
+    let {structType} = classInfo;
     let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
     var lookupName = propName;
     if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
@@ -5607,9 +5620,10 @@ export final class FunctionLowerer {
         }
       } else {
         var currentValue = nextValue;
-        if (m.initializer != null) {
-          if (m.initializer is NumberLiteral) {
-            let raw = (m.initializer as NumberLiteral).raw;
+        let {initializer} = m;
+        if (initializer != null) {
+          if (initializer is NumberLiteral) {
+            let {raw} = initializer;
             let (ok, v) = parseI32WithHex(raw);
             if (ok) {
               currentValue = v;
@@ -5654,8 +5668,9 @@ export final class FunctionLowerer {
     // methods (`this.slice(...)` from the Range wrappers): the
     // element type reads as erased there, but the target is simply
     // this function's own specialization.
-    if (this.func.classType != null) {
-      let ownCt = this.func.classType as ClassType;
+    let {classType} = this.func;
+    if (classType != null) {
+      let ownCt = classType;
       if (ownCt.name == "FixedArray" || ownCt.name == "ImmutableArray") {
         let key = getClassMethodKey(getClassKey(ownCt), lookupName);
         if (let (true, m) = this.wasm.classMethodMap.get(key)) {
@@ -5838,13 +5853,13 @@ export final class FunctionLowerer {
       return null;
     }
     let ftNode = this.func.model.getNodeType(call.callee);
-    let paramSyms = if (ftNode != null && ftNode is FunctionType) {
+    let paramSyms = if (ftNode is FunctionType) {
       ftNode.parameterSymbols
     } else {
       null
     };
     let ownerT = this.func.model.getDefaultArgsOwner(call);
-    let owner = if (ownerT != null && ownerT is ClassType) {
+    let owner = if (ownerT is ClassType) {
       ownerT
     } else {
       null
@@ -5964,7 +5979,7 @@ export final class FunctionLowerer {
     // type-directed inline lowering, mirroring the streaming
     // backend's global intrinsics.
     let calleeFtNode = this.func.model.getNodeType(call.callee);
-    let calleeFt = if (calleeFtNode != null && calleeFtNode is FunctionType) {
+    let calleeFt = if (calleeFtNode is FunctionType) {
       calleeFtNode
     } else {
       null
@@ -6347,7 +6362,8 @@ export final class FunctionLowerer {
     }
     let celled = this.#isCelled(resolved.id);
     var value = -1;
-    if (assign.operator != null && (assign.operator as String) == "??") {
+    let {operator} = assign;
+    if (operator != null && operator == "??") {
       return this.#lowerNullishAssign(assign, resolved.id, celled);
     }
     if (assign.operator == null) {

@@ -42,8 +42,9 @@ export final class TypeLowerer implements TypeLowererInterface {
     if (depth > 12) { return; }
     if (t is ClassType) {
       this.pass.reachablyNamedClasses.add(getClassKey(t) as String);
-      if (t.typeArguments != null) {
-        for (let ta in (t.typeArguments as Array<Type>)) {
+      let typeArguments = t.typeArguments;
+      if (typeArguments != null) {
+        for (let ta in typeArguments) {
           this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, ta), model, depth + 1);
         }
       }
@@ -182,8 +183,9 @@ export final class TypeLowerer implements TypeLowererInterface {
         let visitor = this.pass.visitor;
         let targetSymId = t.functionSymbolId;
         let resolvedArgs = new Array<Type>();
-        if (t.typeArguments != null) {
-          for (let arg in (t.typeArguments as Array<Type>)) {
+        let typeArguments = t.typeArguments;
+        if (typeArguments != null) {
+          for (let arg in typeArguments) {
             resolvedArgs.push(arg);
           }
         }
@@ -260,7 +262,8 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
       
       // Register specialized class struct & methods if generic instantiation
-      if (t.typeArguments != null && (t.typeArguments as Array<Type>).length > 0 && isConcrete(t)) {
+      let typeArguments = t.typeArguments;
+      if (typeArguments != null && typeArguments.length > 0 && isConcrete(t)) {
         // An ERASURE is not a specialization. A mention of one is
         // made by code that does not run: `#linkSuperAndVT` naming a
         // subclass template's supertype, or the walk of a generic
@@ -349,7 +352,8 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
       
       // Register specialized interface struct & methods if generic instantiation
-      if (t.typeArguments != null && (t.typeArguments as Array<Type>).length > 0 && isConcrete(t)) {
+      let typeArguments = t.typeArguments;
+      if (typeArguments != null && typeArguments.length > 0 && isConcrete(t)) {
         let lookupId = (t.genericSource ?? t).symbolId;
         if (this.pass.interfaceDecls.has(lookupId)) {
           let ifaceDecl = this.pass.interfaceDecls[lookupId];
@@ -490,8 +494,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       resolveType: (t: Type) => Type): void {
     if (p is StringLiteral) {
       // `case "lit":` can be a BARE literal-expression pattern.
-      if (this.pass.wasm.stringClass != null) {
-        let bsc = this.pass.wasm.stringClass as ClassType;
+      let {stringClass} = this.pass.wasm;
+      if (stringClass != null) {
+        let bsc = stringClass;
         this.pass.notePendingMemberReach(
             getClassMethodKey(getClassKey(bsc), "=="));
       }
@@ -785,7 +790,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             // just the shared template.
             var targs: Array<Type> | null = null;
             let calleeType = model.getNodeType(callee);
-            if (calleeType != null && calleeType is FunctionType) {
+            if (calleeType is FunctionType) {
               if (calleeType.typeArguments != null &&
                   (calleeType.typeArguments as Array<Type>).length > 0) {
                 let resolved = new Array<Type>();
@@ -827,7 +832,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is NewExpression) {
         let neType = model.getNodeType(n);
-        if (neType != null && neType is ClassType) {
+        if (neType is ClassType) {
           var resolved = resolveType(neType) as ClassType;
           // A body constructs what its EMISSION constructs. The erasure
           // of a generic function is emitted and runs, so its
@@ -850,7 +855,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let calleeSym = model.resolve(n.callee);
         if (calleeSym != null) {
           let calleeT = model.getBindingTypeById(calleeSym.resolveTarget().id);
-          if (calleeT != null && calleeT is ClassType) {
+          if (calleeT is ClassType) {
             this.queueExplicitCtor(resolveType(calleeT) as ClassType);
           }
         }
@@ -907,7 +912,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is RangeExpression) {
         let reType = model.getNodeType(n);
-        if (reType != null && reType is ClassType) {
+        if (reType is ClassType) {
           let rangeCt = resolveType(reType) as ClassType;
           specializer.instantiateClassType(rangeCt, model);
           // A range literal CONSTRUCTS its range class — same tail as
@@ -980,7 +985,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   registerMapLiteral(ml: MapLiteral, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
     let mlType = model.getNodeType(ml);
-    if (mlType != null && mlType is ClassType) {
+    if (mlType is ClassType) {
       let resolved = resolveType(mlType) as ClassType;
       this.pass.specializer.instantiateClassType(resolved, model);
       this.queueExplicitCtor(resolved);
@@ -1217,8 +1222,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     // Six or more parts join through String.fromParts over a
     // FixedArray<String>, so both have to exist.
-    if (this.pass.wasm.stringClass != null) {
-      let sc = this.pass.wasm.stringClass as ClassType;
+    let {stringClass} = this.pass.wasm;
+    if (stringClass != null) {
+      let sc = stringClass;
       let scModel = this.pass.getClassModel(sc);
       for (let md in this.pass.cha.findImplementingMethods(sc, 'fromParts')) {
         this.pass.queueReferrer(new Referrer(false, noSymbolId,
@@ -1437,7 +1443,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is NewExpression) {
         let neType = model.getNodeType(n);
-        if (neType != null && neType is ClassType) {
+        if (neType is ClassType) {
           var resolved = resolveType(neType) as ClassType;
           // A body constructs what its EMISSION constructs. The erasure
           // of a generic function is emitted and runs, so its
@@ -1460,7 +1466,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let calleeSym = model.resolve(n.callee);
         if (calleeSym != null) {
           let calleeT = model.getBindingTypeById(calleeSym.resolveTarget().id);
-          if (calleeT != null && calleeT is ClassType) {
+          if (calleeT is ClassType) {
             this.queueExplicitCtor(resolveType(calleeT) as ClassType);
           }
         }
@@ -1503,7 +1509,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is RangeExpression) {
         let reType = model.getNodeType(n);
-        if (reType != null && reType is ClassType) {
+        if (reType is ClassType) {
           let rangeCt = resolveType(reType) as ClassType;
           specializer.instantiateClassType(rangeCt, model);
           // A range literal CONSTRUCTS its range class — same tail as
@@ -1754,12 +1760,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 isMethod = true;
                 if (mi.type is FunctionType) {
                   let ft = mi.type as FunctionType;
-                  if (ft.typeParameters != null && (ft.typeParameters as Array<TypeParameterType>).length > 0) {
+                  let {typeParameters} = ft;
+                  if (typeParameters != null && typeParameters.length > 0) {
                     isGenericMethod = true;
                     let nodeTypeRaw = model.getNodeType(n);
-                    if (nodeTypeRaw != null && nodeTypeRaw is FunctionType) {
-                      if (nodeTypeRaw.typeArguments != null) {
-                        methodTypeArgs = nodeTypeRaw.typeArguments as Array<Type>;
+                    if (nodeTypeRaw is FunctionType) {
+                      let {typeArguments} = nodeTypeRaw;
+                      if (typeArguments != null) {
+                        methodTypeArgs = typeArguments;
                       }
                     }
                   }
@@ -1859,7 +1867,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is Identifier) {
         let parentNode = model.getParent(n);
         var isCallee = false;
-        if (parentNode != null && parentNode is CallExpression) {
+        if (parentNode is CallExpression) {
           if (parentNode.callee == n) {
             isCallee = true;
           }
@@ -1869,16 +1877,18 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let sym = model.resolve(n);
           if (sym != null) {
             var targetSymId = sym.id;
-            if (sym.declaration != null && sym.declaration is ImportSpecifier) {
-              targetSymId = resolveImportedSymbolId(this.pass.program, model, sym.declaration as ImportSpecifier, null);
+            let {declaration} = sym;
+            if (declaration is ImportSpecifier) {
+              targetSymId = resolveImportedSymbolId(this.pass.program, model, declaration, null);
             }
             let resolvedArgs = new Array<Type>();
             let rawNodeType = model.getNodeType(n);
             if (rawNodeType != null) {
               let nodeType = resolveType(rawNodeType);
               if (nodeType is FunctionType) {
-                if (nodeType.typeArguments != null) {
-                  for (let arg in (nodeType.typeArguments as Array<Type>)) {
+                let {typeArguments} = nodeType;
+                if (typeArguments != null) {
+                  for (let arg in typeArguments) {
                     resolvedArgs.push(arg);
                   }
                 }
@@ -1912,12 +1922,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       return;
     }
     var targetSymId = sym.id;
-    if (sym.declaration != null && sym.declaration is ImportSpecifier) {
-      targetSymId = resolveImportedSymbolId(this.pass.program, model, sym.declaration as ImportSpecifier, null);
+    let {declaration} = sym;
+    if (declaration is ImportSpecifier) {
+      targetSymId = resolveImportedSymbolId(this.pass.program, model, declaration, null);
     }
     let resolvedArgs = new Array<Type>();
-    if (nodeType.typeArguments != null) {
-      for (let arg in (nodeType.typeArguments as Array<Type>)) {
+    let {typeArguments} = nodeType;
+    if (typeArguments != null) {
+      for (let arg in typeArguments) {
         resolvedArgs.push(arg);
       }
     }
@@ -2023,8 +2035,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     
     let resolvedArgs = new Array<Type>();
-    if (ft.typeArguments != null) {
-      for (let arg in (ft.typeArguments as Array<Type>)) {
+    let {typeArguments} = ft;
+    if (typeArguments != null) {
+      for (let arg in typeArguments) {
         resolvedArgs.push(arg);
       }
     }
@@ -2160,7 +2173,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let funcTypeNode = moduleModel.getNodeType(funcExpr);
     var isGeneric = false;
     if (funcTypeNode is FunctionType) {
-      if (funcTypeNode.typeParameters != null && (funcTypeNode.typeParameters as Array<TypeParameterType>).length > 0) {
+      let {typeParameters} = funcTypeNode;
+      if (typeParameters != null && typeParameters.length > 0) {
         isGeneric = true;
       }
     }
@@ -2243,12 +2257,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
             // Mark exported functions in target module as reference taken so they are emitted in Wasm element section
             let parentNode = moduleModel.getParent(spec);
-            if (parentNode != null && parentNode is ImportDeclaration) {
+            if (parentNode is ImportDeclaration) {
               let specifier = parentNode.moduleSpecifier.value;
               var canonicalPath = specifier;
               if (specifier.startsWith("./") || specifier.startsWith("../")) {
                 let referrer = moduleModel.getParent(parentNode);
-                if (referrer != null && referrer is Module) {
+                if (referrer is Module) {
                   let dir = dirName(referrer.path);
                   canonicalPath = normalizePath(dir + "/" + specifier);
                 }
@@ -2378,8 +2392,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               // The eq intrinsic lowers through the equality diamond,
               // whose string tier resolves String.== by name.
               this.pass.equalityDispatchUsed = true;
-              if (this.pass.wasm.stringClass != null) {
-                let eqSc = this.pass.wasm.stringClass as ClassType;
+              let {stringClass} = this.pass.wasm;
+              if (stringClass != null) {
+                let eqSc = stringClass;
                 this.pass.notePendingMemberReach(
                     getClassMethodKey(getClassKey(eqSc), "=="));
                 this.pass.notePendingMemberReach(
@@ -2470,7 +2485,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
 
     var stringStruct: WasmStruct | null = null;
-    let stringClass = this.pass.wasm.stringClass;
+    let {stringClass} = this.pass.wasm;
     if (stringClass != null) {
       let key = getClassKey(stringClass);
       if (let (true, stringInfo) = this.pass.wasm.classInfos.get(key)) {
@@ -2516,7 +2531,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     this.pass.wasm.wasiFdWriteIndex = 1;
     
     var stringStruct: WasmStruct | null = null;
-    let stringClass = this.pass.wasm.stringClass;
+    let {stringClass} = this.pass.wasm;
     if (stringClass != null) {
       let key = getClassKey(stringClass);
       if (let (true, stringInfo) = this.pass.wasm.classInfos.get(key)) {
@@ -2578,9 +2593,10 @@ let eraseType = (t: Type): Type => {
       ret
     }
     case ClassType as ct: {
-      if (ct.typeArguments != null) {
+      let {typeArguments} = ct;
+      if (typeArguments != null) {
         let args = new Array<Type>();
-        for (let arg in (ct.typeArguments as Array<Type>)) {
+        for (let arg in typeArguments) {
           args.push(eraseType(arg));
         }
         instantiateClassType(ct.genericSource ?? ct, args)
@@ -2589,9 +2605,10 @@ let eraseType = (t: Type): Type => {
       }
     }
     case InterfaceType as it: {
-      if (it.typeArguments != null) {
+      let {typeArguments} = it;
+      if (typeArguments != null) {
         let args = new Array<Type>();
-        for (let arg in (it.typeArguments as Array<Type>)) {
+        for (let arg in typeArguments) {
           args.push(eraseType(arg));
         }
         instantiateInterfaceType(it.genericSource ?? it, args)
@@ -2629,8 +2646,9 @@ let matchTypesForImport = (t1: Type, t2: Type): boolean => {
     case ClassType as ct1: {
       if (t2 is ClassType) {
         if (ct1.name != t2.name) { return false; }
-        if (ct1.typeArguments != null && t2.typeArguments != null) {
-          let args1 = ct1.typeArguments as Array<Type>;
+        let {typeArguments} = ct1;
+        if (typeArguments != null && t2.typeArguments != null) {
+          let args1 = typeArguments;
           let args2 = t2.typeArguments as Array<Type>;
           if (args1.length != args2.length) { return false; }
           var i = 0;
@@ -2646,8 +2664,9 @@ let matchTypesForImport = (t1: Type, t2: Type): boolean => {
     case InterfaceType as it1: {
       if (t2 is InterfaceType) {
         if (it1.name != t2.name) { return false; }
-        if (it1.typeArguments != null && t2.typeArguments != null) {
-          let args1 = it1.typeArguments as Array<Type>;
+        let {typeArguments} = it1;
+        if (typeArguments != null && t2.typeArguments != null) {
+          let args1 = typeArguments;
           let args2 = t2.typeArguments as Array<Type>;
           if (args1.length != args2.length) { return false; }
           var i = 0;

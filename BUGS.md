@@ -231,6 +231,32 @@ and (4) and it compiles and runs. The first await is _not_ required —
 
 ## Active Bugs
 
+### Destructuring a sealed-base-typed value compiles and then traps
+
+- **Found**: 2026-08-17, converting `let loc = node.loc;` hoists to
+  `let {loc} = node;` on review feedback.
+- **Severity**: medium — the checker accepts it, the build succeeds,
+  and the trap only fires when the line runs (`wasm: unreachable`, in
+  the sealed base's synthesized getter).
+- **Details**: destructuring works on records, class fields and (at
+  least some) case classes, but a source statically typed as a sealed
+  BASE (`Node`, `Type`) traps at runtime when the bound name is a
+  common member (`loc`, `id`), and an interface-typed source fails
+  lowering with `destructuring source kind`. Accessor-backed members
+  (`compiler.loadTime`, `model.symbols`) fail lowering with
+  `member not found`. Member ACCESS on all of these works; only the
+  destructure form diverges.
+- **Workaround**: plain member reads for sealed-base, interface and
+  accessor sources; destructure the rest.
+
+### An optional method call bails in ZIR
+
+- **Found**: 2026-08-17, applying `this.currentSection?.writeULEB128(x)`
+  on review feedback.
+- **Severity**: low — loud (`zir unsupported: optional method call`).
+  `fn?()` on closure values works; `obj.member?.method(args)` does not.
+- **Workaround**: bind the member and guard with `if (x != null)`.
+
 ### An escape sequence in a tagged template literal fails to compile
 
 - **Found**: 2026-08-16, writing the `dedent` tag: every tagged template

@@ -164,8 +164,9 @@ export final class Specializer implements SpecializerInterface {
     // instantiated with it: if `FixedArray<String>` exists then String
     // values exist, and its `contains` lowers to String's `==`. While
     // String was instantiated unconditionally this held by accident.
-    if (classType.typeArguments != null) {
-      for (let ta in (classType.typeArguments as Array<Type>)) {
+    let typeArguments = classType.typeArguments;
+    if (typeArguments != null) {
+      for (let ta in typeArguments) {
         if (ta is ClassType && isConcrete(ta)) {
           if (getClassKey(ta) != getClassKey(classType)) {
             this.instantiateClassType(ta, this.pass.getClassModel(ta));
@@ -235,7 +236,7 @@ export final class Specializer implements SpecializerInterface {
 
     let classDecl = this.pass.classDecls[classId];
 
-    if (classDecl != null && classDecl is ClassDeclaration) {
+    if (classDecl is ClassDeclaration) {
       this.discoverStaticFields(classType, classDecl, model);
 
       // Check if there is an explicit constructor
@@ -265,7 +266,7 @@ export final class Specializer implements SpecializerInterface {
           }
         }
       }
-    } else if (classDecl != null && classDecl is SealedVariant) {
+    } else if (classDecl is SealedVariant) {
       if (!classType.isExtension) {
         this.registerClassMethod(classType, null, "<constructor>", null, false, false, null, model);
       }
@@ -350,15 +351,17 @@ export final class Specializer implements SpecializerInterface {
     info.vtableStructType = emptyVTableStruct;
 
     // 2. Link super types
-    if (ct.superType != null) {
-      let superCt = ct.superType as ClassType;
+    let {superType} = ct;
+    if (superType != null) {
+      let superCt = superType;
       this.pass.typeLowerer.discoverType(superCt, sourceModel);
       
       let superKey = getClassKey(superCt);
       if (let (true, superInfo) = this.pass.wasm.classInfos.get(superKey)) {
         emptyStruct.superStruct = superInfo.structType;
-        if (superInfo.vtableStructType != null) {
-          emptyVTableStruct.superStruct = superInfo.vtableStructType as WasmStruct;
+        let {vtableStructType} = superInfo;
+        if (vtableStructType != null) {
+          emptyVTableStruct.superStruct = vtableStructType;
         }
       }
 
@@ -433,7 +436,7 @@ export final class Specializer implements SpecializerInterface {
     let mixinMembers = new Array<Node>();
     let mixinScopes = new Array<String>();
     let seenMixins = new HashMap<MixinKey, boolean>();
-    let classDeclCd = if (classDecl != null && classDecl is ClassDeclaration) classDecl else null;
+    let classDeclCd = if (classDecl is ClassDeclaration) classDecl else null;
     if (classDeclCd != null) {
       collectMixinMembers(this.pass.program, sourceModel, classDeclCd.mixins, mixinMembers, seenMixins, mixinScopes);
     }
@@ -583,7 +586,8 @@ export final class Specializer implements SpecializerInterface {
 
       if (ms is MethodDefinition) {
         if (ms.isAbstract) { continue; }
-        if (ms.typeParameters != null && (ms.typeParameters as Array<TypeParameter>).length > 0) {
+        let {typeParameters} = ms;
+        if (typeParameters != null && typeParameters.length > 0) {
           continue;
         }
         let methName = match (ms.name) {
@@ -624,12 +628,13 @@ export final class Specializer implements SpecializerInterface {
           let regG = this.registerClassMethod(ct, classDecl, getterRegName, ms as Node, false, false, null, sourceModel);
           if (msScope != "") { regG.privateScopeKey = msScope; }
         }
-        if (ms.setter != null) {
+        let {setter} = ms;
+        if (setter != null) {
           var setterRegName = "set#" + accName;
           if (isPrivateAcc && msScope != "") {
             setterRegName = msScope + "::" + setterRegName;
           }
-          let regS = this.registerClassMethod(ct, classDecl, setterRegName, ms.setter as Node, false, false, null, sourceModel);
+          let regS = this.registerClassMethod(ct, classDecl, setterRegName, setter, false, false, null, sourceModel);
           if (msScope != "") { regS.privateScopeKey = msScope; }
         }
       } else if (ms is FieldDefinition) {
@@ -783,7 +788,8 @@ export final class Specializer implements SpecializerInterface {
           var isGeneric = false;
           if (mi.type is FunctionType) {
             let ft = mi.type as FunctionType;
-            if (ft.typeParameters != null && (ft.typeParameters as Array<TypeParameterType>).length > 0) {
+            let {typeParameters} = ft;
+            if (typeParameters != null && typeParameters.length > 0) {
               isGeneric = true;
             }
           }
@@ -898,16 +904,17 @@ export final class Specializer implements SpecializerInterface {
         // bogus receiver-only constructor.
         if (methodTypeNode == null && cType.genericSource != null) {
           let gs = cType.genericSource as ClassType;
-          if (gs.constructorType != null) {
+          let {constructorType} = gs;
+          if (constructorType != null) {
             methodTypeNode = substituteTypeParamsInCodegen(this.pass.wasm, 
                 gs.typeParameters, cType.typeArguments,
-                gs.constructorType as FunctionType);
+                constructorType);
           }
         }
       } else {
         var specificFuncType: FunctionType | null = null;
         var hasOverloads = false;
-        if (methodNode != null && methodNode is MethodDefinition) {
+        if (methodNode is MethodDefinition) {
           if (cType.members.has(methName)) {
             let mInfo = cType.members[methName];
             if (mInfo.type is FunctionType) {
@@ -1073,7 +1080,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
-    if (methodTypeNode != null && methodTypeNode is FunctionType) {
+    if (methodTypeNode is FunctionType) {
       origMethodFt = methodTypeNode;
     }
 
@@ -1088,8 +1095,9 @@ export final class Specializer implements SpecializerInterface {
       methodTypeNode = substituteTypeParamsInClassContext(this.pass.wasm, cType, methodTypeNode);
       if (methodTypeArgs != null && methodTypeNode is FunctionType) {
         let fType = methodTypeNode;
-        if (fType.typeParameters != null) {
-          methodTypeNode = substituteTypeParamsInCodegen(this.pass.wasm, fType.typeParameters as Array<TypeParameterType>, methodTypeArgs, methodTypeNode as Type);
+        let {typeParameters} = fType;
+        if (typeParameters != null) {
+          methodTypeNode = substituteTypeParamsInCodegen(this.pass.wasm, typeParameters, methodTypeArgs, methodTypeNode as Type);
         }
       }
     }
@@ -1375,8 +1383,9 @@ export final class Specializer implements SpecializerInterface {
       vtableSet.add(existing);
     }
 
-    if (ct.superType != null) {
-      let superCt = ct.superType as ClassType;
+    let {superType} = ct;
+    if (superType != null) {
+      let superCt = superType;
       let superLookupId = (superCt.genericSource ?? superCt).symbolId;
       let superDecl: Node | null = if (this.pass.classDecls.has(superLookupId)) this.pass.classDecls[superLookupId] else null;
       let superModel = this.pass.getClassModel(superCt);
@@ -1413,7 +1422,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
-    let cdDecl = if (cd != null && cd is ClassDeclaration) cd else null;
+    let cdDecl = if (cd is ClassDeclaration) cd else null;
     // An erasure gets a struct and no methods — see registerSpecializedClass.
     let isErasedCt = containsErasedType(ct as Type);
     if (cdDecl != null && !isErasedCt) {
@@ -1439,7 +1448,8 @@ export final class Specializer implements SpecializerInterface {
         let msScope = allScopes[msIdx];
         if (ms is MethodDefinition) {
           if (ms.isAbstract) { continue; }
-          if (ms.typeParameters != null && (ms.typeParameters as Array<TypeParameter>).length > 0) {
+          let {typeParameters} = ms;
+          if (typeParameters != null && typeParameters.length > 0) {
             continue;
           }
           let methName = match (ms.name) {
@@ -1509,7 +1519,8 @@ export final class Specializer implements SpecializerInterface {
               let regG = this.registerClassMethod(ct, cdDecl, getterName, ms as Node, false, false, null, sourceModel);
               if (msScope != "") { regG.privateScopeKey = msScope; }
             }
-            if (ms.setter != null) {
+            let {setter} = ms;
+            if (setter != null) {
               var setterName = "set#" + accName;
               if (!isPrivateAcc && !vtableSet.has(setterName)) {
                 ctVtable.push(setterName);
@@ -1518,7 +1529,7 @@ export final class Specializer implements SpecializerInterface {
               if (isPrivateAcc && msScope != "") {
                 setterName = msScope + "::" + setterName;
               }
-              let regS = this.registerClassMethod(ct, cdDecl, setterName, ms.setter as Node, false, false, null, sourceModel);
+              let regS = this.registerClassMethod(ct, cdDecl, setterName, setter, false, false, null, sourceModel);
               if (msScope != "") { regS.privateScopeKey = msScope; }
             }
           }
@@ -1587,7 +1598,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
-    if ((cdDecl != null || ct.isCaseClass || (cd != null && cd is SealedVariant)) && !ct.isExtension && !isErasedCt) {
+    if ((cdDecl != null || ct.isCaseClass || (cd is SealedVariant)) && !ct.isExtension && !isErasedCt) {
       let wasmFunc = this.registerClassMethod(ct, cd, "<constructor>", null, false, false, null, sourceModel);
       if (wasmFunc.classDecl == null) {
         wasmFunc.classDecl = cd;
@@ -1754,11 +1765,11 @@ export final class Specializer implements SpecializerInterface {
     // Determine target name
     var originalName = "";
     let parentNode = model.getParent(funcExpr);
-    if (parentNode != null && parentNode is VariableDeclaration) {
+    if (parentNode is VariableDeclaration) {
       if (parentNode.pattern is IdentifierPattern) {
         originalName = (parentNode.pattern as IdentifierPattern).name;
       }
-    } else if (parentNode != null && parentNode is FunctionDeclaration) {
+    } else if (parentNode is FunctionDeclaration) {
       originalName = parentNode.name.name;
     }
     if (originalName == "") {

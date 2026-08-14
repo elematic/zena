@@ -773,8 +773,9 @@ final class CheckerContext {
       declared.add(info.id as i32);
     }
     // Also store on the declaration node for getNodeType() queries.
-    if (info.declaration != null) {
-      this.setNodeType(info.declaration as Node, t);
+    let {declaration} = info;
+    if (declaration != null) {
+      this.setNodeType(declaration, t);
     }
   }
 
@@ -888,10 +889,10 @@ final class CheckerContext {
   lazyResolveFunction(si: Symbol, funcNode: Node): Type | null {
     match (funcNode) {
       case FunctionExpression as fe: {
-        let typeParameters = fe.typeParameters;
-        let params = fe.params;
-        let returnType = fe.returnType;
-        let body = fe.body;
+        let {typeParameters} = fe;
+        let {params} = fe;
+        let {returnType} = fe;
+        let {body} = fe;
         let loc = fe.loc;
         // Check for cycle — if we're already resolving this symbol,
         // it's a recursive reference.
@@ -969,8 +970,9 @@ final class CheckerContext {
     let paramNames = new Array<String>();
     for (let param in params) {
       paramNames.push(param.name.name);
-      if (param.typeAnnotation != null) {
-        paramTypes.push(resolveTypeAnnotation(this, param.typeAnnotation as TypeAnnotation, false));
+      let {typeAnnotation} = param;
+      if (typeAnnotation != null) {
+        paramTypes.push(resolveTypeAnnotation(this, typeAnnotation, false));
       } else {
         paramTypes.push(new ErrorType());
       }
@@ -1232,8 +1234,9 @@ final class CheckerContext {
 
     if (target.declaration != null) {
       let declNode = target.declaration as Node;
-      if (declNode.loc != null) {
-        let declLoc = declNode.loc as SourceLocation;
+      let loc = declNode.loc;
+      if (loc != null) {
+        let declLoc = loc;
         if (let (true, cached) = this.#materializedDeclTypes.get(declLoc.start)) {
           this.#materializedTypes[info.id] = cached;
           this.#materializedTypes[target.id] = cached;
@@ -1296,8 +1299,9 @@ final class CheckerContext {
       this.model.setBindingType(info, materialized);
       if (target.declaration != null) {
         let declNode = target.declaration as Node;
-        if (declNode.loc != null) {
-          let declLoc = declNode.loc as SourceLocation;
+        let loc = declNode.loc;
+        if (loc != null) {
+          let declLoc = loc;
           this.#materializedDeclTypes[declLoc.start] = materialized;
         }
         match (declNode) {
@@ -1554,16 +1558,18 @@ final class CheckerContext {
           // Resolve constraints
           for (var i = 0; i < declarationParams.length; i += 1) {
             let param = declarationParams[i];
-            if (param.constraint != null) {
+            let {constraint} = param;
+            if (constraint != null) {
               // See the matching flag in the type-parameter loop above.
               this.resourceMentionOk = true;
               tempTypeParams[i].constraint =
-                resolveTypeAnnotation(this, param.constraint as TypeAnnotation, false);
+                resolveTypeAnnotation(this, constraint, false);
               this.resourceMentionOk = false;
             }
-            if (param.defaultType != null) {
+            let {defaultType} = param;
+            if (defaultType != null) {
               tempTypeParams[i].defaultType =
-                resolveTypeAnnotation(this, param.defaultType as TypeAnnotation, false);
+                resolveTypeAnnotation(this, defaultType, false);
             }
           }
         }
@@ -2792,7 +2798,7 @@ let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: Arr
     }
     case TuplePattern {elements}: {
       for (let el in elements) {
-        if (el != null && el is Pattern) {
+        if (el is Pattern) {
           collectPatternSymbols(ctx, el, symbols);
         }
       }
@@ -3072,21 +3078,21 @@ export let checkModule = (
     match (stmt) {
       case ClassDeclaration as cd: {
         let t = ctx.resolveTypeName(cd.name.name);
-        if (t != null && t is ClassType) {
+        if (t is ClassType) {
           recordSymbolKeyedMemberIdentities(
               ctx, t.members, cd.body);
         }
       }
       case InterfaceDeclaration as id: {
         let t = ctx.resolveTypeName(id.name.name);
-        if (t != null && t is InterfaceType) {
+        if (t is InterfaceType) {
           recordSymbolKeyedMemberIdentities(
               ctx, t.members, id.body);
         }
       }
       case MixinDeclaration as md: {
         let t = ctx.resolveTypeName(md.name.name);
-        if (t != null && t is MixinType) {
+        if (t is MixinType) {
           recordSymbolKeyedMemberIdentities(
               ctx, t.members, md.body);
         }
@@ -3156,8 +3162,7 @@ export let checkModule = (
   // Finalize: bind exported types directly onto export Symbols
   // so importers can resolve them cleanly.
   for (let {key as expName, value as exInfo} in scopeResult.exports) {
-    let declaration = exInfo.declaration;
-    
+    let {declaration} = exInfo;
     var exportType = ctx.resolveTypeName(expName);
     if (exportType == null) {
       // Re-exported types (export {X} from './dep'): this module has no local
@@ -3819,31 +3824,36 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
 
     match (resolved) {
       case ClassType as ct: {
-        if (ct.typeParameters != null) {
-          applyAndCheckTypeArguments(ctx, ct.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
+        let {typeParameters} = ct;
+        if (typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
           return instantiateClassType(ct, resolvedArgs);
         }
       }
       case MixinType as mt: {
-        if (mt.typeParameters != null) {
-          applyAndCheckTypeArguments(ctx, mt.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
+        let {typeParameters} = mt;
+        if (typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
           let inst = instantiateMixinType(mt, resolvedArgs);
-          if (mt.onType != null) {
-            inst.onType = substituteTypeParams(mt.typeParameters, resolvedArgs, mt.onType as Type);
+          let {onType} = mt;
+          if (onType != null) {
+            inst.onType = substituteTypeParams(typeParameters, resolvedArgs, onType);
           }
           return inst;
         }
       }
       case InterfaceType as it: {
-        if (it.typeParameters != null) {
-          applyAndCheckTypeArguments(ctx, it.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
+        let {typeParameters} = it;
+        if (typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
           return instantiateInterfaceType(it, resolvedArgs);
         }
       }
       case TypeAliasType as tat: {
-        if (tat.typeParameters != null) {
-          applyAndCheckTypeArguments(ctx, tat.typeParameters as Array<TypeParameterType>, resolvedArgs, ann.loc);
-          let target = substituteTypeParams(tat.typeParameters, resolvedArgs, tat.target);
+        let {typeParameters} = tat;
+        if (typeParameters != null) {
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
+          let target = substituteTypeParams(typeParameters, resolvedArgs, tat.target);
           if (tat.isDistinct || tat.resolving) {
             let inst = instantiateTypeAliasType(tat, resolvedArgs);
             inst.target = target;
@@ -4192,8 +4202,9 @@ let getElementType = (
     case InterfaceType as it: {
       // If the interface IS Iterator, use its first type argument.
       if (it.name == "Iterator" || it.name == "Iterable") {
-         if (it.typeArguments != null) {
-            let args = it.typeArguments as Array<Type>;
+         let {typeArguments} = it;
+         if (typeArguments != null) {
+            let args = typeArguments;
             if (args.length > 0) { return args[0]; }
          }
       }
@@ -4230,10 +4241,11 @@ let getElementTypeFromClass = (
 ): Type => {
   // If the class IS Iterator, use its first type argument.
   let iteratorPrelude = ctx.resolvePreludeType("Iterator");
-  if (iteratorPrelude != null && iteratorPrelude is InterfaceType) {
+  if (iteratorPrelude is InterfaceType) {
     if (ct.id == iteratorPrelude.id) {
-       if (ct.typeArguments != null) {
-          let args = ct.typeArguments as Array<Type>;
+       let {typeArguments} = ct;
+       if (typeArguments != null) {
+          let args = typeArguments;
           if (args.length > 0) { return args[0]; }
        }
     }
@@ -4250,8 +4262,9 @@ let getElementTypeFromClass = (
     i += 1;
   }
   // Walk superclass chain.
-  if (ct.superType != null) {
-    return getElementType(ctx, ct.superType as Type, iterableExpr);
+  let {superType} = ct;
+  if (superType != null) {
+    return getElementType(ctx, superType as Type, iterableExpr);
   }
   ctx.error(
     "Type '" + ct.name + "' is not iterable.",
@@ -4278,8 +4291,9 @@ let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | 
         iface.id
       };
       if (sourceId == iterableType.id) {
-        if (iface.typeArguments != null) {
-          let args = iface.typeArguments as Array<Type>;
+        let {typeArguments} = iface;
+        if (typeArguments != null) {
+          let args = typeArguments;
           if (args.length > 0) { return args[0]; }
         }
         return null;
@@ -4378,9 +4392,10 @@ let substituteTypeParams = (
       res.optionalParameters = ft.optionalParameters;
       res.parameterInitializers = ft.parameterInitializers;
       res.parameterSymbols = ft.parameterSymbols;
-      if (ft.overloads != null) {
+      let {overloads} = ft;
+      if (overloads != null) {
         let subOvs = new Array<FunctionType>();
-        let ovs = ft.overloads as Array<FunctionType>;
+        let ovs = overloads;
         for (let ov in ovs) {
           if (ov == ft) {
             subOvs.push(res);
@@ -4399,8 +4414,9 @@ let substituteTypeParams = (
       return res;
     }
     case ClassType as ct: {
-      if (ct.typeArguments != null) {
-        let srcArgs = ct.typeArguments as Array<Type>;
+      let {typeArguments} = ct;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
         let subArgs = new Array<Type>();
         var changed = false;
         for (let arg in srcArgs) {
@@ -4417,8 +4433,9 @@ let substituteTypeParams = (
       return t;
     }
     case InterfaceType as it: {
-      if (it.typeArguments != null) {
-        let srcArgs = it.typeArguments as Array<Type>;
+      let {typeArguments} = it;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
         let subArgs = new Array<Type>();
         var changed = false;
         for (let arg in srcArgs) {
@@ -4435,8 +4452,9 @@ let substituteTypeParams = (
       return t;
     }
     case MixinType as mt: {
-      if (mt.typeArguments != null) {
-        let srcArgs = mt.typeArguments as Array<Type>;
+      let {typeArguments} = mt;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
         let subArgs = new Array<Type>();
         var changed = false;
         for (let arg in srcArgs) {
@@ -4449,8 +4467,9 @@ let substituteTypeParams = (
         if (changed) {
           let genSource = mt.genericSource ?? mt;
           let inst = instantiateMixinType(genSource, subArgs);
-          if (genSource.onType != null && genSource.typeParameters != null) {
-            inst.onType = substituteTypeParams(genSource.typeParameters, subArgs, genSource.onType as Type);
+          let {onType} = genSource;
+          if (onType != null && genSource.typeParameters != null) {
+            inst.onType = substituteTypeParams(genSource.typeParameters, subArgs, onType);
           }
           return inst;
         }
@@ -4467,8 +4486,9 @@ let substituteTypeParams = (
       // Only a distinct alias reaches here — `resolveTypeAnnotation` unwraps a
       // transparent one to its substituted target — plus one that is still
       // `resolving`, whose `target` must not be read.
-      if (ta.typeArguments != null) {
-        let srcArgs = ta.typeArguments as Array<Type>;
+      let {typeArguments} = ta;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
         let subArgs = new Array<Type>();
         var changed = false;
         for (let arg in srcArgs) {
@@ -4481,7 +4501,7 @@ let substituteTypeParams = (
         if (changed) {
           let inst = instantiateTypeAliasType(ta, subArgs);
           // `ta.target` already has the alias's *own* parameters replaced by
-          // `ta.typeArguments` (resolveTypeAnnotationInner does that), so the
+          // `typeArguments` (resolveTypeAnnotationInner does that), so the
           // outer substitution applies to it directly. A `TypeAliasType` keeps
           // no `genericSource`, so there is no declaration-shaped target to go
           // back to.
@@ -4520,9 +4540,10 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       newFt.optionalParameters = ft.optionalParameters;
       newFt.parameterInitializers = ft.parameterInitializers;
       newFt.parameterSymbols = ft.parameterSymbols;
-      if (ft.overloads != null) {
+      let {overloads} = ft;
+      if (overloads != null) {
         let subOvs = new Array<FunctionType>();
-        let ovs = ft.overloads as Array<FunctionType>;
+        let ovs = overloads;
         for (let ov in ovs) {
           if (ov == ft) {
             subOvs.push(newFt);
@@ -4582,8 +4603,9 @@ let applyAndCheckTypeArguments = (
   // Apply defaults if type arguments are missing
   for (var i = typeArgs.length; i < typeParams.length; i += 1) {
     let param = typeParams[i];
-    if (param.defaultType != null) {
-      typeArgs.push(substituteTypeParams(typeParams, typeArgs, param.defaultType as Type));
+    let {defaultType} = param;
+    if (defaultType != null) {
+      typeArgs.push(substituteTypeParams(typeParams, typeArgs, defaultType));
     } else {
       ctx.error(
         `Expected ${typeParams.length} type arguments, but got ${i}.`,
@@ -4972,8 +4994,9 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
         matched = findImplementedInterfaceTransitiveInChecker(argType, ptName);
       }
       if (matched != null) {
-        if (pt.typeArguments != null && matched.typeArguments != null) {
-          let ptArgs = pt.typeArguments as Array<Type>;
+        let {typeArguments} = pt;
+        if (typeArguments != null && matched.typeArguments != null) {
+          let ptArgs = typeArguments;
           let atArgs = matched.typeArguments as Array<Type>;
           var i = 0;
           while (i < ptArgs.length && i < atArgs.length) {
@@ -5032,8 +5055,9 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
             pt.name == "Borrow" && at.name == "Own" &&
             isOwnershipWrapper(pt) && isOwnershipWrapper(at);
           if (pt.name == at.name || borrowsFromOwn) {
-            if (pt.typeArguments != null && at.typeArguments != null) {
-              let ptArgs = pt.typeArguments as Array<Type>;
+            let {typeArguments} = pt;
+            if (typeArguments != null && at.typeArguments != null) {
+              let ptArgs = typeArguments;
               let atArgs = at.typeArguments as Array<Type>;
               var i = 0;
               while (i < ptArgs.length && i < atArgs.length) {
@@ -5508,7 +5532,7 @@ let checkTypeParameterCast = (
   match (targetType) {
     case TypeParameterType as tp: {
       if (typesOverlap(ctx, sourceType, tp as Type)) { return; }
-      let constraint = tp.constraint;
+      let {constraint} = tp;
       if (constraint != null && typesOverlap(ctx, sourceType, constraint)) {
         return;
       }
@@ -5616,8 +5640,9 @@ let inferTypeParameter = (sourceType: Type, targetType: Type, tpName: String, in
   }
   if (sourceType is ClassType) {
     if (targetType is ClassType) {
-      if (sourceType.typeArguments != null && targetType.typeArguments != null) {
-        let sArgs = sourceType.typeArguments as Array<Type>;
+      let {typeArguments} = sourceType;
+      if (typeArguments != null && targetType.typeArguments != null) {
+        let sArgs = typeArguments;
         let tArgs = targetType.typeArguments as Array<Type>;
         if (sArgs.length == tArgs.length) {
           var i = 0;
@@ -5640,8 +5665,9 @@ let tryInstantiateGenericFunction = (
   target: Type,
 ): Type => {
   if (source is FunctionType && target is FunctionType) {
-    if (source.typeParameters != null && (source.typeParameters as Array<TypeParameterType>).length > 0) {
-      let tps = source.typeParameters as Array<TypeParameterType>;
+    let {typeParameters} = source;
+    if (typeParameters != null && typeParameters.length > 0) {
+      let tps = typeParameters;
       let inferred = new HashMap<String, Type>();
       for (let tp in tps) {
         var found = false;
@@ -6230,10 +6256,10 @@ let typesEqual = (a: Type, b: Type): boolean => {
           if (ta.typeArguments == null && tb.typeArguments == null) {
             return true;
           }
-          if (ta.typeArguments == null || tb.typeArguments == null) {
+          let argsA = ta.typeArguments;
+          if (argsA == null || tb.typeArguments == null) {
             return false;
           }
-          let argsA = ta.typeArguments as Array<Type>;
           let argsB = tb.typeArguments as Array<Type>;
           if (argsA.length != argsB.length) {
             return false;
@@ -6322,7 +6348,7 @@ let subtractNullFromType = (t: Type): Type => {
   match (t) {
     case UnionT as u: {
       let remaining = new Array<Type>();
-      let types = u.types;
+      let {types} = u;
       var i = 0;
       while (i < types.length) {
         match (types[i]) {
@@ -6349,7 +6375,7 @@ let subtractTypeFromUnion = (original: Type, toRemove: Type): Type => {
   match (original) {
     case UnionT as u: {
       let remaining = new Array<Type>();
-      let types = u.types;
+      let {types} = u;
       var i = 0;
       while (i < types.length) {
         if (!typesEqual(types[i], toRemove)) {
@@ -7018,7 +7044,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       } else if (argument != null) {
         // By convention, if expectedReturn is VoidType, we are inferring the return type.
         // We should not pass it down as expectedType since it will force if-expressions to void.
-        let isInferring = expectedReturn != null && expectedReturn is VoidType;
+        let isInferring = expectedReturn is VoidType;
         let passedExpected = if (isInferring) { null } else { expectedReturn };
         let argType = checkExpression(ctx, argument, passedExpected);
         if (expectedReturn != null) {
@@ -7647,7 +7673,7 @@ let checkVariableDeclaration = (
       ctx.yieldType == null && ctx.asyncValueType == null &&
       ownershipHandleName(declType) == "Own") {
     let innerOpt = ownershipHandleInner(declType);
-    if (innerOpt != null && innerOpt is ClassType) {
+    if (innerOpt is ClassType) {
       let resource = innerOpt as ClassType;
       if (resource.isResource) {
         let symOpt = ctx.model.resolveDeclaration(pattern);
@@ -8035,7 +8061,8 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
     case IdentifierPattern as pat: {
       let info = ctx.model.resolveDeclaration(pat);
       if (info != null) {
-        if (info.declaration != null && (info.declaration as Node) != pat) {
+        let {declaration} = info;
+        if (declaration != null && declaration != pat) {
           ctx.error(
             "Variable '" + pat.name + "' is already declared in this scope.",
             DiagnosticCode.DuplicateDeclaration,
@@ -8047,7 +8074,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       }
     }
     case RecordPattern as recordPat: {
-      let properties = recordPat.properties;
+      let {properties} = recordPat;
       // For record destructuring: { x, y } = record.
       match (t) {
         case RecordT {properties as recordProps, optionalProperties}: {
@@ -8852,7 +8879,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         }
         ctx.mergeFlow(trueEnd, ctx.currentFlow);
 
-        if (expectedType != null && expectedType is VoidType) {
+        if (expectedType is VoidType) {
           return new VoidType();
         }
         let branches = new Array<Type>();
@@ -8882,7 +8909,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         ctx.mergeFlow(trueEnd, ctx.currentFlow);
 
         // Result type is the union of both branches.
-        if (expectedType != null && expectedType is VoidType) {
+        if (expectedType is VoidType) {
           return new VoidType();
         }
         let branches = new Array<Type>();
@@ -9038,8 +9065,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     rejectSecondClassStorage(ctx, inferredElementType, "an array", loc);
 
     var faType = ctx.resolvePreludeType("FixedArray");
-    if (ctx.currentClass != null && (ctx.currentClass as ClassType).name == "FixedArray") {
-      faType = ctx.currentClass as Type;
+    let {currentClass} = ctx;
+    if (currentClass != null && currentClass.name == "FixedArray") {
+      faType = currentClass as Type;
     }
     if (faType == null) {
       throw new Error("prelude FixedArray class not found");
@@ -9337,8 +9365,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (handler != null) {
       ctx.setFlow(catchEntry);
       ctx.enterScope();
-      if (handler.param != null) {
-        let paramId = handler.param as Identifier;
+      let {param} = handler;
+      if (param != null) {
+        let paramId = param;
         let info = ctx.model.resolveDeclaration(paramId);
         if (info != null) {
           let errorType = ctx.resolveTypeName("Error");
@@ -9666,7 +9695,7 @@ let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
   // hashCode()/== make them valid hash keys, so they are assignable to the
   // well-known Hashable interface without an explicit implements clause.
   let hashable = ctx.resolvePreludeType("Hashable");
-  if (hashable != null && hashable is InterfaceType) {
+  if (hashable is InterfaceType) {
     var already = false;
     for (let impl in ct.implementsList) {
       if (impl === hashable) { already = true; }
@@ -9720,8 +9749,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   classType.sealedVariants = null;
 
   ctx.enterScope();
-  if (cd.typeParameters != null) {
-    let tps = cd.typeParameters as Array<TypeParameter>;
+  let {typeParameters} = cd;
+  if (typeParameters != null) {
+    let tps = typeParameters;
     let freshParams = new Array<TypeParameterType>();
     var tpi = 0;
     while (tpi < tps.length) {
@@ -9735,8 +9765,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         ctx.resourceMentionOk = false;
       }
       var defaultT: Type | null = null;
-      if (tp.defaultType != null) {
-        defaultT = resolveTypeAnnotation(ctx, tp.defaultType as TypeAnnotation);
+      let {defaultType} = tp;
+      if (defaultType != null) {
+        defaultT = resolveTypeAnnotation(ctx, defaultType);
       }
       let tpType = ctx.getOrCreateTypeParameter(tp, constraint, defaultT);
       ctx.declareTypeName(tp.name, tpType);
@@ -9770,8 +9801,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
     while (fvi < variants.length) {
       let variant = variants[fvi];
       if (variant.params == null) {
-        if (classType.forwardVariantNames != null) {
-          (classType.forwardVariantNames as HashSet<String>).add(variant.name.name);
+        let {forwardVariantNames} = classType;
+        if (forwardVariantNames != null) {
+          forwardVariantNames.add(variant.name.name);
         } else {
           let set = new HashSet<String>();
           set.add(variant.name.name);
@@ -9783,8 +9815,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   }
 
   // Resolve superclass.
-  if (cd.superClass != null) {
-    let superAnn = cd.superClass as TypeAnnotation;
+  let {superClass} = cd;
+  if (superClass != null) {
+    let superAnn = superClass;
     // An extends clause names a class, not a value, so a resource class is
     // spellable here — this is the one annotation position where the bare
     // form is what is meant. Without this the "no unwrapped form" rule fires
@@ -9838,8 +9871,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         if (st.isSealed) {
           // Check if this class is a forward-declared variant
           var isForwardVariant = false;
-          if (st.forwardVariantNames != null) {
-            let fwdNames = st.forwardVariantNames as HashSet<String>;
+          let {forwardVariantNames} = st;
+          if (forwardVariantNames != null) {
+            let fwdNames = forwardVariantNames;
             if (fwdNames.has(className)) {
               isForwardVariant = true;
             }
@@ -9935,8 +9969,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   }
 
   // Resolve and populate implementsList.
-  if (cd.implementsList != null) {
-    let implList = cd.implementsList as Array<TypeAnnotation>;
+  let {implementsList} = cd;
+  if (implementsList != null) {
+    let implList = implementsList;
     for (let ifaceAnn in implList) {
       let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
       match (ifaceType) {
@@ -9949,8 +9984,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   }
 
   // Apply mixins
-  if (cd.mixins != null) {
-    let mixinAnns = cd.mixins as Array<TypeAnnotation>;
+  let {mixins} = cd;
+  if (mixins != null) {
+    let mixinAnns = mixins;
     var mi = 0;
     while (mi < mixinAnns.length) {
       let mixinAnn = mixinAnns[mi];
@@ -9960,8 +9996,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         case MixinType as mt: {
           classType.mixins.push(mt);
           // Check 'on' constraint
-          if (mt.onType != null) {
-            let mtOnType = mt.onType as Type;
+          let {onType} = mt;
+          if (onType != null) {
+            let mtOnType = onType;
             var satisfied = false;
             var st: Type | null = null;
             if (cd.superClass != null && classType.superType != null) {
@@ -9984,7 +10021,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             if (!satisfied) {
               ctx.error(
                 "Mixin '" + mt.name + "' requires target to extend or implement '" + 
-                typeToString(mt.onType as Type) + "'.",
+                typeToString(onType) + "'.",
                 DiagnosticCode.TypeMismatch,
                 mixinAnn.loc
               );
@@ -10395,8 +10432,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           let consumesReceiver = receiverKind == ReceiverKind.Owning;
 
           // Check final method override.
-          if (classType.superType != null) {
-            let superCt = classType.superType as ClassType;
+          let {superType} = classType;
+          if (superType != null) {
+            let superCt = superType;
             if (superCt.members.has(methodName)) {
               let inheritedMethod = superCt.members[methodName];
               match (inheritedMethod) {
@@ -10487,8 +10525,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 if (!hasSameSignature(superMethod, methodType)) {
                   newOverloads.push(superMethod);
                 }
-                if (superMethod.overloads != null) {
-                  let superOvs = superMethod.overloads as Array<FunctionType>;
+                let {overloads} = superMethod;
+                if (overloads != null) {
+                  let superOvs = overloads;
                   for (let overload in superOvs) {
                     if (!hasSameSignature(overload, methodType)) {
                       newOverloads.push(overload);
@@ -10580,8 +10619,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         if (acc.getter != null) {
           let getterName = "get#" + accName;
           // Check for final override.
-          if (classType.superType != null) {
-            let superCt = classType.superType as ClassType;
+          let {superType} = classType;
+          if (superType != null) {
+            let superCt = superType;
             if (superCt.members.has(getterName)) {
               let superMethod = superCt.members[getterName];
               match (superMethod) {
@@ -10614,8 +10654,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         if (acc.setter != null) {
           let setterName = "set#" + accName;
           // Check for final override.
-          if (classType.superType != null) {
-            let superCt = classType.superType as ClassType;
+          let {superType} = classType;
+          if (superType != null) {
+            let superCt = superType;
             if (superCt.members.has(setterName)) {
               let superMethod = superCt.members[setterName];
               match (superMethod) {
@@ -10666,8 +10707,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               let paramName = param.name.name;
               var paramType: Type = new ErrorType();
               var lookupName = paramName;
-              if (classType.fieldSetterNames != null) {
-                let m = classType.fieldSetterNames as HashMap<String, String>;
+              let {fieldSetterNames} = classType;
+              if (fieldSetterNames != null) {
+                let m = fieldSetterNames;
                 if (m.has(paramName)) {
                   lookupName = m[paramName];
                 }
@@ -10690,15 +10732,17 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           while (pi < ms.params.length) {
             let param = ms.params[pi];
             var paramType: Type = new ErrorType();
-            if (param.typeAnnotation != null) {
-              paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+            let {typeAnnotation} = param;
+            if (typeAnnotation != null) {
+              paramType = resolveTypeAnnotation(ctx, typeAnnotation);
             }
             paramTypes.push(paramType);
             pi = pi + 1;
           }
           var retType: Type = new VoidType();
-          if (ms.returnType != null) {
-            retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation, true);
+          let {returnType} = ms;
+          if (returnType != null) {
+            retType = resolveTypeAnnotation(ctx, returnType, true);
           }
           let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
           classType.members[methodName] = new MethodInfo(
@@ -10723,7 +10767,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
       // Forward-declared variants (null params, like `case Circle, Rect`)
       // are defined as separate classes - skip creating inline types.
-      if (variant.params != null) {
+      let {params} = variant;
+      if (params != null) {
         // On-demand: resolveTypeName will materialize from the SealedVariant
         // declaration in scope analysis if this variant was referenced earlier.
         // If not, create a fresh ClassType.
@@ -10762,7 +10807,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         }
 
         // Process variant parameters as fields + constructor.
-        let vParams = variant.params as Array<CaseClassParam>;
+        let vParams = params;
         let vCtorParams = new Array<Type>();
         let vCtorNames = new Array<String>();
         let vCtorOptionalParams = new Array<boolean>();
@@ -10817,8 +10862,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               // Only fully set up unit variants (not forward-declared ones
               // which have their own ClassDeclaration that handles fields).
               var isForwardVariant2 = false;
-              if (classType.forwardVariantNames != null) {
-                let fvn = classType.forwardVariantNames as HashSet<String>;
+              let {forwardVariantNames} = classType;
+              if (forwardVariantNames != null) {
+                let fvn = forwardVariantNames;
                 if (fvn.has(variantName)) { isForwardVariant2 = true; }
               }
               if (!isForwardVariant2) {
@@ -10896,9 +10942,9 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
 
   // Re-enter scope for type parameters so method bodies can reference them.
   ctx.enterScope();
-  if (classType.typeParameters != null) {
-    let tps = classType.typeParameters as Array<TypeParameterType>;
-    var tpi = 0;
+  let {typeParameters} = classType;
+  if (typeParameters != null) {
+    let tps = typeParameters;
     for (let tp in tps) {
       ctx.declareTypeName(tp.name, tp);
     }
@@ -10932,7 +10978,8 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   for (let member in cd.body) {
     match (member) {
       case FieldDefinition as fd: {
-        if (fd.value != null) {
+        let {value} = fd;
+        if (value != null) {
           ctx.enterNodeReferrer(fd.id as i32);
           let fieldName = match (fd.name) {
             case Identifier {name}: name
@@ -10976,7 +11023,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
 
           let fieldInfo = classType.members[fieldName];
           let fieldType = fieldInfo.type;
-          let initType = checkExpression(ctx, fd.value as Expression, fieldType);
+          let initType = checkExpression(ctx, value, fieldType);
 
           // Restore hidden fields.
           let restoreKeys = hiddenFields.keys();
@@ -11002,7 +11049,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
           } else {
             let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
             if (instantiatedVal != initType) {
-              ctx.setNodeType(fd.value as Expression, instantiatedVal);
+              ctx.setNodeType(value, instantiatedVal);
             }
           }
           ctx.exitNodeReferrer(fd.id as i32);
@@ -11022,8 +11069,9 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
             case _: "<unknown>"
           };
           if (methodName == "<constructor>") {
-            if (classType.constructorType != null) {
-              checkMethodBody(ctx, classType, classType.constructorType as FunctionType, md);
+            let {constructorType} = classType;
+            if (constructorType != null) {
+              checkMethodBody(ctx, classType, constructorType, md);
             }
             // Derived class constructors must call super() — except when the
             // superclass is a root nobody wrote. A `resource class` with no
@@ -11068,9 +11116,10 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
 
         // Check getter body.
-        if (acc.getter != null) {
+        let {getter} = acc;
+        if (getter != null) {
           ctx.enterNodeReferrer(acc.id as i32);
-          let getterBlock = acc.getter as BlockStatement;
+          let getterBlock = getter;
           ctx.enterScope();
           let prevReturnType = ctx.returnType;
           ctx.setReturnType(accType);
@@ -11087,8 +11136,9 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
         }
 
         // Check setter body.
-        if (acc.setter != null) {
-          match (acc.setter as Node) {
+        let {setter} = acc;
+        if (setter != null) {
+          match (setter) {
             case SetterInfo as si: {
               ctx.enterNodeReferrer(si.id as i32);
               ctx.enterScope();
@@ -11113,8 +11163,9 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   }
 
   // Check interface conformance.
-  if (cd.implementsList != null) {
-    let implList = cd.implementsList as Array<TypeAnnotation>;
+  let {implementsList} = cd;
+  if (implementsList != null) {
+    let implList = implementsList;
     for (let ifaceAnn in implList) {
       let ifaceType = resolveTypeAnnotation(ctx, ifaceAnn);
       match (ifaceType) {
@@ -11337,13 +11388,15 @@ let checkMethodSignature = (
     if (paramInfo != null) {
       ctx.declareBinding(paramInfo, paramType);
     }
-    if (param.pattern != null) {
-      bindPattern(ctx, param.pattern as Pattern, paramType);
+    let {pattern} = param;
+    if (pattern != null) {
+      bindPattern(ctx, pattern, paramType);
     }
 
-    if (param.defaultValue != null) { 
+    let {defaultValue} = param;
+    if (defaultValue != null) { 
       hasInitializers = true; 
-      let initExp = param.defaultValue as Expression;
+      let initExp = defaultValue;
       let initType = checkExpression(ctx, initExp, paramType);
       if (!isAssignableTo(ctx, initType, paramType)) {
         ctx.error(
@@ -11392,8 +11445,9 @@ let checkMethodSignature = (
   }
 
   var retType: Type = new VoidType();
-  if (md.returnType != null) {
-    retType = resolveTypeAnnotation(ctx, md.returnType as TypeAnnotation, true);
+  let {returnType} = md;
+  if (returnType != null) {
+    retType = resolveTypeAnnotation(ctx, returnType, true);
   }
 
   // Generator methods: the annotation is the full Iterator<T> return
@@ -11526,8 +11580,9 @@ let checkMethodBody = (
       ctx.declareBinding(paramInfo, paramType);
     }
     // For destructured params, also bind the pattern fields.
-    if (param.pattern != null) {
-      bindPattern(ctx, param.pattern as Pattern, paramType);
+    let {pattern} = param;
+    if (pattern != null) {
+      bindPattern(ctx, pattern, paramType);
     }
     i += 1;
   }
@@ -11652,8 +11707,9 @@ let checkMethodBody = (
       }
     }
     let fieldsInInitializerList = new HashSet<String>();
-    if (md.initializerList != null) {
-      for (let item in md.initializerList as Array<Node>) {
+    let {initializerList} = md;
+    if (initializerList != null) {
+      for (let item in initializerList) {
         if (item is FieldInitializer) {
           fieldsInInitializerList.add(item.field.name);
           let fieldName = item.field.name;
@@ -11679,7 +11735,7 @@ let checkMethodBody = (
     }
 
     // Validate that all non-nullable fields are initialized
-    let superType = classType.superType;
+    let {superType} = classType;
     let keys = classType.members.keys();
     while (let (true, fieldName) = keys.next()) {
       let member = classType.members[fieldName];
@@ -11698,11 +11754,13 @@ let checkMethodBody = (
 
         // Skip declared fields (e.g., @intrinsic fields)
         var isDeclared = false;
-        if (classType.declaredFields != null && (classType.declaredFields as HashSet<String>).has(fieldName)) {
+        let {declaredFields} = classType;
+        if (declaredFields != null && declaredFields.has(fieldName)) {
           isDeclared = true;
         }
-        if (classType.genericSource != null) {
-          let gs = classType.genericSource as ClassType;
+        let {genericSource} = classType;
+        if (genericSource != null) {
+          let gs = genericSource;
           if (gs.declaredFields != null && (gs.declaredFields as HashSet<String>).has(fieldName)) {
             isDeclared = true;
           }
@@ -11765,8 +11823,9 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
 
   // Type parameters.
   ctx.enterScope();
-  if (id.typeParameters != null) {
-    let tps = id.typeParameters as Array<TypeParameter>;
+  let {typeParameters} = id;
+  if (typeParameters != null) {
+    let tps = typeParameters;
     ifaceType.typeParameters = new Array<TypeParameterType>();
     for (let tp in tps) {
       var constraint: Type | null = null;
@@ -11784,8 +11843,9 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   }
 
   // Resolve extends list.
-  if (id.extendsList != null) {
-    let extends_ = id.extendsList as Array<TypeAnnotation>;
+  let {extendsList} = id;
+  if (extendsList != null) {
+    let extends_ = extendsList;
     for (let currentExtends in extends_) {
       let parentType = resolveTypeAnnotation(ctx, currentExtends);
       match (parentType) {
@@ -11853,14 +11913,16 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         let paramTypes = new Array<Type>();
         for (let param in ms.params) {
           var paramType: Type = new ErrorType();
-          if (param.typeAnnotation != null) {
-            paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+          let {typeAnnotation} = param;
+          if (typeAnnotation != null) {
+            paramType = resolveTypeAnnotation(ctx, typeAnnotation);
                       }
           paramTypes.push(paramType);
         }
         var retType: Type = new VoidType();
-        if (ms.returnType != null) {
-          retType = resolveTypeAnnotation(ctx, ms.returnType as TypeAnnotation, true);
+        let {returnType} = ms;
+        if (returnType != null) {
+          retType = resolveTypeAnnotation(ctx, returnType, true);
         }
         let methodName = match (ms.name) {
           case Identifier {name}: name
@@ -11961,7 +12023,7 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
     match (tat) {
       case TypeAliasType as t: {
         ctx.enterScope();
-        let {typeParameters} = t;
+        let typeParameters = t.typeParameters;
         if (typeParameters != null) {
           for (let param in typeParameters) {
             ctx.declareTypeName(param.name, param);
@@ -11991,8 +12053,8 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
 let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   let i32Type = new I32Type();
   let stringType = ctx.resolvePreludeType("String");
-  let name = ed.name.name;
-  let members = ed.members;
+  let {name} = ed.name;
+  let {members} = ed;
   var isStringEnum = false;
 
   if (members.length == 0) {
@@ -12089,9 +12151,10 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
 
   // Type parameters.
   ctx.enterScope();
-  if (md.typeParameters != null) {
-    let tps = md.typeParameters as Array<TypeParameter>;
-    var resolvedTps = new Array<TypeParameterType>();
+  let {typeParameters} = md;
+  if (typeParameters != null) {
+    let tps = typeParameters;
+    let resolvedTps = new Array<TypeParameterType>();
     for (let tp in tps) {
       var constraint: Type | null = null;
       if (tp.constraint != null) {
@@ -12109,8 +12172,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
 
   // Resolve 'on' type.
-  if (md.on != null) {
-    let onTypeId = md.on as TypeAnnotation;
+  let {on} = md;
+  if (on != null) {
+    let onTypeId = on;
     let onResolved = resolveTypeAnnotation(ctx, onTypeId);
     if (onResolved != null) {
       match (onResolved) {
@@ -12138,8 +12202,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
 
   // Resolve composed mixins.
-  if (md.mixins != null) {
-    let mixinAnns = md.mixins as Array<TypeAnnotation>;
+  let {mixins} = md;
+  if (mixins != null) {
+    let mixinAnns = mixins;
     for (let ma in mixinAnns) {
       let composedType = resolveTypeAnnotation(ctx, ma);
       match (composedType) {
@@ -12196,7 +12261,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   thisType.privateScopeKey = mixinScopeKey;
   mixinType.privateScopeKey = mixinScopeKey;
   
-  let onType = mixinType.onType;
+  let {onType} = mixinType;
   if (onType != null) {
     match (baseType(onType)) {
       case ClassType as ct: {
@@ -12265,8 +12330,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
         thisType.members[fieldName] = fdInfo;
 
         // Check initializer if present.
-        if (fd.value != null) {
-          let initType = checkExpression(ctx, fd.value as Expression, fieldType);
+        let {value} = fd;
+        if (value != null) {
+          let initType = checkExpression(ctx, value, fieldType);
           if (!isAssignableTo(ctx, initType, fieldType)) {
             ctx.error(
               "Type mismatch: field '" + fieldName + "' has type '" +
@@ -12425,9 +12491,10 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
         // accessor type as return context, setter with its parameter
         // bound to the accessor type.
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-        if (acc.getter != null) {
+        let {getter} = acc;
+        if (getter != null) {
           ctx.enterNodeReferrer(acc.id as i32);
-          let getterBlock = acc.getter as BlockStatement;
+          let getterBlock = getter;
           ctx.enterScope();
           let prevReturnType = ctx.returnType;
           ctx.setReturnType(accType);
@@ -12442,8 +12509,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           ctx.exitScope();
           ctx.exitNodeReferrer(acc.id as i32);
         }
-        if (acc.setter != null) {
-          match (acc.setter as Node) {
+        let {setter} = acc;
+        if (setter != null) {
+          match (setter) {
             case SetterInfo as si: {
               ctx.enterNodeReferrer(si.id as i32);
               ctx.enterScope();
@@ -12526,8 +12594,9 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
 
   // Type parameters.
   var resolvedTypeParams: Array<TypeParameterType> | null = null;
-  if (df.typeParameters != null) {
-    let tps = df.typeParameters as Array<TypeParameter>;
+  let {typeParameters} = df;
+  if (typeParameters != null) {
+    let tps = typeParameters;
     resolvedTypeParams = new Array<TypeParameterType>();
     var tpi = 0;
     while (tpi < tps.length) {
@@ -12558,8 +12627,9 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
     paramNames.push(param.name.name);
     optionals.push(param.optional || param.defaultValue != null);
     initializers.push(param.defaultValue);
-    if (param.typeAnnotation != null) {
-      paramTypes.push(resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation));
+    let {typeAnnotation} = param;
+    if (typeAnnotation != null) {
+      paramTypes.push(resolveTypeAnnotation(ctx, typeAnnotation));
     } else {
       paramTypes.push(new ErrorType());
     }
@@ -12584,7 +12654,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   if (info != null) {
     ctx.model.addDeclaredGlobal(info.id, df);
     let existingType = ctx.model.getBindingType(info);
-    if (existingType != null && existingType is FunctionType) {
+    if (existingType is FunctionType) {
       if (existingType.overloads == null) {
         let ovArray = new Array<FunctionType>();
         ovArray.push(existingType);
@@ -12610,8 +12680,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
 // ============================================================================
 
 let checkSymbolDeclaration = (ctx: CheckerContext, sd: SymbolDeclaration): void => {
-  let name = sd.name.name;
-
+  let {name} = sd.name;
   // Declare in value namespace.
   let info = ctx.model.resolveDeclaration(sd);
   if (info == null) {
@@ -12711,10 +12780,11 @@ let checkNewExpression = (
 
 
       // Fill in missing arguments with default values
-      if (ctorType.parameterInitializers != null) {
+      let {parameterInitializers} = ctorType;
+      if (parameterInitializers != null) {
         var a = args.length;
         while (a < ctorType.parameters.length) {
-          let init = (ctorType.parameterInitializers as Array<Expression | null>)[a];
+          let init = parameterInitializers[a];
           if (init != null) {
             match (init) {
               case Identifier {name}: {
@@ -13012,8 +13082,9 @@ let checkMemberExpression = (
   let objectTypeRaw = checkExpression(ctx, object, null);
   var objectType = objectTypeRaw;
   if (objectType is ThisType) {
-    if (ctx.currentClass != null) {
-      objectType = ctx.currentClass as Type;
+    let {currentClass} = ctx;
+    if (currentClass != null) {
+      objectType = currentClass as Type;
     }
   }
 
@@ -13347,7 +13418,7 @@ let resolveMemberType = (
       return new ErrorType();
     }
     case RecordT as rec: {
-      let properties = rec.properties;
+      let {properties} = rec;
       if (properties.has(propName)) {
         if (rec.isOptional(propName)) {
           // The field may be absent, so a direct read has no value to
@@ -13374,8 +13445,9 @@ let resolveMemberType = (
       // ArrayType is produced by array literals [1, 2, 3].
       // Delegate to FixedArray<T> prelude type with T = elementType.
       var faType = ctx.resolvePreludeType("FixedArray");
-      if (ctx.currentClass != null && (ctx.currentClass as ClassType).name == "FixedArray") {
-        faType = ctx.currentClass as Type;
+      let {currentClass} = ctx;
+      if (currentClass != null && currentClass.name == "FixedArray") {
+        faType = currentClass as Type;
       }
       if (faType != null) {
         match (faType) {
@@ -13519,7 +13591,7 @@ let resolveIndexType = (
     case ArrayType {elementType}: {
       // Check for extension class operator[] on Array types (e.g., FixedArray<T>.operator[](Range))
       let fixedArrayPrelude = ctx.resolvePreludeType("FixedArray");
-      if (fixedArrayPrelude != null && fixedArrayPrelude is ClassType) {
+      if (fixedArrayPrelude is ClassType) {
         let typeArgs = new Array<Type>();
         typeArgs.push(elementType);
         let ct = instantiateClassType(fixedArrayPrelude, typeArgs);
@@ -13528,8 +13600,9 @@ let resolveIndexType = (
           let baseMethod = opMethodInfo.type as FunctionType;
           let candidates = new Array<FunctionType>();
           candidates.push(baseMethod);
-          if (baseMethod.overloads != null) {
-            let ovs = baseMethod.overloads as Array<FunctionType>;
+          let {overloads} = baseMethod;
+          if (overloads != null) {
+            let ovs = overloads;
             var oi = 0;
             while (oi < ovs.length) {
               candidates.push(ovs[oi]);
@@ -13605,8 +13678,9 @@ let resolveIndexType = (
         let baseMethod = opMethodInfo.type as FunctionType;
         let candidates = new Array<FunctionType>();
         candidates.push(baseMethod);
-        if (baseMethod.overloads != null) {
-          let ovs = baseMethod.overloads as Array<FunctionType>;
+        let {overloads} = baseMethod;
+        if (overloads != null) {
+          let ovs = overloads;
           var oi = 0;
           while (oi < ovs.length) {
             candidates.push(ovs[oi]);
@@ -13649,8 +13723,9 @@ let resolveIndexType = (
         let baseMethod = opMethodInfo.type as FunctionType;
         let candidates = new Array<FunctionType>();
         candidates.push(baseMethod);
-        if (baseMethod.overloads != null) {
-          let ovs = baseMethod.overloads as Array<FunctionType>;
+        let {overloads} = baseMethod;
+        if (overloads != null) {
+          let ovs = overloads;
           var oi = 0;
           while (oi < ovs.length) {
             candidates.push(ovs[oi]);
@@ -14221,8 +14296,9 @@ let resolveClassFieldType = (
         return substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
       }
       // Walk superclass.
-      if (ct.superType != null) {
-        return resolveClassFieldType(ctx, ct.superType as Type, propName, loc);
+      let {superType} = ct;
+      if (superType != null) {
+        return resolveClassFieldType(ctx, superType as Type, propName, loc);
       }
       ctx.error(
         "Property '" + propName + "' does not exist on type '" + ct.name + "'.",
@@ -14408,8 +14484,9 @@ let checkMatchExpr = (
     }
 
     // Check the guard if present.
-    if (matchCase.guard != null) {
-      let guardType = checkExpression(ctx, matchCase.guard as Expression, null);
+    let {guard} = matchCase;
+    if (guard != null) {
+      let guardType = checkExpression(ctx, guard, null);
       if (!isBooleanLike(guardType)) {
         ctx.error(
           "Match guard must be a boolean expression.",
@@ -14445,7 +14522,7 @@ let checkMatchExpr = (
   }
 
   // Result is union of all case body types.
-  if (expectedType != null && expectedType is VoidType) {
+  if (expectedType is VoidType) {
     return new VoidType();
   }
   if (resultTypes.length == 0) {
@@ -14680,7 +14757,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       }
     }
     case RecordPattern as recordPat: {
-      let properties = recordPat.properties;
+      let {properties} = recordPat;
       if (expectedType is RecordT) {
         // Codegen reads the matched record type off the pattern node
         // for presence tests: an optional field named without a
@@ -14720,7 +14797,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       }
     }
     case TuplePattern as tuplePat: {
-      let elements = tuplePat.elements;
+      let {elements} = tuplePat;
       let elementTypes = getTuplePatternElementTypes(expectedType);
       if (elementTypes == null) {
         if (!(expectedType is ErrorType) && !(expectedType is UnknownType)) {
@@ -14869,10 +14946,10 @@ let extractIteratorYieldType = (ctx: CheckerContext, t: Type): Type | null => {
   if (t.id != prelude.id) {
     return null;
   }
-  if (t.typeArguments == null) {
+  let args = t.typeArguments;
+  if (args == null) {
     return null;
   }
-  let args = t.typeArguments as Array<Type>;
   if (args.length != 1) {
     return null;
   }
@@ -14918,10 +14995,10 @@ let extractFutureValueType = (ctx: CheckerContext, t: Type): Type | null => {
   if (t.id != prelude.id) {
     return null;
   }
-  if (t.typeArguments == null) {
+  let args = t.typeArguments;
+  if (args == null) {
     return null;
   }
-  let args = t.typeArguments as Array<Type>;
   if (args.length != 1) {
     return null;
   }
@@ -15020,12 +15097,11 @@ let checkFunctionExpression = (
   fe: FunctionExpression,
   expectedType: Type | null
 ): Type => {
-  let typeParameters = fe.typeParameters;
-  let params = fe.params;
+  let {typeParameters} = fe;
+  let {params} = fe;
   let returnTypeAnn = fe.returnType;
-  let body = fe.body;
+  let {body} = fe;
   let loc = fe.loc;
-
   var isClosure = !(ctx.referrerStack.length == 1 && ctx.referrerStack[0] == "sym");
   if (!isClosure) {
     let parent = ctx.model.getParent(fe);
@@ -15090,8 +15166,9 @@ let checkFunctionExpression = (
     paramNames.push(paramName);
 
     var paramType: Type = new ErrorType();
-    if (param.typeAnnotation != null) {
-      paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
+    let {typeAnnotation} = param;
+    if (typeAnnotation != null) {
+      paramType = resolveTypeAnnotation(ctx, typeAnnotation);
           } else if (contextualFn != null) {
       if (i < contextualFn.parameters.length) {
         paramType = contextualFn.parameters[i];
@@ -15114,13 +15191,15 @@ let checkFunctionExpression = (
     if (paramInfo != null) {
       ctx.declareBinding(paramInfo, paramType);
     }
-    if (param.pattern != null) {
-      bindPattern(ctx, param.pattern as Pattern, paramType);
+    let {pattern} = param;
+    if (pattern != null) {
+      bindPattern(ctx, pattern, paramType);
     }
 
-    if (param.defaultValue != null) {
+    let {defaultValue} = param;
+    if (defaultValue != null) {
       hasInitializers = true;
-      let initExp = param.defaultValue as Expression;
+      let initExp = defaultValue;
       let initType = checkExpression(ctx, initExp, paramType);
       if (!isAssignableTo(ctx, initType, paramType)) {
         ctx.error(
@@ -15175,7 +15254,7 @@ let checkFunctionExpression = (
   // (the call expression's type); T is the yield type. With no
   // annotation the yield type is inferred from the yield statements.
   // The body may only `yield` values and `return;` bare.
-  let isGenerator = fe.isGenerator;
+  let {isGenerator} = fe;
   var declaredYieldType: Type = new VoidType();
   var declaredIteratorType: Type | null = null;
   if (isGenerator) {
@@ -15203,7 +15282,7 @@ let checkFunctionExpression = (
   // (the call expression's type); the body checks against T, and
   // `return e` may also adopt a Future<T> (async.md §1–§2). With no
   // annotation, T is inferred from the returns and wrapped.
-  let isAsync = fe.isAsync;
+  let {isAsync} = fe;
   var declaredFutureType: Type | null = null;
   if (isAsync) {
     // step()'s failure-capture region is a try_br: an async body needs
@@ -15563,9 +15642,9 @@ let checkCallExpressionInner = (
   calleeType: Type,
   expectedType: Type | null
 ): Type => {
-  let callee = call.callee;
-  let args = call.args;
-  let typeArguments = call.typeArguments;
+  let {callee} = call;
+  let {args} = call;
+  let {typeArguments} = call;
   let loc = call.loc;
   match (calleeType) {
     case UnionT {types}: {
@@ -15573,8 +15652,9 @@ let checkCallExpressionInner = (
       for (let t in types) {
         if (t is FunctionType) {
           var requiredCount = t.parameters.length;
-          if (t.optionalParameters != null) {
-            let optionals = t.optionalParameters as Array<boolean>;
+          let optionalParameters = t.optionalParameters;
+          if (optionalParameters != null) {
+            let optionals = optionalParameters;
             requiredCount = 0;
             var oi = 0;
             while (oi < optionals.length) {
@@ -15610,8 +15690,9 @@ let checkCallExpressionInner = (
       };
       if (args.length > callerArgCount) {
         ctx.model.setOriginalArgCount(call, callerArgCount);
-        if (matchedFt.parameterNames != null) {
-          ctx.model.setDefaultArgParamNames(call, matchedFt.parameterNames as Array<String>);
+        let {parameterNames} = matchedFt;
+        if (parameterNames != null) {
+          ctx.model.setDefaultArgParamNames(call, parameterNames);
         }
       }
 
@@ -15816,10 +15897,11 @@ let checkCallExpressionInner = (
 
       // Fill in missing arguments with default values
       var hasDefaults = false;
-      if (effectiveFt.parameterInitializers != null) {
+      let {parameterInitializers} = effectiveFt;
+      if (parameterInitializers != null) {
         var a = args.length;
         while (a < effectiveFt.parameters.length) {
-          let init = (effectiveFt.parameterInitializers as Array<Expression | null>)[a];
+          let init = parameterInitializers[a];
           if (init != null) {
             match (init) {
               case Identifier {name}: {
@@ -15855,8 +15937,9 @@ let checkCallExpressionInner = (
         // bindings.
         if (hasDefaults || args.length > originalActualCount) {
           ctx.model.setOriginalArgCount(call, originalActualCount);
-          if (effectiveFt.parameterNames != null) {
-            ctx.model.setDefaultArgParamNames(call, effectiveFt.parameterNames as Array<String>);
+          let {parameterNames} = effectiveFt;
+          if (parameterNames != null) {
+            ctx.model.setDefaultArgParamNames(call, parameterNames);
           }
           if (callee is MemberExpression) {
             let objectType = checkExpression(ctx, callee.object, null);

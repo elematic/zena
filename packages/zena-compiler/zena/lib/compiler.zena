@@ -409,8 +409,9 @@ export final class Compiler {
     // still missing.
     this.#wireToFixpoint(files, null);
     for (let lib in files) {
-      if (lib.scopeResult != null) {
-        this.#wireImports(lib, lib.scopeResult as ScopeResult, true);
+      let {scopeResult} = lib;
+      if (scopeResult != null) {
+        this.#wireImports(lib, scopeResult, true);
       }
     }
   }
@@ -474,8 +475,9 @@ export final class Compiler {
         if (only != null && !only.has(lib.path)) {
           continue;
         }
-        if (lib.scopeResult != null) {
-          if (this.#wireImports(lib, lib.scopeResult as ScopeResult, false)) {
+        let {scopeResult} = lib;
+        if (scopeResult != null) {
+          if (this.#wireImports(lib, scopeResult, false)) {
             changed = true;
           }
         }
@@ -536,7 +538,7 @@ export final class Compiler {
    * recordings from the previous compile).
    */
   #wireImports(lib: SourceFile, result: ScopeResult, record: boolean): boolean {
-    let ast = lib.ast;
+    let {ast} = lib;
     var changed = false;
 
     // The export map is rebuilt from the local-declaration snapshot on
@@ -1196,8 +1198,9 @@ let classTypeEquals = (
   // Supertype.
   if (ca.superType == null && cb.superType != null) { return false; }
   if (ca.superType != null && cb.superType == null) { return false; }
-  if (ca.superType != null && cb.superType != null) {
-    if (!classTypeEquals(ca.superType as ClassType, cb.superType as ClassType, visited)) {
+  let {superType} = ca;
+  if (superType != null && cb.superType != null) {
+    if (!classTypeEquals(superType, cb.superType as ClassType, visited)) {
       return false;
     }
   }
@@ -1208,9 +1211,10 @@ let classTypeEquals = (
   // Constructor.
   if (ca.constructorType == null && cb.constructorType != null) { return false; }
   if (ca.constructorType != null && cb.constructorType == null) { return false; }
-  if (ca.constructorType != null && cb.constructorType != null) {
+  let {constructorType} = ca;
+  if (constructorType != null && cb.constructorType != null) {
     if (!functionTypeEquals(
-      ca.constructorType as FunctionType,
+      constructorType,
       cb.constructorType as FunctionType,
       visited
     )) { return false; }
@@ -1279,8 +1283,9 @@ let mixinTypeEquals = (
   // onType
   if (ma.onType == null && mb.onType != null) { return false; }
   if (ma.onType != null && mb.onType == null) { return false; }
-  if (ma.onType != null && mb.onType != null) {
-    if (!classTypeEquals(ma.onType as ClassType, mb.onType as ClassType, visited)) {
+  let {onType} = ma;
+  if (onType != null && mb.onType != null) {
+    if (!classTypeEquals(onType as ClassType, mb.onType as ClassType, visited)) {
       return false;
     }
   }
@@ -1623,8 +1628,9 @@ export let checkCompilation = (
     }
 
     // Compute export signature and compare with previous.
-    if (file.scopeResult != null) {
-      let sr = file.scopeResult as ScopeResult;
+    let {scopeResult} = file;
+    if (scopeResult != null) {
+      let sr = scopeResult;
       let newSig = computeExportSignature(sr.exports, sr.rootScope, checkResult.model);
       allSignatures[file.path] = newSig;
 
@@ -1909,8 +1915,9 @@ let findMemberInClass = (
 ): SourceSpan | null => {
   // For instantiated generics, look at the original source class.
   var sourceClass = ct;
-  if (ct.genericSource != null) {
-    sourceClass = ct.genericSource as ClassType;
+  let {genericSource} = ct;
+  if (genericSource != null) {
+    sourceClass = genericSource;
   }
 
   let filePath = sourceClass.sourcePath;
@@ -1938,8 +1945,9 @@ let findMemberInClass = (
   if (classDecl == null) { return null; }
 
   // Check case class params first (e.g., `class Point(x: f64, y: f64)`).
-  if (classDecl.caseParams != null) {
-    let params = classDecl.caseParams as Array<CaseClassParam>;
+  let {caseParams} = classDecl;
+  if (caseParams != null) {
+    let params = caseParams;
     var pi = 0;
     while (pi < params.length) {
       if (params[pi].name.name == memberName) {
@@ -1982,8 +1990,9 @@ let findMemberInClass = (
   }
 
   // Check inherited members from superclass.
-  if (sourceClass.superType != null) {
-    return findMemberInClass(sourceClass.superType as ClassType, memberName, compiler);
+  let {superType} = sourceClass;
+  if (superType != null) {
+    return findMemberInClass(superType, memberName, compiler);
   }
 
   return null;

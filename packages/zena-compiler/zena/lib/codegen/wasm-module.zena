@@ -364,7 +364,7 @@ export final class WasmSignature extends WasmType {
 /** The WasmStruct behind a reference ValType, or null. */
 export let asWasmStruct = (vt: ValType): WasmStruct | null => {
   let t = refTargetOf(vt);
-  if (t != null && t is WasmStruct) {
+  if (t is WasmStruct) {
     return t;
   }
   return null;
@@ -373,7 +373,7 @@ export let asWasmStruct = (vt: ValType): WasmStruct | null => {
 /** The WasmSignature behind a reference ValType, or null. */
 export let asWasmSignature = (vt: ValType): WasmSignature | null => {
   let t = refTargetOf(vt);
-  if (t != null && t is WasmSignature) {
+  if (t is WasmSignature) {
     return t;
   }
   return null;
@@ -382,7 +382,7 @@ export let asWasmSignature = (vt: ValType): WasmSignature | null => {
 /** The WasmArray behind a reference ValType, or null. */
 export let asWasmArray = (vt: ValType): WasmArray | null => {
   let t = refTargetOf(vt);
-  if (t != null && t is WasmArray) {
+  if (t is WasmArray) {
     return t;
   }
   return null;
@@ -1372,10 +1372,11 @@ export final class WasmModule {
     }
     func.isAdded = true;
     this.functions.push(func);
-    if (func.classType != null && func.methodName != null) {
-      let key = getClassMethodKey(getClassKey(func.classType as ClassType), func.methodName as String);
+    let {classType} = func;
+    if (classType != null && func.methodName != null) {
+      let key = getClassMethodKey(getClassKey(classType), func.methodName as String);
       this.classMethodMap[key] = func;
-      let cKey = getClassKey(func.classType as ClassType) as String;
+      let cKey = getClassKey(classType) as String;
       if (!this.classMethods.has(cKey)) {
         this.classMethods[cKey] = new Array<WasmFunction>();
       }
@@ -1448,7 +1449,8 @@ export final class WasmModule {
     for (let pair in this.classInfos) {
       let info = pair.value;
       let s = info.structType;
-      if (s.name != null && (s.name as String) == "Error") {
+      let name = s.name;
+      if (name != null && name == "Error") {
         errorStruct = s;
       }
     }
@@ -1603,7 +1605,8 @@ export final class WasmModule {
     for (let pair in this.classInfos) {
       let info = pair.value;
       let s = info.structType;
-      if (s.name != null && (s.name as String) == "String") {
+      let name = s.name;
+      if (name != null && name == "String") {
         stringStruct = s;
       }
     }
@@ -1627,8 +1630,9 @@ export final class WasmModule {
     }
     visited.add(t);
     if (t is WasmStruct) {
-      if (t.superStruct != null) {
-        this.#visitTypeForLayout(t.superStruct as WasmStruct, visited, sortedTypes);
+      let superStruct = t.superStruct;
+      if (superStruct != null) {
+        this.#visitTypeForLayout(superStruct, visited, sortedTypes);
       }
     }
     sortedTypes.push(t);
@@ -1679,10 +1683,11 @@ export final class WasmModule {
     this.functionAdaptations.clear();
     this.arrayMethods = new Array<WasmFunction>();
     for (let func in this.functions) {
-      if (func.classType != null && func.methodName != null) {
-        let key = getClassMethodKey(getClassKey(func.classType as ClassType), func.methodName as String);
+      let {classType} = func;
+      if (classType != null && func.methodName != null) {
+        let key = getClassMethodKey(getClassKey(classType), func.methodName as String);
         this.classMethodMap[key] = func;
-        let cKey = getClassKey(func.classType as ClassType) as String;
+        let cKey = getClassKey(classType) as String;
         if (!this.classMethods.has(cKey)) {
           this.classMethods[cKey] = new Array<WasmFunction>();
         }
@@ -1761,8 +1766,9 @@ export final class WasmModule {
       let t = this.types[i];
       t.index = i;
       if (t is WasmStruct) {
-        if (t.name != null && (t.name as String).contains("Iterable_12_MapEntry_332_String_119_bool")) {
-          console.log("layout assigned index: " + i32ToString(i) + " to " + (t.name as String));
+        let name = t.name;
+        if (name != null && name.contains("Iterable_12_MapEntry_332_String_119_bool")) {
+          console.log("layout assigned index: " + i32ToString(i) + " to " + name);
         }
       }
     }

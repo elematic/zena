@@ -159,7 +159,7 @@ export final class ClassHierarchyAnalysis {
               let name = getMethodName(member);
               if (matchMemberName(name, mName)) {
                 let mType = model.getNodeType(member);
-                if (mType != null && mType is FunctionType) {
+                if (mType is FunctionType) {
                   let sigKey = getSignatureKey(mType);
                   if (!seenSigs.has(sigKey)) {
                     methods.push(member);
@@ -388,8 +388,9 @@ export final class ClassHierarchyAnalysis {
     while (curr != null) {
       let currVal = curr;
       list.add(currVal.symbolId);
-      if (currVal.genericSource != null) {
-        list.add((currVal.genericSource as ClassType).symbolId);
+      let {genericSource} = currVal;
+      if (genericSource != null) {
+        list.add(genericSource.symbolId);
       }
       
       let lookupId = (currVal.genericSource ?? currVal).symbolId;
@@ -512,7 +513,7 @@ let collectMixinSymbolIds = (
       if (!seenIds.has(id)) {
         seenIds[id] = true;
         let mt = model.getBindingType(sym);
-        if (mt != null && mt is MixinType) {
+        if (mt is MixinType) {
           let md = findMixinDeclaration(program, mt);
           if (md != null) {
             collectMixinSymbolIds(program, model, md.mixins, seenIds);

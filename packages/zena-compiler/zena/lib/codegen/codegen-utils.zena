@@ -227,11 +227,12 @@ export let isConcrete = (t: Type): boolean => {
     case NeverType: false
     case ThisType: false
     case ClassType as ct: {
-      if (ct.typeParameters != null && (ct.typeParameters as Array<TypeParameterType>).length > 0) {
-        if (ct.typeArguments == null) {
+      let {typeParameters} = ct;
+      if (typeParameters != null && typeParameters.length > 0) {
+        let args = ct.typeArguments;
+        if (args == null) {
           return false;
         }
-        let args = ct.typeArguments as Array<Type>;
         var i = 0;
         var concrete = true;
         while (i < args.length) {
@@ -244,11 +245,12 @@ export let isConcrete = (t: Type): boolean => {
       }
     }
     case InterfaceType as it: {
-      if (it.typeParameters != null && (it.typeParameters as Array<TypeParameterType>).length > 0) {
-        if (it.typeArguments == null) {
+      let {typeParameters} = it;
+      if (typeParameters != null && typeParameters.length > 0) {
+        let args = it.typeArguments;
+        if (args == null) {
           return false;
         }
-        let args = it.typeArguments as Array<Type>;
         var i = 0;
         var concrete = true;
         while (i < args.length) {
@@ -337,8 +339,9 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
         let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
         ct.name + "_t" + i32ToString(baseId as i32)
       };
-      if (ct.typeArguments != null && (ct.typeArguments as Array<Type>).length > 0 && isConcrete(ct)) {
-        let args = ct.typeArguments as Array<Type>;
+      let {typeArguments} = ct;
+      if (typeArguments != null && typeArguments.length > 0 && isConcrete(ct)) {
+        let args = typeArguments;
         let parts = new FixedArray<String>(1 + 2 * args.length, "");
         parts[0] = base;
         var i = 0;
@@ -360,8 +363,9 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
         let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
         it.name + "_t" + i32ToString(baseId as i32)
       };
-      if (it.typeArguments != null && (it.typeArguments as Array<Type>).length > 0 && isConcrete(it)) {
-        let args = it.typeArguments as Array<Type>;
+      let {typeArguments} = it;
+      if (typeArguments != null && typeArguments.length > 0 && isConcrete(it)) {
+        let args = typeArguments;
         let parts = new FixedArray<String>(1 + 2 * args.length, "");
         parts[0] = base;
         var i = 0;
@@ -749,7 +753,7 @@ export let collectMixinMembers = (
     let sym = model.resolve(ann);
     if (sym != null) {
       let mt = model.getBindingType(sym);
-      if (mt != null && mt is MixinType) {
+      if (mt is MixinType) {
         let md = findMixinDeclaration(program, mt);
         if (md != null) {
           let mixinKey = getMixinKey(mt);
@@ -843,8 +847,9 @@ export let mixinScopeOfNode = (model: SemanticModel, node: Node): String | null 
       // source path, so two same-named mixins from different modules
       // are different scopes. Never rederive it from the name.
       let mtRoot = mt.genericSource ?? mt;
-      if (mtRoot.privateScopeKey != null) {
-        return mtRoot.privateScopeKey as String;
+      let {privateScopeKey} = mtRoot;
+      if (privateScopeKey != null) {
+        return privateScopeKey;
       }
       return mt.name + "_This";
     }
@@ -866,7 +871,7 @@ export let collectMixinFields = (
     let sym = model.resolve(ann);
     if (sym != null) {
       let mt = model.getBindingType(sym);
-      if (mt != null && mt is MixinType) {
+      if (mt is MixinType) {
         let md = findMixinDeclaration(program, mt);
         if (md != null) {
           let mixinKey = getMixinKey(mt);
@@ -969,8 +974,9 @@ export let substituteTypeParams = (
       res
     }
     case ClassType as ct: {
-      if (ct.typeArguments != null) {
-        let srcArgs = ct.typeArguments as Array<Type>;
+      let {typeArguments} = ct;
+      if (typeArguments != null) {
+        let srcArgs = typeArguments;
         let subArgs = new Array<Type>();
         for (let arg in srcArgs) {
           subArgs.push(substituteTypeParams(typeParams, typeArgs, arg));
@@ -1006,8 +1012,9 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
   case ClassType as ct: {
     let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
     let base = `${ct.name}_${i32ToString(baseId as i32)}`;
-    if (ct.typeArguments != null) {
-      let args = ct.typeArguments as Array<Type>;
+    let {typeArguments} = ct;
+    if (typeArguments != null) {
+      let args = typeArguments;
       let len = args.length;
       if (len > 0) {
         let parts = new FixedArray<String>(2 * len + 2, "");
@@ -1032,8 +1039,9 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
   case InterfaceType as it: {
     let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
     let base = `${it.name}_${i32ToString(baseId as i32)}`;
-    if (it.typeArguments != null) {
-      let args = it.typeArguments as Array<Type>;
+    let {typeArguments} = it;
+    if (typeArguments != null) {
+      let args = typeArguments;
       let len = args.length;
       if (len > 0) {
         let parts = new FixedArray<String>(2 * len + 2, "");
@@ -1109,7 +1117,7 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
     }
   }
   case RecordType as recT: {
-    let properties = recT.properties;
+    let {properties} = recT;
     let len = properties.size;
     if (len > 0) {
       let parts = new FixedArray<String>(4 * len + 1, "");

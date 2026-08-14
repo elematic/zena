@@ -212,8 +212,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
   new(this.program, this.wasm, this.target = "zena-cli") {
     var idGen: IdGenerator<TypeId> | null = null;
-    if (program.entryPoint != null) {
-      idGen = (program.entryPoint as CompilationUnit).model.typeIdGenerator;
+    let {entryPoint} = program;
+    if (entryPoint != null) {
+      idGen = (entryPoint as CompilationUnit).model.typeIdGenerator;
     } else if (program.units.length > 0) {
       idGen = program.units[0].model.typeIdGenerator;
     }
@@ -259,8 +260,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
   queueReferrer(ref: Referrer): void {
     var suffix = if (ref.classType != null) "@" + (getClassKey(ref.classType as ClassType) as String) else "";
-    if (ref.typeArguments != null) {
-      suffix += "<" + getSpecializedName("", ref.typeArguments as Array<Type>) + ">";
+    let {typeArguments} = ref;
+    if (typeArguments != null) {
+      suffix += "<" + getSpecializedName("", typeArguments) + ">";
     }
     let key = (if (ref.isSymbol) "sym:" + i32ToString(ref.symId as i32) else "node:" + i32ToString(ref.nodeId)) + suffix;
 
@@ -341,8 +343,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
              ((func.intrinsic as String) == "eq" ||
               (func.intrinsic as String) == "hash"))) {
           this.equalityDispatchUsed = true;
-          if (this.wasm.stringClass != null) {
-            let sKey = getClassKey(this.wasm.stringClass as ClassType);
+          let {stringClass} = this.wasm;
+          if (stringClass != null) {
+            let sKey = getClassKey(stringClass);
             this.notePendingMemberReach(getClassMethodKey(sKey, "=="));
             this.notePendingMemberReach(getClassMethodKey(sKey, "hashCode"));
           }
@@ -358,25 +361,29 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         // zena:memory only through user code — the compiler's own
         // time.zena, for the LSP — and previously emitted memory ops
         // with no declared memory (invalid wasm at instantiation).
-        if (func.intrinsic != null) {
-          let iname = func.intrinsic as String;
+        let {intrinsic} = func;
+        if (intrinsic != null) {
+          let iname = intrinsic;
           if (iname == 'memory.size' || iname == 'memory.grow' ||
               iname.contains('.load') || iname.contains('.store')) {
             this.wasm.ensureMemory();
           }
         }
 
-        if (func.contextStruct != null) {
-          this.markTypeReached(func.contextStruct as WasmStruct);
+        let {contextStruct} = func;
+        if (contextStruct != null) {
+          this.markTypeReached(contextStruct);
         }
-        if (func.classType != null) {
-          let ct = func.classType as ClassType;
+        let {classType} = func;
+        if (classType != null) {
+          let ct = classType;
           let model = this.getClassModel(ct);
 
           this.specializer.instantiateClassType(ct, model);
         }
-        if (func.node != null) {
-          let fnNode = func.node as Node;
+        let {node} = func;
+        if (node != null) {
+          let fnNode = node;
           this.nodeIdToNode[fnNode.id as i32] = fnNode;
           this.nodeIdToModel[fnNode.id as i32] = func.model;
           this.queueReferrer(new Referrer(
@@ -463,7 +470,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       return;
     }
     let unit = prog.unitsByPath[componentAbiModule];
-    let model = unit.model;
+    let {model} = unit;
     let gKeys = model.globalDeclarations.keys();
     while (let (true, id) = gKeys.next()) {
       let decl = model.globalDeclarations[id];
@@ -486,8 +493,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (linkedClasses.has(ctKey)) { return; }
     linkedClasses[ctKey] = true;
     
-    if (ct.superType != null) {
-      let superCt = ct.superType as ClassType;
+    let {superType} = ct;
+    if (superType != null) {
+      let superCt = superType;
       this.typeLowerer.discoverType(superCt, model);
       this.#linkSuperAndVT(superCt, model, linkedClasses);
       
@@ -498,8 +506,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         if (let (true, superInfo) = this.wasm.classInfos.get(superKey)) {
           info.structType.superStruct = superInfo.structType;
           superInfo.subclasses.push(info);
-          if (info.vtableStructType != null && superInfo.vtableStructType != null) {
-            let vst = info.vtableStructType as WasmStruct;
+          let {vtableStructType} = info;
+          if (vtableStructType != null && superInfo.vtableStructType != null) {
+            let vst = vtableStructType;
             let superVst = superInfo.vtableStructType as WasmStruct;
             vst.superStruct = superVst;
           }
@@ -534,8 +543,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   #populateClassStruct(ct: ClassType, populated: HashMap<ClassKey, boolean>): void {
     let key = getClassKey(ct);
     if (populated.has(key)) { return; }
-    if (ct.superType != null) {
-      this.#populateClassStruct(ct.superType as ClassType, populated);
+    let {superType} = ct;
+    if (superType != null) {
+      this.#populateClassStruct(superType, populated);
     }
     populated[key] = true;
     let lookupId = (ct.genericSource ?? ct).symbolId;
@@ -549,8 +559,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let tInit = performance.start("codegen-discovery-init");
     // Pass 0: Register empty structs for all declared classes & interfaces to prevent cyclic dependencies
     for (let unit in this.program.units) {
-      let model = unit.model;
-      
+      let {model} = unit;
       {
         // Populate class declarations and their members
         let classKeys = model.classDeclarations.keys();
@@ -609,8 +618,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let rawClassType = this.getClassDeclType(classDecl, model);
         if (rawClassType != null) {
           let classType = rawClassType;
-          if (classType.superType != null) {
-            let superCt = classType.superType as ClassType;
+          let {superType} = classType;
+          if (superType != null) {
+            let superCt = superType;
             this.extendedClassSymbols.add((superCt.genericSource ?? superCt).symbolId);
           }
           if (classDecl.isSealed && classDecl.sealedVariants != null &&
@@ -653,7 +663,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               this.symbolIdToModel[vId] = model;
 
               let rawVariantType = model.getNodeType(variant);
-              if (rawVariantType != null && rawVariantType is ClassType) {
+              if (rawVariantType is ClassType) {
                 let vKey = getClassKey(rawVariantType);
                 if (!this.wasm.classInfos.has(vKey)) {
                   let emptyStruct = new WasmStruct(rawVariantType.name, new Array<WasmField>());
@@ -728,7 +738,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         } else if (decl is FunctionDeclaration) {
           initNode = decl.func;
         }
-        if (initNode != null && initNode is FunctionExpression) {
+        if (initNode is FunctionExpression) {
           let funcTypeNode = model.getNodeType(initNode);
           if (funcTypeNode is FunctionType) {
             let hasParams = funcTypeNode.typeParameters != null;
@@ -759,7 +769,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Populate mixinToClasses mapping
     this.mixinToClasses = new HashMap<MixinKey, Array<ClassType>>();
     for (let unit in this.program.units) {
-      let model = unit.model;
+      let {model} = unit;
       let classKeys = model.classDeclarations.keys();
       while (let (true, id) = classKeys.next()) {
         let classDecl = model.classDeclarations[id];
@@ -782,9 +792,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Process all import declarations upfront for namespace objects and their closure trampolines
     for (let unit in this.program.units) {
       let mod = unit.ast;
-      let model = unit.model;
+      let {model} = unit;
       for (let stmt in mod.body) {
-        if (stmt != null && stmt is ImportDeclaration) {
+        if (stmt is ImportDeclaration) {
           this.visitor.discoverImportDeclaration(stmt, model);
         }
       }
@@ -792,7 +802,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     // RTA Roots
     for (let unit in this.program.units) {
-      let model = unit.model;
+      let {model} = unit;
       let isEntry = this.program.entryPoint != null && unit.ast.path == (this.program.entryPoint as CompilationUnit).ast.path;
       // zena:js's exports are wasm exports too (async.md §4): the JS
       // host calls them to settle a future, so nothing inside the
@@ -843,7 +853,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           // build one with $stringCreate and hand it in, even if the
           // guest never constructs a string itself
           // (`export let identity = (s: String) => s;`).
-          if (this.wasm.stringClass != null) {
+          let {stringClass} = this.wasm;
+          if (stringClass != null) {
             // The type hangs off different nodes per declaration kind;
             // a VariableDeclaration's own node carries none, its
             // pattern and init do.
@@ -858,7 +869,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             }
             if (declType != null &&
                 this.#typeMentionsString(declType, 0)) {
-              let sClass = this.wasm.stringClass as ClassType;
+              let sClass = stringClass;
               this.specializer.instantiateClassType(
                   sClass, this.getClassModel(sClass));
               if (targetEmitsComponent(this.target)) {
@@ -907,8 +918,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // String value exists. A program that builds one reaches its
     // constructor through the normal graph, and a string literal
     // instantiates it below through the literal helpers.
-    if (this.wasm.templateStringsArrayClass != null) {
-      let tsaClass = this.wasm.templateStringsArrayClass as ClassType;
+    let {templateStringsArrayClass} = this.wasm;
+    if (templateStringsArrayClass != null) {
+      let tsaClass = templateStringsArrayClass;
       this.specializer.instantiateClassType(tsaClass, this.getClassModel(tsaClass));
     }
 
@@ -933,8 +945,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let classesToDiscover = new Array<ClassType>();
     for (let cPair in this.wasm.classInfos) {
       let info = cPair.value;
-      if (info.structType.classType != null) {
-        classesToDiscover.push(info.structType.classType as ClassType);
+      let {classType} = info.structType;
+      if (classType != null) {
+        classesToDiscover.push(classType);
       }
     }
     for (let pair in this.classDecls) {
@@ -956,8 +969,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let classesToLink = new Array<ClassType>();
     for (let cPair in this.wasm.classInfos) {
       let info = cPair.value;
-      if (info.structType.classType != null) {
-        classesToLink.push(info.structType.classType as ClassType);
+      let {classType} = info.structType;
+      if (classType != null) {
+        classesToLink.push(classType);
       }
     }
     for (let ct in classesToLink) {
@@ -1012,7 +1026,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             var isGeneric = false;
             if (mi.type is FunctionType) {
               let ft = mi.type as FunctionType;
-              if (ft.typeParameters != null && (ft.typeParameters as Array<TypeParameterType>).length > 0) {
+              let {typeParameters} = ft;
+              if (typeParameters != null && typeParameters.length > 0) {
                 isGeneric = true;
               }
             }
@@ -1042,8 +1057,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     for (let cPair in this.wasm.classInfos) {
       let cName = cPair.key;
       let cStruct = cPair.value.structType;
-      if (cStruct.classType != null) {
-        let cType = cStruct.classType as ClassType;
+      let {classType} = cStruct;
+      if (classType != null) {
+        let cType = classType;
         for (let methName in this.wasm.classVtable(cName)) {
           if (methName.startsWith("get#")) {
             let fieldName = methName.sliceBytes(4, methName.length);
@@ -1053,8 +1069,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             let lookupPrivateName = getClassPrivateFieldKey(cName, fieldName);
             let lookupPrivateHashName = getClassPrivateFieldKey(cName, "#" + fieldName);
             for (let f in cStruct.fields) {
-              if (f.name != null) {
-                let fname = f.name as String;
+              let {name} = f;
+              if (name != null) {
+                let fname = name;
                 if (fname == lookupName) {
                   hasPhysical = true;
                   backingName = lookupName;
@@ -1087,8 +1104,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             let lookupPrivateName = getClassPrivateFieldKey(cName, fieldName);
             let lookupPrivateHashName = getClassPrivateFieldKey(cName, "#" + fieldName);
             for (let f in cStruct.fields) {
-              if (f.name != null) {
-                let fname = f.name as String;
+              let {name} = f;
+              if (name != null) {
+                let fname = name;
                 if (fname == lookupName) {
                   hasPhysical = true;
                   backingName = lookupName;
@@ -1121,8 +1139,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Pass 1.15: Register any remaining vtable slots that haven't been registered yet (e.g. abstract fields/methods)
     for (let cPair in this.wasm.classInfos) {
       let cStruct = cPair.value.structType;
-      if (cStruct.classType != null) {
-        let cType = cStruct.classType as ClassType;
+      let {classType} = cStruct;
+      if (classType != null) {
+        let cType = classType;
         for (let methName in this.wasm.classVtable(cPair.key)) {
           var hasImpl = false;
           var curr: ClassType | null = cType;
@@ -1163,14 +1182,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     for (let f in synthFixups) {
-      if (f.classType != null) {
-        let cType = f.classType as ClassType;
+      let {classType} = f;
+      if (classType != null) {
+        let cType = classType;
         if (!cType.isExtension) {
           let cKey = getClassKey(cType);
           if (let (true, info) = this.wasm.classInfos.get(cKey)) {
             let st = info.structType;
-            if (f.methodName != null) {
-              let mName = f.methodName as String;
+            let {methodName} = f;
+            if (methodName != null) {
+              let mName = methodName;
               if (mName.startsWith("get#")) {
                 let fieldName = mName.sliceBytes(4, mName.length);
                 let lookupName = fieldName;
@@ -1216,8 +1237,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     for (let cPair in this.wasm.classInfos) {
       let info = cPair.value;
       let cStruct = info.structType;
-      if (cStruct.classType != null) {
-        let cType = cStruct.classType as ClassType;
+      let {classType} = cStruct;
+      if (classType != null) {
+        let cType = classType;
         if (cType.isCaseClass && (cType.constructorType == null || (cType.constructorType as FunctionType).parameters.length == 0)) {
           let model = this.getClassModel(cType);
           this.specializer.instantiateClassType(cType, model);
@@ -1234,8 +1256,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let cName = cPair.key;
       let info = cPair.value;
       let cStruct = info.structType;
-      if (cStruct.classType != null) {
-        let cType = cStruct.classType as ClassType;
+      let {classType} = cStruct;
+      if (classType != null) {
+        let cType = classType;
         if (cType.isCaseClass && (cType.constructorType == null || (cType.constructorType as FunctionType).parameters.length == 0)) {
           if (info.singletonGlobal != null) {
             continue;
@@ -1376,8 +1399,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // exactly as it needs its struct — $stringCreate is synthesized
     // against it, and String can be instantiated as late as a literal
     // in a body walked here.
-    if (this.wasm.stringClass != null) {
-      let sKey = getClassKey(this.wasm.stringClass as ClassType);
+    let {stringClass} = this.wasm;
+    if (stringClass != null) {
+      let sKey = getClassKey(stringClass);
       if (this.instantiatedSpecializedClasses.has(sKey as String)) {
         this.#buildClassVTableGlobals(sKey);
       }
@@ -1418,12 +1442,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // with no AST naming the Box. Bounded at the five primitive
       // boxes, present only when something registered them.
       var isBoxSpecialization = false;
-      if (this.wasm.boxClass != null) {
+      let {boxClass} = this.wasm;
+      if (boxClass != null) {
         let ct = cPair.value.structType.classType;
         if (ct != null) {
           isBoxSpecialization = isConcrete(ct) &&
               (ct.genericSource ?? ct).symbolId ==
-                  (this.wasm.boxClass as ClassType).symbolId;
+                  boxClass.symbolId;
         }
       }
       // An EXTENSION class's struct is a placeholder: a value of the
@@ -1449,8 +1474,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     
     for (let g in this.wasm.globals) {
       this.markValTypeReached(g.type);
-      if (g.initVTable != null) {
-        let vtableInit = g.initVTable as VTableInit;
+      let {initVTable} = g;
+      if (initVTable != null) {
+        let vtableInit = initVTable;
         this.markTypeReached(vtableInit.structType);
         for (let func in vtableInit.funcs) {
           this.markFunctionReached(func);
@@ -1495,8 +1521,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.markTypeReached(f.signature);
         // The captured-variable environment is referenced from the
         // lowered body, not from the signature.
-        if (f.contextStruct != null) {
-          this.markTypeReached(f.contextStruct as WasmStruct);
+        let {contextStruct} = f;
+        if (contextStruct != null) {
+          this.markTypeReached(contextStruct);
         }
       }
     }
@@ -1614,8 +1641,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (info.vtableGlobal != null) {
         continue;
       }
-      if (info.vtableStructType != null) {
-        let vstVal = info.vtableStructType as WasmStruct;
+      let {vtableStructType} = info;
+      if (vtableStructType != null) {
+        let vstVal = vtableStructType;
         let cType = vstVal.classType as ClassType;
         let isGenericTemplate = cType.typeParameters != null && 
                                 (cType.typeParameters as Array<TypeParameterType>).length > 0 && 
@@ -1742,8 +1770,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let seenClassKeys = new HashMap<ClassKey, boolean>();
     for (let cPair in this.wasm.classInfos) {
       let cStruct = cPair.value.structType;
-      if (cStruct.classType != null) {
-        let cType = cStruct.classType as ClassType;
+      let {classType} = cStruct;
+      if (classType != null) {
+        let cType = classType;
         let cKey = getClassKey(cType);
         if (!seenClassKeys.has(cKey)) {
           seenClassKeys[cKey] = true;
@@ -1936,8 +1965,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           true
         } else {
           var found = false;
-          if (ct.typeArguments != null) {
-            for (let ta in (ct.typeArguments as Array<Type>)) {
+          let {typeArguments} = ct;
+          if (typeArguments != null) {
+            for (let ta in typeArguments) {
               if (this.#typeMentionsString(ta, depth + 1)) { found = true; break; }
             }
           }
@@ -1946,8 +1976,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
       case InterfaceType as it: {
         var found = false;
-        if (it.typeArguments != null) {
-          for (let ta in (it.typeArguments as Array<Type>)) {
+        let {typeArguments} = it;
+        if (typeArguments != null) {
+          for (let ta in typeArguments) {
             if (this.#typeMentionsString(ta, depth + 1)) { found = true; break; }
           }
         }
@@ -2038,14 +2069,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
   noteExceptionInfra(model: SemanticModel): void {
     this.wasm.ensureExceptionInfra(model);
-    if (this.wasm.stringClass != null) {
-      let sClass = this.wasm.stringClass as ClassType;
+    let {stringClass} = this.wasm;
+    if (stringClass != null) {
+      let sClass = stringClass;
       this.specializer.instantiateClassType(sClass, this.getClassModel(sClass));
-      if (this.wasm.stringCreateFunc != null) {
-        this.markFunctionReached(this.wasm.stringCreateFunc as WasmFunction);
+      let {stringCreateFunc} = this.wasm;
+      if (stringCreateFunc != null) {
+        this.markFunctionReached(stringCreateFunc);
       }
-      if (this.wasm.stringSetByteFunc != null) {
-        this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction);
+      let {stringSetByteFunc} = this.wasm;
+      if (stringSetByteFunc != null) {
+        this.markFunctionReached(stringSetByteFunc);
       }
     }
   }
@@ -2053,9 +2087,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   ensureAllHelperFunctionsReached(): void {
     for (let unit in this.program.units) {
       let mod = unit.ast;
-      let model = unit.model;
+      let {model} = unit;
       for (let stmt in mod.body) {
-        if (stmt != null && stmt is ImportDeclaration) {
+        if (stmt is ImportDeclaration) {
           this.visitor.discoverImportDeclaration(stmt, model);
         }
       }
@@ -2075,15 +2109,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (this.wasm.stringGetByteFunc != null) { this.markFunctionReached(this.wasm.stringGetByteFunc as WasmFunction); }
       if (this.wasm.stringGetLengthFunc != null) { this.markFunctionReached(this.wasm.stringGetLengthFunc as WasmFunction); }
     }
-    if (this.wasm.wasiWriteStringHelper != null) {
-      this.markFunctionReached(this.wasm.wasiWriteStringHelper as WasmFunction);
+    let {wasiWriteStringHelper} = this.wasm;
+    if (wasiWriteStringHelper != null) {
+      this.markFunctionReached(wasiWriteStringHelper);
     }
     // The string hash helper follows the equality evidence, like the
     // ==/hashCode slots it serves. If literal interning ever calls it
     // directly, the miss is a loud 'function index < 0', not a wrong
     // answer.
-    if (this.wasm.stringHashFunc != null && this.equalityDispatchUsed) {
-      this.markFunctionReached(this.wasm.stringHashFunc as WasmFunction);
+    let {stringHashFunc} = this.wasm;
+    if (stringHashFunc != null && this.equalityDispatchUsed) {
+      this.markFunctionReached(stringHashFunc);
     }
   }
 
@@ -2104,7 +2140,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       null
     } else {
       let nodeT = model.getNodeType(node);
-      if (nodeT != null && nodeT is FunctionType) {
+      if (nodeT is FunctionType) {
         nodeT.typeParameters
       } else {
         null
@@ -2273,12 +2309,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
 
       if (parsed != null && parsed.classSymId as i32 != -1) {
-        let classSymId = parsed.classSymId;
-        let mName = parsed.mName;
+        let {classSymId} = parsed;
+        let {mName} = parsed;
         if (let (true, targetModel) = this.symbolIdToModel.get(classSymId)) {
           var targetClassType: ClassType | null = null;
           let t = targetModel.getBindingTypeById(classSymId);
-          if (t != null && t is ClassType) {
+          if (t is ClassType) {
             targetClassType = t;
             if (classType != null && classType.genericSource != null) {
               let genSrc = classType.genericSource as ClassType;
@@ -2293,7 +2329,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           }
 
           if (targetClassType != null) {
-            let cha = this.cha;
+            let {cha} = this;
             let list = new Array<ClassType>();
             if (targetClassType.isExtension) {
               list.push(targetClassType);
@@ -2389,8 +2425,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
       if (parsed != null && parsed.ifaceSymId as i32 != -1) {
         let ifaceId = parsed.ifaceSymId;
-        let mName = parsed.mName;
-        
+        let {mName} = parsed;
         if (let (true, targetModel) = this.symbolIdToModel.get(ifaceId)) {
           let ifaceDecl = this.interfaceDecls[ifaceId];
           if (ifaceDecl != null) {
@@ -2491,7 +2526,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           if (parent == null) { break; }
           if (parent is ClassDeclaration) {
             let ct = model.getNodeType(parent);
-            if (ct != null && ct is ClassType) {
+            if (ct is ClassType) {
               enclosingClassType = ct;
             }
             break;
@@ -2561,7 +2596,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       var resolvedTargetStruct: WasmStruct | null = null;
       
       let parent = model.getParent(expr);
-      if (parent != null && parent is CallExpression) {
+      if (parent is CallExpression) {
         var argIdx = -1;
         for (var idx = 0; idx < parent.args.length; idx += 1) {
           if (parent.args[idx] == expr) {
@@ -2572,7 +2607,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         if (argIdx >= 0 && parent.callee is MemberExpression) {
           let mem = parent.callee as MemberExpression;
           let calleeType = model.getNodeType(mem);
-          if (calleeType != null && calleeType is FunctionType) {
+          if (calleeType is FunctionType) {
             if (argIdx < calleeType.parameters.length) {
               let paramType = calleeType.parameters[argIdx];
               if (paramType is FunctionType) {
@@ -2692,7 +2727,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     if (parsed != null) {
       let ifaceId = parsed.ifaceSymId;
-      let mName = parsed.mName;
+      let {mName} = parsed;
       if (ifaceId as i32 != -1) {
         let symId = ifaceId;
         if (!this.referencedInterfaceMembersById.has(symId)) {
@@ -2712,7 +2747,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
         if (let (true, pairList) = this.instantiatedClassesByInterface.get(symId)) {
           for (let pair in pairList) {
-            let cha = this.cha;
+            let {cha} = this;
             let cType = pair.classType;
             let ifaceType = pair.interfaceType;
             let unspecIName = getInterfaceKey(ifaceType.genericSource ?? ifaceType);
@@ -2769,12 +2804,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   getClassDeclType(classDecl: Node, model: SemanticModel): ClassType | null {
-    let cha = this.cha;
+    let {cha} = this;
     if (cha.classDeclTypeCache.has(classDecl.id)) {
       return cha.classDeclTypeCache[classDecl.id];
     }
     let raw = model.getNodeType(classDecl);
-    if (raw != null && raw is ClassType) {
+    if (raw is ClassType) {
       cha.classDeclTypeCache[classDecl.id] = raw;
       return raw;
     }
@@ -2784,7 +2819,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     if (sym != null) {
       let bType = model.getBindingTypeDirect(sym);
-      if (bType != null && bType is ClassType) {
+      if (bType is ClassType) {
         cha.classDeclTypeCache[classDecl.id] = bType;
         return bType;
       }
@@ -2797,9 +2832,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       return this.#preludeClassCache[name];
     }
     for (let unit in this.program.units) {
-      let model = unit.model;
+      let {model} = unit;
       let t = model.getExportType(name);
-      if (t != null && t is ClassType) {
+      if (t is ClassType) {
         this.#preludeClassCache[name] = t;
         return t;
       }
@@ -2812,9 +2847,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       return this.#preludeInterfaceCache[name];
     }
     for (let unit in this.program.units) {
-      let model = unit.model;
+      let {model} = unit;
       let t = model.getExportType(name);
-      if (t != null && t is InterfaceType) {
+      if (t is InterfaceType) {
         this.#preludeInterfaceCache[name] = t;
         return t;
       }
@@ -2866,14 +2901,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
 
           if (refItem.isSymbol) {
-            let symId = refItem.symId;
-            let model = refItem.model;
-            
+            let {symId} = refItem;
+            let {model} = refItem;
             this.reachedGlobals.add(symId);
             
             var funcExpr: Node | null = null;
             if (let (true, decl) = model.globalDeclarations.get(symId)) {
-              let visitor = this.visitor;
+              let {visitor} = this;
               let resolver = (t: Type): Type => t;
               visitor.discoverNodeTypes(decl, model, resolver);
               if (decl is FunctionDeclaration) {
@@ -2892,15 +2926,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               this.traverseDependencies(deps, model, refItem.classType, refItem.typeArguments, funcExpr);
             }
           } else {
-            let nodeId = refItem.nodeId;
+            let {nodeId} = refItem;
             var model = refItem.model;
             if (let (true, m) = this.nodeIdToModel.get(nodeId)) {
               model = m;
             }
             
             var memberSuffix = if (refItem.classType != null) "@" + (getClassKey(refItem.classType as ClassType) as String) else "";
-            if (refItem.typeArguments != null) {
-              memberSuffix += "<" + getSpecializedName("", refItem.typeArguments as Array<Type>) + ">";
+            let {typeArguments} = refItem;
+            if (typeArguments != null) {
+              memberSuffix += "<" + getSpecializedName("", typeArguments) + ">";
             }
             let memberKey = i32ToString(nodeId) + memberSuffix;
             // A checkable visit records only `reachedMembers`, so a
@@ -2925,15 +2960,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             
             let node = if (this.nodeIdToNode.has(nodeId)) this.nodeIdToNode[nodeId] else null;
              if (node != null) {
-              let classType = refItem.classType;
-              let visitor = this.visitor;
-              let specializer = this.specializer;
+              let {classType} = refItem;
+              let {visitor} = this;
+              let {specializer} = this;
               let resolver = (t: Type): Type => {
                 var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
                 if (refItem.typeArguments != null && node is FunctionExpression) {
                   let ft = model.getNodeType(node) as FunctionType;
-                  if (ft.typeParameters != null) {
-                    res = substituteTypeParamsInCodegen(this.wasm, ft.typeParameters as Array<TypeParameterType>, refItem.typeArguments as Array<Type>, res);
+                  let {typeParameters} = ft;
+                  if (typeParameters != null) {
+                    res = substituteTypeParamsInCodegen(this.wasm, typeParameters, refItem.typeArguments as Array<Type>, res);
                   }
                 }
                 return res;
@@ -3015,7 +3051,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   // static, not off instantiating the class — a generic
                   // class whose statics are all anyone uses is never
                   // instantiated, and its counter still has to exist.
-                  if (node.isStatic && cd != null && cd is ClassDeclaration) {
+                  if (node.isStatic && cd is ClassDeclaration) {
                     specializer.discoverStaticFields(
                         ct, cd, this.classModels[lookupId]);
                   }
@@ -3115,8 +3151,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           let g = this.wasm.globals[this.globalsHead];
           this.globalsHead += 1;
           this.markValTypeReached(g.type);
-          if (g.initVTable != null) {
-            let vtableInit = g.initVTable as VTableInit;
+          let {initVTable} = g;
+          if (initVTable != null) {
+            let vtableInit = initVTable;
             this.markTypeReached(vtableInit.structType);
             for (let func in vtableInit.funcs) {
               if (!this.reachedFunctionsSet.has(func)) {

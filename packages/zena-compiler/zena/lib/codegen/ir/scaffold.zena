@@ -31,7 +31,7 @@ final class StringLayout {
 }
 
 let stringLayoutOf = (wasm: WasmModule): StringLayout => {
-  let stringClass = wasm.stringClass;
+  let {stringClass} = wasm;
   if (stringClass == null) {
     throw new Error('string helper synthesis: String class not found');
   }
@@ -51,10 +51,10 @@ let stringLayoutOf = (wasm: WasmModule): StringLayout => {
   var encoding: String | null = null;
   var hashCode: String | null = null;
   for (let f in st.fields) {
-    if (f.name == null) {
+    let n = f.name;
+    if (n == null) {
       continue;
     }
-    let n = f.name as String;
     if (n.endsWith('::#data')) {
       data = n;
     } else if (n.endsWith('::#start')) {
@@ -243,10 +243,10 @@ let synthStringHashHelper = (wasm: WasmModule, func: WasmFunction): IrBody => {
  */
 let synthStringHash = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let lay = stringLayoutOf(wasm);
-  if (lay.hashCode == null) {
+  let hashField = lay.hashCode;
+  if (hashField == null) {
     throw new Error('string helper synthesis: $stringHash layout');
   }
-  let hashField = lay.hashCode as String;
   let i32vt = new ValTypeI32() as ValType;
   let b = new IrBuilder();
   let params = entryOf(b, func);
@@ -291,7 +291,8 @@ let synthWasiWriteString = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let lay = stringLayoutOf(wasm);
   var fdWrite: WasmFunction | null = null;
   for (let f in wasm.functionImports) {
-    if (f.importName != null && (f.importName as String) == 'fd_write') {
+    let {importName} = f;
+    if (importName == 'fd_write') {
       fdWrite = f;
     }
   }
@@ -394,10 +395,10 @@ let synthStringFromShared = (wasm: WasmModule, func: WasmFunction): IrBody => {
   for (let f in lay.st.fields) {
     let fname = if (f.name != null) f.name as String else '';
     if (fname == '<vtable>') {
-      if (lay.vtable == null) {
+      let vtg = lay.vtable;
+      if (vtg == null) {
         throw new Error('string_from_shared: String vtable missing');
       }
-      let vtg = lay.vtable as WasmGlobal;
       args.push(b.emit(IrOp.global_get, vtg.type, -1,
           b.addRef(new IrRefGlobal(vtg))));
     } else if (fname == lay.data) {
@@ -533,10 +534,10 @@ let synthGetStringLiteral = (wasm: WasmModule, func: WasmFunction): IrBody => {
  * name is not one of the seven.
  */
 export let synthesizeScaffold = (wasm: WasmModule, func: WasmFunction): IrBody | null => {
-  if (func.name == null) {
+  let {name} = func;
+  if (name == null) {
     return null;
   }
-  let name = func.name as String;
   if (name == '$stringCreate') { return synthStringCreate(wasm, func); }
   if (name == '$stringSetByte') { return synthStringSetByte(wasm, func); }
   if (name == '$stringGetByte') { return synthStringGetByte(wasm, func); }
