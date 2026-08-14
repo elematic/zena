@@ -3,6 +3,10 @@ export interface ZenaImports {
   console?: Record<string, Function>;
   // Values may be `WebAssembly.Suspending` objects, not just functions.
   time?: Record<string, unknown>;
+  /** The imports behind `zena:fetch`. Supplied by default from the
+   * host's own `fetch()`; override to intercept or stub network access
+   * (tests do). */
+  web?: Record<string, unknown>;
   /**
    * Promise-returning host functions, exposed to Zena as async imports
    * (async.md §4, Level 2). Keyed by import module, then by name.
@@ -552,6 +556,64 @@ export function createHostAsync(
   };
 }
 
+export interface WebHost {
+  imports: Record<string, unknown>;
+  /** Resolves once no request is outstanding. */
+  idle(): Promise<void>;
+}
+
+/**
+ * The `web` host backing `zena:fetch` on a JS host.
+ *
+ * `fetch_text` is an ordinary host-async operation over the host's own
+ * `fetch()`: settle the handle with the response body, or fail it — a
+ * non-2xx status fails rather than resolves, because a 404's error page
+ * delivered as a value is almost never what the caller wanted. Browser
+ * semantics (CORS included) pass through untouched.
+ *
+ * A host with no `fetch()` still instantiates: the import exists, and
+ * calling it settles the handle as a failure saying so. That keeps
+ * "this host cannot reach the network" an ordinary failed future the
+ * program can catch, not an instantiation error in unrelated code.
+ */
+export function createWebHost(
+  getExports?: () => WebAssembly.Exports | undefined,
+  work: PendingWork = createPendingWork(),
+  hostAsync: HostAsync = createHostAsync(getExports, work),
+): WebHost {
+  let readString: ((ref: unknown, len: number) => string) | null = null;
+  const readZena = (ref: unknown, len: number): string => {
+    if (!readString) {
+      const exports = getExports?.();
+      if (!exports) {
+        throw new Error('web: cannot read a Zena string before instantiation');
+      }
+      readString = createStringReader(exports);
+    }
+    return readString(ref, len);
+  };
+
+  return {
+    imports: {
+      fetch_text: hostAsync.wrap(async (ref: unknown, len: number) => {
+        const url = readZena(ref, len);
+        if (typeof globalThis.fetch !== 'function') {
+          throw new Error(`zena:fetch: this host has no fetch(): ${url}`);
+        }
+        const response = await globalThis.fetch(url);
+        if (!response.ok) {
+          throw new Error(
+            `zena:fetch: GET ${url} failed: ` +
+              `${response.status} ${response.statusText}`,
+          );
+        }
+        return response.text();
+      }, 'string'),
+    },
+    idle: work.idle,
+  };
+}
+
 /** The `time` imports alone, for callers assembling their own object. */
 export function createTimeImports(
   getExports?: () => WebAssembly.Exports | undefined,
@@ -691,10 +753,12 @@ export async function instantiate(
   const pending = createPendingWork();
   const hostAsync = createHostAsync(() => instanceExports, pending);
   const timeHost = createTimeHost(() => instanceExports, pending, hostAsync);
+  const webHost = createWebHost(() => instanceExports, pending, hostAsync);
   const defaultImports = {
     env: envImports,
     console: createConsoleImports(() => instanceExports),
     time: timeHost.imports,
+    web: webHost.imports,
   };
 
   const {asyncImports, ...plainUserImports} = userImports;
@@ -704,6 +768,7 @@ export async function instantiate(
     env: {...defaultImports.env, ...userImports.env},
     console: {...defaultImports.console, ...userImports.console},
     time: {...defaultImports.time, ...userImports.time},
+    web: {...defaultImports.web, ...userImports.web},
   };
 
   // Promise-returning imports become handle-taking void imports, sharing

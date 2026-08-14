@@ -98,14 +98,24 @@ This document tracks completed work and planned features. For project instructio
     value or failure, and refuses an empty array rather than handing
     back a future that can never settle. Both are ordinary library
     code over `subscribe`, exactly as the design predicted: no
-    primitive and no compiler support. They are plain functions
-    rather than `Future.all`/`Future.race`, and stay that way: a static
-    is outside its class's generic scope, so `Future.all` could not be
-    written in terms of `Future`'s own `T` (§"Statics on a Generic
-    Class" of the language reference).
-  - Next: fetch on the web playground — the "first real async I/O" A3
-    was aiming at — `then`/`map`/`flatMap` (blocked on closures inside
-    generic code), and post-v1 items (cancellation and structured
+    primitive and no compiler support. They shipped as free functions
+    and became statics once statics-on-a-generic-class landed; each
+    declares its own type parameter, because a static is outside its
+    class's generic scope (§"Statics on a Generic Class" of the
+    language reference).
+  - **Fetch is done — the "first real async I/O" A3 was aiming at.**
+    `zena:fetch` is a virtual module for the JS-hosted targets:
+    `fetchText(url): Future<String>` is six lines over `pending<T>()`,
+    the same shape as `zena:time`'s host entry. `@zena-lang/runtime`
+    supplies the backing `web.fetch_text` import by default from the
+    host's own `fetch()`, which puts it in the playground with no
+    playground changes. A non-2xx status fails the future, as does a
+    host with no `fetch()` — catchable failures, not instantiation
+    errors. WASI and component builds fail at import resolution; the
+    component's HTTP is `wasi:http` (async.md §4.1).
+  - Next: `then`/`map`/`flatMap` (blocked on closures inside
+    generic code), richer fetch (status, headers, streamed bodies —
+    wants streams), and post-v1 items (cancellation and structured
     concurrency, the tokio-backed CLI, the WASI P3 backend).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and

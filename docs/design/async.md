@@ -614,8 +614,22 @@ website served by a Zena server":
     stack no caller owns, so without that they would be unhandled
     rejections, and the program would go on to fail later with something
     less informative (a drain that never settles reports a deadlock).
-  - Still to do: fetch on the web playground, which is what "first real
-    async I/O" meant. The bridge it needs is in place and covered.
+  - **Fetch is implemented** — the "first real async I/O". `zena:fetch`
+    is a virtual module for the JS-hosted targets whose one binding,
+    `fetchText(url): Future<String>`, is six lines over `pending<T>()`,
+    exactly like `zena:time`'s host entry; WASI and component builds
+    fail at import resolution rather than linking an import no host
+    provides (the component's HTTP is `wasi:http`, §4.1).
+    `@zena-lang/runtime` supplies the `web.fetch_text` import by
+    default, backed by the host's own `fetch()` and sharing the
+    outstanding-work count `run()` waits on — which is what puts fetch
+    in the playground with no playground changes at all. A non-2xx
+    status fails the future (a 404's error page delivered as a value is
+    almost never what the caller wanted), as does a host with no
+    `fetch()` — instantiation still succeeds there, so "no network on
+    this host" is an ordinary catchable failure, not an error in
+    unrelated code. Richer responses (status, headers, streamed bodies)
+    wait on streams, post-v1.
 - **Await-in-try — done** (§6), the fast-follow to A1: resuming
   re-enters each enclosing `try` region, so a failed await is caught
   by the handler the user wrote.

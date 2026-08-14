@@ -1,0 +1,44 @@
+/**
+ * zena:fetch — HTTP requests over the host's own fetch()
+ * (docs/design/async.md §4, Level 2).
+ *
+ * An HTTP request is an ordinary host-async operation: this module mints
+ * a handle, hands it out with the URL, and the host settles it with the
+ * response body once its fetch() resolves. There is no mechanism here —
+ * the six lines of registration are the same shape as `zena:time`'s
+ * host entry, because once a host can settle a future by handle,
+ * nothing about I/O is special.
+ *
+ * Only hosts with a JS event loop resolve this module (the `host`/`js`
+ * targets); a WASI or component build fails at import resolution rather
+ * than linking something that cannot work. The component target's HTTP
+ * story is `wasi:http`, which arrives with the component track
+ * (async.md §4.1) — this module is the playground-and-browser entry.
+ *
+ * The host side inherits fetch()'s web semantics deliberately, CORS
+ * included: in a browser, a request only succeeds where the page could
+ * have made it itself.
+ */
+import { Future } from 'zena:async';
+import { pending } from 'zena:host-async';
+import { String } from 'zena:string';
+
+/** Starts a GET of `url`; the host completes `handle` with the body. */
+@external("web", "fetch_text")
+declare function __fetch_text(handle: i32, url: String, len: i32): void;
+
+/**
+ * The body of a successful GET of `url`, decoded as text.
+ *
+ * The future fails — an ordinary failed future, caught with
+ * `try`/`catch` around the `await` — if the request cannot be made
+ * (network error, CORS refusal, a host with no fetch()) or if the
+ * response status is not 2xx. The failure's message names the URL and,
+ * for a status failure, the status itself: a 404's error page is almost
+ * never what the caller wanted delivered as a value.
+ */
+export let fetchText = (url: String): Future<String> => {
+  let p = pending<String>();
+  __fetch_text(p.handle, url, url.length);
+  return p.future;
+};
