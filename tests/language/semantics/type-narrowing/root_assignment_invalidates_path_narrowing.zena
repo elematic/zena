@@ -1,0 +1,37 @@
+// @mode: check
+// A member-path narrowing (`o.inner != null`) roots at a variable.
+// Reassigning that root variable replaces the whole object, so the
+// path narrowing must die with it.
+
+class Inner {
+  var value: i32 = 1;
+  new();
+}
+
+class Outer {
+  inner: Inner | null;
+  new(this.inner);
+}
+
+let mayOuter = (): Outer => new Outer(null);
+
+let rootReassigned = (o: Outer): i32 => {
+  var x = o;
+  if (x.inner != null) {
+    x = mayOuter();
+    // @error: Object may be null when accessing 'value'.
+    return x.inner.value;
+  }
+  return 0;
+};
+
+// Without the reassignment the path narrowing holds.
+let rootStable = (o: Outer): i32 => {
+  var x = o;
+  if (x.inner != null) {
+    return x.inner.value;
+  }
+  return 0;
+};
+
+export let main = (): i32 => 0;

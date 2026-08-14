@@ -1,0 +1,113 @@
+import { Array } from 'zena:array';
+import { Type } from '../types.zena';
+import { SymbolId } from '../scope/symbol.zena';
+
+/**
+ * The checker's control-flow graph (docs/design/ownership.md, "The checker
+ * flow graph").
+ *
+ * Flow nodes are built by the checker as it walks a function body, in the
+ * style of TypeScript's binder: each node points backward at its
+ * antecedents, so a query walks from a use toward the function entry. The
+ * graph is a side structure — it never replaces the AST, and it exists
+ * per checked body, not per instantiation, which is what lets it serve
+ * checking of code RTA later drops.
+ *
+ * The first consumer is narrowing validity: a narrowing records the flow
+ * node where its guard established it, and a read walks backward from the
+ * reference to that node, failing if some path crosses an assignment that
+ * no longer satisfies the narrowed type. Move checking builds on the same
+ * nodes.
+ *
+ * Nodes compare by `id`, never by `==`: joins make the graph cyclic
+ * through loop back edges, so structural equality must not be reachable.
+ */
+export sealed class FlowNode {
+  case FlowStart, FlowAssign, FlowJoin, FlowUnreachable
+
+  /** Unique within one CheckerContext; minted by the checker. */
+  var id: i32 = 0;
+}
+
+/** Entry of a function body (or of the module's top level). */
+export final class FlowStart extends FlowNode {
+  new() : super();
+}
+
+/**
+ * Follows code that cannot be reached — after `return`, `throw`,
+ * `break`, `continue`. Joins drop unreachable antecedents.
+ */
+export final class FlowUnreachable extends FlowNode {
+  new() : super();
+}
+
+/**
+ * An assignment to a local binding. `assignedType` is the checked type of
+ * the stored value; null means the type was unavailable, which a validity
+ * walk must treat as incompatible.
+ */
+export final class FlowAssign extends FlowNode {
+  antecedent: FlowNode;
+  symbolId: SymbolId;
+  assignedType: Type | null;
+  new(this.antecedent, this.symbolId, this.assignedType) : super();
+}
+
+/**
+ * A merge point: the end of an `if`, a loop header, a `match` join, the
+ * short-circuit join of `&&`/`||`/`??`, or a `catch` entry (whose
+ * antecedents include every assignment in the protected body). Loop
+ * headers gain their back edge after the body is walked.
+ */
+export final class FlowJoin extends FlowNode {
+  antecedents = new Array<FlowNode>();
+  new() : super();
+
+  /** Unreachable antecedents carry no paths, so they are not recorded. */
+  add(node: FlowNode): void {
+    if (node is FlowUnreachable) { return; }
+    this.antecedents.push(node);
+  }
+}
+
+/**
+ * The checker's per-body flow state, saved and restored around nested
+ * function bodies the way return/yield context is: a closure checked in
+ * the middle of an enclosing body gets its own FlowStart and its own
+ * loop and exception stacks.
+ */
+export final class FlowBodyState {
+  current: FlowNode;
+  start: FlowStart;
+  loopHeads: Array<FlowJoin>;
+  loopExits: Array<FlowJoin>;
+  exceptionTargets: Array<FlowJoin>;
+  new(this.current, this.start, this.loopHeads, this.loopExits,
+      this.exceptionTargets);
+}
+
+/**
+ * A narrowing recorded by the checker: the narrowed type plus where the
+ * narrowing was established. `at` is the establishing flow node; `startAt`
+ * is the FlowStart of the function that established it, which lets a
+ * validity walk distinguish "reached this function's entry without passing
+ * the establishment — not dominated, invalid" from "the narrowing came
+ * from an enclosing function — out of this graph's scope".
+ *
+ * `rootSymbolId` is the binding whose assignments can invalidate the
+ * narrowing: the narrowed symbol itself for identifier narrowings, the
+ * path's root binding for member-path narrowings, and `noSymbolId` when
+ * no binding can be assigned (a `this`-rooted path). `isPath` selects the
+ * invalidation rule: any assignment to the root kills a path narrowing,
+ * while an identifier narrowing survives an assignment whose type still
+ * satisfies it.
+ */
+export final class NarrowEntry {
+  type: Type;
+  at: FlowNode;
+  startAt: FlowNode;
+  rootSymbolId: SymbolId;
+  isPath: boolean;
+  new(this.type, this.at, this.startAt, this.rootSymbolId, this.isPath);
+}

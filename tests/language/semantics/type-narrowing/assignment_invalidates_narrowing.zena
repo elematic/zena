@@ -1,0 +1,95 @@
+// @mode: check
+// A narrowing must not survive an assignment that no longer satisfies it.
+// Narrowing is established by a guard; a later assignment to the same
+// variable re-types it: if the assigned value satisfies the narrowed type
+// the narrowing survives, otherwise the variable reverts to its declared
+// type.
+
+class Box {
+  var v: i32 = 42;
+  new();
+}
+
+let mayBox = (): Box | null => null;
+
+// The BUGS.md repro: narrow non-null, assign null, access a field.
+let assignNull = (b: Box | null): i32 => {
+  var x = b;
+  if (x !== null) {
+    x = null;
+    // @error: Object may be null when accessing 'v'.
+    return x.v;
+  }
+  return 0;
+};
+
+// Assigning a maybe-null value defeats the narrowing the same way.
+let assignMaybeNull = (b: Box | null): i32 => {
+  var x = b;
+  if (x !== null) {
+    x = mayBox();
+    // @error: Object may be null when accessing 'v'.
+    return x.v;
+  }
+  return 0;
+};
+
+// An assignment that still satisfies the narrowing keeps it.
+let assignNonNull = (b: Box | null): i32 => {
+  var x = b;
+  if (x !== null) {
+    x = new Box();
+    return x.v;
+  }
+  return 0;
+};
+
+// An assignment in a nested branch invalidates uses after the join,
+// because one path through the block reassigned the variable.
+let assignInNestedBranch = (b: Box | null, cond: boolean): i32 => {
+  var x = b;
+  if (x !== null) {
+    if (cond) {
+      x = mayBox();
+    }
+    // @error: Object may be null when accessing 'v'.
+    return x.v;
+  }
+  return 0;
+};
+
+// A use before the assignment is still narrowed.
+let useBeforeAssignment = (b: Box | null): i32 => {
+  var x = b;
+  if (x !== null) {
+    let first = x.v;
+    x = mayBox();
+    return first;
+  }
+  return 0;
+};
+
+// Early-exit narrowing dies at an invalidating assignment too.
+let earlyExitThenAssign = (b: Box | null): i32 => {
+  var x = b;
+  if (x == null) {
+    return 0;
+  }
+  x = mayBox();
+  // @error: Object may be null when accessing 'v'.
+  return x.v;
+};
+
+// An assignment in expression position counts.
+let consume = (b: Box | null): void => {};
+let expressionPositionAssignment = (b: Box | null): i32 => {
+  var x = b;
+  if (x !== null) {
+    consume(x = mayBox());
+    // @error: Object may be null when accessing 'v'.
+    return x.v;
+  }
+  return 0;
+};
+
+export let main = (): i32 => 0;

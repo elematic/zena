@@ -1141,40 +1141,24 @@ exceeds number of declared memories`. Reaching any linear-memory
 - **Reproduce**: `npm run benchmark -w @zena-lang/zena-compiler -- --basic`,
   "Codegen Comparison: basic".
 
-### Narrowing survives an assignment that invalidates it (unsound)
+### Narrowing of a closure-captured `var` is not invalidated
 
-- **Found**: 2026-08-04 (evaluating whether a checker flow graph would
-  improve narrowing, for ownership.md layer 2)
-- **Severity**: high (type-checks clean, traps at runtime)
-- **Workaround**: don't reassign a narrowed variable inside the narrowed
-  branch. There is no diagnostic, so this is not discoverable.
-- **Details**: Narrowing is stored in a lexically-scoped stack of
-  `narrowedTypes` maps (checker/context.ts) that is pushed and popped per
-  scope. Nothing removes a narrowing when the narrowed path is assigned, so
-  a narrowing outlives the fact that established it:
-
-  ```zena
-  class Box { var v: i32 = 42; }
-  let f = (b: Box | null): i32 => {
-    var x = b;
-    if (x !== null) {
-      x = null;
-      return x.v;   // accepted; x is null
-    }
-    return 0;
-  };
-  ```
-
-  `zena check` reports nothing; running it fails with
-  `RuntimeError: dereferencing a null pointer`. The unnarrowed control
-  (`b.v` with no guard) correctly reports Z2001, so the null check itself
-  works — it is invalidation that is missing.
-
-  The fix wants an assignment-aware flow graph rather than a scope stack:
-  see [ownership.md](docs/design/ownership.md) "A flow graph, not a new IR".
-  A targeted patch (clear narrowings for a path on assignment to it) would
-  close this specific hole sooner, and is worth doing independently since
-  the flow graph is a larger piece of work.
+- **Found**: 2026-08-13 (carved out of "narrowing survives an assignment",
+  whose same-function half is fixed by the checker flow graph)
+- **Severity**: medium (type-checks clean, can trap at runtime; needs a
+  closure to reassign a captured narrowed `var`)
+- **Details**: The flow graph is per function body, so two halves of the
+  closure interaction escape it. A narrowing established in an enclosing
+  function is kept when read inside a nested closure — the walk reaches the
+  closure's own FlowStart and cannot see whether the enclosing function
+  assigned between establishment and the closure running. And an
+  assignment inside a closure to a captured `var` is invisible to the
+  enclosing function's graph, so a narrowing there survives a
+  `xs.forEach(() => { x = null; })` between guard and use. (Inside a loop
+  body the pre-scan does catch closure assignments, deliberately.)
+  TypeScript has the same holes. The capture pass
+  (`analysis/capture.zena`) already computes `mutableCaptures`, which is
+  the ingredient a conservative fix would use.
 
 ### `--dce` crashes codegen on `Regex.replaceAll`
 

@@ -1062,11 +1062,11 @@ transferred.
 
 ## The checker flow graph
 
-Move checking is flow-sensitive with merges and loops. That analysis does not
-exist today: the checker has a lexically-scoped narrowing stack and ad-hoc
-`definitelyExits` recursion, and nothing invalidates a narrowing on assignment.
-Building it is the real cost of move checking, and it is reusable well beyond
-ownership.
+Move checking is flow-sensitive with merges and loops. Before the graph
+landed (see §Landed below) that analysis did not exist: the checker had a
+lexically-scoped narrowing stack and ad-hoc `definitelyExits` recursion,
+and nothing invalidated a narrowing on assignment. Building it is the real
+cost of move checking, and it is reusable well beyond ownership.
 
 **A flow graph, not a new IR.** TypeScript — the language Zena is shaped like —
 does full flow-sensitive narrowing with joins and loops and no IR: its binder
@@ -1089,8 +1089,8 @@ One pass serves several consumers:
 - the narrowing special cases currently hand-rolled in `checker.zena`
 
 **It pays for itself before ownership does.** Narrowing is stored in a
-lexically-scoped stack that nothing invalidates on assignment, which is unsound
-today:
+lexically-scoped stack, and before the graph nothing invalidated an entry
+on assignment, which was unsound:
 
 ```zena
 class Box { var v: i32 = 42; }
@@ -1104,9 +1104,45 @@ let f = (b: Box | null): i32 => {
 };
 ```
 
-`zena check` reports nothing; running it fails with `dereferencing a null
-pointer`. An assignment-aware flow graph makes this class of bug structurally
-impossible rather than patched case by case.
+`zena check` reported nothing; running it failed with `dereferencing a
+null pointer`. The assignment-aware flow graph rejects it — the class of
+bug is structurally impossible rather than patched case by case.
+`semantics/type-narrowing/assignment_invalidates_narrowing.zena` carries
+this example and its variants.
+
+### Landed: the graph, and narrowing validity on it
+
+The checker builds the graph as it walks. `analysis/flow.zena` holds the
+nodes — start, assignment, join, unreachable — and the checker advances a
+current-flow pointer at each construct: assignments append, branches fork
+and join, loops get a header whose back edge is wired after the body,
+`break`/`continue` edge to the loop's exit and header, `match` arms fork
+from the discriminant, `&&`/`||`/`??` join their conditional operand with
+the skip path, and a `try` body's assignments feed the catch entry. Each
+body gets a fresh start node, saved and restored around nested functions
+the way return context is.
+
+The first consumer is narrowing validity. A narrowing records the flow
+node its guard established it at; a read on a mutable binding walks
+backward from the reference over every path to that node. An assignment
+whose checked type still satisfies the narrowing re-establishes it, any
+other assignment to the binding invalidates, and reaching the body's own
+start node without passing the establishment invalidates too — that is a
+loop that may run zero times. A member-path narrowing dies with any
+assignment to its root binding. Because a loop body is checked before its
+back edge exists, entering a loop pre-scans it for assigned symbols and
+records them at the header as unknown-type stores; the guard's own
+narrowing sits after the header, so `while (x != null)` still narrows its
+body while a narrowing carried in from outside dies where it should.
+Immutable bindings take none of these walks — nothing can assign them, so
+their narrowings are valid by construction, which keeps the common case
+free and the behavioral change scoped to `var`.
+
+Still hand-rolled, deliberately: the conditions themselves (the stack
+establishes, the graph only validates), `definitelyExits`, and
+unreachable-code reporting. Moving those onto the graph is mechanical now
+that it exists. Not covered: a `var` captured and assigned by a closure
+(BUGS.md "Narrowing of a closure-captured `var` is not invalidated").
 
 ### Narrowing mutable fields
 

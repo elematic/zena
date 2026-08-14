@@ -153,11 +153,14 @@ Error>` becomes writable.
   unwind, in reverse declaration order. The release shares `try`/`finally`'s
   region — emitted once, in a dispatch outside the region — so the two nest
   through each other and a throwing `dispose` cannot release twice.
-- **O1 — the checker flow graph.** TypeScript-style flow nodes as a
-  `SemanticModel`-style side table. Independently justified: fixes the narrowing
-  soundness bug in BUGS.md, generalizes the hand-rolled `definitelyExits`
-  recursion, prerequisite for mutable-field narrowing. Commits us to nothing
-  about ownership.
+- **O1 — the checker flow graph.** TypeScript-style flow nodes built
+  alongside the checker's walk (`analysis/flow.zena`). Independently
+  justified; commits us to nothing about ownership. **Landed**: the graph,
+  and assignment-aware narrowing validity on it — the narrowing soundness
+  bug formerly in BUGS.md is fixed (ownership.md §"Landed: the graph, and
+  narrowing validity on it"). Still on the old recursion:
+  `definitelyExits` and unreachable-code reporting; move checking (O2)
+  and mutable-field narrowing build on the graph from here.
 - **O2 — affine move checking** on O1, with the meet-plus-edge-drops join rule.
   Upgrades O0's runtime detection to compile time; **no signature changes**.
 - **O3 — implicit drop.** Needs O2, plus G1 for the per-state cancellation drop

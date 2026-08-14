@@ -1,0 +1,53 @@
+// @mode: check
+// Flow constructs and assignments that cannot break a narrowing must
+// leave it intact. These are regression guards for the assignment-aware
+// narrowing: no errors expected anywhere in this file.
+
+class Box {
+  var v: i32 = 42;
+  new();
+}
+
+// An unrelated variable's assignment does not disturb the narrowing.
+let unrelatedAssignment = (b: Box | null): i32 => {
+  var x = b;
+  var other: Box | null = null;
+  if (x !== null) {
+    other = null;
+    return x.v;
+  }
+  return 0;
+};
+
+// A branch that assigns only inside a nested if, where the narrowed
+// variable is re-guarded afterwards, is fine.
+let reGuard = (b: Box | null, c: Box | null): i32 => {
+  var x = b;
+  if (x !== null) {
+    x = c;
+    if (x !== null) {
+      return x.v;
+    }
+  }
+  return 0;
+};
+
+// A closure over an immutable narrowed binding keeps the narrowing:
+// nothing can ever assign to it.
+let closureOverLet = (b: Box | null): i32 => {
+  if (b !== null) {
+    let read = () => b.v;
+    return read();
+  }
+  return 0;
+};
+
+// Narrowing established by `??=` survives: the assignment itself is
+// what makes the variable non-null.
+let nullishAssign = (s: String | null): i32 => {
+  var x = s;
+  x ??= 'fallback';
+  return x.length;
+};
+
+export let main = (): i32 => 0;

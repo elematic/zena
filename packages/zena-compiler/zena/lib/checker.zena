@@ -50,6 +50,10 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { OrderedMap } from 'zena:ordered-map';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
+import {
+  FlowNode, FlowStart, FlowAssign, FlowJoin, FlowUnreachable, NarrowEntry,
+  FlowBodyState
+} from './analysis/flow.zena';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
 import { parseI32, i32ToString } from 'zena:string-convert';
@@ -287,13 +291,54 @@ final class CheckerContext {
    * adding a defaulted parameter makes those call sites fail arity checking.
    */
   var resourceMentionOk: boolean = false;
-  #narrowings = new Array<HashMap<SymbolId, Type>>();
+  #narrowings = new Array<HashMap<SymbolId, NarrowEntry>>();
 
   /**
    * Narrowed types for member paths (for example, "symbolId.inner").
    * Only immutable field paths are eligible for these narrowings.
    */
-  #memberPathNarrowings = new Array<HashMap<String, Type>>();
+  #memberPathNarrowings = new Array<HashMap<String, NarrowEntry>>();
+
+  // --- Control-flow graph (analysis/flow.zena) ---
+  //
+  // Built alongside the checker's forward walk: assignments, joins and
+  // loop headers advance #currentFlow, and a narrowing captures it as
+  // its establishment point. Reads on mutable bindings then validate
+  // the narrowing with a backward walk (see narrowingStillValid).
+
+  /** The flow node reflecting the checker's current position. */
+  var #currentFlow: FlowNode = new FlowStart();
+
+  /** The FlowStart of the innermost body being checked. */
+  var #currentFlowStart: FlowStart = new FlowStart();
+
+  /** The one unreachable node; joins drop it, walks pass through it. */
+  #flowUnreachable = new FlowUnreachable();
+
+  /** Loop header joins (continue targets), innermost last. */
+  var #flowLoopHeads = new Array<FlowJoin>();
+
+  /** Loop exit joins (break targets), innermost last. */
+  var #flowLoopExits = new Array<FlowJoin>();
+
+  /**
+   * Catch-entry joins of enclosing `try` bodies, innermost last. Every
+   * assignment inside a protected body is added as an antecedent of the
+   * innermost one, because the body can throw at any point after it.
+   * The arrays are swapped (not shared) across nested bodies, hence
+   * `var`.
+   */
+  var #flowExceptionTargets = new Array<FlowJoin>();
+
+  /** Mint for FlowNode ids; per-context, so graphs stay deterministic. */
+  var #nextFlowId: i32 = 0;
+
+  /**
+   * Symbols seen while resolving identifiers and building path keys,
+   * so a member-path narrowing can find its root binding's mutability
+   * from the "s<id>" prefix of its key.
+   */
+  #symbolsById = new HashMap<SymbolId, Symbol>();
 
   /**
    * The current function's expected return type, or null if not in a function.
@@ -525,8 +570,17 @@ final class CheckerContext {
     
     // Initialize with module-level scope.
     this.#typeScopes.push(new HashMap<String, Type>());
-    this.#narrowings.push(new HashMap<SymbolId, Type>());
-    this.#memberPathNarrowings.push(new HashMap<String, Type>());
+    this.#narrowings.push(new HashMap<SymbolId, NarrowEntry>());
+    this.#memberPathNarrowings.push(new HashMap<String, NarrowEntry>());
+
+    // Module-level control flow. The field defaults exist only to keep
+    // the fields non-nullable; mint real ids so nodes never compare
+    // equal by accident (comparisons go through `id`).
+    this.#flowUnreachable.id = this.newFlowId();
+    let moduleStart = new FlowStart();
+    moduleStart.id = this.newFlowId();
+    this.#currentFlow = moduleStart;
+    this.#currentFlowStart = moduleStart;
 
     // Wire the scope pass's maps into the SemanticModel
     // so consumers have a single object for all queries.
@@ -594,8 +648,8 @@ final class CheckerContext {
    */
   enterScope(): void {
     this.#typeScopes.push(new HashMap<String, Type>());
-    this.#narrowings.push(new HashMap<SymbolId, Type>());
-    this.#memberPathNarrowings.push(new HashMap<String, Type>());
+    this.#narrowings.push(new HashMap<SymbolId, NarrowEntry>());
+    this.#memberPathNarrowings.push(new HashMap<String, NarrowEntry>());
   }
 
   exitScope(): void {
@@ -661,8 +715,12 @@ final class CheckerContext {
     var i = this.#narrowings.length - 1;
     while (i >= 0) {
       let narrowing = this.#narrowings[i];
-      if (let (true, v) = narrowing.get(si.id)) {
-        return v;
+      if (let (true, entry) = narrowing.get(si.id)) {
+        if (!si.isMutable || this.narrowingStillValid(entry)) {
+          return entry.type;
+        }
+        // Invalidated by an assignment on some path; an outer frame
+        // may hold an older, still-valid narrowing.
       }
       i = i - 1;
     }
@@ -1628,6 +1686,239 @@ final class CheckerContext {
   /** Whether we are currently checking an interface declaration body. */
   inInterface: boolean { get { return this.#inInterface; } }
 
+  // --- Control flow ---
+
+  newFlowId(): i32 {
+    this.#nextFlowId += 1;
+    return this.#nextFlowId;
+  }
+
+  /** The flow node at the checker's current position. */
+  currentFlow: FlowNode { get { return this.#currentFlow; } }
+
+  setFlow(node: FlowNode): void { this.#currentFlow = node; }
+
+  /** Mark the current position unreachable (after return/throw/...). */
+  markFlowUnreachable(): void {
+    this.#currentFlow = this.#flowUnreachable;
+  }
+
+  flowIsUnreachable(): boolean {
+    return this.#currentFlow is FlowUnreachable;
+  }
+
+  newFlowJoin(): FlowJoin {
+    let j = new FlowJoin();
+    j.id = this.newFlowId();
+    return j;
+  }
+
+  /**
+   * Merge two branch ends into a join and make it the current flow.
+   * Unreachable ends are dropped; if both are unreachable the join has
+   * no antecedents and the current flow becomes unreachable.
+   */
+  mergeFlow(a: FlowNode, b: FlowNode): void {
+    if (a is FlowUnreachable && b is FlowUnreachable) {
+      this.#currentFlow = this.#flowUnreachable;
+      return;
+    }
+    let j = this.newFlowJoin();
+    j.add(a);
+    j.add(b);
+    this.#currentFlow = j;
+  }
+
+  /**
+   * Record an assignment to a local binding. `assignedType` is the type
+   * of the stored value; the assignment is also an antecedent of the
+   * innermost enclosing `try`'s catch entry, which can observe the
+   * variable mid-body.
+   */
+  recordFlowAssignment(id: SymbolId, assignedType: Type | null): void {
+    let node = new FlowAssign(this.#currentFlow, id, assignedType);
+    node.id = this.newFlowId();
+    if (this.#flowExceptionTargets.length > 0) {
+      this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
+        .add(node);
+    }
+    this.#currentFlow = node;
+  }
+
+  /**
+   * Begin a loop: the returned header join is the continue/back-edge
+   * target and already has the current flow as an antecedent; the exit
+   * join collects breaks. Both are pushed for break/continue to find.
+   */
+  enterFlowLoop(): FlowJoin {
+    let head = this.newFlowJoin();
+    head.add(this.#currentFlow);
+    let exit = this.newFlowJoin();
+    this.#flowLoopHeads.push(head);
+    this.#flowLoopExits.push(exit);
+    this.#currentFlow = head;
+    return head;
+  }
+
+  /**
+   * End a loop: wire the body-end back edge into the header, collect the
+   * normal exit (`afterTest`, the flow after the condition — for loops
+   * with no condition this is the header itself) into the exit join, and
+   * continue from the exit.
+   */
+  exitFlowLoop(afterTest: FlowNode): void {
+    let head = this.#flowLoopHeads.pop() as FlowJoin;
+    let exit = this.#flowLoopExits.pop() as FlowJoin;
+    head.add(this.#currentFlow);
+    exit.add(afterTest);
+    if (exit.antecedents.length == 0) {
+      this.#currentFlow = this.#flowUnreachable;
+    } else {
+      this.#currentFlow = exit;
+    }
+  }
+
+  /** Route a `break` to the innermost loop's exit join. */
+  recordFlowBreak(): void {
+    if (this.#flowLoopExits.length > 0) {
+      this.#flowLoopExits[this.#flowLoopExits.length - 1]
+        .add(this.#currentFlow);
+    }
+    this.markFlowUnreachable();
+  }
+
+  /** Route a `continue` to the innermost loop's header join. */
+  recordFlowContinue(): void {
+    if (this.#flowLoopHeads.length > 0) {
+      this.#flowLoopHeads[this.#flowLoopHeads.length - 1]
+        .add(this.#currentFlow);
+    }
+    this.markFlowUnreachable();
+  }
+
+  /**
+   * Begin a protected (`try`) body: the returned join is the catch
+   * entry, seeded with the flow before the body; assignments inside the
+   * body add themselves to it.
+   */
+  enterFlowTry(): FlowJoin {
+    let catchEntry = this.newFlowJoin();
+    catchEntry.add(this.#currentFlow);
+    this.#flowExceptionTargets.push(catchEntry);
+    return catchEntry;
+  }
+
+  exitFlowTry(): void {
+    this.#flowExceptionTargets.pop();
+  }
+
+  /**
+   * Install fresh flow state for a nested body (function, method,
+   * accessor). Returns the enclosing state for exitBodyFlow.
+   */
+  enterBodyFlow(): FlowBodyState {
+    let saved = new FlowBodyState(
+      this.#currentFlow, this.#currentFlowStart, this.#flowLoopHeads,
+      this.#flowLoopExits, this.#flowExceptionTargets);
+    let start = new FlowStart();
+    start.id = this.newFlowId();
+    this.#currentFlow = start;
+    this.#currentFlowStart = start;
+    this.#flowLoopHeads = new Array<FlowJoin>();
+    this.#flowLoopExits = new Array<FlowJoin>();
+    this.#flowExceptionTargets = new Array<FlowJoin>();
+    return saved;
+  }
+
+  exitBodyFlow(saved: FlowBodyState): void {
+    this.#currentFlow = saved.current;
+    this.#currentFlowStart = saved.start;
+    this.#flowLoopHeads = saved.loopHeads;
+    this.#flowLoopExits = saved.loopExits;
+    this.#flowExceptionTargets = saved.exceptionTargets;
+  }
+
+  rememberSymbol(si: Symbol): void {
+    this.#symbolsById[si.id] = si;
+  }
+
+  /**
+   * Whether a narrowing established at `entry.at` still holds at the
+   * current flow position. Walks backward over every path from here to
+   * the establishment point:
+   *
+   *   - reaching `entry.at` ends a path cleanly;
+   *   - an assignment to the narrowing's root binding ends it cleanly
+   *     when the assigned type still satisfies the narrowing (identifier
+   *     narrowings only — a path narrowing dies with any root
+   *     assignment), and invalidates otherwise;
+   *   - reaching this body's own FlowStart means the establishment does
+   *     not dominate the reference (a loop that may run zero times), so
+   *     the narrowing is invalid;
+   *   - reaching a different FlowStart means the narrowing came from an
+   *     enclosing function; the graph cannot see that far, so the
+   *     narrowing is (unsoundly, as before) kept.
+   *
+   * Loops make the graph cyclic; the visited set both terminates the
+   * walk and keeps it linear.
+   */
+  narrowingStillValid(entry: NarrowEntry): boolean {
+    let visited = new HashSet<i32>();
+    let pending = new Array<FlowNode>();
+    pending.push(this.#currentFlow);
+    while (pending.length > 0) {
+      let node = pending.pop() as FlowNode;
+      if (node.id == entry.at.id) { continue; }
+      if (visited.has(node.id)) { continue; }
+      visited.add(node.id);
+      match (node) {
+        case FlowStart: {
+          if (node.id == entry.startAt.id) { return false; }
+          // A different body's entry: the narrowing was established in
+          // an enclosing function. Keep it, matching the pre-flow-graph
+          // behavior for captured bindings.
+        }
+        case FlowUnreachable: {}
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) == (entry.rootSymbolId as i32)) {
+            if (entry.isPath) { return false; }
+            let at = assign.assignedType;
+            if (at == null) { return false; }
+            if (!isAssignableTo(this, at as Type, entry.type)) {
+              return false;
+            }
+            // The assignment re-establishes the narrowing; this path
+            // is clean.
+          } else {
+            pending.push(assign.antecedent);
+          }
+        }
+        case FlowJoin as join: {
+          for (let a in join.antecedents) {
+            pending.push(a);
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Look up a NarrowEntry's usability at the current position: entries
+   * on immutable bindings are always valid (nothing can assign them),
+   * mutable ones consult the flow graph.
+   */
+  #narrowEntryUsable(entry: NarrowEntry): boolean {
+    if ((entry.rootSymbolId as i32) < 0) { return true; }
+    if (let (true, si) = this.#symbolsById.get(entry.rootSymbolId)) {
+      if (!si.isMutable) { return true; }
+      return this.narrowingStillValid(entry);
+    }
+    // Unknown root: nothing recorded an assignable binding, so treat as
+    // immutable (the pre-flow-graph behavior).
+    return true;
+  }
+
   // --- Narrowing ---
 
   /**
@@ -1635,24 +1926,31 @@ final class CheckerContext {
    * Keyed by Symbol.id for identity-based precision.
    */
   narrowBinding(info: Symbol, t: Type): void {
-    let top = this.#narrowings[this.#narrowings.length - 1];
-    top[info.id] = t;
+    this.rememberSymbol(info);
+    this.narrowBindingById(info.id, t);
   }
 
   narrowBindingById(id: SymbolId, t: Type): void {
     let top = this.#narrowings[this.#narrowings.length - 1];
-    top[id] = t;
+    top[id] = new NarrowEntry(
+      t, this.#currentFlow, this.#currentFlowStart, id, false);
   }
 
   narrowMemberPath(path: String, t: Type): void {
     let top = this.#memberPathNarrowings[this.#memberPathNarrowings.length - 1];
-    top[path] = t;
+    top[path] = new NarrowEntry(
+      t, this.#currentFlow, this.#currentFlowStart,
+      pathRootSymbolId(path), true);
   }
 
-  resolveNarrowedMemberPath(path: String): Type | null {    
+  resolveNarrowedMemberPath(path: String): Type | null {
     for (var i = this.#memberPathNarrowings.length - 1; i >= 0; i -= 1) {
-      if (let (true, t) = this.#memberPathNarrowings[i].get(path)) {
-        return t;
+      if (let (true, entry) = this.#memberPathNarrowings[i].get(path)) {
+        if (this.#narrowEntryUsable(entry)) {
+          return entry.type;
+        }
+        // Invalidated; an outer frame may hold an older, still-valid
+        // entry for the same path, so keep scanning.
       }
     }
     return null;
@@ -5294,6 +5592,22 @@ let unwrapNullableForMemberLookup = (t: Type): Type | null => {
   }
 };
 
+/**
+ * The root binding of a member-path narrowing key: "s42.inner" roots at
+ * symbol 42, "this.x" at nothing assignable. The inverse of the "s<id>"
+ * prefix getMemberPathKey builds.
+ */
+let pathRootSymbolId = (path: String): SymbolId => {
+  if (path.length < 2 || path.sliceBytes(0, 1) != "s") { return noSymbolId; }
+  var end = 1;
+  // 46 is '.'.
+  while (end < path.length && path.getByteAt(end) != 46) { end += 1; }
+  if (let (true, id) = parseI32(path.sliceBytes(1, end))) {
+    return id as SymbolId;
+  }
+  return noSymbolId;
+};
+
 let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null => {
   match (expr) {
     case Identifier: {
@@ -5301,6 +5615,7 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
       if (info == null) {
         return null;
       }
+      ctx.rememberSymbol(info as Symbol);
       return "s" + i32ToString((info as Symbol).id as i32);
     }
     case ThisExpression: {
@@ -5783,6 +6098,46 @@ enum NullGuardAssignKind {
 }
 
 /**
+ * Every symbol assigned anywhere under `node`, deduplicated. Loops
+ * record these at the loop header as unknown-type flow assignments:
+ * a reference in the body is checked before the loop's back edge
+ * exists, yet on every iteration after the first it observes the
+ * previous iteration's stores, so the header must already carry them.
+ * Descends into nested functions on purpose — a closure created in the
+ * body can run on any iteration.
+ */
+let collectAssignedSymbolIds = (ctx: CheckerContext, node: Node): Array<SymbolId> => {
+  let ids = new Array<SymbolId>();
+  let seen = new HashSet<i32>();
+  walkEnter(node, (n: Node): void => {
+    if (n is AssignmentExpression) {
+      let ae = n as AssignmentExpression;
+      if (ae.left is Identifier) {
+        let info = ctx.model.resolve(ae.left);
+        if (info != null) {
+          let id = (info as Symbol).id;
+          if (!seen.has(id as i32)) {
+            seen.add(id as i32);
+            ids.push(id);
+          }
+        }
+      }
+    }
+  });
+  return ids;
+};
+
+/**
+ * Record `node`'s assignments at the current position (a loop header)
+ * as unknown-type stores. See collectAssignedSymbolIds.
+ */
+let recordLoopAssignments = (ctx: CheckerContext, node: Node): void => {
+  for (let assignedId in collectAssignedSymbolIds(ctx, node)) {
+    ctx.recordFlowAssignment(assignedId, null);
+  }
+};
+
+/**
  * True if `node` contains, anywhere inside it (expression positions,
  * nested statements), an assignment to the variable identified by
  * targetId.
@@ -6013,6 +6368,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
           }
         }
       }
+      ctx.markFlowUnreachable();
     }
     case YieldStatement {argument, loc}: {
       let expectedYield = ctx.yieldType;
@@ -6057,34 +6413,46 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
         case LetPatternCondition as lpc: {
           let initType = checkExpression(ctx, lpc.init, null);
           let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
+          let preBranchFlow = ctx.currentFlow;
           ctx.enterScope();
           checkPattern(ctx, lpc.pattern, narrowedInitType);
           checkStatement(ctx, consequent);
           ctx.exitScope();
+          let trueEnd = ctx.currentFlow;
+          ctx.setFlow(preBranchFlow);
           if (alternate != null) {
             ctx.enterScope();
             checkStatement(ctx, alternate as Statement);
             ctx.exitScope();
           }
+          ctx.mergeFlow(trueEnd, ctx.currentFlow);
         }
 case _: {
           let testExpr = test as Expression;
           let testType = checkExpression(ctx, testExpr, null);
           validateConditionType(ctx, testType, testExpr);
 
+          let preBranchFlow = ctx.currentFlow;
+
           // Consequent body with TRUE narrowings
           ctx.enterScope();
           applyTrueNarrowingFromCondition(ctx, testExpr);
           checkStatement(ctx, consequent);
           ctx.exitScope();
+          let trueEnd = ctx.currentFlow;
 
           // Alternate body with FALSE narrowings
+          ctx.setFlow(preBranchFlow);
           if (alternate != null) {
             ctx.enterScope();
             applyFalseNarrowingFromCondition(ctx, testExpr);
             checkStatement(ctx, alternate as Statement);
             ctx.exitScope();
           }
+
+          // Join the branches BEFORE the post-if narrowings below, so
+          // their establishment point dominates the code they cover.
+          ctx.mergeFlow(trueEnd, ctx.currentFlow);
 
           // Narrowing past definite exits:
           // If the consequent always exits and there is no else branch,
@@ -6120,7 +6488,12 @@ case _: {
     case WhileStatement {test, body, loc}: {
       match (test) {
         case LetPatternCondition as lpc: {
+          // The condition re-runs every iteration, so it sits between
+          // the loop header and the body on the flow graph.
+          ctx.enterFlowLoop();
+          recordLoopAssignments(ctx, stmt);
           let initType = checkExpression(ctx, lpc.init, null);
+          let afterTest = ctx.currentFlow;
           let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
           ctx.enterLoop();
           ctx.enterScope();
@@ -6128,10 +6501,14 @@ case _: {
           checkStatement(ctx, body);
           ctx.exitScope();
           ctx.exitLoop();
+          ctx.exitFlowLoop(afterTest);
         }
         case _: {
+          ctx.enterFlowLoop();
+          recordLoopAssignments(ctx, stmt);
           let testExpr = test as Expression;
           let testType = checkExpression(ctx, testExpr, null);
+          let afterTest = ctx.currentFlow;
           validateConditionType(ctx, testType, testExpr);
           let (guardInfo, guardOrigType, isEqualNull) = extractNullGuardNarrowing(ctx, testExpr);
           let (guardPathKey, guardPathOrigType, pathIsEqualNull) = extractNullGuardPathNarrowing(ctx, testExpr);
@@ -6161,6 +6538,7 @@ case _: {
             checkStatement(ctx, body);
           }
           ctx.exitLoop();
+          ctx.exitFlowLoop(afterTest);
         }
       }
     }
@@ -6177,11 +6555,18 @@ case _: {
           }
         }
       }
+      // Test and update run every iteration, so their flow sits inside
+      // the loop. The update is checked before the body (its check
+      // order), which on the graph approximates "before each iteration
+      // after the first" — conservative for narrowing.
+      ctx.enterFlowLoop();
+      recordLoopAssignments(ctx, stmt);
       if (test != null) {
         let testExpr = test as Expression;
         let testType = checkExpression(ctx, testExpr, null);
         validateConditionType(ctx, testType, testExpr);
       }
+      let afterTest = ctx.currentFlow;
       if (update != null) {
         let updateExpr = update as Expression;
         checkExpression(ctx, updateExpr, null);
@@ -6189,17 +6574,20 @@ case _: {
       ctx.enterLoop();
       checkStatement(ctx, body);
       ctx.exitLoop();
+      ctx.exitFlowLoop(afterTest);
       ctx.exitScope();
     }
     case BreakStatement {loc}: {
       if (!ctx.inLoop()) {
         ctx.error("'break' outside of loop.", DiagnosticCode.BreakOutsideLoop, loc);
       }
+      ctx.recordFlowBreak();
     }
     case ContinueStatement {loc}: {
       if (!ctx.inLoop()) {
         ctx.error("'continue' outside of loop.", DiagnosticCode.ContinueOutsideLoop, loc);
       }
+      ctx.recordFlowContinue();
     }
     // Declarations that are handled during pre-pass or skipped for now.
     case ImportDeclaration {moduleSpecifier, imports}: {
@@ -6428,6 +6816,8 @@ case _: {
         }
       }
       let elementType = getElementType(ctx, iterableType, iterable);
+      let loopHead = ctx.enterFlowLoop();
+      recordLoopAssignments(ctx, stmt);
       ctx.enterScope();
       ctx.enterLoop();
       if (isRefutableDeclarationPattern(pattern)) {
@@ -6441,6 +6831,7 @@ case _: {
       checkStatement(ctx, body);
       ctx.exitLoop();
       ctx.exitScope();
+      ctx.exitFlowLoop(loopHead);
     }
   }
 };
@@ -7492,11 +7883,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           loc
         );
       }
-      // Narrow the binding to non-null.
+      // Narrow the binding to non-null. The flow assignment is recorded
+      // first, so the narrowing's establishment point sits after it.
       match (left) {
         case Identifier: {
           let info = ctx.model.resolve(left);
           if (info != null) {
+            ctx.recordFlowAssignment((info as Symbol).id, nonNullType);
             ctx.narrowBinding(info as Symbol, nonNullType);
           }
         }
@@ -7526,6 +7919,19 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       // We know op is set and not "??". Act like a binary expression: left + right.
       effectiveType = checkBinaryExpression(ctx, leftType, operator, left, value, loc);
       ctx.setNodeType(value, effectiveType);
+    }
+
+    // Record the store on the flow graph: this is what invalidates (or,
+    // when the stored type still satisfies it, re-establishes) any
+    // narrowing of the binding.
+    match (left) {
+      case Identifier: {
+        let info = ctx.model.resolve(left);
+        if (info != null) {
+          ctx.recordFlowAssignment((info as Symbol).id, effectiveType);
+        }
+      }
+      case _: {}
     }
 
     // Index writes: record the []= overload selection for codegen
@@ -7621,10 +8027,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       case LetPatternCondition as lpc: {
         let initType = checkExpression(ctx, lpc.init, null);
         let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
+        let preBranchFlow = ctx.currentFlow;
         ctx.enterScope();
         checkPattern(ctx, lpc.pattern, narrowedInitType);
         let consType = checkIfBranchNode(ctx, consequent, expectedType);
         ctx.exitScope();
+        let trueEnd = ctx.currentFlow;
+        ctx.setFlow(preBranchFlow);
 
         var altType: Type = new VoidType();
         if (alternate != null) {
@@ -7632,6 +8041,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           altType = checkIfBranchNode(ctx, alternate as Node, expectedType);
           ctx.exitScope();
         }
+        ctx.mergeFlow(trueEnd, ctx.currentFlow);
 
         if (expectedType != null && expectedType is VoidType) {
           return new VoidType();
@@ -7669,6 +8079,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           }
         }
 
+        let preBranchFlow = ctx.currentFlow;
+
         // Check consequent with narrowing applied.
         if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
           ctx.enterScope();
@@ -7698,6 +8110,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         if (guardInfo != null || guardPathKey != null || isInfo != null || isPathKey != null) {
           ctx.exitScope();
         }
+        let trueEnd = ctx.currentFlow;
+        ctx.setFlow(preBranchFlow);
 
         // Check alternate with inverse narrowing applied.
         var altType: Type = new VoidType();
@@ -7733,6 +8147,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             ctx.exitScope();
           }
         }
+        ctx.mergeFlow(trueEnd, ctx.currentFlow);
 
         // Result type is the union of both branches.
         if (expectedType != null && expectedType is VoidType) {
@@ -8157,6 +8572,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         );
       }
     }
+    ctx.markFlowUnreachable();
     new NeverType()
   }
   case TryExpression {body, handler, finalizer, loc}: {
@@ -8166,10 +8582,17 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     }
     // yield is rejected anywhere inside try/catch/finally (v1).
     ctx.enterTry();
+    // The body can throw at any point, so the catch entry joins the
+    // pre-try flow with every assignment inside the body (they add
+    // themselves; see recordFlowAssignment).
+    let catchEntry = ctx.enterFlowTry();
     let tryType = checkMatchCaseBody(ctx, body as Node, expectedType);
+    ctx.exitFlowTry();
+    let bodyEnd = ctx.currentFlow;
     var catchType: Type | null = null;
     if (handler != null) {
       let clause = handler as CatchClause;
+      ctx.setFlow(catchEntry);
       ctx.enterScope();
       if (clause.param != null) {
         let paramId = clause.param as Identifier;
@@ -8181,8 +8604,16 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
       catchType = checkMatchCaseBody(ctx, clause.body as Node, expectedType);
       ctx.exitScope();
+      ctx.mergeFlow(bodyEnd, ctx.currentFlow);
+    } else {
+      // No handler: code after the try runs only when the body
+      // completed normally.
+      ctx.setFlow(bodyEnd);
     }
     if (finalizer != null) {
+      // The finalizer also runs on the unwind paths, so its entry joins
+      // in the catch entry (which stands in for "anywhere in the body").
+      ctx.mergeFlow(ctx.currentFlow, catchEntry);
       // Void context, not `null`: the finalizer's value is discarded,
       // and checkMatchCaseBody passes the expected type down to the
       // block's TAIL statement. With no expectation there, a tail
@@ -9901,11 +10332,13 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
           ctx.enterScope();
           let prevReturnType = ctx.returnType;
           ctx.setReturnType(accType);
+          let prevFlowState = ctx.enterBodyFlow();
           var gi = 0;
           while (gi < getterBlock.body.length) {
             checkStatement(ctx, getterBlock.body[gi]);
             gi += 1;
           }
+          ctx.exitBodyFlow(prevFlowState);
           ctx.setReturnType(prevReturnType);
           ctx.exitScope();
           ctx.exitNodeReferrer(acc.id as i32);
@@ -9921,9 +10354,11 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               if (paramInfo != null) {
                 ctx.declareBinding(paramInfo as Symbol, accType);
               }
+              let prevFlowState = ctx.enterBodyFlow();
               for (let stmt in si.body.body) {
                 checkStatement(ctx, stmt);
               }
+              ctx.exitBodyFlow(prevFlowState);
               ctx.exitScope();
               ctx.exitNodeReferrer(si.id as i32);
             }
@@ -10370,6 +10805,7 @@ let checkMethodBody = (
   // resource's `this` may not be captured at all.
   let prevOwningReceiver = ctx.owningReceiver;
   ctx.setOwningReceiver(declaresOwningReceiver(md));
+  let prevFlowState = ctx.enterBodyFlow();
 
   if (md.isGenerator) {
     var yieldT: Type = new ErrorType();
@@ -10566,6 +11002,7 @@ let checkMethodBody = (
   ctx.setAsyncValueType(prevAsyncValue);
   ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.setOwningReceiver(prevOwningReceiver);
+  ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
 };
 
@@ -11255,11 +11692,13 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           ctx.enterScope();
           let prevReturnType = ctx.returnType;
           ctx.setReturnType(accType);
+          let prevFlowState = ctx.enterBodyFlow();
           var gi = 0;
           while (gi < getterBlock.body.length) {
             checkStatement(ctx, getterBlock.body[gi]);
             gi += 1;
           }
+          ctx.exitBodyFlow(prevFlowState);
           ctx.setReturnType(prevReturnType);
           ctx.exitScope();
           ctx.exitNodeReferrer(acc.id as i32);
@@ -11273,9 +11712,11 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
               if (paramInfo != null) {
                 ctx.declareBinding(paramInfo as Symbol, accType);
               }
+              let prevFlowState = ctx.enterBodyFlow();
               for (let stmt in si.body.body) {
                 checkStatement(ctx, stmt);
               }
+              ctx.exitBodyFlow(prevFlowState);
               ctx.exitScope();
               ctx.exitNodeReferrer(si.id as i32);
             }
@@ -12515,19 +12956,25 @@ let checkBinaryExpression = (
   // For && and ||, handle short-circuit evaluation and narrowing.
   if (operator == "&&") {
     let leftType = checkExpression(ctx, left, null);
+    // The right operand runs conditionally: join its flow with the
+    // skip path so an assignment inside it invalidates on both.
+    let preRight = ctx.currentFlow;
     ctx.enterScope();
     applyTrueNarrowingFromCondition(ctx, left);
     let rightType = checkExpression(ctx, right, null);
     ctx.exitScope();
+    ctx.mergeFlow(preRight, ctx.currentFlow);
     // && returns the type of the right operand (if left is truthy).
     return rightType;
   }
   if (operator == "||") {
     let leftType = checkExpression(ctx, left, null);
+    let preRight = ctx.currentFlow;
     ctx.enterScope();
     applyFalseNarrowingFromCondition(ctx, left);
     let rightType = checkExpression(ctx, right, null);
     ctx.exitScope();
+    ctx.mergeFlow(preRight, ctx.currentFlow);
     // || returns union of both types.
     let types = new Array<Type>();
     types.push(leftType);
@@ -12731,7 +13178,10 @@ let checkBinaryExpression = (
     // CheckerContext.nullishSanctioned).
     ctx.nullishSanctioned.add(left.id as i32);
     let leftType = checkExpression(ctx, left, null);
+    // The right operand runs conditionally (only when left is null).
+    let preRight = ctx.currentFlow;
     let rightType = checkExpression(ctx, right, null);
+    ctx.mergeFlow(preRight, ctx.currentFlow);
 
     // Extract non-null part of left type.
     // For T | null, result is T | rightType (simplified to rightType if T = rightType).
@@ -13086,6 +13536,11 @@ let checkMatchExpr = (
   // Check the discriminant expression.
   let scrutineeType = checkExpression(ctx, discriminant, null);
 
+  // Each arm branches from the flow after the discriminant; the arms
+  // join again after the match.
+  let preArmFlow = ctx.currentFlow;
+  let armJoin = ctx.newFlowJoin();
+
   // Track remaining type for exhaustiveness checking.
   var remainingType: Type = scrutineeType;
 
@@ -13109,6 +13564,7 @@ let checkMatchExpr = (
     }
 
     // Enter a new scope for pattern bindings.
+    ctx.setFlow(preArmFlow);
     ctx.enterScope();
 
     // Check the pattern and bind variables. Pass remainingType (not scrutineeType) so
@@ -13219,7 +13675,14 @@ let checkMatchExpr = (
     resultTypes.push(bodyType);
 
     ctx.exitScope();
+    armJoin.add(ctx.currentFlow);
     i += 1;
+  }
+
+  if (armJoin.antecedents.length == 0) {
+    ctx.markFlowUnreachable();
+  } else {
+    ctx.setFlow(armJoin);
   }
 
   // Check exhaustiveness: if the scrutinee is a finite type (sealed class,
@@ -13999,6 +14462,7 @@ let checkFunctionExpression = (
   ctx.setAsyncValueType(newAsyncValue);
   ctx.setAsyncFutureType(if (isAsync) { declaredFutureType } else { null });
   ctx.setTryDepth(0);
+  let prevFlowState = ctx.enterBodyFlow();
 
   // Check the body.
   match (body) {
@@ -14135,6 +14599,7 @@ let checkFunctionExpression = (
   ctx.setAsyncValueType(prevAsyncValue);
   ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.setTryDepth(prevTryDepth);
+  ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
 
   let paramSymbols = new Array<SymbolId>();
