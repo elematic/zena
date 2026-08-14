@@ -26,7 +26,7 @@ import { i32ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, WasmType, heapTypeToSigned, HeapType, valTypeEquals } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
-import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isIrTerminator } from './ir.zena';
+import { IrBody, IrOp, IrSuccessor, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
 
@@ -693,46 +693,72 @@ export final class ZirFunctionEmitter {
         // capped at one — their later "operands" can be branch args
         // with copy semantics, which are not pushed.
         let maxPrefix = if (isIrTerminator(cop)) 1 else ops.length;
-        var prefixLen = if (maxPrefix < ops.length) maxPrefix else ops.length;
-        while (prefixLen > 0) {
-          var ok = true;
-          var scan = j;
-          var oi = prefixLen - 1;
-          while (oi >= 0) {
-            var p = scan - 1;
-            // Rematerialized constants emit nothing at their site, so
-            // they are invisible to emission adjacency, like nops.
-            while (p >= 0 && (body.op(insts[p]) == IrOp.nop ||
-                body.op(insts[p]) == IrOp.mv_get ||
-                this.remat[insts[p]] ||
-                this.#elisionCandidate[insts[p]])) {
-              p -= 1;
-            }
-            if (p < 0) { ok = false; break; }
-            let producer = insts[p];
-            if (producer != ops[oi] || !body.producesValue(producer) ||
-                body.op(producer) == IrOp.mv_get ||
-                stackClaimed[producer]) {
-              ok = false;
+        // A commutative consumer whose natural order streams nothing
+        // gets a second attempt with its operands swapped: `total + x`
+        // puts the freshly-produced value SECOND, where a leading-run
+        // scheduler cannot reach it, and integer add/mul/bitwise and
+        // the equality ops mean the same thing either way. A
+        // successful swap is committed to the instruction itself.
+        var attempt = 0;
+        var matched = false;
+        while (attempt < 2 && !matched) {
+          if (attempt == 1) {
+            if (!isCommutativeOp(cop) || ops.length != 2 ||
+                ops[0] == ops[1]) {
               break;
             }
-            scan = p;
-            oi -= 1;
+            let tmp = ops[0];
+            ops[0] = ops[1];
+            ops[1] = tmp;
           }
-          if (ok) {
-            for (var s = 0; s < prefixLen; s += 1) {
-              stackClaimed[ops[s]] = true;
-              // Single-use: pure stream, no local. Multi-use: tee —
-              // the value lands in its local AND stays on the stack.
-              if (useCount[ops[s]] == 1) {
-                this.streamed[ops[s]] = true;
-              } else {
-                this.teed[ops[s]] = true;
+          var prefixLen = if (maxPrefix < ops.length) maxPrefix else ops.length;
+          while (prefixLen > 0) {
+            var ok = true;
+            var scan = j;
+            var oi = prefixLen - 1;
+            while (oi >= 0) {
+              var p = scan - 1;
+              // Rematerialized constants emit nothing at their site, so
+              // they are invisible to emission adjacency, like nops.
+              while (p >= 0 && (body.op(insts[p]) == IrOp.nop ||
+                  body.op(insts[p]) == IrOp.mv_get ||
+                  this.remat[insts[p]] ||
+                  this.#elisionCandidate[insts[p]])) {
+                p -= 1;
               }
+              if (p < 0) { ok = false; break; }
+              let producer = insts[p];
+              if (producer != ops[oi] || !body.producesValue(producer) ||
+                  body.op(producer) == IrOp.mv_get ||
+                  stackClaimed[producer]) {
+                ok = false;
+                break;
+              }
+              scan = p;
+              oi -= 1;
             }
-            break;
+            if (ok) {
+              if (attempt == 1) {
+                let savedA = body.a[consumer];
+                body.a[consumer] = body.b[consumer];
+                body.b[consumer] = savedA;
+              }
+              for (var s = 0; s < prefixLen; s += 1) {
+                stackClaimed[ops[s]] = true;
+                // Single-use: pure stream, no local. Multi-use: tee —
+                // the value lands in its local AND stays on the stack.
+                if (useCount[ops[s]] == 1) {
+                  this.streamed[ops[s]] = true;
+                } else {
+                  this.teed[ops[s]] = true;
+                }
+              }
+              matched = true;
+              break;
+            }
+            prefixLen -= 1;
           }
-          prefixLen -= 1;
+          attempt += 1;
         }
       }
     }
