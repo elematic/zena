@@ -91,7 +91,38 @@ Consequences, stated explicitly:
   from a default-free annotation, is checked as today: all fields
   required.
 
-### 2.2 Evaluation site and the constant restriction
+### 2.2 Per-consumer defaults
+
+There are two established idioms for optional-field defaults: the type
+declares the default (`port: i32 = 8080`), or the type declares only
+optionality and each consumer fills in its own default (TypeScript's
+`let {timeout = 30} = opts`, Dart/Swift default parameter values).
+Because defaults attach to annotations and never to the type (§2.1),
+this design supports both with one mechanism:
+
+```zena
+type FetchOpts = {timeout: i32 = 30_000, retries: i32 = 3};
+
+// The same shape with different defaults is the SAME type — values
+// flow freely between the two. Only literal checking differs.
+let fetchWithRetry = (opts: {timeout: i32 = 5_000, retries: i32 = 10})
+    => ...;
+```
+
+A shared canonical bag puts the defaults on the alias; a consumer that
+wants its own puts them in its own parameter annotation. In both forms
+the defaults sit where callers look (the signature or the named type,
+surfaced on hover), unlike TypeScript's variant, where types cannot
+carry values and defaults end up buried in a destructuring statement
+inside the body — the arrangement that makes defaults undiscoverable
+and motivates `@defaultValue` doc tags.
+
+Defaults that are logic rather than values — a default that depends on
+another field or on consumer state — are out of scope for annotations
+by design; use a nullable field and compute in the consumer, the same
+form §5 gives for distinguishing "omitted" from "explicitly set".
+
+### 2.3 Evaluation site and the constant restriction
 
 A default expression is evaluated **at each construction site that
 omits the field**, in field-declaration order, interleaved with the
@@ -107,7 +138,7 @@ never shared between two constructions.
 Defaults may not reference other fields of the record, `this`, or any
 local binding.
 
-### 2.3 Syntax
+### 2.4 Syntax
 
 ```ebnf
 RecordTypeProperty ::= Identifier '?'? ':' Type ('=' Expression)?
@@ -119,7 +150,7 @@ one field is an error — a defaulted field is already omittable, and
 `?` asserts that absence is meaningful (§5), which a default
 contradicts.
 
-### 2.4 Interaction with spread and `with`
+### 2.5 Interaction with spread and `with`
 
 Filling happens after the literal's explicit content — spreads
 included — is resolved. In `{...partial, tls: true}` checked against
@@ -131,7 +162,7 @@ The `with` update form (row-types.md §4) operates on a complete value
 of the full shape, so defaults never participate: there is no absent
 field to fill.
 
-### 2.5 Interaction with destructuring defaults
+### 2.6 Interaction with destructuring defaults
 
 Destructuring defaults (`let {timeout = 30} = opts`) are a different
 mechanism at the consumption end, and they exist to handle
@@ -141,7 +172,7 @@ compose without interaction: config records make destructuring
 defaults unnecessary for the options-record use case, since the callee
 receives a complete record.
 
-### 2.6 Interaction with argument explosion
+### 2.7 Interaction with argument explosion
 
 Explosion (records-and-tuples.md Phase 7, Track B) rewrites a
 record-typed parameter into individual scalar parameters. Filling is
