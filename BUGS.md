@@ -7,6 +7,25 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
+### RESOLVED: A subclass vtable could permute its base's slot order
+- **Found**: 2026-08-14 (CI on the suspension-region branch: adding six
+  test files re-sliced the execution runner's batches and
+  `async/external_completions.zena` began trapping with `cast failure`
+  inside `completeError`)
+- **Fixed 2026-08-14**, same change. `Completer<void>`'s vtable global
+  was `[complete, fail, get#future]` while `AnyCompleter`'s layout says
+  slot 0 is `fail` — so a base-typed dispatch pulled `complete`'s
+  funcref and the signature cast trapped. Both vtable merge sites
+  (Pass 0.6 and `registerSpecializedClass`) prefix the super's slot
+  list, but a slot registered after either merge lands wherever
+  registration put it, which is batch-history-dependent — and the
+  permutation type-checks, because every class-vtable slot is a bare
+  `funcref`. Pass 1.5 (`#buildClassVTableGlobals`) now rebuilds every
+  class's slot order super-chain root-first before the global bakes it.
+  Nothing about the trigger was specific to the new tests: any file
+  set that shifted which entry points share a batch compiler could
+  flip it.
+
 ### RESOLVED: A local live across a try holding both an `await` and a `return` miscompiled
 - **Found**: 2026-08-11 (writing the combinator tests; the shape is ordinary
   async code, not anything the combinators need)

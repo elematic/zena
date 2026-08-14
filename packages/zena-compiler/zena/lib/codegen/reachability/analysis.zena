@@ -1628,11 +1628,58 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         if (isGenericTemplate) {
           continue;
         }
+        // Slot order must extend the base's: a dispatch through a
+        // base-typed receiver indexes the base's layout, and the
+        // instance's vtable is the subclass's. Both merge sites
+        // (Pass 0.6 and registerSpecializedClass) prefix the super's
+        // list, but a slot registered AFTER either merge lands
+        // wherever registration put it — batch-history-dependent —
+        // and a subclass whose base list filled late ends up with a
+        // permuted layout that type-checks (every slot is funcref)
+        // and dispatches the wrong method. Rebuild the order here,
+        // super chain root-first, before the global bakes it.
+        let chain = new Array<ClassType>();
+        var cc: ClassType | null = cType;
+        while (cc != null) {
+          chain.push(cc as ClassType);
+          cc = (cc as ClassType).superType;
+        }
+        let orderedNames = new Array<String>();
+        let seenNames = new HashSet<String>();
+        var ci = chain.length - 1;
+        while (ci >= 0) {
+          for (let n in this.wasm.classVtable(getClassKey(chain[ci]))) {
+            if (!seenNames.has(n)) {
+              seenNames.add(n);
+              orderedNames.push(n);
+            }
+          }
+          ci -= 1;
+        }
+        let fieldByName = new HashMap<String, WasmField>();
+        for (let field in vstVal.fields) {
+          fieldByName[field.name as String] = field;
+        }
+        // Names in ancestor lists whose slots this class does not
+        // carry (pruned) are skipped; a field with no list entry
+        // would be a bookkeeping bug and keeps its tail position.
+        let orderedFields = new Array<WasmField>();
+        for (let n in orderedNames) {
+          if (let (true, f) = fieldByName.get(n)) {
+            orderedFields.push(f);
+            fieldByName.delete(n);
+          }
+        }
+        for (let field in vstVal.fields) {
+          if (fieldByName.has(field.name as String)) {
+            orderedFields.push(field);
+          }
+        }
+
         var methods = new Array<WasmFunction>();
-        let fields = vstVal.fields;
         var newFields = new Array<WasmField>();
-        for (var i = 0; i < fields.length; i += 1) {
-          let field = fields[i];
+        for (var i = 0; i < orderedFields.length; i += 1) {
+          let field = orderedFields[i];
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = cType;
           while (currClass != null && foundFunc == null) {
