@@ -58,7 +58,7 @@ export let substituteTypeParamsInCodegen = (
         }
       }
       if (found != null) {
-        return found as Type;
+        return found;
       }
       t
     }
@@ -152,7 +152,7 @@ export let substituteTypeParamsInCodegen = (
         newArgs = new Array<Type>((ft.typeArguments as Array<Type>).length);
         for (let arg in (ft.typeArguments as Array<Type>)) {
           let sub = substituteTypeParamsInCodegen(wasm, params, args, arg);
-          (newArgs as Array<Type>).push(sub);
+          newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
           }
@@ -227,7 +227,7 @@ export let substituteTypeParamsInCodegen = (
         }
       } else if (params != null && args != null && ctParams != null) {
         hasArgs = true;
-        for (let param in (ctParams as Array<TypeParameterType>)) {
+        for (let param in ctParams) {
           ctArgsVal.push(param as Type);
         }
       }
@@ -270,14 +270,14 @@ export let substituteTypeParamsInCodegen = (
         inst.typeArguments = newArgs;
         inst.genericSource = ct.genericSource ?? ct;
         let ctParamsLen = if (ctParams != null) {
-          (ctParams as Array<TypeParameterType>).length
+          ctParams.length
         } else {
           0
         };
         let combinedParams = new Array<TypeParameterType>(ctParamsLen + params.length);
         let combinedArgs = new Array<Type>(ctParamsLen + args.length);
         if (ctParams != null) {
-          for (let p in (ctParams as Array<TypeParameterType>)) {
+          for (let p in ctParams) {
             combinedParams.push(p);
           }
           for (let a in newArgs) {
@@ -352,7 +352,7 @@ export let substituteTypeParamsInCodegen = (
         }
       } else if (params != null && args != null && itParams != null) {
         hasArgs = true;
-        for (let param in (itParams as Array<TypeParameterType>)) {
+        for (let param in itParams) {
           itArgsVal.push(param as Type);
         }
       }
@@ -376,7 +376,7 @@ export let substituteTypeParamsInCodegen = (
         let combinedParams = new Array<TypeParameterType>();
         let combinedArgs = new Array<Type>();
         if (itParams != null) {
-          for (let p in (itParams as Array<TypeParameterType>)) {
+          for (let p in itParams) {
             combinedParams.push(p);
           }
           for (let a in newArgs) {
@@ -412,7 +412,7 @@ export let substituteTypeParamsInCodegen = (
         }
       } else if (params != null && args != null && mtParams != null) {
         hasArgs = true;
-        for (let param in (mtParams as Array<TypeParameterType>)) {
+        for (let param in mtParams) {
           mtArgsVal.push(param as Type);
         }
       }
@@ -428,7 +428,7 @@ export let substituteTypeParamsInCodegen = (
         let combinedParams = new Array<TypeParameterType>();
         let combinedArgs = new Array<Type>();
         if (mtParams != null) {
-          for (let p in (mtParams as Array<TypeParameterType>)) {
+          for (let p in mtParams) {
             combinedParams.push(p);
           }
           for (let a in newArgs) {
@@ -547,7 +547,7 @@ let addTransitiveMixins = (
   
   let mtParams = mt.typeParameters;
   if (mtParams != null && mt.typeArguments != null) {
-    let tps = mtParams as Array<TypeParameterType>;
+    let tps = mtParams;
     let tas = mt.typeArguments as Array<Type>;
     for (var i = 0; i < tps.length; i += 1) {
       allParams.push(tps[i]);
@@ -584,7 +584,7 @@ export let substituteTypeParamsInClassContext = (
     return t;
   }
 
-  let ct = classType as ClassType;
+  let ct = classType;
   let subs = wasm.substitutionsFor(ct);
   if (subs.params == null || subs.args == null) {
     let params = new Array<TypeParameterType>();
@@ -593,7 +593,7 @@ export let substituteTypeParamsInClassContext = (
     // 1. Add class's own type arguments
     let ctParams = getClassTypeParameters(ct);
     if (ctParams != null && ct.typeArguments != null) {
-      let tps = ctParams as Array<TypeParameterType>;
+      let tps = ctParams;
       let tas = ct.typeArguments as Array<Type>;
       for (var i = 0; i < tps.length; i += 1) {
         params.push(tps[i]);
@@ -647,7 +647,7 @@ export let findImplementedInterfaceTransitive = (wasm: WasmModule, ct: ClassType
 
   var currSuper = ct.superType;
   while (currSuper != null) {
-    let superCt = currSuper as ClassType;
+    let superCt = currSuper;
     let superCtParams = getClassTypeParameters(superCt);
     for (let impl in superCt.implementsList) {
       let resolved = substituteTypeParamsInCodegen(wasm, superCtParams, superCt.typeArguments, impl) as InterfaceType;
@@ -688,7 +688,7 @@ export let substituteTypeParamsInFunctionContext = (wasm: WasmModule, wasmFuncti
     wasmFunction.codegenSubstCache = fresh;
     cache = fresh;
   }
-  let cacheVal = cache as HashMap<Type, Type>;
+  let cacheVal = cache;
   if (let (true, hit) = cacheVal.get(t)) {
     return hit;
   }
@@ -728,7 +728,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     let params = new Array<ValType>();
     params.push(new ValTypeAnyRef());
     let returns = new Array<ValType>();
-    returns.push(typeToValType(wasm, memberType as Type));
+    returns.push(typeToValType(wasm, memberType));
     return wasm.getSignature(params, returns);
   } else if (fieldName.startsWith("set#")) {
     let propName = fieldName.sliceBytes(4, fieldName.length);
@@ -749,7 +749,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     }
     let params = new Array<ValType>();
     params.push(new ValTypeAnyRef());
-    mapParamTypeToWasmParams(wasm, memberType as Type, params);
+    mapParamTypeToWasmParams(wasm, memberType, params);
     let returns = new Array<ValType>();
     return wasm.getSignature(params, returns);
   } else {
@@ -787,7 +787,7 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       let targs = ta.typeArguments;
       if (tps != null && targs != null) {
         return eraseTypeParameters(wasm, substituteTypeParamsInCodegen(wasm, 
-            tps as Array<TypeParameterType>, targs as Array<Type>, ta.target));
+            tps, targs, ta.target));
       }
       eraseTypeParameters(wasm, ta.target)
     }
@@ -996,11 +996,11 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
   }
   var curr: ClassType | null = ct;
   while (curr != null) {
-    let k = getClassMethodKey(getClassKey(curr as ClassType), fieldName);
+    let k = getClassMethodKey(getClassKey(curr), fieldName);
     if (let (true, f) = wasm.classMethodMap.get(k)) {
       return f.signature;
     }
-    curr = (curr as ClassType).superType;
+    curr = curr.superType;
   }
 
   let rootClass = getMemberRootClass(erasedCt, fieldName);
@@ -1008,7 +1008,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
   let rootKey = getClassKey(rootClass);
   let classStruct = if (let (true, rootInfo) = wasm.classInfos.get(rootKey)) rootInfo.structType else null;
   if (classStruct != null) {
-    params.push(new ValTypeRefNull(classStruct as WasmStruct));
+    params.push(new ValTypeRefNull(classStruct));
   } else {
     params.push(new ValTypeAnyRef());
   }
@@ -1049,7 +1049,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
       ft = substituteTypeParamsInClassContext(wasm, erasedCt, rawFt) as FunctionType;
     }
     if (ft != null) {
-      let fType = ft as FunctionType;
+      let fType = ft;
       for (let p in fType.parameters) {
         mapParamTypeToWasmParams(wasm, p, params);
       }
@@ -1061,7 +1061,7 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
 
 let getWasmTypeKey = (target: WasmType): String => {
   if (target is WasmStruct) {
-    let s = target as WasmStruct;
+    let s = target;
     if (s.name != null) {
       return s.name as String;
     }
@@ -1072,11 +1072,11 @@ let getWasmTypeKey = (target: WasmType): String => {
     return structKey;
   }
   if (target is WasmArray) {
-    let a = target as WasmArray;
+    let a = target;
     return "array_" + (if (a.isMutable) "mut_" else "imm_") + getValTypeKey(a.elementType);
   }
   if (target is WasmSignature) {
-    let sig = target as WasmSignature;
+    let sig = target;
     var s = "sig_";
     for (let p in sig.params) {
       s = s + getValTypeKey(p) + "_";
@@ -1197,13 +1197,13 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
     var stringStruct: WasmStruct | null = null;
     let stringClass = wasm.stringClass;
     if (stringClass != null) {
-      let key = getClassKey(stringClass as ClassType);
+      let key = getClassKey(stringClass);
       if (let (true, stringInfo) = wasm.classInfos.get(key)) {
         stringStruct = stringInfo.structType;
       }
     }
     if (stringStruct != null) {
-      new ValTypeRef(stringStruct as WasmStruct)
+      new ValTypeRef(stringStruct)
     } else {
       new ValTypeStructRef()
     }
@@ -1377,7 +1377,7 @@ let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionTyp
   let memberTuples = new Array<InlineTupleType>();
   for (let t in unionType.types) {
     if (t is InlineTupleType) {
-      memberTuples.push(t as InlineTupleType);
+      memberTuples.push(t);
     }
   }
   if (memberTuples.length == 0) return false;
@@ -1402,7 +1402,7 @@ let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionTyp
         break;
       }
     }
-    let finalType = if (nonHoleType != null) nonHoleType as Type else elementTypes[0];
+    let finalType = if (nonHoleType != null) nonHoleType else elementTypes[0];
     
     let vType = typeToValType(wasm, finalType);
     let finalVType = if (hasHole) {
@@ -1451,14 +1451,14 @@ export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: 
     return;
   }
   if (type is InlineTupleType) {
-    let tupleType = type as InlineTupleType;
+    let tupleType = type;
     for (let el in tupleType.elementTypes) {
       returns.push(typeToValType(wasm, el));
     }
     return;
   }
   if (type is UnionType) {
-    let unionType = type as UnionType;
+    let unionType = type;
     var hasVoid = false;
     for (let t in unionType.types) {
       if (t is VoidType) {
@@ -1692,9 +1692,9 @@ export let isStructSubtype = (sub: WasmType, superType: WasmType): boolean => {
     return true;
   }
   if (sub is WasmStruct) {
-    var curr = (sub as WasmStruct).superStruct;
+    var curr = sub.superStruct;
     while (curr != null) {
-      let c = curr as WasmStruct;
+      let c = curr;
       if ((c.index != -1 && c.index == superType.index) || c.uid == superType.uid) {
         return true;
       }

@@ -43,7 +43,7 @@ export let sortWasmFields = (fields: Array<WasmField>): void => {
       let a = fields[j].name;
       let b = key.name;
       if (a != null && b != null) {
-        if (compareStrings(a as String, b as String) > 0) {
+        if (compareStrings(a, b) > 0) {
           fields[j + 1] = fields[j];
           j -= 1;
         } else {
@@ -180,7 +180,7 @@ let stringEquals = (s1: String | null, s2: String | null): boolean => {
   if (s2 == null) {
     return false;
   }
-  return s1 as String == s2 as String;
+  return s1 == s2;
 };
 
 export final class StructKey implements Hashable {
@@ -273,12 +273,12 @@ export final class WasmStruct extends WasmType {
     if (lexicalCt != null) {
       var l: ClassType | null = lexicalCt;
       while (l != null) {
-        var g: ClassType | null = l as ClassType;
+        var g: ClassType | null = l;
         while (g != null) {
           // A mixin's This class namespaces its private fields with
           // the mixin's scope key (ClassType.privateScopeKey), shared
           // by all applications of the mixin.
-          let gc = g as ClassType;
+          let gc = g;
           let key = if (gc.privateScopeKey != null) {
             getClassPrivateFieldKey(gc.privateScopeKey as String as ClassKey, propName)
           } else {
@@ -289,13 +289,13 @@ export final class WasmStruct extends WasmType {
           }
           g = gc.genericSource;
         }
-        l = (l as ClassType).superType;
+        l = l.superType;
       }
     }
-    let lexCanonical = if (lexicalCt != null) canonicalClassKey(lexicalCt as ClassType) else null;
+    let lexCanonical = if (lexicalCt != null) canonicalClassKey(lexicalCt) else null;
     var c = this.classType;
     while (c != null) {
-      let cc = c as ClassType;
+      let cc = c;
       if (lexCanonical == null ||
           (canonicalClassKey(cc) as String) == (lexCanonical as ClassKey) as String) {
         let key = getClassPrivateFieldKey(getClassKey(cc), propName);
@@ -363,7 +363,7 @@ export final class WasmSignature extends WasmType {
 /** The WasmStruct behind a reference ValType, or null. */
 export let asWasmStruct = (vt: ValType): WasmStruct | null => {
   let t = refTargetOf(vt);
-  if (t != null && (t as WasmType) is WasmStruct) {
+  if (t != null && t is WasmStruct) {
     return t as WasmStruct;
   }
   return null;
@@ -372,7 +372,7 @@ export let asWasmStruct = (vt: ValType): WasmStruct | null => {
 /** The WasmSignature behind a reference ValType, or null. */
 export let asWasmSignature = (vt: ValType): WasmSignature | null => {
   let t = refTargetOf(vt);
-  if (t != null && (t as WasmType) is WasmSignature) {
+  if (t != null && t is WasmSignature) {
     return t as WasmSignature;
   }
   return null;
@@ -381,7 +381,7 @@ export let asWasmSignature = (vt: ValType): WasmSignature | null => {
 /** The WasmArray behind a reference ValType, or null. */
 export let asWasmArray = (vt: ValType): WasmArray | null => {
   let t = refTargetOf(vt);
-  if (t != null && (t as WasmType) is WasmArray) {
+  if (t != null && t is WasmArray) {
     return t as WasmArray;
   }
   return null;
@@ -430,7 +430,7 @@ export let isValSubtype = (a: ValType, b: ValType): boolean => {
     return true;
   }
   if (b is ValTypeStructRef) {
-    return (aTarget as WasmType) is WasmStruct;
+    return aTarget is WasmStruct;
   }
   let bTarget = refTargetOf(b);
   if (bTarget == null) {
@@ -440,7 +440,7 @@ export let isValSubtype = (a: ValType, b: ValType): boolean => {
   if (aNullable && !bNullable) {
     return false;
   }
-  return heapSubtype(aTarget as WasmType, bTarget as WasmType);
+  return heapSubtype(aTarget, bTarget);
 };
 
 /** Declared-subtype check between heap types (struct super chains). */
@@ -449,12 +449,12 @@ let heapSubtype = (a: WasmType, b: WasmType): boolean => {
     return true;
   }
   if (a is WasmStruct) {
-    var current: WasmStruct | null = (a as WasmStruct).superStruct;
+    var current: WasmStruct | null = a.superStruct;
     while (current != null) {
-      if ((current as WasmStruct) == b) {
+      if (current == b) {
         return true;
       }
-      current = (current as WasmStruct).superStruct;
+      current = current.superStruct;
     }
   }
   return false;
@@ -839,8 +839,8 @@ export final class WasmModule {
         case DeclareFunction as df: {
           if (df.name.name == exportName) {
             let sym = unit.model.resolveDeclaration(df);
-            if (sym != null && this.functionMap.has((sym as Symbol).id)) {
-              let f = this.functionMap[(sym as Symbol).id];
+            if (sym != null && this.functionMap.has(sym.id)) {
+              let f = this.functionMap[sym.id];
               this.#stdlibFuncCache[key] = f;
               return f;
             }
@@ -851,8 +851,8 @@ export final class WasmModule {
             let pat = vd.pattern as IdentifierPattern;
             if (pat.name == exportName) {
               let sym = unit.model.resolve(pat);
-              if (sym != null && this.functionMap.has((sym as Symbol).id)) {
-                let f = this.functionMap[(sym as Symbol).id];
+              if (sym != null && this.functionMap.has(sym.id)) {
+                let f = this.functionMap[sym.id];
                 this.#stdlibFuncCache[key] = f;
                 return f;
               }
@@ -862,8 +862,8 @@ export final class WasmModule {
         case FunctionDeclaration as fd: {
           if (fd.name.name == exportName) {
             let sym = unit.model.resolve(fd.name);
-            if (sym != null && this.functionMap.has((sym as Symbol).id)) {
-              let f = this.functionMap[(sym as Symbol).id];
+            if (sym != null && this.functionMap.has(sym.id)) {
+              let f = this.functionMap[sym.id];
               this.#stdlibFuncCache[key] = f;
               return f;
             }
@@ -1358,7 +1358,7 @@ export final class WasmModule {
       }
     }
     
-    let payloadType = if (errorStruct != null) new ValTypeRefNull(errorStruct as WasmStruct) else new ValTypeEqRef();
+    let payloadType = if (errorStruct != null) new ValTypeRefNull(errorStruct) else new ValTypeEqRef();
     
     let params = new Array<ValType>();
     let sig = this.getSignature(params, new Array<ValType>());
@@ -1516,7 +1516,7 @@ export final class WasmModule {
       throw new Error("$stringHash discovery: String class struct not found!");
     }
     let params = new Array<ValType>();
-    params.push(new ValTypeRefNull(stringStruct as WasmStruct));
+    params.push(new ValTypeRefNull(stringStruct));
     let returns = new Array<ValType>();
     returns.push(new ValTypeI32());
     let sig = this.getSignature(params, returns);
@@ -1532,7 +1532,7 @@ export final class WasmModule {
     }
     visited.add(t);
     if (t is WasmStruct) {
-      let s = t as WasmStruct;
+      let s = t;
       if (s.superStruct != null) {
         this.#visitTypeForLayout(s.superStruct as WasmStruct, visited, sortedTypes);
       }
@@ -1545,7 +1545,7 @@ export final class WasmModule {
       return true;
     }
     if (t is WasmSignature) {
-      let sig = t as WasmSignature;
+      let sig = t;
       for (let param in sig.params) {
         match (param) {
           case ValTypeRef {target}: {
@@ -1668,7 +1668,7 @@ export final class WasmModule {
       let t = this.types[i];
       t.index = i;
       if (t is WasmStruct) {
-        let ws = t as WasmStruct;
+        let ws = t;
         if (ws.name != null && (ws.name as String).contains("Iterable_12_MapEntry_332_String_119_bool")) {
           console.log("layout assigned index: " + i32ToString(i) + " to " + (ws.name as String));
         }

@@ -50,7 +50,7 @@ export let getMemberRootClass = (ct: ClassType, memberName: String): ClassType =
   var rootClass = ct;
   var currClass = ct.superType;
   while (currClass != null) {
-    let superCt = currClass as ClassType;
+    let superCt = currClass;
     var hasMember = superCt.members.has(memberName);
     if (!hasMember && memberName.startsWith("get#")) {
       let propName = memberName.sliceBytes(4, memberName.length);
@@ -283,7 +283,7 @@ export let isConcrete = (t: Type): boolean => {
 export let getTypeKeyForSpecialization = (t: Type): String => {
   let cached = t.specializationKeyCache;
   if (cached != null) {
-    return cached as String;
+    return cached;
   }
   let key = getTypeKeyForSpecializationRaw(t);
   t.specializationKeyCache = key;
@@ -546,7 +546,7 @@ export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
 export let getMixinKey = (mt: MixinType): MixinKey => {
   let cached = mt.mixinKeyCache;
   if (cached != null) {
-    return cached as MixinKey;
+    return cached;
   }
   let key = new MixinKey(mt.sourcePath, mt.name);
   mt.mixinKeyCache = key;
@@ -558,7 +558,7 @@ export let getMixinKeyFromSymbol = (model: SemanticModel, sym: Symbol): MixinKey
   if (mt == null || !(mt is MixinType)) {
     throw new Error(`Symbol is not a mixin: ${sym.name}`);
   }
-  return getMixinKey(mt as MixinType);
+  return getMixinKey(mt);
 };
 
 export let getClassInterfaceKey = (classKey: ClassKey, interfaceKey: InterfaceKey): ClassInterfaceKey => {
@@ -653,9 +653,9 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
   for (let p in mDef.params) {
     let sym = moduleModel.resolveDeclaration(p as Node);
     if (sym != null) {
-      let pType = moduleModel.getBindingType(sym as Symbol);
+      let pType = moduleModel.getBindingType(sym);
       if (pType != null) {
-        paramTypes.push(pType as Type);
+        paramTypes.push(pType);
       } else {
         paramTypes.push(new UnknownType());
       }
@@ -704,7 +704,7 @@ export let findMixinDeclaration = (program: Program, mt: MixinType): MixinDeclar
   if (let (true, unit) = program.unitsByPath.get(path)) {
     for (let stmt in (unit).ast.body) {
       if (stmt is MixinDeclaration) {
-        let md = stmt as MixinDeclaration;
+        let md = stmt;
         if (md.name.name == mt.name) {
           return md;
         }
@@ -723,34 +723,34 @@ export let collectMixinMembers = (
   scopes: Array<String> | null = null
 ): void => {
   if (mixinAnns == null) { return; }
-  for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
+  for (let ann in mixinAnns) {
     let sym = model.resolve(ann);
     if (sym != null) {
-      let mt = model.getBindingType(sym as Symbol);
+      let mt = model.getBindingType(sym);
       if (mt != null && mt is MixinType) {
-        let md = findMixinDeclaration(program, mt as MixinType);
+        let md = findMixinDeclaration(program, mt);
         if (md != null) {
-          let mixinKey = getMixinKey(mt as MixinType);
+          let mixinKey = getMixinKey(mt);
           if (!seen.has(mixinKey)) {
             seen[mixinKey] = true;
-            collectMixinMembers(program, model, (md as MixinDeclaration).mixins, methods, seen, scopes);
+            collectMixinMembers(program, model, md.mixins, methods, seen, scopes);
             // The mixin's private scope key, parallel to `methods`
             // when the caller asks for it: functions compiled from
             // these nodes resolve their "#" fields under this scope
             // (see WasmFunction.privateScopeKey). Read from the
             // MixinType — the key includes the declaration's source
             // path, so it is never rederived from the name.
-            let mtRoot = (mt as MixinType).genericSource ?? (mt as MixinType);
+            let mtRoot = mt.genericSource ?? mt;
             let scope = if (mtRoot.privateScopeKey != null) {
               mtRoot.privateScopeKey as String
             } else {
-              (mt as MixinType).name + "_This"
+              mt.name + "_This"
             };
-            for (let member in (md as MixinDeclaration).body) {
+            for (let member in md.body) {
               if (member is MethodDefinition || member is AccessorDeclaration || member is FieldDefinition) {
                 methods.push(member);
                 if (scopes != null) {
-                  (scopes as Array<String>).push(scope);
+                  scopes.push(scope);
                 }
               }
             }
@@ -810,21 +810,21 @@ export let mixinScopeOfMember = (
 export let mixinScopeOfNode = (model: SemanticModel, node: Node): String | null => {
   var cur: Node | null = node;
   while (cur != null) {
-    let c = cur as Node;
+    let c = cur;
     if (c is ClassDeclaration) { return null; }
     if (c is MixinDeclaration) {
       let sym = model.resolve(c);
       if (sym == null) { return null; }
-      let mt = model.getBindingType(sym as Symbol);
+      let mt = model.getBindingType(sym);
       if (mt == null || !(mt is MixinType)) { return null; }
       // Read the key from the MixinType — it carries the declaration's
       // source path, so two same-named mixins from different modules
       // are different scopes. Never rederive it from the name.
-      let mtRoot = (mt as MixinType).genericSource ?? (mt as MixinType);
+      let mtRoot = mt.genericSource ?? mt;
       if (mtRoot.privateScopeKey != null) {
         return mtRoot.privateScopeKey as String;
       }
-      return (mt as MixinType).name + "_This";
+      return mt.name + "_This";
     }
     cur = model.getParent(c);
   }
@@ -840,31 +840,31 @@ export let collectMixinFields = (
   seen: HashMap<MixinKey, boolean>
 ): void => {
   if (mixinAnns == null) { return; }
-  for (let ann in (mixinAnns as Array<TypeAnnotation>)) {
+  for (let ann in mixinAnns) {
     let sym = model.resolve(ann);
     if (sym != null) {
-      let mt = model.getBindingType(sym as Symbol);
+      let mt = model.getBindingType(sym);
       if (mt != null && mt is MixinType) {
-        let md = findMixinDeclaration(program, mt as MixinType);
+        let md = findMixinDeclaration(program, mt);
         if (md != null) {
-          let mixinKey = getMixinKey(mt as MixinType);
+          let mixinKey = getMixinKey(mt);
           if (!seen.has(mixinKey)) {
             seen[mixinKey] = true;
-            collectMixinFields(program, model, (md as MixinDeclaration).mixins, fields, scopes, seen);
+            collectMixinFields(program, model, md.mixins, fields, scopes, seen);
             // The mixin's private-field scope key: struct fields for
             // this mixin's privates are named "<scope>::#name" in
             // every host (see ClassType.privateScopeKey). Empty for
             // public fields' purposes — callers only apply it to
             // "#"-prefixed names.
-            let mtRoot = (mt as MixinType).genericSource ?? (mt as MixinType);
+            let mtRoot = mt.genericSource ?? mt;
             let scope = if (mtRoot.privateScopeKey != null) {
               mtRoot.privateScopeKey as String
             } else {
-              (mt as MixinType).name + "_This"
+              mt.name + "_This"
             };
-            for (let member in (md as MixinDeclaration).body) {
+            for (let member in md.body) {
               if (member is FieldDefinition) {
-                fields.push(member as FieldDefinition);
+                fields.push(member);
                 scopes.push(scope);
               }
             }
@@ -965,7 +965,7 @@ export let substituteTypeParams = (
 export let unwrapAliases = (t: Type): Type => {
   var curr = t;
   while (curr is TypeAliasType) {
-    curr = (curr as TypeAliasType).target;
+    curr = curr.target;
   }
   return baseType(curr);
 };
@@ -973,7 +973,7 @@ export let unwrapAliases = (t: Type): Type => {
 export let getTypeUniqueKey = (t: Type): String => {
   let cached = t.uniqueKeyCache;
   if (cached != null) {
-    return cached as String;
+    return cached;
   }
   let key = getTypeUniqueKeyRaw(t);
   t.uniqueKeyCache = key;
@@ -1124,7 +1124,7 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
     let names = ft.parameterNames;
     var i = 0;
     while (i < paramsLen) {
-      if (names != null && i < (names as Array<String>).length) {
+      if (names != null && i < names.length) {
         numParts = numParts + 2; // For name and ": "
       }
       numParts = numParts + 1; // For type key
@@ -1143,8 +1143,8 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
         parts[idx] = ", ";
         idx += 1;
       }
-      if (names != null && i < (names as Array<String>).length) {
-        parts[idx] = (names as Array<String>)[i];
+      if (names != null && i < names.length) {
+        parts[idx] = names[i];
         parts[idx + 1] = ": ";
         idx += 2;
       }
