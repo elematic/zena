@@ -160,6 +160,37 @@ plain form works.) This pattern is why let-position filling matters:
 `{}` against the alias is the canonical way to obtain the default
 configuration as a value.
 
+The adapter form of the same pattern — mapping an outer options scheme
+onto an inner one, conditionally setting a field or leaving it to the
+callee's default — works because the callee cannot have defaults apart
+from the alias its parameter names (§2.2). What `{}` fills at the
+`var` is, by construction, exactly what omission at the callee's own
+call sites would produce:
+
+```zena
+// timeout 0 in the outer scheme means "use fetchWithTimeout's default"
+function go(timeout: i32): Response {
+  var opts: FetchOpts = {};              // = fetchWithTimeout's defaults
+  if (timeout > 0) { opts = {...opts, timeout: timeout}; }
+  return fetchWithTimeout(opts);
+}
+```
+
+When the callee's real default is **computed at runtime** rather than
+a constant — "unset" means the callee decides, possibly from other
+fields — the alias states that contract as a defaulted nullable field:
+
+```zena
+type FetchOpts = {timeout: i32 | null = null, retries: i32 = 3};
+// callee: let t = opts.timeout ?? computedDefault();
+```
+
+`{}` leaves the field `null`, an override replaces it, and the callee
+computes only when nobody set it — genuine late binding, at the cost
+of the nullable slot (boxing, for primitives). This is the same
+nullable form the logic-not-values rule below prescribes; declaring
+`= null` on it makes it omittable like every other defaulted field.
+
 The alternative — letting a *partial* value flow to the callee and
 adapting there — is rejected in §6: statically it needs flow-typed
 present-sets (2^N shapes through every join), dynamically it is the
