@@ -131,7 +131,7 @@ signature variant on existing machinery, not new machinery.
   from present-with-the-default-value: `{} != {timeout: 30_000}`.
   This is the point of presence — the config-records model erases
   exactly this distinction, which is why the two features are
-  complements, not rivals (§7).
+  complements, not rivals (§8).
 - **Spread**: `{...opts, x: 1}` copies mask bits for optional fields;
   setting an optional field that is absent in the source is presence
   extension within the same type. An *unset* form (remove a field /
@@ -142,7 +142,83 @@ signature variant on existing machinery, not new machinery.
   prologue. The defaults are visible in the signature — this is the
   named-parameters-with-defaults form, owned by the callee.
 
-## 6. Cost model and optimizations
+## 6. Normalization: full records from partial ones
+
+The boundary idiom: accept a presence-optional record, fill defaults
+once, then hold a fully-required record whose every later read is
+unguarded.
+
+### 6.1 The `Required` and `Partial` type operators
+
+Because optionality is part of the interned type (§3), stripping or
+adding it is a type-level rewrite, not a new type constructor:
+`Required<FetchOpts>` resolves at annotation time to the same fields
+with the optional set empty — an ordinary interned record type — and
+`Partial<T>` is the dual (every field optional). Assignability,
+equality and interning get nothing new. The names follow TypeScript's
+operators. v1 restricts the operand to a concrete record type;
+row-generic operands wait for the row machinery (row-types.md §10's
+type-operator layer).
+
+### 6.2 Baseline patterns
+
+Both work with §4's machinery alone:
+
+```zena
+// Destructure–rebuild:
+let {url, timeout = 30_000, retries = 3} = partial;
+this.opts = {url, timeout, retries};          // : Required<FetchOpts>
+
+// Guarded-read sugar, field by field:
+this.opts = {
+  url: partial.url,
+  timeout: partial.timeout ?? 30_000,
+  retries: partial.retries ?? 3,
+};
+```
+
+### 6.3 Presence-aware spread: definite + conditional = fallback
+
+The terse spelling is a spread with explicit fallbacks:
+
+```zena
+this.opts = {timeout: 30_000, retries: 3, ...partial};
+// : Required<FetchOpts> — partial's present fields win, absent ones
+// take the explicit values; lowering is one mask-tested select each
+```
+
+This extends the extension-spread rules of row-types.md §4 with a
+third supply kind. A label in a record literal may be supplied by at
+most one **definite** source (an explicit field, or a required field
+of a spread) and at most one **conditional** source (an optional field
+of a spread):
+
+- definite + definite: error (disjointness, unchanged).
+- conditional + conditional: error — there is no order to break the
+  tie, and rejecting keeps spread commutative.
+- definite + conditional: the field is the conditional value when
+  present, else the definite one, and the **resulting field is
+  required**.
+- conditional alone: the field stays optional in the result (mask bit
+  copied).
+
+So the literal above types as `Required<FetchOpts>` exactly when every
+optional field has a fallback, and a missing fallback fails
+assignability loudly, naming the field.
+
+One deliberate divergence from JavaScript: this rule is
+**commutative** — `{timeout: 30_000, ...partial}` and
+`{...partial, timeout: 30_000}` both mean *fallback* — where JS
+last-wins would read the second as force-override. Force is the
+`with` form's job: `{...partial with timeout: 30_000}` sets the field
+present with the new value regardless of the prior mask (a
+well-defined extension of update to optional fields, since the label
+exists in the base's type). Each intent has exactly one
+order-independent spelling, and the JS definite-collision idiom
+errors with a pointer to `with` instead of silently meaning
+something.
+
+## 7. Cost model and optimizations
 
 The unoptimized floor: one i32 field per optional-bearing record, one
 mask-test branch (or select) per defaulted read. Everything cheaper is
@@ -158,7 +234,7 @@ an optimization over unchanged semantics:
   value-semantics decision already licenses the representation
   changes.
 
-## 7. Relation to config records
+## 8. Relation to config records
 
 The two features answer different questions and compose:
 
@@ -175,7 +251,7 @@ remains the type-level complement for shared bags; if experience
 shows presence covers the config story well enough, config records
 can stay shelved — the designs are separable on purpose.
 
-## 8. Implementation plan
+## 9. Implementation plan
 
 Ordered, each stage green under the full suite and fixpoint:
 
@@ -198,6 +274,11 @@ Ordered, each stage green under the full suite and fixpoint:
    defaulted patterns; prologue defaults become live. Portable tests
    throughout; the three deleted optional-field semantics tests
    return as execution tests.
+7. **Normalization** (§6): the `Required`/`Partial` operators
+   (annotation-time rewrites — can land any time after stage 1); the
+   presence-aware spread and `with`-set rules land with the A2
+   value-level spread work (row-types.md §4), whose extension/update
+   checking they refine.
 
 No stage needs presence polymorphism in the type system (row
 variables over optionality stay future work, row-types.md §10), and

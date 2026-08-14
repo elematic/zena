@@ -417,7 +417,7 @@ the dispatch path. Presence gives *callee-owned* defaults —
 destructured parameters whose field defaults are live, with absence
 flowing through adapters — which covers the use cases this document's
 type-level defaults cannot; the two designs are deliberately
-separable, and record-presence.md §7 records how they relate.
+separable, and record-presence.md §8 records how they relate.
 
 ## 6. Alternatives considered
 

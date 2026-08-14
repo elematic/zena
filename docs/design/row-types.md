@@ -338,6 +338,12 @@ let opts = { ...defaults with ...userOpts };
 // compile errors instead of silently-ignored keys
 ```
 
+Presence-optional fields add a third supply kind to these rules —
+an optional field of a spread source is a *conditional* supply, and
+definite + conditional means fallback (present wins, else the
+definite value, commutatively) — specified in
+[record-presence.md](record-presence.md) §6.3.
+
 Spreading an **existential** record is rejected (its full field set is
 unknown, so neither disjointness nor the result type is decidable) —
 this also resolves the semantic landmine in today's design, where spread
