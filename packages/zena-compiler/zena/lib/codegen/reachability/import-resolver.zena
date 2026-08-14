@@ -10,9 +10,7 @@ let matchOverloadForImport = (fnType: Type, expectedType: Type): boolean => {
   if (!(fnType is FunctionType) || !(expectedType is FunctionType)) {
     return false;
   }
-  let targetFn = fnType;
-  let expFn = expectedType;
-  if (targetFn.parameters.length != expFn.parameters.length) {
+  if (fnType.parameters.length != expectedType.parameters.length) {
     return false;
   }
   return true;
@@ -25,10 +23,9 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
       if (u.model == model || u.ast.path == model.sourcePath) {
         for (let stmt in u.ast.body) {
           if (stmt is ImportDeclaration) {
-            let imp = stmt;
-            for (let s in imp.imports) {
+            for (let s in stmt.imports) {
               if (s == spec || s.imported.name == spec.imported.name) {
-                parentNode = imp;
+                parentNode = stmt;
                 break;
               }
             }
@@ -41,15 +38,13 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
   if (parentNode == null || !(parentNode is ImportDeclaration)) {
     return noSymbolId;
   }
-  let importDecl = parentNode;
-  let specifier = importDecl.moduleSpecifier.value;
+  let specifier = parentNode.moduleSpecifier.value;
   
   var canonicalPath = specifier;
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
-    let referrer = model.getParent(importDecl);
+    let referrer = model.getParent(parentNode);
     if (referrer != null && referrer is Module) {
-      let mod = referrer;
-      let dir = dirName(mod.path);
+      let dir = dirName(referrer.path);
       canonicalPath = normalizePath(dir + "/" + specifier);
     }
   }

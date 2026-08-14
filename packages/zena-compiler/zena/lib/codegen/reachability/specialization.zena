@@ -77,9 +77,8 @@ export final class Specializer implements SpecializerInterface {
       model: SemanticModel): void {
     for (let member in cd.body) {
       if (!(member is FieldDefinition)) { continue; }
-      let fd = member;
-      if (!fd.isStatic) { continue; }
-      let fieldName = match (fd.name) {
+      if (!member.isStatic) { continue; }
+      let fieldName = match (member.name) {
         case Identifier {name}: name
         case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
           case Identifier {name}: name
@@ -101,10 +100,10 @@ export final class Specializer implements SpecializerInterface {
       let fType = if (classType.members.has(fieldName)) {
         classType.members[fieldName].type
       } else {
-        model.getNodeType(fd)
+        model.getNodeType(member)
       };
       let vType = typeToValType(this.pass.wasm, fType as Type);
-      let initExp: Expression | null = if (fd.value != null) { fd.value as Expression } else { null };
+      let initExp: Expression | null = if (member.value != null) { member.value as Expression } else { null };
       this.pass.wasm.globals.push(
           new WasmGlobal(name, fieldName, vType, true, initExp, null, model));
     }
@@ -168,9 +167,8 @@ export final class Specializer implements SpecializerInterface {
     if (classType.typeArguments != null) {
       for (let ta in (classType.typeArguments as Array<Type>)) {
         if (ta is ClassType && isConcrete(ta)) {
-          let taCt = ta;
-          if (getClassKey(taCt) != getClassKey(classType)) {
-            this.instantiateClassType(taCt, this.pass.getClassModel(taCt));
+          if (getClassKey(ta) != getClassKey(classType)) {
+            this.instantiateClassType(ta, this.pass.getClassModel(ta));
           }
         }
       }
@@ -238,36 +236,32 @@ export final class Specializer implements SpecializerInterface {
     let classDecl = this.pass.classDecls[classId];
 
     if (classDecl != null && classDecl is ClassDeclaration) {
-      let cd = classDecl;
-      this.discoverStaticFields(classType, cd, model);
+      this.discoverStaticFields(classType, classDecl, model);
 
       // Check if there is an explicit constructor
       var hasExplicitCtor = false;
-      for (let member in cd.body) {
+      for (let member in classDecl.body) {
         if (member is MethodDefinition) {
-          let md = member;
-          if (getMethodName(md) == "<constructor>") {
+          if (getMethodName(member) == "<constructor>") {
             hasExplicitCtor = true;
           }
         }
       }
 
       if (!hasExplicitCtor && !classType.isExtension) {
-        this.registerClassMethod(classType, cd, "<constructor>", null, false, false, null, model);
+        this.registerClassMethod(classType, classDecl, "<constructor>", null, false, false, null, model);
       }
 
       // Discover constructor and field initializers
-      for (let member in cd.body) {
+      for (let member in classDecl.body) {
         if (member is MethodDefinition) {
-          let md = member;
-          let mName = getMethodName(md);
+          let mName = getMethodName(member);
           if (mName == "<constructor>") {
-            this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, model, classType, this.pass.currentReachable));
+            this.pass.queueReferrer(new Referrer(false, noSymbolId, (member as Node).id as i32, model, classType, this.pass.currentReachable));
           }
         } else if (member is FieldDefinition) {
-          let fd = member;
-          if (fd.value != null) {
-            this.pass.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, model, classType, this.pass.currentReachable));
+          if (member.value != null) {
+            this.pass.queueReferrer(new Referrer(false, noSymbolId, (member as Node).id as i32, model, classType, this.pass.currentReachable));
           }
         }
       }
@@ -461,9 +455,8 @@ export final class Specializer implements SpecializerInterface {
 
     for (let ms in allMembers) {
       if (ms is MethodDefinition) {
-        let mDef = ms;
-        if (mDef.isStatic) { continue; }
-        let methName = match (mDef.name) {
+        if (ms.isStatic) { continue; }
+        let methName = match (ms.name) {
           case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
             case Identifier {name}: name
@@ -478,7 +471,7 @@ export final class Specializer implements SpecializerInterface {
             let mInfo = ct.members[methName];
             if (mInfo.type is FunctionType) {
               let ft = mInfo.type as FunctionType;
-              let specificType = matchOverload(sourceModel, ft, mDef);
+              let specificType = matchOverload(sourceModel, ft, ms);
               if (specificType != null) {
                 vtableMethName = methName + getSignatureKey(specificType);
               }
@@ -495,16 +488,15 @@ export final class Specializer implements SpecializerInterface {
           // Neither is a GENERIC method: a slot holds one `ref.func`
           // of one signature, and a generic method has no single body
           // — it exists once per specialization, each with its own.
-          let isGenericMeth = mDef.typeParameters != null &&
-              (mDef.typeParameters as Array<TypeParameter>).length > 0;
+          let isGenericMeth = ms.typeParameters != null &&
+              (ms.typeParameters as Array<TypeParameter>).length > 0;
           if (!found && methName != "<constructor>" && !isPrivateMeth && !isGenericMeth) {
             ctVtable.push(vtableMethName);
           }
         }
       } else if (ms is AccessorDeclaration) {
-        let acc = ms;
-        if (acc.isStatic) { continue; }
-        let accName = match (acc.name) {
+        if (ms.isStatic) { continue; }
+        let accName = match (ms.name) {
           case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
             case Identifier {name}: name
@@ -517,7 +509,7 @@ export final class Specializer implements SpecializerInterface {
         // vtable slots (like private methods).
         if (accName != "" &&
             !(accName.length > 0 && accName.sliceBytes(0, 1) == "#")) {
-          if (acc.getter != null) {
+          if (ms.getter != null) {
             let getterName = "get#" + accName;
             var found = false;
             for (let existing in ctVtable) {
@@ -525,7 +517,7 @@ export final class Specializer implements SpecializerInterface {
             }
             if (!found) { ctVtable.push(getterName); }
           }
-          if (acc.setter != null) {
+          if (ms.setter != null) {
             let setterName = "set#" + accName;
             var found = false;
             for (let existing in ctVtable) {
@@ -535,9 +527,8 @@ export final class Specializer implements SpecializerInterface {
           }
         }
       } else if (ms is FieldDefinition) {
-        let fd = ms;
-        if (fd.isStatic) { continue; }
-        let fieldName = match (fd.name) {
+        if (ms.isStatic) { continue; }
+        let fieldName = match (ms.name) {
           case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
             case Identifier {name}: name
@@ -546,7 +537,7 @@ export final class Specializer implements SpecializerInterface {
           }
           case _: ""
         };
-        if (fd.setterName != null && fieldName != "") {
+        if (ms.setterName != null && fieldName != "") {
           let getterName = "get#" + fieldName;
           var found = false;
           for (let existing in ctVtable) {
@@ -554,14 +545,14 @@ export final class Specializer implements SpecializerInterface {
           }
           if (!found) { ctVtable.push(getterName); }
         }
-        if (fd.isAbstract && fieldName != "") {
+        if (ms.isAbstract && fieldName != "") {
           let getterName = "get#" + fieldName;
           var found = false;
           for (let existing in ctVtable) {
             if (existing == getterName) { found = true; break; }
           }
           if (!found) { ctVtable.push(getterName); }
-          if (fd.mutability != null && fd.mutability == "var") {
+          if (ms.mutability != null && ms.mutability == "var") {
             let setterName = "set#" + fieldName;
             var foundS = false;
             for (let existing in ctVtable) {
@@ -570,7 +561,7 @@ export final class Specializer implements SpecializerInterface {
             if (!foundS) { ctVtable.push(setterName); }
           }
         }
-        if (fd.isDeclare && fieldName != "") {
+        if (ms.isDeclare && fieldName != "") {
           let getterName = "get#" + fieldName;
           var found = false;
           for (let existing in ctVtable) {
@@ -591,12 +582,11 @@ export final class Specializer implements SpecializerInterface {
       let msScope = allScopes[msIdx];
 
       if (ms is MethodDefinition) {
-        let method = ms;
-        if (method.isAbstract) { continue; }
-        if (method.typeParameters != null && (method.typeParameters as Array<TypeParameter>).length > 0) {
+        if (ms.isAbstract) { continue; }
+        if (ms.typeParameters != null && (ms.typeParameters as Array<TypeParameter>).length > 0) {
           continue;
         }
-        let methName = match (method.name) {
+        let methName = match (ms.name) {
           case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
             case Identifier {name}: name
@@ -613,11 +603,10 @@ export final class Specializer implements SpecializerInterface {
         if (msScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
           regName = msScope + "::" + methName;
         }
-        let regFn = this.registerClassMethod(ct, classDecl, regName, method as Node, false, false, null, sourceModel);
+        let regFn = this.registerClassMethod(ct, classDecl, regName, ms as Node, false, false, null, sourceModel);
         if (msScope != "") { regFn.privateScopeKey = msScope; }
       } else if (ms is AccessorDeclaration) {
-        let acc = ms;
-        let accName = match (acc.name) {
+        let accName = match (ms.name) {
           case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
             case Identifier {name}: name
@@ -627,25 +616,24 @@ export final class Specializer implements SpecializerInterface {
           case _: "<unknown>"
         };
         let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
-        if (acc.getter != null) {
+        if (ms.getter != null) {
           var getterRegName = "get#" + accName;
           if (isPrivateAcc && msScope != "") {
             getterRegName = msScope + "::" + getterRegName;
           }
-          let regG = this.registerClassMethod(ct, classDecl, getterRegName, acc as Node, false, false, null, sourceModel);
+          let regG = this.registerClassMethod(ct, classDecl, getterRegName, ms as Node, false, false, null, sourceModel);
           if (msScope != "") { regG.privateScopeKey = msScope; }
         }
-        if (acc.setter != null) {
+        if (ms.setter != null) {
           var setterRegName = "set#" + accName;
           if (isPrivateAcc && msScope != "") {
             setterRegName = msScope + "::" + setterRegName;
           }
-          let regS = this.registerClassMethod(ct, classDecl, setterRegName, acc.setter as Node, false, false, null, sourceModel);
+          let regS = this.registerClassMethod(ct, classDecl, setterRegName, ms.setter as Node, false, false, null, sourceModel);
           if (msScope != "") { regS.privateScopeKey = msScope; }
         }
       } else if (ms is FieldDefinition) {
-        let fd = ms;
-        let fieldName = match (fd.name) {
+        let fieldName = match (ms.name) {
           case Identifier {name}: name
           case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
             case Identifier {name}: name
@@ -657,20 +645,20 @@ export final class Specializer implements SpecializerInterface {
         if (fieldName != "") {
           if (!fieldName.startsWith("#")) {
             this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, sourceModel);
-            if (fd.mutability != null && fd.mutability == "var") {
+            if (ms.mutability != null && ms.mutability == "var") {
               this.registerClassMethod(ct, classDecl, "set#" + fieldName, null, false, true, fieldName, sourceModel);
             }
           } else {
-            if (fd.setterName != null) {
+            if (ms.setterName != null) {
               this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, sourceModel);
             }
-            if (fd.isAbstract) {
+            if (ms.isAbstract) {
               this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, sourceModel);
-              if (fd.mutability != null && fd.mutability == "var") {
+              if (ms.mutability != null && ms.mutability == "var") {
                 this.registerClassMethod(ct, classDecl, "set#" + fieldName, null, false, true, fieldName, sourceModel);
               }
             }
-            if (fd.isDeclare) {
+            if (ms.isDeclare) {
               this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, sourceModel);
             }
           }
@@ -680,20 +668,18 @@ export final class Specializer implements SpecializerInterface {
 
     var hasExplicitCtor = false;
     if (classDecl != null) {
-      let cd = classDecl;
       var bodyNodes: Array<Node> | null = null;
-      if (cd is ClassDeclaration) {
-        bodyNodes = cd.body;
-      } else if (cd is InterfaceDeclaration) {
-        bodyNodes = cd.body;
-      } else if (cd is MixinDeclaration) {
-        bodyNodes = cd.body;
+      if (classDecl is ClassDeclaration) {
+        bodyNodes = classDecl.body;
+      } else if (classDecl is InterfaceDeclaration) {
+        bodyNodes = classDecl.body;
+      } else if (classDecl is MixinDeclaration) {
+        bodyNodes = classDecl.body;
       }
       if (bodyNodes != null) {
         for (let member in bodyNodes) {
           if (member is MethodDefinition) {
-            let md = member;
-            if (getMethodName(md) == "<constructor>") {
+            if (getMethodName(member) == "<constructor>") {
               hasExplicitCtor = true;
             }
           }
@@ -723,7 +709,6 @@ export final class Specializer implements SpecializerInterface {
         while (let (true, key) = keys.next()) {
           let member = iface.members[key];
           if (member is FieldInfo) {
-            let fi = member;
             let getterName = "get#" + key;
             let unspecIName = getInterfaceKey(iface.genericSource ?? iface);
             let hasGetter = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, getterName));
@@ -731,7 +716,7 @@ export final class Specializer implements SpecializerInterface {
               this.registerClassMethod(ct, classDecl, getterName, null, true, false, key, sourceModel);
             }
             
-            if (fi.isMutable) {
+            if (member.isMutable) {
               let setterName = "set#" + key;
               let hasSetter = this.pass.wasm.classMethodMap.has(getClassMethodKey(cKey, setterName));
               if (!hasSetter) {
@@ -880,9 +865,8 @@ export final class Specializer implements SpecializerInterface {
     // at either.
     if (methodNode != null && !methName.contains("::") &&
         isConcrete(cType) && !containsErasedType(cType as Type)) {
-      let declaringOpt = this.declaringClassOf(cType, methodNode);
-      if (declaringOpt != null && declaringOpt != cType) {
-        let declaring = declaringOpt;
+      let declaring = this.declaringClassOf(cType, methodNode);
+      if (declaring != null && declaring != cType) {
         let declId = ((declaring.genericSource ?? declaring)).symbolId;
         let dDecl: Node | null = if (this.pass.classDecls.has(declId)) {
           this.pass.classDecls[declId]
@@ -1034,9 +1018,8 @@ export final class Specializer implements SpecializerInterface {
                 if (m is FieldInfo) {
                   pType = m.type;
                 } else if (m is MethodInfo) {
-                  let mi = m;
-                  if (mi.type is FunctionType) {
-                    pType = (mi.type as FunctionType).returnType;
+                  if (m.type is FunctionType) {
+                    pType = (m.type as FunctionType).returnType;
                   }
                 }
               }
@@ -1062,9 +1045,8 @@ export final class Specializer implements SpecializerInterface {
                 if (m is FieldInfo) {
                   pType = m.type;
                 } else if (m is MethodInfo) {
-                  let mi = m;
-                  if (mi.type is FunctionType) {
-                    let ft = mi.type as FunctionType;
+                  if (m.type is FunctionType) {
+                    let ft = m.type as FunctionType;
                     if (ft.parameters.length > 0) {
                       pType = ft.parameters[0];
                     } else {
@@ -1130,13 +1112,12 @@ export final class Specializer implements SpecializerInterface {
 
     var isStatic = false;
     if (methodNode != null) {
-      let nodeVal = methodNode;
-      if (nodeVal is MethodDefinition) {
-        isStatic = nodeVal.isStatic;
-      } else if (nodeVal is AccessorDeclaration) {
-        isStatic = nodeVal.isStatic;
-      } else if (nodeVal is FieldDefinition) {
-        isStatic = nodeVal.isStatic;
+      if (methodNode is MethodDefinition) {
+        isStatic = methodNode.isStatic;
+      } else if (methodNode is AccessorDeclaration) {
+        isStatic = methodNode.isStatic;
+      } else if (methodNode is FieldDefinition) {
+        isStatic = methodNode.isStatic;
       }
     }
 
@@ -1155,12 +1136,11 @@ export final class Specializer implements SpecializerInterface {
       }
     }
     if (methodTypeNode is FunctionType) {
-      let fType = methodTypeNode;
-      for (let p in fType.parameters) {
+      for (let p in methodTypeNode.parameters) {
         mapParamTypeToWasmParams(this.pass.wasm, p, params);
       }
       if (methName != "<constructor>") {
-        mapReturnTypeToWasmResults(this.pass.wasm, fType.returnType, returns);
+        mapReturnTypeToWasmResults(this.pass.wasm, methodTypeNode.returnType, returns);
       } else if (cType.isExtension && cType.onType != null) {
         returns.push(typeToValType(this.pass.wasm, cType.onType as Type));
       }
@@ -1182,22 +1162,18 @@ export final class Specializer implements SpecializerInterface {
 
     var decs: Array<Decorator> | null = null;
     if (methodNode != null) {
-      let nodeVal = methodNode;
-      if (nodeVal is MethodDefinition) {
-        decs = nodeVal.decorators;
-      } else if (nodeVal is AccessorDeclaration) {
-        decs = nodeVal.decorators;
-      } else if (nodeVal is FieldDefinition) {
-        decs = nodeVal.decorators;
+      if (methodNode is MethodDefinition) {
+        decs = methodNode.decorators;
+      } else if (methodNode is AccessorDeclaration) {
+        decs = methodNode.decorators;
+      } else if (methodNode is FieldDefinition) {
+        decs = methodNode.decorators;
       }
     } else if (backingFieldName != null && cDecl != null) {
-      let cDeclVal = cDecl;
-      if (cDeclVal is ClassDeclaration) {
-        let classDecl = cDeclVal;
-        for (let ms in classDecl.body) {
+      if (cDecl is ClassDeclaration) {
+        for (let ms in cDecl.body) {
           if (ms is FieldDefinition) {
-            let fd = ms;
-            let fName = match (fd.name) {
+            let fName = match (ms.name) {
               case Identifier {name}: name
               case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
                 case Identifier {name}: name
@@ -1207,7 +1183,7 @@ export final class Specializer implements SpecializerInterface {
               case _: ""
             };
             if (fName == backingFieldName) {
-              decs = fd.decorators;
+              decs = ms.decorators;
             }
           }
         }
@@ -1237,11 +1213,10 @@ export final class Specializer implements SpecializerInterface {
       let st = wasmFunc.structType;
       if (st != null) {
         var idx = -1;
-        let backingName = backingFieldName;
-        let lookupBackingName = if (backingName.length > 0 && backingName.sliceBytes(0, 1) == "#") {
-          getClassPrivateFieldKey(getClassKey(cType), backingName)
+        let lookupBackingName = if (backingFieldName.length > 0 && backingFieldName.sliceBytes(0, 1) == "#") {
+          getClassPrivateFieldKey(getClassKey(cType), backingFieldName)
         } else {
-          backingName
+          backingFieldName
         };
         for (var fi = 0; fi < st.fields.length; fi += 1) {
           if (st.fields[fi].name == lookupBackingName) {
@@ -1255,11 +1230,10 @@ export final class Specializer implements SpecializerInterface {
       let st = wasmFunc.structType;
       if (st != null) {
         var idx = -1;
-        let backingName = backingFieldName;
-        let lookupBackingName = if (backingName.length > 0 && backingName.sliceBytes(0, 1) == "#") {
-          getClassPrivateFieldKey(getClassKey(cType), backingName)
+        let lookupBackingName = if (backingFieldName.length > 0 && backingFieldName.sliceBytes(0, 1) == "#") {
+          getClassPrivateFieldKey(getClassKey(cType), backingFieldName)
         } else {
-          backingName
+          backingFieldName
         };
         for (var fi = 0; fi < st.fields.length; fi += 1) {
           if (st.fields[fi].name == lookupBackingName) {
@@ -1464,12 +1438,11 @@ export final class Specializer implements SpecializerInterface {
         msIdx += 1;
         let msScope = allScopes[msIdx];
         if (ms is MethodDefinition) {
-          let mDef = ms;
-          if (mDef.isAbstract) { continue; }
-          if (mDef.typeParameters != null && (mDef.typeParameters as Array<TypeParameter>).length > 0) {
+          if (ms.isAbstract) { continue; }
+          if (ms.typeParameters != null && (ms.typeParameters as Array<TypeParameter>).length > 0) {
             continue;
           }
-          let methName = match (mDef.name) {
+          let methName = match (ms.name) {
             case Identifier {name}: name
             case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
               case Identifier {name}: name
@@ -1484,7 +1457,7 @@ export final class Specializer implements SpecializerInterface {
               let mInfo = ct.members[methName];
               if (mInfo.type is FunctionType) {
                 let ft = mInfo.type as FunctionType;
-                let specificType = matchOverload(sourceModel, ft, mDef);
+                let specificType = matchOverload(sourceModel, ft, ms);
                 if (specificType != null) {
                   vtableMethName = methName + getSignatureKey(specificType);
                 }
@@ -1495,9 +1468,9 @@ export final class Specializer implements SpecializerInterface {
             // privates register under the mixin's scope key.
             let isPrivateMeth = methName.length > 0 && methName.sliceBytes(0, 1) == "#";
             // See above: a generic method has no single body to hold.
-            let isGenericMeth = mDef.typeParameters != null &&
-                (mDef.typeParameters as Array<TypeParameter>).length > 0;
-            if (!mDef.isStatic && !vtableSet.has(vtableMethName) && methName != "<constructor>" && !isPrivateMeth && !isGenericMeth) {
+            let isGenericMeth = ms.typeParameters != null &&
+                (ms.typeParameters as Array<TypeParameter>).length > 0;
+            if (!ms.isStatic && !vtableSet.has(vtableMethName) && methName != "<constructor>" && !isPrivateMeth && !isGenericMeth) {
               ctVtable.push(vtableMethName);
               vtableSet.add(vtableMethName);
             }
@@ -1505,13 +1478,12 @@ export final class Specializer implements SpecializerInterface {
             if (msScope != "" && isPrivateMeth) {
               regName = msScope + "::" + methName;
             }
-            let regFn = this.registerClassMethod(ct, cdDecl, regName, mDef, false, false, null, sourceModel);
+            let regFn = this.registerClassMethod(ct, cdDecl, regName, ms, false, false, null, sourceModel);
             if (msScope != "") { regFn.privateScopeKey = msScope; }
           }
         } else if (ms is AccessorDeclaration) {
-          let acc = ms;
-          if (acc.isStatic) { continue; }
-          let accName = match (acc.name) {
+          if (ms.isStatic) { continue; }
+          let accName = match (ms.name) {
             case Identifier {name}: name
             case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
               case Identifier {name}: name
@@ -1525,7 +1497,7 @@ export final class Specializer implements SpecializerInterface {
             // virtual); mixin private accessors register under the
             // mixin's scope key like private methods.
             let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
-            if (acc.getter != null) {
+            if (ms.getter != null) {
               var getterName = "get#" + accName;
               if (!isPrivateAcc && !vtableSet.has(getterName)) {
                 ctVtable.push(getterName);
@@ -1534,10 +1506,10 @@ export final class Specializer implements SpecializerInterface {
               if (isPrivateAcc && msScope != "") {
                 getterName = msScope + "::" + getterName;
               }
-              let regG = this.registerClassMethod(ct, cdDecl, getterName, acc as Node, false, false, null, sourceModel);
+              let regG = this.registerClassMethod(ct, cdDecl, getterName, ms as Node, false, false, null, sourceModel);
               if (msScope != "") { regG.privateScopeKey = msScope; }
             }
-            if (acc.setter != null) {
+            if (ms.setter != null) {
               var setterName = "set#" + accName;
               if (!isPrivateAcc && !vtableSet.has(setterName)) {
                 ctVtable.push(setterName);
@@ -1546,14 +1518,13 @@ export final class Specializer implements SpecializerInterface {
               if (isPrivateAcc && msScope != "") {
                 setterName = msScope + "::" + setterName;
               }
-              let regS = this.registerClassMethod(ct, cdDecl, setterName, acc.setter as Node, false, false, null, sourceModel);
+              let regS = this.registerClassMethod(ct, cdDecl, setterName, ms.setter as Node, false, false, null, sourceModel);
               if (msScope != "") { regS.privateScopeKey = msScope; }
             }
           }
         } else if (ms is FieldDefinition) {
-          let fd = ms;
-          if (fd.isStatic) { continue; }
-          let fieldName = match (fd.name) {
+          if (ms.isStatic) { continue; }
+          let fieldName = match (ms.name) {
             case Identifier {name}: name
             case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
               case Identifier {name}: name
@@ -1570,7 +1541,7 @@ export final class Specializer implements SpecializerInterface {
                 vtableSet.add(getterName);
               }
               this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, sourceModel);
-              if (fd.mutability != null && fd.mutability == "var") {
+              if (ms.mutability != null && ms.mutability == "var") {
                 let setterName = "set#" + fieldName;
                 if (!vtableSet.has(setterName)) {
                   ctVtable.push(setterName);
@@ -1579,21 +1550,21 @@ export final class Specializer implements SpecializerInterface {
                 this.registerClassMethod(ct, cdDecl, setterName, null, false, true, fieldName, sourceModel);
               }
             } else {
-              if (fd.setterName != null) {
+              if (ms.setterName != null) {
                 let getterName = "get#" + fieldName;
                 if (!vtableSet.has(getterName)) {
                   ctVtable.push(getterName);
                   vtableSet.add(getterName);
                 }
               }
-              if (fd.isAbstract) {
+              if (ms.isAbstract) {
                 let getterName = "get#" + fieldName;
                 if (!vtableSet.has(getterName)) {
                   ctVtable.push(getterName);
                   vtableSet.add(getterName);
                 }
                 this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, sourceModel);
-                if (fd.mutability != null && fd.mutability == "var") {
+                if (ms.mutability != null && ms.mutability == "var") {
                   let setterName = "set#" + fieldName;
                   if (!vtableSet.has(setterName)) {
                     ctVtable.push(setterName);
@@ -1602,7 +1573,7 @@ export final class Specializer implements SpecializerInterface {
                   this.registerClassMethod(ct, cdDecl, setterName, null, false, true, fieldName, sourceModel);
                 }
               }
-              if (fd.isDeclare) {
+              if (ms.isDeclare) {
                 let getterName = "get#" + fieldName;
                 if (!vtableSet.has(getterName)) {
                   ctVtable.push(getterName);
@@ -1695,8 +1666,7 @@ export final class Specializer implements SpecializerInterface {
       if (cdDecl == null) return false;
       for (let ms in cdDecl.body) {
         if (ms is FieldDefinition) {
-          let fd = ms;
-          let fieldName = match (fd.name) {
+          let fieldName = match (ms.name) {
             case Identifier {name}: name
             case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
               case Identifier {name}: name
@@ -1706,7 +1676,7 @@ export final class Specializer implements SpecializerInterface {
             case _: ""
           };
           if (fieldName == targetFieldName) {
-            return fd.isStatic;
+            return ms.isStatic;
           }
         }
       }
@@ -1785,9 +1755,8 @@ export final class Specializer implements SpecializerInterface {
     var originalName = "";
     let parentNode = model.getParent(funcExpr);
     if (parentNode != null && parentNode is VariableDeclaration) {
-      let varDecl = parentNode;
-      if (varDecl.pattern is IdentifierPattern) {
-        originalName = (varDecl.pattern as IdentifierPattern).name;
+      if (parentNode.pattern is IdentifierPattern) {
+        originalName = (parentNode.pattern as IdentifierPattern).name;
       }
     } else if (parentNode != null && parentNode is FunctionDeclaration) {
       originalName = parentNode.name.name;
