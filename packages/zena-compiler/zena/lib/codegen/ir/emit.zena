@@ -108,6 +108,23 @@ export final class ZirFunctionEmitter {
   #localEverSet = new Array<boolean>();
   var #prologue = true;
   /**
+   * Multi-use values consumed like streamed ones: the producer emits
+   * local.tee instead of local.set — the value both lands in its local
+   * (for the later uses) and stays on the stack for the adjacent
+   * consumer, which claims it through the same pending queue (#258).
+   */
+  teed = new Array<boolean>();
+  /**
+   * Entry-block default-constant definitions — the candidates for
+   * prologue default-store elision. The stack scheduler treats them
+   * as non-emitting when scanning producer adjacency (they usually
+   * vanish); a candidate that FAILS the emission-time check (its
+   * coalesced local was already written) emits a balanced
+   * const+local.set, which is stack-net-zero and so cannot disturb a
+   * pending streamed run — the optimistic skip stays sound.
+   */
+  #elisionCandidate = new Array<boolean>();
+  /**
    * A `return` at the outermost level (no open frames) is emitted
    * LAZILY: its values are pushed, and the opcode is written only if
    * anything else follows. If nothing does, the function falls
@@ -165,6 +182,8 @@ export final class ZirFunctionEmitter {
       this.tempOf.push(-1);
       this.streamed.push(false);
       this.remat.push(false);
+      this.teed.push(false);
+      this.#elisionCandidate.push(false);
       i += 1;
     }
     this.#planRemat();
@@ -620,6 +639,14 @@ export final class ZirFunctionEmitter {
         }
       }
     }
+    if (body.blocks.length > 0) {
+      for (let inst in body.blocks[0].insts) {
+        if (!this.remat[inst] && body.producesValue(inst) &&
+            this.#isDefaultConst(inst)) {
+          this.#elisionCandidate[inst] = true;
+        }
+      }
+    }
   }
 
   #scheduleStack(): void {
@@ -637,6 +664,14 @@ export final class ZirFunctionEmitter {
           useCount[v] = useCount[v] + 1;
         }
       }
+    }
+    // A producer's on-stack copy can satisfy exactly ONE consumer: a
+    // teed value leaves one copy on the stack (later uses read the
+    // local), so a second consumer matching it in its prefix would
+    // find the copy already consumed and read its operands swapped.
+    let stackClaimed = new Array<boolean>();
+    for (var sc = 0; sc < count; sc += 1) {
+      stackClaimed.push(false);
     }
     for (let blk in body.blocks) {
       let insts = blk.insts;
@@ -669,14 +704,15 @@ export final class ZirFunctionEmitter {
             // they are invisible to emission adjacency, like nops.
             while (p >= 0 && (body.op(insts[p]) == IrOp.nop ||
                 body.op(insts[p]) == IrOp.mv_get ||
-                this.remat[insts[p]])) {
+                this.remat[insts[p]] ||
+                this.#elisionCandidate[insts[p]])) {
               p -= 1;
             }
             if (p < 0) { ok = false; break; }
             let producer = insts[p];
             if (producer != ops[oi] || !body.producesValue(producer) ||
-                useCount[producer] != 1 ||
-                body.op(producer) == IrOp.mv_get) {
+                body.op(producer) == IrOp.mv_get ||
+                stackClaimed[producer]) {
               ok = false;
               break;
             }
@@ -685,7 +721,14 @@ export final class ZirFunctionEmitter {
           }
           if (ok) {
             for (var s = 0; s < prefixLen; s += 1) {
-              this.streamed[ops[s]] = true;
+              stackClaimed[ops[s]] = true;
+              // Single-use: pure stream, no local. Multi-use: tee —
+              // the value lands in its local AND stays on the stack.
+              if (useCount[ops[s]] == 1) {
+                this.streamed[ops[s]] = true;
+              } else {
+                this.teed[ops[s]] = true;
+              }
             }
             break;
           }
@@ -1363,6 +1406,16 @@ export final class ZirFunctionEmitter {
     }
     if (body.producesValue(inst)) {
       if (this.streamed[inst]) {
+        this.pendingStreamed.push(inst);
+      } else if (this.teed[inst]) {
+        this.#markLocalSet(this.localOf[inst]);
+        this.emitter.emitLocalTee(this.localOf[inst]);
+        // local.tee returns the LOCAL's declared type, which is the
+        // nullable widening — re-assert for the on-stack consumer,
+        // exactly as #pushValue does for a local.get.
+        if (this.#storedNullable(inst)) {
+          this.emitter.emitRefAsNonNull();
+        }
         this.pendingStreamed.push(inst);
       } else {
         this.#setLocal(this.localOf[inst]);
