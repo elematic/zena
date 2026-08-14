@@ -246,10 +246,12 @@ function setResourceState(value: Borrow<Resource>, state: i32): void {
  *
  * `disown` **consumes** its argument. Otherwise an `Own` that will implicitly
  * drop would coexist with an `Unmanaged` alias to the same resource, and the
- * drop would run under an alias that outlives it. Consumption is not yet
- * enforced: it needs move checking. The flag narrows the gap — the
- * second `disown` through a stale handle is caught — but a caller that keeps
- * using the original `Own` after disowning it is still unchecked.
+ * drop would run under an alias that outlives it. Move checking enforces the
+ * consumption for local bindings — a caller that keeps using the original
+ * `Own` after disowning it gets a compile error, through the ordinary rule
+ * that an argument to an `Own` parameter is a move. The flag still guards
+ * the routes the checker does not track, such as an `Own` read out of a
+ * field.
  *
  * The cast is legal here and nowhere else: `Own<T>` and `Unmanaged<T>` are
  * opaque types declared in this file, and both erase to `T`, so re-labelling

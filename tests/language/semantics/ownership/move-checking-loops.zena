@@ -1,0 +1,94 @@
+// @mode: check
+// A move inside a loop body is a use-after-move on the second iteration.
+// The rule (ownership.md §"Where the join rule does not reach"): a binding
+// declared outside the loop and moved inside it must be reinitialized on
+// every path to the back edge.
+
+import { Own, Borrow, Disposable } from 'zena:ownership';
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+  :Disposable.dispose(this: Own<this>): void {}
+  fd(): i32 { return this.#fd; }
+}
+
+function consume(f: Own<File>): void {}
+function borrow(f: Borrow<File>): i32 { return f.fd(); }
+
+// The second iteration re-runs the move on a dead binding.
+let moveInLoop = (f: Own<File>, n: i32): void => {
+  var i = 0;
+  while (i < n) {
+    consume(f);  // @error: moved inside this loop
+    i += 1;
+  }
+};
+
+// Reinitialized on every path to the back edge: each iteration moves a
+// value it owns.
+let moveAndReinit = (n: i32): void => {
+  var f = new File(1);
+  var i = 0;
+  while (i < n) {
+    consume(f);
+    f = new File(i);
+    i += 1;
+  }
+};
+
+// Reinitialized only sometimes is not reinitialized.
+let conditionalReinit = (n: i32, c: boolean): void => {
+  var f = new File(1);
+  var i = 0;
+  while (i < n) {
+    consume(f);  // @error: moved inside this loop
+    if (c) {
+      f = new File(i);
+    }
+    i += 1;
+  }
+};
+
+// A binding declared inside the body is fresh every iteration.
+let freshPerIteration = (n: i32): void => {
+  var i = 0;
+  while (i < n) {
+    let g = new File(i);
+    consume(g);
+    i += 1;
+  }
+};
+
+// A move followed by `break` never reaches the back edge.
+let moveThenBreak = (f: Own<File>, n: i32): i32 => {
+  var i = 0;
+  while (i < n) {
+    consume(f);
+    break;
+  }
+  return 0;
+};
+
+// But after that loop the binding is dead on the path that entered it.
+let useAfterLoopMove = (f: Own<File>, n: i32): i32 => {
+  var i = 0;
+  while (i < n) {
+    consume(f);
+    break;
+  }
+  return f.fd();  // @error: may have been moved
+};
+
+// Borrowing in a loop is unrestricted.
+let borrowInLoop = (f: Own<File>, n: i32): i32 => {
+  var i = 0;
+  var sum = 0;
+  while (i < n) {
+    sum += borrow(f);
+    i += 1;
+  }
+  return sum;
+};
+
+export let main = (): i32 => 0;

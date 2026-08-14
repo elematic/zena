@@ -1,6 +1,8 @@
 import { Array } from 'zena:array';
+import { HashSet } from 'zena:set';
 import { Type } from '../types.zena';
 import { SymbolId } from '../scope/symbol.zena';
+import { SourceLocation } from '../ast.zena';
 
 /**
  * The checker's control-flow graph (docs/design/ownership.md, "The checker
@@ -23,7 +25,7 @@ import { SymbolId } from '../scope/symbol.zena';
  * through loop back edges, so structural equality must not be reachable.
  */
 export sealed class FlowNode {
-  case FlowStart, FlowAssign, FlowJoin, FlowUnreachable
+  case FlowStart, FlowAssign, FlowMove, FlowJoin, FlowUnreachable
 
   /** Unique within one CheckerContext; minted by the checker. */
   var id: i32 = 0;
@@ -55,6 +57,21 @@ export final class FlowAssign extends FlowNode {
 }
 
 /**
+ * A move of an owned binding: passed to an `Own` parameter, moved into
+ * another binding, or consumed by a `this: Own<this>` method. The binding
+ * is dead on every path through this node until a reassignment revives
+ * it. `loc` is where the move happened, for the use-after-move message
+ * and for the loop back-edge report.
+ */
+export final class FlowMove extends FlowNode {
+  antecedent: FlowNode;
+  symbolId: SymbolId;
+  name: String;
+  loc: SourceLocation | null;
+  new(this.antecedent, this.symbolId, this.name, this.loc) : super();
+}
+
+/**
  * A merge point: the end of an `if`, a loop header, a `match` join, the
  * short-circuit join of `&&`/`||`/`??`, or a `catch` entry (whose
  * antecedents include every assignment in the protected body). Loop
@@ -83,8 +100,10 @@ export final class FlowBodyState {
   loopHeads: Array<FlowJoin>;
   loopExits: Array<FlowJoin>;
   exceptionTargets: Array<FlowJoin>;
+  loopMoves: Array<Array<FlowMove>>;
+  loopDeclared: Array<HashSet<i32>>;
   new(this.current, this.start, this.loopHeads, this.loopExits,
-      this.exceptionTargets);
+      this.exceptionTargets, this.loopMoves, this.loopDeclared);
 }
 
 /**

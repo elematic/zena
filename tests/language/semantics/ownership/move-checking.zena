@@ -1,0 +1,99 @@
+// @mode: check
+// An `Own<R>` binding may be moved to exactly one destination — passed to
+// a parameter that takes ownership, moved into another binding, consumed
+// by a `this: Own<this>` method — after which the binding is dead. A use
+// on any path after a move is an error, checked on the flow graph.
+// See ownership.md §"Move checking".
+
+import { Own, Borrow, Unmanaged, Disposable, disown } from 'zena:ownership';
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+  :Disposable.dispose(this: Own<this>): void {}
+  fd(): i32 { return this.#fd; }
+  intoFd(this: Own<this>): i32 { return this.#fd; }
+}
+
+function consume(f: Own<File>): void {}
+function borrow(f: Borrow<File>): i32 { return f.fd(); }
+
+// A move through an owning parameter kills the binding.
+let useAfterMove = (f: Own<File>): i32 => {
+  consume(f);
+  return f.fd();  // @error: may have been moved
+};
+
+// The second move is a use of a dead binding like any other.
+let doubleMove = (f: Own<File>): void => {
+  consume(f);
+  consume(f);  // @error: may have been moved
+};
+
+// Release is a consuming method, so it moves the receiver.
+let useAfterDispose = (f: Own<File>): i32 => {
+  f.:Disposable.dispose();
+  return f.fd();  // @error: may have been moved
+};
+
+// Any `this: Own<this>` method consumes, not just the release action.
+let useAfterConsumingMethod = (f: Own<File>): i32 => {
+  let n = f.intoFd();
+  return n + f.fd();  // @error: may have been moved
+};
+
+// Moving into another binding transfers ownership.
+let useAfterRebind = (f: Own<File>): i32 => {
+  let g = f;
+  borrow(g);
+  return f.fd();  // @error: may have been moved
+};
+
+// `disown` consumes its argument: the owner regime ends there.
+let useAfterDisown = (f: Own<File>): i32 => {
+  let raw: Unmanaged<File> = disown(f);
+  return f.fd();  // @error: may have been moved
+};
+
+// A move on one branch is a move at the join: the value is not live
+// afterwards on every path.
+let conditionalMove = (f: Own<File>, c: boolean): i32 => {
+  if (c) {
+    consume(f);
+  }
+  return f.fd();  // @error: may have been moved
+};
+
+// When the moving branch diverges, the merge never sees the move.
+let divergingMove = (f: Own<File>, c: boolean): i32 => {
+  if (c) {
+    consume(f);
+    return 0;
+  }
+  return f.fd();
+};
+
+// Borrowing is not a move: the owner stays live through any number.
+let borrowFreely = (f: Own<File>): i32 => {
+  borrow(f);
+  borrow(f);
+  let n = f.fd();
+  consume(f);
+  return n;
+};
+
+// Returning the owner is the legal single move out.
+let returnMove = (f: Own<File>): Own<File> => {
+  borrow(f);
+  return f;
+};
+
+// Reassignment brings a `var` binding back to life.
+let reinitialize = (c: boolean): i32 => {
+  var f = new File(1);
+  consume(f);
+  f = new File(2);
+  return f.fd();
+};
+
+export let main = (): i32 => 0;

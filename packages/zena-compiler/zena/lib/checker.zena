@@ -51,8 +51,8 @@ import { HashMap } from 'zena:map';
 import { OrderedMap } from 'zena:ordered-map';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import {
-  FlowNode, FlowStart, FlowAssign, FlowJoin, FlowUnreachable, NarrowEntry,
-  FlowBodyState
+  FlowNode, FlowStart, FlowAssign, FlowMove, FlowJoin, FlowUnreachable,
+  NarrowEntry, FlowBodyState
 } from './analysis/flow.zena';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
@@ -329,6 +329,34 @@ final class CheckerContext {
    * `var`.
    */
   var #flowExceptionTargets = new Array<FlowJoin>();
+
+  /**
+   * Moves recorded while each enclosing loop is open, innermost last. A
+   * move registers with every entry, because an outer loop's back edge
+   * re-runs an inner loop's body. Checked by exitFlowLoop.
+   */
+  var #flowLoopMoves = new Array<Array<FlowMove>>();
+
+  /**
+   * Symbols declared while each enclosing loop is open. A binding
+   * declared inside the loop is fresh every iteration, so its moves are
+   * exempt from the back-edge rule.
+   */
+  var #flowLoopDeclared = new Array<HashSet<i32>>();
+
+  /**
+   * Nodes that already reported use-after-move. Several call paths check
+   * an argument expression twice (overload pre-pass, then the selected
+   * signature), and the second check must not duplicate the error.
+   */
+  #moveErrorNodes = new HashSet<i32>();
+
+  /**
+   * The identifier node currently being checked as a plain assignment
+   * TARGET: writing to a dead binding revives it, so the left-hand read
+   * is not a use.
+   */
+  var #moveCheckSuppressedNode: i32 = -1;
 
   /** Mint for FlowNode ids; per-context, so graphs stay deterministic. */
   var #nextFlowId: i32 = 0;
@@ -666,6 +694,11 @@ final class CheckerContext {
    */
   declareBinding(info: Symbol, t: Type): void {
     this.model.setBindingType(info, t);
+    // A binding declared while a loop is open is fresh every iteration,
+    // which exempts its moves from the back-edge rule in exitFlowLoop.
+    for (let declared in this.#flowLoopDeclared) {
+      declared.add(info.id as i32);
+    }
     // Also store on the declaration node for getNodeType() queries.
     if (info.declaration != null) {
       this.setNodeType(info.declaration as Node, t);
@@ -1756,6 +1789,8 @@ final class CheckerContext {
     let exit = this.newFlowJoin();
     this.#flowLoopHeads.push(head);
     this.#flowLoopExits.push(exit);
+    this.#flowLoopMoves.push(new Array<FlowMove>());
+    this.#flowLoopDeclared.push(new HashSet<i32>());
     this.#currentFlow = head;
     return head;
   }
@@ -1769,6 +1804,30 @@ final class CheckerContext {
   exitFlowLoop(afterTest: FlowNode): void {
     let head = this.#flowLoopHeads.pop() as FlowJoin;
     let exit = this.#flowLoopExits.pop() as FlowJoin;
+    let moves = this.#flowLoopMoves.pop() as Array<FlowMove>;
+    let declared = this.#flowLoopDeclared.pop() as HashSet<i32>;
+    // The back-edge rule (ownership.md §"Where the join rule does not
+    // reach"): a binding declared outside the loop and moved inside it
+    // must be reinitialized on every path to the back edge — the next
+    // iteration re-runs the move on a dead binding otherwise. Checked
+    // here, before the back edge is wired, by asking whether any move
+    // is still live at the body's end.
+    let reported = new HashSet<i32>();
+    for (let mv in moves) {
+      if (declared.has(mv.symbolId as i32)) { continue; }
+      if (reported.has(mv.symbolId as i32)) { continue; }
+      let live = this.findLiveMove(mv.symbolId, this.#currentFlow, head.id);
+      if (live != null) {
+        reported.add(mv.symbolId as i32);
+        let liveMv = live as FlowMove;
+        this.error(
+          "'" + liveMv.name +
+            "' is moved inside this loop and not reinitialized before the next iteration.",
+          DiagnosticCode.UseAfterMove,
+          liveMv.loc
+        );
+      }
+    }
     head.add(this.#currentFlow);
     exit.add(afterTest);
     if (exit.antecedents.length == 0) {
@@ -1797,6 +1856,86 @@ final class CheckerContext {
   }
 
   /**
+   * Record a move of an owned binding at the current position. Like an
+   * assignment, a move feeds the innermost catch entry (the body can
+   * throw right after it), and it registers with every open loop for
+   * the back-edge check in exitFlowLoop.
+   */
+  recordFlowMove(id: SymbolId, name: String, loc: SourceLocation | null): void {
+    let node = new FlowMove(this.#currentFlow, id, name, loc);
+    node.id = this.newFlowId();
+    if (this.#flowExceptionTargets.length > 0) {
+      this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
+        .add(node);
+    }
+    for (let loopMoves in this.#flowLoopMoves) {
+      loopMoves.push(node);
+    }
+    this.#currentFlow = node;
+  }
+
+  /**
+   * The move that kills `id` on some backward path from `from`, or null
+   * if the binding is live. An assignment to the binding ends a path
+   * cleanly (the move was compensated), as does reaching `stopAtId` (a
+   * loop header, for the back-edge check) or a FlowStart. Pass -1 as
+   * stopAtId to walk to the start.
+   */
+  findLiveMove(id: SymbolId, from: FlowNode, stopAtId: i32): FlowMove | null {
+    let visited = new HashSet<i32>();
+    let pending = new Array<FlowNode>();
+    pending.push(from);
+    while (pending.length > 0) {
+      let node = pending.pop() as FlowNode;
+      if (node.id == stopAtId) { continue; }
+      if (visited.has(node.id)) { continue; }
+      visited.add(node.id);
+      match (node) {
+        case FlowStart: {}
+        case FlowUnreachable: {}
+        case FlowMove as mv: {
+          if ((mv.symbolId as i32) == (id as i32)) { return mv; }
+          pending.push(mv.antecedent);
+        }
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) != (id as i32)) {
+            pending.push(assign.antecedent);
+          }
+          // An assignment to the binding revives it: this path is clean.
+        }
+        case FlowJoin as join: {
+          for (let a in join.antecedents) {
+            pending.push(a);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Report a use of `expr` (an identifier naming an owned binding) when
+   * a move may precede it. Deduplicated by node id: several call paths
+   * check an argument expression more than once.
+   */
+  checkMoveUse(expr: Node, si: Symbol): void {
+    if ((expr.id as i32) == this.#moveCheckSuppressedNode) { return; }
+    if (this.#moveErrorNodes.has(expr.id as i32)) { return; }
+    let mv = this.findLiveMove(si.id, this.#currentFlow, -1);
+    if (mv == null) { return; }
+    this.#moveErrorNodes.add(expr.id as i32);
+    this.error(
+      "'" + si.name + "' may have been moved: an owned value is dead after the move that consumes it.",
+      DiagnosticCode.UseAfterMove,
+      expr.loc
+    );
+  }
+
+  setMoveCheckSuppressedNode(id: i32): void {
+    this.#moveCheckSuppressedNode = id;
+  }
+
+  /**
    * Begin a protected (`try`) body: the returned join is the catch
    * entry, seeded with the flow before the body; assignments inside the
    * body add themselves to it.
@@ -1819,7 +1958,8 @@ final class CheckerContext {
   enterBodyFlow(): FlowBodyState {
     let saved = new FlowBodyState(
       this.#currentFlow, this.#currentFlowStart, this.#flowLoopHeads,
-      this.#flowLoopExits, this.#flowExceptionTargets);
+      this.#flowLoopExits, this.#flowExceptionTargets,
+      this.#flowLoopMoves, this.#flowLoopDeclared);
     let start = new FlowStart();
     start.id = this.newFlowId();
     this.#currentFlow = start;
@@ -1827,6 +1967,8 @@ final class CheckerContext {
     this.#flowLoopHeads = new Array<FlowJoin>();
     this.#flowLoopExits = new Array<FlowJoin>();
     this.#flowExceptionTargets = new Array<FlowJoin>();
+    this.#flowLoopMoves = new Array<Array<FlowMove>>();
+    this.#flowLoopDeclared = new Array<HashSet<i32>>();
     return saved;
   }
 
@@ -1836,6 +1978,8 @@ final class CheckerContext {
     this.#flowLoopHeads = saved.loopHeads;
     this.#flowLoopExits = saved.loopExits;
     this.#flowExceptionTargets = saved.exceptionTargets;
+    this.#flowLoopMoves = saved.loopMoves;
+    this.#flowLoopDeclared = saved.loopDeclared;
   }
 
   rememberSymbol(si: Symbol): void {
@@ -1892,6 +2036,10 @@ final class CheckerContext {
           } else {
             pending.push(assign.antecedent);
           }
+        }
+        case FlowMove as mv: {
+          // A move does not change the binding's type.
+          pending.push(mv.antecedent);
         }
         case FlowJoin as join: {
           for (let a in join.antecedents) {
@@ -2947,6 +3095,38 @@ let rejectConsumingThroughNonOwner = (
     DiagnosticCode.TypeMismatch,
     loc
   );
+};
+
+/**
+ * A plain identifier argument handed to an `Own` parameter moves the
+ * binding: the callee owns the value from here, and the flow graph is
+ * what makes a later use an error. Only bindings are tracked — a value
+ * produced by an expression has no binding left behind to misuse.
+ */
+let recordArgumentMove = (ctx: CheckerContext, arg: Expression, paramType: Type): void => {
+  if (ownershipHandleName(paramType) != "Own") { return; }
+  if (!(arg is Identifier)) { return; }
+  let info = ctx.model.resolve(arg);
+  if (info == null) { return; }
+  let si = info as Symbol;
+  ctx.recordFlowMove(si.id, si.name, arg.loc);
+};
+
+/**
+ * Whether `object.propName` names a `this: Own<this>` method: the same
+ * lookup rejectConsumingThroughNonOwner does, answered rather than
+ * enforced, for the caller-side move a consuming call performs.
+ */
+let memberConsumesReceiver = (objectType: Type, propName: String): boolean => {
+  let inner = ownershipHandleInner(objectType);
+  if (inner == null) { return false; }
+  let innerT = inner as Type;
+  if (!(innerT is ClassType)) { return false; }
+  let ct = innerT as ClassType;
+  if (!ct.members.has(propName)) { return false; }
+  let member = ct.members[propName];
+  if (!(member is MethodInfo)) { return false; }
+  return (member as MethodInfo).consumesReceiver();
 };
 
 let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean = false): Type => {
@@ -6925,6 +7105,9 @@ let checkVariableDeclaration = (
     );
   }
 
+  // `let g = f` with an owned `f` transfers ownership to `g`.
+  recordArgumentMove(ctx, init, declType);
+
   // Bind the declared names in the pattern.
   bindPattern(ctx, pattern, declType);
 };
@@ -6970,6 +7153,9 @@ let checkUsingStatement = (
   }
 
   requireDisposable(ctx, declType, loc);
+
+  // `using let g = f` takes ownership the same way a plain binding does.
+  recordArgumentMove(ctx, init, declType);
 
   if (pattern != null) {
     let pat = pattern as Pattern;
@@ -7658,6 +7844,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // Resolve through the scope pass's ReferenceMap → Symbol → binding type.
     let resolved = ctx.resolveIdentifier(expr);
     if (resolved != null) {
+      // An owned binding is dead after a move on any path to here.
+      if (ownershipHandleName(resolved as Type) == "Own") {
+        let moveSym = ctx.model.resolve(expr);
+        if (moveSym != null) {
+          ctx.checkMoveUse(expr, moveSym as Symbol);
+        }
+      }
       resolved as Type
     } else {
       // Fall back to prelude values (intrinsics / built-ins without scope info)
@@ -7931,7 +8124,14 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // For assignment, use the declared (binding) type of the LHS,
     // not the narrowed type. The RHS must be compatible with what the
     // variable was declared as, not what it was narrowed to.
+    // A plain `=` writes without reading, so its identifier target is
+    // exempt from the use-after-move check: writing to a dead owned
+    // binding is the reinitialization that revives it.
+    if (operator == null && left is Identifier) {
+      ctx.setMoveCheckSuppressedNode(left.id as i32);
+    }
     var leftType: Type = checkExpression(ctx, left, null);
+    ctx.setMoveCheckSuppressedNode(-1);
     match (left) {
       case Identifier: {
         let info = ctx.model.resolve(left);
@@ -7949,6 +8149,12 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       // We know op is set and not "??". Act like a binary expression: left + right.
       effectiveType = checkBinaryExpression(ctx, leftType, operator, left, value, loc);
       ctx.setNodeType(value, effectiveType);
+    }
+
+    // `g = f` with an owned `f` transfers ownership, exactly like an
+    // initializer; then the store is recorded for narrowing.
+    if (operator == null) {
+      recordArgumentMove(ctx, value, leftType);
     }
 
     // Record the store on the flow graph: this is what invalidates (or,
@@ -12091,6 +12297,7 @@ let checkNewExpression = (
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
         }
+        recordArgumentMove(ctx, args[ai], expectedParamType);
         ai = ai + 1;
       }
 
@@ -12344,6 +12551,19 @@ let checkMemberExpression = (
   ctx.model.setStaticAccess(expr, isStatic);
 
   let propName = getMemberPropertyName(isSymbolAccess, property.name);
+
+  // Reaching a `this: Own<this>` method through an owned binding moves
+  // the binding: the call ends the receiver's life on this path. The
+  // move is recorded at the access — the caller-side counterpart of
+  // rejectConsumingThroughNonOwner's callee-side gate.
+  if (object is Identifier && ownershipHandleName(objectType) == "Own" &&
+      memberConsumesReceiver(objectType, propName)) {
+    let recvSym = ctx.model.resolve(object);
+    if (recvSym != null) {
+      let rs = recvSym as Symbol;
+      ctx.recordFlowMove(rs.id, rs.name, object.loc);
+    }
+  }
 
   let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
   let narrowedPathType = if (pathKey != null) {
@@ -14862,9 +15082,10 @@ let checkCallExpressionInner = (
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
         }
+        recordArgumentMove(ctx, args[j], expectedParamType);
         j = j + 1;
       }
-      
+
       return effectiveFt.returnType;
     }
     case FunctionType as ft: {
@@ -15138,6 +15359,7 @@ let checkCallExpressionInner = (
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
         }
+        recordArgumentMove(ctx, args[j], expectedParamType);
         j = j + 1;
       }
 

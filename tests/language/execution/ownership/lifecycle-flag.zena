@@ -41,14 +41,25 @@ let secondAdoptThrows = (): i32 => {
   return first.value();
 };
 
-/** Disowning twice is caught even though `disown` cannot consume yet. */
+/**
+ * A holder whose field the move checker does not track: it follows local
+ * bindings only, so a field read is the route a second disown can still
+ * take to the runtime flag.
+ */
+class Holder {
+  var slot: Own<Counter>;
+  new(this.slot);
+}
+
+/** Disowning twice is caught by the flag when the checker cannot see it. */
 let secondDisownThrows = (): i32 => {
-  let c = new Counter(2);
-  let raw = disown(c);
+  // Move checking rejects `disown(c); disown(c)` on a local statically,
+  // so the double disown reaches the object through a field — outside
+  // the checker's v1 scope. The flag is what catches it.
+  let h = new Holder(new Counter(2));
+  let raw = disown(h.slot);
   try {
-    // Move checking will reject this statically, by which point `c` is
-    // moved-from. Until then the flag is what catches it.
-    let again = disown(c);
+    let again = disown(h.slot);
     return -3;
   } catch (e) {
     if (!(e is ResourceStateError)) {

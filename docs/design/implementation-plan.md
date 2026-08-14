@@ -163,6 +163,12 @@ Error>` becomes writable.
   and mutable-field narrowing build on the graph from here.
 - **O2 — affine move checking** on O1, with the meet-plus-edge-drops join rule.
   Upgrades O0's runtime detection to compile time; **no signature changes**.
+  **Landed** for local bindings: moves are flow nodes (`Own`-parameter
+  arguments — which makes `disown` consume — rebinding and field-store
+  initializers, consuming-receiver calls), a use walks backward for a live
+  move, and the loop back-edge rule is checked at loop exit
+  (ownership.md §"Landed: moves on the flow graph"). Fields, aggregates and
+  closure captures stay on the runtime flag; compensating drops are O3's.
 - **O3 — implicit drop.** Needs O2, plus G1 for the per-state cancellation drop
   table (the liveness already exists in `generators.zena`).
 - **O3.5 — `affine T` type parameters** and container opt-in, landing lazily one

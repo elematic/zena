@@ -31,12 +31,14 @@ let d = new Descriptor();
 // Inferred — `Own<Descriptor>` against `Borrow<T>` binds T = Descriptor.
 let inferred = read(d);
 
-// The same binding, written down.
+// The same binding, written down. `hold` takes ownership, so it gets its
+// own descriptor — `d` stays borrowable below.
 let explicit = read<Descriptor>(d);
-let held = hold<Descriptor>(d);
+let held = hold<Descriptor>(new Descriptor());
 
 // A handle spelled around the resource is still fine in the same position.
 let wrapped = read<Descriptor>(d);
 
-// `new` takes explicit type arguments through the same path.
-let boxOfHandles = new Box<Own<Descriptor>>(d);
+// `new` takes explicit type arguments through the same path. The argument
+// is moved into the box, so it is a fresh owner too.
+let boxOfHandles = new Box<Own<Descriptor>>(new Descriptor());

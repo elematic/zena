@@ -873,6 +873,32 @@ language reference.
   lexical list. Borrows have the mirror-image problem — see
   [Borrows and suspension](#borrows-and-suspension).
 
+#### Landed: moves on the flow graph
+
+Move checking for local bindings is implemented on the checker flow graph.
+A move appends a flow node the same way an assignment does, at four sites:
+an identifier argument handed to an `Own` parameter (which is also what
+makes `disown` consume), an initializer or assignment whose target type is
+an `Own` handle (rebinding, field stores, `using`), and an access that
+reaches a `this: Own<this>` method through an owned binding. A use of an
+owned binding walks backward over every path: a live move is the error, an
+assignment to the binding revives it, and a moving branch that diverges
+never reaches the join — the branch-join rule above, in detection form.
+Compensating drops are still implicit drop's (O3). The loop rule is
+implemented as specified: at loop exit, a move of a binding declared
+outside the loop that is not reinitialized on every path to the back edge
+is reported, with no fixpoint. Moves inside a `try` body feed the catch
+entry, so a `catch` that uses a maybe-moved binding errors — the meet over
+the body, conservatively.
+
+The checker follows local bindings only. Not tracked: an `Own` reached
+through a field or an aggregate ("types containing one" affine-ness is
+future work), a captured binding moved inside a closure, and
+super-initializer arguments (which today are checked against no parameter
+types at all). The runtime lifecycle flag remains the guard on those
+routes — `execution/ownership/lifecycle-flag.zena` reaches its double
+`disown` through a field for exactly this reason.
+
 ### Implicit drop
 
 Inserting `dispose()` when an owned value leaves scope unmoved is what turns
@@ -1202,9 +1228,8 @@ of surface syntax.
 | **O3.5** | `affine T` type parameters + container opt-in                                                             | O2, A0's `where` bounds           | G, V           |
 | **O4**   | `isolated<T>`/`frozen<T>`/regions                                                                         | O2                                | V, A           |
 
-Implementation currently trails this document in four known places: `Scoped<T>`
-is design-only, `disown` does not yet **consume** its argument (that waits on
-move checking, O2), the
+Implementation currently trails this document in three known places:
+`Scoped<T>` is design-only, the
 `dropped` state is declared but never set, so adopting an already-released
 resource is not the clean error it is specified to be — nothing releases
 anything until implicit drop (O3) — and the liveness rule in §"Borrows and
@@ -1306,10 +1331,10 @@ inherits in either direction: a call through the base type must do the same
 thing to the object whichever override it reaches.
 
 A resource class's release action must therefore be the consuming form, which
-is the contract §Resource states. What is still missing is on the caller's
-side: after `d.:Disposable.dispose()` the compiler does not yet know `d` was
-moved, so a later use is unreported. That is move checking (O2), and it is the
-same gap `disown` has.
+is the contract §Resource states. The caller's side is move checking's: after
+`d.:Disposable.dispose()` the binding `d` is moved-from, and a later use is
+an error — the same rule that makes `disown` consume its argument. See
+§"Landed: moves on the flow graph".
 
 The rules follow §"`Borrow<T>` is the identity at unrestricted
 instantiations": they apply to a borrow of a resource or of a bare type
