@@ -1015,13 +1015,39 @@ Two things it settles that the plan above did not say:
   the exception tag to `$stringCreate` for reasons nothing records —
   worth untangling, and not here.
 
-#### C3.2 — the WIT type encoder.
+#### C3.2 — the WIT type encoder. **Encoder done; compiler wiring open.**
 
 Instance types, resources, `own`/`borrow`, records, variants, results,
 lists, `alias outer`, driven from `packages/wit-parser`'s resolved AST
 rather than hand-written. Plus `--wit` / `--world`. Testable on its own,
 by round-tripping an emitted component's types back through
 `wasm-tools component wit`.
+
+The encoder is `packages/wit-parser/zena/component-encoder.zena`: a
+world's imports become one instance type and one import per interface,
+in first-use order with `use` dependencies ahead of their dependents,
+plus component-level types and imports for the world's bare functions
+and inline interfaces. `test:encoder` round-trips six fixtures through
+`wasm-tools` exactly as prescribed — validate, print, compare against a
+checked-in golden — and the goldens reproduce the source WIT down to
+`use` renames and implicit handles.
+
+Three encoding rules the format hides well, found by probing
+`wasm-tools 1.252.0` byte for byte and now load-bearing in the encoder:
+a type index in value-type position is a *signed* LEB128 (the primitive
+opcodes are its negative range, so index 79 is two bytes); every
+WIT-named type must be **exported** from its instance type, because an
+unexported record fails not at validation of the type but at the import
+that uses the instance ("instance not valid to be used as import"); and
+a resource name in value position is implicitly `own` — including a
+`use`d resource, so resource-ness has to survive the alias hops.
+
+Still open here, deferred to the compiler wiring alongside C3.3:
+`--wit` / `--world` on real compiles (the emitter consuming
+`EncodedWorld.pieces` in place of its hand-built instance types),
+world-level `use` and type definitions, `include`, cross-document
+packages, and fixed-length lists. `future` and `stream` refuse loudly
+until C6.
 
 #### C3.3 — imported memory, and stdio.
 
