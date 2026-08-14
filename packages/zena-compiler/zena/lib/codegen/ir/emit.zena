@@ -237,6 +237,112 @@ export final class ZirFunctionEmitter {
       i += 1;
     }
     this.#planMoves();
+    this.#graduateNonNullLocals();
+  }
+
+
+  /**
+   * Graduates reference locals to their precise non-null type when
+   * every write provably precedes every read with no init rollback:
+   * all writers are block-0 values — block 0 emits first, in order, at
+   * depth 0, where the validator's definite-assignment tracking never
+   * rolls back — and nothing else (edge copy, mutable variable,
+   * multi-value projection, move temp) targets the local. Reads of a
+   * graduated local then skip the ref.as_non_null re-assert (#261).
+   */
+  #graduateNonNullLocals(): void {
+    let body = this.body;
+    let count = body.instCount();
+    // Block 0's instructions emit at depth 0 only when the stackifier
+    // opens no wrapper frames before them: #nodeWithin pushes one
+    // labeled block per merge-node dominator child BEFORE emitting the
+    // node's own code, and a loop-header entry sits inside its loop
+    // frame. A depth>0 init rolls back at the wrapper's `end`, so with
+    // wrappers present nothing can graduate.
+    if (this.cfg.isLoopHeader(0)) { return; }
+    for (let c in this.cfg.domChildren[0]) {
+      if (this.cfg.isMergeNode(c)) { return; }
+    }
+    let paramCount = this.func.signature.params.length;
+    let totalLocals = paramCount + this.localTypes.length;
+    let excluded = new Array<boolean>();
+    var li = 0;
+    while (li < totalLocals) {
+      excluded.push(li < paramCount);
+      li += 1;
+    }
+    for (let vl in this.#varLocal) {
+      excluded[vl] = true;
+    }
+    for (var i = 0; i < count; i += 1) {
+      if (this.tempOf[i] >= 0) {
+        excluded[this.tempOf[i]] = true;
+      }
+      if (body.op(i) == IrOp.mv_get && this.localOf[i] >= 0) {
+        excluded[this.localOf[i]] = true;
+      }
+    }
+    for (let pair in this.#movePlans) {
+      var pi = 0;
+      while (pi < pair.value.length) {
+        excluded[pair.value[pi + 1]] = true;
+        pi += 2;
+      }
+    }
+    let inB0 = new Array<boolean>();
+    for (var i = 0; i < count; i += 1) {
+      inB0.push(false);
+    }
+    if (body.blocks.length > 0) {
+      for (let inst in body.blocks[0].insts) {
+        inB0[inst] = true;
+      }
+    }
+    let writerTarget = new Array<WasmType | null>();
+    let hasWriter = new Array<boolean>();
+    let disqualified = new Array<boolean>();
+    li = 0;
+    while (li < totalLocals) {
+      writerTarget.push(null);
+      hasWriter.push(false);
+      disqualified.push(false);
+      li += 1;
+    }
+    for (var i = 0; i < count; i += 1) {
+      if (!body.producesValue(i) || this.streamed[i] || this.remat[i]) {
+        continue;
+      }
+      let l = this.localOf[i];
+      if (l < 0 || l >= totalLocals) {
+        continue;
+      }
+      hasWriter[l] = true;
+      if (!inB0[i]) {
+        disqualified[l] = true;
+        continue;
+      }
+      let rt = body.resultType(i) as ValType;
+      if (rt is ValTypeRef) {
+        let target = (rt as ValTypeRef).target;
+        let existing = writerTarget[l];
+        if (existing == null) {
+          writerTarget[l] = target;
+        } else if ((existing as WasmType) != target) {
+          disqualified[l] = true;
+        }
+      } else {
+        disqualified[l] = true;
+      }
+    }
+    li = paramCount;
+    while (li < totalLocals) {
+      if (!excluded[li] && hasWriter[li] && !disqualified[li] &&
+          writerTarget[li] != null) {
+        this.localTypes[li - paramCount] =
+            new ValTypeRef(writerTarget[li] as WasmType);
+      }
+      li += 1;
+    }
   }
 
   /**
@@ -841,8 +947,15 @@ export final class ZirFunctionEmitter {
     if (!(this.body.resultType(inst) is ValTypeRef)) {
       return false;
     }
-    // Signature params keep their declared (possibly non-null) types.
-    return this.localOf[inst] >= this.func.signature.params.length;
+    let l = this.localOf[inst];
+    // Signature params keep their declared (possibly non-null) types,
+    // and graduated locals (#graduateNonNullLocals) are declared at
+    // their precise non-null type — neither needs the re-assert.
+    if (l < this.func.signature.params.length) {
+      return false;
+    }
+    return this.localTypes[l - this.func.signature.params.length]
+        is ValTypeRefNull;
   }
 
   /** Loads a value at its declared IR type. */

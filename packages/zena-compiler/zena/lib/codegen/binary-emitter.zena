@@ -382,11 +382,12 @@ export final class BinaryEmitter implements WasmEmitter {
       funcBody.writeULEB128(locals.length);
       for (let l in locals) {
         funcBody.writeULEB128(1); // count 1
-        let declType = match (l) {
-          case ValTypeRef as vr: new ValTypeRefNull(vr.target)
-          case _: l
-        };
-        emitValType(funcBody, declType); 
+        // Emitted EXACTLY as given: the ZIR emitter widens ref locals
+        // to nullable itself and graduates provably-initialized ones
+        // back to non-null (#graduateNonNullLocals) — a blanket
+        // widening here would silently disagree with the re-assert
+        // decisions made against localTypes.
+        emitValType(funcBody, l);
       }
     } else {
       funcBody.writeULEB128(0); // local count 0
