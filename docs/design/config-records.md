@@ -63,12 +63,13 @@ type C = {x: i32};
 // A, B, and C all denote the same record type {x: i32}.
 ```
 
-Defaults act at exactly one point: **checking a record literal against
-a contextual type that was resolved from a default-bearing
-annotation**. The literal may omit any defaulted field; the checker
-records the omission, and the construction site emits the default's
-value into the omitted slot. The literal's type — and everything
-downstream — is the full shape.
+Defaults act at exactly one point: **checking a record literal that is
+an argument (or a nested part of one) at a direct call or constructor
+call, against the callee's declared parameter annotation** (§2.2 for
+why only there). The literal may omit any defaulted field; the checker
+records the omission, and the call site emits the default's value into
+the omitted slot. The literal's type — and everything downstream — is
+the full shape.
 
 This is what lets defaults live on "just a type": nothing about them
 exists at runtime, so the type never needs to carry code the way a
@@ -87,35 +88,66 @@ Consequences, stated explicitly:
   same type. Which defaults apply to a given literal is decided by the
   annotation that contextually types it, which is always syntactically
   evident at the literal.
-- A literal with **no** contextual type, or a contextual type resolved
-  from a default-free annotation, is checked as today: all fields
-  required.
+- A literal anywhere other than a direct call argument — a `let` with
+  a declared type, a field initializer, a return — is checked as
+  today: all fields required, and omission is a missing-field error
+  even when the annotation carries defaults (§2.2).
 
-### 2.2 Per-consumer defaults
+### 2.2 Filling is a call-site affordance
 
-There are two established idioms for optional-field defaults: the type
-declares the default (`port: i32 = 8080`), or the type declares only
-optionality and each consumer fills in its own default (TypeScript's
-`let {timeout = 30} = opts`, Dart/Swift default parameter values).
-Because defaults attach to annotations and never to the type (§2.1),
-this design supports both with one mechanism:
+Filling applies only to a literal in **direct call or constructor
+argument position** (including literals nested inside that argument),
+sourced from the statically resolved callee's parameter annotation.
+This scoping exists because defaults on annotations plus filling in
+*arbitrary* annotation contexts would break behavior preservation
+under the most ordinary refactor. With per-callable defaults — which
+the annotation model makes possible, since two annotations of one
+shape are the same type — these two fragments would compile and
+silently do different things:
 
 ```zena
 type FetchOpts = {timeout: i32 = 30_000, retries: i32 = 3};
-
-// The same shape with different defaults is the SAME type — values
-// flow freely between the two. Only literal checking differs.
 let fetchWithRetry = (opts: {timeout: i32 = 5_000, retries: i32 = 10})
     => ...;
+
+fetchWithRetry({});                  // callee's defaults: 5_000 / 10
+
+let opts: FetchOpts = {};            // alias's defaults: 30_000 / 3
+fetchWithRetry(opts);                // passes an already-full value
 ```
 
-A shared canonical bag puts the defaults on the alias; a consumer that
-wants its own puts them in its own parameter annotation. In both forms
-the defaults sit where callers look (the signature or the named type,
-surfaced on hover), unlike TypeScript's variant, where types cannot
-carry values and defaults end up buried in a destructuring statement
-inside the body — the arrangement that makes defaults undiscoverable
-and motivates `@defaultValue` doc tags.
+Extracting an argument to a local would change which defaults apply —
+the same leaks-through-an-intermediate-variable defect row-types.md
+§3.2 criticizes in TypeScript's excess-property heuristic. Scoping
+filling to call arguments makes the second fragment a **compile
+error** at the `let` (missing fields, named in the message): the
+refactor can fail loudly, never drift silently.
+
+This matches precedent: languages with defaults attach them to
+callables (Dart, Swift, Python default parameters); none fill
+`let x: T = {partial}`. A defaulted record parameter is Zena's named
+parameters with defaults, spelled as a record. Two callables declaring
+different defaults for the same shape is then ordinary and safe — each
+signature is the visible source of its own call sites' fill — while a
+shared alias gives one canonical default set to every callable that
+annotates with it. Both forms keep defaults where callers look, unlike
+TypeScript's destructuring-defaults idiom, where types cannot carry
+values and defaults end up buried in function bodies (the arrangement
+that motivates `@defaultValue` doc tags).
+
+Two corollaries of "the fill source is the statically resolved
+declaration":
+
+- A call through a **function-typed value** (a callback parameter, a
+  stored function) has no statically known declaration, so it does not
+  fill — omitted fields are ordinary missing-field errors. Allowing a
+  function *type alias* to carry defaults and act as a fill source is
+  a possible later extension; it would make the indirection's defaults
+  visible on the type at the call.
+- An **override** does not get its own defaults: a call fills from the
+  member signature it statically resolves against. Declaring defaults
+  on an override that differ from the overridden member's is an error,
+  so dynamic dispatch cannot make the fill misleading.
 
 Defaults that are logic rather than values — a default that depends on
 another field or on consumer state — are out of scope for annotations
@@ -144,19 +176,22 @@ local binding.
 RecordTypeProperty ::= Identifier '?'? ':' Type ('=' Expression)?
 ```
 
-`=` is accepted in any record type annotation: type aliases, parameter
-annotations, field annotations, return types. Combining `?` and `=` on
-one field is an error — a defaulted field is already omittable, and
-`?` asserts that absence is meaningful (§5), which a default
+`=` is accepted where it can take effect (§2.2): in a parameter's
+record type annotation, and in a type alias (whose defaults act when
+the alias annotates a parameter). On a record annotation in any other
+position — a field type, a return type, a local's declared type — `=`
+is an error, since no call could ever fill from it. Combining `?` and
+`=` on one field is an error — a defaulted field is already omittable,
+and `?` asserts that absence is meaningful (§5), which a default
 contradicts.
 
 ### 2.5 Interaction with spread and `with`
 
 Filling happens after the literal's explicit content — spreads
-included — is resolved. In `{...partial, tls: true}` checked against
-`ServerOpts`, fields provided by the spread or explicitly count as
-present; remaining defaulted fields are filled; remaining
-non-defaulted fields are missing-field errors.
+included — is resolved. In `new Server({...partial, tls: true})`,
+fields provided by the spread or explicitly count as present;
+remaining defaulted fields are filled; remaining non-defaulted fields
+are missing-field errors.
 
 The `with` update form (row-types.md §4) operates on a complete value
 of the full shape, so defaults never participate: there is no absent
@@ -196,10 +231,10 @@ representation.
      with `?`) and record them keyed by the annotation — not on the
      interned `RecordType`, which stays defaults-free so that
      interning and assignability are untouched.
-   - When checking a record literal whose contextual type came from a
-     default-bearing annotation, allow omission of defaulted fields
-     and record the completed field set in the semantic model for the
-     literal node.
+   - When checking a call argument literal against a parameter whose
+     annotation carries defaults (directly or through an alias), allow
+     omission of defaulted fields and record the completed field set
+     in the semantic model for the literal node.
    - Interning must not be keyed or polluted by defaults; a test
      asserts that aliases differing only in defaults are
      interchangeable as types.
@@ -211,11 +246,10 @@ The contextual-typing plumbing is the one open implementation
 question: the checker's expected-type flow passes `Type` values, which
 by design no longer carry the defaults. The recommended mechanism is a
 semantic-model side table from annotation node to default set,
-consulted at the two places a literal acquires its contextual type
-(declared-type checking and call-argument checking), with the
-annotation threaded alongside the expected type on those paths only.
-Threading it everywhere is not needed: filling is defined only where a
-literal meets an annotation-derived context (§2.1).
+consulted only at call-argument checking (the one place filling is
+defined, §2.2), with the callee's parameter annotation threaded
+alongside the expected type on that path. Threading it everywhere is
+not needed and not wanted.
 
 Because this adds syntax the checked-in bootstrap compiler cannot
 parse, the compiler's own sources cannot use config records until a
@@ -226,6 +260,14 @@ portable tests are unaffected.
 
 - Omitting a non-defaulted field: today's missing-field error,
   unchanged.
+- Omitting a defaulted field anywhere other than a direct call
+  argument (§2.2): the missing-field error, with a note that defaults
+  fill only at call sites — the message that greets the
+  extract-to-local refactor.
+- `=` on a record annotation in a position no call can fill from
+  (§2.4): error at the annotation.
+- An override declaring defaults that differ from the overridden
+  member's (§2.2): error at the override.
 - `?` combined with `=`: error at the annotation, pointing at this
   distinction (§5).
 - Non-constant default expression: error at the annotation, naming the
@@ -261,6 +303,19 @@ Config records are expected to absorb most demand for `?`; it should
 be implemented only if meaningful-absence use cases accumulate.
 
 ## 6. Alternatives considered
+
+- **Filling in every annotation context.** An earlier draft filled a
+  literal checked against *any* default-bearing annotation — a `let`'s
+  declared type, a field initializer — not just call arguments.
+  Rejected in review: with per-callable defaults, extracting an
+  argument to an annotated local silently switches which defaults
+  apply (`fetchWithRetry({})` fills from the callee;
+  `let opts: FetchOpts = {}; fetchWithRetry(opts)` fills from the
+  alias and passes an already-full value) — behavior drift under a
+  routine refactor, the leaks-through-an-intermediate-variable defect
+  row-types.md §3.2 criticizes in TypeScript's excess-property
+  heuristic. Scoping filling to call arguments turns the drift into a
+  loud missing-field error (§2.2).
 
 - **Consumption-site filling.** Build the partial record as-is and
   apply defaults where the record is *read* — colocating the filling
