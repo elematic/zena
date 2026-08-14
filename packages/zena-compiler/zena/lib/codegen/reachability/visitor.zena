@@ -1,21 +1,32 @@
 import { collectValueExports } from '../lookup.zena';
-import { Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface, SpecializerInterface } from './context.zena';
-import { ClassHierarchyAnalysis } from './hierarchy.zena';
-import { SemanticModel, InterfaceAdaptation } from '../../semantic-model.zena';
-import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, VoidType, BooleanType, I32Type, AnyRefType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, typeToString, ThisType, baseType , ErasedType} from '../../types.zena';
-import { Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, EnumDeclaration, MixinDeclaration, ClassDeclaration, SealedVariant, TypeAnnotation, SourceLocation, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral } from '../../ast.zena';
-import { WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo } from '../wasm-module.zena';
-import { ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeFuncRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, isRefValType } from '../wasm.zena';
+import {
+  Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
+} from './context.zena';
+import { SemanticModel } from '../../semantic-model.zena';
+import {
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
+} from '../../types.zena';
+import {
+  Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral,
+} from '../../ast.zena';
+import {
+  WasmStruct, WasmField, WasmGlobal, WasmFunction,
+} from '../wasm-module.zena';
+import {
+  ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, isRefValType,
+} from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { HashMap } from 'zena:map';
-import { OrderedMap } from 'zena:ordered-map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
-import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
-import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName, containsErasedType } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, recordWasmFields, sortedOptionalNames } from '../type-mapping.zena';
+import {
+  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType,
+} from '../codegen-utils.zena';
+import {
+  typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, recordWasmFields, sortedOptionalNames,
+} from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { Program, CompilationUnit } from '../../program.zena';
