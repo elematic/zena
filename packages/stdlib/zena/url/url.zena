@@ -488,7 +488,7 @@ let parseHost = (input: String, isOpaque: boolean): String | null => {
     if (input.getByteAt(input.length - 1) != 0x5D) return null;
     let pieces = parseIPv6(input.sliceBytes(1, input.length - 1));
     if (pieces == null) return null;
-    return "[" + serializeIPv6(pieces as Array<i32>) + "]";
+    return "[" + serializeIPv6(pieces) + "]";
   }
   // 2. Opaque host.
   if (isOpaque) return parseOpaqueHost(input);
@@ -496,7 +496,7 @@ let parseHost = (input: String, isOpaque: boolean): String | null => {
   let decoded = percentDecode(input);
   let asciiDomain = domainToASCII(decoded);
   if (asciiDomain == null) return null;
-  let domain = asciiDomain as String;
+  let domain = asciiDomain;
   // 7. Forbidden domain code points.
   for (var i = 0; i < domain.length; i += 1) {
     if (isForbiddenDomainByte(domain.getByteAt(i))) return null;
@@ -595,7 +595,7 @@ export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord
         if (url.scheme == "file") {
           state = S_FILE;
         } else if (url.isSpecial() && base != null &&
-                   (base as UrlRecord).scheme == url.scheme) {
+                   base.scheme == url.scheme) {
           state = S_SPECIAL_RELATIVE_OR_AUTHORITY;
         } else if (url.isSpecial()) {
           state = S_SPECIAL_AUTHORITY_SLASHES;
@@ -617,7 +617,7 @@ export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord
       if (base == null) {
         failed = true;
       } else {
-        let b = base as UrlRecord;
+        let b = base;
         if (b.hasOpaquePath() && c != 0x23) {
           failed = true;
         } else if (b.hasOpaquePath() && c == 0x23) {
@@ -809,8 +809,8 @@ export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord
       url.host = "";
       if (c == 0x2F || c == 0x5C) {
         state = S_FILE_SLASH;
-      } else if (base != null && (base as UrlRecord).scheme == "file") {
-        let b = base as UrlRecord;
+      } else if (base != null && base.scheme == "file") {
+        let b = base;
         url.host = b.host;
         url.path = b.clonePath();
         url.query = b.query;
@@ -841,8 +841,8 @@ export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord
       if (c == 0x2F || c == 0x5C) {
         state = S_FILE_HOST;
       } else {
-        if (base != null && (base as UrlRecord).scheme == "file") {
-          let b = base as UrlRecord;
+        if (base != null && base.scheme == "file") {
+          let b = base;
           url.host = b.host;
           if (!startsWithWindowsDriveLetter(input, pointer) &&
               b.path.length > 0 && isNormalizedWindowsDriveLetter(b.path[0])) {
@@ -866,7 +866,7 @@ export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord
           if (host == null) {
             failed = true;
           } else {
-            url.host = if ((host as String) == "localhost") "" else host;
+            url.host = if (host == "localhost") "" else host;
             buffer = new StringBuilder();
             state = S_PATH_START;
           }
@@ -1046,12 +1046,12 @@ export final class URL {
   static parse(input: String, base: String | null = null): URL | null {
     var baseRec: UrlRecord | null = null;
     if (base != null) {
-      baseRec = basicUrlParse(base as String, null);
+      baseRec = basicUrlParse(base, null);
       if (baseRec == null) return null;
     }
     let rec = basicUrlParse(input, baseRec);
     if (rec == null) return null;
-    return new URL(rec as UrlRecord);
+    return new URL(rec);
   }
 
   static canParse(input: String, base: String | null = null): boolean {
@@ -1064,7 +1064,7 @@ export final class URL {
   hostname: String {
     get {
       let h = this.#rec.host;
-      return if (h == null) "" else h as String;
+      return if (h == null) "" else h;
     }
   }
   port: String {
@@ -1077,7 +1077,7 @@ export final class URL {
     get {
       let q = this.#rec.query;
       if (q == null) return "";
-      let qs = q as String;
+      let qs = q;
       return if (qs.length == 0) "" else "?" + qs;
     }
   }
@@ -1085,7 +1085,7 @@ export final class URL {
     get {
       let f = this.#rec.fragment;
       if (f == null) return "";
-      let fs = f as String;
+      let fs = f;
       return if (fs.length == 0) "" else "#" + fs;
     }
   }
@@ -1107,7 +1107,7 @@ export final class URL {
       // A blob: URL's origin is the origin of the URL in its path.
       let inner = URL.parse(this.pathname, null);
       if (inner != null) {
-        let iu = inner as URL;
+        let iu = inner;
         let p = iu.protocol;
         if (p == "http:" || p == "https:" || p == "file:") {
           return iu.origin();

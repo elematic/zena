@@ -203,7 +203,7 @@ final class Parser {
         pos = this.#parseEscape(pattern, pos);
       } else {
         // Default: literal character
-        this.#literal(c as i32);
+        this.#literal(c);
         pos = pos + 1;
       }
     }
@@ -528,12 +528,12 @@ final class Parser {
           pos = pos + 2;
         } else {
           // Literal escaped character
-          this.#appendClassRange(ast.runes, nextC as i32, nextC as i32);
+          this.#appendClassRange(ast.runes, nextC, nextC);
           pos = pos + 2;
         }
       } else if (pos + 2 < len && pattern.getByteAt(pos + 1) == 45) { // '-' range
-        let lo = c as i32;
-        let hi = pattern.getByteAt(pos + 2) as i32;
+        let lo = c;
+        let hi = pattern.getByteAt(pos + 2);
         if (lo > hi) {
           throw new Error('Invalid character class range: ' + pattern);
         }
@@ -541,7 +541,7 @@ final class Parser {
         pos = pos + 3;
       } else {
         // Single character
-        this.#appendClassRange(ast.runes, c as i32, c as i32);
+        this.#appendClassRange(ast.runes, c, c);
         pos = pos + 1;
       }
     }
@@ -773,7 +773,7 @@ final class Parser {
     }
 
     // Literal escape (any other character)
-    this.#literal(c as i32);
+    this.#literal(c);
     return pos + 2;
   }
 
@@ -788,7 +788,7 @@ final class Parser {
     while (i < len) {
       let c = pattern.getByteAt(i);
       if (c >= 48 && c <= 57) {
-        min = min * 10 + ((c as i32) - 48);
+        min = min * 10 + (c - 48);
         hasMin = true;
         i += 1;
       } else {
@@ -836,7 +836,7 @@ final class Parser {
     while (i < len) {
       let c3 = pattern.getByteAt(i);
       if (c3 >= 48 && c3 <= 57) {
-        max = max * 10 + ((c3 as i32) - 48);
+        max = max * 10 + (c3 - 48);
         hasMax = true;
         i += 1;
       } else {
@@ -1438,8 +1438,8 @@ final class NfaCompiler {
       var i = 1;
       while (i < minCount) {
         let sub = this.#compileAst(ast.sub[0]);
-        this.#patchFrag(frag as Frag, sub.start);
-        (frag as Frag).patches = sub.patches;
+        this.#patchFrag(frag, sub.start);
+        frag.patches = sub.patches;
         i += 1;
       }
     }
@@ -1453,9 +1453,9 @@ final class NfaCompiler {
       if (frag == null) {
         return starFrag;
       }
-      this.#patchFrag(frag as Frag, starFrag.start);
-      (frag as Frag).patches = starFrag.patches;
-      return frag as Frag;
+      this.#patchFrag(frag, starFrag.start);
+      frag.patches = starFrag.patches;
+      return frag;
     }
     // {n,m} - add (m-n) optional matches
     var optCount = maxCount - minCount;
@@ -1468,15 +1468,15 @@ final class NfaCompiler {
       if (frag == null) {
         frag = questFrag;
       } else {
-        this.#patchFrag(frag as Frag, questFrag.start);
-        (frag as Frag).patches = questFrag.patches;
+        this.#patchFrag(frag, questFrag.start);
+        frag.patches = questFrag.patches;
       }
       i += 1;
     }
     if (frag == null) {
       return this.#compileEmpty();
     }
-    return frag as Frag;
+    return frag;
   }
 
   // Patch all dangling outputs in a fragment to point to the given state
@@ -2287,7 +2287,7 @@ export final class Regex {
     if (result == null) {
       return input;
     }
-    let m = result as Match;
+    let m = result;
     let before = input.sliceBytes(0, m.index);
     let after = input.sliceBytes(m.index + m.value.length, input.length);
     return before + replacement + after;
@@ -2300,7 +2300,7 @@ export final class Regex {
     if (result == null) {
       return input;
     }
-    let m = result as Match;
+    let m = result;
     let before = input.sliceBytes(0, m.index);
     let after = input.sliceBytes(m.index + m.value.length, input.length);
     return before + replacer(m) + after;

@@ -9,7 +9,7 @@ export class AssertionError extends Error {
   loc: String | null;
 
   new(message: String, this.op: String, this.loc: String | null = null)
-    : super(if (loc != null) { (loc as String) + ": " + message } else { message });
+    : super(if (loc != null) { loc + ": " + message } else { message });
 }
 
 export let equal = <T>(actual: T, expected: T, message: String = 'Values not equal', loc: String | null = __LOCATION__): void => {
@@ -126,7 +126,7 @@ let describeJsonType = (value: JsonValue): String => {
 let describeJsonValue = (value: JsonValue): String => {
   if (value == null) { return 'null'; }
   if (value is String) {
-    let s = value as String;
+    let s = value;
     if (s.length > 50) {
       return '"' + s.sliceBytes(0, 47) + '..."';
     }
@@ -134,14 +134,14 @@ let describeJsonValue = (value: JsonValue): String => {
   }
   if (value is Box<f64>) {
     let sb = new StringBuilder();
-    sb.appendF64((value as Box<f64>).value);
+    sb.appendF64(value.value);
     return sb.toString();
   }
   if (value is Box<boolean>) {
-    return if ((value as Box<boolean>).value) { 'true' } else { 'false' };
+    return if (value.value) { 'true' } else { 'false' };
   }
   if (value is JsonObject) {
-    let obj = value as JsonObject;
+    let obj = value;
     let sb = new StringBuilder();
     sb.append('{');
     var count = 0;
@@ -158,7 +158,7 @@ let describeJsonValue = (value: JsonValue): String => {
   if (value is JsonArray) {
     let sb = new StringBuilder();
     sb.append('[...] (');
-    sb.appendI32((value as JsonArray).length);
+    sb.appendI32(value.length);
     sb.append(' elements)');
     return sb.toString();
   }
@@ -171,7 +171,7 @@ let formatJsonDiff = (path: String, loc: SourceLocation | null, expected: String
   sb.append('  at ');
   sb.append(path);
   if (loc != null) {
-    let l = loc as SourceLocation;
+    let l = loc;
     sb.append(' (line ');
     sb.appendI32(l.line);
     sb.append(')');
@@ -223,8 +223,8 @@ let collectJsonDiffs = (
       diffs.push(formatJsonDiff(path, loc, 'object', describeJsonType(actual)));
       return;
     }
-    let expectedObj = expected as JsonObject;
-    let actualObj = actual as JsonObject;
+    let expectedObj = expected;
+    let actualObj = actual;
 
     // Missing keys (in expected but not actual)
     expectedObj.forEach((key: String, value: JsonValue) => {
@@ -260,8 +260,8 @@ let collectJsonDiffs = (
       diffs.push(formatJsonDiff(path, loc, 'array', describeJsonType(actual)));
       return;
     }
-    let expectedArr = expected as JsonArray;
-    let actualArr = actual as JsonArray;
+    let expectedArr = expected;
+    let actualArr = actual;
 
     if (expectedArr.length != actualArr.length && diffs.length < maxDiffs) {
       let sb = new StringBuilder();
@@ -289,7 +289,7 @@ let collectJsonDiffs = (
       diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonType(actual)));
       return;
     }
-    if ((actual as String) != (expected as String)) {
+    if (actual != expected) {
       diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonValue(actual)));
     }
     return;
@@ -301,8 +301,8 @@ let collectJsonDiffs = (
       diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonType(actual)));
       return;
     }
-    let expectedNum = (expected as Box<f64>).value;
-    let actualNum = (actual as Box<f64>).value;
+    let expectedNum = expected.value;
+    let actualNum = actual.value;
     if (expectedNum != actualNum) {
       diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonValue(actual)));
     }
@@ -315,8 +315,8 @@ let collectJsonDiffs = (
       diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonType(actual)));
       return;
     }
-    let expectedBool = (expected as Box<boolean>).value;
-    let actualBool = (actual as Box<boolean>).value;
+    let expectedBool = expected.value;
+    let actualBool = actual.value;
     if (expectedBool != actualBool) {
       diffs.push(formatJsonDiff(path, loc, describeJsonValue(expected), describeJsonValue(actual)));
     }
