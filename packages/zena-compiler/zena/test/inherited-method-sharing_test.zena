@@ -122,4 +122,31 @@ export let tests = suite('inherited method sharing', (): void => {
     let wat = compileToWat(privateFixture);
     assertNoSubclassCopy(wat, 'Derived', '.#find', 'Base');
   });
+
+  test('an inherited public method is not copied to the subclass',
+      (ctx: TestContext): void => {
+    let wat = compileToWat(privateFixture);
+    assertNoSubclassCopy(wat, 'Derived', '.size', 'Base');
+  });
+
+  test('an override still gets its own copy', (ctx: TestContext): void => {
+    let wat = compileToWat(`
+class Base<T> {
+  new();
+  size(): i32 { return 0; }
+}
+final class Derived<T> extends Base<T> {
+  size(): i32 { return 7; }
+}
+export let main = (): i32 => {
+  let b: Base<i32> = new Derived<i32>();
+  return b.size();
+};
+`);
+    // An override is a different declaration, so the subclass IS its
+    // declaring class — sharing must not collapse it onto the base.
+    let overrides = definedFunctionsMatching(wat, 'Derived', '.size');
+    isTrue(overrides.length > 0,
+        'the Derived.size override must keep its own body');
+  });
 });

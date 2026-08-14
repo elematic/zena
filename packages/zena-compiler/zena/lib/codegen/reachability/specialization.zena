@@ -856,18 +856,21 @@ export final class Specializer implements SpecializerInterface {
       model: SemanticModel,
       methodTypeArgs: Array<Type> | null = null): WasmFunction {
 
-    // An inherited PRIVATE member registers under its declaring
-    // class's resolved instantiation, not the instantiating class
+    // An inherited member registers under its declaring class's
+    // resolved instantiation, not the instantiating class
     // (binary-size.md §16): the body can only mention type parameters
     // in scope at its declaration site, so the subclass-keyed copy is
-    // byte-identical to the declaring class's — and a private member
-    // can never be overridden, so nothing ever needs the subclass key.
-    // Mixin-scoped names ("Scope::#x") stay per-host: a mixin body's
-    // `this` maps to the host class. Templates and erasures keep the
-    // old keying — nothing is emitted at either.
-    let isPrivateName = methName.startsWith("#") ||
-        methName.startsWith("get##") || methName.startsWith("set##");
-    if (isPrivateName && methodNode != null && !methName.contains("::") &&
+    // byte-identical to the declaring class's. An override is a
+    // different declaration — its declaring class IS the subclass —
+    // and a subclass binding the base's generics differently resolves
+    // to a different instantiation, so distinct copies survive exactly
+    // where the key genuinely differs. Vtable slots and every lowering
+    // lookup already walk the super chain, so they find the shared
+    // body one hop later. Mixin-scoped names ("Scope::#x") stay
+    // per-host: a mixin body's `this` maps to the host class.
+    // Templates and erasures keep the old keying — nothing is emitted
+    // at either.
+    if (methodNode != null && !methName.contains("::") &&
         isConcrete(cType) && !containsErasedType(cType as Type)) {
       let declaringOpt = this.declaringClassOf(cType, methodNode as Node);
       if (declaringOpt != null && (declaringOpt as ClassType) != cType) {
