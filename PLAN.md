@@ -118,6 +118,14 @@ This document tracks completed work and planned features. For project instructio
     playground with no playground changes. WASI and component builds
     fail at import resolution; the component's HTTP is `wasi:http`
     (async.md §4.1).
+  - **Suspensions compose with exception regions.** Two fixes in the
+    split passes: values live into a re-entered region's catch are
+    spilled to the frame (the "local live across a try holding an
+    `await` and a `return`" miscompile, loud and silent forms both),
+    and every mutable variable moves into the frame — which lifted the
+    `try`/`finally` and `using` suspension bails. `await` now works
+    inside `try`/`finally` (finalizers can await too) and after
+    `using`, the async-resource pattern.
   - Next: `then`/`map`/`flatMap` (blocked on closures inside
     generic code), richer fetch (headers, streamed bodies — wants
     streams), and post-v1 items (cancellation and structured

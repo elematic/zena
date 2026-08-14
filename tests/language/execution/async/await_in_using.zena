@@ -1,0 +1,97 @@
+// @mode: run
+// @result: 888
+
+// `using` with suspensions after it in the block: the release runs on
+// every path out — normal exit, a failure surfacing at a resume point,
+// an early return — in reverse declaration order, and only once. This
+// shape used to bail with 'suspension inside a using region'; it is
+// the async-resource pattern (`using conn = …; await conn.query()`).
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Disposable } from 'zena:ownership';
+
+/** Records events as decimal digits, so ordering is observable. */
+class Log {
+  var seq: i32 = 0;
+  add(d: i32): void {
+    this.seq = this.seq * 10 + d;
+  }
+}
+
+class Guard implements Disposable {
+  #log: Log;
+  #id: i32;
+  new(log: Log, id: i32) : #log = log, #id = id;
+  :Disposable.dispose(): void {
+    this.#log.add(this.#id);
+  }
+}
+
+/** Two guards, awaits between and after; releases in reverse order,
+ * after the body's last event. */
+let normal = async (c: Completer<i32>, log: Log): Future<i32> => {
+  using a = new Guard(log, 1);
+  let v = await c.future;
+  using b = new Guard(log, 2);
+  log.add(3);
+  return v;
+};
+
+/** The awaited future fails after acquisition: still released. */
+let failing = async (c: Completer<i32>, log: Log): Future<i32> => {
+  using a = new Guard(log, 4);
+  await c.future;
+  return 0 - 1;
+};
+
+/** An early return after a suspension: still released. */
+let early = async (c: Completer<i32>, log: Log): Future<i32> => {
+  using a = new Guard(log, 5);
+  let v = await c.future;
+  if (v > 0) {
+    return v;
+  }
+  log.add(9);
+  return 0;
+};
+
+let observeFailure = async (f: Future<i32>): Future<i32> => {
+  try {
+    await f;
+    return 0 - 2;
+  } catch (e) {
+    return 6;
+  }
+};
+
+export let main = (): i32 => {
+  let log = new Log();
+
+  let c1 = new Completer<i32>();
+  let a = normal(c1, log);
+  c1.complete(10);
+  drainMicrotasks();
+  if (runFuture(a) != 10 || log.seq != 321) {
+    return 0 - 1;
+  }
+
+  log.seq = 0;
+  let c2 = new Completer<i32>();
+  let b = observeFailure(failing(c2, log));
+  c2.fail(new Error('lost'));
+  drainMicrotasks();
+  if (runFuture(b) != 6 || log.seq != 4) {
+    return 0 - 2;
+  }
+
+  log.seq = 0;
+  let c3 = new Completer<i32>();
+  let e = early(c3, log);
+  c3.complete(70);
+  drainMicrotasks();
+  if (runFuture(e) != 70 || log.seq != 5) {
+    return 0 - 3;
+  }
+
+  return 888;
+};

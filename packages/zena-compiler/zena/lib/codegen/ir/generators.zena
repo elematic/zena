@@ -245,6 +245,128 @@ export let dispatchRegionsOf = (
   return out;
 };
 
+/**
+ * Adds to the spill set every value live into the catch target of a
+ * region enclosing a dispatch target.
+ *
+ * Re-entering those regions from the dispatcher gives each such catch
+ * a predecessor that does not pass through definitions above the
+ * region, so a value defined there and read in or after the catch is
+ * no longer dominated by its definition — only a frame load at the use
+ * restores that. Values defined INSIDE the region need nothing: a
+ * catch's presplit predecessor is the try_br terminator itself, so the
+ * body's values never reached the catch as direct SSA uses in the
+ * first place (they ride cells, ir.md §5.1).
+ */
+export let spillCatchLiveIns = (
+  liveIn: Array<HashSet<i32>>,
+  dispatchRegions: HashMap<i32, Array<TryRegion>>,
+  spilled: HashSet<i32>
+): void => {
+  dispatchRegions.forEach((target: i32, regions: Array<TryRegion>): void => {
+    for (let r in regions) {
+      for (let v in liveIn[r.catchTarget]) {
+        spilled.add(v);
+      }
+    }
+  });
+};
+
+/**
+ * Frame fields for the body's mutable variables, appended to `fields`.
+ *
+ * A mutable variable (ir.md §5.1.1) is pinned to a wasm local, and a
+ * local does not survive a suspension — the reason `try`/`finally` and
+ * `using` used to bail in suspension bodies: their exit-dispatch state
+ * (the exit code, the parked result, the saved payload) rides
+ * variables. In a split body every variable lives in the frame
+ * instead: one nullable-weakened field per var index, with the ops
+ * rewritten by rewriteVarsToFrame.
+ */
+export let varFieldsOf = (body: IrBody, fields: Array<WasmField>): void => {
+  var i = 0;
+  while (i < body.varTypes.length) {
+    fields.push(new WasmField('$var' + i32ToString(i),
+        weakenToNullable(body.varTypes[i]), true));
+    i += 1;
+  }
+};
+
+/**
+ * Rewrites var_get/var_set into frame-field reads and writes, then
+ * clears varTypes so emit allocates no locals for them.
+ *
+ * Runs after the spill/reroute passes, so a var_set's value operand
+ * has already been remapped to its frame load where needed. The frame
+ * param dominates every block, so the rewritten accesses need no
+ * dominance care of their own. A var_get of a non-nullable ref type
+ * reads the weakened field through a fresh instruction and the
+ * ORIGINAL id becomes the re-assertion, so users are untouched. Field
+ * defaults (zero/null) match the wasm-local defaults the variables
+ * had, and every dispatch path writes its variable before the replay
+ * reads it.
+ */
+export let rewriteVarsToFrame = (
+  body: IrBody,
+  bodyBlocks: Array<i32>,
+  frame: WasmStruct,
+  frameParam: i32
+): void => {
+  if (body.varTypes.length == 0) {
+    return;
+  }
+  for (let blockId in bodyBlocks) {
+    let block = body.blocks[blockId];
+    let rebuilt = new Array<i32>();
+    for (let inst in block.insts) {
+      let op = body.op(inst);
+      if (op == IrOp.var_get) {
+        let varId = body.b[inst];
+        let vt = body.varTypes[varId];
+        let weak = weakenToNullable(vt);
+        let fieldRef = addRawRef(body, new IrRefField(frame,
+            '$var' + i32ToString(varId)));
+        if (valTypesStrictlyEqual(weak, vt)) {
+          body.opcode[inst] = IrOp.struct_get as i32;
+          body.typeId[inst] = internVt(body, vt);
+          body.a[inst] = frameParam;
+          body.b[inst] = fieldRef;
+          rebuilt.push(inst);
+        } else {
+          let load = rawInst(body, IrOp.struct_get, internVt(body, weak),
+              frameParam, fieldRef);
+          rebuilt.push(load);
+          body.instBlock[load] = blockId;
+          body.opcode[inst] = IrOp.ref_as_non_null as i32;
+          body.typeId[inst] = internVt(body, vt);
+          body.a[inst] = load;
+          body.b[inst] = -1;
+          rebuilt.push(inst);
+        }
+      } else if (op == IrOp.var_set) {
+        let value = body.a[inst];
+        let varId = body.b[inst];
+        let fieldRef = addRawRef(body, new IrRefField(frame,
+            '$var' + i32ToString(varId)));
+        let idx = body.extra.length;
+        body.extra.push(frameParam);
+        body.extra.push(value);
+        body.opcode[inst] = IrOp.struct_set as i32;
+        body.typeId[inst] = -1;
+        body.a[inst] = idx;
+        body.b[inst] = fieldRef;
+        rebuilt.push(inst);
+      } else {
+        rebuilt.push(inst);
+      }
+    }
+    replaceContents(block.insts, rebuilt);
+  }
+  while (body.varTypes.length > 0) {
+    body.varTypes.pop();
+  }
+};
+
 /** Replaces dst's contents with src's, in place (IrBlock fields are
  * immutable bindings; the arrays themselves are mutable). */
 export let replaceContents = (dst: Array<i32>, src: Array<i32>): void => {
@@ -541,6 +663,7 @@ let prepareOne = (
   for (let v in liveIn[0]) {
     spilled.add(v);
   }
+  spillCatchLiveIns(liveIn, dispatchRegions, spilled);
 
   // The frame struct: $state plus one nullable-weakened field per
   // spilled value, ascending value id (deterministic layout).
@@ -558,6 +681,7 @@ let prepareOne = (
     }
     vid += 1;
   }
+  varFieldsOf(presplit, fields);
   let frameName = funcDisplayName(func) + '$' + i32ToString(funcIndex) + '$Frame';
   let frame = new WasmStruct(frameName, fields);
   wasm.types.push(frame);
@@ -1096,6 +1220,10 @@ let buildNextBody = (
       replaceContents(block.insts, rebuilt);
     }
   }
+
+  // Mutable variables move into the frame; their wasm locals would not
+  // survive a suspension.
+  rewriteVarsToFrame(body, bodyBlocks, frame, frameParam);
 
   return body;
 };

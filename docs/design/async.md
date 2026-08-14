@@ -712,10 +712,15 @@ dominates precisely the part of that body it heads.
 `finally` semantics on _abandonment_ (a pending try's future is
 dropped) remain coupled to cancellation and are decided there — same
 one-place answer promised in generators.md §6, which generators then
-inherit. ZIR lowers `finally` (exceptions.md, "Finally Compilation"),
-but bails on an `await` inside a protected region: the dispatch that
-replays the region's exit rides wasm locals, and a local does not
-survive a suspension.
+inherit. `await` inside a `finally`-protected region — the body, and
+the finalizer itself — lowers: the exit-dispatch state (the exit code,
+the parked result, the saved payload) rides mutable variables, and the
+split passes move every variable into the frame
+(`rewriteVarsToFrame`), since a wasm local does not survive a
+suspension. The same lifting covers `using` followed by awaits, which
+is the async-resource pattern. `tests/language/execution/async/
+await_in_try_finally.zena` and `await_in_using.zena` pin every exit
+path — normal, failure at the resume point, `return`, `break`.
 
 ## 7. Errors: plain `Error`, everywhere
 

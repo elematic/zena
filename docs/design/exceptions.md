@@ -166,12 +166,15 @@ run inside-out with no duplicated code. A `break`/`continue` whose loop
 was opened *inside* the region does not leave it and owes nothing,
 which `FinallyScope.loopDepth` is what distinguishes.
 
-**Not yet supported**: an `await` or `yield` inside a `finally`-protected
-region. The dispatch rides wasm locals and a local does not survive a
-suspension; ZIR bails loudly (`suspension inside a try with a
-finalizer`) rather than miscompiling it. Celling those the way RTA
-already cells try-assigned locals in a `gen`/`async` body is what would
-lift it.
+An `await` or `yield` inside a `finally`-protected region is
+supported. The dispatch rides wasm locals, and a local does not
+survive a suspension — so the split passes move every mutable variable
+into the suspension frame (`rewriteVarsToFrame` in generators.zena),
+one nullable-weakened field per variable, with `var_get`/`var_set`
+rewritten to frame reads and writes. Field defaults match the local
+defaults the variables had. This lifted the former loud bails
+(`suspension inside a try with a finalizer`, `suspension inside a
+using region`).
 
 ## Alternative Designs Considered
 

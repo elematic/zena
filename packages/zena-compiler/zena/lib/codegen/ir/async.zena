@@ -65,7 +65,8 @@ import { FunctionLowerer } from './lowering.zena';
 import {
   truncate, replaceContents, internVt, addRawRef, rawInst, placeInst,
   rawParam, computeLiveIn, weakenToNullable, loopContainsSuspend,
-  rerouteEdges, TryRegion, dispatchRegionsOf,
+  rerouteEdges, TryRegion, dispatchRegionsOf, spillCatchLiveIns,
+  varFieldsOf, rewriteVarsToFrame,
 } from './generators.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
@@ -527,6 +528,7 @@ let prepareOne = (
   for (let v in liveIn[0]) {
     spilled.add(v);
   }
+  spillCatchLiveIns(liveIn, dispatchRegions, spilled);
 
   // The frame struct: $state, the frame's own future, then one
   // nullable-weakened field per spilled value, ascending value id.
@@ -546,6 +548,7 @@ let prepareOne = (
     }
     vid += 1;
   }
+  varFieldsOf(presplit, fields);
   let frameName = name + '$' + i32ToString(funcIndex) + '$AsyncFrame';
   let frame = new WasmStruct(frameName, fields);
   wasm.types.push(frame);
@@ -1178,6 +1181,10 @@ let buildStepBody = (
       replaceContents(block.insts, rebuilt);
     }
   }
+
+  // 7. Mutable variables move into the frame; their wasm locals would
+  // not survive a suspension.
+  rewriteVarsToFrame(body, bodyBlocks, frame, frameParam);
 
   return body;
 };

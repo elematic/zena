@@ -1,0 +1,26 @@
+// @mode: run
+// @result: 70
+
+// The generator twin of async's outer-local-across-try shape: a local
+// bound before a `try` that holds a `yield` and a `throw`, read only
+// after the catch. Resuming the yield re-enters the region through the
+// dispatcher, which gives the catch a predecessor that skips the
+// definition — the local must ride the frame.
+
+let g = gen (): Iterator<i32> => {
+  let won = 70;
+  try {
+    yield 1;
+    throw new Error('after the suspension');
+  } catch (e) {
+  }
+  yield won;
+};
+
+export function main(): i32 {
+  var last = 0;
+  for (let v in g()) {
+    last = v;
+  }
+  return last;
+}

@@ -7,9 +7,22 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ```
-### A local live across a try holding both an `await` and a `return` miscompiles
+### RESOLVED: A local live across a try holding both an `await` and a `return` miscompiled
 - **Found**: 2026-08-11 (writing the combinator tests; the shape is ordinary
   async code, not anything the combinators need)
+- **Fixed 2026-08-14.** The split passes' spill set covered values live
+  into dispatch targets, but re-entering a `try` region from the
+  dispatcher gives that region's *catch* a predecessor that skips
+  everything above the region — so a value defined there and read in or
+  after the catch kept a direct SSA use its definition no longer
+  dominated. Loud when the verifier's dominance check caught it, the
+  silent handler-skip when emission's region placement shifted first.
+  `spillCatchLiveIns` (generators.zena, shared by both passes) now
+  spills everything live into the catch target of any region enclosing
+  a dispatch target, so those uses load from the frame. Tests:
+  `execution/async/await_in_try_outer_local{,_in_catch}.zena`,
+  `execution/generators/yield_in_try_outer_local.zena`. The combinator
+  tests' helper-function workaround is no longer needed but harmless.
 - **Severity**: high, and NOT reliably loud (updated 2026-08-13): the
   same four ingredients can instead compile and then *silently skip the
   handler* — a throw inside the try escaped `catch (e)` and surfaced as

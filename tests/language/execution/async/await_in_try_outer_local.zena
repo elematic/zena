@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 70
+
+// A local bound before a `try` that holds both an `await` and a
+// `return`, read after the try. The dispatcher re-enters the region to
+// resume the await, which gives the catch block a predecessor that
+// does not pass through the definition — so the local must ride the
+// frame, not SSA. This shape used to fail ZIR verification with a
+// dominance error (BUGS.md, "A local live across a try holding both an
+// `await` and a `return`").
+
+import { Error } from 'zena:error';
+import { Future, Completer } from 'zena:async';
+
+let failedI32 = (): Future<i32> => {
+  let c = new Completer<i32>();
+  c.fail(new Error('lost'));
+  return c.future;
+};
+
+export async function main(): Future<i32> {
+  let won = 70;
+  try {
+    await failedI32();
+    return 0 - 2;
+  } catch (e) {
+  }
+  return won;
+}

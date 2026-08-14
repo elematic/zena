@@ -1,0 +1,45 @@
+// @mode: run
+// @result: 4
+
+// The same shape with the outer local read in the catch arm itself,
+// and the failure raised synchronously by the awaited call rather than
+// by a rejected future — the first entry into the region throws before
+// any suspension has happened. Both paths into the catch (the original
+// try_br and the dispatcher's re-entry) must see the local's value.
+// This is the zena:fetch body-reads-once shape, which compiled and
+// silently skipped the catch before the outer local was spilled.
+
+import { Error } from 'zena:error';
+import { Future, Completer } from 'zena:async';
+import { String } from 'zena:string';
+
+class Once {
+  var #used: boolean = false;
+
+  take(): Future<String> {
+    if (this.#used) {
+      throw new Error('already taken');
+    }
+    this.#used = true;
+    let c = new Completer<String>();
+    c.complete('pong');
+    return c.future;
+  }
+}
+
+let makeOnce = (): Future<Once> => {
+  let c = new Completer<Once>();
+  c.complete(new Once());
+  return c.future;
+};
+
+export async function main(): Future<i32> {
+  let once = await makeOnce();
+  let first = await once.take();
+  try {
+    await once.take();
+    return 0 - 1;
+  } catch (e) {
+    return first.length;
+  }
+}

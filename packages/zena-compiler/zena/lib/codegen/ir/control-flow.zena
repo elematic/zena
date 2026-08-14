@@ -22,10 +22,8 @@ import {
   TuplePattern, UsingStatement, VariableDeclaration, WhileStatement,
   ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral,
   BinaryExpression, CallExpression, ForInStatement, IdentifierPattern,
-  IndexExpression, MemberExpression, AwaitExpression, YieldStatement,
-  FunctionExpression, FunctionDeclaration, ClassDeclaration,
+  IndexExpression, MemberExpression,
 } from '../../ast.zena';
-import { walk } from '../../visitor.zena';
 import {
   ArrayType, ClassType, InterfaceType, Type, VoidType, baseType,
   isVoidOrNeverType, arrayElementType, isSignedNarrowIntType,
@@ -497,26 +495,6 @@ let bindCatchParam = (cx: LoweringContext, handler: CatchClause): void => {
   cx.bindPatternSym(symOpt, payload);
 };
 
-/**
- * True when `node` contains a suspension point belonging to the
- * enclosing `async`/`gen` body. A nested function body has its own.
- */
-let containsSuspension = (node: Node): boolean => {
-  let hits = new Array<Node>();
-  walk(node, (n: Node): boolean => {
-    if (n is FunctionExpression || n is FunctionDeclaration ||
-        n is ClassDeclaration) {
-      return false;
-    }
-    if (n is AwaitExpression || n is YieldStatement) {
-      hits.push(n);
-      return false;
-    }
-    return true;
-  }, (n: Node): void => {});
-  return hits.length > 0;
-};
-
 // `FinallyScope.codeVar` values: which exit the dispatch must replay.
 let finallyExitNormal = 0;
 let finallyExitReturn = 1;
@@ -805,13 +783,6 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
  */
 let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   let finalizer = expr.finalizer as Node;
-  if (inSuspensionBody(cx) && containsSuspension(expr as Node)) {
-    // The dispatch rides wasm locals — the exit code, the parked
-    // result, the saved payload — and a local does not survive a
-    // suspension. Celling them the way RTA cells try-assigned
-    // locals is what would lift this.
-    bail(cx, 'suspension inside a try with a finalizer');
-  }
   let nodeType = cx.func.model.getNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped try expression');
@@ -1080,14 +1051,6 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
     bail(cx, 'untyped using initializer');
   }
   let ownerClass = disposeOwnerClass(cx, declType);
-
-  for (var k = restStart; k < restEnd; k += 1) {
-    if (inSuspensionBody(cx) && containsSuspension(rest[k] as Node)) {
-      // Same reason `try`/`finally` bails: the dispatch rides wasm
-      // locals, and a local does not survive a suspension.
-      bail(cx, 'suspension inside a using region');
-    }
-  }
 
   let value = lowerExpr(cx, stmt.init, null);
   if (stmt.pattern != null) {

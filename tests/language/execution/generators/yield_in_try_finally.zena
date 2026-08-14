@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 612
+
+// try/finally with a `yield` inside the protected part: the finalizer
+// runs once, when the generator's own control flow leaves the region —
+// here by running to completion. (`finally` on abandonment — a dropped
+// half-consumed generator — is deferred to cancellation, so this only
+// pins the run-to-completion paths.) Used to bail with 'suspension
+// inside a try with a finalizer'.
+
+class Log {
+  var seq: i32 = 0;
+  add(d: i32): void {
+    this.seq = this.seq * 10 + d;
+  }
+}
+
+export function main(): i32 {
+  let log = new Log();
+  let g = gen (): Iterator<i32> => {
+    try {
+      yield 1;
+      yield 2;
+    } finally {
+      log.add(5);
+    }
+    yield 3;
+  };
+  var sum = 0;
+  for (let v in g()) {
+    sum += v;
+  }
+  // Body events: sum 1+2+3 = 6; finalizer ran exactly once = seq 5.
+  if (sum != 6 || log.seq != 5) {
+    return 0 - 1;
+  }
+  return 612;
+}

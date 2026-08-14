@@ -1,0 +1,148 @@
+// @mode: run
+// @result: 777
+
+// try/finally with suspensions (async.md §6): the finalizer runs
+// exactly once on every path out of the protected part — normal
+// completion, a failure surfacing at the resume point, and a `return`
+// — and a finalizer can itself await. The exit-dispatch state (exit
+// code, parked result, saved payload) rides frame fields, so it
+// survives the suspensions; this shape used to bail with 'suspension
+// inside a try with a finalizer'.
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+/** Records events as decimal digits, so ordering is observable. */
+class Log {
+  var seq: i32 = 0;
+  add(d: i32): void {
+    this.seq = this.seq * 10 + d;
+  }
+}
+
+/** Normal path: body completes after a suspension; finalizer runs. */
+let normalPath = async (c: Completer<i32>, log: Log): Future<i32> => {
+  var v = 0;
+  try {
+    v = await c.future;
+    log.add(1);
+  } finally {
+    log.add(2);
+  }
+  log.add(3);
+  return v;
+};
+
+/** The awaited future fails: the finalizer still runs, and the
+ * failure still rejects this function's own future. */
+let failPath = async (c: Completer<i32>, log: Log): Future<i32> => {
+  try {
+    await c.future;
+    return 0 - 1;
+  } finally {
+    log.add(4);
+  }
+};
+
+/** `return` leaves through the finalizer, after a suspension. */
+let returnPath = async (c: Completer<i32>, log: Log): Future<i32> => {
+  try {
+    let v = await c.future;
+    return v + 1;
+  } finally {
+    log.add(5);
+  }
+};
+
+/** The finalizer itself suspends. */
+let awaitInFinally = async (
+  c1: Completer<i32>,
+  c2: Completer<i32>,
+  log: Log
+): Future<i32> => {
+  var v = 0;
+  try {
+    v = await c1.future;
+  } finally {
+    v = v + await c2.future;
+    log.add(6);
+  }
+  return v;
+};
+
+/** `break` leaves the loop through the finalizer, after a suspension. */
+let breakPath = async (c: Completer<i32>, log: Log): Future<i32> => {
+  var total = 0;
+  while (true) {
+    try {
+      total = total + await c.future;
+      break;
+    } finally {
+      log.add(7);
+    }
+  }
+  return total;
+};
+
+/** Catches failPath's rejection so main can observe it was rethrown
+ * AFTER the finalizer ran. */
+let observeFailure = async (f: Future<i32>): Future<i32> => {
+  try {
+    await f;
+    return 0 - 2;
+  } catch (e) {
+    return 9;
+  }
+};
+
+export let main = (): i32 => {
+  let log = new Log();
+
+  let c1 = new Completer<i32>();
+  let a = normalPath(c1, log);
+  c1.complete(10);
+  drainMicrotasks();
+  if (runFuture(a) != 10 || log.seq != 123) {
+    return 0 - 1;
+  }
+
+  log.seq = 0;
+  let c2 = new Completer<i32>();
+  let b = observeFailure(failPath(c2, log));
+  c2.fail(new Error('lost'));
+  drainMicrotasks();
+  if (runFuture(b) != 9 || log.seq != 4) {
+    return 0 - 2;
+  }
+
+  log.seq = 0;
+  let c3 = new Completer<i32>();
+  let r = returnPath(c3, log);
+  c3.complete(20);
+  drainMicrotasks();
+  if (runFuture(r) != 21 || log.seq != 5) {
+    return 0 - 3;
+  }
+
+  log.seq = 0;
+  let c4 = new Completer<i32>();
+  let c5 = new Completer<i32>();
+  let f = awaitInFinally(c4, c5, log);
+  c4.complete(30);
+  drainMicrotasks();
+  c5.complete(7);
+  drainMicrotasks();
+  if (runFuture(f) != 37 || log.seq != 6) {
+    return 0 - 4;
+  }
+
+  log.seq = 0;
+  let c6 = new Completer<i32>();
+  let k = breakPath(c6, log);
+  c6.complete(40);
+  drainMicrotasks();
+  if (runFuture(k) != 40 || log.seq != 7) {
+    return 0 - 5;
+  }
+
+  return 777;
+};

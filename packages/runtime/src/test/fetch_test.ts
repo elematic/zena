@@ -130,30 +130,23 @@ suite('Runtime - zena:fetch', () => {
   test('the body reads once; a second text() throws', async () => {
     globalThis.fetch = (async () => new Response('once')) as typeof fetch;
 
-    // The try/catch lives in a helper that returns from both arms: a
-    // local carried across a try that holds an await and a return is
-    // the miscompile in BUGS.md ("A local live across a try…"), and
-    // this test found its silent form.
+    // A local carried across a try that holds an await and a return —
+    // the shape that once miscompiled by silently skipping the catch
+    // (BUGS.md, "A local live across a try…", found by this very
+    // test). Kept in its direct form as the regression guard.
     const {main} = await hosted(`
       import { Future } from 'zena:async';
-      import { fetch, Response } from 'zena:fetch';
-
-      let secondReadThrew = async (response: Response): Future<boolean> => {
-        try {
-          await response.text();
-          return false;
-        } catch (e) {
-          return true;
-        }
-      };
+      import { fetch } from 'zena:fetch';
 
       export async function main(): Future<i32> {
         let response = await fetch('https://example.test/body');
         let first = await response.text();
-        if (!(await secondReadThrew(response))) {
+        try {
+          await response.text();
           return 0 - 1;
+        } catch (e) {
+          return first.length;
         }
-        return first.length;
       }
     `);
     assert.strictEqual(await main(), 4);
