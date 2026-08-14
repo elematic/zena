@@ -809,6 +809,42 @@ export final class Specializer implements SpecializerInterface {
     this.pass.specializedInterfaces.push(it);
   }
 
+  /**
+   * The class in `ct`'s super chain whose own declaration body
+   * contains `node`, or null when none does (mixin members and
+   * synthesized accessors have no declaring class in the chain).
+   * `instantiateClassType` substitutes `superType` per hop, so the hop
+   * that declares the node IS the declaring class's resolved
+   * instantiation — the substitution context an inherited body is
+   * lowered under.
+   */
+  declaringClassOf(ct: ClassType, node: Node): ClassType | null {
+    var c: ClassType | null = ct;
+    while (c != null) {
+      let cc = c as ClassType;
+      let lookupId = ((cc.genericSource ?? cc)).symbolId;
+      if (this.pass.classDecls.has(lookupId)) {
+        let decl = this.pass.classDecls[lookupId];
+        if (decl is ClassDeclaration) {
+          for (let member in (decl as ClassDeclaration).body) {
+            if (member == node) {
+              return cc;
+            }
+            // A setter registers under its FunctionExpression, not the
+            // AccessorDeclaration the body holds.
+            if (member is AccessorDeclaration &&
+                (member as AccessorDeclaration).setter != null &&
+                ((member as AccessorDeclaration).setter as Node) == node) {
+              return cc;
+            }
+          }
+        }
+      }
+      c = cc.superType;
+    }
+    return null;
+  }
+
   registerClassMethod(
       cType: ClassType,
       cDecl: Node | null,
@@ -819,6 +855,39 @@ export final class Specializer implements SpecializerInterface {
       backingFieldName: String | null,
       model: SemanticModel,
       methodTypeArgs: Array<Type> | null = null): WasmFunction {
+
+    // An inherited PRIVATE member registers under its declaring
+    // class's resolved instantiation, not the instantiating class
+    // (binary-size.md §16): the body can only mention type parameters
+    // in scope at its declaration site, so the subclass-keyed copy is
+    // byte-identical to the declaring class's — and a private member
+    // can never be overridden, so nothing ever needs the subclass key.
+    // Mixin-scoped names ("Scope::#x") stay per-host: a mixin body's
+    // `this` maps to the host class. Templates and erasures keep the
+    // old keying — nothing is emitted at either.
+    let isPrivateName = methName.startsWith("#") ||
+        methName.startsWith("get##") || methName.startsWith("set##");
+    if (isPrivateName && methodNode != null && !methName.contains("::") &&
+        isConcrete(cType) && !containsErasedType(cType as Type)) {
+      let declaringOpt = this.declaringClassOf(cType, methodNode as Node);
+      if (declaringOpt != null && (declaringOpt as ClassType) != cType) {
+        let declaring = declaringOpt as ClassType;
+        let declId = ((declaring.genericSource ?? declaring)).symbolId;
+        let dDecl: Node | null = if (this.pass.classDecls.has(declId)) {
+          this.pass.classDecls[declId]
+        } else {
+          cDecl
+        };
+        let dModel = if (this.pass.classModels.has(declId)) {
+          this.pass.classModels[declId]
+        } else {
+          model
+        };
+        return this.registerClassMethod(declaring, dDecl, methName,
+            methodNode, isSynthesizedGetter, isSynthesizedSetter,
+            backingFieldName, dModel, methodTypeArgs);
+      }
+    }
 
     var realMethName = methName;
     var methodTypeNode: Type | null = null;

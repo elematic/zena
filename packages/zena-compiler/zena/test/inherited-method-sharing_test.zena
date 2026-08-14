@@ -1,0 +1,125 @@
+/**
+ * Inherited method bodies are shared, not re-emitted per subclass.
+ *
+ * When RTA reaches a member on a subclass that inherits it, the body
+ * registers under the DECLARING class's resolved instantiation — a
+ * subclass-keyed copy exists only for an override, a different generic
+ * binding of the base, or a mixin member (whose `this` maps to the
+ * host). These assert the ABSENCE of the subclass-keyed copy, which a
+ * snapshot cannot: regenerating a snapshot accepts the copy right back.
+ */
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue, fail } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { Array } from 'zena:array';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { String } from 'zena:string';
+import { makeCompiler, MockHost } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+
+let compileToWat = (source: String): String => {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile("test.zena");
+  let checkRes = checkCompilation(compResult, null, false);
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+
+  let program = new Program(units, entryUnit);
+  let generator = new WatGenerator("zena-cli", false);
+  return generator.generate(program);
+};
+
+/**
+ * The names of every function the module DEFINES whose name starts
+ * with `classPrefix` and contains `memberPart`, matched WITHOUT the
+ * leading '$'. Specialized class keys embed a symbol id
+ * ("Derived_s891_i32"), so exact names are unstable; the prefix+part
+ * match is not.
+ */
+let definedFunctionsMatching = (wat: String, classPrefix: String,
+    memberPart: String): Array<String> => {
+  let found = new Array<String>();
+  let chunks = wat.split('(func $');
+  for (var ci = 1; ci < chunks.length; ci += 1) {
+    let chunk = chunks[ci];
+    var end = 0;
+    while (end < chunk.length) {
+      let b = chunk.getByteAt(end);
+      if (b == 32 || b == 10 || b == 41) { break; } // ' ', '\n', ')'
+      end += 1;
+    }
+    let name = chunk.sliceBytes(0, end);
+    if (name.startsWith(classPrefix) && name.contains(memberPart)) {
+      found.push(name);
+    }
+  }
+  return found;
+};
+
+let assertNoSubclassCopy = (wat: String, subclassPrefix: String,
+    memberPart: String, basePrefix: String): void => {
+  let baseCopies = definedFunctionsMatching(wat, basePrefix, memberPart);
+  isTrue(baseCopies.length > 0,
+      `expected a ${basePrefix}*${memberPart}* function to be emitted — ` +
+      'the fixture stopped exercising the shape this test pins');
+  let subCopies = definedFunctionsMatching(wat, subclassPrefix, memberPart);
+  if (subCopies.length > 0) {
+    fail(`subclass-keyed copy ${subCopies[0]} was emitted; the inherited ` +
+        'body must register under the declaring class only');
+  }
+};
+
+// The private-generic-return-subclass portable fixture, inlined: the
+// shape PR #246 fixed a substitution bug in, and the natural fixture
+// for sharing — with sharing, the Derived.#find copy stops existing.
+let privateFixture = `
+class Node<T> {
+  value: T;
+  new(this.value: T);
+}
+class Base<T> {
+  #node: Node<T> | null;
+  new() : #node = null;
+  #find(): Node<T> | null {
+    return this.#node;
+  }
+  size(): i32 {
+    let n = this.#find();
+    if (n != null) { return 1; }
+    return 0;
+  }
+}
+final class Derived<T> extends Base<T> {
+  tag(): i32 { return 5; }
+}
+export let main = (): i32 => {
+  let d = new Derived<i32>();
+  return d.size() + d.tag();
+};
+`;
+
+export let tests = suite('inherited method sharing', (): void => {
+  test('an inherited private method is not copied to the subclass',
+      (ctx: TestContext): void => {
+    let wat = compileToWat(privateFixture);
+    assertNoSubclassCopy(wat, 'Derived', '.#find', 'Base');
+  });
+});

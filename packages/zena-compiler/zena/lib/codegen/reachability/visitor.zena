@@ -1226,37 +1226,53 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
   }
 
-  /** Queues a specialization's private method (by name) as reachable. */
+  /**
+   * Queues a specialization's private method (by name) as reachable.
+   *
+   * The walk covers the SUPER CHAIN, not just `classType`'s own body:
+   * the accessing body may be an inherited method walked under a
+   * subclass's context, and the private it names is declared on the
+   * ancestor. Every chain hop declaring the name is queued (privates
+   * are lexical, so under shadowing only the accessor's own class's
+   * copy is called — the extra hop is an over-reach, never a wrong
+   * binding). Each hop is already the declaring class's resolved
+   * instantiation, which is also the key registration uses
+   * (binary-size.md §16).
+   */
   queuePrivateMethod(classType: ClassType, methName: String,
       typeArguments: Array<Type> | null = null): void {
-    let declId = ((classType.genericSource ?? classType)).symbolId;
-    if (!this.pass.classDecls.has(declId)) {
-      return;
-    }
-    let cdNode = this.pass.classDecls[declId];
-    if (!(cdNode is ClassDeclaration)) {
-      return;
-    }
-    let cdModel = this.pass.classModels[declId];
-    for (let member in (cdNode as ClassDeclaration).body) {
-      if (member is MethodDefinition) {
-        let md = member as MethodDefinition;
-        if (ctorMethodName(md) == methName) {
-          if (typeArguments != null &&
-              (typeArguments as Array<Type>).length > 0) {
-            // Generic private method: register the monomorphized copy
-            // under its specialized slot name, exactly like public
-            // generic member references do — queuing the bare
-            // declaration would only register the shared template.
-            this.pass.specializer.instantiateGenericMethod(classType,
-                cdNode, methName, md as Node,
-                typeArguments as Array<Type>, cdModel);
-          } else {
-            this.pass.queueReferrer(new Referrer(false, noSymbolId,
-                (md as Node).id as i32, cdModel, classType, true));
+    var c: ClassType | null = classType;
+    while (c != null) {
+      let cc = c as ClassType;
+      let declId = ((cc.genericSource ?? cc)).symbolId;
+      if (this.pass.classDecls.has(declId)) {
+        let cdNode = this.pass.classDecls[declId];
+        if (cdNode is ClassDeclaration) {
+          let cdModel = this.pass.classModels[declId];
+          for (let member in (cdNode as ClassDeclaration).body) {
+            if (member is MethodDefinition) {
+              let md = member as MethodDefinition;
+              if (ctorMethodName(md) == methName) {
+                if (typeArguments != null &&
+                    (typeArguments as Array<Type>).length > 0) {
+                  // Generic private method: register the monomorphized
+                  // copy under its specialized slot name, exactly like
+                  // public generic member references do — queuing the
+                  // bare declaration would only register the shared
+                  // template.
+                  this.pass.specializer.instantiateGenericMethod(cc,
+                      cdNode, methName, md as Node,
+                      typeArguments as Array<Type>, cdModel);
+                } else {
+                  this.pass.queueReferrer(new Referrer(false, noSymbolId,
+                      (md as Node).id as i32, cdModel, cc, true));
+                }
+              }
+            }
           }
         }
       }
+      c = cc.superType;
     }
   }
 
