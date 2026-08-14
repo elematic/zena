@@ -634,6 +634,18 @@ website served by a Zena server":
     `run()` waits on — which is what puts fetch in the playground with
     no playground changes at all. As on the web, a body reads once:
     a second `text()` throws rather than handing back an empty body.
+    `Response` implements `Disposable` — reading and disposing are one
+    obligation, so `text()` consumes the host entry and `dispose()`
+    releases it unread, idempotently, with `status`/`ok` outliving both
+    (they were copied over when the response arrived). It is
+    deliberately *not* a `resource` class: that regime would put a
+    release obligation on every casual `fetch()` once move checking
+    lands, and the web's own `Response` carries none. A status-only
+    caller writes `using response = await fetch(url);` — which compiles
+    today because no suspension follows the `using`; the body-reading
+    case needs no `using` because `text()` is the release. (`using`
+    around a later `await` is the known suspension-inside-a-region
+    lowering bail, and lifts with it.)
 - **Await-in-try — done** (§6), the fast-follow to A1: resuming
   re-enters each enclosing `try` region, so a failed await is caught
   by the handler the user wrote.

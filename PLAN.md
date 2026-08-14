@@ -110,11 +110,15 @@ This document tracks completed work and planned features. For project instructio
     the body — a 404 is a normal completion, and only "no response at
     all" fails the future. The response object stays on the host behind
     an id until `text()` consumes it, which is also the structure a
-    streamed body needs later. `@zena-lang/runtime` supplies the
-    backing `web.*` imports by default from the host's own `fetch()`,
-    which puts it in the playground with no playground changes. WASI
-    and component builds fail at import resolution; the component's
-    HTTP is `wasi:http` (async.md §4.1).
+    streamed body needs later. `Response` implements `Disposable` (not
+    `resource` — no obligation on casual callers): `text()` consumes
+    the host entry, `dispose()` releases it unread, and a status-only
+    caller can `using response = await fetch(url);` today.
+    `@zena-lang/runtime` supplies the backing `web.*` imports by
+    default from the host's own `fetch()`, which puts it in the
+    playground with no playground changes. WASI and component builds
+    fail at import resolution; the component's HTTP is `wasi:http`
+    (async.md §4.1).
   - Next: `then`/`map`/`flatMap` (blocked on closures inside
     generic code), richer fetch (headers, streamed bodies — wants
     streams), and post-v1 items (cancellation and structured

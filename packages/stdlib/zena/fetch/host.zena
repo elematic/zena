@@ -22,6 +22,7 @@
 import { Error } from 'zena:error';
 import { Future } from 'zena:async';
 import { pending } from 'zena:host-async';
+import { Disposable } from 'zena:ownership';
 import { String } from 'zena:string';
 
 /** Starts a GET of `url`; the host completes `handle` with a response
@@ -38,18 +39,31 @@ declare function __response_status(id: i32): i32;
 @external("web", "response_text")
 declare function __response_text(handle: i32, id: i32): void;
 
+/** Releases the response named by `id` without reading it. The host
+ * tolerates an id that was already consumed. */
+@external("web", "response_drop")
+declare function __response_drop(id: i32): void;
+
 /**
  * An HTTP response: the status, and a one-shot handle on the body.
  *
  * The body lives on the host until `text()` reads it, so reading is
  * asynchronous and — as on the web — allowed once: a second `text()`
  * throws rather than handing back an empty body.
+ *
+ * A response whose body is never read holds its host-side entry until
+ * the program ends. `dispose()` releases it early, so a status-only
+ * caller can write `using response = await fetch(url);` and hold
+ * nothing. (`status`/`ok` were copied over when the response arrived
+ * and outlive disposal.) Reading and disposing are one obligation:
+ * `text()` consumes the entry, after which `dispose()` is a no-op —
+ * and disposal is idempotent, per the `Disposable` contract.
  */
-export class Response {
+export class Response implements Disposable {
   /** The HTTP status code. */
   status: i32;
   #id: i32;
-  var #bodyUsed: boolean = false;
+  var #consumed: boolean = false;
 
   new(this.status, id: i32) : #id = id;
 
@@ -62,13 +76,23 @@ export class Response {
 
   /** The response body, decoded as text. */
   text(): Future<String> {
-    if (this.#bodyUsed) {
-      throw new Error('zena:fetch: the response body has already been read');
+    if (this.#consumed) {
+      throw new Error(
+        'zena:fetch: the response body has already been read or disposed');
     }
-    this.#bodyUsed = true;
+    this.#consumed = true;
     let p = pending<String>();
     __response_text(p.handle, this.#id);
     return p.future;
+  }
+
+  /** Releases the host-side response without reading the body. */
+  :Disposable.dispose(): void {
+    if (this.#consumed) {
+      return;
+    }
+    this.#consumed = true;
+    __response_drop(this.#id);
   }
 }
 

@@ -574,9 +574,10 @@ export interface WebHost {
  * the boundary is also what a streamed body will want: the stream
  * stays here, and reads cross one completion at a time.
  *
- * A response whose body is never read is retired with the instance:
- * the registry lives in this closure, so it cannot outlive the program
- * that filled it.
+ * `response_drop` releases an entry without reading it — the Zena
+ * side's `Response.dispose()`. A response neither read nor disposed is
+ * retired with the instance: the registry lives in this closure, so it
+ * cannot outlive the program that filled it.
  */
 export function createWebHost(
   getExports?: () => WebAssembly.Exports | undefined,
@@ -619,6 +620,11 @@ export function createWebHost(
         responses.delete(id);
         return response.text();
       }, 'string'),
+      // Zena's Response.dispose() guards against double release, so an
+      // unknown id here is not an error worth distinguishing.
+      response_drop: (id: number): void => {
+        responses.delete(id);
+      },
     },
     idle: work.idle,
   };

@@ -158,4 +158,53 @@ suite('Runtime - zena:fetch', () => {
     `);
     assert.strictEqual(await main(), 4);
   });
+
+  test('a status-only response releases through `using`', async () => {
+    globalThis.fetch = (async () =>
+      new Response('unread', {status: 202})) as typeof fetch;
+
+    // No suspension follows the `using` in its block, so this is the
+    // shape `using` supports in an async body today — and status-only
+    // is exactly the case where nothing else releases the host entry.
+    const {main} = await hosted(`
+      import { Future } from 'zena:async';
+      import { fetch } from 'zena:fetch';
+
+      export async function main(): Future<i32> {
+        using response = await fetch('https://example.test/head');
+        return response.status;
+      }
+    `);
+    assert.strictEqual(await main(), 202);
+  });
+
+  test('dispose is idempotent, keeps status readable, refuses text()', async () => {
+    globalThis.fetch = (async () => new Response('unread')) as typeof fetch;
+
+    const {main} = await hosted(`
+      import { Future } from 'zena:async';
+      import { fetch, Response } from 'zena:fetch';
+      import { Disposable } from 'zena:ownership';
+
+      let textThrew = async (response: Response): Future<boolean> => {
+        try {
+          await response.text();
+          return false;
+        } catch (e) {
+          return true;
+        }
+      };
+
+      export async function main(): Future<i32> {
+        let response = await fetch('https://example.test/dropped');
+        response.:Disposable.dispose();
+        response.:Disposable.dispose();
+        if (!(await textThrew(response))) {
+          return 0 - 1;
+        }
+        return response.status;
+      }
+    `);
+    assert.strictEqual(await main(), 200);
+  });
 });
