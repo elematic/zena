@@ -1114,6 +1114,35 @@ a base field keeps its index in a subtype struct, so the
 `getterStruct`/`getterFieldIndex` pair computed for the declaring class
 is correct for every subclass receiver.
 
+### Landed, and what it was worth
+
+The keying change landed as a single chokepoint in
+`registerClassMethod`: when the member node's declaring class, resolved
+through the receiver's (already-substituted) super chain, differs from
+the registering class, the registration re-enters under the declaring
+instantiation. Every consumer already walked the chain — vtable slot
+population, interface trampolines, `resolveDevirtualizedMethod`, and
+the method-call lowering all find the shared body one hop later — so
+no lookup changed. `queuePrivateMethod` now walks the chain too, and
+`inherited-method-sharing_test.zena` asserts the subclass-keyed copy is
+ABSENT from the WAT (a property a snapshot cannot hold: regenerating
+one accepts the copy right back).
+
+Measured on the compiler's own module, fixed input, both stages `-g`:
+3,244,237 → 3,243,538 bytes and 15,199 → 15,190 functions. The nine
+removed bodies are the `hashCode` copies the `Type` and `WasmType`
+hierarchies dragged onto every subclass. The win is small because the
+compiler's hierarchies mostly override what they inherit or inherit
+only fields; the fixtures (`minimal`, `array-sum`, `hello-string`) are
+byte-identical because they barely inherit at all. The remaining
+same-name pairs are all copies the key is SUPPOSED to keep distinct: a
+case variant's synthesized `==`/`hashCode` (its own declaration, even
+under a hand-written base method) and interface-adaptation accessors
+registered without a declaration node. A side effect worth keeping:
+`memberProvidedBySubclass` no longer sees a phantom entry for a
+subclass that merely inherits, so a call through a base-typed receiver
+devirtualizes in cases that used to dispatch through the vtable.
+
 ## The keystone: `hasInst` and the class vtable
 
 Everything still in the module traces back to a single coupling.
