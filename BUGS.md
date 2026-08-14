@@ -40,26 +40,59 @@ immediately trying to fix it (which can pollute the current task's context).
   and `combinator_race.zena` push the try/catch into a small async helper
   that returns from both arms, which has no local living across it.
 
-### `is` and downcasts always fail through an interface-typed reference
+### RESOLVED: `is` and downcasts always failed through an interface-typed reference
 - **Found**: 2026-08-08 (designing zena:host-async's handle registry, which
   wanted to hold completers of different payload types in one map)
-- **Severity**: high (a wrong answer, not a rejected program — the checker
-  accepts the test and the runtime silently says "no")
-- **Details**: A value held as an interface cannot be tested against, or cast
-  back to, its concrete type. Given `interface Marker {}` and
-  `class Plain implements Marker`, `let p: Marker = new Plain(); p is Plain`
-  evaluates to **false**, and `p as Plain` traps with `cast failure`. It is
-  not generics-specific — it fails for a plain class exactly as it does for a
-  specialized generic one.
-- **Not affected**: the same thing through a *base class* works, and works
-  precisely: with `class Cell<T> extends Base`, a `Cell<String>` held as
-  `Base` tests true for `Cell<String>` and false for `Cell<i32>`,
-  `Cell<f64>`, and `Cell<SomeOtherClass>` alike. So specialization identity
-  is available at runtime; only the interface path loses it.
-- **Worked around**: `zena:async`'s `AnyCompleter` is a base class rather
-  than the marker interface it wants to be, with a comment pointing here.
-  Anything else erasing to a common supertype and narrowing back has the
-  same choice forced on it.
+- **Fixed 2026-08-13.** One cause, three lowering sites. A value held as an
+  interface is a fat POINTER — the instance paired with a vtable — so
+  `ref.test` against the concrete struct asked whether the PAIR was a
+  `Square`, which is false for every class, and `ref.cast` cast the pair and
+  trapped. Identity compares already saw through it
+  (`LoweringContext.unwrapFatPointer`, "Identity compares see through fat
+  pointers"); `is`, `as`, and narrowed reads did not.
+  - `#lowerIs` and `lowerAs` unwrap when the TARGET is a class.
+    Interface-to-interface is deliberately untouched: whether an instance
+    implements another interface is a question about vtables, and
+    `ref.test` cannot answer it in either direction.
+  - The third site is the one the first two exposed. After `c is Cell<i32>`
+    the checker narrows `c`, so the read is typed `Cell<i32>` while the
+    value in hand is still the pair — and a pair is not a subtype of the
+    instance inside it, so the coercion bailed `identifier type shift`.
+    `unwrapFatPointerValue` asks the question of the REPRESENTATION rather
+    than of a semantic type, by reverse-scanning `wasm.interfaceStructs`,
+    because that site has a lowered value and no type to consult.
+- **Was severity high**: a wrong answer, not a rejected program.
+- Specialization identity was never the problem — it works through a base
+  class and now works through an interface: a `Cell<i32>` held as `Shape`
+  tests true for `Cell<i32>` and false for `Cell<String>`, including for a
+  specialization the program never constructs.
+- **Test**: `execution/interfaces/downcast-through-interface.zena`.
+- **Still worked around**: `zena:async`'s `AnyCompleter` is a base class
+  rather than the marker interface it wants to be. That can be revisited
+  now; it is a stdlib change rather than part of this fix.
+
+### `match` over an interface-typed scrutinee calls the second arm unreachable
+
+- **Found**: 2026-08-13, writing the regression test for the downcast fix
+  above.
+- **Severity**: medium. A rejected program rather than a wrong answer, but
+  it rejects an ordinary shape and the diagnostic blames the wrong thing.
+- **Details**: with `interface Shape` and two implementors,
+
+  ```zena
+  let named = match (s) {   // s: Shape
+    case Square: 10
+    case Circle: 20         // Unreachable case.
+    case _: 30              // Unreachable case.
+  };
+  ```
+
+  Both later arms are reported unreachable. `Shape` is not sealed, so
+  nothing licenses treating `case Square` as exhaustive — the subtraction
+  appears to consume the whole scrutinee type on the first class arm.
+- **Not the same bug as the downcast one above**, and not fixed by it: this
+  is exhaustiveness in the checker, and it rejects before lowering runs.
+- **Workaround**: an if-chain of `is` tests, which is what the test does.
 
 ### RESOLVED: Self-hosted compiler cannot *call* a generic method on a class
 - **Fixed**: 2026-08-10, "Stop emitting a generic method at its own
@@ -1634,9 +1667,16 @@ found, returning false`, so the reachability pass is probably
   template; RTA never produces per-instantiation specialized copies,
   so reaching it fails with "non-concrete function reached". Applies
   to the self-hosted compiler's RTA; the checker accepts the code.
+- **A generic FUNCTION hits the same wall by another road**, with a
+  different message: a closure created in one bails
+  `zir unsupported: celled capture @twice_spec_i32`, not "non-concrete
+  function reached". Same restriction, so fixing one without the other
+  leaves half of "avoid closures in generic code" standing. Test:
+  `execution/generics/closure-in-generic-function.zena` (`@skip`ped, so
+  it self-retires).
 - **Workaround**: avoid closures in generic code — use small generic
-  classes implementing an interface (see zena:async's
-  Microtask/FutureListener objects).
+  classes implementing an interface (see zena:async's waiter objects).
+  This is what keeps `Future.then`/`map`/`flatMap` unwritten.
 
 ### Generic templates: `this` and generic-typed fields check as the raw template type
 

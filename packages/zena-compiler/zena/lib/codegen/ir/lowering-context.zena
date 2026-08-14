@@ -690,6 +690,36 @@ export final class LoweringContext {
   }
 
   /**
+   * The instance behind `value`, when its wasm type IS an interface fat
+   * pointer; `value` unchanged otherwise.
+   *
+   * The sibling below asks the same question of a semantic type. This
+   * one asks it of the representation, for the places that have a
+   * lowered value and no type to consult — a narrowed identifier read,
+   * where the checker's type for the use is already the narrowed class
+   * and the stored value is still the pair.
+   *
+   * A reverse scan rather than a marker on the struct: `interfaceStructs`
+   * is the registry that decides what a fat pointer IS, so asking it
+   * cannot drift from what packing produced. It runs only on the
+   * coercion path, where the types have already failed to match.
+   */
+  unwrapFatPointerValue(value: i32): i32 {
+    let vt = this.valueTypeOf(value);
+    let stOpt = asWasmStruct(vt);
+    if (stOpt == null) {
+      return value;
+    }
+    let st = stOpt as WasmStruct;
+    for (let pair in this.wasm.interfaceStructs) {
+      if (pair.value == st) {
+        return this.fatPointerInstance(st, value);
+      }
+    }
+    return value;
+  }
+
+  /**
    * Identity compares see through fat pointers: a record or interface
    * value becomes its eq-typed instance (field 0); everything else
    * passes through unchanged.

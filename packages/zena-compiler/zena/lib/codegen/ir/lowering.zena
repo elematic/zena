@@ -2903,8 +2903,19 @@ export final class FunctionLowerer {
     if (target == null) {
       this.#bail('is target kind');
     }
+    // A value held as an interface (or a record) is a fat POINTER — the
+    // instance paired with a vtable — so testing it directly asks
+    // whether the pair is a Square, which is false for every concrete
+    // class. Unwrap to the instance first, exactly as identity compares
+    // already do. Only when the target is a class: interface-to-
+    // interface is a question about vtables, not representation, and
+    // `ref.test` cannot answer it either way.
+    var tested = value;
+    if (baseType(targetType) is ClassType) {
+      tested = this.#cx().unwrapFatPointer(baseType(sourceType), value);
+    }
     // Streaming emits a plain (non-null) ref.test either way.
-    return this.b.emit(IrOp.ref_test, new ValTypeI32(), value,
+    return this.b.emit(IrOp.ref_test, new ValTypeI32(), tested,
         this.b.internType(new ValTypeRef(target as WasmType) as ValType));
   }
 
@@ -3063,6 +3074,24 @@ export final class FunctionLowerer {
         isRefValType(haveVt) && isValSubtype(wantVt, haveVt)) {
       return this.b.emit(IrOp.ref_cast, wantVt, value,
           this.b.internType(wantVt));
+    }
+    // The same narrowing, one representation further out: an
+    // interface-typed binding narrowed by `c is Cell<i32>` is read at
+    // `Cell<i32>` while the value in hand is still the fat pointer, and
+    // a pair is not a subtype of the instance inside it. Unwrap and ask
+    // again — `unwrapFatPointerValue` returns the value untouched when
+    // it is not a fat pointer, so nothing else takes this path.
+    let inner = this.#cx().unwrapFatPointerValue(value);
+    if (inner != value) {
+      let innerVt = this.#valueType(inner);
+      if (valTypeIdentical(innerVt, wantVt) || isValSubtype(innerVt, wantVt)) {
+        return inner;
+      }
+      if ((wantVt is ValTypeRef || wantVt is ValTypeRefNull) &&
+          isRefValType(innerVt) && isValSubtype(wantVt, innerVt)) {
+        return this.b.emit(IrOp.ref_cast, wantVt, inner,
+            this.b.internType(wantVt));
+      }
     }
     return this.#bailValue('identifier type shift');
   }

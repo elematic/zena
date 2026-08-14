@@ -1,0 +1,62 @@
+// @mode: run
+// @result: 7
+//
+// `is` and `as` reach the concrete class through an interface-typed
+// reference.
+//
+// A value held as an interface is a fat POINTER — the instance paired
+// with a vtable — so a `ref.test` against the concrete struct used to
+// ask whether the PAIR was a Square, which is false for every class.
+// That was a silent wrong answer rather than a rejected program, and it
+// is why `zena:async`'s AnyCompleter is a base class. Identity compares
+// already saw through the pair; these three paths now do too:
+// `is`, `as`, and a read of a binding the checker narrowed.
+
+interface Shape {
+  area(): i32;
+}
+
+final class Square implements Shape {
+  side: i32;
+  new(this.side);
+  area(): i32 { return this.side * this.side; }
+}
+
+final class Circle implements Shape {
+  r: i32;
+  new(this.r);
+  area(): i32 { return 3 * this.r * this.r; }
+}
+
+final class Cell<T> implements Shape {
+  v: T;
+  new(this.v);
+  area(): i32 { return 0; }
+}
+
+export function main(): i32 {
+  let s: Shape = new Square(3);
+
+  // Yes to the concrete class, no to a sibling.
+  if (!(s is Square)) { return 1; }
+  if (s is Circle) { return 2; }
+
+  // `as` reaches the instance rather than trapping on the pair.
+  let sq = s as Square;
+  if (sq.side != 3) { return 3; }
+
+  // Specialization identity survives the interface, the way it already
+  // did through a base class: a Cell<i32> is not a Cell<String>, and
+  // naming a specialization nothing constructs is still just false.
+  let c: Shape = new Cell<i32>(1);
+  if (!(c is Cell<i32>)) { return 4; }
+  if (c is Cell<String>) { return 5; }
+
+  // The read after the guard is the third path: the checker narrows `c`
+  // to Cell<i32> here, while the value in hand is still the pair.
+  if (c is Cell<i32>) {
+    if (c.v != 1) { return 6; }
+  }
+
+  return 7;
+}

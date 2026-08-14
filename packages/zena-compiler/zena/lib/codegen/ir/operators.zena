@@ -600,7 +600,20 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     if (cx.refConforms(srcVt, dstVt)) {
       return value;
     }
-    return cx.b.emit(IrOp.ref_cast, dstVt, value,
+    // A value held as an interface (or a record) is a fat POINTER — the
+    // instance paired with a vtable — so casting it to a concrete class
+    // casts the pair, and traps. Unwrap to the instance first, the way
+    // identity compares already do. Only when the destination is a
+    // class: interface-to-interface is a re-pack, not a cast.
+    var operand = value;
+    let dstSemOpt = cx.substitutedNodeType(expr);
+    if (dstSemOpt != null && baseType(dstSemOpt as Type) is ClassType) {
+      let srcSemOpt = cx.substitutedNodeType(expr.expression);
+      if (srcSemOpt != null) {
+        operand = cx.unwrapFatPointer(baseType(srcSemOpt as Type), value);
+      }
+    }
+    return cx.b.emit(IrOp.ref_cast, dstVt, operand,
         cx.b.internType(dstVt));
   }
   if (isRefValType(srcVt) &&
