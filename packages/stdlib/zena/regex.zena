@@ -532,12 +532,11 @@ final class Parser {
           pos = pos + 2;
         }
       } else if (pos + 2 < len && pattern.getByteAt(pos + 1) == 45) { // '-' range
-        let lo = c;
         let hi = pattern.getByteAt(pos + 2);
-        if (lo > hi) {
+        if (c > hi) {
           throw new Error('Invalid character class range: ' + pattern);
         }
-        this.#appendClassRange(ast.runes, lo, hi);
+        this.#appendClassRange(ast.runes, c, hi);
         pos = pos + 3;
       } else {
         // Single character
@@ -2287,9 +2286,8 @@ export final class Regex {
     if (result == null) {
       return input;
     }
-    let m = result;
-    let before = input.sliceBytes(0, m.index);
-    let after = input.sliceBytes(m.index + m.value.length, input.length);
+    let before = input.sliceBytes(0, result.index);
+    let after = input.sliceBytes(result.index + result.value.length, input.length);
     return before + replacement + after;
   }
 
@@ -2300,10 +2298,9 @@ export final class Regex {
     if (result == null) {
       return input;
     }
-    let m = result;
-    let before = input.sliceBytes(0, m.index);
-    let after = input.sliceBytes(m.index + m.value.length, input.length);
-    return before + replacer(m) + after;
+    let before = input.sliceBytes(0, result.index);
+    let after = input.sliceBytes(result.index + result.value.length, input.length);
+    return before + replacer(result) + after;
   }
 
   replaceAll(input: String, replacement: String): String {

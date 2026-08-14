@@ -496,18 +496,17 @@ let parseHost = (input: String, isOpaque: boolean): String | null => {
   let decoded = percentDecode(input);
   let asciiDomain = domainToASCII(decoded);
   if (asciiDomain == null) return null;
-  let domain = asciiDomain;
-  // 7. Forbidden domain code points.
-  for (var i = 0; i < domain.length; i += 1) {
-    if (isForbiddenDomainByte(domain.getByteAt(i))) return null;
+  // 7. Forbidden asciiDomain code points.
+  for (var i = 0; i < asciiDomain.length; i += 1) {
+    if (isForbiddenDomainByte(asciiDomain.getByteAt(i))) return null;
   }
   // 8. IPv4.
-  if (endsInNumber(domain)) {
-    let (ok, addr) = parseIPv4(domain);
+  if (endsInNumber(asciiDomain)) {
+    let (ok, addr) = parseIPv4(asciiDomain);
     if (!ok) return null;
     return serializeIPv4(addr);
   }
-  return domain;
+  return asciiDomain;
 };
 
 // ============================================================================
@@ -617,18 +616,17 @@ export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord
       if (base == null) {
         failed = true;
       } else {
-        let b = base;
-        if (b.hasOpaquePath() && c != 0x23) {
+        if (base.hasOpaquePath() && c != 0x23) {
           failed = true;
-        } else if (b.hasOpaquePath() && c == 0x23) {
-          url.scheme = b.scheme;
-          url.opaquePath = b.opaquePath;
-          url.path = b.clonePath();
-          url.query = b.query;
+        } else if (base.hasOpaquePath() && c == 0x23) {
+          url.scheme = base.scheme;
+          url.opaquePath = base.opaquePath;
+          url.path = base.clonePath();
+          url.query = base.query;
           hasFragmentBuf = true;
           fragmentBuf = new StringBuilder();
           state = S_FRAGMENT;
-        } else if (b.scheme != "file") {
+        } else if (base.scheme != "file") {
           state = S_RELATIVE;
           pointer -= 1;
         } else {
@@ -810,10 +808,9 @@ export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord
       if (c == 0x2F || c == 0x5C) {
         state = S_FILE_SLASH;
       } else if (base != null && base.scheme == "file") {
-        let b = base;
-        url.host = b.host;
-        url.path = b.clonePath();
-        url.query = b.query;
+        url.host = base.host;
+        url.path = base.clonePath();
+        url.query = base.query;
         if (c == 0x3F) {
           hasQueryBuf = true;
           queryBuf = new StringBuilder();
@@ -842,11 +839,10 @@ export let basicUrlParse = (rawInput: String, base: UrlRecord | null): UrlRecord
         state = S_FILE_HOST;
       } else {
         if (base != null && base.scheme == "file") {
-          let b = base;
-          url.host = b.host;
+          url.host = base.host;
           if (!startsWithWindowsDriveLetter(input, pointer) &&
-              b.path.length > 0 && isNormalizedWindowsDriveLetter(b.path[0])) {
-            url.path.push(b.path[0]);
+              base.path.length > 0 && isNormalizedWindowsDriveLetter(base.path[0])) {
+            url.path.push(base.path[0]);
           }
         }
         state = S_PATH;
@@ -1077,16 +1073,14 @@ export final class URL {
     get {
       let q = this.#rec.query;
       if (q == null) return "";
-      let qs = q;
-      return if (qs.length == 0) "" else "?" + qs;
+      return if (q.length == 0) "" else "?" + q;
     }
   }
   hash: String {
     get {
       let f = this.#rec.fragment;
       if (f == null) return "";
-      let fs = f;
-      return if (fs.length == 0) "" else "#" + fs;
+      return if (f.length == 0) "" else "#" + f;
     }
   }
   href: String { get { return serializeUrl(this.#rec, false); } }
@@ -1107,10 +1101,9 @@ export final class URL {
       // A blob: URL's origin is the origin of the URL in its path.
       let inner = URL.parse(this.pathname, null);
       if (inner != null) {
-        let iu = inner;
-        let p = iu.protocol;
+        let p = inner.protocol;
         if (p == "http:" || p == "https:" || p == "file:") {
-          return iu.origin();
+          return inner.origin();
         }
       }
     }

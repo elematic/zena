@@ -226,9 +226,8 @@ export let main = (): i32 => {
     console.error('bench-run: config is not a JSON object');
     return 1;
   }
-  let root = parsed;
 
-  var suite = stringOf(root['suite'], '');
+  var suite = stringOf(parsed['suite'], '');
   if (suite.length == 0) {
     // Default the suite name to the config's file stem.
     let base = configPath.split('/');
@@ -237,21 +236,19 @@ export let main = (): i32 => {
   }
 
   let options = new BenchOptions();
-  let optionsVal = root['options'];
+  let optionsVal = parsed['options'];
   if (optionsVal is JsonObject) {
-    let o = optionsVal;
-    options.minSamples = numberOf(o['minSamples'], options.minSamples as f64) as i32;
-    options.extraSamples = numberOf(o['extraSamples'], options.extraSamples as f64) as i32;
-    options.warmupRuns = numberOf(o['warmupRuns'], options.warmupRuns as f64) as i32;
-    options.timeBudgetMs = numberOf(o['timeBudgetMs'], options.timeBudgetMs);
-    let horizonsVal = o['horizons'];
+    options.minSamples = numberOf(optionsVal['minSamples'], options.minSamples as f64) as i32;
+    options.extraSamples = numberOf(optionsVal['extraSamples'], options.extraSamples as f64) as i32;
+    options.warmupRuns = numberOf(optionsVal['warmupRuns'], options.warmupRuns as f64) as i32;
+    options.timeBudgetMs = numberOf(optionsVal['timeBudgetMs'], options.timeBudgetMs);
+    let horizonsVal = optionsVal['horizons'];
     if (horizonsVal is JsonArray) {
-      let hs = horizonsVal;
-      if (hs.length > 0) {
-        let specs = new FixedArray<String>(hs.length, '0%');
+      if (horizonsVal.length > 0) {
+        let specs = new FixedArray<String>(horizonsVal.length, '0%');
         var h = 0;
-        while (h < hs.length) {
-          specs[h] = stringOf(hs[h], '0%');
+        while (h < horizonsVal.length) {
+          specs[h] = stringOf(horizonsVal[h], '0%');
           h += 1;
         }
         options.horizons = specs;
@@ -260,22 +257,20 @@ export let main = (): i32 => {
   }
 
   let variants = new Array<BenchVariant>();
-  let variantsVal = root['variants'];
+  let variantsVal = parsed['variants'];
   if (!(variantsVal is JsonArray)) {
     console.error('bench-run: config needs a `variants` array');
     return 1;
   }
-  let specs = variantsVal;
   var vi = 0;
-  while (vi < specs.length) {
-    let specVal = specs[vi];
+  while (vi < variantsVal.length) {
+    let specVal = variantsVal[vi];
     vi += 1;
     if (!(specVal is JsonObject)) {
       console.error('bench-run: variant entries must be objects');
       return 1;
     }
-    let spec = specVal;
-    let name = stringOf(spec['name'], '');
+    let name = stringOf(specVal['name'], '');
     if (name.length == 0) {
       console.error('bench-run: every variant needs a `name`');
       return 1;
@@ -287,13 +282,12 @@ export let main = (): i32 => {
       }
     }
 
-    let commandVal = spec['command'];
+    let commandVal = specVal['command'];
     if (commandVal is JsonArray) {
-      let cmd = commandVal;
       let argv = new Array<String>();
       var ci = 0;
-      while (ci < cmd.length) {
-        let entry = stringOf(cmd[ci], '');
+      while (ci < commandVal.length) {
+        let entry = stringOf(commandVal[ci], '');
         if (entry.length == 0) {
           console.error(`bench-run: variant ${name}: command argv entries must be strings`);
           return 1;
@@ -310,12 +304,12 @@ export let main = (): i32 => {
     }
 
     // zena / wasm / wat variants run through the `sample` worker.
-    var file = stringOf(spec['zena'], '');
+    var file = stringOf(specVal['zena'], '');
     if (file.length == 0) {
-      file = stringOf(spec['wasm'], '');
+      file = stringOf(specVal['wasm'], '');
     }
     if (file.length == 0) {
-      file = stringOf(spec['wat'], '');
+      file = stringOf(specVal['wat'], '');
     }
     if (file.length == 0) {
       console.error(`bench-run: variant ${name}: needs one of \`zena\`, \`wasm\`, \`wat\`, \`command\``);
@@ -329,7 +323,7 @@ export let main = (): i32 => {
     argv.push('sample');
     argv.push(joinPath(configDir, file));
     argv.push('--invoke');
-    argv.push(stringOf(spec['invoke'], 'main'));
+    argv.push(stringOf(specVal['invoke'], 'main'));
     variants.push(new BenchVariant(name, argv, null, false));
   }
   if (variants.length == 0) {

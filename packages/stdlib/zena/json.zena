@@ -233,14 +233,12 @@ let stringifyValue = (sb: StringBuilder, value: JsonValue, indent: String | null
   } else if (value is String) {
     escapeJsonString(sb, value);
   } else if (value is Box<f64>) {
-    let boxed = value;
-    stringifyF64(sb, boxed.value);
+    stringifyF64(sb, value.value);
   } else if (value is Box<i32>) {
     let boxed = value as Box<i32>;
     stringifyI32(sb, boxed.value);
   } else if (value is Box<boolean>) {
-    let boxed = value;
-    if (boxed.value) {
+    if (value.value) {
       sb.append("true");
     } else {
       sb.append("false");
@@ -262,7 +260,6 @@ let writeIndent = (sb: StringBuilder, indent: String, depth: i32): void => {
 let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: String | null, depth: i32): void => {
   if (indent != null) {
     // Pretty-print mode
-    let ind = indent;
     if (obj.size == 0) {
       sb.append("{}");
       return;
@@ -276,13 +273,13 @@ let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: String | null
         sb.append("\n");
       }
       first = false;
-      writeIndent(sb, ind, depth + 1);
+      writeIndent(sb, indent, depth + 1);
       escapeJsonString(sb, key);
       sb.append(": ");
       stringifyValue(sb, value, indent, depth + 1);
     });
     sb.append("\n");
-    writeIndent(sb, ind, depth);
+    writeIndent(sb, indent, depth);
     sb.append("}");
   } else {
     // Compact mode
@@ -305,7 +302,6 @@ let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: String | null, 
   let len = arr.length;
   if (indent != null) {
     // Pretty-print mode
-    let ind = indent;
     if (len == 0) {
       sb.append("[]");
       return;
@@ -318,12 +314,12 @@ let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: String | null, 
         sb.append(",");
         sb.append("\n");
       }
-      writeIndent(sb, ind, depth + 1);
+      writeIndent(sb, indent, depth + 1);
       stringifyValue(sb, arr[i], indent, depth + 1);
       i += 1;
     }
     sb.append("\n");
-    writeIndent(sb, ind, depth);
+    writeIndent(sb, indent, depth);
     sb.append("]");
   } else {
     // Compact mode

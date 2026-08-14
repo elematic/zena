@@ -126,11 +126,10 @@ let describeJsonType = (value: JsonValue): String => {
 let describeJsonValue = (value: JsonValue): String => {
   if (value == null) { return 'null'; }
   if (value is String) {
-    let s = value;
-    if (s.length > 50) {
-      return '"' + s.sliceBytes(0, 47) + '..."';
+    if (value.length > 50) {
+      return '"' + value.sliceBytes(0, 47) + '..."';
     }
-    return '"' + s + '"';
+    return '"' + value + '"';
   }
   if (value is Box<f64>) {
     let sb = new StringBuilder();
@@ -141,17 +140,16 @@ let describeJsonValue = (value: JsonValue): String => {
     return if (value.value) { 'true' } else { 'false' };
   }
   if (value is JsonObject) {
-    let obj = value;
     let sb = new StringBuilder();
     sb.append('{');
     var count = 0;
-    obj.forEach((key: String, v: JsonValue) => {
+    value.forEach((key: String, v: JsonValue) => {
       if (count >= 5) { return; }
       if (count > 0) { sb.append(', '); }
       sb.append(key);
       count += 1;
     });
-    if (obj.size > 5) { sb.append(', ...'); }
+    if (value.size > 5) { sb.append(', ...'); }
     sb.append('}');
     return sb.toString();
   }
@@ -171,9 +169,8 @@ let formatJsonDiff = (path: String, loc: SourceLocation | null, expected: String
   sb.append('  at ');
   sb.append(path);
   if (loc != null) {
-    let l = loc;
     sb.append(' (line ');
-    sb.appendI32(l.line);
+    sb.appendI32(loc.line);
     sb.append(')');
   }
   sb.append(':\n    expected: ');
@@ -223,32 +220,30 @@ let collectJsonDiffs = (
       diffs.push(formatJsonDiff(path, loc, 'object', describeJsonType(actual)));
       return;
     }
-    let expectedObj = expected;
-    let actualObj = actual;
 
     // Missing keys (in expected but not actual)
-    expectedObj.forEach((key: String, value: JsonValue) => {
+    expected.forEach((key: String, value: JsonValue) => {
       if (diffs.length >= maxDiffs) { return; }
-      if (!actualObj.has(key)) {
-        let keyLoc = expectedObj.locationOf(key);
+      if (!actual.has(key)) {
+        let keyLoc = expected.locationOf(key);
         diffs.push(formatJsonDiff(path + '.' + key, keyLoc, describeJsonValue(value), 'missing'));
       }
     });
 
     // Extra keys (in actual but not expected)
-    actualObj.forEach((key: String, value: JsonValue) => {
+    actual.forEach((key: String, value: JsonValue) => {
       if (diffs.length >= maxDiffs) { return; }
-      if (!expectedObj.has(key)) {
+      if (!expected.has(key)) {
         diffs.push(formatJsonDiff(path + '.' + key, null, 'missing', describeJsonValue(value)));
       }
     });
 
     // Recurse on shared keys
-    expectedObj.forEach((key: String, value: JsonValue) => {
+    expected.forEach((key: String, value: JsonValue) => {
       if (diffs.length >= maxDiffs) { return; }
-      if (actualObj.has(key)) {
-        let keyLoc = expectedObj.locationOf(key);
-        collectJsonDiffs(actualObj[key], value, path + '.' + key, keyLoc, diffs, maxDiffs);
+      if (actual.has(key)) {
+        let keyLoc = expected.locationOf(key);
+        collectJsonDiffs(actual[key], value, path + '.' + key, keyLoc, diffs, maxDiffs);
       }
     });
     return;
@@ -260,24 +255,22 @@ let collectJsonDiffs = (
       diffs.push(formatJsonDiff(path, loc, 'array', describeJsonType(actual)));
       return;
     }
-    let expectedArr = expected;
-    let actualArr = actual;
 
-    if (expectedArr.length != actualArr.length && diffs.length < maxDiffs) {
+    if (expected.length != actual.length && diffs.length < maxDiffs) {
       let sb = new StringBuilder();
       sb.append('array length ');
-      sb.appendI32(expectedArr.length);
+      sb.appendI32(expected.length);
       let sb2 = new StringBuilder();
       sb2.append('array length ');
-      sb2.appendI32(actualArr.length);
+      sb2.appendI32(actual.length);
       diffs.push(formatJsonDiff(path, loc, sb.toString(), sb2.toString()));
     }
 
-    let minLen = if (expectedArr.length < actualArr.length) { expectedArr.length } else { actualArr.length };
+    let minLen = if (expected.length < actual.length) { expected.length } else { actual.length };
     var i = 0;
     while (i < minLen && diffs.length < maxDiffs) {
-      let elemLoc = expectedArr.locationOf(i);
-      collectJsonDiffs(actualArr[i], expectedArr[i], path + indexStr(i), elemLoc, diffs, maxDiffs);
+      let elemLoc = expected.locationOf(i);
+      collectJsonDiffs(actual[i], expected[i], path + indexStr(i), elemLoc, diffs, maxDiffs);
       i += 1;
     }
     return;

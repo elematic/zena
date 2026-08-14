@@ -182,27 +182,22 @@ let extractClassMembers = (body: Array<Node>, sym: DocumentSymbol): void => {
     let member = body[j];
     // Class members
     if (member is MethodDefinition) {
-      let md = member;
-      let methodName = getIdentifierName(md.name);
+      let methodName = getIdentifierName(member.name);
       let kind = if (methodName == "new" || methodName == "<constructor>") { SK_CONSTRUCTOR } else { SK_METHOD };
-      sym.children.push(symbolFromNamedNode(md.name, kind, md.loc));
+      sym.children.push(symbolFromNamedNode(member.name, kind, member.loc));
     }
     if (member is FieldDefinition) {
-      let fd = member;
-      sym.children.push(symbolFromNamedNode(fd.name, SK_PROPERTY, fd.loc));
+      sym.children.push(symbolFromNamedNode(member.name, SK_PROPERTY, member.loc));
     }
     if (member is AccessorDeclaration) {
-      let ad = member;
-      sym.children.push(symbolFromNamedNode(ad.name, SK_PROPERTY, ad.loc));
+      sym.children.push(symbolFromNamedNode(member.name, SK_PROPERTY, member.loc));
     }
     // Interface members
     if (member is MethodSignature) {
-      let ms = member;
-      sym.children.push(symbolFromNamedNode(ms.name, SK_METHOD, ms.loc));
+      sym.children.push(symbolFromNamedNode(member.name, SK_METHOD, member.loc));
     }
     if (member is AccessorSignature) {
-      let as_ = member;
-      sym.children.push(symbolFromNamedNode(as_.name, SK_PROPERTY, as_.loc));
+      sym.children.push(symbolFromNamedNode(member.name, SK_PROPERTY, member.loc));
     }
     j += 1;
   }
@@ -230,10 +225,9 @@ let extractSymbols = (ast: Module): Array<DocumentSymbol> => {
         extractClassMembers(body, sym);
         // Sealed variants as children
         if (sealedVariants != null) {
-          let variants = sealedVariants;
           var k = 0;
-          while (k < variants.length) {
-            let v = variants[k];
+          while (k < sealedVariants.length) {
+            let v = sealedVariants[k];
             let vSym = symbolFromNamedNode(v.name, SK_CLASS, v.loc);
             sym.children.push(vSym);
             k += 1;
@@ -428,18 +422,16 @@ let symbolFromNamedNode = (name: Node, kind: i32, outerLoc: SourceLocation | nul
   var selStart = 0;
   var selEnd = 0;
   if (outerLoc != null) {
-    let ol = outerLoc;
-    start = ol.start;
-    end = ol.end;
+    start = outerLoc.start;
+    end = outerLoc.end;
   }
   if (name.loc != null) {
     let nl = name.loc as SourceLocation;
     selStart = nl.start;
     selEnd = nl.end;
   } else if (outerLoc != null) {
-    let ol = outerLoc;
-    selStart = ol.start;
-    selEnd = ol.end;
+    selStart = outerLoc.start;
+    selEnd = outerLoc.end;
   }
   return new DocumentSymbol(n, kind, start, end, selStart, selEnd);
 };
@@ -453,18 +445,16 @@ let symbolFromPattern = (name: String, kind: i32, outerLoc: SourceLocation | nul
   var selStart = 0;
   var selEnd = 0;
   if (outerLoc != null) {
-    let ol = outerLoc;
-    start = ol.start;
-    end = ol.end;
+    start = outerLoc.start;
+    end = outerLoc.end;
   }
   if (pattern.loc != null) {
     let pl = pattern.loc as SourceLocation;
     selStart = pl.start;
     selEnd = pl.end;
   } else if (outerLoc != null) {
-    let ol = outerLoc;
-    selStart = ol.start;
-    selEnd = ol.end;
+    selStart = outerLoc.start;
+    selEnd = outerLoc.end;
   }
   return new DocumentSymbol(name, kind, start, end, selStart, selEnd);
 };
@@ -476,9 +466,8 @@ let symbolFromLoc = (name: String, kind: i32, loc: SourceLocation | null): Docum
   var start = 0;
   var end = 0;
   if (loc != null) {
-    let l = loc;
-    start = l.start;
-    end = l.end;
+    start = loc.start;
+    end = loc.end;
   }
   return new DocumentSymbol(name, kind, start, end, start, end);
 };
@@ -652,18 +641,17 @@ let findDocCommentByOffset = (ast: Module, offset: i32, commentMap: CommentMap):
 let findDocComment = (sym: Symbol, ast: Module, commentMap: CommentMap): String => {
   let decl = sym.declaration;
   if (decl == null) { return ""; }
-  let declNode = decl;
 
   // Direct lookup on the declaration node.
-  let leading = commentMap.getLeading(declNode);
+  let leading = commentMap.getLeading(decl);
   if (leading != null) {
     return extractDocComment(leading);
   }
 
   // For IdentifierPattern etc., find the enclosing statement using the
   // declaration's location (not the hover offset).
-  if (declNode.loc != null) {
-    let loc = declNode.loc as SourceLocation;
+  if (decl.loc != null) {
+    let loc = decl.loc as SourceLocation;
     return findDocCommentByOffset(ast, loc.start, commentMap);
   }
 
@@ -679,17 +667,15 @@ let findDocComment = (sym: Symbol, ast: Module, commentMap: CommentMap): String 
 let findCrossFileDocComment = (sym: Symbol, compiler: Compiler): String => {
   let origSym = resolveImportedSymbol(sym, compiler);
   if (origSym == null) { return ""; }
-  let orig = origSym;
 
   // Get the source file for the original symbol's module.
-  let sourceFile = compiler.getSourceFile(orig.modulePath);
+  let sourceFile = compiler.getSourceFile(origSym.modulePath);
   if (sourceFile == null) { return ""; }
-  let sf = sourceFile;
 
-  let depAst = sf.ast;
+  let depAst = sourceFile.ast;
   let depCommentMap = attachComments(depAst);
 
-  return findDocComment(orig, depAst, depCommentMap);
+  return findDocComment(origSym, depAst, depCommentMap);
 };
 
 /**
@@ -703,23 +689,21 @@ let resolveImportFilePath = (sym: Symbol, compiler: Compiler): String => {
   let decl = sym.declaration as Node;
   if (!(decl is ImportSpecifier)) { return ""; }
 
-  let spec = decl;
 
   // Find which file this symbol was declared in.
   let ownerFile = compiler.getSourceFile(sym.modulePath);
   if (ownerFile == null) { return ""; }
-  let sf = ownerFile;
 
   // Walk the AST to find the ImportDeclaration that contains this specifier.
   var moduleSpecifier = "";
   var i = 0;
-  while (i < sf.ast.body.length) {
-    match (sf.ast.body[i]) {
+  while (i < ownerFile.ast.body.length) {
+    match (ownerFile.ast.body[i]) {
       case ImportDeclaration {moduleSpecifier as ms, imports}: {
         var j = 0;
         while (j < imports.length) {
-          if (imports[j].loc != null && spec.loc != null) {
-            let specLoc = spec.loc as SourceLocation;
+          if (imports[j].loc != null && decl.loc != null) {
+            let specLoc = decl.loc as SourceLocation;
             let impLoc = imports[j].loc as SourceLocation;
             if (specLoc.start == impLoc.start) {
               moduleSpecifier = ms.value;
@@ -736,8 +720,8 @@ let resolveImportFilePath = (sym: Symbol, compiler: Compiler): String => {
   if (moduleSpecifier.length == 0) { return ""; }
 
   // Resolve the specifier to a canonical path.
-  if (!sf.imports.has(moduleSpecifier)) { return ""; }
-  let depPath = sf.imports[moduleSpecifier];
+  if (!ownerFile.imports.has(moduleSpecifier)) { return ""; }
+  let depPath = ownerFile.imports[moduleSpecifier];
 
   // Get the dependency's actual SourceFile to return the real filesystem path.
   let depFile = compiler.getSourceFile(depPath);
@@ -759,25 +743,23 @@ let resolveImportedSymbol = (sym: Symbol, compiler: Compiler): Symbol | null => 
   let decl = sym.declaration as Node;
   if (!(decl is ImportSpecifier)) { return null; }
 
-  let spec = decl;
-  let importedName = spec.imported.name;
+  let importedName = decl.imported.name;
 
   // Find which file this symbol was declared in.
   let ownerFile = compiler.getSourceFile(sym.modulePath);
   if (ownerFile == null) { return null; }
-  let sf = ownerFile;
 
   // Walk the AST to find the ImportDeclaration that contains this specifier.
   var moduleSpecifier = "";
   var i = 0;
-  while (i < sf.ast.body.length) {
-    match (sf.ast.body[i]) {
+  while (i < ownerFile.ast.body.length) {
+    match (ownerFile.ast.body[i]) {
       case ImportDeclaration {moduleSpecifier as ms, imports}: {
         var j = 0;
         while (j < imports.length) {
           // Check if this is the same specifier by comparing locations.
-          if (imports[j].loc != null && spec.loc != null) {
-            let specLoc = spec.loc as SourceLocation;
+          if (imports[j].loc != null && decl.loc != null) {
+            let specLoc = decl.loc as SourceLocation;
             let impLoc = imports[j].loc as SourceLocation;
             if (specLoc.start == impLoc.start) {
               moduleSpecifier = ms.value;
@@ -794,15 +776,14 @@ let resolveImportedSymbol = (sym: Symbol, compiler: Compiler): Symbol | null => 
   if (moduleSpecifier.length == 0) { return null; }
 
   // Resolve the specifier to a canonical path using the source file's import map.
-  if (!sf.imports.has(moduleSpecifier)) { return null; }
-  let depPath = sf.imports[moduleSpecifier];
+  if (!ownerFile.imports.has(moduleSpecifier)) { return null; }
+  let depPath = ownerFile.imports[moduleSpecifier];
 
   // Get the dependency's source file and scope result.
   let depFile = compiler.getSourceFile(depPath);
   if (depFile == null) { return null; }
-  let dep = depFile;
-  if (dep.scopeResult == null) { return null; }
-  let depScope = dep.scopeResult as ScopeResult;
+  if (depFile.scopeResult == null) { return null; }
+  let depScope = depFile.scopeResult as ScopeResult;
   let depExports = depScope.exports;
 
   // Look up the original exported symbol.
@@ -991,9 +972,8 @@ export class LanguageService {
         let origSym = resolveImportedSymbol(sym, this.#compiler);
         let depFilePath = resolveImportFilePath(sym, this.#compiler);
         if (origSym != null && depFilePath.length > 0) {
-          let orig = origSym;
-          if (orig.declaration != null) {
-            let origDecl = orig.declaration as Node;
+          if (origSym.declaration != null) {
+            let origDecl = origSym.declaration as Node;
             if (origDecl.loc != null) {
               let loc = origDecl.loc as SourceLocation;
               // Convert canonical paths (e.g., "zena:error") to filesystem paths.
@@ -1007,10 +987,9 @@ export class LanguageService {
 
       let decl = sym.declaration;
       if (decl == null) { return null; }
-      let declNode = decl;
 
-      if (declNode.loc == null) { return null; }
-      let loc = declNode.loc as SourceLocation;
+      if (decl.loc == null) { return null; }
+      let loc = decl.loc as SourceLocation;
 
       var defFile = path;
       if (sym.modulePath.length > 0) {
@@ -1089,22 +1068,19 @@ export class LanguageService {
       return null;
     }
 
-    let theModel = model;
-    let theAst = ast;
 
     // Find the deepest AST node at the cursor position.
-    let node = findNodeAtOffset(theAst, offset);
+    let node = findNodeAtOffset(ast, offset);
     if (node == null) { return null; }
-    let foundNode = node;
 
     // Handle `this` keyword: find enclosing class type.
     // Handle MemberExpression: when offset is on the property name.
     // (The visitor doesn't walk MemberExpression.property, so
     //  findNodeAtOffset returns the MemberExpression when hovering
     //  on the property identifier.)
-    match (foundNode) {
+    match (node) {
       case ThisExpression: {
-        let classType = findEnclosingClassType(theAst, foundNode as Expression, theModel);
+        let classType = findEnclosingClassType(ast, node as Expression, model);
         if (classType == null) { return null; }
         let typeStr = typeToString(classType);
         return new HoverResult(typeStr, "this: " + typeStr, "");
@@ -1114,7 +1090,7 @@ export class LanguageService {
           let propLoc = property.loc as SourceLocation;
           if (offset >= propLoc.start && offset < propLoc.end) {
             // Hovering on the property name — use the MemberExpression's type.
-            let memberType = theModel.getNodeType(foundNode);
+            let memberType = model.getNodeType(node);
             if (memberType != null) {
               let typeStr = typeToString(memberType);
               return new HoverResult(typeStr, "(property) " + property.name + ": " + typeStr, "");
@@ -1126,7 +1102,7 @@ export class LanguageService {
     }
 
     // Try to get the type directly from the SemanticModel.
-    var nodeType = theModel.getNodeType(foundNode);
+    var nodeType = model.getNodeType(node);
 
     // Look up the Symbol for this identifier (needed for both
     // fallback type resolution and doc comment extraction).
@@ -1136,8 +1112,8 @@ export class LanguageService {
     if (hasScopeResult) {
       let sr = this.#scopeResults[path];
       let syms = sr.symbols;
-      var maybeInfo = if (foundNode.loc != null) {
-        let nLoc = foundNode.loc as SourceLocation;
+      var maybeInfo = if (node.loc != null) {
+        let nLoc = node.loc as SourceLocation;
         syms.getByOffset(nLoc.start)
       } else {
         null
@@ -1148,22 +1124,21 @@ export class LanguageService {
       if (maybeInfo != null) {
         symbolInfo = maybeInfo;
         if (nodeType == null) {
-          nodeType = theModel.getBindingType(symbolInfo);
+          nodeType = model.getBindingType(symbolInfo);
         }
         // For type references (e.g. Symbol in HashMap<String, Symbol>),
         // getBindingType may fail because the reference map stores a different
         // Symbol (type namespace) than the one the checker used to store
         // the binding type (value namespace). Try the declaration's node type.
         if (nodeType == null) {
-          let sym = symbolInfo;
-          if (sym.declaration != null) {
+          if (symbolInfo.declaration != null) {
             // For imported symbols, the declaration is an ImportSpecifier in the
             // current file. The declaration offset won't match anything useful in
             // the current model. Resolve through the dependency's model instead.
-            if (sym.declaration as Node is ImportSpecifier) {
-              nodeType = this.#getCrossFileNodeType(sym);
+            if (symbolInfo.declaration as Node is ImportSpecifier) {
+              nodeType = this.#getCrossFileNodeType(symbolInfo);
             } else {
-              nodeType = theModel.getNodeType(sym.declaration as Node);
+              nodeType = model.getNodeType(symbolInfo.declaration as Node);
             }
           }
         }
@@ -1176,25 +1151,23 @@ export class LanguageService {
       // in the scope's reference or declaration maps). When symbolInfo exists,
       // the hover is on a reference INSIDE a member, not on the member itself.
       if (symbolInfo == null) {
-        let memberHover = resolveClassMemberHover(theAst, offset, theModel);
+        let memberHover = resolveClassMemberHover(ast, offset, model);
         if (memberHover != null) {
-          let hr = memberHover;
-          let commentMap = attachComments(theAst);
-          let doc = findDocCommentByOffset(theAst, offset, commentMap);
-          return new HoverResult(hr.typeStr, hr.label, doc);
+          let commentMap = attachComments(ast);
+          let doc = findDocCommentByOffset(ast, offset, commentMap);
+          return new HoverResult(memberHover.typeStr, memberHover.label, doc);
         }
       }
       return null;
     }
 
-    let typ = nodeType;
-    let typeStr = typeToString(typ);
+    let typeStr = typeToString(nodeType);
 
     // Build a display label like "let x: i32" or "class Foo".
     let label = if (hasScopeResult) {
-      buildHoverLabel(foundNode, typeStr, this.#scopeResults[path])
+      buildHoverLabel(node, typeStr, this.#scopeResults[path])
     } else {
-      buildHoverLabel(foundNode, typeStr, null)
+      buildHoverLabel(node, typeStr, null)
     };
 
     // Extract doc comment from the symbol's declaration site.
@@ -1203,14 +1176,13 @@ export class LanguageService {
     // the enclosing field's or class's doc when hovering on a reference
     // inside it. Offset-based lookup is only used for class member
     // definition sites (in resolveClassMemberHover above).
-    let commentMap = attachComments(theAst);
+    let commentMap = attachComments(ast);
     let docComment = if (symbolInfo != null) {
-      let sym = symbolInfo;
       // For imported symbols, follow the import to the source module.
-      if (sym.declaration != null && (sym.declaration as Node) is ImportSpecifier) {
-        findCrossFileDocComment(sym, this.#compiler)
+      if (symbolInfo.declaration != null && (symbolInfo.declaration as Node) is ImportSpecifier) {
+        findCrossFileDocComment(symbolInfo, this.#compiler)
       } else {
-        findDocComment(sym, theAst, commentMap)
+        findDocComment(symbolInfo, ast, commentMap)
       }
     } else { "" };
 
@@ -1230,10 +1202,9 @@ export class LanguageService {
       let entryPath = compilation.entry.path;
       if (checkResult.results.has(entryPath)) {
         let model = checkResult.results[entryPath].model;
-        let scopeResultOpt = if (this.#scopeResults.has(normPath)) { this.#scopeResults[normPath] } else if (this.#scopeResults.has(path)) { this.#scopeResults[path] } else { null };
+        let scopeResult = if (this.#scopeResults.has(normPath)) { this.#scopeResults[normPath] } else if (this.#scopeResults.has(path)) { this.#scopeResults[path] } else { null };
 
-        if (scopeResultOpt != null) {
-          let scopeResult = scopeResultOpt;
+        if (scopeResult != null) {
 
           var me: MemberExpression | null = findMemberExpressionAtOffset(ast, offset);
           if (me == null && offset > 0) {
@@ -1241,15 +1212,13 @@ export class LanguageService {
           }
 
           if (me != null) {
-            let memberExpr = me;
-            let objType = resolveObjectType(memberExpr.object, model, scopeResult, memberExpr.loc, ast, checkResult.sharedState);
+            let objType = resolveObjectType(me.object, model, scopeResult, me.loc, ast, checkResult.sharedState);
             if (objType != null) {
-              let t = objType;
               let memberItems = new Array<CompletionItem>();
               let addedMembers = new HashMap<String, boolean>();
 
-              if (t is ClassType) {
-                var currClass: ClassType | null = t;
+              if (objType is ClassType) {
+                var currClass: ClassType | null = objType;
                 while (currClass != null) {
                   let ct = currClass;
                   let mKeys = ct.members.keys();
@@ -1276,19 +1245,18 @@ export class LanguageService {
                   }
                   currClass = ct.superType;
                 }
-              } else if (t is InterfaceType) {
-                let it = t;
-                let mKeys = it.members.keys();
+              } else if (objType is InterfaceType) {
+                let mKeys = objType.members.keys();
                 while (let (true, mName) = mKeys.next()) {
                   if (!addedMembers.has(mName)) {
                     addedMembers[mName] = true;
-                    let mInfo = it.members[mName];
+                    let mInfo = objType.members[mName];
                     var mKind = 6;
                     if (mInfo is MethodInfo) { mKind = 2; }
                     memberItems.push(new CompletionItem(mName, mKind, "member", ""));
                   }
                 }
-                for (let extIt in it.extendsList) {
+                for (let extIt in objType.extendsList) {
                   let extKeys = extIt.members.keys();
                   while (let (true, mName) = extKeys.next()) {
                     if (!addedMembers.has(mName)) {
@@ -1303,7 +1271,7 @@ export class LanguageService {
               }
 
               // Filter member items by prefix if property is non-empty identifier
-              let prefix = match (memberExpr.property as Node) {
+              let prefix = match (me.property as Node) {
                 case Identifier {name}: name
                 case _: ""
               };
@@ -1411,18 +1379,17 @@ export class LanguageService {
     // Resolve through the import to find the original symbol.
     let origSym = resolveImportedSymbol(sym, this.#compiler);
     if (origSym == null) { return null; }
-    let orig = origSym;
 
-    let modulePath = orig.modulePath;
+    let modulePath = origSym.modulePath;
     if (!checkResult.results.has(modulePath)) { return null; }
     let depModel = checkResult.results[modulePath].model;
 
     // Try binding type first (keyed by Symbol.id — stable across modules).
-    let bt = depModel.getBindingType(orig);
+    let bt = depModel.getBindingType(origSym);
     if (bt != null) { return bt; }
     // Fall back to node type (keyed by declaration offset — only valid in the source module).
-    if (orig.declaration != null) {
-      return depModel.getNodeType(orig.declaration as Node);
+    if (origSym.declaration != null) {
+      return depModel.getNodeType(origSym.declaration as Node);
     }
     return null;
   }
@@ -1459,12 +1426,10 @@ let buildHoverLabel = (node: Node, typeStr: String, scopeResult: ScopeResult | n
 
   var prefix = "let";
   if (scopeResult != null) {
-    let sr = scopeResult;
-    let syms = sr.symbols;
-    var maybeInfo = syms.getByNode(node);
+    let syms = scopeResult.symbols;
+    var sym = syms.getByNode(node);
 
-    if (maybeInfo != null) {
-      let sym = maybeInfo;
+    if (sym != null) {
       // Check if the declaration is a parameter.
       if (sym.declaration != null) {
         let declNode = sym.declaration as Node;
