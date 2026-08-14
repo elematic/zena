@@ -98,6 +98,16 @@ export final class ZirFunctionEmitter {
    */
   remat = new Array<boolean>();
   /**
+   * Whether each wasm local has had a set emitted, and whether emission
+   * is still in the function's straight-line PROLOGUE (no control
+   * frame opened yet — everything emitted so far runs exactly once,
+   * in order). Together they justify default-store elision: a fresh
+   * local already holds its type's default, so a prologue store of
+   * the default into a never-written local is a no-op (#259).
+   */
+  #localEverSet = new Array<boolean>();
+  var #prologue = true;
+  /**
    * A `return` at the outermost level (no open frames) is emitted
    * LAZILY: its values are pushed, and the opcode is written only if
    * anything else follows. If nothing does, the function falls
@@ -120,6 +130,13 @@ export final class ZirFunctionEmitter {
     }
     this.emitter.emitFunctionSignatureStart(name, this.func.signature.index);
     this.#allocLocals();
+    // Params arrive initialized by the caller — they never hold a
+    // "default" the elision below could rely on.
+    var pi = 0;
+    while (pi < this.func.signature.params.length) {
+      this.#markLocalSet(pi);
+      pi += 1;
+    }
     this.emitter.emitFunctionLocalsStart(this.localTypes);
     this.#doTree(0);
     // Every doTree leaf ends in a real terminator, but wasm validation
@@ -795,6 +812,39 @@ export final class ZirFunctionEmitter {
     }
   }
 
+
+  /** Emits a local.set, recording that the local no longer holds its default. */
+  #setLocal(idx: i32): void {
+    this.#markLocalSet(idx);
+    this.emitter.emitLocalSet(idx);
+  }
+
+  #markLocalSet(idx: i32): void {
+    while (this.#localEverSet.length <= idx) {
+      this.#localEverSet.push(false);
+    }
+    this.#localEverSet[idx] = true;
+  }
+
+  #localWasSet(idx: i32): boolean {
+    if (idx < 0 || idx >= this.#localEverSet.length) { return false; }
+    return this.#localEverSet[idx];
+  }
+
+  /** True for a constant of its type's default value (positive zero
+   * for floats — eliding a -0.0 store would change the value). */
+  #isDefaultConst(inst: i32): boolean {
+    let body = this.body;
+    let op = body.op(inst);
+    if (op == IrOp.const_i32) { return body.a[inst] == 0; }
+    if (op == IrOp.const_i64) { return body.constI64[body.a[inst]] == 0; }
+    if (op == IrOp.const_f32 || op == IrOp.const_f64) {
+      let v = body.constF64[body.a[inst]];
+      return v == 0.0 && 1.0 / v > 0.0;
+    }
+    return op == IrOp.ref_null;
+  }
+
   /** Emits a rematerialized constant at its use site. */
   #emitConstInline(inst: i32): void {
     let body = this.body;
@@ -878,6 +928,7 @@ export final class ZirFunctionEmitter {
     if (count > 0) {
       let y = exits[count - 1];
       this.#flushPendingReturn();
+      this.#prologue = false;
       this.frames.push(new EmitFrame(y, false));
       this.emitter.emitBlock(new ValTypeVoid());
       this.#loopWithExits(x, inLoopMerge, exits, count - 1);
@@ -887,7 +938,8 @@ export final class ZirFunctionEmitter {
       return;
     }
     this.#flushPendingReturn();
-    this.frames.push(new EmitFrame(x, true));
+    this.#prologue = false;
+      this.frames.push(new EmitFrame(x, true));
     this.emitter.emitLoop(new ValTypeVoid());
     this.#nodeWithin(x, inLoopMerge, inLoopMerge.length);
     this.#flushPendingReturn();
@@ -899,6 +951,7 @@ export final class ZirFunctionEmitter {
     if (count > 0) {
       let y = mergeChildren[count - 1];
       this.#flushPendingReturn();
+      this.#prologue = false;
       this.frames.push(new EmitFrame(y, false));
       this.emitter.emitBlock(new ValTypeVoid());
       this.#nodeWithin(x, mergeChildren, count - 1);
@@ -1019,9 +1072,11 @@ export final class ZirFunctionEmitter {
       // targets (out through the try_table); nothing falls out of it,
       // so the code after the inner `end` never runs.
       this.emitter.emitBlock(new ValTypeVoid());
+      this.#prologue = false;
       this.frames.push(new EmitFrame(-1, false));
       this.emitter.emitTryTableCatch(new ValTypeVoid(),
           ref.target.index, 0);
+      this.#prologue = false;
       this.frames.push(new EmitFrame(-1, false));
       this.#doBranch(from, succs[0]);
       this.emitter.emitEnd();
@@ -1053,6 +1108,7 @@ export final class ZirFunctionEmitter {
       }
       this.#pushValue(body.a[inst]);
       this.emitter.emitIf(new ValTypeVoid());
+      this.#prologue = false;
       this.frames.push(new EmitFrame(-1, false));
       this.#doBranch(from, succs[0]);
       this.emitter.emitElse();
@@ -1098,8 +1154,16 @@ export final class ZirFunctionEmitter {
     if (let (true, plan) = this.#movePlans.get(s.argStart)) {
       var i = 0;
       while (i < plan.length) {
+        if (this.#prologue && !this.#localWasSet(plan[i]) &&
+            !this.#localWasSet(plan[i + 1])) {
+          // Both locals still hold their type's default (never written,
+          // and in the prologue nothing has run twice), so the copy is
+          // default-over-default — a no-op.
+          i += 2;
+          continue;
+        }
         this.emitter.emitLocalGet(plan[i]);
-        this.emitter.emitLocalSet(plan[i + 1]);
+        this.#setLocal(plan[i + 1]);
         i += 2;
       }
     }
@@ -1136,6 +1200,16 @@ export final class ZirFunctionEmitter {
     // A rematerialized constant emits at each USE (#emitConstInline),
     // nothing at its definition.
     if (this.remat[inst]) { return; }
+    // A default-value constant stored into a never-written local in the
+    // straight-line prologue is a no-op: the fresh local already holds
+    // the default, and nothing before this point can have run twice.
+    // Later reads load the untouched default from the local.
+    if (this.#prologue && this.body.producesValue(inst) &&
+        !this.streamed[inst] && this.localOf[inst] >= 0 &&
+        !this.#localWasSet(this.localOf[inst]) &&
+        this.#isDefaultConst(inst)) {
+      return;
+    }
     this.#flushPendingReturn();
     let body = this.body;
     let op = body.op(inst);
@@ -1177,7 +1251,7 @@ export final class ZirFunctionEmitter {
       }
       case IrOp.var_set: {
         this.#pushValue(body.a[inst]);
-        this.emitter.emitLocalSet(this.#varLocal[body.b[inst]]);
+        this.#setLocal(this.#varLocal[body.b[inst]]);
       }
       case IrOp.struct_new_default: {
         this.emitter.emitStructNewDefault(this.#typeIndexOf(inst));
@@ -1291,7 +1365,7 @@ export final class ZirFunctionEmitter {
       if (this.streamed[inst]) {
         this.pendingStreamed.push(inst);
       } else {
-        this.emitter.emitLocalSet(this.localOf[inst]);
+        this.#setLocal(this.localOf[inst]);
       }
     }
   }
@@ -1619,7 +1693,7 @@ export final class ZirFunctionEmitter {
       while (k >= 0) {
         for (let p in projs) {
           if (this.body.b[p] == k) {
-            this.emitter.emitLocalSet(this.localOf[p]);
+            this.#setLocal(this.localOf[p]);
             break;
           }
         }
