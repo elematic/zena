@@ -1,0 +1,40 @@
+// `use` across interfaces: a shared record, a rename, a shared
+// resource, and a source interface the world never names — it is
+// imported anyway, ahead of its dependents, because its types cannot
+// exist otherwise.
+package test:web@2.0.0;
+
+interface types {
+  record request {
+    url: string,
+    body: option<list<u8>>,
+  }
+
+  record response {
+    status: u16,
+    body: list<u8>,
+  }
+
+  resource session {
+    constructor();
+    send: func(r: request) -> response;
+  }
+}
+
+interface client {
+  use types.{request, response as reply, session};
+
+  fetch: func(r: request) -> reply;
+  fetch-with: func(s: borrow<session>, r: request) -> reply;
+}
+
+interface pool {
+  use types.{session};
+
+  acquire: func() -> session;
+}
+
+world web {
+  import client;
+  import pool;
+}

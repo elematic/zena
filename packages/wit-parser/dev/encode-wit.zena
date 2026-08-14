@@ -1,0 +1,43 @@
+/**
+ * Encode a WIT world's imports as a types-only component.
+ *
+ * The test driver for the component encoder: `roundtrip-encoder.js`
+ * runs this over each fixture and hands the bytes to
+ * `wasm-tools component wit`, which prints the world back out — a
+ * round-trip only correct type and import sections survive.
+ *
+ *     zena-cli run packages/wit-parser/dev/encode-wit.zena \
+ *         <input.wit> <world> <out.wasm>
+ */
+
+import { getArguments, exit } from 'zena:cli';
+import { console } from 'zena:console';
+import { readFile, writeFileBytes } from 'zena:fs';
+import { String } from 'zena:string';
+import { Error } from 'zena:error';
+import { parse } from '../zena/wit.zena';
+import { encodeTypesOnlyComponent } from '../zena/component-encoder.zena';
+
+export let main = (): i32 => {
+  let args = getArguments();
+  if (args.length != 4) {
+    console.error('Usage: encode-wit <input.wit> <world> <out.wasm>');
+    exit(1);
+  }
+  try {
+    let ast = parse(readFile(args[1]));
+    let result = encodeTypesOnlyComponent(ast, args[2]);
+    writeFileBytes(args[3], result.bytes.toByteArray());
+    for (let name in result.encoded.skippedExports) {
+      // A types-only component has nothing to implement an export with;
+      // the harness's goldens show the imports only.
+      console.log('skipped export: ' + name);
+    }
+  } catch (e) {
+    if (e is Error) {
+      console.error('error: ' + (e as Error).message);
+    }
+    exit(1);
+  }
+  return 0;
+};

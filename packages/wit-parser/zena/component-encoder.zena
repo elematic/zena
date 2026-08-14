@@ -1,0 +1,877 @@
+/**
+ * The WIT type encoder: a resolved document's world, as the type and
+ * import sections of a component binary.
+ *
+ * This is the encoding half of what `wasm-tools component embed` does —
+ * each imported interface becomes an instance type whose declarations
+ * spell out its types and functions, and the component imports one
+ * instance per interface. The compiler's component target consumes the
+ * emitted pieces to head its own component; `encodeTypesOnlyComponent`
+ * wraps the same pieces in a bare component so the encoding can be
+ * verified on its own, by handing the bytes back to
+ * `wasm-tools component wit`.
+ *
+ * The encoding rules that are easy to get wrong, verified against
+ * `wasm-tools 1.252.0` byte for byte:
+ *
+ * - A type index in *value-type position* is a signed LEB128, because
+ *   the primitive opcodes (`0x64`–`0x7f`) are its negative range. An
+ *   index of 79 is two bytes. Indices in every other position (type
+ *   bounds, `own`, export declarations) are unsigned.
+ * - Every WIT-*named* type — record, variant, enum, flags, resource,
+ *   `type` alias — must be **exported** from the instance type, and it
+ *   is the *export* that creates the index everything else refers to.
+ *   An instance type that keeps a record anonymous validates on its
+ *   own and then fails at the import with "instance not valid to be
+ *   used as import". Anonymous constructors (`list`, `tuple`,
+ *   `option`, `result`, `own`, `borrow`) need no export.
+ * - A `use`d type crosses instances in two hops: at component level an
+ *   `alias export` pulls it out of the already-imported source
+ *   instance, and inside the dependent instance type an `alias outer`
+ *   (count 1: the enclosing component) brings it back in, where it is
+ *   re-exported under its local name.
+ * - A method's `self: borrow<R>` parameter is implicit in WIT and
+ *   explicit in the binary; a constructor returns `own<R>` the same
+ *   way. Resource function export names carry the `[constructor]r` /
+ *   `[method]r.f` / `[static]r.f` prefixes.
+ *
+ * What this does not encode yet, each a loud `EncodeError` rather than
+ * wrong bytes: `future`, `stream`, `map` and `error-context` (their
+ * runtime is C6), fixed-length lists, world-level `use` and type
+ * definitions, and `include`. A world's *exports* are skipped rather
+ * than rejected — a types-only component has nothing to implement them
+ * with, and the compiler's own export machinery is what lifts real
+ * functions — and the skipped names are reported on the result so a
+ * caller can say so.
+ */
+
+import { String } from 'zena:string';
+import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
+import { ByteBuffer } from 'zena:byte-buffer';
+import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
+import {
+  Ast, AstItem, AstItemTag, InterfaceDef, WorldDef, InterfaceItem,
+  InterfaceItemTag, TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func,
+  ResourceFunc, ResourceFuncTag, Use, UsePath, UsePathTag,
+  PackageName, WorldItem, WorldItemTag, Import, Export, ExternKind,
+  ExternKindTag, Id, Field, Case, EnumCaseDef, FlagDef,
+} from './parser.zena';
+
+/** A failure to encode: a construct the encoder cannot express yet. */
+export class EncodeError extends Error {
+  new(message: String) : super(message);
+}
+
+// Component binary section ids. They are not core wasm's — a component
+// numbers its sections differently.
+export let sectionCoreModule = 1;
+export let sectionType = 7;
+export let sectionAlias = 6;
+export let sectionImport = 10;
+
+/**
+ * One section of the component head, in emission order. The ids repeat —
+ * a type section per instance type, an import section per import — which
+ * the format allows and `wasm-tools` itself produces; interleaving is
+ * what lets an alias name the import before it.
+ */
+export final class SectionPiece {
+  id: i32;
+  payload: ByteBuffer;
+  new(this.id, this.payload);
+}
+
+/**
+ * A value-type code: a local type index when `>= 0`, and a primitive's
+ * opcode negated when `< 0`. The two need one representation because a
+ * field or parameter holds either, and the sign is what keeps an index
+ * of 0x73 distinct from `string`.
+ */
+let primCode = (opcode: i32): i32 => 0 - opcode;
+
+let writeValType = (buf: ByteBuffer, code: i32): void => {
+  if (code < 0) {
+    buf.writeByte(0 - code);
+  } else {
+    // Signed on purpose: this position's grammar is
+    // `typeidx | primvaltype`, and the primitives are the negative
+    // SLEB128 space. An unsigned encoding of 64..127 would collide.
+    buf.writeSLEB128(code);
+  }
+};
+
+let writeName = (buf: ByteBuffer, name: String): void => {
+  buf.writeULEB128(name.length);
+  for (var i = 0; i < name.length; i += 1) {
+    buf.writeByte(name.getByteAt(i));
+  }
+};
+
+/** An import or export name: the plain-name discriminant, then the name. */
+let writeExternName = (buf: ByteBuffer, name: String): void => {
+  buf.writeByte(0x00);
+  writeName(buf, name);
+};
+
+let primOpcodeOf = (tag: TypeTag): i32 => {
+  if (tag == TypeTag.Bool) { return 0x7f; }
+  if (tag == TypeTag.S8) { return 0x7e; }
+  if (tag == TypeTag.U8) { return 0x7d; }
+  if (tag == TypeTag.S16) { return 0x7c; }
+  if (tag == TypeTag.U16) { return 0x7b; }
+  if (tag == TypeTag.S32) { return 0x7a; }
+  if (tag == TypeTag.U32) { return 0x79; }
+  if (tag == TypeTag.S64) { return 0x78; }
+  if (tag == TypeTag.U64) { return 0x77; }
+  if (tag == TypeTag.F32) { return 0x76; }
+  if (tag == TypeTag.F64) { return 0x75; }
+  if (tag == TypeTag.Char) { return 0x74; }
+  if (tag == TypeTag.String) { return 0x73; }
+  return -1;
+};
+
+/** One interface the document defines, under its import name. */
+final class RegisteredInterface {
+  /** The name the component imports it by: `ns:pkg/iface@version`. */
+  qualifiedName: String;
+  items: Array<InterfaceItem>;
+  new(this.qualifiedName, this.items);
+}
+
+/**
+ * Where declarations land while one signature's types are encoded.
+ *
+ * An *instance* scope buffers instance declarations — `0x01` type,
+ * `0x04` export — to become one instance type, and its indices are
+ * local to it. The *component* scope (for a world-level function's
+ * types) writes each type as a component-level type section instead,
+ * and its indices are the component's. `#declareType` is the one place
+ * that knows the difference.
+ */
+final class Scope {
+  /** Buffered instance declarations; unused at component level. */
+  decls = new ByteBuffer();
+  var declCount = 0;
+  var typeCount = 0;
+  /** WIT type name → the local index its *export* created. */
+  named = new HashMap<String, i32>();
+  /**
+   * The named indices that are resources. A resource name in value
+   * position means `own` of it — `open: func() -> bucket` returns a
+   * handle — so `#encodeType` has to know which lookups to wrap, and
+   * a `use`d resource is still one.
+   */
+  resourceIndices = new HashMap<i32, boolean>();
+  /** Structural key of an anonymous type → its index here. */
+  anon = new HashMap<String, i32>();
+  var atComponentLevel = false;
+  new();
+}
+
+/** What `encodeWorld` produced. */
+export final class EncodedWorld {
+  /** The component-head sections, in order. */
+  pieces = new Array<SectionPiece>();
+  /** How many component-level types the pieces defined. */
+  var typeCount = 0;
+  /** How many instances the pieces imported. */
+  var instanceCount = 0;
+  /** How many component-level functions the pieces imported. */
+  var funcImportCount = 0;
+  /** World exports the encoding skipped, for the caller to report. */
+  skippedExports = new Array<String>();
+  new();
+}
+
+export final class ComponentTypeEncoder {
+  #ast: Ast;
+  #result = new EncodedWorld();
+  /** Everything importable by qualified name, main package and nested. */
+  #interfaces = new Array<RegisteredInterface>();
+  /** Qualified interface name → component-level instance index. */
+  #instanceIndex = new HashMap<String, i32>();
+  /**
+   * `qualifiedInterface + '#' + typeName` → the component-level type
+   * index its `alias export` created. One alias serves every interface
+   * that uses the type.
+   */
+  #aliasedTypes = new HashMap<String, i32>();
+
+  new(ast: Ast) : #ast = ast {
+    this.#registerPackage(ast.packageName, ast.items);
+    for (let nested in ast.nestedPackages) {
+      this.#registerPackage(nested.name, nested.items);
+    }
+  }
+
+  #registerPackage(pkgName: PackageName | null, items: Array<AstItem>): void {
+    for (let item in items) {
+      if (item.tag == AstItemTag.Interface) {
+        let def = item.interfaceDef as InterfaceDef;
+        this.#interfaces.push(new RegisteredInterface(
+            qualifiedInterfaceName(pkgName, def.name.name), def.items));
+      }
+    }
+  }
+
+  /**
+   * Encode the world's imports. Interfaces are imported in first-use
+   * order with their `use` dependencies ahead of them — WIT implies the
+   * import of anything a used type comes from, so a dependency absent
+   * from the world's own list still gets an instance.
+   */
+  encodeWorld(worldName: String): EncodedWorld {
+    var world: WorldDef | null = null;
+    for (let item in this.#ast.items) {
+      if (item.tag == AstItemTag.World) {
+        let def = item.worldDef as WorldDef;
+        if (def.name.name == worldName) {
+          world = def;
+        }
+      }
+    }
+    if (world == null) {
+      throw new EncodeError(
+          "no world named '" + worldName + "' in this document");
+    }
+
+    for (let item in (world as WorldDef).items) {
+      if (item.tag == WorldItemTag.Import) {
+        this.#encodeWorldImport((item.importItem as Import).kind);
+      } else if (item.tag == WorldItemTag.Export) {
+        this.#result.skippedExports.push(externName(
+            (item.exportItem as Export).kind));
+      } else if (item.tag == WorldItemTag.Use) {
+        throw new EncodeError("world-level `use` is not encodable yet");
+      } else if (item.tag == WorldItemTag.TypeDef) {
+        throw new EncodeError(
+            "world-level type definitions are not encodable yet");
+      } else {
+        throw new EncodeError("world `include` is not encodable yet");
+      }
+    }
+    return this.#result;
+  }
+
+  #encodeWorldImport(kind: ExternKind): void {
+    if (kind.tag == ExternKindTag.Path) {
+      this.#importInterface(this.#resolveInterface(kind.path as UsePath));
+    } else if (kind.tag == ExternKindTag.Func) {
+      this.#importWorldFunc((kind.name as Id).name, kind.funcDef as Func);
+    } else {
+      // An inline interface: the same encoding, imported under the
+      // plain name its declaration gave it.
+      this.#importNamedInterface(new RegisteredInterface(
+          (kind.name as Id).name, kind.items as Array<InterfaceItem>));
+    }
+  }
+
+  /**
+   * A world-level function import: its types live at component level,
+   * each in a type section of its own, then the import names the
+   * functype. Only structural types can appear here — a named type
+   * would have arrived through world-level `use` or a world type
+   * definition, both rejected before this runs.
+   */
+  #importWorldFunc(name: String, func: Func): void {
+    let scope = new Scope();
+    scope.atComponentLevel = true;
+    scope.typeCount = this.#result.typeCount;
+    let funcType = this.#encodeFuncType(scope, func, -1, func.isAsync);
+    let imp = new ByteBuffer();
+    imp.writeULEB128(1);
+    writeExternName(imp, name);
+    imp.writeByte(0x01); // externdesc: func
+    imp.writeULEB128(funcType);
+    this.#result.pieces.push(new SectionPiece(sectionImport, imp));
+    this.#result.funcImportCount += 1;
+  }
+
+  #resolveInterface(path: UsePath): RegisteredInterface {
+    let qualified = if (path.tag == UsePathTag.Id) {
+      qualifiedInterfaceName(this.#ast.packageName, (path.id as Id).name)
+    } else {
+      qualifiedInterfaceName(path.packageId, (path.name as Id).name)
+    };
+    for (let r in this.#interfaces) {
+      if (r.qualifiedName == qualified) {
+        return r;
+      }
+    }
+    throw new EncodeError("interface '" + qualified +
+        "' is not defined in this document; cross-document " +
+        "dependencies are not resolvable yet");
+  }
+
+  #importInterface(reg: RegisteredInterface): void {
+    if (this.#instanceIndex.has(reg.qualifiedName)) {
+      return;
+    }
+    // Dependencies first: an `alias export` can only name an instance
+    // that is already imported.
+    for (let item in reg.items) {
+      if (item.tag == InterfaceItemTag.Use) {
+        this.#importInterface(
+            this.#resolveInterface((item.use as Use).from));
+      }
+    }
+    this.#importNamedInterface(reg);
+  }
+
+  #importNamedInterface(reg: RegisteredInterface): void {
+    let scope = new Scope();
+    for (let item in reg.items) {
+      if (item.tag == InterfaceItemTag.Use) {
+        this.#encodeUse(scope, item.use as Use);
+      } else if (item.tag == InterfaceItemTag.TypeDef) {
+        this.#encodeTypeDef(scope, item.typeDef as TypeDef);
+      } else {
+        this.#encodeInterfaceFunc(scope, item.func as NamedFunc, "", -1);
+      }
+    }
+
+    let types = new ByteBuffer();
+    types.writeULEB128(1);
+    types.writeByte(0x42); // instance type
+    types.writeULEB128(scope.declCount);
+    types.writeBuffer(scope.decls);
+    this.#result.pieces.push(new SectionPiece(sectionType, types));
+    let instanceTypeIndex = this.#result.typeCount;
+    this.#result.typeCount += 1;
+
+    let imp = new ByteBuffer();
+    imp.writeULEB128(1);
+    writeExternName(imp, reg.qualifiedName);
+    imp.writeByte(0x05); // externdesc: instance
+    imp.writeULEB128(instanceTypeIndex);
+    this.#result.pieces.push(new SectionPiece(sectionImport, imp));
+    this.#instanceIndex[reg.qualifiedName] = this.#result.instanceCount;
+    this.#result.instanceCount += 1;
+  }
+
+  /**
+   * A `use`: each named type is aliased out of its source instance at
+   * component level (once, however many interfaces use it), aliased
+   * back in through `outer`, and re-exported under its local name —
+   * which may differ, `use` renames.
+   */
+  #encodeUse(scope: Scope, use: Use): void {
+    let source = this.#resolveInterface(use.from);
+    for (let n in use.names) {
+      let componentIndex =
+          this.#aliasTypeExport(source.qualifiedName, n.name.name);
+      scope.decls.writeByte(0x02); // instancedecl: alias
+      scope.decls.writeByte(0x03); // sort: type
+      scope.decls.writeByte(0x02); // target: outer
+      scope.decls.writeULEB128(1); // count 1: the enclosing component
+      scope.decls.writeULEB128(componentIndex);
+      scope.declCount += 1;
+      let inner = scope.typeCount;
+      scope.typeCount += 1;
+
+      let asName = n.asName;
+      let localName = if (asName == null) n.name.name else (asName as Id).name;
+      let exported = this.#exportType(scope, localName, inner);
+      scope.named[localName] = exported;
+      if (this.#isResource(source, n.name.name)) {
+        scope.resourceIndices[exported] = true;
+      }
+    }
+  }
+
+  /**
+   * Whether `name` in `reg` is a resource — directly, through a `use`,
+   * or through a `type` alias of either. Resource-ness survives every
+   * hop, and it decides whether a value-position mention is a handle.
+   */
+  #isResource(reg: RegisteredInterface, name: String): boolean {
+    for (let item in reg.items) {
+      if (item.tag == InterfaceItemTag.TypeDef) {
+        let td = item.typeDef as TypeDef;
+        if (td.name.name == name) {
+          if (td.tag == TypeDefTag.Resource) {
+            return true;
+          }
+          if (td.tag == TypeDefTag.Alias) {
+            let target = td.aliasType as Type;
+            if (target.tag == TypeTag.Name) {
+              return this.#isResource(reg, (target.name as Id).name);
+            }
+          }
+          return false;
+        }
+      } else if (item.tag == InterfaceItemTag.Use) {
+        let use = item.use as Use;
+        for (let n in use.names) {
+          let asName = n.asName;
+          let localName =
+              if (asName == null) n.name.name else (asName as Id).name;
+          if (localName == name) {
+            return this.#isResource(
+                this.#resolveInterface(use.from), n.name.name);
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  #aliasTypeExport(qualifiedInterface: String, typeName: String): i32 {
+    let key = qualifiedInterface + "#" + typeName;
+    if (let (true, existing) = this.#aliasedTypes.get(key)) {
+      return existing;
+    }
+    if (!this.#instanceIndex.has(qualifiedInterface)) {
+      throw new EncodeError("'" + qualifiedInterface +
+          "' is not imported yet, so nothing can use its types");
+    }
+    let alias = new ByteBuffer();
+    alias.writeULEB128(1);
+    alias.writeByte(0x03); // sort: type
+    alias.writeByte(0x00); // target: instance export
+    alias.writeULEB128(this.#instanceIndex[qualifiedInterface]);
+    writeName(alias, typeName);
+    this.#result.pieces.push(new SectionPiece(sectionAlias, alias));
+    let index = this.#result.typeCount;
+    this.#result.typeCount += 1;
+    this.#aliasedTypes[key] = index;
+    return index;
+  }
+
+  /** Export local type `index` under `name`; the export's own index. */
+  #exportType(scope: Scope, name: String, index: i32): i32 {
+    scope.decls.writeByte(0x04); // instancedecl: export
+    writeExternName(scope.decls, name);
+    scope.decls.writeByte(0x03); // externdesc: type
+    scope.decls.writeByte(0x00); // typebound: eq
+    scope.decls.writeULEB128(index);
+    scope.declCount += 1;
+    let exported = scope.typeCount;
+    scope.typeCount += 1;
+    return exported;
+  }
+
+  /** Declare an anonymous type from `body`; the index it gets. */
+  #declareType(scope: Scope, body: ByteBuffer): i32 {
+    if (scope.atComponentLevel) {
+      let section = new ByteBuffer();
+      section.writeULEB128(1);
+      section.writeBuffer(body);
+      this.#result.pieces.push(new SectionPiece(sectionType, section));
+      this.#result.typeCount += 1;
+    } else {
+      scope.decls.writeByte(0x01); // instancedecl: type
+      scope.decls.writeBuffer(body);
+      scope.declCount += 1;
+    }
+    let index = scope.typeCount;
+    scope.typeCount += 1;
+    return index;
+  }
+
+  #encodeTypeDef(scope: Scope, td: TypeDef): void {
+    let name = td.name.name;
+    if (td.tag == TypeDefTag.Resource) {
+      // A resource has no structure to declare — the export itself is
+      // the declaration, and `sub resource` is its bound.
+      scope.decls.writeByte(0x04);
+      writeExternName(scope.decls, name);
+      scope.decls.writeByte(0x03);
+      scope.decls.writeByte(0x01); // typebound: sub resource
+      scope.declCount += 1;
+      let resourceIndex = scope.typeCount;
+      scope.typeCount += 1;
+      scope.named[name] = resourceIndex;
+      scope.resourceIndices[resourceIndex] = true;
+      for (let rf in td.resourceFuncs as Array<ResourceFunc>) {
+        this.#encodeResourceFunc(scope, rf, name, resourceIndex);
+      }
+      return;
+    }
+
+    var code = 0;
+    if (td.tag == TypeDefTag.Record) {
+      let fields = td.fields as Array<Field>;
+      let fieldCodes = new Array<i32>();
+      for (let f in fields) {
+        fieldCodes.push(this.#encodeType(scope, f.type));
+      }
+      let body = new ByteBuffer();
+      body.writeByte(0x72);
+      body.writeULEB128(fields.length);
+      for (var i = 0; i < fields.length; i += 1) {
+        writeName(body, fields[i].name.name);
+        writeValType(body, fieldCodes[i]);
+      }
+      code = this.#declareType(scope, body);
+    } else if (td.tag == TypeDefTag.Variant) {
+      let cases = td.cases as Array<Case>;
+      let caseCodes = new Array<i32>();
+      for (let c in cases) {
+        let payload = c.type;
+        caseCodes.push(
+            if (payload == null) 0 else this.#encodeType(scope, payload as Type));
+      }
+      let body = new ByteBuffer();
+      body.writeByte(0x71);
+      body.writeULEB128(cases.length);
+      for (var i = 0; i < cases.length; i += 1) {
+        writeName(body, cases[i].name.name);
+        if (cases[i].type == null) {
+          body.writeByte(0x00); // no payload
+        } else {
+          body.writeByte(0x01);
+          writeValType(body, caseCodes[i]);
+        }
+        body.writeByte(0x00); // refines: none (the format still asks)
+      }
+      code = this.#declareType(scope, body);
+    } else if (td.tag == TypeDefTag.Enum) {
+      let cases = td.enumCases as Array<EnumCaseDef>;
+      let body = new ByteBuffer();
+      body.writeByte(0x6d);
+      body.writeULEB128(cases.length);
+      for (let c in cases) {
+        writeName(body, c.name.name);
+      }
+      code = this.#declareType(scope, body);
+    } else if (td.tag == TypeDefTag.Flags) {
+      let flags = td.flags as Array<FlagDef>;
+      let body = new ByteBuffer();
+      body.writeByte(0x6e);
+      body.writeULEB128(flags.length);
+      for (let f in flags) {
+        writeName(body, f.name.name);
+      }
+      code = this.#declareType(scope, body);
+    } else {
+      // `type name = t`: encode the target, and export an index for it.
+      // A primitive target still needs a declared type to bound the
+      // export to — `eq` takes an index, not an opcode. A named target
+      // is looked up raw so that `type b = bucket` aliases the resource
+      // itself rather than an `own` of it.
+      let target = td.aliasType as Type;
+      var isResource = false;
+      if (target.tag == TypeTag.Name) {
+        code = this.#namedIndex(scope, (target.name as Id).name);
+        isResource = scope.resourceIndices.has(code);
+      } else {
+        let encoded = this.#encodeType(scope, target);
+        if (encoded < 0) {
+          let body = new ByteBuffer();
+          body.writeByte(0 - encoded);
+          code = this.#declareType(scope, body);
+        } else {
+          code = encoded;
+        }
+      }
+      let exportedAlias = this.#exportType(scope, name, code);
+      scope.named[name] = exportedAlias;
+      if (isResource) {
+        scope.resourceIndices[exportedAlias] = true;
+      }
+      return;
+    }
+    scope.named[name] = this.#exportType(scope, name, code);
+  }
+
+  /**
+   * A type expression, as a value-type code. Named constructors were
+   * handled by `#encodeTypeDef` — this resolves references to them and
+   * builds the anonymous ones, one declaration per distinct shape.
+   */
+  #encodeType(scope: Scope, t: Type): i32 {
+    let prim = primOpcodeOf(t.tag);
+    if (prim >= 0) {
+      return primCode(prim);
+    }
+    if (t.tag == TypeTag.Name) {
+      let index = this.#namedIndex(scope, (t.name as Id).name);
+      if (scope.resourceIndices.has(index)) {
+        // A resource name in value position is a handle: `-> bucket`
+        // returns `own<bucket>`. The explicit `own`/`borrow` arms below
+        // are the ones that look the name up raw.
+        return this.#handleType(scope, 0x69, index);
+      }
+      return index;
+    }
+    if (t.tag == TypeTag.Future || t.tag == TypeTag.Stream) {
+      throw new EncodeError(
+          "future and stream types wait on the async runtime (C6)");
+    }
+    if (t.tag == TypeTag.Map) {
+      throw new EncodeError("map types are not encodable yet");
+    }
+    if (t.tag == TypeTag.ErrorContext) {
+      throw new EncodeError("error-context types are not encodable yet");
+    }
+    if (t.tag == TypeTag.List && t.fixedLength >= 0) {
+      throw new EncodeError("fixed-length lists are not encodable yet");
+    }
+
+    if (t.tag == TypeTag.List || t.tag == TypeTag.Option) {
+      let inner = this.#encodeType(scope, t.inner as Type);
+      let opcode = if (t.tag == TypeTag.List) 0x70 else 0x6b;
+      let key = i32ToString(opcode) + "(" + i32ToString(inner) + ")";
+      if (let (true, existing) = scope.anon.get(key)) {
+        return existing;
+      }
+      let body = new ByteBuffer();
+      body.writeByte(opcode);
+      writeValType(body, inner);
+      let index = this.#declareType(scope, body);
+      scope.anon[key] = index;
+      return index;
+    }
+    if (t.tag == TypeTag.Own || t.tag == TypeTag.Borrow) {
+      let inner = t.inner as Type;
+      if (inner.tag != TypeTag.Name) {
+        throw new EncodeError("own/borrow take a resource by name");
+      }
+      let resource = this.#namedIndex(scope, (inner.name as Id).name);
+      let opcode = if (t.tag == TypeTag.Own) 0x69 else 0x68;
+      return this.#handleType(scope, opcode, resource);
+    }
+    if (t.tag == TypeTag.Tuple) {
+      let members = t.types as Array<Type>;
+      let codes = new Array<i32>();
+      var key = "tuple(";
+      for (let m in members) {
+        let c = this.#encodeType(scope, m);
+        codes.push(c);
+        key = key + i32ToString(c) + ",";
+      }
+      key = key + ")";
+      if (let (true, existing) = scope.anon.get(key)) {
+        return existing;
+      }
+      let body = new ByteBuffer();
+      body.writeByte(0x6f);
+      body.writeULEB128(codes.length);
+      for (let c in codes) {
+        writeValType(body, c);
+      }
+      let index = this.#declareType(scope, body);
+      scope.anon[key] = index;
+      return index;
+    }
+    if (t.tag == TypeTag.Result) {
+      let ok = t.okType;
+      let err = t.errType;
+      let okCode = if (ok == null) 0 else this.#encodeType(scope, ok as Type);
+      let errCode = if (err == null) 0 else this.#encodeType(scope, err as Type);
+      let key = "result(" + (if (ok == null) "" else i32ToString(okCode)) +
+          "," + (if (err == null) "" else i32ToString(errCode)) + ")";
+      if (let (true, existing) = scope.anon.get(key)) {
+        return existing;
+      }
+      let body = new ByteBuffer();
+      body.writeByte(0x6a);
+      if (ok == null) {
+        body.writeByte(0x00);
+      } else {
+        body.writeByte(0x01);
+        writeValType(body, okCode);
+      }
+      if (err == null) {
+        body.writeByte(0x00);
+      } else {
+        body.writeByte(0x01);
+        writeValType(body, errCode);
+      }
+      let index = this.#declareType(scope, body);
+      scope.anon[key] = index;
+      return index;
+    }
+    throw new EncodeError("unhandled type tag in the WIT encoder");
+  }
+
+  /**
+   * A function type declaration; the index it gets. `selfBorrow` is a
+   * borrow handle's index for a method and -1 otherwise.
+   */
+  #encodeFuncType(
+    scope: Scope,
+    func: Func,
+    selfBorrow: i32,
+    isAsync: boolean
+  ): i32 {
+    let paramCodes = new Array<i32>();
+    for (let p in func.params) {
+      paramCodes.push(this.#encodeType(scope, p.type));
+    }
+    let result = func.result;
+    let resultCode =
+        if (result == null) 0 else this.#encodeType(scope, result as Type);
+
+    let body = new ByteBuffer();
+    body.writeByte(if (isAsync) 0x43 else 0x40);
+    body.writeULEB128(
+        func.params.length + (if (selfBorrow >= 0) 1 else 0));
+    if (selfBorrow >= 0) {
+      writeName(body, "self");
+      writeValType(body, selfBorrow);
+    }
+    for (var i = 0; i < func.params.length; i += 1) {
+      writeName(body, func.params[i].name.name);
+      writeValType(body, paramCodes[i]);
+    }
+    if (result == null) {
+      body.writeByte(0x01); // the named-results arm of resultlist,
+      body.writeByte(0x00); // holding none
+    } else {
+      body.writeByte(0x00); // one unnamed result
+      writeValType(body, resultCode);
+    }
+    return this.#declareType(scope, body);
+  }
+
+  #exportFunc(scope: Scope, name: String, typeIndex: i32): void {
+    scope.decls.writeByte(0x04);
+    writeExternName(scope.decls, name);
+    scope.decls.writeByte(0x01); // externdesc: func
+    scope.decls.writeULEB128(typeIndex);
+    scope.declCount += 1;
+  }
+
+  #encodeInterfaceFunc(
+    scope: Scope,
+    nf: NamedFunc,
+    exportPrefix: String,
+    selfBorrow: i32
+  ): void {
+    let typeIndex =
+        this.#encodeFuncType(scope, nf.func, selfBorrow, nf.func.isAsync);
+    this.#exportFunc(scope, exportPrefix + nf.name.name, typeIndex);
+  }
+
+  #encodeResourceFunc(
+    scope: Scope,
+    rf: ResourceFunc,
+    resourceName: String,
+    resourceIndex: i32
+  ): void {
+    if (rf.tag == ResourceFuncTag.Constructor) {
+      // A constructor's declared result is nothing; its real one is
+      // `own` of the resource it builds.
+      let ownIndex = this.#handleType(scope, 0x69, resourceIndex);
+      let func = rf.func.func;
+      let paramCodes = new Array<i32>();
+      for (let p in func.params) {
+        paramCodes.push(this.#encodeType(scope, p.type));
+      }
+      let body = new ByteBuffer();
+      body.writeByte(0x40);
+      body.writeULEB128(func.params.length);
+      for (var i = 0; i < func.params.length; i += 1) {
+        writeName(body, func.params[i].name.name);
+        writeValType(body, paramCodes[i]);
+      }
+      body.writeByte(0x00);
+      writeValType(body, ownIndex);
+      let typeIndex = this.#declareType(scope, body);
+      this.#exportFunc(scope, "[constructor]" + resourceName, typeIndex);
+    } else if (rf.tag == ResourceFuncTag.Method) {
+      let borrowIndex = this.#handleType(scope, 0x68, resourceIndex);
+      this.#encodeInterfaceFunc(scope, rf.func,
+          "[method]" + resourceName + ".", borrowIndex);
+    } else {
+      this.#encodeInterfaceFunc(scope, rf.func,
+          "[static]" + resourceName + ".", -1);
+    }
+  }
+
+  /** The index `name` exports here, with no handle wrapping. */
+  #namedIndex(scope: Scope, name: String): i32 {
+    if (let (true, index) = scope.named.get(name)) {
+      return index;
+    }
+    if (scope.atComponentLevel) {
+      throw new EncodeError("a world-level function names type '" +
+          name + "', which needs world-level `use` encoding");
+    }
+    throw new EncodeError("type '" + name +
+        "' is not defined before its first use; declaration order " +
+        "is encoding order");
+  }
+
+  /** An `own`/`borrow` of `resourceIndex`, deduplicated like any anon. */
+  #handleType(scope: Scope, opcode: i32, resourceIndex: i32): i32 {
+    let key = i32ToString(opcode) + "(" + i32ToString(resourceIndex) + ")";
+    if (let (true, existing) = scope.anon.get(key)) {
+      return existing;
+    }
+    let body = new ByteBuffer();
+    body.writeByte(opcode);
+    body.writeULEB128(resourceIndex); // an index position: unsigned
+    let index = this.#declareType(scope, body);
+    scope.anon[key] = index;
+    return index;
+  }
+}
+
+/** `ns:pkg/name@version`, or the bare name when there is no package. */
+let qualifiedInterfaceName = (
+  pkg: PackageName | null,
+  interfaceName: String
+): String => {
+  if (pkg == null) {
+    return interfaceName;
+  }
+  let p = pkg as PackageName;
+  var name = p.namespace.name + ":" + p.name.name + "/" + interfaceName;
+  let version = p.version;
+  if (version != null) {
+    name = name + "@" + (version as String);
+  }
+  return name;
+};
+
+let externName = (kind: ExternKind): String => {
+  if (kind.tag == ExternKindTag.Path) {
+    return (kind.path as UsePath).getName().name;
+  }
+  return (kind.name as Id).name;
+};
+
+/** The names of the worlds the document's main package defines. */
+export let worldNames = (ast: Ast): Array<String> => {
+  let names = new Array<String>();
+  for (let item in ast.items) {
+    if (item.tag == AstItemTag.World) {
+      names.push((item.worldDef as WorldDef).name.name);
+    }
+  }
+  return names;
+};
+
+/** A world's encoding, plus the bytes as a complete component. */
+export final class TypesOnlyComponent {
+  bytes: ByteBuffer;
+  encoded: EncodedWorld;
+  new(this.bytes, this.encoded);
+}
+
+/**
+ * The pieces as a complete, importing-only component: the head sections
+ * with nothing behind them. Valid on its own — which is the point, as
+ * `wasm-tools component wit` will read the world back out of it.
+ */
+export let encodeTypesOnlyComponent = (
+  ast: Ast,
+  worldName: String
+): TypesOnlyComponent => {
+  let encoder = new ComponentTypeEncoder(ast);
+  let encoded = encoder.encodeWorld(worldName);
+  let out = new ByteBuffer();
+  out.writeU32(0x6D736100); // \0asm
+  out.writeU32(0x0001000D); // version 0x0d, layer 1: a component
+  for (let piece in encoded.pieces) {
+    out.writeByte(piece.id);
+    out.writeULEB128(piece.payload.length);
+    out.writeBuffer(piece.payload);
+  }
+  return new TypesOnlyComponent(out, encoded);
+};
