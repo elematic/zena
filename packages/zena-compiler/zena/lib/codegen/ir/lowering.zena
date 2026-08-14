@@ -194,7 +194,7 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
   if (actualSig == null) {
     throw new ZirUnsupported('adaptation source shape');
   }
-  let srcSig = actualSig as WasmSignature;
+  let srcSig = actualSig;
   let b = new IrBuilder();
   let entry = b.newBlock();
   let params = new Array<i32>();
@@ -297,7 +297,7 @@ export let lowerFunction = (wasm: WasmModule, func: WasmFunction): IrBody => {
     if (e is ZirUnsupported) {
       // message carries the class's own 'zir unsupported: ' prefix;
       // strip it so re-wrapping does not double it.
-      let m = (e as ZirUnsupported).message;
+      let m = e.message;
       failMsg = m.sliceBytes(17, m.length) + ' [in ' +
           (if (func.name != null) func.name as String else '<unnamed>') + ']';
       null
@@ -306,7 +306,7 @@ export let lowerFunction = (wasm: WasmModule, func: WasmFunction): IrBody => {
     }
   };
   if (failMsg != null) {
-    throw new ZirUnsupported(failMsg as String);
+    throw new ZirUnsupported(failMsg);
   }
   return result as IrBody;
 };
@@ -332,7 +332,7 @@ let castToConcreteRef = (b: IrBuilder, value: i32, targetVt: ValType): i32 => {
   if (target == null) {
     return value;
   }
-  let vt = new ValTypeRef(target as WasmType) as ValType;
+  let vt = new ValTypeRef(target) as ValType;
   return b.emit(IrOp.ref_cast, vt, value, b.internType(vt));
 };
 
@@ -358,7 +358,7 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
     if (iname == 'array.get' || iname == 'array.set') {
       let arrTypeOpt = asWasmArray(target.signature.params[0]);
       if (arrTypeOpt != null) {
-        let arrType = arrTypeOpt as WasmArray;
+        let arrType = arrTypeOpt;
         let recv = castToConcreteRef(b, params[0], target.signature.params[0]);
         if (iname == 'array.get') {
           // Packed i8 elements read unsigned as i32; the erased slot is i32.
@@ -425,7 +425,7 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
       throw new ZirUnsupported('trampoline result shape');
     }
     let expectedRet = func.signature.returns[0];
-    if (!isWasmSubtype(resultType as ValType, expectedRet)) {
+    if (!isWasmSubtype(resultType, expectedRet)) {
       result = castToConcreteRef(b, result, expectedRet);
     }
     b.ret(result);
@@ -651,7 +651,7 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     // generators.
     let scaffold = synthesizeScaffold(wasm, func);
     if (scaffold != null) {
-      return scaffold as IrBody;
+      return scaffold;
     }
     if (func.intrinsic != null) {
       return synthesizeIntrinsic(func);
@@ -847,7 +847,7 @@ export final class FunctionLowerer {
     let node = this.func.node as Node;
     var setterParamIdent: Identifier | null = null;
     if (node is MethodDefinition) {
-      let md = node as MethodDefinition;
+      let md = node;
       params = md.params;
       bodyNode = md.body;
       if (!md.isStatic) {
@@ -870,7 +870,7 @@ export final class FunctionLowerer {
       }
     } else if (node is AccessorDeclaration) {
       // Written getter body: `this` plus no declared parameters.
-      let acc = node as AccessorDeclaration;
+      let acc = node;
       if (acc.getter == null) {
         this.#bail('accessor without getter body');
       }
@@ -880,7 +880,7 @@ export final class FunctionLowerer {
     } else if (node is SetterInfo) {
       // Written setter body: `this` plus the single value parameter
       // (a bare Identifier, bound manually after the entry params).
-      let si = node as SetterInfo;
+      let si = node;
       params = new Array<Parameter>();
       bodyNode = si.body;
       paramOffset = 1;
@@ -894,7 +894,7 @@ export final class FunctionLowerer {
         paramOffset = 1;
       }
     }
-    let paramList = params as Array<Parameter>;
+    let paramList = params;
     let setterExtra = if (setterParamIdent != null) 1 else 0;
     // Zero-width (`void`) parameters occupy NO wasm slot: the signature
     // was built by mapParamTypeToWasmParams, which drops them. So both
@@ -956,8 +956,8 @@ export final class FunctionLowerer {
         // operand (NO_VALUE), so the binding is never read.
         let voidSym = this.func.model.resolveDeclaration(p.name);
         if (voidSym != null) {
-          this.#cx().env[(voidSym as Symbol).id] = NO_VALUE;
-          this.#cx().symbols[(voidSym as Symbol).id] = voidSym as Symbol;
+          this.#cx().env[voidSym.id] = NO_VALUE;
+          this.#cx().symbols[voidSym.id] = voidSym;
         }
         if (p.pattern != null) {
           this.#bail('destructuring a zero-width parameter');
@@ -969,8 +969,8 @@ export final class FunctionLowerer {
       let value = this.b.blockParam(entry, vt);
       let sym = this.func.model.resolveDeclaration(p.name);
       if (sym != null) {
-        this.#cx().env[(sym as Symbol).id] = value;
-        this.#cx().symbols[(sym as Symbol).id] = sym as Symbol;
+        this.#cx().env[sym.id] = value;
+        this.#cx().symbols[sym.id] = sym;
       }
       // Destructuring parameters bind their pattern from the same
       // value once the entry block is current (below).
@@ -989,8 +989,8 @@ export final class FunctionLowerer {
       let vt = sig.params[paramOffset];
       this.#requireSupported(vt, 'parameter type');
       let value = this.b.blockParam(entry, vt);
-      this.#cx().env[(sym as Symbol).id] = value;
-      this.#cx().symbols[(sym as Symbol).id] = sym as Symbol;
+      this.#cx().env[sym.id] = value;
+      this.#cx().symbols[sym.id] = sym;
     }
     this.b.switchTo(entry);
     // Destructuring parameters bind now that instructions can emit.
@@ -1006,8 +1006,8 @@ export final class FunctionLowerer {
         continue;
       }
       let sym = this.func.model.resolveDeclaration(paramList[i].name);
-      if (sym != null && this.#isCelled((sym as Symbol).id)) {
-        let symId = (sym as Symbol).id;
+      if (sym != null && this.#isCelled(sym.id)) {
+        let symId = sym.id;
         this.#cx().env[symId] = this.#cellAlloc(
             sig.params[paramSigIndex[i]], this.#cx().env[symId]);
       }
@@ -1021,7 +1021,7 @@ export final class FunctionLowerer {
       if (infoOpt == null) {
         this.#bail('override class not discovered');
       }
-      let ownStruct = (infoOpt as ClassCodegenInfo).structType;
+      let ownStruct = infoOpt.structType;
       let castVt = new ValTypeRef(ownStruct) as ValType;
       this.#cx().thisValue = this.b.emit(IrOp.ref_cast, castVt, this.#cx().thisValue,
           this.b.internType(castVt));
@@ -1031,11 +1031,11 @@ export final class FunctionLowerer {
     }
 
     if (extCtorDef != null) {
-      this.#lowerExtensionConstructor(extCtorDef as MethodDefinition, sig);
+      this.#lowerExtensionConstructor(extCtorDef, sig);
       return this.b.finish();
     }
     if (ctorDef != null) {
-      this.#lowerConstructorPrologue(ctorDef as MethodDefinition);
+      this.#lowerConstructorPrologue(ctorDef);
       if (bodyNode != null) {
         this.#lowerStatement(bodyNode as Statement);
       }
@@ -1051,7 +1051,7 @@ export final class FunctionLowerer {
       // that conforms to the return type IS the return value (the
       // checker accepts exactly that shape). Generators have no return
       // value, so in presplit mode the tail is an ordinary statement.
-      let stmts = (body as BlockStatement).body;
+      let stmts = body.body;
       // Cells for self/forward-referencing closure bindings exist
       // before any statement runs (see precellBindings).
       this.#cx().precellBindings(stmts);
@@ -1061,7 +1061,7 @@ export final class FunctionLowerer {
           stmts[stmts.length - 1] is ExpressionStatement) {
         let te = (stmts[stmts.length - 1] as ExpressionStatement).expression;
         let tt = this.func.model.getNodeType(te);
-        if (tt != null && !isVoidOrNeverType(tt as Type)) {
+        if (tt != null && !isVoidOrNeverType(tt)) {
           tailExpr = te;
         }
       }
@@ -1082,8 +1082,8 @@ export final class FunctionLowerer {
         for (var si = 0; si < bodyCount; si += 1) {
           withReturn.push(stmts[si]);
         }
-        withReturn.push(new ReturnStatement(tailExpr as Expression,
-            (tailExpr as Expression).loc) as Statement);
+        withReturn.push(new ReturnStatement(tailExpr,
+            tailExpr.loc) as Statement);
         this.#lowerStatementList(withReturn, 0);
         tailExpr = null;
       } else {
@@ -1091,7 +1091,7 @@ export final class FunctionLowerer {
       }
       if (tailExpr != null && this.#cx().reachable) {
         let tailValue = this.#lowerExpressionCtx(
-            tailExpr as Expression, this.#returnSlotVt());
+            tailExpr, this.#returnSlotVt());
         this.#emitCheckedRet(tailValue);
       } else if (this.#cx().reachable) {
         // A `Future<void>` async body falls off the end like a void
@@ -1222,20 +1222,20 @@ export final class FunctionLowerer {
     if (parentNode == null || !(parentNode is ImportDeclaration)) {
       this.#bail('namespace import shape');
     }
-    let importDecl = parentNode as ImportDeclaration;
+    let importDecl = parentNode;
     var canonicalPath = importDecl.moduleSpecifier.value;
     if (canonicalPath.startsWith('./') || canonicalPath.startsWith('../')) {
       let referrer = moduleModel.getParent(importDecl);
       if (referrer != null && referrer is Module) {
         canonicalPath = normalizePath(
-            dirName((referrer as Module).path) + '/' + canonicalPath);
+            dirName(referrer.path) + '/' + canonicalPath);
       }
     }
     let progOpt = this.wasm.program;
     if (progOpt == null) {
       this.#bail('namespace import shape');
     }
-    let prog = progOpt as Program;
+    let prog = progOpt;
     if (!prog.unitsByPath.has(canonicalPath)) {
       this.#bail('namespace import module');
     }
@@ -1247,7 +1247,7 @@ export final class FunctionLowerer {
     if (rtOpt == null || !(rtOpt is RecordType)) {
       this.#bail('namespace import shape');
     }
-    let rt = rtOpt as RecordType;
+    let rt = rtOpt;
     let fields = new Array<WasmField>();
     for (let pair in rt.properties) {
       fields.push(new WasmField(pair.key,
@@ -1321,7 +1321,7 @@ export final class FunctionLowerer {
     }
     let progOpt = this.wasm.program;
     if (progOpt != null) {
-      let prog = progOpt as Program;
+      let prog = progOpt;
       for (let unit in prog.units) {
         if (unit.model.sourcePath.contains('memory.zena')) {
           this.#lowerUnitGlobalInits(unit);
@@ -1342,11 +1342,11 @@ export final class FunctionLowerer {
     let model = unit.model;
     for (let stmt in unit.ast.body) {
       if (stmt is VariableDeclaration) {
-        let vd = stmt as VariableDeclaration;
+        let vd = stmt;
         if (vd.pattern is IdentifierPattern) {
           let sym = model.resolveDeclaration(vd.pattern);
           if (sym != null) {
-            if (let (true, g) = this.wasm.globalMap.get((sym as Symbol).id)) {
+            if (let (true, g) = this.wasm.globalMap.get(sym.id)) {
               if (g.initExpr != null &&
                   !this.#isLiteralInit(g.initExpr as Expression)) {
                 this.#lowerGlobalInit(g);
@@ -1355,10 +1355,10 @@ export final class FunctionLowerer {
           }
         }
       } else if (stmt is ClassDeclaration) {
-        let cd = stmt as ClassDeclaration;
+        let cd = stmt;
         for (let member in cd.body) {
           if (member is FieldDefinition) {
-            let fd = member as FieldDefinition;
+            let fd = member;
             if (fd.isStatic && fd.value != null &&
                 !this.#isLiteralInit(fd.value as Expression)) {
               if (fd.name is Identifier) {
@@ -1422,7 +1422,7 @@ export final class FunctionLowerer {
     // inherited initializers run in the base constructor via super.
     var cdOpt: ClassDeclaration | null = null;
     if (classDecl != null && classDecl is ClassDeclaration) {
-      cdOpt = classDecl as ClassDeclaration;
+      cdOpt = classDecl;
     } else if (classDecl == null || !(classDecl is SealedVariant)) {
       this.#bail('constructor declaration shape');
     }
@@ -1471,10 +1471,10 @@ export final class FunctionLowerer {
     if (cdOpt == null) {
       return;
     }
-    let cd = cdOpt as ClassDeclaration;
+    let cd = cdOpt;
     for (let member in cd.body) {
       if (member is FieldDefinition) {
-        let fd = member as FieldDefinition;
+        let fd = member;
         if (fd.value != null && !fd.isStatic) {
           if (!(fd.name is Identifier)) {
             this.#bail('field name shape');
@@ -1562,10 +1562,10 @@ export final class FunctionLowerer {
     if (cdOpt == null) {
       return;
     }
-    let cd = cdOpt as ClassDeclaration;
+    let cd = cdOpt;
     for (let member in cd.body) {
       if (member is FieldDefinition) {
-        let fd = member as FieldDefinition;
+        let fd = member;
         if (fd.value != null && !fd.isStatic) {
           // Streaming skips (not bails) non-identifier field names here.
           if (fd.name is Identifier) {
@@ -1601,7 +1601,7 @@ export final class FunctionLowerer {
       if (fieldName == null) {
         this.#bail('unnamed context field');
       }
-      let fieldRef = this.b.addRef(new IrRefField(cs, fieldName as String));
+      let fieldRef = this.b.addRef(new IrRefField(cs, fieldName));
       this.#cx().thisValue = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
       fieldIdx = 1;
     }
@@ -1612,7 +1612,7 @@ export final class FunctionLowerer {
         this.#bail('unnamed context field');
       }
       this.#requireSupported(field.type, 'capture type');
-      let fieldRef = this.b.addRef(new IrRefField(cs, fieldName as String));
+      let fieldRef = this.b.addRef(new IrRefField(cs, fieldName));
       let value = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
       this.#cx().env[symId] = value;
       fieldIdx += 1;
@@ -1640,13 +1640,13 @@ export final class FunctionLowerer {
     if (classDecl == null || !(classDecl is ClassDeclaration)) {
       this.#bail('constructor declaration shape');
     }
-    let cd = classDecl as ClassDeclaration;
+    let cd = classDecl;
 
     // 1. Field defaults, in declaration order: the class's own fields,
     // then mixin fields — streaming's order.
     for (let member in cd.body) {
       if (member is FieldDefinition) {
-        let fd = member as FieldDefinition;
+        let fd = member;
         if (fd.value != null && !fd.isStatic) {
           if (!(fd.name is Identifier)) {
             this.#bail('field name shape');
@@ -1662,7 +1662,7 @@ export final class FunctionLowerer {
     if (md.initializerList != null) {
       for (let init in md.initializerList as Array<Node>) {
         if (init is FieldInitializer) {
-          let fi = init as FieldInitializer;
+          let fi = init;
           this.#storeCtorField(ct, structType, fi.field.name, fi.value);
         } else {
           this.#bail('initializer kind');
@@ -1682,7 +1682,7 @@ export final class FunctionLowerer {
       if (superCtorOpt == null) {
         this.#bail('super constructor not found');
       }
-      let superCtor = superCtorOpt as WasmFunction;
+      let superCtor = superCtorOpt;
       let superSig = superCtor.signature;
       if (superSig.params.length != this.#liveArgCount(si.args) + 1) {
         this.#bail('super constructor arity');
@@ -1769,7 +1769,7 @@ export final class FunctionLowerer {
       // same multi-value shape — projections flow straight through.
       let sig = this.func.signature;
       let outs = new Array<i32>();
-      this.#lowerCall(arg as CallExpression, outs);
+      this.#lowerCall(arg, outs);
       if (outs.length != sig.returns.length) {
         this.#bail('multi-value return arity');
       }
@@ -1786,13 +1786,13 @@ export final class FunctionLowerer {
     if (!(arg is TupleLiteral)) {
       this.#bail('multi-value return');
     }
-    let lit = arg as TupleLiteral;
+    let lit = arg;
     let sig = this.func.signature;
     if (lit.elements.length != sig.returns.length) {
       this.#bail('multi-value return arity');
     }
     let nt = this.func.model.getNodeType(lit);
-    if (nt == null || !(baseType(nt as Type) is InlineTupleType)) {
+    if (nt == null || !(baseType(nt) is InlineTupleType)) {
       this.#bail('boxed tuple return');
     }
     let values = new Array<i32>();
@@ -1800,7 +1800,7 @@ export final class FunctionLowerer {
       let el = lit.elements[i];
       let expected = sig.returns[i];
       var v = -1;
-      if (el is Identifier && (el as Identifier).name == '_') {
+      if (el is Identifier && el.name == '_') {
         v = this.#defaultValueOf(expected);
       } else {
         v = this.#lowerExpressionCtx(el, expected);
@@ -1863,7 +1863,7 @@ export final class FunctionLowerer {
     }
     var v = value;
     let have = this.#valueType(v);
-    let want = slot as ValType;
+    let want = slot;
     if (!this.#cx().refConforms(have, want)) {
       // Returns conform like stores (the signature is the binding):
       // a nullable value whose non-null form conforms re-asserts (the
@@ -1871,9 +1871,9 @@ export final class FunctionLowerer {
       // erased eqref out of a merge-typed expression) casts down at
       // the boundary; anything else bails.
       if (have is ValTypeRefNull && want is ValTypeRef &&
-          isValSubtype(new ValTypeRef((have as ValTypeRefNull).target) as ValType, want)) {
+          isValSubtype(new ValTypeRef(have.target) as ValType, want)) {
         v = this.b.emit(IrOp.ref_as_non_null,
-            new ValTypeRef((have as ValTypeRefNull).target) as ValType, v, -1);
+            new ValTypeRef(have.target) as ValType, v, -1);
       } else if (isRefValType(have) && isValSubtype(want, have)) {
         v = this.b.emit(IrOp.ref_cast, want, v, this.b.internType(want));
       } else {
@@ -1900,7 +1900,7 @@ export final class FunctionLowerer {
       }
       let s = body[i];
       if (s is UsingStatement) {
-        lowerUsingRegion(this.#cx(), s as UsingStatement, body, i + 1, last);
+        lowerUsingRegion(this.#cx(), s, body, i + 1, last);
         return;
       }
       this.#lowerStatement(s);
@@ -1928,7 +1928,7 @@ export final class FunctionLowerer {
       }
       case ExpressionStatement {expression}: {
         if (expression is ThrowExpression) {
-          this.#lowerThrowStatement(expression as ThrowExpression);
+          this.#lowerThrowStatement(expression);
         } else {
           this.#lowerExpression(expression);
         }
@@ -1946,14 +1946,14 @@ export final class FunctionLowerer {
           if (!returnThroughFinally(this.#cx(), -1)) {
             this.b.retVoid();
           }
-        } else if (this.#isZeroWidthExpr(argument as Expression) &&
+        } else if (this.#isZeroWidthExpr(argument) &&
             this.func.signature.returns.length == 0) {
           // `return this.value;` where T = void: the operand exists in
           // the source but not in wasm. Run it for its effects, then
           // return nothing. (Guarded on the signature having no result
           // so a `never`-typed operand — a throw — in a value-returning
           // function keeps its existing path.)
-          this.#lowerExpression(argument as Expression);
+          this.#lowerExpression(argument);
           if (!returnThroughFinally(this.#cx(), -1)) {
             this.b.retVoid();
           }
@@ -1964,10 +1964,10 @@ export final class FunctionLowerer {
             // needs it yet.
             this.#bail('multi-value return through a finalizer');
           }
-          this.#lowerMultiReturn(argument as Expression);
+          this.#lowerMultiReturn(argument);
         } else {
           let ctx = this.#returnSlotVt();
-          let value = this.#lowerExpressionCtx(argument as Expression, ctx);
+          let value = this.#lowerExpressionCtx(argument, ctx);
           // The operand may have left the function itself (a `throw`
           // as the operand); #emitCheckedRet checks for that, and
           // parking the return has to check for it too.
@@ -2031,14 +2031,14 @@ export final class FunctionLowerer {
   #lowerVariableDeclaration(vd: VariableDeclaration): void {
     var pat = vd.pattern;
     if (pat is BindingPattern) {
-      pat = (pat as BindingPattern).pattern;
+      pat = pat.pattern;
     }
     if (pat is TuplePattern) {
-      this.#lowerTupleDeclaration(vd, pat as TuplePattern);
+      this.#lowerTupleDeclaration(vd, pat);
       return;
     }
     if (pat is RecordPattern) {
-      this.#lowerObjectPatternDeclaration(vd, (pat as RecordPattern).properties);
+      this.#lowerObjectPatternDeclaration(vd, pat.properties);
       return;
     }
     if (!(pat is IdentifierPattern)) {
@@ -2048,18 +2048,18 @@ export final class FunctionLowerer {
     if (sym == null) {
       this.#bail('unresolved declaration');
     }
-    let bindingType = this.func.model.getBindingType(sym as Symbol);
+    let bindingType = this.func.model.getBindingType(sym);
     if (bindingType == null) {
       this.#bail('untyped binding');
     }
-    let bindingVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
+    let bindingVt = typeToValTypeWithSub(this.wasm, bindingType, this.func);
     this.#requireSupported(bindingVt, 'binding type');
     let value = this.#conformToBinding(
         this.#lowerExpressionCtx(vd.init, bindingVt), bindingVt);
-    if (this.#isCelled((sym as Symbol).id)) {
+    if (this.#isCelled(sym.id)) {
       // The binding lives in a heap cell shared with capturing
       // closures; the environment holds the (invariant) cell ref.
-      let symId = (sym as Symbol).id;
+      let symId = sym.id;
       if (this.#cx().precelledBindings.has(symId)) {
         // Pre-allocated for self/forward-referencing closures, which
         // already captured this cell: write through it, don't replace.
@@ -2069,9 +2069,9 @@ export final class FunctionLowerer {
         this.#cx().env[symId] = this.#cellAlloc(bindingVt, value);
       }
     } else {
-      this.#cx().env[(sym as Symbol).id] = value;
+      this.#cx().env[sym.id] = value;
     }
-    this.#cx().symbols[(sym as Symbol).id] = sym as Symbol;
+    this.#cx().symbols[sym.id] = sym;
   }
 
   #lowerLetCondition(lpc: LetPatternCondition): LetCondBinds {
@@ -2087,7 +2087,7 @@ export final class FunctionLowerer {
   #lowerMultiSource(init: Expression): Array<i32> {
     let out = new Array<i32>();
     if (init is TupleLiteral) {
-      for (let el in (init as TupleLiteral).elements) {
+      for (let el in init.elements) {
         out.push(this.#lowerExpression(el));
       }
       return out;
@@ -2098,12 +2098,12 @@ export final class FunctionLowerer {
       out.push(this.#lowerExpression(init));
       return out;
     }
-    let call = init as CallExpression;
+    let call = init;
     if (call.callee is MemberExpression) {
       let member = call.callee as MemberExpression;
       let objT = this.#substitutedNodeType(member.object);
       if (objT != null && call.args.length == 0 &&
-          this.#resolveSelfType(objT as Type) is InterfaceType) {
+          this.#resolveSelfType(objT) is InterfaceType) {
         let recv = this.#lowerExpression(member.object);
         return this.#cx().slotCallOnValue(recv, getMemberPropertyName(
             member.isSymbolAccess, member.property.name));
@@ -2141,7 +2141,7 @@ export final class FunctionLowerer {
       // non-inline tuple returns arrive as one struct reference.
       let unboxed = this.#unboxTupleValue(values[0], tp.elements.length);
       if (unboxed != null) {
-        values = unboxed as Array<i32>;
+        values = unboxed;
       }
     }
     if (values.length != tp.elements.length) {
@@ -2153,8 +2153,8 @@ export final class FunctionLowerer {
           el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
         continue;
       }
-      if (this.#patternBinds(el as Node)) {
-        this.#lowerPatternBindings(el as Node, values[i]);
+      if (this.#patternBinds(el)) {
+        this.#lowerPatternBindings(el, values[i]);
       }
     }
   }
@@ -2169,7 +2169,7 @@ export final class FunctionLowerer {
     if (stOpt == null) {
       return null;
     }
-    let st = stOpt as WasmStruct;
+    let st = stOpt;
     let out = new Array<i32>();
     for (var i = 0; i < n; i += 1) {
       let fieldName = i32ToString(i);
@@ -2199,14 +2199,14 @@ export final class FunctionLowerer {
     if (initTypeOpt == null) {
       this.#bail('untyped destructuring source');
     }
-    let initBase = baseType(getNonNullableType(initTypeOpt as Type));
+    let initBase = baseType(getNonNullableType(initTypeOpt));
     for (let prop in properties) {
       if (!this.#patternBinds(prop.value)) {
         continue;
       }
       let read = if (initBase is RecordType) {
         this.#lowerRecordPropertyRead(
-            initBase as RecordType, prop.name.name, source)
+            initBase, prop.name.name, source)
       } else {
         this.#lowerObjectPropertyRead(prop.name.name, source)
       };
@@ -2277,7 +2277,7 @@ export final class FunctionLowerer {
     if (objectType == null) {
       this.#bail('untyped static receiver');
     }
-    let resolved = this.#resolveSelfType(objectType as Type);
+    let resolved = this.#resolveSelfType(objectType);
     if (!(resolved is ClassType)) {
       this.#bail('static receiver kind');
     }
@@ -2289,7 +2289,7 @@ export final class FunctionLowerer {
     // reproduces the registered slot name. No record = no overloads.
     let chosenFt = this.func.model.getResolvedOverload(call);
     if (chosenFt != null) {
-      name = name + getSignatureKey(chosenFt as FunctionType);
+      name = name + getSignatureKey(chosenFt);
     }
     // A generic static registers one monomorphized copy per solved
     // type-argument list, under a specialized slot name — exactly as a
@@ -2304,25 +2304,25 @@ export final class FunctionLowerer {
           if (targs == null) {
             this.#bail('generic static call');
           }
-          name = getSpecializedName(propName, targs as Array<Type>);
+          name = getSpecializedName(propName, targs);
         }
       }
     }
     var foundOpt: WasmFunction | null = null;
     var curr: ClassType | null = ct;
     while (curr != null && foundOpt == null) {
-      let key = getClassMethodKey(getClassKey(curr as ClassType), name);
+      let key = getClassMethodKey(getClassKey(curr), name);
       if (let (true, f) = this.wasm.classMethodMap.get(key)) {
         if (f.isStatic) {
           foundOpt = f;
         }
       }
-      curr = (curr as ClassType).superType;
+      curr = curr.superType;
     }
     if (foundOpt == null) {
       this.#bail('static method not found');
     }
-    let target = foundOpt as WasmFunction;
+    let target = foundOpt;
     // A monomorphized copy keeps the declaration's type parameters
     // alongside the arguments it was specialized at; only an
     // UNspecialized generic is unlowerable here.
@@ -2381,7 +2381,7 @@ export final class FunctionLowerer {
     if (ftNode == null || !(ftNode is FunctionType)) {
       return null;
     }
-    let ft = ftNode as FunctionType;
+    let ft = ftNode;
     if (ft.typeArguments == null) {
       return null;
     }
@@ -2466,13 +2466,13 @@ export final class FunctionLowerer {
     var v = value;
     let raOpt = this.func.model.getRecordAdaptation(expr);
     if (raOpt != null) {
-      v = this.#applyRecordAdaptation(raOpt as RecordAdaptation, v);
+      v = this.#applyRecordAdaptation(raOpt, v);
     }
     v = this.#applyInterfaceAdaptation(expr, v);
     let faOpt = this.func.model.getFunctionAdaptation(expr);
     if (faOpt != null) {
       v = this.#applyFunctionAdaptation(
-          expr, faOpt as FunctionAdaptation, v);
+          expr, faOpt, v);
     }
     return v;
   }
@@ -2530,7 +2530,7 @@ export final class FunctionLowerer {
     if (wOpt == null) {
       this.#bail('function adaptation wrapper unregistered');
     }
-    let wrapper = wOpt as WasmFunction;
+    let wrapper = wOpt;
     let actualStruct = wrapper.functionAdaptationResolvedSourceStruct ??
         getClosureStruct(this.wasm, fa.source);
     let expectedStruct = wrapper.functionAdaptationResolvedTargetStruct ??
@@ -2559,13 +2559,13 @@ export final class FunctionLowerer {
     if (value < 0 || this.b.body.typeId[value] < 0) {
       this.#bail('interface adaptation without value');
     }
-    let ia = iaOpt as InterfaceAdaptation;
+    let ia = iaOpt;
     var srcType = ia.source as Type;
     var tgtType = ia.target as Type;
     // Mixin-intermediate and `_This`-marker sources stand in for the
     // enclosing class (mirrors the streaming hook).
     if (srcType is ClassType) {
-      let sct = srcType as ClassType;
+      let sct = srcType;
       let n = sct.name;
       if (sct.isMixinIntermediate ||
           (n.length >= 5 && n.sliceBytes(n.length - 5, n.length) == "_This")) {
@@ -2582,8 +2582,8 @@ export final class FunctionLowerer {
     if (!(srcType is ClassType) || !(tgtType is InterfaceType)) {
       this.#bail('interface adaptation shape');
     }
-    return this.#packInterface(value, srcType as ClassType,
-        tgtType as InterfaceType);
+    return this.#packInterface(value, srcType,
+        tgtType);
   }
 
   #packInterface(value: i32, ct: ClassType, it: InterfaceType): i32 {
@@ -2653,14 +2653,14 @@ export final class FunctionLowerer {
     if (operandTypeOpt == null) {
       this.#bail('untyped await operand');
     }
-    let resolved = eraseTypeParameters(this.wasm, baseType(operandTypeOpt as Type));
+    let resolved = eraseTypeParameters(this.wasm, baseType(operandTypeOpt));
     if (!(resolved is ClassType)) {
       // `T | Future<T>` awaits (async.md §1) need a runtime test on the
       // union payload; the checker accepts them but A1 does not lower
       // them yet. Loud rather than silently wrong.
       this.#bail('await of a union operand is not supported yet');
     }
-    let futureClass = resolved as ClassType;
+    let futureClass = resolved;
     let getterKey = getClassMethodKey(getClassKey(futureClass), ':valueOrThrow');
     let getterOpt =
         if (let (true, g) = this.wasm.classMethodMap.get(getterKey)) g else null;
@@ -2668,7 +2668,7 @@ export final class FunctionLowerer {
       this.#bail('await operand is not a Future: ' +
           (getClassKey(futureClass) as String));
     }
-    let getter = getterOpt as WasmFunction;
+    let getter = getterOpt;
     let subKey =
         getClassMethodKey(getClassKey(futureClass), 'subscribe');
     let subOpt =
@@ -2681,7 +2681,7 @@ export final class FunctionLowerer {
     let future = this.#lowerExpression(aw.argument);
     let resume = this.b.newBlock();
     let suspend = this.b.awaitTo(future, resume, new Array<i32>(0));
-    this.awaitSubscribeTargets[suspend] = subOpt as WasmFunction;
+    this.awaitSubscribeTargets[suspend] = subOpt;
     this.b.switchTo(resume);
 
     let args = new Array<i32>();
@@ -2696,11 +2696,11 @@ export final class FunctionLowerer {
     if (tOpt == null) {
       this.#bail('untyped tuple literal');
     }
-    let bt = baseType(tOpt as Type);
+    let bt = baseType(tOpt);
     if (!(bt is TupleType)) {
       this.#bail('inline tuple in value position');
     }
-    let tt = bt as TupleType;
+    let tt = bt;
     let fields = new Array<WasmField>();
     for (var i = 0; i < tt.elementTypes.length; i += 1) {
       fields.push(new WasmField(i32ToString(i),
@@ -2733,18 +2733,18 @@ export final class FunctionLowerer {
     if (tOpt == null) {
       this.#bail('untyped record literal');
     }
-    let bt = baseType(tOpt as Type);
+    let bt = baseType(tOpt);
     if (!(bt is RecordType)) {
       this.#bail('record literal type');
     }
-    let dispatch = this.#cx().recordDispatchOf(bt as RecordType);
+    let dispatch = this.#cx().recordDispatchOf(bt);
     // Spread sources evaluate first, once each (streaming's order);
     // their values are looked up per field below.
     let spreadIds = new Array<i32>();
     let spreadVals = new Array<i32>();
     for (let prop in lit.properties) {
       if (prop is SpreadElement) {
-        let sp = prop as SpreadElement;
+        let sp = prop;
         spreadIds.push((sp as Node).id as i32);
         spreadVals.push(this.#lowerExpression(sp.argument));
       }
@@ -2760,13 +2760,13 @@ export final class FunctionLowerer {
       while (pi >= 0 && !found) {
         let prop = lit.properties[pi];
         if (prop is PropertyAssignment) {
-          let pa = prop as PropertyAssignment;
+          let pa = prop;
           if (pa.name.name == key) {
             v = this.#lowerExpressionCtx(pa.value, f.type);
             found = true;
           }
         } else if (prop is SpreadElement) {
-          let sp = prop as SpreadElement;
+          let sp = prop;
           let spT = this.#substitutedNodeType(sp.argument);
           if (spT != null) {
             var sv = -1;
@@ -2775,9 +2775,9 @@ export final class FunctionLowerer {
                 sv = spreadVals[si];
               }
             }
-            let nn = baseType(getNonNullableType(spT as Type));
-            if (nn is RecordType && (nn as RecordType).properties.has(key)) {
-              let srcDispatch = this.#cx().recordDispatchOf(nn as RecordType);
+            let nn = baseType(getNonNullableType(spT));
+            if (nn is RecordType && nn.properties.has(key)) {
+              let srcDispatch = this.#cx().recordDispatchOf(nn);
               v = this.#recordDispatchRead(srcDispatch, key, sv);
               found = true;
             } else if (nn is ClassType) {
@@ -2789,7 +2789,7 @@ export final class FunctionLowerer {
                   !(key.length > 0 && key.sliceBytes(0, 1) == '#')) {
                 let infoOpt = if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) info else null;
                 if (infoOpt != null) {
-                  let st = (infoOpt as ClassCodegenInfo).structType;
+                  let st = infoOpt.structType;
                   if (st.fieldIndexByName(key) >= 0) {
                     let fieldRef = this.b.addRef(new IrRefField(st, key));
                     v = this.b.emit(IrOp.struct_get,
@@ -2854,7 +2854,7 @@ export final class FunctionLowerer {
     if (arrOpt == null) {
       this.#bail('array literal type');
     }
-    let arr = arrOpt as WasmArray;
+    let arr = arrOpt;
     let elemVt = arr.elementType;
     let args = new Array<i32>();
     for (let el in lit.elements) {
@@ -2881,13 +2881,13 @@ export final class FunctionLowerer {
     if (sourceTypeOpt == null) {
       this.#bail('untyped is source');
     }
-    let sourceType = sourceTypeOpt as Type;
+    let sourceType = sourceTypeOpt;
     let targetTypeOpt = this.func.model.getNodeType(isExpr.typeAnnotation);
     if (targetTypeOpt == null) {
       this.#bail('untyped is target');
     }
     let targetType = substituteTypeParamsInFunctionContext(this.wasm, 
-        this.func, targetTypeOpt as Type);
+        this.func, targetTypeOpt);
     let value = this.#lowerExpression(isExpr.expression);
     if (!isRefType(sourceType)) {
       let same = getTypeUniqueKey(sourceType) == getTypeUniqueKey(targetType) ||
@@ -2916,7 +2916,7 @@ export final class FunctionLowerer {
     }
     // Streaming emits a plain (non-null) ref.test either way.
     return this.b.emit(IrOp.ref_test, new ValTypeI32(), tested,
-        this.b.internType(new ValTypeRef(target as WasmType) as ValType));
+        this.b.internType(new ValTypeRef(target) as ValType));
   }
 
   /**
@@ -2934,13 +2934,13 @@ export final class FunctionLowerer {
     if (tagOpt == null || payloadOpt == null) {
       this.#bail('exception infra missing');
     }
-    let payload = payloadOpt as WasmGlobal;
+    let payload = payloadOpt;
     var value = this.#lowerExpressionCtx(thr.argument, payload.type);
     value = this.#conformToSlot(value, payload.type, 'throw payload type');
     this.b.emitVoid(IrOp.global_set, value,
         this.b.addRef(new IrRefGlobal(payload)));
     this.b.throwWithTag(this.#noArgs(),
-        this.b.addRef(new IrRefTag(tagOpt as WasmTag)));
+        this.b.addRef(new IrRefTag(tagOpt)));
     this.#cx().reachable = false;
   }
 
@@ -2994,7 +2994,7 @@ export final class FunctionLowerer {
     if (sym == null) {
       this.#bail('unresolved identifier');
     }
-    let resolved = (sym as Symbol).resolveTarget();
+    let resolved = sym.resolveTarget();
     if (!this.#cx().env.has(resolved.id)) {
       // Module-level globals read via global.get; the checked type of
       // the identifier reasserts non-nullness where the global's wasm
@@ -3011,7 +3011,7 @@ export final class FunctionLowerer {
       // unequal by identity.
       let identT = this.#substitutedNodeType(ident);
       if (identT != null && identT is FunctionType) {
-        let ft = identT as FunctionType;
+        let ft = identT;
         let isSpecialized = ft.typeArguments != null &&
             (ft.typeArguments as Array<Type>).length > 0;
         let keyName = if (isSpecialized) {
@@ -3048,14 +3048,14 @@ export final class FunctionLowerer {
     if (nodeType == null) {
       return value;
     }
-    let wantVt = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+    let wantVt = typeToValTypeWithSub(this.wasm, nodeType, this.func);
     let haveVt = this.#valueType(value);
     if (valTypeIdentical(haveVt, wantVt)) {
       return value;
     }
     if (wantVt is ValTypeRef && haveVt is ValTypeRefNull) {
-      let wantTarget = (wantVt as ValTypeRef).target;
-      let haveTarget = (haveVt as ValTypeRefNull).target;
+      let wantTarget = wantVt.target;
+      let haveTarget = haveVt.target;
       if (wantTarget == haveTarget) {
         return this.b.emit(IrOp.ref_as_non_null, wantVt, value, -1);
       }
@@ -3271,7 +3271,7 @@ export final class FunctionLowerer {
     // class check, not after: constructing a resource is typed `Own<R>`, a
     // distinct-type alias that erases to `R`, so checking first would bail on
     // a type that does have a class behind it.
-    let selfResolved = eraseTypeParameters(this.wasm, this.#resolveSelfType(nodeType as Type));
+    let selfResolved = eraseTypeParameters(this.wasm, this.#resolveSelfType(nodeType));
     if (!(selfResolved is ClassType)) {
       this.#bail('new of non-class');
     }
@@ -3279,7 +3279,7 @@ export final class FunctionLowerer {
     if (!(classType is ClassType)) {
       this.#bail('new erased kind');
     }
-    let ct = classType as ClassType;
+    let ct = classType;
     if (ct.isExtension) {
       // Extension `new` is a plain call: the constructor takes the
       // declared arguments (no receiver) and RETURNS the underlying
@@ -3289,7 +3289,7 @@ export final class FunctionLowerer {
       if (ctorOpt == null) {
         this.#bail('extension constructor not found: ' + (getClassKey(ct) as String));
       }
-      let ctor = ctorOpt as WasmFunction;
+      let ctor = ctorOpt;
       let sig = ctor.signature;
       if (sig.returns.length != 1 ||
           sig.params.length != this.#liveArgCount(expr.args)) {
@@ -3317,7 +3317,7 @@ export final class FunctionLowerer {
     if (infoOpt == null) {
       this.#bail('class not discovered');
     }
-    let classInfo = infoOpt as ClassCodegenInfo;
+    let classInfo = infoOpt;
     let structType = classInfo.structType;
     let resultVt: ValType = new ValTypeRef(structType);
 
@@ -3401,7 +3401,7 @@ export final class FunctionLowerer {
     if (!(tOpt is ClassType)) {
       this.#bail('map literal type');
     }
-    let ct = tOpt as ClassType;
+    let ct = tOpt;
     let cKey = getClassKey(ct);
     let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
     if (infoOpt == null) {
@@ -3412,7 +3412,7 @@ export final class FunctionLowerer {
     if (ctorOpt == null) {
       this.#bail('map constructor missing');
     }
-    let ctor = ctorOpt as WasmFunction;
+    let ctor = ctorOpt;
     if (ctor.signature.params.length != 2 ||
         !(ctor.signature.params[1] is ValTypeI32)) {
       this.#bail('map constructor shape');
@@ -3422,12 +3422,12 @@ export final class FunctionLowerer {
     if (setOpt == null) {
       this.#bail('map setter missing');
     }
-    let setFn = setOpt as WasmFunction;
+    let setFn = setOpt;
     let setSig = setFn.signature;
     if (setSig.params.length != 3 || setSig.returns.length != 0) {
       this.#bail('map setter shape');
     }
-    let inst = this.#instanceShell(infoOpt as ClassCodegenInfo);
+    let inst = this.#instanceShell(infoOpt);
     let capacity = if (lit.entries.length > 16) lit.entries.length else 16;
     let capValue = this.b.constI32(capacity, new ValTypeI32());
     this.b.callFunc(this.b.addRef(new IrRefFunc(ctor)),
@@ -3487,7 +3487,7 @@ export final class FunctionLowerer {
     if (!(nodeType is ClassType)) {
       this.#bail('range of non-class');
     }
-    let ct = nodeType as ClassType;
+    let ct = nodeType;
     // The range form is the AST shape itself: which bounds exist is
     // exhaustive by construction (start/end presence), so there is
     // nothing to dispatch on — the checker already resolved the class
@@ -3505,7 +3505,7 @@ export final class FunctionLowerer {
     if (infoOpt == null) {
       this.#bail('range class not discovered');
     }
-    return this.#constructInstance(infoOpt as ClassCodegenInfo, cKey, operands);
+    return this.#constructInstance(infoOpt, cKey, operands);
   }
 
   /**
@@ -3531,11 +3531,11 @@ export final class FunctionLowerer {
     // Interface receivers write through the set# vtable slot.
     let objT = this.#substitutedNodeType(member.object);
     if (objT != null &&
-        this.#resolveSelfType(objT as Type) is InterfaceType) {
+        this.#resolveSelfType(objT) is InterfaceType) {
       if (assign.operator != null) {
         this.#bail('interface compound write');
       }
-      let it = this.#resolveSelfType(objT as Type) as InterfaceType;
+      let it = this.#resolveSelfType(objT) as InterfaceType;
       let propName2 = getMemberPropertyName(
           member.isSymbolAccess, member.property.name);
       let setterArgs = new Array<Expression>();
@@ -3570,7 +3570,7 @@ export final class FunctionLowerer {
     if (!isPrivateWrite &&
         (this.#accessorRedefined(receiverCt, propName, 'set#' + propName) ||
          (infoOpt != null && this.#cx().accessorOverriddenBySubclass(
-             infoOpt as ClassCodegenInfo, 'set#' + propName, fieldName)))) {
+             infoOpt, 'set#' + propName, fieldName)))) {
       // An accessor shadows the physical field somewhere between the
       // receiver and a subclass: the write must dispatch.
       return this.#lowerVirtualSetterWrite(
@@ -3635,13 +3635,13 @@ export final class FunctionLowerer {
         var g: ClassType | null = currClass;
         while (g != null && setterOpt == null) {
           let key = getClassMethodKey(
-              getClassKey(g as ClassType), 'set#' + propName);
+              getClassKey(g), 'set#' + propName);
           if (let (true, f) = this.wasm.classMethodMap.get(key)) {
             setterOpt = f;
           }
-          g = (g as ClassType).genericSource;
+          g = g.genericSource;
         }
-        currClass = (currClass as ClassType).superType;
+        currClass = currClass.superType;
       }
       if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
         vtInfoOpt = info;
@@ -3657,7 +3657,7 @@ export final class FunctionLowerer {
     if (setterOpt == null) {
       this.#bail('setter not found');
     }
-    let setter = setterOpt as WasmFunction;
+    let setter = setterOpt;
     if (setter.isStatic ||
         (setter.typeParameters != null && setter.typeArguments == null) ||
         setter.intrinsic != null) {
@@ -3721,7 +3721,7 @@ export final class FunctionLowerer {
     if (infoOpt == null) {
       this.#bail('method receiver not discovered');
     }
-    let info = infoOpt as ClassCodegenInfo;
+    let info = infoOpt;
     if (this.#vtableSlotIndex(info, 'set#' + propName) < 0) {
       this.#bail('overridden field without setter slot');
     }
@@ -3731,18 +3731,18 @@ export final class FunctionLowerer {
       var g: ClassType | null = currClass;
       while (g != null && setterOpt == null) {
         let key = getClassMethodKey(
-            getClassKey(g as ClassType), 'set#' + propName);
+            getClassKey(g), 'set#' + propName);
         if (let (true, f) = this.wasm.classMethodMap.get(key)) {
           setterOpt = f;
         }
-        g = (g as ClassType).genericSource;
+        g = g.genericSource;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     if (setterOpt == null) {
       this.#bail('overridden field without setter slot');
     }
-    let setter = setterOpt as WasmFunction;
+    let setter = setterOpt;
     let sig = setter.signature;
     if (sig.params.length != 2 || sig.returns.length != 0) {
       this.#bail('setter shape');
@@ -3760,16 +3760,16 @@ export final class FunctionLowerer {
       var gc: ClassType | null = receiverCt;
       while (gc != null && getterOpt == null) {
         let key = getClassMethodKey(
-            getClassKey(gc as ClassType), 'get#' + propName);
+            getClassKey(gc), 'get#' + propName);
         if (let (true, g) = this.wasm.classMethodMap.get(key)) {
           getterOpt = g;
         }
-        gc = (gc as ClassType).superType;
+        gc = gc.superType;
       }
       if (getterOpt == null) {
         this.#bail('overridden field without getter slot');
       }
-      let gsig = (getterOpt as WasmFunction).signature;
+      let gsig = getterOpt.signature;
       if (gsig.returns.length != 1) {
         this.#bail('getter shape');
       }
@@ -3811,8 +3811,8 @@ export final class FunctionLowerer {
     // streaming backend: numeric members inline their (implicit or
     // literal) value, string-enum members their string literal. The
     // enum "namespace" identifier itself is never lowered.
-    if (objectType != null && baseType(objectType as Type) is RecordType) {
-      let rt = baseType(objectType as Type) as RecordType;
+    if (objectType != null && baseType(objectType) is RecordType) {
+      let rt = baseType(objectType) as RecordType;
       if (rt.enumDeclaration != null) {
         return this.#lowerEnumMember(
             rt.enumDeclaration as EnumDeclaration, member);
@@ -3820,11 +3820,11 @@ export final class FunctionLowerer {
       return this.#lowerRecordRead(rt, member);
     }
     if (objectType != null &&
-        this.#resolveSelfType(objectType as Type) is InterfaceType) {
+        this.#resolveSelfType(objectType) is InterfaceType) {
       if (this.func.model.isStaticAccess(member)) {
         this.#bail('static interface access');
       }
-      let it = this.#resolveSelfType(objectType as Type) as InterfaceType;
+      let it = this.#resolveSelfType(objectType) as InterfaceType;
       let propName = getMemberPropertyName(
           member.isSymbolAccess, member.property.name);
       let result = this.#lowerInterfaceDispatch(
@@ -3832,7 +3832,7 @@ export final class FunctionLowerer {
       return this.#reassertNonNull(result, this.#exprValType(member));
     }
     if (objectType != null && this.func.model.isStaticAccess(member)) {
-      let selfR = this.#resolveSelfType(objectType as Type);
+      let selfR = this.#resolveSelfType(objectType);
       if (selfR is ClassType) {
         return this.#lowerStaticMemberRead(
             member, eraseTypeParameters(this.wasm, selfR) as ClassType);
@@ -3879,18 +3879,18 @@ export final class FunctionLowerer {
       var g: ClassType | null = curr;
       while (g != null && getterOpt == null) {
         let key = getClassMethodKey(
-            getClassKey(g as ClassType), 'get#' + propName);
+            getClassKey(g), 'get#' + propName);
         if (let (true, f) = this.wasm.classMethodMap.get(key)) {
           if (!f.isStatic) {
             getterOpt = f;
           }
         }
-        g = (g as ClassType).genericSource;
+        g = g.genericSource;
       }
-      curr = (curr as ClassType).superType;
+      curr = curr.superType;
     }
     if (getterOpt != null) {
-      let getter = getterOpt as WasmFunction;
+      let getter = getterOpt;
       let sig = getter.signature;
       if (sig.params.length != 1 || sig.returns.length != 1) {
         this.#bail('super getter shape');
@@ -3910,7 +3910,7 @@ export final class FunctionLowerer {
     if (infoOpt == null) {
       this.#bail('super class not discovered');
     }
-    let st = (infoOpt as ClassCodegenInfo).structType;
+    let st = infoOpt.structType;
     if (st.fieldIndexByName(propName) < 0) {
       this.#bail('super member not found');
     }
@@ -3983,20 +3983,20 @@ export final class FunctionLowerer {
       var g: ClassType | null = curr;
       while (g != null && setterOpt == null) {
         let key = getClassMethodKey(
-            getClassKey(g as ClassType), 'set#' + propName);
+            getClassKey(g), 'set#' + propName);
         if (let (true, f) = this.wasm.classMethodMap.get(key)) {
           if (!f.isStatic) {
             setterOpt = f;
           }
         }
-        g = (g as ClassType).genericSource;
+        g = g.genericSource;
       }
-      curr = (curr as ClassType).superType;
+      curr = curr.superType;
     }
     var targetVt: ValType = new ValTypeI32();
     var fieldStruct: WasmStruct | null = null;
     if (setterOpt != null) {
-      let sig = (setterOpt as WasmFunction).signature;
+      let sig = setterOpt.signature;
       if (sig.params.length != 2 || sig.returns.length != 0) {
         this.#bail('super setter shape');
       }
@@ -4006,7 +4006,7 @@ export final class FunctionLowerer {
       if (infoOpt == null) {
         this.#bail('super class not discovered');
       }
-      let st = (infoOpt as ClassCodegenInfo).structType;
+      let st = infoOpt.structType;
       if (st.fieldIndexByName(propName) < 0) {
         this.#bail('super member not found');
       }
@@ -4025,7 +4025,7 @@ export final class FunctionLowerer {
       this.#failConformance(value, targetVt, 'super write type');
     }
     if (setterOpt != null) {
-      let setter = setterOpt as WasmFunction;
+      let setter = setterOpt;
       if (!isValSubtype(this.#valueType(receiver), setter.signature.params[0])) {
         this.#failConformance(receiver, setter.signature.params[0],
             'super receiver type');
@@ -4058,7 +4058,7 @@ export final class FunctionLowerer {
     }
     let chosenFt = this.func.model.getResolvedOverload(call);
     let slotName = if (chosenFt != null) {
-      propName + getSignatureKey(chosenFt as FunctionType)
+      propName + getSignatureKey(chosenFt)
     } else {
       propName
     };
@@ -4067,18 +4067,18 @@ export final class FunctionLowerer {
     while (currClass != null && methodOpt == null) {
       var g: ClassType | null = currClass;
       while (g != null && methodOpt == null) {
-        let key = getClassMethodKey(getClassKey(g as ClassType), slotName);
+        let key = getClassMethodKey(getClassKey(g), slotName);
         if (let (true, m) = this.wasm.classMethodMap.get(key)) {
           methodOpt = m;
         }
-        g = (g as ClassType).genericSource;
+        g = g.genericSource;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     if (methodOpt == null) {
       this.#bail('super method not found');
     }
-    let method = methodOpt as WasmFunction;
+    let method = methodOpt;
     if (method.isStatic ||
         (method.typeParameters != null && method.typeArguments == null) ||
         method.intrinsic != null) {
@@ -4119,9 +4119,9 @@ export final class FunctionLowerer {
         this.b.addRef(new IrRefFunc(method)), args, resultType);
     if (resultType != null) {
       let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
-        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
-        if (want is ValTypeRef && (resultType as ValType) is ValTypeRefNull) {
+      if (nodeType != null && !(baseType(nodeType) is VoidType)) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType, this.func);
+        if (want is ValTypeRef && resultType is ValTypeRefNull) {
           return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
         }
       }
@@ -4140,7 +4140,7 @@ export final class FunctionLowerer {
     if (objectType == null) {
       this.#bail('untyped static receiver');
     }
-    let selfR = this.#resolveSelfType(objectType as Type);
+    let selfR = this.#resolveSelfType(objectType);
     if (!(selfR is ClassType)) {
       this.#bail('static receiver kind');
     }
@@ -4151,7 +4151,7 @@ export final class FunctionLowerer {
     if (gOpt == null) {
       this.#bail('static member not found');
     }
-    let g = gOpt as WasmGlobal;
+    let g = gOpt;
     var value = -1;
     if (assign.operator == null) {
       value = this.#lowerExpressionCtx(assign.value, g.type);
@@ -4181,16 +4181,16 @@ export final class FunctionLowerer {
     var currClass: ClassType | null = ct;
     while (currClass != null && getterOpt == null) {
       let key = getClassMethodKey(
-          getClassKey(currClass as ClassType), 'get#' + propName);
+          getClassKey(currClass), 'get#' + propName);
       if (let (true, f) = this.wasm.classMethodMap.get(key)) {
         if (f.isStatic) {
           getterOpt = f;
         }
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     if (getterOpt != null) {
-      let getter = getterOpt as WasmFunction;
+      let getter = getterOpt;
       let sig = getter.signature;
       if (sig.params.length != 0 || sig.returns.length != 1) {
         this.#bail('static getter shape');
@@ -4203,7 +4203,7 @@ export final class FunctionLowerer {
     if (gOpt == null) {
       this.#bail('static member not found');
     }
-    let g = gOpt as WasmGlobal;
+    let g = gOpt;
     let raw = this.b.emit(IrOp.global_get, g.type, -1,
         this.b.addRef(new IrRefGlobal(g)));
     let want = this.#exprValType(member);
@@ -4223,13 +4223,13 @@ export final class FunctionLowerer {
   #staticFieldGlobal(ct: ClassType, propName: String): WasmGlobal | null {
     var currClass: ClassType | null = ct;
     while (currClass != null) {
-      let wanted = (currClass as ClassType).name + '_' + propName;
+      let wanted = currClass.name + '_' + propName;
       for (let g in this.wasm.globals) {
         if (g.name == wanted) {
           return g;
         }
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     return null;
   }
@@ -4255,15 +4255,15 @@ export final class FunctionLowerer {
       let objectType = this.#substitutedNodeType(member.object);
       var extCt: ClassType | null = null;
       if (objectType != null) {
-        let selfR = this.#resolveSelfType(objectType as Type);
-        if (selfR is ClassType && (selfR as ClassType).isExtension) {
+        let selfR = this.#resolveSelfType(objectType);
+        if (selfR is ClassType && selfR.isExtension) {
           extCt = eraseTypeParameters(this.wasm, selfR) as ClassType;
         }
       }
       if (extCt == null) {
         this.#bail('array member');
       }
-      let extTarget = this.#resolveMemberTarget(member, extCt as ClassType);
+      let extTarget = this.#resolveMemberTarget(member, extCt);
       if (extTarget.fieldName != null || extTarget.vtSlot != null ||
           extTarget.getter == null) {
         this.#bail('array member');
@@ -4351,24 +4351,24 @@ export final class FunctionLowerer {
    */
   #lowerOptionalHit(expr: Expression, receiver: i32): i32 {
     if (expr is MemberExpression) {
-      let member = expr as MemberExpression;
+      let member = expr;
       let objectType = this.#substitutedNodeType(member.object);
       if (objectType != null) {
-        let nonNull = baseType(getNonNullableType(objectType as Type));
+        let nonNull = baseType(getNonNullableType(objectType));
         if (nonNull is RecordType) {
-          return this.#lowerRecordReadOn(nonNull as RecordType, member, receiver);
+          return this.#lowerRecordReadOn(nonNull, member, receiver);
         }
       }
       return this.#lowerMemberReadOn(member, receiver);
     }
     if (expr is IndexExpression) {
-      let idx = expr as IndexExpression;
+      let idx = expr;
       let objectType = this.#substitutedNodeType(idx.object);
       if (objectType == null) {
         this.#bail('untyped index receiver');
       }
       let selfResolved = this.#resolveSelfType(
-          getNonNullableType(objectType as Type));
+          getNonNullableType(objectType));
       return this.#lowerIndexReadOn(idx, selfResolved, receiver);
     }
     return this.#lowerClosureCallOn(expr as CallExpression, receiver);
@@ -4446,8 +4446,8 @@ export final class FunctionLowerer {
     // Record-typed receivers (including namespace imports, which are
     // record globals of the module's exports): the member is a field
     // holding a function value — read it, call the closure pair.
-    if (baseType(objectType as Type) is RecordType) {
-      let rt = baseType(objectType as Type) as RecordType;
+    if (baseType(objectType) is RecordType) {
+      let rt = baseType(objectType) as RecordType;
       let recv = this.#lowerExpression(member.object);
       let fnValue = this.#lowerRecordReadOn(rt, member, recv);
       return this.#lowerClosureCallOn(call, fnValue);
@@ -4455,14 +4455,14 @@ export final class FunctionLowerer {
     // Erase before dispatching on the receiver's kind: a receiver typed
     // `Own<R>`/`Borrow<R>`/`Unmanaged<R>` is a distinct-type alias that erases
     // to `R`, and member access forwards through it (ownership.md §Handles).
-    let selfResolved = eraseTypeParameters(this.wasm, this.#resolveSelfType(objectType as Type));
+    let selfResolved = eraseTypeParameters(this.wasm, this.#resolveSelfType(objectType));
     if (selfResolved is InterfaceType) {
       let propName = getMemberPropertyName(
           member.isSymbolAccess, member.property.name);
       let result = this.#lowerInterfaceDispatch(
-          selfResolved as InterfaceType, propName, member.object,
+          selfResolved, propName, member.object,
           call.args, multiOut);
-      if (multiOut != null && (multiOut as Array<i32>).length > 1) {
+      if (multiOut != null && multiOut.length > 1) {
         // Multi-value results have no single checked type to
         // re-assert against; the projections carry their slot types.
         return result;
@@ -4488,7 +4488,7 @@ export final class FunctionLowerer {
       case _: {}
     }
     if (arrayElem != null) {
-      return this.#lowerArrayExtensionCall(call, member, arrayElem as Type);
+      return this.#lowerArrayExtensionCall(call, member, arrayElem);
     }
     if (!(selfResolved is ClassType)) {
       this.#bail('method receiver kind');
@@ -4500,14 +4500,14 @@ export final class FunctionLowerer {
     var ct = eraseTypeParameters(this.wasm, selfResolved) as ClassType;
     let fromValue = this.#classTypeOfValue(receiver);
     if (fromValue != null && !ct.isExtension) {
-      ct = fromValue as ClassType;
+      ct = fromValue;
     }
     let cKey = getClassKey(ct);
     let infoOpt = if (let (true, info) = this.wasm.classInfos.get(cKey)) info else null;
     if (infoOpt == null) {
       this.#bail('method receiver not discovered');
     }
-    let classInfo = infoOpt as ClassCodegenInfo;
+    let classInfo = infoOpt;
     let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
     // One namespace, one lookup: the checker's member info names the
     // KIND. A field holding a function value is a member read plus a
@@ -4524,12 +4524,12 @@ export final class FunctionLowerer {
         // BUGS.md). Refuse to pick a side.
         var superWalk: ClassType | null = ct.superType;
         while (superWalk != null) {
-          if (let (true, superInfo) = (superWalk as ClassType).members.get(propName)) {
+          if (let (true, superInfo) = superWalk.members.get(propName)) {
             if (superInfo is MethodInfo) {
               this.#bail('field shadows inherited method');
             }
           }
-          superWalk = (superWalk as ClassType).superType;
+          superWalk = superWalk.superType;
         }
         if (multiOut != null) {
           this.#bail('closure call in multi-value position');
@@ -4545,7 +4545,7 @@ export final class FunctionLowerer {
     // fallback could bind a different overload.
     let chosenFt = this.func.model.getResolvedOverload(call);
     var slotName = if (chosenFt != null) {
-      propName + getSignatureKey(chosenFt as FunctionType)
+      propName + getSignatureKey(chosenFt)
     } else {
       propName
     };
@@ -4561,7 +4561,7 @@ export final class FunctionLowerer {
           if (targs == null) {
             this.#bail('generic method call');
           }
-          slotName = getSpecializedName(propName, targs as Array<Type>);
+          slotName = getSpecializedName(propName, targs);
         }
       }
     }
@@ -4577,7 +4577,7 @@ export final class FunctionLowerer {
       // mixin may have been applied at an ancestor.
       let mixScope = this.#mixinScope();
       if (mixScope != null) {
-        let scopedName = (mixScope as String) + "::" + slotName;
+        let scopedName = mixScope + "::" + slotName;
         var applied: ClassType | null = ct;
         while (applied != null) {
           let key = getClassMethodKey(getClassKey(applied), scopedName);
@@ -4606,7 +4606,7 @@ export final class FunctionLowerer {
           let lexCanonical = this.#canonicalKeyOf(lexicalCt);
           var c: ClassType | null = ct;
           while (c != null && methodOpt == null) {
-            let cc = c as ClassType;
+            let cc = c;
             if (this.#canonicalKeyOf(cc) == lexCanonical) {
               let key = getClassMethodKey(getClassKey(cc), slotName);
               if (let (true, m2) = this.wasm.classMethodMap.get(key)) {
@@ -4627,18 +4627,18 @@ export final class FunctionLowerer {
       // template methods register under the template's key.
       var g: ClassType | null = currClass;
       while (g != null && methodOpt == null) {
-        let key = getClassMethodKey(getClassKey(g as ClassType), slotName);
+        let key = getClassMethodKey(getClassKey(g), slotName);
         if (let (true, m) = this.wasm.classMethodMap.get(key)) {
           methodOpt = m;
         }
-        g = (g as ClassType).genericSource;
+        g = g.genericSource;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     if (methodOpt == null) {
       this.#bail('method not found');
     }
-    let method = methodOpt as WasmFunction;
+    let method = methodOpt;
     // Intrinsic methods inline as instructions, exactly like their
     // call-position forms — streaming routes them through the same
     // per-name generators (the marker receiver carries no value).
@@ -4713,9 +4713,9 @@ export final class FunctionLowerer {
     };
     if (resultType != null) {
       let nodeType = this.func.model.getNodeType(call);
-      if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
-        let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
-        if (want is ValTypeRef && (resultType as ValType) is ValTypeRefNull) {
+      if (nodeType != null && !(baseType(nodeType) is VoidType)) {
+        let want = typeToValTypeWithSub(this.wasm, nodeType, this.func);
+        if (want is ValTypeRef && resultType is ValTypeRefNull) {
           return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
         }
       }
@@ -4740,13 +4740,13 @@ export final class FunctionLowerer {
     if (objectType == null) {
       this.#bail('untyped index receiver');
     }
-    let selfResolved = this.#resolveSelfType(objectType as Type);
+    let selfResolved = this.#resolveSelfType(objectType);
 
     if (selfResolved is InterfaceType) {
       let args = new Array<Expression>();
       args.push(idx.index);
       let result = this.#lowerInterfaceDispatch(
-          selfResolved as InterfaceType, '[]', idx.object, args);
+          selfResolved, '[]', idx.object, args);
       return this.#reassertNonNull(result, this.#exprValType(idx));
     }
 
@@ -4773,7 +4773,7 @@ export final class FunctionLowerer {
       if (stOpt == null) {
         this.#bail('tuple receiver kind');
       }
-      let st = stOpt as WasmStruct;
+      let st = stOpt;
       let fieldName = i32ToString(elemIdx);
       if (st.fieldIndexByName(fieldName) < 0) {
         this.#bail('tuple field not found');
@@ -4792,13 +4792,13 @@ export final class FunctionLowerer {
     let idxTypeOpt = this.#substitutedNodeType(idx.index);
     var classIndex = false;
     if (idxTypeOpt != null) {
-      let idxBase = baseType(idxTypeOpt as Type);
+      let idxBase = baseType(idxTypeOpt);
       if (idxBase is ClassType) {
-        classIndex = !(idxBase as ClassType).isExtension;
+        classIndex = !idxBase.isExtension;
       }
     }
     if (arrOpt != null && !classIndex) {
-      let arr = arrOpt as WasmArray;
+      let arr = arrOpt;
       let index = this.#lowerExpression(idx.index);
       if (!(this.#valueType(index) is ValTypeI32)) {
         this.#bail('index operand type');
@@ -4841,15 +4841,15 @@ export final class FunctionLowerer {
     // plain name is unambiguous.
     let chosenFt = this.func.model.getResolvedOverload(idx);
     let mangled = if (chosenFt != null) {
-      '[]' + getSignatureKey(chosenFt as FunctionType)
+      '[]' + getSignatureKey(chosenFt)
     } else {
       '[]'
     };
-    let methodOpt = this.#resolveIndexMethod(ct as ClassType, mangled, chosenFt != null);
+    let methodOpt = this.#resolveIndexMethod(ct, mangled, chosenFt != null);
     if (methodOpt == null) {
       this.#bail('index method not found');
     }
-    let method = methodOpt as WasmFunction;
+    let method = methodOpt;
     if (method.intrinsic != null) {
       // Linear-memory byte access (mem[i]) is the only [] intrinsic:
       // one load instruction, align 0 — streaming's shape.
@@ -4898,7 +4898,7 @@ export final class FunctionLowerer {
     while (currClass != null) {
       var g: ClassType | null = currClass;
       while (g != null) {
-        let cKey = getClassKey(g as ClassType);
+        let cKey = getClassKey(g);
         let keyWithSig = getClassMethodKey(cKey, mangled);
         if (let (true, f) = this.wasm.classMethodMap.get(keyWithSig)) {
           if (f.intrinsic != null) {
@@ -4912,9 +4912,9 @@ export final class FunctionLowerer {
         } else if (let (true, f3) = this.wasm.classMethodMap.get(keyWithSig)) {
           return f3;
         }
-        g = (g as ClassType).genericSource;
+        g = g.genericSource;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     return null;
   }
@@ -4934,8 +4934,8 @@ export final class FunctionLowerer {
     if (vstOpt == null || fatPtrOpt == null) {
       this.#bail('interface not discovered');
     }
-    let vst = vstOpt as WasmStruct;
-    let fatPtr = fatPtrOpt as WasmStruct;
+    let vst = vstOpt;
+    let fatPtr = fatPtrOpt;
     let slot = vst.fieldIndexByName(memberName);
     if (slot < 0) {
       // Function-typed interface fields called as methods land here
@@ -4949,12 +4949,12 @@ export final class FunctionLowerer {
     if (sigOpt == null) {
       this.#bail('interface slot shape');
     }
-    let sig = sigOpt as WasmSignature;
+    let sig = sigOpt;
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('interface member multi-value return');
     }
     let argCount = if (argExprs == null) 0
-        else this.#liveArgCount(argExprs as Array<Expression>);
+        else this.#liveArgCount(argExprs);
     if (sig.params.length != argCount + 1) {
       this.#bail('interface call arity adaptation');
     }
@@ -4972,7 +4972,7 @@ export final class FunctionLowerer {
     let args = new Array<i32>();
     args.push(inst);
     if (argExprs != null) {
-      let list = argExprs as Array<Expression>;
+      let list = argExprs;
       var sIdx = 1;
       for (var i = 0; i < list.length; i += 1) {
         if (this.#dropZeroWidthArg(list[i])) {
@@ -5026,7 +5026,7 @@ export final class FunctionLowerer {
   #lexicalClassOf(member: MemberExpression, fallback: ClassType): ClassType {
     let objectType = this.#substitutedNodeType(member.object);
     if (objectType != null) {
-      let selfResolved = this.#resolveSelfType(objectType as Type);
+      let selfResolved = this.#resolveSelfType(objectType);
       if (selfResolved is ClassType) {
         return eraseTypeParameters(this.wasm, selfResolved) as ClassType;
       }
@@ -5078,7 +5078,7 @@ export final class FunctionLowerer {
     // never registered, and the caller bails.
     let mixScope = this.#mixinScope();
     if (mixScope != null) {
-      let scopedName = (mixScope as String) + "::" + propName;
+      let scopedName = mixScope + "::" + propName;
       if (st.fieldIndexByName(scopedName) >= 0) {
         return scopedName;
       }
@@ -5100,7 +5100,7 @@ export final class FunctionLowerer {
   #resolvePrivateAccessor(ct: ClassType, lexicalCt: ClassType, accName: String): WasmFunction | null {
     let mixScope = this.#mixinScope();
     if (mixScope != null) {
-      let scopedName = (mixScope as String) + "::" + accName;
+      let scopedName = mixScope + "::" + accName;
       var applied: ClassType | null = ct;
       while (applied != null) {
         let key = getClassMethodKey(getClassKey(applied), scopedName);
@@ -5135,20 +5135,20 @@ export final class FunctionLowerer {
     // VALUE is the underlying onType and never names the extension.
     let checkedType = this.#substitutedNodeType(member.object);
     if (checkedType != null) {
-      let selfR = this.#resolveSelfType(checkedType as Type);
-      if (selfR is ClassType && (selfR as ClassType).isExtension) {
+      let selfR = this.#resolveSelfType(checkedType);
+      if (selfR is ClassType && selfR.isExtension) {
         return eraseTypeParameters(this.wasm, selfR) as ClassType;
       }
     }
     let fromValue = this.#classTypeOfValue(receiver);
     if (fromValue != null) {
-      return fromValue as ClassType;
+      return fromValue;
     }
     let objectType = this.#substitutedNodeType(member.object);
     if (objectType == null) {
       this.#bail('untyped member receiver');
     }
-    let selfResolved = this.#resolveSelfType(objectType as Type);
+    let selfResolved = this.#resolveSelfType(objectType);
     if (!(selfResolved is ClassType)) {
       this.#bail('member on non-class');
     }
@@ -5176,7 +5176,7 @@ export final class FunctionLowerer {
     if (infoOpt == null) {
       this.#bail('receiver class not discovered');
     }
-    let classInfo = infoOpt as ClassCodegenInfo;
+    let classInfo = infoOpt;
     let structType = classInfo.structType;
     var propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
     var lookupName = propName;
@@ -5187,7 +5187,7 @@ export final class FunctionLowerer {
       let lexicalCt = this.#lexicalClassOf(member, ct);
       let resolved = this.#privateLookupName(structType, lexicalCt, propName);
       if (resolved != null) {
-        lookupName = resolved as String;
+        lookupName = resolved;
       } else {
         // No physical field: a private ACCESSOR. Resolve the getter
         // LEXICALLY (never against the receiver chain — copied-down
@@ -5197,7 +5197,7 @@ export final class FunctionLowerer {
         // generic sources.
         let privGetter = this.#resolvePrivateAccessor(ct, lexicalCt, 'get#' + propName);
         if (privGetter != null) {
-          return new MemberTarget(structType, null, privGetter as WasmFunction);
+          return new MemberTarget(structType, null, privGetter);
         }
         // Never fall through to the receiver-chain getter walk below:
         // it could bind a subclass's shadowing private accessor.
@@ -5234,16 +5234,16 @@ export final class FunctionLowerer {
     var getter: WasmFunction | null = null;
     var currClass: ClassType | null = ct;
     while (currClass != null && getter == null) {
-      let key = getClassMethodKey(getClassKey(currClass as ClassType), 'get#' + propName);
+      let key = getClassMethodKey(getClassKey(currClass), 'get#' + propName);
       if (let (true, g) = this.wasm.classMethodMap.get(key)) {
         getter = g;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     if (getter == null) {
       this.#bail('member not found');
     }
-    if ((getter as WasmFunction).isStatic) {
+    if (getter.isStatic) {
       this.#bail('static member');
     }
     if (!isPrivate && this.#cx().memberProvidedBySubclass(classInfo, 'get#' + propName)) {
@@ -5269,11 +5269,11 @@ export final class FunctionLowerer {
     var currClass: ClassType | null = ct;
     while (currClass != null && getter == null) {
       let key = getClassMethodKey(
-          getClassKey(currClass as ClassType), 'get#' + propName);
+          getClassKey(currClass), 'get#' + propName);
       if (let (true, g) = this.wasm.classMethodMap.get(key)) {
         getter = g;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     if (getter == null) {
       this.#bail('overridden field without getter slot');
@@ -5298,7 +5298,7 @@ export final class FunctionLowerer {
     var fieldDeclaringClass = ct;
     var curr: ClassType | null = ct;
     while (curr != null) {
-      let c = curr as ClassType;
+      let c = curr;
       if (c.members.has(propName) && c.members[propName] is FieldInfo) {
         fieldDeclaringClass = c;
       }
@@ -5310,11 +5310,11 @@ export final class FunctionLowerer {
     var currClass: ClassType | null = ct;
     while (currClass != null && resolved == null) {
       let key = getClassMethodKey(
-          getClassKey(currClass as ClassType), accessorName);
+          getClassKey(currClass), accessorName);
       if (let (true, r) = this.wasm.classMethodMap.get(key)) {
         resolved = r;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     return resolved != null && defaultAccessor != null &&
         resolved != defaultAccessor;
@@ -5337,7 +5337,7 @@ export final class FunctionLowerer {
     if (objectType == null) {
       this.#bail('untyped index receiver');
     }
-    let selfResolved = this.#resolveSelfType(objectType as Type);
+    let selfResolved = this.#resolveSelfType(objectType);
     if (selfResolved is InterfaceType) {
       this.#bail('interface index write');
     }
@@ -5345,7 +5345,7 @@ export final class FunctionLowerer {
     let receiver = this.#lowerExpression(idx.object);
     let arrOpt = asWasmArray(this.#valueType(receiver));
     if (arrOpt != null) {
-      let arr = arrOpt as WasmArray;
+      let arr = arrOpt;
       let index = this.#lowerExpression(idx.index);
       if (!(this.#valueType(index) is ValTypeI32)) {
         this.#bail('index operand type');
@@ -5404,15 +5404,15 @@ export final class FunctionLowerer {
     }
     let chosenFt = this.func.model.getResolvedOverload(assign);
     let mangled = if (chosenFt != null) {
-      '[]=' + getSignatureKey(chosenFt as FunctionType)
+      '[]=' + getSignatureKey(chosenFt)
     } else {
       '[]='
     };
-    let methodOpt = this.#resolveIndexMethod(ct as ClassType, mangled, chosenFt != null);
+    let methodOpt = this.#resolveIndexMethod(ct, mangled, chosenFt != null);
     if (methodOpt == null) {
       this.#bail('index setter not found');
     }
-    let method = methodOpt as WasmFunction;
+    let method = methodOpt;
     if (method.intrinsic != null) {
       // Linear-memory byte store (mem[i] = v): one store instruction,
       // align 0 — streaming's shape.
@@ -5505,7 +5505,7 @@ export final class FunctionLowerer {
       if (ctOpt == null) {
         this.#bail('compound operand kind');
       }
-      let ct = ctOpt as ClassType;
+      let ct = ctOpt;
       if (!ct.members.has(opName)) {
         this.#bail('compound operator member not found');
       }
@@ -5586,7 +5586,7 @@ export final class FunctionLowerer {
     var lookupName = propName;
     let chosenFt = this.func.model.getResolvedOverload(call);
     if (chosenFt != null) {
-      lookupName = propName + getSignatureKey(chosenFt as FunctionType);
+      lookupName = propName + getSignatureKey(chosenFt);
     }
     let isGenericElem = elemType is TypeParameterType;
     var foundOpt: WasmFunction | null = null;
@@ -5615,12 +5615,12 @@ export final class FunctionLowerer {
       }
       let fArgs = fClass.typeArguments;
       if (isGenericElem) {
-        if (fArgs == null || (fArgs as Array<Type>).length == 0) {
+        if (fArgs == null || fArgs.length == 0) {
           foundOpt = f;
         }
-      } else if (fArgs != null && (fArgs as Array<Type>).length > 0) {
+      } else if (fArgs != null && fArgs.length > 0) {
         if (getTypeKeyForSpecialization(elemType) ==
-            getTypeKeyForSpecialization((fArgs as Array<Type>)[0])) {
+            getTypeKeyForSpecialization(fArgs[0])) {
           foundOpt = f;
         }
       }
@@ -5629,7 +5629,7 @@ export final class FunctionLowerer {
     if (foundOpt == null) {
       this.#bail('array extension method');
     }
-    let target = foundOpt as WasmFunction;
+    let target = foundOpt;
     if (target.intrinsic != null || target.typeParameters != null) {
       this.#bail('array extension shape');
     }
@@ -5693,7 +5693,7 @@ export final class FunctionLowerer {
   #cx(): LoweringContext {
     let cached = this.#cxCache;
     if (cached != null) {
-      return cached as LoweringContext;
+      return cached;
     }
     let cx = new LoweringContext(
         this.b,
@@ -5712,7 +5712,7 @@ export final class FunctionLowerer {
     if (want == null) {
       return this.#lowerExpression(e);
     }
-    return this.#lowerExpressionCtx(e, want as ValType);
+    return this.#lowerExpressionCtx(e, want);
   }
   /**
    * True while lowering a `gen`/`async` body, before the split pass
@@ -5780,13 +5780,13 @@ export final class FunctionLowerer {
     }
     let ftNode = this.func.model.getNodeType(call.callee);
     let paramSyms = if (ftNode != null && ftNode is FunctionType) {
-      (ftNode as FunctionType).parameterSymbols
+      ftNode.parameterSymbols
     } else {
       null
     };
     let ownerT = this.func.model.getDefaultArgsOwner(call);
     let owner = if (ownerT != null && ownerT is ClassType) {
-      ownerT as ClassType
+      ownerT
     } else {
       null
     };
@@ -5801,21 +5801,21 @@ export final class FunctionLowerer {
    */
   #lowerArgWithDefaults(call: CallExpression, i: i32, paramVt: ValType,
       info: DefaultArgInfo | null, receiver: i32): i32 {
-    if (info == null || i < (info as DefaultArgInfo).originalCount) {
+    if (info == null || i < info.originalCount) {
       let value = this.#lowerExpressionCtx(call.args[i], paramVt);
       if (info != null) {
-        (info as DefaultArgInfo).values.push(value);
+        info.values.push(value);
       }
       return value;
     }
-    let inf = info as DefaultArgInfo;
+    let inf = info;
     let savedThis = this.#cx().thisValue;
     let savedClass = this.func.classType;
     let savedSyms = new Array<SymbolId>();
     let savedVals = new Array<i32>();
     let syms = inf.paramSymbols;
     if (syms != null) {
-      let symList = syms as Array<SymbolId>;
+      let symList = syms;
       for (var j = 0; j < inf.values.length && j < symList.length; j += 1) {
         let symId = symList[j];
         if (symId == noSymbolId) {
@@ -5897,7 +5897,7 @@ export final class FunctionLowerer {
     if (sym == null) {
       this.#bail('unresolved callee');
     }
-    let resolved = (sym as Symbol).resolveTarget();
+    let resolved = sym.resolveTarget();
     if (this.#cx().env.has(resolved.id)) {
       // A local variable holding a function value: closure call.
       return this.#lowerClosureCall(call);
@@ -5908,13 +5908,13 @@ export final class FunctionLowerer {
     // backend's global intrinsics.
     let calleeFtNode = this.func.model.getNodeType(call.callee);
     let calleeFt = if (calleeFtNode != null && calleeFtNode is FunctionType) {
-      calleeFtNode as FunctionType
+      calleeFtNode
     } else {
       null
     };
     let intrDecl = findDeclaration(this.wasm, resolved, calleeFt);
     if (intrDecl != null) {
-      if (let (true, intrName) = this.wasm.intrinsics.get((intrDecl as DeclareFunction).id)) {
+      if (let (true, intrName) = this.wasm.intrinsics.get(intrDecl.id)) {
         return lowerIntrinsic(this.#cx(), intrName, call);
       }
     }
@@ -5925,13 +5925,13 @@ export final class FunctionLowerer {
     let solvedTargs = this.#solvedCallTypeArguments(call);
     if (solvedTargs != null) {
       let specKey = getSpecializedFunctionKey(
-          resolved.name, solvedTargs as Array<Type>);
+          resolved.name, solvedTargs);
       let specOpt = if (let (true, f) = this.wasm.specializedFunctions.get(specKey)) f else null;
       if (specOpt == null) {
         this.#bail('generic call');
       }
       return this.#lowerSpecializedCall(
-          call, specOpt as WasmFunction, multiOut);
+          call, specOpt, multiOut);
     }
     if (call.typeArguments != null) {
       // Explicit type arguments but no solution recorded on the
@@ -5944,7 +5944,7 @@ export final class FunctionLowerer {
       // (global function values still bail when the callee lowers).
       return this.#lowerClosureCall(call);
     }
-    return this.#lowerDirectCallTo(call, targetOpt as WasmFunction, multiOut);
+    return this.#lowerDirectCallTo(call, targetOpt, multiOut);
   }
 
   /** The direct-call tail shared by identifier callees and
@@ -6033,7 +6033,7 @@ export final class FunctionLowerer {
     if (implOpt == null) {
       this.#bail('closure not registered');
     }
-    let impl = implOpt as WasmFunction;
+    let impl = implOpt;
     // The pair struct is keyed by the IMPLEMENTATION's own signature —
     // deriving it from the checked node type drifted under
     // substitution, and the func slot must hold exactly (ref implSig)
@@ -6043,7 +6043,7 @@ export final class FunctionLowerer {
     if (closureStructOpt == null) {
       this.#bail('closure pair struct not found');
     }
-    let closureStruct = closureStructOpt as WasmStruct;
+    let closureStruct = closureStructOpt;
     if (impl.contextStruct == null) {
       this.#bail('closure without context struct');
     }
@@ -6088,7 +6088,7 @@ export final class FunctionLowerer {
     // The func slot's declared signature must be the implementation's
     // own signature (both come from the interned signature table).
     let slotSig = asWasmSignature(closureStruct.fields[0].type);
-    if (slotSig == null || (slotSig as WasmSignature) != impl.signature) {
+    if (slotSig == null || slotSig != impl.signature) {
       this.#bail('closure signature adaptation');
     }
     let funcVal = this.b.emit(IrOp.ref_func, closureStruct.fields[0].type,
@@ -6125,7 +6125,7 @@ export final class FunctionLowerer {
       args.push(this.#lowerExpression(a));
     }
     let callT = this.func.model.getNodeType(call);
-    let isVoid = callT == null || isVoidOrNeverType(callT as Type);
+    let isVoid = callT == null || isVoidOrNeverType(callT);
     var resultVt: ValType | null = null;
     if (!isVoid) {
       let vt = typeToValTypeWithSub(this.wasm, callT as Type, this.func);
@@ -6135,13 +6135,13 @@ export final class FunctionLowerer {
     let merge = this.b.newBlock();
     var resultParam = -1;
     if (resultVt != null) {
-      resultParam = this.b.blockParam(merge, resultVt as ValType);
+      resultParam = this.b.blockParam(merge, resultVt);
     }
     for (let member in ut.types) {
       if (!(member is FunctionType)) {
         continue;
       }
-      let ftm = member as FunctionType;
+      let ftm = member;
       let cs = getClosureStruct(this.wasm, ftm);
       let csVt = new ValTypeRef(cs) as ValType;
       let hit = this.b.emit(IrOp.ref_test, new ValTypeI32(), callee,
@@ -6156,7 +6156,7 @@ export final class FunctionLowerer {
       if (sigOpt == null) {
         this.#bail('union member shape');
       }
-      let sig = sigOpt as WasmSignature;
+      let sig = sigOpt;
       if (sig.returns.length > 1) {
         this.#bail('union member shape');
       }
@@ -6184,8 +6184,8 @@ export final class FunctionLowerer {
       };
       if (resultVt != null) {
         if (sig.returns.length != 1 ||
-            !isValSubtype(this.#valueType(memberResult), resultVt as ValType)) {
-          this.#failConformance(memberResult, resultVt as ValType,
+            !isValSubtype(this.#valueType(memberResult), resultVt)) {
+          this.#failConformance(memberResult, resultVt,
               'union call result type');
         }
         this.b.br(merge, this.#oneArg(memberResult));
@@ -6218,7 +6218,7 @@ export final class FunctionLowerer {
     if (structOpt == null) {
       this.#bail('closure callee kind');
     }
-    let closureStruct = structOpt as WasmStruct;
+    let closureStruct = structOpt;
     if (closureStruct.fields.length != 2) {
       // Not a closure pair struct (e.g. a class instance): bail.
       this.#bail('closure callee shape');
@@ -6227,7 +6227,7 @@ export final class FunctionLowerer {
     if (sigOpt == null) {
       this.#bail('closure callee shape');
     }
-    let sig = sigOpt as WasmSignature;
+    let sig = sigOpt;
     if (sig.returns.length > 1) {
       this.#bail('closure multi-value return');
     }
@@ -6287,7 +6287,7 @@ export final class FunctionLowerer {
     if (sym == null) {
       this.#bail('unresolved assignment target');
     }
-    let resolved = (sym as Symbol).resolveTarget();
+    let resolved = sym.resolveTarget();
     if (!this.#cx().env.has(resolved.id)) {
       if (let (true, g) = this.wasm.globalMap.get(resolved.id)) {
         return this.#lowerGlobalAssign(assign, g);
@@ -6303,7 +6303,7 @@ export final class FunctionLowerer {
       var assignCtx: ValType | null = null;
       let targetBinding = this.func.model.getBindingType(resolved);
       if (targetBinding != null) {
-        assignCtx = typeToValTypeWithSub(this.wasm, targetBinding as Type, this.func);
+        assignCtx = typeToValTypeWithSub(this.wasm, targetBinding, this.func);
       }
       value = this.#lowerExpressionCtx(assign.value, assignCtx);
     } else {
@@ -6315,7 +6315,7 @@ export final class FunctionLowerer {
     if (let (true, storeSym) = this.#cx().symbols.get(resolved.id)) {
       let bt = this.func.model.getBindingType(storeSym);
       if (bt != null) {
-        let bvt = typeToValTypeWithSub(this.wasm, bt as Type, this.func);
+        let bvt = typeToValTypeWithSub(this.wasm, bt, this.func);
         this.#requireSupported(bvt, 'binding type');
         value = this.#conformToBinding(value, bvt);
       }
@@ -6423,8 +6423,8 @@ export final class FunctionLowerer {
       return result;
     }
     let nodeType = this.func.model.getNodeType(call);
-    if (nodeType != null && !(baseType(nodeType as Type) is VoidType)) {
-      let want = typeToValTypeWithSub(this.wasm, nodeType as Type, this.func);
+    if (nodeType != null && !(baseType(nodeType) is VoidType)) {
+      let want = typeToValTypeWithSub(this.wasm, nodeType, this.func);
       return this.#reassertNonNull(result, want);
     }
     return result;
@@ -6450,11 +6450,11 @@ export final class FunctionLowerer {
     if (t == null) {
       return false;
     }
-    let elem = arrayElementType(t as Type);
+    let elem = arrayElementType(t);
     if (elem == null) {
       return false;
     }
-    return isSignedNarrowIntType(elem as Type);
+    return isSignedNarrowIntType(elem);
   }
 
   /**
@@ -6490,7 +6490,7 @@ export final class FunctionLowerer {
     // everything that can actually BE a parameter type — the one
     // divergence, a union containing void, cannot arise because void
     // absorbs in unions (`T | void` collapses to `void`).
-    return isVoidOrNeverType(t as Type);
+    return isVoidOrNeverType(t);
   }
 
   /**
@@ -6535,11 +6535,11 @@ export final class FunctionLowerer {
     if (sym == null) {
       return false;
     }
-    let bt = this.func.model.getBindingType(sym as Symbol);
+    let bt = this.func.model.getBindingType(sym);
     if (bt == null) {
       return false;
     }
-    return typeToValTypeWithSub(this.wasm, bt as Type, this.func) is ValTypeVoid;
+    return typeToValTypeWithSub(this.wasm, bt, this.func) is ValTypeVoid;
   }
 
   /**
@@ -6569,7 +6569,7 @@ export final class FunctionLowerer {
     if (t == null) {
       return null;
     }
-    return baseType(t as Type);
+    return baseType(t);
   }
 
   #requireScalar(vt: ValType, what: String): void {
@@ -6600,7 +6600,7 @@ export final class FunctionLowerer {
       if (contextVt == null) {
         this.#bail('null without context');
       }
-      let vt = contextVt as ValType;
+      let vt = contextVt;
       let nullable = vt is ValTypeRefNull || vt is ValTypeAnyRef ||
           vt is ValTypeEqRef || vt is ValTypeStructRef;
       if (!nullable) {

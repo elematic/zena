@@ -204,7 +204,7 @@ export final class LoweringContext {
   reassertNonNull(value: i32, want: ValType): i32 {
     let have = this.valueTypeOf(value);
     if (want is ValTypeRef && have is ValTypeRefNull &&
-        (want as ValTypeRef).target == (have as ValTypeRefNull).target) {
+        want.target == have.target) {
       return this.b.emit(IrOp.ref_as_non_null, want, value, -1);
     }
     return value;
@@ -215,7 +215,7 @@ export final class LoweringContext {
     let vt = this.valueTypeOf(value);
     return if (vt is ValTypeRefNull) {
       this.reassertNonNull(
-          value, new ValTypeRef((vt as ValTypeRefNull).target) as ValType)
+          value, new ValTypeRef(vt.target) as ValType)
     } else {
       value
     };
@@ -248,7 +248,7 @@ export final class LoweringContext {
     if (t == null) {
       return null;
     }
-    return substituteTypeParamsInFunctionContext(this.wasm, this.func, t as Type);
+    return substituteTypeParamsInFunctionContext(this.wasm, this.func, t);
   }
 
   /**
@@ -270,10 +270,10 @@ export final class LoweringContext {
   /** The receiver/callee expression of an optional-chain access. */
   optionalChainObject(expr: Expression): Expression {
     if (expr is MemberExpression) {
-      return (expr as MemberExpression).object;
+      return expr.object;
     }
     if (expr is IndexExpression) {
-      return (expr as IndexExpression).object;
+      return expr.object;
     }
     return (expr as CallExpression).callee;
   }
@@ -304,7 +304,7 @@ export final class LoweringContext {
     let bt = baseType(t);
     var isSelf = bt is ThisType;
     if (!isSelf && bt is ClassType) {
-      let ct = bt as ClassType;
+      let ct = bt;
       if (ct.name.length >= 5 &&
           ct.name.sliceBytes(ct.name.length - 5, ct.name.length) == "_This") {
         isSelf = true;
@@ -329,7 +329,7 @@ export final class LoweringContext {
    */
   slotCallOnValue(recv: i32, memberName: String): Array<i32> {
     let fatOpt = asWasmStruct(this.valueTypeOf(recv));
-    if (fatOpt == null || (fatOpt as WasmStruct).fields.length != 2) {
+    if (fatOpt == null || fatOpt.fields.length != 2) {
       this.fail('interface receiver type');
     }
     let fatPtr = fatOpt as WasmStruct;
@@ -400,9 +400,9 @@ export final class LoweringContext {
    */
   chainReceiver(obj: Expression): i32 {
     if (obj is Identifier) {
-      let sym = this.func.model.resolve(obj as Identifier);
+      let sym = this.func.model.resolve(obj);
       if (sym != null) {
-        let resolved = (sym as Symbol).resolveTarget();
+        let resolved = sym.resolveTarget();
         if (this.env.has(resolved.id)) {
           var value = this.env[resolved.id];
           if (this.isCelled(resolved.id)) {
@@ -429,7 +429,7 @@ export final class LoweringContext {
   classTypeOfValue(value: i32): ClassType | null {
     let st = asWasmStruct(this.valueTypeOf(value));
     if (st != null) {
-      return (st as WasmStruct).classType;
+      return st.classType;
     }
     return null;
   }
@@ -473,7 +473,7 @@ export final class LoweringContext {
       infoOpt = info;
     }
     if (infoOpt != null &&
-        this.memberProvidedBySubclass(infoOpt as ClassCodegenInfo, methName)) {
+        this.memberProvidedBySubclass(infoOpt, methName)) {
       return null;
     }
     return found;
@@ -505,7 +505,7 @@ export final class LoweringContext {
     for (let sub in subclasses) {
       let subClassType = sub.structType.classType;
       if (subClassType != null) {
-        let key = getClassMethodKey(getClassKey(subClassType as ClassType), slotName);
+        let key = getClassMethodKey(getClassKey(subClassType), slotName);
         if (let (true, f) = this.wasm.classMethodMap.get(key)) {
           let isGetter = slotName.startsWith("get#");
           let st = if (isGetter) f.getterStruct else f.setterStruct;
@@ -514,7 +514,7 @@ export final class LoweringContext {
             // Hand-written accessor: a real override.
             return true;
           }
-          let fields = (st as WasmStruct).fields;
+          let fields = st.fields;
           if (idx >= fields.length || fields[idx].name != fieldName) {
             // Synthesized, but bound to a different field.
             return true;
@@ -542,7 +542,7 @@ export final class LoweringContext {
     for (let sub in subclasses) {
       let subClassType = sub.structType.classType;
       if (subClassType != null) {
-        let key = getClassMethodKey(getClassKey(subClassType as ClassType), methodName);
+        let key = getClassMethodKey(getClassKey(subClassType), methodName);
         if (this.wasm.classMethodMap.has(key)) {
           return true;
         }
@@ -560,7 +560,7 @@ export final class LoweringContext {
     if (vtOpt == null) {
       return -1;
     }
-    return (vtOpt as WasmStruct).fieldIndexByName(slotName);
+    return vtOpt.fieldIndexByName(slotName);
   }
 
   /**
@@ -671,13 +671,13 @@ export final class LoweringContext {
     var currClass: ClassType | null = ctOpt as ClassType;
     while (currClass != null && getterOpt == null) {
       let key = getClassMethodKey(
-          getClassKey(currClass as ClassType), 'get#' + propName);
+          getClassKey(currClass), 'get#' + propName);
       if (let (true, g) = this.wasm.classMethodMap.get(key)) {
         getterOpt = g;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
-    if (getterOpt == null || (getterOpt as WasmFunction).isStatic) {
+    if (getterOpt == null || getterOpt.isStatic) {
       this.fail('member not found');
     }
     let getter = getterOpt as WasmFunction;
@@ -710,7 +710,7 @@ export final class LoweringContext {
     if (stOpt == null) {
       return value;
     }
-    let st = stOpt as WasmStruct;
+    let st = stOpt;
     for (let pair in this.wasm.interfaceStructs) {
       if (pair.value == st) {
         return this.fatPointerInstance(st, value);
@@ -726,11 +726,11 @@ export final class LoweringContext {
    */
   unwrapFatPointer(base: Type, value: i32): i32 {
     if (base is RecordType) {
-      let dispatch = this.recordDispatchOf(base as RecordType);
+      let dispatch = this.recordDispatchOf(base);
       return this.fatPointerInstance(dispatch.fatPtrType, value);
     }
     if (base is InterfaceType) {
-      let iName = getInterfaceKey(base as InterfaceType);
+      let iName = getInterfaceKey(base);
       let fatOpt = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
       if (fatOpt == null) {
         this.fail('interface struct not found');
@@ -740,7 +740,7 @@ export final class LoweringContext {
     if (base is UnionType) {
       // A nullable fat pointer (`Shape | null`) unwraps behind a null
       // guard: null stays null and compares like any null reference.
-      let ut = base as UnionType;
+      let ut = base;
       var nonNull: Type | null = null;
       var nonNullCount = 0;
       var nullCount = 0;
@@ -758,9 +758,9 @@ export final class LoweringContext {
       let inner = baseType(nonNull as Type);
       var fatOpt: WasmStruct | null = null;
       if (inner is RecordType) {
-        fatOpt = this.recordDispatchOf(inner as RecordType).fatPtrType;
+        fatOpt = this.recordDispatchOf(inner).fatPtrType;
       } else if (inner is InterfaceType) {
-        let iName = getInterfaceKey(inner as InterfaceType);
+        let iName = getInterfaceKey(inner);
         if (let (true, st) = this.wasm.interfaceStructs.get(iName)) {
           fatOpt = st;
         }
@@ -777,7 +777,7 @@ export final class LoweringContext {
       this.b.brIf(isNull, merge, oneValue(nullEq),
           extractB, noValues());
       this.b.switchTo(extractB);
-      let inst = this.fatPointerInstance(fatOpt as WasmStruct, value);
+      let inst = this.fatPointerInstance(fatOpt, value);
       this.b.br(merge, oneValue(inst));
       this.b.switchTo(merge);
       return result;
@@ -827,10 +827,10 @@ export final class LoweringContext {
   operatorMemberOn(opMember: String, left: i32, right: i32,
       leftCt: ClassType): i32 {
     let fromValue = this.classTypeOfValue(left);
-    let recvCt = if (fromValue != null) fromValue as ClassType else leftCt;
+    let recvCt = if (fromValue != null) fromValue else leftCt;
     let methodOpt = this.resolveDevirtualizedMethod(recvCt, opMember);
     if (methodOpt != null) {
-      let method = methodOpt as WasmFunction;
+      let method = methodOpt;
       let sig = method.signature;
       if (sig.params.length != 2 || sig.returns.length != 1) {
         this.fail('operator method shape');
@@ -852,13 +852,13 @@ export final class LoweringContext {
     while (currClass != null && resolvedOpt == null) {
       var g: ClassType | null = currClass;
       while (g != null && resolvedOpt == null) {
-        let key = getClassMethodKey(getClassKey(g as ClassType), opMember);
+        let key = getClassMethodKey(getClassKey(g), opMember);
         if (let (true, m) = this.wasm.classMethodMap.get(key)) {
           resolvedOpt = m;
         }
-        g = (g as ClassType).genericSource;
+        g = g.genericSource;
       }
-      currClass = (currClass as ClassType).superType;
+      currClass = currClass.superType;
     }
     if (resolvedOpt == null) {
       this.fail('operator dispatch');
@@ -899,11 +899,11 @@ export final class LoweringContext {
     }
     walkEnter(node, (n: Node): void => {
       if (n is AssignmentExpression) {
-        let ae = n as AssignmentExpression;
+        let ae = n;
         if (ae.left is Identifier) {
           let sym = this.func.model.resolve(ae.left);
           if (sym != null) {
-            let resolved = (sym as Symbol).resolveTarget();
+            let resolved = sym.resolveTarget();
             // Celled bindings mutate their heap cell, not the env
             // entry, so they never need merge parameters.
             if (this.env.has(resolved.id) && !seen.has(resolved.id) &&
@@ -952,7 +952,7 @@ export final class LoweringContext {
     // checker proved this use non-null; re-assert (a null here traps,
     // which is the re-assert contract everywhere else too).
     if (have is ValTypeRefNull && want is ValTypeRef) {
-      let nn = new ValTypeRef((have as ValTypeRefNull).target) as ValType;
+      let nn = new ValTypeRef(have.target) as ValType;
       if (isValSubtype(nn, want)) {
         return this.b.emit(IrOp.ref_as_non_null, nn, value, -1);
       }
@@ -971,7 +971,7 @@ export final class LoweringContext {
     if (have is ValTypeRefNull && bindingVt is ValTypeRef) {
       // Nullable value into a non-null binding: the checker proved
       // this init non-null; re-assert (same-target) or cast down.
-      let nn = new ValTypeRef((have as ValTypeRefNull).target) as ValType;
+      let nn = new ValTypeRef(have.target) as ValType;
       if (isValSubtype(nn, bindingVt)) {
         return this.reassertNonNull(value, nn);
       }
@@ -1080,20 +1080,20 @@ export final class LoweringContext {
   precellBindings(body: Array<Statement>): void {
     for (let stmt in body) {
       if (!(stmt is VariableDeclaration)) { continue; }
-      let vd = stmt as VariableDeclaration;
+      let vd = stmt;
       var pat = vd.pattern;
       if (pat is BindingPattern) {
-        pat = (pat as BindingPattern).pattern;
+        pat = pat.pattern;
       }
       if (!(pat is IdentifierPattern)) { continue; }
       if (!(vd.init is FunctionExpression)) { continue; }
       let symOpt = this.func.model.resolveDeclaration(pat);
       if (symOpt == null) { continue; }
-      let sym = symOpt as Symbol;
+      let sym = symOpt;
       if (!this.isCelled(sym.id) || this.env.has(sym.id)) { continue; }
       let bindingType = this.func.model.getBindingType(sym);
       if (bindingType == null) { continue; }
-      let bindingVt = typeToValTypeWithSub(this.wasm, bindingType as Type, this.func);
+      let bindingVt = typeToValTypeWithSub(this.wasm, bindingType, this.func);
       // Same invariant as cellAlloc: post-layout, the cell shape must
       // already be interned by discovery or its casts emit heap type -1.
       if (this.wasm.isLayoutLocked &&
@@ -1141,7 +1141,7 @@ export final class LoweringContext {
   cellStructOf(cell: i32): WasmStruct {
     let st = asWasmStruct(this.valueTypeOf(cell));
     if (st != null) {
-      return st as WasmStruct;
+      return st;
     }
     throw new ZirUnsupported('celled binding shape');
   }

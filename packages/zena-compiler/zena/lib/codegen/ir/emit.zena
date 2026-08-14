@@ -993,7 +993,7 @@ export final class ZirFunctionEmitter {
       if (!(ref is IrRefTag)) {
         throw new Error('zir emit: throw ref kind');
       }
-      this.emitter.emitThrow((ref as IrRefTag).target.index);
+      this.emitter.emitThrow(ref.target.index);
       return;
     }
     let succs = body.successors(inst);
@@ -1021,7 +1021,7 @@ export final class ZirFunctionEmitter {
       this.emitter.emitBlock(new ValTypeVoid());
       this.frames.push(new EmitFrame(-1, false));
       this.emitter.emitTryTableCatch(new ValTypeVoid(),
-          (ref as IrRefTag).target.index, 0);
+          ref.target.index, 0);
       this.frames.push(new EmitFrame(-1, false));
       this.#doBranch(from, succs[0]);
       this.emitter.emitEnd();
@@ -1202,7 +1202,7 @@ export final class ZirFunctionEmitter {
         if (!(ref is IrRefFunc)) {
           throw new Error('zir emit: ref_func ref kind');
         }
-        let target = (ref as IrRefFunc).target;
+        let target = ref.target;
         if (target.index < 0) {
           // An unindexed target means reachability never saw this
           // function, so it has no slot in the function section. The
@@ -1302,7 +1302,7 @@ export final class ZirFunctionEmitter {
     if (!(ref is IrRefGlobal)) {
       throw new Error('zir emit: ' + irOpName(this.body.op(inst)) + ' ref kind');
     }
-    return (ref as IrRefGlobal).target.index;
+    return ref.target.index;
   }
 
   /**
@@ -1313,7 +1313,7 @@ export final class ZirFunctionEmitter {
   #requireIndexed(t: WasmType, what: String): void {
     if (t.index < 0) {
       let desc = if (t is WasmStruct) {
-        "struct " + ((t as WasmStruct).name ?? "unnamed")
+        "struct " + (t.name ?? "unnamed")
       } else if (t is WasmSignature) {
         "signature"
       } else if (t is WasmArray) {
@@ -1332,12 +1332,12 @@ export final class ZirFunctionEmitter {
     if (!(ref is IrRefType)) {
       throw new Error('zir emit: ' + irOpName(this.body.op(inst)) + ' ref kind');
     }
-    let target = (ref as IrRefType).target;
+    let target = ref.target;
     if (target.index < 0) {
       // Writing -1 here produces a module V8 rejects with an opaque
       // `Unknown heap type` at a byte offset; name the type instead.
       let desc = if (target is WasmStruct) {
-        "struct " + ((target as WasmStruct).name ?? "unnamed")
+        "struct " + (target.name ?? "unnamed")
       } else if (target is WasmSignature) {
         "signature"
       } else {
@@ -1567,7 +1567,7 @@ export final class ZirFunctionEmitter {
       case _: {}
     }
     if (target is WasmSignature) {
-      return target as WasmSignature;
+      return target;
     }
     throw new Error('zir emit: call_ref callee is not signature-typed');
   }
@@ -1582,7 +1582,7 @@ export final class ZirFunctionEmitter {
       case _: {}
     }
     if (target is WasmArray) {
-      return target as WasmArray;
+      return target;
     }
     throw new Error('zir emit: array operand is not array-typed');
   }
@@ -1597,7 +1597,7 @@ export final class ZirFunctionEmitter {
       case _: {}
     }
     if (target is WasmStruct) {
-      return target as WasmStruct;
+      return target;
     }
     throw new Error('zir emit: fat-pointer operand is not struct-typed');
   }
@@ -1631,7 +1631,7 @@ export final class ZirFunctionEmitter {
   #fieldRef(refIdx: i32): IrRefField {
     let ref = this.body.refTable[refIdx];
     if (ref is IrRefField) {
-      return ref as IrRefField;
+      return ref;
     }
     throw new Error('zir emit: expected field ref');
   }

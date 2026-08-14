@@ -106,7 +106,7 @@ export let isAsyncFunction = (func: WasmFunction): boolean => {
   if (node == null) {
     return false;
   }
-  return match (node as Node) {
+  return match (node) {
     case FunctionExpression {isAsync}: isAsync
     case MethodDefinition {isAsync}: isAsync
     case _: false
@@ -132,7 +132,7 @@ let futureInstantiationOf = (wasm: WasmModule, func: WasmFunction): ClassType =>
     throw new Error('async function has no checked function type: ' +
         funcDisplayName(func));
   }
-  var ret: Type = (t as FunctionType).returnType;
+  var ret: Type = t.returnType;
   if (func.classType != null) {
     let ct = func.classType as ClassType;
     if (ct.typeArguments != null) {
@@ -148,7 +148,7 @@ let futureInstantiationOf = (wasm: WasmModule, func: WasmFunction): ClassType =>
     throw new Error('async function return type is not Future<T>: ' +
         funcDisplayName(func));
   }
-  return ret as ClassType;
+  return ret;
 };
 
 /**
@@ -165,11 +165,11 @@ let resumableInterfaceOf = (futureType: ClassType): InterfaceType => {
   if (!(mi is MethodInfo)) {
     throw new Error('subscribe is not a method');
   }
-  let ft = (mi as MethodInfo).type;
+  let ft = mi.type;
   if (!(ft is FunctionType)) {
     throw new Error('subscribe has no function type');
   }
-  let params = (ft as FunctionType).parameters;
+  let params = ft.parameters;
   if (params.length != 1 || !(params[0] is InterfaceType)) {
     throw new Error('subscribe does not take a Task');
   }
@@ -251,7 +251,7 @@ let prepareAsyncMain = (wasm: WasmModule, pass: ReachabilityAnalysis): void => {
   if (drainOpt == null) {
     throw new Error('async main: zena:async drainMicrotasks was not reached');
   }
-  let drainFn = drainOpt as WasmFunction;
+  let drainFn = drainOpt;
 
   let wrapperSig = wasm.getSignature(ramp.signature.params,
       valueOrThrowFn.signature.returns);
@@ -428,7 +428,7 @@ let prepareOne = (
     throw new Error('async Future instantiation was not materialized: ' +
         funcDisplayName(func));
   }
-  let futureInfo = futureInfoOpt as ClassCodegenInfo;
+  let futureInfo = futureInfoOpt;
   let futureStruct = futureInfo.structType;
 
   let name = funcDisplayName(func);
@@ -544,7 +544,7 @@ let prepareOne = (
         throw new Error('async spill of valueless instruction');
       }
       fields.push(new WasmField('$v' + i32ToString(vid),
-          weakenToNullable(vt as ValType), true));
+          weakenToNullable(vt), true));
     }
     vid += 1;
   }
@@ -605,7 +605,7 @@ let prepareOne = (
   wasm.globals.push(vtableGlobal);
   wasm.classInterfaceVTables[getClassInterfaceKey(frameKey, iKey)] = vtableGlobal;
   wasm.usedInterfaceAdaptations[getClassInterfaceKey(frameKey, iKey)] = true;
-  let unspecIKey = getInterfaceKey((iface.genericSource ?? iface) as InterfaceType);
+  let unspecIKey = getInterfaceKey(iface.genericSource ?? iface);
   wasm.usedInterfaceAdaptations[getClassInterfaceKey(frameKey, unspecIKey)] = true;
 
   // The two bodies.
@@ -1121,7 +1121,7 @@ let buildStepBody = (
       body.extra.push(futureVal);
       body.extra.push(packed);
       let call = rawInst(body, IrOp.call, -1, callIdx,
-          addRawRef(body, new IrRefFunc(subscribeOpt as WasmFunction)));
+          addRawRef(body, new IrRefFunc(subscribeOpt)));
       rebuilt.push(call);
       body.instBlock[call] = blockId;
       // The suspension itself: a plain return out of the region.

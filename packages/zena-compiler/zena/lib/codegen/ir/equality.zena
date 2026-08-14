@@ -51,7 +51,7 @@ let isStringStruct = (cx: LoweringContext, st: WasmStruct): boolean => {
   if (strClass == null) {
     return false;
   }
-  if (let (true, info) = cx.wasm.classInfos.get(getClassKey(strClass as ClassType))) {
+  if (let (true, info) = cx.wasm.classInfos.get(getClassKey(strClass))) {
     return info.structType.index == st.index;
   }
   return false;
@@ -63,7 +63,7 @@ let isStringStruct = (cx: LoweringContext, st: WasmStruct): boolean => {
 let stringEqFunc = (cx: LoweringContext): WasmFunction => {
   let strClass = cx.wasm.stringClass;
   if (strClass != null) {
-    let key = getClassMethodKey(getClassKey(strClass as ClassType), "==");
+    let key = getClassMethodKey(getClassKey(strClass), "==");
     if (let (true, m) = cx.wasm.classMethodMap.get(key)) {
       return m;
     }
@@ -112,7 +112,7 @@ let callStringHash = (cx: LoweringContext, v: i32): i32 => {
   if (hashFn == null) {
     bail(cx, 'string hash helper');
   }
-  return callUnary(cx, hashFn as WasmFunction, v);
+  return callUnary(cx, hashFn, v);
 };
 
 /**
@@ -186,7 +186,7 @@ let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => 
     return cx.b.binary(IrOp.f64_eq, i32vt, a, b2);
   }
   let targetOpt = refTargetOf(ft);
-  if (targetOpt != null && (targetOpt as WasmType) is WasmStruct) {
+  if (targetOpt != null && targetOpt is WasmStruct) {
     let fieldStruct = targetOpt as WasmStruct;
     var eqFunc: WasmFunction | null = null;
     if (isStringStruct(cx, fieldStruct)) {
@@ -206,7 +206,7 @@ let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => 
     if (eqFunc != null) {
       // Null-safe reference fast path around the content equality
       // (see refEqFastPathCall): struct fields are nullable refs.
-      return refEqFastPathCall(cx, eqFunc as WasmFunction, a, b2, true);
+      return refEqFastPathCall(cx, eqFunc, a, b2, true);
     }
   }
   // Fallback: reference identity (also covers arrays/closures).
@@ -234,7 +234,7 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
   // above over-narrows `ft` (see BUGS.md narrowing entries).
   let ftRef: ValType = f.type;
   let targetOpt = refTargetOf(ftRef);
-  if (targetOpt != null && (targetOpt as WasmType) is WasmStruct) {
+  if (targetOpt != null && targetOpt is WasmStruct) {
     let fieldStruct = targetOpt as WasmStruct;
     var hashFunc: WasmFunction | null = null;
     if (isStringStruct(cx, fieldStruct) && cx.wasm.stringHashFunc != null) {
@@ -254,24 +254,24 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
           while (hc != null && resolvedOpt == null) {
             var hg: ClassType | null = hc;
             while (hg != null && resolvedOpt == null) {
-              let key = getClassMethodKey(getClassKey(hg as ClassType), 'hashCode');
+              let key = getClassMethodKey(getClassKey(hg), 'hashCode');
               if (let (true, m) = cx.wasm.classMethodMap.get(key)) {
                 resolvedOpt = m;
               }
-              hg = (hg as ClassType).genericSource;
+              hg = hg.genericSource;
             }
-            hc = (hc as ClassType).superType;
+            hc = hc.superType;
           }
           let infoOpt2 = if (let (true, info) = cx.wasm.classInfos.get(getClassKey(fct))) info else null;
           if (resolvedOpt == null || infoOpt2 == null) {
             bail(cx, 'case hash field dispatch');
           }
-          let ci = infoOpt2 as ClassCodegenInfo;
+          let ci = infoOpt2;
           if (cx.vtableSlotIndex(ci, 'hashCode') < 0) {
             bail(cx, 'case hash field dispatch');
           }
           hashVtInfo = ci;
-          hashSlotSig = (resolvedOpt as WasmFunction).signature;
+          hashSlotSig = resolvedOpt.signature;
         }
       }
     }
@@ -292,7 +292,7 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
 
       cx.b.switchTo(callB);
       let called = if (hashSlotSig != null) {
-        let hsig = hashSlotSig as WasmSignature;
+        let hsig = hashSlotSig;
         let nonNullV = cx.stripNonNull(v);
         cx.lowerVtableCall(nonNullV, hashVtInfo as ClassCodegenInfo,
             'hashCode', hsig, oneValue(nonNullV), hsig.returns[0])
@@ -461,7 +461,7 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
   cx.b.switchTo(contB);
   let stringClassOpt = cx.wasm.stringClass;
   if (stringClassOpt != null) {
-    let sKey = getClassKey(stringClassOpt as ClassType);
+    let sKey = getClassKey(stringClassOpt);
     var sStructOpt: WasmStruct | null = null;
     if (let (true, info) = cx.wasm.classInfos.get(sKey)) {
       sStructOpt = info.structType;
@@ -472,7 +472,7 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
       eqFuncOpt = f;
     }
     if (sStructOpt != null && eqFuncOpt != null) {
-      let sStruct = sStructOpt as WasmStruct;
+      let sStruct = sStructOpt;
       let strVt = new ValTypeRef(sStruct) as ValType;
       let lIsS = cx.b.emit(IrOp.ref_test, i32vt, left,
           cx.b.internType(strVt));
@@ -483,7 +483,7 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
       let afterStrB = cx.b.newBlock();
       cx.b.brIf(bothS, strB, noValues(), afterStrB, noValues());
       cx.b.switchTo(strB);
-      let eqFunc = eqFuncOpt as WasmFunction;
+      let eqFunc = eqFuncOpt;
       let lS = cx.b.emit(IrOp.ref_cast, strVt, left,
           cx.b.internType(strVt));
       let rS = cx.b.emit(IrOp.ref_cast, strVt, right,
@@ -515,7 +515,7 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
       let t = boxTypes[bi];
       let typeArgs = new Array<Type>();
       typeArgs.push(t);
-      let boxCt = instantiateClassType(boxClassOpt as ClassType, typeArgs);
+      let boxCt = instantiateClassType(boxClassOpt, typeArgs);
       var boxStructOpt: WasmStruct | null = null;
       if (let (true, info) = cx.wasm.classInfos.get(getClassKey(boxCt))) {
         boxStructOpt = info.structType;
@@ -523,7 +523,7 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
       if (boxStructOpt == null) {
         continue;
       }
-      let boxStruct = boxStructOpt as WasmStruct;
+      let boxStruct = boxStructOpt;
       if (boxStruct.fields.length < 2 || boxStruct.fields[1].name == null) {
         continue;
       }
@@ -614,24 +614,24 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
   }
   let strClass = cx.wasm.stringClass;
   if (strClass != null &&
-      cx.canonicalKeyOf(ctA as ClassType) == cx.canonicalKeyOf(strClass as ClassType) &&
-      cx.canonicalKeyOf(ctB as ClassType) == cx.canonicalKeyOf(strClass as ClassType)) {
+      cx.canonicalKeyOf(ctA) == cx.canonicalKeyOf(strClass) &&
+      cx.canonicalKeyOf(ctB) == cx.canonicalKeyOf(strClass)) {
     return callEqMethod(cx, stringEqFunc(cx), a, b2);
   }
   if (isNullableRef(va) || isNullableRef(vb)) {
     bail(cx, 'nullable eq operand');
   }
-  if (!(ctA as ClassType).members.has('==')) {
+  if (!ctA.members.has('==')) {
     // No content equality declared: eq() compares identity. The
     // operands are non-null same-class references here, so plain
     // ref.eq is streaming's diamond minus its dead arms.
     return cx.b.binary(IrOp.ref_eq, new ValTypeI32(), a, b2);
   }
-  let eqMethod = cx.resolveDevirtualizedMethod(ctA as ClassType, "==");
+  let eqMethod = cx.resolveDevirtualizedMethod(ctA, "==");
   if (eqMethod == null) {
     bail(cx, 'eq dispatch');
   }
-  return refEqFastPathCall(cx, eqMethod as WasmFunction, a, b2, false);
+  return refEqFastPathCall(cx, eqMethod, a, b2, false);
 };
 
 /**
@@ -677,40 +677,40 @@ export let lowerHashIntrinsic = (cx: LoweringContext, call: CallExpression): i32
   }
   let strClass = cx.wasm.stringClass;
   if (strClass != null &&
-      cx.canonicalKeyOf(ctV as ClassType) == cx.canonicalKeyOf(strClass as ClassType)) {
+      cx.canonicalKeyOf(ctV) == cx.canonicalKeyOf(strClass)) {
     return callStringHash(cx, v);
   }
   if (isNullableRef(vv)) {
     bail(cx, 'nullable hash operand');
   }
-  let hashMethod = cx.resolveDevirtualizedMethod(ctV as ClassType, "hashCode");
+  let hashMethod = cx.resolveDevirtualizedMethod(ctV, "hashCode");
   if (hashMethod != null) {
-    return callUnary(cx, hashMethod as WasmFunction, v);
+    return callUnary(cx, hashMethod, v);
   }
   // Overridden hashCode: dispatch through the vtable, like the
   // case-class hash synthesizer does for its fields.
   var resolvedOpt: WasmFunction | null = null;
-  var hc: ClassType | null = ctV as ClassType;
+  var hc: ClassType | null = ctV;
   while (hc != null && resolvedOpt == null) {
     var hg: ClassType | null = hc;
     while (hg != null && resolvedOpt == null) {
-      let key = getClassMethodKey(getClassKey(hg as ClassType), 'hashCode');
+      let key = getClassMethodKey(getClassKey(hg), 'hashCode');
       if (let (true, m) = cx.wasm.classMethodMap.get(key)) {
         resolvedOpt = m;
       }
-      hg = (hg as ClassType).genericSource;
+      hg = hg.genericSource;
     }
-    hc = (hc as ClassType).superType;
+    hc = hc.superType;
   }
-  let infoOpt = if (let (true, info) = cx.wasm.classInfos.get(getClassKey(ctV as ClassType))) info else null;
+  let infoOpt = if (let (true, info) = cx.wasm.classInfos.get(getClassKey(ctV))) info else null;
   if (resolvedOpt == null || infoOpt == null) {
     bail(cx, 'hash operand type');
   }
-  let ci = infoOpt as ClassCodegenInfo;
+  let ci = infoOpt;
   if (cx.vtableSlotIndex(ci, 'hashCode') < 0) {
     bail(cx, 'hash operand type');
   }
-  let hsig = (resolvedOpt as WasmFunction).signature;
+  let hsig = resolvedOpt.signature;
   return cx.lowerVtableCall(v, ci, 'hashCode', hsig,
       oneValue(v), hsig.returns[0]);
 };

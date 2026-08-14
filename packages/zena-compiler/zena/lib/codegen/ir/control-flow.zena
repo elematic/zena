@@ -72,12 +72,12 @@ let bail = (cx: LoweringContext, reason: String): never => {
 export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): LetCondBinds => {
   var pat = lpc.pattern;
   if (pat is BindingPattern) {
-    pat = (pat as BindingPattern).pattern;
+    pat = pat.pattern;
   }
   if (!(pat is TuplePattern)) {
     bail(cx, 'let-condition pattern');
   }
-  let tp = pat as TuplePattern;
+  let tp = pat;
   let values = multiSource(cx, lpc.init);
   if (values.length != tp.elements.length) {
     bail(cx, 'let-condition arity');
@@ -92,10 +92,10 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
   // bare-literal form is still accepted for patterns built elsewhere.
   var first = tp.elements[0];
   if (first != null && first is LiteralPattern) {
-    first = (first as LiteralPattern).value;
+    first = first.value;
   }
   if (first != null && first is BooleanLiteral) {
-    if (!(first as BooleanLiteral).value) {
+    if (!first.value) {
       cond = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
     }
   }
@@ -110,24 +110,24 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
         el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
       continue;
     }
-    let symOpt = cx.func.model.resolveDeclaration(el as Node);
+    let symOpt = cx.func.model.resolveDeclaration(el);
     if (symOpt == null) {
       // Nested destructuring elements defer to the taken block,
       // where their tests can branch to the not-taken side.
-      if (patternBinds(cx, el as Node) ||
-          patternRefutable(cx, el as Node)) {
-        patterns.push(el as Node);
+      if (patternBinds(cx, el) ||
+          patternRefutable(cx, el)) {
+        patterns.push(el);
         patternValues.push(values[i]);
       }
       continue;
     }
-    let sym = symOpt as Symbol;
+    let sym = symOpt;
     let bindingType = cx.func.model.getBindingType(sym);
     if (bindingType == null) {
       bail(cx, 'untyped binding');
     }
     let bindVt = typeToValTypeWithSub(
-        cx.wasm, bindingType as Type, cx.func);
+        cx.wasm, bindingType, cx.func);
     cx.requireSupported(bindVt, 'let-condition element type');
     if (!isValSubtype(cx.valueTypeOf(values[i]), bindVt) &&
         !isRefValType(bindVt)) {
@@ -192,14 +192,14 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
     if (node is ThrowExpression) {
       // A bare throw as an arm: the arm ends unreachable and
       // produces no value; callers skip their merge branch.
-      throwStmt(cx, node as ThrowExpression);
+      throwStmt(cx, node);
       return -1;
     }
-    let value = lowerExpr(cx, node as Expression, ctxVt);
+    let value = lowerExpr(cx, node, ctxVt);
     return if (isVoid) -1 else value;
   }
   if (node is BlockStatement) {
-    let body = (node as BlockStatement).body;
+    let body = node.body;
     if (body.length == 0) {
       if (isVoid) {
         return -1;
@@ -223,11 +223,11 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
     }
     let last = body[body.length - 1];
     if (last is ExpressionStatement) {
-      let lastExpr = (last as ExpressionStatement).expression;
+      let lastExpr = last.expression;
       if (lastExpr is ThrowExpression) {
         // A throw in arm-tail position: the arm ends unreachable and
         // produces no value; callers skip their merge branch.
-        throwStmt(cx, lastExpr as ThrowExpression);
+        throwStmt(cx, lastExpr);
         return -1;
       }
       let value = lowerExpr(cx, lastExpr, ctxVt);
@@ -265,9 +265,9 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
   if (nodeType == null) {
     bail(cx, 'untyped match');
   }
-  let isVoid = isVoidOrNeverType(nodeType as Type);
+  let isVoid = isVoidOrNeverType(nodeType);
   let resultVt = if (!isVoid) {
-    let vt = typeToValTypeWithSub(cx.wasm, nodeType as Type, cx.func);
+    let vt = typeToValTypeWithSub(cx.wasm, nodeType, cx.func);
     cx.requireSupported(vt, 'match result type');
     vt
   } else {
@@ -348,7 +348,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
     let saved = cx.copyEnv();
     cx.b.switchTo(thenB);
     if (letBinds != null) {
-      let binds = letBinds as LetCondBinds;
+      let binds = letBinds;
       let needsFail = letBindsNeedFail(cx, binds);
       var failB = mergeB;
       if (needsFail) {
@@ -390,7 +390,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
   let saved = cx.copyEnv();
   cx.b.switchTo(thenB);
   if (letBinds != null) {
-    applyLetBinds(cx, letBinds as LetCondBinds, elseB);
+    applyLetBinds(cx, letBinds, elseB);
   }
   lowerStmt(cx, stmt.consequent);
   if (cx.reachable) {
@@ -419,7 +419,7 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
   if (nodeType == null) {
     bail(cx, 'untyped if expression');
   }
-  let isVoid = baseType(nodeType as Type) is VoidType;
+  let isVoid = baseType(nodeType) is VoidType;
   let resultVt = if (!isVoid) cx.exprVt(expr) else null;
   if (expr.alternate == null && !isVoid) {
     bail(cx, 'value if without else');
@@ -453,7 +453,7 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
   let saved = cx.copyEnv();
   cx.b.switchTo(thenB);
   if (letBinds != null) {
-    applyLetBinds(cx, letBinds as LetCondBinds, elseB);
+    applyLetBinds(cx, letBinds, elseB);
   }
   let thenValue = lowerValueNode(cx, expr.consequent, isVoid, resultVt);
   if (cx.reachable) {
@@ -497,7 +497,7 @@ let bindCatchParam = (cx: LoweringContext, handler: CatchClause): void => {
     payload = cx.b.emit(IrOp.ref_as_non_null,
         new ValTypeRef(t) as ValType, payload, -1);
   }
-  cx.bindPatternSym(symOpt as Symbol, payload);
+  cx.bindPatternSym(symOpt, payload);
 };
 
 /**
@@ -552,7 +552,7 @@ export let returnThroughFinally = (cx: LoweringContext, value: i32): boolean => 
       if (slot == null) {
         bail(cx, 'return value through a finalizer without a return slot');
       }
-      scope.returnVar = cx.b.newVar(slot as ValType);
+      scope.returnVar = cx.b.newVar(slot);
     }
     cx.b.varSet(scope.returnVar, cx.conformToSlot(value,
         cx.b.body.varTypes[scope.returnVar], 'return through a finalizer'));
@@ -581,7 +581,7 @@ export let breakThroughFinally = (cx: LoweringContext): boolean => {
   if (scope == null) {
     return false;
   }
-  let s = scope as FinallyScope;
+  let s = scope;
   s.exitsByBreak = true;
   parkExit(cx, s, finallyExitBreak);
   return true;
@@ -593,7 +593,7 @@ export let continueThroughFinally = (cx: LoweringContext): boolean => {
   if (scope == null) {
     return false;
   }
-  let s = scope as FinallyScope;
+  let s = scope;
   s.exitsByContinue = true;
   parkExit(cx, s, finallyExitContinue);
   return true;
@@ -668,7 +668,7 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
   let payloadG = cx.wasm.exceptionPayload as WasmGlobal;
   let i32vt = new ValTypeI32() as ValType;
   let codeVar = cx.b.newVar(i32vt);
-  let resultVar = if (resultVt != null) cx.b.newVar(resultVt as ValType) else -1;
+  let resultVar = if (resultVt != null) cx.b.newVar(resultVt) else -1;
   let payloadVar = cx.b.newVar(payloadG.type);
 
   let dispatchB = cx.b.newBlock();
@@ -821,9 +821,9 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   if (nodeType == null) {
     bail(cx, 'untyped try expression');
   }
-  let isVoid = isVoidOrNeverType(nodeType as Type);
+  let isVoid = isVoidOrNeverType(nodeType);
   let resultVt = if (!isVoid) {
-    let vt = typeToValTypeWithSub(cx.wasm, nodeType as Type, cx.func);
+    let vt = typeToValTypeWithSub(cx.wasm, nodeType, cx.func);
     cx.requireSupported(vt, 'try result type');
     vt
   } else {
@@ -912,9 +912,9 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
   if (nodeType == null) {
     bail(cx, 'untyped try expression');
   }
-  let isVoid = isVoidOrNeverType(nodeType as Type);
+  let isVoid = isVoidOrNeverType(nodeType);
   let resultVt = if (!isVoid) {
-    let vt = typeToValTypeWithSub(cx.wasm, nodeType as Type, cx.func);
+    let vt = typeToValTypeWithSub(cx.wasm, nodeType, cx.func);
     cx.requireSupported(vt, 'try result type');
     vt
   } else {
@@ -994,13 +994,13 @@ let disposeOwnerClass = (cx: LoweringContext, t: Type): ClassType => {
   while (isOwnershipWrapper(target)) {
     let inner = ownershipHandleInner(target);
     if (inner == null) { break; }
-    target = inner as Type;
+    target = inner;
   }
   let base = unwrapAliases(target);
   if (!(base is ClassType)) {
     bail(cx, 'using operand is not a class');
   }
-  return base as ClassType;
+  return base;
 };
 
 /**
@@ -1018,27 +1018,27 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
   if (infoOpt == null) {
     bail(cx, 'using receiver class not discovered');
   }
-  let classInfo = infoOpt as ClassCodegenInfo;
+  let classInfo = infoOpt;
 
   var methodOpt: WasmFunction | null = null;
   var curr: ClassType | null = ct;
   while (curr != null && methodOpt == null) {
     var g: ClassType | null = curr;
     while (g != null && methodOpt == null) {
-      let key = getClassMethodKey(getClassKey(g as ClassType), ':dispose');
+      let key = getClassMethodKey(getClassKey(g), ':dispose');
       if (let (true, m) = cx.wasm.classMethodMap.get(key)) {
         methodOpt = m;
       }
-      g = (g as ClassType).genericSource;
+      g = g.genericSource;
     }
-    curr = (curr as ClassType).superType;
+    curr = curr.superType;
   }
   if (methodOpt == null) {
     // The checker required the member, so this means RTA pruned it —
     // the dependency `checkUsingStatement` records is what roots it.
     bail(cx, 'using dispose method not found');
   }
-  let method = methodOpt as WasmFunction;
+  let method = methodOpt;
   let sig = method.signature;
   if (sig.params.length != 1) {
     bail(cx, 'using dispose arity');
@@ -1086,7 +1086,7 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
   if (declType == null) {
     bail(cx, 'untyped using initializer');
   }
-  let ownerClass = disposeOwnerClass(cx, declType as Type);
+  let ownerClass = disposeOwnerClass(cx, declType);
 
   for (var k = restStart; k < restEnd; k += 1) {
     if (inSuspensionBody(cx) && containsSuspension(rest[k] as Node)) {
@@ -1102,11 +1102,11 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
     if (!(pat is IdentifierPattern)) {
       bail(cx, 'using destructuring pattern');
     }
-    let symOpt = cx.func.model.resolveDeclaration(pat as IdentifierPattern);
+    let symOpt = cx.func.model.resolveDeclaration(pat);
     if (symOpt == null) {
       bail(cx, 'using binding symbol');
     }
-    cx.bindPatternSym(symOpt as Symbol, value);
+    cx.bindPatternSym(symOpt, value);
   }
 
   let mirrored = new Array<SymbolId>();
@@ -1163,7 +1163,7 @@ export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
   cx.loops.push(new LoopCtx(header, exitB, carried));
   cx.b.switchTo(bodyB);
   if (letBinds != null) {
-    let binds = letBinds as LetCondBinds;
+    let binds = letBinds;
     let needsFail = letBindsNeedFail(cx, binds);
     var failB = exitB;
     if (needsFail) {
@@ -1197,11 +1197,11 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   if (stmt.init != null) {
     let init = stmt.init as Node;
     if (init is VariableDeclaration) {
-      varDecl(cx, init as VariableDeclaration);
+      varDecl(cx, init);
     } else if (init is ExpressionStatement) {
-      lowerExpr(cx, (init as ExpressionStatement).expression, null);
+      lowerExpr(cx, init.expression, null);
     } else if (init is Expression) {
-      lowerExpr(cx, init as Expression, null);
+      lowerExpr(cx, init, null);
     } else {
       bail(cx, 'for-init kind');
     }
@@ -1348,18 +1348,18 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
     let iteratorIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterator');
     if (iteratorIface != null) {
       // The iterable IS an iterator: no :iterator call.
-      iter = cx.packInterface(recv, ct, iteratorIface as InterfaceType);
+      iter = cx.packInterface(recv, ct, iteratorIface);
     } else {
       let iterableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterable');
       if (iterableIface == null) {
         bail(cx, 'for-in iterable kind');
       }
       let packed = cx.packInterface(recv, ct,
-          iterableIface as InterfaceType);
+          iterableIface);
       iter = cx.slotCallSingle(packed, ':iterator');
     }
   } else if (resolved is InterfaceType) {
-    let it = resolved as InterfaceType;
+    let it = resolved;
     let recv = lowerExpr(cx, stmt.iterable, null);
     if (it.name == 'Iterator') {
       iter = recv;
@@ -1372,7 +1372,7 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
 
   var pat = stmt.pattern;
   if (pat is BindingPattern) {
-    pat = (pat as BindingPattern).pattern;
+    pat = pat.pattern;
   }
   var symOpt: Symbol | null = null;
   if (pat is IdentifierPattern || pat is Identifier) {
@@ -1385,11 +1385,11 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
   }
   var bindVtOpt: ValType | null = null;
   if (symOpt != null) {
-    let bindingType = cx.func.model.getBindingType(symOpt as Symbol);
+    let bindingType = cx.func.model.getBindingType(symOpt);
     if (bindingType == null) {
       bail(cx, 'untyped binding');
     }
-    let vt = typeToValTypeWithSub(cx.wasm, bindingType as Type, cx.func);
+    let vt = typeToValTypeWithSub(cx.wasm, bindingType, cx.func);
     cx.requireSupported(vt, 'for-in element type');
     bindVtOpt = vt;
   }
@@ -1424,7 +1424,7 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
       }
       elem = cx.b.emit(IrOp.ref_cast, bindVt, elem, cx.b.internType(bindVt));
     }
-    cx.bindPatternSym(symOpt as Symbol, elem);
+    cx.bindPatternSym(symOpt, elem);
   } else {
     // Destructuring patterns split the (boxed tuple) element.
     lowerPatternBindings(cx, pat, cx.stripNonNull(elem));
@@ -1477,11 +1477,11 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   var arrayCt: ClassType | null = null;
   if (iterableType is ArrayType) {
     isFixed = true;
-    elemType = (iterableType as ArrayType).elementType;
+    elemType = iterableType.elementType;
   } else {
-    let resolved = cx.resolveSelfType(iterableType as Type);
+    let resolved = cx.resolveSelfType(iterableType);
     if (resolved is ClassType) {
-      let ct = resolved as ClassType;
+      let ct = resolved;
       var canonical = ct;
       while (canonical.genericSource != null) {
         canonical = canonical.genericSource as ClassType;
@@ -1500,7 +1500,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
     }
   }
   if ((!isFixed && !isArray) || elemType == null) {
-    lowerForInIterator(cx, stmt, iterableType as Type);
+    lowerForInIterator(cx, stmt, iterableType);
     return;
   }
 
@@ -1524,7 +1524,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
     if (infoOpt == null) {
       bail(cx, 'for-in Array not discovered');
     }
-    let structType = (infoOpt as ClassCodegenInfo).structType;
+    let structType = infoOpt.structType;
     if (!isValSubtype(cx.valueTypeOf(iterable),
         new ValTypeRefNull(structType) as ValType)) {
       bail(cx, 'for-in receiver struct mismatch');
@@ -1542,7 +1542,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   if (bufTarget == null) {
     bail(cx, 'for-in buffer kind');
   }
-  let storedVt = (bufTarget as WasmArray).elementType;
+  let storedVt = bufTarget.elementType;
   // Packed elements (narrow integers) are stored as wasm i8/i16 but
   // unpack to a full i32, so the loop variable is an i32 and the read
   // picks its extension from the semantic element type — the wasm array
@@ -1553,9 +1553,9 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   if (packed) {
     let iterT = cx.substitutedNodeType(stmt.iterable);
     if (iterT != null) {
-      let elemT = arrayElementType(iterT as Type);
+      let elemT = arrayElementType(iterT);
       if (elemT != null) {
-        packedSigned = isSignedNarrowIntType(elemT as Type);
+        packedSigned = isSignedNarrowIntType(elemT);
       }
     }
   }
@@ -1563,7 +1563,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
 
   var pat = stmt.pattern;
   if (pat is BindingPattern) {
-    pat = (pat as BindingPattern).pattern;
+    pat = pat.pattern;
   }
   var symOpt: Symbol | null = null;
   if (pat is IdentifierPattern || pat is Identifier) {
@@ -1603,7 +1603,7 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   };
   let elem = cx.b.emit(getOp, elemVt, buf, idxParam);
   if (symOpt != null) {
-    cx.bindPatternSym(symOpt as Symbol, elem);
+    cx.bindPatternSym(symOpt, elem);
   } else {
     lowerPatternBindings(cx, pat, elem);
   }

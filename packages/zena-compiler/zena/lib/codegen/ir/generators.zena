@@ -82,7 +82,7 @@ export let isGeneratorFunction = (func: WasmFunction): boolean => {
   if (node == null) {
     return false;
   }
-  return match (node as Node) {
+  return match (node) {
     case FunctionExpression {isGenerator}: isGenerator
     case MethodDefinition {isGenerator}: isGenerator
     case _: false
@@ -108,7 +108,7 @@ let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): InterfaceT
     throw new Error('generator has no checked function type: ' +
         funcDisplayName(func));
   }
-  var ret: Type = (t as FunctionType).returnType;
+  var ret: Type = t.returnType;
   if (func.classType != null) {
     let ct = func.classType as ClassType;
     if (ct.typeArguments != null) {
@@ -124,7 +124,7 @@ let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): InterfaceT
     throw new Error('generator return type is not Iterator<T>: ' +
         funcDisplayName(func));
   }
-  return ret as InterfaceType;
+  return ret;
 };
 
 // ---------------------------------------------------------------------------
@@ -554,7 +554,7 @@ let prepareOne = (
         throw new Error('generator spill of valueless instruction');
       }
       fields.push(new WasmField('$v' + i32ToString(vid),
-          weakenToNullable(vt as ValType), true));
+          weakenToNullable(vt), true));
     }
     vid += 1;
   }
@@ -603,7 +603,7 @@ let prepareOne = (
   wasm.globals.push(vtableGlobal);
   wasm.classInterfaceVTables[getClassInterfaceKey(frameKey, iKey)] = vtableGlobal;
   wasm.usedInterfaceAdaptations[getClassInterfaceKey(frameKey, iKey)] = true;
-  let unspecIKey = getInterfaceKey((iface.genericSource ?? iface) as InterfaceType);
+  let unspecIKey = getInterfaceKey(iface.genericSource ?? iface);
   wasm.usedInterfaceAdaptations[getClassInterfaceKey(frameKey, unspecIKey)] = true;
 
   // The two bodies.

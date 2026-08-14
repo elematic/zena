@@ -47,7 +47,7 @@ let substitutedBaseType = (cx: LoweringContext, expr: Expression): Type | null =
   if (t == null) {
     return null;
   }
-  return baseType(t as Type);
+  return baseType(t);
 };
 
 /** Whether the operand's checked type is unsigned (name-driven: only
@@ -56,7 +56,7 @@ let substitutedBaseType = (cx: LoweringContext, expr: Expression): Type | null =
  * though the operands have already widened to i32. */
 export let isUnsignedNode = (cx: LoweringContext, expr: Expression): boolean => {
   let bt = substitutedBaseType(cx, expr);
-  return bt != null && isUnsignedIntType(bt as Type);
+  return bt != null && isUnsignedIntType(bt);
 };
 
 export let mapBinaryOp = (cx: LoweringContext, operator: String, vt: ValType,
@@ -129,7 +129,7 @@ let requireScalarNode = (cx: LoweringContext, expr: Expression): void => {
   if (bt == null) {
     bail(cx, 'untyped operand');
   }
-  let btVal = bt as Type;
+  let btVal = bt;
   let ok = btVal is I32Type || btVal is I64Type || btVal is U32Type ||
       btVal is U64Type || btVal is F32Type || btVal is F64Type ||
       btVal is BooleanType || isNarrowIntType(btVal);
@@ -197,7 +197,7 @@ let refReprType = (cx: LoweringContext, t: Type): boolean => {
 let refIdentityEqType = (tIn: Type): boolean => {
   var t = tIn;
   if (t is UnionType) {
-    let ut = t as UnionType;
+    let ut = t;
     var nonNull: Type | null = null;
     var count = 0;
     for (let m in ut.types) {
@@ -209,13 +209,13 @@ let refIdentityEqType = (tIn: Type): boolean => {
     if (count != 1 || nonNull == null) {
       return false;
     }
-    t = baseType(nonNull as Type);
+    t = baseType(nonNull);
   }
   if (t is ClassType) {
-    return !(t as ClassType).members.has('==');
+    return !t.members.has('==');
   }
   if (t is InterfaceType) {
-    return !(t as InterfaceType).members.has('==');
+    return !t.members.has('==');
   }
   return false;
 };
@@ -281,11 +281,11 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     // object (the bootstrap compiler unwraps both the same way).
     let lb = substitutedBaseType(cx, bin.left);
     if (lb != null) {
-      left = cx.unwrapFatPointer(lb as Type, left);
+      left = cx.unwrapFatPointer(lb, left);
     }
     let rb = substitutedBaseType(cx, bin.right);
     if (rb != null) {
-      right = cx.unwrapFatPointer(rb as Type, right);
+      right = cx.unwrapFatPointer(rb, right);
     }
     let lt = cx.valueTypeOf(left);
     let rt = cx.valueTypeOf(right);
@@ -317,7 +317,7 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   // dominant users.
   let leftBaseOpt = substitutedBaseType(cx, bin.left);
   if (leftBaseOpt != null) {
-    let leftBase = leftBaseOpt as Type;
+    let leftBase = leftBaseOpt;
     if (leftBase is ClassType) {
       let opMember = if (bin.operator == "!=") "==" else bin.operator;
       let leftCt = eraseTypeParameters(cx.wasm, leftBase) as ClassType;
@@ -337,7 +337,7 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   // null, then String content, then boxed-primitive unwraps.
   if ((bin.operator == "==" || bin.operator == "!=") &&
       leftBaseOpt != null) {
-    let lb = leftBaseOpt as Type;
+    let lb = leftBaseOpt;
     if (lb is TypeParameterType || lb is AnyRefType ||
         lb is EqRefType) {
       let left = lowerExpr(cx, bin.left, null);
@@ -361,17 +361,17 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   // non-null member owns an ==).
   if ((bin.operator == "==" || bin.operator == "!=") &&
       leftBaseOpt != null &&
-      refIdentityEqType(leftBaseOpt as Type)) {
+      refIdentityEqType(leftBaseOpt)) {
     var left = lowerExpr(cx, bin.left, null);
     var right = lowerExpr(cx, bin.right, null);
     if (!isRefValType(cx.valueTypeOf(left)) ||
         !isRefValType(cx.valueTypeOf(right))) {
       bail(cx, 'identity compare on non-refs');
     }
-    left = cx.unwrapFatPointer(leftBaseOpt as Type, left);
+    left = cx.unwrapFatPointer(leftBaseOpt, left);
     let rBase = substitutedBaseType(cx, bin.right);
     if (rBase != null) {
-      right = cx.unwrapFatPointer(rBase as Type, right);
+      right = cx.unwrapFatPointer(rBase, right);
     }
     let same = cx.b.binary(IrOp.ref_eq, new ValTypeI32(), left, right);
     if (bin.operator == "!=") {
@@ -390,11 +390,11 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     let lb2 = substitutedBaseType(cx, bin.left);
     let rb2 = substitutedBaseType(cx, bin.right);
     if (lb2 != null && rb2 != null &&
-        refReprType(cx, lb2 as Type) && refReprType(cx, rb2 as Type)) {
+        refReprType(cx, lb2) && refReprType(cx, rb2)) {
       var eqL = lowerExpr(cx, bin.left, null);
       var eqR = lowerExpr(cx, bin.right, null);
-      eqL = cx.unwrapFatPointer(lb2 as Type, eqL);
-      eqR = cx.unwrapFatPointer(rb2 as Type, eqR);
+      eqL = cx.unwrapFatPointer(lb2, eqL);
+      eqR = cx.unwrapFatPointer(rb2, eqR);
       if (isRefValType(cx.valueTypeOf(eqL)) &&
           isRefValType(cx.valueTypeOf(eqR))) {
         let same = lowerErasedEq(cx, eqL, eqR);
@@ -431,7 +431,7 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     if (targetOpt == null) {
       bail(cx, 'mixed operand types');
     }
-    let target = targetOpt as ValType;
+    let target = targetOpt;
     left = scalarConvert(cx, left, target);
     right = scalarConvert(cx, right, target);
     leftType = target;
@@ -518,7 +518,7 @@ let normalizeNarrow = (cx: LoweringContext, value: i32, target: Type | null): i3
   if (target == null) {
     return value;
   }
-  let t = target as Type;
+  let t = target;
   if (!isNarrowIntType(t)) {
     return value;
   }
@@ -539,7 +539,7 @@ let narrowCastTarget = (cx: LoweringContext, expr: AsExpression): Type | null =>
   if (t == null) {
     return null;
   }
-  let bt = baseType(t as Type);
+  let bt = baseType(t);
   return if (isNarrowIntType(bt)) bt else null;
 };
 
@@ -613,10 +613,10 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     // class: interface-to-interface is a re-pack, not a cast.
     var operand = value;
     let dstSemOpt = cx.substitutedNodeType(expr);
-    if (dstSemOpt != null && baseType(dstSemOpt as Type) is ClassType) {
+    if (dstSemOpt != null && baseType(dstSemOpt) is ClassType) {
       let srcSemOpt = cx.substitutedNodeType(expr.expression);
       if (srcSemOpt != null) {
-        operand = cx.unwrapFatPointer(baseType(srcSemOpt as Type), value);
+        operand = cx.unwrapFatPointer(baseType(srcSemOpt), value);
       }
     }
     return cx.b.emit(IrOp.ref_cast, dstVt, operand,
@@ -632,7 +632,7 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     if (semOpt == null || cx.wasm.boxClass == null) {
       bail(cx, 'unbox cast type');
     }
-    let semT = baseType(semOpt as Type);
+    let semT = baseType(semOpt);
     let typeArgs = new Array<Type>();
     typeArgs.push(semT);
     let boxCt = instantiateClassType(cx.wasm.boxClass as ClassType, typeArgs);
@@ -640,7 +640,7 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     if (infoOpt == null) {
       bail(cx, 'unbox cast box class');
     }
-    let boxStruct = (infoOpt as ClassCodegenInfo).structType;
+    let boxStruct = infoOpt.structType;
     if (boxStruct.fields.length < 2 || boxStruct.fields[1].name == null) {
       bail(cx, 'unbox cast box shape');
     }

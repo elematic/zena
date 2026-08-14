@@ -76,7 +76,7 @@ let structOfValue = (cx: LoweringContext, value: i32): WasmStruct => {
   if (stOpt == null) {
     bail(cx, 'pattern operand kind');
   }
-  return stOpt as WasmStruct;
+  return stOpt;
 };
 
 /** The record dispatch whose fat-pointer struct backs `value`, if any. */
@@ -118,7 +118,7 @@ let stringPatternEq = (cx: LoweringContext, value: i32,
   if (eqFuncOpt == null) {
     bail(cx, 'string pattern without String.==');
   }
-  let eqFunc = eqFuncOpt as WasmFunction;
+  let eqFunc = eqFuncOpt;
   let sig = eqFunc.signature;
   if (sig.returns.length != 1 || sig.params.length != 2) {
     bail(cx, 'String.== shape');
@@ -156,7 +156,7 @@ export let patternRefutable = (cx: LoweringContext, pattern: Node): boolean => {
     case TuplePattern as tp: {
       var refutable = false;
       for (let el in tp.elements) {
-        if (el != null && patternRefutable(cx, el as Node)) {
+        if (el != null && patternRefutable(cx, el)) {
           refutable = true;
         }
       }
@@ -184,7 +184,7 @@ export let patternBinds = (cx: LoweringContext, pattern: Node): boolean => {
         false
       } else {
         let sym = cx.func.model.resolveDeclaration(ident);
-        sym != null && !(sym as Symbol).isType()
+        sym != null && !sym.isType()
       }
     }
     case AsPattern: true
@@ -204,7 +204,7 @@ export let patternBinds = (cx: LoweringContext, pattern: Node): boolean => {
     case TuplePattern as tp: {
       var binds = false;
       for (let el in tp.elements) {
-        if (el != null && patternBinds(cx, el as Node)) {
+        if (el != null && patternBinds(cx, el)) {
           binds = true;
         }
       }
@@ -227,59 +227,59 @@ export let patternBinds = (cx: LoweringContext, pattern: Node): boolean => {
 export let collectPatternBindSyms = (cx: LoweringContext, pattern: Node,
     out: Array<SymbolId>): void => {
   if (pattern is IdentifierPattern) {
-    if ((pattern as IdentifierPattern).name != "_") {
+    if (pattern.name != "_") {
       let sym = cx.func.model.resolveDeclaration(pattern);
       if (sym != null) {
-        out.push((sym as Symbol).id);
+        out.push(sym.id);
       }
     }
     return;
   }
   if (pattern is Identifier) {
-    let ident = pattern as Identifier;
+    let ident = pattern;
     if (ident.name != "_") {
       let sym = cx.func.model.resolveDeclaration(ident);
-      if (sym != null && !(sym as Symbol).isType()) {
-        out.push((sym as Symbol).id);
+      if (sym != null && !sym.isType()) {
+        out.push(sym.id);
       }
     }
     return;
   }
   if (pattern is AsPattern) {
-    let ap = pattern as AsPattern;
+    let ap = pattern;
     let sym = cx.func.model.resolveDeclaration(ap.name);
     if (sym != null) {
-      out.push((sym as Symbol).id);
+      out.push(sym.id);
     }
     collectPatternBindSyms(cx, ap.pattern, out);
     return;
   }
   if (pattern is BindingPattern) {
-    collectPatternBindSyms(cx, (pattern as BindingPattern).pattern, out);
+    collectPatternBindSyms(cx, pattern.pattern, out);
     return;
   }
   if (pattern is TuplePattern) {
-    for (let el in (pattern as TuplePattern).elements) {
+    for (let el in pattern.elements) {
       if (el != null) {
-        collectPatternBindSyms(cx, el as Node, out);
+        collectPatternBindSyms(cx, el, out);
       }
     }
     return;
   }
   if (pattern is RecordPattern) {
-    for (let prop in (pattern as RecordPattern).properties) {
+    for (let prop in pattern.properties) {
       collectPatternBindSyms(cx, prop.value, out);
     }
     return;
   }
   if (pattern is ClassPattern) {
-    for (let prop in (pattern as ClassPattern).properties) {
+    for (let prop in pattern.properties) {
       collectPatternBindSyms(cx, prop.value, out);
     }
     return;
   }
   if (pattern is LogicalPattern) {
-    let lp = pattern as LogicalPattern;
+    let lp = pattern;
     collectPatternBindSyms(cx, lp.left, out);
     if (lp.operator != "||") {
       collectPatternBindSyms(cx, lp.right, out);
@@ -303,7 +303,7 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
         // streaming's check emitter).
         let patType = cx.func.model.getNodeType(pattern);
         if (patType is ClassType) {
-          let st = classStructOf(cx, patType as ClassType);
+          let st = classStructOf(cx, patType);
           emitRefTest(cx, value, st, failB);
         }
       }
@@ -459,9 +459,9 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
     case TuplePattern as tp: {
       for (var i = 0; i < tp.elements.length; i += 1) {
         let el = tp.elements[i];
-        if (el != null && patternRefutable(cx, el as Node)) {
+        if (el != null && patternRefutable(cx, el)) {
           let fieldVal = tupleFieldRead(cx, value, i);
-          lowerPatternTest(cx, el as Node, fieldVal, failB);
+          lowerPatternTest(cx, el, fieldVal, failB);
         }
       }
     }
@@ -492,22 +492,22 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
       if (pat.name != "_") {
         let sym = cx.func.model.resolveDeclaration(pat);
         if (sym != null) {
-          cx.bindPatternSym(sym as Symbol, value);
+          cx.bindPatternSym(sym, value);
         }
       }
     }
     case Identifier as ident: {
       if (ident.name != "_") {
         let sym = cx.func.model.resolveDeclaration(ident);
-        if (sym != null && !(sym as Symbol).isType()) {
-          cx.bindPatternSym(sym as Symbol, value);
+        if (sym != null && !sym.isType()) {
+          cx.bindPatternSym(sym, value);
         }
       }
     }
     case AsPattern as ap: {
       let sym = cx.func.model.resolveDeclaration(ap.name);
       if (sym != null) {
-        cx.bindPatternSym(sym as Symbol, value);
+        cx.bindPatternSym(sym, value);
       }
       lowerPatternBindings(cx, ap.pattern, value);
     }
@@ -548,8 +548,8 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
     case TuplePattern as tp: {
       for (var i = 0; i < tp.elements.length; i += 1) {
         let el = tp.elements[i];
-        if (el != null && patternBinds(cx, el as Node)) {
-          lowerPatternBindings(cx, el as Node, tupleFieldRead(cx, value, i));
+        if (el != null && patternBinds(cx, el)) {
+          lowerPatternBindings(cx, el, tupleFieldRead(cx, value, i));
         }
       }
     }
@@ -559,7 +559,7 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
         if (patternBinds(cx, prop.value)) {
           let read = if (dispatchOpt != null) {
             cx.recordDispatchRead(
-                dispatchOpt as RecordDispatchInfo, prop.name.name, value)
+                dispatchOpt, prop.name.name, value)
           } else {
             cx.objectPropertyRead(prop.name.name, value)
           };
