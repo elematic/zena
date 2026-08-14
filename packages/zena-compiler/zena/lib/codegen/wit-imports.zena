@@ -1,0 +1,236 @@
+/**
+ * The component's imported interfaces, encoded by the WIT type encoder.
+ *
+ * The emitter used to hand-write each imported interface's instance
+ * type — possible only while every signature was flat scalars. Now the
+ * shape's imports are rendered as a WIT document and pushed through
+ * `wit-parser`'s component encoder, the same code path that round-trips
+ * real WIT through `wasm-tools component wit`. For scalar interfaces
+ * the bytes are identical to the hand-written ones; what changes is
+ * what becomes *possible*, because the encoder already speaks records,
+ * variants, resources and `use`, and the emitter no longer has an
+ * opinion.
+ *
+ * The derivation is per-interface WIT text, not per-program: each
+ * `@external("ns:pkg/iface@ver", "field")` group becomes an interface
+ * in a nested package, and a synthetic world imports them all. When an
+ * interface's true WIT is richer than a Zena declaration can spell
+ * (resources, lists — stdio's case), this is where its real source
+ * will be substituted for the derived one.
+ */
+
+import { String } from 'zena:string';
+import { Array } from 'zena:array';
+import { StringBuilder } from 'zena:string-builder';
+import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
+import { parse } from 'wit-parser:wit';
+import {
+  ComponentTypeEncoder, EncodedWorld, funcFlatMeta, WitFuncMeta
+} from 'wit-parser:component-encoder';
+import {
+  ComponentShape, ComponentImportFunc, ComponentFuncType, noComponentResult,
+  EncodedImports, EncodedImportPiece
+} from './component-emitter.zena';
+
+/** The WIT spelling of a flat-scalar component value type opcode. */
+let scalarWitName = (opcode: i32): String => {
+  if (opcode == 0x7f) { return "bool"; }
+  if (opcode == 0x7e) { return "s8"; }
+  if (opcode == 0x7d) { return "u8"; }
+  if (opcode == 0x7c) { return "s16"; }
+  if (opcode == 0x7b) { return "u16"; }
+  if (opcode == 0x7a) { return "s32"; }
+  if (opcode == 0x79) { return "u32"; }
+  if (opcode == 0x78) { return "s64"; }
+  if (opcode == 0x77) { return "u64"; }
+  if (opcode == 0x76) { return "f32"; }
+  if (opcode == 0x75) { return "f64"; }
+  if (opcode == 0x74) { return "char"; }
+  if (opcode == 0x73) { return "string"; }
+  // Only the shape builder produces these opcodes, and it only
+  // produces the scalars and string; anything else is a bug there.
+  throw new Error(
+      "no WIT spelling for component type opcode " + i32ToString(opcode));
+};
+
+/** One imported interface: its qualified name split into WIT's parts. */
+final class InterfacePath {
+  /** `ns:pkg`, the package half. */
+  packageName: String;
+  /** The interface's own name. */
+  interfaceName: String;
+  /** The `@version`, or empty. */
+  version: String;
+  new(this.packageName, this.interfaceName, this.version);
+}
+
+let splitInterfaceName = (name: String): InterfacePath => {
+  var slash = -1;
+  for (var i = 0; i < name.length; i += 1) {
+    if (name.getByteAt(i) == 47) { // '/'
+      slash = i;
+    }
+  }
+  if (slash < 0) {
+    throw new Error(
+      "The component target cannot import from '" + name +
+        "': a WIT interface is named ns:pkg/interface, optionally with " +
+        "@version, and this has no '/'.");
+  }
+  let packageName = name.sliceBytes(0, slash);
+  var rest = name.sliceBytes(slash + 1, name.length);
+  var version = "";
+  var at = -1;
+  for (var i = 0; i < rest.length; i += 1) {
+    if (rest.getByteAt(i) == 64) { // '@'
+      at = i;
+    }
+  }
+  if (at >= 0) {
+    version = rest.sliceBytes(at + 1, rest.length);
+    rest = rest.sliceBytes(0, at);
+  }
+  return new InterfacePath(packageName, rest, version);
+};
+
+/** One function of an interface, as WIT source. */
+let renderFunc = (sb: StringBuilder, f: ComponentImportFunc): void => {
+  let sig = f.signature;
+  sb.append("    ").append(f.fieldName).append(": ");
+  if (sig.isAsync) {
+    sb.append("async ");
+  }
+  sb.append("func(");
+  for (var i = 0; i < sig.paramTypes.length; i += 1) {
+    if (i > 0) {
+      sb.append(", ");
+    }
+    sb.append(sig.paramNames[i]).append(": ")
+        .append(scalarWitName(sig.paramTypes[i]));
+  }
+  sb.append(")");
+  if (sig.result != noComponentResult) {
+    sb.append(" -> ").append(scalarWitName(sig.result));
+  }
+  sb.append(";\n");
+};
+
+/** The name of the synthetic world the derived document declares. */
+let derivedWorldName = "imports";
+
+/**
+ * The shape's imports as a WIT document: one interface per `@external`
+ * namespace, grouped into their packages, and a world importing each.
+ */
+export let deriveImportsWit = (shape: ComponentShape): String => {
+  // Group by interface, preserving first-appearance order (the same
+  // grouping the emitter's aliases use), then group interfaces by
+  // package for the nested-package declarations.
+  let interfaceNames = new Array<String>();
+  for (let imp in shape.imports) {
+    var seen = false;
+    for (let n in interfaceNames) {
+      if (n == imp.interfaceName) { seen = true; }
+    }
+    if (!seen) { interfaceNames.push(imp.interfaceName); }
+  }
+
+  let sb = new StringBuilder();
+  sb.append("package zena:derived;\n\n");
+
+  let renderedPackages = new Array<String>();
+  for (let name in interfaceNames) {
+    let path = splitInterfaceName(name);
+    let packageKey = path.packageName + "@" + path.version;
+    var rendered = false;
+    for (let p in renderedPackages) {
+      if (p == packageKey) { rendered = true; }
+    }
+    if (rendered) { continue; }
+    renderedPackages.push(packageKey);
+
+    sb.append("package ").append(path.packageName);
+    if (path.version != "") {
+      sb.append("@").append(path.version);
+    }
+    sb.append(" {\n");
+    // Every interface of this package, in first-appearance order.
+    for (let other in interfaceNames) {
+      let otherPath = splitInterfaceName(other);
+      if (otherPath.packageName + "@" + otherPath.version != packageKey) {
+        continue;
+      }
+      sb.append("  interface ").append(otherPath.interfaceName)
+          .append(" {\n");
+      for (let imp in shape.imports) {
+        if (imp.interfaceName == other) {
+          renderFunc(sb, imp);
+        }
+      }
+      sb.append("  }\n");
+    }
+    sb.append("}\n\n");
+  }
+
+  sb.append("world ").append(derivedWorldName).append(" {\n");
+  for (let name in interfaceNames) {
+    sb.append("  import ").append(name).append(";\n");
+  }
+  sb.append("}\n");
+  return sb.toString();
+};
+
+/**
+ * Encode the shape's imported interfaces; the emitter's front matter.
+ *
+ * Also the point where WIT-provided imports meet the document: each is
+ * checked to actually exist in its interface, and its flattening
+ * decides whether the lowering carries the canonical memory options.
+ * An empty import list encodes to an empty world — no pieces, every
+ * count zero — so the caller need not special-case it.
+ */
+export let encodeImportTypes = (shape: ComponentShape): EncodedImports => {
+  if (shape.imports.length == 0) {
+    return new EncodedImports();
+  }
+  let text = deriveImportsWit(shape);
+  let ast = parse(text);
+  for (let imp in shape.imports) {
+    if (!imp.witProvided) {
+      continue;
+    }
+    let meta = funcFlatMeta(ast, imp.interfaceName, imp.fieldName);
+    if (meta == null) {
+      throw new Error(
+        "The component target cannot import '" + imp.fieldName +
+          "' from '" + imp.interfaceName + "': the interface's WIT " +
+          "declares no such function.");
+    }
+    imp.needsMemoryLower = (meta as WitFuncMeta).needsMemory;
+  }
+  let encoder = new ComponentTypeEncoder(ast);
+  let world = encoder.encodeWorld(derivedWorldName);
+  // Mirrored into codegen's own classes: codegen calls the encoder
+  // through an injected closure and does not link the WIT parser, so
+  // it cannot name `EncodedWorld` itself.
+  let out = new EncodedImports();
+  for (let piece in world.pieces) {
+    out.pieces.push(new EncodedImportPiece(piece.id, piece.payload));
+  }
+  out.typeCount = world.typeCount;
+  out.instanceCount = world.instanceCount;
+  let names = world.instanceIndices.keys();
+  while (let (true, name) = names.next()) {
+    out.instanceIndices[name] = world.instanceIndices[name];
+  }
+  return out;
+};
+
+/**
+ * The encoder as drivers inject it: `BinaryGenerator.importEncoder`
+ * gets this closure on the component target, which is the one edge
+ * from the compiler's build to the WIT parser.
+ */
+export let makeImportEncoder = (): (shape: ComponentShape) => EncodedImports =>
+    (shape: ComponentShape): EncodedImports => encodeImportTypes(shape);

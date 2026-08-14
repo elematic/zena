@@ -12,15 +12,14 @@
 // embeds is byte-for-byte the one the other targets emit.
 //
 // The types that cross are the flat scalars — `u8`-`u64`, `s8`-`s64`,
-// `f32`, `f64`, `bool` — plus `string` on exports. The scalars need no
-// memory, no `realloc` and no type encoding beyond primitives; a string
-// needs the first two, and takes them from the program module's own
-// exports, which is what keeps this file to one core module and no
-// shim. A string on an *import* is the case that cannot: its lowering
-// has to exist before the module is instantiated, so its memory has to
-// come from a second core module. That, and lists and records, arrive
-// with the WIT type encoder; see docs/design/component-emission.md,
-// Parts 1.3, 4 and 6.
+// `f32`, `f64`, `bool` — plus `string` on exports. A string means the
+// canonical memory options, which name the runtime memory module's
+// `memory` and `realloc`; that module is embedded and instantiated
+// ahead of the program module, so a memory-carrying lowering has a
+// memory that exists first (docs/design/component-emission.md, 1.3).
+// Imported interfaces' types come from the WIT type encoder
+// (`wit-imports.zena` derives a document from the shape); a string on
+// an *import* still waits on the memory-carrying `canon lower`.
 //
 // The binary format is the Component Model's `Binary.md`. Section ids
 // differ from core wasm's and are listed in `ComponentSectionId` below.
@@ -29,7 +28,31 @@ import { ByteBuffer } from 'zena:byte-buffer';
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { String } from 'zena:string';
+import { HashMap } from 'zena:map';
 import { i32ToString } from 'zena:string-convert';
+
+/**
+ * One section of the component head produced by the WIT type encoder,
+ * and the counts the emitter continues its index spaces from. These
+ * mirror `wit-parser`'s `EncodedWorld` rather than importing it: the
+ * encoder is *injected* by drivers (`wit-imports.zena` builds the
+ * closure), so that codegen — and everything that links it, like the
+ * language service — does not carry the WIT parser in its module graph.
+ */
+export final class EncodedImportPiece {
+  id: i32;
+  payload: ByteBuffer;
+  new(this.id, this.payload);
+}
+
+export final class EncodedImports {
+  pieces = new Array<EncodedImportPiece>();
+  var typeCount = 0;
+  var instanceCount = 0;
+  /** Each imported interface's component instance index, by name. */
+  instanceIndices = new HashMap<String, i32>();
+  new();
+}
 
 /**
  * Component section ids. A component's sections are a different space
@@ -115,6 +138,20 @@ export final class ComponentImportFunc {
   signature: ComponentFuncType;
   /** Whether to lower the call with the `async` canonical option. */
   lowerAsync: boolean;
+  /**
+   * Whether the interface's types come from real WIT source rather
+   * than being derived from the Zena declaration — the declaration is
+   * then core-shaped (handles and pointers as `i32`s) and says nothing
+   * about the WIT types.
+   */
+  var witProvided = false;
+  /**
+   * Whether lowering this function needs the canonical memory options:
+   * a `string` or `list` in the signature, a spilled parameter list,
+   * or an indirect result. Set from the WIT flattening once the
+   * document is parsed.
+   */
+  var needsMemoryLower = false;
 
   new(this.interfaceName, this.fieldName, this.signature, this.lowerAsync = false);
 }
@@ -259,6 +296,13 @@ export final class ComponentShape {
    * first.
    */
   var needsRuntimeMemory = false;
+  /**
+   * The imported interfaces' types and imports, encoded by the WIT
+   * type encoder — `buildComponentShape`'s last step, carried here so
+   * shape and encoding cannot drift apart. Null only for a shape with
+   * no imports.
+   */
+  var encodedImports: EncodedImports | null = null;
 
   new();
 }
@@ -482,37 +526,95 @@ export let emitComponent = (
 
   let groups = groupByInterface(shape.imports);
 
-  // --- type: one instance type per imported interface ---------------------
+  // --- the imported interfaces: instance types and imports -----------------
+  // The WIT type encoder's output, section by section — one instance
+  // type and one import per interface, `use`d types aliased between
+  // them. The emitter no longer writes instance types itself; what the
+  // encoder cannot express, nothing here can either.
+  let shapeEncoded = shape.encodedImports;
+  let encoded = if (shapeEncoded == null) {
+    new EncodedImports()
+  } else {
+    shapeEncoded as EncodedImports
+  };
+  if (groups.length > 0 && encoded.instanceCount == 0) {
+    throw new Error(
+      "This component imports interfaces, and the shape carries no " +
+      "encoding for them — buildComponentShape encodes them as its " +
+      "last step."
+    );
+  }
+  for (let piece in encoded.pieces) {
+    writeSection(out, piece.id, piece.payload);
+  }
+
+  // A lowering that carries a string or list needs the canonical
+  // memory options, and they can only name things that already exist —
+  // so when any import needs them, the runtime memory module is
+  // embedded, instantiated and its two exports aliased before the
+  // lowers. Without such an import it stays where it was, just ahead
+  // of the program module, and the bytes of every existing component
+  // are untouched.
+  var lowersNeedMemory = false;
+  for (let imp in shape.imports) {
+    if (imp.needsMemoryLower) { lowersNeedMemory = true; }
+  }
+  if (lowersNeedMemory && !shape.needsRuntimeMemory) {
+    throw new Error(
+      "An import needs the canonical memory options, but the program " +
+      "was emitted without linear memory. These cannot both be true."
+    );
+  }
+  var runtimeInstance = -1;
+  var earlyReallocCoreFunc = -1;
+  let writeRuntimeModuleAndInstance = (): void => {
+    if (runtimeModule == null) {
+      throw new Error(
+        "This program uses linear memory, so its component needs the " +
+        "runtime memory module, and the driver did not provide one. " +
+        "Compile it with compileComponentRuntimeModule and pass it to " +
+        "BinaryGenerator."
+      );
+    }
+    writeSection(out, ComponentSectionId.CoreModule as i32,
+        runtimeModule as ByteBuffer);
+    let runtimeInst = new ByteBuffer();
+    runtimeInst.writeULEB128(1);
+    runtimeInst.writeByte(0x00); // instantiate
+    runtimeInst.writeULEB128(0); // the runtime module, embedded first
+    runtimeInst.writeULEB128(0); // no arguments
+    writeSection(out, ComponentSectionId.CoreInstance as i32, runtimeInst);
+  };
+  if (lowersNeedMemory) {
+    writeRuntimeModuleAndInstance();
+    runtimeInstance = 0;
+    // The memory and the allocator, as core memory 0 and core func 0.
+    let early = new ByteBuffer();
+    early.writeULEB128(2);
+    early.writeByte(0x00); // sort: core
+    early.writeByte(0x00); // core sort: func
+    early.writeByte(0x01); // target: core instance export
+    early.writeULEB128(runtimeInstance);
+    writeName(early, componentRuntimeReallocExport);
+    early.writeByte(0x00);
+    early.writeByte(0x02); // core sort: memory
+    early.writeByte(0x01);
+    early.writeULEB128(runtimeInstance);
+    writeName(early, componentMemoryExport);
+    writeSection(out, ComponentSectionId.Alias as i32, early);
+    earlyReallocCoreFunc = 0;
+  }
+
+  /** A group's component-level instance index, from the encoder. */
+  let instanceIndexOf = (name: String): i32 => {
+    if (let (true, index) = encoded.instanceIndices.get(name)) {
+      return index;
+    }
+    throw new Error("the WIT encoder imported no instance named '" +
+        name + "'");
+  };
+
   if (groups.length > 0) {
-    let types = new ByteBuffer();
-    types.writeULEB128(groups.length);
-    for (let group in groups) {
-      types.writeByte(0x42); // instance type
-      // Two declarations per function: its type, then its export.
-      types.writeULEB128(group.funcs.length * 2);
-      for (var i = 0; i < group.funcs.length; i += 1) {
-        types.writeByte(0x01); // instancedecl: type
-        writeFuncType(types, group.funcs[i].signature);
-        types.writeByte(0x04); // instancedecl: export
-        writeExternName(types, group.funcs[i].fieldName);
-        types.writeByte(0x01); // externdesc: func
-        // Index within the instance type's own type space: the i-th
-        // function's type is the i-th type declared here.
-        types.writeULEB128(i);
-      }
-    }
-    writeSection(out, ComponentSectionId.Type as i32, types);
-
-    // --- import: one instance per interface -------------------------------
-    let imports = new ByteBuffer();
-    imports.writeULEB128(groups.length);
-    for (var i = 0; i < groups.length; i += 1) {
-      writeExternName(imports, groups[i].name);
-      imports.writeByte(0x05); // externdesc: instance
-      imports.writeULEB128(i); // the instance type declared above
-    }
-    writeSection(out, ComponentSectionId.Import as i32, imports);
-
     // --- alias: each imported function out of its instance ----------------
     let aliases = new ByteBuffer();
     var aliasCount = 0;
@@ -524,7 +626,7 @@ export let emitComponent = (
       for (let f in groups[i].funcs) {
         aliases.writeByte(0x01); // sort: func
         aliases.writeByte(0x00); // target: instance export
-        aliases.writeULEB128(i);
+        aliases.writeULEB128(instanceIndexOf(groups[i].name));
         writeName(aliases, f.fieldName);
       }
     }
@@ -539,11 +641,19 @@ export let emitComponent = (
         lowers.writeByte(0x01); // canon lower
         lowers.writeByte(0x00);
         lowers.writeULEB128(funcIndex);
+        var optionCount = 0;
+        if (f.lowerAsync) { optionCount += 1; }
+        if (f.needsMemoryLower) { optionCount += 2; }
+        lowers.writeULEB128(optionCount);
         if (f.lowerAsync) {
-          lowers.writeULEB128(1); // one canonical option
           lowers.writeByte(0x06); // async
-        } else {
+        }
+        if (f.needsMemoryLower) {
+          // The runtime memory module's, aliased ahead of this section.
+          lowers.writeByte(0x03); // memory
           lowers.writeULEB128(0);
+          lowers.writeByte(0x04); // realloc
+          lowers.writeULEB128(earlyReallocCoreFunc);
         }
         funcIndex += 1;
       }
@@ -580,7 +690,9 @@ export let emitComponent = (
     let coreInstances = new ByteBuffer();
     coreInstances.writeULEB128(
         groups.length + (if (shape.builtins.length > 0) 1 else 0));
-    var loweredIndex = 0;
+    // Core function indices: the early realloc alias, when the lowers
+    // needed one, occupies index 0 ahead of the lowered functions.
+    var loweredIndex = if (lowersNeedMemory) 1 else 0;
     for (let group in groups) {
       coreInstances.writeByte(0x01); // from inline exports
       coreInstances.writeULEB128(group.funcs.length);
@@ -604,29 +716,15 @@ export let emitComponent = (
     writeSection(out, ComponentSectionId.CoreInstance as i32, coreInstances);
   }
 
-  // --- core module: the runtime memory module, when the program needs it --
-  // Embedded and instantiated before the program so that its memory
-  // exists first: the program imports it, and a memory-carrying `canon
-  // lower` can name it. It imports nothing, so instantiation takes no
-  // arguments.
-  let runtimeInstance = groups.length + (if (shape.builtins.length > 0) 1 else 0);
-  if (shape.needsRuntimeMemory) {
-    if (runtimeModule == null) {
-      throw new Error(
-        "This program uses linear memory, so its component needs the " +
-        "runtime memory module, and the driver did not provide one. " +
-        "Compile it with compileComponentRuntimeModule and pass it to " +
-        "BinaryGenerator."
-      );
-    }
-    writeSection(out, ComponentSectionId.CoreModule as i32,
-        runtimeModule as ByteBuffer);
-    let runtimeInst = new ByteBuffer();
-    runtimeInst.writeULEB128(1);
-    runtimeInst.writeByte(0x00); // instantiate
-    runtimeInst.writeULEB128(0); // the runtime module, embedded first
-    runtimeInst.writeULEB128(0); // no arguments
-    writeSection(out, ComponentSectionId.CoreInstance as i32, runtimeInst);
+  // --- core module: the runtime memory module, unless already placed ------
+  // When no lower needed memory it sits here, just ahead of the program
+  // module, and every existing component keeps its bytes; a
+  // memory-carrying lower moved it (and its aliases) ahead of the
+  // lowering section above instead.
+  if (shape.needsRuntimeMemory && runtimeInstance < 0) {
+    runtimeInstance =
+        groups.length + (if (shape.builtins.length > 0) 1 else 0);
+    writeRuntimeModuleAndInstance();
   }
 
   // --- core module: the Zena module, verbatim -----------------------------
@@ -642,17 +740,20 @@ export let emitComponent = (
   instantiate.writeULEB128(
       groups.length + (if (shape.builtins.length > 0) 1 else 0) +
       (if (shape.needsRuntimeMemory) 1 else 0));
+  // The synthesized instances' indices shift by one when the runtime
+  // memory module was instantiated ahead of them.
+  let synthBase = if (lowersNeedMemory) 1 else 0;
   for (var i = 0; i < groups.length; i += 1) {
     // The argument name is the core module's import module name, which
     // is the interface string itself.
     writeName(instantiate, groups[i].name);
     instantiate.writeByte(0x12); // core sort: instance
-    instantiate.writeULEB128(i);
+    instantiate.writeULEB128(synthBase + i);
   }
   if (shape.builtins.length > 0) {
     writeName(instantiate, canonNamespace);
     instantiate.writeByte(0x12);
-    instantiate.writeULEB128(groups.length);
+    instantiate.writeULEB128(synthBase + groups.length);
   }
   if (shape.needsRuntimeMemory) {
     // The program's memory import and the delegated realloc, both
@@ -667,14 +768,16 @@ export let emitComponent = (
     return out;
   }
 
-  // The instantiated module is the last core instance: one per imported
-  // interface, then the builtins', then the runtime memory module's,
-  // then this one.
-  let programInstance = runtimeInstance + (if (shape.needsRuntimeMemory) 1 else 0);
+  // The instantiated module is the last core instance, after the
+  // synthesized ones, the builtins' and the runtime memory module's.
+  let programInstance = synthBase + groups.length +
+      (if (shape.builtins.length > 0) 1 else 0) +
+      (if (shape.needsRuntimeMemory && !lowersNeedMemory) 1 else 0);
 
-  // The core function index space: the lowered imports, then the
-  // builtins, then everything aliased back out of the program instance.
-  var coreFuncIndex = 0;
+  // The core function index space: the early realloc alias when the
+  // lowers needed one, then the lowered imports, then the builtins,
+  // then everything aliased back out of the program instance.
+  var coreFuncIndex = if (lowersNeedMemory) 1 else 0;
   for (let group in groups) {
     coreFuncIndex += group.funcs.length;
   }
@@ -723,14 +826,21 @@ export let emitComponent = (
       "was emitted without linear memory. These cannot both be true."
     );
   }
-  let reallocCoreFunc = firstExportCoreFunc + shape.exports.length +
-      callbackNames.length;
-  let postReturnCoreFunc = reallocCoreFunc + 1;
+  // When the lowers already aliased the runtime module's realloc and
+  // memory, the lifts reuse them; otherwise they are aliased here,
+  // after the exports and callbacks.
+  let reallocCoreFunc = if (earlyReallocCoreFunc >= 0) {
+    earlyReallocCoreFunc
+  } else {
+    firstExportCoreFunc + shape.exports.length + callbackNames.length
+  };
+  let postReturnCoreFunc = firstExportCoreFunc + shape.exports.length +
+      callbackNames.length + (if (earlyReallocCoreFunc >= 0) 0 else 1);
 
   // --- alias: pull each exported core function out of the instance --------
   let exportAliases = new ByteBuffer();
   var aliasTotal = shape.exports.length + callbackNames.length;
-  if (needsMemory) {
+  if (needsMemory && earlyReallocCoreFunc < 0) {
     aliasTotal += 2; // realloc, then the memory itself
   }
   if (needsPostReturn) {
@@ -751,7 +861,7 @@ export let emitComponent = (
     exportAliases.writeULEB128(programInstance);
     writeName(exportAliases, name);
   }
-  if (needsMemory) {
+  if (needsMemory && earlyReallocCoreFunc < 0) {
     // The core function index space continues past the callbacks, so
     // realloc and post-return are aliased in that order to match
     // `reallocCoreFunc` above. The allocator and the memory are the
@@ -775,6 +885,12 @@ export let emitComponent = (
     exportAliases.writeByte(0x01);
     exportAliases.writeULEB128(runtimeInstance);
     writeName(exportAliases, componentMemoryExport);
+  } else if (needsPostReturn) {
+    exportAliases.writeByte(0x00);
+    exportAliases.writeByte(0x00);
+    exportAliases.writeByte(0x01);
+    exportAliases.writeULEB128(programInstance);
+    writeName(exportAliases, componentPostReturnExport);
   }
   writeSection(out, ComponentSectionId.Alias as i32, exportAliases);
 
@@ -787,8 +903,9 @@ export let emitComponent = (
   writeSection(out, ComponentSectionId.Type as i32, exportTypes);
 
   // --- canon: lift each export --------------------------------------------
-  // The component-level type index continues after the instance types.
-  let firstExportType = groups.length;
+  // The component-level type index continues after everything the
+  // encoder defined.
+  let firstExportType = encoded.typeCount;
   let lifts = new ByteBuffer();
   lifts.writeULEB128(shape.exports.length);
   for (var i = 0; i < shape.exports.length; i += 1) {

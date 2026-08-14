@@ -34,6 +34,7 @@ import {
   componentCallbackExport, componentTypeNeedsMemory,
   componentSignatureNeedsMemory, componentRuntimeNamespace
 } from './component-emitter.zena';
+import { EncodedImports } from './component-emitter.zena';
 
 /** Look through type aliases (`type`, `distinct type`) to the type itself. */
 let underlying = (t: Type): Type => match (t) {
@@ -249,7 +250,10 @@ let signatureOf = (
  * silently missing the entry point the program wrote — both worse than
  * a compile error naming the function.
  */
-export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
+export let buildComponentShape = (
+  wasm: WasmModule,
+  importEncoder: ((shape: ComponentShape) => EncodedImports) | null
+): ComponentShape => {
   let shape = new ComponentShape();
   // On this target the program module never owns its memory: if it
   // touches linear memory at all, it imports the runtime memory
@@ -381,6 +385,16 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
     }
     shape.exports.push(
       new ComponentExportFunc(lifted, exportName, signature));
+  }
+
+  // The last step: hand the finished import list to the WIT encoder.
+  // This is also where WIT-provided imports are checked against their
+  // interfaces and their lowerings marked for the memory options. The
+  // encoder is injected by the driver (`wit-imports.zena`) so codegen
+  // does not link the WIT parser; a driver that emits components
+  // without providing one gets `emitComponent`'s loud error.
+  if (importEncoder != null) {
+    shape.encodedImports = importEncoder(shape);
   }
 
   return shape;

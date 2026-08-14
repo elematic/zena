@@ -333,6 +333,54 @@ member expression itself is a tracked narrowing subject.
   this reason.
 
 ### `static` on an accessor is dropped by the parser
+### `IterableUtils.all` fails to lower in some module graphs
+
+- **Found**: 2026-08-14, adding `wit-parser` to the language service's
+  module graph (via codegen). The same sources compile in the CLI graph.
+- **Severity**: medium. It gates which packages may link which, which is
+  an unreasonable coupling; the workaround shapes real architecture.
+- **Details**: with wit-parser in the LSP graph, compiling
+  `zena/lsp.zena --target host` bails:
+
+  ```
+  zir unsupported: closure argument type @Array_s884_Type_s9526.all
+      [in Array_s884_Type_s9526.all]
+  ```
+
+  `Array<Type>.all` is `IterableUtils`' mixin method — nothing calls
+  it; it is retained through the method table. Lowering its
+  `predicate(item)` call fails `#conformToSlot` for that instantiation
+  in that graph, while the same method for the same `T` lowers in the
+  CLI graph (target `zena-cli`) after the 2026-08-14 bootstrap
+  re-baseline. Graph- and target-dependent, which smells like the
+  erased-versus-specialized closure-slot family.
+- **Workaround**: codegen takes the WIT import encoder as an injected
+  closure (`BinaryGenerator.importEncoder`) instead of importing
+  `wit-parser`, which keeps the parser out of the LSP graph. Fixing the
+  lowering would let codegen import it directly.
+
+### A defaulted `this` parameter on an initialized field fails ZIR lowering
+
+- **Found**: 2026-08-14, declaring a metadata class in the WIT encoder.
+- **Severity**: low. Either half alone works, and the fix is dropping
+  one of them.
+- **Details**: a constructor `this` parameter with a default, on a field
+  that also has an initializer, bails every *caller* of the constructor:
+
+  ```zena
+  final class Meta {
+    var count = 0;
+    new(this.count = 0);
+  }
+  new Meta(3);   // zir unsupported: auto-box to any @main [in main]
+  ```
+
+  Remove the field initializer (`var count: i32;`) or the parameter
+  default and it compiles and runs. The bail names the calling function,
+  not the class, which makes the source of the failure hard to find —
+  the reproduction above was bisected out of a five-hundred-line module.
+- **Workaround**: don't initialize a field twice; the parameter default
+  is the one that can express both spellings.
 
 - **Found**: 2026-08-11, writing the rule that a static may not name its
   class's type parameters. The accessor arm of that rule never fired.

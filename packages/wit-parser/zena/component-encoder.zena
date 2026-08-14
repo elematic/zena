@@ -132,7 +132,13 @@ final class RegisteredInterface {
   /** The name the component imports it by: `ns:pkg/iface@version`. */
   qualifiedName: String;
   items: Array<InterfaceItem>;
-  new(this.qualifiedName, this.items);
+  /**
+   * The package the interface was declared in. A bare `use foo` from
+   * inside it resolves against this package, not the document's main
+   * one — nested packages have their own name spaces.
+   */
+  packageName: PackageName | null;
+  new(this.qualifiedName, this.items, this.packageName = null);
 }
 
 /**
@@ -175,6 +181,13 @@ export final class EncodedWorld {
   var instanceCount = 0;
   /** How many component-level functions the pieces imported. */
   var funcImportCount = 0;
+  /**
+   * Each imported interface's component-level instance index, by its
+   * qualified name. Interfaces are imported in dependency order, not
+   * request order, so a consumer aliasing functions out of an instance
+   * looks the index up rather than assuming it.
+   */
+  instanceIndices = new HashMap<String, i32>();
   /** World exports the encoding skipped, for the caller to report. */
   skippedExports = new Array<String>();
   new();
@@ -206,7 +219,8 @@ export final class ComponentTypeEncoder {
       if (item.tag == AstItemTag.Interface) {
         let def = item.interfaceDef as InterfaceDef;
         this.#interfaces.push(new RegisteredInterface(
-            qualifiedInterfaceName(pkgName, def.name.name), def.items));
+            qualifiedInterfaceName(pkgName, def.name.name), def.items,
+            pkgName));
       }
     }
   }
@@ -284,9 +298,17 @@ export final class ComponentTypeEncoder {
     this.#result.funcImportCount += 1;
   }
 
-  #resolveInterface(path: UsePath): RegisteredInterface {
+  #resolveInterface(
+    path: UsePath,
+    contextPackage: PackageName | null = null
+  ): RegisteredInterface {
     let qualified = if (path.tag == UsePathTag.Id) {
-      qualifiedInterfaceName(this.#ast.packageName, (path.id as Id).name)
+      // A bare name resolves within the package the `use` sits in;
+      // only a top-level world's imports resolve against the main one.
+      qualifiedInterfaceName(
+          if (contextPackage == null) this.#ast.packageName
+          else contextPackage,
+          (path.id as Id).name)
     } else {
       qualifiedInterfaceName(path.packageId, (path.name as Id).name)
     };
@@ -308,8 +330,8 @@ export final class ComponentTypeEncoder {
     // that is already imported.
     for (let item in reg.items) {
       if (item.tag == InterfaceItemTag.Use) {
-        this.#importInterface(
-            this.#resolveInterface((item.use as Use).from));
+        this.#importInterface(this.#resolveInterface(
+            (item.use as Use).from, reg.packageName));
       }
     }
     this.#importNamedInterface(reg);
@@ -319,7 +341,7 @@ export final class ComponentTypeEncoder {
     let scope = new Scope();
     for (let item in reg.items) {
       if (item.tag == InterfaceItemTag.Use) {
-        this.#encodeUse(scope, item.use as Use);
+        this.#encodeUse(scope, item.use as Use, reg.packageName);
       } else if (item.tag == InterfaceItemTag.TypeDef) {
         this.#encodeTypeDef(scope, item.typeDef as TypeDef);
       } else {
@@ -343,6 +365,8 @@ export final class ComponentTypeEncoder {
     imp.writeULEB128(instanceTypeIndex);
     this.#result.pieces.push(new SectionPiece(sectionImport, imp));
     this.#instanceIndex[reg.qualifiedName] = this.#result.instanceCount;
+    this.#result.instanceIndices[reg.qualifiedName] =
+        this.#result.instanceCount;
     this.#result.instanceCount += 1;
   }
 
@@ -352,8 +376,12 @@ export final class ComponentTypeEncoder {
    * back in through `outer`, and re-exported under its local name —
    * which may differ, `use` renames.
    */
-  #encodeUse(scope: Scope, use: Use): void {
-    let source = this.#resolveInterface(use.from);
+  #encodeUse(
+    scope: Scope,
+    use: Use,
+    contextPackage: PackageName | null
+  ): void {
+    let source = this.#resolveInterface(use.from, contextPackage);
     for (let n in use.names) {
       let componentIndex =
           this.#aliasTypeExport(source.qualifiedName, n.name.name);
@@ -405,7 +433,8 @@ export final class ComponentTypeEncoder {
               if (asName == null) n.name.name else (asName as Id).name;
           if (localName == name) {
             return this.#isResource(
-                this.#resolveInterface(use.from), n.name.name);
+                this.#resolveInterface(use.from, reg.packageName),
+                n.name.name);
           }
         }
       }
@@ -829,6 +858,262 @@ let externName = (kind: ExternKind): String => {
     return (kind.path as UsePath).getName().name;
   }
   return (kind.name as Id).name;
+};
+
+// ============================================================================
+// Canonical flattening metadata
+// ============================================================================
+
+/**
+ * How a WIT type crosses the core boundary: how many flat core values
+ * it occupies, and whether it needs linear memory to cross at all.
+ *
+ * This is the *counting* half of the canonical ABI's `flatten` — enough
+ * to decide two things a `canon lower` depends on: whether the options
+ * must name a memory and a realloc (a `string` or `list` anywhere in
+ * the signature), and whether the result is returned indirectly
+ * (flattened results exceeding one mean the caller passes a return
+ * area's address as a trailing `i32` parameter, and so does a
+ * parameter list flattening past sixteen).
+ */
+export final class WitFlatMeta {
+  // No field initializers: a defaulted `this.x` parameter on a field
+  // that also has an initializer fails ZIR lowering ("auto-box to
+  // any") — see BUGS.md.
+  var flatCount: i32;
+  var needsMemory: boolean;
+  new(this.flatCount = 0, this.needsMemory = false);
+}
+
+/** One function's flattening, plus whether the lookup found it at all. */
+export final class WitFuncMeta {
+  var paramFlatCount = 0;
+  var resultFlatCount = 0;
+  /** Whether lowering this function needs the canonical memory options. */
+  var needsMemory = false;
+  new();
+}
+
+/** One interface, as the flattening walker sees the document. */
+final class FlatIface {
+  name: String;
+  items: Array<InterfaceItem>;
+  new(this.name, this.items);
+}
+
+function flatMetaOfType(
+  interfaces: Array<FlatIface>,
+  itemsOf: Array<InterfaceItem>,
+  t: Type
+): WitFlatMeta {
+  let prim = primOpcodeOf(t.tag);
+  if (prim >= 0) {
+    if (t.tag == TypeTag.String) {
+      return new WitFlatMeta(2, true);
+    }
+    return new WitFlatMeta(1, false);
+  }
+  if (t.tag == TypeTag.List) {
+    return new WitFlatMeta(2, true);
+  }
+  if (t.tag == TypeTag.Own || t.tag == TypeTag.Borrow) {
+    return new WitFlatMeta(1, false);
+  }
+  if (t.tag == TypeTag.Tuple) {
+    let meta = new WitFlatMeta();
+    for (let m in t.types as Array<Type>) {
+      let inner = flatMetaOfType(interfaces, itemsOf, m);
+      meta.flatCount += inner.flatCount;
+      if (inner.needsMemory) { meta.needsMemory = true; }
+    }
+    return meta;
+  }
+  if (t.tag == TypeTag.Option) {
+    let inner = flatMetaOfType(interfaces, itemsOf, t.inner as Type);
+    return new WitFlatMeta(1 + inner.flatCount, inner.needsMemory);
+  }
+  if (t.tag == TypeTag.Result) {
+    // A variant of two cases: the discriminant, then the larger payload
+    // (the join's *count* is the maximum; the exact core types do not
+    // matter for what this decides).
+    var payload = 0;
+    var mem = false;
+    let ok = t.okType;
+    if (ok != null) {
+      let m = flatMetaOfType(interfaces, itemsOf, ok as Type);
+      payload = m.flatCount;
+      if (m.needsMemory) { mem = true; }
+    }
+    let err = t.errType;
+    if (err != null) {
+      let m = flatMetaOfType(interfaces, itemsOf, err as Type);
+      if (m.flatCount > payload) { payload = m.flatCount; }
+      if (m.needsMemory) { mem = true; }
+    }
+    return new WitFlatMeta(1 + payload, mem);
+  }
+  if (t.tag == TypeTag.Name) {
+    return flatMetaOfName(interfaces, itemsOf, (t.name as Id).name);
+  }
+  // future/stream/map/error-context: the encoder already refused these
+  // before metadata is asked for; count them as one word so a caller
+  // that asks anyway gets something rather than a lie about memory.
+  return new WitFlatMeta(1, false);
+}
+
+function flatMetaOfName(
+  interfaces: Array<FlatIface>,
+  itemsOf: Array<InterfaceItem>,
+  name: String
+): WitFlatMeta {
+  for (let item in itemsOf) {
+    if (item.tag == InterfaceItemTag.TypeDef) {
+      let td = item.typeDef as TypeDef;
+      if (td.name.name != name) { continue; }
+      if (td.tag == TypeDefTag.Resource) {
+        // A resource name in value position is a handle.
+        return new WitFlatMeta(1, false);
+      }
+      if (td.tag == TypeDefTag.Enum || td.tag == TypeDefTag.Flags) {
+        return new WitFlatMeta(1, false);
+      }
+      if (td.tag == TypeDefTag.Record) {
+        let meta = new WitFlatMeta();
+        for (let f in td.fields as Array<Field>) {
+          let inner = flatMetaOfType(interfaces, itemsOf, f.type);
+          meta.flatCount += inner.flatCount;
+          if (inner.needsMemory) { meta.needsMemory = true; }
+        }
+        return meta;
+      }
+      if (td.tag == TypeDefTag.Variant) {
+        var payload = 0;
+        var mem = false;
+        for (let c in td.cases as Array<Case>) {
+          let payloadType = c.type;
+          if (payloadType != null) {
+            let m = flatMetaOfType(interfaces, itemsOf, payloadType as Type);
+            if (m.flatCount > payload) { payload = m.flatCount; }
+            if (m.needsMemory) { mem = true; }
+          }
+        }
+        return new WitFlatMeta(1 + payload, mem);
+      }
+      return flatMetaOfType(interfaces, itemsOf, td.aliasType as Type);
+    } else if (item.tag == InterfaceItemTag.Use) {
+      let use = item.use as Use;
+      for (let n in use.names) {
+        let asName = n.asName;
+        let localName =
+            if (asName == null) n.name.name else (asName as Id).name;
+        if (localName != name) { continue; }
+        let sourceName = use.from.getName().name;
+        for (let iface in interfaces) {
+          // Match by trailing interface name: `use` paths inside a
+          // package name interfaces bare, and the registry holds them
+          // qualified.
+          if (iface.name == sourceName ||
+              iface.name.endsWith("/" + sourceName) ||
+              iface.name.contains("/" + sourceName + "@")) {
+            return flatMetaOfName(interfaces, iface.items, n.name.name);
+          }
+        }
+      }
+    }
+  }
+  throw new EncodeError("flattening cannot resolve type '" + name + "'");
+}
+
+function funcMetaOf(
+  interfaces: Array<FlatIface>,
+  itemsOf: Array<InterfaceItem>,
+  func: Func,
+  selfParams: i32
+): WitFuncMeta {
+  let meta = new WitFuncMeta();
+  meta.paramFlatCount = selfParams;
+  for (let p in func.params) {
+    let m = flatMetaOfType(interfaces, itemsOf, p.type);
+    meta.paramFlatCount += m.flatCount;
+    if (m.needsMemory) { meta.needsMemory = true; }
+  }
+  let result = func.result;
+  if (result != null) {
+    let m = flatMetaOfType(interfaces, itemsOf, result as Type);
+    meta.resultFlatCount = m.flatCount;
+    if (m.needsMemory) { meta.needsMemory = true; }
+  }
+  if (meta.paramFlatCount > 16 || meta.resultFlatCount > 1) {
+    // Spilled parameters land in memory; an indirect result needs a
+    // return area. Either way the options must say where.
+    meta.needsMemory = true;
+  }
+  return meta;
+}
+
+/**
+ * The flattening of one function of one interface, by the names a core
+ * module imports them under — the qualified interface, and the field
+ * (`get-stdout`, `[method]output-stream.blocking-write-and-flush`).
+ * Null when the interface or the function is not in the document,
+ * which callers treat as its own loud error.
+ */
+export let funcFlatMeta = (
+  ast: Ast,
+  interfaceName: String,
+  fieldName: String
+): WitFuncMeta | null => {
+  let interfaces = new Array<FlatIface>();
+  let register = (pkg: PackageName | null, items: Array<AstItem>): void => {
+    for (let item in items) {
+      if (item.tag == AstItemTag.Interface) {
+        let def = item.interfaceDef as InterfaceDef;
+        interfaces.push(new FlatIface(
+            qualifiedInterfaceName(pkg, def.name.name), def.items));
+      }
+    }
+  };
+  register(ast.packageName, ast.items);
+  for (let nested in ast.nestedPackages) {
+    register(nested.name, nested.items);
+  }
+
+  for (let iface in interfaces) {
+    if (iface.name != interfaceName) { continue; }
+    for (let item in iface.items) {
+      if (item.tag == InterfaceItemTag.Func) {
+        let nf = item.func as NamedFunc;
+        if (nf.name.name == fieldName) {
+          return funcMetaOf(interfaces, iface.items, nf.func, 0);
+        }
+      } else if (item.tag == InterfaceItemTag.TypeDef) {
+        let td = item.typeDef as TypeDef;
+        if (td.tag != TypeDefTag.Resource) { continue; }
+        let resourceName = td.name.name;
+        for (let rf in td.resourceFuncs as Array<ResourceFunc>) {
+          var exported = "";
+          var selfParams = 0;
+          if (rf.tag == ResourceFuncTag.Constructor) {
+            exported = "[constructor]" + resourceName;
+          } else if (rf.tag == ResourceFuncTag.Method) {
+            exported = "[method]" + resourceName + "." + rf.func.name.name;
+            selfParams = 1;
+          } else {
+            exported = "[static]" + resourceName + "." + rf.func.name.name;
+          }
+          if (exported != fieldName) { continue; }
+          let meta =
+              funcMetaOf(interfaces, iface.items, rf.func.func, selfParams);
+          if (rf.tag == ResourceFuncTag.Constructor) {
+            meta.resultFlatCount = 1; // the own handle
+          }
+          return meta;
+        }
+      }
+    }
+    return null;
+  }
+  return null;
 };
 
 /** The names of the worlds the document's main package defines. */

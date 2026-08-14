@@ -3,7 +3,7 @@ import { ByteBuffer } from 'zena:byte-buffer';
 import { Program } from '../program.zena';
 import { BinaryEmitter } from './binary-emitter.zena';
 import { ModuleGenerator } from './module-generator.zena';
-import { emitComponent, ComponentShape } from './component-emitter.zena';
+import { emitComponent, ComponentShape, EncodedImports } from './component-emitter.zena';
 import { targetEmitsComponent } from '../targets.zena';
 
 /**
@@ -30,12 +30,20 @@ export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
    */
   var runtimeMemoryModule: ByteBuffer | null = null;
 
+  /**
+   * The WIT import encoder, injected beside the runtime module by
+   * drivers that emit components. Codegen calls it through this
+   * indirection so it does not link the WIT parser itself.
+   */
+  var importEncoder: ((shape: ComponentShape) => EncodedImports) | null = null;
+
   new(this.target = "zena-cli", this.zirStats = false, this.debugNames = false);
 
   generate(program: Program): ByteBuffer {
     let bb = new ByteBuffer();
     let emitter = new BinaryEmitter(bb, this.debugNames);
     let generator = new ModuleGenerator(program, emitter, this.target, this.zirStats);
+    generator.importEncoder = this.importEncoder;
     generator.compile();
     // A component is the same core module with a wrapper around it: the
     // module is embedded verbatim, and the component contributes only

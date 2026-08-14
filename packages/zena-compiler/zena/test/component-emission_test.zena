@@ -28,8 +28,12 @@ import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { i32ToString } from 'zena:string-convert';
 import {
-  isKebabName, toKebabName
+  isKebabName, toKebabName, ComponentShape, ComponentImportFunc,
+  ComponentFuncType
 } from '../lib/codegen/component-emitter.zena';
+import {
+  deriveImportsWit, encodeImportTypes, makeImportEncoder
+} from '../lib/codegen/wit-imports.zena';
 import { assertFunctionUsesTimes } from './wat-invariants.zena';
 
 let stdlibRoot = 'packages/stdlib/zena';
@@ -77,6 +81,7 @@ let compileFor = (path: String, target: String): ByteArray => {
     let host = new PlainHost();
     generator.runtimeMemoryModule = compileComponentRuntimeModule(
         host, stdlibRoot, loadPackageMap(host, 'zena-packages.json'));
+    generator.importEncoder = makeImportEncoder();
   }
   return generator.generate(programFor(path, target)).toByteArray();
 };
@@ -400,6 +405,53 @@ export let tests = suite('Component emission', (): void => {
     // core-module section, and it is the program.
     isTrue(sectionPayloadAfter(bytes, 1, 1).length == 0,
       'a memory-free component still embeds the runtime memory module');
+  });
+
+  test('imported interfaces are encoded from derived WIT', (ctx: TestContext): void => {
+    // The emitter no longer hand-writes instance types: the shape's
+    // imports are rendered as a WIT document and pushed through the
+    // same encoder that round-trips real WIT through wasm-tools. For a
+    // flat-scalar interface the bytes come out identical to the old
+    // hand-written ones, which the exact-section tests above pin; this
+    // pins the derivation itself.
+    let paramTypes = new Array<i32>();
+    paramTypes.push(0x73); // string
+    let paramNames = new Array<String>();
+    paramNames.push('a0');
+    let sig = new ComponentFuncType(paramTypes, paramNames, 0x79, false);
+    let shape = new ComponentShape();
+    shape.imports.push(new ComponentImportFunc(
+        'test:probe/things@1.0.0', 'poke', sig));
+    let text = deriveImportsWit(shape);
+    isTrue(text.contains('package test:probe@1.0.0 {'),
+      'the derived document does not declare the package');
+    isTrue(text.contains('interface things {'),
+      'the derived document does not declare the interface');
+    isTrue(text.contains('poke: func(a0: string) -> u32;'),
+      `the derived function is wrong:\n${text}`);
+    isTrue(text.contains('import test:probe/things@1.0.0;'),
+      'the derived world does not import the interface');
+    let encoded = encodeImportTypes(shape);
+    equal(encoded.instanceCount, 1);
+    if (let (true, index) = encoded.instanceIndices.get('test:probe/things@1.0.0')) {
+      equal(index, 0);
+    } else {
+      throw new Error('the encoded world lost the interface');
+    }
+  });
+
+  test('an interface name without a package path is rejected', (ctx: TestContext): void => {
+    // "a:b" passes the colon check but is not a WIT interface path, so
+    // no WIT document can be derived for it. Before the encoder wiring
+    // this emitted an import name no host could match; now it is a
+    // compile error naming the expected shape.
+    let sig = new ComponentFuncType(new Array<i32>(), new Array<String>(),
+        -1, false);
+    let shape = new ComponentShape();
+    shape.imports.push(new ComponentImportFunc('a:b', 'poke', sig));
+    throws((): void => {
+      deriveImportsWit(shape);
+    }, "an interface name with no '/' derived a WIT document");
   });
 
   test('Zena identifiers become kebab-case names', (ctx: TestContext): void => {

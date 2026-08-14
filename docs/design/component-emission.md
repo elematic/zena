@@ -1048,12 +1048,23 @@ that uses the instance ("instance not valid to be used as import"); and
 a resource name in value position is implicitly `own` — including a
 `use`d resource, so resource-ness has to survive the alias hops.
 
-Still open here, deferred to the compiler wiring alongside C3.3:
-`--wit` / `--world` on real compiles (the emitter consuming
-`EncodedWorld.pieces` in place of its hand-built instance types),
-world-level `use` and type definitions, `include`, cross-document
-packages, and fixed-length lists. `future` and `stream` refuse loudly
-until C6.
+The emitter now consumes the encoder for every imported interface:
+`wit-imports.zena` renders the shape's `@external` imports as a WIT
+document — one interface per namespace, grouped into nested packages,
+a synthetic world importing them — and `emitComponent`'s import front
+matter is the encoder's `EncodedWorld.pieces` verbatim. For a
+flat-scalar interface the bytes come out identical to the hand-written
+ones (verified by direct comparison on every fixture), so the change is
+what becomes possible: when an interface's true WIT is richer than a
+Zena declaration can spell — resources, lists, stdio's case — its real
+source substitutes for the derived one and the emitter needs no new
+opinion. One name got stricter: an `@external` namespace must now be a
+full `ns:pkg/interface[@version]` path, because nothing less derives a
+WIT document.
+
+Still open here: `--wit` / `--world` on real compiles, world-level
+`use` and type definitions, `include`, cross-document packages, and
+fixed-length lists. `future` and `stream` refuse loudly until C6.
 
 #### C3.3 — imported memory, and stdio. **Memory done; stdio open.**
 

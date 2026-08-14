@@ -27,9 +27,10 @@ import { runGvn } from './ir/gvn.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
 import {
-  ComponentShape, componentEntryExport, componentCallbackExport,
-  componentReallocExport, componentPostReturnExport,
-  componentMemoryExport, componentRuntimeNamespace
+  ComponentShape, EncodedImports, componentEntryExport,
+  componentCallbackExport, componentReallocExport,
+  componentPostReturnExport, componentMemoryExport,
+  componentRuntimeNamespace
 } from './component-emitter.zena';
 import { buildComponentShape } from './component-shape.zena';
 import { targetEmitsComponent } from '../targets.zena';
@@ -48,6 +49,13 @@ export final class ModuleGenerator {
    * the two cannot disagree about what exists.
    */
   var componentShape: ComponentShape | null = null;
+  /**
+   * The WIT import encoder, injected by the driver on the component
+   * target (`wit-imports.zena` builds it). Null elsewhere — and in
+   * hosts like the language service that never emit a component and
+   * deliberately do not link the WIT parser.
+   */
+  var importEncoder: ((shape: ComponentShape) => EncodedImports) | null = null;
 
   new(this.program, this.emitter, this.target = "zena-cli", this.zirStats = false);
 
@@ -783,7 +791,7 @@ export final class ModuleGenerator {
     performance.end(tEmitOther2);
 
     if (targetEmitsComponent(this.target)) {
-      this.componentShape = buildComponentShape(wasm);
+      this.componentShape = buildComponentShape(wasm, this.importEncoder);
     }
   }
 }
