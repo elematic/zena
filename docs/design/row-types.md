@@ -284,13 +284,14 @@ let s = new Server({ port: 8080 });   // host and tls filled statically
 - The escape hatch when "explicitly set to the default" must be
   distinguishable from "absent" is a nullable field or true `?` (§3.4).
 
-The full design is [config-records.md](config-records.md), which
-resolves the points this sketch left open: defaults attach to the
-annotation rather than the interned structural type (so identity,
-assignability and interning are untouched), default expressions are
-restricted to constants and notionally evaluated per omission site,
-and the interactions with `?`, spread/`with`, destructuring defaults
-and argument explosion are specified there. Status: plan of record.
+This sketch was worked out in [config-records.md](config-records.md)
+and then **superseded**: review rejected type-level defaults as
+categorically wrong (a type describes shape; defaults are behavior).
+The adopted direction is [record-presence.md](record-presence.md) —
+presence-optional fields with defaults only in destructuring and
+spread, which serves the config story through callee-owned defaults
+and boundary normalization. Config-records.md remains as the record
+of the explored design space.
 
 ## 4. Value-level spread: extension and update
 

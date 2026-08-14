@@ -1,27 +1,28 @@
 # Presence-Optional Record Fields
 
-Status: **Proposed** (2026-08)
+Status: **Proposed — review-favored direction** (2026-08-14)
 
 This document designs true presence for optional record fields: a
 record typed `{url: String, timeout?: i32}` may or may not *have*
 `timeout`, absence is observable, and the consumer supplies defaults
 at destructuring. It is the semantic model
-[row-types.md](row-types.md) §3.4 deferred as presence polymorphism
-and [config-records.md](config-records.md) §5 worked around with
-type-level constant defaults. Two representation choices make it
-tractable now: a **presence bitmask** in a single full-width struct,
-and **`inline (boolean, T)`** as the accessor shape on the dispatch
-path.
+[row-types.md](row-types.md) §3.4 deferred as presence polymorphism.
+It supersedes [config-records.md](config-records.md): review rejected
+type-level defaults as categorically wrong (a type describes shape;
+defaults are behavior), so defaults appear **only in destructuring and
+spread**. Two representation choices make presence tractable now: a
+**presence bitmask** in a single full-width struct, and
+**`inline (boolean, T)`** as the accessor shape on the dispatch path.
 
 ## 1. Motivation
 
-Config records place defaults on the type, which serves shared option
-bags but cannot express callee-owned defaults: an adapter that
-conditionally sets a field or leaves the decision to the callee needs
-absence to *flow through it*. With presence, the destructured
-parameter with field defaults — already parsed and compiled today,
-with the defaults inert — becomes the natural signature-visible
-spelling of consumer defaults:
+Type-level defaults (the superseded config-records design) serve
+shared option bags but cannot express callee-owned defaults: an
+adapter that conditionally sets a field or leaves the decision to the
+callee needs absence to *flow through it*. With presence, the
+destructured parameter with field defaults — already parsed and
+compiled today, with the defaults inert — becomes the natural
+signature-visible spelling of consumer defaults:
 
 ```zena
 let fetch = ({url: String, timeout: i32 = 30_000, retries: i32 = 3})
@@ -69,8 +70,12 @@ error initially (widen to i64, then a second word, if ever needed).
 Primitives are why the mask exists at all: `0` is a valid `i32`, so
 absence cannot be a sentinel. For reference fields a null-sentinel
 encoding could drop the mask bit, but the uniform mask keeps `?`
-orthogonal to nullability (`timeout?: i32 | null` is expressible) and
-keeps equality and patterns one code path.
+orthogonal to the field's own type (`timeout?: Option<i32>` is
+expressible — absent vs present-holding-none stay distinct) and keeps
+equality and patterns one code path. The slot-plus-bit technique is
+also the natural unboxed representation for `Option<T>`-typed fields
+themselves, if `Option` moves to an inline representation — the two
+features can share machinery.
 
 ## 3. Typing
 
@@ -85,16 +90,48 @@ keeps equality and patterns one code path.
   ignore it; with `?` rejected that is unobservable, but it is a
   latent bug this work fixes).
 - **Coercion**: a required-shape value flowing into an optional-typed
-  position builds the wider struct (projection plus mask). The copy
-  is unconditionally legal only under the records-are-value-types
-  decision (records-and-tuples.md §3.1, step V0) — one more reason V0
-  precedes this. Contextually-typed literals build the target shape
-  directly and need no copy.
+  position builds the wider struct (projection plus mask) — §3.1
+  below works the example.
 - **Access**: `opts.timeout` on an optional field is a compile error;
   presence must be consumed through a pattern (§4) or the `??` sugar:
   `opts.timeout ?? 30_000` compiles to the guarded read and has type
   `i32`. (This makes the row-types §5.2 access rule real; today the
   checker does not guard it.)
+
+### 3.1 Which values carry a mask, and how maskless values acquire one
+
+Presence tracking is a property of the **type**, not the value's
+history: an interned record type has a `$present` field iff it has at
+least one optional field, and every value of that type has that
+layout. There is no fat pointer and no side channel on the closed
+path. The case that must be answered explicitly:
+
+```zena
+type FetchOpts = {timeout?: i32};
+
+let opts = {};                    // type {} — no optional fields, no mask
+let fetchOpts: FetchOpts = opts;  // FetchOpts has a mask. Where from?
+```
+
+The assignment is a **projection copy**: it builds a `FetchOpts`
+struct — zero-valued `timeout` slot, mask `0` — from the maskless
+`{}` value. Because records are value types with unobservable
+identity (records-and-tuples.md §3.1, step V0), the copy is
+unobservable; this is the same lowering family as post-flip
+width-by-projection, with the mask constant derived from which target
+fields the source type has (present) and lacks (absent). The copy
+makes **V0 a hard prerequisite** for this feature: under today's
+observable `===`, a copy at this boundary could be witnessed.
+Contextually-typed literals never hit the copy — `let f: FetchOpts =
+{};` builds the `FetchOpts` layout directly.
+
+On the pre-flip dispatch representation the same flow needs no copy:
+the fat pointer repacks with an adapted vtable whose getter for the
+absent field returns `(false, zero)` (§4) — presence lives in the
+choice of adaptation rather than in a mask field. Both
+representations answer every presence question identically; which one
+a given boundary uses is the closed-vs-existential story of
+row-types.md, not part of presence semantics.
 
 ## 4. Patterns are the presence API
 
@@ -253,6 +290,11 @@ can stay shelved — the designs are separable on purpose.
 
 ## 9. Implementation plan
 
+**Prerequisite: V0** (the `===`-on-records ban, equality.md D1 /
+implementation-plan.md Track V) — §3.1's projection copies are
+unobservable only once record identity is. V0 is small and already
+first in the plan of record.
+
 Ordered, each stage green under the full suite and fixpoint:
 
 1. **Checker semantics**: optionality in interning and `typesEqual`;
@@ -284,3 +326,33 @@ No stage needs presence polymorphism in the type system (row
 variables over optionality stay future work, row-types.md §10), and
 none needs the M5 template work — the mask is per-type data, not
 per-shape code.
+
+## 10. Open questions
+
+1. **A `record` declaration construct.** Review floated
+
+   ```zena
+   record FetchOpts {
+     timeout?: i32,
+   }
+   ```
+
+   as a more concrete-looking declaration than a `type` alias.
+   Nothing in this design requires it: presence needs no
+   value-namespace name (the superseded constructor form was what
+   raised that question, and it died with type-level defaults), and
+   records stay structural. A `record` declaration would earn its
+   keep only if records grow declaration-attached affordances —
+   derived constructors, member functions — at which point the line
+   between it and a case class (`class Pair(a, b)`: nominal, final,
+   derived `==`/`hashCode`) needs drawing. Deferred until such an
+   affordance is actually wanted.
+2. **An unset form** — remove a field / clear a presence bit in a
+   spread (`delete`'s immutable analogue). Deferred (§5);
+   destructure-and-rebuild covers it.
+3. **Mask width** past 32 optional fields — widen to i64 or a second
+   word; currently a compile error (§2).
+4. **`??` sugar scope** — whether `opts.timeout ?? d` is the only
+   direct-access affordance, or `"timeout" in opts` narrowing is also
+   wanted alongside if-let patterns. The pattern forms are the v1
+   answer; `in` stays out unless patterns prove insufficient.

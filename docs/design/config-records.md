@@ -1,6 +1,19 @@
 # Config Records: Default-Bearing Record Types
 
-Status: **Plan of record** (2026-08)
+Status: **Superseded** by [record-presence.md](record-presence.md)
+(2026-08-14)
+
+Review rejected this document's premise — default values in a type
+definition — as categorically wrong: a type describes shape, and
+defaults are behavior. The adopted direction is presence-optional
+fields with defaults appearing only in destructuring and spread
+(record-presence.md), where the callee or the normalizing boundary
+owns them. This document is kept as the record of the explored design
+space: three revisions of the filling rule and their footguns
+(§6 Alternatives), the constructor form, and the reasons each was
+reshaped. None of it is planned work.
+
+The original abstract follows.
 
 This document is the full design for the proposal sketched in
 [row-types.md](row-types.md) §3.5 (track A3 in
@@ -401,10 +414,14 @@ construction) and from nullability (`T | null`, where the field is
 present holding `null`). The three forms:
 
 ```zena
-{retries: i32 = 3}   // omittable at construction; always present after
-{retries?: i32}      // may be absent; absence is meaningful
-{retries: i32?}      // always present; may be null (boxing for primitives)
+{retries: i32 = 3}        // omittable at construction; always present after
+{retries?: i32}           // may be absent; absence is meaningful
+{retries: Option<i32>}    // always present; the VALUE is maybe-none
 ```
+
+(An earlier revision spelled the third form `i32?`/`i32 | null`;
+review rejected nullable-union spellings for maybe-values in favor of
+`Option<T>`, which is slated for an inline representation.)
 
 As of this writing the implementation of `?` is front-end only (the
 checker rejects every literal that omits the field, and no runtime

@@ -124,12 +124,15 @@ Per row-types.md §9, refined:
   adoption on it.
 - **A2 — value-level ops**: disjoint extension spread, `with` update,
   rest patterns and typed `...rest` (record + tuple).
-- **A3 — default-bearing config records** (design:
-  [config-records.md](config-records.md), sketched in row-types.md
-  §3.5): can go **first** in this track — independent of A0/A1,
-  addresses the config-ergonomics pain directly, full payoff
-  (immutable fields via option-bag constructors) arrives with M4
-  single-shot construction — M4 is complete, so nothing blocks it.
+- **A3 — presence-optional record fields** (design:
+  [record-presence.md](record-presence.md); the earlier type-level
+  defaults design, config-records.md, is superseded): bitmask
+  presence, patterns as the presence API, live destructured-parameter
+  defaults, `Required`/`Partial`, fallback spread. Independent of
+  A0/A1; **prerequisite V0** (projection copies need unobservable
+  identity); the fallback-spread/`with` refinements ride A2. M4 is
+  complete, so the constructor-side payoff (immutable fields via
+  option-bag constructors) is unblocked.
 
 ## Track O — ownership and resource management (adopted 2026-08-06)
 

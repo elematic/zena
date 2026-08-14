@@ -289,13 +289,15 @@ let point2d: {x: i32, y: i32} = point3d;  // ✅ OK - z is ignored
 
 ### 5.2 Optional Fields
 
-> **Revision note:** the option-bag-with-defaults pattern shown here is
-> superseded by default-bearing record types
-> ([config-records.md](config-records.md)): defaults move from the
-> destructuring site into the record type annotation, and the built
-> record always has the full shape. `?` remains for fields whose
-> _absence is meaningful_, per the restrictions in
-> [row-types.md](row-types.md) §3.4.
+> **Revision note:** the semantics of this section are redesigned in
+> [record-presence.md](record-presence.md): presence is tracked with a
+> bitmask in one full-width struct per type, defaults stay at the
+> destructuring site exactly as shown here (and become live —
+> destructured parameters with field defaults were never
+> code-generated), patterns are the presence API, and narrowing is
+> if-let rather than an `in` operator. An intermediate design that
+> moved defaults into the type annotation (config-records.md) was
+> rejected in review.
 
 Optional fields allow callers to omit fields entirely. This is the "option bag" pattern.
 
