@@ -12,10 +12,10 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString, parseF64 } from 'zena:string-convert';
 import {
-  AsPattern, BindingPattern, BooleanLiteral, ClassPattern, Expression,
-  Identifier, IdentifierPattern, LiteralPattern, LogicalPattern,
-  MemberExpression, Node, NullLiteral, NumberLiteral, RecordPattern,
-  StringLiteral, TuplePattern,
+  AsPattern, AssignmentPattern, BindingPattern, BooleanLiteral,
+  ClassPattern, Expression, Identifier, IdentifierPattern,
+  LiteralPattern, LogicalPattern, MemberExpression, Node, NullLiteral,
+  NumberLiteral, RecordPattern, StringLiteral, TuplePattern,
 } from '../../ast.zena';
 import { ClassType } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
@@ -170,6 +170,7 @@ export let patternRefutable = (cx: LoweringContext, pattern: Node): boolean => {
       }
       refutable
     }
+    case AssignmentPattern as ap: patternRefutable(cx, ap.left)
     case _: true
   };
 };
@@ -218,6 +219,7 @@ export let patternBinds = (cx: LoweringContext, pattern: Node): boolean => {
       }
       binds
     }
+    case AssignmentPattern as ap: patternBinds(cx, ap.left)
     case _: false
   };
 };
@@ -280,6 +282,10 @@ export let collectPatternBindSyms = (cx: LoweringContext, pattern: Node,
     if (pattern.operator != "||") {
       collectPatternBindSyms(cx, pattern.right, out);
     }
+    return;
+  }
+  if (pattern is AssignmentPattern) {
+    collectPatternBindSyms(cx, pattern.left, out);
   }
 };
 
@@ -474,6 +480,9 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
         }
       }
     }
+    case AssignmentPattern as ap: {
+      lowerPatternTest(cx, ap.left, value, failB);
+    }
     case _: {
       bail(cx, 'pattern kind');
     }
@@ -562,6 +571,12 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
           lowerPatternBindings(cx, prop.value, read);
         }
       }
+    }
+    case AssignmentPattern as ap: {
+      // `{x = 0}` — the matched field is always present (record fields
+      // cannot be absent), so the default expression never applies and
+      // the left pattern binds the field value directly.
+      lowerPatternBindings(cx, ap.left, value);
     }
     case _: {}
   }

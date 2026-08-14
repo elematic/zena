@@ -3705,17 +3705,22 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
   }
   case RecordTypeAnnotation {properties}: {
     let props = new HashMap<String, Type>();
-    var optionals: HashSet<String> | null = null;
     for (let prop in properties) {
       let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, allowInlineTuple);
       rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
             props[prop.name.name] = resolved;
       if (prop.optional) {
-        optionals ??= new HashSet<String>();
-        optionals.add(prop.name.name);
+        // Presence-optional record fields have no assignability rule or
+        // runtime representation (docs/design/record-presence.md); the
+        // field is treated as required after this error.
+        ctx.error(
+          "Optional record fields are not supported yet.",
+          DiagnosticCode.IncompatibleTypes,
+          prop.loc
+        );
       }
     }
-    new RecordT(props, optionals)
+    new RecordT(props, null)
   }
   case TupleTypeAnnotation {elementTypes}: {
     let elTypes = new Array<Type>();

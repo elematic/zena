@@ -3293,6 +3293,11 @@ let p = { x: 1, y: 2 };
 let x = p.x;
 ```
 
+Every field of a record type is required: `?` is not supported on record
+fields (unlike class and interface fields, where it means `T | null`).
+For a maybe-value, make the value itself optional — an `Option<T>` from
+`zena:option`, or a nullable reference type — the field stays present.
+
 #### Shorthand Syntax
 
 If a variable name matches the field name, you can use the shorthand syntax:
