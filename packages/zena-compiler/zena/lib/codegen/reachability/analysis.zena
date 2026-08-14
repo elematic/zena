@@ -1480,6 +1480,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       } else if (compT is FunctionType) {
         this.reachablyNamedClosures.add(
             getClosureStruct(this.wasm, compT as FunctionType));
+      } else if (compT is ArrayType) {
+        // The raw wasm array of an array VALUE reached code names: an
+        // index-loop for-in references it directly (array.new_fixed,
+        // array.get) with no reached signature ever mentioning it.
+        // typeToValType is the same derivation lowering uses, so the
+        // marked array is the one the instructions will reference.
+        let saved = this.currentReachable;
+        this.currentReachable = true;
+        this.markValTypeReached(typeToValType(this.wasm, compT));
+        this.currentReachable = saved;
       }
     }
 

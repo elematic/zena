@@ -3368,6 +3368,29 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
  * against the prelude Iterable interface.
  * Reports an error if the type is not iterable.
  */
+/**
+ * True when codegen compiles a for-in over this class to a direct
+ * index loop (lowerForIn in ir/control-flow.zena): FixedArray,
+ * ImmutableArray and Array lower to array.len/array.get and never
+ * touch the Iterable/Iterator protocol, so a for-in iterable of one
+ * of these types must not register an interface adaptation. Mirrors
+ * lowerForIn's dispatch, including the type-argument requirement — a
+ * bare mention with no arguments has no element type there and falls
+ * back to the iterator path.
+ */
+let forInLowersToIndexLoop = (ct: ClassType): boolean => {
+  var canonical = ct;
+  while (canonical.genericSource != null) {
+    canonical = canonical.genericSource as ClassType;
+  }
+  if (canonical.name != "FixedArray" && canonical.name != "ImmutableArray" &&
+      canonical.name != "Array") {
+    return false;
+  }
+  return ct.typeArguments != null &&
+      (ct.typeArguments as Array<Type>).length > 0;
+};
+
 let getElementType = (
   ctx: CheckerContext,
   iterableType: Type,
@@ -6804,7 +6827,14 @@ case _: {
     case ForInStatement {pattern, iterable, body, loc}: {
       let iterableType = checkExpression(ctx, iterable, null);
       let baseT = unwrapAliases(iterableType);
-      if (baseT is ClassType) {
+      // Codegen compiles a for-in over FixedArray, ImmutableArray or
+      // Array to a direct index loop (lowerForIn) and ignores the
+      // top-level Iterable adaptation, so registering one here would
+      // only root the whole iterator protocol for a loop that never
+      // dispatches through it. RTA mirrors the same dispatch in its
+      // ForInStatement arm.
+      if (baseT is ClassType &&
+          !forInLowersToIndexLoop(baseT as ClassType)) {
         let ct = baseT as ClassType;
         let iterableIface = findImplementedInterfaceTransitiveInChecker(ct, "Iterable");
         if (iterableIface != null) {

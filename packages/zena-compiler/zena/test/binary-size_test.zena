@@ -196,7 +196,7 @@ let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zen
  * moving up is the signal this test exists to give.
  */
 let budget = 37;
-let arrayBudget = 5800;
+let arrayBudget = 240;
 let helloBudget = 600;
 
 export let tests = suite('Binary size', (): void => {
@@ -223,6 +223,29 @@ export let tests = suite('Binary size', (): void => {
       `${i32ToString(helloBudget)}-byte budget. Instantiating String is ` +
       `reaching more than a program with one literal uses — see ` +
       `docs/design/binary-size.md.`);
+  });
+
+  test('a for-in over an array ships no iterator machinery', (ctx: TestContext): void => {
+    // lowerForIn compiles a for-in whose iterable is a bare array,
+    // FixedArray, ImmutableArray or Array to an index loop —
+    // array.len/array.get, no :iterator call, no ArrayIterator, no
+    // Iterable dispatch. Reachability must root exactly what lowering
+    // calls: this program's only loop is over an array literal, so
+    // none of the iterator machinery may exist in the module. The
+    // String assertions pin the downstream chain: instantiating
+    // FixedArray<String> as a sibling force-reached its `contains`,
+    // whose `==` on elements dragged the whole String equality/hash
+    // family into a program with no strings.
+    let wat = new WatGenerator('zena-cli', false).generate(programOf(arrayTarget));
+    isTrue(!wat.contains('ArrayIterator'),
+      `${arrayTarget} emits ArrayIterator machinery for a loop lowering ` +
+      `compiles to an index loop.`);
+    isTrue(!wat.contains('_trampoline'),
+      `${arrayTarget} emits interface trampolines for a loop that never ` +
+      `dispatches through an interface.`);
+    isTrue(!wat.contains('String_'),
+      `${arrayTarget} emits String machinery in a program with no strings — ` +
+      `a phantom FixedArray<String> specialization is being instantiated.`);
   });
 
   test('a subclassed generic emits no erased specialization', (ctx: TestContext): void => {
@@ -265,6 +288,16 @@ export let tests = suite('Binary size', (): void => {
     // same text for any program.
     assertSnapshot('hello_string_program',
         new WatGenerator('zena-cli', false).generate(programOf(helloTarget)));
+  });
+
+  test('the array-sum WAT names everything it ships', (ctx: TestContext): void => {
+    // Small enough to read whole since the for-in fast path stopped
+    // rooting the iterator protocol: one function (main's index loop),
+    // one array type, and the plumbing. Regenerate with
+    // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry means a
+    // loop that lowers to array.get started reaching machinery again.
+    assertSnapshot('array_sum_program',
+        new WatGenerator('zena-cli', false).generate(programOf(arrayTarget)));
   });
 
   test('the minimal program WAT is exactly the ideal module', (ctx: TestContext): void => {

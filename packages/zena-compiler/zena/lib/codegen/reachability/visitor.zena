@@ -48,6 +48,16 @@ export final class TypeLowerer implements TypeLowererInterface {
           this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, ta), model, depth + 1);
         }
       }
+      // An extension VALUE is its representation type: reached code
+      // naming FixedArray<T> allocates and indexes the raw array
+      // (array.new_fixed in an index-loop for-in) with no reached
+      // signature ever mentioning it, so the representation is
+      // evidence in its own right.
+      if (ct.isExtension && ct.onType != null) {
+        this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm,
+            substituteTypeParamsInClassContext(this.pass.wasm, ct,
+                ct.onType as Type)), model, depth + 1);
+      }
     } else if (t is RecordType) {
       let rec = t as RecordType;
       for (let pair in rec.properties) {
@@ -76,6 +86,12 @@ export final class TypeLowerer implements TypeLowererInterface {
       this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, (t as TypeAliasType).target), model, depth + 1);
     } else if (t is ArrayType) {
       this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, (t as ArrayType).elementType), model, depth + 1);
+      // The array TYPE itself is evidence, not only its element: a
+      // value of it can exist with no reached signature naming it.
+      // Deferred like records — computing the element ValType here
+      // could throw for a record element whose dispatch is not
+      // created yet; the settle step resolves it.
+      this.pass.noteCompositeType(eraseTypeParameters(this.pass.wasm, t));
     } else if (t is FunctionType) {
       let ft = t as FunctionType;
       // Interning the closure struct here would compute its signature
@@ -377,7 +393,11 @@ export final class TypeLowerer implements TypeLowererInterface {
       let at = t as ArrayType;
       this.discoverType(at.elementType, model);
       let elemValType = typeToValType(this.pass.wasm, at.elementType);
-      this.pass.wasm.getArray(elemValType, true);
+      // Reached, not just created: an array VALUE can exist with no
+      // reached signature mentioning the type — a literal iterated by
+      // an index loop is array.new_fixed and array.get, both of which
+      // reference the type index directly.
+      this.pass.markTypeReached(this.pass.wasm.getArray(elemValType, true));
 
       if (isConcrete(at)) {
         let faClass = this.pass.findPreludeClass("FixedArray");
@@ -1643,22 +1663,50 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               }
             }
           } else if (resolvedIterable is ArrayType) {
-            let faClass = this.pass.findPreludeClass("FixedArray");
-            if (faClass != null) {
-              let arrType = resolvedIterable as ArrayType;
-              let typeArgs = new Array<Type>();
-              typeArgs.push(arrType.elementType);
-              let instantiated = instantiateClassType(faClass as ClassType, typeArgs);
-              resolvedIterableTypes.push(instantiated);
-              this.pass.typeLowerer.discoverType(instantiated, model);
-              this.pass.specializer.instantiateClassType(instantiated, model);
+            // A bare array iterable lowers to array.len/array.get
+            // directly, but the wasm array TYPE those instructions
+            // reference still has to exist. Instantiating
+            // FixedArray<elem> here — as this arm used to — was what
+            // put three FixedArray specializations (the element type
+            // plus siblings) in a program whose only loop is over an
+            // array literal.
+            this.pass.typeLowerer.discoverType(resolvedIterable, model);
+          }
+
+          // lowerForIn (ir/control-flow.zena) compiles a for-in over
+          // FixedArray, ImmutableArray or Array to a direct index loop
+          // — no :iterator call, no ArrayIterator, no Iterable
+          // dispatch — so those iterables must root none of the
+          // protocol machinery. The filter mirrors lowerForIn's
+          // dispatch; a class skipped here that lowering DOES
+          // iterator-path fails loudly there, never silently.
+          let protocolClasses = new Array<ClassType>();
+          for (let rc in resolvedIterableTypes) {
+            if (!forInLowersToIndexLoop(rc)) {
+              protocolClasses.push(rc);
+            } else {
+              // The index loop still consumes the VALUE: the class —
+              // and through it an extension's raw representation type,
+              // which array.len/array.get reference — must exist even
+              // though no method on it is ever called.
+              this.pass.typeLowerer.discoverType(rc, model);
             }
           }
+          let usesIteratorProtocol = if (resolvedIterable is ArrayType) {
+            false
+          } else if (resolvedIterable is ClassType ||
+              resolvedIterable is ThisType) {
+            protocolClasses.length > 0
+          } else {
+            // Interfaces, type parameters, unions: lowering takes the
+            // iterator path for all of them.
+            true
+          };
 
           let iterableIface = this.pass.findPreludeInterface("Iterable");
           let iteratorIface = this.pass.findPreludeInterface("Iterator");
 
-          if (iterableIface != null) {
+          if (iterableIface != null && usesIteratorProtocol) {
             let iterableKey = getInterfaceKey(iterableIface as InterfaceType);
             let itKey = getInterfaceMemberKey(iterableKey, ":iterator");
             this.pass.wasm.usedInterfaceMembers[itKey] = true;
@@ -1668,7 +1716,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
             let cha = this.pass.cha;
             let typeLowerer = this.pass.typeLowerer;
-            for (let resolvedClass in resolvedIterableTypes) {
+            for (let resolvedClass in protocolClasses) {
               let cName = getClassKey(resolvedClass);
               this.pass.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iterableKey)] = true;
               
@@ -1689,7 +1737,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             }
           }
 
-          if (iteratorIface != null) {
+          if (iteratorIface != null && usesIteratorProtocol) {
             let iteratorKey = getInterfaceKey(iteratorIface as InterfaceType);
             let nextKey = getInterfaceMemberKey(iteratorKey, "next");
             this.pass.wasm.usedInterfaceMembers[nextKey] = true;
@@ -2720,4 +2768,26 @@ let ctorMethodName = (md: MethodDefinition): String => {
     }
     case _: ""
   };
+};
+
+/**
+ * True when lowerForIn (ir/control-flow.zena) takes the direct
+ * index-loop path for a for-in whose iterable has this class type:
+ * FixedArray, ImmutableArray and Array compile to array.len/array.get
+ * and never touch the Iterable/Iterator protocol. Mirrors lowerForIn's
+ * dispatch, including the type-argument requirement — a bare mention
+ * with no arguments has no element type there and falls back to the
+ * iterator path.
+ */
+let forInLowersToIndexLoop = (ct: ClassType): boolean => {
+  var canonical = ct;
+  while (canonical.genericSource != null) {
+    canonical = canonical.genericSource as ClassType;
+  }
+  if (canonical.name != "FixedArray" && canonical.name != "ImmutableArray" &&
+      canonical.name != "Array") {
+    return false;
+  }
+  return ct.typeArguments != null &&
+      (ct.typeArguments as Array<Type>).length > 0;
 };
