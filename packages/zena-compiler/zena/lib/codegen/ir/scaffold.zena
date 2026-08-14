@@ -115,7 +115,7 @@ let fnvLoop = (b: IrBuilder, data: i32, start: i32, end: i32): i32 => {
   let header = b.newBlock();
   let hParam = b.blockParam(header, i32vt);
   let iParam = b.blockParam(header, i32vt);
-  var seed = new Array<i32>();
+  let seed = new Array<i32>();
   seed.push(i32c(b, -2128831035));
   seed.push(start);
   b.br(header, seed);
@@ -125,7 +125,7 @@ let fnvLoop = (b: IrBuilder, data: i32, start: i32, end: i32): i32 => {
   let bodyB = b.newBlock();
   let exitB = b.newBlock();
   let hOut = b.blockParam(exitB, i32vt);
-  var exitArgs = new Array<i32>();
+  let exitArgs = new Array<i32>();
   exitArgs.push(hParam);
   b.brIf(done, exitB, exitArgs, bodyB, new Array<i32>());
 
@@ -135,7 +135,7 @@ let fnvLoop = (b: IrBuilder, data: i32, start: i32, end: i32): i32 => {
   let mixed = b.binary(IrOp.i32_mul, i32vt, xored, i32c(b, 16777619));
   let one = i32c(b, 1);
   let next = b.binary(IrOp.i32_add, i32vt, iParam, one);
-  var back = new Array<i32>();
+  let back = new Array<i32>();
   back.push(mixed);
   back.push(next);
   b.br(header, back);
@@ -158,7 +158,7 @@ let synthStringCreate = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let vtg = lay.vtable as WasmGlobal;
   let vtVal = b.emit(IrOp.global_get, vtg.type, -1, b.addRef(new IrRefGlobal(vtg)));
   fieldSet(b, lay.st, '<vtable>', inst, vtVal);
-  var lenInit = new Array<i32>();
+  let lenInit = new Array<i32>();
   lenInit.push(params[0]);
   lenInit.push(-1);
   let bytes = b.emit(IrOp.array_new, new ValTypeRef(byteArr) as ValType,
@@ -268,11 +268,11 @@ let synthStringHash = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let zeroB = b.newBlock();
   let storeB = b.newBlock();
   let hFinal = b.blockParam(storeB, i32vt);
-  var hArgs = new Array<i32>();
+  let hArgs = new Array<i32>();
   hArgs.push(h);
   b.brIf(h, storeB, hArgs, zeroB, new Array<i32>());
   b.switchTo(zeroB);
-  var oneArg = new Array<i32>();
+  let oneArg = new Array<i32>();
   oneArg.push(i32c(b, 1));
   b.br(storeB, oneArg);
   b.switchTo(storeB);
@@ -329,7 +329,7 @@ let synthWasiWriteString = (wasm: WasmModule, func: WasmFunction): IrBody => {
   b.switchTo(writeB);
   let header = b.newBlock();
   let iParam = b.blockParam(header, i32vt);
-  var iInit = new Array<i32>();
+  let iInit = new Array<i32>();
   iInit.push(i32c(b, 0));
   b.br(header, iInit);
   b.switchTo(header);
@@ -341,21 +341,21 @@ let synthWasiWriteString = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let addr = b.binary(IrOp.i32_add, i32vt, i32c(b, 64), iParam);
   let srcIdx = b.binary(IrOp.i32_add, i32vt, start, iParam);
   let byte = b.emit(IrOp.array_get_u, i32vt, data, srcIdx);
-  var storePair = new Array<i32>();
+  let storePair = new Array<i32>();
   storePair.push(addr);
   storePair.push(byte);
   b.emitVoid(IrOp.i32_store8, b.pushExtra(storePair), 0);
   let next = b.binary(IrOp.i32_add, i32vt, iParam, i32c(b, 1));
-  var back = new Array<i32>();
+  let back = new Array<i32>();
   back.push(next);
   b.br(header, back);
 
   b.switchTo(afterB);
-  var iov0 = new Array<i32>();
+  let iov0 = new Array<i32>();
   iov0.push(i32c(b, 0));
   iov0.push(i32c(b, 64));
   b.emitVoid(IrOp.i32_store, b.pushExtra(iov0), 2);
-  var iov1 = new Array<i32>();
+  let iov1 = new Array<i32>();
   iov1.push(i32c(b, 4));
   iov1.push(len);
   b.emitVoid(IrOp.i32_store, b.pushExtra(iov1), 2);
