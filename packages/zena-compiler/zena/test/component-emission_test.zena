@@ -23,6 +23,7 @@ import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { i32ToString } from 'zena:string-convert';
@@ -70,10 +71,46 @@ let programFor = (path: String, target: String): Program => {
   return new Program(units, entryUnit);
 };
 
-let compileFor = (path: String, target: String): ByteArray =>
-  new BinaryGenerator(target, false)
-    .generate(programFor(path, target))
-    .toByteArray();
+let compileFor = (path: String, target: String): ByteArray => {
+  let generator = new BinaryGenerator(target, false);
+  if (target == 'component') {
+    let host = new PlainHost();
+    generator.runtimeMemoryModule = compileComponentRuntimeModule(
+        host, stdlibRoot, loadPackageMap(host, 'zena-packages.json'));
+  }
+  return generator.generate(programFor(path, target)).toByteArray();
+};
+
+/** The payload of the (`skip`+1)-th section with `id`, or empty. */
+let sectionPayloadAfter = (bytes: ByteArray, id: i32, skip: i32): ByteArray => {
+  var pos = 8;
+  var remaining = skip;
+  while (pos < bytes.length) {
+    let sectionId = bytes[pos];
+    pos += 1;
+    var size = 0;
+    var shift = 0;
+    while (pos < bytes.length) {
+      let b = bytes[pos];
+      pos += 1;
+      size = size | ((b & 0x7f) << shift);
+      shift += 7;
+      if ((b & 0x80) == 0) { break; }
+    }
+    if (sectionId == id) {
+      if (remaining == 0) {
+        let payload = newByteArray(size);
+        for (var i = 0; i < size; i += 1) {
+          payload[i] = bytes[pos + i];
+        }
+        return payload;
+      }
+      remaining -= 1;
+    }
+    pos += size;
+  }
+  return newByteArray(0);
+};
 
 /**
  * The core module's WAT. The component wrapper has no WAT form — it is
@@ -279,15 +316,29 @@ export let tests = suite('Component emission', (): void => {
     // the signature the ABI expects, and the lift names it rather than
     // the program's own function.
     let bytes = compileFor(`${fixtures}/strings.zena`, 'component');
-    let coreExports = sectionPayload(sectionPayload(bytes, 1), 7);
+    // Two core modules: the runtime memory module first, then the
+    // program. The program's export section is in the second.
+    let runtimeExports = sectionPayload(sectionPayload(bytes, 1), 7);
+    isTrue(containsName(runtimeExports, 'realloc'),
+      'the runtime module does not export its allocator');
+    isTrue(containsName(runtimeExports, 'memory'),
+      'the runtime module does not export its memory');
+    let coreExports = sectionPayload(sectionPayloadAfter(bytes, 1, 1), 7);
     isTrue(containsName(coreExports, 'greet$componentExport'),
       'the core module does not export a wrapper for `greet`');
-    isTrue(containsName(coreExports, 'cabi_realloc'),
-      'the core module does not export the canonical allocator');
     isTrue(containsName(coreExports, 'cabi_post_return'),
       'the core module does not export post-return');
-    isTrue(containsName(coreExports, 'memory'),
-      'the core module does not export its memory');
+    // The allocator and the memory are the runtime module's; exporting
+    // them from the program too would be a second name for each, and
+    // the program does not even define a memory to export.
+    isTrue(!containsName(coreExports, 'cabi_realloc'),
+      'the program still exports cabi_realloc beside the runtime module');
+    isTrue(!containsName(coreExports, 'memory'),
+      'the program still exports a memory it no longer defines');
+    // The program's memory is imported from the runtime module.
+    let coreImports = sectionPayload(sectionPayloadAfter(bytes, 1, 1), 2);
+    isTrue(containsName(coreImports, 'zena:runtime'),
+      'the program does not import from the runtime namespace');
     // The wrapper is a core export only: the component still exports the
     // name the program wrote.
     let componentExports = sectionPayload(bytes, 11);
@@ -295,6 +346,17 @@ export let tests = suite('Component emission', (): void => {
       'the component does not export `greet`');
     isTrue(!containsName(componentExports, 'greet$componentExport'),
       'the wrapper leaked out as a component export');
+  });
+
+  test('a string-moving component embeds the runtime memory module first',
+      (ctx: TestContext): void => {
+    // Two core-module sections and two instantiations, runtime first:
+    // its memory must exist before the program module that imports it —
+    // the same ordering a memory-carrying `canon lower` will need
+    // (docs/design/component-emission.md, 1.3).
+    let ids = sectionIds(compileFor(`${fixtures}/strings.zena`, 'component'));
+    equal(idsToString(ids), '1,2,1,2,6,7,8,11',
+      `strings.zena emitted sections ${idsToString(ids)}`);
   });
 
   test('a wrapper releases every argument buffer it is handed',
@@ -330,10 +392,14 @@ export let tests = suite('Component emission', (): void => {
     // allocator and the copy loops are rooted only when a String
     // actually crosses an export, so the timer and clock components are
     // emitted exactly as they were before any of this existed.
-    let coreExports = sectionPayload(
-        sectionPayload(compileFor(`${fixtures}/clock.zena`, 'component'), 1), 7);
+    let bytes = compileFor(`${fixtures}/clock.zena`, 'component');
+    let coreExports = sectionPayload(sectionPayload(bytes, 1), 7);
     isTrue(!containsName(coreExports, 'cabi_realloc'),
       'a component with no strings still links the canonical allocator');
+    // And with no linear memory there is no runtime module either: one
+    // core-module section, and it is the program.
+    isTrue(sectionPayloadAfter(bytes, 1, 1).length == 0,
+      'a memory-free component still embeds the runtime memory module');
   });
 
   test('Zena identifiers become kebab-case names', (ctx: TestContext): void => {

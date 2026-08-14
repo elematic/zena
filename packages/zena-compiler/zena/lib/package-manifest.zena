@@ -138,7 +138,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
     "byte-buffer", "cli", "component-abi", "error", "fixed-array", "fs",
     "growable-array", "iterable-utils", "growable-array-iterator", "hashable",
     "immutable-array", "iterator", "json", "map", "ordered-map",
-    "math", "memory", "option", "ownership", "range", "regex", "result", "sequence",
+    "math", "option", "ownership", "range", "regex", "result", "sequence",
     "set", "string", "string-builder", "string-convert",
     "string-reader", "template-strings-array", "test"
   ];
@@ -154,6 +154,21 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // `freestanding` and `component` have no entry on purpose: a target
   // that cannot print must fail to resolve `zena:console` rather than
   // quietly link a no-op that compiles and then prints nothing.
+  // Virtual module: memory → the linear-memory allocator. One
+  // implementation everywhere but the component target, where the
+  // memory belongs to the runtime memory module and the allocator
+  // delegates to its `realloc` — two allocators handing out blocks from
+  // the same pages would corrupt each other, so the component entry
+  // keeps no allocation state at all.
+  let memoryVirtual = new HashMap<String, String>();
+  memoryVirtual["host"] = "memory.zena";
+  memoryVirtual["js"] = "memory.zena";
+  memoryVirtual["wasi"] = "memory.zena";
+  memoryVirtual["zena-cli"] = "memory.zena";
+  memoryVirtual["freestanding"] = "memory.zena";
+  memoryVirtual["component"] = "memory/component.zena";
+  exports["memory"] = new ModuleExport(memoryVirtual);
+
   let consoleVirtual = new HashMap<String, String>();
   consoleVirtual["host"] = "console/host.zena";
   consoleVirtual["js"] = "console/host.zena";

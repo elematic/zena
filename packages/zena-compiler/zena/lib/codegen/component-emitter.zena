@@ -142,14 +142,26 @@ export let componentCallbackExport = "__zena_component_callback";
  * The core exports the canonical options name, when a signature carries
  * anything that lives in linear memory.
  *
- * They are `zena:component-abi`'s, exported under the names
- * `wit-component` and `wit-bindgen` use for the same two functions, so
- * a component of ours reads the way every other one does.
+ * They are exported under the names `wit-component` and `wit-bindgen`
+ * use for the same functions, so a component of ours reads the way
+ * every other one does. `cabi_post_return` is the program module's
+ * (`zena:component-abi`'s); `realloc` and `memory` are the runtime
+ * memory module's.
  */
 export let componentReallocExport = "cabi_realloc";
 export let componentPostReturnExport = "cabi_post_return";
-/** The core module's memory export, which the emitter aliases back out. */
+/** The runtime memory module's exports, aliased into the lift options. */
 export let componentMemoryExport = "memory";
+export let componentRuntimeReallocExport = "realloc";
+
+/**
+ * The core-import namespace the program module uses for the runtime
+ * memory module's exports — its memory, and the `realloc` behind
+ * `zena:memory`'s delegating allocator. Reserved: `component-shape`
+ * does not treat it as a WIT interface, and the emitter satisfies it
+ * from the runtime core instance at instantiation.
+ */
+export let componentRuntimeNamespace = "zena:runtime";
 
 /**
  * The standard library module holding the guest side of the canonical
@@ -239,6 +251,14 @@ export final class ComponentShape {
   imports = new Array<ComponentImportFunc>();
   builtins = new Array<ComponentCanonBuiltin>();
   exports = new Array<ComponentExportFunc>();
+  /**
+   * Whether the program module imports its memory from the runtime
+   * memory module — true exactly when it touches linear memory at all,
+   * since on this target the memory is never its own. The emitter must
+   * then be handed the runtime module's bytes to embed and instantiate
+   * first.
+   */
+  var needsRuntimeMemory = false;
 
   new();
 }
@@ -431,16 +451,28 @@ let writeSection = (out: ByteBuffer, id: i32, payload: ByteBuffer): void => {
  *   canon         `canon lower` per imported function
  *   core instance one synthesized instance per interface, holding the
  *                 lowered core functions under their field names
+ *   core module   the runtime memory module, when the program uses
+ *                 linear memory
+ *   core instance instantiate it (it imports nothing)
  *   core module   the Zena module, embedded verbatim
  *   core instance instantiate it against those
  *   alias         pull each lifted export back out of the instance
  *   type          one functype per export
  *   canon         `canon lift` per export
  *   export        the component's exports
+ *
+ * `runtimeModule` is the runtime memory module's bytes, compiled by the
+ * driver (`component-runtime.zena`); it is embedded and instantiated
+ * before the program module, which imports its `memory` and `realloc`
+ * under the reserved namespace. Required exactly when the shape says
+ * the program uses linear memory — the memory is never the program
+ * module's own on this target, so that a lowered import's canonical
+ * options can name it (docs/design/component-emission.md, 1.3).
  */
 export let emitComponent = (
   coreModule: ByteBuffer,
-  shape: ComponentShape
+  shape: ComponentShape,
+  runtimeModule: ByteBuffer | null = null
 ): ByteBuffer => {
   let out = new ByteBuffer();
   // Magic, then version 0x000d and layer 0x0001 — the layer is what
@@ -572,6 +604,31 @@ export let emitComponent = (
     writeSection(out, ComponentSectionId.CoreInstance as i32, coreInstances);
   }
 
+  // --- core module: the runtime memory module, when the program needs it --
+  // Embedded and instantiated before the program so that its memory
+  // exists first: the program imports it, and a memory-carrying `canon
+  // lower` can name it. It imports nothing, so instantiation takes no
+  // arguments.
+  let runtimeInstance = groups.length + (if (shape.builtins.length > 0) 1 else 0);
+  if (shape.needsRuntimeMemory) {
+    if (runtimeModule == null) {
+      throw new Error(
+        "This program uses linear memory, so its component needs the " +
+        "runtime memory module, and the driver did not provide one. " +
+        "Compile it with compileComponentRuntimeModule and pass it to " +
+        "BinaryGenerator."
+      );
+    }
+    writeSection(out, ComponentSectionId.CoreModule as i32,
+        runtimeModule as ByteBuffer);
+    let runtimeInst = new ByteBuffer();
+    runtimeInst.writeULEB128(1);
+    runtimeInst.writeByte(0x00); // instantiate
+    runtimeInst.writeULEB128(0); // the runtime module, embedded first
+    runtimeInst.writeULEB128(0); // no arguments
+    writeSection(out, ComponentSectionId.CoreInstance as i32, runtimeInst);
+  }
+
   // --- core module: the Zena module, verbatim -----------------------------
   writeSection(out, ComponentSectionId.CoreModule as i32, coreModule);
 
@@ -579,9 +636,12 @@ export let emitComponent = (
   let instantiate = new ByteBuffer();
   instantiate.writeULEB128(1);
   instantiate.writeByte(0x00); // instantiate
-  instantiate.writeULEB128(0); // module index 0
+  // The program module's index: after the runtime module when there is
+  // one, first otherwise.
+  instantiate.writeULEB128(if (shape.needsRuntimeMemory) 1 else 0);
   instantiate.writeULEB128(
-      groups.length + (if (shape.builtins.length > 0) 1 else 0));
+      groups.length + (if (shape.builtins.length > 0) 1 else 0) +
+      (if (shape.needsRuntimeMemory) 1 else 0));
   for (var i = 0; i < groups.length; i += 1) {
     // The argument name is the core module's import module name, which
     // is the interface string itself.
@@ -594,6 +654,13 @@ export let emitComponent = (
     instantiate.writeByte(0x12);
     instantiate.writeULEB128(groups.length);
   }
+  if (shape.needsRuntimeMemory) {
+    // The program's memory import and the delegated realloc, both
+    // satisfied by the runtime instance's like-named exports.
+    writeName(instantiate, componentRuntimeNamespace);
+    instantiate.writeByte(0x12);
+    instantiate.writeULEB128(runtimeInstance);
+  }
   writeSection(out, ComponentSectionId.CoreInstance as i32, instantiate);
 
   if (shape.exports.length == 0) {
@@ -601,8 +668,9 @@ export let emitComponent = (
   }
 
   // The instantiated module is the last core instance: one per imported
-  // interface, then the builtins', then this one.
-  let programInstance = groups.length + (if (shape.builtins.length > 0) 1 else 0);
+  // interface, then the builtins', then the runtime memory module's,
+  // then this one.
+  let programInstance = runtimeInstance + (if (shape.needsRuntimeMemory) 1 else 0);
 
   // The core function index space: the lowered imports, then the
   // builtins, then everything aliased back out of the program instance.
@@ -638,17 +706,22 @@ export let emitComponent = (
 
   // A `string` anywhere in a signature means the canonical options: the
   // memory the bytes live in, and the allocator that placed them. Both
-  // come out of the program module's own exports, which is why one core
-  // module is still the whole component — lifting happens after
-  // instantiation, so nothing has to exist before the module does. An
-  // *import* carrying a string is the case that cannot do this, because
-  // its lowering has to exist before the module is instantiated; see
-  // docs/design/component-emission.md 1.3.
+  // are the runtime memory module's — the one owner of the pages — and
+  // `post-return` is the program's, because reading the return area is
+  // its business. A signature that needs them without the runtime
+  // module existing is a contradiction: strings live in linear memory,
+  // and touching linear memory is what brings the runtime module in.
   var needsMemory = false;
   var needsPostReturn = false;
   for (let e in shape.exports) {
     if (e.needsMemory()) { needsMemory = true; }
     if (e.needsPostReturn()) { needsPostReturn = true; }
+  }
+  if (needsMemory && !shape.needsRuntimeMemory) {
+    throw new Error(
+      "An export's signature carries a string, but the program module " +
+      "was emitted without linear memory. These cannot both be true."
+    );
   }
   let reallocCoreFunc = firstExportCoreFunc + shape.exports.length +
       callbackNames.length;
@@ -681,12 +754,13 @@ export let emitComponent = (
   if (needsMemory) {
     // The core function index space continues past the callbacks, so
     // realloc and post-return are aliased in that order to match
-    // `reallocCoreFunc` above.
+    // `reallocCoreFunc` above. The allocator and the memory are the
+    // runtime module's; `cabi_post_return` is the program's.
     exportAliases.writeByte(0x00);
     exportAliases.writeByte(0x00);
     exportAliases.writeByte(0x01);
-    exportAliases.writeULEB128(programInstance);
-    writeName(exportAliases, componentReallocExport);
+    exportAliases.writeULEB128(runtimeInstance);
+    writeName(exportAliases, componentRuntimeReallocExport);
     if (needsPostReturn) {
       exportAliases.writeByte(0x00);
       exportAliases.writeByte(0x00);
@@ -699,7 +773,7 @@ export let emitComponent = (
     exportAliases.writeByte(0x00);
     exportAliases.writeByte(0x02); // core sort: memory
     exportAliases.writeByte(0x01);
-    exportAliases.writeULEB128(programInstance);
+    exportAliases.writeULEB128(runtimeInstance);
     writeName(exportAliases, componentMemoryExport);
   }
   writeSection(out, ComponentSectionId.Alias as i32, exportAliases);

@@ -22,6 +22,14 @@ export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
 
   backendName(): String { return 'wasm'; }
 
+  /**
+   * The runtime memory module's bytes, for the component target. The
+   * driver compiles them once per build (`compileComponentRuntimeModule`)
+   * and hands them here; a component whose program uses linear memory
+   * cannot be emitted without them, and `emitComponent` says so.
+   */
+  var runtimeMemoryModule: ByteBuffer | null = null;
+
   new(this.target = "zena-cli", this.zirStats = false, this.debugNames = false);
 
   generate(program: Program): ByteBuffer {
@@ -40,7 +48,7 @@ export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
           "ModuleGenerator.compile did not collect one."
         );
       }
-      return emitComponent(bb, shape);
+      return emitComponent(bb, shape, this.runtimeMemoryModule);
     }
     return bb;
   }

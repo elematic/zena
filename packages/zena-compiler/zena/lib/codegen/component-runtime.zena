@@ -1,0 +1,80 @@
+/**
+ * The component target's runtime memory module, compiled on demand.
+ *
+ * A component whose program touches linear memory embeds a second core
+ * module owning the memory and the allocator
+ * (docs/design/component-emission.md, 1.3). Its source is fixed —
+ * `component-memory.zena` in the standard library — so this is a small,
+ * deterministic nested compile: same compiler, `freestanding` target,
+ * fresh `Compiler` instance. Drivers call it once per component build
+ * and hand the bytes to `BinaryGenerator`; a driver that skips it gets
+ * a loud error from `emitComponent` the moment a program needs memory,
+ * not a component that fails validation.
+ *
+ * This lives beside the generators rather than in `compiler.zena`
+ * because it needs both halves — the compiler to check the source and
+ * `BinaryGenerator` to emit it — and `compiler.zena` deliberately does
+ * not depend on codegen.
+ */
+
+import { String } from 'zena:string';
+import { Array } from 'zena:array';
+import { ByteBuffer } from 'zena:byte-buffer';
+import { Error } from 'zena:error';
+import { CompilerHost } from '../library-loader.zena';
+import { PackageConfig } from '../module-resolver.zena';
+import {
+  createCompiler, CompilerOptions, checkCompilation
+} from '../compiler.zena';
+import { DiagnosticSeverity } from '../diagnostics.zena';
+import { Program, CompilationUnit } from '../program.zena';
+import { BinaryGenerator } from './binary-generator.zena';
+import { HashMap } from 'zena:map';
+
+/** The runtime module's entry, relative to the standard library root. */
+let runtimeEntry = "component-memory.zena";
+
+/**
+ * Compile the runtime memory module; the finished core-module bytes.
+ *
+ * `stdlibRoot` and `packages` are the same values the enclosing compile
+ * was created with — the nested compile reads the same standard library
+ * through the same host, just on the `freestanding` target, where
+ * `zena:memory` is the real free-list allocator rather than the
+ * delegating one.
+ */
+export let compileComponentRuntimeModule = (
+  host: CompilerHost,
+  stdlibRoot: String,
+  packages: HashMap<String, PackageConfig>
+): ByteBuffer => {
+  let options = new CompilerOptions("freestanding", stdlibRoot, packages);
+  let compiler = createCompiler(host, options);
+  let entryPath = stdlibRoot + "/" + runtimeEntry;
+  let compResult = compiler.compile(entryPath);
+  let checkResults = checkCompilation(compResult, null, false);
+  for (let diag in checkResults.diagnostics) {
+    if (diag.severity == DiagnosticSeverity.Error) {
+      // Program code cannot reach this compile; an error here means the
+      // stdlib or the compiler itself regressed.
+      throw new Error(
+          "the component runtime memory module failed to compile: " +
+          diag.message);
+    }
+  }
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    let res = checkResults.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+  return new BinaryGenerator("freestanding", false)
+      .generate(new Program(units, entryUnit));
+};

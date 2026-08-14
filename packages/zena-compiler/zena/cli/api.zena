@@ -20,6 +20,8 @@ import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.ze
 import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
 import { DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
+import { targetEmitsComponent } from '../lib/targets.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 
 /**
@@ -114,6 +116,10 @@ export let compileSource = (
   }
   let program = new Program(units, entryUnit);
   let generator = new BinaryGenerator(target, false);
+  if (targetEmitsComponent(target)) {
+    generator.runtimeMemoryModule =
+        compileComponentRuntimeModule(host, stdlibRoot, packages);
+  }
   lastOutput = generator.generate(program).toByteArray();
   return 0;
 };

@@ -1,0 +1,35 @@
+/**
+ * @file
+ *
+ * The component target's runtime memory module.
+ *
+ * Not an importable library — this file is a compilation *entry point*.
+ * The compiler builds it `--target freestanding` and embeds the result
+ * as the component's first core module: the one that owns linear memory
+ * and the free list, instantiated before the program module so that a
+ * lowered import's canonical options have a memory to name (see
+ * docs/design/component-emission.md, 1.3). It is deliberately not in
+ * the stdlib manifest; nothing can `import` it by name.
+ *
+ * The program module imports this module's two exports under the
+ * reserved `zena:runtime` namespace — `memory` as its own memory 0, and
+ * `realloc` behind `zena:memory`'s delegating allocator — so there is
+ * exactly one allocator over the pages, and it lives here.
+ *
+ * The wrapper below would rather be
+ * `export { realloc } from 'zena:component-abi';` — but a re-export
+ * binding is module-system surface only, and an entry consisting of one
+ * emits an empty module with no exports at all. Until re-exports reach
+ * the export section, the function is declared here and delegates.
+ */
+
+import { realloc as abiRealloc } from 'zena:component-abi';
+
+export function realloc(
+  ptr: i32,
+  oldSize: i32,
+  align: i32,
+  newSize: i32
+): i32 {
+  return abiRealloc(ptr, oldSize, align, newSize);
+}

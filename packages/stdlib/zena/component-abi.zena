@@ -10,7 +10,7 @@
  *
  * Nothing in a Zena program calls them. The compiler synthesizes a
  * wrapper around each export whose signature mentions `String` and the
- * wrapper calls these; `cabiRealloc` is named by the component's
+ * wrapper calls these; `realloc` is named by the component's
  * canonical options rather than by any code at all. That is why they
  * live in the standard library instead of being built in IR: the work
  * is allocation and a copy loop, which Zena already says better than
@@ -50,7 +50,7 @@ let mem = Memory.default;
  * and becomes a trap. That is the right outcome: returning 0 would make
  * the canonical ABI write the value at address 0 and carry on.
  */
-export function cabiRealloc(
+export function realloc(
   ptr: i32,
   oldSize: i32,
   align: i32,
@@ -110,7 +110,7 @@ export function stringFromMemory(ptr: i32, len: i32): String {
  * argument, and the free list never gets it back.
  *
  * The guard is on the length rather than the pointer. A zero-length
- * string is lowered through `cabiRealloc(0, 0, 1, 0)`, which returns
+ * string is lowered through `realloc(0, 0, 1, 0)`, which returns
  * `align` — an aligned address that was never allocated. Freeing that
  * would walk into a block header that is not there.
  */
@@ -127,7 +127,7 @@ export function releaseStringArgument(ptr: i32, len: i32): void {
  * A single `string` flattens to two core values, one more than a lifted
  * function may return, so the canonical ABI returns it indirectly: the
  * core function's `i32` result is this area's address, and the host
- * reads the pair out of it. `cabiPostReturn` frees both halves once it
+ * reads the pair out of it. `postReturn` frees both halves once it
  * has.
  *
  * The bytes are copied verbatim, which assumes the String is WTF-8 —
@@ -136,8 +136,8 @@ export function releaseStringArgument(ptr: i32, len: i32): void {
  */
 export function stringResultArea(s: String): i32 {
   let len = s.length;
-  let area = cabiRealloc(0, 0, 4, 8);
-  let ptr = if (len == 0) 0 else cabiRealloc(0, 0, 1, len);
+  let area = realloc(0, 0, 4, 8);
+  let ptr = if (len == 0) 0 else realloc(0, 0, 1, len);
   for (var i = 0; i < len; i += 1) {
     mem[ptr + i] = s.getByteAt(i);
   }
@@ -153,7 +153,7 @@ export function stringResultArea(s: String): i32 {
  * only moment at which the guest can know the buffer is dead. Without
  * it the component still works and leaks a string per call.
  */
-export function cabiPostReturn(area: i32): void {
+export function postReturn(area: i32): void {
   let ptr = mem.getI32(area);
   if (ptr != 0) {
     defaultAllocator.free(ptr);

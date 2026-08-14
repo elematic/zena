@@ -2,13 +2,16 @@
 
 ## Status
 
-- **Status**: Implemented through C2, and C3's export half. `--target
+- **Status**: Implemented through C2, and most of C3. `--target
   component` emits components; `zena:time`'s `sleep` is a p3 timer on
   that target, a 300 ms sleep costing 310 ms of wall time and 20 ms of
-  CPU; and `string` crosses an export in both directions
-  (`greet("world")` → `"hello, world"`). The rest of C3 — the WIT type
-  encoder, memory-carrying lowerings, and stdio — and C4 onward are
-  unbuilt. Every load-bearing claim was verified against
+  CPU; `string` crosses an export in both directions
+  (`greet("world")` → `"hello, world"`); the WIT type encoder
+  round-trips through `wasm-tools component wit`; and a memory-using
+  program gets the two-core-module shape of 1.3, its memory imported
+  from the runtime memory module. The rest of C3 — memory-carrying
+  `canon lower`, stdio, and the encoder wired to the emitter — and C4
+  onward are unbuilt. Every load-bearing claim was verified against
   `wasm-tools 1.252.0` / `wasmtime 46.0.0` on 2026-08-08; the
   corrections that building it turned up are marked **Correction**
   below.
@@ -980,13 +983,16 @@ C3 splits along the line 1.3 draws, and the first part is **done**:
 #### C3.1 — `string` on exports. **Done.**
 
 The direction that needs no second core module. Lifting happens after
-instantiation, so an export takes `memory` and `realloc` from the
-program module's own exports and one core module is still the whole
-component.
+instantiation, so an export can take `memory` and `realloc` from the
+program module's own exports and one core module is the whole
+component — which is how this shipped, and what made it separable.
+(C3.3's memory half has since moved both to the runtime memory module:
+lift and lower now name one owner, and the program module no longer
+exports `cabi_realloc` or `memory` at all.)
 
 The marshaling is `zena:component-abi`, a standard library module: a
-`cabiRealloc` over `zena:memory`'s free list, the two string
-conversions, and a `cabiPostReturn` that frees what a result allocated.
+`realloc` over `zena:memory`'s free list, the two string
+conversions, and a `postReturn` that frees what a result allocated.
 Written in Zena for the reason the p3 callback is — allocating and
 copying is something the standard library already says. What the
 compiler synthesizes is one wrapper per string-carrying export, in
@@ -1049,12 +1055,51 @@ world-level `use` and type definitions, `include`, cross-document
 packages, and fixed-length lists. `future` and `stream` refuse loudly
 until C6.
 
-#### C3.3 — imported memory, and stdio.
+#### C3.3 — imported memory, and stdio. **Memory done; stdio open.**
 
-The runtime core module, `WasmModule.ensureMemory` emitting an import
-rather than a definition, the allocator delegating to the imported
-`realloc`, memory-carrying `canon lower`, and `zena:console` over p2
+The runtime core module, the program module importing its memory rather
+than defining it, the allocator delegating to the imported `realloc`,
+memory-carrying `canon lower`, and `zena:console` over p2
 `wasi:cli/stdout`. This is where a component can print.
+
+The memory half is built, in the shape 1.3 prescribes. A program that
+touches linear memory on this target gets a two-core-module component:
+the runtime memory module first — `memory` plus a `realloc` with the
+canonical contract — instantiated with no arguments, then the program
+module, which imports both under the reserved `zena:runtime` namespace.
+The lift options now take `memory` and `realloc` from the runtime
+instance, and only `cabi_post_return` remains the program's. A program
+with no linear memory is emitted exactly as before, one core module and
+all.
+
+Three decisions worth recording:
+
+- **The runtime module is compiled from Zena, per build.** Its source is
+  `component-memory.zena` in the standard library — a re-export of
+  `zena:component-abi`'s `realloc`, built `--target freestanding`,
+  where `zena:memory` is the real free-list allocator. The driver runs
+  that nested compile (`compileComponentRuntimeModule`) and hands the
+  bytes to `BinaryGenerator`; hand-writing a free list in raw bytes
+  inside the emitter would restate what the standard library already
+  says, in a form nothing can review.
+- **`zena:memory` is now a virtual module.** Every target but
+  `component` keeps the single implementation; the component entry
+  (`memory/component.zena`) holds no allocation state and routes
+  `alloc`/`free` through the imported `realloc`, because two free lists
+  handing out blocks from the same pages would corrupt each other — the
+  runtime module owns the pages, full stop. One visible difference:
+  exhaustion traps instead of returning the failure arm, since the
+  canonical `realloc` cannot report failure.
+- **The import/definition switch lives in `ModuleGenerator`, not
+  `WasmModule.ensureMemory`** as the sketch above says. Which form the
+  memory takes is a per-target emission decision, and `WasmModule` is
+  the target-free structural model; `ensureMemory` still only records
+  that a memory exists.
+
+Still open here: memory-carrying `canon lower` (the import-side
+adapters mirroring C3.1's export wrappers), and `zena:console` over
+`wasi:cli/stdout` — whose instance types are what C3.2's encoder is
+for.
 
 ### C4 — filesystem and CLI. Weeks.
 

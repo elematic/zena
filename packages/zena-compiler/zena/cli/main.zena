@@ -16,7 +16,8 @@ import { Module, Statement, VariableDeclaration } from '../lib/ast.zena';
 import { Array } from 'zena:array';
 import { SemanticModel } from '../lib/semantic-model.zena';
 import { performance } from '../lib/time.zena';
-import { isKnownTarget, knownTargetsDescription } from '../lib/targets.zena';
+import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from '../lib/targets.zena';
+import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
 
 class WasiHost implements CompilerHost {
   testMode: boolean;
@@ -173,6 +174,13 @@ export let main = (): i32 => {
     }
 
     let generator = new BinaryGenerator(target, zirStats, debugNames);
+    if (targetEmitsComponent(target)) {
+      // The component's second core module, owning linear memory and
+      // the allocator. Compiled up front — whether the program needs it
+      // is only known after its own compile, and this one is small.
+      generator.runtimeMemoryModule =
+          compileComponentRuntimeModule(host, "/stdlib", packages);
+    }
     let wasmBytes = generator.generate(program).toByteArray();
     writeFileBytes(outPath, wasmBytes);
 

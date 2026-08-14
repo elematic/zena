@@ -1,0 +1,76 @@
+/**
+ * @file
+ *
+ * `zena:memory` on the component target: the same surface, delegating
+ * to the runtime memory module.
+ *
+ * A component's linear memory lives in a separate core module,
+ * instantiated before the program — that is what lets a lowered import
+ * carry a `string` or `list`, whose canonical options must name a
+ * memory that exists before the program module does (see
+ * docs/design/component-emission.md, 1.3). The free list lives there
+ * with it: two allocators handing out blocks from the same pages would
+ * corrupt each other, so this variant keeps no allocation state at all
+ * and routes every request through the runtime module's `realloc`.
+ *
+ * The `Memory` class itself is unchanged — `memory.size`, loads and
+ * stores address memory index 0, which on this target is the imported
+ * memory. Only the allocator differs.
+ */
+
+import { Allocator } from '../memory.zena';
+import { Error } from 'zena:error';
+
+export { Memory, Allocator, FreeListAllocator, BumpAllocator } from '../memory.zena';
+
+/**
+ * The runtime memory module's allocator, with C `realloc` semantics
+ * plus an alignment: `ptr == 0` allocates, `newSize == 0` frees, and
+ * anything else moves. The namespace is reserved — `component-shape`
+ * skips it when collecting WIT imports, and the emitter satisfies it
+ * from the runtime core instance rather than from the host.
+ */
+@external("zena:runtime", "realloc")
+declare function runtimeRealloc(
+  ptr: i32,
+  oldSize: i32,
+  align: i32,
+  newSize: i32
+): i32;
+
+/**
+ * Every allocation is a call across to the runtime module.
+ *
+ * The result shape is `Allocator`'s, and this implementation never
+ * takes its failure arm: the runtime module's `realloc` has the
+ * canonical ABI's contract and cannot report failure — returning 0
+ * would be an address — so exhaustion traps over there instead.
+ * Nothing in the standard library takes the failure arm as anything
+ * but a throw, so the trap arrives a frame earlier and means the same
+ * thing; conforming to the interface is what keeps every caller
+ * allocator-generic.
+ */
+final class DelegatingAllocator implements Allocator {
+  alloc(bytes: i32): inline (true, i32) | inline (false, _) {
+    return (true, runtimeRealloc(0, 0, 8, bytes));
+  }
+
+  allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, _) {
+    if (align > 8) {
+      // Reachable: `allocAligned` is public `Allocator` surface, and
+      // user code on this target can ask for any alignment. The
+      // standard library itself never asks past 8 (the canonical ABI
+      // does not either), and the runtime module's blocks are 8-aligned
+      // with the request ignored beyond that — so a larger ask must
+      // throw rather than hand back a misaligned block.
+      throw new Error('the component allocator aligns to at most 8');
+    }
+    return (true, runtimeRealloc(0, 0, align, bytes));
+  }
+
+  free(ptr: i32): void {
+    runtimeRealloc(ptr, 0, 8, 0);
+  }
+}
+
+export let defaultAllocator: Allocator = new DelegatingAllocator();

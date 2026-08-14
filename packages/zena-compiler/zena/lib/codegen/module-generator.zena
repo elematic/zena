@@ -37,7 +37,8 @@ import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
 import {
   ComponentShape, componentEntryExport, componentCallbackExport,
-  componentReallocExport, componentPostReturnExport
+  componentReallocExport, componentPostReturnExport,
+  componentMemoryExport, componentRuntimeNamespace
 } from './component-emitter.zena';
 import { buildComponentShape } from './component-shape.zena';
 import { targetEmitsComponent } from '../targets.zena';
@@ -446,7 +447,16 @@ export final class ModuleGenerator {
 
     this.emitter.emitTypeSectionEnd();
 
-    this.emitter.emitImportSectionStart(wasm.functionImports.length);
+    // On the component target the program does not own its memory: the
+    // runtime memory module does, instantiated before this one, so that
+    // a lowered import's canonical options have a memory that already
+    // exists (docs/design/component-emission.md, 1.3). Everywhere else
+    // the module defines its memory as before.
+    let memoryImported =
+        targetEmitsComponent(this.target) && wasm.hasMemory;
+
+    this.emitter.emitImportSectionStart(
+        wasm.functionImports.length + (if (memoryImported) 1 else 0));
     for (let f in wasm.functionImports) {
       if (f.importModule != null && f.importName != null) {
         if (f.signature.index < 0) {
@@ -454,6 +464,10 @@ export final class ModuleGenerator {
         }
         this.emitter.emitFunctionImport(f.importModule as String, f.importName as String, f.signature.index);
       }
+    }
+    if (memoryImported) {
+      this.emitter.emitMemoryImport(
+          componentRuntimeNamespace, componentMemoryExport, 1);
     }
     this.emitter.emitImportSectionEnd();
 
@@ -466,7 +480,7 @@ export final class ModuleGenerator {
     }
     this.emitter.emitFunctionSectionEnd();
 
-    if (wasm.hasMemory) {
+    if (wasm.hasMemory && !memoryImported) {
       this.emitter.emitMemorySection(1);
     }
 
@@ -667,7 +681,10 @@ export final class ModuleGenerator {
         exports.push(new WasmExport(wrapperName, wrapper));
       }
     }
-    if (wasm.componentReallocFunc != null) {
+    // `cabi_realloc` is not exported when the memory is imported: the
+    // canonical options name the runtime memory module's own realloc,
+    // which is the allocator this module already delegates to.
+    if (wasm.componentReallocFunc != null && !memoryImported) {
       exports.push(new WasmExport(componentReallocExport,
           wasm.componentReallocFunc as WasmFunction));
     }
@@ -697,7 +714,9 @@ export final class ModuleGenerator {
     }
     totalExports += tagExports.length;
 
-    if (wasm.hasMemory) {
+    // An imported memory is the runtime module's to export; re-exporting
+    // it here would only offer the component a second name for it.
+    if (wasm.hasMemory && !memoryImported) {
       totalExports += 1;
     }
 
@@ -712,7 +731,7 @@ export final class ModuleGenerator {
       let tag = wasm.exportTagMap[tName];
       this.emitter.emitExportTag(tName, tag.index);
     }
-    if (wasm.hasMemory) {
+    if (wasm.hasMemory && !memoryImported) {
       this.emitter.emitExportMemory("memory", 0);
     }
     this.emitter.emitExportSectionEnd();

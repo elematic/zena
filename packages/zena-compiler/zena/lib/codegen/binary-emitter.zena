@@ -859,6 +859,24 @@ export final class BinaryEmitter implements WasmEmitter {
     b.writeByte(if (isMutable) 1 else 0);
   }
 
+  emitMemoryImport(module: String, name: String, minPages: i32): void {
+    let section = this.currentSection;
+    if (section == null) {
+      return;
+    }
+    section.writeULEB128(module.length);
+    for (var j = 0; j < module.length; j += 1) {
+      section.writeByte(module.getByteAt(j));
+    }
+    section.writeULEB128(name.length);
+    for (var j = 0; j < name.length; j += 1) {
+      section.writeByte(name.getByteAt(j));
+    }
+    section.writeByte(0x02); // 2 = memory import
+    section.writeByte(0x00); // limits: min only
+    section.writeULEB128(minPages);
+  }
+
   emitMemorySection(minPages: i32): void {
     let payload = new ByteBuffer();
     payload.writeULEB128(1); // 1 memory

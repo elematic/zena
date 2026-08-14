@@ -32,7 +32,7 @@ import {
   ComponentCanonBuiltin, ComponentValType, noComponentResult, isKebabName,
   toKebabName, canonNamespace, isKnownCanonBuiltin, componentEntryExport,
   componentCallbackExport, componentTypeNeedsMemory,
-  componentSignatureNeedsMemory
+  componentSignatureNeedsMemory, componentRuntimeNamespace
 } from './component-emitter.zena';
 
 /** Look through type aliases (`type`, `distinct type`) to the type itself. */
@@ -251,6 +251,10 @@ let signatureOf = (
  */
 export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
   let shape = new ComponentShape();
+  // On this target the program module never owns its memory: if it
+  // touches linear memory at all, it imports the runtime memory
+  // module's, and the emitter must embed that module first.
+  shape.needsRuntimeMemory = wasm.hasMemory;
 
   for (let f in wasm.functionImports) {
     let module = f.importModule;
@@ -291,6 +295,12 @@ export let buildComponentShape = (wasm: WasmModule): ComponentShape => {
         }
       }
       shape.builtins.push(new ComponentCanonBuiltin(field, builtinResult));
+      continue;
+    }
+    // The runtime memory module's exports. Not a WIT interface: the
+    // emitter satisfies this namespace from the runtime core instance
+    // at instantiation, the same way `canon` never reaches the host.
+    if (module == componentRuntimeNamespace) {
       continue;
     }
     if (!module.contains(":")) {
