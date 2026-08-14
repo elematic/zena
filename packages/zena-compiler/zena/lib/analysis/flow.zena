@@ -3,7 +3,7 @@ import { HashSet } from 'zena:set';
 import { HashMap } from 'zena:map';
 import { Type } from '../types.zena';
 import { SymbolId } from '../scope/symbol.zena';
-import { SourceLocation } from '../ast.zena';
+import { Node, SourceLocation } from '../ast.zena';
 
 /**
  * The checker's control-flow graph (docs/design/ownership.md, "The checker
@@ -119,6 +119,24 @@ export final class FlowJoin extends FlowNode {
 }
 
 /**
+ * One if/else whose arms may need compensating drops (ownership.md
+ * §"The branch-join rule"): recorded while checking, decided when the
+ * enclosing scope closes and every capture and escape is known. The
+ * arm-end flow nodes let the decision ask, per binding, whether a move
+ * lies on one arm and not the other.
+ */
+export final class PendingEdgeIf {
+  ifNode: Node;
+  preBranch: FlowNode;
+  trueEnd: FlowNode;
+  falseEnd: FlowNode;
+  trueReachable: boolean;
+  falseReachable: boolean;
+  new(this.ifNode, this.preBranch, this.trueEnd, this.falseEnd,
+      this.trueReachable, this.falseReachable);
+}
+
+/**
  * The checker's per-body flow state, saved and restored around nested
  * function bodies the way return/yield context is: a closure checked in
  * the middle of an enclosing body gets its own FlowStart and its own
@@ -132,7 +150,9 @@ export final class FlowBodyState {
   exceptionTargets: Array<FlowJoin>;
   loopMoves: Array<Array<FlowMove>>;
   loopDeclared: Array<HashSet<i32>>;
+  pendingEdgeIfs: Array<PendingEdgeIf>;
   new(this.current, this.start, this.loopHeads, this.loopExits,
-      this.exceptionTargets, this.loopMoves, this.loopDeclared);
+      this.exceptionTargets, this.loopMoves, this.loopDeclared,
+      this.pendingEdgeIfs);
 }
 

@@ -52,7 +52,7 @@ import { OrderedMap } from 'zena:ordered-map';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import {
   FlowNode, FlowStart, FlowAssign, FlowMove, FlowNarrowings, FlowJoin,
-  FlowUnreachable, FlowBodyState
+  FlowUnreachable, FlowBodyState, PendingEdgeIf
 } from './analysis/flow.zena';
 import { HashSet } from 'zena:set';
 import { Error } from 'zena:error';
@@ -111,7 +111,7 @@ import {
   promoteNumeric, typeToString, requiredParameterCount, makeTypeIdGenerator, typeContainsTypeParameter,
   isOwnershipWrapper, ownershipHandleName, ownershipHandleInner
 , ErasedType} from './types.zena';
-import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency } from './semantic-model.zena';
+import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
@@ -329,6 +329,34 @@ final class CheckerContext {
    * declaration for lowering.
    */
   #ownScopeStack = new Array<Array<OwnDropCandidate>>();
+
+  /**
+   * If/else joins recorded while checking, awaiting the branch-join
+   * decision when a scope with candidates closes (the decision needs
+   * the complete capture and escape facts). Per body, swapped with the
+   * rest of the flow state.
+   */
+  var #pendingEdgeIfs = new Array<PendingEdgeIf>();
+
+  /** Whether any open scope holds an implicit-drop candidate. */
+  #hasOwnCandidates(): boolean {
+    for (let frame in this.#ownScopeStack) {
+      if (frame.length > 0) { return true; }
+    }
+    return false;
+  }
+
+  /**
+   * Record an if/else for the branch-join decision. Skipped when no
+   * candidate is in scope — nothing could need a compensating drop.
+   */
+  recordPendingEdgeIf(ifNode: Node, preBranch: FlowNode,
+      trueEnd: FlowNode, falseEnd: FlowNode): void {
+    if (!this.#hasOwnCandidates()) { return; }
+    this.#pendingEdgeIfs.push(new PendingEdgeIf(
+      ifNode, preBranch, trueEnd, falseEnd,
+      !(trueEnd is FlowUnreachable), !(falseEnd is FlowUnreachable)));
+  }
 
   /**
    * Flow-type results at join nodes, keyed by (join id, symbol id) and
@@ -1960,6 +1988,25 @@ final class CheckerContext {
     classifyOwnUses(this, scopeNode, ids);
     for (let c in frame) {
       let id = c.sym.id as i32;
+      // The branch-join rule: a candidate moved on exactly one arm of
+      // an if whose arms both complete gets a compensating drop at the
+      // end of the arm that kept it, making it uniformly dead at the
+      // merge. Decided here, where captures and escapes are complete.
+      if (this.#everMovedSymbols.has(id) &&
+          !this.#everAssignedSymbols.has(id) &&
+          !this.#undroppableSymbols.has(id)) {
+        for (let p in this.#pendingEdgeIfs) {
+          let movedTrue = p.trueReachable &&
+            this.findLiveMove(c.sym.id, p.trueEnd, p.preBranch.id) != null;
+          let movedFalse = p.falseReachable &&
+            this.findLiveMove(c.sym.id, p.falseEnd, p.preBranch.id) != null;
+          if (movedTrue && !movedFalse && p.falseReachable) {
+            this.#addEdgeDrop(p.ifNode, c.sym.id, false, c.resource);
+          } else if (movedFalse && !movedTrue && p.trueReachable) {
+            this.#addEdgeDrop(p.ifNode, c.sym.id, true, c.resource);
+          }
+        }
+      }
       let drop = !this.#everMovedSymbols.has(id) &&
         !this.#everAssignedSymbols.has(id) &&
         !this.#undroppableSymbols.has(id);
@@ -1978,6 +2025,31 @@ final class CheckerContext {
             i32ToString(classSymId as i32) + ".:dispose");
         }
       }
+    }
+  }
+
+  /**
+   * Commit one compensating drop, replacing any stale entry for the
+   * same binding on the same if (the latest verdict wins; a fresh model
+   * on a full re-check clears the rest). Roots `:dispose` — the drop is
+   * a plain call at the arm's end, so no exception region is needed.
+   */
+  #addEdgeDrop(ifNode: Node, symId: SymbolId, onTrue: boolean, resource: ClassType): void {
+    let existing = this.model.edgeDropsOfDirect(ifNode);
+    let kept = new Array<EdgeDrop>();
+    if (existing != null) {
+      for (let d in existing) {
+        if ((d.symbolId as i32) != (symId as i32)) { kept.push(d); }
+      }
+    }
+    kept.push(new EdgeDrop(symId, onTrue));
+    this.model.setEdgeDrops(ifNode, kept);
+    let deps = this.currentDependencies();
+    if (deps != null) {
+      let classSymId = (resource.genericSource ?? resource).symbolId;
+      deps.referencedSymbols.add(classSymId);
+      deps.referencedClassMethods.add(
+        i32ToString(classSymId as i32) + ".:dispose");
     }
   }
 
@@ -2070,7 +2142,7 @@ final class CheckerContext {
     let saved = new FlowBodyState(
       this.#currentFlow, this.#currentFlowStart, this.#flowLoopHeads,
       this.#flowLoopExits, this.#flowExceptionTargets,
-      this.#flowLoopMoves, this.#flowLoopDeclared);
+      this.#flowLoopMoves, this.#flowLoopDeclared, this.#pendingEdgeIfs);
     let start = new FlowStart();
     start.id = this.newFlowId();
     // A nested body's walk may continue at its creation site: the
@@ -2086,6 +2158,7 @@ final class CheckerContext {
     this.#flowExceptionTargets = new Array<FlowJoin>();
     this.#flowLoopMoves = new Array<Array<FlowMove>>();
     this.#flowLoopDeclared = new Array<HashSet<i32>>();
+    this.#pendingEdgeIfs = new Array<PendingEdgeIf>();
     return saved;
   }
 
@@ -2097,6 +2170,7 @@ final class CheckerContext {
     this.#flowExceptionTargets = saved.exceptionTargets;
     this.#flowLoopMoves = saved.loopMoves;
     this.#flowLoopDeclared = saved.loopDeclared;
+    this.#pendingEdgeIfs = saved.pendingEdgeIfs;
   }
 
   // --- Narrowing ---
@@ -7033,6 +7107,10 @@ case _: {
             checkStatement(ctx, alternate);
             ctx.exitScope();
           }
+          // Held for the branch-join drop decision when the enclosing
+          // scope closes (ownership.md §"The branch-join rule").
+          ctx.recordPendingEdgeIf(stmt as Node, preBranchFlow, trueEnd,
+              ctx.currentFlow);
           ctx.mergeFlow(trueEnd, ctx.currentFlow);
         }
       }

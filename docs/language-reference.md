@@ -3989,8 +3989,18 @@ it in a closure, or uses it in a position the compiler does not recognize
 as a borrow — and, for now, when it was declared in a value-producing
 block, a generator, or an `async` body. Left alone means what it always
 meant before implicit drop: the value leaks unless something else releases
-it. A conditional move also leaves the binding alone for now; releasing on
-the non-moving branch is the branch-join rule, which lands separately.
+it.
+
+A move on one arm of an `if` releases the binding at the end of the other
+arm, so it is uniformly dead after the merge — and a use there is the
+use-after-move error either way:
+
+```zena
+let f = open(path);
+if (handOff) {
+  pool.give(f);   // moved
+}                 // not handing off? released here
+```
 
 Release timing is observable when `dispose` has effects: a resource
 declared in an inner block releases at that block's `}`, before the code

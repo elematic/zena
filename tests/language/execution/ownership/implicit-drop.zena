@@ -1,5 +1,5 @@
 // @mode: run
-// @result: 6154
+// @result: 12298
 // Implicit drop (ownership.md §Implicit drop): an `Own` of a resource
 // class bound by a simple `let`, never moved, reassigned, captured or
 // escaped, is released when its block exits — on the normal path, on an
@@ -95,6 +95,20 @@ let innerBlockTiming = (): i32 => {
   return order;
 };
 
+/**
+ * The branch-join rule: a move on one arm is compensated at the end of
+ * the other, so the binding is uniformly dead at the merge.
+ */
+let branchJoin = (c: boolean): i32 => {
+  let before = released;
+  let a = new Res(9);
+  if (c) {
+    consume(a);   // handed off: the callee owns it, no release here
+  }
+  // The else edge released a; past the merge it is dead either way.
+  return released - before;
+};
+
 export function main(): i32 {
   // normalExit returns 0 (releases happen after its return), and the
   // two releases land in reverse order: order == 21 afterwards.
@@ -107,6 +121,7 @@ export function main(): i32 {
   if (capturedNotReleased() == 0) { score += 16; }
   if (disownedNotReleased() == 0) { score += 32; }
   if (innerBlockTiming() == 8) { score += 64; }
-  // score should be 127; scale so partial sums are unambiguous.
+  if (branchJoin(true) == 0 && branchJoin(false) == 1) { score += 128; }
+  // score should be 255; scale so partial sums are unambiguous.
   return score * 48 + 58;
 }

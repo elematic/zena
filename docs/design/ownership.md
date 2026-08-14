@@ -904,20 +904,33 @@ routes — `execution/ownership/lifecycle-flag.zena` reaches its double
 Inserting `dispose()` when an owned value leaves scope unmoved is what turns
 affine (_at most_ once) into leak-free. Four parts:
 
-**Landed: the scope-exit half.** A simple-`let` `Own<resource>` binding that
-nothing moves, reassigns, captures or escapes is released at its block's
-exit — normal completion, `return`, `break`/`continue`, and unwind — through
-the same shared finally region `using` compiles to, in reverse declaration
-order via the regions' nesting. The checker decides per declaration
-(`exitOwnScope`; a use position must be affirmatively classified as a borrow,
-so anything unrecognized leaves the binding alone and leaks as before) and
-records the verdict in `SemanticModel.scopeExitDrops`; lowering routes a
-flagged declaration into `lowerScopeDropRegion`, `using`'s twin. Not yet
-released: conditionally-moved bindings (the branch-join rule below),
-bindings in value-producing blocks (the region cannot carry a result out),
-parameters, and anything in a generator or `async` body (part 4's
-cancellation table). `execution/ownership/implicit-drop.zena` pins the
-behavior; the release-timing note now lives in the language reference.
+**Landed: the scope-exit half, and the branch-join rule for `if`.** A
+simple-`let` `Own<resource>` binding that nothing moves, reassigns,
+captures or escapes is released at its block's exit — normal completion,
+`return`, `break`/`continue`, and unwind — through the same shared finally
+region `using` compiles to, in reverse declaration order via the regions'
+nesting. The checker decides per declaration (`exitOwnScope`; a use
+position must be affirmatively classified as a borrow, so anything
+unrecognized leaves the binding alone and leaks as before) and records the
+verdict in `SemanticModel.scopeExitDrops`; lowering routes a flagged
+declaration into `lowerScopeDropRegion`, `using`'s twin.
+
+The branch-join rule is implemented for `if`/`else`: a candidate moved on
+exactly one arm, both arms completing, gets a compensating drop at the end
+of the arm that kept it — a plain call on that edge, no region — recorded
+in `SemanticModel.edgeDrops` and decided when the enclosing scope closes,
+where the capture and escape facts are complete. The arm-end flow nodes
+recorded per `if` are what let the decision ask, per binding, whether a
+move lies on one arm and not the other; nesting composes because an inner
+if's compensation makes the binding definitely dead at its own merge. A
+diverging arm needs no compensation, which is what keeps the
+conditional-handoff shape working.
+
+Not yet released: bindings in value-producing blocks (the region cannot
+carry a result out), parameters, `match`-arm asymmetric moves, and
+anything in a generator or `async` body (part 4's cancellation table).
+`execution/ownership/implicit-drop.zena` pins the behavior; the
+release-timing note now lives in the language reference.
 
 1. **Unwind paths.** Every scope holding a live resource needs cleanup on
    exception propagation. `finally` makes this expressible; it is still real

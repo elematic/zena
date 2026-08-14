@@ -181,9 +181,11 @@ Error>` becomes writable.
 - **O3 — implicit drop.** Needs O2, plus G1 for the per-state cancellation drop
   table (the liveness already exists in `generators.zena`). **Landed**: the
   scope-exit half — an unmoved, uncaptured `Own<resource>` `let` releases at
-  its block's exit through `using`'s shared finally region (ownership.md
-  §Implicit drop). Still open: branch-join compensating drops, value-block
-  and parameter drops, and the suspension/cancellation chapter.
+  its block's exit through `using`'s shared finally region — and the
+  branch-join rule for `if`/`else`, with compensating drops at the
+  non-moving arm's end (ownership.md §Implicit drop). Still open:
+  value-block and parameter drops, `match`-arm joins, and the
+  suspension/cancellation chapter.
 - **O3.5 — `affine T` type parameters** and container opt-in, landing lazily one
   container at a time. The one cross-track dependency: needs **A0's member-level
   `where` bounds**. `Array<Unmanaged<Conn>>` covers the interim.

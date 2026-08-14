@@ -335,6 +335,39 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
   return cx.finishMerge(m, saved);
 };
 
+/**
+ * The compensating drops one arm of an `if` owes at its end: the other
+ * arm moved the binding, so releasing here makes it uniformly dead at
+ * the merge (ownership.md §"The branch-join rule"). Plain calls, not a
+ * region — the drop belongs to one specific point on one edge.
+ */
+let emitEdgeDrops = (cx: LoweringContext, stmt: IfStatement, onTrue: boolean): void => {
+  let dropsOpt = cx.func.model.edgeDropsOf(stmt as Node);
+  if (dropsOpt == null) { return; }
+  for (let d in dropsOpt) {
+    if (d.onTrueArm != onTrue) { continue; }
+    let declType = cx.func.model.getBindingTypeById(d.symbolId);
+    if (declType == null) {
+      bail(cx, 'edge drop untyped binding');
+    }
+    let ownerClass = disposeOwnerClass(cx, declType);
+    let syms = new Array<SymbolId>();
+    syms.push(d.symbolId);
+    let value = cx.envValues(syms)[0];
+    emitDispose(cx, value, ownerClass);
+  }
+};
+
+/** Whether the if has any drops owed on the given arm. */
+let hasEdgeDrops = (cx: LoweringContext, stmt: IfStatement, onTrue: boolean): boolean => {
+  let dropsOpt = cx.func.model.edgeDropsOf(stmt as Node);
+  if (dropsOpt == null) { return false; }
+  for (let d in dropsOpt) {
+    if (d.onTrueArm == onTrue) { return true; }
+  }
+  return false;
+};
+
 export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
   var cond = -1;
   var letBinds: LetCondBinds | null = null;
@@ -353,7 +386,17 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
     let thenB = cx.b.newBlock();
     let mergeB = cx.b.newBlock();
     let mergeParams = cx.addParams(mergeB, mergeSyms);
-    cx.b.brIf(cond, thenB, noValues(), mergeB, cx.envValues(mergeSyms));
+    if (hasEdgeDrops(cx, stmt, false)) {
+      // The false edge owes drops, and with no else there is no block
+      // to hold them: route it through one.
+      let falseB = cx.b.newBlock();
+      cx.b.brIf(cond, thenB, noValues(), falseB, noValues());
+      cx.b.switchTo(falseB);
+      emitEdgeDrops(cx, stmt, false);
+      cx.b.br(mergeB, cx.envValues(mergeSyms));
+    } else {
+      cx.b.brIf(cond, thenB, noValues(), mergeB, cx.envValues(mergeSyms));
+    }
 
     let saved = cx.copyEnv();
     cx.b.switchTo(thenB);
@@ -376,6 +419,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
     }
     lowerStmt(cx, stmt.consequent);
     if (cx.reachable) {
+      emitEdgeDrops(cx, stmt, true);
       cx.b.br(mergeB, cx.envValues(mergeSyms));
     }
     cx.env = saved;
@@ -403,6 +447,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
   }
   lowerStmt(cx, stmt.consequent);
   if (cx.reachable) {
+    emitEdgeDrops(cx, stmt, true);
     cx.mergeArm(m, -1);
   }
 
@@ -411,6 +456,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
   cx.b.switchTo(elseB);
   lowerStmt(cx, alternate);
   if (cx.reachable) {
+    emitEdgeDrops(cx, stmt, false);
     cx.mergeArm(m, -1);
   }
 
