@@ -57,8 +57,8 @@ export const mapModule = fs.readFileSync(
   path.join(stdlibDir, 'map.zena'),
   'utf-8',
 );
-export const orderedMapModule = fs.readFileSync(
-  path.join(stdlibDir, 'ordered-map.zena'),
+export const collectionsModule = fs.readFileSync(
+  path.join(stdlibDir, 'collections', 'index.zena'),
   'utf-8',
 );
 export const boxModule = fs.readFileSync(

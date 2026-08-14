@@ -3676,10 +3676,11 @@ export interface Hashable {
   hashCode(): i32;
 }
 
-// In zena:map and zena:set:
+// In zena:collections (HashMap and HashSet are also in zena:map and zena:set):
 class HashMap<K extends Hashable, V> { ... }
 class HashSet<T extends Hashable> { ... }
-class OrderedMap<K extends Hashable, V> { ... }
+class OrderedHashMap<K extends Hashable, V> { ... }
+class OrderedHashSet<T extends Hashable> { ... }
 ```
 
 The contract: if two values are equal (per the `eq` intrinsic's semantics — a

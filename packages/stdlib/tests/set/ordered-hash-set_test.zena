@@ -1,0 +1,116 @@
+// OrderedHashSet stdlib tests using zena:test
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {OrderedHashSet} from 'zena:collections';
+import {StringBuilder} from 'zena:string-builder';
+
+let joined = (s: OrderedHashSet<String>): String => {
+  let sb = new StringBuilder();
+  for (let v in s) {
+    sb.append(v);
+  }
+  return sb.toString();
+};
+
+export let tests = suite('OrderedHashSet', (): void => {
+  test('starts empty', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<i32>();
+    equal(s.size, 0);
+  });
+
+  test('add increases size and reports newness', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<i32>();
+    isTrue(s.add(1));
+    isTrue(s.add(2));
+    isFalse(s.add(1));
+    equal(s.size, 2);
+  });
+
+  test('has and [] agree', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<i32>();
+    s.add(42);
+    isTrue(s.has(42));
+    isTrue(s[42]);
+    isFalse(s.has(7));
+    isFalse(s[7]);
+  });
+
+  test('iterates in insertion order', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<String>();
+    s.add('b');
+    s.add('a');
+    s.add('c');
+    equal(joined(s), 'bac');
+  });
+
+  test('re-adding an existing value does not move it', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<String>();
+    s.add('b');
+    s.add('a');
+    s.add('b');
+    equal(joined(s), 'ba');
+  });
+
+  test('delete then add moves the value to the end', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<String>();
+    s.add('a');
+    s.add('b');
+    s.add('c');
+    isTrue(s.delete('a'));
+    s.add('a');
+    equal(joined(s), 'bca');
+  });
+
+  test('delete returns false for a missing value', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<String>();
+    s.add('a');
+    isFalse(s.delete('zz'));
+    equal(s.size, 1);
+  });
+
+  test('delete of the only value empties the set', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<String>();
+    s.add('a');
+    isTrue(s.delete('a'));
+    equal(s.size, 0);
+    equal(joined(s), '');
+  });
+
+  test('clear empties the set and its order', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<String>();
+    s.add('a');
+    s.add('b');
+    s.clear();
+    equal(s.size, 0);
+    equal(joined(s), '');
+    s.add('z');
+    equal(joined(s), 'z');
+  });
+
+  test('order survives the resizes of a large set', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<i32>();
+    var i = 0;
+    while (i < 200) {
+      isTrue(s.add(i));
+      i += 1;
+    }
+    equal(s.size, 200);
+
+    var expected = 0;
+    for (let v in s) {
+      equal(v, expected);
+      expected += 1;
+    }
+    equal(expected, 200);
+    isTrue(s.has(0));
+    isTrue(s.has(199));
+    isFalse(s.has(200));
+  });
+
+  test('contains comes from IterableUtils', (ctx: TestContext): void => {
+    let s = new OrderedHashSet<i32>();
+    s.add(3);
+    isTrue(s.contains(3));
+    isFalse(s.contains(4));
+  });
+});

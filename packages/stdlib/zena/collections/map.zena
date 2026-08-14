@@ -1,0 +1,100 @@
+// The Map interface and the entry it yields. The hash tables that implement
+// it live in hash-map.zena.
+
+import { Option } from 'zena:option';
+import { Iterable, Iterator } from 'zena:iterator';
+import { Hashable } from 'zena:hashable';
+
+/**
+ * The link from one entry to the next in its bucket.
+ *
+ * Exported so that hash-map.zena can chain entries, and left out of
+ * 'zena:collections' so that callers cannot.
+ */
+export symbol next;
+
+/** A key-value pair from a Map. */
+export class MapEntry<K, V> {
+  /** The key this entry was inserted with. */
+  key: K;
+
+  /**
+   * The value associated with this key. Mutable, so an entry obtained from
+   * iteration can be updated in place.
+   */
+  var value: V;
+
+  /** The next entry in the same bucket, for collision chaining. */
+  var :next: MapEntry<K, V> | null;
+
+  // `nextEntry` rather than `next`: a parameter of that name would shadow the
+  // symbol, and `this.:next` would stop resolving.
+  new(this.key: K, this.value: V, nextEntry: MapEntry<K, V> | null) {
+    this.:next = nextEntry;
+  }
+}
+
+/**
+ * A collection of key-value pairs with efficient lookup by key.
+ *
+ * A key maps to at most one value; inserting over an existing key replaces the
+ * value.
+ *
+ * Keys must not change while they are in the map. An implementation places an
+ * entry by the key's hash code and finds it again by equality, so a key that
+ * changes either leaves its entry unreachable — still held, still counted in
+ * `size`, but no longer findable — or collides with another. Prefer keys that
+ * cannot change: primitives, Strings, enums, and case classes over those.
+ */
+export interface Map<K extends Hashable, V> extends Iterable<MapEntry<K, V>> {
+  /** How many entries the map holds. */
+  size: i32 { get; }
+
+  /**
+   * The value for `key`. Throws KeyNotFoundError if the key is absent, so
+   * reach for it only when the key's presence is an invariant rather than a
+   * question.
+   */
+  operator [](key: K): V;
+
+  /** Associates `value` with `key`, replacing any value already there. */
+  operator []=(key: K, value: V): void;
+
+  /**
+   * `(true, value)` if the key is present, `(false, _)` otherwise.
+   *
+   * The way to ask and read in one step, and the one to prefer: the result is
+   * an inline tuple, so it allocates nothing and is usually destructured
+   * straight away.
+   *
+   *   if (let (true, v) = m.get(k)) { use(v); }
+   */
+  get(key: K): inline (true, V) | inline (false, _);
+
+  /** The value for `key`, or `defaultValue` if the key is absent. */
+  getOr(key: K, defaultValue: V): V;
+
+  /**
+   * `Some(value)` if the key is present, `None` otherwise.
+   *
+   * Answers the same question as `get`, but as a value that can be stored,
+   * returned or passed on. That costs an allocation, so prefer `get` when the
+   * answer is used where it is asked for.
+   */
+  getOption(key: K): Option<V>;
+
+  /** Whether `key` is present. */
+  has(key: K): boolean;
+
+  /** Removes `key`. Returns whether it was present. */
+  delete(key: K): boolean;
+
+  /** Removes every entry. */
+  clear(): void;
+
+  /** An iterator over the keys, in the map's iteration order. */
+  keys(): Iterator<K>;
+
+  /** Calls `callback` once per entry, in the map's iteration order. */
+  forEach(callback: (key: K, value: V) => void): void;
+}

@@ -137,10 +137,11 @@ Implementing `hash` in Zena is **feasible and desirable**, provided that the com
 Partially implemented, via a different route than proposed above:
 
 - `Hashable` (hashCode-only) lives in `zena:hashable`, and `HashMap`,
-  `HashSet`, and `OrderedMap` constrain their keys with `K extends Hashable`.
+  `HashSet`, `OrderedHashMap`, and `OrderedHashSet` constrain their keys with
+  `K extends Hashable`.
 - The `hash`/`eq` intrinsics remain the implementation mechanism, but they are
   no longer exported from the stdlib — they are private declarations inside
-  `zena:map` and `zena:ordered-map`.
+  the `zena:collections` library.
 - All numeric primitives hash by value: i64/u64 fold high and low bits
   (`wrap(x ^ (x >>> 32))`), floats hash their bits after adding `+0.0` so
   that `-0.0` and `+0.0` (which compare equal) hash equally.

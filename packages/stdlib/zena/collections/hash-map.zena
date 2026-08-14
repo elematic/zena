@@ -1,0 +1,505 @@
+// The hash maps behind 'zena:map' and 'zena:collections'.
+//
+// There is one table: a power-of-two array of buckets, each a chain of
+// MapEntry linked by `:next`. OrderedMap extends HashMap, storing a
+// MapEntry subclass that is also a node of a doubly-linked list, so insertion
+// order survives rehashing and costs nothing on lookup. The order list is
+// maintained through three extension points — an entry factory, a removal
+// notification, and a rehash strategy — leaving every lookup path shared.
+
+import { FixedArray } from 'zena:fixed-array';
+import { KeyNotFoundError } from 'zena:error';
+import { Option, some, none } from 'zena:option';
+import { Iterable, Iterator } from 'zena:iterator';
+import { Hashable, hash, equals } from 'zena:hashable';
+import { clz } from 'zena:math';
+import { IterableUtils } from 'zena:iterable-utils';
+import { Map, MapEntry, next } from './map.zena';
+
+/** HashMap's extension points, overridden by OrderedMap. */
+symbol newEntry;
+symbol entryRemoved;
+symbol rehash;
+
+/** How OrderedMap's iterators walk its insertion-order list. */
+symbol nextLive;
+
+/**
+ * Rounds a capacity up to a power of two, so that `hash & (length - 1)` is a
+ * valid bucket index.
+ */
+let getPowerOfTwoCapacity = (capacity: i32): i32 => {
+  return 1 << (32 - clz(capacity - 1));
+};
+
+/**
+ * A bucket entry that is also a node of an insertion-order list.
+ *
+ * `removed` marks an entry that has left the map. Removal unlinks the node
+ * from the order list but leaves `next` intact, so an iterator parked on the
+ * node can still advance past it — see OrderedMap's iteration rules.
+ *
+ * The links are plain fields: this class is module-private, and iteration
+ * hands callers entries typed as MapEntry, so there is nothing to reach them
+ * with.
+ */
+final class OrderedEntry<K, V> extends MapEntry<K, V> {
+  var next: OrderedEntry<K, V> | null = null;
+  var previous: OrderedEntry<K, V> | null = null;
+  var removed: boolean = false;
+}
+
+// ============================================================================
+// HashMap
+// ============================================================================
+
+/**
+ * A hash map with separate chaining, growing at a 75% load factor.
+ *
+ * Iteration order is unspecified and changes as the map grows; use
+ * OrderedHashMap when order matters. Lookup, insertion and deletion are O(1)
+ * amortized.
+ *
+ * A subclass adapts the table through `:newEntry`, `:entryRemoved` and
+ * `:rehash`, which is how OrderedMap threads an insertion-order list through
+ * the entries without duplicating any of the lookup paths.
+ */
+export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> implements Map<K, V> {
+  var #buckets: FixedArray<MapEntry<K, V> | null>;
+  var #size = 0;
+
+  new(capacity: i32 = 16)
+    : #buckets = __array_new_empty<MapEntry<K, V> | null>(getPowerOfTwoCapacity(capacity)) as FixedArray<MapEntry<K, V> | null>;
+
+  size: i32 {
+    get {
+      return this.#size;
+    }
+  }
+
+  // Entries do not cache their key's hash code, so a lookup rehashes the key
+  // it was given rather than trusting a value captured at insertion time.
+  #findEntry(key: K, h: i32): MapEntry<K, V> | null {
+    let buckets = this.#buckets;
+    var entry = buckets[h & (buckets.length - 1)];
+    while (entry != null) {
+      if (equals(entry.key, key)) {
+        return entry;
+      }
+      entry = entry.:next;
+    }
+    return null;
+  }
+
+  operator []=(key: K, value: V): void {
+    var buckets = this.#buckets;
+    if (this.#size * 4 >= buckets.length * 3) {
+      this.#resize();
+      buckets = this.#buckets;
+    }
+
+    let h = hash(key);
+    let existing = this.#findEntry(key, h);
+    if (existing != null) {
+      existing.value = value;
+      return;
+    }
+
+    let index = h & (buckets.length - 1);
+    buckets[index] = this.:newEntry(key, value, buckets[index]);
+    this.#size += 1;
+  }
+
+  /** The value for `key`. Throws KeyNotFoundError if the key is absent. */
+  operator [](key: K): V {
+    let entry = this.#findEntry(key, hash(key));
+    if (entry != null) {
+      return entry.value;
+    }
+    throw new KeyNotFoundError();
+  }
+
+  /**
+   * `(true, value)` if the key is present, `(false, _)` otherwise. An inline
+   * tuple, so this is the allocation-free way to test and read in one step.
+   */
+  get(key: K): inline (true, V) | inline (false, _) {
+    let entry = this.#findEntry(key, hash(key));
+    if (entry != null) {
+      return (true, entry.value);
+    }
+    return (false, _);
+  }
+
+  /** The value for `key`, or `defaultValue` if the key is absent. */
+  getOr(key: K, defaultValue: V): V {
+    let entry = this.#findEntry(key, hash(key));
+    if (entry != null) {
+      return entry.value;
+    }
+    return defaultValue;
+  }
+
+  /**
+   * `Some(value)` if the key is present, `None` otherwise. Prefer `get` unless
+   * the result has to be stored or passed on.
+   */
+  getOption(key: K): Option<V> {
+    let entry = this.#findEntry(key, hash(key));
+    if (entry != null) {
+      return some(entry.value);
+    }
+    return none;
+  }
+
+  has(key: K): boolean {
+    return this.#findEntry(key, hash(key)) != null;
+  }
+
+  /** Removes `key`. Returns whether it was present. */
+  delete(key: K): boolean {
+    let buckets = this.#buckets;
+    let index = hash(key) & (buckets.length - 1);
+    var entry = buckets[index];
+    var prev: MapEntry<K, V> | null = null;
+
+    while (entry != null) {
+      let following = entry.:next;
+      if (equals(entry.key, key)) {
+        if (prev == null) {
+          buckets[index] = following;
+        } else {
+          prev.:next = following;
+        }
+        this.:entryRemoved(entry);
+        this.#size -= 1;
+        return true;
+      }
+      prev = entry;
+      entry = following;
+    }
+    return false;
+  }
+
+  /** Removes every entry. */
+  clear(): void {
+    this.#buckets = __array_new_empty<MapEntry<K, V> | null>(16) as FixedArray<MapEntry<K, V> | null>;
+    this.#size = 0;
+  }
+
+  // Doubles the table. The new bucket array is installed before rehashing, so
+  // an override sees the table it is filling in `this`.
+  #resize(): void {
+    let oldBuckets = this.#buckets;
+    let newBuckets = __array_new_empty<MapEntry<K, V> | null>(oldBuckets.length * 2) as FixedArray<MapEntry<K, V> | null>;
+    this.#buckets = newBuckets;
+    this.:rehash(oldBuckets, newBuckets);
+  }
+
+  /**
+   * Builds the entry to store for a newly inserted key, and records it in
+   * whatever secondary structure the table keeps.
+   */
+  :newEntry(key: K, value: V, nextEntry: MapEntry<K, V> | null): MapEntry<K, V> {
+    return new MapEntry<K, V>(key, value, nextEntry);
+  }
+
+  /** Called with each entry as it leaves the table, already unlinked. */
+  :entryRemoved(_entry: MapEntry<K, V>): void {}
+
+  /**
+   * Moves the entries of `oldBuckets` into `newBuckets`.
+   *
+   * Entries are copied rather than relinked, so `oldBuckets` remains an intact
+   * snapshot and an iterator walking it keeps yielding a consistent view of
+   * the map as it was when iteration began.
+   */
+  :rehash(
+    oldBuckets: FixedArray<MapEntry<K, V> | null>,
+    newBuckets: FixedArray<MapEntry<K, V> | null>
+  ): void {
+    let mask = newBuckets.length - 1;
+    var i = 0;
+    while (i < oldBuckets.length) {
+      var entry = oldBuckets[i];
+      while (entry != null) {
+        let current = entry;
+        let index = hash(current.key) & mask;
+        newBuckets[index] = this.:newEntry(current.key, current.value, newBuckets[index]);
+        entry = current.:next;
+      }
+      i += 1;
+    }
+  }
+
+  /** Returns an iterator over the keys. */
+  keys(): Iterator<K> {
+    return new BucketKeyIterator<K, V>(this.#buckets);
+  }
+
+  /** Returns an iterator over the entries. */
+  :Iterable.iterator(): Iterator<MapEntry<K, V>> {
+    return new BucketEntryIterator<K, V>(this.#buckets);
+  }
+
+  /** Calls `callback` once per entry. */
+  forEach(callback: (key: K, value: V) => void): void {
+    let buckets = this.#buckets;
+    var i = 0;
+    while (i < buckets.length) {
+      var entry = buckets[i];
+      while (entry != null) {
+        callback(entry.key, entry.value);
+        entry = entry.:next;
+      }
+      i += 1;
+    }
+  }
+}
+
+// ============================================================================
+// OrderedMap
+// ============================================================================
+
+/**
+ * A hash map that iterates in insertion order — exported as OrderedHashMap.
+ *
+ * Order is maintained by a doubly-linked list through the entries, so it costs
+ * two pointers per entry and nothing per lookup. Replacing an existing key's
+ * value keeps its position; deleting a key and inserting it again moves it to
+ * the end.
+ *
+ * Iteration follows the same rules as JavaScript's `Map`:
+ *
+ * - entries inserted during an iteration are visited by it;
+ * - entries deleted before an iteration reaches them are not visited;
+ * - deleting the entry an iteration is parked on does not disturb it;
+ * - once an iterator reports exhaustion it stays exhausted.
+ *
+ * Example:
+ *   let m = new OrderedHashMap<String, i32>();
+ *   m["b"] = 2;
+ *   m["a"] = 1;
+ *   // Iteration order: "b", "a"
+ */
+export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
+  // The ends of the insertion-order list. The iterators reach it through
+  // `:nextLive`, so the list itself stays private.
+  var #head: OrderedEntry<K, V> | null = null;
+  var #tail: OrderedEntry<K, V> | null = null;
+
+  new(capacity: i32 = 16) : super(capacity);
+
+  /** Stores a list node, and appends it. New keys always go last. */
+  :newEntry(key: K, value: V, nextEntry: MapEntry<K, V> | null): MapEntry<K, V> {
+    let node = new OrderedEntry<K, V>(key, value, nextEntry);
+    let last = this.#tail;
+    this.#tail = node;
+    if (last == null) {
+      this.#head = node;
+    } else {
+      last.next = node;
+      node.previous = last;
+    }
+    return node;
+  }
+
+  // Unlinks the node but leaves `next` pointing at the successor it had: an
+  // iterator parked here follows it to reach the rest of the map, and skips
+  // this node because `removed` is set.
+  :entryRemoved(entry: MapEntry<K, V>): void {
+    let node = entry as OrderedEntry<K, V>;
+    let before = node.previous;
+    let after = node.next;
+
+    if (before != null) {
+      before.next = after;
+    } else {
+      this.#head = after;
+    }
+
+    if (after != null) {
+      after.previous = before;
+    } else {
+      this.#tail = before;
+    }
+
+    node.previous = null;
+    node.removed = true;
+  }
+
+  // Entries are relinked rather than copied, because they are also nodes of
+  // the order list. The order list reaches every entry, so the old buckets are
+  // not needed; iteration follows that list rather than the buckets, and so is
+  // undisturbed by the move. Hashes are recomputed, so only the bucket changes.
+  :rehash(
+    _oldBuckets: FixedArray<MapEntry<K, V> | null>,
+    newBuckets: FixedArray<MapEntry<K, V> | null>
+  ): void {
+    let mask = newBuckets.length - 1;
+    var node = this.#head;
+    while (node != null) {
+      let current = node;
+      let index = hash(current.key) & mask;
+      current.:next = newBuckets[index];
+      newBuckets[index] = current;
+      node = current.next;
+    }
+  }
+
+  /**
+   * The first live entry after `last`, or the first entry of the map when
+   * `last` is null. Removed entries keep their forward link, so this walks
+   * past any deleted since `last` was visited.
+   */
+  :nextLive(last: OrderedEntry<K, V> | null): OrderedEntry<K, V> | null {
+    var node: OrderedEntry<K, V> | null = null;
+    if (last == null) {
+      node = this.#head;
+    } else {
+      node = last.next;
+    }
+    while (node != null) {
+      let current = node;
+      if (!current.removed) {
+        return current;
+      }
+      node = current.next;
+    }
+    return null;
+  }
+
+  /** Removes every entry. */
+  clear(): void {
+    super.clear();
+    this.#head = null;
+    this.#tail = null;
+  }
+
+  /** Returns an iterator over the keys, in insertion order. */
+  keys(): Iterator<K> {
+    let self = this as OrderedMap<K, V>;
+    return new OrderedKeyIterator<K, V>(self);
+  }
+
+  /** Returns an iterator over the entries, in insertion order. */
+  :Iterable.iterator(): Iterator<MapEntry<K, V>> {
+    let self = this as OrderedMap<K, V>;
+    return new OrderedEntryIterator<K, V>(self);
+  }
+
+  /**
+   * Calls `callback` once per entry, in insertion order, under the same rules
+   * as iteration.
+   */
+  forEach(callback: (key: K, value: V) => void): void {
+    var last: OrderedEntry<K, V> | null = null;
+    while (true) {
+      let node = this.:nextLive(last);
+      if (node == null) {
+        return;
+      }
+      last = node;
+      callback(node.key, node.value);
+    }
+  }
+}
+
+// ============================================================================
+// Iterators
+// ============================================================================
+
+/** Iterates a bucket array, in bucket order. */
+final class BucketEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
+  var #buckets: FixedArray<MapEntry<K, V> | null>;
+  var #bucketIndex: i32;
+  var #current: MapEntry<K, V> | null;
+
+  new(buckets: FixedArray<MapEntry<K, V> | null>)
+    : #buckets = buckets, #bucketIndex = 0, #current = null {
+    this.#advanceToNext();
+  }
+
+  #advanceToNext(): void {
+    let entry = this.#current;
+    if (entry != null && entry.:next != null) {
+      this.#current = entry.:next;
+      return;
+    }
+    this.#current = null;
+    while (this.#bucketIndex < this.#buckets.length) {
+      let bucket = this.#buckets[this.#bucketIndex];
+      this.#bucketIndex += 1;
+      if (bucket != null) {
+        this.#current = bucket;
+        return;
+      }
+    }
+  }
+
+  next(): inline (true, MapEntry<K, V>) | inline (false, _) {
+    let entry = this.#current;
+    if (entry == null) {
+      return (false, _);
+    }
+    this.#advanceToNext();
+    return (true, entry);
+  }
+}
+
+/** Iterates the keys of a bucket array. Delegates to BucketEntryIterator. */
+final class BucketKeyIterator<K, V> implements Iterator<K> {
+  var #inner: BucketEntryIterator<K, V>;
+
+  new(buckets: FixedArray<MapEntry<K, V> | null>)
+    : #inner = new BucketEntryIterator<K, V>(buckets);
+
+  next(): inline (true, K) | inline (false, _) {
+    if (let (true, entry) = this.#inner.next()) {
+      return (true, entry.key);
+    }
+    return (false, _);
+  }
+}
+
+/**
+ * Iterates an OrderedMap in insertion order.
+ *
+ * The cursor is the last entry yielded, and the next one is resolved against
+ * the map on each step. That is what lets entries inserted mid-iteration be
+ * visited and deleted ones be skipped.
+ */
+final class OrderedEntryIterator<K extends Hashable, V> implements Iterator<MapEntry<K, V>> {
+  var #map: OrderedMap<K, V>;
+  var #last: OrderedEntry<K, V> | null = null;
+  var #exhausted: boolean = false;
+
+  new(map: OrderedMap<K, V>) : #map = map;
+
+  next(): inline (true, MapEntry<K, V>) | inline (false, _) {
+    if (this.#exhausted) {
+      return (false, _);
+    }
+    let node = this.#map.:nextLive(this.#last);
+    if (node == null) {
+      this.#exhausted = true;
+      return (false, _);
+    }
+    this.#last = node;
+    return (true, node);
+  }
+}
+
+/** Iterates the keys of an OrderedMap. Delegates to OrderedEntryIterator. */
+final class OrderedKeyIterator<K extends Hashable, V> implements Iterator<K> {
+  var #inner: OrderedEntryIterator<K, V>;
+
+  new(map: OrderedMap<K, V>) : #inner = new OrderedEntryIterator<K, V>(map);
+
+  next(): inline (true, K) | inline (false, _) {
+    if (let (true, entry) = this.#inner.next()) {
+      return (true, entry.key);
+    }
+    return (false, _);
+  }
+}

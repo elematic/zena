@@ -1,0 +1,111 @@
+// The hash-backed sets behind 'zena:set' and 'zena:collections'.
+//
+// A set is a map whose values carry no information, so there is one
+// implementation: MapBackedSet forwards to a map, and the two exported classes
+// differ only in which map they hand it. Because OrderedMap extends HashMap,
+// that field holds either, and both leaves are final, so the forwarding calls
+// devirtualize.
+
+import { Hashable } from 'zena:hashable';
+import { Iterable, Iterator } from 'zena:iterator';
+import { IterableUtils } from 'zena:iterable-utils';
+import { HashMap, OrderedMap } from './hash-map.zena';
+import { Set } from './set.zena';
+
+// The value half of the backing map. A set only cares about the keys, so every
+// entry stores this same null.
+let unit = null;
+
+/**
+ * A set backed by a map, holding its values in the map's keys.
+ *
+ * A set costs exactly what its map costs: the map it is given decides both the
+ * iteration order and the per-entry footprint.
+ */
+class MapBackedSet<T extends Hashable> with IterableUtils<T> implements Set<T> {
+  #map: HashMap<T, null>;
+
+  new(map: HashMap<T, null>) : #map = map;
+
+  size: i32 {
+    get {
+      return this.#map.size;
+    }
+  }
+
+  /**
+   * Adds a value to the set. Returns true if the value was newly added,
+   * false if it already existed.
+   */
+  add(value: T): boolean {
+    if (this.#map.has(value)) {
+      return false;
+    }
+    this.#map[value] = unit;
+    return true;
+  }
+
+  /**
+   * Checks if the set contains the given value.
+   */
+  operator [](value: T): boolean {
+    return this.#map.has(value);
+  }
+
+  /**
+   * Checks if the set contains the given value.
+   */
+  has(value: T): boolean {
+    return this.#map.has(value);
+  }
+
+  /**
+   * Removes a value from the set. Returns true if the value was removed,
+   * false if it didn't exist.
+   */
+  delete(value: T): boolean {
+    return this.#map.delete(value);
+  }
+
+  /**
+   * Removes all values from the set.
+   */
+  clear(): void {
+    this.#map.clear();
+  }
+
+  /**
+   * Returns an iterator over the values in this set.
+   */
+  :Iterable.iterator(): Iterator<T> {
+    return this.#map.keys();
+  }
+}
+
+/**
+ * A set of unique values with efficient membership tests.
+ *
+ * Iteration order is unspecified and can change as the set grows. Use
+ * OrderedHashSet from 'zena:collections' when insertion order matters.
+ */
+export final class HashSet<T extends Hashable> extends MapBackedSet<T> {
+  new(capacity: i32 = 16) : super(new HashMap<T, null>(capacity));
+}
+
+/**
+ * A set that iterates in insertion order.
+ *
+ * Order costs two pointers per value and nothing per membership test.
+ * Re-adding a value it already holds keeps its position; deleting a value and
+ * adding it again moves it to the end. Iteration follows the same rules as
+ * OrderedHashMap, and so as JavaScript's `Set`.
+ *
+ * Example:
+ *   let s = new OrderedHashSet<String>();
+ *   s.add("b");
+ *   s.add("a");
+ *   // Iteration order: "b", "a"
+ */
+export final class OrderedHashSet<T extends Hashable> extends MapBackedSet<T> {
+  new(capacity: i32 = 16) : super(new OrderedMap<T, null>(capacity));
+}
