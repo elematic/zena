@@ -112,9 +112,9 @@ let expectationOf = (f: TestFile): Expectation => {
   let stdout = f.directive('stdout');
   let invoke = f.directive('invoke');
   return new Expectation(
-    if (result == null) { null } else { unquote(result as String) },
-    if (stdout == null) { null } else { unescapeNewlines(unquote(stdout as String)) },
-    if (invoke == null) { 'main' } else { invoke as String });
+    if (result == null) { null } else { unquote(result) },
+    if (stdout == null) { null } else { unescapeNewlines(unquote(stdout)) },
+    if (invoke == null) { 'main' } else { invoke });
 };
 
 /** A test file is only a test if it says what running it should produce. */
@@ -240,10 +240,10 @@ let failureOf = (e: Expectation, res: ProcessResult): String | null => {
   let expectedStdout = e.stdout;
   if (expectedStdout != null) {
     let actual = trim(res.stdout);
-    if (actual == expectedStdout as String) {
+    if (actual == expectedStdout) {
       return null;
     }
-    return `expected stdout: ${expectedStdout as String}\n  actual stdout: ${actual}`;
+    return `expected stdout: ${expectedStdout}\n  actual stdout: ${actual}`;
   }
 
   let expected = e.result as String;
@@ -258,7 +258,7 @@ let failureOf = (e: Expectation, res: ProcessResult): String | null => {
 let report = (running: RunningTest): boolean => {
   let compileError = running.compileError;
   let failure = if (compileError != null) {
-    `did not compile:\n${compileError as String}`
+    `did not compile:\n${compileError}`
   } else {
     failureOf(running.expectation, (running.process as Process).waitFor(testTimeoutMs))
   };
@@ -266,7 +266,7 @@ let report = (running: RunningTest): boolean => {
     return true;
   }
   console.log(`${red}FAIL${reset} ${running.file.relPath}`);
-  for (let line in (failure as String).split('\n')) {
+  for (let line in failure.split('\n')) {
     console.log(`  ${dim}${line}${reset}`);
   }
   return false;
@@ -650,13 +650,13 @@ export let main = (): i32 => {
     let wasmPath = wasmPathOf(file.relPath);
     let statusPath = statusPathOf(file.relPath);
     let status = if (exists(statusPath)) { readFile(statusPath) } else { null };
-    if (status == null || status as String != 'ok' || !exists(wasmPath)) {
+    if (status == null || status != 'ok' || !exists(wasmPath)) {
       // Anything other than an `ok` written by this run's compile phase
       // means this test has no module to run: it failed to compile, or
       // its worker died before reaching it. Either way it failed, and
       // says why.
-      let why = if (status != null && status as String != 'ok') {
-        status as String
+      let why = if (status != null && status != 'ok') {
+        status
       } else {
         'the compile phase left no verdict for this test ' +
         '(its worker most likely died — look for a failed compile worker above)'
