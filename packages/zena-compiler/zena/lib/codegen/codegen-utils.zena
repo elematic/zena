@@ -361,7 +361,7 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
       var i = 0;
       while (let (true, key) = keys.next()) {
         parts[1 + 4 * i] = "_";
-        parts[2 + 4 * i] = key;
+        parts[2 + 4 * i] = if (rec.isOptional(key)) key + "?" else key;
         parts[3 + 4 * i] = "_";
         parts[4 + 4 * i] = getTypeKeyForSpecialization(rec.properties[key]);
         i += 1;
@@ -1085,7 +1085,8 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
       ""
     }
   }
-  case RecordType {properties}: {
+  case RecordType as recT: {
+    let properties = recT.properties;
     let len = properties.size;
     if (len > 0) {
       let parts = new FixedArray<String>(4 * len + 1, "");
@@ -1093,13 +1094,14 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
       let keys = properties.keys();
       var i = 0;
       while (let (true, key) = keys.next()) {
+        let shownKey = if (recT.isOptional(key)) key + "?" else key;
         if (i > 0) {
           parts[4 * i] = ", ";
-          parts[4 * i + 1] = key;
+          parts[4 * i + 1] = shownKey;
           parts[4 * i + 2] = ": ";
           parts[4 * i + 3] = getTypeUniqueKey(properties[key]);
         } else {
-          parts[1] = key;
+          parts[1] = shownKey;
           parts[2] = ": ";
           parts[3] = getTypeUniqueKey(properties[key]);
         }

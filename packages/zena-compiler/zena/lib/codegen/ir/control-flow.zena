@@ -73,7 +73,20 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
     pat = pat.pattern;
   }
   if (!(pat is TuplePattern)) {
-    bail(cx, 'let-condition pattern');
+    // A non-tuple let-condition (a record presence pattern): the whole
+    // pattern defers into the taken block, where its tests branch to
+    // the not-taken side and its bindings apply.
+    if (!patternBinds(cx, pat) && !patternRefutable(cx, pat)) {
+      bail(cx, 'let-condition pattern');
+    }
+    let value = lowerExpr(cx, lpc.init, null);
+    let patterns = new Array<Node>();
+    patterns.push(pat);
+    let patternValues = new Array<i32>();
+    patternValues.push(value);
+    let cond = cx.b.constI32(1, new ValTypeI32() as ValType);
+    return new LetCondBinds(cond, new Array<Symbol>(), new Array<i32>(),
+        new Array<ValType>(), patterns, patternValues);
   }
   let values = multiSource(cx, lpc.init);
   if (values.length != pat.elements.length) {

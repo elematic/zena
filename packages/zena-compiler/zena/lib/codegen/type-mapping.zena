@@ -19,6 +19,7 @@ import {
   ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode,
   WasmType, isWasmSubtype, HeapType, heapTypeToSigned
 } from './wasm.zena';
+import { compareStrings } from './codegen-utils.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { HashMap } from 'zena:map';
@@ -1214,12 +1215,8 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   case I16Type: new ValTypeI32()
   case BooleanType: new ValTypeI32()
   case RecordType as rec: {
-    let fields = new Array<WasmField>();
-    for (let pair in rec.properties) {
-       fields.push(new WasmField(pair.key, typeToValType(wasm, pair.value), false));
-    }
-    sortWasmFields(fields);
-    let info_opt = wasm.findRecordDispatch(fields);
+    let fields = recordWasmFields(wasm, rec, null);
+    let info_opt = wasm.findRecordDispatch(fields, sortedOptionalNames(rec));
     match (info_opt) {
       case RecordDispatchInfo as info: new ValTypeRef(info.fatPtrType)
       case null: {
@@ -1478,6 +1475,67 @@ export let getNonNullableType = (type: Type): Type => match (type) {
     }
   }
   case _: type
+};
+
+/**
+ * The hidden i32 bitmask field carrying optional-field presence on a
+ * record struct (docs/design/record-presence.md §2). Bit i corresponds
+ * to the i-th optional field name in sorted order.
+ */
+export let presentFieldName = '$present';
+
+/** A record type's optional field names in sorted order — the canonical
+ *  presence-bit assignment shared by every consumer of the mask. */
+export let sortedOptionalNames = (rec: RecordType): Array<String> => {
+  let names = new Array<String>();
+  let optionals = rec.optionalProperties;
+  if (optionals != null) {
+    for (let name in optionals) {
+      names.push(name);
+    }
+    let len = names.length;
+    for (var i = 1; i < len; i += 1) {
+      let key = names[i];
+      var j = i - 1;
+      while (j >= 0 && compareStrings(names[j], key) > 0) {
+        names[j + 1] = names[j];
+        j -= 1;
+      }
+      names[j + 1] = key;
+    }
+  }
+  return names;
+};
+
+/** An optional field's slot must be able to hold a placeholder when the
+ *  field is absent, so reference slots widen to nullable. */
+let optionalSlotValType = (vt: ValType): ValType => {
+  return match (vt) {
+    case ValTypeRef as r: new ValTypeRefNull(r.target)
+    case _: vt
+  };
+};
+
+/**
+ * The canonical wasm field list for a record type: one slot per
+ * property (optional properties' reference slots nullable-ized), plus
+ * the `$present` mask when the type has optional fields, sorted.
+ */
+export let recordWasmFields = (wasm: WasmModule, rec: RecordType,
+    subFunc: WasmFunction | null): Array<WasmField> => {
+  let fields = new Array<WasmField>();
+  for (let pair in rec.properties) {
+    var vt = typeToValTypeWithSub(wasm, pair.value, subFunc);
+    if (rec.isOptional(pair.key)) {
+      vt = optionalSlotValType(vt);
+    }
+    fields.push(new WasmField(pair.key, vt, false));
+  }
+  if (rec.hasOptionalProperties()) {
+    fields.push(new WasmField(presentFieldName, new ValTypeI32(), false));
+  }
+  sortWasmFields(fields);
+  return fields;
 };
 
 export let typeToValTypeWithSub = (wasm: WasmModule, t: Type, wasmFunction: WasmFunction | null): ValType => {

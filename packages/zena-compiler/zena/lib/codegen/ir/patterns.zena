@@ -12,12 +12,18 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString, parseF64 } from 'zena:string-convert';
 import {
-  AsPattern, AssignmentPattern, BindingPattern, BooleanLiteral,
-  ClassPattern, Expression, Identifier, IdentifierPattern,
-  LiteralPattern, LogicalPattern, MemberExpression, Node, NullLiteral,
-  NumberLiteral, RecordPattern, StringLiteral, TuplePattern,
+  AsPattern, AssignmentPattern, BindingPattern, BindingProperty,
+  BooleanLiteral, ClassPattern, Expression, Identifier,
+  IdentifierPattern, LiteralPattern, LogicalPattern, MemberExpression,
+  Node, NullLiteral, NumberLiteral, RecordPattern, StringLiteral,
+  TuplePattern,
 } from '../../ast.zena';
-import { ClassType } from '../../types.zena';
+import {
+  ClassType, NullType, RecordType, Type, UnionType, baseType,
+} from '../../types.zena';
+import {
+  presentFieldName, typeToValTypeWithSub,
+} from '../type-mapping.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
   ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64,
@@ -31,7 +37,7 @@ import {
 import { getClassKey, getClassMethodKey, parseI64OrU64Literal } from '../codegen-utils.zena';
 import { IrOp, IrRefField, IrRefFunc } from './ir.zena';
 import {
-  LoweringContext, ZirUnsupported, noValues, twoValues,
+  LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
 import { lowerStringLiteral } from './templates.zena';
 import { lowerExpr } from './lowering.zena';
@@ -163,7 +169,18 @@ export let patternRefutable = (cx: LoweringContext, pattern: Node): boolean => {
     }
     case RecordPattern as rp: {
       var refutable = false;
+      // An optional field named without a default is a presence test —
+      // the matched record type is stamped on the pattern node by the
+      // checker (absent in irrefutable contexts, where the checker
+      // requires a default instead).
+      let tOpt = cx.func.model.getNodeType(rp);
+      let recOpt: RecordType | null =
+          if (tOpt != null && tOpt is RecordType) tOpt else null;
       for (let prop in rp.properties) {
+        if (recOpt != null && recOpt.isOptional(prop.name.name) &&
+            !(prop.value is AssignmentPattern)) {
+          refutable = true;
+        }
         if (patternRefutable(cx, prop.value)) {
           refutable = true;
         }
@@ -472,10 +489,26 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
       if (dispatchOpt == null) {
         bail(cx, 'record pattern operand');
       }
+      let dispatch = dispatchOpt as RecordDispatchInfo;
+      var mask = -1;
       for (let prop in rp.properties) {
+        // Naming an optional field without a default asserts its
+        // presence: test the mask bit before any value test.
+        let bit = dispatch.optionalBitOf(prop.name.name);
+        if (bit >= 0 && !(prop.value is AssignmentPattern)) {
+          if (mask < 0) {
+            mask = cx.recordDispatchRead(dispatch, presentFieldName, value);
+          }
+          let i32Vt: ValType = new ValTypeI32();
+          let bitVal = cx.b.binary(IrOp.i32_and, i32Vt,
+              cx.b.binary(IrOp.i32_shr_u, i32Vt, mask,
+                  cx.b.constI32(bit, i32Vt)),
+              cx.b.constI32(1, i32Vt));
+          branchUnless(cx, bitVal, failB);
+        }
         if (patternRefutable(cx, prop.value)) {
           let read = cx.recordDispatchRead(
-              dispatchOpt as RecordDispatchInfo, prop.name.name, value);
+              dispatch, prop.name.name, value);
           lowerPatternTest(cx, prop.value, read, failB);
         }
       }
@@ -560,24 +593,106 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
     }
     case RecordPattern as rp: {
       let dispatchOpt = recordDispatchOfValue(cx, value);
+      let tOpt = cx.func.model.getNodeType(rp);
+      let recOpt: RecordType | null =
+          if (tOpt != null && tOpt is RecordType) tOpt else null;
       for (let prop in rp.properties) {
         if (patternBinds(cx, prop.value)) {
-          let read = if (dispatchOpt != null) {
-            cx.recordDispatchRead(
-                dispatchOpt, prop.name.name, value)
+          if (dispatchOpt != null) {
+            bindRecordProp(cx, dispatchOpt, recOpt, prop, value);
           } else {
-            cx.objectPropertyRead(prop.name.name, value)
-          };
-          lowerPatternBindings(cx, prop.value, read);
+            let read = cx.objectPropertyRead(prop.name.name, value);
+            lowerPatternBindings(cx, prop.value, read);
+          }
         }
       }
     }
     case AssignmentPattern as ap: {
-      // `{x = 0}` — the matched field is always present (record fields
-      // cannot be absent), so the default expression never applies and
-      // the left pattern binds the field value directly.
+      // `{x = 0}` on a REQUIRED field — the field is always present,
+      // so the default never applies and the left pattern binds the
+      // field value directly. (Optional fields route through
+      // bindRecordProp, which guards on the presence bit.)
       lowerPatternBindings(cx, ap.left, value);
     }
     case _: {}
   }
+};
+
+/** Whether a record property's Zena type itself admits null (as opposed
+ *  to its slot being nullable only because the field is optional). */
+let propTypeAdmitsNull = (rec: RecordType | null, name: String): boolean => {
+  if (rec == null) { return true; }
+  if (!rec.properties.has(name)) { return true; }
+  let bt = baseType(rec.properties[name]);
+  return match (bt) {
+    case NullType: true
+    case UnionType {types}: {
+      var admits = false;
+      for (let m in types) {
+        if (m is NullType) { admits = true; }
+      }
+      admits
+    }
+    case _: false
+  };
+};
+
+/**
+ * Binds one record-pattern property against a dispatch-carried record
+ * value. Required fields read and bind directly. An optional field
+ * with a default (`{x = d}`) branches on its presence bit — slot value
+ * when present, the default expression when absent. An optional field
+ * without a default relies on the presence test the refutable phase
+ * already ran; the slot holds the value, re-asserted non-null when the
+ * slot is nullable only because the field is optional.
+ */
+export let bindRecordProp = (cx: LoweringContext,
+    dispatch: RecordDispatchInfo, rec: RecordType | null,
+    prop: BindingProperty, receiver: i32): void => {
+  let name = prop.name.name;
+  let bit = dispatch.optionalBitOf(name);
+  if (bit < 0) {
+    let read = cx.recordDispatchRead(dispatch, name, receiver);
+    lowerPatternBindings(cx, prop.value, read);
+    return;
+  }
+  let i32Vt: ValType = new ValTypeI32();
+  if (prop.value is AssignmentPattern) {
+    let ap = prop.value as AssignmentPattern;
+    let leftSym = cx.func.model.resolveDeclaration(ap.left);
+    if (leftSym == null) {
+      bail(cx, 'optional destructuring default shape');
+    }
+    let btOpt = cx.func.model.getBindingType(leftSym as Symbol);
+    if (btOpt == null) {
+      bail(cx, 'untyped optional destructuring default');
+    }
+    let targetVt = typeToValTypeWithSub(cx.wasm, btOpt as Type, cx.func);
+    let mask = cx.recordDispatchRead(dispatch, presentFieldName, receiver);
+    let bitVal = cx.b.binary(IrOp.i32_and, i32Vt,
+        cx.b.binary(IrOp.i32_shr_u, i32Vt, mask,
+            cx.b.constI32(bit, i32Vt)),
+        cx.b.constI32(1, i32Vt));
+    let presentB = cx.b.newBlock();
+    let absentB = cx.b.newBlock();
+    let merge = cx.b.newBlock();
+    let bound = cx.b.blockParam(merge, targetVt);
+    cx.b.brIf(bitVal, presentB, noValues(), absentB, noValues());
+    cx.b.switchTo(presentB);
+    let slotVal = cx.recordDispatchRead(dispatch, name, receiver);
+    cx.b.br(merge, oneValue(cx.coerceTo(slotVal, targetVt)));
+    cx.b.switchTo(absentB);
+    let defVal = lowerExpr(cx, ap.right, null);
+    cx.b.br(merge, oneValue(cx.coerceTo(defVal, targetVt)));
+    cx.b.switchTo(merge);
+    lowerPatternBindings(cx, ap.left, bound);
+    return;
+  }
+  var read = cx.recordDispatchRead(dispatch, name, receiver);
+  let rv = cx.valueTypeOf(read);
+  if (rv is ValTypeRefNull && !propTypeAdmitsNull(rec, name)) {
+    read = cx.reassertNonNull(read,
+        new ValTypeRef((rv as ValTypeRefNull).target) as ValType);
+  }
+  lowerPatternBindings(cx, prop.value, read);
 };

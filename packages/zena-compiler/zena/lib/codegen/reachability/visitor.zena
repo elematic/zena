@@ -15,7 +15,7 @@ import { String } from 'zena:string';
 import { StringBuilder } from 'zena:string-builder';
 import { i32ToString } from 'zena:string-convert';
 import { getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, InterfaceKey, templateConvertHelperName, containsErasedType } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getInterfaceMemberSignature, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, recordWasmFields, sortedOptionalNames } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -130,11 +130,9 @@ export final class TypeLowerer implements TypeLowererInterface {
       for (let pair in t.properties) {
         this.discoverType(pair.value, model);
       }
-      let fields = new Array<WasmField>();
-      for (let pair in t.properties) {
-        fields.push(new WasmField(pair.key, typeToValType(this.pass.wasm, pair.value), false));
-      }
-      let st = this.pass.wasm.getRecordDispatch(model, fields);
+      let fields = recordWasmFields(this.pass.wasm, t, null);
+      let st = this.pass.wasm.getRecordDispatch(model, fields,
+          sortedOptionalNames(t));
       this.pass.markTypeReached(st.fatPtrType);
       this.pass.markTypeReached(st.vtableType);
       this.pass.markTypeReached(st.concreteType);
@@ -1516,16 +1514,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is Expression) {
         let adaptation = model.getRecordAdaptation(n);
         if (adaptation != null) {
-          typeLowerer.discoverType(resolveType(adaptation.target), model);
-          let inFields = new Array<WasmField>();
-          for (let pair in adaptation.source.properties) {
-            inFields.push(new WasmField(pair.key, typeToValType(this.pass.wasm, resolveType(pair.value)), false));
-          }
-          let outFields = new Array<WasmField>();
-          for (let pair in adaptation.target.properties) {
-            outFields.push(new WasmField(pair.key, typeToValType(this.pass.wasm, resolveType(pair.value)), false));
-          }
-          this.pass.wasm.getAdaptedRecordDispatch(model, inFields, outFields);
+          let srcRec = resolveType(adaptation.source) as RecordType;
+          let tgtRec = resolveType(adaptation.target) as RecordType;
+          typeLowerer.discoverType(tgtRec, model);
+          typeLowerer.discoverType(srcRec, model);
+          let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
+          let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
+          this.pass.wasm.getAdaptedRecordDispatch(model,
+              inFields, sortedOptionalNames(srcRec),
+              outFields, sortedOptionalNames(tgtRec));
         }
         
         let ifaceAdaptation = model.getInterfaceAdaptation(n);

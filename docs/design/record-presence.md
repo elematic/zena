@@ -1,6 +1,7 @@
 # Presence-Optional Record Fields
 
-Status: **Proposed — review-favored direction** (2026-08-14)
+Status: **Implemented on the dispatch representation** (2026-08-14);
+the closed-representation lowering waits on the row-types flip.
 
 This document designs true presence for optional record fields: a
 record typed `{url: String, timeout?: i32}` may or may not _have_
@@ -113,15 +114,15 @@ let opts = {};                    // type {} — no optional fields, no mask
 let fetchOpts: FetchOpts = opts;  // FetchOpts has a mask. Where from?
 ```
 
-The assignment is a **projection copy**: it builds a `FetchOpts`
-struct — zero-valued `timeout` slot, mask `0` — from the maskless
-`{}` value. Because records are value types with unobservable
-identity (records-and-tuples.md §3.1, step V0), the copy is
-unobservable; this is the same lowering family as post-flip
+On the closed representation the assignment is a **projection copy**:
+it builds a `FetchOpts` struct — zero-valued `timeout` slot, mask
+`0` — from the maskless `{}` value. Because records are value types
+with unobservable identity (records-and-tuples.md §3.1, step V0), the
+copy is unobservable; this is the same lowering family as post-flip
 width-by-projection, with the mask constant derived from which target
 fields the source type has (present) and lacks (absent). The copy
-makes **V0 a hard prerequisite** for this feature: under today's
-observable `===`, a copy at this boundary could be witnessed.
+makes **V0 a prerequisite of the closed-representation stage**: under
+today's observable `===`, a copy at this boundary could be witnessed.
 Contextually-typed literals never hit the copy — `let f: FetchOpts =
 {};` builds the `FetchOpts` layout directly.
 
@@ -154,12 +155,16 @@ forms:
 
 On the closed/direct representation all of this is inline mask
 arithmetic — no calls. On the **dispatch path** (fat pointers, and the
-future explicit existential), the vtable getter for an optional field
-has the multi-value signature `() -> inline (boolean, T)` — the
-`Map.get`/`Iterator.next` shape — and an adapted vtable for a concrete
-shape lacking the field returns `(false, zero)`. Virtual multi-value
-calls already work in ZIR (`lowerVtableCallMulti`), so this is a
-signature variant on existing machinery, not new machinery.
+future explicit existential), `$present` is an ordinary vtable getter
+slot: a presence-consuming read is one mask-getter call plus one
+field-getter call, keeping every getter single-value and the vtable
+machinery unchanged. An adapted vtable's `$present` getter assembles
+the target mask (constant bits for source-required fields, remapped
+source-mask bits for source-optional ones), and its getter for a field
+the source lacks returns the slot type's zero value — the mask reports
+the absence. (An `inline (boolean, T)` multi-value getter — the
+`Map.get`/`Iterator.next` shape — remains an option to fold the two
+calls into one; virtual multi-value calls already work in ZIR.)
 
 ## 5. Semantics that follow
 
@@ -290,10 +295,11 @@ can stay shelved — the designs are separable on purpose.
 
 ## 9. Implementation plan
 
-**Prerequisite: V0** (the `===`-on-records ban, equality.md D1 /
-implementation-plan.md Track V) — §3.1's projection copies are
-unobservable only once record identity is. V0 is small and already
-first in the plan of record.
+On the **current dispatch representation** presence needs no copies at
+all — §3.1's maskless→masked flow is a fat-pointer repack with an
+adapted vtable, identity-preserving — so stages 1–6 landed without
+V0. The V0 prerequisite attaches to the **closed-representation**
+lowering (post-flip), where the same flow becomes a projection copy.
 
 Ordered, each stage green under the full suite and fixpoint:
 

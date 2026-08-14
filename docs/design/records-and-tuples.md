@@ -558,21 +558,19 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 
 ### Phase 3: Optional Fields
 
-> **Revision note:** the checkboxes below described the retired
-> TypeScript bootstrap compiler. The self-hosted compiler implemented
-> only the parser and the destructuring-default rule; assignability
-> never admitted a literal missing an optional field, and no runtime
-> representation of absence exists — so `?` could not be used at all.
-> The checker now rejects `?` in record types with an explicit error
-> until presence-optional fields are implemented (planned
-> representation: an `inline (boolean, T)` accessor —
-> [config-records.md](config-records.md) §5). Defaulted fields cover
-> the option-bag use case without presence tracking.
+> **Revision note:** implemented per
+> [record-presence.md](record-presence.md): presence is a `$present`
+> i32 bitmask field in the record's one concrete struct (bit per
+> optional field in canonical sorted order), optionality is part of
+> type identity and assignability (required satisfies optional, never
+> the reverse), and adaptation across optionality differences
+> synthesizes mask-remapping and zero-returning getters. Direct access
+> to an optional field is a compile error.
 
 - [x] **Parser**: Parse `foo?: Type` syntax in record types.
-- [ ] **Type Checker**: Track optional vs required fields in `RecordType.optionalProperties`. Update `isAssignableTo` to allow missing optional fields. _(Existed in the bootstrap compiler only; currently `?` is rejected.)_
-- [ ] **Narrowing**: Skipped - use `if let` for optional field access instead of `"field" in record` operator.
-- [ ] **Destructuring Defaults**: Destructuring an optional field REQUIRES a default value (`let {foo = default} = record`). This avoids boxing primitives - the "absent" case is handled by the default, not by nullable types. _(The check exists; defaults on always-present fields are compiled and never apply.)_
+- [x] **Type Checker**: Track optional vs required fields in `RecordType.optionalProperties`; `isAssignableTo` allows missing optional target fields; interning and `typesEqual` include optionality.
+- [x] **Narrowing**: `if (let {foo} = record)` — an optional field named without a default is a refutable presence test. (No `"field" in record` operator.)
+- [x] **Destructuring Defaults**: Destructuring an optional field in an irrefutable position REQUIRES a default value (`let {foo = default} = record`), compiled as a presence-bit branch. This avoids boxing primitives — the "absent" case is handled by the default, not by nullable types.
 
 ### Phase 4: Code Generator (Dispatch-based)
 

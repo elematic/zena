@@ -3293,10 +3293,42 @@ let p = { x: 1, y: 2 };
 let x = p.x;
 ```
 
-Every field of a record type is required: `?` is not supported on record
-fields (unlike class and interface fields, where it means `T | null`).
-For a maybe-value, make the value itself optional — an `Option<T>` from
-`zena:option`, or a nullable reference type — the field stays present.
+#### Optional Fields
+
+A record field marked `?` may be **absent** — this is presence, not
+nullability (unlike class and interface fields, where `?` means
+`T | null`). A literal may omit optional fields, and a record value
+that reliably has a field may flow to a type where it is optional (the
+reverse is an error — a maybe-absent field cannot satisfy a required
+one):
+
+```zena
+type Opts = {url: String, timeout?: i32, retries?: i32};
+
+let f = (opts: Opts): i32 => {
+  let {timeout = 30_000, retries = 3} = opts;  // defaults where absent
+  return timeout + retries;
+};
+
+f({url: '/api'});               // both absent — defaults apply
+f({url: '/api', timeout: 5});   // retries absent
+```
+
+Absence is observable and consumed through patterns:
+
+- Destructuring an optional field requires a default
+  (`let {timeout = 30_000} = opts`) in irrefutable positions.
+- Naming it *without* a default in an `if (let ...)` or `match`
+  pattern is a presence test — the branch is taken only when the
+  field is present, and the binding holds its value.
+
+Direct member access on an optional field (`opts.timeout`) is a
+compile error. Presence is tracked per field, so an explicit
+`{timeout: 0}` is present — `0` never triggers a default — and spread
+propagates presence (`{...partial, retries: 2}` keeps `timeout`
+present or absent as it was in `partial`). A record type may have at
+most 32 optional fields. For a field that is always present but whose
+*value* may be missing, use `Option<T>` from `zena:option`.
 
 #### Shorthand Syntax
 

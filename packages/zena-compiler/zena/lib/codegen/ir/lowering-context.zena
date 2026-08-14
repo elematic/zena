@@ -29,6 +29,7 @@ import {
 } from '../wasm.zena';
 import {
   substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
+  recordWasmFields, sortedOptionalNames,
 } from '../type-mapping.zena';
 import { IrOp } from './ir.zena';
 import {
@@ -803,13 +804,9 @@ export final class LoweringContext {
    * means the type never reached discovery — bail.
    */
   recordDispatchOf(rt: RecordType): RecordDispatchInfo {
-    let fields = new Array<WasmField>();
-    for (let pair in rt.properties) {
-      fields.push(new WasmField(pair.key,
-          typeToValTypeWithSub(this.wasm, pair.value, this.func), false));
-    }
-    sortWasmFields(fields);
-    let infoOpt = this.wasm.findRecordDispatch(fields);
+    let fields = recordWasmFields(this.wasm, rt, this.func);
+    let infoOpt = this.wasm.findRecordDispatch(
+        fields, sortedOptionalNames(rt));
     if (infoOpt == null) {
       this.fail('record shape not discovered');
     }

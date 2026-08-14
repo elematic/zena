@@ -48,7 +48,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, WasmArray, WasmTag, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical } from '../wasm-module.zena';
-import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType } from '../type-mapping.zena';
+import { typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getCellStruct, findImplementedInterfaceTransitive, getNonNullableType, recordWasmFields, sortedOptionalNames, presentFieldName } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import { getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getClassInterfaceKey, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal } from '../codegen-utils.zena';
@@ -67,8 +67,9 @@ import {
   lowerHashIntrinsic,
 } from './equality.zena';
 import {
-  branchUnless, collectPatternBindSyms, lowerPatternBindings,
-  lowerPatternTest, patternBinds, patternRefutable,
+  bindRecordProp, branchUnless, collectPatternBindSyms,
+  lowerPatternBindings, lowerPatternTest, patternBinds,
+  patternRefutable,
 } from './patterns.zena';
 import {
   isUnsignedNode, lowerAs, lowerBinary, lowerUnary, mapBinaryOp,
@@ -440,12 +441,70 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
  * streaming. A field index of -1 means the accessor is a vtable slot
  * for a member no reachable class stores physically — it traps.
  */
+/** The zero value of a wasm value type (absent optional-field slots). */
+let zeroValueOf = (b: IrBuilder, vt: ValType): i32 => {
+  return match (vt) {
+    case ValTypeI32: b.constI32(0, vt)
+    case ValTypeI64: b.constI64(0, vt)
+    case ValTypeF32: b.constF32(0.0, vt)
+    case ValTypeF64: b.constF64(0.0, vt)
+    case _: b.emit(IrOp.ref_null, vt, -1, -1)
+  };
+};
+
 let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
   let st = if (isGetter) func.getterStruct as WasmStruct
       else func.setterStruct as WasmStruct;
   let idx = if (isGetter) func.getterFieldIndex else func.setterFieldIndex;
   let b = new IrBuilder();
   let params = synthEntryParams(b, func);
+  let maskSpec = func.getterMaskSpec;
+  if (isGetter && maskSpec != null) {
+    // Adapted `$present` getter: assemble the target mask from
+    // constant bits and remapped source-mask bits
+    // (docs/design/record-presence.md §2).
+    let i32Vt: ValType = new ValTypeI32();
+    var srcMask = -1;
+    let srcMaskIdx = st.fieldIndexByName(presentFieldName);
+    if (srcMaskIdx >= 0) {
+      let castVt: ValType = new ValTypeRef(st);
+      let casted = b.emit(IrOp.ref_cast, castVt, params[0],
+          b.internType(castVt));
+      srcMask = b.emit(IrOp.struct_get, i32Vt, casted,
+          b.addRef(new IrRefField(st, presentFieldName)));
+    }
+    var result = b.constI32(0, i32Vt);
+    for (var bit = 0; bit < maskSpec.length; bit += 1) {
+      let src = maskSpec[bit];
+      if (src == -1) {
+        continue;
+      }
+      var bitVal = -1;
+      if (src == -2) {
+        bitVal = b.constI32(1 << bit, i32Vt);
+      } else {
+        if (srcMask < 0) {
+          throw new ZirUnsupported('mask spec without source mask');
+        }
+        let srcBit = b.binary(IrOp.i32_and, i32Vt,
+            b.binary(IrOp.i32_shr_u, i32Vt, srcMask,
+                b.constI32(src, i32Vt)),
+            b.constI32(1, i32Vt));
+        bitVal = b.binary(IrOp.i32_shl, i32Vt, srcBit,
+            b.constI32(bit, i32Vt));
+      }
+      result = b.binary(IrOp.i32_or, i32Vt, result, bitVal);
+    }
+    b.ret(result);
+    return b.finish();
+  }
+  if (isGetter && func.getterReturnsZero) {
+    // Adapted getter for an optional field the source shape lacks: the
+    // mask reports the absence; return a well-typed placeholder.
+    let expected = func.signature.returns[0];
+    b.ret(zeroValueOf(b, expected));
+    return b.finish();
+  }
   if (idx == -1) {
     b.unreachable();
     return b.finish();
@@ -1245,13 +1304,9 @@ export final class FunctionLowerer {
     if (rt == null || !(rt is RecordType)) {
       this.#bail('namespace import shape');
     }
-    let fields = new Array<WasmField>();
-    for (let pair in rt.properties) {
-      fields.push(new WasmField(pair.key,
-          typeToValType(this.wasm, pair.value), false));
-    }
-    sortWasmFields(fields);
-    let dispatch = this.wasm.getRecordDispatch(moduleModel, fields);
+    let fields = recordWasmFields(this.wasm, rt, null);
+    let dispatch = this.wasm.getRecordDispatch(
+        moduleModel, fields, sortedOptionalNames(rt));
 
     let args = new Array<i32>();
     for (let field in fields) {
@@ -2187,26 +2242,24 @@ export final class FunctionLowerer {
       this.#bail('untyped destructuring source');
     }
     let initBase = baseType(getNonNullableType(initTypeOpt));
+    if (initBase is RecordType) {
+      let dispatch = this.#cx().recordDispatchOf(initBase);
+      let recv = this.#conformRecordReceiver(dispatch, source);
+      for (let prop in properties) {
+        if (!this.#patternBinds(prop.value)) {
+          continue;
+        }
+        bindRecordProp(this.#cx(), dispatch, initBase, prop, recv);
+      }
+      return;
+    }
     for (let prop in properties) {
       if (!this.#patternBinds(prop.value)) {
         continue;
       }
-      let read = if (initBase is RecordType) {
-        this.#lowerRecordPropertyRead(
-            initBase, prop.name.name, source)
-      } else {
-        this.#lowerObjectPropertyRead(prop.name.name, source)
-      };
+      let read = this.#lowerObjectPropertyRead(prop.name.name, source);
       this.#lowerPatternBindings(prop.value, read);
     }
-  }
-
-  /** A record property read on an already-lowered receiver value. */
-  #lowerRecordPropertyRead(rt: RecordType, propName: String,
-      receiver: i32): i32 {
-    let dispatch = this.#cx().recordDispatchOf(rt);
-    let recv = this.#conformRecordReceiver(dispatch, receiver);
-    return this.#recordDispatchRead(dispatch, propName, recv);
   }
 
   /**
@@ -2472,19 +2525,14 @@ export final class FunctionLowerer {
     if (value < 0 || this.b.body.typeId[value] < 0) {
       this.#bail('record adaptation without value');
     }
-    let inFields = new Array<WasmField>();
-    for (let pair in ra.source.properties) {
-      inFields.push(new WasmField(pair.key,
-          typeToValType(this.wasm, pair.value), false));
-    }
-    let inInfo = this.wasm.getRecordDispatch(this.func.model, inFields);
-    let outFields = new Array<WasmField>();
-    for (let pair in ra.target.properties) {
-      outFields.push(new WasmField(pair.key,
-          typeToValType(this.wasm, pair.value), false));
-    }
+    let inFields = recordWasmFields(this.wasm, ra.source, this.func);
+    let inOptionals = sortedOptionalNames(ra.source);
+    let inInfo = this.wasm.getRecordDispatch(
+        this.func.model, inFields, inOptionals);
+    let outFields = recordWasmFields(this.wasm, ra.target, this.func);
     let outInfo = this.wasm.getAdaptedRecordDispatch(
-        this.func.model, inFields, outFields);
+        this.func.model, inFields, inOptionals,
+        outFields, sortedOptionalNames(ra.target));
     if (outInfo.vtableGlobal.index < 0) {
       this.#bail('record adaptation vtable unregistered');
     }
@@ -2729,8 +2777,23 @@ export final class FunctionLowerer {
       }
     }
     let args = new Array<i32>();
-    for (let f in dispatch.fields) {
+    let i32Vt: ValType = new ValTypeI32();
+    // Presence contributions for the `$present` mask: constant bits for
+    // definitely-provided optional fields, dynamic parts for optional
+    // fields fed by a spread source that itself tracks presence.
+    var maskConstBits = 0;
+    let maskDynParts = new Array<i32>();
+    var presentFieldSlot = -1;
+    for (var fi = 0; fi < dispatch.fields.length; fi += 1) {
+      let f = dispatch.fields[fi];
       let key = if (f.name != null) f.name as String else '';
+      if (key == presentFieldName) {
+        // Filled after the loop, once the contributions are known.
+        presentFieldSlot = args.length;
+        args.push(-1);
+        continue;
+      }
+      let optBit = dispatch.optionalBitOf(key);
       var v = -1;
       var found = false;
       // Last property wins, scanning explicit assignments and spreads
@@ -2742,6 +2805,7 @@ export final class FunctionLowerer {
           if (prop.name.name == key) {
             v = this.#lowerExpressionCtx(prop.value, f.type);
             found = true;
+            if (optBit >= 0) { maskConstBits = maskConstBits | (1 << optBit); }
           }
         } else if (prop is SpreadElement) {
           let spT = this.#substitutedNodeType(prop.argument);
@@ -2757,6 +2821,22 @@ export final class FunctionLowerer {
               let srcDispatch = this.#cx().recordDispatchOf(nn);
               v = this.#recordDispatchRead(srcDispatch, key, sv);
               found = true;
+              if (optBit >= 0) {
+                let srcBit = srcDispatch.optionalBitOf(key);
+                if (srcBit < 0) {
+                  maskConstBits = maskConstBits | (1 << optBit);
+                } else {
+                  // Present iff present in the source: remap its bit.
+                  let srcMask = this.#recordDispatchRead(
+                      srcDispatch, presentFieldName, sv);
+                  let bitVal = this.b.binary(IrOp.i32_and, i32Vt,
+                      this.b.binary(IrOp.i32_shr_u, i32Vt, srcMask,
+                          this.b.constI32(srcBit, i32Vt)),
+                      this.b.constI32(1, i32Vt));
+                  maskDynParts.push(this.b.binary(IrOp.i32_shl, i32Vt,
+                      bitVal, this.b.constI32(optBit, i32Vt)));
+                }
+              }
             } else if (nn is ClassType) {
               // Class spreads copy PHYSICAL public fields; anything
               // else falls through and the missing-field bail fires.
@@ -2774,6 +2854,9 @@ export final class FunctionLowerer {
                         this.#coerceTo(sv, new ValTypeRef(st) as ValType),
                         fieldRef);
                     found = true;
+                    if (optBit >= 0) {
+                      maskConstBits = maskConstBits | (1 << optBit);
+                    }
                   }
                 }
               }
@@ -2783,12 +2866,24 @@ export final class FunctionLowerer {
         pi -= 1;
       }
       if (!found) {
-        this.#bail('record literal field missing');
+        if (optBit >= 0) {
+          // An omitted optional field: zero slot, mask bit stays 0.
+          v = zeroValueOf(this.b, f.type);
+        } else {
+          this.#bail('record literal field missing');
+        }
       }
       if (!isValSubtype(this.#valueType(v), f.type)) {
         this.#failConformance(v, f.type, 'record literal field type');
       }
       args.push(v);
+    }
+    if (presentFieldSlot >= 0) {
+      var mask = this.b.constI32(maskConstBits, i32Vt);
+      for (let part in maskDynParts) {
+        mask = this.b.binary(IrOp.i32_or, i32Vt, mask, part);
+      }
+      args[presentFieldSlot] = mask;
     }
     let instance = this.b.emit(IrOp.struct_new,
         new ValTypeRef(dispatch.concreteType) as ValType,

@@ -3965,22 +3965,26 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
   }
   case RecordTypeAnnotation {properties}: {
     let props = new HashMap<String, Type>();
+    var optionals: HashSet<String> | null = null;
     for (let prop in properties) {
       let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, allowInlineTuple);
       rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
             props[prop.name.name] = resolved;
       if (prop.optional) {
-        // Presence-optional record fields have no assignability rule or
-        // runtime representation (docs/design/record-presence.md); the
-        // field is treated as required after this error.
-        ctx.error(
-          "Optional record fields are not supported yet.",
-          DiagnosticCode.IncompatibleTypes,
-          prop.loc
-        );
+        optionals ??= new HashSet<String>();
+        optionals.add(prop.name.name);
       }
     }
-    new RecordT(props, null)
+    if (optionals != null && optionals.size > 32) {
+      // The presence bitmask is a single i32 (docs/design/record-presence.md
+      // §2); widen it before lifting this limit.
+      ctx.error(
+        "A record type may have at most 32 optional fields.",
+        DiagnosticCode.IncompatibleTypes,
+        properties[0].loc
+      );
+    }
+    new RecordT(props, optionals)
   }
   case TupleTypeAnnotation {elementTypes}: {
     let elTypes = new Array<Type>();
@@ -5589,6 +5593,12 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
           if (!isAssignableTo(ctx, t1, t2) || !isAssignableTo(ctx, t2, t1)) {
             needsAdaptation = true;
           }
+          // Same field set and types, but a presence difference still
+          // changes the layout (the target carries a mask slot for its
+          // optional fields).
+          if (nonNullSrc.isOptional(key) != nonNullTgt.isOptional(key)) {
+            needsAdaptation = true;
+          }
         } else {
           needsAdaptation = true;
         }
@@ -5948,20 +5958,27 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case _: {}
   }
 
-  // Record structural assignability: all target properties must exist in source
-  // with assignable types.
+  // Record structural assignability: all required target properties must
+  // exist in source with assignable types; a target's optional property may
+  // be missing, and may only be fed by a source property that is itself
+  // reliably present (a source optional cannot satisfy a required target).
   match (source) {
-    case RecordT {properties as srcProps}: {
+    case RecordT as srcRec: {
       match (target) {
-        case RecordT {properties as tgtProps}: {
+        case RecordT as tgtRec: {
+          let srcProps = srcRec.properties;
+          let tgtProps = tgtRec.properties;
           for (let key in tgtProps.keys()) {
             if (let (true, srcType) = srcProps.get(key)) {
+              if (srcRec.isOptional(key) && !tgtRec.isOptional(key)) {
+                return false;
+              }
               if (let (true, tgtType) = tgtProps.get(key)) {
                 if (!isAssignableTo(ctx, srcType, tgtType)) {
                   return false;
                 }
               }
-            } else {
+            } else if (!tgtRec.isOptional(key)) {
               return false;
             }
           }
@@ -6180,14 +6197,17 @@ let typesEqual = (a: Type, b: Type): boolean => {
         case _: false
       }
     }
-    case RecordT {properties as pa}: {
+    case RecordT as ra: {
       match (b) {
-        case RecordT {properties as pb}: {
+        case RecordT as rb: {
+          let pa = ra.properties;
+          let pb = rb.properties;
           if (pa.size != pb.size) { return false; }
           let keys = pa.keys();
           while (let (true, key) = keys.next()) {
             if (!pb.has(key)) { return false; }
             if (!typesEqual(pa[key], pb[key])) { return false; }
+            if (ra.isOptional(key) != rb.isOptional(key)) { return false; }
           }
           true
         }
@@ -8029,10 +8049,14 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
         }
       }
     }
-    case RecordPattern {properties}: {
+    case RecordPattern as recordPat: {
+      let properties = recordPat.properties;
       // For record destructuring: { x, y } = record.
       match (t) {
         case RecordT {properties as recordProps, optionalProperties}: {
+          // Codegen reads the matched record type off the pattern node
+          // for presence tests and guarded defaults.
+          ctx.setNodeType(recordPat, t);
           for (let prop in properties) {
             let propName = prop.name.name;
             if (recordProps.has(propName)) {
@@ -9036,6 +9060,11 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
     }
     let propTypes = new HashMap<String, Type>();
+    // A field fed only by a spread source where it is optional stays
+    // optional in the literal's own type — its runtime presence follows
+    // the source's. An explicit assignment (or a required spread field)
+    // later in the literal makes it definite again.
+    var literalOptionals: HashSet<String> | null = null;
     var i = 0;
     while (i < properties.length) {
       match (properties[i]) {
@@ -9047,16 +9076,24 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           }
           let valType = checkExpression(ctx, value, propExpected);
           propTypes[name.name] = valType;
+          if (literalOptionals != null) { literalOptionals.delete(name.name); }
         }
         case SpreadElement {argument}: {
           // Spread: merge properties from the argument's record/class type.
           let spreadType = checkExpression(ctx, argument, null);
           let nonNullSpread = subtractNullFromType(spreadType);
           match (nonNullSpread) {
-            case RecordT {properties as spreadProps}: {
+            case RecordT as spreadRec: {
+              let spreadProps = spreadRec.properties;
               let keys = spreadProps.keys();
               while (let (true, key) = keys.next()) {
                 propTypes[key] = spreadProps[key];
+                if (spreadRec.isOptional(key)) {
+                  literalOptionals ??= new HashSet<String>();
+                  literalOptionals.add(key);
+                } else if (literalOptionals != null) {
+                  literalOptionals.delete(key);
+                }
               }
             }
             case ClassType as ct: {
@@ -9075,7 +9112,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
       i += 1;
     }
-    let recT = new RecordT(propTypes, null);
+    if (literalOptionals != null && literalOptionals.size == 0) {
+      literalOptionals = null;
+    }
+    let recT = new RecordT(propTypes, literalOptionals);
     if (expectedType != null) {
       let baseExpected = baseType(expectedType);
       if (baseExpected is RecordT && isAssignableTo(ctx, recT, baseExpected)) {
@@ -13296,8 +13336,21 @@ let resolveMemberType = (
       );
       return new ErrorType();
     }
-    case RecordT {properties}: {
+    case RecordT as rec: {
+      let properties = rec.properties;
       if (properties.has(propName)) {
+        if (rec.isOptional(propName)) {
+          // The field may be absent, so a direct read has no value to
+          // produce; presence is consumed through destructuring with a
+          // default or an `if (let {...} = ...)` pattern.
+          ctx.error(
+            "Property '" + propName + "' is optional and may be absent. " +
+                "Destructure it with a default or match on its presence.",
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
         return properties[propName];
       }
       ctx.error(
@@ -14604,7 +14657,15 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         pi = pi + 1;
       }
     }
-    case RecordPattern {properties, loc}: {
+    case RecordPattern as recordPat: {
+      let properties = recordPat.properties;
+      if (expectedType is RecordT) {
+        // Codegen reads the matched record type off the pattern node
+        // for presence tests: an optional field named without a
+        // default is a refutable presence pattern here (a match arm or
+        // if-let), unlike in irrefutable destructuring.
+        ctx.setNodeType(recordPat, expectedType);
+      }
       var pi = 0;
       while (pi < properties.length) {
         let prop = properties[pi];

@@ -555,6 +555,18 @@ export final class WasmFunction implements Hashable {
   var setterStruct: WasmStruct | null = null;
   /** The index of the field in the class struct for the synthesized setter. */
   var setterFieldIndex: i32 = -1;
+  /**
+   * For an adapted record dispatch's `$present` getter: how each target
+   * mask bit derives from the source — -1 = absent (constant 0), -2 =
+   * required in the source (constant 1), else the source's bit index.
+   */
+  var getterMaskSpec: Array<i32> | null = null;
+  /**
+   * An adapted getter for an optional target field the source shape
+   * lacks: return the slot type's zero value (the mask reports the
+   * absence; there is nothing to read).
+   */
+  var getterReturnsZero: boolean = false;
   /** The concrete target function for an interface trampoline method/property call. */
   var interfaceTrampolineTarget: WasmFunction | null = null;
   /** The target imported function for an external reference wrapper. */
@@ -647,9 +659,34 @@ export final class RecordDispatchInfo {
   vtableGlobal: WasmGlobal;
   fields: Array<WasmField>;
   getterTypes: Array<WasmSignature>;
-  
-  new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes);
+  /**
+   * Sorted optional field names of the (target) record type; position =
+   * presence-bit index. Part of the dispatch key: two record types with
+   * identical field lists but different optional sets have different
+   * getter semantics.
+   */
+  optionalNames: Array<String>;
+  /** For an adapted dispatch: the SOURCE shape's sorted optional names
+   *  (equals optionalNames on a plain dispatch). */
+  inOptionalNames: Array<String>;
+
+  new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes, this.optionalNames, this.inOptionalNames);
+
+  optionalBitOf(name: String): i32 {
+    for (var i = 0; i < this.optionalNames.length; i += 1) {
+      if (this.optionalNames[i] == name) { return i; }
+    }
+    return -1;
+  }
 }
+
+let stringArraysEqual = (a: Array<String>, b: Array<String>): boolean => {
+  if (a.length != b.length) { return false; }
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) { return false; }
+  }
+  return true;
+};
 
 export final class ClassCodegenInfo {
   structType: WasmStruct;
@@ -976,10 +1013,11 @@ export final class WasmModule {
   functionAdaptationWrappers = new NodeMap<WasmFunction>();
   symbolNames = new HashMap<SymbolId, String>();
   
-  findRecordDispatch(fields: Array<WasmField>): RecordDispatchInfo | null {
+  findRecordDispatch(fields: Array<WasmField>, optionalNames: Array<String>): RecordDispatchInfo | null {
     for (var k = 0; k < this.recordDispatchInfos.length; k += 1) {
       let info = this.recordDispatchInfos[k];
-      if (info.fields.length == fields.length) {
+      if (info.fields.length == fields.length &&
+          stringArraysEqual(info.optionalNames, optionalNames)) {
         var match = true;
         for (var i = 0; i < fields.length; i += 1) {
           if (info.fields[i].name != fields[i].name || !valTypeEquals(info.fields[i].type, fields[i].type)) {
@@ -993,9 +1031,13 @@ export final class WasmModule {
     return null;
   }
   
-  findAdaptedDispatch(inFields: Array<WasmField>, outFields: Array<WasmField>): RecordDispatchInfo | null {
+  findAdaptedDispatch(inFields: Array<WasmField>, inOptionalNames: Array<String>, outFields: Array<WasmField>, outOptionalNames: Array<String>): RecordDispatchInfo | null {
     for (var k = 0; k < this.adaptedDispatchInfos.length; k += 1) {
       let info = this.adaptedDispatchInfos[k];
+      if (!stringArraysEqual(info.optionalNames, outOptionalNames) ||
+          !stringArraysEqual(info.inOptionalNames, inOptionalNames)) {
+        continue;
+      }
       let s = info.concreteType;
       var inMatch = false;
       if (s.fields.length == inFields.length) {
@@ -1126,10 +1168,10 @@ export final class WasmModule {
     return this.getStruct(null, fields);
   }
   
-  getRecordDispatch(model: SemanticModel, fields: Array<WasmField>): RecordDispatchInfo {
+  getRecordDispatch(model: SemanticModel, fields: Array<WasmField>, optionalNames: Array<String>): RecordDispatchInfo {
     sortWasmFields(fields);
-    
-    let existing = this.findRecordDispatch(fields);
+
+    let existing = this.findRecordDispatch(fields, optionalNames);
     if (existing != null) {
       return existing;
     }
@@ -1181,17 +1223,17 @@ export final class WasmModule {
     let vtableGlobal = new WasmGlobal("vtable_record", "vtable_record", new ValTypeRef(vtableType), false, null, vtableInit, model);
     this.globals.push(vtableGlobal);
     
-    let info = new RecordDispatchInfo(fatPtrType, vtableType, concreteType, vtableGlobal, fields, getterTypes);
+    let info = new RecordDispatchInfo(fatPtrType, vtableType, concreteType, vtableGlobal, fields, getterTypes, optionalNames, optionalNames);
     this.recordDispatchInfos.push(info);
-    
+
     return info;
   }
   
-  getAdaptedRecordDispatch(model: SemanticModel, inFields: Array<WasmField>, outFields: Array<WasmField>): RecordDispatchInfo {
+  getAdaptedRecordDispatch(model: SemanticModel, inFields: Array<WasmField>, inOptionalNames: Array<String>, outFields: Array<WasmField>, outOptionalNames: Array<String>): RecordDispatchInfo {
     sortWasmFields(inFields);
     sortWasmFields(outFields);
-    
-    let existing = this.findAdaptedDispatch(inFields, outFields);
+
+    let existing = this.findAdaptedDispatch(inFields, inOptionalNames, outFields, outOptionalNames);
     if (existing != null) {
       return existing;
     }
@@ -1220,7 +1262,7 @@ export final class WasmModule {
       
       let getterFunc = new WasmFunction(getterType, null, model);
       getterFunc.getterStruct = inStructType;
-      
+
       // Find the corresponding field in the inFields by name
       var inIndex = -1;
       for (var j = 0; j < inFields.length; j += 1) {
@@ -1229,8 +1271,50 @@ export final class WasmModule {
           break;
         }
       }
-      
-      getterFunc.getterFieldIndex = inIndex;
+
+      let outName = outFields[i].name;
+      if (outName != null && (outName as String) == '$present') {
+        // The target's mask derives per bit from the source shape:
+        // constant 1 for fields the source holds unconditionally,
+        // constant 0 for fields it lacks, the source's own bit where
+        // the source also tracks it.
+        let spec = new Array<i32>();
+        for (let optName in outOptionalNames) {
+          var srcBit = -1;
+          for (var j = 0; j < inOptionalNames.length; j += 1) {
+            if (inOptionalNames[j] == optName) { srcBit = j; }
+          }
+          if (srcBit >= 0) {
+            spec.push(srcBit);
+          } else {
+            var inHas = false;
+            for (var j = 0; j < inFields.length; j += 1) {
+              if (inFields[j].name != null &&
+                  (inFields[j].name as String) == optName) {
+                inHas = true;
+              }
+            }
+            spec.push(if (inHas) -2 else -1);
+          }
+        }
+        getterFunc.getterMaskSpec = spec;
+        getterFunc.getterFieldIndex = -1;
+      } else if (inIndex < 0) {
+        var outOptional = false;
+        if (outName != null) {
+          for (let optName in outOptionalNames) {
+            if (optName == (outName as String)) { outOptional = true; }
+          }
+        }
+        if (outOptional) {
+          // Absent in the source; the mask reports it, the getter just
+          // needs a well-typed placeholder.
+          getterFunc.getterReturnsZero = true;
+        }
+        getterFunc.getterFieldIndex = -1;
+      } else {
+        getterFunc.getterFieldIndex = inIndex;
+      }
       this.addFunction(getterFunc);
       getters.push(getterFunc);
       
@@ -1255,7 +1339,7 @@ export final class WasmModule {
     this.globals.push(vtableGlobal);
     
     // We return information about the TARGET shape (outFields), but with a vtable matching our adapted getters
-    let info = new RecordDispatchInfo(fatPtrType, vtableType, inStructType, vtableGlobal, outFields, getterTypes);
+    let info = new RecordDispatchInfo(fatPtrType, vtableType, inStructType, vtableGlobal, outFields, getterTypes, outOptionalNames, inOptionalNames);
     this.adaptedDispatchInfos.push(info);
     
     return info;

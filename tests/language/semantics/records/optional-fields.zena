@@ -1,0 +1,26 @@
+// @mode: check
+// Optional record fields: a literal may omit them, a required target
+// field cannot be fed by an optional source field, and direct access
+// requires consuming presence through a pattern.
+type Opts = {
+  url: String,
+  timeout?: i32,
+};
+
+let f = (opts: Opts) => {
+  let {url, timeout = 30} = opts;
+  let u: String = url;
+  let t: i32 = timeout;
+  return t;
+};
+
+let ok = f({url: 'x'});
+let ok2 = f({url: 'x', timeout: 5});
+
+let g = (opts: Opts) => {
+  return opts.timeout; // @error: optional and may be absent
+};
+
+let h = (full: {url: String, timeout: i32}) => 0;
+let partial: Opts = {url: 'x'};
+let bad = h(partial); // @error: Type mismatch
