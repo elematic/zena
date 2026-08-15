@@ -4,7 +4,7 @@
 
 `distinct type` gives a type its own identity in the checker, which is enough
 to stop `Meters` being passed where `Seconds` is expected. It is not enough to
-make a type *trustworthy*, because anyone can write the cast:
+make a type _trustworthy_, because anyone can write the cast:
 
 ```zena
 distinct type Token = i32;
@@ -19,7 +19,7 @@ index is in bounds, this string was escaped — can be sidestepped by a cast at
 the use site, and the compiler will not say a word.
 
 `opaque type` closes that gap. It is a distinct type that can only be cast
-*to* inside the file that declares it, which makes that file the sole source
+_to_ inside the file that declares it, which makes that file the sole source
 of values, and therefore the only place its invariants have to be checked.
 
 ```zena
@@ -37,7 +37,7 @@ them — a property the checker now underwrites rather than merely documents.
 
 ## Why a file, and not a module or a package
 
-The declaring *file* is the boundary because it is the unit a reader can hold
+The declaring _file_ is the boundary because it is the unit a reader can hold
 in their head. Reviewing whether a `Token`'s invariant holds means reading one
 file top to bottom and finding every `as Token` in it. A package-level boundary
 would spread the audit over an unbounded number of files; a
@@ -62,7 +62,7 @@ type it is erased before codegen, and casts across it compile to nothing.
 
 ## What counts as forging
 
-The restriction has to be on casts that *manufacture* a value, not on every
+The restriction has to be on casts that _manufacture_ a value, not on every
 cast whose target mentions the type. Rejecting the latter would make ordinary
 code illegal:
 
@@ -79,11 +79,11 @@ and the value it produces already existed — nothing was forged. So the rule is
 
 Both directions of assignability are needed, and each covers a real case:
 
-| Cast | Source → target | Target → source | Verdict |
-|---|---|---|---|
-| `42 as Token` | no | no | rejected — a forge |
-| `t as Token` where `t: Token` | yes | yes | allowed — redundant |
-| `t as Token` where `t: Token \| null` | no | yes | allowed — narrowing |
+| Cast                                  | Source → target | Target → source | Verdict             |
+| ------------------------------------- | --------------- | --------------- | ------------------- |
+| `42 as Token`                         | no              | no              | rejected — a forge  |
+| `t as Token` where `t: Token`         | yes             | yes             | allowed — redundant |
+| `t as Token` where `t: Token \| null` | no              | yes             | allowed — narrowing |
 
 A cast where neither type is assignable to the other is precisely a
 reinterpretation of an unrelated representation, which is exactly what forging
@@ -188,10 +188,10 @@ Two things that look like they should work, and do not:
 
 - `IdGenerator<T extends NodeId | SymbolId>` parses, but `id as T` under that
   bound is still asking to turn an arbitrary `i32` into a `NodeId`. A
-  constraint narrows *which* types you can forge, not *whether* you are
+  constraint narrows _which_ types you can forge, not _whether_ you are
   forging, so the rule rejects it — correctly.
 - Wrapping the instantiation in a factory (`makeNodeIdGenerator = () => new
-  IdGenerator<NodeId>()`) does not help while the body still casts: the
+IdGenerator<NodeId>()`) does not help while the body still casts: the
   unjustified cast is inside `next()`, and it is checked where it is written,
   not where the generic is instantiated. Injecting the closure works precisely
   because it removes that cast rather than relocating its instantiation.
@@ -200,22 +200,22 @@ The indirect call through `mint` is not measurable above noise: self-compile
 minimum went 6852ms to 6960ms across 7 runs each, against run-to-run spread of
 6852-11013ms on the same box.
 
-Targets that merely *mention* a type parameter are checked the same way, by
+Targets that merely _mention_ a type parameter are checked the same way, by
 comparing type arguments pairwise (`castMintsTypeParameter`): `Array<T>` to
 `ImmutableArray<T>` re-labels a container whose elements are already `T` and
 mints nothing, while `Array<i32>` to `Array<T>` mints one per element.
 
 ## Implementation
 
-| Concern | Location |
-|---|---|
-| `opaque` keyword | `tokenizer.zena` (`TokenType.Opaque`), usable as an identifier elsewhere |
-| Parsing (`opaque` only before `type`) | `parser.zena` `#parseTypeAliasDeclaration` |
-| AST flag | `ast.zena` `TypeAliasDeclaration.isOpaque` |
-| Type flag + declaring module | `types.zena` `TypeAliasType.isOpaque`, `.declaringModule` |
-| Cast check | `checker.zena` `findForeignOpaque`, `checkOpaqueCast` |
-| Type-parameter cast check | `checker.zena` `checkTypeParameterCast`, `castMintsTypeParameter` |
-| Diagnostic | `diagnostics.zena` `DiagnosticCode.OpaqueTypeCast` |
+| Concern                               | Location                                                                 |
+| ------------------------------------- | ------------------------------------------------------------------------ |
+| `opaque` keyword                      | `tokenizer.zena` (`TokenType.Opaque`), usable as an identifier elsewhere |
+| Parsing (`opaque` only before `type`) | `parser.zena` `#parseTypeAliasDeclaration`                               |
+| AST flag                              | `ast.zena` `TypeAliasDeclaration.isOpaque`                               |
+| Type flag + declaring module          | `types.zena` `TypeAliasType.isOpaque`, `.declaringModule`                |
+| Cast check                            | `checker.zena` `findForeignOpaque`, `checkOpaqueCast`                    |
+| Type-parameter cast check             | `checker.zena` `checkTypeParameterCast`, `castMintsTypeParameter`        |
+| Diagnostic                            | `diagnostics.zena` `DiagnosticCode.OpaqueTypeCast`                       |
 
 `declaringModule` is set once, where the alias is materialized from its
 declaration, out of `Symbol.modulePath` — the same canonical string space as
@@ -237,7 +237,7 @@ minting a second identity.
   rejected.
 - `.../opaque-types/cross-file/allowed.zena` — everything that must stay
   legal. Kept in a separate file on purpose: the portable-semantics runner only
-  reports *unexpected* errors for files that declare no `@error` directive, so
+  reports _unexpected_ errors for files that declare no `@error` directive, so
   a file mixing legal and illegal casts would hide a regression that made valid
   code fail.
 - `tests/language/execution/operators/as/opaque.zena` — erasure; the value

@@ -172,7 +172,6 @@ Two API stances, decided here:
   `Future.race` in `zena:async`, alongside `Future.of` and
   `Future.failed`. Two things came out differently from the sketch
   above:
-
   - **Each static declares its own type parameter.** A static is
     outside its class's generic scope, so the signature is
     `static all<A>(futures: Array<Future<A>>): Future<Array<A>>`, not
@@ -310,7 +309,7 @@ to rule it out, for the availability reason exactly.)
 
 The conditionality stays confined to the clock, and is smaller than
 expected: the timer queue, the `Parker`, and the meaning of
-`drainMicrotasks()` — *run until nothing more can happen now* — are
+`drainMicrotasks()` — _run until nothing more can happen now_ — are
 shared. WASI's clock can genuinely wait, so its drain never unwinds and
 `main` still completes inside the call; a standalone
 `wasmtime --invoke main` is unaffected.
@@ -334,10 +333,11 @@ completion). Two unconditional exports rather than one with an
 `@zena-lang/runtime`'s `run()` drives the pair and hands back a promise.
 
 This inherits `setTimeout`'s web semantics on purpose, including the
->=4ms floor browsers impose once timeouts nest more than five deep.
-Each wake schedules a fresh timeout, so long chains of very short
-sleeps hit that floor; driving them from a single shared interval would
-avoid it if the granularity ever matters.
+
+> =4ms floor browsers impose once timeouts nest more than five deep.
+> Each wake schedules a fresh timeout, so long chains of very short
+> sleeps hit that floor; driving them from a single shared interval would
+> avoid it if the granularity ever matters.
 
 ### Level 2 — external completions (JS host; later, custom Rust I/O)
 
@@ -359,11 +359,11 @@ matched up: the completion says which operation finished and what it
 produced, in one call.
 
 **Implemented** on the JS host, and confirmed as designed. An earlier
-revision of this document had the module *pull* completions instead —
+revision of this document had the module _pull_ completions instead —
 the host would park a result, ping the drain, and a `Parker` would ask
 `next_ready()` which handle was ready and then for its payload. That was
 built and then removed. It was chosen to avoid a compiler change (an
-export has to be *reached* by RTA, and nothing in Zena calls a
+export has to be _reached_ by RTA, and nothing in Zena calls a
 completion entry point), which is the wrong thing to optimise for in a
 language's own stdlib: it put a ready-queue and a peek/consume protocol
 in every host, to save rooting five functions.
@@ -384,11 +384,11 @@ naming both rather than a coercion.
 
 One constraint fell out of building it and is worth recording, because
 it shapes any other erase-and-narrow design: this only works through a
-**base class**. Through an *interface*, `is` answers false and the cast
+**base class**. Through an _interface_, `is` answers false and the cast
 traps, for plain and generic classes alike — see BUGS.md. `AnyCompleter`
 is a class for that reason and not by preference.
 
-Only *delivery* is per-payload-type, and unavoidably so: each entry
+Only _delivery_ is per-payload-type, and unavoidably so: each entry
 point is a wasm export whose signature has to name the payload. The set
 is small and closed because it is bounded by what a host can hand to
 wasm at all — nothing, an integer, a double, a string, or a reference
@@ -413,7 +413,7 @@ Once a host can settle a future by handle, `sleep` is an ordinary
 host-async binding whose host side is `setTimeout`, and `zena:time`'s
 host entry is six lines with no mechanism of its own. The `Clock`
 interface, the timer queue and the `Parker` exist for the target that
-can genuinely *block*: WASI's drain sorts pending deadlines itself and
+can genuinely _block_: WASI's drain sorts pending deadlines itself and
 sleeps on the nearest through `poll_oneoff`. `time/queue.zena` is
 reachable only from `time/wasi.zena`, and Level 1 above describes the
 WASI story.
@@ -589,6 +589,7 @@ website served by a Zena server":
   land first: a sleep carries no value, and faking it with
   `Future<i32>` would have put a meaningless zero in the stdlib
   permanently.
+
 - **A3 — external completions on the JS host. Implemented**
   (`zena:js` + `@zena-lang/runtime`'s `asyncImports`), as
   designed — the host calls `__zena_complete_<kind>(handle, value)` and
@@ -764,11 +765,10 @@ input for async v1.)
    because reducing promise allocation is a large, well-trodden win in
    JS VMs, and nothing in this document had addressed it.
 
-   Where it stands today: §3 planned for the frame to *be* its
+   Where it stands today: §3 planned for the frame to _be_ its
    `Future<T>` — one allocation — and A1 deliberately traded that away,
-   so the frame *holds* one. Counting what an `await` of an async call
+   so the frame _holds_ one. Counting what an `await` of an async call
    actually costs now:
-
    1. the frame struct,
    2. its `Future<T>`,
    3. `Future`'s two eagerly-constructed `Array` fields (`#listeners`,
@@ -796,7 +796,7 @@ input for async v1.)
    scalar replacement — deleting the object and promoting its fields —
    is the only mechanism, as that document says.
 
-   Two things make it *not* a free win, and are why this is a question
+   Two things make it _not_ a free win, and are why this is a question
    rather than a plan. The always-async rule (§1.1) means the queue hop
    must survive even if the future does not, so the peephole may remove
    the allocation but not the suspension. And eager start means the
@@ -811,6 +811,6 @@ input for async v1.)
    per-settle delivery objects all fall out of one change to the
    notification protocol — and sharpens the hedge above: eliding the
    queue hop is observable whenever anything else is queued, so the rule
-   is unconditionally *elide the allocation, keep the hop*. That makes
+   is unconditionally _elide the allocation, keep the hop_. That makes
    the remaining work a multi-value ramp return rather than an escape
    analysis.

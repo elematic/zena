@@ -247,7 +247,7 @@ heavier feature than v1 should carry. Interim position:
   rejected in v1 with a pointer to the existential form.
 
 Full presence polymorphism (rows over `label: present|absent`) is listed
-as future work (§10). Concrete presence on *specific* fields is a
+as future work (§10). Concrete presence on _specific_ fields is a
 lighter feature than that, and
 [record-presence.md](record-presence.md) proposes it: a presence
 bitmask in one full-width struct per record type (no per-present-set
@@ -340,7 +340,7 @@ let opts = { ...defaults with ...userOpts };
 ```
 
 Presence-optional fields add a third supply kind to these rules —
-an optional field of a spread source is a *conditional* supply, and
+an optional field of a spread source is a _conditional_ supply, and
 definite + conditional means fallback (present wins, else the
 definite value, commutatively) — specified in
 [record-presence.md](record-presence.md) §6.3.

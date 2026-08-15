@@ -5,6 +5,7 @@
 Zena should provide a unified declarative model for use cases like UI authoring, package manifests, build configurations, document templates, and data transfer.
 
 Declarative use cases span multiple container formats and levels of declarativeness:
+
 - **Embedded expressions**: UI descriptions embedded in imperative source code (e.g. JSX, SwiftUI).
 - **Standalone files**: Pure data files for configuration and manifests (e.g. JSON, YAML, HCL).
 - **Hybrid templates**: Markup or prose outer shells containing embedded expressions (e.g. HTML templates, MDX).
@@ -34,6 +35,7 @@ The relationship between logic and declarative data exists along a continuous sp
 ### Pure Declarative (`.zconf`)
 
 All declarative, no logic. Represents pure data graphs such as package declarations (`package.zconf`), workspace build manifests (`build.zconf`), and choreography protocols (`workflow.zconf`).
+
 - Zero `let`/`var`/`export` boilerplate.
 - Statically parseable without code execution.
 - Strongly typed against Zena schema classes.
@@ -41,6 +43,7 @@ All declarative, no logic. Represents pure data graphs such as package declarati
 ### Declarative Shell with Embedded Logic (`.zhtml`, `.zsvg`, `.ztpl`, `.zmd`)
 
 Declarative markup or prose on the outside, with embedded Zena expressions and control flow on the inside.
+
 - Contextual text scanning between tags.
 - `${ expr }` interpolation matching string template syntax.
 - `${ for ... }` and `${ if ... }` control-flow mapping to node sequences.
@@ -48,6 +51,7 @@ Declarative markup or prose on the outside, with embedded Zena expressions and c
 ### Zena Logic with Embedded Declarative (`.zena` with `html <tag>` / `data { ... }`)
 
 Imperative Zena source code containing embedded declarative block expressions or JSX-like markup sugar.
+
 - Seamless transition between imperative logic and declarative trees.
 - Validated by the Zena type checker.
 - Enables visual editing of embedded declarative blocks while preserving human logic code.
@@ -62,14 +66,14 @@ All logic, no declarative structures. Standard functions, classes, and algorithm
 
 Existing declarative formats and embedded DSLs present specific trade-offs:
 
-| Format / System | Outer Structure | Key Strengths | Main Drawbacks | Zena Borrowing |
-| :--- | :--- | :--- | :--- | :--- |
-| **JSON / YAML** | Key-value maps & lists | Universal parsing, simple data model | No comments, no schemas in syntax, verbose array syntax | Pure data tree model |
-| **HCL (Terraform)** | Typed block statements | Clean block structure, no top-level boilerplate | Separate DSL from host language | Block statement syntax (`Type Name { ... }`) |
-| **KDL** | Node statements | Positional args, named properties, and nested children | Non-standard ecosystem | Positional args + properties + children model |
-| **Protobuf TextFormat** | Message blocks | Strongly-typed message trees | Rigid schema rules, limited control flow | Implicit child node appending |
-| **JSX / HTML** | Markup elements | Familiar syntax, visual hierarchy | Capitalization heuristic (`<div />` vs `<Card />`), required string quotes | Markup sugar desugaring to node trees, explicit component sigil (`<@Component>`) |
-| **Nunjucks / Jinja** | Outer text shell + embedded control flow | Effective for documents and templates | Bespoke ad-hoc mini-languages, weak typing | Inverted template file mode (`.zhtml`, `.zmd`) |
+| Format / System         | Outer Structure                          | Key Strengths                                          | Main Drawbacks                                                             | Zena Borrowing                                                                   |
+| :---------------------- | :--------------------------------------- | :----------------------------------------------------- | :------------------------------------------------------------------------- | :------------------------------------------------------------------------------- |
+| **JSON / YAML**         | Key-value maps & lists                   | Universal parsing, simple data model                   | No comments, no schemas in syntax, verbose array syntax                    | Pure data tree model                                                             |
+| **HCL (Terraform)**     | Typed block statements                   | Clean block structure, no top-level boilerplate        | Separate DSL from host language                                            | Block statement syntax (`Type Name { ... }`)                                     |
+| **KDL**                 | Node statements                          | Positional args, named properties, and nested children | Non-standard ecosystem                                                     | Positional args + properties + children model                                    |
+| **Protobuf TextFormat** | Message blocks                           | Strongly-typed message trees                           | Rigid schema rules, limited control flow                                   | Implicit child node appending                                                    |
+| **JSX / HTML**          | Markup elements                          | Familiar syntax, visual hierarchy                      | Capitalization heuristic (`<div />` vs `<Card />`), required string quotes | Markup sugar desugaring to node trees, explicit component sigil (`<@Component>`) |
+| **Nunjucks / Jinja**    | Outer text shell + embedded control flow | Effective for documents and templates                  | Bespoke ad-hoc mini-languages, weak typing                                 | Inverted template file mode (`.zhtml`, `.zmd`)                                   |
 
 ---
 
@@ -78,6 +82,7 @@ Existing declarative formats and embedded DSLs present specific trade-offs:
 ### Comptime Generators and Build-System Expressivity
 
 Treat configuration files as standard Zena scripts executed at compile time.
+
 - **Pros**: Full language power (`for` loops, helper functions).
 - **Cons**: Poor static tool support—tools must run a WebAssembly engine to inspect structure.
 
@@ -90,18 +95,21 @@ Build systems need to query target dependencies across all package configs as pu
 ### Overlay Protocol
 
 Separate human-written code (`.zena`) from machine-generated layout state (`.zlayout`).
+
 - **Pros**: Allows visual editors to modify coordinates without altering logic.
 - **Cons**: Requires stable IDs for nodes.
 
 ### Type-Safe Builders
 
 Functions accepting builder callbacks with implicit receivers (`c.transfer(...)`).
+
 - **Pros**: Idiomatic language syntax, strong autocomplete.
 - **Cons**: Imperative at the source level; difficult for static visual tools to round-trip.
 
 ### Pure Data Literals
 
 Restrict declarative files to record literals (`export let config = { ... }`).
+
 - **Pros**: 100% statically parseable.
 - **Cons**: Array bracket noise, mandatory commas, `export let` boilerplate.
 
@@ -136,6 +144,7 @@ Markup syntax (`<div class="card">...</div>`) desugars 1:1 into the Node-Block A
 React/JSX distinguishes HTML tags from component symbols using capitalization (`<div>` vs `<Card>`). This breaks Web Components (`<user-card>`) and binds syntax to identifier casing.
 
 Zena uses an explicit **Sigil (`@`)** for component references:
+
 - **Element Tags**: `<div>`, `<span>`, `<user-card>` (standard element strings).
 - **Component Symbols**: `<@UserCard>`, `<@Button>` (references to Zena functions or classes).
 
@@ -144,6 +153,7 @@ Zena uses an explicit **Sigil (`@`)** for component references:
 Template files (`.ztpl`, `.zhtml`, `.zsvg`, `.zmd`) invert the container model: the outer shell is markup or text, while the inner layer contains Zena expressions.
 
 In markup mode (`html <tag>` or `.zhtml` files):
+
 - Character sequences between `>` and `<` or `${` scan as raw unquoted text tokens.
 - `${ expression }` pauses text scanning to evaluate standard Zena expressions.
 - `<child>` opens a child tag; `</div>` closes a tag and resumes the outer context.
@@ -302,7 +312,7 @@ import { Callout, Badge } from "./components";
 
 # Release Notes: ${ version } <@Badge type="success">v${ version }</@Badge>
 
-Published on ${ releaseDate } by **${ author }**.
+Published on ${ releaseDate } by **${ author }\*\*.
 
 <@Callout type="warning">
 This release includes breaking changes to the session channel API.
@@ -311,8 +321,9 @@ This release includes breaking changes to the session channel API.
 ### Major Features
 
 ${ for (feature in features) {
+
 - **${ feature.title }**: ${ feature.description }
-} }
+  } }
 
 ${ if (features.length == 0) {
 _No major features listed for this patch release._

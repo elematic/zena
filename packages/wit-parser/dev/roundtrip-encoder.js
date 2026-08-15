@@ -67,10 +67,18 @@ const fixtures = readdirSync(fixtureDir)
 
 for (const fixture of fixtures) {
   console.log(fixture);
-  const source = join('packages', 'wit-parser', 'test-files', 'encoder', fixture);
+  const source = join(
+    'packages',
+    'wit-parser',
+    'test-files',
+    'encoder',
+    fixture,
+  );
   const isError = fixture.endsWith('.error.wit');
   const world = isError
-    ? readFileSync(join(fixtureDir, fixture), 'utf8').match(/^world ([a-z-]+)/m)?.[1]
+    ? readFileSync(join(fixtureDir, fixture), 'utf8').match(
+        /^world ([a-z-]+)/m,
+      )?.[1]
     : WORLDS[fixture];
   if (!world) {
     fail('no world known for this fixture — add it to WORLDS');
@@ -80,18 +88,24 @@ for (const fixture of fixtures) {
   // repo-relative spelling; wasm-tools runs on the host and gets the
   // absolute one.
   const outRel = join(
-    'packages', 'wit-parser', '.encoder-out',
+    'packages',
+    'wit-parser',
+    '.encoder-out',
     `${basename(fixture, '.wit')}.wasm`,
   );
   const out = join(repoRoot, outRel);
 
-  const run = spawnSync(zenaCli, ['run', '--dir', '.', driver, source, world, outRel], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    // The binary bakes in the checkout it was built from; a worktree's
-    // build still resolves the right root, but say so explicitly.
-    env: {...process.env, ZENA_REPO_ROOT: repoRoot},
-  });
+  const run = spawnSync(
+    zenaCli,
+    ['run', '--dir', '.', driver, source, world, outRel],
+    {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      // The binary bakes in the checkout it was built from; a worktree's
+      // build still resolves the right root, but say so explicitly.
+      env: {...process.env, ZENA_REPO_ROOT: repoRoot},
+    },
+  );
   if (run.error) {
     fail(`could not run zena-cli: ${run.error.message}`);
     continue;
@@ -115,9 +129,13 @@ for (const fixture of fixtures) {
     continue;
   }
 
-  const validate = spawnSync('wasm-tools', ['validate', '--features', 'all', out], {
-    encoding: 'utf8',
-  });
+  const validate = spawnSync(
+    'wasm-tools',
+    ['validate', '--features', 'all', out],
+    {
+      encoding: 'utf8',
+    },
+  );
   if (validate.error) {
     fail(`wasm-tools not runnable: ${validate.error.message}`);
     continue;
@@ -138,7 +156,10 @@ for (const fixture of fixtures) {
     continue;
   }
 
-  const goldenPath = join(fixtureDir, `${basename(fixture, '.wit')}.golden.wit`);
+  const goldenPath = join(
+    fixtureDir,
+    `${basename(fixture, '.wit')}.golden.wit`,
+  );
   if (process.env.UPDATE_WIT_GOLDENS) {
     writeFileSync(goldenPath, printed);
     ok(`golden updated`);
@@ -152,7 +173,9 @@ for (const fixture of fixtures) {
     continue;
   }
   if (printed !== golden) {
-    fail(`round-tripped WIT differs from the golden:\n--- golden\n${golden}\n--- got\n${printed}`);
+    fail(
+      `round-tripped WIT differs from the golden:\n--- golden\n${golden}\n--- got\n${printed}`,
+    );
   } else {
     ok('round-trips to the golden WIT');
   }

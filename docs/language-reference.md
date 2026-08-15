@@ -374,7 +374,7 @@ operation.
 
 An **opaque type** is a distinct type that cannot be forged. Anyone can write
 `10 as Meters`, so a `distinct type` documents intent but does not enforce it.
-An opaque type additionally restricts casts *to* it to the file that declares
+An opaque type additionally restricts casts _to_ it to the file that declares
 it, which makes the declaring file the only source of values.
 
 ```zena
@@ -405,7 +405,7 @@ the guarantee costs nothing at runtime.
 
 #### What counts as forging
 
-The restriction is on casts that *manufacture* a value, not on every mention of
+The restriction is on casts that _manufacture_ a value, not on every mention of
 the type in a cast target. A cast is allowed when the source and target types
 already overlap — that is, when either is assignable to the other — because
 such a cast cannot produce a value that did not already exist:
@@ -442,7 +442,7 @@ let forged = ints as Tokens; // Error: Cannot cast to opaque type 'Token'.
 
 #### Casting out
 
-Casting *out* of an opaque type is allowed anywhere:
+Casting _out_ of an opaque type is allowed anywhere:
 
 ```zena
 let raw: i32 = real as i32; // OK
@@ -470,7 +470,7 @@ let unwrap = <T>(x: T | null): T => x as T;  // OK — narrowing
 let pick = <T extends Animal>(a: Animal): T => a as T; // OK — downcast in bound
 ```
 
-The same applies when a type parameter appears *inside* the target, since
+The same applies when a type parameter appears _inside_ the target, since
 minting a container of them is no better than minting one:
 
 ```zena
@@ -2919,7 +2919,7 @@ c.set();                   // so is the method argument
 c.get();                   // a void result is a statement, not a value
 ```
 
-Omitting is permitted, not required: an expression that is *already*
+Omitting is permitted, not required: an expression that is _already_
 `void` can be passed explicitly, and still runs for its side effects.
 
 ```zena

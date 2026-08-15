@@ -91,7 +91,7 @@ the alias is the only carrier, §2.3 for the forms):
 In both, the literal may omit any defaulted field; the checker records
 the omission, and the construction site emits the default's value into
 the omitted slot. The literal's type — and everything downstream — is
-the full shape. In any *other* position (`let opts: FetchOpts = {}`, a
+the full shape. In any _other_ position (`let opts: FetchOpts = {}`, a
 field initializer, a return), all fields are required — a typing
 context never conjures values on its own; the error suggests the
 constructor form.
@@ -144,12 +144,12 @@ fetchWithRetry(opts);                // and passes the already-full value
 
 That is the leaks-through-an-intermediate-variable defect row-types.md
 §3.2 criticizes in TypeScript's excess-property heuristic. With
-defaults on aliases only, the callee's parameter *is* the alias, so
+defaults on aliases only, the callee's parameter _is_ the alias, so
 extracting an argument to a local — `let opts = FetchOpts({});` — is
 behavior-preserving by construction: the constructor form names the
 same alias the signature does, the fill is visible at the expression,
 and no annotation is even needed (the type is inferred). Drift
-requires writing a *different alias name*, a visible source change. A
+requires writing a _different alias name_, a visible source change. A
 callable that wants its own defaults declares its own one-line alias —
 the Dart/Swift signature-defaults idiom, with the defaults hoisted
 into a name callers can also construct with.
@@ -203,10 +203,10 @@ until then.
 
 ### 2.4 Dynamic construction of options
 
-Conditionally *including* a field is a staple of JS option-bag code
+Conditionally _including_ a field is a staple of JS option-bag code
 and is awkward even there (`...(cond ? {timeout: 5} : {})` — setting
 a field to `undefined` still defines it). Zena's answer: materialize
-the defaults, then conditionally *override*. The two are
+the defaults, then conditionally _override_. The two are
 indistinguishable here by construction, since absence is erased the
 moment a literal is filled:
 
@@ -256,7 +256,7 @@ the cost of the nullable slot (boxing, for primitives). This is the same
 nullable form the logic-not-values rule below prescribes; declaring
 `= null` on it makes it omittable like every other defaulted field.
 
-The alternative — letting a *partial* value flow to the callee and
+The alternative — letting a _partial_ value flow to the callee and
 adapting there — is rejected in §6: statically it needs flow-typed
 present-sets (2^N shapes through every join), dynamically it is the
 N×M vtable-adaptation problem, i.e. presence polymorphism by another
@@ -430,7 +430,7 @@ with a clear diagnostic until the feature is built. The full design
 for building it is [record-presence.md](record-presence.md): one
 full-width struct with a presence bitmask (no per-present-set shapes),
 patterns as the presence API, and `inline (boolean, T)` accessors on
-the dispatch path. Presence gives *callee-owned* defaults —
+the dispatch path. Presence gives _callee-owned_ defaults —
 destructured parameters whose field defaults are live, with absence
 flowing through adapters — which covers the use cases this document's
 type-level defaults cannot; the two designs are deliberately
@@ -473,7 +473,7 @@ separable, and record-presence.md §8 records how they relate.
   directly.
 
 - **Consumption-site filling.** Build the partial record as-is and
-  apply defaults where the record is *read* — colocating the filling
+  apply defaults where the record is _read_ — colocating the filling
   in the consumer instead of at every construction site. The runtime
   mechanics exist: every record value today is a fat pointer whose
   vtable identifies its concrete shape, so an adapted vtable for
@@ -481,7 +481,6 @@ separable, and record-presence.md §8 records how they relate.
   absent fields that return the default constant — a per-(shape, type)
   cost instead of a per-call-site cost, with no branching at reads.
   Rejected on three grounds:
-
   1. Partial records become first-class values, which is observable
      absence: equality and hashing across present-sets, spread of a
      partial value, and what a read sees before "consumption" (once

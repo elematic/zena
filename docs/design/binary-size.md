@@ -129,22 +129,22 @@ one line.
 
 `FixedArray<T>` and `ImmutableArray<T>` are declared
 `extension class ... on array<T>`. An extension class has no
-`struct.new` — its representation *is* the underlying `array<T>` — so
+`struct.new` — its representation _is_ the underlying `array<T>` — so
 "instantiated" is not a meaningful state for one. Two places treat it
 as one anyway:
 
 - `reachability/visitor.zena`, `discoverType`'s `ClassType` arm:
   `if (isRtaActive && (instantiatedClasses.has(lookupId) || ct.isExtension))
-  → instantiateClassType(ct)`
+→ instantiateClassType(ct)`
 - `reachability/specialization.zena`, `registerClassMethod`:
   `if (!isGenericTemplate && (hasInst || cType.isExtension))
-  → #reachRegisteredMethod(func)`
+→ #reachRegisteredMethod(func)`
 
 So **mentioning** the type `FixedArray<X>` anywhere — as a field type,
 a return type, a signature component — instantiates it, and
 instantiating it reaches all 18 of its methods for that `X`.
 
-### 2b. Instantiating a class reaches *every* method of it
+### 2b. Instantiating a class reaches _every_ method of it
 
 `registerClassMethod` force-reaches whatever it registers as soon as
 `hasInst` is true, whether or not the method is ever called. This is
@@ -158,7 +158,7 @@ it is to keep unreferenced selectors out of the vtable in the first
 place, which is a whole-program decision RTA is the right place to
 make.
 
-### 2c. Pass 1.05 populates classes that were only *discovered*
+### 2c. Pass 1.05 populates classes that were only _discovered_
 
 `ReachabilityAnalysis.run`'s "Pass 1.05" walks every entry in
 `wasm.classInfos` and calls `populateClassStructAndMethods`. At that
@@ -185,7 +185,7 @@ shows this exactly:
 pays for the two `MapEntry` array specializations.
 
 Simply skipping non-instantiated classes in Pass 1.05 does **not**
-work: a discovered-only class still needs its struct *fields* laid out
+work: a discovered-only class still needs its struct _fields_ laid out
 (its type can appear in a signature even with no value of it), and the
 pass does layout and method registration together. Tried; it breaks the
 self-compile with `member not found @FixedArray_…[]$BoundedRange`. The
@@ -196,13 +196,13 @@ two responsibilities have to be separated first.
 Dropping `|| ct.isExtension` from both sites in 2a, plus the three
 gaps it was masking:
 
-| | before | after |
-| --- | ---: | ---: |
-| total (names off) | 23,994 | **15,328** |
-| functions | 227 | 99 |
-| code | 17,485 | 10,453 |
-| types | 4,854 | 4,258 |
-| globals | 730 (39) | 168 (18) |
+|                   |   before |      after |
+| ----------------- | -------: | ---------: |
+| total (names off) |   23,994 | **15,328** |
+| functions         |      227 |         99 |
+| code              |   17,485 |     10,453 |
+| types             |    4,854 |      4,258 |
+| globals           | 730 (39) |   168 (18) |
 
 Against the original 33,875-byte module that is a **55% cut**. All 470
 execution tests pass and the fixpoint holds.
@@ -277,7 +277,7 @@ Only **seven** instantiations now, and they explain everything left:
    not it has a string in it.
 2. **One instantiation of a generic instantiates all its known
    siblings.** `instantiateClassType` marks `instantiatedClasses` by
-   the *generic's* symbol id and then instantiates every entry in
+   the _generic's_ symbol id and then instantiates every entry in
    `specializedClassTypes` for it; `discoverType` gates on that same
    per-generic flag. So `FixedArray<u8>`, genuinely needed by
    `String`, drags in `FixedArray<String>`, `FixedArray<anyref>` and
@@ -291,7 +291,8 @@ Only **seven** instantiations now, and they explain everything left:
    both breaks the self-compile, for the same class of reason as 3a —
    uses that currently rely on the over-approximation have to reach
    their own specialization first. Measured and reverted.
-3. **`WasiConsole` and `None`** are instantiated from *checkable*
+
+3. **`WasiConsole` and `None`** are instantiated from _checkable_
    traversals of stdlib globals (`console`, `none`). A checkable
    traversal is supposed to discover types without reaching code;
    `instantiateClassType` is not phase-gated, so it reaches.
@@ -300,7 +301,7 @@ Only **seven** instantiations now, and they explain everything left:
 
 `markTypeReached` runs throughout discovery and appends to
 `emittedTypes`, and `wasm.types` is set from that list at the end. So
-the type section was *everything any pass ever looked at* — for
+the type section was _everything any pass ever looked at_ — for
 `return 42`, 59 types and 4,204 of 11,530 bytes, mostly interface
 member signatures reached through the vtable structs of interfaces the
 program never mentions.
@@ -313,10 +314,10 @@ codegen knows about, record/adapted dispatches, closure structs, try
 cells, boxed tuples and records, and the interfaces something is
 genuinely packed into. `closeReachedTypes` takes it from there.
 
-| | before | after |
-| --- | ---: | ---: |
-| minimal | 11,530 | **10,457** |
-| array-sum | 16,790 | **15,947** |
+|                 |     before |      after |
+| --------------- | ---------: | ---------: |
+| minimal         |     11,530 | **10,457** |
+| array-sum       |     16,790 | **15,947** |
 | types (minimal) | 4,204 (59) | 3,400 (50) |
 
 This one is safe to make aggressively: a type that is genuinely needed
@@ -340,10 +341,10 @@ instantiates (see below).
 A library unit's globals are now roots only when something reaches
 them.
 
-| | before | after |
-| --- | ---: | ---: |
-| minimal | 10,457 | **8,540** |
-| array-sum | 15,947 | **13,928** |
+|                 |     before |      after |
+| --------------- | ---------: | ---------: |
+| minimal         |     10,457 |  **8,540** |
+| array-sum       |     15,947 | **13,928** |
 | types (minimal) | 3,400 (50) | 2,760 (29) |
 
 `return 42` now has **no imports, no memory, no data section and no
@@ -361,7 +362,7 @@ bug once it was gone:
   discovered. The import itself now roots every export it names.
 - a namespace-import global is initialized in `__start`, but carries
   no `initExpr` to say so, so `needsStartFunction` missed it. It had a
-  start function for free as long as *some* stdlib global had a
+  start function for free as long as _some_ stdlib global had a
   non-literal initializer. Without one the object stayed null and
   calling through it trapped.
 
@@ -379,7 +380,7 @@ Struct layout (Pass 1.05) ran **once**, over whatever was in
 `classInfos` at that moment. But populating a class registers its
 methods, and that instantiates further classes; so did the
 class-interface vtable pass and the final queue drains, both of which
-run *after* layout. A class first instantiated in any of those never
+run _after_ layout. A class first instantiated in any of those never
 got its struct populated, and carried an empty layout into codegen.
 
 Nothing detected that. It surfaced much later and somewhere else —
@@ -402,8 +403,8 @@ Now:
   never been instantiated before.
 
 Size is unchanged — this is an invariant, not an optimisation. What it
-buys is that the next attempt at the String root fails *at the
-instantiation that is wrong*, naming the class, instead of somewhere
+buys is that the next attempt at the String root fails _at the
+instantiation that is wrong_, naming the class, instead of somewhere
 downstream in scaffold synthesis.
 
 A specialization's concrete class type arguments are also instantiated
@@ -423,10 +424,10 @@ signatures, and the module was uniformly imprecise but valid.
 
 The layout fixpoint populates more classes during Pass 1.05, each
 population queues more referrers, and a body that used to be walked in
-the *RTA-inactive* final drain — where `instantiateClassType` no-ops —
+the _RTA-inactive_ final drain — where `instantiateClassType` no-ops —
 now gets walked while RTA is still active. `JsonBuilder`'s constructor
 (`new Array<i32>()`) is exactly that: `Array<i32>` becomes properly
-instantiated *after* `JsonBuilder`'s struct baked `#stack` as
+instantiated _after_ `JsonBuilder`'s struct baked `#stack` as
 `structref`, its `pop` gets a precise `ref null Array<i32>` receiver,
 and lowering fails receiver conformance —
 `zir unsupported: method receiver type` — half a compiler away from
@@ -504,9 +505,9 @@ structs — state built once, invalidated by late instantiation:
   functions and 9 globals — measured and reverted to the targeted
   form.
 
-| | before | after |
-| --- | ---: | ---: |
-| minimal | 8,540 | **2,292** |
+|           | before |      after |
+| --------- | -----: | ---------: |
+| minimal   |  8,540 |  **2,292** |
 | array-sum | 13,928 | **13,504** |
 
 `minimal` is one function (`main`, 8 bytes of code), one export, no
@@ -520,12 +521,12 @@ signatures, 4 arrays) for a program that needs one. Each came from a
 wholesale root in the final type-rooting walk:
 
 - **every `classInfos` entry's struct + vtable struct** — and
-  `classInfos` holds every *declared* class, because init pre-registers
+  `classInfos` holds every _declared_ class, because init pre-registers
   them all for circular-definition handling;
 - **every closure struct ever interned** — each dragging its impl
   signature through its `func` field (that was most of the 74);
 - **every anonymous boxed-tuple struct**, minted by `discoverType`
-  for every tuple type *any* walk sees.
+  for every tuple type _any_ walk sees.
 
 (Record-dispatch triples stay wholesale for now — deliberately.
 `getRecordDispatch` pushes the dispatch's vtable global
@@ -566,11 +567,11 @@ steps:
    (`noteUnboxCast`); registered Box specializations are kept
    wholesale — bounded at the five primitive boxes.
 
-| | before | after |
-| --- | ---: | ---: |
-| minimal | 2,292 | **53** (→ 39 after section 9) |
-| hello-string | — | 7,392 (→ 7,354) |
-| array-sum | 13,504 | **12,169** |
+|              | before |                         after |
+| ------------ | -----: | ----------------------------: |
+| minimal      |  2,292 | **53** (→ 39 after section 9) |
+| hello-string |      — |               7,392 (→ 7,354) |
+| array-sum    | 13,504 |                    **12,169** |
 
 The failures this cut surfaced were all the loud kind — `Invalid
 WasmType index < 0` naming the struct — exactly the failure mode
@@ -669,11 +670,11 @@ all reachability over-approximation.
 
 Three changes get there, each answering a "why is this here at all":
 
-| change | minimal | tests |
-| --- | ---: | --- |
-| baseline (PR #220) | 11,530 | 470/470 |
-| root only the entry unit | 9,562 | 465/470 |
-| + gate `String` and the `$string*` helpers on String existing | 2,887 | 402/470 |
+| change                                                        | minimal | tests   |
+| ------------------------------------------------------------- | ------: | ------- |
+| baseline (PR #220)                                            |  11,530 | 470/470 |
+| root only the entry unit                                      |   9,562 | 465/470 |
+| + gate `String` and the `$string*` helpers on String existing |   2,887 | 402/470 |
 
 And what remains at 2,887 is **2,852 bytes of type section** — 33
 function-signature types for a function that needs one. They are
@@ -710,7 +711,7 @@ It is worth stating plainly, because it is not a leak in the ordinary
 sense. **RTA's root set is the whole program, not `main`'s closure.**
 
 `ReachabilityAnalysis.run` has a loop labelled "RTA Roots" that walks
-`program.units` — every stdlib module — and queues *every* global
+`program.units` — every stdlib module — and queues _every_ global
 declaration in each one as a referrer. Only `main` and the entry
 unit's exports are queued reachable; the rest are queued **checkable**.
 Nothing is ever excluded.
@@ -741,7 +742,7 @@ current phase — was built. It does not work, and the reason matters
 more than the attempt:
 
 `currentReachable` is a mutable field on the pass, set while a
-referrer is being processed and simply *left there* afterwards.
+referrer is being processed and simply _left there_ afterwards.
 `ensureAllHelperFunctionsReached`, the layout passes and Pass 1.5 all
 run outside queue processing, and read whatever the last referrer
 happened to leave behind — usually `false`, since the checkable queue
@@ -802,6 +803,7 @@ What replaced it:
   mixin declaring a private accessor **with a setter** fail to compile
   outright, used or not. Only getter-only accessors were covered by a
   test, which is why nobody had hit it.
+
 - **Pass 1.2 resolves synthesized accessors over every REGISTERED
   method**, not `wasm.functions` — an early-registered getter carries
   backing index -1 (an `unreachable` stub body) until fixed up, and
@@ -821,11 +823,11 @@ What replaced it:
   and node ids are a relabelling across `invalidate()` — id-hash order
   made an unchanged file emit different bytes after an invalidate.
 
-| | before | after |
-| --- | ---: | ---: |
-| minimal | 37 | 37 |
-| hello-string | 7,270 | **1,926** (14 functions: main, the literal machinery, the four `$string*`, `String.==`/`hashCode`) |
-| array-sum | 11,967 | **6,665** |
+|              | before |                                                                                              after |
+| ------------ | -----: | -------------------------------------------------------------------------------------------------: |
+| minimal      |     37 |                                                                                                 37 |
+| hello-string |  7,270 | **1,926** (14 functions: main, the literal machinery, the four `$string*`, `String.==`/`hashCode`) |
+| array-sum    | 11,967 |                                                                                          **6,665** |
 
 All four `FixedArray` specializations left hello-string entirely.
 Budgets ratcheted to 37 / 2,000 / 6,700 here, then to 37 / 600 /
@@ -978,11 +980,11 @@ whose body uses `eq` on its own parameter compiles for the first time.
 With no erased body left to construct one, an erasure is never
 instantiated, and the rule is flat.
 
-| | before | after |
-|---|---|---|
-| `subclassed-generic.zena` | 478 B | **400 B** |
-| compiler's own module | 3,241,046 B / 15,284 funcs | **3,219,326 B / 15,184 funcs** |
-| minimal / hello-string / array-sum | 37 / 532 / 5,635 | unchanged |
+|                                    | before                     | after                          |
+| ---------------------------------- | -------------------------- | ------------------------------ |
+| `subclassed-generic.zena`          | 478 B                      | **400 B**                      |
+| compiler's own module              | 3,241,046 B / 15,284 funcs | **3,219,326 B / 15,184 funcs** |
+| minimal / hello-string / array-sum | 37 / 532 / 5,635           | unchanged                      |
 
 What is left: 130 functions on erased classes remain in the compiler's
 module, a closed island referenced only by each other — kept alive by
@@ -1071,8 +1073,8 @@ when every call goes through the subclass.
 ### Sharing by declaring-class instantiation
 
 The fix is a keying change in registration, not a dedup pass over
-emitted bodies: register an inherited member under its *declaring
-class's resolved instantiation* (`Derived<i32>` resolves `#find` to
+emitted bodies: register an inherited member under its _declaring
+class's resolved instantiation_ (`Derived<i32>` resolves `#find` to
 `Base_s890_i32.#find`) instead of minting a copy under the
 instantiating class. The cases that genuinely need a distinct copy then
 fall out of the key itself:
@@ -1189,11 +1191,11 @@ recording can run before a record element's dispatch exists). Each
 gap surfaced as a loud `array.new_fixed references unemitted type`,
 which now names the function it is in.
 
-| | before | after |
-| --- | ---: | ---: |
-| array-sum | 3,647 B / 45 funcs | **217 B / 1 func** |
+|                                           |                     before |                          after |
+| ----------------------------------------- | -------------------------: | -----------------------------: |
+| array-sum                                 |         3,647 B / 45 funcs |             **217 B / 1 func** |
 | compiler's own module (fixed input, `-g`) | 3,463,511 B / 16,613 funcs | **2,899,290 B / 13,347 funcs** |
-| minimal / hello-string | 37 / 532 | unchanged |
+| minimal / hello-string                    |                   37 / 532 |                      unchanged |
 
 The compiler's 16% is the same leak at scale: its sources are full of
 for-in loops over arrays, and every one seeded the `Iterable`
@@ -1247,11 +1249,11 @@ hid it was removed, one compile error at a time.
 
 Both halves were built. Measured, on top of 11,530 / 16,823:
 
-| step | minimal | array-sum | tests |
-| --- | ---: | ---: | --- |
-| vtable pruning + `==`/`hashCode` kept | 11,077 | 16,303 | 469/470 |
-| … + reach method-node referrers | 11,111 | **17,709** | 470/470 |
-| … + reach accessor referrers, drop force-reach | — | — | compiler traps |
+| step                                           | minimal |  array-sum | tests          |
+| ---------------------------------------------- | ------: | ---------: | -------------- |
+| vtable pruning + `==`/`hashCode` kept          |  11,077 |     16,303 | 469/470        |
+| … + reach method-node referrers                |  11,111 | **17,709** | 470/470        |
+| … + reach accessor referrers, drop force-reach |       — |          — | compiler traps |
 
 Three things came out of it, all worth keeping:
 
@@ -1268,7 +1270,7 @@ Three things came out of it, all worth keeping:
   Two more register-without-reach sites fell out — the method-node
   referrer and the accessor referrer in `processQueues`.
 - **And that is where it stops being a win.** Rooting those referrers
-  costs *more* than the vtable pruning saves: `array-sum` went from
+  costs _more_ than the vtable pruning saves: `array-sum` went from
   16,303 to 17,709. The cause is `recordReachedClassMember`, which,
   when a member is reached on one specialization, queues that member
   for **every** known specialization of the class. Under the old
@@ -1288,7 +1290,7 @@ in place before it can even be diagnosed.
 
 ### Why phase-gating instantiation is not the shortcut it looks like
 
-`instantiateClassType` is not phase-gated, so a *checkable* traversal —
+`instantiateClassType` is not phase-gated, so a _checkable_ traversal —
 one whose whole purpose is to discover types without reaching code —
 instantiates. Tracing the seven surviving instantiations showed all
 three junk ones (`String`, `WasiConsole`, `None`) coming from checkable
@@ -1300,14 +1302,14 @@ It is not. Gating it:
   from a reachable traversal anyway, so its 21 methods and all four
   array specializations stay),
 - **cost 1,523 bytes on `array-sum.zena`**, and
-- made `enums/string.zena` fail *only under the batched test runner* —
+- made `enums/string.zena` fail _only under the batched test runner_ —
   it passes standalone. That is order-dependence across entry points
   sharing one `Compiler`, the same hazard as the batch-position
   nondeterminism already documented in
   `packages/zena-compiler/CONTEXT.md`.
 
 Built, measured, reverted. Phase-gating is probably still right, but it
-has to come *after* the keystone, not before it — while the force-reach
+has to come _after_ the keystone, not before it — while the force-reach
 is load-bearing, moving instantiation just moves which
 over-approximation fires.
 
@@ -1325,7 +1327,7 @@ none is landable as written.
 - **Drop the sibling-propagation loop in `instantiateClassType`**
   (instantiating one specialization instantiates every known sibling).
   Worth 194 bytes on its own (15,328 → 15,134) because
-  `discoverType`'s gate is keyed on the *generic's* symbol id and
+  `discoverType`'s gate is keyed on the _generic's_ symbol id and
   re-instantiates each specialization as it is discovered. Removing
   both breaks the self-compile.
 - **Drop the `hasInst` force-reach in `registerClassMethod`** (2b).
@@ -1351,19 +1353,20 @@ Interface dispatch does not need these: it goes through
 In dependency order:
 
 0a. **Close the by-name lookup contract.** Every backend lookup that
-   resolves a callee by name after RTA (`getStdlibFunc`, and the
-   synthesized-helper families) needs an explicit root from the
-   construct that implies it, as template helpers got in #219. This is
-   what makes all the later steps possible instead of merely smaller.
+resolves a callee by name after RTA (`getStdlibFunc`, and the
+synthesized-helper families) needs an explicit root from the
+construct that implies it, as template helpers got in #219. This is
+what makes all the later steps possible instead of merely smaller.
 
 0b. **Make the traversal phase explicit rather than ambient.** Thread
-   it through `queueReferrer`/`instantiateClassType`/the visitor
-   instead of reading `pass.currentReachable`, which survives between
-   phases and is what makes every phase-gating attempt fail in a
-   different place. Prerequisite for 1 and everything after it.
+it through `queueReferrer`/`instantiateClassType`/the visitor
+instead of reading `pass.currentReachable`, which survives between
+phases and is what makes every phase-gating attempt fail in a
+different place. Prerequisite for 1 and everything after it.
+
 1. ~~**Make `recordReachedClassMember` per-specialization.**~~ Done:
    `queueReferrer` now records a member against the generic only when
-   the referrer's class type *is* the generic template. A referrer
+   the referrer's class type _is_ the generic template. A referrer
    against a concrete specialization names its own. Worth little on
    its own (16,823 → 16,790) — it is a correctness fix and the
    prerequisite, not a win.
@@ -1379,9 +1382,10 @@ In dependency order:
    so still not landed. The residual +370 on array-sum is the
    accessor/method-node referrers reaching members that the referrer
    names but the program never calls: a referrer is queued per
-   *member node*, while the checker's dependency records distinguish
+   _member node_, while the checker's dependency records distinguish
    `get#x` from `set#x`. Threading that distinction through is
    probably what closes the gap.
+
 3. **Make instantiation per-specialization**, not per-generic — with
    the use-side gaps closed first, the way 3a closed them for generic
    methods. Worth roughly three of the four array specializations.
@@ -1400,7 +1404,7 @@ In dependency order:
    `populateClassStructAndMethods`, so a discovered-only class can get
    its fields without its methods (2c). Blunt-skipping it does not
    work — tried, and it breaks the self-compile with `member not found
-   @FixedArray_…[]$BoundedRange`.
+@FixedArray_…[]$BoundedRange`.
 7. **Prune interface vtables to referenced selectors.** RTA already
    tracks `referencedInterfaceMembers` / `usedInterfaceMembers`; the
    vtable struct shape should be built from that set rather than from
@@ -1422,11 +1426,11 @@ In dependency order:
 `zena/test/binary-size_test.zena` holds three fixtures to absolute
 byte budgets, to be moved DOWN only:
 
-| fixture | what it adds | bytes | budget |
-| --- | --- | ---: | ---: |
-| `test-files/minimal.zena` | `return 42` — no strings, no allocation, no calls | 37 | 37 |
-| `test-files/array-sum.zena` | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) | 119 | 130 |
-| `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports | 399 | 420 |
+| fixture                        | what it adds                                                                                   | bytes | budget |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- | ----: | -----: |
+| `test-files/minimal.zena`      | `return 42` — no strings, no allocation, no calls                                              |    37 |     37 |
+| `test-files/array-sum.zena`    | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) |   119 |    130 |
+| `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports                     |   399 |    420 |
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the other two. A budget left
@@ -1435,5 +1439,5 @@ module shrank to 3,647 underneath it, and a 2KB regression would have
 passed unseen.
 
 `dce_test.zena` never caught any of this: it asserts only that two
-programs compile to the *same* length, which stays true while both
+programs compile to the _same_ length, which stays true while both
 triple.

@@ -6,7 +6,7 @@ immediately trying to fix it (which can pollute the current task's context).
 
 ## Format
 
-```
+````
 ### RESOLVED: A subclass vtable could permute its base's slot order
 - **Found**: 2026-08-14 (CI on the suspension-region branch: adding six
   test files re-sliced the execution runner's batches and
@@ -67,15 +67,17 @@ immediately trying to fix it (which can pollute the current task's context).
     }
     return won;                                    // (4) used AFTER the try
   }
-  ```
-  Drop the `return` at (3) and it compiles and runs; drop the local at (1)
-  and (4) and it compiles and runs. The first await is *not* required —
-  `let won = 70;` reproduces it as readily as `let won = await …`.
+````
+
+Drop the `return` at (3) and it compiles and runs; drop the local at (1)
+and (4) and it compiles and runs. The first await is _not_ required —
+`let won = 70;` reproduces it as readily as `let won = await …`.
+
 - **Fragile to trigger**: a longer function with the same shape compiled
   fine, so this is sensitive to surrounding SSA numbering rather than being
   a clean syntactic rule. Treat the four ingredients as necessary, not
   sufficient.
-- **Related**: PR #186 ([[try cells]]) fixed try-*body*-assigned locals, and
+- **Related**: PR #186 ([[try cells]]) fixed try-_body_-assigned locals, and
   #196 fixed regions at every dispatch target. This is neither: the local is
   never assigned inside the try, only read after it.
 - **Worked around**: `tests/language/execution/async/combinator_all.zena`
@@ -83,6 +85,7 @@ immediately trying to fix it (which can pollute the current task's context).
   that returns from both arms, which has no local living across it.
 
 ### RESOLVED: `is` and downcasts always failed through an interface-typed reference
+
 - **Found**: 2026-08-08 (designing zena:host-async's handle registry, which
   wanted to hold completers of different payload types in one map)
 - **Fixed 2026-08-13.** One cause, three lowering sites. A value held as an
@@ -132,11 +135,13 @@ immediately trying to fix it (which can pollute the current task's context).
   Both later arms are reported unreachable. `Shape` is not sealed, so
   nothing licenses treating `case Square` as exhaustive — the subtraction
   appears to consume the whole scrutinee type on the first class arm.
+
 - **Not the same bug as the downcast one above**, and not fixed by it: this
   is exhaustiveness in the checker, and it rejects before lowering runs.
 - **Workaround**: an if-chain of `is` tests, which is what the test does.
 
-### RESOLVED: Self-hosted compiler cannot *call* a generic method on a class
+### RESOLVED: Self-hosted compiler cannot _call_ a generic method on a class
+
 - **Fixed**: 2026-08-10, "Stop emitting a generic method at its own
   erasure". A generic method was ALSO emitted unspecialized, with its
   own type parameters erased to anyref — given a class-vtable slot and
@@ -151,18 +156,19 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Severity**: medium (no longer blocks `packages/wit-parser`)
 - **Tests**: `tests/language/execution/classes/generic-method.zena`
   (unskipped), `generics/generic-method-specializations.zena`.
-- **Details**: *Calling* a generic public method fails in ZIR with
+- **Details**: _Calling_ a generic public method fails in ZIR with
   `zir unsupported: method not found @Box_s787.run`. Declaring one is fine —
   `tests/language/execution/classes/generic-loop-member.zena` has `fold<R>(…)`
   and runs under self-hosted today — but that method is never called, so no
   portable test covered the call path until now. Declaration coverage is not
   call coverage.
-- **Fixed half**: this entry originally also covered generic *private*
+- **Fixed half**: this entry originally also covered generic _private_
   methods, which the parser rejected as private fields. Fixed by 0e7effe4;
   `classes/generic-private-method.zena` is no longer skipped. That was the
   half blocking the WIT parser (`Parser.#parseList<T>`).
 
 ### if-let accepts any refutable pattern but only inline tuples are implemented
+
 - **Found**: 2026-07-31 (review question on #95: "if-let should work
   with any refutable pattern — do we need more coverage?")
 - **Severity**: medium (checker-accepted syntax crashes codegen)
@@ -185,6 +191,7 @@ immediately trying to fix it (which can pollute the current task's context).
   test matrix to if-let/while-let either way.
 
 ### Method/field same-name semantics are unsettled
+
 - **Found**: 2026-07-31 (review discussion on #87's field-closure calls)
 - **Severity**: medium (silent acceptance with resolution divergence)
 - **Deferred**: per review (2026-07-31), until bootstrap retirement so
@@ -214,11 +221,13 @@ immediately trying to fix it (which can pollute the current task's context).
     diagnostic or a real lowering.
 
 ### [Short description]
+
 - **Found**: [Date]
 - **Severity**: [low/medium/high/blocking]
 - **Workaround**: [if any]
 - **Details**: [description of the bug and how to reproduce]
-```
+
+````
 
 ## Active Bugs
 
@@ -258,13 +267,15 @@ immediately trying to fix it (which can pollute the current task's context).
     if (b is Sub && b.arr != null) { return 1; }  // member not found @f
     return 0;
   };
-  ```
-  An i32 member (`b is Sub && b.y != 0`) and a non-null ref member
-  (`b is Sub && b.s.length > 0`) both lower fine, as does the same
-  read with the "unnecessary" cast: `(b as Sub).arr != null`. So the
-  flow graph narrows `b` for the member read, but the identifier read
-  the member lowering sees does not carry the narrowed type when the
-  member expression itself is a tracked narrowing subject.
+````
+
+An i32 member (`b is Sub && b.y != 0`) and a non-null ref member
+(`b is Sub && b.s.length > 0`) both lower fine, as does the same
+read with the "unnecessary" cast: `(b as Sub).arr != null`. So the
+flow graph narrows `b` for the member read, but the identifier read
+the member lowering sees does not carry the narrowed type when the
+member expression itself is a tracked narrowing subject.
+
 - **Workaround**: keep the `(x as Sub)` cast on the receiver. Three
   such casts in `codegen/ir/templates.zena` (`lowerTaggedTemplate`,
   the `(vp as ClassType).typeArguments` cluster) are kept for exactly
@@ -277,7 +288,7 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Severity**: low. Nothing declares a static accessor today.
 - **Details**: `parser.zena` builds every `AccessorDeclaration` with
   `isStatic` hardcoded to `false`, so `static` in front of one parses and
-  is then silently discarded. The accessor registers as an *instance*
+  is then silently discarded. The accessor registers as an _instance_
   member; naming it through the class still passes the checker and fails
   in lowering:
 
@@ -292,6 +303,7 @@ immediately trying to fix it (which can pollute the current task's context).
   Two things are wrong: the parser drops the modifier, and static access
   to an instance member is not diagnosed. The second is the one that
   turns a parse bug into a codegen failure.
+
 - **Note**: `rejectClassTypeParamsInStatic` already has the accessor arm,
   so the type-parameter rule starts working the moment `isStatic` is
   plumbed through. It is untested until then.
@@ -317,8 +329,9 @@ immediately trying to fix it (which can pollute the current task's context).
 
   `checkMixinDeclaration` registers a `FieldInfo`/`MethodInfo` carrying
   `fd.isStatic` into `mixinType.members`, so the member exists; what is
-  missing is static access *through a mixin name* in
+  missing is static access _through a mixin name_ in
   `checkMemberExpression`, which handles `ClassType` receivers only.
+
 - **Open question worth settling first**: whether a mixin static should be
   one cell on the mixin, or one per host class that mixes it in. Mixins are
   copied into their hosts, so the second is closer to how the rest of the
@@ -348,6 +361,7 @@ immediately trying to fix it (which can pollute the current task's context).
   works depends on where the generic code lives, not on what it does.
   Test: `execution/generics/vtable-in-generic-fn.zena` (`@skip`ped, so
   it self-retires).
+
 - **Not the same bug as** "A generic static's body cannot reach any
   generic construct" (RESOLVED below). That one was RTA walking a
   generic method's body with its type parameters still open; this one
@@ -363,7 +377,7 @@ immediately trying to fix it (which can pollute the current task's context).
   declared, and it never fired — including in files importing nothing at
   all from `zena:ownership`.
 - **Severity**: medium. It is a silent fuzzy fallback of exactly the kind
-  the project avoids elsewhere: a name resolves by being *somewhere* in
+  the project avoids elsewhere: a name resolves by being _somewhere_ in
   the stdlib rather than by being brought into scope, so a typo or a
   forgotten import can bind to an unrelated type instead of failing.
 - **Details**: not specific to ownership, and not an artifact of the
@@ -379,6 +393,7 @@ immediately trying to fix it (which can pollute the current task's context).
   `CheckerContext.resolveTypeName` is `#materializeFromScope` then
   `#resolveBuiltinOrPreludeType`, and one of the two is answering for
   names that are neither in scope nor in the prelude.
+
 - **Consequence worth noting**: `wrapResourceInOwn`'s
   "Add: import { Own } from 'zena:ownership';" diagnostic appears to be
   unreachable for the same reason, and nothing tests it. The design
@@ -406,7 +421,7 @@ immediately trying to fix it (which can pollute the current task's context).
   handed one.
 - **Do not do the same to its sibling.** `_nextTypeUid` in
   `lib/types.zena` is the identical shape one level up — a module-global
-  feeding `Type.uid`, which is `Type.hashCode` — but it must *not* be
+  feeding `Type.uid`, which is `Type.hashCode` — but it must _not_ be
   reset per compile. A long-lived compiler interns semantic types across
   compiles, so restarting that sequence would hand a fresh type the uid
   of a cached one, which is the node-id collision of #209 again in a
@@ -432,7 +447,7 @@ immediately trying to fix it (which can pollute the current task's context).
 - **Fix**: `registerWrapper` in `codegen/reachability/visitor.zena` is
   reached for an identifier that is only ever a direct callee.
   Registering wrappers strictly from value uses would drop it.
-- **Was also**: *which* of the two got the wrapper used to vary between
+- **Was also**: _which_ of the two got the wrapper used to vary between
   compiles in one process. Exactly one spurious registration happens
   either way — `asciiUpperByte` gets no wrapper at all, despite
   identical usage — and hash order decided which function it landed on.
@@ -460,7 +475,7 @@ immediately trying to fix it (which can pollute the current task's context).
   once per validation pass, and a class member is checked both on the
   declaration and on the member.
 - **A third cause**, found 2026-08-10 adding the borrow storage rule: a
-  `type` alias's annotation is resolved twice, so *every* diagnostic
+  `type` alias's annotation is resolved twice, so _every_ diagnostic
   raised while resolving one is emitted twice. It is not particular to
   any check — `type Slot = {file: File};` on a resource class reports
   "has no unwrapped form" twice on the same line and column. It is why
@@ -495,7 +510,7 @@ immediately trying to fix it (which can pollute the current task's context).
     deduplicated generic union
     (`generics/union-dedup-generic.zena`).
 - **Tracking**: each site carries a `// @missing-error:` directive,
-  which asserts the error is still *absent*. Implementing any of these
+  which asserts the error is still _absent_. Implementing any of these
   fails its test with a message saying to promote the directive to
   `@error:`, so the marker retires itself.
 
@@ -527,7 +542,7 @@ immediately trying to fix it (which can pollute the current task's context).
   Compare how arity is resolved for a call whose callee is already checked
   versus one resolved through the forward-declaration stub.
 
-### A generic *function*'s callback parameter does not contextually type its closure
+### A generic _function_'s callback parameter does not contextually type its closure
 
 - **Found**: 2026-08-07 (writing execution tests for generic distinct-type
   aliases — a `map`-shaped helper over the alias hit it, and the alias turned
@@ -554,11 +569,12 @@ immediately trying to fix it (which can pollute the current task's context).
 
   So the substituted parameter list is reaching the assignability check (the
   call is not rejected) but not the contextual type handed to the closure.
+
 - **Fix sketch**: the call path substitutes `effectiveFt.parameters` into
   `subParams` before checking arguments, and the generic-method path already
   contextually types from the substituted signature. Compare the two — the free
   function path appears to contextually type each argument from the
-  *pre-substitution* parameter type.
+  _pre-substitution_ parameter type.
 - **Tests**: none yet. `tests/language/execution/generics/generic_opaque_cell.zena`
   had a `map` written against this shape and it was cut back to first-order
   helpers; that is the test to restore with the fix.
@@ -655,6 +671,7 @@ immediately trying to fix it (which can pollute the current task's context).
   end of the body; when the body ends unreachable, nothing does. Either the
   update block should not be created, or the verifier's reachability check
   should run after a dead-block prune.
+
 - **Workaround**: make the exit conditional, or use `while`.
 
 ### zena-cli cannot compile files outside the repository root
@@ -1773,6 +1790,7 @@ found, returning false`, so the reachability pass is probably
   Both closures mutate the resource, and neither is tracked. The design
   already names the fix: `this` should be `Borrow<R>`, whose second-class
   rules forbid closure capture.
+
 - **Fixed** in two steps. First the second-class rules themselves, which
   were specified in ownership.md and implemented nowhere: a `Borrow<R>`
   may not be captured by a closure, stored in a field or a container, or
@@ -1798,7 +1816,7 @@ found, returning false`, so the reachability pass is probably
 - **Severity**: high (silent)
 - **Details**: `isResource` is read from the declaration and never
   inherited, and nothing checks the superclass. `resource class R extends
-  Plain` is accepted, and any method `Plain` declares sees `this` as a
+Plain` is accepted, and any method `Plain` declares sees `this` as a
   bare, spellable `Plain`:
 
   ```zena
@@ -1811,9 +1829,10 @@ found, returning false`, so the reachability pass is probably
   `Own<>`'s nominal distinctness does not help: the leak happens inside
   the base method, where the type is spellable. The converse direction
   (`class Sub extends R`) and resource-extends-resource are both
-  *accidentally* rejected — the extends clause is a type annotation, so
+  _accidentally_ rejected — the extends clause is a type annotation, so
   naming a resource class there trips "has no unwrapped form" and then
   "Superclass must be a class type, got '<error>'". The advice to write
   `Own<R>` as a superclass is nonsense, and it wrongly blocks
   `resource class Derived extends Handle`.
+
 - **Workaround**: do not give a resource class an ordinary superclass.

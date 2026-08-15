@@ -25,7 +25,8 @@ import {
 const run_ = async (source: string) => {
   const wasm = compile(source);
   const result = await instantiate(wasm);
-  const instance = (result as {instance?: WebAssembly.Instance}).instance ??
+  const instance =
+    (result as {instance?: WebAssembly.Instance}).instance ??
     (result as WebAssembly.Instance);
   // run() drives the split entry: start the program, let the event loop
   // deliver each wake, then read the result.

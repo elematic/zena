@@ -187,7 +187,7 @@ ordinary import return. The JS object lives inside the WasmGC heap
 behind `any.convert_extern`, and the engine's unified garbage collector
 frees it when the Zena struct that holds it dies.
 
-The missing piece was delivering such a reference *asynchronously*: one
+The missing piece was delivering such a reference _asynchronously_: one
 new completion kind, `__zena_complete_extern(handle, ref)`, beside the
 four existing ones. A reference-carrying operation registers as
 `pending<anyref>()` — one canonical payload type, not one per binding,
@@ -214,7 +214,7 @@ tracking and implicit disposal land ([ownership.md](ownership.md)).
 differ in lifecycle while sharing the API surface.
 
 One optimization remains open: import and completion signatures still
-declare `anyref` (the compiler wraps only single-GC-ref *returns* in an
+declare `anyref` (the compiler wraps only single-GC-ref _returns_ in an
 externref shim), while V8's wasm-into-JS inlining triggers only for
 nullable `externref` (see the Kummerow notes under "Strings" above).
 Moving the reference-carrying signatures to nullable `externref` with
@@ -270,7 +270,7 @@ proposal (shipped in current Chrome, Firefox, and Safari as of Safari
 
 and an embedder compiling with
 [`importedStringConstants: "S"`](https://developer.mozilla.org/en-US/docs/WebAssembly/Guides/JavaScript_builtins)
-fulfills the import with the import *name itself* as an engine-interned
+fulfills the import with the import _name itself_ as an engine-interned
 JS string constant. Property names then exist as real JS strings from
 instantiation, with no byte copying anywhere.
 
@@ -307,7 +307,7 @@ that can supply a host value as an externref global — a few lines in
 wasmtime, wazero, or a JVM embedder, the same shape as the
 `Module.imports()` polyfill above. What is JS-specific is only the
 engine-side optimization (`importedStringConstants` making them true
-constants) and the `wasm:js-string` builtin *functions*. The natural
+constants) and the `wasm:js-string` builtin _functions_. The natural
 host string types are immutable in the plausible hosts —
 `java.lang.String`, Go's `string`, .NET's `System.String`, Python's
 `str` — so a `HostString` handle can be treated as a value everywhere
@@ -327,7 +327,7 @@ the stub table has to be built somewhere regardless.
 Access control attaches to the selector table: the host checks a name
 against its allowlist once, when `selector()` is called, not on every
 call — and a denied name fails at the line that named it rather than at
-some later call site. Per-object restrictions (which *receivers* a
+some later call site. Per-object restrictions (which _receivers_ a
 selector may be used on) stay open; the intern-time check covers the
 name dimension only.
 
@@ -350,7 +350,7 @@ hand-written bindings it replaces:
   cache, and a given selector overwhelmingly sees one receiver shape
   (`'text'` sees responses), so those caches stay monomorphic.
 
-  The stub must be a *distinct function object per selector*, which is
+  The stub must be a _distinct function object per selector_, which is
   why `new Function` and not a closure over the name: V8 keeps at most
   one feedback cell per function literal per native context
   ([feedback-cell.h](https://chromium.googlesource.com/v8/v8/+/refs/heads/main/src/objects/feedback-cell.h)),
@@ -365,7 +365,7 @@ hand-written bindings it replaces:
 The layer above selectors: declare the shape of a host object in Zena,
 and the compiler derives the names. No selector appears in user code —
 the member name in the declaration is the property name, and a member
-*use* is what makes its string constant exist.
+_use_ is what makes its string constant exist.
 
 ```zena
 // sketch
@@ -407,7 +407,7 @@ to remove.
 A declaration is a claim the compiler cannot check against the host —
 the same trust boundary `@external` functions already have, and a wrong
 claim surfaces as a boundary error at runtime (the completion machinery
-already rejects mismatched payloads loudly). What the module *can*
+already rejects mismatched payloads loudly). What the module _can_
 prove is which names it touches: with all names arriving as imported
 string constants, the module's import section is a complete, statically
 readable manifest of every host property it can reach. A host policy

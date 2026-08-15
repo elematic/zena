@@ -3,7 +3,7 @@
 ## Status
 
 - **Status**: Implemented through C2, and most of C3. `--target
-  component` emits components; `zena:time`'s `sleep` is a p3 timer on
+component` emits components; `zena:time`'s `sleep` is a p3 timer on
   that target, a 300 ms sleep costing 310 ms of wall time and 20 ms of
   CPU; `string` crosses an export in both directions
   (`greet("world")` → `"hello, world"`); the WIT type encoder
@@ -804,18 +804,18 @@ and the mixture changes when Track G lands and stdio moves to p3.
 For the component in 1.4 — the realistic target — the full section list
 is:
 
-| Section           | Contents                                                                                     |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| header            | `\0asm\0d\00\01\00`                                                                          |
-| component type    | one instance type per imported interface, minimal subset                                     |
-| import            | one per interface, referencing its type                                                      |
-| alias             | `alias export` per imported function and type                                                |
-| canon             | `canon lower` per import; `waitable-set.new`, `waitable.join`, `subtask.drop`, `task.return` |
-| core module       | the memory module, then the Zena module, embedded verbatim                                   |
-| core instance     | instantiate the memory module; synthesize the import instance; instantiate the main module   |
+| Section           | Contents                                                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| header            | `\0asm\0d\00\01\00`                                                                                                            |
+| component type    | one instance type per imported interface, minimal subset                                                                       |
+| import            | one per interface, referencing its type                                                                                        |
+| alias             | `alias export` per imported function and type                                                                                  |
+| canon             | `canon lower` per import; `waitable-set.new`, `waitable.join`, `subtask.drop`, `task.return`                                   |
+| core module       | the memory module, then the Zena module, embedded verbatim                                                                     |
+| core instance     | instantiate the memory module; synthesize the import instance; instantiate the main module                                     |
 | alias core export | pull `run` / `cb` back out of the main instance, plus `cabi_realloc`, `cabi_post_return` and `memory` where a `string` crosses |
-| canon             | `canon lift` per export, `async (callback …)` where needed                                   |
-| export            | the component's exports                                                                      |
+| canon             | `canon lift` per export, `async (callback …)` where needed                                                                     |
+| export            | the component's exports                                                                                                        |
 
 Every one of those is LEB128 and index vectors. `BinaryEmitter` already
 has the primitives, and none of this touches ZIR, lowering, or the type
@@ -1040,7 +1040,7 @@ checked-in golden — and the goldens reproduce the source WIT down to
 
 Three encoding rules the format hides well, found by probing
 `wasm-tools 1.252.0` byte for byte and now load-bearing in the encoder:
-a type index in value-type position is a *signed* LEB128 (the primitive
+a type index in value-type position is a _signed_ LEB128 (the primitive
 opcodes are its negative range, so index 79 is two bytes); every
 WIT-named type must be **exported** from its instance type, because an
 unexported record fails not at validation of the type but at the import

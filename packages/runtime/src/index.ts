@@ -643,7 +643,7 @@ export function runSync(
 ): unknown {
   if (isAsyncMain(instance)) {
     throw new Error(
-      'runSync(): this module\'s `main` is async, so its value is not ' +
+      "runSync(): this module's `main` is async, so its value is not " +
         'available synchronously — use run().',
     );
   }

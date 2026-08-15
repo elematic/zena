@@ -3,7 +3,7 @@
 Status: **Proposed — review-favored direction** (2026-08-14)
 
 This document designs true presence for optional record fields: a
-record typed `{url: String, timeout?: i32}` may or may not *have*
+record typed `{url: String, timeout?: i32}` may or may not _have_
 `timeout`, absence is observable, and the consumer supplies defaults
 at destructuring. It is the semantic model
 [row-types.md](row-types.md) §3.4 deferred as presence polymorphism.
@@ -19,7 +19,7 @@ spread**. Two representation choices make presence tractable now: a
 Type-level defaults (the superseded config-records design) serve
 shared option bags but cannot express callee-owned defaults: an
 adapter that conditionally sets a field or leaves the decision to the
-callee needs absence to *flow through it*. With presence, the
+callee needs absence to _flow through it_. With presence, the
 destructured parameter with field defaults — already parsed and
 compiled today, with the defaults inert — becomes the natural
 signature-visible spelling of consumer defaults:
@@ -53,7 +53,7 @@ A record type with optional fields compiles to **one wasm struct**:
 
 - a slot for every field, optional or not, in the existing canonical
   sorted order;
-- one `$present: i32` field; bit *i* corresponds to the *i*-th
+- one `$present: i32` field; bit _i_ corresponds to the _i_-th
   optional field in sorted order (canonical per interned type);
 - absent slots hold the zero value of their type; optional reference
   fields use nullable slots internally regardless of the declared
@@ -63,7 +63,7 @@ A record type with optional fields compiles to **one wasm struct**:
   limitation.
 
 `{url: 'x'}` and `{url: 'x', timeout: 5}` checked against
-`{url: String, timeout?: i32}` build the *same* struct type with
+`{url: String, timeout?: i32}` build the _same_ struct type with
 different mask constants. More than 32 optional fields is a compile
 error initially (widen to i64, then a second word, if ever needed).
 
@@ -144,7 +144,7 @@ forms:
   "optional requires a default" rule, now with live semantics.
 - **Refutable, without default** — `if (let {timeout} = opts) {...}`
   and `match` arms — an optional field named without a default makes
-  the pattern *refutable*: the test is the mask bit, the binding is
+  the pattern _refutable_: the test is the mask bit, the binding is
   the field read. What is currently a bypass hole in the
   requires-default check (the `checkPattern` path never consults
   optionality) becomes the intended behavior of refutable positions.
@@ -171,7 +171,7 @@ signature variant on existing machinery, not new machinery.
   complements, not rivals (§8).
 - **Spread**: `{...opts, x: 1}` copies mask bits for optional fields;
   setting an optional field that is absent in the source is presence
-  extension within the same type. An *unset* form (remove a field /
+  extension within the same type. An _unset_ form (remove a field /
   clear a bit — the analogue of JS `delete` in immutable clothing) is
   deliberately deferred; destructure-and-rebuild covers it.
 - **Destructured parameters**: `({timeout: i32 = 30_000})` types the
@@ -245,7 +245,7 @@ assignability loudly, naming the field.
 
 One deliberate divergence from JavaScript: this rule is
 **commutative** — `{timeout: 30_000, ...partial}` and
-`{...partial, timeout: 30_000}` both mean *fallback* — where JS
+`{...partial, timeout: 30_000}` both mean _fallback_ — where JS
 last-wins would read the second as force-override. Force is the
 `with` form's job: `{...partial with timeout: 30_000}` sets the field
 present with the new value regardless of the prior mask (a
@@ -267,7 +267,7 @@ an optimization over unchanged semantics:
   the config-records lowering re-derived, per call site, where the
   compiler can see it.
 - Exploded signatures carry the mask (or its known bits) as scalars.
-- Escape analysis is *not* required for correctness anywhere; the V0
+- Escape analysis is _not_ required for correctness anywhere; the V0
   value-semantics decision already licenses the representation
   changes.
 
@@ -347,6 +347,7 @@ per-shape code.
    between it and a case class (`class Pair(a, b)`: nominal, final,
    derived `==`/`hashCode`) needs drawing. Deferred until such an
    affordance is actually wanted.
+
 2. **An unset form** — remove a field / clear a presence bit in a
    spread (`delete`'s immutable analogue). Deferred (§5);
    destructure-and-rebuild covers it.

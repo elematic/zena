@@ -96,7 +96,7 @@ directives in `invalid-casts.zena` pass against two unrelated errors
 while the messages they named had changed underneath them, and hid 58
 unclaimed errors suite-wide.
 
-`@missing-error:` records an error the language *should* report and does
+`@missing-error:` records an error the language _should_ report and does
 not. It asserts the absence, so implementing the check fails the test
 and tells you to promote the directive — the marker retires itself
 instead of rotting. See BUGS.md for the six it currently marks.
@@ -122,9 +122,9 @@ traps and hangs live.
 all 465 tests in one process, varying only how many entry points share
 one `Compiler` and timing the compile loop:
 
-| entries per compiler | 1  | 8  | 16 | 24 | 58 | 465 |
-| -------------------- | -- | -- | -- | -- | -- | --- |
-| compile time (s)     | 28 | 19 | 19 | 19 | 22 | 30  |
+| entries per compiler | 1   | 8   | 16  | 24  | 58  | 465 |
+| -------------------- | --- | --- | --- | --- | --- | --- |
+| compile time (s)     | 28  | 19  | 19  | 19  | 22  | 30  |
 
 One compiler for the whole suite is _worse than not sharing at all_, and
 the whole win is in by about eight. What a compiler accumulates per
@@ -148,7 +148,7 @@ cache.
 
 Batching needed one compiler fix first, and it was not a codegen bug:
 generic instantiations are interned on the generic source, and the key
-was the type argument's *name*, so two entry points that each declared a
+was the type argument's _name_, so two entry points that each declared a
 `class Item` shared `zena:iterator`'s `Iterable<Item>` and the second
 emitted an interface trampoline that downcast to the first's struct.
 `instantiationKeyOf` in `lib/types.zena` now keys nominal types by
@@ -165,7 +165,7 @@ same-signature wrappers was registered first. Unlike `WasmType`'s uid
 the counter cannot be reset per compile, because a long-lived compiler
 interns semantic types across compiles; instead `referencedTypes` is an
 `OrderedTypeSet` that iterates in insertion order.
-`zena/test/codegen-determinism_test.zena` guards it, and needs a *run*
+`zena/test/codegen-determinism_test.zena` guards it, and needs a _run_
 of repeat compiles to do so — divergence is not monotonic in batch
 position, so a two-compile version of that test passed with the bug
 fully present.

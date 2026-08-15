@@ -163,7 +163,7 @@ Three things fall out of that shape:
 keeps a stack of open finalizers (`cx.finallyScopes`); an exit replayed
 at one dispatch re-enters that stack truncated, so nested finalizers
 run inside-out with no duplicated code. A `break`/`continue` whose loop
-was opened *inside* the region does not leave it and owes nothing,
+was opened _inside_ the region does not leave it and owes nothing,
 which `FinallyScope.loopDepth` is what distinguishes.
 
 An `await` or `yield` inside a `finally`-protected region is

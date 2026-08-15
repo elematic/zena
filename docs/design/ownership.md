@@ -1313,7 +1313,7 @@ outside the region, and normal completion, the handler edge, and each
 there, to be replayed after the release has run.
 
 One copy outside the region is a correctness requirement, not a size choice.
-A copy on the normal path would sit *inside* the region, so a `dispose` that
+A copy on the normal path would sit _inside_ the region, so a `dispose` that
 threw would land in its own handler and release a second time.
 [`Disposable`](#disposable) says implementations must not throw, but nothing
 enforces that, and the shape does not depend on it —
@@ -1325,13 +1325,13 @@ releases run inside-out, and a `using` and a `try`/`finally` nest through each
 other for free.
 
 That is the machinery O3 reuses. What O3 adds is not new codegen but new
-*obligations*: the releases an implicit drop contributes come from move
+_obligations_: the releases an implicit drop contributes come from move
 checking rather than from a `using` the programmer wrote.
 
 One gap remains, loud rather than silent: a `using` inside a value-producing
 block — a `match` or `if` arm whose tail expression supplies the arm's value —
 bails, since the region would have to carry a result out to the arm's join.
-A function body's value tail *is* handled, by lowering it where a `return`
+A function body's value tail _is_ handled, by lowering it where a `return`
 would go.
 
 **Second-class-ness is enforced.** A `Borrow<R>` may not be captured by a
@@ -1343,7 +1343,7 @@ positionally is still open.
 
 **`this` inside a resource's methods is a `Borrow<R>` unless the method says
 otherwise**, which is what points those rules at the receiver. It has to be
-*some* handle — a resource has no
+_some_ handle — a resource has no
 unwrapped form, so a bare `this` is a reference the handle regime cannot see
 — and `Own<R>` would be wrong, since the method did not receive ownership and
 must not release or move its receiver. So a method's receiver is the one
@@ -1389,7 +1389,7 @@ an error — the same rule that makes `disown` consume its argument. See
 The rules follow §"`Borrow<T>` is the identity at unrestricted
 instantiations": they apply to a borrow of a resource or of a bare type
 parameter, and not at all to `Borrow<i32>`. Storage is checked on the
-*type* rather than on each assignment — once `Borrow<R>` cannot be a field's
+_type_ rather than on each assignment — once `Borrow<R>` cannot be a field's
 type or an element type there is no location left to hold one, so the stores
 that never name the type, like `xs.push(f)`, need no flow analysis to find.
 
