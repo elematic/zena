@@ -1,4 +1,5 @@
-import {LitElement, html, css} from 'lit';
+import {LitElement, html, css, nothing} from 'lit';
+import {live} from 'lit/directives/live.js';
 import {customElement, property, state, query} from 'lit/decorators.js';
 import {
   acceptCompletion,
@@ -18,6 +19,11 @@ import {lspWasmUrl} from '@zena-lang/language-service';
 import 'codemirror-elements';
 import '@zena-lang/codemirror';
 import type {ZenaHoverProvider} from '@zena-lang/codemirror';
+import '@radica/ui/components/tab-group/tab-group.js';
+import '@radica/ui/components/tab/tab.js';
+import '@radica/ui/components/tab-panel/tab-panel.js';
+import '@radica/ui/components/button/button.js';
+import '@radica/ui/components/dialog/dialog.js';
 import type {
   CompletionItem,
   ConsoleEntry,
@@ -49,8 +55,8 @@ const CHECK_DEBOUNCE_MS = 250;
 export class ZenaPlayground extends LitElement {
   static override styles = css`
     :host {
-      display: flex;
-      flex-direction: column;
+      display: grid !important;
+      grid-template-rows: min-content 1fr !important;
       width: 100%;
       height: 600px;
       font-family:
@@ -71,6 +77,7 @@ export class ZenaPlayground extends LitElement {
     }
 
     .toolbar {
+      grid-row: 1;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -78,6 +85,202 @@ export class ZenaPlayground extends LitElement {
       background: rgba(15, 23, 42, 0.8);
       backdrop-filter: blur(12px);
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .main-pane {
+      grid-row: 2;
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      grid-template-rows: 1fr;
+      min-height: 0;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+    }
+
+    .editor-pane {
+      grid-column: 1;
+      display: grid;
+      grid-template-rows: min-content 1fr;
+      min-width: 0;
+      min-height: 0;
+      height: 100%;
+      background: #1e293b;
+      border-right: 1px solid rgba(255, 255, 255, 0.08);
+      overflow: hidden;
+    }
+
+    .tabs-header {
+      grid-row: 1;
+      background: #0f172a;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+    }
+
+    rad-tab-group {
+      width: 100%;
+      --track-color: transparent;
+    }
+
+    rad-tab::part(close-button) {
+      display: inline-flex;
+      align-items: center;
+      line-height: 1;
+      height: auto;
+      opacity: 0;
+      transition: opacity 0.15s ease-in-out;
+    }
+
+    rad-tab[active]::part(close-button),
+    rad-tab:hover::part(close-button),
+    rad-tab:focus-within::part(close-button) {
+      opacity: 1;
+    }
+
+    rad-tab::part(close-button__button) {
+      height: 20px !important;
+      width: 20px !important;
+      min-height: 0 !important;
+      line-height: 1 !important;
+    }
+
+    .tab-rename-input {
+      background: var(--rad-color-surface-sunken, rgba(0, 0, 0, 0.4));
+      border: 1px solid var(--rad-color-border-focused, #38bdf8);
+      border-radius: 4px;
+      color: #f1f5f9;
+      font-family: inherit;
+      font-size: 13px;
+      line-height: 1.2;
+      padding: 1px 6px;
+      outline: none;
+      width: 100px;
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3);
+    }
+
+    rad-tab-panel {
+      display: none !important;
+    }
+
+    .tab-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .tab-badge {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+
+    .tab-badge-error {
+      background-color: #ef4444;
+      box-shadow: 0 0 6px rgba(239, 68, 68, 0.7);
+    }
+
+    .tab-badge-warning {
+      background-color: #f59e0b;
+      box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+    }
+
+    cm-editor {
+      grid-row: 2;
+      display: grid;
+      grid-template-rows: 1fr;
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      border: none !important;
+      outline: none !important;
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    cm-editor .cm-editor,
+    .cm-editor,
+    .cm-scroller,
+    .cm-content {
+      min-height: 100% !important;
+      height: 100% !important;
+      box-sizing: border-box !important;
+    }
+
+    .cm-scroller {
+      overflow: auto !important;
+    }
+
+    /* CodeMirror Dark Tooltip Overrides */
+    .cm-tooltip-lint {
+      background-color: #0f172a !important;
+      border: 1px solid rgba(255, 255, 255, 0.2) !important;
+      border-radius: 6px !important;
+      color: #f8fafc !important;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6) !important;
+    }
+
+    .cm-diagnostic {
+      padding: 6px 10px !important;
+      font-family:
+        system-ui,
+        -apple-system,
+        sans-serif !important;
+      font-size: 0.85rem !important;
+      color: #f8fafc !important;
+    }
+
+    .cm-diagnostic-error {
+      border-left: 4px solid #ef4444 !important;
+      background: rgba(239, 68, 68, 0.2) !important;
+      color: #fca5a5 !important;
+    }
+
+    .cm-diagnostic-warning {
+      border-left: 4px solid #f59e0b !important;
+      background: rgba(245, 158, 11, 0.2) !important;
+      color: #fde68a !important;
+    }
+
+    .console-pane {
+      grid-column: 2;
+      display: grid;
+      grid-template-rows: min-content 1fr;
+      min-width: 280px;
+      min-height: 0;
+      height: 100%;
+      background: #090d16;
+      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
+      font-size: 0.85rem;
+      overflow: hidden;
+    }
+
+    .console-header {
+      grid-row: 1;
+      padding: 8px 12px;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .console-body {
+      grid-row: 2;
+      min-height: 0;
+      height: 100%;
+      overflow-y: auto;
+      padding: 8px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
     }
 
     .title-group {
@@ -221,121 +424,6 @@ export class ZenaPlayground extends LitElement {
       color: #ffffff;
     }
 
-    .main-pane {
-      display: flex;
-      flex-direction: row;
-      flex: 1 1 0%;
-      min-height: 0;
-      width: 100%;
-      height: 100%;
-    }
-
-    .editor-pane {
-      flex: 1 1 0%;
-      min-width: 0;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-      background: #1e293b;
-      border-right: 1px solid rgba(255, 255, 255, 0.08);
-      height: 100%;
-    }
-
-    cm-editor {
-      display: flex;
-      flex-direction: column;
-      flex: 1 1 0%;
-      width: 100%;
-      height: 100%;
-      min-height: 0;
-      border: none !important;
-      outline: none !important;
-      font-family: 'JetBrains Mono', 'Fira Code', Consolas, Monaco, monospace;
-      font-size: 14px;
-      line-height: 1.5;
-    }
-
-    cm-editor .cm-editor,
-    .cm-editor {
-      height: 100% !important;
-      display: flex !important;
-      flex-direction: column !important;
-      flex: 1 1 0% !important;
-      min-height: 0 !important;
-    }
-
-    .cm-scroller {
-      flex: 1 1 0% !important;
-      min-height: 0 !important;
-      overflow: auto !important;
-    }
-
-    /* CodeMirror Dark Tooltip Overrides */
-    .cm-tooltip-lint {
-      background-color: #0f172a !important;
-      border: 1px solid rgba(255, 255, 255, 0.2) !important;
-      border-radius: 6px !important;
-      color: #f8fafc !important;
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.6) !important;
-    }
-
-    .cm-diagnostic {
-      padding: 6px 10px !important;
-      font-family:
-        system-ui,
-        -apple-system,
-        sans-serif !important;
-      font-size: 0.85rem !important;
-      color: #f8fafc !important;
-    }
-
-    .cm-diagnostic-error {
-      border-left: 4px solid #ef4444 !important;
-      background: rgba(239, 68, 68, 0.2) !important;
-      color: #fca5a5 !important;
-    }
-
-    .cm-diagnostic-warning {
-      border-left: 4px solid #f59e0b !important;
-      background: rgba(245, 158, 11, 0.2) !important;
-      color: #fde68a !important;
-    }
-
-    .console-pane {
-      width: 380px;
-      min-width: 280px;
-      flex: 0 0 380px;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-      background: #090d16;
-      font-family: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
-      font-size: 0.85rem;
-      height: 100%;
-    }
-
-    .console-header {
-      padding: 8px 12px;
-      font-size: 0.75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: #64748b;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .console-body {
-      flex: 1;
-      overflow-y: auto;
-      padding: 8px 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-    }
-
     .log-item {
       padding: 6px 8px;
       border-radius: 4px;
@@ -414,20 +502,45 @@ export class ZenaPlayground extends LitElement {
       padding-top: 4px;
       margin-top: 4px;
     }
+
+    .tabs-header {
+      background: #0f172a;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      align-items: center;
+    }
+
+    rad-tab-group {
+      width: 100%;
+    }
+
+    rad-tab-group::part(body),
+    rad-tab-panel {
+      display: none;
+    }
+
+    .btn-add-file {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 1.1rem;
+      cursor: pointer;
+      padding: 0 8px;
+      line-height: 1;
+    }
+
+    .btn-add-file:hover {
+      color: #ffffff;
+    }
   `;
 
-  /** Initial Zena source code. */
+  /** Initial Zena source files mapping filenames to code strings. */
+  @property({type: Object})
+  files?: Record<string, string>;
+
+  /** Initial Zena source code (single file option). */
   @property({type: String})
-  value = `// Welcome to the Zena Playground!
-
-let greet = (name: String) => {
-  return \`Hello \${name}!\`;
-};
-
-export let main = () => {
-  console.log(greet('Zena Developer'));
-};
-`;
+  value?: string;
 
   /**
    * Where to load the compiler from.
@@ -443,6 +556,28 @@ export let main = () => {
   /** Selected CodeMirror theme name. */
   @property({type: String})
   theme = 'one-dark';
+
+  /** Currently active file tab name. */
+  @state()
+  private activeFile = 'main.zena';
+
+  /** Internal dictionary of file names to content. */
+  @state()
+  private fileMap: Record<string, string> = {
+    'main.zena': `import { add, greet } from './math.zena';
+
+export let main = () => {
+  console.log(greet('Zena Developer'));
+  console.log(\`1 + 2 = \${add(1, 2)}\`);
+};
+`,
+    'math.zena': `export let add = (a: i32, b: i32): i32 => a + b;
+
+export let greet = (name: String): String => {
+  return 'Hello ' + name + '!';
+};
+`,
+  };
 
   @state()
   private status: 'loading' | 'ready' | 'checking' | 'error' = 'loading';
@@ -460,9 +595,19 @@ export let main = () => {
     addExtensions?: (exts: any[]) => void;
   };
 
+  @state()
+  private editingTab: string | null = null;
+
+  @state()
+  private editingName = '';
+
+  @state()
+  private deleteTargetFile: string | null = null;
+
   private worker?: Worker;
   private checkDebounceTimer?: number;
   private nextRequestId = 1;
+  private isSwitchingTab = false;
 
   /** Editor queries in flight, waiting on the worker to answer. */
   private pendingHovers = new Map<number, (hover: HoverInfo | null) => void>();
@@ -492,21 +637,160 @@ export let main = () => {
 
   override connectedCallback() {
     super.connectedCallback();
+    if (this.files && Object.keys(this.files).length > 0) {
+      this.fileMap = {...this.files};
+      this.activeFile = Object.keys(this.fileMap)[0];
+    } else if (this.value !== undefined) {
+      this.fileMap = {'main.zena': this.value};
+      this.activeFile = 'main.zena';
+    }
     this.initWorker();
   }
 
-  override firstUpdated() {
-    this.attachCodeMirrorExtensions();
+  private getAllFiles(): Record<string, string> {
+    if (this.codeMirrorEl?.value !== undefined) {
+      this.fileMap[this.activeFile] = this.codeMirrorEl.value;
+    }
+    return {...this.fileMap};
+  }
+
+  private getFileDiagnostics(filename: string): Diagnostic[] {
+    return this.diagnostics.filter((d) => {
+      if (!d.file) return false;
+      return (
+        d.file === filename ||
+        d.file === `./${filename}` ||
+        d.file.replace(/^\.\//, '') === filename.replace(/^\.\//, '') ||
+        d.file.endsWith(`/${filename}`)
+      );
+    });
+  }
+
+  private selectFile(filename: string) {
+    if (filename === this.activeFile) return;
+    if (this.codeMirrorEl?.value !== undefined) {
+      this.fileMap[this.activeFile] = this.codeMirrorEl.value;
+    }
+    this.isSwitchingTab = true;
+    this.activeFile = filename;
+    if (this.codeMirrorEl) {
+      this.codeMirrorEl.value = this.fileMap[filename] ?? '';
+    }
+    this.updateComplete.then(() => {
+      requestAnimationFrame(() => {
+        this.updateCodeMirrorDiagnostics(this.getFileDiagnostics(filename));
+        this.isSwitchingTab = false;
+      });
+    });
+  }
+
+  private addFile = () => {
+    let baseName = 'module';
+    let candidate = `${baseName}.zena`;
+    let counter = 1;
+    while (this.fileMap[candidate] !== undefined) {
+      candidate = `${baseName}_${counter}.zena`;
+      counter++;
+    }
+    this.fileMap = {
+      ...this.fileMap,
+      [candidate]: `// ${candidate}\n\nexport let example = () => {};\n`,
+    };
+    this.selectFile(candidate);
+    this.startEditingTab(candidate);
+  };
+
+  private startEditingTab(filename: string) {
+    if (filename === 'main.zena') return;
+    this.editingTab = filename;
+    this.editingName = filename;
+    this.updateComplete.then(() => {
+      const input =
+        this.shadowRoot?.querySelector<HTMLInputElement>('.tab-rename-input');
+      if (input) {
+        input.focus();
+        const dotIdx = input.value.lastIndexOf('.');
+        if (dotIdx > 0) {
+          input.setSelectionRange(0, dotIdx);
+        } else {
+          input.select();
+        }
+      }
+    });
+  }
+
+  private commitRename(oldFilename: string) {
+    if (this.editingTab !== oldFilename) return;
+    let newName = (this.editingName || '').trim();
+    this.editingTab = null;
+
+    if (!newName || newName === oldFilename) {
+      this.requestUpdate();
+      return;
+    }
+    if (!newName.endsWith('.zena')) {
+      newName += '.zena';
+    }
+    if (newName === oldFilename) {
+      this.requestUpdate();
+      return;
+    }
+    if (newName === 'main.zena' || this.fileMap[newName] !== undefined) {
+      this.requestUpdate();
+      return;
+    }
+
+    const nextFiles: Record<string, string> = {};
+    for (const [name, content] of Object.entries(this.fileMap)) {
+      if (name === oldFilename) {
+        nextFiles[newName] = content;
+      } else {
+        nextFiles[name] = content;
+      }
+    }
+    this.fileMap = nextFiles;
+    if (this.activeFile === oldFilename) {
+      this.activeFile = newName;
+    }
     this.scheduleCheck(0, false);
   }
 
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-    this.worker?.terminate();
-    this.worker = undefined;
-    this.pendingHovers.clear();
-    this.pendingCompletions.clear();
+  private cancelRename() {
+    this.editingTab = null;
+    this.requestUpdate();
   }
+
+  private getEntryFile(): string {
+    if (this.fileMap['main.zena'] !== undefined) return 'main.zena';
+    if (this.fileMap['main'] !== undefined) return 'main';
+    return Object.keys(this.fileMap)[0] ?? 'main.zena';
+  }
+
+  private requestCloseFile(filename: string, e: Event) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (filename === 'main.zena') return;
+    this.deleteTargetFile = filename;
+  }
+
+  private executeDeleteFile = () => {
+    const filename = this.deleteTargetFile;
+    this.deleteTargetFile = null;
+    if (!filename || filename === 'main.zena') return;
+
+    const filenames = Object.keys(this.fileMap);
+    if (filenames.length <= 1) return;
+
+    const nextFiles = {...this.fileMap};
+    delete nextFiles[filename];
+    this.fileMap = nextFiles;
+
+    if (this.activeFile === filename) {
+      const remaining = Object.keys(this.fileMap);
+      this.selectFile(remaining[0]);
+    }
+    this.scheduleCheck(0, false);
+  };
 
   /** Type information at a byte offset — what the hover tooltip shows. */
   queryHover(offset: number): Promise<HoverInfo | null> {
@@ -519,8 +803,9 @@ export let main = () => {
       this.worker!.postMessage({
         type: 'hover',
         id,
-        path: DOCUMENT_PATH,
+        path: this.activeFile,
         offset,
+        files: this.getAllFiles(),
       } satisfies WorkerRequest);
     });
   }
@@ -536,9 +821,10 @@ export let main = () => {
       this.worker!.postMessage({
         type: 'completions',
         id,
-        path: DOCUMENT_PATH,
+        path: this.activeFile,
         source,
         offset,
+        files: this.getAllFiles(),
       } satisfies WorkerRequest);
     });
   }
@@ -667,7 +953,9 @@ export let main = () => {
           ? 'error'
           : 'ready';
         this.diagnostics = res.diagnostics;
-        this.updateCodeMirrorDiagnostics(this.diagnostics);
+        this.updateCodeMirrorDiagnostics(
+          this.getFileDiagnostics(this.activeFile),
+        );
         break;
       case 'console':
         this.addLog(res.level, res.message);
@@ -722,8 +1010,10 @@ export let main = () => {
   }
 
   private onCodeInput() {
-    // Deliberately not assigning to this.value: re-rendering the editor with a
-    // new value resets the selection out from under whoever is typing.
+    if (this.isSwitchingTab) return;
+    if (this.codeMirrorEl?.value !== undefined) {
+      this.fileMap[this.activeFile] = this.codeMirrorEl.value;
+    }
     this.scheduleCheck(CHECK_DEBOUNCE_MS, false);
   }
 
@@ -739,12 +1029,17 @@ export let main = () => {
   private triggerCheck(shouldRun = false) {
     if (!this.worker || this.status === 'loading') return;
 
+    const files = this.getAllFiles();
+    const entryPath = this.getEntryFile();
+    const entrySource = files[entryPath] ?? '';
+
     this.status = 'checking';
     this.worker.postMessage({
       type: 'check',
       id: this.nextRequestId++,
-      path: DOCUMENT_PATH,
-      source: this.codeMirrorEl?.value ?? this.value,
+      path: entryPath,
+      source: entrySource,
+      files,
       run: shouldRun,
     } satisfies WorkerRequest);
   }
@@ -864,8 +1159,97 @@ export let main = () => {
 
       <div class="main-pane" @keydown=${this.onKeyDown}>
         <div class="editor-pane">
+          <div class="tabs-header">
+            <rad-tab-group .selected=${this.activeFile}>
+              ${Object.keys(this.fileMap).map((filename) => {
+                const fileDiags = this.getFileDiagnostics(filename);
+                const errorCount = fileDiags.filter(
+                  (d) => d.severity === 'error',
+                ).length;
+                const warningCount = fileDiags.filter(
+                  (d) => d.severity === 'warning',
+                ).length;
+                return html`
+                  <rad-tab
+                    slot="tabs"
+                    panel=${filename}
+                    ?active=${this.activeFile === filename}
+                    ?closable=${filename !== 'main.zena' &&
+                    Object.keys(this.fileMap).length > 1}
+                    @click=${() => this.selectFile(filename)}
+                    @close=${(e: Event) => this.requestCloseFile(filename, e)}
+                    @dblclick=${(e: MouseEvent) => {
+                      e.stopPropagation();
+                      this.startEditingTab(filename);
+                    }}
+                  >
+                    ${this.editingTab === filename
+                      ? html`
+                          <input
+                            class="tab-rename-input"
+                            .value=${this.editingName}
+                            @click=${(e: MouseEvent) => e.stopPropagation()}
+                            @dblclick=${(e: MouseEvent) => e.stopPropagation()}
+                            @input=${(e: InputEvent) => {
+                              this.editingName = (
+                                e.target as HTMLInputElement
+                              ).value;
+                            }}
+                            @keydown=${(e: KeyboardEvent) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                this.commitRename(filename);
+                              } else if (e.key === 'Escape') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                this.cancelRename();
+                              }
+                            }}
+                            @blur=${() => this.commitRename(filename)}
+                          />
+                        `
+                      : html`
+                          <span class="tab-label">
+                            ${filename}
+                            ${errorCount > 0
+                              ? html`<span
+                                  class="tab-badge tab-badge-error"
+                                  title="${errorCount} error${errorCount === 1
+                                    ? ''
+                                    : 's'}"
+                                ></span>`
+                              : warningCount > 0
+                                ? html`<span
+                                    class="tab-badge tab-badge-warning"
+                                    title="${warningCount} warning${warningCount ===
+                                    1
+                                      ? ''
+                                      : 's'}"
+                                  ></span>`
+                                : nothing}
+                          </span>
+                        `}
+                  </rad-tab>
+                `;
+              })}
+              <button
+                class="btn-add-file"
+                slot="tabs"
+                @click=${this.addFile}
+                title="Add file"
+              >
+                +
+              </button>
+              ${Object.keys(this.fileMap).map(
+                (filename) => html`
+                  <rad-tab-panel name=${filename}></rad-tab-panel>
+                `,
+              )}
+            </rad-tab-group>
+          </div>
           <cm-editor
-            .value=${this.value}
+            .value=${live(this.fileMap[this.activeFile] ?? '')}
             @input=${this.onCodeInput}
             @codemirror-document-change=${this.onCodeInput}
           >
@@ -905,6 +1289,30 @@ export let main = () => {
           </div>
         </div>
       </div>
+
+      <rad-dialog
+        ?open=${this.deleteTargetFile !== null}
+        title="Delete File"
+        @close=${() => (this.deleteTargetFile = null)}
+      >
+        <p
+          style="margin: 0; font-size: 14px; line-height: 1.5; color: var(--rad-on-surface-overlay, var(--rad-neutral-text-normal, #cbd5e1));"
+        >
+          Are you sure you want to delete
+          <strong>${this.deleteTargetFile}</strong>?
+        </p>
+        <div
+          slot="footer"
+          style="display: flex; justify-content: flex-end; gap: 8px;"
+        >
+          <rad-button @click=${() => (this.deleteTargetFile = null)}
+            >Cancel</rad-button
+          >
+          <rad-button variant="danger" @click=${this.executeDeleteFile}
+            >Delete</rad-button
+          >
+        </div>
+      </rad-dialog>
     `;
   }
 }

@@ -38,6 +38,7 @@ export interface CheckRequest {
   id: number;
   path: string;
   source: string;
+  files?: Record<string, string>;
   run: boolean;
 }
 
@@ -46,6 +47,7 @@ export interface HoverRequest {
   id: number;
   path: string;
   offset: number;
+  files?: Record<string, string>;
 }
 
 export interface CompletionsRequest {
@@ -54,6 +56,7 @@ export interface CompletionsRequest {
   path: string;
   source: string;
   offset: number;
+  files?: Record<string, string>;
 }
 
 export type WorkerRequest =

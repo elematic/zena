@@ -89,8 +89,30 @@ function withService(
   }
 }
 
+const openDocPaths = new Set<string>();
+
+function syncFiles(
+  service: ZenaLanguageService,
+  files?: Record<string, string>,
+): void {
+  if (files) {
+    const currentKeys = new Set(Object.keys(files));
+    for (const oldPath of openDocPaths) {
+      if (!currentKeys.has(oldPath)) {
+        service.closeDocument(oldPath);
+        openDocPaths.delete(oldPath);
+      }
+    }
+    for (const [path, source] of Object.entries(files)) {
+      service.openDocument(path, source);
+      openDocPaths.add(path);
+    }
+  }
+}
+
 function check(request: CheckRequest): void {
   withService(request.id, (service) => {
+    syncFiles(service, request.files);
     const all = service.check(request.path, request.source);
 
     // A check reports on every module it reached, not just this document,
@@ -99,13 +121,7 @@ function check(request: CheckRequest): void {
     // line of this document happened to be closest — so only the ones
     // that belong here become markers, and an error somewhere else goes
     // to the console pane, where it can say which file it came from.
-    const diagnostics = all.filter((d) => d.file === request.path);
-    for (const d of all) {
-      if (d.file !== request.path && d.severity === 'error') {
-        sendLog('error', `${d.file}:${d.line}:${d.column}: ${d.message}`);
-      }
-    }
-    post({type: 'diagnostics', id: request.id, diagnostics});
+    post({type: 'diagnostics', id: request.id, diagnostics: all});
 
     // Gated on *all* errors: an error in an imported module fails the
     // compile too, however far from this document it is.
@@ -117,6 +133,7 @@ function check(request: CheckRequest): void {
 
 function hover(request: HoverRequest): void {
   withService(request.id, (service) => {
+    syncFiles(service, request.files);
     post({
       type: 'hover',
       id: request.id,
@@ -127,6 +144,7 @@ function hover(request: HoverRequest): void {
 
 function completions(request: CompletionsRequest): void {
   withService(request.id, (service) => {
+    syncFiles(service, request.files);
     post({
       type: 'completions',
       id: request.id,

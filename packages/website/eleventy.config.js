@@ -1,4 +1,5 @@
 import {createRequire} from 'node:module';
+import fs from 'node:fs/promises';
 import * as esbuild from 'esbuild';
 import MarkdownIt from 'markdown-it';
 import {createZenaHighlighter, renderCodeBlock} from './lib/highlight.js';
@@ -16,6 +17,31 @@ const WORKER_ENTRY = require.resolve('@zena-lang/playground/worker');
 
 /** Held across rebuilds so esbuild's watcher is started exactly once. */
 let assetContext;
+
+/**
+ * esbuild plugin to handle CSS imports with `with { type: 'css' }` attributes,
+ * outputting Constructable CSSStyleSheets for web components.
+ */
+const cssTypeAttributePlugin = {
+  name: 'css-type-attribute',
+  setup(build) {
+    build.onLoad({filter: /\.css$/}, async (args) => {
+      // Only intercept JS imports using `with { type: 'css' }`
+      if (args.with?.type !== 'css') {
+        return null;
+      }
+      const cssText = await fs.readFile(args.path, 'utf8');
+      return {
+        contents: `
+          const sheet = new CSSStyleSheet();
+          sheet.replaceSync(${JSON.stringify(cssText)});
+          export default sheet;
+        `,
+        loader: 'js',
+      };
+    });
+  },
+};
 
 /**
  * Bundles the Lit client and the stylesheet straight into `_site`.
@@ -44,6 +70,7 @@ const bundleAssets = async () => {
     bundle: true,
     format: 'esm',
     target: ['es2022', 'chrome111', 'firefox113', 'safari16.4'],
+    plugins: [cssTypeAttributePlugin],
     minify: isProduction,
     sourcemap: !isProduction,
     logLevel: 'warning',

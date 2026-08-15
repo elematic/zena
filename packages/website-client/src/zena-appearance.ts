@@ -40,6 +40,7 @@ export class ZenaAppearance extends LightElement {
   #apply(dark: boolean): void {
     this.isDark = dark;
     document.documentElement.classList.toggle('dark', dark);
+    document.documentElement.classList.toggle('rad-theme-dark', dark);
   }
 
   #toggle(): void {
