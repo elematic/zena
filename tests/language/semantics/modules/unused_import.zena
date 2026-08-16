@@ -1,0 +1,42 @@
+// @mode: check
+
+// 1. Entire import declaration is unused:
+import { helperFn3 } from './unused_import_helper.zena'; // @warning: Import from './unused_import_helper.zena' is never used.
+
+// 2. Unused namespace import:
+import * as unusedNs from './unused_import_helper.zena'; // @warning: Import from './unused_import_helper.zena' is never used.
+
+// 3. Unnecessary prelude import:
+import { String } from 'zena:string'; // @warning: Imported symbol 'String' is unnecessary because it is in the prelude.
+
+// 4. Renamed prelude import is permitted without warning:
+import { String as CustomString } from 'zena:string';
+
+// 5. Some symbols used, some unused, some duplicate:
+// @warning: Imported symbol 'helperFn2' is never used.
+// @warning: Duplicate import of 'helperFn1'.
+import { helperFn1, helperFn2, helperFn1 } from './unused_import_helper.zena';
+
+// 6. Duplicate import from a separate statement:
+import { helperFn1 } from './unused_import_helper.zena'; // @warning: Duplicate import of 'helperFn1'.
+
+// 7. Underscore-prefixed unused import is suppressed:
+import { helperFn2 as _unusedFn } from './unused_import_helper.zena';
+
+// 8. Used in type annotation, new expression, and pattern matching:
+import { HelperClass1, HelperClass2, HelperVariant, VariantA, HelperAlias } from './unused_import_helper.zena';
+
+export let testUsages = (aliasVal: HelperAlias): i32 => {
+  let s: CustomString = "test";
+  let fnResult = helperFn1();
+  let instance1: HelperClass1 = new HelperClass1(fnResult);
+  let instance2 = new HelperClass2(s);
+
+  let v: HelperVariant = new VariantA(10);
+  let matchResult = match (v) {
+    case VariantA {val}: val
+    case _: 0
+  };
+
+  return instance1.value + matchResult + aliasVal + instance2.name.length;
+};

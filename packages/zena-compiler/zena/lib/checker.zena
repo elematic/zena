@@ -2999,6 +2999,45 @@ export let checkModule = (
     ctx.diagnostics.reportWarning("Variable '" + neverMut.name + "' is declared as mutable but never written to. Use 'let' instead.", DiagnosticCode.NeverMutatedVariable, loc);
   }
 
+  // Emit warnings for unused import declarations (where all symbols are unused).
+  for (let decl in scopeResult.unusedImportDeclarations) {
+    ctx.diagnostics.reportWarning(
+      "Import from '" + decl.moduleSpecifier.value + "' is never used.",
+      DiagnosticCode.UnusedImport,
+      decl.loc
+    );
+  }
+
+  // Emit warnings for unused individual imported symbols.
+  for (let sym in scopeResult.unusedImportedSymbols) {
+    let loc = if (sym.declaration != null) sym.declaration.loc else null;
+    ctx.diagnostics.reportWarning(
+      "Imported symbol '" + sym.name + "' is never used.",
+      DiagnosticCode.UnusedImportedSymbol,
+      loc
+    );
+  }
+
+  // Emit warnings for unnecessary prelude imports.
+  for (let sym in scopeResult.unnecessaryImports) {
+    let loc = if (sym.declaration != null) sym.declaration.loc else null;
+    ctx.diagnostics.reportWarning(
+      "Imported symbol '" + sym.name + "' is unnecessary because it is in the prelude.",
+      DiagnosticCode.UnnecessaryImport,
+      loc
+    );
+  }
+
+  // Emit warnings for duplicate imports.
+  for (let sym in scopeResult.duplicateImports) {
+    let loc = if (sym.declaration != null) sym.declaration.loc else null;
+    ctx.diagnostics.reportWarning(
+      "Duplicate import of '" + sym.name + "'.",
+      DiagnosticCode.DuplicateImport,
+      loc
+    );
+  }
+
   // === Phase 1: Register all declaration signatures ===
   // Process imports and register type declarations (classes, interfaces,
   // enums, mixins, type aliases, declared functions, symbols) so that ALL

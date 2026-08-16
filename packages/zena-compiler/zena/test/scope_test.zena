@@ -512,4 +512,97 @@ export let tests = suite('Scope', (): void => {
       isTrue((sym as Symbol).declaration is ImportSpecifier);
     });
   });
+
+  // ==========================================================================
+  // Import Warnings
+  // ==========================================================================
+
+  suite('Import warnings', (): void => {
+    test('all symbols unused flags unusedImportDeclarations', (ctx: TestContext): void => {
+      let source = "import { a, b } from './mod.zena';";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      equal(result.unusedImportDeclarations.length, 1);
+      equal(result.unusedImportedSymbols.length, 0);
+      equal(result.unnecessaryImports.length, 0);
+      equal(result.duplicateImports.length, 0);
+    });
+
+    test('some symbols unused flags unusedImportedSymbols', (ctx: TestContext): void => {
+      let source = "import { a, b } from './mod.zena'; let x = a;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      equal(result.unusedImportDeclarations.length, 0);
+      equal(result.unusedImportedSymbols.length, 1);
+      equal(result.unusedImportedSymbols[0].name, "b");
+    });
+
+    test('unnecessary prelude import is flagged', (ctx: TestContext): void => {
+      let prelude = new Scope(ScopeKind.Module, null);
+      let dummy = parse("class String {}", "string.zena");
+      prelude.declare("String", false, dummy.body[0], "string.zena");
+
+      let source = "import { String } from 'zena:string'; let s: String = 'hello';";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena", prelude);
+      let result = builder.build(mod);
+
+      equal(result.unnecessaryImports.length, 1);
+      equal(result.unnecessaryImports[0].name, "String");
+      equal(result.unusedImportDeclarations.length, 0);
+      equal(result.unusedImportedSymbols.length, 0);
+    });
+
+    test('renamed prelude import is not flagged as unnecessary', (ctx: TestContext): void => {
+      let prelude = new Scope(ScopeKind.Module, null);
+      let dummy = parse("class String {}", "string.zena");
+      prelude.declare("String", false, dummy.body[0], "string.zena");
+
+      let source = "import { String as MyString } from 'zena:string'; let s: MyString = 'hello';";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena", prelude);
+      let result = builder.build(mod);
+
+      equal(result.unnecessaryImports.length, 0);
+      equal(result.unusedImportDeclarations.length, 0);
+      equal(result.unusedImportedSymbols.length, 0);
+    });
+
+    test('duplicate imports are flagged', (ctx: TestContext): void => {
+      let source = "import { a, b, a } from './mod.zena'; import { b } from './other.zena'; let x = a + b;";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      equal(result.duplicateImports.length, 2);
+      equal(result.duplicateImports[0].name, "a");
+      equal(result.duplicateImports[1].name, "b");
+      equal(result.unusedImportDeclarations.length, 0);
+      equal(result.unusedImportedSymbols.length, 0);
+    });
+
+    test('type annotations and new expressions mark imports as read', (ctx: TestContext): void => {
+      let source = "import { Foo, Bar } from './mod.zena'; let f: Foo = new Bar();";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      equal(result.unusedImportDeclarations.length, 0);
+      equal(result.unusedImportedSymbols.length, 0);
+    });
+
+    test('underscore-prefixed unused imports are suppressed', (ctx: TestContext): void => {
+      let source = "import { a as _a, _b } from './mod.zena';";
+      let mod = parse(source, 'test.zena');
+      let builder = new ScopeBuilder("test.zena");
+      let result = builder.build(mod);
+
+      equal(result.unusedImportDeclarations.length, 0);
+      equal(result.unusedImportedSymbols.length, 0);
+    });
+  });
 });

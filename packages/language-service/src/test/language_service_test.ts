@@ -67,7 +67,7 @@ suite('language service API', () => {
   test('resolves stdlib imports through the stdlib root', () => {
     const diagnostics = service.check(
       PATH,
-      `import {HashMap} from 'zena:map';\nlet _m = new HashMap<String, i32>();\n`,
+      `import {OrderedMap} from 'zena:ordered-map';\nlet _m = new OrderedMap<String, i32>();\n`,
     );
     assert.deepStrictEqual(diagnostics, []);
   });

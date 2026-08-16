@@ -1,5 +1,6 @@
 import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
 import { Iterator } from 'zena:iterator';
 import { NodeMap } from '../node-map.zena';
 import {
@@ -148,6 +149,10 @@ export final class ScopeResult(
 
   unusedVariables: Array<Symbol>,
   neverMutatedVariables: Array<Symbol>,
+  unusedImportDeclarations: Array<ImportDeclaration>,
+  unusedImportedSymbols: Array<Symbol>,
+  unnecessaryImports: Array<Symbol>,
+  duplicateImports: Array<Symbol>,
 
   /**
    * Parent pointer map from node → parent node.
@@ -191,6 +196,7 @@ export final class ScopeBuilder {
   #isRead = new HashMap<SymbolId, boolean>();
   #isWritten = new HashMap<SymbolId, boolean>();
   #allVariables = new Array<Symbol>();
+  #allImportDeclarations = new Array<ImportDeclaration>();
 
   new(modulePath: String, preludeScope: Scope | null = null, symbolIdGenerator: IdGenerator<SymbolId> | null = null)
     : #modulePath = modulePath {
@@ -245,6 +251,63 @@ export final class ScopeBuilder {
       }
     }
 
+    let seenImportedNames = new HashSet<String>();
+    let unusedImportDeclarations = new Array<ImportDeclaration>();
+    let unusedImportedSymbols = new Array<Symbol>();
+    let unnecessaryImports = new Array<Symbol>();
+    let duplicateImports = new Array<Symbol>();
+
+    for (let importDecl in this.#allImportDeclarations) {
+      if (importDecl.imports.length == 0) {
+        continue;
+      }
+      let declUnusedSymbols = new Array<Symbol>();
+      var hasUsedOrSuppressedOrSpecial = false;
+
+      for (let spec in importDecl.imports) {
+        let localName = spec.local.name;
+        let sym = this.#symbols.getByNode(spec);
+        if (sym == null) {
+          continue;
+        }
+
+        // 1. Check for duplicate import:
+        if (seenImportedNames.has(localName)) {
+          duplicateImports.push(new Symbol(localName, spec, this.#modulePath, false, sym.id));
+          hasUsedOrSuppressedOrSpecial = true;
+          continue;
+        }
+        seenImportedNames.add(localName);
+
+        // 2. Check for unnecessary prelude import (only when not renamed):
+        let parentScope = this.#current.parent;
+        if (spec.imported.name == spec.local.name &&
+            parentScope != null &&
+            parentScope.resolve(localName) != null) {
+          unnecessaryImports.push(sym);
+          hasUsedOrSuppressedOrSpecial = true;
+          continue;
+        }
+
+        // 3. Check if used or suppressed by leading underscore:
+        if (localName.startsWith("_") || this.#isRead.has(sym.id)) {
+          hasUsedOrSuppressedOrSpecial = true;
+        } else {
+          declUnusedSymbols.push(sym);
+        }
+      }
+
+      if (declUnusedSymbols.length > 0) {
+        if (!hasUsedOrSuppressedOrSpecial) {
+          unusedImportDeclarations.push(importDecl);
+        } else {
+          for (let sym in declUnusedSymbols) {
+            unusedImportedSymbols.push(sym);
+          }
+        }
+      }
+    }
+
     return new ScopeResult(
       this.#current,
       this.#exports,
@@ -255,6 +318,10 @@ export final class ScopeBuilder {
       this.#duplicateDeclarations,
       unused,
       neverMutated,
+      unusedImportDeclarations,
+      unusedImportedSymbols,
+      unnecessaryImports,
+      duplicateImports,
       this.#parents
     );
   }
@@ -653,7 +720,8 @@ export final class ScopeBuilder {
         this.#processClassBody(body);
         this.#exitScope();
       }
-      case ImportDeclaration {moduleSpecifier, imports}: {
+      case ImportDeclaration {moduleSpecifier, imports} as idDecl: {
+        this.#allImportDeclarations.push(idDecl);
         // Declare imported names into the current scope.
         // The actual bindings come from the imported module's exports.
         //
@@ -778,6 +846,7 @@ export final class ScopeBuilder {
           this.#unresolvedNames.push(new UnresolvedName(callee.name, callee));
         } else {
           this.#symbols.record(callee, info);
+          this.#isRead[info.id] = true;
         }
         if (typeArguments != null) {
           for (let typeArgument in typeArguments) {
@@ -1126,7 +1195,12 @@ export final class ScopeBuilder {
         this.#symbols.record(name, this.#current.getLocal(name.name) as Symbol);
         this.#declarePatternNode(pattern, kind, declaration);
       }
-      case ClassPattern {properties}: {
+      case ClassPattern {name, properties}: {
+        let info = this.#current.resolve(name.name);
+        if (info != null) {
+          this.#symbols.record(name, info);
+          this.#isRead[info.id] = true;
+        }
         for (let prop in properties) {
           this.#declarePatternNode(prop.value, kind, declaration);
         }
@@ -1157,7 +1231,9 @@ export final class ScopeBuilder {
             }
           }
           if (isTypePattern) {
-            this.#symbols.record(ident, resolved as Symbol);
+            let s = resolved as Symbol;
+            this.#symbols.record(ident, s);
+            this.#isRead[s.id] = true;
           } else {
             this.#current.declare(ident.name, false, ident, this.#modulePath);
             let sym = this.#current.getLocal(ident.name) as Symbol;
@@ -1189,7 +1265,9 @@ export final class ScopeBuilder {
             }
           }
           if (isTypePattern) {
-            this.#symbols.record(ident, resolved as Symbol);
+            let s = resolved as Symbol;
+            this.#symbols.record(ident, s);
+            this.#isRead[s.id] = true;
           } else {
             this.#current.declare(ident.name, kind == "var", ident, this.#modulePath);
             let sym = this.#current.getLocal(ident.name) as Symbol;
@@ -1252,6 +1330,7 @@ export final class ScopeBuilder {
         let info = this.#current.resolve(name);
         if (info != null) {
           this.#symbols.record(ann, info);
+          this.#isRead[info.id] = true;
         } else {
           this.#unresolvedNames.push(new UnresolvedName(name, ann));
         }
