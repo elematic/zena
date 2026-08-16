@@ -5,7 +5,7 @@
  * provide mock host imports, and exercise the check/diagnostic/format API.
  */
 
-import {suite, test} from 'node:test';
+import {suite, test, before} from 'node:test';
 import assert from 'node:assert';
 import {readFile} from 'node:fs/promises';
 import {readFileSync} from 'node:fs';
@@ -100,7 +100,7 @@ async function loadLsp(): Promise<LspHandle> {
         const content = readFileSync(filePath, 'utf8');
         return writeString!(content);
       } catch (e: any) {
-        return writeString!('');
+        return null;
       }
     },
   };
@@ -177,8 +177,11 @@ suite('lsp.wasm integration', () => {
   // Load once, reuse across tests.
   let lsp: LspHandle;
 
-  test('loads and initializes', async () => {
+  before(async () => {
     lsp = await loadLsp();
+  });
+
+  test('loads and initializes', () => {
     assert.ok(lsp.exports.check, 'check export exists');
     assert.ok(lsp.exports.init, 'init export exists');
   });
@@ -208,6 +211,50 @@ suite('lsp.wasm integration', () => {
   test('reports diagnostic for unresolved name', () => {
     const diags = checkSource(lsp, 'let x = unknownVariable;');
     assert.ok(diags.length > 0, 'Expected at least 1 diagnostic');
+  });
+
+  test('reports diagnostic on import statement for missing module', () => {
+    const diags = checkSource(
+      lsp,
+      "import { foo } from './does_not_exist.zena';\nlet _ = foo;",
+      '/test/main.zena',
+    );
+    assert.ok(diags.length > 0, 'Expected diagnostic for missing module');
+    const hasModuleNotFound = diags.some(
+      (d) =>
+        d.severity === 0 &&
+        d.line === 1 &&
+        d.message.includes("Module not found: './does_not_exist.zena'"),
+    );
+    assert.ok(
+      hasModuleNotFound,
+      `Expected ModuleNotFound diagnostic on line 1, got: ${JSON.stringify(diags)}`,
+    );
+  });
+
+  test('reports diagnostic on import statement for missing exported member', () => {
+    checkSource(lsp, 'export let existing = 1;', '/test/math.zena');
+    const diags = checkSource(
+      lsp,
+      "import { nonexistent } from './math.zena';\nlet _ = nonexistent;",
+      '/test/main.zena',
+    );
+    assert.ok(
+      diags.length > 0,
+      'Expected diagnostic for missing exported member',
+    );
+    const hasSymbolNotFound = diags.some(
+      (d) =>
+        d.severity === 0 &&
+        d.line === 1 &&
+        d.message.includes(
+          "Module './math.zena' has no exported member 'nonexistent'",
+        ),
+    );
+    assert.ok(
+      hasSymbolNotFound,
+      `Expected SymbolNotFound diagnostic on line 1, got: ${JSON.stringify(diags)}`,
+    );
   });
 
   test('resolves stdlib imports without errors', () => {

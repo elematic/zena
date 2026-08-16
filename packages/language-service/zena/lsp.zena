@@ -63,7 +63,7 @@ import { format as formatSource } from 'zena-formatter:printer';
  * The JS side provides this import at instantiation time.
  */
 @external("compiler", "read_file")
-declare function __read_file(path: String, len: i32): String;
+declare function __read_file(path: String, len: i32): String | null;
 
 /**
  * CompilerHost that tracks open editor documents.
@@ -97,11 +97,11 @@ class LspHost implements CompilerHost {
     this.#openDocuments[path] = source;
   }
 
-  /**
-   * Remove a document from the open set (e.g., on editor close).
-   * Subsequent readFile calls for this path will hit the filesystem.
-   */
-  closeDocument(path: String): void {
+  hasDocument(path: String): boolean {
+    return this.#openDocuments.has(path);
+  }
+
+  deleteDocument(path: String): void {
     this.#openDocuments.delete(path);
   }
 
@@ -113,10 +113,18 @@ class LspHost implements CompilerHost {
     // Stdlib: map canonical "zena:module" to filesystem path.
     if (path.startsWith("zena:")) {
       let fsPath = this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
-      return __read_file(fsPath, fsPath.length);
+      let content = __read_file(fsPath, fsPath.length);
+      if (content == null) {
+        throw new Error("File not found: " + fsPath);
+      }
+      return content;
     }
     // Regular file: read by absolute path.
-    return __read_file(path, path.length);
+    let content = __read_file(path, path.length);
+    if (content == null) {
+      throw new Error("File not found: " + path);
+    }
+    return content;
   }
 }
 
@@ -811,9 +819,13 @@ export class LanguageService {
   new(host: LspHost, compiler: Compiler) : #host = host, #compiler = compiler;
 
   preloadStdlib(): void {
-    let result = this.#compiler.compile("zena:prelude");
-    let checkResult = checkCompilation(result, this.#cachedCheckResult);
-    this.#cachedCheckResult = checkResult;
+    try {
+      let result = this.#compiler.compile("zena:string");
+      let checkResult = checkCompilation(result, this.#cachedCheckResult);
+      this.#cachedCheckResult = checkResult;
+    } catch (e) {
+      // Best-effort preload
+    }
   }
 
   /**

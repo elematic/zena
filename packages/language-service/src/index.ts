@@ -225,7 +225,10 @@ export async function createLanguageService(
       openDocuments.get(path) ??
       openDocuments.get(normalizePath(path)) ??
       readFile?.(path);
-    return writeString!(contents ?? '');
+    if (contents == null) {
+      return null;
+    }
+    return writeString!(contents);
   };
 
   const defaultConsole = createConsoleImports(() => exports);

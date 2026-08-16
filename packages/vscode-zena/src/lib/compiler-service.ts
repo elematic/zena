@@ -102,10 +102,7 @@ export class ZenaCompilerService {
           const content = readFileSync(filePath, 'utf8');
           return writer(content);
         } catch {
-          this.#outputChannel.appendLine(
-            `Warning: could not read file: ${filePath}`,
-          );
-          return writer('');
+          throw new Error(`File not found: ${filePath}`);
         }
       },
     };

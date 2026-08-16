@@ -7287,115 +7287,180 @@ case _: {
               let typeExport = if (let (true, exp) = depMod.get(importedName)) {
                 if (exp.isType()) { exp } else { null }
               } else { null };
-              if (typeExport != null) {
-                var resolvedType: Type | null = null;
-                if (depModel != null) {
-                  resolvedType = depModel.getExportType(importedName);
-                  if (resolvedType == null) {
-                    resolvedType = depModel.getBindingType(typeExport);
-                  }
-                }
-                if (resolvedType == null) {
-                  resolvedType = lookupBindingTypeInDeps(ctx, typeExport);
-                }
-                if (resolvedType == null) {
-                  // Cycle back edge on the first pass: the origin has
-                  // no model yet. Materialize (or reuse) the canonical
-                  // shell for nominal declarations; the origin's own
-                  // registration fills the same object.
-                  resolvedType = ctx.materializeCyclicImport(typeExport, importedName);
-                }
-
-                if (resolvedType != null) {
-                  // Use the actual resolved type from the dependency.
-                  ctx.declareTypeName(localName, resolvedType);
-                  
-                  // Bind directly to the local TYPE symbol for this import.
-                  let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
-                  if (localTypeInfo != null) {
-                    ctx.registerType(localTypeInfo, resolvedType);
-                  }
-                } else {
-                  // Fallback: create stub types from the declaration AST node.
-                  // For stdlib types, prefer the prelude type which has full
-                  // member definitions (fields, methods, constructors).
-                  let decl = typeExport.declaration;
-                  if (decl != null) {
-                    let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
-                    match (decl) {
-                      case ClassDeclaration {name}: {
-                        let preludeType = ctx.resolveTypeName(name.name);
-                        if (preludeType != null) {
-                          ctx.declareTypeName(localName, preludeType);
-                          if (localTypeInfo != null) {
-                            ctx.declareBinding(localTypeInfo, preludeType);
-                          }
-                        } else {
-                          let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
-                          ctx.declareTypeName(localName, ct);
-                          if (localTypeInfo != null) {
-                            ctx.declareBinding(localTypeInfo, ct);
-                          }
-                        }
-                      }
-                      case InterfaceDeclaration {name}: {
-                        let it = new InterfaceType(ctx.freshTypeId(), noSymbolId, name.name);
-                        ctx.declareTypeName(localName, it);
-                        if (localTypeInfo != null) {
-                          ctx.declareBinding(localTypeInfo, it);
-                        }
-                      }
-                      case SealedVariant {name}: {
-                        let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
-                        ct.isCaseClass = true;
-                        ctx.declareTypeName(localName, ct);
-                        if (localTypeInfo != null) {
-                          ctx.declareBinding(localTypeInfo, ct);
-                        }
-                      }
-                      case _: {
-                        ctx.declareTypeName(localName, new ErrorType());
-                      }
-                    }
-                  } else {
-                    ctx.declareTypeName(localName, new ErrorType());
-                  }
-                }
-              }
 
               // Register value imports (functions, variables).
               let valueExport = if (let (true, exp) = depMod.get(importedName)) {
                 if (exp.isValue()) { exp } else { null }
               } else { null };
-              if (valueExport != null) {
+
+              if (typeExport == null && valueExport == null) {
+                ctx.error(
+                  "Module '" + specifier + "' has no exported member '" + importedName + "'.",
+                  DiagnosticCode.SymbolNotFound,
+                  spec.loc
+                );
                 let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
                 if (localValInfo != null) {
-                  var resolvedValType = if (depModel != null) {
-                    let t = depModel.getBindingType(valueExport);
-                    if (t != null) { t } else { lookupBindingTypeInDeps(ctx, valueExport) }
-                  } else {
-                    lookupBindingTypeInDeps(ctx, valueExport)
-                  };
-                  if (resolvedValType == null) {
-                    // Cycle back edge, first pass: nominal declarations
-                    // (class constructor values) resolve via their
-                    // canonical shell.
-                    resolvedValType = ctx.materializeCyclicImport(valueExport, importedName);
+                  ctx.declareBinding(localValInfo, new ErrorType());
+                }
+                ctx.declareTypeName(localName, new ErrorType());
+              } else {
+                if (typeExport != null) {
+                  var resolvedType: Type | null = null;
+                  if (depModel != null) {
+                    resolvedType = depModel.getExportType(importedName);
+                    if (resolvedType == null) {
+                      resolvedType = depModel.getBindingType(typeExport);
+                    }
                   }
-                  if (resolvedValType != null) {
-                    ctx.declareBinding(localValInfo, resolvedValType);
-                  } else if (typeExport == null) {
-                    ctx.declareBinding(localValInfo, new ErrorType());
+                  if (resolvedType == null) {
+                    resolvedType = lookupBindingTypeInDeps(ctx, typeExport);
+                  }
+                  if (resolvedType == null) {
+                    // Cycle back edge on the first pass: the origin has
+                    // no model yet. Materialize (or reuse) the canonical
+                    // shell for nominal declarations; the origin's own
+                    // registration fills the same object.
+                    resolvedType = ctx.materializeCyclicImport(typeExport, importedName);
+                  }
+
+                  if (resolvedType != null) {
+                    // Use the actual resolved type from the dependency.
+                    ctx.declareTypeName(localName, resolvedType);
+                    
+                    // Bind directly to the local TYPE symbol for this import.
+                    let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                    if (localTypeInfo != null) {
+                      ctx.registerType(localTypeInfo, resolvedType);
+                    }
+                  } else {
+                    // Fallback: create stub types from the declaration AST node.
+                    // For stdlib types, prefer the prelude type which has full
+                    // member definitions (fields, methods, constructors).
+                    let decl = typeExport.declaration;
+                    if (decl != null) {
+                      let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                      match (decl) {
+                        case ClassDeclaration {name}: {
+                          let preludeType = ctx.resolveTypeName(name.name);
+                          if (preludeType != null) {
+                            ctx.declareTypeName(localName, preludeType);
+                            if (localTypeInfo != null) {
+                              ctx.declareBinding(localTypeInfo, preludeType);
+                            }
+                          } else {
+                            let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
+                            ctx.declareTypeName(localName, ct);
+                            if (localTypeInfo != null) {
+                              ctx.declareBinding(localTypeInfo, ct);
+                            }
+                          }
+                        }
+                        case InterfaceDeclaration {name}: {
+                          let it = new InterfaceType(ctx.freshTypeId(), noSymbolId, name.name);
+                          ctx.declareTypeName(localName, it);
+                          if (localTypeInfo != null) {
+                            ctx.declareBinding(localTypeInfo, it);
+                          }
+                        }
+                        case SealedVariant {name}: {
+                          let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
+                          ct.isCaseClass = true;
+                          ctx.declareTypeName(localName, ct);
+                          if (localTypeInfo != null) {
+                            ctx.declareBinding(localTypeInfo, ct);
+                          }
+                        }
+                        case _: {
+                          ctx.declareTypeName(localName, new ErrorType());
+                        }
+                      }
+                    } else {
+                      ctx.declareTypeName(localName, new ErrorType());
+                    }
+                  }
+                }
+
+                if (valueExport != null) {
+                  let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                  if (localValInfo != null) {
+                    var resolvedValType = if (depModel != null) {
+                      let t = depModel.getBindingType(valueExport);
+                      if (t != null) { t } else { lookupBindingTypeInDeps(ctx, valueExport) }
+                    } else {
+                      lookupBindingTypeInDeps(ctx, valueExport)
+                    };
+                    if (resolvedValType == null) {
+                      // Cycle back edge, first pass: nominal declarations
+                      // (class constructor values) resolve via their
+                      // canonical shell.
+                      resolvedValType = ctx.materializeCyclicImport(valueExport, importedName);
+                    }
+                    if (resolvedValType != null) {
+                      ctx.declareBinding(localValInfo, resolvedValType);
+                    } else if (typeExport == null) {
+                      ctx.declareBinding(localValInfo, new ErrorType());
+                    }
                   }
                 }
               }
             }
           }
+        } else if (specifier != "") {
+          ctx.error(
+            "Module not found: '" + specifier + "'.",
+            DiagnosticCode.ModuleNotFound,
+            moduleSpecifier.loc
+          );
+          for (let spec in imports) {
+            let localName = spec.local.name;
+            let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
+            if (localValInfo != null) {
+              ctx.declareBinding(localValInfo, new ErrorType());
+            }
+            ctx.declareTypeName(localName, new ErrorType());
+          }
         }
       }
     }
-    case ExportAllDeclaration {}: {}
-    case ExportFromDeclaration {}: {}
+    case ExportAllDeclaration {moduleSpecifier}: {
+      let deps = ctx.depExports;
+      if (deps != null) {
+        let specifier = moduleSpecifier.value;
+        if (!deps.has(specifier) && specifier != "") {
+          ctx.error(
+            "Module not found: '" + specifier + "'.",
+            DiagnosticCode.ModuleNotFound,
+            moduleSpecifier.loc
+          );
+        }
+      }
+    }
+    case ExportFromDeclaration {moduleSpecifier, specifiers}: {
+      let deps = ctx.depExports;
+      if (deps != null) {
+        let specifier = moduleSpecifier.value;
+        if (!deps.has(specifier) && specifier != "") {
+          ctx.error(
+            "Module not found: '" + specifier + "'.",
+            DiagnosticCode.ModuleNotFound,
+            moduleSpecifier.loc
+          );
+        } else if (deps.has(specifier)) {
+          let depMod = deps[specifier];
+          for (let spec in specifiers) {
+            let importedName = spec.imported.name;
+            if (!depMod.has(importedName)) {
+              ctx.error(
+                "Module '" + specifier + "' has no exported member '" + importedName + "'.",
+                DiagnosticCode.SymbolNotFound,
+                spec.loc
+              );
+            }
+          }
+        }
+      }
+    }
     case ClassDeclaration as cd: {
       registerClassDeclaration(ctx, cd);
       checkClassBodies(ctx, cd);
