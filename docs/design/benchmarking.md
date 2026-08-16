@@ -53,7 +53,6 @@ registered on a `BenchRunner`, timed with the WASI monotonic clock
 
 ```zena
 import { BenchRunner, BenchContext, reportToString, reportToJson } from 'zena:bench';
-import { console } from 'zena:console';
 
 export function main(): i32 {
   let runner = new BenchRunner('string concat');

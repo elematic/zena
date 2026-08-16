@@ -40,7 +40,6 @@ const generateWrapper = (testFileNames: string[]): string => {
   return `\
 ${imports}
 import { Suite, runAndReport } from 'zena:test';
-import { console } from 'zena:console';
 
 export let main = (): i32 => {
   let root = new Suite('Compiler Tests');

@@ -167,7 +167,6 @@ For tests that print to the console.
 ```zena
 // @mode: run
 // @stdout: Hello\nWorld
-import { console } from 'zena:console';
 export function main() {
   console.log("Hello");
   console.log("World");

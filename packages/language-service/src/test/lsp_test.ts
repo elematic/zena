@@ -1083,8 +1083,7 @@ let x: i32 = 0;`;
   });
 
   test('compileToWasm: compiles source and exports main()', async () => {
-    const src = `import { console } from 'zena:console';
-export let main = (): void => {
+    const src = `export let main = (): void => {
   console.log('Hello from test main');
 };`;
     const wasmRef = lsp.exports.compileToWasm(

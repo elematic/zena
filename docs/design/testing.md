@@ -85,7 +85,6 @@ export a `tests` variable containing the suite:
 // packages/compiler/stdlib-tests/array_test.zena
 import { suite, test, TestContext, Suite } from 'zena:test';
 import { equal } from 'zena:assert';
-import { Array } from 'zena:array';
 
 export let tests = suite('Array', (): void => {
   test('push increases length', (ctx: TestContext): void => {
@@ -512,8 +511,6 @@ export let throws = (fn: () => void, message: String = 'Expected function to thr
 ```zena
 // test.zena
 import { AssertionError } from 'zena:assert';
-import { Array } from 'zena:array';
-import { console } from 'zena:console';
 
 export class TestContext {
   name: String;
