@@ -128,21 +128,27 @@ Every sample below is a complete program: paste one into the
 <figcaption>Functions</figcaption>
 
 ```zena
-// Arrow syntax only. Parameters can have default values.
-let greet = (name: String, prefix: String = 'Hello'): String =>
-  `${prefix}, ${name}`;
+// Top-level functions are declared with the `function` keyword:
+function greet (name: String, prefix: String = 'Hello') {
+  return `${prefix}, ${name}`;
+}
 
-export let main = () => {
+// Closures can be written with arrow syntax:
+let add = (a: i32, b: i32): i32 => a + b;
+
+export function main() {
   console.log(greet('Zena'));
   console.log(greet('Zena', 'Hi'));
 
-  // Closures are contextually typed — `n` needs no annotation.
   let names = ['Alice', 'Bob'];
+
+  // Inline closures are contextually typed — `n` needs no annotation.
   let upper = names.map((n) => n.asciiUpperCase());
+
   for (let n in upper) {
     console.log(n);
   }
-};
+}
 ```
 
 </figure>
