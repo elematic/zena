@@ -42,11 +42,13 @@ for WebAssembly GC</span>
       <div class="item grid-3">
         <a class="feature link" href="/guide/web-assembly/">
           <article class="box">
-            <div class="icon">🎯</div>
-            <h2 class="title">Wasm GC native</h2>
-            <p class="details">Primitives, references, and arrays map straight onto Wasm GC types. No allocator, no garbage collector, and no runtime shipped in your module.</p>
+            <div class="header">
+              <div class="icon">🎯</div>
+              <h2 class="title">WebAssembly GC native</h2>
+            </div>
+            <p class="details">Primitives, references, records, tuples, and arrays map directly Wasm GC types. Operators and function calls directly to Wasm instructions. No allocator, garbage collector, or language runtime shipped in your module.</p>
             <div class="link-text">
-              <p class="link-text-value">How it maps <span class="icon-arrow-right link-text-icon"></span></p>
+              <p class="link-text-value">WebAssembly <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
           </article>
         </a>
@@ -54,11 +56,14 @@ for WebAssembly GC</span>
       <div class="item grid-3">
         <a class="feature link" href="/guide/performance/">
           <article class="box">
-            <div class="icon">⚡</div>
-            <h2 class="title">Tiny, fast binaries</h2>
-            <p class="details">Aggressive dead-code elimination, devirtualization, and monomorphized generics produce compact modules with no boxing on the hot path.</p>
+            <div class="header">
+              <div class="icon">⚡</div>
+              <h2 class="title">Tiny, fast binaries</h2>
+            </div>
+            <p class="details">The combination of direct Wasm mapping and aggressive optimizations produces compact modules. Monomorphization eliminates boxing for generic code.</p>
+            <p class="details">And when speed and size are in tension, compiler options let you control the trade-offs.</p>
             <div class="link-text">
-              <p class="link-text-value">The performance model <span class="icon-arrow-right link-text-icon"></span></p>
+              <p class="link-text-value">Performance <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
           </article>
         </a>
@@ -66,11 +71,13 @@ for WebAssembly GC</span>
       <div class="item grid-3">
         <a class="feature link" href="/guide/overview/">
           <article class="box">
-            <div class="icon">📝</div>
-            <h2 class="title">Familiar and predictable</h2>
-            <p class="details">TypeScript-like syntax with the best ideas from Rust, Swift, Dart, and Kotlin. Real numeric types, no implicit coercion, no truthiness surprises.</p>
+            <div class="header">
+              <div class="icon">🧘</div>
+              <h2 class="title">Familiar & predictable</h2>
+            </div>
+            <p class="details">TypeScript-like syntax with the best ideas from Rust, Swift, Dart, and Kotlin, combined into a cohesive whole. Real numeric types, no implicit coercion, and a stable program structure means fewer surprises.</p>
             <div class="link-text">
-              <p class="link-text-value">The language in five minutes <span class="icon-arrow-right link-text-icon"></span></p>
+              <p class="link-text-value">Language overview <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
           </article>
         </a>
@@ -78,11 +85,13 @@ for WebAssembly GC</span>
       <div class="item grid-3">
         <a class="feature link" href="/guide/correctness/">
           <article class="box">
-            <div class="icon">🔷</div>
-            <h2 class="title">Sound by construction</h2>
-            <p class="details">A sound type system with no escape hatches. Non-nullable references, guaranteed initialization, exhaustive matching, and checked casts.</p>
+            <div class="header">
+              <div class="icon">🔐</div>
+              <h2 class="title">Safe and Sound</h2>
+            </div>
+            <p class="details">Correctness is anchored by a sound type system, non-nullable types, guaranteed class initialization, exhaustive pattern matching, and checked casts.</p>
             <div class="link-text">
-              <p class="link-text-value">Correctness and safety <span class="icon-arrow-right link-text-icon"></span></p>
+              <p class="link-text-value">Correctness <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
           </article>
         </a>
@@ -90,9 +99,11 @@ for WebAssembly GC</span>
       <div class="item grid-3">
         <a class="feature link" href="/guide/overview/#borrowed-from-other-languages">
           <article class="box">
-            <div class="icon">✨</div>
-            <h2 class="title">Modern ergonomics</h2>
-            <p class="details">Expression-oriented control flow, pattern matching, algebraic data types, multi-value returns, and pipelines for clean chaining.</p>
+            <div class="header">
+              <div class="icon">🦾</div>
+              <h2 class="title">Modern ergonomics</h2>
+            </div>
+            <p class="details">Expression-oriented control flow, pattern matching, algebraic data types, multi-value returns, pipelines, automatic resource management, and more.</p>
             <div class="link-text">
               <p class="link-text-value">Borrowed from other languages <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
@@ -102,8 +113,10 @@ for WebAssembly GC</span>
       <div class="item grid-3">
         <a class="feature link" href="/reference/cli/">
           <article class="box">
-            <div class="icon">🛠️</div>
-            <h2 class="title">One toolchain</h2>
+            <div class="header">
+              <div class="icon">🛠️</div>
+              <h2 class="title">Unified toolchain</h2>
+            </div>
             <p class="details">Compiler, test runner, formatter, and language server in a single CLI, all written in Zena and running natively on Wasm.</p>
             <div class="link-text">
               <p class="link-text-value">CLI reference <span class="icon-arrow-right link-text-icon"></span></p>
@@ -117,10 +130,9 @@ for WebAssembly GC</span>
 
 <div class="prose container">
 
-## Write code that already looks familiar
+## Features
 
-Every sample below is a complete program: paste one into the
-[playground](/playground/) and press Run.
+Explore Zena's features through examples. Zena is designed to be familiar and readable.
 
 <zena-code-group class="code-group vertical">
 
