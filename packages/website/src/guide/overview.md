@@ -160,13 +160,12 @@ let checked = if (ok) result else throw new Error('failed');
 
 ## Libraries
 
-ES-style imports. There are **no globals** — every name is declared in your
-library or imported into it, including `console`.
+ES-style imports. There are no globals in Zena, but every module has "prelude"
+imports that are always available, such as `console`, `String`, `Array`, `Map`,
+and `FixedArray`.
 
 ```zena
-import {Map} from 'zena:map';
-import {console} from 'zena:console';
-from 'zena:math' import {min, max};   // Python-style form also works
+import { min, max } from 'zena:math';
 
 export let pi = 3.14159;
 ```

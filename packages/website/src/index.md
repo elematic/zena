@@ -128,8 +128,6 @@ Every sample below is a complete program: paste one into the
 <figcaption>Functions</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 // Arrow syntax only. Parameters can have default values.
 let greet = (name: String, prefix: String = 'Hello'): String =>
   `${prefix}, ${name}`;
@@ -153,8 +151,6 @@ export let main = () => {
 <figcaption>Types</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 // Aliases name a structural shape.
 type Point = {x: f64, y: f64};
 type Status = 'success' | 'failure';
@@ -178,8 +174,6 @@ export let main = () => {
 <figcaption>Primitives &amp; Arrays</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 export let main = () => {
   // Primitives map straight onto Wasm types — no boxed numbers.
   let count: i32 = 42;
@@ -199,8 +193,6 @@ export let main = () => {
 <figcaption>Records &amp; Tuples</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 // Records have a fixed structural shape, and destructure by name.
 let origin = {x: 10.0, y: 20.0};
 
@@ -222,9 +214,6 @@ export let main = () => {
 <figcaption>Maps</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-import {Map} from 'zena:map';
-
 export let main = () => {
   let scores: Map<String, i32> = {'Alice' => 95, 'Bob' => 87};
 
@@ -245,8 +234,6 @@ export let main = () => {
 <figcaption>Classes</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 // Fields are immutable by default; `var` opts into mutation.
 class Cat {
   id: String;                  // public, immutable
@@ -276,8 +263,6 @@ export let main = () => {
 <figcaption>Mixins &amp; Interfaces</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 interface Animal {
   speak(): void;
 }
@@ -308,8 +293,6 @@ export let main = () => {
 <figcaption>Sealed Classes</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 // Sealed hierarchies are a closed set, so `match` is checked for exhaustiveness.
 sealed class Expr {
   case Lit(value: i32)
@@ -335,8 +318,6 @@ export let main = () => {
 <figcaption>Pattern Matching</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 sealed class Shape {
   case Circle(radius: f64)
   case Rect(width: f64, height: f64)
@@ -368,8 +349,6 @@ export let main = () => {
 <figcaption>Enums</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 // Enums are nominal wrapper types backed by integers or strings.
 enum Color {
   Red,
@@ -389,9 +368,6 @@ export let main = () => {
 <figcaption>Expression Oriented</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-import {Error} from 'zena:error';
-
 let parse = (input: String): i32 => {
   if (input == 'bad') {
     throw new Error('not a number');
@@ -420,8 +396,6 @@ export let main = () => {
 <figcaption>Loops</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 export let main = () => {
   let items = [10, 20, 30];
 
@@ -444,8 +418,6 @@ export let main = () => {
 <figcaption>Pipelines</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 let shout = (s: String): String => `${s.asciiUpperCase()}!`;
 let repeat = (s: String, times: i32): String => {
   var out = '';
@@ -470,8 +442,6 @@ export let main = () => {
 <figcaption>Extension Classes</figcaption>
 
 ```zena
-import {console} from 'zena:console';
-
 // Extension classes add methods to a type you don't own — including primitives.
 extension class IntExtensions on i32 {
   isEven(): boolean {
@@ -494,7 +464,6 @@ export let main = () => {
 <figcaption>Regular Expressions</figcaption>
 
 ```zena
-import {console} from 'zena:console';
 import {regex} from 'zena:regex';
 
 export let main = () => {
@@ -512,7 +481,6 @@ export let main = () => {
 
 ```zena
 // Standard ES import syntax.
-import {console} from 'zena:console';
 import {min, max} from 'zena:math';
 
 // The Python-style form is also supported.

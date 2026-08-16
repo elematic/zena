@@ -10,8 +10,6 @@ pattern matching — enough to read most Zena code.
 ## Hello, world
 
 ```zena [main.zena]
-import {console} from 'zena:console';
-
 export function main(): i32 {
   console.log('Hello, world!');
   return 0;
@@ -27,18 +25,12 @@ Four things are already worth noticing:
 - **`let`, not `function`.** Zena has arrow functions and nothing else. A
   function is a value bound with `let`.
 - **`export`.** `main` is the entry point, so the module has to export it.
-- **The return type is written.** Parameter and return types on top-level
+- **The return type is written.** Parameter types and return types on exported
   functions are required; inside a function body, inference does the work.
-- **Even `console` is imported.** Zena has no globals at all — every name you
-  use is either declared in your library or imported into it. That costs you one
-  line here, and buys a compiler that can check libraries in parallel; see
-  [Why Zena?](/guide/why-zena/#compilation-fast-enough-to-stay-in-the-loop).
 
 ## Adding a function
 
 ```zena [main.zena]
-import {console} from 'zena:console';
-
 let greet = (name: String): String => `Hello, ${name}!`;
 
 export function main(): i32 {
@@ -162,8 +154,6 @@ let describe = (shape: Shape): String => match (shape) {
 ## Putting it together
 
 ```zena [main.zena]
-import {console} from 'zena:console';
-
 sealed class Shape {
   case Circle(radius: f64)
   case Rect(width: f64, height: f64)

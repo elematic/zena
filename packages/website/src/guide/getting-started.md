@@ -47,8 +47,6 @@ your `PATH`.
 A Zena project is a directory of `.zena` files. Start with one:
 
 ```zena [main.zena]
-import {console} from 'zena:console';
-
 export function main(): i32 {
   console.log('Hello from Zena!');
   return 0;

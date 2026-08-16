@@ -157,6 +157,8 @@ import {Map} from 'zena:map';
 import {console} from 'zena:console'; // Imported as a read-only binding
 ```
 
+See packages/zena-compiler/zena/lib/prelude.zena for the current prelude.
+
 ### Mutable Exports & Optimization
 
 Zena distinguishes between immutable and mutable exports, which has significant implications for optimization.

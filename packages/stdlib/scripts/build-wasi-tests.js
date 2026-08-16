@@ -57,7 +57,6 @@ for (const testFile of allTestFiles) {
     ? '// @requires: wasmtime\n'
     : '';
   const wrapperContent = `${requiresWasmtime}import {runAndReport} from 'zena:test';
-import {console} from 'zena:console';
 import {tests} from './${baseName}.zena';
 
 export let main = (): i32 => {
