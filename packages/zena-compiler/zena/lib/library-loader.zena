@@ -283,17 +283,12 @@ export class LibraryLoader {
   }
 
   /**
-   * Invalidate a single file by canonical path (push-based).
+   * Delete a file from the loader cache (e.g. on editor document close/delete).
    *
-   * Evicts the file from the cache, clears `scopeResult` on any cached
-   * file that directly imports it (so import wiring is redone), then
-   * re-loads the file from the host so it's ready for the next compile.
-   *
-   * Use this in push-based environments (IDE, language service) where
-   * the host knows exactly which file changed. For pull-based batch
-   * compilation, use `refreshCache()` instead.
+   * Evicts the file from the cache and clears `scopeResult` on any cached file
+   * that directly imports it so import wiring will fail or update on next compile.
    */
-  invalidate(path: String): void {
+  delete(path: String): void {
     let norm = normalizePath(path);
     if (this.#cache.has(norm)) { this.#cache.delete(norm); }
     if (this.#cache.has(path)) { this.#cache.delete(path); }
@@ -305,12 +300,28 @@ export class LibraryLoader {
       if (!cached.isStdlib && cached.scopeResult != null) {
         let importIter = cached.imports.keys();
         while (let (true, spec) = importIter.next()) {
-          if (cached.imports[spec] == path) {
+          let target = cached.imports[spec];
+          if (target == path || target == norm) {
             cached.scopeResult = null;
           }
         }
       }
     }
+  }
+
+  /**
+   * Invalidate a single file by canonical path (push-based).
+   *
+   * Evicts the file from the cache, clears `scopeResult` on any cached
+   * file that directly imports it (so import wiring is redone), then
+   * re-loads the file from the host so it's ready for the next compile.
+   *
+   * Use this in push-based environments (IDE, language service) where
+   * the host knows exactly which file changed. For pull-based batch
+   * compilation, use `refreshCache()` instead.
+   */
+  invalidate(path: String): void {
+    this.delete(path);
 
     // Re-load so the file is back in the cache with fresh content.
     this.load(path);

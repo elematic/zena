@@ -829,6 +829,32 @@ export class LanguageService {
   }
 
   /**
+   * Register or update an open document's source in the host and compiler cache.
+   */
+  openDocument(path: String, source: String): void {
+    let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
+    this.#host.setDocument(path, source);
+    this.#host.setDocument(normPath, source);
+    this.#compiler.invalidate(path);
+    this.#compiler.invalidate(normPath);
+  }
+
+  /**
+   * Remove an open document, evicting it from compiler cache and analysis state.
+   */
+  closeDocument(path: String): void {
+    let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
+    this.#host.deleteDocument(path);
+    this.#host.deleteDocument(normPath);
+    this.#compiler.delete(path);
+    this.#compiler.delete(normPath);
+    this.#compilations.delete(path);
+    this.#compilations.delete(normPath);
+    this.#scopeResults.delete(path);
+    this.#scopeResults.delete(normPath);
+  }
+
+  /**
    * Parse, scope-analyze, and type-check a source string with full
    * cross-module import resolution.
    *
@@ -837,12 +863,9 @@ export class LanguageService {
    * starting from `path` as the root of the dependency tree.
    */
   check(path: String, source: String): Array<Diagnostic> {
-    this.#host.setDocument(path, source);
+    this.openDocument(path, source);
 
     let diagnostics = try {
-      // Invalidate the edited file so the loader re-reads it from
-      // the host (which serves the unsaved editor buffer).
-      this.#compiler.invalidate(path);
       let result = this.#compiler.compile(path);
 
       // Cache scope results for ALL files in the compilation (not just the entry)
@@ -1636,6 +1659,24 @@ export let init = (stdlibRoot: String): void => {
  */
 export let check = (path: String, source: String): Array<Diagnostic> => {
   return (__ls as LanguageService).check(path, source);
+};
+
+/**
+ * Register or update an open document.
+ */
+export let openDocument = (path: String, source: String): void => {
+  if (__ls != null) {
+    (__ls as LanguageService).openDocument(path, source);
+  }
+};
+
+/**
+ * Close an open document and remove it from cache.
+ */
+export let closeDocument = (path: String): void => {
+  if (__ls != null) {
+    (__ls as LanguageService).closeDocument(path);
+  }
 };
 
 /**

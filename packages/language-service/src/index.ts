@@ -143,6 +143,8 @@ export interface LanguageServiceOptions {
 export interface LspExports extends WebAssembly.Exports {
   init(stdlibRoot: unknown): void;
   check(path: unknown, source: unknown): unknown;
+  openDocument?(path: unknown, source: unknown): void;
+  closeDocument?(path: unknown): void;
   compileToWasm(path: unknown, source: unknown): unknown;
   format(source: unknown): unknown;
   getByteArrayLength(bytes: unknown): number;
@@ -374,12 +376,21 @@ export class ZenaLanguageService {
   openDocument(path: string, source: string): void {
     this.#openDocuments.set(path, source);
     this.#openDocuments.set(normalizePath(path), source);
+    if (this.#exports.openDocument) {
+      this.#exports.openDocument(
+        this.#writeString(path),
+        this.#writeString(source),
+      );
+    }
   }
 
   /** Drops an open document, so `path` resolves through `readFile` again. */
   closeDocument(path: string): void {
     this.#openDocuments.delete(path);
     this.#openDocuments.delete(normalizePath(path));
+    if (this.#exports.closeDocument) {
+      this.#exports.closeDocument(this.#writeString(path));
+    }
   }
 
   /**
@@ -592,8 +603,16 @@ export function createVirtualFileReader(
     const path = normalizePath(rawPath);
     const candidates = [rawPath, path, rawPath + '.zena', path + '.zena'];
 
-    if (rawPath.startsWith('zena:')) {
-      const module = rawPath.slice('zena:'.length);
+    if (
+      rawPath.startsWith('zena:') ||
+      rawPath.startsWith(stdlibRoot) ||
+      path.startsWith(stdlibRoot)
+    ) {
+      const module = rawPath.startsWith('zena:')
+        ? rawPath.slice('zena:'.length)
+        : rawPath.startsWith(stdlibRoot)
+          ? rawPath.slice(stdlibRoot.length).replace(/^\//, '')
+          : path.slice(stdlibRoot.length).replace(/^\//, '');
       candidates.push(
         `${stdlibRoot}/${module}`,
         `${stdlibRoot}/${module}.zena`,
@@ -604,15 +623,14 @@ export function createVirtualFileReader(
           `${stdlibRoot}/${module}/host.zena`,
         );
       }
-    }
 
-    // Last resort: the compiler resolved an import to a directory the map does
-    // not mirror, but the basename is unique within the stdlib.
-    const basename = path.split('/').pop();
-    if (basename) {
-      candidates.push(
-        `${stdlibRoot}/${basename.endsWith('.zena') ? basename : basename + '.zena'}`,
-      );
+      // Last resort for stdlib: basename lookup within stdlib root.
+      const basename = path.split('/').pop();
+      if (basename) {
+        candidates.push(
+          `${stdlibRoot}/${basename.endsWith('.zena') ? basename : basename + '.zena'}`,
+        );
+      }
     }
 
     for (const candidate of candidates) {

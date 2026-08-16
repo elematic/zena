@@ -258,6 +258,16 @@ export final class Compiler {
   }
 
   /**
+   * Delete a file from the loader cache (push-based).
+   *
+   * Evicts the file from the loader cache and clears scope results on its
+   * direct importers.
+   */
+  delete(path: String): void {
+    this.#loader.delete(path);
+  }
+
+  /**
    * Invalidate a single cached file (push-based).
    *
    * Call this when you know a specific file's source has changed (e.g.,
@@ -1486,12 +1496,39 @@ export let checkCompilation = (
   let reverseDeps = buildReverseDeps(result.files);
 
   // Set of file paths that must be (re-)checked. Start with files whose
-  // source text changed or that are new.
+  // source text changed or that are new, or that import missing/deleted files.
   let mustCheck = new HashSet<String>();
   if (previous != null) {
+    let currentPaths = new HashSet<String>();
+    for (let file in result.files) {
+      currentPaths.add(file.path);
+    }
+
     for (let file in result.files) {
       if (!previous.sources.has(file.path) || previous.sources[file.path] != file.source) {
         mustCheck.add(file.path);
+      } else if (!file.isStdlib) {
+        let importIter = file.imports.keys();
+        while (let (true, spec) = importIter.next()) {
+          let target = file.imports[spec];
+          if (!target.startsWith("zena:") && !currentPaths.has(target)) {
+            mustCheck.add(file.path);
+          }
+        }
+      }
+    }
+
+    let prevIter = previous.sources.keys();
+    while (let (true, prevPath) = prevIter.next()) {
+      if (!currentPaths.has(prevPath)) {
+        for (let file in result.files) {
+          let importIter = file.imports.keys();
+          while (let (true, spec) = importIter.next()) {
+            if (file.imports[spec] == prevPath) {
+              mustCheck.add(file.path);
+            }
+          }
+        }
       }
     }
   }

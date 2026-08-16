@@ -156,6 +156,46 @@ suite('language service API', () => {
       'expected the reader’s copy to be checked once the document was closed',
     );
   });
+
+  test('closing an imported document invalidates cache and reports missing module error', () => {
+    const mathPath = '/test/math.zena';
+    const mainPath = '/test/main_import.zena';
+
+    service.openDocument(
+      mathPath,
+      'export let add = (a: i32, b: i32): i32 => a + b;',
+    );
+    const diagsBefore = service.check(
+      mainPath,
+      "import { add } from './math.zena';\nexport let main = () => add(1, 2);",
+    );
+    assert.deepStrictEqual(diagsBefore, []);
+
+    service.closeDocument(mathPath);
+    const diagsAfter = service.check(
+      mainPath,
+      "import { add } from './math.zena';\nexport let main = () => add(1, 2);",
+    );
+    assert.ok(
+      diagsAfter.some(
+        (d) =>
+          d.severity === 'error' &&
+          d.line === 1 &&
+          d.message.includes("Module not found: './math.zena'"),
+      ),
+      `Expected Module not found error on line 1, got: ${JSON.stringify(diagsAfter)}`,
+    );
+
+    const bytes = service.compileToWasm(
+      mainPath,
+      "import { add } from './math.zena';\nexport let main = () => add(1, 2);",
+    );
+    assert.strictEqual(
+      bytes,
+      null,
+      'compileToWasm should return null when dependency is missing',
+    );
+  });
 });
 
 suite('createVirtualFileReader', () => {
