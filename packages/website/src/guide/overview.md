@@ -190,8 +190,8 @@ What Zena changed on purpose, rather than inherited:
 - `let` means **immutable**, not "block-scoped mutable"
 - Conditions take `boolean` — no truthiness
 - No implicit numeric coercion
-- No unchecked casts and no escape hatch from checking (`any` exists, but you
-  must cast out of it, and it is under review)
+- No unchecked casts and no escape hatch from checking — there is no `any`,
+  and primitives are never boxed implicitly
 - Nothing is implicitly in scope, and types act only where they are named
 
 The last one is the least familiar and has the widest consequences — it is what

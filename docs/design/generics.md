@@ -271,4 +271,4 @@ To ensure all memory allocations and boxing overheads are explicit, Zena has dec
 
 1. **No Erasure Fallbacks**: Avoid any compiler-level type parameter erasure fallbacks (like resolving to `anyref` inside class method vtables).
 2. **Explicit VTable Method Monomorphization**: Expand vtable structures dynamically based on reached specialized generic method instantiations rather than relying on erased base methods and trampoline boxing.
-3. **No Implicit/Auto-Boxing**: Deprecate the dynamically-typed `any` in favor of a strictly reference-only `anyref` type, and prohibit implicit boxing patterns.
+3. **No Implicit/Auto-Boxing** (done, 2026-07-30): the dynamically-typed `any` was removed in favour of a strictly reference-only `anyref`, which rejects primitives. Explicit `new Box<T>(x)` remains. See [primitive-boxing-semantic-types.md](primitive-boxing-semantic-types.md).

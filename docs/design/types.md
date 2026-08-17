@@ -337,7 +337,8 @@ class Map<K, V> {
 - **Implementation**:
   - If `A` and `B` share a common ancestor class `Base`, `A | B` is treated as
     `Base`.
-  - If they are unrelated, they are treated as `any` (WASM `anyref` or `eqref`).
+  - If they are unrelated, they are treated as the wasm top type for
+    references (`anyref` or `eqref`).
 - **Function Calls**:
   - Calling a union of function types (e.g., `((a: i32) => void) | ((a: i32, b:
 i32) => void)`) is supported.

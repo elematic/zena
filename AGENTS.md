@@ -91,8 +91,9 @@ Key things that differ from TypeScript:
 - for/in loops iterate on iterables and iterators: `for (let item in items)`.
   They are like for/of loops in TypeScript.
 - **No `++`/`--`** — use `+= 1` instead.
-- **Sound type system** — no `any` escape hatch (well, `any` exists but requires
-  explicit casts back).
+- **Sound type system** — there is no `any`, and no escape hatch from checking.
+  `anyref` is the top type for REFERENCES only; primitives are never boxed
+  implicitly, so putting one behind a reference means writing `new Box<T>(x)`.
 - **`match` expressions** with exhaustiveness checking.
 - **Sealed classes** for sum types, not TypeScript discriminated unions.
 

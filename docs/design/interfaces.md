@@ -20,7 +20,8 @@ approach.
 An interface value at runtime is not just a pointer to the object. It is a
 heap-allocated struct containing two fields:
 
-1.  **Instance**: A reference to the underlying object (erased to `any` / `eq`).
+1.  **Instance**: A reference to the underlying object (erased to the wasm
+    `anyref` / `eq` heap type).
 2.  **VTable**: A reference to a struct containing function pointers specific to
     this interface.
 
@@ -46,8 +47,8 @@ The compiler generates a WASM struct type:
 ### 2.2. VTable Layout
 
 The VTable struct contains function pointers for every method defined in the
-interface. Crucially, the first parameter of these functions is `any` (the
-erased type of `$instance`), not the specific class type.
+interface. Crucially, the first parameter of these functions is the erased
+wasm reference type of `$instance`, not the specific class type.
 
 ```wat
 (type $RunnableVTable (struct
@@ -64,7 +65,7 @@ class type (e.g., `(ref $Task)`). However, the interface VTable expects `(ref
 any)`.
 
 To bridge this gap, we generate **Trampoline Functions** for each
-Class-Interface pair. These trampolines cast the `any` reference back to the
+Class-Interface pair. These trampolines cast the erased reference back to the
 specific class type and call the actual method.
 
 **Example:**

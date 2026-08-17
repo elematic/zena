@@ -396,9 +396,11 @@ console.log(`Passed: ${results.passed}, Failed: ${results.failed}`);
   - `isFalse(value: boolean, message?: String): void`
 - Test file: `packages/compiler/src/test/stdlib/assert_test.ts`
 
-**Note**: The `AssertionError` class currently only stores `message` and `operator`,
-not `actual`/`expected` values. This is because we don't have an `any` type or
-boxing mechanism for arbitrary values yet.
+**Note**: The `AssertionError` class stores `message`, `op` and `loc`, not
+`actual`/`expected` values. Holding a value of arbitrary type would mean
+boxing every primitive that reaches an assertion, and Zena has no implicit
+boxing — `anyref` takes references only. Formatting the values into the
+message at the throw site avoids the allocation.
 
 **Original Tasks**:
 
@@ -674,11 +676,11 @@ AssertionError: Values not equal
 For Phase 1, we start with simple messages. Enhanced formatting can come later
 when we have better string interpolation and reflection capabilities.
 
-### 5. `any` Type for AssertionError Fields
+### 5. No `actual`/`expected` fields on AssertionError
 
-`AssertionError.actual` and `expected` use `any` type to hold values of any
-type. This requires auto-boxing for primitives but enables storing any value
-for error reporting.
+Storing the compared values would need a field that holds any type, which in
+Zena means `anyref` and therefore an explicit `Box<T>` around every primitive
+an assertion touches. The values are formatted into the message instead.
 
 ---
 
@@ -695,7 +697,6 @@ for error reporting.
 | `throw`           | ✅ Done    | Assertion failures           |
 | `try`/`catch`     | 🔄 Planned | Exception assertions, runner |
 | Optional params   | ✅ Done    | Default messages             |
-| `any` type        | ✅ Done    | Storing any value in errors  |
 | Template literals | ✅ Done    | Error message formatting     |
 | `Array<T>`        | ✅ Done    | Test registry                |
 | Module-level vars | ✅ Done    | Global test registry         |

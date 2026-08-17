@@ -335,7 +335,7 @@ This tiered approach means most `is` checks remain fast, and only fully-specifie
 
 We intend to move to **Pure Monomorphization** to completely eliminate implicit heap allocations:
 
-1. **Remove `any` / Keep `anyref`**: The dynamically typed `any` (which implicitly boxes primitives) will be deprecated in favor of a strictly reference-only `anyref` type (which forbids primitive values without explicit wrapping).
+1. **Remove `any` / Keep `anyref`** (done, 2026-07-30): the dynamically typed `any` is gone; `anyref` is reference-only and rejects primitives, so wrapping is explicit. Pinned by `tests/language/semantics/any/`.
 2. **Generic Method VTable Expansion**: Instead of type-erasing generic methods in vtables, the compiler's Reachability Analysis (RTA) will specialize virtual generic method slots. Each reached type argument combination (e.g., `map_spec_i32`, `map_spec_string`) will get its own physical slot in the class/interface vtable, making all virtual generic calls fully concrete and zero-overhead (no auto-boxing or trampolines). See the implementation plan below.
 
 ## Generic interface dispatch: implementation plan (2026-07-26)

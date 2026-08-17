@@ -162,11 +162,13 @@ use `as` to convert to other numeric types.
 | `boolean`  | `i32`           | `true` or `false`                                    |
 | `v128`     | `v128`          | SIMD vector; no literals, operators or casts         |
 | `String`   | `(ref $String)` | Immutable Unicode string                             |
-| `anyref`   | `anyref`        | Top type for all reference types                     |
-| `any`      | `anyref`        | Can hold any value (primitives are auto-boxed)       |
+| `anyref`   | `anyref`        | Top type for reference types only                    |
 | `never`    | —               | Bottom type (e.g., result of `throw`)                |
 
-> **Note**: We are strongly considering removing the `any` type and all auto-boxing in a future release to make boxing/allocation costs explicit (requiring manual boxing using `Box<T>`).
+> **Note**: There is no `any` type, and no implicit boxing. `anyref` accepts
+> references — objects, arrays, strings, functions, `null` — and rejects
+> primitives, so allocation is always visible in the source: put a primitive
+> behind a reference with `new Box<T>(x)`.
 
 ```zena
 let i: i32 = 42;
@@ -201,7 +203,7 @@ needed. They come from the _prelude_, which is implicitly imported.
 | `FixedArray<T>`         | Fixed-size array (literal syntax: `[1, 2, 3]`)     |
 | `ImmutableArray<T>`     | Read-only array view                               |
 | `Map<K, V>`             | Hash map (literal syntax: `{"a" => 1}`)            |
-| `Box<T>`                | Wraps primitives for use in unions or `any`        |
+| `Box<T>`                | Wraps a primitive for use in a union or `anyref`   |
 | `BoundedRange`          | Range with start and end (`1..10`)                 |
 | `FromRange`             | Range with start only (`5..`)                      |
 | `ToRange`               | Range with end only (`..10`)                       |
@@ -1875,14 +1877,18 @@ if (maybeNumber != null) {
 }
 ```
 
-### Auto-boxing with `any`
+### Boxing is always explicit
 
-The `any` type accepts any value. Primitives are automatically boxed when
-assigned to `any`, and unboxed when cast back.
+There is no `any` type and no implicit boxing. `anyref` is the top type for
+references, and a primitive is not assignable to it — wrap it first.
 
 ```zena
-let x: any = 42; // Auto-boxed to Box<i32>
-let n = x as i32; // Unboxed back to 42
+let boxed: anyref = new Box<i32>(42); // allocation is visible
+// let bad: anyref = 42;              // Error: no implicit boxing
+
+if (boxed is Box<i32>) {
+  let n = (boxed as Box<i32>).value; // 42
+}
 ```
 
 ## Exception Handling
