@@ -50,12 +50,17 @@ const primitiveTypes = new Set([
   'i32',
   'i64',
   'u32',
+  'u64',
+  'i8',
+  'i16',
+  'u8',
+  'u16',
   'f32',
   'f64',
+  'v128',
   'boolean',
   'void',
   'never',
-  'any',
   'anyref',
 ]);
 
