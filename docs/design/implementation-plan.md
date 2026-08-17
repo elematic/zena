@@ -91,13 +91,11 @@ The async-specific refinement:
 
 ## Track V — equality/identity contractions (cheap, early)
 
-- **V0 (both compilers, ~days):** ban `===`/`!==` on record/tuple
-  operands (equality.md D1). Convert
-  `tests/language/execution/records/adaptation_identity.zena` and
-  `identity_nullable_matrix.zena` to expected-error tests; create the
-  missing `tests/language/semantics/records/` folder. No codegen
-  changes; the observability-guarded optimizations stay guarded until
-  Track B.
+- **V0 — DONE:** `===`/`!==` on record/tuple operands is a compile
+  error (equality.md D1). `adaptation_identity.zena` and
+  `identity_nullable_matrix.zena` retired in favor of
+  `tests/language/semantics/records/no-identity.zena`. No codegen
+  changes; Track B's lowerings are now unconditional.
 - **V1 (survey first; lands in both compilers or at retirement,
   survey decides):** no-fallback `==` on classes + the
   `Equatable`/`Hashable` interfaces with derived value conformance

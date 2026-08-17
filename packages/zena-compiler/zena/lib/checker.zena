@@ -14588,6 +14588,26 @@ let checkBinaryExpression = (
     }
     
     let rightType = checkExpression(ctx, right, rightContext);
+    // Identity is not observable on records and tuples: they are
+    // values, and the compiler is free to copy or dissolve them (width
+    // adaptation, argument explosion). `==` is structural equality and
+    // `== null` is the null test, so nothing `===` could answer here
+    // is answerable.
+    if (operator == "===" || operator == "!==") {
+      let lBase = baseType(subtractNullFromType(leftType));
+      let rBase = baseType(subtractNullFromType(rightType));
+      if (lBase is RecordT || lBase is TupleT ||
+          rBase is RecordT || rBase is TupleT) {
+        ctx.error(
+          "'" + operator + "' compares identity; records and tuples " +
+          "are values — use '" +
+          (if (operator == "===") { "==" } else { "!=" }) + "'.",
+          DiagnosticCode.InvalidOperator,
+          loc
+        );
+        return new BooleanType();
+      }
+    }
     // Validate that types are comparable:
     // - Both boolean: always allowed
     // - Both numeric: always allowed

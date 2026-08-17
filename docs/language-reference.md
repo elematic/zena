@@ -1696,6 +1696,11 @@ let result = (1 + 2) * 3;
   `operator ==`.
 - `!==` (Strict Not Equal) - Checks for reference inequality, bypassing custom
   `operator ==`.
+
+`===` and `!==` are compile errors on record and tuple operands:
+records and tuples are values with no observable identity (the
+compiler is free to copy or dissolve them), so `==` is their equality
+and `== null` their null test.
 - `<` (Less Than) - Signed comparison for `i32`, unsigned for `u32`.
 - `<=` (Less Than or Equal) - Signed comparison for `i32`, unsigned for `u32`.
 - `>` (Greater Than) - Signed comparison for `i32`, unsigned for `u32`.

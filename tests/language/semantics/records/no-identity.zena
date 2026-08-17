@@ -1,0 +1,28 @@
+// @mode: check
+// Records and tuples are values: identity is not observable, so
+// `===`/`!==` are rejected on them. This is what licenses the
+// compiler to copy a record on width adaptation and to dissolve one
+// entirely at an exploded call site. `==` (structural) and `== null`
+// remain the comparisons.
+
+type P = {x: i32, y: i32};
+
+export let main = (): i32 => {
+  let a = {x: 1, y: 2};
+  let b: P = a;
+  var maybe: P | null = null;
+  let t = (1, 'two');
+  let u = (1, 'two');
+
+  let r1 = a === b;      // @error: '===' compares identity; records and tuples are values — use '=='.
+  let r2 = a !== b;      // @error: '!==' compares identity; records and tuples are values — use '!='.
+  let r3 = t === u;      // @error: '===' compares identity; records and tuples are values — use '=='.
+  let r4 = maybe === null;  // @error: '===' compares identity; records and tuples are values — use '=='.
+  let r5 = maybe !== a;  // @error: '!==' compares identity; records and tuples are values — use '!='.
+
+  // The value comparisons stay legal.
+  let ok1 = a == b;
+  let ok2 = t != u;
+  let ok3 = maybe == null;
+  return 0;
+};

@@ -4,9 +4,9 @@
 
 > **Revision note:** two decisions now layer on this document.
 > **(1) Records and tuples are value types** — §3.1 records the decision
-> to make identity permanently unobservable (`===` on records becomes a
-> compile error), why, and what the _current_ implemented behavior is
-> (identity is observable today, and tested).
+> to make identity permanently unobservable. **V0 has landed**: `===`/
+> `!==` on record/tuple operands is a compile error
+> (`tests/language/semantics/records/no-identity.zena`).
 > **(2) Row polymorphism** — [row-types.md](row-types.md) revises the
 > width-subtyping default (§5.1 — closed types by default, width by
 > projection, explicit `...` existentials for dispatch-based width),
@@ -91,23 +91,20 @@ let name = p[1];
 
 ### 3.1 Identity and `===`: records and tuples are value types (plan of record)
 
-**Current implemented behavior** — stated precisely, because earlier
-drafts of the row-types work misread it:
+**Status: V0 landed.** `===`/`!==` with a record- or tuple-typed
+operand is a compile error
+(`tests/language/semantics/records/no-identity.zena`); the two
+execution tests that pinned identity-through-adaptation
+(`adaptation_identity.zena`, `identity_nullable_matrix.zena`) are
+retired. Nothing in the language can observe a record's box anymore,
+so §4.2's allocation sinking / argument explosion / multi-value
+returns are unconditional lowerings, not escape-guarded optimizations.
 
-- `===` exists and is reference equality (language-reference §Comparison
-  Operators), and on records it observes identity **through width
-  adaptation**: `tests/language/execution/records/adaptation_identity.zena`
-  asserts that a record widened to a narrower type stays `===` to the
-  original, and `identity_nullable_matrix.zena` pins a six-case matrix
-  across nullable slots and separately-adapted views. Adaptation
-  therefore unwraps fat pointers before comparing — identity is
-  preserved across views, deliberately.
-- Consequently, §4.2's allocation sinking / argument explosion /
-  multi-value returns are today **optimizations guarded by
-  observability**: they are legal only where no `===` (or future
-  identity-observing feature) could witness the re-boxing. `inline`
-  tuples are the existing opt-in that turns value representation into a
-  guarantee.
+**Pre-V0 behavior**, recorded because earlier drafts of the row-types
+work misread it: `===` was reference equality and on records observed
+identity **through width adaptation** — adaptation unwrapped fat
+pointers before comparing, so identity was preserved across views,
+deliberately, and the two retired tests pinned it.
 
 **Decision**: records and tuples become **value types** — identity
 permanently unobservable:
@@ -157,12 +154,10 @@ permanently unobservable:
   or an explicit key. (Weak-keying values whose boxes come and go would
   have been a footgun regardless.)
 
-**Migration**: the checker change is small (reject `===`/`!==` on
-record/tuple operands) and lands early, in both compilers, as step V0
-of [implementation-plan.md](implementation-plan.md); the two identity
-tests above convert to expected-error tests. Until then the current
-identity semantics hold and the §4.2 optimizations stay
-observability-guarded.
+**Migration**: done — step V0 of
+[implementation-plan.md](implementation-plan.md) landed the checker
+rejection and converted the two identity tests to an expected-error
+test.
 
 **Companion decisions**: the full equality design — no-fallback `==`,
 the `Equatable`/`Hashable` interfaces, `contains`/`includes` — is in
@@ -187,10 +182,9 @@ The compiler will maintain a registry of used record shapes.
 
 The user explicitly requested that we avoid allocations for common patterns like named arguments and multiple return values.
 
-> **Revision note:** under today's semantics the techniques below are
-> _optimizations_, legal only where re-boxing is unobservable (see §3.1 —
-> `===` currently observes record identity, so escape analysis gates
-> them). Under the §3.1 decision they become unconditional lowerings.
+> **Revision note:** with V0 landed (§3.1 — record/tuple identity is
+> not observable), the techniques below are unconditional lowerings,
+> not escape-guarded optimizations.
 
 #### 4.2.1 Function Parameters (Named Arguments)
 
