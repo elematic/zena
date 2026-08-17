@@ -21,7 +21,7 @@ import {
   ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType,
   RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
-  isOwnershipWrapper, ownershipHandleInner,
+  isOwnershipWrapper, ownershipHandleInner, soleNonNullMember,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -378,7 +378,7 @@ let emitEdgeDrops = (cx: LoweringContext, stmt: IfStatement, onTrue: boolean): v
     let syms = new Array<SymbolId>();
     syms.push(d.symbolId);
     let value = cx.envValues(syms)[0];
-    emitDispose(cx, value, ownerClass);
+    emitMaybeDispose(cx, value, ownerClass);
   }
 };
 
@@ -1040,7 +1040,8 @@ let disposeOwnerClass = (cx: LoweringContext, t: Type): ClassType => {
   // Neither `baseType` nor `unwrapAliases` gets here: the handles are
   // *generic* aliases, so `Own<T> = T` has the bare type parameter as its
   // target and following it lands on `T` rather than on the resource.
-  var target = t;
+  // A `T | null` binding releases through `T` (null skips at runtime).
+  var target = soleNonNullMember(t) ?? t;
   while (isOwnershipWrapper(target)) {
     let inner = ownershipHandleInner(target);
     if (inner == null) { break; }
@@ -1105,6 +1106,27 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
     return;
   }
   cx.b.callFunc(cx.b.addRef(new IrRefFunc(method)), args, null);
+};
+
+/**
+ * Emits a release, guarded when the value can be null at runtime: a
+ * nullable binding holds nothing when it holds null, and the dispose is
+ * skipped rather than trapped — the same rule TC39 `using` adopted.
+ */
+let emitMaybeDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void => {
+  if (!(cx.valueTypeOf(value) is ValTypeRefNull)) {
+    emitDispose(cx, value, ownerClass);
+    return;
+  }
+  let isNull = cx.b.emit(
+      IrOp.ref_is_null, new ValTypeI32() as ValType, value, -1);
+  let skipB = cx.b.newBlock();
+  let doB = cx.b.newBlock();
+  cx.b.brIf(isNull, skipB, noValues(), doB, noValues());
+  cx.b.switchTo(doB);
+  emitDispose(cx, value, ownerClass);
+  cx.b.br(skipB, noValues());
+  cx.b.switchTo(skipB);
 };
 
 /**
@@ -1173,7 +1195,7 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
         }
         finishProtectedArm(cx, scope, resultVar, -1);
       },
-      () => { emitDispose(cx, value, ownerClass); });
+      () => { emitMaybeDispose(cx, value, ownerClass); });
 };
 
 /** Whether the checker marked this declaration for release at scope exit. */
@@ -1231,7 +1253,7 @@ export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
         }
         finishProtectedArm(cx, scope, resultVar, -1);
       },
-      () => { emitDispose(cx, value, ownerClass); });
+      () => { emitMaybeDispose(cx, value, ownerClass); });
 };
 
 export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {

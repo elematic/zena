@@ -4070,8 +4070,22 @@ something the garbage collector cannot reclaim — carries `:dispose()` like
 anything else, so `using` releases it normally rather than rejecting it or
 skipping it.
 
-A `Borrow<R>` is rejected. A borrow is temporary access to something another
-party owns, and never releases what it points at.
+A nullable operand — `Disposable | null`, `Own<R> | null` — is accepted:
+the release is skipped when the value is null at scope exit, so a
+fallible acquire needs no unwrapping to be scope-bound:
+
+```zena
+using f = maybeOpen(path);   // f: Own<File> | null
+if (f != null) { read(f); }
+// disposed at block exit — unless f is null, in which case nothing runs
+```
+
+Wider unions are rejected (two disposable members have no single release
+path), as is an initializer that is statically `null` — a `using` that
+can never release anything is reported as a mistake.
+
+A `Borrow<R>` is rejected, nullable or not. A borrow is temporary access
+to something another party owns, and never releases what it points at.
 
 `using` earns its keep on ordinary disposables — a lock guard, a tracing span,
 a transaction. See [docs/design/ownership.md](design/ownership.md).
@@ -4092,6 +4106,10 @@ The release runs on every path out of the block — falling off the end,
 is computed, and in reverse declaration order when several bindings release
 at one exit. A `using` on a resource is therefore redundant rather than
 wrong: disposal is idempotent, so the second release does nothing.
+
+An `Own<R> | null` binding releases the same way, skipping the dispose
+when the value is null — except one initialized to literal `null`, which
+can never hold anything to release.
 
 The compiler releases a binding only when it still owns the value at every
 exit. A binding is left alone when anything moves it (a call taking

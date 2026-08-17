@@ -1,0 +1,56 @@
+// @mode: run
+// @result: 4201
+// Nullable release end to end: `using` and implicit drop over
+// `Own<R> | null` bindings dispose when the value is there and skip
+// when it is null, including through early returns.
+import {Own, Disposable} from 'zena:ownership';
+
+var released = 0;
+
+resource class Res {
+  id: i32;
+  new(this.id);
+  :Disposable.dispose(this: Own<this>): void {
+    released += this.id;
+  }
+}
+
+let mk = (ok: boolean, id: i32): Own<Res> | null =>
+  if (ok) new Res(id) else null;
+
+let usingSome = (): void => {
+  using f = mk(true, 1);
+};
+
+let usingNone = (): void => {
+  using f = mk(false, 1);
+};
+
+let dropSome = (): void => {
+  let f = mk(true, 2);
+};
+
+let dropNone = (): void => {
+  let f = mk(false, 2);
+};
+
+let checkedEarlyReturn = (): i32 => {
+  let f = mk(true, 4);
+  if (f != null) { return 1; }
+  return 0;
+};
+
+export let main = (): i32 => {
+  var score = 0;
+  released = 0; usingSome();
+  score += released;                // disposed: 1
+  released = 0; usingNone();
+  score += released * 10;           // null skipped: 0
+  released = 0; dropSome();
+  score += released * 100;          // implicit drop: 200
+  released = 0; dropNone();
+  score += released * 1000;         // null skipped: 0
+  released = 0; checkedEarlyReturn();
+  score += released * 1000;         // dropped on early return: 4000
+  return score;                     // 4201
+};

@@ -797,6 +797,19 @@ An `Own<R>` bound by `if (let …)` is already released by implicit drop at bran
 exit, so `using` is redundant there. The construct earns its keep on ordinary
 `Disposable` values.
 
+#### Nullable operands
+
+`using` accepts a `T | null` operand — the shape every fallible acquire
+returns — by requiring `:dispose` of the non-null member and skipping
+the release when the value is null at scope exit, the rule TC39's
+`using` established. The skip is a runtime `ref.is_null` guard around
+the one dispose in the shared finally region. Wider unions stay
+rejected: two disposable members would need dispatch no vtable
+currently carries, and a union mixing a disposable with anything else
+has no single release path at all. A statically null initializer is
+rejected outright — a `using` that can never release anything is a
+mistake, not a degenerate case.
+
 ### Move checking
 
 Each local of affine type has a state: `Unborrowed → SharedBorrow |
@@ -893,11 +906,14 @@ the body, conservatively.
 
 The checker follows local bindings only. Not tracked: an `Own` reached
 through a field or an aggregate ("types containing one" affine-ness is
-future work), a captured binding moved inside a closure, and
-super-initializer arguments (which today are checked against no parameter
-types at all). The runtime lifecycle flag remains the guard on those
-routes — `execution/ownership/lifecycle-flag.zena` reaches its double
-`disown` through a field for exactly this reason.
+future work) and a captured binding moved inside a closure. The runtime
+lifecycle flag remains the guard on those routes —
+`execution/ownership/lifecycle-flag.zena` reaches its double `disown`
+through a field for exactly this reason. Super-initializer arguments are
+checked against the superclass constructor's parameter types like any
+other call, and an `Own` parameter there moves its argument; the
+constructor prologue is checked in evaluation order (initializer list,
+then super, then body) so the flow graph sees the move where it happens.
 
 ### Implicit drop
 
@@ -909,7 +925,9 @@ simple-`let` `Own<resource>` binding that nothing moves, reassigns,
 captures or escapes is released at its block's exit — normal completion,
 `return`, `break`/`continue`, and unwind — through the same shared finally
 region `using` compiles to, in reverse declaration order via the regions'
-nesting. The checker decides per declaration (`exitOwnScope`; a use
+nesting. `Own<resource> | null` qualifies too, with the same null-skipping
+guard as nullable `using` (except a binding initialized to literal null,
+which can never hold anything to release). The checker decides per declaration (`exitOwnScope`; a use
 position must be affirmatively classified as a borrow, so anything
 unrecognized leaves the binding alone and leaks as before) and records the
 verdict in `SemanticModel.scopeExitDrops`; lowering routes a flagged

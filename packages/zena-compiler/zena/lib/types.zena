@@ -1070,6 +1070,29 @@ export let isOwnershipWrapper = (t: Type): boolean => {
   return t.name == "Own" || t.name == "Borrow" || t.name == "Unmanaged";
 };
 
+/**
+ * The sole non-null member of a `T | null` union, or null when `t` is
+ * not exactly that shape. `using` and implicit drop accept a nullable
+ * handle by skipping the release when the value is null, so both the
+ * checker and lowering peel exactly this union form; wider unions have
+ * no single release path and stay rejected.
+ */
+export let soleNonNullMember = (t: Type): Type | null => {
+  if (!(t is UnionType)) { return null; }
+  var nonNull: Type | null = null;
+  var sawNull = false;
+  for (let m in t.types) {
+    if (m is NullType) {
+      sawNull = true;
+    } else {
+      if (nonNull != null) { return null; }
+      nonNull = m;
+    }
+  }
+  if (!sawNull) { return null; }
+  return nonNull;
+};
+
 /** The name of the handle `t` is, or "" if it is not one. */
 export let ownershipHandleName = (t: Type): String => {
   if (!isOwnershipWrapper(t)) { return ""; }

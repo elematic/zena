@@ -103,7 +103,7 @@ import {
   numericTypeName, isBooleanLike, baseType,
   integerLiteralFits,
   promoteNumeric, typeToString, requiredParameterCount, makeTypeIdGenerator, typeContainsTypeParameter,
-  isOwnershipWrapper, ownershipHandleName, ownershipHandleInner
+  isOwnershipWrapper, ownershipHandleName, ownershipHandleInner, soleNonNullMember
 , ErasedType} from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop } from './semantic-model.zena';
 import {
@@ -3653,7 +3653,9 @@ let recordArgumentMove = (ctx: CheckerContext, arg: Expression, paramType: Type)
   if (!(arg is Identifier)) { return; }
   let info = ctx.model.resolve(arg);
   if (info == null) { return; }
-  let handle = ownershipHandleName(paramType);
+  // An `Own<R> | null` sink takes ownership the same way `Own<R>` does;
+  // null just means there may be nothing to own.
+  let handle = ownershipHandleName(soleNonNullMember(paramType) ?? paramType);
   if (handle == "Own") {
     ctx.recordFlowMove(info.id, info.name, arg.loc);
     return;
@@ -7695,10 +7697,15 @@ let checkVariableDeclaration = (
   // generator or async body: the release region rides wasm locals,
   // which do not survive a suspension — those drops are the
   // cancellation table's chapter of ownership.md §Implicit drop.
+  // A nullable handle qualifies too — the release is null-guarded — but
+  // not one initialized to literal null: an immutable binding of null
+  // never holds a resource, so there is nothing to release.
+  let dropHandleType = soleNonNullMember(declType) ?? declType;
   if (kind == "let" && pattern is IdentifierPattern &&
       ctx.yieldType == null && ctx.asyncValueType == null &&
-      ownershipHandleName(declType) == "Own") {
-    let innerOpt = ownershipHandleInner(declType);
+      !(initType is NullType) &&
+      ownershipHandleName(dropHandleType) == "Own") {
+    let innerOpt = ownershipHandleInner(dropHandleType);
     if (innerOpt is ClassType) {
       let resource = innerOpt as ClassType;
       if (resource.isResource) {
@@ -7756,7 +7763,18 @@ let checkUsingStatement = (
     declType = expectedType;
   }
 
-  requireDisposable(ctx, declType, loc);
+  // A statically null initializer never has anything to release; a
+  // no-op `using` is a mistake worth reporting, and lowering has no
+  // class to release through anyway.
+  if (initType is NullType) {
+    ctx.error(
+      "'using' initializer is always null: there is nothing to release.",
+      DiagnosticCode.IncompatibleTypes,
+      loc
+    );
+  } else {
+    requireDisposable(ctx, declType, loc);
+  }
 
   // `using let g = f` takes ownership the same way a plain binding does.
   recordArgumentMove(ctx, init, declType);
@@ -7784,6 +7802,15 @@ let checkUsingStatement = (
  */
 let requireDisposable = (ctx: CheckerContext, t: Type, loc: SourceLocation | null): void => {
   if (t is ErrorType) { return; }
+
+  // `T | null` releases like `T`: the dispose is skipped when the value
+  // is null, so the requirement falls on the non-null member. Wider
+  // unions have no single release path and stay rejected below.
+  let nonNull = soleNonNullMember(t);
+  if (nonNull != null) {
+    requireDisposable(ctx, nonNull, loc);
+    return;
+  }
 
   if (ownershipHandleName(t) == "Borrow") {
     ctx.error(

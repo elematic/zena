@@ -1,0 +1,39 @@
+// @mode: check
+// `using` accepts `T | null`: the release is skipped when the value is
+// null at scope exit (the same rule TC39 `using` adopted). A nullable
+// Borrow stays rejected — a borrow never releases what it points at —
+// and wider unions have no single release path.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+
+resource class File {
+  name: String;
+  new(this.name);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+
+let maybeOpen = (ok: boolean): Own<File> | null =>
+  if (ok) new File('f') else null;
+
+let inferred = (ok: boolean): void => {
+  using f = maybeOpen(ok);
+};
+
+let annotated = (ok: boolean): void => {
+  using f: Own<File> | null = maybeOpen(ok);
+};
+
+let unbound = (ok: boolean): void => {
+  using maybeOpen(ok);
+};
+
+let borrowStaysRejected = (b: Borrow<File> | null): void => {
+  using f = b; // @error: cannot release a 'Borrow
+};
+
+let widerUnionRejected = (u: Own<File> | String | null): void => {
+  using f = u; // @error: no ':dispose()'
+};
+
+let alwaysNullRejected = (): void => {
+  using f: Own<File> | null = null; // @error: always null
+};
