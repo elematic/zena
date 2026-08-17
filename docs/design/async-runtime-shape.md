@@ -24,10 +24,14 @@ deleted, no per-settle allocation), inline-first waiter storage,
 `tryComplete`/`tryFail`, combinators rewritten to read their inputs, and
 the symbol-keyed reads.
 
+Landed since, REVERSING a plan item: the settle side is symbol-keyed
+too, so a reference to a `Future` is read-only and `Completer` is the
+write capability — see "`Completer<T>` is the write capability" below,
+which replaces this document's original removal plan.
+
 Not landed, in the order the plan below gives them: hole-initialized
 fields (so `#value` is still a `Box<T>`), the intrusive queue, removing
-`state`/`isCompleted`, deleting `Completer`, the `Parker` hook, and the
-multi-value ramp.
+`state`/`isCompleted`, the `Parker` hook, and the multi-value ramp.
 
 Line references below are to `ea7837e3`, the commit before this change,
 since the point of most of them is what the code looked like going in.
@@ -449,21 +453,29 @@ enforces that much. The symbol closes the remaining gap — not by making a
 premature read ill-typed, but by making it unwritable outside the module
 that cannot perform one.
 
-## `Completer<T>`'s removal
+## `Completer<T>` is the write capability
 
-`Future.complete` and `Future.fail` are public today (`async.zena:306`,
-`:324`), so `Completer<T>` enforces no read/write split — it is one extra
-allocation and one extra class on every host-async operation and every
-combinator, plus the `AnyCompleter` base and its vtable
-(`async.zena:386`). Folding the write side into `Future` and renaming
-`AnyCompleter` to `AnyFuture` leaves `zena:js`'s registry
-unchanged in shape and removes an object from every asynchronous
-operation in the language.
+This section originally planned the opposite — deleting `Completer` and
+folding the settle side into `Future`, on the observation that
+`Future.complete`/`fail` were public anyway, so the wrapper enforced no
+split. Review reversed the direction: a reference to a `Future` should
+be read-only, so instead of removing the wrapper the hole is closed.
+`complete`, `fail`, `tryComplete` and `tryFail` are keyed by the same
+unexported symbols as the settled reads, which makes the split
+identity-enforced rather than conventional: user code with a future can
+only await or subscribe, and `Completer` — which forwards through the
+symbols from inside `zena:async` — is the one way to settle from
+outside the module. That makes async.md §2's claim ("everything
+external completes futures through it; there is no other way in") true
+rather than aspirational, and it is the withResolvers shape collapsed
+to one object: `new Completer<T>()` is the `{resolve, reject}` bundle,
+and `.future` is the promise.
 
-An enforced split is worth wanting, and a wrapper class is not how to get
-it: [opaque-types.md](opaque-types.md) or the ownership work are the
-tools, and either can be applied later without changing the runtime
-shape.
+The wrapper's cost — one extra allocation and one class per externally
+settled operation, plus the `AnyCompleter` base — is the price of the
+capability, paid only where a capability is actually handed out: the
+split pass's frames, the statics, and the combinators settle through
+the symbols directly and allocate no completer.
 
 ## Callback combinators
 
@@ -659,8 +671,10 @@ next one works against.
    binding. Deletes four types and every per-settle allocation.
 3. **Inline the first waiter.** Stdlib only. Deletes the two eager
    arrays and their backing.
-4. **`:result()`, `tryComplete`, deadlock detection in the drain, delete
-   `Completer`.** Stdlib plus the transform's resume-point emission.
+4. **`:result()` adoption and deadlock detection in the drain.**
+   Stdlib plus the transform's resume-point emission. (This step
+   originally included deleting `Completer`; that reversed — see
+   "`Completer<T>` is the write capability".)
 5. **`Parker` to a hook.** Stdlib only.
 6. **Multi-value ramp.** Compiler.
 
@@ -683,19 +697,12 @@ rather than conventional.
   arbitrary `T` being minted from an unrelated representation. A hole is
   a zero value rather than a laundered one, so it should be admissible,
   but the rule needs reading before the syntax is added.
-- **Deleting `Completer`** is a stdlib API break for any code holding
-  one, including `zena:js` and `@zena-lang/runtime`'s fixtures.
-  Small today; larger the longer it waits.
 - **`Future.race`'s shared listener** had to become one node per input
   before the intrusive list could land. Done: race subscribes a
   `RaceWaiter` per input, each holding the input it reads.
 
 ## Open
 
-- Whether an enforced read/write split for `complete`/`fail` is wanted
-  once `Completer` is gone. Symbol-keying is the same device again and
-  the cheapest answer; [opaque-types.md](opaque-types.md) and ownership
-  are the heavier ones.
 - Whether frame sinking is worth the entry-segment duplication. Wants a
   measurement on a real async workload, which does not exist yet — the
   same gap [async.md](async.md) §8.6 notes.

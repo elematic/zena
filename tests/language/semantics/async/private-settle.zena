@@ -1,0 +1,27 @@
+// @mode: check
+
+// A reference to a `Future` is read-only: the settle side is keyed by
+// symbols `zena:async` does not export, so `Completer` is the write
+// capability — everything external completes futures through one, and
+// there is no other way in (async.md §2). Naming the methods does not
+// reach them, and neither does declaring same-named symbols here.
+import { Future, Completer } from 'zena:async';
+
+symbol complete;
+symbol fail;
+symbol tryComplete;
+symbol tryFail;
+
+let test = (c: Completer<i32>, f: Future<i32>): void => {
+  // The write capability.
+  c.complete(1);
+  c.fail(new Error('x'));
+
+  f.complete(2); // @error: Property 'complete' does not exist
+  f.fail(new Error('y')); // @error: Property 'fail' does not exist
+  f.tryComplete(3); // @error: Property 'tryComplete' does not exist
+  f.tryFail(new Error('z')); // @error: Property 'tryFail' does not exist
+
+  let forged = f.:complete(4); // @error: different symbol
+  let forgedTry = f.:tryFail(new Error('w')); // @error: different symbol
+};

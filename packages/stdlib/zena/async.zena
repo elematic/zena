@@ -57,6 +57,18 @@
 symbol result;
 symbol failure;
 symbol valueOrThrow;
+/**
+ * The settle side, keyed by the same unexported symbols: a reference
+ * to a `Future` is read-only, and `Completer` is the write capability
+ * (async.md §2 — everything external completes futures through one,
+ * and there is no other way in). This module's own machinery — the
+ * statics, the combinators, the frames the split pass synthesizes —
+ * settles through the symbols directly.
+ */
+symbol complete;
+symbol fail;
+symbol tryComplete;
+symbol tryFail;
 
 /** A future is Pending until it settles as Resolved or Rejected. */
 export enum FutureState {
@@ -328,8 +340,8 @@ export class Future<T> {
   }
 
   /** Settles this future with a value. Throws if already settled. */
-  complete(value: T): void {
-    if (!this.tryComplete(value)) {
+  :complete(value: T): void {
+    if (!this.:tryComplete(value)) {
       throw new Error('Future already completed');
     }
   }
@@ -337,7 +349,7 @@ export class Future<T> {
   /** Settles this future with a value, reporting whether it won.
    * False means someone else settled it first, which is not an error
    * for a caller racing on purpose. */
-  tryComplete(value: T): boolean {
+  :tryComplete(value: T): boolean {
     if (!(this.#state == FutureState.Pending)) {
       return false;
     }
@@ -348,14 +360,14 @@ export class Future<T> {
   }
 
   /** Settles this future with a failure. Throws if already settled. */
-  fail(error: Error): void {
-    if (!this.tryFail(error)) {
+  :fail(error: Error): void {
+    if (!this.:tryFail(error)) {
       throw new Error('Future already completed');
     }
   }
 
   /** Settles this future with a failure, reporting whether it won. */
-  tryFail(error: Error): boolean {
+  :tryFail(error: Error): boolean {
     if (!(this.#state == FutureState.Pending)) {
       return false;
     }
@@ -400,14 +412,14 @@ export class Future<T> {
   /** An already-resolved future. */
   static of<A>(value: A): Future<A> {
     let f = new Future<A>();
-    f.complete(value);
+    f.:complete(value);
     return f;
   }
 
   /** An already-failed future. */
   static failed<A>(error: Error): Future<A> {
     let f = new Future<A>();
-    f.fail(error);
+    f.:fail(error);
     return f;
   }
 
@@ -496,11 +508,23 @@ export class Completer<T> extends AnyCompleter {
   new() : super();
 
   complete(value: T): void {
-    this.future.complete(value);
+    this.future.:complete(value);
   }
 
   fail(error: Error): void {
-    this.future.fail(error);
+    this.future.:fail(error);
+  }
+
+  /** Settles with a value, reporting whether it won. False means
+   * someone else settled first — not an error for a caller racing on
+   * purpose. */
+  tryComplete(value: T): boolean {
+    return this.future.:tryComplete(value);
+  }
+
+  /** Settles with a failure, reporting whether it won. */
+  tryFail(error: Error): boolean {
+    return this.future.:tryFail(error);
   }
 }
 
@@ -598,7 +622,7 @@ class AllState<T> {
   attach(futures: Array<Future<T>>): Future<Array<T>> {
     this.remaining = futures.length;
     if (futures.length == 0) {
-      this.result.complete(new Array<T>());
+      this.result.:complete(new Array<T>());
       return this.result;
     }
     var i = 0;
@@ -634,13 +658,13 @@ class AllState<T> {
         values.push(this.inputs[i].:valueOrThrow());
         i += 1;
       }
-      this.result.complete(values);
+      this.result.:complete(values);
     }
   }
 
   /** The first failure settles the whole thing; later ones are spent. */
   reject(error: Error): void {
-    this.result.tryFail(error);
+    this.result.:tryFail(error);
   }
 }
 
@@ -690,11 +714,11 @@ class RaceState<T> {
   }
 
   win(value: T): void {
-    this.result.tryComplete(value);
+    this.result.:tryComplete(value);
   }
 
   lose(error: Error): void {
-    this.result.tryFail(error);
+    this.result.:tryFail(error);
   }
 }
 

@@ -138,12 +138,13 @@ no other way in, which is what makes the host contract small (§4).
 
 **The shipped surface differs from this sketch.** Waiters pull rather
 than being pushed to, so there is one untyped `Task` protocol instead of
-`Microtask`/`Resumable`/`FutureListener`; the settled-value reads are
-symbol-keyed and private to `zena:async`; `onComplete` takes a pair of
-callbacks rather than one tagged-tuple callback; the statics are
-`of`/`failed` rather than `resolve`/`fail` (which are the settling
-operations); and `runFuture(f)` is how synchronous code gets a value
-out. [async-runtime-shape.md](async-runtime-shape.md) has the current
+`Microtask`/`Resumable`/`FutureListener`; the settled-value reads AND
+the settling operations are symbol-keyed and private to `zena:async`,
+so a reference to a `Future` is read-only and "there is no other way
+in" above is identity-enforced, not conventional; `onComplete` takes a
+pair of callbacks rather than one tagged-tuple callback; the statics
+are `of`/`failed`; and `runFuture(f)` is how synchronous code gets a
+value out. [async-runtime-shape.md](async-runtime-shape.md) has the current
 shape and the reasoning.
 
 Two API stances, decided here:
