@@ -807,12 +807,36 @@ exit, so `using` is redundant there. The construct earns its keep on ordinary
 returns — by requiring `:dispose` of the non-null member and skipping
 the release when the value is null at scope exit, the rule TC39's
 `using` established. The skip is a runtime `ref.is_null` guard around
-the one dispose in the shared finally region. Wider unions stay
-rejected: two disposable members would need dispatch no vtable
-currently carries, and a union mixing a disposable with anything else
-has no single release path at all. A statically null initializer is
+the one dispose in the shared finally region, and it also guards every
+value carried in an abstract reference (`eqref`/`anyref`), which admits
+null whatever the static type says. A statically null initializer is
 rejected outright — a `using` that can never release anything is a
 mistake, not a degenerate case.
+
+#### Union operands
+
+Same-handle unions normalize at union creation: `Own<A> | Own<B>` IS
+`Own<A | B>` — the handles are erased, so the two spellings denote the
+same values carrying the same single release obligation, and one
+canonical form keeps release, drop candidacy and assignability
+single-path. The union spelling is legal directly (`Own<A | B>`: the
+members are named inside a handle, so the bare-mention rule admits
+them), a narrower owner widens into the union owner, and `using` and
+implicit drop both release one by testing each member class in turn
+and dispatching to the dynamic member's `:dispose` — overridden
+disposes still dispatch virtually inside each arm. A union of plain
+`Disposable` classes releases the same way.
+
+The restriction that remains is the honest one: handles of different
+names never merge (`Own<A> | Borrow<B>` arms carry different
+obligations, and such a union has no single release path), and a
+`Borrow` union is second-class when ANY member restricts — `Borrow<A> |
+Borrow<String>` normalizes to `Borrow<A | String>` and the `A` arm's
+restriction survives the merge. The same distributivity is NOT sound
+for nominal generics: `Future<i32> | Future<String>` are different
+monomorphized structs with identity, and `Array` adds the covariant
+mutable-container problem — so normalization is handle-only, not a
+general algebra.
 
 ### Move checking
 

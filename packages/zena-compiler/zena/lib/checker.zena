@@ -2062,10 +2062,10 @@ final class CheckerContext {
   }
 
   /** A simple-`let` `Own<resource>` declaration in the current block. */
-  registerOwnCandidate(sym: Symbol, patternNode: Node, resource: ClassType): void {
+  registerOwnCandidate(sym: Symbol, patternNode: Node, resources: Array<ClassType>): void {
     if (this.#ownScopeStack.length == 0) { return; }
     this.#ownScopeStack[this.#ownScopeStack.length - 1]
-      .push(new OwnDropCandidate(sym, patternNode, resource));
+      .push(new OwnDropCandidate(sym, patternNode, resources));
   }
 
   /**
@@ -2098,9 +2098,9 @@ final class CheckerContext {
           let movedFalse = p.falseReachable &&
             this.findLiveMove(c.sym.id, p.falseEnd, p.preBranch.id) != null;
           if (movedTrue && !movedFalse && p.falseReachable) {
-            this.#addEdgeDrop(p.ifNode, c.sym.id, false, c.resource);
+            this.#addEdgeDrop(p.ifNode, c.sym.id, false, c.resources);
           } else if (movedFalse && !movedTrue && p.trueReachable) {
-            this.#addEdgeDrop(p.ifNode, c.sym.id, true, c.resource);
+            this.#addEdgeDrop(p.ifNode, c.sym.id, true, c.resources);
           }
         }
       }
@@ -2116,10 +2116,12 @@ final class CheckerContext {
         let deps = this.currentDependencies();
         if (deps != null) {
           deps.needsExceptionInfra = true;
-          let classSymId = (c.resource.genericSource ?? c.resource).symbolId;
-          deps.referencedSymbols.add(classSymId);
-          deps.referencedClassMethods.add(
-            i32ToString(classSymId as i32) + ".:dispose");
+          for (let resource in c.resources) {
+            let classSymId = (resource.genericSource ?? resource).symbolId;
+            deps.referencedSymbols.add(classSymId);
+            deps.referencedClassMethods.add(
+              i32ToString(classSymId as i32) + ".:dispose");
+          }
         }
       }
     }
@@ -2131,7 +2133,7 @@ final class CheckerContext {
    * on a full re-check clears the rest). Roots `:dispose` — the drop is
    * a plain call at the arm's end, so no exception region is needed.
    */
-  #addEdgeDrop(ifNode: Node, symId: SymbolId, onTrue: boolean, resource: ClassType): void {
+  #addEdgeDrop(ifNode: Node, symId: SymbolId, onTrue: boolean, resources: Array<ClassType>): void {
     let existing = this.model.edgeDropsOfDirect(ifNode);
     let kept = new Array<EdgeDrop>();
     if (existing != null) {
@@ -2143,10 +2145,12 @@ final class CheckerContext {
     this.model.setEdgeDrops(ifNode, kept);
     let deps = this.currentDependencies();
     if (deps != null) {
-      let classSymId = (resource.genericSource ?? resource).symbolId;
-      deps.referencedSymbols.add(classSymId);
-      deps.referencedClassMethods.add(
-        i32ToString(classSymId as i32) + ".:dispose");
+      for (let resource in resources) {
+        let classSymId = (resource.genericSource ?? resource).symbolId;
+        deps.referencedSymbols.add(classSymId);
+        deps.referencedClassMethods.add(
+          i32ToString(classSymId as i32) + ".:dispose");
+      }
     }
   }
 
@@ -3538,8 +3542,23 @@ let isSecondClass = (t: Type): boolean => {
   if (ownershipHandleName(t) != "Borrow") { return false; }
   let inner = ownershipHandleInner(t);
   if (inner == null) { return false; }
+  return borrowInnerRestricts(inner);
+};
+
+/**
+ * Whether borrowing `inner` is restricted. A union inner — a merged
+ * `Borrow<A> | Borrow<B>` — restricts when ANY member does: a value of
+ * the union may dynamically be the restricted member, and dropping the
+ * restriction there would let that arm escape its owner's extent.
+ */
+let borrowInnerRestricts = (inner: Type): boolean => {
   if (inner is TypeParameterType) { return true; }
   if (inner is ClassType) { return inner.isResource; }
+  if (inner is UnionT) {
+    for (let m in inner.types) {
+      if (borrowInnerRestricts(m)) { return true; }
+    }
+  }
   return false;
 };
 
@@ -3820,13 +3839,41 @@ let recordArgumentMove = (ctx: CheckerContext, arg: Expression, paramType: Type)
 /**
  * An `Own<resource>` declared by a simple `let` in a block: a candidate
  * for release at that block's exit, pending exitOwnScope's verdict.
+ * A union owner (`Own<A | B>`) carries every member class — the
+ * release dispatches on the dynamic one, and each needs its `:dispose`
+ * rooted.
  */
 final class OwnDropCandidate {
   sym: Symbol;
   node: Node;
-  resource: ClassType;
-  new(this.sym, this.node, this.resource);
+  resources: Array<ClassType>;
+  new(this.sym, this.node, this.resources);
 }
+
+/**
+ * The resource classes an `Own` inner type names: one for a lone
+ * resource class, all members for a union of them, null when anything
+ * else appears (a non-resource member has no release obligation, so
+ * the binding is not an implicit-drop candidate).
+ */
+let ownedResourceClasses = (inner: Type): Array<ClassType> | null => {
+  let result = new Array<ClassType>();
+  let members = match (inner) {
+    case UnionT {types}: types
+    case _: {
+      let one = new Array<Type>();
+      one.push(inner);
+      one
+    }
+  };
+  for (let m in members) {
+    if (!(m is ClassType)) { return null; }
+    if (!m.isResource) { return null; }
+    result.push(m);
+  }
+  if (result.length == 0) { return null; }
+  return result;
+};
 
 /**
  * Mark drop candidates whose block contains a use the allowlist does
@@ -4043,13 +4090,20 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     resolved
   }
   case UnionTypeAnnotation {types}: {
+    // A handle's type argument may be a union of resource classes —
+    // `Own<A | B>` — so the mention permission the argument position
+    // carries applies to each member, not only the first one resolved
+    // (the NamedTypeAnnotation arm consumes the flag per name).
+    let memberResourceOk = ctx.resourceMentionOk;
     let resolved = new Array<Type>();
     var i = 0;
     while (i < types.length) {
+      ctx.resourceMentionOk = memberResourceOk;
       let t = resolveTypeAnnotation(ctx, types[i], allowInlineTuple);
       resolved.push(t);
       i += 1;
     }
+    ctx.resourceMentionOk = false;
 
     // Check for multiple extension types on the same underlying type.
     var ei = 0;
@@ -4227,6 +4281,77 @@ let combineArmTypes = (types: Array<Type>, ctx: CheckerContext | null = null, lo
 /**
  * Create a union type, flattening nested unions and deduplicating.
  */
+/**
+ * Same-handle members of a union merge: `Own<A> | Own<B>` is
+ * `Own<A | B>`. The handles are erased, so the two spellings denote
+ * the same values carrying the same obligation, and one canonical form
+ * keeps every downstream consumer — release, drop candidacy,
+ * assignability — single-path. Other members (null above all) ride
+ * alongside, and handles of different names never merge: their arms
+ * carry different obligations.
+ */
+let mergeHandleMembers = (
+  members: Array<Type>,
+  ctx: CheckerContext | null,
+  loc: SourceLocation | null
+): Array<Type> => {
+  var mergeable = 0;
+  for (let m in members) {
+    if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
+      mergeable += 1;
+    }
+  }
+  if (mergeable < 2) { return members; }
+
+  // Group the handle members' inner types by handle name.
+  let names = new Array<String>();
+  let inners = new Array<Array<Type>>();
+  for (let m in members) {
+    if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
+      let alias = m as TypeAliasType;
+      var idx = -1;
+      for (var i = 0; i < names.length; i += 1) {
+        if (names[i] == alias.name) { idx = i; }
+      }
+      if (idx == -1) {
+        names.push(alias.name);
+        inners.push(new Array<Type>());
+        idx = names.length - 1;
+      }
+      inners[idx].push(ownershipHandleInner(m) as Type);
+    }
+  }
+
+  // Rebuild in member order: each handle name appears once, at its
+  // first position, wrapping the union of its inners.
+  let emitted = new HashSet<String>();
+  let result = new Array<Type>();
+  for (let m in members) {
+    if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
+      let alias = m as TypeAliasType;
+      if (emitted.has(alias.name)) { continue; }
+      emitted.add(alias.name);
+      var idx = 0;
+      for (var i = 0; i < names.length; i += 1) {
+        if (names[i] == alias.name) { idx = i; }
+      }
+      if (inners[idx].length == 1) {
+        result.push(m);
+      } else {
+        let mergedInner = createUnionType(inners[idx], ctx, loc);
+        let mergedArgs = new Array<Type>();
+        mergedArgs.push(mergedInner);
+        result.push(new TypeAliasType(
+          alias.name, alias.typeParameters, mergedInner, true, mergedArgs,
+          alias.isOpaque, alias.declaringModule));
+      }
+    } else {
+      result.push(m);
+    }
+  }
+  return result;
+};
+
 let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, loc: SourceLocation | null = null): Type => {
   var deduped = new Array<Type>();
   var hasBoolean = false;
@@ -4270,6 +4395,8 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
        // However, we mainly care about boolean for this bug.
     }
   }
+
+  deduped = mergeHandleMembers(deduped, ctx, loc);
 
   if (deduped.length == 0) { return new NeverType(); }
   if (deduped.length == 1) { return deduped[0]; }
@@ -7863,12 +7990,12 @@ let checkVariableDeclaration = (
       !(initType is NullType) &&
       ownershipHandleName(dropHandleType) == "Own") {
     let innerOpt = ownershipHandleInner(dropHandleType);
-    if (innerOpt is ClassType) {
-      let resource = innerOpt as ClassType;
-      if (resource.isResource) {
+    if (innerOpt != null) {
+      let resources = ownedResourceClasses(innerOpt);
+      if (resources != null) {
         let symOpt = ctx.model.resolveDeclaration(pattern);
         if (symOpt != null) {
-          ctx.registerOwnCandidate(symOpt, pattern as Node, resource);
+          ctx.registerOwnCandidate(symOpt, pattern as Node, resources);
         }
       }
     }
@@ -7918,6 +8045,15 @@ let checkUsingStatement = (
       );
     }
     declType = expectedType;
+  }
+
+  // The release region is a try_table, so the module needs the
+  // exception infrastructure even when no source `try` appears. Every
+  // existing `using` module happened to also throw or carry an
+  // implicit drop, which is what masked this.
+  let infraDeps = ctx.currentDependencies();
+  if (infraDeps != null) {
+    infraDeps.needsExceptionInfra = true;
   }
 
   // A statically null initializer never has anything to release; a
@@ -7980,19 +8116,32 @@ let requireDisposable = (ctx: CheckerContext, t: Type, loc: SourceLocation | nul
     return;
   }
 
-  // A handle is erased, so its members are the resource's members.
+  // A handle is erased, so its members are the resource's members. A
+  // union owner — `Own<A | B>` — requires `:dispose` of every member;
+  // the release dispatches on the dynamic class.
   var target = unwrapAliases(t);
   while (isOwnershipWrapper(target)) {
     let inner = ownershipHandleInner(target);
     if (inner == null) { break; }
     target = unwrapAliases(inner);
   }
+  let targets = new Array<Type>();
+  match (target) {
+    case UnionT {types}: {
+      for (let m in types) { targets.push(unwrapAliases(m)); }
+    }
+    case _: { targets.push(target); }
+  }
 
-  let hasDispose = match (target) {
-    case ClassType as ct: ct.members.has(":dispose")
-    case InterfaceType as it: it.members.has(":dispose")
-    case _: false
-  };
+  var hasDispose = targets.length > 0;
+  for (let one in targets) {
+    let ok = match (one) {
+      case ClassType as ct: ct.members.has(":dispose")
+      case InterfaceType as it: it.members.has(":dispose")
+      case _: false
+    };
+    if (!ok) { hasDispose = false; }
+  }
 
   if (!hasDispose) {
     ctx.error(
@@ -8006,12 +8155,14 @@ let requireDisposable = (ctx: CheckerContext, t: Type, loc: SourceLocation | nul
     return;
   }
 
-  if (target is ClassType) {
-    let deps = ctx.currentDependencies();
-    if (deps != null) {
-      let classSymId = (target.genericSource ?? target).symbolId;
-      deps.referencedSymbols.add(classSymId);
-      deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".:dispose");
+  for (let one in targets) {
+    if (one is ClassType) {
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        let classSymId = (one.genericSource ?? one).symbolId;
+        deps.referencedSymbols.add(classSymId);
+        deps.referencedClassMethods.add(i32ToString(classSymId as i32) + ".:dispose");
+      }
     }
   }
 };

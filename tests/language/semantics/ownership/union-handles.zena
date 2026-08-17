@@ -1,0 +1,61 @@
+// @mode: check
+// Same-handle unions normalize: `Own<A> | Own<B>` is `Own<A | B>` —
+// the handles are erased, so the two spellings denote the same values
+// carrying the same single release obligation. Mixed handles stay
+// irreducible, and a Borrow union is restricted when any member is.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+import {Array} from 'zena:array';
+
+resource class FileR {
+  name: String;
+  new(this.name);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+
+resource class SockR {
+  port: i32;
+  new(this.port);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+
+// The union spelling of the argument is legal: the members are named
+// inside a handle, exactly like a lone resource argument.
+let mk = (c: boolean): Own<FileR | SockR> =>
+  if (c) new FileR('f') else new SockR(1);
+
+// The join spelling names the same type…
+let mk2 = (c: boolean): Own<FileR> | Own<SockR> =>
+  if (c) new FileR('f') else new SockR(1);
+
+// …so the two interconvert, both ways.
+let fromJoin = (c: boolean): Own<FileR | SockR> => mk2(c);
+let fromUnion = (c: boolean): Own<FileR> | Own<SockR> => mk(c);
+
+// A narrower owner widens into the union owner.
+let widen = (f: Own<FileR>): Own<FileR | SockR> => f;
+
+// `using` releases a union owner, dispatching on the dynamic class.
+let scoped = (c: boolean): void => {
+  using u = mk(c);
+};
+
+// A union owner moves like any owner.
+let consume = (u: Own<FileR | SockR>): void => {};
+let moved = (c: boolean): i32 => {
+  let u = mk(c);
+  consume(u);
+  consume(u); // @error: moved
+  return 0;
+};
+
+// A borrow union is second-class when any member restricts: it may
+// not be stored.
+let stored = (b: Borrow<FileR | String>): void => {
+  let xs = new Array<Borrow<FileR | String>>(); // @error: may not be stored
+};
+
+// Handles of different names never merge; such a union has no single
+// release path.
+let mixed = (c: boolean, o: Own<FileR>, b: Borrow<SockR>): void => {
+  using u = if (c) o else b; // @error: no ':dispose()'
+};

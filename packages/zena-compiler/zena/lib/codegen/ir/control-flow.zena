@@ -21,12 +21,12 @@ import {
   ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType,
   RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
-  isOwnershipWrapper, ownershipHandleInner, soleNonNullMember,
+  isOwnershipWrapper, ownershipHandleInner, soleNonNullMember, UnionType,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
   ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeRef, ValTypeRefNull,
-  WasmType, isRefValType, refTargetOf,
+  ValTypeOptRef, WasmType, isRefValType, refTargetOf,
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, RecordDispatchInfo, WasmFunction, WasmGlobal, WasmTag,
@@ -374,11 +374,11 @@ let emitEdgeDrops = (cx: LoweringContext, stmt: IfStatement, onTrue: boolean): v
     if (declType == null) {
       bail(cx, 'edge drop untyped binding');
     }
-    let ownerClass = disposeOwnerClass(cx, declType);
+    let ownerClasses = disposeOwnerClasses(cx, declType);
     let syms = new Array<SymbolId>();
     syms.push(d.symbolId);
     let value = cx.envValues(syms)[0];
-    emitMaybeDispose(cx, value, ownerClass);
+    emitMaybeDispose(cx, value, ownerClasses);
   }
 };
 
@@ -1029,13 +1029,16 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
 };
 
 /**
- * The class whose `:dispose` releases a value of type `t`.
+ * The classes whose `:dispose` can release a value of type `t`: one
+ * for a lone owner, every member for a union owner (`Own<A | B>`, or a
+ * union of plain disposables) — the release then dispatches on the
+ * dynamic class in emitDisposeDispatch.
  *
  * A handle is erased, so `Own<Descriptor>` releases through
- * `Descriptor`'s member; the checker has already established that one
- * exists, and that a `Borrow<R>` never reaches here.
+ * `Descriptor`'s member; the checker has already established that the
+ * members exist, and that a `Borrow<R>` never reaches here.
  */
-let disposeOwnerClass = (cx: LoweringContext, t: Type): ClassType => {
+let disposeOwnerClasses = (cx: LoweringContext, t: Type): Array<ClassType> => {
   // Peel the handle the way the checker did when it found the `:dispose`.
   // Neither `baseType` nor `unwrapAliases` gets here: the handles are
   // *generic* aliases, so `Own<T> = T` has the bare type parameter as its
@@ -1048,10 +1051,21 @@ let disposeOwnerClass = (cx: LoweringContext, t: Type): ClassType => {
     target = inner;
   }
   let base = unwrapAliases(target);
-  if (!(base is ClassType)) {
-    bail(cx, 'using operand is not a class');
+  let result = new Array<ClassType>();
+  match (base) {
+    case ClassType as ct: { result.push(ct); }
+    case UnionType {types}: {
+      for (let m in types) {
+        let mb = unwrapAliases(m);
+        if (!(mb is ClassType)) {
+          bail(cx, 'using operand is not a class');
+        }
+        result.push(mb);
+      }
+    }
+    case _: { bail(cx, 'using operand is not a class'); }
   }
-  return base;
+  return result;
 };
 
 /**
@@ -1109,13 +1123,61 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
 };
 
 /**
+ * One release, dispatched on the dynamic class when the static owner
+ * is a union: test each member in order and dispose as that member;
+ * the last member needs no test — emitDispose's receiver conformance
+ * cast enforces it. Relatives in the union stay correct in any order,
+ * because emitDispose dispatches virtually when a subclass overrides
+ * `:dispose`.
+ */
+let emitDisposeDispatch = (cx: LoweringContext, value: i32, owners: Array<ClassType>): void => {
+  if (owners.length == 1) {
+    emitDispose(cx, value, owners[0]);
+    return;
+  }
+  let endB = cx.b.newBlock();
+  for (var i = 0; i < owners.length; i += 1) {
+    if (i == owners.length - 1) {
+      emitDispose(cx, value, owners[i]);
+      cx.b.br(endB, noValues());
+    } else {
+      let cKey = getClassKey(owners[i]);
+      let info = if (let (true, ci) = cx.wasm.classInfos.get(cKey)) ci else null;
+      if (info == null) {
+        bail(cx, 'using receiver class not discovered');
+      }
+      let targetVt = new ValTypeRef(info.structType) as ValType;
+      let cond = cx.b.emit(IrOp.ref_test, new ValTypeI32() as ValType, value,
+          cx.b.internType(targetVt));
+      let doB = cx.b.newBlock();
+      let nextB = cx.b.newBlock();
+      cx.b.brIf(cond, doB, noValues(), nextB, noValues());
+      cx.b.switchTo(doB);
+      emitDispose(cx, value, owners[i]);
+      cx.b.br(endB, noValues());
+      cx.b.switchTo(nextB);
+    }
+  }
+  cx.b.switchTo(endB);
+};
+
+/**
  * Emits a release, guarded when the value can be null at runtime: a
  * nullable binding holds nothing when it holds null, and the dispose is
  * skipped rather than trapped — the same rule TC39 `using` adopted.
  */
-let emitMaybeDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void => {
-  if (!(cx.valueTypeOf(value) is ValTypeRefNull)) {
-    emitDispose(cx, value, ownerClass);
+let emitMaybeDispose = (cx: LoweringContext, value: i32, owners: Array<ClassType>): void => {
+  let vt = cx.valueTypeOf(value);
+  if (!isRefValType(vt)) {
+    bail(cx, 'dispose operand kind');
+  }
+  if (vt is ValTypeRef) {
+    // The one non-nullable reference form; everything else — refnull,
+    // and the abstract eqref/anyref/structref a union of unrelated
+    // classes rides in — admits null at runtime regardless of the
+    // static type, and the dispatch ladder's receiver casts are
+    // nullable and would NOT trap on one.
+    emitDisposeDispatch(cx, value, owners);
     return;
   }
   let isNull = cx.b.emit(
@@ -1124,7 +1186,7 @@ let emitMaybeDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType):
   let doB = cx.b.newBlock();
   cx.b.brIf(isNull, skipB, noValues(), doB, noValues());
   cx.b.switchTo(doB);
-  emitDispose(cx, value, ownerClass);
+  emitDisposeDispatch(cx, value, owners);
   cx.b.br(skipB, noValues());
   cx.b.switchTo(skipB);
 };
@@ -1156,7 +1218,7 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
   if (declType == null) {
     bail(cx, 'untyped using initializer');
   }
-  let ownerClass = disposeOwnerClass(cx, declType);
+  let ownerClasses = disposeOwnerClasses(cx, declType);
 
   let value = lowerExpr(cx, stmt.init, null);
   let pattern = stmt.pattern;
@@ -1195,7 +1257,7 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
         }
         finishProtectedArm(cx, scope, resultVar, -1);
       },
-      () => { emitMaybeDispose(cx, value, ownerClass); });
+      () => { emitMaybeDispose(cx, value, ownerClasses); });
 };
 
 /** Whether the checker marked this declaration for release at scope exit. */
@@ -1218,7 +1280,7 @@ export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
   if (declType == null) {
     bail(cx, 'untyped implicit-drop binding');
   }
-  let ownerClass = disposeOwnerClass(cx, declType);
+  let ownerClasses = disposeOwnerClasses(cx, declType);
 
 
   varDecl(cx, vd);
@@ -1253,7 +1315,7 @@ export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
         }
         finishProtectedArm(cx, scope, resultVar, -1);
       },
-      () => { emitMaybeDispose(cx, value, ownerClass); });
+      () => { emitMaybeDispose(cx, value, ownerClasses); });
 };
 
 export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {

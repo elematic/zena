@@ -1,0 +1,41 @@
+// @mode: run
+// @result: 101101
+// A union owner releases through the dynamic member's dispose: a
+// same-handle union normalizes to one owner, and the release —
+// through `using` and through implicit drop — dispatches on the
+// value's class. A nullable union owner skips when null.
+import {Own, Disposable} from 'zena:ownership';
+
+var log = 0;
+
+resource class FileR {
+  new();
+  :Disposable.dispose(this: Own<this>): void { log += 1; }
+}
+
+resource class SockR {
+  new();
+  :Disposable.dispose(this: Own<this>): void { log += 10; }
+}
+
+let mk = (c: boolean): Own<FileR> | Own<SockR> =>
+  if (c) new FileR() else new SockR();
+
+let mkMaybe = (have: boolean, c: boolean): Own<FileR> | Own<SockR> | null =>
+  if (have) mk(c) else null;
+
+let usingFile = (): void => { using u = mk(true); };
+let usingSock = (): void => { using u = mk(false); };
+let dropFile = (): void => { let u = mk(true); };
+let dropSock = (): void => { let u = mk(false); };
+let usingNone = (): void => { using u = mkMaybe(false, true); };
+
+export let main = (): i32 => {
+  var score = 0;
+  log = 0; usingFile(); score += log;           // dispose FileR: 1
+  log = 0; usingSock(); score += log * 10;      // dispose SockR: 100
+  log = 0; dropFile(); score += log * 1000;     // implicit drop FileR: 1000
+  log = 0; dropSock(); score += log * 10000;    // implicit drop SockR: 100000
+  log = 0; usingNone(); score += log;           // null skipped: 0
+  return score;                                 // 101101
+};

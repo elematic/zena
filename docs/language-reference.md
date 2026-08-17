@@ -4080,9 +4080,14 @@ if (f != null) { read(f); }
 // disposed at block exit — unless f is null, in which case nothing runs
 ```
 
-Wider unions are rejected (two disposable members have no single release
-path), as is an initializer that is statically `null` — a `using` that
-can never release anything is reported as a mistake.
+Same-handle unions are one owner: `Own<A> | Own<B>` normalizes to
+`Own<A | B>` (the spelling `Own<A | B>` is also legal directly), and
+`using` or implicit drop releases it by dispatching on the value's
+dynamic class. A union of plain `Disposable` classes releases the same
+way. What stays rejected: a union mixing different handles (`Own<A> |
+Borrow<B>` has no single release path), and an initializer that is
+statically `null` — a `using` that can never release anything is
+reported as a mistake.
 
 A `Borrow<R>` is rejected, nullable or not. A borrow is temporary access
 to something another party owns, and never releases what it points at.
