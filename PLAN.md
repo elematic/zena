@@ -133,7 +133,9 @@ This document tracks completed work and planned features. For project instructio
   - Next: `then`/`map`/`flatMap` (blocked on closures inside
     generic code), richer fetch (headers, streamed bodies — wants
     streams), and post-v1 items (cancellation and structured
-    concurrency, the tokio-backed CLI, the WASI P3 backend).
+    concurrency — designed in
+    [cancellation.md](docs/design/cancellation.md), implementation
+    not started — the tokio-backed CLI, the WASI P3 backend).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running

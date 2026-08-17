@@ -420,8 +420,10 @@ the whole difficulty and one of which turned out not to bind:
 So the standing restriction is narrower than "no yield in try": there is
 still **no `return()` / disposal protocol**, so `for-in` over generators
 needs no early-exit hook — `break` just drops the frame (or, fused, is a
-plain branch) — and what happens to a pending `finally` on abandonment
-is still decided once, with cancellation, on the async side.
+plain branch). Pending `finally` on abandonment is now decided in
+[cancellation.md](cancellation.md): disposal is a cancellation
+delivered at the suspended `yield`, over the same tag and region
+machinery, and a frame that is merely dropped runs no finalizers.
 
 ## 7. The fast path: for-in fusion
 

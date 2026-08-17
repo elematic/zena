@@ -668,9 +668,11 @@ website served by a Zena server":
   compiler support, nothing the executor knows about. `then`/`map`/
   `flatMap` wait on closures-in-generic-code.
 - **Post-v1** (each its own design conversation): cancellation +
-  structured concurrency (TaskGroup, from concurrency.md) — which is
-  also what would let a race cancel its losers, Rust-CLI tokio I/O,
-  WASI P3 backend, streams/`async gen`.
+  structured concurrency — designed in
+  [cancellation.md](cancellation.md) (scopes, checkpoint delivery on
+  a second exception tag, the `cancel` clause and `shielded` block,
+  and the loser-cancelling race as a TaskGroup API) — Rust-CLI tokio
+  I/O, WASI P3 backend, streams/`async gen`.
 
 ## 6. Await-in-try (implemented)
 
@@ -722,9 +724,10 @@ subtree of its body target and a dispatch target inside a try body
 dominates precisely the part of that body it heads.
 
 `finally` semantics on _abandonment_ (a pending try's future is
-dropped) remain coupled to cancellation and are decided there — same
+dropped) are decided in [cancellation.md](cancellation.md) — the
 one-place answer promised in generators.md §6, which generators then
-inherit. `await` inside a `finally`-protected region — the body, and
+inherit: cleanup runs at cancellation, and only cancellation is
+deterministic. `await` inside a `finally`-protected region — the body, and
 the finalizer itself — lowers: the exit-dispatch state (the exit code,
 the parked result, the saved payload) rides mutable variables, and the
 split passes move every variable into the frame
