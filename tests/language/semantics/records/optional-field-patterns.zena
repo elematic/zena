@@ -1,0 +1,50 @@
+// @mode: check
+// The conditional-pattern matrix for optional record fields.
+type Opts = {url: String, timeout?: i32, inner?: {x: i32}};
+
+// Naming an optional field without a default in an if-let is a
+// presence test; the binding holds the field's type in the branch.
+let presence = (opts: Opts) => {
+  if (let {timeout} = opts) {
+    let t: i32 = timeout;
+    return t;
+  }
+  return 0;
+};
+
+// A value sub-pattern on an optional field tests presence AND value.
+let valueTest = (opts: Opts) => {
+  if (let {timeout: 5} = opts) {
+    return 1;
+  }
+  return 0;
+};
+
+// A default keeps the pattern irrefutable even in a refutable
+// position: no presence test, the default applies when absent.
+let defaulted = (opts: Opts) => {
+  if (let {timeout = 9} = opts) {
+    let t: i32 = timeout;
+    return t;
+  }
+  return 0;
+};
+
+// Nested: presence of a record-typed field, then its sub-pattern.
+let nested = (opts: Opts) => {
+  if (let {inner: {x}} = opts) {
+    let v: i32 = x;
+    return v;
+  }
+  return 0;
+};
+
+// Presence is spelled by naming the field, not by the inline-tuple
+// protocol: an optional i32 field is an i32 when present, never an
+// inline (boolean, i32) value.
+let tupleShape = (opts: Opts) => {
+  if (let {timeout: (present, t)} = opts) { // @error: tuple pattern cannot match
+    return 0;
+  }
+  return 0;
+};

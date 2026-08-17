@@ -25,6 +25,7 @@ import {
   Type, I32Type, F64Type, BooleanType, VoidType, NullType, NeverType,
   TypeParameterType, MemberInfo, FieldInfo, MethodInfo,
   BoolLiteralType, ClassType, FunctionType, UnionType, TupleType,
+  InlineTupleType, HoleType,
   typeToString, TypeId
 } from '../lib/types.zena';
 import {
@@ -76,7 +77,17 @@ let createTestSharedState = (): SharedCheckerState => {
   mapClass.typeParameters = mapTArr;
   let getParams = new Array<Type>();
   getParams.push(mapK as Type);
-  mapClass.members["get"] = new MethodInfo(new FunctionType(getParams, null, mapV as Type), false, false, false, false);
+  // Mirror the stdlib signature: inline (true, V) | inline (false, _).
+  let hitElems = new Array<Type>();
+  hitElems.push(new BoolLiteralType(true) as Type);
+  hitElems.push(mapV as Type);
+  let missElems = new Array<Type>();
+  missElems.push(new BoolLiteralType(false) as Type);
+  missElems.push(new HoleType() as Type);
+  let getReturnArms = new Array<Type>();
+  getReturnArms.push(new InlineTupleType(hitElems) as Type);
+  getReturnArms.push(new InlineTupleType(missElems) as Type);
+  mapClass.members["get"] = new MethodInfo(new FunctionType(getParams, null, new UnionType(getReturnArms) as Type), false, false, false, false);
   let hasParams = new Array<Type>();
   hasParams.push(mapK as Type);
   mapClass.members["has"] = new MethodInfo(new FunctionType(hasParams, null, new BooleanType() as Type), false, false, false, false);

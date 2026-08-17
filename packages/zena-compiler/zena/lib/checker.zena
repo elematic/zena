@@ -2804,6 +2804,9 @@ let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: Arr
       }
       collectPatternSymbols(ctx, inner as Pattern, symbols);
     }
+    case AssignmentPattern {left}: {
+      collectPatternSymbols(ctx, left as Pattern, symbols);
+    }
     case _: {}
   }
 };
@@ -14674,9 +14677,18 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         pi = pi + 1;
       }
     }
-    case TuplePattern {elements}: {
+    case TuplePattern as tuplePat: {
+      let elements = tuplePat.elements;
       let elementTypes = getTuplePatternElementTypes(expectedType);
       if (elementTypes == null) {
+        if (!(expectedType is ErrorType) && !(expectedType is UnknownType)) {
+          ctx.error(
+            "A tuple pattern cannot match a value of type '" +
+                typeToString(expectedType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            tuplePat.loc
+          );
+        }
         for (let element in elements) {
           if (element != null) {
             checkPattern(ctx, element, new ErrorType());
@@ -14696,6 +14708,19 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
           }
         }
       }
+    }
+    case AssignmentPattern {left, right}: {
+      // `{x = default}` in a refutable position: the irrefutable form —
+      // the default must fit the field type and the left side binds it.
+      let defaultType = checkExpression(ctx, right, expectedType);
+      if (!isAssignableTo(ctx, defaultType, expectedType)) {
+        ctx.error(
+          `Type mismatch: default value type '${typeToString(defaultType)}' is not assignable to '${typeToString(expectedType)}'.`,
+          DiagnosticCode.TypeMismatch,
+          right.loc
+        );
+      }
+      checkPattern(ctx, left, expectedType);
     }
     case AsPattern as ap: {
       checkPattern(ctx, ap.pattern, expectedType);
