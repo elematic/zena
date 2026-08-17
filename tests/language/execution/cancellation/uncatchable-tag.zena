@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 42
+
+// A cancellation raises on its own tag (docs/design/cancellation.md):
+// `catch (e)` cannot observe it, `finally` still runs its cleanup, and
+// the unwind then continues. A finalizer that leaves on its own
+// discards the pending exit — the language's existing rule, and the
+// one legitimate way for this test to survive the unwind.
+
+import { raiseCancellation } from 'zena:async';
+
+var trace = '';
+
+let observe = (): i32 => {
+  try {
+    try {
+      trace += 'a';
+      raiseCancellation();
+      trace += 'X';
+    } catch (e) {
+      trace += 'C';
+    } finally {
+      trace += 'f';
+    }
+    trace += 'Y';
+    return 9;
+  } finally {
+    return 7;
+  }
+};
+
+export function main(): i32 {
+  if (observe() != 7) {
+    return 1;
+  }
+  if (trace != 'af') {
+    return 2;
+  }
+  return 42;
+}

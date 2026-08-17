@@ -71,11 +71,17 @@ class Error {
 
 ### Tag Design
 
-We use a **single exception tag** with no parameters:
+We use a **single exception tag** with no parameters for every user
+`throw`:
 
 ```wat
 (tag $zena_exception)  ;; type () -> ()
 ```
+
+(Cancellation raises on a second, payload-free tag that user `catch`
+does not lower against — see
+[cancellation.md](cancellation.md). "Single tag" here means one tag
+for the error channel, not one tag per module.)
 
 The exception payload (the thrown `Error` object) is stored in a **mutable global variable**:
 
@@ -180,7 +186,7 @@ using region`).
 
 1. **Tag with payload parameter**: `(tag (param eqref))` — Rejected due to catch target block arity issues.
 
-2. **Multiple tags per exception type**: One tag per class. Would require knowing all exception types at compile time and complex pattern matching. Rejected in favor of single tag + runtime type checking.
+2. **Multiple tags per exception type**: One tag per class. Would require knowing all exception types at compile time and complex pattern matching. Rejected in favor of single tag + runtime type checking. (The cancellation tag is not this: it is a second *channel* with different catchability, not a per-type discriminator.)
 
 3. **Using `exnref` with `catch_ref`**: Could enable rethrowing with full context. May revisit when more widely supported.
 

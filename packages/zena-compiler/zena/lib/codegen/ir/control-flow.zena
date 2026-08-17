@@ -609,6 +609,7 @@ let finallyExitReturn = 1;
 let finallyExitBreak = 2;
 let finallyExitContinue = 3;
 let finallyExitThrow = 4;
+let finallyExitCancel = 5;
 
 /** Parks `code` as the pending exit and branches to the dispatch. */
 let parkExit = (cx: LoweringContext, scope: FinallyScope, code: i32): void => {
@@ -726,6 +727,15 @@ let finishProtectedArm = (cx: LoweringContext, scope: FinallyScope,
  * The in-flight payload rides a variable rather than staying in the
  * global, because the finalizer may itself throw and catch, and that
  * overwrites the global before the rethrow reads it.
+ *
+ * When the module has cancellation infra, a second region on the
+ * cancellation tag nests OUTSIDE the error region, its handler edge
+ * parking the CANCEL code — a cancellation unwind is one more exit,
+ * replayed as a rethrow of its own tag (docs/design/cancellation.md).
+ * No payload rides with it: nothing may observe a cancellation. The
+ * dispatch stays outside both regions for the same reason as before,
+ * one level up: the cancel handler edge is a predecessor, and the
+ * emitter streams it past the outer region's end.
  */
 let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
     isVoid: boolean, resultVt: ValType | null,
@@ -756,6 +766,15 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
   let scope = new FinallyScope(dispatchB, codeVar, cx.loops.length);
   let protectedB = cx.b.newBlock();
   let ehB = cx.b.newBlock();
+  let cancelTagOpt = cx.wasm.cancellationTag;
+  var ehCancelB = -1;
+  if (cancelTagOpt != null) {
+    ehCancelB = cx.b.newBlock();
+    let midB = cx.b.newBlock();
+    cx.b.tryBr(cx.b.addRef(new IrRefTag(cancelTagOpt as WasmTag)),
+        midB, noValues(), ehCancelB, noValues());
+    cx.b.switchTo(midB);
+  }
   cx.b.tryBr(cx.b.addRef(new IrRefTag(tag)), protectedB, noValues(),
       ehB, noValues());
 
@@ -776,6 +795,15 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
       cx.b.emit(IrOp.global_get, payloadG.type, -1, ehPayloadRef));
   cx.b.varSet(codeVar, cx.b.constI32(finallyExitThrow, i32vt));
   cx.b.br(dispatchB, noValues());
+
+  // ---- the cancel region's handler edge -----------------------------
+  if (ehCancelB >= 0) {
+    cx.env = cx.copyOf(saved);
+    cx.reachable = true;
+    cx.b.switchTo(ehCancelB);
+    cx.b.varSet(codeVar, cx.b.constI32(finallyExitCancel, i32vt));
+    cx.b.br(dispatchB, noValues());
+  }
 
   // ---- the finalizer, once ------------------------------------------
   cx.env = cx.copyOf(saved);
@@ -864,6 +892,20 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
       let loop = cx.loops[cx.loops.length - 1];
       cx.b.br(loop.continueTarget, cx.envValues(loop.carried));
     }
+    elseB = nextB;
+  }
+
+  // A pending cancellation continues on its own tag, payload-free.
+  if (ehCancelB >= 0) {
+    cx.b.switchTo(elseB);
+    let armB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, code,
+            cx.b.constI32(finallyExitCancel, i32vt)),
+        armB, noValues(), nextB, noValues());
+    cx.b.switchTo(armB);
+    cx.b.throwWithTag(noValues(),
+        cx.b.addRef(new IrRefTag(cancelTagOpt as WasmTag)));
     elseB = nextB;
   }
 

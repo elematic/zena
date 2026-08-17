@@ -1,0 +1,46 @@
+// @mode: run
+// @result: 42
+
+// A cancellation raised after an await resumes must still run the
+// enclosing `finally`: the split pass re-enters try regions at every
+// dispatch target, and the cancellation region has to be re-entered
+// with them. This fails silently if it regresses — the success path is
+// byte-for-byte plausible and only the unwinding path skips the
+// finalizer — which is why the raise sits on the far side of a
+// suspension. The error-tag capture in step() must not reject the
+// future either: the cancellation passes through it, out of the
+// executor, and is discarded by main's finalizer leaving on its own.
+
+import { Future, Completer, drainMicrotasks, raiseCancellation } from 'zena:async';
+
+var trace = '';
+
+let work = async (gate: Future<i32>): Future<i32> => {
+  try {
+    trace += 'a';
+    let v = await gate;
+    trace += 'b';
+    raiseCancellation();
+    trace += 'X';
+  } finally {
+    trace += 'f';
+  }
+  return 0;
+};
+
+export function main(): i32 {
+  let c = new Completer<i32>();
+  let fut = work(c.future);
+  trace += '1';
+  c.complete(9);
+  try {
+    drainMicrotasks();
+    trace += 'Y';
+  } finally {
+    if (trace != 'a1bf') {
+      return 2;
+    }
+    return 42;
+  }
+  return 3;
+}

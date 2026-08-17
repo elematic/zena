@@ -771,6 +771,7 @@ export final class WasmModule {
   exportTagMap = new HashMap<String, WasmTag>();
   var exceptionTag: WasmTag | null = null;
   var exceptionPayload: WasmGlobal | null = null;
+  var cancellationTag: WasmTag | null = null;
   var isLayoutLocked: boolean = false;
   var startFunction: WasmFunction | null = null;
   
@@ -1476,6 +1477,25 @@ export final class WasmModule {
     this.hostWritesStrings = true;
     this.ensureStringCreate(model);
     this.ensureStringSetByte(model);
+  }
+
+  /**
+   * The cancellation channel's tag (docs/design/cancellation.md). No
+   * payload and no payload global: `catch (e)` cannot observe a
+   * cancellation, so there is nothing to carry. Created by RTA when
+   * `cancel.raise` is reached; a program that never raises
+   * cancellation gets no second tag, and finalizer regions keep their
+   * one-tag shape.
+   */
+  ensureCancellationInfra(): void {
+    if (this.cancellationTag != null) {
+      return;
+    }
+    let sig = this.getSignature(new Array<ValType>(), new Array<ValType>());
+    let tag = new WasmTag(sig);
+    this.tags.push(tag);
+    this.cancellationTag = tag;
+    this.exportTagMap["__zena_cancellation"] = tag;
   }
 
   ensureStringCreate(model: SemanticModel): void {

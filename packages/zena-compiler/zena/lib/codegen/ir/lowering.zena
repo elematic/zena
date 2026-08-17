@@ -2039,9 +2039,13 @@ export final class FunctionLowerer {
           if (t != null && t is NeverType && expression is CallExpression) {
             // A never-returning call ends the path like a throw: emit
             // the call, then close the block — nothing after it runs.
+            // An intrinsic (cancel.raise) may have ended it already
+            // with its own terminator; only close a block still open.
             this.#lowerCall(expression);
-            this.b.unreachable();
-            this.#cx().reachable = false;
+            if (this.#cx().reachable) {
+              this.b.unreachable();
+              this.#cx().reachable = false;
+            }
           } else {
             this.#lowerExpression(expression);
           }

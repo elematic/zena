@@ -22,11 +22,11 @@ import { parseI32WithHex } from '../codegen-utils.zena';
 import { i32ToString } from 'zena:string-convert';
 import { arrayElementType, isSignedNarrowIntType } from '../../types.zena';
 import {
-  WasmFunction, WasmArray, isValSubtype, asWasmArray,
+  WasmFunction, WasmArray, WasmTag, isValSubtype, asWasmArray,
 } from '../wasm-module.zena';
 import { ValTypeI64, ValTypeF32, ValTypeF64 } from '../wasm.zena';
 import { IrRefFunc } from './ir.zena';
-import { IrOp, IrRefType } from './ir.zena';
+import { IrOp, IrRefTag, IrRefType } from './ir.zena';
 import { LoweringContext } from './lowering-context.zena';
 import { lowerEqIntrinsic, lowerHashIntrinsic } from './equality.zena';
 import { lowerExpr } from './lowering.zena';
@@ -69,6 +69,22 @@ let lowerInstr = (cx: LoweringContext, call: CallExpression, op: IrOp, resultVt:
     return cx.b.binary(op, resultVt, a, c);
   }
   cx.fail('intrinsic arity');
+};
+
+/** cancel.raise: a throw on the cancellation tag — the channel user
+ * `catch` cannot observe (docs/design/cancellation.md). No payload is
+ * set: nothing may observe a cancellation, so there is nothing to
+ * carry. RTA ensures the tag when the intrinsic is reached; a miss
+ * here is a reachability bug, not a fallback site. */
+let lowerCancelRaise = (cx: LoweringContext, call: CallExpression): i32 => {
+  let tagOpt = cx.wasm.cancellationTag;
+  if (tagOpt == null) {
+    cx.fail('cancellation infra missing');
+  }
+  cx.b.throwWithTag(new Array<i32>(),
+      cx.b.addRef(new IrRefTag(tagOpt as WasmTag)));
+  cx.reachable = false;
+  return -1;
 };
 
 /** Lowers `e` and requires an array-typed value: (value, its array). */
@@ -574,6 +590,7 @@ export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpres
     case 'memory.size': cx.b.emit(IrOp.memory_size, new ValTypeI32(), -1, -1)
     case 'memory.grow': lowerMemoryGrow(cx, call)
     case 'wasi_write_string': lowerWasiWriteString(cx, call)
+    case 'cancel.raise': lowerCancelRaise(cx, call)
     case 'eq': {
       lowerEqIntrinsic(cx, call)
     }

@@ -1,0 +1,44 @@
+// @mode: run
+// @result: 42
+
+// `using` releases on a cancellation unwind exactly as it does on an
+// exception unwind, in reverse declaration order, and the unwind then
+// continues past the block.
+
+import { raiseCancellation } from 'zena:async';
+import { Disposable } from 'zena:ownership';
+
+var trace = '';
+
+class Guard implements Disposable {
+  #name: String;
+  new(name: String) : #name = name;
+  :Disposable.dispose(): void { trace += this.#name; }
+}
+
+let work = (): void => {
+  using a = new Guard('a');
+  using b = new Guard('b');
+  trace += 'r';
+  raiseCancellation();
+  trace += 'X';
+};
+
+let run = (): i32 => {
+  try {
+    work();
+    return 9;
+  } finally {
+    return 5;
+  }
+};
+
+export function main(): i32 {
+  if (run() != 5) {
+    return 1;
+  }
+  if (trace != 'rba') {
+    return 2;
+  }
+  return 42;
+}
