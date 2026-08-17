@@ -116,12 +116,18 @@ safety.
 - **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0
 as f64`).
 - **`boolean`**: Boolean value (`true` or `false`).
-- **`v128`**: A 128-bit WebAssembly SIMD vector. It has no literal syntax, no
-  operators and no casts: the bits carry no interpretation of their own — the
-  same vector is four floats to one instruction and sixteen bytes to the next
-  — so there is nothing for `+` or `as` to mean. Values are produced and
-  consumed by the instructions in `zena:simd`, and otherwise behave like any
-  other value in locals, fields, arrays and returns. See
+- **`v128`**: A 128-bit WebAssembly SIMD vector. It has no literal syntax and
+  no operators of its own: the bits carry no interpretation — the same vector
+  is four floats to one instruction and sixteen bytes to the next — so there
+  is nothing for a bare `+` to mean. Its only cast is to and from a shaped
+  view of itself. Otherwise it behaves like any other value, in locals,
+  fields, arrays and returns.
+
+  Arithmetic comes from the shaped vector types in `zena:simd` (`I32x4`,
+  `F32x4` and siblings), which attach a lane width and lane type and define
+  elementwise operators. They are [extension
+  classes](#operators-on-extension-classes) over `v128` and are erased, so
+  they cost nothing beyond the instructions they issue. See
   [simd.md](design/simd.md).
 - **`String`**: UTF-8 string.
 - **`anyref`**: The top type for all reference types. It can hold any object,
@@ -1528,6 +1534,10 @@ let usage = dedent`
 - `!` (Logical NOT) - Inverts a boolean value.
 - `-` (Negation) - Negates a numeric value (`i32` or `f32`).
 
+Unary operators apply to primitives only: a class cannot overload them, so a
+type that needs negation names it (`value.neg()`). See [Unary
+Operators](#unary-operators-1) under operator overloading.
+
 ### Binary Operators
 
 Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
@@ -1539,7 +1549,10 @@ Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
 - `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
 
 Classes can define custom behavior for `+` via `operator +`. See [Operator
-Overloading](#operator-overloading).
+Overloading](#operator-overloading). Extension classes over a primitive may do
+the same: the vector types in `zena:simd` define `+`, `-` and `*` as
+elementwise operations over a `v128`, where `a * b` multiplies lane i by lane
+i rather than forming a dot product.
 
 Supported bitwise operators for integer types (`i32`, `u32`, `i64`, `u64`):
 
@@ -3124,6 +3137,55 @@ class Point {
   }
 }
 ```
+
+##### Unary Operators
+
+Only binary operators dispatch to operator methods. Unary `-` requires a
+numeric type, and `-value` on a class is an error however the class is
+declared:
+
+```zena
+class Vector {
+  x: i32;
+  new(this.x);
+  operator -(other: Vector): Vector {
+    return new Vector(this.x - other.x);
+  }
+}
+
+let d = a - b; // OK: the binary operator method
+let n = -a;    // Error: Unary '-' requires a numeric type, got 'Vector'
+```
+
+A type that wants negation gives it a name — `a.neg()`. This is why the
+vector types in `zena:simd` spell negation as a method.
+
+##### Operators on Extension Classes
+
+An [extension class](#extension-classes) may define operators, including
+one whose `on` type is a primitive. Extension classes are erased, so the
+operator method takes and returns the underlying primitive, and using it
+costs a call and nothing else — there is no wrapper to allocate or unpack.
+
+```zena
+final extension class Celsius on f64 {
+  operator +(other: Celsius): Celsius {
+    return ((this as f64) + (other as f64)) as Celsius;
+  }
+}
+
+let warm = (20.0 as Celsius) + (5.0 as Celsius);
+```
+
+The casts in both directions are what make the underlying value
+reachable. How tightly they are policed depends on the `on` type: an
+extension on a numeric primitive inherits the ordinary numeric cast
+rules, so `20.0 as Celsius` and `celsius as i32` are both accepted. An
+extension on `v128` is stricter — a `v128` converts only to and from a
+view of itself, because there is no numeric conversion for it to inherit.
+
+`zena:simd`'s vector types are built this way — `I32x4` is an extension
+class on `v128` whose `+` is a single wasm instruction.
 
 ##### Index Operators
 

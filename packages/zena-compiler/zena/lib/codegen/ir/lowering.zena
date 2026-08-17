@@ -4548,6 +4548,49 @@ export final class FunctionLowerer {
   }
 
   /**
+   * A member read whose receiver has no struct behind it: the value is
+   * a wasm array or a bare primitive, and an extension class declared
+   * `on` that type owns the member. Extensions have no fields and no
+   * vtable, so the target is always a getter, called directly with the
+   * underlying value as its only argument — which is also why this
+   * costs nothing beyond the call: there is no wrapper to unpack.
+   *
+   * Returns -1 when the static type is not an extension at all, so the
+   * caller can report the failure in its own terms.
+   */
+  #lowerExtensionMemberOn(member: MemberExpression, receiver: i32,
+      what: String): i32 {
+    let objectType = this.#substitutedNodeType(member.object);
+    var extCt: ClassType | null = null;
+    if (objectType != null) {
+      let selfR = this.#resolveSelfType(objectType);
+      if (selfR is ClassType && selfR.isExtension) {
+        extCt = eraseTypeParameters(this.wasm, selfR) as ClassType;
+      }
+    }
+    if (extCt == null) {
+      return -1;
+    }
+    let extTarget = this.#resolveMemberTarget(member, extCt);
+    if (extTarget.fieldName != null || extTarget.vtSlot != null ||
+        extTarget.getter == null) {
+      this.#bail(what);
+    }
+    let extGetter = extTarget.getter as WasmFunction;
+    let egSig = extGetter.signature;
+    if (egSig.params.length != 1 || egSig.returns.length != 1) {
+      this.#bail('getter shape');
+    }
+    if (!isValSubtype(this.#valueType(receiver), egSig.params[0])) {
+      this.#failConformance(receiver, egSig.params[0],
+          'member receiver type');
+    }
+    let extCall = this.b.callFunc(this.b.addRef(new IrRefFunc(extGetter)),
+        this.#oneArg(receiver), egSig.returns[0]);
+    return this.#reassertNonNull(extCall, this.#exprValType(member));
+  }
+
+  /**
    * The receiver-value core of a member read: array .length, then
    * field / non-overridden getter resolution against the receiver's
    * class. Shared by the plain path and the optional-chain hit arm.
@@ -4562,45 +4605,28 @@ export final class FunctionLowerer {
       if (arrProp == "length") {
         return this.b.emit(IrOp.array_len, new ValTypeI32(), receiver, -1);
       }
-      // An extension class on the array type owns other members:
-      // extensions have no fields or vtable, so the target is always
-      // a getter called directly with the array value as receiver.
-      let objectType = this.#substitutedNodeType(member.object);
-      var extCt: ClassType | null = null;
-      if (objectType != null) {
-        let selfR = this.#resolveSelfType(objectType);
-        if (selfR is ClassType && selfR.isExtension) {
-          extCt = eraseTypeParameters(this.wasm, selfR) as ClassType;
-        }
-      }
-      if (extCt == null) {
+      // An extension class on the array type owns other members.
+      let arrExt = this.#lowerExtensionMemberOn(member, receiver, 'array member');
+      if (arrExt == -1) {
         this.#bail('array member');
       }
-      let extTarget = this.#resolveMemberTarget(member, extCt);
-      if (extTarget.fieldName != null || extTarget.vtSlot != null ||
-          extTarget.getter == null) {
-        this.#bail('array member');
+      return arrExt;
+    }
+    let earlyVt = this.#valueType(receiver);
+    if (!(earlyVt is ValTypeRef) && !(earlyVt is ValTypeRefNull)) {
+      // A receiver with no struct behind it — a `v128` under a shaped
+      // view, say. Only an extension class declared `on` that type can
+      // own a member here; nothing else has a member to read.
+      let primExt = this.#lowerExtensionMemberOn(
+          member, receiver, 'member receiver kind');
+      if (primExt != -1) {
+        return primExt;
       }
-      let extGetter = extTarget.getter as WasmFunction;
-      let egSig = extGetter.signature;
-      if (egSig.params.length != 1 || egSig.returns.length != 1) {
-        this.#bail('getter shape');
-      }
-      if (!isValSubtype(this.#valueType(receiver), egSig.params[0])) {
-        this.#failConformance(receiver, egSig.params[0],
-            'member receiver type');
-      }
-      let extCall = this.b.callFunc(this.b.addRef(new IrRefFunc(extGetter)),
-          this.#oneArg(receiver), egSig.returns[0]);
-      return this.#reassertNonNull(extCall, this.#exprValType(member));
+      this.#bail('member receiver kind');
     }
     let receiverCt = this.#receiverClass(receiver, member);
     let target = this.#resolveMemberTarget(member, receiverCt);
     let receiverVt = this.#valueType(receiver);
-    let isStructRef = receiverVt is ValTypeRef || receiverVt is ValTypeRefNull;
-    if (!isStructRef) {
-      this.#bail('member receiver kind');
-    }
     // The receiver value must actually be (a subtype of) the struct the
     // member resolved against — mismatched specialization keys (e.g.
     // intrinsic array classes) would otherwise emit invalid struct.gets.

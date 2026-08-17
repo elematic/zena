@@ -1,0 +1,511 @@
+/**
+ * @file
+ *
+ * Shaped views of a `v128`: the same 128 bits, with a lane width and a
+ * lane type attached so the type system can see them.
+ *
+ * Each is an `extension class on v128`, which Zena erases — `I32x4` IS
+ * a `v128` at runtime, every method is one wasm instruction, and
+ * `v as v128` moves no data. Nothing here allocates.
+ *
+ * Operators are ELEMENTWISE, following numpy and Rust: `a * b`
+ * multiplies lane i by lane i. It is not a dot product, and there is no
+ * matrix interpretation. Products and reductions that combine lanes are
+ * named methods, so a line of arithmetic never hides one.
+ *
+ * Two operators are missing on purpose rather than emulated:
+ *
+ * - `/` on integer shapes. Wasm SIMD divides floats only, so an
+ *   integer `/` would unpack the lanes and divide them one at a time.
+ * - `*` on `I8x16`. Wasm has no `i8x16.mul`.
+ *
+ * Also absent: `==`. Wasm's lane comparisons produce a MASK — all-ones
+ * or all-zeros per lane — while Zena's `==` must return `boolean` and
+ * carries the equality contract that `HashSet` keys rely on. The two
+ * cannot be the same operator, so the masks stay named functions in
+ * `instructions.zena` (`i32x4Eq` and friends) until the boolean form
+ * is designed.
+ *
+ * Signed shapes only for now: `+`, `-` and `*` are bit-identical for
+ * signed and unsigned lanes, so the unsigned views wait for the
+ * comparison and min/max surface that actually distinguishes them.
+ *
+ * See docs/design/simd.md.
+ *
+ * GENERATED shape: six types, one per lane layout.
+ */
+import {
+  f32x4Abs, f32x4Add, f32x4Div, f32x4ExtractLane,
+  f32x4Max, f32x4Min, f32x4Mul, f32x4Neg,
+  f32x4ReplaceLane, f32x4Splat, f32x4Sqrt, f32x4Sub,
+  f64x2Abs, f64x2Add, f64x2Div, f64x2ExtractLane,
+  f64x2Max, f64x2Min, f64x2Mul, f64x2Neg,
+  f64x2ReplaceLane, f64x2Splat, f64x2Sqrt, f64x2Sub,
+  i16x8Abs, i16x8Add, i16x8ExtractLaneS, i16x8MaxS,
+  i16x8MinS, i16x8Mul, i16x8Neg, i16x8Splat,
+  i16x8Sub, i32x4Abs, i32x4Add, i32x4ExtractLane,
+  i32x4MaxS, i32x4MinS, i32x4Mul, i32x4Neg,
+  i32x4ReplaceLane, i32x4Splat, i32x4Sub, i64x2Abs,
+  i64x2Add, i64x2ExtractLane, i64x2Mul, i64x2Neg,
+  i64x2ReplaceLane, i64x2Splat, i64x2Sub, i8x16Abs,
+  i8x16Add, i8x16ExtractLaneS, i8x16MaxS, i8x16MinS,
+  i8x16Neg, i8x16Splat, i8x16Sub, v128Load,
+  v128Store,
+} from './instructions.zena';
+
+/**
+ * 16 lanes of `i8` over one `v128`.
+ *
+ * Lanes are read with `i8x16ExtractLaneS` and the other
+ * instruction-level functions: at 16 lanes there is no set of
+ * names that beats an index, and an index has to be a literal.
+ */
+export final extension class I8x16 on v128 {
+  /** Every lane set to `value`. */
+  new(value: i32) : super(i8x16Splat(value));
+
+  /** Every lane set to `value`. */
+  static splat(value: i32): I8x16 {
+    return i8x16Splat(value) as I8x16;
+  }
+
+  /** The 16 bytes at `ptr` in linear memory. */
+  static load(ptr: i32): I8x16 {
+    return v128Load(ptr) as I8x16;
+  }
+
+  /** Writes all 16 bytes to `ptr` in linear memory. */
+  store(ptr: i32): void {
+    v128Store(ptr, this as v128);
+  }
+
+  /** Elementwise addition — lane i plus lane i. */
+  operator +(other: I8x16): I8x16 {
+    return i8x16Add(this as v128, other as v128) as I8x16;
+  }
+
+  /** Elementwise subtraction. */
+  operator -(other: I8x16): I8x16 {
+    return i8x16Sub(this as v128, other as v128) as I8x16;
+  }
+
+  // No `*`: wasm has no `i8x16.mul`. Widening to i16x8,
+  // multiplying and narrowing back is a different operation with
+  // different overflow behaviour, so it is not spelled `*`.
+
+  // No `/`: wasm SIMD divides floats only. Dividing 16 integer
+  // lanes means unpacking them, and an operator that quietly costs
+  // 48 instructions is the kind of hidden price this language
+  // avoids elsewhere.
+
+  /**
+   * Elementwise negation. A method rather than `-v`: Zena dispatches
+   * only binary operators to operator methods.
+   */
+  neg(): I8x16 { return i8x16Neg(this as v128) as I8x16; }
+
+  /** Elementwise absolute value. */
+  abs(): I8x16 { return i8x16Abs(this as v128) as I8x16; }
+
+  /** Elementwise minimum. */
+  min(other: I8x16): I8x16 {
+    return i8x16MinS(this as v128, other as v128) as I8x16;
+  }
+
+  /** Elementwise maximum. */
+  max(other: I8x16): I8x16 {
+    return i8x16MaxS(this as v128, other as v128) as I8x16;
+  }
+}
+
+/**
+ * 8 lanes of `i16` over one `v128`.
+ *
+ * Lanes are read with `i16x8ExtractLaneS` and the other
+ * instruction-level functions: at 8 lanes there is no set of
+ * names that beats an index, and an index has to be a literal.
+ */
+export final extension class I16x8 on v128 {
+  /** Every lane set to `value`. */
+  new(value: i32) : super(i16x8Splat(value));
+
+  /** Every lane set to `value`. */
+  static splat(value: i32): I16x8 {
+    return i16x8Splat(value) as I16x8;
+  }
+
+  /** The 16 bytes at `ptr` in linear memory. */
+  static load(ptr: i32): I16x8 {
+    return v128Load(ptr) as I16x8;
+  }
+
+  /** Writes all 16 bytes to `ptr` in linear memory. */
+  store(ptr: i32): void {
+    v128Store(ptr, this as v128);
+  }
+
+  /** Elementwise addition — lane i plus lane i. */
+  operator +(other: I16x8): I16x8 {
+    return i16x8Add(this as v128, other as v128) as I16x8;
+  }
+
+  /** Elementwise subtraction. */
+  operator -(other: I16x8): I16x8 {
+    return i16x8Sub(this as v128, other as v128) as I16x8;
+  }
+
+  /** Elementwise multiplication — NOT a dot product. */
+  operator *(other: I16x8): I16x8 {
+    return i16x8Mul(this as v128, other as v128) as I16x8;
+  }
+
+  // No `/`: wasm SIMD divides floats only. Dividing 8 integer
+  // lanes means unpacking them, and an operator that quietly costs
+  // 24 instructions is the kind of hidden price this language
+  // avoids elsewhere.
+
+  /**
+   * Elementwise negation. A method rather than `-v`: Zena dispatches
+   * only binary operators to operator methods.
+   */
+  neg(): I16x8 { return i16x8Neg(this as v128) as I16x8; }
+
+  /** Elementwise absolute value. */
+  abs(): I16x8 { return i16x8Abs(this as v128) as I16x8; }
+
+  /** Elementwise minimum. */
+  min(other: I16x8): I16x8 {
+    return i16x8MinS(this as v128, other as v128) as I16x8;
+  }
+
+  /** Elementwise maximum. */
+  max(other: I16x8): I16x8 {
+    return i16x8MaxS(this as v128, other as v128) as I16x8;
+  }
+}
+
+/**
+ * 4 lanes of `i32` over one `v128`.
+ */
+export final extension class I32x4 on v128 {
+  /** Every lane set to `value`. */
+  new(value: i32) : super(i32x4Splat(value));
+
+  /** Every lane set to `value`. */
+  static splat(value: i32): I32x4 {
+    return i32x4Splat(value) as I32x4;
+  }
+
+  /** The 16 bytes at `ptr` in linear memory. */
+  static load(ptr: i32): I32x4 {
+    return v128Load(ptr) as I32x4;
+  }
+
+  /** Writes all 16 bytes to `ptr` in linear memory. */
+  store(ptr: i32): void {
+    v128Store(ptr, this as v128);
+  }
+
+  /** Lane 0. */
+  x: i32 { get { return i32x4ExtractLane(this as v128, 0); } }
+  /** Lane 1. */
+  y: i32 { get { return i32x4ExtractLane(this as v128, 1); } }
+  /** Lane 2. */
+  z: i32 { get { return i32x4ExtractLane(this as v128, 2); } }
+  /** Lane 3. */
+  w: i32 { get { return i32x4ExtractLane(this as v128, 3); } }
+
+  /** A copy with lane 0 set to `value`. */
+  withX(value: i32): I32x4 {
+    return i32x4ReplaceLane(this as v128, 0, value) as I32x4;
+  }
+  /** A copy with lane 1 set to `value`. */
+  withY(value: i32): I32x4 {
+    return i32x4ReplaceLane(this as v128, 1, value) as I32x4;
+  }
+  /** A copy with lane 2 set to `value`. */
+  withZ(value: i32): I32x4 {
+    return i32x4ReplaceLane(this as v128, 2, value) as I32x4;
+  }
+  /** A copy with lane 3 set to `value`. */
+  withW(value: i32): I32x4 {
+    return i32x4ReplaceLane(this as v128, 3, value) as I32x4;
+  }
+
+  /** Elementwise addition — lane i plus lane i. */
+  operator +(other: I32x4): I32x4 {
+    return i32x4Add(this as v128, other as v128) as I32x4;
+  }
+
+  /** Elementwise subtraction. */
+  operator -(other: I32x4): I32x4 {
+    return i32x4Sub(this as v128, other as v128) as I32x4;
+  }
+
+  /** Elementwise multiplication — NOT a dot product. */
+  operator *(other: I32x4): I32x4 {
+    return i32x4Mul(this as v128, other as v128) as I32x4;
+  }
+
+  // No `/`: wasm SIMD divides floats only. Dividing 4 integer
+  // lanes means unpacking them, and an operator that quietly costs
+  // 12 instructions is the kind of hidden price this language
+  // avoids elsewhere.
+
+  /**
+   * Elementwise negation. A method rather than `-v`: Zena dispatches
+   * only binary operators to operator methods.
+   */
+  neg(): I32x4 { return i32x4Neg(this as v128) as I32x4; }
+
+  /** Elementwise absolute value. */
+  abs(): I32x4 { return i32x4Abs(this as v128) as I32x4; }
+
+  /** Elementwise minimum. */
+  min(other: I32x4): I32x4 {
+    return i32x4MinS(this as v128, other as v128) as I32x4;
+  }
+
+  /** Elementwise maximum. */
+  max(other: I32x4): I32x4 {
+    return i32x4MaxS(this as v128, other as v128) as I32x4;
+  }
+}
+
+/**
+ * 2 lanes of `i64` over one `v128`.
+ */
+export final extension class I64x2 on v128 {
+  /** Every lane set to `value`. */
+  new(value: i64) : super(i64x2Splat(value));
+
+  /** Every lane set to `value`. */
+  static splat(value: i64): I64x2 {
+    return i64x2Splat(value) as I64x2;
+  }
+
+  /** The 16 bytes at `ptr` in linear memory. */
+  static load(ptr: i32): I64x2 {
+    return v128Load(ptr) as I64x2;
+  }
+
+  /** Writes all 16 bytes to `ptr` in linear memory. */
+  store(ptr: i32): void {
+    v128Store(ptr, this as v128);
+  }
+
+  /** Lane 0. */
+  x: i64 { get { return i64x2ExtractLane(this as v128, 0); } }
+  /** Lane 1. */
+  y: i64 { get { return i64x2ExtractLane(this as v128, 1); } }
+
+  /** A copy with lane 0 set to `value`. */
+  withX(value: i64): I64x2 {
+    return i64x2ReplaceLane(this as v128, 0, value) as I64x2;
+  }
+  /** A copy with lane 1 set to `value`. */
+  withY(value: i64): I64x2 {
+    return i64x2ReplaceLane(this as v128, 1, value) as I64x2;
+  }
+
+  /** Elementwise addition — lane i plus lane i. */
+  operator +(other: I64x2): I64x2 {
+    return i64x2Add(this as v128, other as v128) as I64x2;
+  }
+
+  /** Elementwise subtraction. */
+  operator -(other: I64x2): I64x2 {
+    return i64x2Sub(this as v128, other as v128) as I64x2;
+  }
+
+  /** Elementwise multiplication — NOT a dot product. */
+  operator *(other: I64x2): I64x2 {
+    return i64x2Mul(this as v128, other as v128) as I64x2;
+  }
+
+  // No `/`: wasm SIMD divides floats only. Dividing 2 integer
+  // lanes means unpacking them, and an operator that quietly costs
+  // 6 instructions is the kind of hidden price this language
+  // avoids elsewhere.
+
+  /**
+   * Elementwise negation. A method rather than `-v`: Zena dispatches
+   * only binary operators to operator methods.
+   */
+  neg(): I64x2 { return i64x2Neg(this as v128) as I64x2; }
+
+  /** Elementwise absolute value. */
+  abs(): I64x2 { return i64x2Abs(this as v128) as I64x2; }
+
+  // No min/max: wasm has no `i64x2.min_s`/`max_s`.
+}
+
+/**
+ * 4 lanes of `f32` over one `v128`.
+ */
+export final extension class F32x4 on v128 {
+  /** Every lane set to `value`. */
+  new(value: f32) : super(f32x4Splat(value));
+
+  /** Every lane set to `value`. */
+  static splat(value: f32): F32x4 {
+    return f32x4Splat(value) as F32x4;
+  }
+
+  /** The 16 bytes at `ptr` in linear memory. */
+  static load(ptr: i32): F32x4 {
+    return v128Load(ptr) as F32x4;
+  }
+
+  /** Writes all 16 bytes to `ptr` in linear memory. */
+  store(ptr: i32): void {
+    v128Store(ptr, this as v128);
+  }
+
+  /** Lane 0. */
+  x: f32 { get { return f32x4ExtractLane(this as v128, 0); } }
+  /** Lane 1. */
+  y: f32 { get { return f32x4ExtractLane(this as v128, 1); } }
+  /** Lane 2. */
+  z: f32 { get { return f32x4ExtractLane(this as v128, 2); } }
+  /** Lane 3. */
+  w: f32 { get { return f32x4ExtractLane(this as v128, 3); } }
+
+  /** A copy with lane 0 set to `value`. */
+  withX(value: f32): F32x4 {
+    return f32x4ReplaceLane(this as v128, 0, value) as F32x4;
+  }
+  /** A copy with lane 1 set to `value`. */
+  withY(value: f32): F32x4 {
+    return f32x4ReplaceLane(this as v128, 1, value) as F32x4;
+  }
+  /** A copy with lane 2 set to `value`. */
+  withZ(value: f32): F32x4 {
+    return f32x4ReplaceLane(this as v128, 2, value) as F32x4;
+  }
+  /** A copy with lane 3 set to `value`. */
+  withW(value: f32): F32x4 {
+    return f32x4ReplaceLane(this as v128, 3, value) as F32x4;
+  }
+
+  /** Elementwise addition — lane i plus lane i. */
+  operator +(other: F32x4): F32x4 {
+    return f32x4Add(this as v128, other as v128) as F32x4;
+  }
+
+  /** Elementwise subtraction. */
+  operator -(other: F32x4): F32x4 {
+    return f32x4Sub(this as v128, other as v128) as F32x4;
+  }
+
+  /** Elementwise multiplication — NOT a dot product. */
+  operator *(other: F32x4): F32x4 {
+    return f32x4Mul(this as v128, other as v128) as F32x4;
+  }
+
+  /** Elementwise division. */
+  operator /(other: F32x4): F32x4 {
+    return f32x4Div(this as v128, other as v128) as F32x4;
+  }
+
+  /**
+   * Elementwise negation. A method rather than `-v`: Zena dispatches
+   * only binary operators to operator methods.
+   */
+  neg(): F32x4 { return f32x4Neg(this as v128) as F32x4; }
+
+  /** Elementwise absolute value. */
+  abs(): F32x4 { return f32x4Abs(this as v128) as F32x4; }
+
+  /** Elementwise square root. */
+  sqrt(): F32x4 { return f32x4Sqrt(this as v128) as F32x4; }
+
+  /** Elementwise minimum. */
+  min(other: F32x4): F32x4 {
+    return f32x4Min(this as v128, other as v128) as F32x4;
+  }
+
+  /** Elementwise maximum. */
+  max(other: F32x4): F32x4 {
+    return f32x4Max(this as v128, other as v128) as F32x4;
+  }
+}
+
+/**
+ * 2 lanes of `f64` over one `v128`.
+ */
+export final extension class F64x2 on v128 {
+  /** Every lane set to `value`. */
+  new(value: f64) : super(f64x2Splat(value));
+
+  /** Every lane set to `value`. */
+  static splat(value: f64): F64x2 {
+    return f64x2Splat(value) as F64x2;
+  }
+
+  /** The 16 bytes at `ptr` in linear memory. */
+  static load(ptr: i32): F64x2 {
+    return v128Load(ptr) as F64x2;
+  }
+
+  /** Writes all 16 bytes to `ptr` in linear memory. */
+  store(ptr: i32): void {
+    v128Store(ptr, this as v128);
+  }
+
+  /** Lane 0. */
+  x: f64 { get { return f64x2ExtractLane(this as v128, 0); } }
+  /** Lane 1. */
+  y: f64 { get { return f64x2ExtractLane(this as v128, 1); } }
+
+  /** A copy with lane 0 set to `value`. */
+  withX(value: f64): F64x2 {
+    return f64x2ReplaceLane(this as v128, 0, value) as F64x2;
+  }
+  /** A copy with lane 1 set to `value`. */
+  withY(value: f64): F64x2 {
+    return f64x2ReplaceLane(this as v128, 1, value) as F64x2;
+  }
+
+  /** Elementwise addition — lane i plus lane i. */
+  operator +(other: F64x2): F64x2 {
+    return f64x2Add(this as v128, other as v128) as F64x2;
+  }
+
+  /** Elementwise subtraction. */
+  operator -(other: F64x2): F64x2 {
+    return f64x2Sub(this as v128, other as v128) as F64x2;
+  }
+
+  /** Elementwise multiplication — NOT a dot product. */
+  operator *(other: F64x2): F64x2 {
+    return f64x2Mul(this as v128, other as v128) as F64x2;
+  }
+
+  /** Elementwise division. */
+  operator /(other: F64x2): F64x2 {
+    return f64x2Div(this as v128, other as v128) as F64x2;
+  }
+
+  /**
+   * Elementwise negation. A method rather than `-v`: Zena dispatches
+   * only binary operators to operator methods.
+   */
+  neg(): F64x2 { return f64x2Neg(this as v128) as F64x2; }
+
+  /** Elementwise absolute value. */
+  abs(): F64x2 { return f64x2Abs(this as v128) as F64x2; }
+
+  /** Elementwise square root. */
+  sqrt(): F64x2 { return f64x2Sqrt(this as v128) as F64x2; }
+
+  /** Elementwise minimum. */
+  min(other: F64x2): F64x2 {
+    return f64x2Min(this as v128, other as v128) as F64x2;
+  }
+
+  /** Elementwise maximum. */
+  max(other: F64x2): F64x2 {
+    return f64x2Max(this as v128, other as v128) as F64x2;
+  }
+}

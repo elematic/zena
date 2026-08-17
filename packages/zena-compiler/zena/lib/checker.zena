@@ -5557,12 +5557,34 @@ let isNullableType = (t: Type): boolean => match (t) {
   case _: false
 };
 
+/**
+ * Whether `t` is an extension class declared `on v128` — a shaped view
+ * of a vector, like `I32x4` or `F32x4`. Extension classes are erased,
+ * so such a type IS the same 128 bits with a lane interpretation
+ * attached, and converting between the two moves no data.
+ */
+let isV128View = (t: Type): boolean => {
+  if (t is ClassType) {
+    if (t.isExtension && t.onType != null) {
+      return baseType(t.onType as Type) is V128Type;
+    }
+  }
+  return false;
+};
+
 let isValidCast = (sourceType: Type, targetType: Type): boolean => {
-  // `v128` casts to and from nothing but itself. The bits carry no
-  // interpretation to convert, and reinterpreting them is what the
-  // `zena:simd` instructions are for.
+  // `v128` has no numeric conversions. The bits carry no interpretation
+  // until an instruction reads them, so there is nothing for a cast to
+  // `i32` to preserve. What it does convert to is a shaped view of
+  // itself, which is where the interpretation comes from.
   if (sourceType is V128Type || targetType is V128Type) {
-    return sourceType is V128Type && targetType is V128Type;
+    if (sourceType is V128Type && targetType is V128Type) {
+      return true;
+    }
+    if (sourceType is V128Type) {
+      return isV128View(targetType);
+    }
+    return isV128View(sourceType);
   }
 
   // Primitive → Primitive: VALID only if both are numeric or both are boolean

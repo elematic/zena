@@ -8,7 +8,7 @@ import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation, createCompiler, CompilerOptions } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { getEnv } from 'zena:cli';
-import { assertFunctionUses } from './wat-invariants.zena';
+import { assertFunctionUses, assertNoAllocation } from './wat-invariants.zena';
 
 let assertSnapshot = (name: String, content: String): void => {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
@@ -432,6 +432,40 @@ export let tests = suite('WatGenerator', (): void => {
     ops.push('v128.store8_lane align=0 offset=0 5');
     assertFunctionUses(result, '$main', ops,
         'the WAT emitter should spell each SIMD shape the way wasm text does');
+  });
+
+  // The shaped vector types (`I32x4` and friends in `zena:simd`) are
+  // extension classes over `v128`, and their whole value proposition is
+  // that the shape is a compile-time view: no wrapper object, so no
+  // allocation and no unpacking. A snapshot would not catch a
+  // regression that started boxing them — the diff would just look
+  // different — so assert the property.
+  test('a shaped vector type allocates nothing', (ctx: TestContext): void => {
+    let result = compileAndGenerateWat(`
+      @intrinsic('i32x4.splat')
+      declare function splat(x: i32): v128;
+      @intrinsic('i32x4.add')
+      declare function add(a: v128, b: v128): v128;
+      @intrinsic('i32x4.extract_lane')
+      declare function lane(a: v128, i: i32): i32;
+      final extension class I32x4 on v128 {
+        static of(v: i32): I32x4 { return splat(v) as I32x4; }
+        x: i32 { get { return lane(this as v128, 0); } }
+        operator +(other: I32x4): I32x4 {
+          return add(this as v128, other as v128) as I32x4;
+        }
+      }
+      export let main = (): i32 => {
+        let a = I32x4.of(20);
+        let b = I32x4.of(22);
+        return (a + b).x;
+      };
+    `);
+    assertNoAllocation(result, '$main',
+        'an extension class over v128 is erased — there is nothing to allocate');
+    // The shape must still be a v128 in the signature: that is what says
+    // it was not widened to a reference somewhere along the way.
+    equal(result.contains('(param v128) (param v128) (result v128)'), true);
   });
 });
 

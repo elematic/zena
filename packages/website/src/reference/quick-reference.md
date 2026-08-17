@@ -2058,10 +2058,36 @@ trailing zeros), `popcnt` (population count).
 
 ### zena:simd
 
-All 236 fixed-width WebAssembly SIMD instructions over the `v128` type, one
-function each, lowered to that single instruction. Names transliterate the
-wasm names: split on `.` and `_`, then capitalize every segment but the
-first, so `i32x4.add` is `i32x4Add` and `v128.load8x8_s` is `v128Load8x8S`.
+Two layers over WebAssembly SIMD, in one import.
+
+**Shaped types** give a `v128` a lane width and a lane type: `I8x16`, `I16x8`,
+`I32x4`, `I64x2`, `F32x4`, `F64x2`. They are extension classes over `v128` and
+are erased, so a shape IS a `v128` at runtime — every method is one
+instruction and nothing allocates.
+
+```zena
+import {F32x4} from 'zena:simd';
+
+let a = F32x4.splat(1.5 as f32);
+let b = new F32x4(2.5 as f32);
+let c = (a + b).withX(10.0 as f32);
+c.x + c.y; // 10.0 + 4.0
+```
+
+Operators are **elementwise**, as in numpy and Rust: `a * b` multiplies lane
+i by lane i, and is not a dot product. Lane-combining operations are named
+methods. Four- and two-lane shapes name their lanes `x`/`y`/`z`/`w` with
+matching `withX`/`withY`/… copies; wider shapes use the instruction layer.
+
+Missing on purpose: `/` on integer shapes (wasm SIMD divides floats only),
+`*` on `I8x16` (no `i8x16.mul`), and `==` (wasm's lane comparison yields a
+mask, not a `boolean`). Negation is `v.neg()`, since Zena dispatches only
+binary operators to operator methods.
+
+**All 236 instructions** are also exposed, one function each, lowered to that
+single instruction. Names transliterate the wasm names: split on `.` and `_`,
+then capitalize every segment but the first, so `i32x4.add` is `i32x4Add` and
+`v128.load8x8_s` is `v128Load8x8S`.
 
 ```zena
 import {i32x4Splat, i32x4Add, i32x4ExtractLane} from 'zena:simd';

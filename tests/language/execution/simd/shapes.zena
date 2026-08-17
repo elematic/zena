@@ -1,0 +1,90 @@
+// @mode: run
+// @result: 0
+//
+// The shaped vector types: elementwise operators, named lanes, and the
+// conversions to and from bare `v128`.
+//
+// Each check returns 0 when it holds and its own number when it does
+// not, so a failure names itself.
+import {
+  I8x16, I16x8, I32x4, I64x2, F32x4, F64x2,
+  i8x16ExtractLaneS, i16x8ExtractLaneS, i32x4Splat, i32x4ExtractLane,
+} from 'zena:simd';
+import {defaultAllocator} from 'zena:memory';
+
+export function main(): i32 {
+  // 1. Arithmetic is elementwise, and the operators read left to right.
+  let a = I32x4.splat(10);
+  let b = I32x4.splat(3);
+  if ((a + b).x != 13) { return 1; }
+  if ((a - b).x != 7) { return 2; }
+  if ((a * b).x != 30) { return 3; }
+  // `*` is lanewise, not a dot product: four lanes of 30, not 120.
+  let product = a * b;
+  if (product.x != 30 || product.w != 30) { return 4; }
+
+  // 5. Named lanes address the vector in order, and `with` copies.
+  let laned = I32x4.splat(0).withX(1).withY(2).withZ(3).withW(4);
+  if (laned.x != 1) { return 5; }
+  if (laned.y != 2) { return 6; }
+  if (laned.z != 3) { return 7; }
+  if (laned.w != 4) { return 8; }
+  // `with` returns a copy — the original is untouched.
+  let base = I32x4.splat(9);
+  let copy = base.withX(0);
+  if (base.x != 9) { return 9; }
+  if (copy.x != 0) { return 10; }
+
+  // 11. neg and abs are methods: Zena has no unary operator overloading.
+  if (I32x4.splat(-5).neg().x != 5) { return 11; }
+  if (I32x4.splat(-5).abs().x != 5) { return 12; }
+  if (I32x4.splat(2).min(I32x4.splat(7)).x != 2) { return 13; }
+  if (I32x4.splat(2).max(I32x4.splat(7)).x != 7) { return 14; }
+
+  // 15. A shape is a `v128` — erased, so the conversion moves nothing
+  // and the instruction-level functions accept it directly.
+  let raw: v128 = laned as v128;
+  if (i32x4ExtractLane(raw, 2) != 3) { return 15; }
+  let back = i32x4Splat(42) as I32x4;
+  if (back.x != 42) { return 16; }
+
+  // 17. Floats get division and square root.
+  let f = F32x4.splat(9.0 as f32);
+  if (f.sqrt().x != (3.0 as f32)) { return 17; }
+  if ((f / F32x4.splat(2.0 as f32)).x != (4.5 as f32)) { return 18; }
+  if ((f + F32x4.splat(0.5 as f32)).y != (9.5 as f32)) { return 19; }
+  if (new F32x4(1.25 as f32).w != (1.25 as f32)) { return 20; }
+
+  // 21. Two-lane shapes carry a full 64 bits and name only x and y.
+  let big = I64x2.splat(0 as i64).withY(0x1122334455667788 as i64);
+  if (big.y != (0x1122334455667788 as i64)) { return 21; }
+  if (big.x != (0 as i64)) { return 22; }
+  let d = F64x2.splat(2.0).withX(8.0);
+  if (d.x != 8.0) { return 23; }
+  if ((d * F64x2.splat(0.5)).y != 1.0) { return 24; }
+
+  // 25. Eight- and sixteen-lane shapes have arithmetic but no named
+  // lanes — reading one goes through the instruction-level function.
+  let bytes = I8x16.splat(3) + I8x16.splat(4);
+  if (i8x16ExtractLaneS(bytes as v128, 15) != 7) { return 25; }
+  let shorts = I16x8.splat(100) * I16x8.splat(3);
+  if (i16x8ExtractLaneS(shorts as v128, 7) != 300) { return 26; }
+  if (I8x16.splat(-2).abs() as v128 is v128) {
+    // `abs` exists on the narrow shapes too; the cast above just keeps
+    // the expression in statement position honest.
+  }
+
+  // 27. Load and store round-trip through linear memory.
+  var buf = -1;
+  if (let (true, ptr) = defaultAllocator.allocAligned(64, 16)) {
+    buf = ptr;
+  } else {
+    return 27;
+  }
+  laned.store(buf);
+  let loaded = I32x4.load(buf);
+  if (loaded.x != 1) { return 28; }
+  if (loaded.w != 4) { return 29; }
+
+  return 0;
+}
