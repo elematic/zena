@@ -241,6 +241,57 @@ own — spawn the candidates in a child scope, cancel the scope when
 the first settles. That form arrives with the structured half of
 `TaskGroup`.
 
+## Consumer interest
+
+An opt-in layer over the previous section: work spawned on behalf of
+several consumers, cancelled when the last of them disclaims interest.
+It changes nothing in the mechanism — the last disclaim calls the
+scope's cancel, and delivery, cleanup, and the boundary state are the
+ones above — and it belongs in the stdlib next to the task object, in
+the structured half of the sequencing.
+
+Implicit interest — cancel when nobody holds the future — is not
+available: WasmGC has no deterministic finalization, so the death of a
+last reference is unobservable. Interest is therefore declared and
+released explicitly, which is also the safer contract: disclaiming has
+consequences for other consumers, and should be an act rather than a
+garbage-collection artifact.
+
+The encoding is an affine handle in the ownership regime —
+`OwnedFuture<T>` as the working name (`Lease<T>` is the alternative;
+the concept has no canonical name, and the nearest mechanisms are
+Rust's `Shared`, whose clones are counted interests with last-drop
+cancelling the inner future, and Rx's `refCount`):
+
+- Spawning shared work yields an `OwnedFuture<T>`: awaitable directly,
+  and a resource whose release — `using`, `dispose`, or move-checked
+  consumption — decrements the interest count. Sharing is an explicit
+  split that increments before the second handle exists. Move checking
+  makes the discipline static: an affine handle cannot be aliased, so
+  "two holders, one drops what the other needs" cannot be written —
+  a holder either moved its handle away or split it, and splits are
+  counted.
+- The last release cancels the scope, deferred by one microtask so a
+  same-turn handoff (release, then acquire) never observes a transient
+  zero — Kotlin's `WhileSubscribed` grace period reduced to its
+  minimal form under run-to-completion.
+- `Future` itself stays inert and freely copyable: an `OwnedFuture`
+  exposes the bare future for bystanders, holding it confers awaiting
+  and nothing else, and if the interest holders all release, a
+  bystander mid-await gets the cancellation raise at its checkpoint.
+  Awaiting without holding interest is awaiting at the holders'
+  pleasure, which is the legible version of the contract every
+  shared-cancellation design needs somewhere.
+
+Two boundary markers from the precedent record, both deliberate here:
+handle lifetime is not interest (Swift's SE-0304 made dropping an
+unstructured task handle not cancel it, and tokio's `JoinHandle`
+detaches on drop — an `OwnedFuture` released by the ownership regime
+is an explicit act, not a scope exit surprise), and interest never
+lives on the shared value (TC39's cancelable-promises proposal
+foundered on making every promise holder a threat to every other; the
+inert `Future` is the same lesson enforced by type).
+
 ## Abandonment and generator disposal
 
 The deferred questions resolve as one rule: **cleanup runs at
@@ -310,7 +361,9 @@ not-yet-run computation holds a thunk, and running it is where the
 task creates the child scope that a re-run or supersession later
 cancels — the same shape as `AsyncComputed` minus the signal graph.
 Nothing new is required of this design; the task object is a consumer
-of the scope API and the boundary states.
+of the scope API and the boundary states, and `OwnedFuture` (see
+"Consumer interest") is its natural neighbor — the same shelf of the
+stdlib, task state on one object and counted interest on the other.
 
 One naming collision to resolve before that lands: `zena:async`
 already uses `Task` for the executor's queue protocol (the interface
@@ -354,9 +407,9 @@ the caller, not a directive to unwind.
    passes.
 3. **Syntax.** The `cancel` clause and `shielded` block.
 4. **The structured half.** `TaskGroup` joins its children, a child's
-   failure cancels its siblings, and the loser-cancelling race
-   arrives. This changes no mechanism above; it adds policy over the
-   same scope object.
+   failure cancels its siblings, and the loser-cancelling race and
+   `OwnedFuture` arrive. This changes no mechanism above; it adds
+   policy over the same scope object.
 5. **Generator disposal** over the same machinery.
 
 ## Alternatives considered
