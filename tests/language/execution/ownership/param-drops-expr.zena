@@ -1,0 +1,60 @@
+// @mode: run
+// @result: 4321
+// Expression-bodied functions release their owned parameters too: the
+// value computes first, then the release runs — and a body that hands
+// the ownership out (returning the parameter) releases nothing, since
+// the caller owns it from there.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+
+var released = 0;
+var seen = 0;
+
+resource class Res {
+  id: i32;
+  new(this.id);
+  :Disposable.dispose(this: Own<this>): void { released += this.id; }
+}
+
+let bump = (b: Borrow<Res>): i32 => {
+  seen += b.id;
+  return b.id;
+};
+
+let bumpVoid = (b: Borrow<Res>): void => {
+  seen += b.id;
+};
+
+// Valued expression body: releases after the value computes.
+let value = (r: Own<Res>): i32 => r.id;
+
+// Void expression body: evaluates for effects, then releases.
+let effect = (r: Own<Res>): void => bumpVoid(r);
+
+// Ownership flows out: no release here — the caller owns it.
+let pass = (r: Own<Res>): Own<Res> => r;
+
+// Nullable owner in an expression body: guarded like everywhere else.
+let maybe = (r: Own<Res> | null): i32 => 5;
+
+export let main = (): i32 => {
+  var score = 0;
+  released = 0;
+  let v = value(new Res(1));
+  score += released;                 // 1 (and v == 1)
+  released = 0; seen = 0;
+  effect(new Res(2));
+  score += released * 10;            // 20 (and seen == 2)
+  released = 0;
+  {
+    let got = pass(new Res(3));
+    bump(got);
+  }
+  score += released * 100;           // exactly one release — got's: 300
+  released = 0;
+  maybe(null);
+  score += released * 1000;          // null skipped: 0
+  released = 0;
+  maybe(new Res(4));
+  score += released * 1000;          // 4000
+  return score;                      // 4321
+};

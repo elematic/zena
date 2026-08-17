@@ -12359,6 +12359,10 @@ let checkMethodBody = (
       ctx.exitOwnScope(block as Node);
     }
     case Expression as bodyExpr: {
+      ctx.enterOwnScope();
+      if (methodName != "<constructor>") {
+        registerOwnParamCandidates(ctx, md.params, methodType.parameters);
+      }
       let bodyType = checkExpression(ctx, bodyExpr, effectiveReturnType);
       if (!isAssignableTo(ctx, bodyType, effectiveReturnType)) {
         ctx.error(
@@ -12368,6 +12372,7 @@ let checkMethodBody = (
           md.loc
         );
       }
+      ctx.exitOwnScope(bodyExpr as Node);
     }
     case _: {}
   }
@@ -16100,10 +16105,12 @@ let checkFunctionExpression = (
       }
     }
     case Expression as bodyExpr: {
+      ctx.enterOwnScope();
+      registerOwnParamCandidates(ctx, fe.params, paramTypes);
       // If we don't have an expected type, don't pass retType (which is VoidType by default).
       let expectedBodyType = if (needsInference) { null } else { retType };
       let bodyType = checkExpression(ctx, bodyExpr, expectedBodyType);
-      
+
       // Expression body: validate return type if annotated
       if (returnTypeAnn != null) {
         if (!isAssignableTo(ctx, bodyType, retType)) {
@@ -16129,6 +16136,7 @@ let checkFunctionExpression = (
         // Infer return type from expression body.
         retType = bodyType;
       }
+      ctx.exitOwnScope(bodyExpr as Node);
     }
   }
 

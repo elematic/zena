@@ -4128,8 +4128,7 @@ the function received ownership, so the function releases unless its
 body moves the value onward. Passing a resource to `Own<R>` parameter
 is therefore a complete handoff — the caller's binding dies at the
 call, and the callee disposes what it was handed (or moves it further).
-Constructors, expression-bodied functions, and `async`/`gen` bodies are
-not yet covered.
+Constructors and `async`/`gen` bodies are not yet covered.
 
 The compiler releases a binding only when it still owns the value at every
 exit. A binding is left alone when anything moves it (a call taking

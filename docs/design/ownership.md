@@ -973,27 +973,29 @@ because an inner construct's compensation makes the binding definitely
 dead at its own merge. A diverging arm needs no compensation, which is
 what keeps the conditional-handoff shape working — in both constructs.
 
-**Owned parameters release too.** A block-bodied function's
-`Own<resource>` parameter that the body never moves, captures or
-escapes is released at function exit — the function received
-ownership, so the function releases; this is the callee's half of a
-move, and what makes `consume(r)` leak-free without the callee writing
-anything. The same verdict machinery decides (a parameter is a
-candidate in the body's own scope, branch-join compensation included),
-and lowering wraps the whole body in the shared finally regions, first
-parameter outermost so release order is the reverse of declaration.
-Excluded: constructors (their owned parameters feed fields and the
-super call, which are checked outside the body block), suspending
-bodies, expression-bodied functions (no statement list to wrap — the
-region cannot carry the expression result out yet), the receiver, and
-`this.x` field parameters.
+**Owned parameters release too.** A function's `Own<resource>`
+parameter that the body never moves, captures or escapes is released
+at function exit — the function received ownership, so the function
+releases; this is the callee's half of a move, and what makes
+`consume(r)` leak-free without the callee writing anything. The same
+verdict machinery decides (a parameter is a candidate in the body's
+own scope, branch-join compensation included), and lowering wraps the
+whole body in the shared finally regions, first parameter outermost so
+release order is the reverse of declaration. An expression body is
+spelled as a one-statement list first — a `return` when the function
+produces a value, so the value computes inside the region, before the
+release; a body that returns the parameter itself is a use the
+classifier does not affirm, so ownership flows out unreleased, to the
+caller. Excluded: constructors (their owned parameters feed fields and
+the super call, which are checked outside the body block), suspending
+bodies, the receiver, and `this.x` field parameters.
 
-Not yet released: bindings in value-producing blocks and parameters of
-expression-bodied functions (the region cannot carry a result out),
-and anything in a generator or `async` body (part 4's cancellation
-table). `execution/ownership/implicit-drop.zena`, `match-arm-drops.zena`
-and `param-drops.zena` pin the behavior; the release-timing note now
-lives in the language reference.
+Not yet released: bindings in value-producing blocks (the region
+cannot carry a result out), and anything in a generator or `async`
+body (part 4's cancellation table).
+`execution/ownership/implicit-drop.zena`, `match-arm-drops.zena`,
+`param-drops.zena` and `param-drops-expr.zena` pin the behavior; the
+release-timing note now lives in the language reference.
 
 1. **Unwind paths.** Every scope holding a live resource needs cleanup on
    exception propagation. `finally` makes this expressible; it is still real

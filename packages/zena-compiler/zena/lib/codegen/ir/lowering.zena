@@ -1103,6 +1103,17 @@ export final class FunctionLowerer {
     }
 
     let body = bodyNode as Node;
+    // Owned parameters the checker marked for release wrap the whole
+    // body in regions, first parameter outermost.
+    let dropParamSyms = new Array<Symbol>();
+    for (var pi = 0; pi < params.length; pi += 1) {
+      if (this.func.model.hasScopeExitDrop(params[pi] as Node)) {
+        let ds = this.func.model.resolveDeclaration(params[pi].name);
+        if (ds != null) {
+          dropParamSyms.push(ds);
+        }
+      }
+    }
     if (body is BlockStatement) {
       // Value-block function bodies: a trailing expression statement
       // that conforms to the return type IS the return value (the
@@ -1123,17 +1134,6 @@ export final class FunctionLowerer {
         }
       }
       let bodyCount = if (tailExpr != null) stmts.length - 1 else stmts.length;
-      // Owned parameters the checker marked for release wrap the whole
-      // body in regions, first parameter outermost.
-      let dropParamSyms = new Array<Symbol>();
-      for (var pi = 0; pi < params.length; pi += 1) {
-        if (this.func.model.hasScopeExitDrop(params[pi] as Node)) {
-          let ds = this.func.model.resolveDeclaration(params[pi].name);
-          if (ds != null) {
-            dropParamSyms.push(ds);
-          }
-        }
-      }
       var usingInBody = dropParamSyms.length > 0;
       for (var si = 0; si < bodyCount; si += 1) {
         let s = stmts[si];
@@ -1205,6 +1205,35 @@ export final class FunctionLowerer {
           let value = this.#lowerExpressionCtx(
               body as Expression, this.presplitAsyncValueVt);
           this.#emitCheckedRet(value);
+        }
+        return this.b.finish();
+      }
+      if (dropParamSyms.length > 0) {
+        // The release region wraps a statement list; spell the
+        // expression body as one — a return when the function produces
+        // a value (the value computes inside the region, before the
+        // release), a bare expression statement when it is void.
+        if (sig.returns.length > 1) {
+          this.#bail('param drop multi-return');
+        }
+        let bodyExpr = body as Expression;
+        let synthesized = new Array<Statement>();
+        if (sig.returns.length == 1) {
+          synthesized.push(
+              new ReturnStatement(bodyExpr, bodyExpr.loc) as Statement);
+        } else {
+          synthesized.push(
+              new ExpressionStatement(bodyExpr, bodyExpr.loc) as Statement);
+        }
+        lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
+            synthesized, 0, synthesized.length);
+        if (this.#cx().reachable) {
+          if (sig.returns.length == 0) {
+            this.b.retVoid();
+          } else {
+            // Every path returned inside the region.
+            this.b.unreachable();
+          }
         }
         return this.b.finish();
       }
