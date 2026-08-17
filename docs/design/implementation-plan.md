@@ -204,7 +204,9 @@ assignability-and-representation only, and signatures can migrate to
 
 Ordered by payoff: delete the observability guards
 (explosion/sinking/multi-value unconditional); records Phase 7
-argument explosion; projection + prefix-chain-view lowerings; size-mode
+argument explosion ([argument-explosion.md](argument-explosion.md) —
+the direct-call slice does not wait for the flip); projection +
+prefix-chain-view lowerings; size-mode
 shared lowering (row-types.md §7.4) wired to `-Osize`; SoA/`MultiList`;
 `inline`-tuple destructuring relaxation.
 

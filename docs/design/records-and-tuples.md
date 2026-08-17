@@ -590,6 +590,9 @@ Records behave like interfaces in terms of subtyping rules, but maintain their i
 
 ### Phase 7: Argument Explosion (Multi-value optimization)
 
+> **Revision note:** the implementation design for the parameter half
+> is [argument-explosion.md](argument-explosion.md).
+
 - [ ] **Argument Explosion**:
   - Detect functions accepting records with known shapes.
   - Rewrite function signature to flatten parameters.
