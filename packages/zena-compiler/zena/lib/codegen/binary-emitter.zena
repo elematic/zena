@@ -67,6 +67,15 @@ export final class BinaryEmitter implements WasmEmitter {
   var currentSection: ByteBuffer | null = null;
   var currentBuffer: ByteBuffer | null = null;
   var currentLocals: Array<ValType> | null = null;
+  /**
+   * Byte offsets (into currentBuffer) and locals of the removable
+   * ref.as_non_null asserts in the current function, in emission
+   * order. emitFunctionCodeEnd skips the offsets whose local
+   * graduated (per #graduatedLocals) when copying the body out.
+   */
+  #removableOffsets = new Array<i32>();
+  #removableLocals = new Array<i32>();
+  var #graduatedLocals: Array<boolean> | null = null;
   functionsList = new Array<WasmFunction>();
   /**
    * Emit the `name` custom section. Debug metadata only, and by far the
@@ -379,6 +388,11 @@ export final class BinaryEmitter implements WasmEmitter {
   emitFunctionCodeStart(func: WasmFunction): void {
     this.currentBuffer = new ByteBuffer();
     this.functionsList.push(func);
+    while (this.#removableOffsets.length > 0) {
+      this.#removableOffsets.pop();
+      this.#removableLocals.pop();
+    }
+    this.#graduatedLocals = null;
   }
   
   emitFunctionCodeEnd(func: WasmFunction): void {
@@ -400,8 +414,26 @@ export final class BinaryEmitter implements WasmEmitter {
     }
     
     let currFunc = this.currentBuffer as ByteBuffer;
-    funcBody.writeBuffer(currFunc);
-    
+    // Copy the body, skipping the one-byte removable ref.as_non_null
+    // asserts whose local graduated non-null (dropAssertsForLocals).
+    let graduated = this.#graduatedLocals;
+    if (graduated == null) {
+      funcBody.writeBuffer(currFunc);
+    } else {
+      var pos = 0;
+      var r = 0;
+      while (r < this.#removableOffsets.length) {
+        let l = this.#removableLocals[r];
+        if (l < graduated.length && graduated[l]) {
+          let off = this.#removableOffsets[r];
+          funcBody.writeBufferRange(currFunc, pos, off);
+          pos = off + 1;
+        }
+        r += 1;
+      }
+      funcBody.writeBufferRange(currFunc, pos, currFunc.length);
+    }
+
     let section = this.currentSection as ByteBuffer;
     section.writeULEB128(funcBody.length);
     section.writeBuffer(funcBody);
@@ -735,6 +767,17 @@ export final class BinaryEmitter implements WasmEmitter {
   emitRefAsNonNull(): void {
     let b = this.currentBuffer as ByteBuffer;
     b.writeByte(Opcode.ref_as_non_null as i32);
+  }
+
+  emitRemovableRefAsNonNull(local: i32): void {
+    let b = this.currentBuffer as ByteBuffer;
+    this.#removableOffsets.push(b.length);
+    this.#removableLocals.push(local);
+    b.writeByte(Opcode.ref_as_non_null as i32);
+  }
+
+  dropAssertsForLocals(graduated: Array<boolean>): void {
+    this.#graduatedLocals = graduated;
   }
 
   emitGlobalSet(index: i32): void {

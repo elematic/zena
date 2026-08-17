@@ -99,6 +99,38 @@ export final class ByteBuffer {
   }
 
   /**
+   * Write the byte range [start, end) of another ByteBuffer's contents.
+   */
+  writeBufferRange(other: ByteBuffer, start: i32, end: i32): ByteBuffer {
+    var base = 0;
+    var i = 0;
+    while (i < other.#chunks.length && base < end) {
+      let chunk = other.#chunks[i];
+      let len = __byte_array_length(chunk);
+      this.#writeChunkOverlap(chunk, len, base, start, end);
+      base += len;
+      i += 1;
+    }
+    if (base < end) {
+      this.#writeChunkOverlap(
+          other.#currentChunk, other.#currentPos, base, start, end);
+    }
+    return this;
+  }
+
+  /** Write the part of [start, end) that falls inside a chunk at `base`. */
+  #writeChunkOverlap(chunk: ByteArray, len: i32, base: i32, start: i32,
+      end: i32): void {
+    var s = start - base;
+    if (s < 0) { s = 0; }
+    var e = end - base;
+    if (e > len) { e = len; }
+    if (e > s) {
+      this.writeBytesSlice(chunk, s, e - s);
+    }
+  }
+
+  /**
    * Write another ByteBuffer's contents.
    */
   writeBuffer(other: ByteBuffer): ByteBuffer {

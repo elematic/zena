@@ -148,6 +148,38 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf2.getByte(3), 3);
   });
 
+  test('writeBufferRange copies a byte range across chunks', (ctx: TestContext): void => {
+    // Small initial capacity forces the source range to span chunks.
+    let src = new ByteBuffer(4);
+    var i = 0;
+    while (i < 10) {
+      src.writeByte(i);
+      i += 1;
+    }
+
+    let dst = new ByteBuffer();
+    dst.writeByte(100);
+    dst.writeBufferRange(src, 3, 8);
+    dst.writeByte(101);
+
+    equal(dst.length, 7);
+    equal(dst.getByte(0), 100);
+    i = 0;
+    while (i < 5) {
+      equal(dst.getByte(1 + i), 3 + i);
+      i += 1;
+    }
+    equal(dst.getByte(6), 101);
+  });
+
+  test('writeBufferRange of an empty range writes nothing', (ctx: TestContext): void => {
+    let src = new ByteBuffer();
+    src.writeByte(9);
+    let dst = new ByteBuffer();
+    dst.writeBufferRange(src, 1, 1);
+    equal(dst.length, 0);
+  });
+
   test('setByte for patching', (ctx: TestContext): void => {
     let buf = new ByteBuffer();
     buf.writeByte(0);

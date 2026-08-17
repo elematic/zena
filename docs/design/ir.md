@@ -1019,21 +1019,30 @@ trailing streamed/teed producer chain that feeds the terminator on the
 operand stack, which must stay adjacent to its consumer because wasm
 frames cannot carry operands across a `block` boundary.
 
-Mechanism 5 works by simulation rather than approximation
-(`#planNonNullLocals` in emit.zena): emission runs twice. A dry pass
-into a scratch `BinaryEmitter` records the exact scope open/else/close
-and local set/get event stream; replaying the stream under the
-validator's own rules — sets forgotten at their block's `end`,
-uniform rollback, enclosing-scope persistence — finds the locals
-whose every get follows a persisting set, and the real pass declares
-those at their precise `(ref $T)`. The two passes take identical
-decisions because declared local types only steer `ref.as_non_null`
-re-assert bytes, never scheduling or structure (stage-2 byte parity
-gates this). A `#copyArgs` move transfers the source local's declared
-type, so a destination graduates only when every source ends at the
-same non-null type — a fixpoint demotes across copy chains, move
-temps included. Mutable variables and multi-value projections need no
-special casing: their sets and gets are events like any other.
+Mechanism 5 works by replaying the validator rather than
+approximating it (`#initNonNullTracking` / `#finishNonNullLocals` in
+emit.zena): the validator's own init state — sets forgotten at their
+block's `end`, uniform rollback, enclosing-scope persistence — is
+maintained live during the single emission pass, at the scope, set,
+and get points the emitter already runs through. A get of an
+uninitialized candidate demotes it on the spot. A `#copyArgs` move
+transfers the source local's declared type, so a destination
+graduates only when every source ends at the same non-null type — a
+fixpoint at the end of the body demotes across copy chains, move
+temps included. Mutable variables and multi-value projections need
+no special casing: their sets and gets hit the same hooks.
+
+Because graduation is decided after the body, its two outputs are
+assembled late: re-asserts on candidate reads are emitted
+optimistically through `emitRemovableRefAsNonNull`, which records
+where each landed, and both emitters build the function at
+`emitFunctionCodeEnd` — the binary emitter skips the dropped
+one-byte asserts during its existing body copy, and the WAT emitter
+joins per-function head/body pieces so the locals declaration
+prints the final graduated types. Binary and text stay aligned by
+construction: the WAT never shows a `ref.as_non_null` the binary
+does not pay for, because readers judge emitted code quality by the
+text.
 
 On the compiler's own module the split is ~34,100 ref locals
 non-null against ~8,900 kept nullable (~52 KB of re-asserts

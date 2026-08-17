@@ -26,8 +26,6 @@ import { i32ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, WasmType, heapTypeToSigned, HeapType, valTypeEquals } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
-import { BinaryEmitter } from '../binary-emitter.zena';
-import { ByteBuffer } from 'zena:byte-buffer';
 import {
   IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator, simdExtraOperandCount,
 } from './ir.zena';
@@ -43,8 +41,7 @@ final class EmitFrame {
 
 export final class ZirFunctionEmitter {
   wasm: WasmModule;
-  /** Swapped to a scratch BinaryEmitter for the dry pass (#planNonNullLocals). */
-  var emitter: WasmEmitter;
+  emitter: WasmEmitter;
   func: WasmFunction;
   body: IrBody;
   cfg: IrCfg;
@@ -142,18 +139,24 @@ export final class ZirFunctionEmitter {
   /** The instruction currently being emitted (diagnostics). */
   var currentEmit = -1;
   /**
-   * Init-event stream recorded by the dry pass (#planNonNullLocals):
-   * parallel (kind, a, b) arrays. Kinds: 0 = scope open (block, loop,
-   * try_table, if), 1 = else, 2 = scope close, 3 = local set (a = the
-   * local, b = the copy's source local, or -1 for a value store),
-   * 4 = local get (a = the local). Replaying the stream reproduces the
-   * validator's scoped init-tracking for non-defaultable locals.
+   * Live replay of the validator's scoped init-tracking for
+   * non-defaultable locals (ir.md §12.1), maintained DURING emission:
+   * #candTarget holds each extra local's would-be non-null heap
+   * target (null = not a candidate, or demoted), #ownerDepth the
+   * scope depth at which each local is currently initialized (-1 =
+   * uninitialized), #scopeSets the locals initialized per open scope.
+   * A get of an uninitialized candidate demotes it on the spot; copy
+   * edges accumulate for the end-of-body fixpoint
+   * (#finishNonNullLocals). All of it is off (#trackInit) when the
+   * static writer check leaves no candidates.
    */
-  #evKind = new Array<i32>();
-  #evA = new Array<i32>();
-  #evB = new Array<i32>();
-  var #recording = false;
-  /** Source local of the #copyArgs move currently being recorded, or -1. */
+  #candTarget = new Array<WasmType | null>();
+  #ownerDepth = new Array<i32>();
+  #scopeSets = new Array<Array<i32>>();
+  #copyEdgeDst = new Array<i32>();
+  #copyEdgeSrc = new Array<i32>();
+  var #trackInit = false;
+  /** Source local of the #copyArgs move currently being emitted, or -1. */
   var #copyRecordSrc = -1;
   /** ZENA_ZIR_STATS: nullable ref locals graduated non-null / kept nullable. */
   var graduatedLocals = 0;
@@ -169,8 +172,11 @@ export final class ZirFunctionEmitter {
     }
     this.emitter.emitFunctionSignatureStart(name, this.func.signature.index);
     this.#allocLocals();
-    this.#planNonNullLocals();
+    this.#initNonNullTracking();
     this.#markParamsSet();
+    // The array is shared with the emitter, which assembles the
+    // locals declaration at emitFunctionCodeEnd — after
+    // #finishNonNullLocals has graduated what the init replay allows.
     this.emitter.emitFunctionLocalsStart(this.localTypes);
     this.#doTree(0);
     // Every doTree leaf ends in a real terminator, but wasm validation
@@ -186,6 +192,7 @@ export final class ZirFunctionEmitter {
     } else if (this.func.signature.returns.length > 0) {
       this.emitter.emitUnreachable();
     }
+    this.#finishNonNullLocals();
     this.emitter.emitFunctionEnd();
     this.emitter.emitFunctionCodeEnd(this.func);
   }
@@ -279,34 +286,29 @@ export final class ZirFunctionEmitter {
    * in BOTH arms of an if still counts uninitialized after the join —
    * while a set in an enclosing scope persists into nested blocks and
    * past their ends. Rather than approximate that discipline, this
-   * runs emission twice: a DRY pass into a scratch binary emitter
-   * records the exact scope/set/get event stream, replaying the
-   * stream applies the validator's own rules to find which locals
-   * pass, and the real pass declares the survivors non-null. The two
-   * passes take identical decisions — declared local types only steer
-   * re-assert bytes, never scheduling or structure.
+   * replays it live as the single emission pass runs: scope, set, and
+   * get hooks maintain the validator's own init state, a get of an
+   * uninitialized candidate demotes it immediately, and the
+   * re-asserts — emitted optimistically through
+   * emitRemovableRefAsNonNull — are dropped from the output for the
+   * locals that graduate, when the emitter assembles the function at
+   * emitFunctionCodeEnd. The locals declaration is assembled there
+   * too, so the graduated types apply even though they are decided
+   * after the body.
    *
-   * A #copyArgs move transfers the SOURCE local's declared type, so a
-   * destination graduates only when every source ends at the same
-   * non-null type — a fixpoint demotes across copy chains (move
-   * temps included). Mutable variables and multi-value projections
-   * need no special exclusion: their sets and gets are events like
-   * any other, and the replay demotes exactly the ones wasm would
-   * reject.
+   * This sets up the tracking: the static writer check first — every
+   * value a producer stores (local.set/tee, multi-value projection,
+   * var_set) must already have the exact non-null type the local
+   * would declare — then the scope/owner structures, with everything
+   * off when no candidate survives.
    */
-  #planNonNullLocals(): void {
+  #initNonNullTracking(): void {
     let {body} = this;
     let paramCount = this.func.signature.params.length;
     let extraCount = this.localTypes.length;
-    // Candidate targets: the declared heap target of each nullable ref
-    // local. The static writer check runs first — every value a
-    // producer stores (local.set/tee, multi-value projection, var_set)
-    // must already have the exact non-null type the local would
-    // declare, or the local keeps its nullable declaration.
-    let target = new Array<WasmType | null>();
     var li = 0;
     while (li < extraCount) {
-      target.push(match (this.localTypes[li]) {
+      this.#candTarget.push(match (this.localTypes[li]) {
         case ValTypeRefNull as r: r.target
         case _: null
       });
@@ -316,72 +318,35 @@ export final class ZirFunctionEmitter {
     for (var i = 0; i < count; i += 1) {
       if (body.producesValue(i) && !this.streamed[i] && !this.remat[i] &&
           this.localOf[i] >= paramCount) {
-        this.#checkWriter(target, this.localOf[i] - paramCount,
+        this.#checkWriter(this.localOf[i] - paramCount,
             body.resultType(i) as ValType);
       }
       if (body.op(i) == IrOp.var_set) {
-        this.#checkWriter(target,
-            this.#varLocal[body.b[i]] - paramCount,
+        this.#checkWriter(this.#varLocal[body.b[i]] - paramCount,
             body.resultType(body.a[i]) as ValType);
       }
     }
-    var haveCandidate = false;
     li = 0;
     while (li < extraCount) {
-      if (target[li] != null) {
-        haveCandidate = true;
+      if (this.#candTarget[li] != null) {
+        this.#trackInit = true;
       }
       li += 1;
     }
-    if (!haveCandidate) {
-      li = 0;
-      while (li < extraCount) {
-        if (this.localTypes[li] is ValTypeRefNull) {
-          this.demotedLocals += 1;
-        }
-        li += 1;
-      }
+    if (!this.#trackInit) {
       return;
     }
-    // Dry pass: identical emission into a throwaway buffer, recording
-    // events. The per-pass emission state is reset afterwards; frames
-    // and the streamed queue drain by construction (the same asserts
-    // that guard the real pass ran here).
-    let realEmitter = this.emitter;
-    let scratchBuffer = new ByteBuffer();
-    let scratch = new BinaryEmitter(scratchBuffer);
-    scratch.emitFunctionCodeStart(this.func);
-    this.emitter = scratch;
-    this.#recording = true;
-    this.#markParamsSet();
-    this.#doTree(0);
-    this.#recording = false;
-    this.emitter = realEmitter;
-    this.#pendingTopReturn = false;
-    this.#prologue = true;
-    this.currentEmit = -1;
-    while (this.#localEverSet.length > 0) {
-      this.#localEverSet.pop();
-    }
-    this.#simulateInit(target, paramCount);
     li = 0;
-    while (li < extraCount) {
-      if (this.localTypes[li] is ValTypeRefNull) {
-        let t = target[li];
-        if (t != null) {
-          this.localTypes[li] = new ValTypeRef(t as WasmType);
-          this.graduatedLocals += 1;
-        } else {
-          this.demotedLocals += 1;
-        }
-      }
+    while (li < paramCount + extraCount) {
+      this.#ownerDepth.push(-1);
       li += 1;
     }
+    this.#scopeSets.push(new Array<i32>());
   }
 
   /** Demotes a candidate whose stored value is not exactly (ref target). */
-  #checkWriter(target: Array<WasmType | null>, idx: i32, vt: ValType): void {
-    let t = target[idx];
+  #checkWriter(idx: i32, vt: ValType): void {
+    let t = this.#candTarget[idx];
     if (t == null) {
       return;
     }
@@ -390,79 +355,93 @@ export final class ZirFunctionEmitter {
       ok = (vt as ValTypeRef).target == (t as WasmType);
     }
     if (!ok) {
-      target[idx] = null;
+      this.#candTarget[idx] = null;
+    }
+  }
+
+  /** A control scope opened (block, loop, try_table, if). */
+  #scopeOpened(): void {
+    if (!this.#trackInit) {
+      return;
+    }
+    this.#scopeSets.push(new Array<i32>());
+  }
+
+  /**
+   * The arm switch of an if: the then-arm's sets roll back, and the
+   * scope stays open at the same depth with a fresh set list.
+   */
+  #scopeElse(): void {
+    this.#rollbackScope(false);
+  }
+
+  /** A control scope closed: its sets are forgotten, uniformly. */
+  #scopeClosed(): void {
+    this.#rollbackScope(true);
+  }
+
+  #rollbackScope(popScope: boolean): void {
+    if (!this.#trackInit) {
+      return;
+    }
+    // Depth works as the owner id because scopes are stack-like: an
+    // entry rolls back exactly when the scope that owns it closes.
+    let depth = this.#scopeSets.length - 1;
+    let list = this.#scopeSets[depth];
+    for (let l in list) {
+      if (this.#ownerDepth[l] == depth) {
+        this.#ownerDepth[l] = -1;
+      }
+    }
+    if (popScope) {
+      this.#scopeSets.pop();
+    } else {
+      this.#scopeSets[depth] = new Array<i32>();
+    }
+  }
+
+  /** A read of a local: an uninitialized candidate must stay nullable. */
+  #trackGet(l: i32): void {
+    if (!this.#trackInit) {
+      return;
+    }
+    let paramCount = this.func.signature.params.length;
+    if (this.#ownerDepth[l] < 0 && l >= paramCount) {
+      this.#candTarget[l - paramCount] = null;
     }
   }
 
   /**
-   * Replays the recorded event stream under wasm's scoped
-   * init-tracking, demoting candidates read while uninitialized, then
-   * runs the copy fixpoint.
+   * Runs the copy fixpoint over the edges collected during emission,
+   * graduates the surviving candidates in localTypes, and tells the
+   * emitter which removable asserts to drop. Runs after the body,
+   * before the emitter assembles the function.
    */
-  #simulateInit(target: Array<WasmType | null>, paramCount: i32): void {
-    let totalLocals = paramCount + this.localTypes.length;
-    // Depth at which each local is currently initialized, or -1. Depth
-    // works as the owner id because scopes are stack-like: the entry
-    // rolls back exactly when the scope that owns it closes.
-    let ownerDepth = new Array<i32>();
-    var li = 0;
-    while (li < totalLocals) {
-      ownerDepth.push(-1);
-      li += 1;
-    }
-    let scopeSets = new Array<Array<i32>>();
-    scopeSets.push(new Array<i32>());
-    let copyDst = new Array<i32>();
-    let copySrc = new Array<i32>();
-    var e = 0;
-    while (e < this.#evKind.length) {
-      let kind = this.#evKind[e];
-      if (kind == 0) {
-        scopeSets.push(new Array<i32>());
-      } else if (kind == 1 || kind == 2) {
-        let depth = scopeSets.length - 1;
-        let list = scopeSets[depth];
-        for (let l in list) {
-          if (ownerDepth[l] == depth) {
-            ownerDepth[l] = -1;
-          }
+  #finishNonNullLocals(): void {
+    let paramCount = this.func.signature.params.length;
+    let extraCount = this.localTypes.length;
+    if (!this.#trackInit) {
+      var li = 0;
+      while (li < extraCount) {
+        if (this.localTypes[li] is ValTypeRefNull) {
+          this.demotedLocals += 1;
         }
-        if (kind == 1) {
-          // else: the then-arm's sets roll back; the arm's scope stays
-          // open at the same depth with a fresh set list.
-          scopeSets[depth] = new Array<i32>();
-        } else {
-          scopeSets.pop();
-        }
-      } else if (kind == 3) {
-        let l = this.#evA[e];
-        if (ownerDepth[l] < 0) {
-          let depth = scopeSets.length - 1;
-          ownerDepth[l] = depth;
-          scopeSets[depth].push(l);
-        }
-        if (this.#evB[e] >= 0 && l >= paramCount) {
-          copyDst.push(l);
-          copySrc.push(this.#evB[e]);
-        }
-      } else {
-        let l = this.#evA[e];
-        if (ownerDepth[l] < 0 && l >= paramCount) {
-          // Read where the validator would see the local
-          // uninitialized: it must stay defaultable.
-          target[l - paramCount] = null;
-        }
+        li += 1;
       }
-      e += 1;
+      return;
     }
+    // A #copyArgs move transfers the SOURCE local's declared type, so
+    // a destination graduates only when every source ends at the same
+    // non-null type — demotions cascade along copy chains (move temps
+    // included).
     var changed = true;
     while (changed) {
       changed = false;
       var c = 0;
-      while (c < copyDst.length) {
-        let dstIdx = copyDst[c] - paramCount;
-        if (target[dstIdx] != null) {
-          let src = copySrc[c];
+      while (c < this.#copyEdgeDst.length) {
+        let dstIdx = this.#copyEdgeDst[c] - paramCount;
+        if (this.#candTarget[dstIdx] != null) {
+          let src = this.#copyEdgeSrc[c];
           var srcTarget: WasmType | null = null;
           if (src < paramCount) {
             srcTarget = match (this.func.signature.params[src]) {
@@ -470,27 +449,45 @@ export final class ZirFunctionEmitter {
               case _: null
             };
           } else {
-            srcTarget = target[src - paramCount];
+            srcTarget = this.#candTarget[src - paramCount];
           }
           if (srcTarget == null ||
-              (srcTarget as WasmType) != (target[dstIdx] as WasmType)) {
-            target[dstIdx] = null;
+              (srcTarget as WasmType) !=
+                  (this.#candTarget[dstIdx] as WasmType)) {
+            this.#candTarget[dstIdx] = null;
             changed = true;
           }
         }
         c += 1;
       }
     }
-  }
-
-  /** Appends an init event during the dry pass. */
-  #recordEvent(kind: i32, a: i32, b: i32): void {
-    if (!this.#recording) {
-      return;
+    let graduated = new Array<boolean>();
+    var li = 0;
+    while (li < paramCount) {
+      graduated.push(false);
+      li += 1;
     }
-    this.#evKind.push(kind);
-    this.#evA.push(a);
-    this.#evB.push(b);
+    var any = false;
+    li = 0;
+    while (li < extraCount) {
+      var g = false;
+      if (this.localTypes[li] is ValTypeRefNull) {
+        let t = this.#candTarget[li];
+        if (t != null) {
+          this.localTypes[li] = new ValTypeRef(t as WasmType);
+          this.graduatedLocals += 1;
+          g = true;
+          any = true;
+        } else {
+          this.demotedLocals += 1;
+        }
+      }
+      graduated.push(g);
+      li += 1;
+    }
+    if (any) {
+      this.emitter.dropAssertsForLocals(graduated);
+    }
   }
 
   /**
@@ -1143,10 +1140,10 @@ export final class ZirFunctionEmitter {
       throw new Error('zir emit: streamed value %' + i32ToString(inst) +
           ' read outside its schedule');
     }
-    this.#recordEvent(4, this.localOf[inst], -1);
+    this.#trackGet(this.localOf[inst]);
     this.emitter.emitLocalGet(this.localOf[inst]);
     if (this.#storedNullable(inst)) {
-      this.emitter.emitRefAsNonNull();
+      this.emitter.emitRemovableRefAsNonNull(this.localOf[inst]);
     }
   }
 
@@ -1158,7 +1155,18 @@ export final class ZirFunctionEmitter {
   }
 
   #markLocalSet(idx: i32): void {
-    this.#recordEvent(3, idx, this.#copyRecordSrc);
+    if (this.#trackInit) {
+      if (this.#ownerDepth[idx] < 0) {
+        let depth = this.#scopeSets.length - 1;
+        this.#ownerDepth[idx] = depth;
+        this.#scopeSets[depth].push(idx);
+      }
+      if (this.#copyRecordSrc >= 0 &&
+          idx >= this.func.signature.params.length) {
+        this.#copyEdgeDst.push(idx);
+        this.#copyEdgeSrc.push(this.#copyRecordSrc);
+      }
+    }
     while (this.#localEverSet.length <= idx) {
       this.#localEverSet.push(false);
     }
@@ -1269,10 +1277,10 @@ export final class ZirFunctionEmitter {
       this.#flushPendingReturn();
       this.#prologue = false;
       this.frames.push(new EmitFrame(y, false));
-      this.#recordEvent(0, -1, -1);
+      this.#scopeOpened();
       this.emitter.emitBlock(new ValTypeVoid());
       this.#loopWithExits(x, inLoopMerge, exits, count - 1);
-      this.#recordEvent(2, -1, -1);
+      this.#scopeClosed();
       this.emitter.emitEnd();
       this.frames.pop();
       this.#doTree(y);
@@ -1281,11 +1289,11 @@ export final class ZirFunctionEmitter {
     this.#flushPendingReturn();
     this.#prologue = false;
       this.frames.push(new EmitFrame(x, true));
-    this.#recordEvent(0, -1, -1);
+    this.#scopeOpened();
     this.emitter.emitLoop(new ValTypeVoid());
     this.#nodeWithin(x, inLoopMerge, inLoopMerge.length);
     this.#flushPendingReturn();
-    this.#recordEvent(2, -1, -1);
+    this.#scopeClosed();
     this.emitter.emitEnd();
     this.frames.pop();
   }
@@ -1336,11 +1344,11 @@ export final class ZirFunctionEmitter {
       this.#flushPendingReturn();
       this.#prologue = false;
       this.frames.push(new EmitFrame(y, false));
-      this.#recordEvent(0, -1, -1);
+      this.#scopeOpened();
       this.emitter.emitBlock(new ValTypeVoid());
       this.#wrapMerges(x, mergeChildren, count - 1, tailStart);
       this.#flushPendingReturn();
-      this.#recordEvent(2, -1, -1);
+      this.#scopeClosed();
       this.emitter.emitEnd();
       this.frames.pop();
       this.#doTree(y);
@@ -1456,20 +1464,20 @@ export final class ZirFunctionEmitter {
       // catch-path...   Exits from the body br straight to their
       // targets (out through the try_table); nothing falls out of it,
       // so the code after the inner `end` never runs.
-      this.#recordEvent(0, -1, -1);
+      this.#scopeOpened();
       this.emitter.emitBlock(new ValTypeVoid());
       this.#prologue = false;
       this.frames.push(new EmitFrame(-1, false));
-      this.#recordEvent(0, -1, -1);
+      this.#scopeOpened();
       this.emitter.emitTryTableCatch(new ValTypeVoid(),
           ref.target.index, 0);
       this.#prologue = false;
       this.frames.push(new EmitFrame(-1, false));
       this.#doBranch(from, succs[0]);
-      this.#recordEvent(2, -1, -1);
+      this.#scopeClosed();
       this.emitter.emitEnd();
       this.frames.pop();
-      this.#recordEvent(2, -1, -1);
+      this.#scopeClosed();
       this.emitter.emitEnd();
       this.frames.pop();
       this.#doBranch(from, succs[1]);
@@ -1496,15 +1504,15 @@ export final class ZirFunctionEmitter {
         return;
       }
       this.#pushValue(body.a[inst]);
-      this.#recordEvent(0, -1, -1);
+      this.#scopeOpened();
       this.emitter.emitIf(new ValTypeVoid());
       this.#prologue = false;
       this.frames.push(new EmitFrame(-1, false));
       this.#doBranch(from, succs[0]);
-      this.#recordEvent(1, -1, -1);
+      this.#scopeElse();
       this.emitter.emitElse();
       this.#doBranch(from, succs[1]);
-      this.#recordEvent(2, -1, -1);
+      this.#scopeClosed();
       this.emitter.emitEnd();
       this.frames.pop();
       return;
@@ -1554,7 +1562,7 @@ export final class ZirFunctionEmitter {
           i += 2;
           continue;
         }
-        this.#recordEvent(4, plan[i], -1);
+        this.#trackGet(plan[i]);
         this.emitter.emitLocalGet(plan[i]);
         this.#copyRecordSrc = plan[i];
         this.#setLocal(plan[i + 1]);
@@ -1637,15 +1645,13 @@ export final class ZirFunctionEmitter {
       }
       case IrOp.var_get: {
         let vl = this.#varLocal[body.b[inst]];
-        this.#recordEvent(4, vl, -1);
+        this.#trackGet(vl);
         this.emitter.emitLocalGet(vl);
-        // A non-null declared IR type re-asserts on the way out of a
-        // still-nullable local — the same round trip #pushValue does
-        // for SSA values. A graduated var local skips it.
-        if (body.resultType(inst) is ValTypeRef &&
-            this.localTypes[vl - this.func.signature.params.length]
-                is ValTypeRefNull) {
-          this.emitter.emitRefAsNonNull();
+        // A non-null declared IR type re-asserts on the way out of the
+        // nullable local — the same round trip #pushValue does for SSA
+        // values. Dropped from the output if the var local graduates.
+        if (body.resultType(inst) is ValTypeRef) {
+          this.emitter.emitRemovableRefAsNonNull(vl);
         }
       }
       case IrOp.var_set: {
@@ -1781,7 +1787,7 @@ export final class ZirFunctionEmitter {
         // nullable widening — re-assert for the on-stack consumer,
         // exactly as #pushValue does for a local.get.
         if (this.#storedNullable(inst)) {
-          this.emitter.emitRefAsNonNull();
+          this.emitter.emitRemovableRefAsNonNull(this.localOf[inst]);
         }
         this.pendingStreamed.push(inst);
       } else {

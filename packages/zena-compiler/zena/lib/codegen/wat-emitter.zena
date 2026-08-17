@@ -7,12 +7,28 @@ import { ByteBuffer } from 'zena:byte-buffer';
 import { simdName } from '../simd.zena';
 
 export final class WatEmitter implements WasmEmitter {
-  sb: StringBuilder;
+  /**
+   * The active output. Function code is assembled out-of-line — the
+   * signature and body go to per-function builders, joined at
+   * emitFunctionCodeEnd — so locals print with their FINAL types and
+   * dropped removable asserts never appear: the text must not show a
+   * `ref.as_non_null` the binary does not pay for.
+   */
+  var sb: StringBuilder;
   var indentDepth: i32 = 1;
   var currentSuperTypeIndex: i32 = -1;
   var emittedRecGroup: boolean = false;
   var currentFunctionName: String = "";
-  
+  var #outerSb: StringBuilder | null = null;
+  var #funcHeadSb: StringBuilder | null = null;
+  var #funcBodySb: StringBuilder | null = null;
+  var #currentLocals: Array<ValType> | null = null;
+  /** Byte ranges of removable asserts in the body builder, per local. */
+  #removableStarts = new Array<i32>();
+  #removableEnds = new Array<i32>();
+  #removableLocals = new Array<i32>();
+  var #graduatedLocals: Array<boolean> | null = null;
+
   new(this.sb);
 
   indent(): void {    
@@ -214,9 +230,56 @@ export final class WatEmitter implements WasmEmitter {
   
   emitCodeSectionStart(count: i32): void {}
   
-  emitFunctionCodeStart(func: WasmFunction): void {}
-  
-  emitFunctionCodeEnd(func: WasmFunction): void {}
+  emitFunctionCodeStart(func: WasmFunction): void {
+    this.#outerSb = this.sb;
+    let head = new StringBuilder();
+    this.#funcHeadSb = head;
+    this.sb = head;
+    while (this.#removableStarts.length > 0) {
+      this.#removableStarts.pop();
+      this.#removableEnds.pop();
+      this.#removableLocals.pop();
+    }
+    this.#graduatedLocals = null;
+  }
+
+  emitFunctionCodeEnd(func: WasmFunction): void {
+    let outer = this.#outerSb as StringBuilder;
+    this.sb = outer;
+    let head = this.#funcHeadSb as StringBuilder;
+    outer.append(head.toString());
+    let locals = this.#currentLocals;
+    if (locals != null && locals.length > 0) {
+      outer.append('\n');
+      this.indentDepth += 1;
+      for (let l in locals) {
+        this.indent();
+        outer.append('(local ').append(getTypeName(l)).append(')\n');
+      }
+      this.indentDepth -= 1;
+    }
+    outer.append('\n');
+    // Body text, minus the removable asserts of graduated locals.
+    let bodyText = (this.#funcBodySb as StringBuilder).toString();
+    let graduated = this.#graduatedLocals;
+    var pos = 0;
+    if (graduated != null) {
+      var r = 0;
+      while (r < this.#removableStarts.length) {
+        let l = this.#removableLocals[r];
+        if (l < graduated.length && graduated[l]) {
+          outer.append(bodyText.sliceBytes(pos, this.#removableStarts[r]));
+          pos = this.#removableEnds[r];
+        }
+        r += 1;
+      }
+    }
+    outer.append(bodyText.sliceBytes(pos, bodyText.length));
+    this.#outerSb = null;
+    this.#funcHeadSb = null;
+    this.#funcBodySb = null;
+    this.#currentLocals = null;
+  }
   emitCodeSectionEnd(): void {}
   
   emitModuleEnd(): void {
@@ -232,16 +295,12 @@ export final class WatEmitter implements WasmEmitter {
 
 
   emitFunctionLocalsStart(locals: Array<ValType>): void {
-    if (locals.length > 0) {
-      this.sb.append('\n');
-      this.indentDepth += 1;
-      for (let l in locals) {
-        this.indent();
-        this.sb.append('(local ').append(getTypeName(l)).append(')\n');
-      }
-      this.indentDepth -= 1;
-    }
-    this.sb.append('\n');
+    // Printing is deferred to emitFunctionCodeEnd: the ZIR emitter may
+    // still graduate entries of this array to non-null after the body.
+    this.#currentLocals = locals;
+    let body = new StringBuilder();
+    this.#funcBodySb = body;
+    this.sb = body;
     this.indentDepth += 1;
   }
 
@@ -358,6 +417,17 @@ export final class WatEmitter implements WasmEmitter {
   emitRefAsNonNull(): void {
     this.indent();
     this.sb.append('ref.as_non_null\n');
+  }
+
+  emitRemovableRefAsNonNull(local: i32): void {
+    this.#removableStarts.push(this.sb.length);
+    this.#removableLocals.push(local);
+    this.emitRefAsNonNull();
+    this.#removableEnds.push(this.sb.length);
+  }
+
+  dropAssertsForLocals(graduated: Array<boolean>): void {
+    this.#graduatedLocals = graduated;
   }
 
   emitRefFunc(index: i32): void {

@@ -107,6 +107,21 @@ export interface WasmEmitter {
   emitRefEq(): void;
   emitRefIsNull(): void;
   emitRefAsNonNull(): void;
+  /**
+   * Emits a ref.as_non_null that exists only because `local` is
+   * declared nullable, remembering where it landed. If the local later
+   * graduates to its non-null type (init-discipline typing, ir.md
+   * §12.1), dropAssertsForLocals removes the emission from the
+   * function's output — binary bytes and WAT text alike, so the text
+   * never shows an assert the binary does not pay for.
+   */
+  emitRemovableRefAsNonNull(local: i32): void;
+  /**
+   * Marks which locals graduated non-null; called after the function
+   * body, before emitFunctionCodeEnd assembles the output. Removable
+   * asserts recorded against a graduated local are dropped.
+   */
+  dropAssertsForLocals(graduated: Array<boolean>): void;
   emitGlobalSet(index: i32): void;
   
   // Binary operations
