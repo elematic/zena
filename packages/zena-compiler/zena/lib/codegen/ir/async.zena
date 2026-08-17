@@ -668,25 +668,12 @@ let buildRamp = (
     i += 1;
   }
 
-  // The frame's own Future<T>: shell + vtable + constructor, the same
-  // shape `new Future<T>()` lowers to.
+  // The frame's own Future<T>: one factory call, the same shape
+  // `new Future<T>()` lowers to.
   let futureStruct = futureInfo.structType;
   let futVt: ValType = new ValTypeRef(futureStruct);
-  let futTypeRef = b.addRef(new IrRefType(futureStruct));
-  let fut = b.emit(IrOp.struct_new_default, futVt, -1, futTypeRef);
-  if (futureInfo.vtableGlobal != null) {
-    let vtGlobal = futureInfo.vtableGlobal as WasmGlobal;
-    let vtRef = b.addRef(new IrRefGlobal(vtGlobal));
-    let vtValue = b.emit(IrOp.global_get, vtGlobal.type, -1, vtRef);
-    let vtField = b.addRef(new IrRefField(futureStruct, '<vtable>'));
-    let pair = new Array<i32>();
-    pair.push(fut);
-    pair.push(vtValue);
-    b.emitVoid(IrOp.struct_set, b.pushExtra(pair), vtField);
-  }
-  let ctorArgs = new Array<i32>();
-  ctorArgs.push(fut);
-  b.callFunc(b.addRef(new IrRefFunc(futureCtor)), ctorArgs, null);
+  let fut = b.callFunc(b.addRef(new IrRefFunc(futureCtor)),
+      new Array<i32>(), futVt);
 
   let futField = b.addRef(new IrRefField(frame, '$future'));
   let futPair = new Array<i32>();

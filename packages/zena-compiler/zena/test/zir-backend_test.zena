@@ -299,8 +299,8 @@ export let tests = suite('zir backend', (): void => {
         'class Box { x: i32; new(this.x); }\n' +
         'export let main = (): i32 => {\n' +
         '  let b = new Box(3);\n' +
-        '  var acc = 0;\n' +
-        '  if (b.x > 1) { acc = 1; } else { acc = 2; }\n' +
+        '  var acc = 7;\n' +
+        '  if (acc > 1) { acc = 1; } else { acc = 2; }\n' +
         '  return acc + b.x;\n' +
         '};');
     let mainWat = watFunction(result, '$main');
@@ -337,7 +337,10 @@ export let tests = suite('zir backend', (): void => {
         '}\n' +
         'let measure = (p: Point): i32 => p.manhattan() + p.x;\n' +
         'export let main = (): i32 => measure(new Point(1, 2));');
-    isTrue(result.contains('struct.new_default'));
+    // Construction is a single-shot struct.new inside the factory
+    // (non-nullable-refs.md) — no struct.new_default shell remains.
+    isTrue(result.contains('struct.new'));
+    isTrue(!result.contains('struct.new_default'));
     isTrue(result.contains('struct.get'));
     isTrue(result.contains('call $Point'));
   });
@@ -356,8 +359,13 @@ export let tests = suite('zir backend', (): void => {
         '  let d = new Derived(3);\n' +
         '  return d.tag + d.extra;\n' +
         '};');
+    // Derived's factory drives Base through its value phase and
+    // allocates with one struct.new; the body's `this.extra += t`
+    // is the surviving struct.set.
     isTrue(result.contains('call $Base'));
-    isTrue(result.contains('struct.new_default'));
+    isTrue(result.contains('<ctor-init>'));
+    isTrue(result.contains('struct.new'));
+    isTrue(!result.contains('struct.new_default'));
     isTrue(result.contains('struct.set'));
   });
 

@@ -89,6 +89,15 @@ export final class ZirFunctionEmitter {
   pendingStreamed = new Array<i32>();
   var claimedStreamed = 0;
   /**
+   * Per streamed/teed producer: the consumer its on-stack copy is
+   * scheduled for. Only that consumer may claim it from the pending
+   * queue — an INTERVENING instruction that also uses the value (a
+   * teed producer's other consumer) must read the local instead, or
+   * it would consume a stack slot that sits below its own other
+   * operands and call with its arguments swapped.
+   */
+  #streamedFor = new Array<i32>();
+  /**
    * Rematerialized constants: a numeric constant or ref.null gets no
    * local and emits NOTHING at its definition — every #pushValue of it
    * emits the constant inline instead. A local.get and an i32.const
@@ -208,6 +217,7 @@ export final class ZirFunctionEmitter {
       this.remat.push(false);
       this.teed.push(false);
       this.#elisionCandidate.push(false);
+      this.#streamedFor.push(-1);
       i += 1;
     }
     this.#planRemat();
@@ -995,6 +1005,7 @@ export final class ZirFunctionEmitter {
               }
               for (var s = 0; s < prefixLen; s += 1) {
                 stackClaimed[ops[s]] = true;
+                this.#streamedFor[ops[s]] = consumer;
                 // Single-use: pure stream, no local. Multi-use: tee —
                 // the value lands in its local AND stays on the stack.
                 if (useCount[ops[s]] == 1) {
@@ -1113,7 +1124,8 @@ export final class ZirFunctionEmitter {
   /** Loads a value at its declared IR type. */
   #pushValue(inst: i32): void {
     if (this.claimedStreamed < this.pendingStreamed.length &&
-        this.pendingStreamed[this.claimedStreamed] == inst) {
+        this.pendingStreamed[this.claimedStreamed] == inst &&
+        this.#streamedFor[inst] == this.currentEmit) {
       // Already on the stack from a preceding instruction, at its
       // declared IR type — no local, no re-assert. Claims run
       // bottom-up: the consumer's operand order is the push order.

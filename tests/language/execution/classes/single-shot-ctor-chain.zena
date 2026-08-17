@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 6968
+// Constructor evaluation order across a hierarchy under single-shot
+// construction (non-nullable-refs.md): the subclass's initializer list
+// evaluates before the superclass's, all fields are in place before
+// any body runs, bodies run superclass-first, and a virtual call from
+// the base's body sees the subclass override AND the subclass's
+// already-initialized fields.
+
+class Base {
+  tag: i32;
+  var log: i32 = 0;
+  new(this.tag) {
+    this.log += this.tag * 10;
+    this.hook();
+  }
+  hook(): void { this.log += 1; }
+}
+
+final class Derived extends Base {
+  extra: i32;
+  new(t: i32) : extra = t + 5, super(t * 2) {
+    this.log += 100;
+  }
+  hook(): void { this.log += this.extra; }
+}
+
+export let main = (): i32 => {
+  let d = new Derived(3);
+  // tag = 6, extra = 8; Base body: log += 60, then hook() dispatches
+  // to Derived.hook (+8); Derived body: +100 => log = 168.
+  return d.tag * 1000 + d.extra * 100 + d.log;
+};

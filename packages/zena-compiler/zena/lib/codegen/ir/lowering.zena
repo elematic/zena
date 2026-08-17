@@ -92,6 +92,13 @@ import {
  */
 export let NO_VALUE = -1;
 
+/**
+ * One class level's construction inputs (non-nullable-refs.md):
+ * field values keyed by resolved struct field name, and the evaluated
+ * super() arguments.
+ */
+type CtorLevel = {values: HashMap<String, i32>, superArgs: Array<i32>};
+
 /** Bail-reason tag for expression kinds without a dispatch arm. */
 
 
@@ -667,6 +674,22 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     let lowerer = new FunctionLowerer(wasm, func);
     return lowerer.lowerCaseClassHash();
   }
+  // Constructor phases (non-nullable-refs.md, Construction protocol):
+  // the value phase and written-body phase of a superclass
+  // constructor, lowered from the same AST (or synthesized shape) as
+  // its factory. Dispatch is on the FUNCTION's method name — the node,
+  // when present, is the factory's `<constructor>` MethodDefinition.
+  if (func.methodName != null) {
+    let fMeth = func.methodName as String;
+    if (fMeth == '<ctor-init>' || fMeth == '<ctor-body>') {
+      let lowerer = new FunctionLowerer(wasm, func);
+      lowerer.ctorPhase = if (fMeth == '<ctor-init>') 1 else 2;
+      if (func.node == null) {
+        return lowerer.lowerSynthesizedConstructor();
+      }
+      return lowerer.lower();
+    }
+  }
   if (func.node == null) {
     if (func.isGeneratorNext) {
       return lowerGeneratorNext(wasm, func);
@@ -864,6 +887,28 @@ export final class FunctionLowerer {
   var presplitYieldVt: ValType | null = null;
 
   /**
+   * Which constructor role this function lowers as
+   * (non-nullable-refs.md, Construction protocol): 0 = the factory
+   * (`<constructor>` — computes field values, allocates with one
+   * struct.new, runs bodies, returns the instance), 1 = a superclass's
+   * value phase (`<ctor-init>`), 2 = a superclass's written body
+   * (`<ctor-body>`).
+   */
+  var ctorPhase = 0;
+  /**
+   * The allocated instance while the factory's own body statements
+   * lower inline, or -1. A bare `return;` in that body returns it.
+   */
+  var ctorFactoryThis = -1;
+  /**
+   * While a field default's expression lowers: the level's computed
+   * field values, so `this.f` inside it reads the value instead of a
+   * not-yet-existing object; the mixin scope mangles private names.
+   */
+  var #ctorLevelFields: HashMap<String, i32> | null = null;
+  var #ctorLevelScope = '';
+
+  /**
    * Presplit-async mode (async.md §3): `await` lowers to an await_
    * terminator plus a resume segment that reads the settled value back
    * off the awaited future, and `return e` returns the future's VALUE
@@ -922,6 +967,12 @@ export final class FunctionLowerer {
           // Extension constructors take NO receiver (their signature
           // is the declared params, returning the underlying value).
           extCtorDef = node;
+          paramOffset = 0;
+        } else if (this.ctorPhase != 2) {
+          // Factory and value phase run before the object exists:
+          // declared params only, no receiver. The body phase (2)
+          // keeps the receiver slot.
+          ctorDef = node;
           paramOffset = 0;
         } else {
           ctorDef = node;
@@ -1092,12 +1143,32 @@ export final class FunctionLowerer {
       return this.b.finish();
     }
     if (ctorDef != null) {
-      this.#lowerConstructorPrologue(ctorDef);
+      if (this.ctorPhase == 2) {
+        // Body phase: receiver and params are bound; just the written
+        // statements, post-allocation.
+        if (bodyNode != null) {
+          this.#lowerStatement(bodyNode as Statement);
+        }
+        if (this.#cx().reachable) {
+          this.b.retVoid();
+        }
+        return this.b.finish();
+      }
+      let level = this.#lowerCtorLevel(ctorDef);
+      if (this.ctorPhase == 1) {
+        this.#emitCtorInitReturn(level);
+        return this.b.finish();
+      }
+      // The factory: allocate in one struct.new, run ancestor bodies,
+      // then the own body inline with `this` bound to the instance.
+      let inst = this.#allocateInstance(level);
+      this.#cx().thisValue = inst;
+      this.ctorFactoryThis = inst;
       if (bodyNode != null) {
         this.#lowerStatement(bodyNode as Statement);
       }
       if (this.#cx().reachable) {
-        this.b.retVoid();
+        this.b.ret(inst);
       }
       return this.b.finish();
     }
@@ -1508,9 +1579,6 @@ export final class FunctionLowerer {
 
   lowerSynthesizedConstructor(): IrBody {
     let sig = this.func.signature;
-    if (sig.returns.length != 0 || sig.params.length == 0) {
-      this.#bail('constructor shape');
-    }
     if (this.func.classType == null || this.func.structType == null) {
       this.#bail('constructor without class');
     }
@@ -1519,10 +1587,17 @@ export final class FunctionLowerer {
     if (ct.isExtension) {
       this.#bail('extension constructor');
     }
+    if (this.ctorPhase == 0 && sig.returns.length != 1) {
+      this.#bail('constructor shape');
+    }
+    if (this.ctorPhase == 2) {
+      // Synthesized constructors have no written body to phase out.
+      this.#bail('synthesized constructor body phase');
+    }
     let {classDecl} = this.func;
     // Sealed-class variants (`case Lit(...)`) declare via a
     // SealedVariant node: no class body, so no local field defaults —
-    // inherited initializers run in the base constructor via super.
+    // inherited initializers run in the base's value phase.
     var cdOpt: ClassDeclaration | null = null;
     if (classDecl is ClassDeclaration) {
       cdOpt = classDecl;
@@ -1537,64 +1612,69 @@ export final class FunctionLowerer {
       params.push(this.b.blockParam(entry, vt));
     }
     this.b.switchTo(entry);
-    this.#cx().thisValue = params[0];
 
-    if (ct.isCaseClass) {
-      this.#lowerCaseClassCtorBody(ct, structType, cdOpt, params);
+    let level = if (ct.isCaseClass) {
+      this.#synthCaseLevel(ct, structType, cdOpt, params)
     } else {
-      this.#lowerDefaultCtorBody(ct, structType, cdOpt, params);
+      this.#synthDefaultLevel(ct, structType, cdOpt, params)
+    };
+    if (this.ctorPhase == 1) {
+      this.#emitCtorInitReturn(level);
+      return this.b.finish();
     }
-    this.b.retVoid();
+    let inst = this.#allocateInstance(level);
+    this.b.ret(inst);
     return this.b.finish();
   }
 
-  #lowerDefaultCtorBody(ct: ClassType, structType: WasmStruct,
-      cd: ClassDeclaration | null, params: Array<i32>): void {
+  #synthDefaultLevel(ct: ClassType, structType: WasmStruct,
+      cd: ClassDeclaration | null, params: Array<i32>): CtorLevel {
+    let values = new HashMap<String, i32>();
+    if (cd != null) {
+      for (let member in cd.body) {
+        if (member is FieldDefinition) {
+          if (member.value != null && !member.isStatic) {
+            if (!(member.name is Identifier)) {
+              this.#bail('field name shape');
+            }
+            this.#computeCtorField(values, ct, structType,
+                (member.name as Identifier).name,
+                member.value as Expression, false);
+          }
+        }
+      }
+      this.#mixinFieldValues(values, ct, structType, cd, false);
+    }
+    let superArgs = new Array<i32>();
     if (ct.superType != null) {
       let superType = ct.superType as ClassType;
       let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
       if (let (true, superCtor) = this.wasm.classMethodMap.get(ctorKey)) {
         // The default constructor forwards its own params to super.
         if (superCtor.signature.params.length > params.length ||
-            superCtor.signature.returns.length != 0) {
+            superCtor.signature.returns.length != 1) {
           this.#bail('super constructor shape');
         }
-        let args = new Array<i32>();
         for (var i = 0; i < superCtor.signature.params.length; i += 1) {
           if (!isValSubtype(this.#valueType(params[i]),
               superCtor.signature.params[i])) {
             this.#bail('super constructor arg type');
           }
-          args.push(params[i]);
-        }
-        let fr = this.b.addRef(new IrRefFunc(superCtor));
-        this.b.callFunc(fr, args, null);
-      }
-    }
-    if (cd == null) {
-      return;
-    }
-    for (let member in cd.body) {
-      if (member is FieldDefinition) {
-        if (member.value != null && !member.isStatic) {
-          if (!(member.name is Identifier)) {
-            this.#bail('field name shape');
-          }
-          this.#storeCtorField(ct, structType, (member.name as Identifier).name,
-              member.value as Expression, false);
+          superArgs.push(params[i]);
         }
       }
     }
-    this.#mixinFieldDefaults(ct, structType, cd, false);
+    return {values: values, superArgs: superArgs};
   }
 
   /**
-   * Field-default stores for the fields a class gains from its mixins,
-   * after the class's own defaults (streaming's order). Private mixin
-   * field names mangle with the MIXIN's scope key via #storeCtorField.
+   * Field values for the fields a class gains from its mixins, after
+   * the class's own defaults (streaming's order). Private mixin field
+   * names mangle with the MIXIN's scope key via #computeCtorField.
    */
-  #mixinFieldDefaults(ct: ClassType, structType: WasmStruct,
-      cd: ClassDeclaration, mapSetterNames: boolean): void {
+  #mixinFieldValues(values: HashMap<String, i32>, ct: ClassType,
+      structType: WasmStruct, cd: ClassDeclaration,
+      mapSetterNames: boolean): void {
     if (cd.mixins == null ||
         (cd.mixins as Array<TypeAnnotation>).length == 0) {
       return;
@@ -1610,36 +1690,35 @@ export final class FunctionLowerer {
         if (!(fd.name is Identifier)) {
           this.#bail('field name shape');
         }
-        this.#storeCtorField(ct, structType, (fd.name as Identifier).name,
+        this.#computeCtorField(values, ct, structType,
+            (fd.name as Identifier).name,
             fd.value as Expression, mapSetterNames, mixinFieldScopes[i]);
       }
     }
   }
 
-  #lowerCaseClassCtorBody(ct: ClassType, structType: WasmStruct,
-      cd: ClassDeclaration | null, params: Array<i32>): void {
+  #synthCaseLevel(ct: ClassType, structType: WasmStruct,
+      cd: ClassDeclaration | null, params: Array<i32>): CtorLevel {
     if (ct.superType != null) {
       let superType = ct.superType as ClassType;
       let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
       if (let (true, superCtor) = this.wasm.classMethodMap.get(ctorKey)) {
-        // The case-class constructor passes ONLY the receiver to super.
-        if (superCtor.signature.params.length != 1 ||
-            superCtor.signature.returns.length != 0 ||
-            !isValSubtype(this.#valueType(params[0]),
-                superCtor.signature.params[0])) {
+        // The case-class constructor passes nothing to super: the
+        // sealed base's factory takes no arguments.
+        if (superCtor.signature.params.length != 0 ||
+            superCtor.signature.returns.length != 1) {
           this.#bail('case super constructor shape');
         }
-        let fr = this.b.addRef(new IrRefFunc(superCtor));
-        this.b.callFunc(fr, this.#oneArg(params[0]), null);
       }
     }
+    let values = new HashMap<String, i32>();
     let {constructorType} = ct;
     if (constructorType != null) {
       let ctorType = constructorType;
       let {parameterNames} = ctorType;
       if (parameterNames != null) {
         for (var pi = 0; pi < ctorType.parameters.length; pi += 1) {
-          if (pi + 1 >= params.length || pi >= parameterNames.length) {
+          if (pi >= params.length || pi >= parameterNames.length) {
             this.#bail('case constructor arity');
           }
           let pName = parameterNames[pi];
@@ -1650,31 +1729,28 @@ export final class FunctionLowerer {
           let fieldIdx = structType.fieldIndexByName(lookupName);
           if (fieldIdx >= 0) {
             let fieldVt = structType.fields[fieldIdx].type;
-            if (!isValSubtype(this.#valueType(params[pi + 1]), fieldVt)) {
+            if (!isValSubtype(this.#valueType(params[pi]), fieldVt)) {
               this.#bail('case constructor param type');
             }
-            let fieldRef = this.b.addRef(new IrRefField(structType, lookupName));
-            let pairIdx = this.b.pushExtra(
-                this.#twoValues(this.#cx().thisValue, params[pi + 1]));
-            this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+            values[lookupName] = params[pi];
           }
         }
       }
     }
-    if (cd == null) {
-      return;
-    }
-    for (let member in cd.body) {
-      if (member is FieldDefinition) {
-        if (member.value != null && !member.isStatic) {
-          // Streaming skips (not bails) non-identifier field parameterNames here.
-          if (member.name is Identifier) {
-            this.#storeCtorField(ct, structType,
-                (member.name as Identifier).name, member.value as Expression);
+    if (cd != null) {
+      for (let member in cd.body) {
+        if (member is FieldDefinition) {
+          if (member.value != null && !member.isStatic) {
+            // Streaming skips (not bails) non-identifier field parameterNames here.
+            if (member.name is Identifier) {
+              this.#computeCtorField(values, ct, structType,
+                  (member.name as Identifier).name, member.value as Expression);
+            }
           }
         }
       }
     }
+    return {values: values, superArgs: new Array<i32>()};
   }
 
   /**
@@ -1720,14 +1796,15 @@ export final class FunctionLowerer {
   }
 
   /**
-   * Constructor prologue, mirroring FunctionGenerator's order exactly:
-   * field default initializers (class body FieldDefinitions with
-   * values), then the initializer list (which also carries desugared
-   * `this.x` parameters), then the super-initializer call, then the
-   * body. Mixins and decorated (synthetic) constructors bail before we
-   * get here.
+   * One class level's construction values (non-nullable-refs.md,
+   * Construction protocol), evaluated with no `this` in scope, in the
+   * order the old mutate-a-shell prologue stored them: field defaults
+   * (own fields, then mixin fields), then the initializer list (which
+   * carries desugared `this.x` params, overwriting defaults), then
+   * the super() arguments. `values` is keyed by resolved struct field
+   * name.
    */
-  #lowerConstructorPrologue(md: MethodDefinition): void {
+  #lowerCtorLevel(md: MethodDefinition): CtorLevel {
     if (this.func.classType == null || this.func.structType == null) {
       this.#bail('constructor without class');
     }
@@ -1740,35 +1817,31 @@ export final class FunctionLowerer {
     if (classDecl == null || !(classDecl is ClassDeclaration)) {
       this.#bail('constructor declaration shape');
     }
-
-    // 1. Field defaults, in declaration order: the class's own fields,
-    // then mixin fields — streaming's order.
+    let values = new HashMap<String, i32>();
     for (let member in classDecl.body) {
       if (member is FieldDefinition) {
         if (member.value != null && !member.isStatic) {
           if (!(member.name is Identifier)) {
             this.#bail('field name shape');
           }
-          this.#storeCtorField(ct, structType, (member.name as Identifier).name,
-              member.value as Expression);
+          this.#computeCtorField(values, ct, structType,
+              (member.name as Identifier).name, member.value as Expression);
         }
       }
     }
-    this.#mixinFieldDefaults(ct, structType, classDecl, true);
-
-    // 2. Initializer list (includes desugared this.x params).
+    this.#mixinFieldValues(values, ct, structType, classDecl, true);
     let {initializerList} = md;
     if (initializerList != null) {
       for (let init in initializerList) {
         if (init is FieldInitializer) {
-          this.#storeCtorField(ct, structType, init.field.name, init.value);
+          this.#computeCtorField(values, ct, structType, init.field.name,
+              init.value);
         } else {
           this.#bail('initializer kind');
         }
       }
     }
-
-    // 3. Super-initializer.
+    let superArgs = new Array<i32>();
     let {superInitializer} = md;
     if (superInitializer != null) {
       let si = superInitializer as SuperInitializer;
@@ -1782,12 +1855,10 @@ export final class FunctionLowerer {
         this.#bail('super constructor not found');
       }
       let superSig = superCtor.signature;
-      if (superSig.params.length != this.#liveArgCount(si.args) + 1) {
+      if (superSig.params.length != this.#liveArgCount(si.args)) {
         this.#bail('super constructor arity');
       }
-      let args = new Array<i32>();
-      args.push(this.#cx().thisValue);
-      var sIdx = 1;
+      var sIdx = 0;
       for (var i = 0; i < si.args.length; i += 1) {
         if (this.#dropZeroWidthArg(si.args[i])) {
           continue;
@@ -1797,20 +1868,20 @@ export final class FunctionLowerer {
         this.#requireSupported(paramVt, 'super arg type');
         var value = this.#lowerExpressionCtx(si.args[i], paramVt);
         value = this.#conformToSlot(value, paramVt, 'super argument type');
-        args.push(value);
+        superArgs.push(value);
       }
-      let superRef = this.b.addRef(new IrRefFunc(superCtor));
-      this.b.callFunc(superRef, args, null);
     }
+    return {values: values, superArgs: superArgs};
   }
 
   /**
-   * Stores one constructor field initialization, applying the public
-   * name -> private storage mapping (var(#x) x) and private-field key
-   * mangling. Fields absent from the struct are skipped WITHOUT
-   * evaluating the value, matching the streaming backend.
+   * Evaluates one constructor field initialization into the value map,
+   * applying the public name -> private storage mapping (var(#x) x)
+   * and private-field key mangling. Fields absent from the struct are
+   * skipped WITHOUT evaluating the value, matching the streaming
+   * backend.
    */
-  #storeCtorField(ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression, mapSetterNames: boolean = true, mixinScope: String = ''): void {
+  #computeCtorField(values: HashMap<String, i32>, ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression, mapSetterNames: boolean = true, mixinScope: String = ''): void {
     var actualName = fieldName;
     // Streaming's DEFAULT-constructor path stores by the raw field name;
     // the written-constructor and case-class paths apply the accessor
@@ -1831,6 +1902,10 @@ export final class FunctionLowerer {
         getClassPrivateFieldKey(getClassKey(ct), actualName)
       };
     }
+    let savedFields = this.#ctorLevelFields;
+    let savedScope = this.#ctorLevelScope;
+    this.#ctorLevelFields = values;
+    this.#ctorLevelScope = mixinScope;
     let found = structType.fieldIndexByName(lookupName) >= 0;
     if (!found) {
       if (this.#isZeroWidthExpr(value)) {
@@ -1838,14 +1913,224 @@ export final class FunctionLowerer {
         // initializer still runs.
         this.#lowerExpression(value);
       }
+      this.#ctorLevelFields = savedFields;
+      this.#ctorLevelScope = savedScope;
       return;
     }
     let fieldVt = this.#fieldValType(structType, lookupName);
     var lowered = this.#lowerExpressionCtx(value, fieldVt);
     lowered = this.#conformToSlot(lowered, fieldVt, 'constructor field type');
-    let fieldRef = this.b.addRef(new IrRefField(structType, lookupName));
-    let pairIdx = this.b.pushExtra(this.#twoValues(this.#cx().thisValue, lowered));
-    this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+    this.#ctorLevelFields = savedFields;
+    this.#ctorLevelScope = savedScope;
+    values[lookupName] = lowered;
+  }
+
+  /**
+   * A `this.f` read inside a field default: the level's computed value
+   * for f, or f's type default when it is not yet initialized (what
+   * struct.new_default held under the old protocol). Anything that is
+   * not a plain field — a getter, a method — has no value yet and
+   * bails.
+   */
+  #ctorLevelFieldRead(values: HashMap<String, i32>,
+      member: MemberExpression): i32 {
+    let ct = this.func.classType as ClassType;
+    let structType = this.func.structType as WasmStruct;
+    if (this.#isZeroWidthExpr(member as Expression)) {
+      return NO_VALUE;
+    }
+    let propName = getMemberPropertyName(
+        member.isSymbolAccess, member.property.name);
+    var actualName = propName;
+    if (ct.fieldSetterNames != null) {
+      let mapping = ct.fieldSetterNames as HashMap<String, String>;
+      if (let (true, mapped) = mapping.get(propName)) {
+        actualName = mapped;
+      }
+    }
+    var lookupName = actualName;
+    if (actualName.length > 0 && actualName.sliceBytes(0, 1) == "#") {
+      lookupName = if (this.#ctorLevelScope != '') {
+        this.#ctorLevelScope + '::' + actualName
+      } else {
+        getClassPrivateFieldKey(getClassKey(ct), actualName)
+      };
+    }
+    if (let (true, v) = values.get(lookupName)) {
+      return v;
+    }
+    let fieldIdx = structType.fieldIndexByName(lookupName);
+    if (fieldIdx < 0) {
+      this.#bail('field initializer reads `this.' + propName +
+          '`, which is not a field');
+    }
+    return this.#defaultValueFor(structType.fields[fieldIdx].type);
+  }
+
+  /**
+   * The value-phase return: own field values in struct order (defaults
+   * filled) followed by the evaluated super() arguments.
+   */
+  #emitCtorInitReturn(level: CtorLevel): void {
+    let list = this.#ctorOwnFieldValues(
+        this.func.structType as WasmStruct, level.values);
+    for (let a in level.superArgs) {
+      list.push(a);
+    }
+    this.b.retMulti(list);
+  }
+
+  /**
+   * The class's own struct-field range as an ordered value list, with
+   * each field the level did not initialize holding its type's
+   * default — the same contents struct.new_default gave it.
+   */
+  #ctorOwnFieldValues(structType: WasmStruct,
+      values: HashMap<String, i32>): Array<i32> {
+    var ownStart = 1;
+    if (structType.superStruct != null) {
+      ownStart = (structType.superStruct as WasmStruct).fields.length;
+    }
+    let list = new Array<i32>();
+    var fi = ownStart;
+    while (fi < structType.fields.length) {
+      let f = structType.fields[fi];
+      let fname = if (f.name != null) f.name as String else '';
+      if (let (true, v) = values.get(fname)) {
+        list.push(v);
+      } else {
+        list.push(this.#defaultValueFor(f.type));
+      }
+      fi += 1;
+    }
+    return list;
+  }
+
+  #defaultValueFor(vt: ValType): i32 {
+    return match (vt) {
+      case ValTypeI32: this.b.constI32(0, vt)
+      case ValTypeI8: this.b.constI32(0, new ValTypeI32())
+      case ValTypeI16: this.b.constI32(0, new ValTypeI32())
+      case ValTypeI64: this.b.constI64(0 as i64, vt)
+      case ValTypeF32: this.b.constF32(0.0, vt)
+      case ValTypeF64: this.b.constF64(0.0, vt)
+      case ValTypeV128: this.b.constV128Zero(vt)
+      case ValTypeRef: {
+        // The checker requires initializing non-defaultable fields;
+        // reaching this is a registration/lowering disagreement.
+        this.#bailValue('non-defaultable field without initializer')
+      }
+      case ValTypeVoid: this.#bailValue('zero-width field slot')
+      case _: this.b.emit(IrOp.ref_null, vt, -1, -1)
+    };
+  }
+
+  /**
+   * Allocation and the post-allocation body chain. Drives the
+   * ancestor value phases (each returning its field values plus the
+   * arguments for ITS super), assembles every field in struct order,
+   * allocates with one struct.new — the vtable is an operand, not a
+   * post-allocation store — and runs the written ancestor bodies
+   * root-first on the instance.
+   */
+  #allocateInstance(level: CtorLevel): i32 {
+    let ct = this.func.classType as ClassType;
+    let structType = this.func.structType as WasmStruct;
+    // Per-level own-field values, own class first, root last.
+    let levelValues = new Array<Array<i32>>();
+    levelValues.push(this.#ctorOwnFieldValues(structType, level.values));
+    let bodyFns = new Array<WasmFunction | null>();
+    let bodyArgs = new Array<Array<i32>>();
+    var args = level.superArgs;
+    var anc = ct.superType;
+    while (anc != null) {
+      let ancCt = anc;
+      let ancKey = getClassKey(ancCt);
+      let initFn = if (let (true, f) = this.wasm.classMethodMap.get(
+          getClassMethodKey(ancKey, '<ctor-init>'))) f else null;
+      if (initFn == null) {
+        this.#bail('super constructor phases missing for ' +
+            (ancKey as String));
+      }
+      let ancStruct = initFn.structType as WasmStruct;
+      var ancOwnStart = 1;
+      if (ancStruct.superStruct != null) {
+        ancOwnStart = (ancStruct.superStruct as WasmStruct).fields.length;
+      }
+      let ownCount = ancStruct.fields.length - ancOwnStart;
+      let rets = initFn.signature.returns;
+      let projs = this.b.callFuncMulti(
+          this.b.addRef(new IrRefFunc(initFn)), args, rets);
+      let vals = new Array<i32>();
+      var k = 0;
+      while (k < ownCount) {
+        vals.push(projs[k]);
+        k += 1;
+      }
+      levelValues.push(vals);
+      let nextArgs = new Array<i32>();
+      while (k < projs.length) {
+        nextArgs.push(projs[k]);
+        k += 1;
+      }
+      let bodyFn = if (let (true, f) = this.wasm.classMethodMap.get(
+          getClassMethodKey(ancKey, '<ctor-body>'))) f else null;
+      bodyFns.push(bodyFn);
+      bodyArgs.push(args);
+      args = nextArgs;
+      anc = ancCt.superType;
+    }
+    let structArgs = new Array<i32>();
+    structArgs.push(this.#ctorVtableValue(structType));
+    var li = levelValues.length - 1;
+    while (li >= 0) {
+      for (let v in levelValues[li]) {
+        structArgs.push(v);
+      }
+      li -= 1;
+    }
+    if (structArgs.length != structType.fields.length) {
+      this.#bail('constructor field arity for ' +
+          (getClassKey(ct) as String));
+    }
+    let vt: ValType = new ValTypeRef(structType);
+    let inst = this.b.emit(IrOp.struct_new, vt,
+        this.b.pushArgList(structArgs),
+        this.b.addRef(new IrRefType(structType)));
+    this.#cx().exactValues.add(inst);
+    var bi = bodyFns.length - 1;
+    while (bi >= 0) {
+      let bf = bodyFns[bi];
+      if (bf != null) {
+        let callArgs = new Array<i32>();
+        callArgs.push(inst);
+        for (let a in bodyArgs[bi]) {
+          callArgs.push(a);
+        }
+        this.b.callFunc(this.b.addRef(new IrRefFunc(bf)), callArgs, null);
+      }
+      bi -= 1;
+    }
+    return inst;
+  }
+
+  /** The <vtable> operand: the class's vtable global, or null. */
+  #ctorVtableValue(structType: WasmStruct): i32 {
+    let ct = this.func.classType as ClassType;
+    let info = if (let (true, i) = this.wasm.classInfos.get(
+        getClassKey(ct))) i else null;
+    if (info == null) {
+      this.#bail('constructor class not discovered');
+    }
+    let vtFieldVt = this.#fieldValType(structType, '<vtable>');
+    let {vtableGlobal} = info;
+    if (vtableGlobal != null) {
+      let vtg = vtableGlobal;
+      let v = this.b.emit(IrOp.global_get, vtg.type, -1,
+          this.b.addRef(new IrRefGlobal(vtg)));
+      return this.#conformToSlot(v, vtFieldVt, 'vtable field type');
+    }
+    return this.b.emit(IrOp.ref_null, vtFieldVt, -1, -1);
   }
 
   /**
@@ -2061,7 +2346,13 @@ export final class FunctionLowerer {
         // innermost dispatch, which replays it once the finalizer has
         // run (and re-enters this on the way out of the next one).
         if (argument == null) {
-          if (!returnThroughFinally(this.#cx(), -1)) {
+          if (this.ctorFactoryThis >= 0) {
+            // A bare `return;` in a constructor body inlined into the
+            // factory returns the allocated instance.
+            if (!returnThroughFinally(this.#cx(), this.ctorFactoryThis)) {
+              this.b.ret(this.ctorFactoryThis);
+            }
+          } else if (!returnThroughFinally(this.#cx(), -1)) {
             this.b.retVoid();
           }
         } else if (this.#isZeroWidthExpr(argument) &&
@@ -3655,59 +3946,38 @@ export final class FunctionLowerer {
   }
 
   /**
-   * The shared construction tail of `new` and range literals:
-   * struct.new_default, store the vtable when the class has one, call
-   * the constructor with the given argument expressions.
+   * The shared construction tail of `new` and range literals: a call
+   * to the class's constructor factory, which allocates with one
+   * struct.new and returns the instance (non-nullable-refs.md).
    */
   #constructInstance(classInfo: ClassCodegenInfo, cKey: ClassKey,
       argExprs: Array<Expression>): i32 {
-    let inst = this.#instanceShell(classInfo);
-
     let ctorKey = getClassMethodKey(cKey, '<constructor>');
-    if (let (true, ctor) = this.wasm.classMethodMap.get(ctorKey)) {
-      let sig = ctor.signature;
-      if (sig.params.length != this.#liveArgCount(argExprs) + 1) {
-        this.#bail('constructor arity adaptation');
-      }
-      let args = new Array<i32>();
-      args.push(inst);
-      var sIdx = 1;
-      for (var i = 0; i < argExprs.length; i += 1) {
-        if (this.#dropZeroWidthArg(argExprs[i])) {
-          continue;
-        }
-        let paramVt = sig.params[sIdx];
-        sIdx += 1;
-        this.#requireSupported(paramVt, 'constructor param type');
-        var value = this.#lowerExpressionCtx(argExprs[i], paramVt);
-        value = this.#conformToSlot(value, paramVt, 'constructor argument type');
-        args.push(value);
-      }
-      let ctorRef = this.b.addRef(new IrRefFunc(ctor));
-      this.b.callFunc(ctorRef, args, null);
-    } else if (argExprs.length > 0) {
+    let ctor = if (let (true, c) = this.wasm.classMethodMap.get(ctorKey)) c else null;
+    if (ctor == null) {
       this.#bail('constructor missing for ' + (cKey as String));
     }
-    return inst;
-  }
-
-  /** struct.new_default plus the vtable store: a default-initialized
-   * instance, ready for its constructor call. */
-  #instanceShell(classInfo: ClassCodegenInfo): i32 {
-    let {structType} = classInfo;
-    let resultVt: ValType = new ValTypeRef(structType);
-    let typeRef = this.b.addRef(new IrRefType(structType));
-    let inst = this.b.emit(IrOp.struct_new_default, resultVt, -1, typeRef);
-    this.#cx().exactValues.add(inst);
-    let {vtableGlobal} = classInfo;
-    if (vtableGlobal != null) {
-      let vtGlobal = vtableGlobal;
-      let vtRef = this.b.addRef(new IrRefGlobal(vtGlobal));
-      let vtValue = this.b.emit(IrOp.global_get, vtGlobal.type, -1, vtRef);
-      let fieldRef = this.b.addRef(new IrRefField(structType, '<vtable>'));
-      let pairIdx = this.b.pushExtra(this.#twoValues(inst, vtValue));
-      this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+    let sig = ctor.signature;
+    if (sig.params.length != this.#liveArgCount(argExprs) ||
+        sig.returns.length != 1) {
+      this.#bail('constructor arity adaptation');
     }
+    let args = new Array<i32>();
+    var sIdx = 0;
+    for (var i = 0; i < argExprs.length; i += 1) {
+      if (this.#dropZeroWidthArg(argExprs[i])) {
+        continue;
+      }
+      let paramVt = sig.params[sIdx];
+      sIdx += 1;
+      this.#requireSupported(paramVt, 'constructor param type');
+      var value = this.#lowerExpressionCtx(argExprs[i], paramVt);
+      value = this.#conformToSlot(value, paramVt, 'constructor argument type');
+      args.push(value);
+    }
+    let ctorRef = this.b.addRef(new IrRefFunc(ctor));
+    let inst = this.b.callFunc(ctorRef, args, sig.returns[0]);
+    this.#cx().exactValues.add(inst);
     return inst;
   }
 
@@ -3734,8 +4004,9 @@ export final class FunctionLowerer {
     if (ctor == null) {
       this.#bail('map constructor missing');
     }
-    if (ctor.signature.params.length != 2 ||
-        !(ctor.signature.params[1] is ValTypeI32)) {
+    if (ctor.signature.params.length != 1 ||
+        !(ctor.signature.params[0] is ValTypeI32) ||
+        ctor.signature.returns.length != 1) {
       this.#bail('map constructor shape');
     }
     let setFn = if (let (true, f) = this.wasm.classMethodMap.get(
@@ -3747,11 +4018,11 @@ export final class FunctionLowerer {
     if (setSig.params.length != 3 || setSig.returns.length != 0) {
       this.#bail('map setter shape');
     }
-    let inst = this.#instanceShell(infoOpt);
     let capacity = if (lit.entries.length > 16) lit.entries.length else 16;
     let capValue = this.b.constI32(capacity, new ValTypeI32());
-    this.b.callFunc(this.b.addRef(new IrRefFunc(ctor)),
-        this.#twoValues(inst, capValue), null);
+    let inst = this.b.callFunc(this.b.addRef(new IrRefFunc(ctor)),
+        this.#oneArg(capValue), ctor.signature.returns[0]);
+    this.#cx().exactValues.add(inst);
     for (let entry in lit.entries) {
       this.#requireSupported(setSig.params[1], 'map key type');
       this.#requireSupported(setSig.params[2], 'map value type');
@@ -4116,6 +4387,17 @@ export final class FunctionLowerer {
   #lowerMemberRead(member: MemberExpression): i32 {
     if (member.optional) {
       return this.#lowerOptionalChainExpr(member as Expression);
+    }
+    // Field defaults evaluate before the object exists
+    // (non-nullable-refs.md): `this.f` inside one resolves to the
+    // level's already-computed value — an earlier field's value, or
+    // the type's default for a field not yet initialized, exactly
+    // what the old allocate-then-mutate shell held at this point.
+    if (member.object is ThisExpression) {
+      let lf = this.#ctorLevelFields;
+      if (lf != null) {
+        return this.#ctorLevelFieldRead(lf, member);
+      }
     }
     if (this.#isZeroWidthExpr(member as Expression)) {
       // A zero-width field (`Box<void>.value`) has no storage to read.

@@ -1,181 +1,200 @@
 # Non-Nullable WASM References
 
-## Problem
+Zena's checker distinguishes `T` from `T | null`, but codegen has
+historically widened both to nullable wasm references. Precise types
+matter at the uses: a read of a nullable-typed slot whose IR type is
+non-null costs an explicit `ref.as_non_null` (a compare-and-trap the
+engine cannot fold into a dereference), and nullable declared types
+pessimize engine-side null-check elimination, `call_ref` handling, and
+inlining.
 
-Every reference type in codegen unconditionally uses `ref_null` (nullable
-reference), even when the checker knows a value cannot be null. This means:
+The work splits by storage kind:
 
-- `Animal` and `Animal | null` produce identical WASM types
-- WASM engines can't optimize away null checks on field access / method calls
-- The type mapping is less precise than the static type information allows
+- **Signature params and returns** are precise already — `typeToValType`
+  maps `T` to `(ref $T)` and only `T | null` to `(ref null $T)`.
+- **Locals** are precise since the init-discipline typing in
+  [ir.md §12.1](ir.md): emission replays the validator's scoped
+  init-tracking and declares every local that passes at its precise
+  non-null type. The residue (conditional-join values) waits on typed
+  labels, also §12.1.
+- **Struct fields** are the remaining leg, and this document's subject.
 
-## Background
+## Fields today
 
-WASM GC distinguishes two reference encodings:
+`Specializer.registerSpecializedClass` registers every class field
+nullable and mutable regardless of its declared type
+(specialization.zena):
 
-- `(ref null $T)` — nullable, can hold `ref.null` or a valid reference
-- `(ref $T)` — non-nullable, guaranteed to hold a valid reference
-
-Currently, `mapCheckerTypeToWasmType` returns `[ValType.ref_null, typeIndex]`
-for all 11 reference categories (classes, interfaces, arrays, records, tuples,
-functions, etc.). The `T | null` union handler unwraps to the inner type and
-recurses — but since the inner type already returns `ref_null`, the unwrapping
-is a no-op for reference types.
-
-## Compiler Target Status
-
-This optimization targets both compilers, but with different implementation scopes and phases:
-
-- **Bootstrap Compiler (`packages/compiler`)**: Currently, the bootstrap compiler maps all reference types to `ValType.ref_null` (nullable) at the Wasm GC level by default. Transitioning to non-nullable Wasm reference types would require refactoring multiple codegen blocks (such as `try/catch` block result allocation and `match` expression branch mergers) to trace definite assignment. Thus, the bootstrap compiler retains the simpler `ref_null` model to ensure compiler stability.
-- **Self-Hosted Compiler (`packages/zena-compiler`)**: The self-hosted compiler is the primary target for full non-nullable Wasm GC optimization. Since it tracks nullability semantics statically at the Zena type checker level, its code generator is designed to eventually map non-nullable types directly to Wasm `(ref $T)`. The self-hosted codegen already implements explicit `emitRefCast` (the equivalent of Wasm's non-null casting) during interface calls and record dispatch field access to handle conversions at non-nullable boundaries.
-
-## Proposed Change
-
-Make `mapCheckerTypeToWasmType` return `[ValType.ref, typeIndex]` (non-nullable)
-for non-union reference types, and `[ValType.ref_null, typeIndex]` only when
-the checker type is `T | null`.
-
-### Before
-
-```
-Animal       → [ref_null, idx]
-Animal|null  → unwrap → Animal → [ref_null, idx]   (identical)
+```zena
+let nullableValType = match (valType) {
+  case ValTypeRef {target}: new ValTypeRefNull(target)
+  case _: valType
+};
+let wf = new WasmField(fName, nullableValType, true);
 ```
 
-### After
+The widening exists because construction is allocate-then-mutate:
+`new C(...)` lowers to `struct.new_default` plus a vtable `struct.set`
+(`#instanceShell` in lowering.zena), then a call to `$C.<constructor>`
+which stores field defaults, the initializer list, and `this.` params
+into the shell with `struct.set`, calls the super constructor on the
+same shell, and runs the body. `struct.new_default` requires every
+field defaultable, so a non-null reference field cannot exist under
+this protocol.
 
-```
-Animal       → [ref, idx]
-Animal|null  → [ref_null, idx]                      (distinct)
-```
+Records and tuples already register precise, immutable fields — they
+construct with `struct.new` in one shot. Classes are the exception.
 
-## Benefits
+The cost, measured on the compiler's own module after the locals leg
+landed: 15,530 of the 31,951 remaining `ref.as_non_null` re-asserts
+(49%) immediately follow a `struct.get`. Every constructor field store
+also pays a `local.get $this` + `struct.set` pair that a `struct.new`
+operand would not, and the per-allocation vtable store pays a
+`global.get` + `struct.set` where an operand would pay only the
+`global.get`.
 
-1. **Engine optimizations** — WASM engines can elide null checks for non-nullable
-   locals, parameters, fields, and return values.
-2. **Truthful type mapping** — the WASM type reflects the static type.
-3. **Foundation for non-null assertions** — e.g., `x!` could cast `ref_null`
-   to `ref` with a trap on null.
+## Language rules already in place
 
-## Scope
+The construction semantics were designed for single-shot allocation,
+and the checker enforces all three preconditions today (verified
+against the current compiler):
 
-### Phase 1: `mapCheckerTypeToWasmType` (core change)
+- Initializer lists (including desugared `this.x` params) cannot
+  reference `this` — "the object doesn't exist yet"
+  (language-reference.md, Initializer Lists).
+- Immutable fields have no setter: `this.x = 2` on a `let` field in a
+  constructor body is rejected ("Cannot assign to read-only property"),
+  so bodies only ever write `var` fields.
+- A non-nullable field with neither an inline initializer nor a
+  constructor assignment is rejected ("Field 'b' must be initialized").
 
-Change the 11 return sites in `mapCheckerTypeToWasmType` from `ref_null` to
-`ref`. The `T | null` union handler currently unwraps the union and recurses
-into the inner type — since that recursion would now return `ref` (non-nullable),
-the handler must stop recursing and instead return `[ref_null, ...]` directly.
-This transforms the union unwrapping from a no-op into the mechanism that adds
-nullability:
+So every value a `let` field will ever hold, and the first value of
+every `var` field, is computable before allocation, with no `this` in
+scope.
 
-```typescript
-if (nonNullTypes.length === 1) {
-  // ...primitive boxing unchanged...
+## Construction protocol
 
-  // Reference types: get the non-nullable encoding, make it nullable
-  const innerWasm = mapCheckerTypeToWasmType(ctx, innerType); // [ref, idx]
-  if (innerWasm[0] === ValType.ref) {
-    return [ValType.ref_null, ...innerWasm.slice(1)]; // → [ref_null, idx]
-  }
-  return innerWasm;
-}
-```
+Constructors reshape from mutate-a-shell to compute-then-allocate.
+Three function roles per class, all lowered from the same constructor
+AST in the class's own module (no cross-module inlining):
 
-**Affected categories:** Class, Interface, Array, Record, Tuple, Function/Closure,
-ByteArray, String, boxed primitives (Box<T>).
+- **`$C.<constructor>` — the factory.** Signature changes from
+  `(this, args...) -> ()` to `(args...) -> (ref $C)`; `new C(...)`
+  sites call it and use the result. It evaluates C's own field
+  defaults and initializer list into SSA values (no `this` exists
+  yet), evaluates the `super(...)` arguments, then drives the ancestor
+  chain:
 
-The `NullType` path (`kind === TypeKind.Null`) should continue returning
-`[ref_null, ...]` since a bare `null` literal needs a nullable encoding.
+  ```
+  factory C(argsC):
+    cVals, argsB  = C's defaults + initializer list; super args   (inline)
+    (bVals..., argsA...) = call $B.<init>(argsB)
+    (aVals...)           = call $A.<init>(argsA)
+    this = struct.new $C (vtableGlobal, aVals..., bVals..., cVals...)
+    call $A.<ctorBody>(this, argsA...)      (only if A's ctor has a body)
+    call $B.<ctorBody>(this, argsB...)
+    C's body                                 (inline)
+    return this
+  ```
 
-### Phase 2: Fix null-producing sites (~23 sites)
+- **`$B.<init>` — a superclass's value phase.** Signature
+  `(args...) -> (ownFieldValues..., evaluatedSuperArgs...)`: the
+  class's field defaults and initializer list, in its own-struct field
+  order, plus the arguments it evaluates for *its* super constructor.
+  Returning the super args is what lets the factory continue the chain
+  and later hand `$A.<ctorBody>` the same values — each level's
+  constructor arguments are evaluated exactly once. Minted only for
+  classes that are the superclass of some instantiated class.
 
-Every place that emits `Opcode.ref_null` creates a null value. These sites must
-ensure the target local or field is typed `ref_null`, not `ref`. Key categories:
+- **`$B.<ctorBody>` — a superclass's body phase.** Signature
+  `(this, args...) -> ()`: just the constructor body statements, which
+  run post-allocation and may write `var` fields, call methods, and
+  escape `this`. Minted only when the constructor has a body.
 
-- **Default field values** — `generateDefaultValue` in classes.ts emits
-  `ref.null` for reference fields. Fields allowing null must be declared
-  `ref_null` in their struct type.
-- **Optional parameter defaults** — when no argument is passed, codegen emits
-  `ref.null`. The parameter type must be `ref_null`.
-- **Null literals in expressions** — `null` returns `ref.null`. The target
-  local must be nullable.
-- **Conditional fallbacks** — if/match with null branches.
+The leaf level always inlines into its factory, so a depth-1 class
+(the common case) costs one call per `new`, the same as today. Each
+ancestor level costs one `<init>` call plus one `<ctorBody>` call when
+a body exists, against one constructor call per level today. A
+non-abstract base that is both instantiated and extended carries its
+init code twice (inline in its own factory, and as `<init>` for
+subclass factories).
 
-### Phase 3: Fix casting operations (~47 sites)
+Fields with no initializer and no constructor assignment — nullable
+references, numerics — fill their `struct.new` slot with the type's
+default, preserving `struct.new_default` semantics.
 
-- `ref.cast_null` (42 sites) — works on nullable inputs, produces nullable
-  output. Needed when source or target is nullable.
-- `ref.cast` (5 sites) — works on non-nullable inputs, traps on null. Use when
-  source is known non-null.
-- `ref.test_null` / `ref.test` — same distinction for type tests.
+### Evaluation order
 
-Each site needs a decision: is the source expression nullable? Use the checker
-type to decide:
+Observable side-effect order is unchanged for written constructors.
+Today: C defaults, C initializer list, super args, then recursively
+B's prologue and body, then C's body. Under the factory: identical —
+the allocation moves from before everything to after all value
+phases, and allocation itself has no observable effects.
 
-```
-source is T|null → ref.cast_null / ref.test_null
-source is T      → ref.cast / ref.test
-```
+Synthesized default constructors change order to match the documented
+semantics: today they call super *first* and store their own defaults
+after, which contradicts the language reference's "subclass fields are
+initialized before the superclass constructor runs". Under the
+factory, default-constructor classes evaluate their own defaults
+first like every other class. Observable only when field default
+expressions have side effects ordered against an ancestor's.
 
-### Phase 4: Fix null checks (13 sites)
+### Field type and mutability flip
 
-`ref.is_null` is only valid on nullable refs. In most cases these are already
-behind an `if (x != null)` narrowing check, so the source type should be
-`T | null`. But verify each site.
+With single-shot allocation in place, registration drops the
+widening:
 
-### Phase 5: Struct field nullability
+- Field type = `typeToValType` of the checker type, exactly: `T` →
+  `(ref $T)`, `T | null` → `(ref null $T)`. Type-parameter fields
+  keep their erased (nullable) encodings.
+- `isMutable` = the checker's `FieldInfo.isMutable` (`var` fields
+  only). Wasm immutable fields unlock engine CSE of `struct.get` and
+  are covariance-capable in subtypes, though this design keeps field
+  types invariant across a hierarchy.
+- The `<vtable>` field keeps its current nullable, mutable encoding
+  for now; its value becomes a `struct.new` operand rather than a
+  post-allocation store. Flipping it non-null (and covariant per
+  class) is a separate follow-up.
+- `ErasedFieldBake` re-resolution (a class-typed field registered
+  before its class) preserves the precise nullability when it
+  re-resolves.
 
-Struct field types are declared via `defineStructType`. Currently all reference
-fields use `ref_null`. After this change:
+`struct.get` of a non-null field then has a non-null IR result type,
+and the emitter's existing machinery stops re-asserting — no emission
+changes needed.
 
-- `x: Animal` → field type `ref $Animal`
-- `x: Animal | null` → field type `ref null $Animal`
-- `var x: Animal` with possible null assignment → `ref null $Animal`
+### Internal allocators
 
-The checker already tracks which fields are `T | null` vs `T`.
+Compiler-synthesized structs keep `struct.new_default` and stay fully
+defaultable: generator and async frames, closure contexts, heap cells.
+The scaffold's string construction switches to `struct.new` with its
+already-computed values, since `String` is an ordinary class whose
+fields flip.
 
-## Risks
+Erased specializations register structs but no constructor today; they
+likewise get no factory. Abstract classes get `<init>`/`<ctorBody>`
+but no factory (no `new` sites exist).
 
-- **Subtle runtime traps** — assigning null to a `ref` field traps at runtime.
-  Must ensure the checker's nullability analysis is sound.
-- **`var` fields** — a `var` field typed `Animal` that's later assigned `null`
-  would trap. The checker should prevent this (null isn't assignable to
-  non-nullable types), but need to verify all paths.
-- **Generic type parameters** — `T` may or may not be nullable depending on
-  instantiation. May need to default to `ref_null` for generic fields.
-- **Casting chains** — downcasts from `anyref` (nullable) to concrete types
-  need careful null handling.
+## Expected results
 
-## Wasm GC Validation Requirements
+On the compiler's own module: ~15.5 KB of `ref.as_non_null` removed
+(one byte per field-read re-assert), minus nothing on the WAT side
+since reads simply stop asserting; several KB more from constructor
+field stores (`local.get $this` + `struct.set` per field, ~5 B,
+across every reached constructor) and per-allocation vtable stores
+collapsing into `struct.new` operands; engine-side, non-null immutable
+fields are the representation V8 and wasmtime optimize best.
 
-### Local Variable Initialization
+## Testing
 
-In WebAssembly GC, local variables of non-nullable types (like `(ref $T)`) do not have a default value. According to the Wasm specification:
-
-- Any local variable declared with a non-nullable type must be definitely assigned (written via `local.set` or `local.tee`) before it is read (`local.get`).
-- Since Zena strictly requires all local variables to be initialized upon declaration (e.g. `let x = ...`), this is naturally satisfied. However, the compiler must ensure it generates Wasm bytecode that initializes these locals immediately upon declaration to satisfy the Wasm validator.
-
-### Constructor Field Allocation
-
-In WebAssembly GC, a struct cannot be allocated in a partially uninitialized state if it has non-nullable fields. Crucially:
-
-- `struct.new_default` is only valid if all struct fields are defaultable (nullable references or primitives).
-- If a struct has a non-nullable field of type `(ref $T)`, `struct.new` must be called with a valid, non-null reference value.
-- Since Zena enforces that all non-nullable fields must be initialized via inline initializers or constructor initializer lists (including `this.` parameter properties) before the constructor body executes, the compiler must evaluate these initializer expressions first, store them in temporary Wasm locals, and call `struct.new` to allocate the object with its fields already initialized, instead of allocating a default-initialized object and assigning fields dynamically in the constructor body.
-
-## Checker Support (Already Exists)
-
-The checker already has the utilities needed:
-
-- `isNullableType(type)` — returns true for `T | null` unions
-- `getNonNullableType(type)` — extracts `T` from `T | null`
-- `makeNullable(type)` — creates `T | null` union
-- Type narrowing already tracks null/non-null in branches
-
-## Testing Strategy
-
-1. Verify all existing tests pass (most should — WASM validates `ref` as
-   strictly as `ref_null` for non-null values).
-2. Add tests for nullable vs non-nullable parameter types.
-3. Add tests that null assignment to non-nullable local fails at checker level.
-4. Benchmark to measure engine optimization gains (V8, wasmtime).
+- Portable execution tests: constructor evaluation order across a
+  hierarchy (side-effecting initializers), super bodies calling
+  virtual methods that read subclass fields, `var` field writes in
+  bodies, defaults + initializer-list overwrite semantics, mixin
+  field defaults, case classes, sealed variants.
+- WAT invariants: a class with non-null `let` fields declares
+  `(field (ref $T))` (immutable), and a reader function contains no
+  `ref.as_non_null` after `struct.get`; a `T | null` field stays
+  `(ref null $T)`.
+- The full suite plus stage-2 byte parity gate the protocol swap; the
+  whole self-compile must validate under wasm-tools.

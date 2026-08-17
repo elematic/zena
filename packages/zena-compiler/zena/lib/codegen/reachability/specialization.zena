@@ -4,7 +4,7 @@ import {
 import { SemanticModel } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
 import {
-  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration,
+  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement,
 } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
 import {
@@ -1135,8 +1135,13 @@ export final class Specializer implements SpecializerInterface {
     }
 
     if (!isStatic) {
-      let isExtCtor = methName == "<constructor>" && cType.isExtension;
-      if (!isExtCtor) {
+      // Constructors take no receiver: a non-extension constructor is a
+      // FACTORY — it computes field values, allocates with one
+      // struct.new, and returns the instance (non-nullable-refs.md,
+      // Construction protocol). Extension constructors already had this
+      // shape, returning the underlying value.
+      let isCtor = methName == "<constructor>";
+      if (!isCtor) {
         if (cType.isExtension && cType.onType != null) {
           params.push(typeToValType(this.pass.wasm, cType.onType as Type));
         } else {
@@ -1156,12 +1161,16 @@ export final class Specializer implements SpecializerInterface {
         mapReturnTypeToWasmResults(this.pass.wasm, methodTypeNode.returnType, returns);
       } else if (cType.isExtension && cType.onType != null) {
         returns.push(typeToValType(this.pass.wasm, cType.onType as Type));
+      } else {
+        this.#pushCtorReturn(cType, returns);
       }
     } else {
       if (methName != "<constructor>") {
         returns.push(new ValTypeI32());
       } else if (cType.isExtension && cType.onType != null) {
         returns.push(typeToValType(this.pass.wasm, cType.onType as Type));
+      } else {
+        this.#pushCtorReturn(cType, returns);
       }
     }
     
@@ -1611,12 +1620,13 @@ export final class Specializer implements SpecializerInterface {
       if (wasmFunc.structType == null) {
         wasmFunc.structType = st;
       }
-      let params = new Array<ValType>();
-      params.push(new ValTypeRefNull(st));
-      for (var i = 1; i < wasmFunc.signature.params.length; i += 1) {
-        params.push(wasmFunc.signature.params[i]);
-      }
-      let sig = this.pass.wasm.getSignature(params, wasmFunc.signature.returns);
+      // Re-derive the factory's return at the now-registered struct;
+      // the first registration may have preceded it and fallen back to
+      // structref.
+      let returns = new Array<ValType>();
+      returns.push(new ValTypeRef(st));
+      let sig = this.pass.wasm.getSignature(
+          wasmFunc.signature.params, returns);
       wasmFunc.signature = sig;
       this.pass.markTypeReached(sig);
       if (ct.isCaseClass) {
@@ -1763,6 +1773,125 @@ export final class Specializer implements SpecializerInterface {
 
   }
 
+  /**
+   * The factory's return type: the instance at its precise struct
+   * type. A registration that precedes the struct falls back to
+   * structref; the constructor patch-up in populateClassStructAndMethods
+   * re-derives the signature once the struct exists — the same
+   * two-step the receiver parameter used.
+   */
+  #pushCtorReturn(cType: ClassType, returns: Array<ValType>): void {
+    if (let (true, cInfo) = this.pass.wasm.classInfos.get(getClassKey(cType))) {
+      returns.push(new ValTypeRef(cInfo.structType));
+    } else {
+      returns.push(new ValTypeStructRef());
+    }
+  }
+
+  /**
+   * The value and body phases of superclass constructors
+   * (non-nullable-refs.md, Construction protocol). A subclass factory
+   * drives its ancestor chain through `<ctor-init>` — declared
+   * constructor params in, own field values (struct order, defaults
+   * filled) plus the evaluated super() arguments out — and
+   * `<ctor-body>`, the written body run on the allocated instance.
+   * Minted after the discovery fixpoint, when every constructor
+   * signature and struct is final; the ancestors' ASTs were walked
+   * when their factories were reached, so the phases introduce no new
+   * discovery.
+   */
+  mintConstructorPhases(): void {
+    // Snapshot the reached constructors: minting appends functions.
+    let ctors = new Array<WasmFunction>();
+    for (let f in this.pass.wasm.functions) {
+      if (f.methodName != null &&
+          (f.methodName as String) == '<constructor>' &&
+          f.classType != null &&
+          !(f.classType as ClassType).isExtension) {
+        ctors.push(f);
+      }
+    }
+    for (let f in ctors) {
+      var anc = (f.classType as ClassType).superType;
+      while (anc != null) {
+        let ancCt = anc;
+        let factoryKey = getClassMethodKey(getClassKey(ancCt), '<constructor>');
+        if (let (true, ancFactory) =
+            this.pass.wasm.classMethodMap.get(factoryKey)) {
+          this.#mintPhasesFor(ancCt, ancFactory);
+        }
+        anc = ancCt.superType;
+      }
+    }
+  }
+
+  #mintPhasesFor(cType: ClassType, factory: WasmFunction): void {
+    let cKey = getClassKey(cType);
+    let initKey = getClassMethodKey(cKey, '<ctor-init>');
+    if (this.pass.wasm.classMethodMap.has(initKey)) {
+      return;
+    }
+    let st = factory.structType;
+    if (st == null) {
+      throw new Error('constructor phases without a struct: ' +
+          (cKey as String));
+    }
+    let structType = st;
+    // Own fields start after the inherited prefix; a root class's
+    // field 0 is the synthetic <vtable>.
+    var ownStart = 1;
+    if (structType.superStruct != null) {
+      ownStart = (structType.superStruct as WasmStruct).fields.length;
+    }
+    let initReturns = new Array<ValType>();
+    var fi = ownStart;
+    while (fi < structType.fields.length) {
+      initReturns.push(structType.fields[fi].type);
+      fi += 1;
+    }
+    if (cType.superType != null) {
+      let superKey = getClassMethodKey(
+          getClassKey(cType.superType as ClassType), '<constructor>');
+      if (let (true, superFactory) =
+          this.pass.wasm.classMethodMap.get(superKey)) {
+        for (let p in superFactory.signature.params) {
+          initReturns.push(p);
+        }
+      }
+    }
+    let initSig = this.pass.wasm.getSignature(
+        factory.signature.params, initReturns);
+    let initFn = new WasmFunction(initSig, factory.node, factory.model);
+    initFn.name = (cKey as String) + '.<ctor-init>';
+    initFn.methodName = '<ctor-init>';
+    initFn.classType = cType;
+    initFn.classDecl = factory.classDecl;
+    initFn.structType = structType;
+    this.pass.wasm.classMethodMap[initKey] = initFn;
+    this.pass.wasm.addFunction(initFn);
+    this.pass.markFunctionReached(initFn);
+
+    if (ctorHasRunnableBody(factory)) {
+      let bodyParams = new Array<ValType>();
+      bodyParams.push(new ValTypeRefNull(structType));
+      for (let p in factory.signature.params) {
+        bodyParams.push(p);
+      }
+      let bodySig = this.pass.wasm.getSignature(
+          bodyParams, new Array<ValType>());
+      let bodyFn = new WasmFunction(bodySig, factory.node, factory.model);
+      bodyFn.name = (cKey as String) + '.<ctor-body>';
+      bodyFn.methodName = '<ctor-body>';
+      bodyFn.classType = cType;
+      bodyFn.classDecl = factory.classDecl;
+      bodyFn.structType = structType;
+      this.pass.wasm.classMethodMap[getClassMethodKey(cKey, '<ctor-body>')] =
+          bodyFn;
+      this.pass.wasm.addFunction(bodyFn);
+      this.pass.markFunctionReached(bodyFn);
+    }
+  }
+
   instantiateGenericFunction(symId: SymbolId, typeArgs: Array<Type>): WasmFunction {
     let funcExpr = this.pass.wasm.genericFunctions[symId];
     let model = this.pass.wasm.genericFunctionModels[symId];
@@ -1855,4 +1984,24 @@ let getMethodName = (md: MethodDefinition): String => {
     }
     case _: ""
   };
+};
+
+/**
+ * Whether a constructor has body statements to run post-allocation.
+ * Synthesized constructors (node-less) never do; a written `new(...);`
+ * or an empty block has nothing to run either.
+ */
+let ctorHasRunnableBody = (factory: WasmFunction): boolean => {
+  if (!(factory.node is MethodDefinition)) {
+    return false;
+  }
+  let md = factory.node as MethodDefinition;
+  let b = md.body;
+  if (b == null) {
+    return false;
+  }
+  if (b is BlockStatement) {
+    return b.body.length > 0;
+  }
+  return true;
 };

@@ -1,0 +1,23 @@
+// @mode: run
+// @result: 93
+// A constructor factory's result consumed as the SECOND argument of
+// the immediately following call, then used again afterwards. The
+// stack scheduler tees the value for the later use; the intervening
+// call must read the local rather than claim the on-stack copy — a
+// claim would sit below the call's own first-argument push and swap
+// the arguments (the pending-stream queue records which consumer a
+// value was scheduled for).
+
+class Span {
+  start: i32;
+  end: i32;
+  new(this.start, this.end);
+}
+
+function combine(a: i32, s: Span): i32 { return a * 10 + s.start; }
+
+export function main(): i32 {
+  let s = new Span(1, 2);
+  let r = combine(9, s);
+  return r + s.end;
+}
