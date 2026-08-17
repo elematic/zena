@@ -71,7 +71,8 @@ import {
 import {
   declScopeDrop, lowerFor, lowerForIn, lowerIf, lowerIfExpression,
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
-  lowerLetCondition, lowerMatch, lowerScopeDropRegion, lowerTryExpression,
+  lowerLetCondition, lowerMatch, lowerParamDropRegions,
+  lowerScopeDropRegion, lowerTryExpression,
   lowerUsingRegion, lowerValueNode, lowerWhile,
 } from './control-flow.zena';
 
@@ -1122,7 +1123,18 @@ export final class FunctionLowerer {
         }
       }
       let bodyCount = if (tailExpr != null) stmts.length - 1 else stmts.length;
-      var usingInBody = false;
+      // Owned parameters the checker marked for release wrap the whole
+      // body in regions, first parameter outermost.
+      let dropParamSyms = new Array<Symbol>();
+      for (var pi = 0; pi < params.length; pi += 1) {
+        if (this.func.model.hasScopeExitDrop(params[pi] as Node)) {
+          let ds = this.func.model.resolveDeclaration(params[pi].name);
+          if (ds != null) {
+            dropParamSyms.push(ds);
+          }
+        }
+      }
+      var usingInBody = dropParamSyms.length > 0;
       for (var si = 0; si < bodyCount; si += 1) {
         let s = stmts[si];
         if (s is UsingStatement) {
@@ -1146,10 +1158,20 @@ export final class FunctionLowerer {
         }
         withReturn.push(new ReturnStatement(tailExpr,
             tailExpr.loc) as Statement);
-        this.#lowerStatementList(withReturn, 0);
+        if (dropParamSyms.length > 0) {
+          lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
+              withReturn, 0, withReturn.length);
+        } else {
+          this.#lowerStatementList(withReturn, 0);
+        }
         tailExpr = null;
       } else {
-        this.#lowerStatementList(stmts, 0, bodyCount);
+        if (dropParamSyms.length > 0) {
+          lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
+              stmts, 0, bodyCount);
+        } else {
+          this.#lowerStatementList(stmts, 0, bodyCount);
+        }
       }
       if (tailExpr != null && this.#cx().reachable) {
         let tailValue = this.#lowerExpressionCtx(

@@ -4123,6 +4123,14 @@ An `Own<R> | null` binding releases the same way, skipping the dispose
 when the value is null — except one initialized to literal `null`, which
 can never hold anything to release.
 
+An owned **parameter** releases at function exit under the same rule:
+the function received ownership, so the function releases unless its
+body moves the value onward. Passing a resource to `Own<R>` parameter
+is therefore a complete handoff — the caller's binding dies at the
+call, and the callee disposes what it was handed (or moves it further).
+Constructors, expression-bodied functions, and `async`/`gen` bodies are
+not yet covered.
+
 The compiler releases a binding only when it still owns the value at every
 exit. A binding is left alone when anything moves it (a call taking
 `Own<R>`, `disown`, a consuming method, rebinding), reassigns it, captures

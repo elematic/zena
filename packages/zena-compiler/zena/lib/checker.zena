@@ -3923,6 +3923,39 @@ let ownedResourceClasses = (inner: Type): Array<ClassType> | null => {
 };
 
 /**
+ * Register a body's owned parameters as implicit-drop candidates: the
+ * function received ownership, so the function releases at exit unless
+ * the body moves, captures or escapes it — the same verdict machinery
+ * as a local binding, including branch-join compensation. Not in
+ * constructors (their owned parameters feed fields and the super call,
+ * which are checked outside the body block), not in suspending bodies,
+ * and never the receiver or a `this.x` field parameter.
+ */
+let registerOwnParamCandidates = (
+  ctx: CheckerContext,
+  params: Array<Parameter>,
+  paramTypes: Array<Type>
+): void => {
+  if (ctx.yieldType != null || ctx.asyncValueType != null) { return; }
+  var i = 0;
+  while (i < params.length && i < paramTypes.length) {
+    let param = params[i];
+    let t = paramTypes[i];
+    i += 1;
+    if (param.isThisParam || param.name.name == "this") { continue; }
+    let handleType = soleNonNullMember(t) ?? t;
+    if (ownershipHandleName(handleType) != "Own") { continue; }
+    let innerOpt = ownershipHandleInner(handleType);
+    if (innerOpt == null) { continue; }
+    let resources = ownedResourceClasses(innerOpt);
+    if (resources == null) { continue; }
+    let si = ctx.model.resolveDeclaration(param);
+    if (si == null) { continue; }
+    ctx.registerOwnCandidate(si, param as Node, resources);
+  }
+};
+
+/**
  * Mark drop candidates whose block contains a use the allowlist does
  * not affirm as a borrow. The default is unsafe: only positions the
  * checker fully understands — a member-access receiver, a call or
@@ -12314,6 +12347,9 @@ let checkMethodBody = (
   match (md.body as Node) {
     case BlockStatement as block: {
       ctx.enterOwnScope();
+      if (methodName != "<constructor>") {
+        registerOwnParamCandidates(ctx, md.params, methodType.parameters);
+      }
       prescanPendingFunctions(ctx, block.body);
       var j = 0;
       while (j < block.body.length) {
@@ -16007,6 +16043,7 @@ let checkFunctionExpression = (
       // (a match with value arms) type as values, not void.
       var tailConforms = false;
       ctx.enterOwnScope();
+      registerOwnParamCandidates(ctx, fe.params, paramTypes);
       prescanPendingFunctions(ctx, block.body);
       let tailIndex = if (!needsInference && !(retType is VoidType) &&
           block.body.length > 0 &&

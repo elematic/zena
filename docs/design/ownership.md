@@ -973,10 +973,26 @@ because an inner construct's compensation makes the binding definitely
 dead at its own merge. A diverging arm needs no compensation, which is
 what keeps the conditional-handoff shape working — in both constructs.
 
-Not yet released: bindings in value-producing blocks (the region cannot
-carry a result out), parameters, and anything in a generator or `async`
-body (part 4's cancellation table). `execution/ownership/implicit-drop.zena`
-and `match-arm-drops.zena` pin the behavior; the release-timing note now
+**Owned parameters release too.** A block-bodied function's
+`Own<resource>` parameter that the body never moves, captures or
+escapes is released at function exit — the function received
+ownership, so the function releases; this is the callee's half of a
+move, and what makes `consume(r)` leak-free without the callee writing
+anything. The same verdict machinery decides (a parameter is a
+candidate in the body's own scope, branch-join compensation included),
+and lowering wraps the whole body in the shared finally regions, first
+parameter outermost so release order is the reverse of declaration.
+Excluded: constructors (their owned parameters feed fields and the
+super call, which are checked outside the body block), suspending
+bodies, expression-bodied functions (no statement list to wrap — the
+region cannot carry the expression result out yet), the receiver, and
+`this.x` field parameters.
+
+Not yet released: bindings in value-producing blocks and parameters of
+expression-bodied functions (the region cannot carry a result out),
+and anything in a generator or `async` body (part 4's cancellation
+table). `execution/ownership/implicit-drop.zena`, `match-arm-drops.zena`
+and `param-drops.zena` pin the behavior; the release-timing note now
 lives in the language reference.
 
 1. **Unwind paths.** Every scope holding a live resource needs cleanup on

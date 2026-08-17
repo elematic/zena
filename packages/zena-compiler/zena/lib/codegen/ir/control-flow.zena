@@ -1290,6 +1290,57 @@ export let declScopeDrop = (cx: LoweringContext, vd: VariableDeclaration): boole
 };
 
 /**
+ * Release regions for owned parameters the body never moves: the
+ * function received ownership, so the function releases at exit —
+ * through the same shared finally region every other release uses.
+ * Nested first-parameter-outermost, so release order is the reverse of
+ * declaration order, matching how sibling bindings release. Past the
+ * last parameter, the body statements lower with the same
+ * using/scope-drop dispatch #lowerStatementList applies.
+ */
+export let lowerParamDropRegions = (cx: LoweringContext,
+    dropSyms: Array<Symbol>, idx: i32,
+    body: Array<Statement>, start: i32, end: i32): void => {
+  if (idx >= dropSyms.length) {
+    for (var i = start; i < end; i += 1) {
+      if (!cx.reachable) { break; }
+      if (body[i] is UsingStatement) {
+        lowerUsingRegion(cx, body[i] as UsingStatement, body, i + 1, end);
+        break;
+      }
+      if (body[i] is VariableDeclaration &&
+          declScopeDrop(cx, body[i] as VariableDeclaration)) {
+        lowerScopeDropRegion(cx, body[i] as VariableDeclaration,
+            body, i + 1, end);
+        break;
+      }
+      lowerStmt(cx, body[i]);
+    }
+    return;
+  }
+  let declType = cx.func.model.getBindingTypeById(dropSyms[idx].id);
+  if (declType == null) {
+    bail(cx, 'param drop untyped binding');
+  }
+  let owners = disposeOwnerClasses(cx, declType);
+  let syms = new Array<SymbolId>();
+  syms.push(dropSyms[idx].id);
+  let value = cx.envValues(syms)[0];
+
+  let mirrored = new Array<SymbolId>();
+  for (var k = start; k < end; k += 1) {
+    cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
+  }
+
+  lowerFinallyRegion(cx, mirrored, true, null,
+      (scope, resultVar, saved) => {
+        lowerParamDropRegions(cx, dropSyms, idx + 1, body, start, end);
+        finishProtectedArm(cx, scope, resultVar, -1);
+      },
+      () => { emitMaybeDispose(cx, value, owners); });
+};
+
+/**
  * An implicit-drop declaration and everything after it in its block:
  * `using` without the keyword. The checker marked the binding as an
  * owned resource nothing moves, reassigns, captures or escapes

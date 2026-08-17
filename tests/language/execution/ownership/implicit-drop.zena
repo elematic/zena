@@ -21,6 +21,8 @@ resource class Res {
   }
 }
 
+// Takes ownership and never moves it onward, so the parameter release
+// disposes it here — the callee's half of a move.
 function consume(r: Own<Res>): void {}
 function look(r: Borrow<Res>): i32 { return r.value(); }
 
@@ -61,7 +63,7 @@ let movedNotReleased = (): i32 => {
   let before = released;
   let a = new Res(5);
   consume(a);
-  return released - before;   // consume never disposes: 0 new releases
+  return released - before;   // exactly one release — consume's, not ours
 };
 
 /** A captured binding may outlive the block; it is left alone. */
@@ -103,9 +105,10 @@ let branchJoin = (c: boolean): i32 => {
   let before = released;
   let a = new Res(9);
   if (c) {
-    consume(a);   // handed off: the callee owns it, no release here
+    consume(a);   // handed off: the callee owns it, and releases it
   }
-  // The else edge released a; past the merge it is dead either way.
+  // The else edge released a; past the merge it is dead either way —
+  // one release on both paths, just by different hands.
   return released - before;
 };
 
@@ -117,11 +120,11 @@ export function main(): i32 {
   let r1 = earlyReturn(true);
   if (r1 == 3 && released == 3) { score += 2; }
   if (unwindReleases() == 1) { score += 4; }
-  if (movedNotReleased() == 0) { score += 8; }
+  if (movedNotReleased() == 1) { score += 8; }
   if (capturedNotReleased() == 0) { score += 16; }
   if (disownedNotReleased() == 0) { score += 32; }
   if (innerBlockTiming() == 8) { score += 64; }
-  if (branchJoin(true) == 0 && branchJoin(false) == 1) { score += 128; }
+  if (branchJoin(true) == 1 && branchJoin(false) == 1) { score += 128; }
   // score should be 255; scale so partial sums are unambiguous.
   return score * 48 + 58;
 }
