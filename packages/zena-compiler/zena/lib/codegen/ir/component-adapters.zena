@@ -14,16 +14,16 @@
  * The two halves live in different places, because they need different
  * things:
  *
- * - The callback is `zena:time`'s own `componentResume`, exported
- *   directly. It has to reach the timer queue and the completer
- *   registry, which is Zena code, so synthesizing it here would mean
- *   rebuilding in IR what the standard library already says.
+ * - The callback is `zena:component-async`'s own `componentResume`,
+ *   exported directly. It has to reach the subtask registry and the
+ *   microtask queue, which is Zena code, so synthesizing it here would
+ *   mean rebuilding in IR what the standard library already says.
  * - The entry is synthesized here, because it has to call `main`, and
  *   nothing in the standard library can name a program's `main`.
  *
  * The entry is two calls: run the program, then ask the driver what to
- * do next. Everything else — arming the wait, dropping the subtask,
- * calling `task.return` — is in `time/p3.zena`.
+ * do next. Everything else — resolving completers, dropping subtasks,
+ * calling `task.return` — is in `component-async.zena`.
  *
  * ## The export wrappers
  *
@@ -70,18 +70,18 @@ var entryBodies = new HashMap<i32, IrBody>();
 
 /**
  * The stdlib module supplying the driver. It is a path id rather than a
- * name id because `zena:time` is a virtual module: the component target
- * resolves it to this file, and no other target has it.
+ * name id because `zena:component-async` is a virtual module: only the
+ * component target resolves it, to this file.
  */
-let driverModule = 'zena:time/p3.zena';
+let driverModule = 'zena:component-async.zena';
 
 /**
  * Build the async entry, if this program links a driver that needs one.
  *
  * "Needs one" is decided by reachability, not by a flag: `componentPoll`
- * is reached exactly when the program pulled in the p3 clock, which
- * happens when it uses `zena:time`. A program that never sleeps gets the
- * synchronous lift and none of this.
+ * is reached exactly when the program pulled in `zena:component-async`,
+ * which happens when it uses `zena:time` or any async WIT import. A
+ * program with no asynchrony gets the synchronous lift and none of this.
  */
 export let prepareComponentEntry = (
   wasm: WasmModule,
@@ -92,6 +92,15 @@ export let prepareComponentEntry = (
   let poll = wasm.getStdlibFunc(driverModule, 'componentPoll');
   let resume = wasm.getStdlibFunc(driverModule, 'componentResume');
   if (poll == null || resume == null) {
+    return;
+  }
+  if (!poll.isReached || !resume.isReached) {
+    // In the function map is not the same as in the module: the
+    // checkable traversal registers functions it only type-walked.
+    // The driver's entry points are reached exactly when reachability
+    // rooted them — when the program awaited an async-lowered import —
+    // and a program that merely links the driver's unit (any
+    // synthesized WIT module does) keeps the synchronous lift.
     return;
   }
 

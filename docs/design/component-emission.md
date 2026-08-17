@@ -986,12 +986,22 @@ as JS. Tested as 1.7 was, asserting wall time against CPU time: 310 ms
 wall, 20 ms CPU, for a 300 ms sleep.
 
 Five builtins rather than four — `waitable-set.drop` joins the list, per
-the corrections in 1.7. The callback is `zena:time`'s own
+the corrections in 1.7. The callback is `zena:component-async`'s own
 `componentResume`, exported and named by the lift, rather than
-synthesized: it has to reach the timer queue and the completer registry,
-which is Zena code. What the compiler does synthesize is the _entry_,
-because that has to call `main`, and nothing in the standard library can
-name a program's `main`.
+synthesized: it has to reach the subtask registry and the microtask
+queue, which is Zena code. What the compiler does synthesize is the
+_entry_, because that has to call `main`, and nothing in the standard
+library can name a program's `main`.
+
+(The driver originally lived in `time/p3.zena`, with room for exactly
+one subtask — the timer queue parks on its earliest deadline. The WIT
+interop work generalized it into `zena:component-async`, a registry of
+any number of in-flight subtasks: `awaitPacked` turns an async-lowered
+import's packed result into a `Future<void>`, and the clock became its
+first client. The driver's entry points root only when `awaitPacked` is
+actually reached — merely linking the module, which every synthesized
+WIT module with an async function does, must not force the async entry
+onto a program that awaits nothing.)
 
 Two restrictions the shape imposes, both loud at compile time:
 
@@ -1209,9 +1219,17 @@ Formerly "bindgen", renamed because nothing is generated: the compiler
 imports WIT natively — synthesized module symbols for the checker,
 synthesized marshaling adapters in codegen. Its stage 0a–0d
 prerequisites (`Result`, narrow ints, `FixedArray<u8>`, `Disposable`)
-have all landed, several through Track O and the emission work. The
-next slice is `async` function imports, which p3 makes ubiquitous and
-the subtask protocol from the timer work already supports.
+have all landed, several through Track O and the emission work.
+
+The `async` slice is built, for functions without results: the timer's
+one-subtask driver became `zena:component-async` (a registry —
+`awaitPacked` maps the packed lowering result to a `Future<void>`,
+resolved by the shared callback), and a synthesized WIT module renders
+an async function as the raw async-lowered declaration plus a wrapper
+over `awaitPacked`, so what the program imports is an ordinary
+function returning `Future<void>`. The
+next slices are strings and lists on imports, then async *results*
+(the subtask-read machinery, C6-adjacent).
 
 ### C6 — p3 streams and futures. Ahead of C4, after the interop async slice.
 

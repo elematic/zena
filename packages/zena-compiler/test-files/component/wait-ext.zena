@@ -1,0 +1,22 @@
+// wait-wit.zena's import, hand-transcribed: the same raw async-lowered
+// declaration and `awaitPacked` wrapper the synthesized WIT module
+// renders. The two programs must agree on their component front
+// matter section for section.
+import { drainMicrotasks, Future } from 'zena:async';
+import { awaitPacked } from 'zena:component-async';
+
+@external("wasi:clocks/monotonic-clock@0.3.0", "wait-for", "async")
+declare function waitFor_raw(howLong: u64): i32;
+
+function waitFor(howLong: u64): Future<void> {
+  return awaitPacked(waitFor_raw(howLong));
+}
+
+async function wait(): Future<void> {
+  await waitFor(1000000);
+}
+
+export function main(): void {
+  wait();
+  drainMicrotasks();
+}

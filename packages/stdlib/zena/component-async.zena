@@ -1,0 +1,154 @@
+/**
+ * @file
+ *
+ * The component target's async-import driver: subtasks in, futures out.
+ *
+ * An async-lowered import returns immediately with a packed value —
+ * `(subtask << 4) | state` — instead of blocking. This module turns
+ * that protocol into the `Future` every other async source already
+ * speaks: `awaitPacked` either completes at once (the call finished
+ * inside the lowering) or joins the subtask to the driver's waitable
+ * set and parks a completer; when the host re-enters through the
+ * callback with a RETURNED subtask, the completer resolves and the
+ * microtask queue drains.
+ *
+ * It generalizes what `time/p3.zena` built for the one timer wait —
+ * that driver now delegates here — from "at most one subtask" to a
+ * registry of any number, which is what synthesized WIT imports need:
+ * two in-flight `wait-for`s from different call sites are two
+ * subtasks, each with its own future.
+ *
+ * The entry and callback the compiler wires (`componentPoll`,
+ * `componentResume`) live here now, since the driver is no longer the
+ * timer's private business. Only the `component` target resolves this
+ * module.
+ */
+
+import { HashMap } from 'zena:map';
+import { Future, Completer, drainMicrotasks } from 'zena:async';
+
+// ============================================================================
+// The canonical builtins
+// ============================================================================
+
+@external("canon", "waitable-set.new")
+declare function waitableSetNew(): i32;
+
+@external("canon", "waitable-set.drop")
+declare function waitableSetDrop(set: i32): void;
+
+@external("canon", "waitable.join")
+declare function waitableJoin(waitable: i32, set: i32): void;
+
+@external("canon", "subtask.drop")
+declare function subtaskDrop(subtask: i32): void;
+
+@external("canon", "task.return")
+declare function taskReturn(): void;
+
+// ============================================================================
+// Callback codes and states
+// ============================================================================
+
+/** Done: the task has returned and must not be re-entered. */
+let EXIT = 0;
+/** Wake me when something in this waitable set fires. */
+let WAIT = 2;
+
+/**
+ * The low four bits of a packed async-lowered result, and the `code` a
+ * subtask event carries, are both a `CallState`. A subtask is reported
+ * more than once — it starts, and later it returns — and only RETURNED
+ * means there is a completed subtask to resolve and drop.
+ */
+let STATE_MASK = 15;
+let STATE_RETURNED = 2;
+
+// ============================================================================
+// The driver
+// ============================================================================
+
+/**
+ * The waitable set the host wakes us on, created on first use. Zero is
+ * not a valid set index, so it doubles as "not yet created".
+ */
+var waitableSet = 0;
+
+/** In-flight subtasks, each owed one completion. */
+let pending = new HashMap<i32, Completer<void>>();
+
+/**
+ * An async-lowered import's packed result, as a future.
+ *
+ * State RETURNED means the call finished inside the lowering — the
+ * timer had already expired, the write already flushed — and the
+ * future arrives completed, with no subtask to own. Anything else is a
+ * subtask: joined to the set, registered, resolved by the callback.
+ */
+export function awaitPacked(packed: i32): Future<void> {
+  let completer = new Completer<void>();
+  if ((packed & STATE_MASK) == STATE_RETURNED) {
+    completer.complete();
+    return completer.future;
+  }
+  if (waitableSet == 0) {
+    waitableSet = waitableSetNew();
+  }
+  let subtask = packed >> 4;
+  waitableJoin(subtask, waitableSet);
+  pending[subtask] = completer;
+  return completer.future;
+}
+
+/**
+ * What the entry and the callback both end with: either something is
+ * still in flight, in which case tell the host which set to wake us
+ * on, or nothing is, in which case the task is done and its result —
+ * nothing, for a `main(): void` — has to be returned before exiting.
+ */
+let nextCode = (): i32 => {
+  if (pending.size == 0) {
+    // Every handle the task took out has to be given back before it
+    // returns: an outstanding waitable set at exit is a leak the host
+    // reports rather than collects.
+    if (waitableSet != 0) {
+      waitableSetDrop(waitableSet);
+      waitableSet = 0;
+    }
+    taskReturn();
+    return EXIT;
+  }
+  return WAIT | (waitableSet << 4);
+};
+
+/**
+ * Called by the synthesized entry after `main` returns: run everything
+ * that can run now, then either exit or ask to be woken.
+ */
+export function componentPoll(): i32 {
+  drainMicrotasks();
+  return nextCode();
+}
+
+/**
+ * The callback the host re-enters through when a waitable fires.
+ *
+ * `waitable` is the subtask the event is about and `code` is its new
+ * state. A subtask is delivered more than once — it starts, and later
+ * it returns — and only the final state resolves anything. Dropping a
+ * subtask before it has resolved traps, so the state is checked rather
+ * than assumed: anything short of RETURNED goes straight back to
+ * waiting, without draining, because nothing has completed.
+ */
+export function componentResume(event: i32, waitable: i32, code: i32): i32 {
+  if (code != STATE_RETURNED) {
+    return WAIT | (waitableSet << 4);
+  }
+  if (let (true, completer) = pending.get(waitable)) {
+    pending.delete(waitable);
+    subtaskDrop(waitable);
+    completer.complete();
+  }
+  drainMicrotasks();
+  return nextCode();
+}

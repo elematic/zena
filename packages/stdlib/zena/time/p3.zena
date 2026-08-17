@@ -13,12 +13,18 @@
  * unchanged — the difference between a browser's `setTimeout` and a p3
  * timer is entirely in who does the waking.
  *
+ * The waking itself lives in `zena:component-async`, the driver every
+ * async-lowered import shares: the clock hands `wait-for`'s packed
+ * result to `awaitPacked` and keeps the future, and the driver's
+ * callback resolves it when the host reports the subtask returned.
+ * This module used to own that machinery for its one subtask; the
+ * registry generalized it away.
+ *
  * See docs/design/component-emission.md, Part 5, and async.md §4.
  */
 
-import { Error } from 'zena:error';
 import { Future } from 'zena:async';
-import { drainMicrotasks } from 'zena:async';
+import { awaitPacked } from 'zena:component-async';
 import { Clock, installClock, sleep as sleepImpl, monotonicNs as nowImpl,
          monotonicMs as nowMsImpl } from './queue.zena';
 
@@ -36,72 +42,23 @@ declare function monotonicNow(): u64;
  * which is the whole point: without it the same function blocks. The
  * core signature that comes back is `(param i64) (result i32)`, and the
  * result packs a subtask handle and a status — `(subtask << 4) | status`
- * — where status 0 means the call already returned and there is nothing
- * to wait for.
+ * — which is exactly what `awaitPacked` takes.
  */
 @external("wasi:clocks/monotonic-clock@0.3.0", "wait-for", "async")
 declare function waitFor(howLong: u64): i32;
 
 // ============================================================================
-// The canonical builtins
-// ============================================================================
-//
-// Not WIT functions: the canonical ABI provides them, so they have no
-// interface to be imported from and no type to declare. The `canon`
-// namespace is how a Zena declaration names one.
-
-@external("canon", "waitable-set.new")
-declare function waitableSetNew(): i32;
-
-@external("canon", "waitable-set.drop")
-declare function waitableSetDrop(set: i32): void;
-
-@external("canon", "waitable.join")
-declare function waitableJoin(waitable: i32, set: i32): void;
-
-@external("canon", "subtask.drop")
-declare function subtaskDrop(subtask: i32): void;
-
-@external("canon", "task.return")
-declare function taskReturn(): void;
-
-// ============================================================================
-// Callback codes
-// ============================================================================
-//
-// What a callback-lifted export returns, from the canonical ABI: the low
-// four bits are the code and the rest is its operand.
-
-/** Done: the task has returned and must not be re-entered. */
-let EXIT = 0;
-/** Wake me when something in this waitable set fires. */
-let WAIT = 2;
-
-/**
- * The low four bits of `wait-for`'s packed result, and the `code` a
- * subtask event carries, are both a `CallState`. A subtask is reported
- * more than once — it starts, and later it returns — and only RETURNED
- * means there is a completed subtask to drop.
- */
-let STATE_MASK = 15;
-let STATE_RETURNED = 2;
-
-// ============================================================================
-// The driver
+// The clock
 // ============================================================================
 
 /**
- * The waitable set the host wakes us on, created on first use. Zero is
- * not a valid set index, so it doubles as "not yet created".
+ * The wait currently in flight, or null. At most one: the timer queue
+ * parks on its earliest deadline, so there is only ever one outstanding
+ * `wait-for`. The future is the driver's — it settles when the host
+ * reports the subtask returned — so completion is read off it directly
+ * rather than mirrored in a flag that could go stale.
  */
-var waitableSet = 0;
-
-/**
- * The subtask of the wait currently in flight, or 0. At most one: the
- * timer queue parks on its earliest deadline, so there is only ever one
- * outstanding `wait-for`.
- */
-var pendingSubtask = 0;
+var inFlight: Future<void> | null = null;
 
 final class P3Clock implements Clock {
   new();
@@ -120,27 +77,22 @@ final class P3Clock implements Clock {
    * deadline had already passed.
    */
   waitNs(ns: i64): boolean {
-    if (pendingSubtask != 0) {
+    let f = inFlight;
+    if (f != null && !(f as Future<void>).isCompleted) {
       // A wake is already scheduled. Arming a second `wait-for` would
-      // leave the first orphaned in the waitable set — still owned by
-      // the guest, never dropped — and the drain runs more than once
-      // before the host takes over, so this is the common case rather
-      // than a corner. When the armed wait fires the queue re-runs and
-      // arms whatever is earliest then.
+      // put a second subtask in flight for the same park, and the
+      // drain runs more than once before the host takes over, so this
+      // is the common case rather than a corner. When the armed wait
+      // fires the queue re-runs and arms whatever is earliest then.
       return false;
     }
-    let packed = waitFor(ns as u64);
-    if ((packed & STATE_MASK) == STATE_RETURNED) {
-      // The call finished inside the lowering: the deadline had already
-      // passed. There is no subtask to wait on, and the wait is done.
+    let armed = awaitPacked(waitFor(ns as u64));
+    if (armed.isCompleted) {
+      // The call finished inside the lowering: the deadline had
+      // already passed, and the wait is done.
       return true;
     }
-    if (waitableSet == 0) {
-      waitableSet = waitableSetNew();
-    }
-    let subtask = packed >> 4;
-    waitableJoin(subtask, waitableSet);
-    pendingSubtask = subtask;
+    inFlight = armed;
     return false;
   }
 }
@@ -158,65 +110,6 @@ let ensureClock = (): void => {
     installed = true;
   }
 };
-
-// ============================================================================
-// The event loop
-// ============================================================================
-
-/**
- * What the entry and the callback both end with: either there is a wait
- * in flight, in which case tell the host which set to wake us on, or
- * there is not, in which case the task is done and its result — nothing,
- * for a `main(): void` — has to be returned before exiting.
- */
-let nextCode = (): i32 => {
-  if (pendingSubtask == 0) {
-    // Every handle the task took out has to be given back before it
-    // returns: an outstanding waitable set at exit is a leak the host
-    // reports rather than collects.
-    if (waitableSet != 0) {
-      waitableSetDrop(waitableSet);
-      waitableSet = 0;
-    }
-    taskReturn();
-    return EXIT;
-  }
-  return WAIT | (waitableSet << 4);
-};
-
-/**
- * Called by the synthesized entry after `main` returns.
- *
- * The drain runs everything that can run now; on this target it stops as
- * soon as the only remaining work is a deadline, having armed the timer
- * through `waitNs` above.
- */
-export function componentPoll(): i32 {
-  drainMicrotasks();
-  return nextCode();
-}
-
-/**
- * The callback the host re-enters through when a waitable fires.
- *
- * `waitable` is the subtask the event is about and `code` is its new
- * state. A subtask is delivered more than once — it starts, and later it
- * returns — and only the final state means the wait is over. Dropping a
- * subtask before it has resolved traps, so the state is checked rather
- * than assumed: anything short of RETURNED goes straight back to
- * waiting, without draining, because nothing has completed.
- */
-export function componentResume(event: i32, waitable: i32, code: i32): i32 {
-  if (code != STATE_RETURNED) {
-    return WAIT | (waitableSet << 4);
-  }
-  if (pendingSubtask != 0) {
-    subtaskDrop(pendingSubtask);
-    pendingSubtask = 0;
-  }
-  drainMicrotasks();
-  return nextCode();
-}
 
 // ============================================================================
 // The public surface, identical to every other target's

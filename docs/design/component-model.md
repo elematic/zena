@@ -30,7 +30,7 @@
 | Component emission                      | ✅ Done — C0–C3 of [component-emission.md](./component-emission.md): components print, `--wit`/`--world` declare a world the program is checked against |
 | Stage 0a–0d prerequisites               | ✅ Done — `Result`, narrow ints with `Array<u8>`/`FixedArray<u8>`, `ByteArrayType` retired, `Disposable` + `resource class` (Track O)                   |
 | Canonical flattening metadata           | ✅ Done for counts and memory-need (`funcFlatMeta`); full type flattening is stage 2's                                                                  |
-| WIT-typed modules (stage 1)             | ❌ Does not exist — the subject of this document                                                                                                        |
+| WIT-typed modules (stage 1)             | 🚧 First slices landed — flat-scalar functions, sync and `async`-without-result (imported as functions returning `Future<void>`, over `zena:component-async`); strings/lists/resources next |
 | Canonical ABI lift/lower for rich types | ❌ Hand-written per function so far (`zena:console`'s component entry); stage 2 makes the compiler synthesize it                                        |
 
 So: everything _around_ interop has landed, several pieces earlier than
@@ -62,12 +62,14 @@ a wrong-typed probe cannot distinguish "absent" from "mistyped".)
 
 That reorders the tracks:
 
-1. **WIT interop continues** (this document): the next slice is
-   `async` function imports — the subtask protocol already exists from
-   the timer work — then richer types. Interop still precedes C4, for
-   the same reason as before: hand-computing canonical layouts was
-   fine for stdio's four functions and is wrong for filesystem's
-   forty, doubly so when every signature is also async.
+1. **WIT interop continues** (this document): the `async` function
+   slice is built — the timer's driver generalized into
+   `zena:component-async`, and a synthesized WIT module wraps an
+   async-lowered import as an ordinary function returning
+   `Future<void>` — with richer types next. Interop still precedes C4, for the same reason as before:
+   hand-computing canonical layouts was fine for stdio's four
+   functions and is wrong for filesystem's forty, doubly so when
+   every signature is also async.
 2. **Track G — `stream<T>`/`future<T>` — moves ahead of C4.** p3
    filesystem and stdio are stream-shaped; there is no p3 without
    them. The canonical builtins (`stream.new`/`read`/`write`/cancel/

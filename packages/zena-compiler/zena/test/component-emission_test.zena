@@ -593,6 +593,60 @@ world only {
     }
   });
 
+  test('a WIT-typed async import compiles like its @external spelling',
+      (ctx: TestContext): void => {
+    // `wait-for` is `async` in the package's WIT, so the synthesized
+    // module is the raw async-lowered declaration plus a `Future<void>`
+    // wrapper over `awaitPacked`. The import front matter must match
+    // wait-ext.zena's hand transcription of exactly that, and both
+    // programs must be entered through the callback-lifted `run` —
+    // awaiting the import is what roots the driver.
+    let viaWit = compileFor(`${fixtures}/wait-wit.zena`, 'component');
+    let viaExternal = compileFor(`${fixtures}/wait-ext.zena`, 'component');
+    let witImports = sectionPayload(viaWit, 10);
+    let externalImports = sectionPayload(viaExternal, 10);
+    isTrue(witImports.length > 0, 'no import section at all');
+    equal(witImports.length, externalImports.length,
+      'the two import sections differ in size');
+    for (var i = 0; i < witImports.length; i += 1) {
+      if (witImports[i] != externalImports[i]) {
+        throw new Error('the two import sections differ at byte ' +
+            i32ToString(i));
+      }
+    }
+    let witTypes = sectionPayload(viaWit, 7);
+    let externalTypes = sectionPayload(viaExternal, 7);
+    equal(witTypes.length, externalTypes.length,
+      'the two instance-type sections differ in size');
+    for (var i = 0; i < witTypes.length; i += 1) {
+      if (witTypes[i] != externalTypes[i]) {
+        throw new Error('the two instance-type sections differ at byte ' +
+            i32ToString(i));
+      }
+    }
+    let witExports = sectionPayload(viaWit, 11);
+    isTrue(containsName(witExports, 'run'),
+      'the WIT-typed async import did not produce the async entry');
+    isTrue(!containsName(witExports, 'main'),
+      'the async entry should replace main');
+  });
+
+  test('a sync-only use of an async-declaring interface keeps the ' +
+      'synchronous lift', (ctx: TestContext): void => {
+    // clock-wit.zena imports only `now`, but the interface also
+    // declares the async `wait-for` — so the synthesized module links
+    // `zena:component-async` for its wrapper. Linking the driver's unit
+    // must not root it: only a program that actually awaits an
+    // async-lowered import gets the callback-lifted entry, and this one
+    // keeps its synchronous `main(): u64`.
+    let exports = sectionPayload(
+        compileFor(`${fixtures}/clock-wit.zena`, 'component'), 11);
+    isTrue(containsName(exports, 'main'),
+      'a program that awaits nothing lost its synchronous main');
+    isTrue(!containsName(exports, 'run'),
+      'a program that awaits nothing was given the async entry');
+  });
+
   test('Zena identifiers become kebab-case names', (ctx: TestContext): void => {
     // Every name in a component — imports, exports, parameters — is
     // kebab-case, and a Zena identifier cannot contain `-`, so the

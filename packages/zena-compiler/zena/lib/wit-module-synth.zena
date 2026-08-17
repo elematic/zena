@@ -16,12 +16,20 @@
  * out of the module graphs of hosts that do not serve WIT-backed
  * packages, like the language service.
  *
- * The first slice covers synchronous functions of flat scalars. A
- * function whose signature needs more — strings and lists (compiler-
- * synthesized marshaling), resources (handle types), `async` (the
- * subtask protocol) — is listed in the synthesized module's header
- * comment with its reason, and importing it reports a missing export.
- * Those arrive with the interop stages in
+ * The rendered slice covers functions of flat scalars, synchronous or
+ * `async`. A synchronous function is one `@external` declaration. An
+ * async one is two pieces: the raw declaration, lowered with the
+ * canonical `async` option so its core result is the packed
+ * `(subtask << 4) | state`, and an exported wrapper that hands that to
+ * `zena:component-async`'s `awaitPacked` — so what the program imports
+ * is an ordinary function returning `Future<void>`, the same future
+ * every other async source returns.
+ *
+ * A function whose signature needs more — strings and lists (compiler-
+ * synthesized marshaling), resources (handle types), async *results*
+ * (the subtask-read machinery) — is listed in the synthesized module's
+ * header comment with its reason, and importing it reports a missing
+ * export. Those arrive with the interop stages in
  * docs/design/component-model.md.
  */
 
@@ -146,7 +154,9 @@ export function synthesizeWitModule(canonicalPath: String): String {
   let sb = new StringBuilder();
   sb.append("// Synthesized from WIT: ").append(interfaceName)
       .append(". Do not edit.\n");
+  let body = new StringBuilder();
   let skipped = new StringBuilder();
+  var hasAsync = false;
   for (let item in iface.def.items) {
     if (item.tag != InterfaceItemTag.Func) {
       if (item.tag == InterfaceItemTag.TypeDef) {
@@ -157,12 +167,19 @@ export function synthesizeWitModule(canonicalPath: String): String {
       continue;
     }
     let nf = item.func as NamedFunc;
-    let rendered = renderFunc(sb, nf, interfaceName, iface.def.items);
+    let rendered = renderFunc(body, nf, interfaceName, iface.def.items);
     if (rendered != "") {
       skipped.append("//   ").append(nf.name.name).append(": ")
           .append(rendered).append("\n");
+    } else if (nf.func.isAsync) {
+      hasAsync = true;
     }
   }
+  if (hasAsync) {
+    sb.append("import { Future } from 'zena:async';\n");
+    sb.append("import { awaitPacked } from 'zena:component-async';\n");
+  }
+  sb.append(body.toString());
   let skippedText = skipped.toString();
   if (skippedText != "") {
     sb.append("// Not yet importable from this interface ")
@@ -173,8 +190,9 @@ export function synthesizeWitModule(canonicalPath: String): String {
 }
 
 /**
- * Render one function as an `@external` declaration, or return the
- * reason it cannot be rendered yet.
+ * Render one function — an `@external` declaration, plus a delegating
+ * wrapper when it is `async` — or return the reason it cannot be
+ * rendered yet.
  */
 function renderFunc(
   sb: StringBuilder,
@@ -183,10 +201,8 @@ function renderFunc(
   ifaceItems: Array<InterfaceItem>
 ): String {
   let func = nf.func;
-  if (func.isAsync) {
-    return "async functions wait on the subtask protocol";
-  }
   let params = new StringBuilder();
+  let args = new StringBuilder();
   for (var i = 0; i < func.params.length; i += 1) {
     let zenaType = scalarZenaType(func.params[i].type, ifaceItems);
     if (zenaType == "") {
@@ -194,12 +210,35 @@ function renderFunc(
     }
     if (i > 0) {
       params.append(", ");
+      args.append(", ");
     }
-    params.append(camelName(func.params[i].name.name)).append(": ")
-        .append(zenaType);
+    let paramName = camelName(func.params[i].name.name);
+    params.append(paramName).append(": ").append(zenaType);
+    args.append(paramName);
+  }
+  let result = func.result;
+  if (func.isAsync) {
+    if (result != null) {
+      return "an async result waits on the subtask-read machinery";
+    }
+    // The raw import's core result is the packed `(subtask << 4) |
+    // state` the canonical `async` lowering returns; `awaitPacked`
+    // turns it into the future. The `_raw` suffix cannot collide with
+    // another rendered function: WIT names are kebab-case, so no
+    // camelName output contains an underscore.
+    let zenaName = camelName(nf.name.name);
+    sb.append("@external(\"").append(interfaceName).append("\", \"")
+        .append(nf.name.name).append("\", \"async\")\n");
+    sb.append("declare function ").append(zenaName)
+        .append("_raw(").append(params.toString()).append("): i32;\n");
+    sb.append("export function ").append(zenaName)
+        .append("(").append(params.toString())
+        .append("): Future<void> {\n  return awaitPacked(")
+        .append(zenaName).append("_raw(").append(args.toString())
+        .append("));\n}\n");
+    return "";
   }
   var resultType = "void";
-  let result = func.result;
   if (result != null) {
     resultType = scalarZenaType(result as Type, ifaceItems);
     if (resultType == "") {

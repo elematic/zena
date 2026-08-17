@@ -499,6 +499,54 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
+  /**
+   * Root `zena:component-async`, the component target's async-import
+   * driver — conditionally.
+   *
+   * Its `componentPoll`/`componentResume` are called only by the host,
+   * through the callback-lifted entry, so nothing inside the program
+   * references them and plain RTA would drop them. But rooting them
+   * whenever the unit is linked would force the async entry — and its
+   * `main(): void` requirement — onto every program that imports a WIT
+   * interface *declaring* an async function and calls none of them,
+   * because a synthesized WIT module always links the driver for its
+   * wrappers. So the gate is that the program's own traversal, which
+   * has just finished, reached `awaitPacked`: the one door into the
+   * driver's registry. A program that never awaits an async-lowered
+   * import keeps the synchronous lift.
+   */
+  #rootComponentAsyncDriver(): void {
+    let driverPath = 'zena:component-async.zena';
+    let prog = this.program;
+    if (prog == null || !prog.unitsByPath.has(driverPath)) {
+      return;
+    }
+    let awaitPacked = this.wasm.getStdlibFunc(driverPath, 'awaitPacked');
+    if (awaitPacked == null || !(awaitPacked as WasmFunction).isReached) {
+      return;
+    }
+    let unit = prog.unitsByPath[driverPath];
+    let {model} = unit;
+    let gKeys = model.globalDeclarations.keys();
+    while (let (true, id) = gKeys.next()) {
+      let decl = model.globalDeclarations[id];
+      var isExported = false;
+      if (decl is VariableDeclaration) {
+        isExported = decl.exported;
+      } else if (decl is FunctionDeclaration) {
+        isExported = decl.exported;
+      } else if (decl is DeclareFunction) {
+        isExported = decl.exported;
+      }
+      if (isExported) {
+        this.queueReferrer(new Referrer(true, id, -1, model, null, true));
+      }
+    }
+    // The abi rooting above queues before the main drain; this one runs
+    // after it, so it drains what it queued.
+    this.processQueues();
+  }
+
   #linkSuperAndVT(ct: ClassType, model: SemanticModel, linkedClasses: HashMap<ClassKey, boolean>): void {
     let ctKey = getClassKey(ct);
     if (linkedClasses.has(ctKey)) { return; }
@@ -821,13 +869,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // them here rather than force-reaching a hardcoded list keeps the
       // gate exact — the unit only exists when the program imports the
       // module, so a program that does no host I/O links none of it.
-      // `zena:time`'s p3 entry is a host boundary in the same sense: the
-      // component's event loop calls `componentPoll` and
-      // `componentResume` from outside the program, so nothing inside it
-      // references them. Only the component target resolves `zena:time`
-      // to this file, so no other target links any of it.
-      let isHostBoundary = unit.ast.path == 'zena:js/index.zena' ||
-          unit.ast.path == 'zena:time/p3.zena';
+      // `zena:component-async` is a host boundary in the same sense —
+      // the component's event loop calls `componentPoll` and
+      // `componentResume` from outside the program — but its exports
+      // root conditionally, after the main traversal below: see
+      // `#rootComponentAsyncDriver`.
+      let isHostBoundary = unit.ast.path == 'zena:js/index.zena';
       // The root set is `main` plus the exports of those two units.
       // Every other unit is a library: its globals are roots only if
       // something reaches them. Queuing them all — which is what this
@@ -946,6 +993,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     this.ensureAllHelperFunctionsReached();
     this.processQueues();
+
+    this.#rootComponentAsyncDriver();
     performance.end(tQueues);
     let tLayout = performance.start("codegen-discovery-layout");
 
