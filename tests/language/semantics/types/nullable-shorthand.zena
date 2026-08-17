@@ -1,0 +1,33 @@
+// @mode: check
+// The nullable shorthand: `T?` is exactly `T | null`, in every type position.
+
+class Widget { new(); }
+
+// --- The shorthand and the spelled-out union are the same type ---
+let fromUnion = (w: Widget | null): Widget? => w;
+let toUnion = (w: Widget?): Widget | null => w;
+
+// --- Nullable fields need no initializer: the field defaults to null ---
+class Holder {
+  var widget: Widget?;
+  new() {}
+}
+
+// --- Narrowing works through the shorthand ---
+let unwrap = (w: Widget?): Widget => {
+  if (w != null) {
+    return w;
+  }
+  return new Widget();
+};
+
+// --- A doubled shorthand collapses: (T?)? is still T | null ---
+let collapse = (w: (Widget?)?): Widget? => w;
+
+// --- The shorthand binds tighter than `|` ---
+let tight = (x: String | Widget?): String | Widget | null => x;
+
+// --- null stays assignable, non-null stays checkable ---
+let h = new Holder();
+let direct: Widget? = null;
+let bad: Widget = h.widget; // @error: Type mismatch: 'Widget?' is not assignable to 'Widget'.

@@ -220,14 +220,15 @@ small and fast.
 
 For instance, union members must be distinguisable and able to be stored in one
 WASM value type. You can't mix primitives and references because there's no
-WASM type that allows that. You must box primitives instead:
+WASM type that allows that. You must box primitives instead (`T?` is shorthand
+for `T | null`):
 
 ```typescript
-type NullableId = i32 | null; // ❌ Error
-type Nullable<T> = T | null; // ❌ Error: T could be a primitive
+type NullableId = i32?; // ❌ Error
+type Nullable<T> = T?; // ❌ Error: T could be a primitive
 
-type NullableId = Box<i32> | null; // ✅ OK
-type Nullable<T extends anyref> = T | null; // ✅ OK
+type NullableId = Box<i32>?; // ✅ OK
+type Nullable<T extends anyref> = T?; // ✅ OK
 
 type NullableId = Option<i32>; // ✅ Also OK
 ```

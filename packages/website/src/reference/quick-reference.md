@@ -296,11 +296,11 @@ let print = <T extends Printable>(x: T): void => {
 ### Optional Parameters
 
 Parameters marked with `?` are optional. For reference types, the parameter
-becomes `T | null`. Primitive types cannot be optional without a default value
+becomes `T?` (`T | null`). Primitive types cannot be optional without a default value
 (since they can't be `null`).
 
 ```zena
-// Reference types can be optional (become T | null)
+// Reference types can be optional (become T?)
 let greet = (name: String, greeting?: String) => {
   if (greeting == null) {
     return 'Hello, ' + name;
@@ -430,7 +430,7 @@ x %= 4; // x is now 2
 Nullish assignment assigns only when the left side is `null`:
 
 ```zena
-var name: String | null = null;
+var name: String? = null;
 name ??= 'Anonymous'; // name is now 'Anonymous'
 ```
 
@@ -467,7 +467,7 @@ a || b; // Logical OR (short-circuit)
 The `??` operator returns the right operand when the left is `null`:
 
 ```zena
-let name: String | null = null;
+let name: String? = null;
 let display = name ?? 'Anonymous'; // 'Anonymous'
 ```
 
@@ -927,7 +927,7 @@ union must be _distinguishable at runtime_—the compiler rejects unions where i
 can't tell the types apart.
 
 ```zena
-let x: String | null = null;
+let x: String? = null;  // T? is shorthand for T | null
 x = "hello";
 
 // Union narrowing
@@ -942,10 +942,10 @@ if (x is MyClass) {
 
 **Union restrictions:**
 
-- Primitives cannot mix with other types: `i32 | null` is not allowed - Literal
+- Primitives cannot mix with other types: `i32?` is not allowed - Literal
   unions of the same primitive are fine: `1 | 2 | 3` works
 - Extension classes on the same base type cannot be unioned (indistinguishable)
-- Use `Box<T>` to put primitives in unions with references: `Box<i32> | null`
+- Use `Box<T>` to put primitives in unions with references: `Box<i32>?`
 
 ### Literal Types
 
@@ -972,7 +972,7 @@ type Predicate<T> = (item: T) => boolean;
 The type system narrows types based on control flow:
 
 ```zena
-let process = (x: String | null) => {
+let process = (x: String?) => {
   if (x == null) {
     return 'empty';
   }
@@ -986,7 +986,7 @@ tuple elements):
 
 ```zena
 class Wrapper {
-  let inner: Container | null;  // Immutable field
+  let inner: Container?;  // Immutable field
   new() : inner = null { }
 }
 
@@ -1098,7 +1098,7 @@ let x = t[i]; // ❌ var is not compile-time known
 Tuple elements support type narrowing since tuples are immutable:
 
 ```zena
-let process = (t: (Container | null, i32)): i32 => {
+let process = (t: (Container?, i32)): i32 => {
   if (t[0] !== null) {
     return t[0].value; // t[0] narrowed to Container
   }
@@ -1239,16 +1239,19 @@ let n = c.count;  // OK - reading is public
 c.count = 5;      // Error - no public setter
 ```
 
-### Optional Fields
+### Nullable Fields
 
-Fields marked with `?` are shorthand for `Type | null`. They default to `null`
-when not set in the constructor. Like explicit nullable unions, optional fields
-cannot use primitive types directly—use `Box<T>` if needed.
+A field of nullable type (`Type?`, shorthand for `Type | null`) needs no
+initializer: it defaults to `null` when not set in the constructor. Like any
+nullable type, primitives are excluded—use `Box<T>` if needed. Fields cannot
+be marked optional themselves (`bio?: String` is an error): `?` after a name
+means "may be absent", which is a record property and parameter concept—a
+constructed object's fields are never absent.
 
 ```zena
 class User {
   name: String;
-  bio?: String;  // Same as bio: String | null
+  bio: String?;  // String or null
 
   new(name: String) {
     this.name = name;
@@ -1257,23 +1260,23 @@ class User {
 }
 
 interface Configurable {
-  label?: String;  // Optional interface field
+  label: String?;  // Nullable interface field
 }
 
 mixin Timestamped {
-  updatedAt?: String;  // Optional mixin field
+  updatedAt: String?;  // Nullable mixin field
 }
 ```
 
-Optional fields work with `abstract` and private (`#`) fields:
+Nullable fields work with `abstract` and private (`#`) fields:
 
 ```zena
 abstract class Base {
-  abstract metadata?: String; // Subclasses must provide
+  abstract metadata: String?; // Subclasses must provide
 }
 
 class Cache {
-  #lastResult?: String; // Private optional field
+  #lastResult: String?; // Private nullable field
 }
 ```
 
@@ -1415,7 +1418,7 @@ class Boxed<T> {
   item: T;
   new(this.item);
   static of<A>(v: A): Boxed<A> { return new Boxed<A>(v); }
-  static none<A>(): Boxed<A> | null { return null; }
+  static none<A>(): Boxed<A>? { return null; }
 }
 
 let b = Boxed.of(11);          // Boxed<i32>, solved from the argument
@@ -1864,7 +1867,7 @@ they have a different memory representation than references. Use `Box<T>` to
 wrap primitives when needed.
 
 ```zena
-let maybeNumber: Box<i32> | null = new Box(42);
+let maybeNumber: Box<i32>? = new Box(42);
 
 if (maybeNumber != null) {
   let n = maybeNumber.value;

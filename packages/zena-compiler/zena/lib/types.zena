@@ -1650,14 +1650,29 @@ export let typeToString = (t: Type): String => match (t) {
     s + ")"
   }
   case UnionType {types}: {
-    var s = "";
-    var i = 0;
-    while (i < types.length) {
-      if (i > 0) { s = s + " | "; }
-      s = s + typeToString(types[i]);
-      i += 1;
+    // A union of one type with null prints as the nullable shorthand.
+    var nullableInner: Type | null = null;
+    if (types.length == 2) {
+      if (types[0] is NullType) { nullableInner = types[1]; }
+      else if (types[1] is NullType) { nullableInner = types[0]; }
     }
-    s
+    if (nullableInner != null) {
+      let inner = nullableInner;
+      if (inner is FunctionType) {
+        "(" + typeToString(inner) + ")?"
+      } else {
+        typeToString(inner) + "?"
+      }
+    } else {
+      var s = "";
+      var i = 0;
+      while (i < types.length) {
+        if (i > 0) { s = s + " | "; }
+        s = s + typeToString(types[i]);
+        i += 1;
+      }
+      s
+    }
   }
   case RecordType {properties}: {
     var s = "{ ";

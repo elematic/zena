@@ -414,7 +414,7 @@ such a cast cannot produce a value that did not already exist:
 let t: Token = mint(1);
 let same = t as Token;                       // OK — redundant, forges nothing
 
-let unwrap = (t: Token | null): Token =>
+let unwrap = (t: Token?): Token =>
   t as Token;                                // OK — narrowing, not forging
 ```
 
@@ -466,7 +466,7 @@ one:
 ```zena
 let launder = <T>(x: i32): T => x as T;      // Error: 'T' is unconstrained
 let identity = <T>(x: T): T => x as T;       // OK — redundant
-let unwrap = <T>(x: T | null): T => x as T;  // OK — narrowing
+let unwrap = <T>(x: T?): T => x as T;  // OK — narrowing
 let pick = <T extends Animal>(a: Animal): T => a as T; // OK — downcast in bound
 ```
 
@@ -508,13 +508,27 @@ let x: String | null = null;
 x = 'hello';
 ```
 
+#### Nullable Shorthand
+
+A trailing `?` is shorthand for a union with `null`: `String?` is exactly
+`String | null`, and it is the preferred spelling for a nullable type.
+
+```zena
+let x: String? = null;
+x = 'hello';
+```
+
+`?` binds tighter than `|` and tighter than a function type's arrow, so
+`A | B?` is `A | (B | null)` and `() => i32?` is a function returning
+`i32 | null`. Parenthesize for the other reading: `(A | B)?`, `(() => i32)?`.
+
 #### Constraints
 
 Union types in Zena are restricted to **Reference Types**. You cannot create a
 union containing a value primitive (`i32`, `f32`, `boolean`).
 
-- **Valid**: `String | null`, `MyClass | MyInterface`, `array<i32> | null`. -
-  **Invalid**: `i32 | null`, `boolean | String`.
+- **Valid**: `String?`, `MyClass | MyInterface`, `array<i32> | null`. -
+  **Invalid**: `i32?`, `boolean | String`.
 
 This restriction exists because value primitives in WASM have a different memory
 representation (stack/value) than reference types (heap/pointer). Mixing them in
@@ -527,7 +541,7 @@ in a `Box<T>`.
 ```zena
 import {Box} from 'zena';
 
-let maybeNumber: Box<i32> | null = new Box(42);
+let maybeNumber: Box<i32>? = new Box(42);
 ```
 
 **Note**: This is distinct from the "Indistinguishable Types" limitation (see
@@ -546,7 +560,7 @@ system automatically narrows the variable's type within the respective branches.
 ```zena
 class Node {
   value: i32;
-  next: Node | null;
+  next: Node?;
 
   new(value: i32) {
     this.value = value;
@@ -554,7 +568,7 @@ class Node {
   }
 }
 
-let process = (node: Node | null): void => {
+let process = (node: Node?): void => {
   if (node !== null) {
     // Inside this block, `node` is narrowed to `Node`
     let v = node.value;  // OK: `node` is known to be non-null
@@ -563,7 +577,7 @@ let process = (node: Node | null): void => {
     // Inside this block, `node` is narrowed to `null`
     // node.value would be an error here
   }
-  // After the if, `node` is back to `Node | null`
+  // After the if, `node` is back to `Node?`
 };
 ```
 
@@ -618,7 +632,7 @@ Type narrowing also works for member expressions when the path is **immutable**:
 ```zena
 // Class with immutable field
 class Wrapper {
-  let inner: Container | null;
+  let inner: Container?;
   new() : inner = null { }
 }
 
@@ -630,7 +644,7 @@ let process = (w: Wrapper): i32 => {
 };
 
 // Record field
-let processRecord = (r: {inner: Container | null}): i32 => {
+let processRecord = (r: {inner: Container?}): i32 => {
   if (r.inner !== null) {
     return r.inner.value;  // r.inner narrowed to Container
   }
@@ -638,7 +652,7 @@ let processRecord = (r: {inner: Container | null}): i32 => {
 };
 
 // Tuple element
-let processTuple = (t: (Container | null, i32)): i32 => {
+let processTuple = (t: (Container?, i32)): i32 => {
   if (t[0] !== null) {
     return t[0].value;  // t[0] narrowed to Container
   }
@@ -651,7 +665,7 @@ reference could modify the field between the null check and use:
 
 ```zena
 class MutableWrapper {
-  var inner: Container | null;  // Mutable field
+  var inner: Container?;  // Mutable field
   new() { this.inner = null; }
 }
 
@@ -1080,28 +1094,28 @@ time.
 Function parameters can be marked as optional using `?`. Optional parameters
 must come after required parameters.
 
-When a parameter is optional and has no default value, its type becomes a union
-with `null` (e.g., `T | null`). Because unions cannot contain primitive types,
+When a parameter is optional and has no default value, its type becomes
+nullable (e.g., `String?`). Because unions cannot contain primitive types,
 **optional primitive parameters must have a default value** or be wrapped in
 `Box<T>`.
 
 ```zena
-// ✅ Valid: Reference type (String | null)
+// ✅ Valid: Reference type (String?)
 let greet = (name?: String) => { ... };
 
 // ✅ Valid: Primitive with default value (type is i32)
 let increment = (amount: i32 = 1) => { ... };
 
-// ✅ Valid: Boxed primitive (Box<i32> | null)
+// ✅ Valid: Boxed primitive (Box<i32>?)
 let process = (val?: Box<i32>) => { ... };
 
-// ❌ Invalid: Primitive without default (would be i32 | null)
+// ❌ Invalid: Primitive without default (would be i32?)
 // let invalid = (amount?: i32) => { ... };
 ```
 
 ```zena
 let greet = (name: String, greeting?: String) => {
-  // greeting is inferred as String | null
+  // greeting is inferred as String?
   if (greeting == null) {
     return `Hello, ${name}`;
   }
@@ -1160,7 +1174,7 @@ increment(10, 5); // 15
    entirely does.
 
    ```zena
-   let greet = (name: String | null = 'World') => `Hello, ${name}`;
+   let greet = (name: String? = 'World') => `Hello, ${name}`;
 
    greet();       // "Hello, World" - default used
    greet('Alice'); // "Hello, Alice"
@@ -1624,10 +1638,10 @@ left-hand side is `null`. It short-circuits: the right side is not evaluated
 when the left is non-null.
 
 ```zena
-var name: String | null = null;
+var name: String? = null;
 name ??= 'Anonymous';  // name is now 'Anonymous'
 
-var value: String | null = 'hello';
+var value: String? = 'hello';
 value ??= 'default';   // value is still 'hello'
 ```
 
@@ -1688,10 +1702,10 @@ short-circuiting operator: the right side is only evaluated if the left is
 `null`.
 
 ```zena
-let name: String | null = null;
+let name: String? = null;
 let display = name ?? 'Anonymous';  // 'Anonymous'
 
-let value: String | null = 'hello';
+let value: String? = 'hello';
 let result = value ?? 'default';    // 'hello'
 ```
 
@@ -1710,17 +1724,17 @@ class User {
   new(name: String) { this.name = name; }
 }
 
-let user: User | null = null;
+let user: User? = null;
 
 // Property access
 let name = user?.name;       // null (not a runtime error)
 
 // Index access
-let items: Items | null = null;
+let items: Items? = null;
 let first = items?[0];       // null
 
 // Method call
-let callback: ((a: i32) => i32) | null = null;
+let callback: ((a: i32) => i32)? = null;
 let result = callback?(42);  // null
 ```
 
@@ -1730,8 +1744,8 @@ Optional chaining can be combined with nullish coalescing to provide defaults:
 let display = user?.name ?? 'Anonymous';
 ```
 
-The result type of an optional chain is `T | null`, where `T` is the type of
-the accessed property, element, or call result.
+The result type of an optional chain is `T?`, where `T` is the type of the
+accessed property, element, or call result.
 
 **Primitive results require immediate coalescence.** When `T` is a primitive
 (`i32`, `f64`, `boolean`, …), the union `T | null` has no runtime
@@ -1739,7 +1753,7 @@ representation — primitives are not references and are never boxed — so the
 chain must appear directly as the left operand of `??`:
 
 ```zena
-let p: Point | null = null;
+let p: Point? = null;
 
 let x = p?.x ?? 0;   // OK: the miss becomes the ?? arm; only i32 exists
 let y = p?.x;        // error: optional access to a primitive requires
@@ -2444,32 +2458,35 @@ Fields are **immutable by default**. Use `var` to make a field mutable. The
 `let` modifier is accepted but redundant — bare fields are already immutable.
 Field types can be inferred from their initializer expression.
 
-### Optional Fields
+### Nullable Fields
 
-Fields can be marked optional with `?`, which makes their type `T | null`:
+A field that may hold `null` is declared with a nullable type. Such a field
+needs no initializer and no constructor assignment — reference fields default
+to `null`:
 
 ```zena
 class TreeNode {
   value: i32;
-  var left?: TreeNode;   // Type is TreeNode | null
-  var right?: TreeNode;  // Type is TreeNode | null
+  var left: TreeNode?;
+  var right: TreeNode?;
 
   new(value: i32) : value = value {}
 }
 ```
 
-Optional fields are syntactic sugar for a union with `null`. The same
-restrictions apply: **primitive types cannot be optional** (since `i32 | null`
-would require boxing). Optional fields work in classes, interfaces, and mixins.
+Fields themselves cannot be marked optional: `bar?: Bar` is an error. `?`
+after a name means "may be absent" (as on record properties and parameters),
+and a constructed object's fields are never absent. Nullable fields work in
+classes, interfaces, and mixins:
 
 ```zena
 interface Container {
-  child?: Element;       // OK: reference type
-  // count?: i32;        // Error: primitives cannot be optional
+  child: Element?;       // OK: reference type
+  // count: i32?;        // Error: primitives cannot be null
 }
 
 mixin Linkable {
-  var next?: Node;
+  var next: Node?;
 }
 ```
 
@@ -2512,11 +2529,11 @@ class Counter(name: String, var count: i32)
 #### Optional parameters
 
 Case class parameters can be marked optional with `?`. Optional parameters
-become nullable fields (`T | null`) and can be omitted in the constructor call:
+become nullable fields (`T?`) and can be omitted in the constructor call:
 
 ```zena
 class Node(value: i32, label?: String)
-// label has type `String | null`
+// label has type `String?`
 
 let a = new Node(1);          // label defaults to null
 let b = new Node(1, 'hello'); // label is 'hello'
@@ -2525,7 +2542,7 @@ let b = new Node(1, 'hello'); // label is 'hello'
 Optional and mutable can be combined:
 
 ```zena
-class Config(name: String, var cache?: i32)
+class Config(name: String, var cache?: Cache)
 ```
 
 #### Generic case classes
@@ -2902,7 +2919,7 @@ class Boxed<T> {
   item: T;
   new(this.item);
   static of<A>(v: A): Boxed<A> { return new Boxed<A>(v); }
-  static none<A>(): Boxed<A> | null { return null; }
+  static none<A>(): Boxed<A>? { return null; }
 }
 
 let b = Boxed.of(11);            // Boxed<i32>, solved from the argument
@@ -3325,8 +3342,9 @@ let x = p.x;
 #### Optional Fields
 
 A record field marked `?` may be **absent** — this is presence, not
-nullability (unlike class and interface fields, where `?` means
-`T | null`). A literal may omit optional fields, and a record value
+nullability. (Class and interface fields cannot be optional at all: a
+constructed object's fields are never absent, and a field that may be null
+is written `field: T?`.) A literal may omit optional fields, and a record value
 that reliably has a field may flow to a type where it is optional (the
 reverse is an error — a maybe-absent field cannot satisfy a required
 one):
@@ -3455,7 +3473,7 @@ class Container {
   new(value: i32) { this.value = value; }
 }
 
-let process = (t: (Container | null, i32)): i32 => {
+let process = (t: (Container?, i32)): i32 => {
   if (t[0] !== null) {
     // t[0] is narrowed to Container (non-null)
     return t[0].value;
@@ -3464,7 +3482,7 @@ let process = (t: (Container | null, i32)): i32 => {
 };
 
 // Works with let indices too:
-let process2 = (t: (Container | null, i32)): i32 => {
+let process2 = (t: (Container?, i32)): i32 => {
   let idx = 0;
   if (t[idx] !== null) {
     return t[idx].value;  // Narrowed to Container
@@ -3951,7 +3969,7 @@ primitive types in contexts that require reference types, such as Union Types.
 
 ```zena
 let b = new Box(42);
-let val: Box<i32> | null = b;
+let val: Box<i32>? = b;
 ```
 
 ## 11. Exception Handling

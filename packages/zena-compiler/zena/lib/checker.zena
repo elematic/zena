@@ -75,7 +75,7 @@ import {
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern,
   // Type Annotations
-  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
+  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation,
   FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
   TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation,
   // Helpers
@@ -642,14 +642,14 @@ final class CheckerContext {
    * Dependency exports map: import specifier → ModuleExports.
    * Populated by the compiler so the checker can resolve imported types.
    */
-  var #depExports?: HashMap<String, ModuleExports> | null = null;
+  var #depExports: HashMap<String, ModuleExports> | null = null;
 
   /**
    * Dependency semantic models: import specifier → SemanticModel.
    * When provided, the checker can look up actual resolved types from
    * already-checked dependency modules instead of creating empty stubs.
    */
-  var #depModels?: HashMap<String, SemanticModel> | null = null;
+  var #depModels: HashMap<String, SemanticModel> | null = null;
 
   /** The file path of the module being checked. */
   #filePath: String;
@@ -3951,6 +3951,23 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     }
 
     createUnionType(resolved, ctx, ann.loc)
+  }
+  case NullableTypeAnnotation {typeAnnotation}: {
+    // T? desugars to T | null; T?? and (T | null)? collapse in the union.
+    let inner = resolveTypeAnnotation(ctx, typeAnnotation, allowInlineTuple);
+    if (isNumericType(inner) || inner is BooleanType) {
+      ctx.error(
+        "'" + typeToString(inner) + "' is not nullable: primitives cannot be null.",
+        DiagnosticCode.IncompatibleTypes,
+        ann.loc
+      );
+      new ErrorType() as Type
+    } else {
+      let arms = new Array<Type>(2);
+      arms.push(inner);
+      arms.push(new NullType());
+      createUnionType(arms, ctx, ann.loc)
+    }
   }
   case FunctionTypeAnnotation {params, returnType}: {
     let paramTypes = new Array<Type>();
@@ -10209,43 +10226,13 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
           case _: "<unknown>"
         };
-        var fieldType = if (fd.typeAnnotation != null) {
+        let fieldType = if (fd.typeAnnotation != null) {
           let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
           rejectSecondClassStorage(ctx, resolved, "a field", fd.loc);
           resolved
         } else {
           new ErrorType() as Type
         };
-
-        if (fd.isOptional) {
-          let isPrimitive = isNumericType(fieldType) || fieldType is BooleanType;
-          if (isPrimitive) {
-            ctx.error(
-              "Optional field '" + fieldName + "' cannot have primitive type '" +
-              typeToString(fieldType) + "'. Primitives are not nullable.",
-              DiagnosticCode.IncompatibleTypes,
-              fd.loc
-            );
-          }
-          var alreadyNullable = false;
-          match (fieldType) {
-            case NullType: { alreadyNullable = true; }
-            case UnionT {types}: {
-              var ui = 0;
-              while (ui < types.length) {
-                if (types[ui] is NullType) { alreadyNullable = true; }
-                ui += 1;
-              }
-            }
-            case _: {}
-          }
-          if (!alreadyNullable) {
-            let unionTypes = new Array<Type>();
-            unionTypes.push(fieldType);
-            unionTypes.push(new NullType());
-            fieldType = createUnionType(unionTypes);
-          }
-        }
 
         if (fd.isStatic) {
           rejectClassTypeParamsInStatic(

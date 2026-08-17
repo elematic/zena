@@ -14,7 +14,7 @@ import {
   Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, CallExpression, MemberExpression, IndexExpression, ThisExpression, SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral, TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, // Statements
   Statement, VariableDeclaration, UsingStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, // Type Annotations
-  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
+  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
   TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, SymbolPropertyName,
 } from 'zena-compiler:ast';
 import {
@@ -607,7 +607,6 @@ let printFieldDefinition = (field: FieldDefinition): Doc => {
     parts.push(text(' '));
   }
   parts.push(printNodeName(field.name));
-  if (field.isOptional) { parts.push(text('?')); }
   if (field.typeAnnotation != null) {
     parts.push(text(': '));
     parts.push(printTypeAnnotation(field.typeAnnotation as TypeAnnotation));
@@ -1734,6 +1733,16 @@ let printTypeAnnotation = (ann: TypeAnnotation): Doc => match (ann) {
     }
     join(text(' | '), typeDocs)
   }
+  case NullableTypeAnnotation {typeAnnotation}: {
+    // `?` binds tighter than `|` and function arrows, so those need parens
+    // to survive a round-trip; so does a nested `?` (`??` lexes as one token).
+    match (typeAnnotation) {
+      case UnionTypeAnnotation {}: concat(docs3(text('('), printTypeAnnotation(typeAnnotation), text(')?')))
+      case FunctionTypeAnnotation {}: concat(docs3(text('('), printTypeAnnotation(typeAnnotation), text(')?')))
+      case NullableTypeAnnotation {}: concat(docs3(text('('), printTypeAnnotation(typeAnnotation), text(')?')))
+      case _: concat(docs2(printTypeAnnotation(typeAnnotation), text('?')))
+    }
+  }
   case FunctionTypeAnnotation {params, returnType}: {
     let parts = new Array<Doc>();
     parts.push(text('('));
@@ -1754,7 +1763,8 @@ let printTypeAnnotation = (ann: TypeAnnotation): Doc => match (ann) {
     var i = 0;
     while (i < properties.length) {
       let p = properties[i];
-      propDocs.push(concat(docs3(text(p.name.name), text(': '), printTypeAnnotation(p.typeAnnotation))));
+      let nameDoc = if (p.optional) { concat(docs2(text(p.name.name), text('?'))) } else { text(p.name.name) };
+      propDocs.push(concat(docs3(nameDoc, text(': '), printTypeAnnotation(p.typeAnnotation))));
       i += 1;
     }
     concat(docs3(text('{'), join(text(', '), propDocs), text('}')))
@@ -1908,6 +1918,7 @@ let printNode = (node: Node): Doc => match (node) {
   // Type Annotations
   case NamedTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
   case UnionTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case NullableTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
   case FunctionTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
   case LiteralTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
   case RecordTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)

@@ -471,6 +471,46 @@ let tests = suite('formatter', () => {
     let result = format(input);
     check('mixed ops', result, "let x = a + b * c;\n");
   });
+
+  test('formats nullable type shorthand', (t: TestContext) => {
+    let result = format('let x: String? = null;');
+    check('nullable type', result, 'let x: String? = null;\n');
+  });
+
+  test('formats nullable type in generic argument', (t: TestContext) => {
+    let result = format('let x: Array<String?> = a;');
+    check('nullable in generic', result, 'let x: Array<String?> = a;\n');
+  });
+
+  test('formats nullable union member with tight binding', (t: TestContext) => {
+    let result = format('let x: String | Widget? = null;');
+    check('nullable union member', result, 'let x: String | Widget? = null;\n');
+  });
+
+  test('parenthesizes nullable of a union', (t: TestContext) => {
+    let result = format('let x: (A | B)? = null;');
+    check('nullable of union', result, 'let x: (A | B)? = null;\n');
+  });
+
+  test('parenthesizes nullable of a function type', (t: TestContext) => {
+    let result = format('let f: (() => i32)? = null;');
+    check('nullable of function type', result, 'let f: (() => i32)? = null;\n');
+  });
+
+  test('parenthesizes doubled nullable', (t: TestContext) => {
+    let result = format('let x: (String?)? = null;');
+    check('doubled nullable', result, 'let x: (String?)? = null;\n');
+  });
+
+  test('formats nullable field without initializer', (t: TestContext) => {
+    let result = format('class Foo {\n  var bar: Bar?;\n}');
+    check('nullable field', result, 'class Foo {\n  var bar: Bar?;\n}\n');
+  });
+
+  test('keeps the presence marker on optional record properties', (t: TestContext) => {
+    let result = format('let x: {a?: String, b: i32} = y;');
+    check('optional record property', result, 'let x: {a?: String, b: i32} = y;\n');
+  });
 });
 
 // Entry point - returns number of failed tests (0 = success)
