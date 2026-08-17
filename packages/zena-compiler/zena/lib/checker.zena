@@ -73,7 +73,7 @@ import {
   SymbolPropertyName,
   // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
-  ClassPattern, LogicalPattern, AssignmentPattern, LiteralPattern,
+  ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern,
   // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
   FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
@@ -7785,6 +7785,9 @@ let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {
     case BindingPattern as bp: {
       return isRefutableDeclarationPattern(bp.pattern);
     }
+    case AbsencePattern: {
+      return true;
+    }
     case IdentifierPattern: {
       return false;
     }
@@ -8058,7 +8061,10 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
               let isOptional = optionalProperties != null &&
                 optionalProperties.has(propName);
               let hasDefault = prop.value is AssignmentPattern;
-              if (isOptional && !hasDefault) {
+              if (prop.value is AbsencePattern) {
+                // No bindings; the refutable-pattern-in-declaration
+                // check reports the misuse.
+              } else if (isOptional && !hasDefault) {
                 ctx.error(
                   "Optional field '" + propName + "' requires a default value when destructuring.",
                   DiagnosticCode.TypeMismatch,
@@ -8184,6 +8190,16 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
     }
     case LiteralPattern: {
       // Literal patterns introduce no bindings.
+    }
+    case AbsencePattern as absent: {
+      // Reached when the enclosing pattern is not an optional record
+      // field (the record arm rejects with a better message first).
+      ctx.error(
+        "An absence test ('!field') can only appear on an optional " +
+            "record field in a refutable pattern.",
+        DiagnosticCode.TypeMismatch,
+        absent.loc
+      );
     }
   }
 };
@@ -14647,7 +14663,19 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         let prop = props[pi];
         let propName = prop.name.name;
         let propType = resolveClassFieldType(ctx, classType, propName, prop.loc);
-        checkPattern(ctx, prop.value, propType);
+        if (prop.value is AbsencePattern) {
+          // Class fields have no presence; a maybe-field is `T | null`
+          // and null is a value with its own pattern.
+          ctx.error(
+            "'!" + propName + "' tests record-field absence; class " +
+                "fields are always present. Match '" + propName +
+                ": null' to test for null.",
+            DiagnosticCode.TypeMismatch,
+            prop.loc
+          );
+        } else {
+          checkPattern(ctx, prop.value, propType);
+        }
         pi = pi + 1;
       }
     }
@@ -14665,15 +14693,29 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         let prop = properties[pi];
         let propName = prop.name.name;
         var propType: Type = new ErrorType();
+        var propOptional = false;
         match (expectedType) {
-          case RecordT {properties as recordProps}: {
-            if (recordProps.has(propName)) {
-              propType = recordProps[propName];
+          case RecordT as rec: {
+            if (rec.properties.has(propName)) {
+              propType = rec.properties[propName];
+              propOptional = rec.isOptional(propName);
             }
           }
           case _: {}
         }
-        checkPattern(ctx, prop.value, propType);
+        if (prop.value is AbsencePattern) {
+          // `{!field}` — only meaningful where the field CAN be absent.
+          if (!(expectedType is ErrorType) && !propOptional) {
+            ctx.error(
+              "'!" + propName + "' tests absence, but '" + propName +
+                  "' is not an optional field here.",
+              DiagnosticCode.TypeMismatch,
+              prop.loc
+            );
+          }
+        } else {
+          checkPattern(ctx, prop.value, propType);
+        }
         pi = pi + 1;
       }
     }

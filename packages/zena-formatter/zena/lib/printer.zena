@@ -28,7 +28,7 @@ import {
   ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration,
   // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
-  ClassPattern, LogicalPattern, AssignmentPattern, LiteralPattern,
+  ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern,
   // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
   FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
@@ -1700,6 +1700,9 @@ let printPattern = (pat: Pattern): Doc => match (pat) {
     concat(docs3(printNode(left), text(' = '), printExpression(right)))
   }
   case LiteralPattern {value}: printExpression(value)
+  // Only reachable through printBindingProperty, which prints the
+  // `!name` form; standalone the node is just its marker.
+  case AbsencePattern {}: text('!')
 };
 
 let printRecordPattern = (pattern: RecordPattern): Doc => {
@@ -1717,6 +1720,9 @@ let printBindingProperty = (bp: BindingProperty): Doc => {
   match (bp.value) {
     case IdentifierPattern {name}: {
       if (name == bp.name.name) { return text(bp.name.name); }
+    }
+    case AbsencePattern {}: {
+      return concat(docs2(text('!'), text(bp.name.name)));
     }
     case _: {}
   }
@@ -1933,6 +1939,7 @@ let printNode = (node: Node): Doc => match (node) {
   case ClassPattern {}: printPattern(node as Pattern)
   case LogicalPattern {}: printPattern(node as Pattern)
   case AssignmentPattern {}: printPattern(node as Pattern)
+  case AbsencePattern {}: printPattern(node as Pattern)
   case LiteralPattern {}: printPattern(node as Pattern)
   // Type Annotations
   case NamedTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)

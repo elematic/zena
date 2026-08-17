@@ -68,7 +68,7 @@ import {
   AsPattern,
   ClassPattern,
   LogicalPattern,
-  AssignmentPattern,
+  AssignmentPattern, AbsencePattern,
   LiteralPattern,
   MatchExpression,
   MatchCase,
@@ -1102,6 +1102,18 @@ export final class Parser {
         let properties = new Array<BindingProperty>(4);
         while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
           let propStart = this.#peek();
+          // Parsed here so the checker can reject it with a pointed
+          // message (class fields have no presence).
+          if (this.#match(TokenType.Bang)) {
+            let absentName = this.#parseIdentifier();
+            properties.push(new BindingProperty(absentName,
+                new AbsencePattern(this.#makeLocation(propStart)),
+                this.#makeLocation(propStart)));
+            if (!this.#check(TokenType.RBrace)) {
+              this.#consume(TokenType.Comma, "Expected ',' after property");
+            }
+            continue;
+          }
           let name = this.#parseIdentifier();
           var value: Node = new IdentifierPattern(name.name, name.loc);
           if (this.#match(TokenType.Colon)) {
@@ -1314,6 +1326,18 @@ export final class Parser {
         let properties = new Array<BindingProperty>(4);
         while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
           let propStart = this.#peek();
+          // Parsed here so the checker can reject it with a pointed
+          // message (class fields have no presence).
+          if (this.#match(TokenType.Bang)) {
+            let absentName = this.#parseIdentifier();
+            properties.push(new BindingProperty(absentName,
+                new AbsencePattern(this.#makeLocation(propStart)),
+                this.#makeLocation(propStart)));
+            if (!this.#check(TokenType.RBrace)) {
+              this.#consume(TokenType.Comma, "Expected ',' after property");
+            }
+            continue;
+          }
           let name = this.#parseIdentifier();
           var value: Node = new IdentifierPattern(name.name, name.loc);
           if (this.#match(TokenType.Colon)) {
@@ -1348,9 +1372,20 @@ export final class Parser {
   
   #parseRecordPattern(startToken: Token, isUnderLet: boolean, matchContext: boolean): RecordPattern {
     let properties = new Array<BindingProperty>(4);
-    
+
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       let propStart = this.#peek();
+      // Absence pattern: { !x } asserts the optional field is absent.
+      if (this.#match(TokenType.Bang)) {
+        let absentName = this.#parseIdentifier();
+        properties.push(new BindingProperty(absentName,
+            new AbsencePattern(this.#makeLocation(propStart)),
+            this.#makeLocation(propStart)));
+        if (!this.#check(TokenType.RBrace)) {
+          this.#consume(TokenType.Comma, "Expected ',' after property");
+        }
+        continue;
+      }
       let name = this.#parseIdentifier();
       
       // Shorthand: { x } means { x: x }

@@ -3334,6 +3334,22 @@ Absence is observable and consumed through patterns:
 - Naming it *without* a default in an `if (let ...)` or `match`
   pattern is a presence test — the branch is taken only when the
   field is present, and the binding holds its value.
+- Prefixing it with `!` is the absence test: `if (let {!timeout} =
+  opts)` and `case {a, !b}:` match only when the field is absent, and
+  bind nothing. `!` requires an optional field (it is vacuous on a
+  required one, and class fields have no presence — match
+  `field: null` there instead). Absence patterns make presence
+  matrices order-independent:
+
+  ```zena
+  match (o) {
+    case {a, b}: both()
+    case {a, !b}: aOnly()
+    case {!a, b}: bOnly()
+    case {!a, !b}: neither()
+    case _: unreachable()
+  }
+  ```
 
 Direct member access on an optional field (`opts.timeout`) is a
 compile error. Presence is tracked per field, so an explicit

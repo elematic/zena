@@ -12,8 +12,8 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { i32ToString, parseF64 } from 'zena:string-convert';
 import {
-  AsPattern, AssignmentPattern, BindingPattern, BindingProperty,
-  BooleanLiteral, ClassPattern, Expression, Identifier,
+  AbsencePattern, AsPattern, AssignmentPattern, BindingPattern,
+  BindingProperty, BooleanLiteral, ClassPattern, Expression, Identifier,
   IdentifierPattern, LiteralPattern, LogicalPattern, MemberExpression,
   Node, NullLiteral, NumberLiteral, RecordPattern, StringLiteral,
   TuplePattern,
@@ -188,6 +188,7 @@ export let patternRefutable = (cx: LoweringContext, pattern: Node): boolean => {
       refutable
     }
     case AssignmentPattern as ap: patternRefutable(cx, ap.left)
+    case AbsencePattern: true
     case _: true
   };
 };
@@ -491,10 +492,22 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
       }
       let dispatch = dispatchOpt as RecordDispatchInfo;
       for (let prop in rp.properties) {
+        let bit = dispatch.optionalBitOf(prop.name.name);
+        if (prop.value is AbsencePattern) {
+          // `{!field}` — matches when the presence bit is CLEAR. The
+          // checker guarantees the field is optional here.
+          if (bit < 0) {
+            bail(cx, 'absence pattern on required field');
+          }
+          let present = maskBitTest(cx, dispatch, bit, value);
+          let absent = cx.b.emit(IrOp.i32_eqz,
+              new ValTypeI32() as ValType, present, -1);
+          branchUnless(cx, absent, failB);
+          continue;
+        }
         // Naming an optional field without a default asserts its
         // presence: test the mask bit before any value test. (Repeated
         // word reads deduplicate in GVN.)
-        let bit = dispatch.optionalBitOf(prop.name.name);
         if (bit >= 0 && !(prop.value is AssignmentPattern)) {
           branchUnless(cx, maskBitTest(cx, dispatch, bit, value), failB);
         }

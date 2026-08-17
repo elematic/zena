@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 1045
+// @invoke: main
+
+// `{!field}` matches when the optional field is absent, making the
+// presence matrix order-independent.
+type Opts = {a?: i32, b?: i32};
+
+let classify = (o: Opts): i32 => match (o) {
+  case {a, b}: a + b
+  case {a, !b}: a + 10
+  case {!a, b}: b + 20
+  case {!a, !b}: 999
+  case _: -1
+};
+
+let absentViaIfLet = (o: Opts): i32 => {
+  if (let {!a} = o) {
+    return 1;
+  }
+  return 0;
+};
+
+export let main = (): i32 => {
+  let both = classify({a: 1, b: 2});       // 3
+  let aOnly = classify({a: 5});            // 15
+  let bOnly = classify({b: 7});            // 27
+  let neither = classify({});              // 999
+  let ifAbsent = absentViaIfLet({});       // 1
+  let ifPresent = absentViaIfLet({a: 3});  // 0
+  return both + aOnly + bOnly + neither + ifAbsent + ifPresent; // 1045
+};

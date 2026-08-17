@@ -1,0 +1,45 @@
+// @mode: check
+// `{!field}` asserts an optional record field is absent.
+type Opts = {url: String, timeout?: i32};
+
+let f = (opts: Opts) => {
+  if (let {!timeout} = opts) {
+    return 1;
+  }
+  return 0;
+};
+
+// Composes with required-field bindings in one pattern.
+let g = (opts: Opts) => {
+  if (let {url, !timeout} = opts) {
+    let u: String = url;
+    return 1;
+  }
+  return 0;
+};
+
+// Absence of a required field is vacuous — rejected.
+let h = (opts: Opts) => {
+  if (let {!url} = opts) { // @error: not an optional field
+    return 1;
+  }
+  return 0;
+};
+
+// Refutable only: an absence test may not appear in a plain `let`.
+let irrefutable = (opts: Opts) => {
+  let {!timeout} = opts; // @error: Refutable pattern in variable declaration
+  return 0;
+};
+
+// Class fields have no presence; a maybe-field is nullable and null is
+// matched as a value.
+class Link {
+  var next: Link | null = null;
+}
+
+let j = (n: Link) => {
+  return match (n) {
+    case Link {!next}: 1 // @error: class fields are always present
+  };
+};

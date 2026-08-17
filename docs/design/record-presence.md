@@ -152,6 +152,14 @@ forms:
   the field read. What is currently a bypass hole in the
   requires-default check (the `checkPattern` path never consults
   optionality) becomes the intended behavior of refutable positions.
+- **Absence** — `{!timeout}` matches when the field is absent (the
+  negated mask bit) and binds nothing. Restricted to optional record
+  fields: on a required field it is vacuous and rejected, and class
+  patterns reject it outright (class fields have no presence; their
+  maybe-fields are `T | null`, tested with a `field: null` value
+  pattern). Together `{f}` and `{!f}` make presence matrices
+  order-independent, and form the complete pair a future presence
+  exhaustiveness check would recognize.
 - Exhaustiveness over presence follows the composite rules
   (pattern-exhaustiveness-composite.md): `case {timeout}` and
   `case {}` cover an optional field.
