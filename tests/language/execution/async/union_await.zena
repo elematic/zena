@@ -1,0 +1,42 @@
+// @mode: run
+// @result: 777
+
+// `await` on `T | Future<T>` (async.md §1): the future arm suspends
+// and delivers its settled value; the bare arm forwards the value
+// through one queue hop, preserving the always-async rule — the
+// caller can never observe a synchronous completion, whichever arm
+// arrived.
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+let echo = async (v: String | Future<String>): Future<String> => {
+  return await v;
+};
+
+export let main = (): i32 => {
+  // Bare arm: the value still takes one queue hop.
+  let a = echo('bare');
+  if (a.isCompleted) {
+    // Completing synchronously would break the always-async rule.
+    return 0 - 1;
+  }
+  drainMicrotasks();
+  if (!a.isCompleted || !(runFuture(a) == 'bare')) {
+    return 0 - 2;
+  }
+
+  // Future arm: suspends until the future settles.
+  let c = new Completer<String>();
+  let b = echo(c.future);
+  drainMicrotasks();
+  if (b.isCompleted) {
+    return 0 - 3;
+  }
+  c.complete('settled');
+  drainMicrotasks();
+  if (!(runFuture(b) == 'settled')) {
+    return 0 - 4;
+  }
+
+  return 777;
+};

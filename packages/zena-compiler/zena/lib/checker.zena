@@ -15063,42 +15063,63 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
     return direct;
   }
   if (operandType is UnionT) {
+    // Partition the arms: future arms unwrap to their payloads, bare
+    // arms pass through (with one queue hop — async.md §1). The result
+    // is the union of bare arms and payloads; T | Future<T> collapses
+    // to T through the dedup in createUnionType.
     let arms = operandType.types;
-    let valueArms = new Array<Type>();
-    var futureValue: Type | null = null;
+    let resultArms = new Array<Type>();
     var futureCount = 0;
     for (let arm in arms) {
       let fv = extractFutureValueType(ctx, arm);
       if (fv != null) {
-        futureValue = fv;
         futureCount += 1;
+        resultArms.push(fv);
       } else {
-        valueArms.push(arm);
+        resultArms.push(arm);
       }
     }
-    if (futureCount == 1 && valueArms.length > 0) {
-      let valueType = if (valueArms.length == 1) {
-        valueArms[0]
-      } else {
-        createUnionType(valueArms)
-      };
-      if (typesEqual(valueType, futureValue as Type)) {
-        return valueType;
+    if (futureCount > 0) {
+      let dedup = new Array<Type>();
+      for (let arm in resultArms) {
+        var seen = false;
+        for (let existing in dedup) {
+          if (typesEqual(existing, arm)) {
+            seen = true;
+            break;
+          }
+        }
+        if (!seen) {
+          dedup.push(arm);
+        }
       }
-      ctx.error(
-        "Type mismatch: 'await' on a union requires 'T | Future<T>' with matching T, got '" +
-        typeToString(operandType) + "'.",
-        DiagnosticCode.TypeMismatch,
-        aw.loc
-      );
-      return new ErrorType();
+      let result = if (dedup.length == 1) {
+        dedup[0]
+      } else {
+        createUnionType(dedup)
+      };
+      if (dedup.length > 1) {
+        for (let arm in dedup) {
+          if (isValuePrimitive(arm)) {
+            ctx.error(
+              "Type mismatch: awaiting '" + typeToString(operandType) +
+              "' would yield '" + typeToString(result) +
+              "', which mixes a value primitive into a union.",
+              DiagnosticCode.TypeMismatch,
+              aw.loc
+            );
+            return new ErrorType();
+          }
+        }
+      }
+      return result;
     }
   }
   if (operandType is ErrorType) {
     return new ErrorType();
   }
   ctx.error(
-    "Type mismatch: 'await' operand must be 'Future<T>' or 'T | Future<T>', got '" +
+    "Type mismatch: 'await' operand must be 'Future<T>' or a union with a 'Future' arm, got '" +
     typeToString(operandType) + "'.",
     DiagnosticCode.TypeMismatch,
     aw.loc

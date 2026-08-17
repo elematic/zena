@@ -1075,6 +1075,19 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let resolved = resolveType(awaited);
         if (resolved is ClassType) {
           this.registerAsyncFuture(resolved, model, false);
+        } else if (resolved is UnionType) {
+          // A union await suspends on whichever future arm arrived, so
+          // every future arm's instantiation must exist
+          // (registerAsyncFuture quietly skips bare arms — they have
+          // no `subscribe`). The bare arms forward through the queue
+          // hop, which needs scheduleTask.
+          for (let arm in resolved.types) {
+            let armResolved = resolveType(arm);
+            if (armResolved is ClassType) {
+              this.registerAsyncFuture(armResolved, model, false);
+            }
+          }
+          this.queueStdlibFunction('zena:async', 'scheduleTask');
         }
       }
       return;

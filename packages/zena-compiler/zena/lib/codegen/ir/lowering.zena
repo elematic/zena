@@ -891,6 +891,10 @@ export final class FunctionLowerer {
    * operand's semantic type is still in hand.
    */
   awaitSubscribeTargets = new HashMap<i32, WasmFunction>();
+  /** Await terminators that are a union await's bare-arm hop: the
+   * split pass schedules the frame directly instead of subscribing
+   * to a future (async.md §1, the always-async rule). */
+  awaitHopTerms = new HashSet<i32>();
 
   new(this.wasm, this.func);
 
@@ -2696,39 +2700,186 @@ export final class FunctionLowerer {
       this.#bail('untyped await operand');
     }
     let resolved = eraseTypeParameters(this.wasm, baseType(operandTypeOpt));
-    if (!(resolved is ClassType)) {
-      // `T | Future<T>` awaits (async.md §1) need a runtime test on the
-      // union payload; the checker accepts them but A1 does not lower
-      // them yet. Loud rather than silently wrong.
-      this.#bail('await of a union operand is not supported yet');
+    if (resolved is UnionType) {
+      return this.#lowerUnionAwait(aw, resolved);
     }
-    let getterKey = getClassMethodKey(getClassKey(resolved), ':valueOrThrow');
-    let getter =
-        if (let (true, g) = this.wasm.classMethodMap.get(getterKey)) g else null;
+    if (!(resolved is ClassType)) {
+      this.#bail('await operand is neither a Future nor a union: ' +
+          typeToString(resolved));
+    }
+    let future = this.#lowerExpression(aw.argument);
+    return this.#suspendOnFuture(resolved, future);
+  }
+
+  /** The class's `:valueOrThrow`/`subscribe`, or null if it has
+   * neither registered — which is what makes a union arm a future. */
+  #futureMethodOf(ct: ClassType, name: String): WasmFunction | null {
+    let key = getClassMethodKey(getClassKey(ct), name);
+    return if (let (true, f) = this.wasm.classMethodMap.get(key)) f else null;
+  }
+
+  /**
+   * Suspends on `future` (typed `ct`) and resumes with its settled
+   * value: the single-future await, and each future arm of a union
+   * await. The future value is live across the suspension, so the
+   * split pass spills it; the resumed segment reads the result back
+   * with `:valueOrThrow`, which is what makes a rejected future
+   * surface as a plain throw at the resume point.
+   */
+  #suspendOnFuture(ct: ClassType, future: i32): i32 {
+    let getter = this.#futureMethodOf(ct, ':valueOrThrow');
     if (getter == null) {
       this.#bail('await operand is not a Future: ' +
-          (getClassKey(resolved) as String));
+          (getClassKey(ct) as String));
     }
-    let subKey =
-        getClassMethodKey(getClassKey(resolved), 'subscribe');
-    let subOpt =
-        if (let (true, s) = this.wasm.classMethodMap.get(subKey)) s else null;
+    let subOpt = this.#futureMethodOf(ct, 'subscribe');
     if (subOpt == null) {
       this.#bail('await operand has no subscribe: ' +
-          (getClassKey(resolved) as String));
+          (getClassKey(ct) as String));
     }
-
-    let future = this.#lowerExpression(aw.argument);
     let resume = this.b.newBlock();
     let suspend = this.b.awaitTo(future, resume, new Array<i32>(0));
-    this.awaitSubscribeTargets[suspend] = subOpt;
+    this.awaitSubscribeTargets[suspend] = subOpt as WasmFunction;
     this.b.switchTo(resume);
 
     let args = new Array<i32>();
     args.push(future);
-    let sig = getter.signature;
+    let g = getter as WasmFunction;
+    let sig = g.signature;
     let resultVt = if (sig.returns.length == 1) sig.returns[0] else null;
-    return this.b.callFunc(this.b.addRef(new IrRefFunc(getter)), args, resultVt);
+    return this.b.callFunc(this.b.addRef(new IrRefFunc(g)), args, resultVt);
+  }
+
+  /** Widens or narrows `value` to `want`; unions widen to their
+   * common representation and narrow back with an exact cast. */
+  #conformUnionArm(value: i32, want: ValType): i32 {
+    let have = this.#valueType(value);
+    if (this.#cx().refConforms(have, want)) {
+      return this.#conformToSlot(value, want, 'await result type');
+    }
+    return this.b.emit(IrOp.ref_cast, want, value, this.b.internType(want));
+  }
+
+  /**
+   * `await` on a union (async.md §1): the future arms are
+   * distinguished at runtime by their own specializations and each
+   * suspends on its future; the bare arms pass through — with one
+   * queue hop, so awaiting is always asynchronous whichever arm
+   * arrived. Every path joins at the checked result type, the union
+   * of bare arms and payloads.
+   */
+  #lowerUnionAwait(aw: AwaitExpression, union: UnionType): i32 {
+    let resultTypeOpt = this.#substitutedNodeType(aw);
+    if (resultTypeOpt == null) {
+      this.#bail('untyped await result');
+    }
+    let resultT = eraseTypeParameters(this.wasm, resultTypeOpt);
+    let resultVt = typeToValTypeWithSub(this.wasm, resultT, this.func);
+    this.#cx().requireSupported(resultVt, 'await result type');
+
+    // Partition on the CONCRETE arm types. The checker partitioned the
+    // unsubstituted arms; a bare arm substituted to a Future would land
+    // in the future set here and silently change meaning (a value the
+    // source passes through would be awaited), so that divergence is
+    // detected below and refused loudly (async.md §1: an instantiation
+    // where T = Future<U> is rejected at the use site).
+    let futureArms = new Array<ClassType>();
+    var bareCount = 0;
+    for (let arm in union.types) {
+      let armR = eraseTypeParameters(this.wasm, baseType(arm));
+      if (armR is ClassType &&
+          this.#futureMethodOf(armR, ':valueOrThrow') != null &&
+          this.#futureMethodOf(armR, 'subscribe') != null) {
+        futureArms.push(armR);
+      } else {
+        bareCount += 1;
+      }
+    }
+    if (futureArms.length == 0) {
+      this.#bail('await union has no future arm: ' + typeToString(union));
+    }
+    if (bareCount == 0) {
+      // All-future partition: sound only if the checker also saw no
+      // bare arm — i.e. the result contains no future. A future in the
+      // result means a bare arm was substituted into a Future (or the
+      // rare explicit Future<Future<U>> payload, refused with it).
+      let resultArms = new Array<Type>();
+      if (resultT is UnionType) {
+        for (let ra in resultT.types) {
+          resultArms.push(ra);
+        }
+      } else {
+        resultArms.push(resultT);
+      }
+      for (let ra in resultArms) {
+        let raR = eraseTypeParameters(this.wasm, baseType(ra));
+        if (raR is ClassType &&
+            this.#futureMethodOf(raR, ':valueOrThrow') != null) {
+          this.#bail('await union instantiation is ambiguous: an arm ' +
+              'meant to pass through was substituted to a Future in ' +
+              typeToString(union));
+        }
+      }
+    }
+
+    let opVal = this.#lowerExpression(aw.argument);
+    let join = this.b.newBlock();
+    let joinParam = this.b.blockParam(join, resultVt);
+    let noArgs = new Array<i32>(0);
+
+    var fi = 0;
+    while (fi < futureArms.length) {
+      let ct = futureArms[fi];
+      let armVt = typeToValTypeWithSub(this.wasm, ct as Type, this.func);
+      let target = refTargetOf(armVt);
+      if (target == null) {
+        this.#bail('await union arm has no struct: ' +
+            (getClassKey(ct) as String));
+      }
+      let castVt = new ValTypeRef(target as WasmType) as ValType;
+      let isLast = fi == futureArms.length - 1 && bareCount == 0;
+      var armEntry = -1;
+      if (isLast) {
+        // No fall-through remains: the value must be this arm.
+        armEntry = -1;
+      } else {
+        let armBlock = this.b.newBlock();
+        let nextBlock = this.b.newBlock();
+        let test = this.b.emit(IrOp.ref_test, new ValTypeI32(), opVal,
+            this.b.internType(castVt));
+        this.b.brIf(test, armBlock, noArgs, nextBlock, noArgs);
+        this.b.switchTo(armBlock);
+        armEntry = nextBlock;
+      }
+      let cast = this.b.emit(IrOp.ref_cast, castVt, opVal,
+          this.b.internType(castVt));
+      let v = this.#suspendOnFuture(ct, cast);
+      let conformed = this.#conformUnionArm(v, resultVt);
+      let joinArgs = new Array<i32>();
+      joinArgs.push(conformed);
+      this.b.br(join, joinArgs);
+      if (armEntry >= 0) {
+        this.b.switchTo(armEntry);
+      }
+      fi += 1;
+    }
+
+    if (bareCount > 0) {
+      // The bare arms: park the frame directly on the microtask queue
+      // (the split pass emits scheduleTask for a hop suspension), and
+      // deliver the value at the resume — one hop, never synchronous.
+      let resume = this.b.newBlock();
+      let suspend = this.b.awaitTo(opVal, resume, noArgs);
+      this.awaitHopTerms.add(suspend);
+      this.b.switchTo(resume);
+      let conformed = this.#conformUnionArm(opVal, resultVt);
+      let joinArgs = new Array<i32>();
+      joinArgs.push(conformed);
+      this.b.br(join, joinArgs);
+    }
+
+    this.b.switchTo(join);
+    return joinParam;
   }
 
   #lowerTupleLiteralExpr(tl: TupleLiteral): i32 {

@@ -1,0 +1,67 @@
+// @mode: run
+// @result: 963
+
+// `await` on `T | Future<U> | Future<V>` yields `T | U | V`: each
+// future arm is distinguished at runtime by its own specialization and
+// unwraps to its own payload; the bare arm passes through. A failed
+// future arm surfaces at the await, catchable there.
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+class Bare {
+  tag(): i32 { return 100; }
+}
+class FromB {
+  tag(): i32 { return 200; }
+}
+class FromC {
+  tag(): i32 { return 300; }
+}
+
+let pick = async (
+  v: Bare | Future<FromB> | Future<FromC>
+): Future<i32> => {
+  let got = await v;
+  return match (got) {
+    case Bare as x: x.tag()
+    case FromB as x: x.tag() + 1
+    case FromC as x: x.tag() + 2
+  };
+};
+
+let guarded = async (v: Bare | Future<FromB> | Future<FromC>): Future<i32> => {
+  try {
+    return await pick(v);
+  } catch (e) {
+    return 9;
+  }
+};
+
+export let main = (): i32 => {
+  var total = 0;
+
+  let a = pick(new Bare());
+  drainMicrotasks();
+  total += runFuture(a);              // 100
+
+  let cb = new Completer<FromB>();
+  let b = pick(cb.future);
+  cb.complete(new FromB());
+  drainMicrotasks();
+  total += runFuture(b);              // 201
+
+  let cc = new Completer<FromC>();
+  let c = pick(cc.future);
+  cc.complete(new FromC());
+  drainMicrotasks();
+  total += runFuture(c);              // 302
+
+  // A failed future arm is catchable at the await.
+  let cf = new Completer<FromB>();
+  let f = guarded(cf.future);
+  cf.fail(new Error('lost'));
+  drainMicrotasks();
+  total += runFuture(f) * 40;         // 360
+
+  return total;                       // 963
+};

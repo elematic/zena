@@ -46,17 +46,21 @@ resolves from the prelude without an import, like `Iterator`.
 Checker rules:
 
 - `await e` — `e` must be a `Future<T>` (expression type `T`) **or a
-  union `T | Future<T>`** (expression type `T`): the common
-  maybe-async shape awaits the future arm and forwards a bare value
-  through one queue hop (preserving the always-async rule). The union
-  form is only legal where the checker can prove the arms are
-  runtime-distinguishable — `T` must not itself be (or be able to be)
-  a `Future`. Monomorphization makes this checkable even for generic
-  `T`: each instantiation sees a concrete `T`, and an instantiation
-  where `T = Future<U>` is rejected at the use site, loudly, rather
-  than guessed at (`await` on `Future<U> | Future<Future<U>>` is
-  genuinely ambiguous and stays an error). A `MaybeFuture<T>` alias
-  for `T | Future<T>` can ship in the stdlib.
+  union with at least one `Future` arm** (implemented): awaiting
+  `T | Future<U> | Future<V>` yields `T | U | V`. Each future arm is
+  distinguished at runtime by its own specialization and suspends on
+  its future; the bare arms forward through one queue hop (preserving
+  the always-async rule — the split pass parks the frame directly on
+  the microtask queue via `scheduleTask`). `T | Future<T>` collapses
+  to `T`, the common maybe-async shape. A multi-arm result may not mix
+  a value primitive into a union — the language's ordinary union rule,
+  so `A | Future<i32>` is rejected at the await. Monomorphization
+  makes the shape checkable even for generic `T`: each instantiation
+  lowers against concrete arms, and an instantiation where a bare arm
+  substituted to a `Future` — `T = Future<U>` in `T | Future<T>`,
+  where a value the source passes through would instead be awaited —
+  is rejected loudly at lowering rather than guessed at. A
+  `MaybeFuture<T>` alias for `T | Future<T>` can ship in the stdlib.
 - `await` is valid only inside `async` bodies; a non-`async` closure
   nested in an async body cannot await (it is its own function), same
   as yield.
@@ -548,9 +552,15 @@ website served by a Zena server":
     the frame's own future, with no error slot to thread. This held
     up under await-in-try (§6), which needed no change to the error
     path at all — a per-frame error slot would have.
-  - **Not yet: `await` on a `T | Future<T>` union** (§1). The checker
-    accepts it; lowering rejects it loudly. It needs a runtime test on
-    the union payload, which is its own piece of work.
+  - **`await` on a union is implemented** (§1), generalized past the
+    original sketch: any union with future arms lowers, and
+    `T | Future<U> | Future<V>` yields `T | U | V`. Future arms are
+    `ref.test`ed in arm order and each suspends on its own future; the
+    bare fall-through parks the frame directly on the microtask queue,
+    so the hop costs no allocation (the frame is already the `Task`).
+    `tests/language/execution/async/union_await*.zena` pin the hop's
+    observability (the bare arm never completes synchronously), the
+    per-arm values, a failed future arm, and generic instantiations.
   - **`Future<void>` now works** (§8 question 1), and it took no
     async-specific machinery: what was missing was the general rule
     that `void` is a ZERO-WIDTH type argument (language reference,

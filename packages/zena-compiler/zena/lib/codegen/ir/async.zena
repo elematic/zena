@@ -461,6 +461,19 @@ let prepareOne = (
   fl.presplitAsyncValueVt = valueVt;
   let presplit = fl.lower();
   let subscribeOf = fl.awaitSubscribeTargets;
+  let hopTerms = fl.awaitHopTerms;
+  // A union await's bare arm parks the frame directly on the queue
+  // (async.md §1); the stdlib entry for that is only linked when a
+  // program contains one.
+  var scheduleFn: WasmFunction | null = null;
+  if (hopTerms.size > 0) {
+    let scheduleOpt = wasm.getStdlibFunc('zena:async', 'scheduleTask');
+    if (scheduleOpt == null) {
+      throw new Error('async lowering: zena:async scheduleTask was not ' +
+          'reached (needed by a union await in ' + name + ')');
+    }
+    scheduleFn = scheduleOpt;
+  }
   let cfg = new IrCfg(presplit);
 
   // Suspension analysis on the pristine CFG.
@@ -614,8 +627,8 @@ let prepareOne = (
   let rampBody = buildRamp(func, frame, futureInfo, futureCtor, stepFunc,
       entryParamIds);
   let stepBody = buildStepBody(presplit, cfg, frame, futureStruct, spilled,
-      pcOfBlock, dTargets, subscribeOf, completeFn, failFn, valueVt,
-      fatPtr, vtableGlobal, wasm.exceptionTag as WasmTag,
+      pcOfBlock, dTargets, subscribeOf, hopTerms, scheduleFn, completeFn,
+      failFn, valueVt, fatPtr, vtableGlobal, wasm.exceptionTag as WasmTag,
       wasm.exceptionPayload as WasmGlobal, dispatchRegions);
   let artifacts = new AsyncArtifacts(rampBody, stepBody);
   func.isAsyncRamp = true;
@@ -706,6 +719,8 @@ let buildStepBody = (
   pcOfBlockIn: HashMap<i32, i32>,
   dTargetsIn: Array<i32>,
   subscribeOf: HashMap<i32, WasmFunction>,
+  hopTerms: HashSet<i32>,
+  scheduleFn: WasmFunction | null,
   completeFn: WasmFunction,
   failFn: WasmFunction,
   valueVt: ValType | null,
@@ -1084,9 +1099,10 @@ let buildStepBody = (
       let resumeTarget = body.successors(term)[0].target;
       let pc = pcOfBlock[resumeTarget];
       let futureVal = body.a[term];
+      let isHop = hopTerms.has(term);
       let subscribeOpt =
           if (let (true, s) = subscribeOf.get(term)) s else null;
-      if (subscribeOpt == null) {
+      if (subscribeOpt == null && !isHop) {
         throw new Error('async split: await site without a subscribe target');
       }
       let rebuilt = new Array<i32>();
@@ -1105,10 +1121,11 @@ let buildStepBody = (
       let st = rawInst(body, IrOp.struct_set, -1, stIdx, stateRef);
       rebuilt.push(st);
       body.instBlock[st] = blockId;
-      // Park this frame on the awaited future as a Task. The
-      // library schedules it on the microtask queue when the future
-      // settles — or immediately, if it already had (the always-async
-      // rule still costs one queue hop).
+      // Park this frame as a Task: on the awaited future (the library
+      // schedules it when the future settles — or immediately, if it
+      // already had), or, for a union await's bare arm, directly on
+      // the microtask queue — the value needs no completion, only the
+      // one hop the always-async rule requires.
       let self = rawInst(body, IrOp.ref_as_non_null,
           internVt(body, new ValTypeRef(frame)), frameParam, -1);
       rebuilt.push(self);
@@ -1119,11 +1136,21 @@ let buildStepBody = (
       rebuilt.push(packed);
       body.instBlock[packed] = blockId;
       let callIdx = body.extra.length;
-      body.extra.push(2);
-      body.extra.push(futureVal);
-      body.extra.push(packed);
+      if (isHop) {
+        body.extra.push(1);
+        body.extra.push(packed);
+      } else {
+        body.extra.push(2);
+        body.extra.push(futureVal);
+        body.extra.push(packed);
+      }
+      let callee = if (isHop) {
+        scheduleFn as WasmFunction
+      } else {
+        subscribeOpt as WasmFunction
+      };
       let call = rawInst(body, IrOp.call, -1, callIdx,
-          addRawRef(body, new IrRefFunc(subscribeOpt)));
+          addRawRef(body, new IrRefFunc(callee)));
       rebuilt.push(call);
       body.instBlock[call] = blockId;
       // The suspension itself: a plain return out of the region.

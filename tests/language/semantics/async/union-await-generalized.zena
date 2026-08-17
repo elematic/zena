@@ -1,0 +1,38 @@
+// @mode: check
+
+// `await` on unions, generalized (async.md §1): future arms unwrap,
+// bare arms pass through, and the result is the union of bare arms
+// and payloads.
+
+import { Future } from 'zena:async';
+
+class A {}
+class B {}
+class C {}
+
+let mixed = async (v: A | Future<B> | Future<C>): Future<i32> => {
+  let got: A | B | C = await v;
+  return 1;
+};
+
+let same = async (v: String | Future<String>): Future<String> => {
+  // T | Future<T> collapses to T.
+  return await v;
+};
+
+let allFutures = async (v: Future<A> | Future<B>): Future<i32> => {
+  let got: A | B = await v;
+  return 2;
+};
+
+let noFuture = async (v: A | B): Future<i32> => {
+  let bad = await v; // @error: Type mismatch: 'await' operand must be 'Future<T>' or a union with a 'Future' arm, got 'A | B'.
+  return 3;
+};
+
+let primitivePayload = async (v: A | Future<i32>): Future<i32> => {
+  // The result A | i32 would put a value primitive in a union, which
+  // the language forbids (language reference, "Union Types").
+  let bad = await v; // @error: Type mismatch: awaiting 'A | Future<i32>' would yield 'A | i32', which mixes a value primitive into a union.
+  return 4;
+};

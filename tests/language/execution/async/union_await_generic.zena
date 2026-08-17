@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 55
+
+// The maybe-async shape in generic code: `T | Future<T>` awaited with
+// `T` a type parameter, instantiated at more than one payload type.
+// Each instantiation partitions its own concrete arms.
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+class Payload {
+  n: i32;
+  new(this.n);
+}
+
+let unwrap = async <T>(v: T | Future<T>): Future<T> => {
+  return await v;
+};
+
+export let main = (): i32 => {
+  var total = 0;
+
+  let a = unwrap<String>('five');
+  drainMicrotasks();
+  total += runFuture(a).length;                 // 4
+
+  let c = new Completer<Payload>();
+  let b = unwrap<Payload>(c.future);
+  c.complete(new Payload(51));
+  drainMicrotasks();
+  total += runFuture(b).n;                      // 51
+
+  return total;                                 // 55
+};
