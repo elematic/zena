@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 218
+// A super call may omit defaulted trailing parameters: the checker
+// splices the superclass constructor's defaults, exactly as a `new`
+// expression does, and lowering emits the full-arity call.
+
+class Base {
+  a: i32;
+  b: i32;
+  c: String;
+  new(this.a, this.b = 7, this.c = 'dflt');
+}
+
+class OmitsBoth extends Base {
+  new() : super(100);
+}
+
+class OmitsOne extends Base {
+  new() : super(100, 3);
+}
+
+export let main = (): i32 => {
+  var result = 0;
+  let x = new OmitsBoth();
+  result += x.a + x.b + x.c.length;      // 100 + 7 + 4 = 111
+  let y = new OmitsOne();
+  result += y.a + y.b + y.c.length;      // 100 + 3 + 4 = 107 -> 218
+  return result;
+};

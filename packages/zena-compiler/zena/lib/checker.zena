@@ -11559,6 +11559,148 @@ let checkMethodSignature = (
 };
 
 /**
+ * Check a constructor's super(...) call against the superclass
+ * constructor: splice defaulted trailing arguments (exactly as a `new`
+ * expression does), check arity, and check each caller-written
+ * argument against the parameter type — which an instantiated
+ * superclass carries already substituted. Own-typed parameters move
+ * their arguments, the same as at any other call.
+ */
+let checkSuperInitArgs = (
+  ctx: CheckerContext,
+  classType: ClassType,
+  superInit: SuperInitializer
+): void => {
+  let args = superInit.args;
+  let loc = superInit.loc;
+  let superCt = classType.superType;
+  if (superCt == null) {
+    // Never legal, but keep the arguments checked so their own errors
+    // still surface.
+    for (let arg in args) {
+      checkExpression(ctx, arg, null);
+    }
+    return;
+  }
+  let ctorType = superCt.constructorType;
+  if (ctorType == null) {
+    // No explicit constructor anywhere up the chain — must have zero args.
+    if (args.length > 0) {
+      ctx.error(
+        `Class '${superCt.name}' has no constructor, but ${args.length} arguments were provided.`,
+        DiagnosticCode.ArgumentCountMismatch,
+        loc
+      );
+      for (let arg in args) {
+        checkExpression(ctx, arg, null);
+      }
+    }
+    return;
+  }
+
+  // Re-check passes see the defaults a prior pass spliced into the
+  // shared AST; only caller-written arguments count as supplied.
+  let previousOriginal = ctx.splicedArgCountOf(superInit as Node);
+  let callerArgCount = if (previousOriginal != -1 && previousOriginal < args.length) {
+    previousOriginal
+  } else {
+    args.length
+  };
+
+  // Fill in missing arguments with default values.
+  let {parameterInitializers} = ctorType;
+  if (parameterInitializers != null) {
+    var a = args.length;
+    while (a < ctorType.parameters.length) {
+      let init = parameterInitializers[a];
+      if (init != null) {
+        match (init) {
+          case Identifier {name}: {
+            if (name == "__LOCATION__") {
+              if (ctx.emitLocations) {
+                let locStr = if (loc != null) {
+                  `${ctx.filePath}:${loc.line}`
+                } else {
+                  `${ctx.filePath}:0`
+                };
+                args.push(new StringLiteral(locStr, loc));
+              } else {
+                args.push(new NullLiteral(loc));
+              }
+            } else {
+              args.push(init);
+            }
+          }
+          case _: { args.push(init); }
+        }
+      } else {
+        // Optional but no default? Inject null.
+        args.push(new NullLiteral(loc));
+      }
+      a += 1;
+    }
+  }
+
+  // Record the caller-written argument count so later re-checks don't
+  // treat the spliced defaults as caller-supplied arguments.
+  if (args.length > callerArgCount) {
+    ctx.model.setOriginalArgCount(superInit as Node, callerArgCount);
+  }
+
+  // Check argument count (optional and zero-width parameters are
+  // omittable, exactly as at a `new` expression).
+  let expectedCount = ctorType.parameters.length;
+  let requiredCount = requiredParameterCount(
+      ctorType.parameters, ctorType.optionalParameters);
+  if (callerArgCount < requiredCount || callerArgCount > expectedCount) {
+    let expectedMsg = if (requiredCount == expectedCount) {
+      `${expectedCount}`
+    } else {
+      `${requiredCount}-${expectedCount}`
+    };
+    ctx.error(
+      `Expected ${expectedMsg} arguments, got ${callerArgCount}.`,
+      DiagnosticCode.ArgumentCountMismatch,
+      loc
+    );
+  }
+
+  // Check caller-written argument types; spliced defaults were already
+  // checked in the superclass constructor's own scope.
+  var ai = 0;
+  while (ai < callerArgCount && ai < expectedCount) {
+    let paramType = ctorType.parameters[ai];
+    let expectedParamType = substituteTypeParams(
+      superCt.typeParameters, superCt.typeArguments, paramType
+    );
+    let argType = checkExpression(ctx, args[ai], expectedParamType);
+    if (!isAssignableTo(ctx, argType, expectedParamType)) {
+      ctx.error(
+        "Type mismatch: argument '" + typeToString(argType) +
+        "' is not assignable to parameter '" +
+        typeToString(expectedParamType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        args[ai].loc
+      );
+    } else {
+      let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
+      if (instantiatedVal != argType) {
+        ctx.setNodeType(args[ai], instantiatedVal);
+      }
+      checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
+    }
+    recordArgumentMove(ctx, args[ai], expectedParamType);
+    ai = ai + 1;
+  }
+  // Excess caller-written arguments (already diagnosed above) still
+  // get checked, once, so every node carries a type.
+  while (ai < callerArgCount) {
+    checkExpression(ctx, args[ai], null);
+    ai += 1;
+  }
+};
+
+/**
  * Check a method body: push method scope, declare params, check body.
  */
 let checkMethodBody = (
@@ -11643,37 +11785,31 @@ let checkMethodBody = (
     ctx.setAsyncFutureType(null);
   }
 
-  // Check body.
-  match (md.body as Node) {
-    case BlockStatement as block: {
-      ctx.enterOwnScope();
-      prescanPendingFunctions(ctx, block.body);
-      var j = 0;
-      while (j < block.body.length) {
-        checkStatement(ctx, block.body[j]);
-        j = j + 1;
-      }
-      ctx.exitOwnScope(block as Node);
-    }
-    case Expression as bodyExpr: {
-      let bodyType = checkExpression(ctx, bodyExpr, effectiveReturnType);
-      if (!isAssignableTo(ctx, bodyType, effectiveReturnType)) {
-        ctx.error(
-          "Type mismatch: method body returns '" + typeToString(bodyType) +
-          "' but expects '" + typeToString(effectiveReturnType) + "'.",
-          DiagnosticCode.TypeMismatch,
-          md.loc
-        );
-      }
-    }
-    case _: {}
-  }
-
   let methodName = match (md.name) {
     case Identifier {name}: name
     case _: ""
   };
   if (methodName == "<constructor>") {
+    // The constructor prologue evaluates before the body: field
+    // defaults, then the initializer list, then the super call. It is
+    // checked in that order too, so flow-sensitive analysis — move
+    // checking above all — sees evaluation order, not source order.
+    let fieldsInInitializerList = new HashSet<String>();
+    let {initializerList} = md;
+    if (initializerList != null) {
+      for (let item in initializerList) {
+        if (item is FieldInitializer) {
+          fieldsInInitializerList.add(item.field.name);
+          let fieldName = item.field.name;
+          let fieldType: Type | null = if (classType.members.has(fieldName)) {
+            classType.members[fieldName].type
+          } else {
+            null
+          };
+          checkExpression(ctx, item.value, fieldType);
+        }
+      }
+    }
     if (classType.isExtension && !md.isStatic) {
       // An extension-class constructor produces its value solely
       // through super(<underlying value>): required, exactly one
@@ -11710,26 +11846,7 @@ let checkMethodBody = (
         }
       }
     } else if (md.superInitializer != null) {
-      let superInit = md.superInitializer as SuperInitializer;
-      for (let arg in superInit.args) {
-        checkExpression(ctx, arg, null);
-      }
-    }
-    let fieldsInInitializerList = new HashSet<String>();
-    let {initializerList} = md;
-    if (initializerList != null) {
-      for (let item in initializerList) {
-        if (item is FieldInitializer) {
-          fieldsInInitializerList.add(item.field.name);
-          let fieldName = item.field.name;
-          let fieldType: Type | null = if (classType.members.has(fieldName)) {
-            classType.members[fieldName].type
-          } else {
-            null
-          };
-          checkExpression(ctx, item.value, fieldType);
-        }
-      }
+      checkSuperInitArgs(ctx, classType, md.superInitializer as SuperInitializer);
     }
     for (let param in md.params) {
       if (param.isThisParam) {
@@ -11801,6 +11918,32 @@ let checkMethodBody = (
         );
       }
     }
+  }
+
+  // Check body.
+  match (md.body as Node) {
+    case BlockStatement as block: {
+      ctx.enterOwnScope();
+      prescanPendingFunctions(ctx, block.body);
+      var j = 0;
+      while (j < block.body.length) {
+        checkStatement(ctx, block.body[j]);
+        j = j + 1;
+      }
+      ctx.exitOwnScope(block as Node);
+    }
+    case Expression as bodyExpr: {
+      let bodyType = checkExpression(ctx, bodyExpr, effectiveReturnType);
+      if (!isAssignableTo(ctx, bodyType, effectiveReturnType)) {
+        ctx.error(
+          "Type mismatch: method body returns '" + typeToString(bodyType) +
+          "' but expects '" + typeToString(effectiveReturnType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+      }
+    }
+    case _: {}
   }
 
   ctx.setReturnType(prevReturnType);

@@ -1,0 +1,59 @@
+// @mode: check
+// Super-call arguments are checked against the superclass constructor:
+// arity (with defaults and optionals counted) and per-argument
+// assignability, including through a generic superclass instantiation.
+class Base {
+  x: i32;
+  new(this.x);
+}
+
+class WrongType extends Base {
+  new() : super('hello'); // @error: not assignable
+}
+
+class TooMany extends Base {
+  new() : super(1, 2); // @error: Expected 1 arguments, got 2
+}
+
+class TooFew extends Base {
+  new() : super(); // @error: Expected 1 arguments, got 0
+}
+
+class Ok extends Base {
+  new() : super(42);
+}
+
+class Forwarded extends Base {
+  new(x: i32) : super(x);
+}
+
+class WithDefault {
+  a: i32;
+  b: i32;
+  new(this.a, this.b = 5);
+}
+
+class UsesDefault extends WithDefault {
+  new() : super(1);
+}
+
+class OverridesDefault extends WithDefault {
+  new() : super(1, 2);
+}
+
+class DefaultArityWrong extends WithDefault {
+  new() : super(); // @error: Expected 1-2 arguments, got 0
+}
+
+class Box<T> {
+  value: T;
+  new(this.value);
+}
+
+class IntBox extends Box<i32> {
+  new() : super('nope'); // @error: not assignable
+}
+
+class StrBox extends Box<String> {
+  new() : super('yep');
+}

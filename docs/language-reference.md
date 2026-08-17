@@ -2630,6 +2630,22 @@ class Point3D extends Point {
 This ensures subclass fields are initialized before the superclass constructor runs,
 preventing uninitialized field access if the superclass calls virtual methods.
 
+The arguments to `super()` are checked against the superclass
+constructor exactly like a `new` expression's: arity and argument types
+are enforced, and trailing parameters with defaults may be omitted:
+
+```zena
+class Base {
+  a: i32;
+  b: i32;
+  new(this.a, this.b = 7);
+}
+
+class Derived extends Base {
+  new() : super(1);   // b defaults to 7
+}
+```
+
 #### Restrictions
 
 - Only actual fields can be initialized (not setters/accessors)

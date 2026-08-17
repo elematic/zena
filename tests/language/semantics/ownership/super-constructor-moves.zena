@@ -1,0 +1,39 @@
+// @mode: check
+// A super(...) call is a call like any other for move checking: an
+// argument passed to an `Own<R>` parameter of the superclass
+// constructor is moved. The constructor prologue evaluates initializer
+// list first, then super, then the body — so an initializer-list use
+// before the super call is fine, and a body use after it is a use
+// after move.
+import {Own, Disposable} from 'zena:ownership';
+
+resource class File {
+  name: String;
+  new(this.name);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+
+class Holder {
+  file: Own<File>;
+  new(this.file);
+}
+
+class LoggingHolder extends Holder {
+  label: String;
+  new(f: Own<File>, this.label) : super(f);
+}
+
+// The initializer list runs before the super call: reading `f` there
+// precedes the move.
+class UseThenMove extends Holder {
+  tag: String;
+  new(f: Own<File>) : tag = f.name, super(f);
+}
+
+// The body runs after the super call: `f` is gone by then.
+class UseAfterMove extends Holder {
+  var tag: String = '';
+  new(f: Own<File>) : super(f) {
+    this.tag = f.name; // @error: moved
+  }
+}
