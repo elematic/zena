@@ -1,0 +1,47 @@
+// @mode: run
+// @result: 42
+
+// Eager start is unchanged: a call in a just-cancelled scope still
+// runs its ramp segment — code between suspensions is never
+// interrupted. Delivery happens at the first checkpoint, which is
+// ENTERING the await: the frame never parks, the finalizer runs, and
+// the future comes back already cancelled, all synchronously inside
+// the ramp.
+
+import {
+  Future, FutureState, Completer, CancelScope,
+} from 'zena:async';
+
+var trace = '';
+var fut: Future<i32> | null = null;
+
+let work = async (gate: Future<i32>): Future<i32> => {
+  try {
+    trace += 'ramp';
+    let v = await gate;
+    trace += 'X';
+    return v;
+  } finally {
+    trace += 'f';
+  }
+};
+
+export function main(): i32 {
+  let c = new Completer<i32>();
+  let scope = new CancelScope();
+  scope.cancel();
+  scope.run(() => {
+    fut = work(c.future);
+  });
+  if (trace != 'rampf') {
+    return 2;
+  }
+  let f = fut;
+  if (f == null) {
+    return 3;
+  }
+  if (!((f as Future<i32>).state == FutureState.Cancelled)) {
+    return 4;
+  }
+  return 42;
+}

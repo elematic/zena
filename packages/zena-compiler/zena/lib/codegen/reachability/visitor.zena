@@ -1024,6 +1024,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.queueExplicitCtor(futureType);
       this.queuePrivateMethod(futureType, ':complete');
       this.queuePrivateMethod(futureType, ':fail');
+      // A cancellation unwinding a frame completes it as cancelled,
+      // and the frame binds to a scope at creation, tests it at each
+      // checkpoint, and swaps it ambient around each resumed step
+      // (docs/design/cancellation.md). `checkpoint`'s body raises on
+      // the cancellation channel, so reaching it is also what mints
+      // the cancellation tag for every async program.
+      this.queuePrivateMethod(futureType, ':cancelComplete');
+      this.queueStdlibFunction('zena:async', 'currentScope');
+      this.queueStdlibFunction('zena:async', 'swapScope');
+      this.queueStdlibFunction('zena:async', 'checkpoint');
       // An async `main` is driven by a synthesized export wrapper that
       // drains the queue and unwraps the result (async.md §4, Level 0).
       // Whether THIS function is that main is not knowable here, so

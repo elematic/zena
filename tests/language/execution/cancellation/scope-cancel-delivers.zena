@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 42
+
+// Cancelling a scope delivers at the parked frame's next checkpoint:
+// the awaited future completes NORMALLY, but the resume tests the
+// frame's scope first and raises — the finalizer runs, the value is
+// never read, and the frame's future completes as cancelled. The
+// scope that cancelled observes all of it as data.
+
+import {
+  Future, FutureState, Completer, CancelScope, drainMicrotasks,
+} from 'zena:async';
+
+var trace = '';
+var parked: Future<i32> | null = null;
+
+let work = async (gate: Future<i32>): Future<i32> => {
+  try {
+    trace += 'a';
+    let v = await gate;
+    trace += 'X';
+    return v;
+  } finally {
+    trace += 'f';
+  }
+};
+
+export function main(): i32 {
+  let c = new Completer<i32>();
+  let scope = new CancelScope();
+  scope.run(() => {
+    parked = work(c.future);
+  });
+  trace += '1';
+  scope.cancel();
+  c.complete(9);
+  drainMicrotasks();
+  if (trace != 'a1f') {
+    return 2;
+  }
+  let f = parked;
+  if (f == null) {
+    return 3;
+  }
+  if (!((f as Future<i32>).state == FutureState.Cancelled)) {
+    return 4;
+  }
+  return 42;
+}

@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 42
+
+// The unwind continues across frames without a shared stack: a
+// cancelled frame's awaiters raise at their own resumes. The outer
+// frame here is OUTSIDE the cancelled scope — it raises not because
+// its scope is cancelled but because the work it awaits completed as
+// cancelled — and its own finalizer runs before its future completes
+// as cancelled in turn.
+
+import {
+  Future, FutureState, Completer, CancelScope, drainMicrotasks,
+} from 'zena:async';
+
+var trace = '';
+var innerFut: Future<i32> | null = null;
+
+let inner = async (gate: Future<i32>): Future<i32> => {
+  trace += 'i';
+  let v = await gate;
+  trace += 'X';
+  return v;
+};
+
+let outer = async (of: Future<i32>): Future<i32> => {
+  try {
+    trace += 'o';
+    let v = await of;
+    trace += 'Y';
+    return v;
+  } finally {
+    trace += 'f';
+  }
+};
+
+export function main(): i32 {
+  let c = new Completer<i32>();
+  let scope = new CancelScope();
+  scope.run(() => {
+    innerFut = inner(c.future);
+  });
+  let if_ = innerFut;
+  if (if_ == null) {
+    return 3;
+  }
+  let outerFut = outer(if_ as Future<i32>);
+  trace += '1';
+  scope.cancel();
+  c.complete(9);
+  drainMicrotasks();
+  if (trace != 'io1f') {
+    return 2;
+  }
+  if (!(((if_ as Future<i32>)).state == FutureState.Cancelled)) {
+    return 4;
+  }
+  if (!(outerFut.state == FutureState.Cancelled)) {
+    return 5;
+  }
+  return 42;
+}

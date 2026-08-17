@@ -69,12 +69,19 @@ symbol complete;
 symbol fail;
 symbol tryComplete;
 symbol tryFail;
+symbol cancelComplete;
 
 /** A future is Pending until it settles as Resolved or Rejected. */
 export enum FutureState {
   Pending,
   Resolved,
   Rejected,
+  /** The work was cancelled before it produced a value or a failure.
+   * Observing the result of a cancelled future raises on the
+   * cancellation channel — being downstream of cancelled work is
+   * inside the cancellation's blast radius
+   * (docs/design/cancellation.md, "Observation at the boundary"). */
+  Cancelled,
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +222,124 @@ export let drainMicrotasks = (): void => {
 export declare function raiseCancellation(): never;
 
 // ---------------------------------------------------------------------------
+// Cancellation scopes (docs/design/cancellation.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * The ambient current scope: ordinary module state, maintained at
+ * exactly two control-transfer sites — a frame's trampoline swaps it
+ * around each step() (compiler-emitted, via `swapScope`), and a
+ * scope's own `run` swaps it around its body. Null until the root is
+ * constructed; `currentScope` resolves null to the root.
+ */
+var ambientScope: CancelScope | null = null;
+
+/**
+ * The root scope: what `currentScope()` reports before any scope has
+ * been entered. Constructed while the ambient is still null, which is
+ * what makes it parentless.
+ */
+let rootScope = new CancelScope();
+
+/**
+ * A cancellation scope: a level-triggered cancelled flag and a parent
+ * link. Cancelling a scope marks it and every descendant, and every
+ * checkpoint in a cancelled scope raises — however many already have.
+ * Async frames bind to the ambient scope at creation and test it at
+ * each checkpoint; sync code that wants to stop early polls
+ * `currentScope()` explicitly.
+ */
+export class CancelScope {
+  #parent: CancelScope | null;
+  var #cancelled: boolean = false;
+  #children = new Array<CancelScope>();
+
+  /** A child of the current scope, sharing its cancelled level. */
+  new() : #parent = ambientScope {
+    let p = this.#parent;
+    if (p != null) {
+      let parent = p as CancelScope;
+      parent.#children.push(this);
+      this.#cancelled = parent.#cancelled;
+    }
+  }
+
+  isCancelled: boolean {
+    get {
+      return this.#cancelled;
+    }
+  }
+
+  /**
+   * Marks this scope and every descendant cancelled. Code between
+   * checkpoints is never interrupted: each frame bound to a marked
+   * scope raises at its next checkpoint. The root scope cannot be
+   * cancelled — code that started before any scope existed belongs to
+   * it, and cancelling everything is not a meaningful request.
+   */
+  cancel(): void {
+    if (this == rootScope) {
+      throw new Error('The root scope cannot be cancelled');
+    }
+    if (this.#cancelled) {
+      return;
+    }
+    this.#cancelled = true;
+    for (let child in this.#children) {
+      child.cancel();
+    }
+  }
+
+  /**
+   * Runs `body` with this scope as the ambient, so async frames
+   * created inside bind to it. Eager start does the inheritance: a
+   * frame's ramp runs synchronously here, reads the ambient once, and
+   * stores it — after creation nothing consults the ambient again.
+   */
+  run(body: () => void): void {
+    let prev = ambientScope;
+    ambientScope = this;
+    try {
+      body();
+    } finally {
+      ambientScope = prev;
+    }
+  }
+}
+
+/** The scope new async work would bind to; sync code polls this to
+ * stop early without any signature change. */
+export let currentScope = (): CancelScope => {
+  let s = ambientScope;
+  return if (s != null) s as CancelScope else rootScope;
+};
+
+/**
+ * Installs `s` as the ambient and returns the previous scope. This is
+ * the trampoline's half of the two save/restore sites: the compiler
+ * emits a swap to the frame's scope around each step(), so work the
+ * step runs synchronously — ramps of new async calls, explicit polls —
+ * sees the frame's scope rather than whatever ran last.
+ */
+export let swapScope = (s: CancelScope): CancelScope => {
+  let prev = currentScope();
+  ambientScope = s;
+  return prev;
+};
+
+/**
+ * One checkpoint: raises on the cancellation channel when `scope` is
+ * cancelled. The split pass calls this at every suspension point —
+ * entering an await and resuming from one — which is the only place
+ * cancellation is delivered.
+ */
+export let checkpoint = (scope: CancelScope): void => {
+  if (scope.isCancelled) {
+    raiseCancellation();
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Future / Completer
 // ---------------------------------------------------------------------------
 
@@ -256,6 +381,9 @@ export class Future<T> {
     if (this.#state == FutureState.Rejected) {
       return (false, _, this.#error as Error);
     }
+    if (this.#state == FutureState.Cancelled) {
+      raiseCancellation();
+    }
     if (this.#state == FutureState.Pending) {
       throw new Error(
         'Deadlock: the microtask queue is empty but this future is ' +
@@ -276,6 +404,9 @@ export class Future<T> {
    * void lanes lower.
    */
   :failure(): Error | null {
+    if (this.#state == FutureState.Cancelled) {
+      raiseCancellation();
+    }
     if (this.#state == FutureState.Pending) {
       throw new Error(
         'Deadlock: the microtask queue is empty but this future is ' +
@@ -341,6 +472,13 @@ export class Future<T> {
     if (this.#state == FutureState.Rejected) {
       throw this.#error as Error;
     }
+    if (this.#state == FutureState.Cancelled) {
+      // Awaiting cancelled work is being downstream of it: raise on
+      // the cancellation channel, exactly as a checkpoint does. This
+      // is the one hook that makes a cancellation propagate from a
+      // frame to its awaiters — each resume calls this.
+      raiseCancellation();
+    }
     if (this.#state == FutureState.Pending) {
       throw new Error(
         'Deadlock: the microtask queue is empty but this future is ' +
@@ -386,6 +524,24 @@ export class Future<T> {
     this.#error = error;
     this.#notify();
     return true;
+  }
+
+  /**
+   * Settles this future as cancelled: no value and no error, and
+   * every observer raises on the cancellation channel when it looks.
+   * This is what step()'s cancellation capture calls when a
+   * cancellation unwinds an async frame; the frame's waiters resume
+   * and re-raise at their own checkpoints, which is how the unwind
+   * continues across frames without a shared stack. Throws if already
+   * settled — a frame that is still running cannot have settled its
+   * own future.
+   */
+  :cancelComplete(): void {
+    if (!(this.#state == FutureState.Pending)) {
+      throw new Error('Future already completed');
+    }
+    this.#state = FutureState.Cancelled;
+    this.#notify();
   }
 
   /**

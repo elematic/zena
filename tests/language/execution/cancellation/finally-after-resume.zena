@@ -8,10 +8,11 @@
 // byte-for-byte plausible and only the unwinding path skips the
 // finalizer — which is why the raise sits on the far side of a
 // suspension. The error-tag capture in step() must not reject the
-// future either: the cancellation passes through it, out of the
-// executor, and is discarded by main's finalizer leaving on its own.
+// future: the cancellation reaches step()'s own cancellation capture,
+// which completes the frame as cancelled, so the executor continues
+// and main observes the state as data.
 
-import { Future, Completer, drainMicrotasks, raiseCancellation } from 'zena:async';
+import { Future, FutureState, Completer, drainMicrotasks, raiseCancellation } from 'zena:async';
 
 var trace = '';
 
@@ -33,14 +34,12 @@ export function main(): i32 {
   let fut = work(c.future);
   trace += '1';
   c.complete(9);
-  try {
-    drainMicrotasks();
-    trace += 'Y';
-  } finally {
-    if (trace != 'a1bf') {
-      return 2;
-    }
-    return 42;
+  drainMicrotasks();
+  if (trace != 'a1bf') {
+    return 2;
   }
-  return 3;
+  if (!(fut.state == FutureState.Cancelled)) {
+    return 3;
+  }
+  return 42;
 }

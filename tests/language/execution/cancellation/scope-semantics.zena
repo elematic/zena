@@ -1,0 +1,52 @@
+// @mode: run
+// @result: 42
+
+// Sync scope semantics: `run` installs the ambient and restores it;
+// a child created inside a scope's run is marked when the parent
+// cancels; the flag is level-triggered (it stays set); and the root
+// scope refuses to be cancelled.
+
+import { CancelScope, currentScope } from 'zena:async';
+
+export function main(): i32 {
+  let root = currentScope();
+  var rootRefused = false;
+  try {
+    root.cancel();
+  } catch (e) {
+    rootRefused = true;
+  }
+  if (!rootRefused) {
+    return 2;
+  }
+
+  let parent = new CancelScope();
+  var child: CancelScope | null = null;
+  var sawParentAmbient = false;
+  parent.run(() => {
+    sawParentAmbient = currentScope() == parent;
+    child = new CancelScope();
+  });
+  if (!sawParentAmbient) {
+    return 3;
+  }
+  if (!(currentScope() == root)) {
+    return 4;
+  }
+  let c = child;
+  if (c == null) {
+    return 5;
+  }
+  parent.cancel();
+  if (!parent.isCancelled) {
+    return 6;
+  }
+  if (!(c as CancelScope).isCancelled) {
+    return 7;
+  }
+  parent.cancel();
+  if (!parent.isCancelled) {
+    return 8;
+  }
+  return 42;
+}
