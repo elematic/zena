@@ -1,0 +1,38 @@
+// @mode: check
+// Structural (record) patterns match structural types; classes are
+// matched nominally, by naming the class.
+class Point {
+  x: i32;
+  y: i32;
+  new(this.x, this.y);
+}
+
+// Irrefutable destructuring of a class instance stays legal — it is
+// statically resolved field access, not dispatch.
+let p = new Point(1, 2);
+let {x, y} = p;
+let a: i32 = x + y;
+
+// A refutable record pattern against a class scrutinee is rejected,
+// pointing at the nominal spelling.
+let f = (q: Point) => {
+  if (let {x as px} = q) { // @error: Use a class pattern
+    return 1;
+  }
+  return 0;
+};
+
+let g = (q: Point) => {
+  return match (q) {
+    case {x: 1}: 1 // @error: Use a class pattern
+    case _: 0
+  };
+};
+
+// The nominal spelling works, including value sub-patterns.
+let h = (q: Point) => {
+  if (let Point {x: 1} = q) {
+    return 1;
+  }
+  return 0;
+};

@@ -160,6 +160,24 @@ forms:
   pattern). Together `{f}` and `{!f}` make presence matrices
   order-independent, and form the complete pair a future presence
   exhaustiveness check would recognize.
+
+Refutable record patterns are **record-only**: `case {x}:` against a
+class scrutinee is an error pointing at the nominal spelling
+(`case Point {x}:`). This follows the near-universal precedent —
+Python, Dart, Scala, Rust, Haskell and Elixir all head object matching
+with the type's name and reserve structural patterns for structural
+data (dicts, records, maps); C#'s bare property patterns resolve
+members statically with no shape dispatch; TypeScript's `in` narrowing
+is the lone structural-dispatch precedent, and TS is structural
+everywhere — and it keeps Zena's own nominal/structural line
+(records-and-tuples.md §8.4): shape dispatch on classes would make
+`{z}` mean runtime presence on records but a runtime *type* test on
+classes, and on open hierarchies its truth set would be a whole-program
+CHA fact rather than a property of the scrutinee's type. "Any variant
+with a `z`" dispatch belongs to the nominal side (an interface, or a
+future row existential). Irrefutable destructuring of class instances
+(`let {x, y} = point`) remains legal: statically resolved field
+access, no dispatch — the C# property-pattern shape.
 - Exhaustiveness over presence follows the composite rules
   (pattern-exhaustiveness-composite.md): `case {timeout}` and
   `case {}` cover an optional field.

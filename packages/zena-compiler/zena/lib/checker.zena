@@ -14765,6 +14765,20 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         // if-let), unlike in irrefutable destructuring.
         ctx.setNodeType(recordPat, expectedType);
       }
+      if (expectedType is ClassType) {
+        // Structural patterns match structural types. Classes are
+        // matched nominally — a class pattern names the class and its
+        // field sub-patterns work from there. (Irrefutable
+        // destructuring of a class instance stays legal: it is
+        // statically resolved field access, not dispatch.)
+        ctx.error(
+          "A record pattern cannot match class '" + expectedType.name +
+              "'. Use a class pattern: '" + expectedType.name + " {...}'.",
+          DiagnosticCode.TypeMismatch,
+          recordPat.loc
+        );
+        return;
+      }
       var pi = 0;
       while (pi < properties.length) {
         let prop = properties[pi];
