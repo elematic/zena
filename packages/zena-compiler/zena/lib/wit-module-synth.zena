@@ -1,0 +1,215 @@
+/**
+ * WIT-typed modules, synthesized: the source text behind an
+ * `import {now} from 'wasi:clocks/monotonic-clock'`.
+ *
+ * A WIT-backed package (`{"wit": "./path"}` in the manifest) resolves
+ * its modules to `wit:<root>#<namespace>:<interface-path>` canonical
+ * paths, and the compiler host answers `readFile` for those by calling
+ * `synthesizeWitModule` here: parse the package's WIT, find the
+ * interface, and render its functions as Zena `@external` declarations
+ * typed *from the WIT* — the checker then sees the interface's real
+ * signatures rather than whatever an author transcribed.
+ *
+ * This module is imported by the drivers (the CLI's host, the test
+ * hosts), never by compiler-lib code — the same edge as
+ * `wit-imports.zena`, and for the same reason: it keeps the WIT parser
+ * out of the module graphs of hosts that do not serve WIT-backed
+ * packages, like the language service.
+ *
+ * The first slice covers synchronous functions of flat scalars. A
+ * function whose signature needs more — strings and lists (compiler-
+ * synthesized marshaling), resources (handle types), `async` (the
+ * subtask protocol) — is listed in the synthesized module's header
+ * comment with its reason, and importing it reports a missing export.
+ * Those arrive with the interop stages in
+ * docs/design/component-model.md.
+ */
+
+import { String } from 'zena:string';
+import { Array } from 'zena:array';
+import { StringBuilder } from 'zena:string-builder';
+import { Error } from 'zena:error';
+import { parse } from 'wit-parser:wit';
+import {
+  readWitSource, findInterface, FoundInterface
+} from 'wit-parser:document';
+import {
+  InterfaceItem, InterfaceItemTag, NamedFunc, Type, TypeTag, TypeDef,
+  TypeDefTag, Id
+} from 'wit-parser:parser';
+
+
+/** Whether `path` is a synthesized WIT module's canonical path. */
+export function isWitModulePath(path: String): boolean {
+  return path.startsWith("wit:");
+}
+
+/**
+ * The Zena spelling of a WIT flat scalar, or "" when it is not one.
+ * The mapping is docs/design/component-model.md Part 5's table. A named
+ * type resolves through the interface's own `type` aliases — `instant =
+ * u64` is how the real clocks interface spells its result — and
+ * anything else named (records, resources, `use`d types) is not a
+ * scalar and waits on the interop stages.
+ */
+function scalarZenaType(t: Type, ifaceItems: Array<InterfaceItem>): String {
+  return match (t.tag) {
+    case TypeTag.Bool: "boolean"
+    case TypeTag.U8: "u8"
+    case TypeTag.U16: "u16"
+    case TypeTag.U32: "u32"
+    case TypeTag.U64: "u64"
+    case TypeTag.S8: "i8"
+    case TypeTag.S16: "i16"
+    case TypeTag.S32: "i32"
+    case TypeTag.S64: "i64"
+    case TypeTag.F32: "f32"
+    case TypeTag.F64: "f64"
+    case TypeTag.Name: {
+      let name = (t.name as Id).name;
+      for (let item in ifaceItems) {
+        if (item.tag != InterfaceItemTag.TypeDef) { continue; }
+        let td = item.typeDef as TypeDef;
+        if (td.name.name == name && td.tag == TypeDefTag.Alias) {
+          return scalarZenaType(td.aliasType as Type, ifaceItems);
+        }
+      }
+      ""
+    }
+    case _: ""
+  };
+}
+
+/**
+ * `wait-for` → `waitFor`: a WIT name as a Zena identifier
+ * (docs/design/component-model.md, Part 5's name mapping).
+ *
+ * TODO: consider moving this into a utilities package, and benchmark a
+ * linear character copy against this slicing — the output can be
+ * pre-allocated at `kebab.length`, since it only ever shrinks.
+ */
+function camelName(kebab: String): String {
+  var out = "";
+  var upper = false;
+  for (var i = 0; i < kebab.length; i += 1) {
+    let c = kebab.getByteAt(i);
+    if (c == 45) { // '-'
+      upper = true;
+      continue;
+    }
+    var piece = kebab.sliceBytes(i, i + 1);
+    if (upper) {
+      piece = piece.asciiUpperCase();
+      upper = false;
+    }
+    out = out + piece;
+  }
+  return out;
+}
+
+
+/**
+ * The synthesized Zena source for a `wit:<root>#<ns>:<iface-path>`
+ * canonical path.
+ */
+export function synthesizeWitModule(canonicalPath: String): String {
+  let rest = canonicalPath.sliceBytes(4, canonicalPath.length);
+  var hash = -1;
+  for (var i = 0; i < rest.length; i += 1) {
+    if (rest.getByteAt(i) == 35) { // '#'
+      hash = i;
+    }
+  }
+  if (hash < 0) {
+    throw new Error("Malformed WIT module path: " + canonicalPath);
+  }
+  let witRoot = rest.sliceBytes(0, hash);
+  let spec = rest.sliceBytes(hash + 1, rest.length);
+  var colon = -1;
+  for (var i = 0; i < spec.length; i += 1) {
+    if (spec.getByteAt(i) == 58) { // ':'
+      colon = i;
+      break;
+    }
+  }
+  let namespace = spec.sliceBytes(0, colon);
+  let interfacePath = spec.sliceBytes(colon + 1, spec.length);
+
+  let ast = parse(readWitSource(witRoot));
+  let iface = findInterface(ast, namespace, interfacePath);
+  let version = iface.packageName.version;
+  var interfaceName = namespace + ":" + interfacePath;
+  if (version != null) {
+    interfaceName = interfaceName + "@" + (version as String);
+  }
+
+  let sb = new StringBuilder();
+  sb.append("// Synthesized from WIT: ").append(interfaceName)
+      .append(". Do not edit.\n");
+  let skipped = new StringBuilder();
+  for (let item in iface.def.items) {
+    if (item.tag != InterfaceItemTag.Func) {
+      if (item.tag == InterfaceItemTag.TypeDef) {
+        skipped.append("//   ")
+            .append((item.typeDef as TypeDef).name.name)
+            .append(": types wait on the interop stages\n");
+      }
+      continue;
+    }
+    let nf = item.func as NamedFunc;
+    let rendered = renderFunc(sb, nf, interfaceName, iface.def.items);
+    if (rendered != "") {
+      skipped.append("//   ").append(nf.name.name).append(": ")
+          .append(rendered).append("\n");
+    }
+  }
+  let skippedText = skipped.toString();
+  if (skippedText != "") {
+    sb.append("// Not yet importable from this interface ")
+        .append("(docs/design/component-model.md):\n")
+        .append(skippedText);
+  }
+  return sb.toString();
+}
+
+/**
+ * Render one function as an `@external` declaration, or return the
+ * reason it cannot be rendered yet.
+ */
+function renderFunc(
+  sb: StringBuilder,
+  nf: NamedFunc,
+  interfaceName: String,
+  ifaceItems: Array<InterfaceItem>
+): String {
+  let func = nf.func;
+  if (func.isAsync) {
+    return "async functions wait on the subtask protocol";
+  }
+  let params = new StringBuilder();
+  for (var i = 0; i < func.params.length; i += 1) {
+    let zenaType = scalarZenaType(func.params[i].type, ifaceItems);
+    if (zenaType == "") {
+      return "a parameter's type is not a flat scalar";
+    }
+    if (i > 0) {
+      params.append(", ");
+    }
+    params.append(camelName(func.params[i].name.name)).append(": ")
+        .append(zenaType);
+  }
+  var resultType = "void";
+  let result = func.result;
+  if (result != null) {
+    resultType = scalarZenaType(result as Type, ifaceItems);
+    if (resultType == "") {
+      return "the result type is not a flat scalar";
+    }
+  }
+  sb.append("@external(\"").append(interfaceName).append("\", \"")
+      .append(nf.name.name).append("\")\n");
+  sb.append("export declare function ").append(camelName(nf.name.name))
+      .append("(").append(params.toString()).append("): ")
+      .append(resultType).append(";\n");
+  return "";
+}

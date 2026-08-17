@@ -15,6 +15,7 @@ import { isTrue, equal, throws } from 'zena:assert';
 import { readFile } from 'zena:fs';
 import { newByteArray } from 'zena:byte-array';
 import { Array } from 'zena:array';
+import { HashMap } from 'zena:map';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
   createCompiler, CompilerOptions, checkCompilation
@@ -34,6 +35,10 @@ import {
 import {
   deriveImportsWit, encodeImportTypes, makeImportEncoder
 } from '../lib/codegen/wit-imports.zena';
+import {
+  isWitModulePath, synthesizeWitModule
+} from '../lib/wit-module-synth.zena';
+import { PackageConfig } from '../lib/module-resolver.zena';
 import { assertFunctionUsesTimes } from './wat-invariants.zena';
 
 let stdlibRoot = 'packages/stdlib/zena';
@@ -42,6 +47,9 @@ let fixtures = 'packages/zena-compiler/test-files/component';
 class PlainHost implements CompilerHost {
   new();
   readFile(path: String): String {
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
+    }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
@@ -49,10 +57,19 @@ class PlainHost implements CompilerHost {
   }
 }
 
+/** Package map: the repo's, plus a WIT-backed `wasi` for the fixtures. */
+let testPackages = (host: CompilerHost): HashMap<String, PackageConfig> => {
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  let wasi = new PackageConfig('', null);
+  wasi.witRoot = `${fixtures}/wit-pkg`;
+  packages['wasi'] = wasi;
+  return packages;
+};
+
 /** The compiled program, ready for whichever generator wants it. */
 let programFor = (path: String, target: String): Program => {
   let host = new PlainHost();
-  let packages = loadPackageMap(host, 'zena-packages.json');
+  let packages = testPackages(host);
   let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
   let result = c.compile(path);
   let checked = checkCompilation(result, null, false);
@@ -543,6 +560,37 @@ world only {
       compileForWorld('packages/zena-compiler/test-files/minimal.zena',
           wit, 'nope');
     }, "--world named a world the document does not declare");
+  });
+
+  test('a WIT-typed module compiles like its @external spelling',
+      (ctx: TestContext): void => {
+    // `import {now} from 'wasi:clocks/monotonic-clock'` — the signature
+    // comes from the package's WIT (through its `instant = u64` alias),
+    // and the emitted component's imported-interface front matter is
+    // identical to clock.zena's hand-transcribed @external.
+    let viaWit = compileFor(`${fixtures}/clock-wit.zena`, 'component');
+    let viaExternal = compileFor(`${fixtures}/clock.zena`, 'component');
+    let witImports = sectionPayload(viaWit, 10);
+    let externalImports = sectionPayload(viaExternal, 10);
+    isTrue(witImports.length > 0, 'no import section at all');
+    equal(witImports.length, externalImports.length,
+      'the two import sections differ in size');
+    for (var i = 0; i < witImports.length; i += 1) {
+      if (witImports[i] != externalImports[i]) {
+        throw new Error('the two import sections differ at byte ' +
+            i32ToString(i));
+      }
+    }
+    let witTypes = sectionPayload(viaWit, 7);
+    let externalTypes = sectionPayload(viaExternal, 7);
+    equal(witTypes.length, externalTypes.length,
+      'the two instance-type sections differ in size');
+    for (var i = 0; i < witTypes.length; i += 1) {
+      if (witTypes[i] != externalTypes[i]) {
+        throw new Error('the two instance-type sections differ at byte ' +
+            i32ToString(i));
+      }
+    }
   });
 
   test('Zena identifiers become kebab-case names', (ctx: TestContext): void => {

@@ -1,8 +1,6 @@
 // Cache invalidation comment to force clean rebuild - 31
 import { getArguments, getEnv, exit } from 'zena:cli';
-import {
-  readFile, writeFileBytes, writeFile, exists, isDirectory, listDir
-} from 'zena:fs';
+import { readFile, writeFileBytes, writeFile, exists } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
@@ -17,7 +15,10 @@ import { performance } from '../lib/time.zena';
 import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from '../lib/targets.zena';
 import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
 import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
-import { compareStrings } from '../lib/codegen/codegen-utils.zena';
+import {
+  isWitModulePath, synthesizeWitModule
+} from '../lib/wit-module-synth.zena';
+import { readWitSource } from 'wit-parser:document';
 
 class WasiHost implements CompilerHost {
   testMode: boolean;
@@ -25,6 +26,11 @@ class WasiHost implements CompilerHost {
   new(this.testMode, this.entryPath);
 
   readFile(path: String): String {
+    // A WIT-backed package's module: no file exists — the source is
+    // synthesized from the package's WIT.
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
+    }
     var actualPath = path;
     // If it's a zena: package import, map it to the wasi /stdlib dir
     if (path.startsWith("zena:")) {
@@ -136,34 +142,7 @@ export let main = (): i32 => {
       console.error("Error: --wit path does not exist: " + witPath);
       exit(1);
     }
-    if (isDirectory(witPath)) {
-      let names = new Array<String>();
-      for (let entry in listDir(witPath)) {
-        if (entry.name.endsWith(".wit")) {
-          names.push(entry.name);
-        }
-      }
-      if (names.length == 0) {
-        console.error("Error: --wit directory holds no .wit files: " +
-            witPath);
-        exit(1);
-      }
-      // Name order, so the document is the same however the host lists.
-      for (var a = 0; a < names.length; a += 1) {
-        for (var b = a + 1; b < names.length; b += 1) {
-          if (compareStrings(names[b], names[a]) < 0) {
-            let t = names[a];
-            names[a] = names[b];
-            names[b] = t;
-          }
-        }
-      }
-      for (let n in names) {
-        witSource = witSource + readFile(witPath + "/" + n) + "\n";
-      }
-    } else {
-      witSource = readFile(witPath);
-    }
+    witSource = readWitSource(witPath);
   }
 
   let host = new WasiHost(testMode, filename);

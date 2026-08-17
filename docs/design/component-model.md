@@ -1,29 +1,86 @@
-# Component Model & WIT Bindings
+# Component Model & WIT Interop
+
+> **The track this document designs is now called WIT interop**, and its
+> mechanism **WIT-typed modules** — decided 2026-08-17. "Bindgen" names
+> tools that generate source files for a foreign toolchain to compile,
+> and nothing here generates anything: the compiler consumes WIT at
+> compile time, synthesizes the imported module's symbols for the
+> checker (the way virtual modules already work), and synthesizes the
+> marshaling adapters in codegen (the way the string export wrappers
+> already work). The body of this document still says "bindgen"; read
+> it as WIT interop until the implementation PRs rename it in passing.
 
 ## Status
 
-- **Status**: Proposed — no implementation; open questions marked
-  **DECIDE** below
-- **Date**: 2026-08-04, Part 5 and Part 8 revised 2026-08-06 against measured
-  WASI p2 (see Part 8's re-ordering note)
+- **Status**: Design accepted; prerequisites landed; **next up, ahead of
+  C4** — see the sequencing decision below
+- **Date**: 2026-08-04; Part 5 and Part 8 revised 2026-08-06 against
+  measured WASI p2; status, naming and sequencing revised 2026-08-17
+  after C3 completed
 - **Supersedes**: the "Strategy" and "Implementation Plan" sketches in
   [wasi.md](./wasi.md), which predate the WIT parser being finished
 
 ## What exists today
 
-| Piece                                | State                                                                                                          |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| WIT lexer / parser / resolver        | ✅ Done — [wit-parser.md](./wit-parser.md), 211/211 wasm-tools UI tests                                        |
-| WIT → `.wit.json` (wasm-tools shape) | ✅ Done                                                                                                        |
-| Parser callable from the compiler    | ⚠️ Has a public entry point (`wit-parser:wit`) and is in the package map; nothing in the compiler calls it yet |
-| WIT → Zena bindings (bindgen)        | ❌ Does not exist                                                                                              |
-| Canonical ABI lift/lower             | ❌ Does not exist. WASI is used today via hand-written `@external` decls at the                                |
-|                                      | already-flattened core ABI with manual `i32.store8` pokes (see `wasi_fs_test.ts`)                              |
-| Component emission                   | ❌ `--target wasi` emits a **core module** with `wasi_snapshot_preview1` imports                               |
-| `async` / `await` in the language    | ❌ Zero occurrences in either compiler's lexer or parser                                                       |
+| Piece                                   | State                                                                                                                                                   |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WIT lexer / parser / resolver           | ✅ Done — [wit-parser.md](./wit-parser.md), 211/211 wasm-tools UI tests                                                                                 |
+| WIT → component type sections           | ✅ Done — the component encoder round-trips through `wasm-tools component wit` and drives every imported interface                                      |
+| Parser in the compiler's build          | ✅ Done — injected as `ImportTypeEncoder`, kept out of the language service's graph                                                                     |
+| Component emission                      | ✅ Done — C0–C3 of [component-emission.md](./component-emission.md): components print, `--wit`/`--world` declare a world the program is checked against |
+| Stage 0a–0d prerequisites               | ✅ Done — `Result`, narrow ints with `Array<u8>`/`FixedArray<u8>`, `ByteArrayType` retired, `Disposable` + `resource class` (Track O)                   |
+| Canonical flattening metadata           | ✅ Done for counts and memory-need (`funcFlatMeta`); full type flattening is stage 2's                                                                  |
+| WIT-typed modules (stage 1)             | ❌ Does not exist — the subject of this document                                                                                                        |
+| Canonical ABI lift/lower for rich types | ❌ Hand-written per function so far (`zena:console`'s component entry); stage 2 makes the compiler synthesize it                                        |
 
-So: parsing WIT is solved; **everything that turns a parsed WIT into a running
-component is unbuilt**, and this document is the missing design for that.
+So: everything _around_ interop has landed, several pieces earlier than
+this document expected, and the remaining work is exactly stages 1–2.
+
+## Sequencing: p3-first, and against C4 (decided 2026-08-17)
+
+**The target is p3, and p2 APIs are skipped rather than finished.**
+Decided by the user, and the reason is structural: a p2 call blocks —
+`blocking-write-and-flush`, `descriptor.read` — and while the guest is
+blocked the host cannot re-enter it through the async callback, so
+timers and every task in the program freeze. An async-first language
+cannot ship standard-library APIs that stop its own event loop. p3
+makes every potentially-blocking operation an async import or a
+stream, which lands on the event loop the timer work already built.
+The one p2 surface in-tree — `zena:console` over p2 stdio — stays as
+the scaffold that proved the marshaling, flips to p3 when streams
+land, and grows no further.
+
+The host is ready: `wasmtime 46 -S p3=y` registers the complete 0.3
+surface — `wasi:cli` (stdio, environment, exit, run, terminals),
+`wasi:clocks`, `wasi:filesystem` (preopens, types), `wasi:http`
+(client, handler, types), `wasi:random`, `wasi:sockets` — and probes
+confirm `environment` and `random` serve correctly-typed imports at
+0.3.0, alongside the clocks and stdout already exercised end to end.
+(Probing note: the linker reports "no matching implementation" for
+_any_ type mismatch, so only a correctly-typed import proves serving —
+a wrong-typed probe cannot distinguish "absent" from "mistyped".)
+
+That reorders the tracks:
+
+1. **WIT interop continues** (this document): the next slice is
+   `async` function imports — the subtask protocol already exists from
+   the timer work — then richer types. Interop still precedes C4, for
+   the same reason as before: hand-computing canonical layouts was
+   fine for stdio's four functions and is wrong for filesystem's
+   forty, doubly so when every signature is also async.
+2. **Track G — `stream<T>`/`future<T>` — moves ahead of C4.** p3
+   filesystem and stdio are stream-shaped; there is no p3 without
+   them. The canonical builtins (`stream.new`/`read`/`write`/cancel/
+   drop, the `future.*` family) join the waitable machinery C2 built,
+   and Zena's `Stream<T>` rides the same event loop as `Future<T>`.
+3. **p3 stdio**: `zena:console` flips to `write-via-stream`, retiring
+   the p2 scaffold.
+4. **C4 = p3 filesystem and CLI**, on interop + streams.
+5. **p3 HTTP** — `wasi:http@0.3.0` is served by the host already.
+
+Part 7 below ("You can have an HTTP server _before_ async") argued for
+a p2 HTTP server; the p3-first decision supersedes it — the p2 server
+would block the loop like everything else on p2.
 
 > **Emission does not wait for any of this.** Stage 6 below lists component
 > emission after bindgen and the canonical ABI, which reads as "components come
@@ -319,30 +376,43 @@ composed into a middleware chain no matter how good the composer is.
 
 ## Part 5: Type mapping
 
-Measured over the pinned `wasi-http` tree (WASI p2: 33 files, 7 packages, 32
-interfaces, 173 functions). Counts are comment-stripped text matches, so ±a
-few — they are for sizing, not accounting.
+**This table is the canonical WIT → Zena mapping** — the one the
+synthesized modules implement and cite. Measured over the pinned
+`wasi-http` tree (WASI p2: 33 files, 7 packages, 32 interfaces, 173
+functions). Counts are comment-stripped text matches, so ±a few — they
+are for sizing, not accounting. (State column refreshed 2026-08-17:
+the narrow integers, `FixedArray<u8>` and `Result` rows landed since
+the measurement.)
 
-| WIT                        | Zena                                 | p2 uses           | State                              |
-| -------------------------- | ------------------------------------ | ----------------- | ---------------------------------- |
-| `s32`, `s64`, `f32`, `f64` | `i32`, `i64`, `f32`, `f64`           | 2                 | ✅ exists                          |
-| `u32`, `u64`               | `u32`, `u64`                         | 53                | ✅ exists                          |
-| `u8`, `u16`, `s8`, `s16`   | `u8`, `u16`, `i8`, `i16`             | 34                | ❌ **Zena has no narrow integers** |
-| `bool`                     | `boolean`                            |                   | ✅ exists                          |
-| `char`                     | —                                    | **0**             | deferred: p2 never uses it         |
-| `string`                   | `String`                             |                   | ✅ exists                          |
-| `list<u8>`                 | `FixedArray<u8>`                     | 11                | ❌ needs `u8`                      |
-| `list<T>` (other)          | `Array<T>` / `FixedArray<T>`         | 11                | ✅ exists                          |
-| `tuple<A, B>`              | inline tuple                         | 11                | ✅ exists                          |
-| `option<T>`                | `Option<T>`                          | 50                | ✅ exists                          |
-| `result<T, E>`             | `Result<T, E>`                       | **101 + 10 bare** | ❌ **not in stdlib**               |
-| `record`                   | case class                           | 10                | ✅ exists                          |
-| `variant`                  | sealed case-class hierarchy          | 8                 | ✅ exists                          |
-| `enum`                     | enum                                 | 6                 | ✅ exists                          |
-| `flags`                    | `u32` newtype                        | 3                 | ❌ no analogue                     |
-| `resource`                 | `final class` + `Disposable`         | **25**            | ❌ see Part 6                      |
-| `own<T>` / `borrow<T>`     | same class, differing lifetime rules | 0 / 13 explicit   | see Part 6                         |
-| `stream<T>` / `future<T>`  | needs async                          | **0**             | not needed for p2                  |
+| WIT                        | Zena                                 | p2 uses           | State                      |
+| -------------------------- | ------------------------------------ | ----------------- | -------------------------- |
+| `s32`, `s64`, `f32`, `f64` | `i32`, `i64`, `f32`, `f64`           | 2                 | ✅ exists                  |
+| `u32`, `u64`               | `u32`, `u64`                         | 53                | ✅ exists                  |
+| `u8`, `u16`, `s8`, `s16`   | `u8`, `u16`, `i8`, `i16`             | 34                | ✅ exists                  |
+| `bool`                     | `boolean`                            |                   | ✅ exists                  |
+| `char`                     | —                                    | **0**             | deferred: p2 never uses it |
+| `string`                   | `String`                             |                   | ✅ exists                  |
+| `list<u8>`                 | `FixedArray<u8>`                     | 11                | ✅ exists                  |
+| `list<T>` (other)          | `Array<T>` / `FixedArray<T>`         | 11                | ✅ exists                  |
+| `tuple<A, B>`              | inline tuple                         | 11                | ✅ exists                  |
+| `option<T>`                | `Option<T>`                          | 50                | ✅ exists                  |
+| `result<T, E>`             | `Result<T, E>`                       | **101 + 10 bare** | ✅ exists                  |
+| `record`                   | case class                           | 10                | ✅ exists                  |
+| `variant`                  | sealed case-class hierarchy          | 8                 | ✅ exists                  |
+| `enum`                     | enum                                 | 6                 | ✅ exists                  |
+| `flags`                    | `u32` newtype                        | 3                 | ❌ no analogue             |
+| `resource`                 | `final class` + `Disposable`         | **25**            | ❌ see Part 6              |
+| `own<T>` / `borrow<T>`     | same class, differing lifetime rules | 0 / 13 explicit   | see Part 6                 |
+| `stream<T>` / `future<T>`  | needs async                          | **0**             | not needed for p2          |
+
+**Name mapping.** WIT names are kebab-case and Zena identifiers cannot
+contain `-`, so synthesized modules convert: functions and parameters
+become camelCase (`wait-for` → `waitFor`, `max-len` → `maxLen`), and
+the reverse conversion (`toKebabName`) already governs exports. The
+conversion is bijective for names that are single-case ASCII words —
+which WIT's grammar guarantees — so no synthesized name can collide
+with another from the same interface. Type names, when they arrive,
+become PascalCase by the same rule.
 
 Three corrections to what this table used to say, each found by measuring
 rather than reading:

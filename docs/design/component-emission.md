@@ -20,11 +20,11 @@
 - **Scope**: how Zena emits WebAssembly components from its own backend,
   what the `--target` surface should be, and how p3's async timers land
 - **Relationship to [component-model.md](./component-model.md)**: that
-  document designs _bindgen_ — WIT → Zena symbols, and the marshaling
-  glue for rich types. This one covers **emission**, which is stage 6
-  there, listed after bindgen and the canonical ABI. Emission is
-  independent of both and should land first. Nothing here changes the
-  bindgen design.
+  document designs _WIT interop_ (formerly "bindgen") — WIT-typed
+  modules the checker sees, and compiler-synthesized marshaling for
+  rich types. This one covers **emission**, which is stage 6 there.
+  Emission was independent of interop and landed first; interop is now
+  the next track, ahead of C4 (see the plan's tail).
 
 ---
 
@@ -835,6 +835,10 @@ component.
 This is not a p2 target. It is one component importing the best
 available interface for each job, which is normal: worlds mix versions,
 and the mixture changes when Track G lands and stdio moves to p3.
+(Decided 2026-08-17: it changes _entirely_ — p2 APIs are skipped rather
+than finished, because their blocking calls stall the event loop; this
+stdio scaffold is the only p2 surface that will ever exist in-tree, and
+it retires when streams land.)
 
 ---
 
@@ -1187,22 +1191,35 @@ package fails to resolve ("interface not found in package") — the
 resolver looks in the main package. The baked WIT spells its uses
 package-qualified; fixing the resolver retires the workaround.
 
-### C4 — filesystem and CLI. Weeks.
+### C4 — filesystem and CLI, at p3, on interop and streams. Weeks.
 
-`zena:fs` and `zena:cli` over `wasi:filesystem/*` and
-`wasi:cli/environment` for the component target. Larger than stdio, same
-shape.
+`zena:fs` and `zena:cli` over `wasi:filesystem@0.3.0` and
+`wasi:cli@0.3.0` — p3, not p2, and written against WIT-typed modules
+rather than hand-marshaled. **p2 is skipped outright** (decided
+2026-08-17): a blocking p2 call stalls the guest, and while it is
+stalled the host cannot re-enter through the async callback, so timers
+and every task freeze — an async-first language cannot ship APIs that
+stop its own event loop. `wasmtime 46 -S p3=y` serves the complete 0.3
+surface (probed; see component-model.md's sequencing section), so
+nothing waits on the host.
 
-### C5 — bindgen, per component-model.md. Months.
+### C5 — WIT interop, per component-model.md. Months. **Ahead of C4.**
 
-Unchanged, and now strictly downstream: stages 0a–0d (`Result` ✅, narrow
-ints, `FixedArray<u8>`, `Disposable`) → first-class WIT imports →
-marshaling → p2 HTTP. Each stage becomes testable against a running
-component.
+Formerly "bindgen", renamed because nothing is generated: the compiler
+imports WIT natively — synthesized module symbols for the checker,
+synthesized marshaling adapters in codegen. Its stage 0a–0d
+prerequisites (`Result`, narrow ints, `FixedArray<u8>`, `Disposable`)
+have all landed, several through Track O and the emission work. The
+next slice is `async` function imports, which p3 makes ubiquitous and
+the subtask protocol from the timer work already supports.
 
-### C6 — p3 streams. After Track G.
+### C6 — p3 streams and futures. Ahead of C4, after the interop async slice.
 
-`stream<T>` and `future<T>`, which move stdio to p3 and bring p3 HTTP.
+`stream<T>` and `future<T>`: the canonical builtins join the waitable
+machinery the timers built, and Zena's `Stream<T>` rides the same
+event loop as `Future<T>`. This is what flips `zena:console` to
+`write-via-stream` (retiring the one p2 scaffold in the tree) and is a
+prerequisite of C4, whose p3 interfaces are stream-shaped.
 
 ---
 

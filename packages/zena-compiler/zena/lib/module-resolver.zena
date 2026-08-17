@@ -45,6 +45,14 @@ export final class PackageConfig {
   // package). If present, only listed modules can be imported (closed package).
   exports: HashMap<String, ModuleExport> | null;
 
+  // WIT-backed package: the path to a .wit file, or a directory of them,
+  // declared with `{"wit": "./path"}` in the manifest. Its modules are
+  // WIT interfaces — `import {now} from 'wasi:clocks/monotonic-clock'` —
+  // and the compiler host synthesizes their Zena declarations from the
+  // WIT source (docs/design/component-model.md, Part 2). Mutually
+  // exclusive with `root`/`exports`.
+  var witRoot: String | null = null;
+
   new(
     root: String,
     exports: HashMap<String, ModuleExport> | null
@@ -180,6 +188,18 @@ export final class ModuleResolver {
     referrer: String
   ): ResolvedModule {
     if (let (true, config) = this.#packages.get(packageName)) {
+
+      // A WIT-backed package: the module is a WIT interface, and the
+      // canonical path carries everything the host needs to synthesize
+      // its declarations — where the WIT lives, and which interface.
+      // The specifier has no version on purpose; the WIT declares it.
+      let witRoot = config.witRoot;
+      if (witRoot != null) {
+        return new ResolvedModule(
+            "wit:" + (witRoot as String) + "#" + packageName + ":" +
+                moduleName,
+            packageName);
+      }
 
       // Check exports if the package has an explicit export list.
       if (config.exports != null) {

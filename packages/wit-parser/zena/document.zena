@@ -1,0 +1,121 @@
+/**
+ * Loading and querying WIT documents, for the parser's consumers.
+ *
+ * The parser takes a source string; these are the steps just before
+ * and after it that every consumer repeats — reading a package's
+ * source off disk in a canonical way, and finding an interface in the
+ * parsed result. They live here rather than in each consumer because
+ * their behavior is contract: the compiler's `--wit` flag and its
+ * WIT-backed packages must agree on what "a directory of WIT" means.
+ */
+
+import { String } from 'zena:string';
+import { Array } from 'zena:array';
+import { Error } from 'zena:error';
+import { readFile, isDirectory, listDir } from 'zena:fs';
+import {
+  Ast, AstItem, AstItemTag, InterfaceDef, PackageName
+} from './parser.zena';
+
+/** Byte-wise string order, for a listing that reads the same everywhere. */
+let byteCompare = (a: String, b: String): i32 => {
+  var minLen = a.length;
+  if (b.length < minLen) {
+    minLen = b.length;
+  }
+  for (var i = 0; i < minLen; i += 1) {
+    let d = a.getByteAt(i) - b.getByteAt(i);
+    if (d != 0) {
+      return d;
+    }
+  }
+  return a.length - b.length;
+};
+
+/**
+ * The WIT source at `path`: one file, or a directory whose `.wit` files
+ * are concatenated in name order into one document.
+ */
+export function readWitSource(path: String): String {
+  if (!isDirectory(path)) {
+    return readFile(path);
+  }
+  let names = new Array<String>();
+  for (let entry in listDir(path)) {
+    if (entry.name.endsWith(".wit")) {
+      names.push(entry.name);
+    }
+  }
+  if (names.length == 0) {
+    throw new Error("No .wit files in directory: " + path);
+  }
+  // Name order, so the document is the same however the host lists.
+  for (var a = 0; a < names.length; a += 1) {
+    for (var b = a + 1; b < names.length; b += 1) {
+      if (byteCompare(names[b], names[a]) < 0) {
+        let t = names[a];
+        names[a] = names[b];
+        names[b] = t;
+      }
+    }
+  }
+  var source = "";
+  for (let n in names) {
+    source = source + readFile(path + "/" + n) + "\n";
+  }
+  return source;
+}
+
+/** One interface of a parsed document, with its package's name. */
+export final class FoundInterface {
+  def: InterfaceDef;
+  packageName: PackageName;
+  new(this.def, this.packageName);
+}
+
+/**
+ * The interface `namespace:interfacePath` (`pkg/iface`) in `ast`, from
+ * the main package or a nested one.
+ *
+ * Versions are the WIT's own business — callers resolve by unversioned
+ * name — so matching ignores them, and two versions of one interface
+ * in the same document is an error rather than a guess.
+ */
+export function findInterface(
+  ast: Ast,
+  namespace: String,
+  interfacePath: String
+): FoundInterface {
+  var found: FoundInterface | null = null;
+  var matches = 0;
+  let consider = (pkg: PackageName | null, items: Array<AstItem>): void => {
+    if (pkg == null) {
+      return;
+    }
+    let p = pkg as PackageName;
+    for (let item in items) {
+      if (item.tag != AstItemTag.Interface) {
+        continue;
+      }
+      let def = item.interfaceDef as InterfaceDef;
+      let path = p.name.name + "/" + def.name.name;
+      if (p.namespace.name == namespace && path == interfacePath) {
+        found = new FoundInterface(def, p);
+        matches += 1;
+      }
+    }
+  };
+  consider(ast.packageName, ast.items);
+  for (let nested in ast.nestedPackages) {
+    consider(nested.name, nested.items);
+  }
+  if (matches > 1) {
+    throw new Error("WIT interface '" + namespace + ":" + interfacePath +
+        "' is declared more than once (differing versions?) — pin one.");
+  }
+  if (found == null) {
+    throw new Error("WIT interface '" + namespace + ":" + interfacePath +
+        "' is not declared by the package's WIT.");
+  }
+  return found as FoundInterface;
+}
