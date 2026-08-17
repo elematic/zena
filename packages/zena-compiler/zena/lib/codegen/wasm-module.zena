@@ -820,8 +820,9 @@ export final class WasmModule {
   vtables = new HashMap<ClassKey, Array<String>>();
   interfaceStructs = new HashMap<InterfaceKey, WasmStruct>();
   interfaceVTableStructs = new HashMap<InterfaceKey, WasmStruct>();
-  /** Where the single big rec group begins in `types`; set by layout(). */
-  var typeRecBlockStart = 0;
+  /** One entry per emitted rec group, in emission order; a size of 1
+   * emits the bare (header-free) form. Set by layout(). */
+  var typeRecGroupSizes = new Array<i32>();
   classInterfaceVTables = new HashMap<ClassInterfaceKey, WasmGlobal>();
   #signatureCache = new HashMap<SignatureKey, WasmSignature>();
   #structCache = new HashMap<StructKey, WasmStruct>();
@@ -1619,50 +1620,7 @@ export final class WasmModule {
     this.stringHashFunc = hashFunc;
   }
 
-  #visitTypeForLayout(t: WasmType, visited: HashSet<WasmType>, sortedTypes: Array<WasmType>): void {
-    if (visited.has(t)) {
-      return;
-    }
-    visited.add(t);
-    if (t is WasmStruct) {
-      let superStruct = t.superStruct;
-      if (superStruct != null) {
-        this.#visitTypeForLayout(superStruct, visited, sortedTypes);
-      }
-    }
-    sortedTypes.push(t);
-  }
   
-  #referencesNominal(t: WasmType): boolean {
-    if (t is WasmStruct || t is WasmArray) {
-      return true;
-    }
-    if (t is WasmSignature) {
-      for (let param in t.params) {
-        match (param) {
-          case ValTypeRef {target}: {
-            if (this.#referencesNominal(target)) { return true; }
-          }
-          case ValTypeRefNull {target}: {
-            if (this.#referencesNominal(target)) { return true; }
-          }
-          case _: {}
-        }
-      }
-      for (let ret in t.returns) {
-        match (ret) {
-          case ValTypeRef {target}: {
-            if (this.#referencesNominal(target)) { return true; }
-          }
-          case ValTypeRefNull {target}: {
-            if (this.#referencesNominal(target)) { return true; }
-          }
-          case _: {}
-        }
-      }
-    }
-    return false;
-  }
 
   /**
    * Locks in the module layout, assigning final WebAssembly indices (i32)
@@ -1700,72 +1658,269 @@ export final class WasmModule {
       }
     }
     
-    // zone1 = signatures referencing no nominal type: safe to emit as
-    // singleton rec groups before the one big group. Everything else
-    // (structs, arrays, and signatures that reference them) must land
-    // inside the big group — a nominal-referencing signature emitted
-    // as a singleton BEFORE the group cannot see into it, and the
-    // module fails validation with `type index out of bounds`. The
-    // boundary is recorded (typeRecBlockStart) rather than re-derived
-    // by scanning for the first struct: with evidence-ordered type
-    // marking, a nominal-referencing signature can precede the first
-    // struct in insertion order.
-    let zone1 = new Array<WasmType>();
-    let zone2 = new Array<WasmType>();
-    
+    // Minimal recursion groups: one rec group per strongly-connected
+    // component of the type-reference graph (fields, array elements,
+    // signature params/results, supertypes), in dependency order —
+    // Tarjan pops a component only after every component it references,
+    // so cross-group references always point to an earlier group, and
+    // only intra-group references point forward. Wasm-gc canonicalizes
+    // structural identity per GROUP, so the one-big-group layout this
+    // replaces made every type's cross-module identity depend on every
+    // other type in the module. In practice almost every component is
+    // a singleton (99% in the compiler's own module; the largest
+    // genuine cycle is 8 types), and a singleton emits with no group
+    // header — a self-reference included, since the bare form IS a
+    // one-member rec group.
+    let uniqueTypes = new Array<WasmType>();
+    let seenTypes = new HashSet<WasmType>();
+    // `types` can contain duplicate entries (the generator/async split
+    // passes push types the reachability pass already emitted).
     for (let t in this.types) {
-      if (t is WasmSignature) {
-        if (!this.#referencesNominal(t)) {
-          zone1.push(t);
-        } else {
-          zone2.push(t);
+      if (!seenTypes.has(t)) {
+        seenTypes.add(t);
+        uniqueTypes.push(t);
+      }
+    }
+    let typeCount = uniqueTypes.length;
+    let posOf = new HashMap<WasmType, i32>();
+    for (var i = 0; i < typeCount; i += 1) {
+      posOf[uniqueTypes[i]] = i;
+    }
+    let adjacency = new Array<Array<i32>>();
+    let pushRef = (list: Array<i32>, vt: ValType): void => {
+      match (vt) {
+        case ValTypeRef {target}: {
+          if (let (true, p) = posOf.get(target)) { list.push(p); }
         }
-      } else {
-        zone2.push(t);
+        case ValTypeRefNull {target}: {
+          if (let (true, p) = posOf.get(target)) { list.push(p); }
+        }
+        case _: {}
+      }
+    };
+    for (var i = 0; i < typeCount; i += 1) {
+      let t = uniqueTypes[i];
+      let list = new Array<i32>();
+      if (t is WasmStruct) {
+        if (t.superStruct != null) {
+          if (let (true, p) = posOf.get(t.superStruct as WasmStruct)) {
+            list.push(p);
+          }
+        }
+        for (let f in t.fields) { pushRef(list, f.type); }
+      } else if (t is WasmArray) {
+        pushRef(list, t.elementType);
+      } else if (t is WasmSignature) {
+        for (let pv in t.params) { pushRef(list, pv); }
+        for (let rv in t.returns) { pushRef(list, rv); }
+      }
+      adjacency.push(list);
+    }
+
+    // Iterative Tarjan. Deterministic: roots in first-seen order,
+    // edges in declaration order — the fixpoint gate depends on it.
+    let sccOf = new Array<i32>();
+    let lowLink = new Array<i32>();
+    let onStack = new Array<boolean>();
+    for (var i = 0; i < typeCount; i += 1) {
+      sccOf.push(-1);
+      lowLink.push(0);
+      onStack.push(false);
+    }
+    let componentStack = new Array<i32>();
+    let componentMembers = new Array<Array<i32>>();
+    var nextDiscovery = 0;
+    let workNode = new Array<i32>();
+    let workEdge = new Array<i32>();
+    for (var root = 0; root < typeCount; root += 1) {
+      if (sccOf[root] != -1) { continue; }
+      workNode.push(root);
+      workEdge.push(0);
+      while (workNode.length > 0) {
+        let v = workNode[workNode.length - 1];
+        let ei = workEdge[workEdge.length - 1];
+        if (ei == 0) {
+          sccOf[v] = nextDiscovery;
+          lowLink[v] = nextDiscovery;
+          nextDiscovery += 1;
+          componentStack.push(v);
+          onStack[v] = true;
+        }
+        let edges = adjacency[v];
+        var descended = false;
+        var e = ei;
+        while (e < edges.length) {
+          let w = edges[e];
+          if (sccOf[w] == -1) {
+            workEdge[workEdge.length - 1] = e + 1;
+            workNode.push(w);
+            workEdge.push(0);
+            descended = true;
+            break;
+          }
+          if (onStack[w] && sccOf[w] < lowLink[v]) {
+            lowLink[v] = sccOf[w];
+          }
+          e += 1;
+        }
+        if (descended) { continue; }
+        if (lowLink[v] == sccOf[v]) {
+          let members = new Array<i32>();
+          while (true) {
+            let w = componentStack.pop();
+            onStack[w] = false;
+            members.push(w);
+            if (w == v) { break; }
+          }
+          componentMembers.push(members);
+        }
+        let ignoredNode = workNode.pop();
+        let ignoredEdge = workEdge.pop();
+        if (workNode.length > 0) {
+          let parent = workNode[workNode.length - 1];
+          if (lowLink[v] < lowLink[parent]) {
+            lowLink[parent] = lowLink[v];
+          }
+        }
       }
     }
-    
-    let newTypes = new Array<WasmType>();
-    for (let t in zone1) {
-      newTypes.push(t);
+
+    // Canonically-identical groups MERGE into one rec group. Wasm-gc
+    // type identity is structural per group: two singleton groups of
+    // the same shape are THE SAME type, so structurally-identical
+    // nominal classes (same fields, same super — sealed variants with
+    // one payload; every slot-pruned empty vtable struct) would
+    // collapse, and `is`/`as`/match would stop telling them apart —
+    // position IN a shared group is the only brand the format offers.
+    // A group's key encodes its emitted shape with external references
+    // by (merged-group id, member index); groups arrive in dependency
+    // order, so by induction two same-keyed groups have the SAME
+    // merged dependencies, all of which precede the first twin — which
+    // makes appending later twins to the first one's group always
+    // order-valid.
+    let groupOfType = new Array<i32>();
+    let memberIndexOfType = new Array<i32>();
+    for (var i = 0; i < typeCount; i += 1) {
+      groupOfType.push(-1);
+      memberIndexOfType.push(-1);
     }
-    for (let t in zone2) {
-      newTypes.push(t);
-    }
-    
-    let sortedTypes = new Array<WasmType>();
-    let visited = new HashSet<WasmType>();
-    for (let t in newTypes) {
-      this.#visitTypeForLayout(t, visited, sortedTypes);
-    }
-    this.types = sortedTypes;
-    // The boundary is scanned off the SORTED list rather than taken as
-    // zone1.length: `types` can contain duplicate entries (the
-    // generator/async split passes push types the reachability pass
-    // already emitted), the visit above deduplicates them, and a
-    // duplicate inside zone1 would otherwise shift the boundary past
-    // the first struct — emitting it as a singleton rec group whose
-    // forward references then fail validation.
-    var boundary = 0;
-    while (boundary < sortedTypes.length) {
-      let bt = sortedTypes[boundary];
-      if (bt is WasmSignature && !this.#referencesNominal(bt)) {
-        boundary += 1;
+    let mergedMembers = new Array<Array<i32>>();
+    let groupByKey = new HashMap<String, i32>();
+    for (let members in componentMembers) {
+      // Ascending first-seen order inside a group: deterministic, and
+      // independent of DFS pop order.
+      var mi = 1;
+      while (mi < members.length) {
+        let mkey = members[mi];
+        var mj = mi - 1;
+        while (mj >= 0 && members[mj] > mkey) {
+          members[mj + 1] = members[mj];
+          mj -= 1;
+        }
+        members[mj + 1] = mkey;
+        mi += 1;
+      }
+      let intraIndex = new HashMap<i32, i32>();
+      for (var i = 0; i < members.length; i += 1) {
+        intraIndex[members[i]] = i;
+      }
+      let parts = new Array<String>();
+      let encodeTarget = (target: WasmType): void => {
+        if (let (true, tp) = posOf.get(target)) {
+          if (let (true, ii) = intraIndex.get(tp)) {
+            parts.push("#");
+            parts.push(i32ToString(ii));
+            return;
+          }
+          parts.push("@");
+          parts.push(i32ToString(groupOfType[tp]));
+          parts.push(".");
+          parts.push(i32ToString(memberIndexOfType[tp]));
+          return;
+        }
+        // A reference to a type outside the layout would already be a
+        // broken module; keep the key honest anyway.
+        parts.push("?");
+      };
+      let encodeVal = (vt: ValType): void => {
+        match (vt) {
+          case ValTypeRef {target}: {
+            parts.push("r");
+            encodeTarget(target);
+          }
+          case ValTypeRefNull {target}: {
+            parts.push("n");
+            encodeTarget(target);
+          }
+          case _: {
+            parts.push(i32ToString(valTypeToOpcode(vt)));
+          }
+        }
+        parts.push(",");
+      };
+      for (let m in members) {
+        let t = uniqueTypes[m];
+        if (t is WasmStruct) {
+          parts.push("S");
+          if (t.superStruct != null) {
+            encodeTarget(t.superStruct as WasmStruct);
+          }
+          parts.push("[");
+          for (let f in t.fields) {
+            encodeVal(f.type);
+            parts.push(if (f.isMutable) "m" else "c");
+          }
+          parts.push("]");
+        } else if (t is WasmArray) {
+          parts.push("A");
+          encodeVal(t.elementType);
+          parts.push(if (t.isMutable) "m" else "c");
+        } else if (t is WasmSignature) {
+          parts.push("F");
+          for (let pv in t.params) {
+            encodeVal(pv);
+          }
+          parts.push(">");
+          for (let rv in t.returns) {
+            encodeVal(rv);
+          }
+        }
+        parts.push(";");
+      }
+      let keyParts = new FixedArray<String>(parts.length, "");
+      for (var pi = 0; pi < parts.length; pi += 1) {
+        keyParts[pi] = parts[pi];
+      }
+      let key = String.fromParts(keyParts as array<String>);
+      var g = -1;
+      if (let (true, existing) = groupByKey.get(key)) {
+        g = existing;
       } else {
-        break;
+        g = mergedMembers.length;
+        mergedMembers.push(new Array<i32>());
+        groupByKey[key] = g;
+      }
+      let bucket = mergedMembers[g];
+      for (let m in members) {
+        groupOfType[m] = g;
+        memberIndexOfType[m] = bucket.length;
+        bucket.push(m);
       }
     }
-    this.typeRecBlockStart = boundary;
+
+    let orderedTypes = new Array<WasmType>();
+    let groupSizes = new Array<i32>();
+    for (let bucket in mergedMembers) {
+      for (let m in bucket) {
+        orderedTypes.push(uniqueTypes[m]);
+      }
+      groupSizes.push(bucket.length);
+    }
+    this.types = orderedTypes;
+    this.typeRecGroupSizes = groupSizes;
 
     for (var i = 0; i < this.types.length; i += 1) {
-      let t = this.types[i];
-      t.index = i;
-      if (t is WasmStruct) {
-        let name = t.name;
-        if (name != null && name.contains("Iterable_12_MapEntry_332_String_119_bool")) {
-          console.log("layout assigned index: " + i32ToString(i) + " to " + name);
-        }
-      }
+      this.types[i].index = i;
     }
     for (let rd in this.recordDispatchInfos) {
     }

@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 3
+// Two classes with identical shapes stay distinct at runtime. Wasm-gc
+// canonicalizes structural types per recursion group, so identical
+// singleton groups would collapse into one heap type and `is` could no
+// longer tell P from Q; layout merges canonical twins into one rec
+// group, where position keeps them nominally distinct.
+
+class P {
+  x: i32;
+  new(this.x);
+}
+class Q {
+  x: i32;
+  new(this.x);
+}
+
+export let main = (): i32 => {
+  let p = new P(1) as anyref;
+  let q = new Q(2) as anyref;
+  var acc = 0;
+  if (p is P) { acc += 1; }
+  if (q is Q) { acc += 2; }
+  if (p is Q) { acc += 4; }
+  if (q is P) { acc += 8; }
+  return acc;
+};

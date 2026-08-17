@@ -369,25 +369,23 @@ export final class ModuleGenerator {
 
     let tEmitOther = performance.start("codegen-emit-other");
     this.emitter.emitModuleStart();
-    // The boundary comes from layout()'s zone split, NOT from scanning
-    // for the first struct: a signature that references a nominal type
-    // can precede the first struct in the final order, and emitting it
-    // as a singleton group before the big rec group makes its type
-    // reference unresolvable (`type index out of bounds`).
-    let recBlockStart = if (wasm.typeRecBlockStart < wasm.types.length) {
-      wasm.typeRecBlockStart
-    } else {
-      -1
-    };
+    // Rec groups come from layout()'s SCC pass: one group per
+    // strongly-connected component of the type-reference graph, in
+    // dependency order. A type-section entry is a GROUP (a singleton
+    // emits in the bare, header-free form), so the section count is
+    // the group count.
+    let recGroupSizes = wasm.typeRecGroupSizes;
+    var groupedTypeCount = 0;
+    for (let gs in recGroupSizes) {
+      groupedTypeCount += gs;
+    }
+    if (groupedTypeCount != wasm.types.length) {
+      throw new Error('rec group sizes cover ' +
+          i32ToString(groupedTypeCount) + ' types but the layout has ' +
+          i32ToString(wasm.types.length));
+    }
 
-    let recBlockEnd = wasm.types.length - 1;
-
-    let beforeCount = if (recBlockStart >= 0) recBlockStart else wasm.types.length;
-    let afterCount = if (recBlockStart >= 0) (wasm.types.length - 1 - recBlockEnd) else 0;
-    let recBlockSize = if (recBlockStart >= 0) (recBlockEnd - recBlockStart + 1) else 0;
-    let totalGroups = beforeCount + (if (recBlockSize > 0) 1 else 0) + afterCount;
-
-    this.emitter.emitTypeSectionStart(totalGroups);
+    this.emitter.emitTypeSectionStart(recGroupSizes.length);
 
     let emitTypeAtIndex = (idx: i32): void => {
       let t = wasm.types[idx];
@@ -422,30 +420,16 @@ export final class ModuleGenerator {
       }
     };
 
-    if (recBlockStart == -1) {
-      for (var idx = 0; idx < wasm.types.length; idx += 1) {
-        this.emitter.emitRecGroupStart(1);
-        emitTypeAtIndex(idx);
-        this.emitter.emitRecGroupEnd();
-      }
-    } else {
-      for (var idx = 0; idx < recBlockStart; idx += 1) {
-        this.emitter.emitRecGroupStart(1);
-        emitTypeAtIndex(idx);
-        this.emitter.emitRecGroupEnd();
-      }
-
-      this.emitter.emitRecGroupStart(recBlockSize);
-      for (var idx = recBlockStart; idx <= recBlockEnd; idx += 1) {
-        emitTypeAtIndex(idx);
+    var nextTypeIdx = 0;
+    for (let gs in recGroupSizes) {
+      this.emitter.emitRecGroupStart(gs);
+      var inGroup = 0;
+      while (inGroup < gs) {
+        emitTypeAtIndex(nextTypeIdx);
+        nextTypeIdx += 1;
+        inGroup += 1;
       }
       this.emitter.emitRecGroupEnd();
-
-      for (var idx = recBlockEnd + 1; idx < wasm.types.length; idx += 1) {
-        this.emitter.emitRecGroupStart(1);
-        emitTypeAtIndex(idx);
-        this.emitter.emitRecGroupEnd();
-      }
     }
 
     this.emitter.emitTypeSectionEnd();

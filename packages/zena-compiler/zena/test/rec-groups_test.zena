@@ -1,0 +1,228 @@
+/**
+ * Recursion groups are minimal: one per strongly-connected component
+ * of the type-reference graph, not one big group over everything.
+ *
+ * Wasm-gc canonicalizes structural type identity per GROUP, so the
+ * one-big-group layout made every type's cross-module identity depend
+ * on every other type in the module — any change anywhere invalidated
+ * all of them. Minimal groups are what makes recompiled modules keep
+ * compatible types for the parts that did not change.
+ */
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue, equal } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { Array } from 'zena:array';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { String } from 'zena:string';
+import { makeCompiler, MockHost } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+import { i32ToString } from 'zena:string-convert';
+
+let compileToWat = (source: String): String => {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile("test.zena");
+  let checkRes = checkCompilation(compResult, null, false);
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+
+  let program = new Program(units, entryUnit);
+  let generator = new WatGenerator("zena-cli", false);
+  return generator.generate(program);
+};
+
+/** The number of `(type ` definitions inside each `(rec ` group. */
+let recGroupSizes = (wat: String): Array<i32> => {
+  let sizes = new Array<i32>();
+  let chunks = wat.split('(rec');
+  for (var ci = 1; ci < chunks.length; ci += 1) {
+    let chunk = chunks[ci];
+    // A rec group's members are indented one level deeper; the group
+    // ends at the first line that closes back to the section level.
+    // Counting '(type ' up to the next '(func'/'(global'/'(export'
+    // over-counts nothing: groups are emitted before all of those.
+    var depth = 1;
+    var i = 0;
+    var count = 0;
+    while (i < chunk.length && depth > 0) {
+      let b = chunk.getByteAt(i);
+      if (b == 40) { // '('
+        if (chunk.sliceBytes(i, if (i + 6 < chunk.length) i + 6 else chunk.length) == '(type ') {
+          count += 1;
+        }
+        depth += 1;
+      } else if (b == 41) { // ')'
+        depth -= 1;
+      }
+      i += 1;
+    }
+    sizes.push(count);
+  }
+  return sizes;
+};
+
+/**
+ * The type names declared in a rec-group body. A program class prints
+ * bare ("$A"); stdlib and generic classes carry symbol-id suffixes
+ * ("$FixedArray_s187_i32") — membership accepts both and filters the
+ * vtable twin explicitly.
+ */
+let groupTypeNames = (body: String): Array<String> => {
+  let names = new Array<String>();
+  let chunks = body.split('(type $');
+  for (var ci = 1; ci < chunks.length; ci += 1) {
+    let chunk = chunks[ci];
+    var end = 0;
+    while (end < chunk.length && chunk.getByteAt(end) != 32) {
+      end += 1;
+    }
+    names.push(chunk.sliceBytes(0, end));
+  }
+  return names;
+};
+
+let groupHasClassStruct = (body: String, cls: String): boolean => {
+  for (let name in groupTypeNames(body)) {
+    if (name.contains('_VTable')) { continue; }
+    if (name == cls || name.startsWith(`${cls}_s`)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/** The bodies of every `(rec ...)` group in the module. */
+let recGroupBodies = (wat: String): Array<String> => {
+  let bodies = new Array<String>();
+  let chunks = wat.split('(rec');
+  for (var ci = 1; ci < chunks.length; ci += 1) {
+    let chunk = chunks[ci];
+    var depth = 1;
+    var i = 0;
+    while (i < chunk.length && depth > 0) {
+      let b = chunk.getByteAt(i);
+      if (b == 40) { depth += 1; }
+      if (b == 41) { depth -= 1; }
+      i += 1;
+    }
+    bodies.push(chunk.sliceBytes(0, i));
+  }
+  return bodies;
+};
+
+export let tests = suite('rec groups', (): void => {
+  test('mutually recursive classes share one minimal group',
+      (ctx: TestContext): void => {
+    // A and B reference each other: a genuine two-member recursion.
+    // Their group holds exactly the cycle — not the vtable structs,
+    // not the signatures, not the String machinery. (OTHER multi-member
+    // groups may exist: canonically-identical types share a group so
+    // position keeps them nominally distinct.)
+    let wat = compileToWat(`
+class A {
+  var other: B | null;
+  new() : other = null;
+}
+class B {
+  var other: A | null;
+  new() : other = null;
+}
+export let main = (): i32 => {
+  let a = new A();
+  let b = new B();
+  a.other = b;
+  b.other = a;
+  return if (a.other != null) 1 else 0;
+};
+`);
+    var cycleGroup = "";
+    for (let body in recGroupBodies(wat)) {
+      if (groupHasClassStruct(body, 'A')) {
+        cycleGroup = body;
+      }
+    }
+    isTrue(cycleGroup.length > 0, 'A should sit inside a rec group');
+    isTrue(groupHasClassStruct(cycleGroup, 'B'),
+        'A and B are mutually recursive and must share a group');
+    equal(2, groupTypeNames(cycleGroup).length);
+  });
+
+  test('a self-referential class needs no rec group at all',
+      (ctx: TestContext): void => {
+    // A singleton type may reference itself without a group header —
+    // the shorthand IS a one-member rec group.
+    let wat = compileToWat(`
+class Node {
+  var next: Node | null;
+  new() : next = null;
+}
+export let main = (): i32 => {
+  let n = new Node();
+  n.next = n;
+  return if (n.next != null) 1 else 0;
+};
+`);
+    for (let body in recGroupBodies(wat)) {
+      isTrue(!groupHasClassStruct(body, 'Node'),
+          'a self-reference is not mutual recursion — Node must emit ' +
+          'in the bare, header-free form');
+    }
+  });
+
+  test('structurally identical classes stay nominally distinct',
+      (ctx: TestContext): void => {
+    // P and Q have the same source shape; wasm-gc canonicalizes
+    // identical groups to ONE type, which would make `is Q` true for a
+    // P. Canonically-identical groups therefore merge into one rec
+    // group, where position keeps them distinct — here that lands on
+    // the two empty VTABLE structs, and the class structs (which each
+    // reference their own now-branded vtable) become distinct
+    // singletons for free. The runtime half of this pin is
+    // tests/language/execution/classes/structural-twins-distinct.zena.
+    let wat = compileToWat(`
+class P {
+  x: i32;
+  new(this.x);
+}
+class Q {
+  x: i32;
+  new(this.x);
+}
+export let main = (): i32 => {
+  let p = new P(1) as anyref;
+  return if (p is Q) 1 else 0;
+};
+`);
+    var vtGroup = "";
+    for (let body in recGroupBodies(wat)) {
+      for (let name in groupTypeNames(body)) {
+        if (name == 'P_VTable' || name.startsWith('P_s') && name.contains('_VTable')) {
+          vtGroup = body;
+        }
+      }
+    }
+    isTrue(vtGroup.length > 0,
+        "P's empty vtable struct is a canonical twin and must sit in a " +
+        'shared rec group');
+    isTrue(vtGroup.contains('Q_VTable'),
+        "P's and Q's twin vtable structs must share one group so " +
+        'position brands them — and with them the classes — distinct');
+  });
+});
