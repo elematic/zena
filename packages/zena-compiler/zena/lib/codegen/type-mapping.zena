@@ -19,7 +19,7 @@ import {
   ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode,
   WasmType, isWasmSubtype, HeapType, heapTypeToSigned
 } from './wasm.zena';
-import { compareStrings } from './codegen-utils.zena';
+import { compareStrings, presentWordCount, presentWordName } from './codegen-utils.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { HashMap } from 'zena:map';
@@ -1477,13 +1477,6 @@ export let getNonNullableType = (type: Type): Type => match (type) {
   case _: type
 };
 
-/**
- * The hidden i32 bitmask field carrying optional-field presence on a
- * record struct (docs/design/record-presence.md §2). Bit i corresponds
- * to the i-th optional field name in sorted order.
- */
-export let presentFieldName = '$present';
-
 /** A record type's optional field names in sorted order — the canonical
  *  presence-bit assignment shared by every consumer of the mask. */
 export let sortedOptionalNames = (rec: RecordType): Array<String> => {
@@ -1531,8 +1524,12 @@ export let recordWasmFields = (wasm: WasmModule, rec: RecordType,
     }
     fields.push(new WasmField(pair.key, vt, false));
   }
-  if (rec.hasOptionalProperties()) {
-    fields.push(new WasmField(presentFieldName, new ValTypeI32(), false));
+  let optionals = rec.optionalProperties;
+  if (optionals != null && optionals.size > 0) {
+    let words = presentWordCount(optionals.size);
+    for (var w = 0; w < words; w += 1) {
+      fields.push(new WasmField(presentWordName(w), new ValTypeI64(), false));
+    }
   }
   sortWasmFields(fields);
   return fields;

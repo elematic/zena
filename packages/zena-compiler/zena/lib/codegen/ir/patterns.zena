@@ -22,7 +22,7 @@ import {
   ClassType, NullType, RecordType, Type, UnionType, baseType,
 } from '../../types.zena';
 import {
-  presentFieldName, typeToValTypeWithSub,
+  typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -34,7 +34,7 @@ import {
   RecordDispatchInfo, WasmFunction, WasmStruct, asWasmStruct,
   isValSubtype,
 } from '../wasm-module.zena';
-import { getClassKey, getClassMethodKey, parseI64OrU64Literal } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, parseI64OrU64Literal, presentWordName } from '../codegen-utils.zena';
 import { IrOp, IrRefField, IrRefFunc } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
@@ -490,21 +490,13 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
         bail(cx, 'record pattern operand');
       }
       let dispatch = dispatchOpt as RecordDispatchInfo;
-      var mask = -1;
       for (let prop in rp.properties) {
         // Naming an optional field without a default asserts its
-        // presence: test the mask bit before any value test.
+        // presence: test the mask bit before any value test. (Repeated
+        // word reads deduplicate in GVN.)
         let bit = dispatch.optionalBitOf(prop.name.name);
         if (bit >= 0 && !(prop.value is AssignmentPattern)) {
-          if (mask < 0) {
-            mask = cx.recordDispatchRead(dispatch, presentFieldName, value);
-          }
-          let i32Vt: ValType = new ValTypeI32();
-          let bitVal = cx.b.binary(IrOp.i32_and, i32Vt,
-              cx.b.binary(IrOp.i32_shr_u, i32Vt, mask,
-                  cx.b.constI32(bit, i32Vt)),
-              cx.b.constI32(1, i32Vt));
-          branchUnless(cx, bitVal, failB);
+          branchUnless(cx, maskBitTest(cx, dispatch, bit, value), failB);
         }
         if (patternRefutable(cx, prop.value)) {
           let read = cx.recordDispatchRead(
@@ -618,6 +610,23 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
   }
 };
 
+/**
+ * An i32 0/1 condition for "optional field `bit` is present": reads
+ * the record's presence word for that bit and extracts it.
+ */
+let maskBitTest = (cx: LoweringContext, dispatch: RecordDispatchInfo,
+    bit: i32, receiver: i32): i32 => {
+  let i64Vt: ValType = new ValTypeI64();
+  let mask = cx.recordDispatchRead(
+      dispatch, presentWordName(bit >> 6), receiver);
+  let bitVal = cx.b.binary(IrOp.i64_and, i64Vt,
+      cx.b.binary(IrOp.i64_shr_u, i64Vt, mask,
+          cx.b.constI64((bit & 63) as i64, i64Vt)),
+      cx.b.constI64(1, i64Vt));
+  return cx.b.emit(IrOp.i32_wrap_i64,
+      new ValTypeI32() as ValType, bitVal, -1);
+};
+
 /** Whether a record property's Zena type itself admits null (as opposed
  *  to its slot being nullable only because the field is optional). */
 let propTypeAdmitsNull = (rec: RecordType | null, name: String): boolean => {
@@ -656,7 +665,6 @@ export let bindRecordProp = (cx: LoweringContext,
     lowerPatternBindings(cx, prop.value, read);
     return;
   }
-  let i32Vt: ValType = new ValTypeI32();
   if (prop.value is AssignmentPattern) {
     let ap = prop.value as AssignmentPattern;
     let leftSym = cx.func.model.resolveDeclaration(ap.left);
@@ -668,11 +676,7 @@ export let bindRecordProp = (cx: LoweringContext,
       bail(cx, 'untyped optional destructuring default');
     }
     let targetVt = typeToValTypeWithSub(cx.wasm, btOpt as Type, cx.func);
-    let mask = cx.recordDispatchRead(dispatch, presentFieldName, receiver);
-    let bitVal = cx.b.binary(IrOp.i32_and, i32Vt,
-        cx.b.binary(IrOp.i32_shr_u, i32Vt, mask,
-            cx.b.constI32(bit, i32Vt)),
-        cx.b.constI32(1, i32Vt));
+    let bitVal = maskBitTest(cx, dispatch, bit, receiver);
     let presentB = cx.b.newBlock();
     let absentB = cx.b.newBlock();
     let merge = cx.b.newBlock();

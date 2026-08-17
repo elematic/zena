@@ -25,6 +25,29 @@ declare function hash<T>(value: T): i32;
 
 
 
+/**
+ * The hidden i64 bitmask fields carrying optional-field presence on a
+ * record struct (docs/design/record-presence.md §2). Word w holds bits
+ * for optional fields 64*w .. 64*w+63 in canonical sorted name order.
+ * The suffix is zero-padded so canonical field sorting keeps the words
+ * in index order.
+ */
+export let presentWordName = (word: i32): String => {
+  var suffix = i32ToString(word);
+  while (suffix.length < 3) {
+    suffix = '0' + suffix;
+  }
+  return '$present' + suffix;
+};
+
+export let isPresentWordName = (name: String): boolean => {
+  return name.length == 11 && name.sliceBytes(0, 8) == '$present';
+};
+
+export let presentWordCount = (optionalCount: i32): i32 => {
+  return (optionalCount + 63) >> 6;
+};
+
 // TODO: Add string comparison to the stdlib and use that instead.
 export let compareStrings = (a: String, b: String): i32 => {
   let lenA = a.length;

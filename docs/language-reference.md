@@ -3326,9 +3326,9 @@ Direct member access on an optional field (`opts.timeout`) is a
 compile error. Presence is tracked per field, so an explicit
 `{timeout: 0}` is present — `0` never triggers a default — and spread
 propagates presence (`{...partial, retries: 2}` keeps `timeout`
-present or absent as it was in `partial`). A record type may have at
-most 32 optional fields. For a field that is always present but whose
-*value* may be missing, use `Option<T>` from `zena:option`.
+present or absent as it was in `partial`). For a field that is always
+present but whose *value* may be missing, use `Option<T>` from
+`zena:option`.
 
 #### Shorthand Syntax
 

@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 16022
+// @invoke: main
+
+// Presence masks span multiple 64-bit words: seventy optional fields
+// put f64..f69 in the second word (bit = sorted-name index).
+type Big = {
+  f00?: i32, f01?: i32, f02?: i32, f03?: i32, f04?: i32, f05?: i32, f06?: i32,
+  f07?: i32, f08?: i32, f09?: i32, f10?: i32, f11?: i32, f12?: i32, f13?: i32,
+  f14?: i32, f15?: i32, f16?: i32, f17?: i32, f18?: i32, f19?: i32, f20?: i32,
+  f21?: i32, f22?: i32, f23?: i32, f24?: i32, f25?: i32, f26?: i32, f27?: i32,
+  f28?: i32, f29?: i32, f30?: i32, f31?: i32, f32?: i32, f33?: i32, f34?: i32,
+  f35?: i32, f36?: i32, f37?: i32, f38?: i32, f39?: i32, f40?: i32, f41?: i32,
+  f42?: i32, f43?: i32, f44?: i32, f45?: i32, f46?: i32, f47?: i32, f48?: i32,
+  f49?: i32, f50?: i32, f51?: i32, f52?: i32, f53?: i32, f54?: i32, f55?: i32,
+  f56?: i32, f57?: i32, f58?: i32, f59?: i32, f60?: i32, f61?: i32, f62?: i32,
+  f63?: i32, f64?: i32, f65?: i32, f66?: i32, f67?: i32, f68?: i32, f69?: i32,
+};
+
+let probe = (b: Big): i32 => {
+  let {f01 = 1000, f63 = 2000, f65 = 3000, f69 = 4000} = b;
+  return f01 + f63 + f65 + f69;
+};
+
+export let main = (): i32 => {
+  let allAbsent = probe({});                                // 10000
+  let allSet = probe({f01: 1, f63: 2, f65: 3, f69: 4});     // 10
+  // Spread propagates presence across both words.
+  let src: Big = {f65: 7};
+  let merged: Big = {...src, f01: 5};
+  let m = probe(merged);                // 5 + 2000 + 7 + 4000 = 6012
+  return allAbsent + allSet + m;        // 16022
+};

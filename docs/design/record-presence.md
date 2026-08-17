@@ -54,8 +54,10 @@ A record type with optional fields compiles to **one wasm struct**:
 
 - a slot for every field, optional or not, in the existing canonical
   sorted order;
-- one `$present: i32` field; bit _i_ corresponds to the _i_-th
-  optional field in sorted order (canonical per interned type);
+- one `$presentNNN: i64` field per 64 optional fields (zero-padded so
+  canonical field sorting keeps words in index order); global bit _i_
+  corresponds to the _i_-th optional field in sorted order and lives
+  in word `i / 64`, bit `i % 64` (canonical per interned type);
 - absent slots hold the zero value of their type; optional reference
   fields use nullable slots internally regardless of the declared
   type — the mask guards every read, so the placeholder never
@@ -65,8 +67,9 @@ A record type with optional fields compiles to **one wasm struct**:
 
 `{url: 'x'}` and `{url: 'x', timeout: 5}` checked against
 `{url: String, timeout?: i32}` build the _same_ struct type with
-different mask constants. More than 32 optional fields is a compile
-error initially (widen to i64, then a second word, if ever needed).
+different mask constants. The word scheme supports arbitrarily many
+optional fields; an adapted `$present` getter assembles one target
+word from any mix of constant bits and remapped source-word bits.
 
 Primitives are why the mask exists at all: `0` is a valid `i32`, so
 absence cannot be a sentinel. For reference fields a null-sentinel
@@ -357,8 +360,8 @@ per-shape code.
 2. **An unset form** — remove a field / clear a presence bit in a
    spread (`delete`'s immutable analogue). Deferred (§5);
    destructure-and-rebuild covers it.
-3. **Mask width** past 32 optional fields — widen to i64 or a second
-   word; currently a compile error (§2).
+3. ~~**Mask width**~~ — resolved: i64 words, one per 64 optional
+   fields, unbounded (§2).
 4. **`??` sugar scope** — whether `opts.timeout ?? d` is the only
    direct-access affordance, or `"timeout" in opts` narrowing is also
    wanted alongside if-let patterns. The pattern forms are the v1

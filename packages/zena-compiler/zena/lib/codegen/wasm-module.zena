@@ -25,6 +25,7 @@ import { Program } from '../program.zena';
 import { 
   compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey, 
   CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getClassPrivateFieldKey, getTypeUniqueKey,
+  isPresentWordName, presentWordCount, presentWordName,
   FunctionAdaptationKey, getFunctionAdaptationKey, ClassMethodKey, getClassMethodKey,
   SpecializedFunctionKey, getSpecializedFunctionKey, ClosureSpecializationKey, getClosureSpecializationKey,
   FunctionValueWrapperKey, getFunctionValueWrapperKey
@@ -556,11 +557,14 @@ export final class WasmFunction implements Hashable {
   /** The index of the field in the class struct for the synthesized setter. */
   var setterFieldIndex: i32 = -1;
   /**
-   * For an adapted record dispatch's `$present` getter: how each target
-   * mask bit derives from the source — -1 = absent (constant 0), -2 =
-   * required in the source (constant 1), else the source's bit index.
+   * For an adapted record dispatch's `$present` word getter: how each
+   * target mask bit (globally indexed across all words) derives from
+   * the source — -1 = absent (constant 0), -2 = required in the source
+   * (constant 1), else the source's global bit index.
    */
   var getterMaskSpec: Array<i32> | null = null;
+  /** Which 64-bit word of the target mask this getter assembles. */
+  var getterMaskWord: i32 = 0;
   /**
    * An adapted getter for an optional target field the source shape
    * lacks: return the slot type's zero value (the mask reports the
@@ -1273,11 +1277,12 @@ export final class WasmModule {
       }
 
       let outName = outFields[i].name;
-      if (outName != null && (outName as String) == '$present') {
+      if (outName != null && isPresentWordName(outName as String)) {
         // The target's mask derives per bit from the source shape:
         // constant 1 for fields the source holds unconditionally,
         // constant 0 for fields it lacks, the source's own bit where
-        // the source also tracks it.
+        // the source also tracks it. The spec covers every word; the
+        // getter's word index selects its 64-bit slice.
         let spec = new Array<i32>();
         for (let optName in outOptionalNames) {
           var srcBit = -1;
@@ -1297,7 +1302,13 @@ export final class WasmModule {
             spec.push(if (inHas) -2 else -1);
           }
         }
+        var word = 0;
+        let wordCount = presentWordCount(outOptionalNames.length);
+        for (var w = 0; w < wordCount; w += 1) {
+          if (presentWordName(w) == (outName as String)) { word = w; }
+        }
         getterFunc.getterMaskSpec = spec;
+        getterFunc.getterMaskWord = word;
         getterFunc.getterFieldIndex = -1;
       } else if (inIndex < 0) {
         var outOptional = false;
