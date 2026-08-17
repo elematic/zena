@@ -63,7 +63,7 @@ export final class Specializer implements SpecializerInterface {
     for (let bake in this.#erasedFieldBakes) {
       let valType = typeToValType(this.pass.wasm, bake.fieldType);
       if (valType is ValTypeRef) {
-        bake.field.type = new ValTypeRefNull(valType.target);
+        bake.field.type = valType;
       }
     }
   }
@@ -1751,11 +1751,16 @@ export final class Specializer implements SpecializerInterface {
           // to it lower to just their right-hand side's effects.
           continue;
         }
-        let nullableValType = match (valType) {
-          case ValTypeRef {target}: new ValTypeRefNull(target)
-          case _: valType
-        };
-        let wf = new WasmField(fName, nullableValType, true);
+        // Precise field types (non-nullable-refs.md): `T` stays
+        // `(ref $T)` and only `T | null` is nullable, and `let` fields
+        // are immutable — single-shot construction supplies every
+        // field's value to struct.new, so nothing needs the
+        // defaultable/mutable widening anymore.
+        var fieldIsMutable = true;
+        if (pair.value is FieldInfo) {
+          fieldIsMutable = (pair.value as FieldInfo).isMutable;
+        }
+        let wf = new WasmField(fName, valType, fieldIsMutable);
         // `structref` for a class-typed field means the class had no
         // registration yet — discovery may still produce one, and then
         // its method signatures would be precise while this field is

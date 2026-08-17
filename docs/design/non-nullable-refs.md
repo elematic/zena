@@ -175,14 +175,16 @@ Erased specializations register structs but no constructor today; they
 likewise get no factory. Abstract classes get `<init>`/`<ctorBody>`
 but no factory (no `new` sites exist).
 
-## Expected results
+## Results
 
-On the compiler's own module: ~15.5 KB of `ref.as_non_null` removed
-(one byte per field-read re-assert), minus nothing on the WAT side
-since reads simply stop asserting; several KB more from constructor
-field stores (`local.get $this` + `struct.set` per field, ~5 B,
-across every reached constructor) and per-allocation vtable stores
-collapsing into `struct.new` operands; engine-side, non-null immutable
+On the compiler's own module: the protocol swap alone (fields still
+nullable) took the self-compile from 2,021,549 to 1,984,066 bytes
+(−1.9%) — the per-field `local.get $this` + `struct.set` pairs and
+the per-allocation vtable stores collapsing into `struct.new`
+operands. The field flip took it to 1,952,219 (−3.4% total), with
+`ref.as_non_null` count falling from 31,951 to 16,731; nearly all of
+the residue is the conditional-join locals, which wait on typed
+labels (ir.md §12.1 mechanism 4). Engine-side, non-null immutable
 fields are the representation V8 and wasmtime optimize best.
 
 ## Testing

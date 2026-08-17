@@ -11,7 +11,7 @@ import { Array } from 'zena:array';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import {
-  ValType, ValTypeI32, ValTypeRef, ValTypeAnyRef, ValTypeExternRef,
+  ValType, ValTypeI32, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeExternRef,
 } from '../wasm.zena';
 import {
   WasmModule, WasmFunction, WasmStruct, WasmGlobal,
@@ -156,20 +156,33 @@ let synthStringCreate = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let byteArr = wasm.getByteArrayType();
   let b = new IrBuilder();
   let params = entryOf(b, func);
-  let inst = b.emit(IrOp.struct_new_default,
-      new ValTypeRef(lay.st) as ValType, -1, b.addRef(new IrRefType(lay.st)));
-  let vtg = lay.vtable as WasmGlobal;
-  let vtVal = b.emit(IrOp.global_get, vtg.type, -1, b.addRef(new IrRefGlobal(vtg)));
-  fieldSet(b, lay.st, '<vtable>', inst, vtVal);
   let lenInit = new Array<i32>();
   lenInit.push(params[0]);
   lenInit.push(-1);
   let bytes = b.emit(IrOp.array_new, new ValTypeRef(byteArr) as ValType,
       b.pushExtra(lenInit), b.addRef(new IrRefType(byteArr)));
-  fieldSet(b, lay.st, lay.data, inst, bytes);
-  fieldSet(b, lay.st, lay.start, inst, i32c(b, 0));
-  fieldSet(b, lay.st, lay.end, inst, params[0]);
-  fieldSet(b, lay.st, lay.encoding as String, inst, i32c(b, 0));
+  // Single-shot struct.new in field order, like string_from_shared:
+  // String's fields are non-null, so there is no defaultable shell.
+  let args = new Array<i32>();
+  for (let f in lay.st.fields) {
+    let fname = if (f.name != null) f.name as String else '';
+    if (fname == '<vtable>') {
+      let vtg = lay.vtable as WasmGlobal;
+      args.push(b.emit(IrOp.global_get, vtg.type, -1,
+          b.addRef(new IrRefGlobal(vtg))));
+    } else if (fname == lay.data) {
+      args.push(bytes);
+    } else if (fname == lay.end) {
+      args.push(params[0]);
+    } else if (f.type is ValTypeI32) {
+      // start, encoding, and any other counter default to 0.
+      args.push(i32c(b, 0));
+    } else {
+      throw new Error('$stringCreate: unexpected String field ' + fname);
+    }
+  }
+  let inst = b.emit(IrOp.struct_new, new ValTypeRef(lay.st) as ValType,
+      b.pushArgList(args), b.addRef(new IrRefType(lay.st)));
   let ext = b.emit(IrOp.extern_convert_any, new ValTypeExternRef(), inst, -1);
   b.ret(ext);
   return b.finish();
@@ -405,8 +418,14 @@ let synthStringFromShared = (wasm: WasmModule, func: WasmFunction): IrBody => {
       args.push(b.emit(IrOp.global_get, vtg.type, -1,
           b.addRef(new IrRefGlobal(vtg))));
     } else if (fname == lay.data) {
-      args.push(b.emit(IrOp.global_get, shared.type, -1,
-          b.addRef(new IrRefGlobal(shared))));
+      // The shared-bytes global is nullable (initialized by __start);
+      // the data field is not — re-assert on the way in.
+      var data = b.emit(IrOp.global_get, shared.type, -1,
+          b.addRef(new IrRefGlobal(shared)));
+      if (shared.type is ValTypeRefNull && f.type is ValTypeRef) {
+        data = b.emit(IrOp.ref_as_non_null, f.type, data, -1);
+      }
+      args.push(data);
     } else if (fname == lay.start) {
       args.push(params[0]);
     } else if (fname == lay.end) {

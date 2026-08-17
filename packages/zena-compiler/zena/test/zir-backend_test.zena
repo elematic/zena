@@ -369,6 +369,26 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('struct.set'));
   });
 
+  test('non-null let fields are immutable and read without re-asserts', (ctx: TestContext): void => {
+    // Field types are precise (non-nullable-refs.md): a `let` field of
+    // non-null class type declares `(field (ref $T))` — immutable, no
+    // null — while a `T | null` field stays nullable, and a reader
+    // needs no ref.as_non_null after struct.get.
+    let result = compileWithZir(
+        'class Box { x: i32; new(this.x); }\n' +
+        'class Holder {\n' +
+        '  b: Box;\n' +
+        '  var maybe: Box | null = null;\n' +
+        '  new(this.b);\n' +
+        '}\n' +
+        'let read = (h: Holder): i32 => h.b.x;\n' +
+        'export let main = (): i32 => read(new Holder(new Box(5)));');
+    isTrue(result.contains('(field (ref '));
+    isTrue(result.contains('(field (mut (ref null'));
+    let readWat = watFunction(result, '$read');
+    isTrue(!readWat.contains('ref.as_non_null'));
+  });
+
   test('scalar match with literals, or-patterns, and guards', (ctx: TestContext): void => {
     let result = compileWithZir(
         'export let main = (): i32 => {\n' +

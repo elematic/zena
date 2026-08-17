@@ -4182,9 +4182,10 @@ export final class FunctionLowerer {
       let current = this.b.emit(IrOp.struct_get, readVt, receiver, fieldRefRead);
       value = this.#combineCompound(current, assign, member as Expression);
     }
-    if (!isValSubtype(this.#valueType(value), fieldVt)) {
-      this.#failConformance(value, fieldVt, 'member write type');
-    }
+    // Conform, not just check: a non-null field takes narrowed and
+    // `as`-cast nullable values whose re-assert the consumers own
+    // (lowerAs passes same-target values through raw).
+    value = this.#conformToSlot(value, fieldVt, 'member write type');
     let fieldRef = this.b.addRef(new IrRefField(target.owner, fieldName));
     let pairIdx = this.b.pushExtra(this.#twoValues(receiver, value));
     this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
@@ -4621,9 +4622,7 @@ export final class FunctionLowerer {
       let current = this.#lowerSuperRead(member);
       value = this.#combineCompound(current, assign, member as Expression);
     }
-    if (!isValSubtype(this.#valueType(value), targetVt)) {
-      this.#failConformance(value, targetVt, 'super write type');
-    }
+    value = this.#conformToSlot(value, targetVt, 'super write type');
     if (setter != null) {
       if (!isValSubtype(this.#valueType(receiver), setter.signature.params[0])) {
         this.#failConformance(receiver, setter.signature.params[0],
