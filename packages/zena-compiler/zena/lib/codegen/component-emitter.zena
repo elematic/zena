@@ -55,6 +55,26 @@ export final class EncodedImports {
 }
 
 /**
+ * The WIT import encoder, as codegen consumes it. Implemented by
+ * `wit-imports.zena` and injected by the drivers
+ * (`BinaryGenerator.importEncoder`) — this indirection is what keeps
+ * the WIT parser out of codegen's module graph, and with it out of
+ * hosts like the language service that never emit a component.
+ *
+ * `witProvided` answers during shape building: is this interface's WIT
+ * the encoder's business rather than something to derive from the Zena
+ * declaration? True for the interfaces the compiler carries WIT for,
+ * and for *every* interface when a world was declared with `--wit` —
+ * the declaration is then core-shaped and checked against the WIT in
+ * `encode`, which also validates a declared world's whole surface
+ * before encoding it.
+ */
+export interface ImportTypeEncoder {
+  witProvided(interfaceName: String): boolean;
+  encode(shape: ComponentShape): EncodedImports;
+}
+
+/**
  * Component section ids. A component's sections are a different space
  * from a core module's: `1` is a nested core module, not a type section.
  */
@@ -152,6 +172,14 @@ export final class ComponentImportFunc {
    * document is parsed.
    */
   var needsMemoryLower = false;
+  /**
+   * The core import's parameter and result counts, recorded for
+   * WIT-provided imports so `encode` can check the declaration against
+   * the interface's canonical flattening — the one shape both sides
+   * must agree on when the types cannot be compared directly.
+   */
+  var coreParamCount = -1;
+  var coreResultCount = -1;
 
   new(this.interfaceName, this.fieldName, this.signature, this.lowerAsync = false);
 }

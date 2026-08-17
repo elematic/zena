@@ -86,6 +86,20 @@ let compileFor = (path: String, target: String): ByteArray => {
   return generator.generate(programFor(path, target)).toByteArray();
 };
 
+/** Compile against a declared world (`--wit`/`--world`'s path). */
+let compileForWorld = (
+  path: String,
+  witSource: String,
+  worldName: String
+): ByteArray => {
+  let generator = new BinaryGenerator('component', false);
+  let host = new PlainHost();
+  generator.runtimeMemoryModule = compileComponentRuntimeModule(
+      host, stdlibRoot, loadPackageMap(host, 'zena-packages.json'));
+  generator.importEncoder = makeImportEncoder(witSource, worldName);
+  return generator.generate(programFor(path, 'component')).toByteArray();
+};
+
 /** The payload of the (`skip`+1)-th section with `id`, or empty. */
 let sectionPayloadAfter = (bytes: ByteArray, id: i32, skip: i32): ByteArray => {
   var pos = 8;
@@ -452,6 +466,83 @@ export let tests = suite('Component emission', (): void => {
     throws((): void => {
       deriveImportsWit(shape);
     }, "an interface name with no '/' derived a WIT document");
+  });
+
+  test('a declared world is the import surface, used or not',
+      (ctx: TestContext): void => {
+    // The world imports an interface the program never calls. With a
+    // declared world the component's imports are the world's, so the
+    // unused instance is imported anyway — a host must satisfy the
+    // world, not the subset a particular build happened to reach.
+    let wit = `package test:probe@1.0.0;
+
+interface extras {
+  ping: func() -> u32;
+}
+
+world probe {
+  import extras;
+  export main: func() -> s32;
+}
+`;
+    let bytes = compileForWorld(
+        'packages/zena-compiler/test-files/minimal.zena', wit, 'probe');
+    isTrue(containsName(sectionPayload(bytes, 10), 'test:probe/extras@1.0.0'),
+      'the unused world import is missing from the import section');
+  });
+
+  test('disagreements between a declared world and the program are errors',
+      (ctx: TestContext): void => {
+    // Both directions, and types: a world export the program lacks, a
+    // program export the world lacks, and a shared export whose types
+    // differ. Each is a compile error naming the mismatch, not a
+    // component that fails at instantiation.
+    let missingInProgram = `package test:probe@1.0.0;
+world probe {
+  export main: func() -> s32;
+  export absent: func() -> u32;
+}
+`;
+    throws((): void => {
+      compileForWorld('packages/zena-compiler/test-files/minimal.zena',
+          missingInProgram, 'probe');
+    }, 'a world export the program lacks compiled anyway');
+
+    let missingInWorld = `package test:probe@1.0.0;
+world probe {
+}
+`;
+    throws((): void => {
+      compileForWorld('packages/zena-compiler/test-files/minimal.zena',
+          missingInWorld, 'probe');
+    }, 'a program export the world lacks compiled anyway');
+
+    let wrongType = `package test:probe@1.0.0;
+world probe {
+  export main: func() -> string;
+}
+`;
+    throws((): void => {
+      compileForWorld('packages/zena-compiler/test-files/minimal.zena',
+          wrongType, 'probe');
+    }, 'a type disagreement compiled anyway');
+  });
+
+  test('a declared world resolves without --world when it is alone',
+      (ctx: TestContext): void => {
+    let wit = `package test:probe@1.0.0;
+world only {
+  export main: func() -> s32;
+}
+`;
+    let bytes = compileForWorld(
+        'packages/zena-compiler/test-files/minimal.zena', wit, '');
+    isTrue(containsName(sectionPayload(bytes, 11), 'main'),
+      'the sole world did not resolve');
+    throws((): void => {
+      compileForWorld('packages/zena-compiler/test-files/minimal.zena',
+          wit, 'nope');
+    }, "--world named a world the document does not declare");
   });
 
   test('Zena identifiers become kebab-case names', (ctx: TestContext): void => {

@@ -10,9 +10,10 @@
   `wasm-tools component wit` and drives every imported interface's
   types; a memory-using program gets the two-core-module shape of 1.3;
   and **a component prints** — `zena:console` over p2 stdio, the
-  write's lowering carrying the canonical memory options. Open in C3's
-  orbit: `--wit`/`--world` for programs declaring their own world.
-  C4 onward is unbuilt. Every load-bearing claim was verified against
+  write's lowering carrying the canonical memory options — and a
+  program can declare its own world with `--wit`/`--world`, which
+  emission then follows and disagreements with which are compile
+  errors. C4 onward is unbuilt. Every load-bearing claim was verified against
   `wasm-tools 1.252.0` / `wasmtime 46.0.0` on 2026-08-08; the
   corrections that building it turned up are marked **Correction**
   below.
@@ -717,11 +718,48 @@ Four points this settles:
   ambiguous about which preview it meant. Dropping p1 and p2 as portable
   targets removes the ambiguity and the argument with it.
 
-The remaining flags concern the world, not the target, and are needed
-only once a program declares its own (C3):
+The remaining flags concern the world, not the target:
 
-- `--wit <dir>` — WIT package directory defining the world.
-- `--world <name>` — which world in it.
+- `--wit <path>` — a WIT file, or a directory whose `.wit` files are
+  concatenated in name order, defining the world.
+- `--world <name>` — which world in it; optional when the document
+  declares exactly one.
+
+They are **input**: a world the program is compiled against, not a WIT
+generator. Without them the world is _derived_ — the import surface is
+whatever `@external` declarations the program reached, typed from the
+Zena signatures (or from the WIT the compiler carries, for the WASI
+interfaces the standard library binds), and the exports are the
+program's own. The derived world is only observable from the binary,
+where `wasm-tools component wit` prints it back.
+
+With them, the declared world is the authority, and that means two
+things which are really one mechanism:
+
+- **Emission follows the WIT.** The component's type and import
+  sections are encoded from the world's interfaces — the encoder's
+  original mode — so the component imports exactly what the world
+  imports, used by the program or not, plus the `use` dependencies WIT
+  implies. This is also what makes user-declared richer types on the
+  boundary expressible at all: a Zena declaration is core-shaped and
+  cannot spell `own` or `list<u8>`.
+- **Disagreements are errors.** Every `@external` must name a function
+  of an interface the world explicitly imports, with a core signature
+  matching the WIT's canonical flattening (a count-level check: a
+  missing return-area pointer, a forgotten parameter, or a sync
+  declaration against an async function all fail by name). The export
+  surfaces must agree in both directions — a world export the program
+  does not provide, a program export the world does not declare, and a
+  type or asyncness mismatch on one they share are all compile errors,
+  not components that fail at instantiation.
+
+The relationship is the one a declaration file has to an
+implementation: the WIT declares the boundary, the Zena program
+implements it, and the compiler both emits from and checks against the
+declaration. A world may import the WASI interfaces the compiler
+carries WIT for (`wasi:cli`/`wasi:io` at 0.2.8) by name without
+vendoring them; a document that declares those packages itself
+overrides the carried copies.
 
 ### The freestanding target
 
@@ -1071,7 +1109,9 @@ opinion. One name got stricter: an `@external` namespace must now be a
 full `ns:pkg/interface[@version]` path, because nothing less derives a
 WIT document.
 
-Still open here: `--wit` / `--world` on real compiles, world-level
+`--wit` / `--world` are built — Part 3 states the contract (the
+declared world is the authority; emission follows it; disagreements
+are errors, checked in both directions). Still open here: world-level
 `use` and type definitions, `include`, cross-document packages, and
 fixed-length lists. `future` and `stream` refuse loudly until C6.
 

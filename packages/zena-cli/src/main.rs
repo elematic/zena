@@ -52,6 +52,15 @@ enum Commands {
         /// (it validates the value; currently 'zena-cli' or 'host')
         #[arg(short = 't', long)]
         target: Option<String>,
+
+        /// WIT file or directory declaring the component's world
+        /// (component target only; passed through to the compiler)
+        #[arg(long)]
+        wit: Option<String>,
+
+        /// Which world in the --wit document, when it declares several
+        #[arg(long)]
+        world: Option<String>,
     },
     /// Run a compiled Zena source file or WASM file
     Run {
@@ -143,8 +152,8 @@ struct MyState {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Build { file, output, time, no_cache, target } => {
-            build_file(&file, &output, cli.verbose, time, no_cache, cli.debug, target.as_deref())
+        Commands::Build { file, output, time, no_cache, target, wit, world } => {
+            build_file(&file, &output, cli.verbose, time, no_cache, cli.debug, target.as_deref(), wit.as_deref(), world.as_deref())
         }
         Commands::Run { file, invoke, dirs, time, no_cache, allow_spawn, args } => {
             let allow_spawn = process::spawn_allowed(allow_spawn);
@@ -210,13 +219,13 @@ fn precompile_file(file: &str, debug: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bool, debug: bool, target: Option<&str>) -> Result<()> {
+fn build_file(file: &str, output: &str, verbose: bool, time: bool, _no_cache: bool, debug: bool, target: Option<&str>, wit: Option<&str>, world: Option<&str>) -> Result<()> {
     // `build` is an explicit request to compile: invoking it at all expresses
     // the staleness decision, and the build scripts that call it are gated by
     // Wireit's own input tracking. Always compile rather than second-guessing
     // with mtime heuristics.
     let wat = output.ends_with(".wat");
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, true, debug, target, wat)?;
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, false, true, debug, target, wat, wit, world)?;
     // Output directories like zena/out/ are gitignored, so a clean checkout
     // does not have them.
     if let Some(parent) = std::path::Path::new(output).parent() {
@@ -234,7 +243,7 @@ fn compile_and_run(file: &str, invoke: &str, verbose: bool, time: bool, no_cache
     // miss the cache must not change what the program appears to print.
     // On failure the captured text is replayed to stderr; `-v` streams
     // it live instead.
-    let cached_wasm_path = compile_to_cache(file, verbose, time, false, !verbose, no_cache, debug, None, false)?;
+    let cached_wasm_path = compile_to_cache(file, verbose, time, false, !verbose, no_cache, debug, None, false, None, None)?;
     run_wasm(cached_wasm_path.to_str().unwrap(), invoke, verbose, dirs, args, debug, allow_spawn)
 }
 
@@ -354,6 +363,8 @@ fn compile_to_cache(
     debug: bool,
     target: Option<&str>,
     wat: bool,
+    wit: Option<&str>,
+    world: Option<&str>,
 ) -> Result<std::path::PathBuf> {
     let repo_root = repo_root()?;
     let compiler_wasm = std::env::var("ZENA_COMPILER_WASM")
@@ -522,6 +533,16 @@ fn compile_to_cache(
     }
     if test_mode {
         compiler_args.push("--test".to_string());
+    }
+    // The declared world: the guest resolves both through the `.`
+    // preopen, so pass them repo-relative like the source file.
+    if let Some(wit) = wit {
+        compiler_args.push("--wit".to_string());
+        compiler_args.push(wit.to_string());
+    }
+    if let Some(world) = world {
+        compiler_args.push("--world".to_string());
+        compiler_args.push(world.to_string());
     }
 
     if cached_wasm_path.exists() {
@@ -1030,7 +1051,7 @@ fn run_internal_tool(
     debug: bool,
 ) -> Result<i32> {
     let src = repo_root()?.join(src_repo_rel);
-    let cached = compile_to_cache(&src.to_string_lossy(), verbose, false, false, true, false, debug, None, false)?;
+    let cached = compile_to_cache(&src.to_string_lossy(), verbose, false, false, true, false, debug, None, false, None, None)?;
     let engine = Engine::new(&base_config(debug))?;
     let cwasm = cwasm_path_for(&cached, debug);
     let module = load_or_compile_module(&engine, &cached, &cwasm)?;
@@ -1073,7 +1094,7 @@ fn run_single_test(
 ) -> Result<(TestStatus, String, String, Option<String>)> {
     let t_start = std::time::Instant::now();
     // Compile to cache (always capture compiler output during tests to prevent log flooding)
-    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false, debug, None, false)?;
+    let cached_wasm_path = compile_to_cache(&test_file.to_string_lossy(), verbose, false, true, true, false, debug, None, false, None, None)?;
     let t_compile = t_start.elapsed();
 
     let t_load_start = std::time::Instant::now();

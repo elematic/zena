@@ -64,6 +64,8 @@ interface Fixture {
   name: string;
   /** WASI features wasmtime needs to supply the imports. */
   wasi: string[];
+  /** A declared world to compile against: [witFile, worldName]. */
+  wit?: [string, string];
   invocations: Invocation[];
 }
 
@@ -111,6 +113,24 @@ const FIXTURES: Fixture[] = [
       // `greet` then allocates for its result out of the corrupted list.
       {invoke: 'greet("")', expect: '"hello, "'},
       {invoke: 'measure("")', expect: '0'},
+    ],
+  },
+  {
+    name: 'declared',
+    wasi: [],
+    wit: ['declared.wit', 'app'],
+    // A program compiled against a declared world: the world is the
+    // authority (disagreements are compile errors, unit-tested), the
+    // component's import surface is the world's, and the wasi WIT the
+    // compiler carries satisfies the world's stdio imports without
+    // vendoring.
+    invocations: [
+      {
+        invoke: 'main()',
+        expect: '0',
+        expectOutput: ['declared world says hello'],
+      },
+      {invoke: 'shout()', expect: '"FROM A DECLARED WORLD"'},
     ],
   },
   {
@@ -188,10 +208,20 @@ for (const fixture of FIXTURES) {
   const out = join(outDir, `${fixture.name}.wasm`);
   console.log(`${fixture.name}.zena`);
 
+  const buildArgs = ['build', source, '--target', 'component', '-o', out];
+  if (fixture.wit) {
+    // Repo-relative: the compiler resolves the path through its `.`
+    // preopen, and zena-cli relativizes only the source file.
+    buildArgs.push(
+      '--wit',
+      join('packages', 'zena-compiler', 'test-files', 'component', fixture.wit[0]),
+    );
+    buildArgs.push('--world', fixture.wit[1]);
+  }
   try {
     execFileSync(
       zenaCli,
-      ['build', source, '--target', 'component', '-o', out],
+      buildArgs,
       {
         stdio: 'pipe',
         cwd: repoRoot,

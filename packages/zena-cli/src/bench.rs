@@ -56,7 +56,7 @@ pub(crate) fn run_sample(file: &str, invoke: &str, n: u32, verbose: bool, debug:
         let cwasm = cwasm_path_for(Path::new(file), debug);
         load_or_compile_module(&engine, Path::new(file), &cwasm)?
     } else {
-        let cached = compile_to_cache(file, verbose, false, false, true, false, debug, None, false)?;
+        let cached = compile_to_cache(file, verbose, false, false, true, false, debug, None, false, None, None)?;
         let cwasm = cwasm_path_for(&cached, debug);
         load_or_compile_module(&engine, &cached, &cwasm)?
     };

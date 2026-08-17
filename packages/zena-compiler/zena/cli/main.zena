@@ -1,6 +1,8 @@
 // Cache invalidation comment to force clean rebuild - 31
 import { getArguments, getEnv, exit, ExitCode } from 'zena:cli';
-import { readFile, writeFileBytes, writeFile, exists } from 'zena:fs';
+import {
+  readFile, writeFileBytes, writeFile, exists, isDirectory, listDir
+} from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
@@ -15,6 +17,7 @@ import { performance } from '../lib/time.zena';
 import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from '../lib/targets.zena';
 import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
 import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
+import { compareStrings } from '../lib/codegen/codegen-utils.zena';
 
 class WasiHost implements CompilerHost {
   testMode: boolean;
@@ -65,6 +68,11 @@ export let main = (): i32 => {
   var target = "zena-cli";
   var testMode = false;
   var time = false;
+  // A declared world (docs/design/component-emission.md, Part 3): the
+  // WIT becomes the authority the program is compiled against, and
+  // disagreements between it and the Zena are errors.
+  var witPath = "";
+  var worldName = "";
   // Name section: opt-in. zena-cli's `-g` arrives as an env var
   // (the checked-in bootstrap predates the flag and would read an
   // unknown `-g` as the input filename); `-g` here serves direct
@@ -84,6 +92,12 @@ export let main = (): i32 => {
       i += 1;
     } else if (args[i] == "--time") {
       time = true;
+    } else if (args[i] == "--wit" && i + 1 < args.length) {
+      witPath = args[i + 1];
+      i += 1;
+    } else if (args[i] == "--world" && i + 1 < args.length) {
+      worldName = args[i + 1];
+      i += 1;
     } else if (args[i] == "-g" || args[i] == "--debug") {
       debugNames = true;
     } else {
@@ -100,6 +114,56 @@ export let main = (): i32 => {
     console.error("Error: invalid target '" + target + "' (expected " +
         knownTargetsDescription() + ")");
     exit(1);
+  }
+
+  if ((witPath != "" || worldName != "") && !targetEmitsComponent(target)) {
+    console.error(
+        "Error: --wit/--world declare a component's world, and the " +
+        "target is '" + target + "'. Use --target component.");
+    exit(1);
+  }
+  if (worldName != "" && witPath == "") {
+    console.error("Error: --world names a world in a --wit document, " +
+        "and no --wit was given.");
+    exit(1);
+  }
+
+  // The declared world's WIT: one file, or a directory whose *.wit
+  // files are concatenated in name order into one document.
+  var witSource = "";
+  if (witPath != "") {
+    if (!exists(witPath)) {
+      console.error("Error: --wit path does not exist: " + witPath);
+      exit(1);
+    }
+    if (isDirectory(witPath)) {
+      let names = new Array<String>();
+      for (let entry in listDir(witPath)) {
+        if (entry.name.endsWith(".wit")) {
+          names.push(entry.name);
+        }
+      }
+      if (names.length == 0) {
+        console.error("Error: --wit directory holds no .wit files: " +
+            witPath);
+        exit(1);
+      }
+      // Name order, so the document is the same however the host lists.
+      for (var a = 0; a < names.length; a += 1) {
+        for (var b = a + 1; b < names.length; b += 1) {
+          if (compareStrings(names[b], names[a]) < 0) {
+            let t = names[a];
+            names[a] = names[b];
+            names[b] = t;
+          }
+        }
+      }
+      for (let n in names) {
+        witSource = witSource + readFile(witPath + "/" + n) + "\n";
+      }
+    } else {
+      witSource = readFile(witPath);
+    }
   }
 
   let host = new WasiHost(testMode, filename);
@@ -177,7 +241,11 @@ export let main = (): i32 => {
       // is only known after its own compile, and this one is small.
       generator.runtimeMemoryModule =
           compileComponentRuntimeModule(host, "/stdlib", packages);
-      generator.importEncoder = makeImportEncoder();
+      generator.importEncoder = if (witPath != "") {
+        makeImportEncoder(witSource, worldName)
+      } else {
+        makeImportEncoder()
+      };
     }
     let wasmBytes = generator.generate(program).toByteArray();
     writeFileBytes(outPath, wasmBytes);

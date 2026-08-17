@@ -34,8 +34,7 @@ import {
   componentCallbackExport, componentTypeNeedsMemory,
   componentSignatureNeedsMemory, componentRuntimeNamespace
 } from './component-emitter.zena';
-import { isKnownWasiInterface } from './wasi-interfaces.zena';
-import { EncodedImports } from './component-emitter.zena';
+import { ImportTypeEncoder } from './component-emitter.zena';
 
 /** Look through type aliases (`type`, `distinct type`) to the type itself. */
 let underlying = (t: Type): Type => match (t) {
@@ -253,7 +252,7 @@ let signatureOf = (
  */
 export let buildComponentShape = (
   wasm: WasmModule,
-  importEncoder: ((shape: ComponentShape) => EncodedImports) | null
+  importEncoder: ImportTypeEncoder | null
 ): ComponentShape => {
   let shape = new ComponentShape();
   // On this target the program module never owns its memory: if it
@@ -317,19 +316,24 @@ export let buildComponentShape = (
           "\"now\")."
       );
     }
-    // An interface the compiler carries real WIT for: the declaration
-    // is core-shaped (handles and pointers as i32s) and says nothing
-    // about the WIT types, so no signature is derived from it. The
-    // field may be a resource path like `[method]r.f`, which is not
-    // kebab-case and does not have to be. Whether the field exists,
-    // and whether its lowering needs the memory options, is settled
-    // against the parsed WIT in `encodeImportTypes`.
-    if (isKnownWasiInterface(module)) {
+    // An interface whose WIT the encoder provides — one the compiler
+    // carries source for, or any interface at all when a world was
+    // declared with `--wit`. The Zena declaration is core-shaped
+    // (handles and pointers as i32s) and says nothing about the WIT
+    // types, so no signature is derived from it, and the field may be
+    // a resource path like `[method]r.f`, which is not kebab-case and
+    // does not have to be. Whether the field exists, and whether its
+    // declaration agrees with the interface's canonical flattening, is
+    // settled against the parsed WIT in the encoder's `encode`.
+    if (importEncoder != null &&
+        (importEncoder as ImportTypeEncoder).witProvided(module)) {
       let imp = new ComponentImportFunc(module, field,
           new ComponentFuncType(new Array<i32>(), new Array<String>(),
               noComponentResult, f.importIsAsync),
           f.importIsAsync);
       imp.witProvided = true;
+      imp.coreParamCount = f.signature.params.length;
+      imp.coreResultCount = f.signature.returns.length;
       shape.imports.push(imp);
       continue;
     }
@@ -411,7 +415,7 @@ export let buildComponentShape = (
   // does not link the WIT parser; a driver that emits components
   // without providing one gets `emitComponent`'s loud error.
   if (importEncoder != null) {
-    shape.encodedImports = importEncoder(shape);
+    shape.encodedImports = (importEncoder as ImportTypeEncoder).encode(shape);
   }
 
   return shape;

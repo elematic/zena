@@ -26,11 +26,17 @@ import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
 import { parse } from 'wit-parser:wit';
 import {
-  ComponentTypeEncoder, EncodedWorld, funcFlatMeta, WitFuncMeta
+  ComponentTypeEncoder, EncodedWorld, funcFlatMeta, WitFuncMeta,
+  worldNames, qualifiedInterfaceName
 } from 'wit-parser:component-encoder';
 import {
-  ComponentShape, ComponentImportFunc, ComponentFuncType, noComponentResult,
-  EncodedImports, EncodedImportPiece
+  Ast, AstItemTag, WorldDef, WorldItemTag, Import, Export, ExternKind,
+  ExternKindTag, UsePath, UsePathTag, Id, Func, Type, TypeTag, PackageName
+} from 'wit-parser:parser';
+import {
+  ComponentShape, ComponentImportFunc, ComponentExportFunc,
+  ComponentFuncType, noComponentResult, EncodedImports, EncodedImportPiece,
+  ImportTypeEncoder
 } from './component-emitter.zena';
 import {
   knownWasiPackagesWit, isKnownWasiInterface, isKnownWasiPackage
@@ -234,8 +240,23 @@ export let encodeImportTypes = (shape: ComponentShape): EncodedImports => {
   let encoder = new ComponentTypeEncoder(ast);
   let world = encoder.encodeWorld(derivedWorldName);
   // Mirrored into codegen's own classes: codegen calls the encoder
-  // through an injected closure and does not link the WIT parser, so
-  // it cannot name `EncodedWorld` itself.
+  // through the injected interface and does not link the WIT parser,
+  // so it cannot name `EncodedWorld` itself.
+  let out = new EncodedImports();
+  for (let piece in world.pieces) {
+    out.pieces.push(new EncodedImportPiece(piece.id, piece.payload));
+  }
+  out.typeCount = world.typeCount;
+  out.instanceCount = world.instanceCount;
+  let names = world.instanceIndices.keys();
+  while (let (true, name) = names.next()) {
+    out.instanceIndices[name] = world.instanceIndices[name];
+  }
+  return out;
+};
+
+/** `EncodedWorld`, mirrored into codegen's own classes. */
+let mirrorEncodedWorld = (world: EncodedWorld): EncodedImports => {
   let out = new EncodedImports();
   for (let piece in world.pieces) {
     out.pieces.push(new EncodedImportPiece(piece.id, piece.payload));
@@ -250,9 +271,355 @@ export let encodeImportTypes = (shape: ComponentShape): EncodedImports => {
 };
 
 /**
- * The encoder as drivers inject it: `BinaryGenerator.importEncoder`
- * gets this closure on the component target, which is the one edge
- * from the compiler's build to the WIT parser.
+ * The default encoder: no world was declared, so each interface's WIT
+ * is derived from the Zena declarations, except for the interfaces the
+ * compiler carries real source for.
  */
-export let makeImportEncoder = (): (shape: ComponentShape) => EncodedImports =>
-    (shape: ComponentShape): EncodedImports => encodeImportTypes(shape);
+final class DerivedImportEncoder implements ImportTypeEncoder {
+  new();
+  witProvided(interfaceName: String): boolean {
+    return isKnownWasiInterface(interfaceName);
+  }
+  encode(shape: ComponentShape): EncodedImports {
+    return encodeImportTypes(shape);
+  }
+}
+
+/** The WIT spelling of a declared export's WIT type, for messages. */
+let witTypeName = (t: Type): String => {
+  let opcode = exportableWitOpcode(t);
+  if (opcode >= 0) {
+    return scalarWitName(opcode);
+  }
+  return "<not a flat scalar or string>";
+};
+
+/**
+ * The component opcode of a WIT type a program export can carry today —
+ * the flat scalars and `string` — or -1. Richer world exports need the
+ * marshaling C-track work and are rejected by name.
+ */
+let exportableWitOpcode = (t: Type): i32 => {
+  if (t.tag == TypeTag.Bool) { return 0x7f; }
+  if (t.tag == TypeTag.S8) { return 0x7e; }
+  if (t.tag == TypeTag.U8) { return 0x7d; }
+  if (t.tag == TypeTag.S16) { return 0x7c; }
+  if (t.tag == TypeTag.U16) { return 0x7b; }
+  if (t.tag == TypeTag.S32) { return 0x7a; }
+  if (t.tag == TypeTag.U32) { return 0x79; }
+  if (t.tag == TypeTag.S64) { return 0x78; }
+  if (t.tag == TypeTag.U64) { return 0x77; }
+  if (t.tag == TypeTag.F32) { return 0x76; }
+  if (t.tag == TypeTag.F64) { return 0x75; }
+  if (t.tag == TypeTag.String) { return 0x73; }
+  return -1;
+};
+
+/**
+ * Parse a declared world's document, with the compiler's own WASI WIT
+ * riding along so a world can `import wasi:cli/stdout@0.2.8;` without
+ * vendoring it — unless the document declares those packages itself,
+ * in which case its definitions win and ours stay out of the way.
+ */
+let parseWithWasi = (witSource: String): Ast => {
+  var source = witSource;
+  if (!source.contains("package wasi:io@0.2.8") &&
+      !source.contains("package wasi:cli@0.2.8")) {
+    source = source + "\n" + knownWasiPackagesWit();
+  }
+  return parse(source);
+};
+
+/** One function export a declared world demands of the program. */
+final class DeclaredExport {
+  name: String;
+  func: Func;
+  new(this.name, this.func);
+}
+
+/**
+ * The encoder for a program compiled against a declared world
+ * (`--wit`/`--world`): the world is the authority, emission follows it,
+ * and every disagreement between the WIT and the Zena program is a
+ * compile error.
+ *
+ * Concretely: the component imports exactly what the world imports
+ * (plus `use` dependencies, which WIT implies); every `@external` must
+ * name a function of an interface the world explicitly imports, with a
+ * core signature matching the WIT's canonical flattening; and the
+ * export surfaces must agree in both directions — a world export the
+ * program does not provide, or a program export the world does not
+ * declare, is an error, as is a type or asyncness mismatch on one they
+ * share.
+ */
+final class DeclaredWorldEncoder implements ImportTypeEncoder {
+  #ast: Ast;
+  var #worldName = "";
+  /** The world's explicit interface imports, by qualified name. */
+  #importedInterfaces = new Array<String>();
+  /** The world's function exports, in declaration order. */
+  #declaredExports = new Array<DeclaredExport>();
+
+  new(witSource: String, worldName: String) : #ast = parseWithWasi(witSource) {
+    var name = worldName;
+    if (name == "") {
+      let names = worldNames(this.#ast);
+      if (names.length != 1) {
+        var listed = "";
+        for (let n in names) {
+          if (listed != "") { listed = listed + ", "; }
+          listed = listed + "'" + n + "'";
+        }
+        throw new Error(if (names.length == 0) {
+          "--wit names a document with no world; declare one, or pass " +
+          "--world if it lives in another file."
+        } else {
+          "--wit names a document with more than one world (" + listed +
+          "); say which with --world."
+        });
+      }
+      name = names[0];
+    }
+    this.#worldName = name;
+
+    var found = false;
+    for (let item in this.#ast.items) {
+      if (item.tag != AstItemTag.World) { continue; }
+      let world = item.worldDef as WorldDef;
+      if (world.name.name != name) { continue; }
+      found = true;
+      for (let wi in world.items) {
+        if (wi.tag == WorldItemTag.Import) {
+          this.#collectImport((wi.importItem as Import).kind);
+        } else if (wi.tag == WorldItemTag.Export) {
+          this.#collectExport((wi.exportItem as Export).kind);
+        }
+        // use / typedef / include fail in the encoder with their own
+        // messages; collecting nothing here keeps that the one error.
+      }
+    }
+    if (!found) {
+      throw new Error("--world '" + name + "' is not a world the --wit " +
+          "document declares.");
+    }
+  }
+
+  #collectImport(kind: ExternKind): void {
+    if (kind.tag == ExternKindTag.Path) {
+      let path = kind.path as UsePath;
+      let qualified = if (path.tag == UsePathTag.Id) {
+        qualifiedInterfaceName(this.#ast.packageName, (path.id as Id).name)
+      } else {
+        qualifiedInterfaceName(path.packageId, (path.name as Id).name)
+      };
+      this.#importedInterfaces.push(qualified);
+    } else if (kind.tag == ExternKindTag.Interface) {
+      // An inline interface imports under its plain name.
+      this.#importedInterfaces.push((kind.name as Id).name);
+    }
+    // A world-level function import is legal WIT and is encoded, but a
+    // program has no way to bind one yet — `@external` names an
+    // interface and a field — so it is import surface the program
+    // simply does not call.
+  }
+
+  #collectExport(kind: ExternKind): void {
+    if (kind.tag == ExternKindTag.Func) {
+      this.#declaredExports.push(
+          new DeclaredExport((kind.name as Id).name, kind.funcDef as Func));
+      return;
+    }
+    throw new Error("The declared world exports an interface, which a " +
+        "program cannot implement yet — only function exports are " +
+        "supported (interface exports arrive with bindgen).");
+  }
+
+  witProvided(interfaceName: String): boolean {
+    return true;
+  }
+
+  encode(shape: ComponentShape): EncodedImports {
+    this.#checkImports(shape);
+    this.#checkExports(shape);
+    let encoder = new ComponentTypeEncoder(this.#ast);
+    return mirrorEncodedWorld(encoder.encodeWorld(this.#worldName));
+  }
+
+  /**
+   * Every `@external` must name a function of an interface the world
+   * explicitly imports, and the Zena declaration's core signature must
+   * match the WIT's canonical flattening. The flattening determines
+   * counts, not core value types, so this is a count-level check —
+   * enough to catch a missing retptr, a forgotten parameter, or a sync
+   * declaration against an async function.
+   */
+  #checkImports(shape: ComponentShape): void {
+    for (let imp in shape.imports) {
+      var declared = false;
+      for (let name in this.#importedInterfaces) {
+        if (name == imp.interfaceName) { declared = true; }
+      }
+      if (!declared) {
+        throw new Error("The program imports '" + imp.fieldName +
+            "' from '" + imp.interfaceName + "', which the declared " +
+            "world does not import. Add `import " + imp.interfaceName +
+            ";` to the world, or drop the @external.");
+      }
+      let metaOpt = funcFlatMeta(this.#ast, imp.interfaceName, imp.fieldName);
+      if (metaOpt == null) {
+        throw new Error("The program imports '" + imp.fieldName +
+            "' from '" + imp.interfaceName + "', and the interface's WIT " +
+            "declares no such function.");
+      }
+      let meta = metaOpt as WitFuncMeta;
+      if (imp.lowerAsync != meta.isAsync) {
+        throw new Error("The program and the WIT disagree about whether '" +
+            imp.fieldName + "' of '" + imp.interfaceName + "' is async: " +
+            (if (meta.isAsync) {
+              "the WIT says async, so the @external needs the \"async\" " +
+              "option."
+            } else {
+              "the @external says async, and the WIT function is not."
+            }));
+      }
+      // The core signature the canonical ABI will call with: flattened
+      // parameters (or one pointer once they spill past sixteen), a
+      // trailing return-area address when the result flattens to more
+      // than one value, and for an async lowering a subtask handle as
+      // the one result.
+      var expectedParams =
+          if (meta.paramFlatCount > 16) 1 else meta.paramFlatCount;
+      var expectedResults = 0;
+      if (imp.lowerAsync) {
+        expectedResults = 1;
+      } else if (meta.resultFlatCount > 1) {
+        expectedParams += 1;
+      } else {
+        expectedResults = meta.resultFlatCount;
+      }
+      if (imp.coreParamCount != expectedParams ||
+          imp.coreResultCount != expectedResults) {
+        throw new Error("The @external declaration for '" + imp.fieldName +
+            "' of '" + imp.interfaceName + "' does not match the WIT's " +
+            "canonical flattening: the declaration has " +
+            i32ToString(imp.coreParamCount) + " parameter(s) and " +
+            i32ToString(imp.coreResultCount) + " result(s), and the " +
+            "flattening needs " + i32ToString(expectedParams) +
+            " and " + i32ToString(expectedResults) + ".");
+      }
+      imp.needsMemoryLower = meta.needsMemory;
+    }
+  }
+
+  /**
+   * The export surfaces must agree exactly: name for name, type for
+   * type, and async for async. The world's export types are limited to
+   * what the program can marshal today — flat scalars and `string` —
+   * and anything richer is rejected by name rather than emitted as a
+   * lift the wrappers cannot satisfy.
+   */
+  #checkExports(shape: ComponentShape): void {
+    for (let declared in this.#declaredExports) {
+      var found = false;
+      for (let e in shape.exports) {
+        if (e.exportName == declared.name) { found = true; }
+      }
+      if (!found) {
+        throw new Error("The declared world exports '" + declared.name +
+            "', and the program does not export it.");
+      }
+    }
+    for (let e in shape.exports) {
+      var declaredOpt: DeclaredExport | null = null;
+      for (let d in this.#declaredExports) {
+        if (d.name == e.exportName) { declaredOpt = d; }
+      }
+      if (declaredOpt == null) {
+        throw new Error("The program exports '" + e.exportName +
+            "', which the declared world does not export. Add `export " +
+            e.exportName + ": func(...);` to the world, or stop " +
+            "exporting it.");
+      }
+      this.#checkExportSignature(declaredOpt as DeclaredExport, e);
+    }
+  }
+
+  #checkExportSignature(declared: DeclaredExport, e: ComponentExportFunc): void {
+    let witFunc = declared.func;
+    let sig = e.signature;
+    if (witFunc.isAsync != sig.isAsync) {
+      throw new Error("The program and the WIT disagree about whether " +
+          "export '" + declared.name + "' is async" +
+          (if (sig.isAsync) {
+            " — a program that sleeps is entered through an async lift, " +
+            "so the world must declare `export " + declared.name +
+            ": async func();`."
+          } else {
+            "."
+          }));
+    }
+    if (witFunc.params.length != sig.paramTypes.length) {
+      throw new Error("Export '" + declared.name + "': the WIT declares " +
+          i32ToString(witFunc.params.length) + " parameter(s) and the " +
+          "program's signature has " + i32ToString(sig.paramTypes.length) +
+          ".");
+    }
+    for (var i = 0; i < witFunc.params.length; i += 1) {
+      let want = exportableWitOpcode(witFunc.params[i].type);
+      if (want < 0) {
+        throw new Error("Export '" + declared.name + "', parameter '" +
+            witFunc.params[i].name.name + "': the WIT type is not yet " +
+            "expressible by a program export — only flat scalars and " +
+            "string cross today.");
+      }
+      if (want != sig.paramTypes[i]) {
+        throw new Error("Export '" + declared.name + "', parameter '" +
+            witFunc.params[i].name.name + "': the WIT says '" +
+            witTypeName(witFunc.params[i].type) + "' and the program's " +
+            "signature says '" + scalarWitName(sig.paramTypes[i]) + "'.");
+      }
+    }
+    let witResult = witFunc.result;
+    if (witResult == null) {
+      if (sig.result != noComponentResult) {
+        throw new Error("Export '" + declared.name + "': the WIT declares " +
+            "no result and the program's signature returns '" +
+            scalarWitName(sig.result) + "'.");
+      }
+      return;
+    }
+    let want = exportableWitOpcode(witResult as Type);
+    if (want < 0) {
+      throw new Error("Export '" + declared.name + "': the WIT result " +
+          "type is not yet expressible by a program export — only flat " +
+          "scalars and string cross today.");
+    }
+    if (sig.result == noComponentResult) {
+      throw new Error("Export '" + declared.name + "': the WIT declares " +
+          "a '" + witTypeName(witResult as Type) + "' result and the " +
+          "program's signature returns nothing.");
+    }
+    if (want != sig.result) {
+      throw new Error("Export '" + declared.name + "': the WIT says '" +
+          witTypeName(witResult as Type) + "' and the program's " +
+          "signature says '" + scalarWitName(sig.result) + "'.");
+    }
+  }
+}
+
+/**
+ * The encoder as drivers inject it (`BinaryGenerator.importEncoder`) —
+ * the one edge from the compiler's build to the WIT parser. With no
+ * arguments, the derived-world default; with `--wit`'s document text
+ * (and `--world`'s name, or "" to take the document's sole world), the
+ * declared world becomes the authority and disagreements are errors.
+ */
+export let makeImportEncoder = (
+  witSource: String | null = null,
+  worldName: String = ""
+): ImportTypeEncoder => {
+  if (witSource == null) {
+    return new DerivedImportEncoder();
+  }
+  return new DeclaredWorldEncoder(witSource as String, worldName);
+};
