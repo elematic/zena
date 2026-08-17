@@ -1,0 +1,139 @@
+// The `dedent` template tag.
+//
+// None of the templates below contain an escape sequence, and that is not an
+// oversight: a tagged template whose literal holds one currently fails to
+// compile ("String literal missing from the shared registry"), because the raw
+// string never reaches the literal registry. See BUGS.md. Escapes in the
+// *expected* values are fine — only the tagged literals are affected.
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {dedent} from 'zena:template-strings-array';
+
+export let tests = suite('dedent', (): void => {
+  suite('the block form', (): void => {
+    test('strips the common indentation', (ctx: TestContext): void => {
+      equal(dedent`
+        alpha
+        beta
+      `, 'alpha\nbeta');
+    });
+
+    test('keeps the indentation lines do not share', (ctx: TestContext): void => {
+      equal(dedent`
+        alpha
+          beta
+        gamma
+      `, 'alpha\n  beta\ngamma');
+    });
+
+    test('drops the opening and closing lines only when they are blank', (ctx: TestContext): void => {
+      // Both blank: both go, along with their line breaks.
+      equal(dedent`
+        alpha
+      `, 'alpha');
+      // No closing line break: the last content line still ends the result.
+      equal(dedent`
+        alpha
+        beta`, 'alpha\nbeta');
+      // Content on the opening line: it stays, and it counts as a line, so
+      // there is nothing the two lines share to strip.
+      equal(dedent`alpha
+        beta`, 'alpha\n        beta');
+    });
+
+    test('leaves a single line with no indentation alone', (ctx: TestContext): void => {
+      equal(dedent`hello`, 'hello');
+      equal(dedent``, '');
+      // One line is still a content line, and its own indentation is
+      // trivially the longest prefix every content line shares, so it goes.
+      // Trailing whitespace is content and stays.
+      equal(dedent`  hello  `, 'hello  ');
+    });
+
+    test('produces nothing from an entirely blank template', (ctx: TestContext): void => {
+      equal(dedent`
+      `, '');
+    });
+  });
+
+  suite('the common prefix', (): void => {
+    test('compares indentation byte for byte rather than by width', (ctx: TestContext): void => {
+      // A tab-indented block dedents by the tab.
+      equal(dedent`
+	alpha
+		beta
+	`, 'alpha\n\tbeta');
+      // Two lines indented with different characters share nothing, whatever
+      // a tab is displayed as, so neither line moves.
+      equal(dedent`
+  alpha
+	beta
+  `, '  alpha\n\tbeta');
+    });
+
+    test('ignores blank lines, and empties them', (ctx: TestContext): void => {
+      equal(dedent`
+        alpha
+
+        beta
+      `, 'alpha\n\nbeta');
+      // A blank line of leftover spaces is neither counted nor kept — were it
+      // counted here, it would leave every line indented by six.
+      equal(dedent`
+        alpha
+  
+        beta
+      `, 'alpha\n\nbeta');
+    });
+
+    test('leaves trailing whitespace on a content line alone', (ctx: TestContext): void => {
+      equal(dedent`
+        alpha  
+        beta
+      `, 'alpha  \nbeta');
+    });
+
+    test('measures the closing line only as a line to drop', (ctx: TestContext): void => {
+      // The closing line is indented deeper than the content; dropping it is
+      // all that happens, and the content still dedents fully.
+      equal(dedent`
+  alpha
+    `, 'alpha');
+    });
+  });
+
+  suite('interpolation', (): void => {
+    test('inserts values verbatim', (ctx: TestContext): void => {
+      let name = 'world';
+      equal(dedent`
+        hello ${name}
+      `, 'hello world');
+      equal(dedent`
+        a${name}b${name}c
+        d
+      `, 'aworldbworldc\nd');
+      equal(dedent`${name}`, 'world');
+    });
+
+    test('counts a line that starts with a value as a content line', (ctx: TestContext): void => {
+      let value = 'X';
+      // The whitespace before the value is that line's indentation, so it
+      // takes part in the common prefix like any other line's.
+      equal(dedent`
+        ${value}
+          deeper
+      `, 'X\n  deeper');
+    });
+
+    test('does not re-indent a value that spans lines', (ctx: TestContext): void => {
+      // The newlines inside a value are the value's, not the template's: they
+      // start no line that the common prefix is computed from, and nothing is
+      // stripped from them.
+      let block = 'one\n  two';
+      equal(dedent`
+        alpha
+        ${block}
+      `, 'alpha\none\n  two');
+    });
+  });
+});

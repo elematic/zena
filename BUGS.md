@@ -231,6 +231,57 @@ and (4) and it compiles and runs. The first await is _not_ required —
 
 ## Active Bugs
 
+### An escape sequence in a tagged template literal fails to compile
+
+- **Found**: 2026-08-16, writing the `dedent` tag: every tagged template
+  whose literal part contains an escape is affected, whatever the tag.
+- **Severity**: medium. Loud, and there is no workaround short of
+  keeping escapes out of the literal — which for a tag whose whole job
+  is formatting text (`dedent`) rules out exactly the strings that want
+  one.
+- **Details**: reproduce with any tag at all:
+  ```zena
+  let tag = (strings: TemplateStringsArray, values: FixedArray<String>): String =>
+      strings[0];
+  tag`a\nb`;
+  ```
+  ```
+  Exception caught in CLI compiler!
+  Error message: String literal missing from the shared registry: 'a\nb'
+  ```
+  A tagged template needs both strings: cooked for `strings[i]`, raw for
+  `strings.raw[i]`. The literal registry is populated with the cooked
+  values, so a raw string that differs from its cooked form — which is
+  what an escape means — has no id, and `lowerStringLiteral` throws
+  rather than falling back (correctly: the registry is complete by
+  construction, so a miss is a discovery bug). The fix belongs in
+  discovery: register the raw quasis of a tagged template alongside the
+  cooked ones.
+
+### A cycle among the prelude's own modules breaks a large compile
+
+- **Found**: 2026-08-16, trying to put the `dedent` tag in `zena:string`
+  — which means `string.zena` importing `TemplateStringsArray`, whose
+  module imports `zena:string` back.
+- **Severity**: medium. Loud, and only reachable from a stdlib edit,
+  since the cycle has to involve a prelude module. It is why `dedent`
+  lives in `zena:template-strings-array` and not in `zena:string`.
+- **Details**: adding one import line to `packages/stdlib/zena/string.zena`
+  ```zena
+  import {TemplateStringsArray} from 'zena:template-strings-array';
+  ```
+  is enough on its own — no other change, the name need not be used.
+  Small programs still compile and run. Compiling the compiler does not:
+  ```
+  Error message: zir unsupported: class not discovered @ModuleGenerator.compile
+  ```
+  Which class is not reported. `docs/design/import-cycles.md` says cycles
+  are legal, and this one breaks none of its rules (the names crossing it
+  are classes), so either discovery or the two-pass re-check mishandles a
+  cycle whose members are in the prelude closure — note that the closure
+  is built without a prelude parent, so an edge into it moves a module
+  between the two scope-building phases in `#resolveScopes`.
+
 ### A re-export-only entry point compiles to an empty module
 
 - **Found**: 2026-08-14, trying to write the component runtime memory

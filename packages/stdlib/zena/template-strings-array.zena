@@ -1,4 +1,4 @@
-import { String } from 'zena:string';
+import { String, Encoding } from 'zena:string';
 import { ImmutableArray } from 'zena:immutable-array';
 import { FixedArray } from 'zena:fixed-array';
 
@@ -88,3 +88,286 @@ export final class TemplateStringsArray {
     return this.#strings[index];
   }
 }
+
+// ============================================================================
+// dedent
+// ============================================================================
+
+/**
+ * Whether `b` can be part of a line's indentation: a space or a tab.
+ *
+ * Deliberately not a general whitespace test. Indentation is written with
+ * spaces and tabs; treating, say, a no-break space as indentation would
+ * silently delete a character the author put there as content.
+ */
+let isIndentByte = (b: i32): boolean => b == 0x20 || b == 0x09;
+
+/**
+ * Whether the line whose indentation ends at `wsEnd` holds nothing but its
+ * line break. Blank lines take no part in the common-indent computation, and
+ * come out empty rather than carrying the indent's leftovers.
+ *
+ * `valueFollows` says whether an interpolated value is spliced in at `end`: a
+ * line that runs into a value is not blank, because the value is content.
+ */
+let isBlankRest = (seg: String, wsEnd: i32, end: i32, valueFollows: boolean): boolean => {
+  if (wsEnd >= end) {
+    return !valueFollows;
+  }
+  let b = seg.getByteAt(wsEnd);
+  if (b == 0x0A) {          // \n
+    return true;
+  }
+  if (b == 0x0D) {          // \r, the first half of a CRLF line ending
+    if (wsEnd + 1 >= end) {
+      return !valueFollows;
+    }
+    return seg.getByteAt(wsEnd + 1) == 0x0A;
+  }
+  return false;
+};
+
+/** The index of the next `\n` in `[from, end)`, or -1 if there is none. */
+let nextNewline = (seg: String, from: i32, end: i32): i32 => {
+  for (var i = from; i < end; i += 1) {
+    if (seg.getByteAt(i) == 0x0A) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+/** The end of the indentation run that starts at `pos`. */
+let indentEnd = (seg: String, pos: i32, end: i32): i32 => {
+  var i = pos;
+  while (i < end && isIndentByte(seg.getByteAt(i))) {
+    i += 1;
+  }
+  return i;
+};
+
+/**
+ * How many bytes to drop at the line start `pos`: the common indent for a
+ * content line, and the whole run for a blank one.
+ *
+ * A content line always carries at least `indentLen` bytes of indentation —
+ * it is one of the lines that indent was computed from — but the minimum is
+ * taken anyway so that a miscount could never eat a line's first character.
+ */
+let dropAt = (seg: String, pos: i32, end: i32, valueFollows: boolean, indentLen: i32): i32 => {
+  let wsEnd = indentEnd(seg, pos, end);
+  if (isBlankRest(seg, wsEnd, end, valueFollows)) {
+    return wsEnd - pos;
+  }
+  return if (wsEnd - pos < indentLen) wsEnd - pos else indentLen;
+};
+
+/** The longest common prefix of two indentation runs. */
+let commonIndent = (a: String, b: String): String => {
+  let limit = if (a.length < b.length) a.length else b.length;
+  var i = 0;
+  while (i < limit && a.getByteAt(i) == b.getByteAt(i)) {
+    i += 1;
+  }
+  return a.sliceBytes(0, i);
+};
+
+/**
+ * Where the content starts in the first literal: past the opening line when
+ * that line is blank, and at 0 otherwise.
+ */
+let contentStart = (first: String): i32 => {
+  let len = first.length;
+  for (var i = 0; i < len; i += 1) {
+    let b = first.getByteAt(i);
+    if (b == 0x0A) {
+      return i + 1;
+    }
+    if (!isIndentByte(b) && b != 0x0D) {
+      return 0;
+    }
+  }
+  return 0;
+};
+
+/**
+ * Where the content ends in the last literal: before the closing line when
+ * that line is blank — dropping its line break with it — and at the end
+ * otherwise.
+ */
+let contentEnd = (last: String): i32 => {
+  let len = last.length;
+  var i = len - 1;
+  while (i >= 0) {
+    let b = last.getByteAt(i);
+    if (b == 0x0A) {
+      // Drop the newline, and the carriage return of a CRLF pair with it.
+      if (i > 0 && last.getByteAt(i - 1) == 0x0D) {
+        return i - 1;
+      }
+      return i;
+    }
+    if (!isIndentByte(b)) {
+      return len;
+    }
+    i -= 1;
+  }
+  return len;
+};
+
+/**
+ * Walks one literal's retained region `[start, end)`, dropping the
+ * indentation at every line start, and copies it into `data` when `data` is
+ * non-null. Returns the number of bytes written.
+ *
+ * Measuring and filling are the same walk, called twice, so the size of the
+ * buffer and what goes into it cannot disagree.
+ */
+let copySegment = (
+    seg: String,
+    start: i32,
+    end: i32,
+    startsLine: boolean,
+    valueFollows: boolean,
+    indentLen: i32,
+    data: ByteArray | null,
+    out: i32): i32 => {
+  var written = 0;
+  var i = start;
+  var atLineStart = startsLine;
+  while (i < end) {
+    if (atLineStart) {
+      i += dropAt(seg, i, end, valueFollows, indentLen);
+      atLineStart = false;
+      if (i >= end) {
+        break;
+      }
+    }
+    let nl = nextNewline(seg, i, end);
+    let chunkEnd = if (nl < 0) end else nl + 1;
+    if (data != null) {
+      seg.copyBytesTo(data as ByteArray, out + written, i, chunkEnd - i);
+    }
+    written += chunkEnd - i;
+    i = chunkEnd;
+    atLineStart = nl >= 0;
+  }
+  return written;
+};
+
+/**
+ * A template tag that strips the source indentation from a multi-line
+ * template literal, so a block of text can be written at the indentation of
+ * the code around it and still come out flush left:
+ *
+ * ```
+ * let usage = dedent`
+ *   zena build <entry>
+ *     -o <path>   where to write the module
+ * `;
+ * // "zena build <entry>\n  -o <path>   where to write the module"
+ * ```
+ *
+ * The rules:
+ *
+ * - The opening line is dropped, along with its line break, when it is blank
+ *   — which it is in the form above, where the content starts on the line
+ *   after the backtick. The closing line is dropped the same way. Neither is
+ *   dropped when it has content on it: a line with content is a line, and it
+ *   takes part in the rule below like any other.
+ * - The indentation removed from every remaining line is the longest common
+ *   prefix of the indentation of the lines that have content on them. It is
+ *   compared byte for byte, so a file that mixes tabs and spaces dedents by
+ *   what its lines actually share rather than by a count that assumes a tab
+ *   width.
+ * - Blank lines are ignored when computing that prefix and come out empty,
+ *   so a line of leftover trailing spaces is not what decides the result.
+ * - Interpolated values are inserted verbatim. A value containing newlines
+ *   is not re-indented, and its newlines do not start lines that participate
+ *   in the computation: only indentation written in the literal counts. A
+ *   line that *starts* with a value is a content line, and the whitespace
+ *   before the value is its indentation.
+ *
+ * Interpolations must be `String`s — a tag receives its values without the
+ * conversion `${}` performs in an untagged template literal, so write
+ * ``dedent`count: ${`${n}`}` `` (or `i32ToString(n)`) for a number.
+ *
+ * The text dedented is the cooked strings, so an escape is processed before
+ * the indentation is measured: a `\n` written as an escape breaks a line here
+ * exactly as a real newline does. Today that is theory rather than practice —
+ * a tagged template whose literal contains any escape sequence fails to
+ * compile, whatever the tag (see BUGS.md).
+ */
+export let dedent = (strings: TemplateStringsArray, values: FixedArray<String>): String => {
+  let segCount = strings.length;
+  let start0 = contentStart(strings[0]);
+  var endN = contentEnd(strings[segCount - 1]);
+  if (segCount == 1 && endN < start0) {
+    // An entirely blank template: both trims found the same line break.
+    endN = start0;
+  }
+
+  // Pass one: the common indentation of the content lines.
+  var indent: String | null = null;
+  for (var s = 0; s < segCount; s += 1) {
+    let seg = strings[s];
+    let segEnd = if (s == segCount - 1) endN else seg.length;
+    let valueFollows = s < segCount - 1;
+    var pos = if (s == 0) start0 else 0;
+    // A literal after a value continues the line that value is on; only the
+    // first literal starts a line at its own start.
+    var atLineStart = s == 0;
+    while (true) {
+      if (atLineStart) {
+        let wsEnd = indentEnd(seg, pos, segEnd);
+        if (!isBlankRest(seg, wsEnd, segEnd, valueFollows)) {
+          let run = seg.sliceBytes(pos, wsEnd);
+          indent = if (indent == null) run else commonIndent(indent as String, run);
+        }
+      }
+      let nl = nextNewline(seg, pos, segEnd);
+      if (nl < 0) {
+        break;
+      }
+      pos = nl + 1;
+      atLineStart = true;
+    }
+  }
+  let indentLen = if (indent == null) 0 else (indent as String).length;
+
+  if (segCount == 1 && indentLen == 0 && start0 == 0 && endN == strings[0].length) {
+    // Nothing to strip and nothing to trim: hand back the literal itself.
+    return strings[0];
+  }
+
+  // Pass two: measure the result, allocate once, then fill it.
+  var total = 0;
+  for (var s = 0; s < segCount; s += 1) {
+    let seg = strings[s];
+    let segStart = if (s == 0) start0 else 0;
+    let segEnd = if (s == segCount - 1) endN else seg.length;
+    total += copySegment(
+        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, null, 0);
+    if (s < segCount - 1) {
+      total += values[s].length;
+    }
+  }
+
+  let data = __byte_array_new(total);
+  var out = 0;
+  for (var s = 0; s < segCount; s += 1) {
+    let seg = strings[s];
+    let segStart = if (s == 0) start0 else 0;
+    let segEnd = if (s == segCount - 1) endN else seg.length;
+    out += copySegment(
+        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, data, out);
+    if (s < segCount - 1) {
+      let value = values[s];
+      value.copyBytesTo(data, out, 0, value.length);
+      out += value.length;
+    }
+  }
+  // WTF-8: nothing in the stdlib constructs a WTF-16 String today, and a
+  // literal's bytes are the compiler's, which are WTF-8.
+  return String.fromByteArray(data, 0, total, Encoding.WTF8);
+};

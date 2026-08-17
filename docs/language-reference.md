@@ -1489,6 +1489,19 @@ let userId = 123;
 let query = sql`SELECT * FROM users WHERE id = ${userId}`;
 ```
 
+The standard library ships two tags: `dedent` from
+`zena:template-strings-array`, which strips the source indentation from a
+multi-line literal, and `regex` from `zena:regex`, which compiles a pattern
+from the raw strings so backslashes need no escaping.
+
+```zena
+let usage = dedent`
+  zena build <entry>
+    -o <path>   where to write the module
+`;
+// "zena build <entry>\n  -o <path>   where to write the module"
+```
+
 ### Unary Operators
 
 - `!` (Logical NOT) - Inverts a boolean value.
