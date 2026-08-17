@@ -1,0 +1,44 @@
+// @mode: run
+// @result: 143
+// @invoke: main
+
+// `opts.t ?? d` reads an optional field when present, else the
+// default — lazily: the default expression runs only on absence.
+import { HashMap } from 'zena:map';
+
+type Opts = {t?: i32};
+
+var defaultCalls = 0;
+let dflt = (): i32 => {
+  defaultCalls += 1;
+  return 100;
+};
+
+let read = (o: Opts): i32 => o.t ?? dflt();
+
+let checkedSub = (
+  a: i32,
+  b: i32,
+): inline (true, i32, _) | inline (false, _, String) => {
+  if (b > a) {
+    return (false, _, 'underflow');
+  }
+  return (true, a - b, _);
+};
+
+export let main = (): i32 => {
+  let absent = read({});       // 100, defaultCalls = 1
+  let present = read({t: 7});  // 7
+  let zero = read({t: 0});     // 0 — presence, not a sentinel
+
+  let m = new HashMap<String, i32>();
+  m['k'] = 30;
+  let hit = m.get('k') ?? -1;   // 30
+  let miss = m.get('z') ?? -1;  // -1
+
+  let ok = checkedSub(9, 3) ?? 0;   // 6
+  let err = checkedSub(3, 9) ?? 0;  // 0 — error lane discarded
+
+  // 100 + 7 + 0 + 30 - 1 + 6 + 0 + 1(defaultCalls) = 143
+  return absent + present + zero + hit + miss + ok + err + defaultCalls;
+};

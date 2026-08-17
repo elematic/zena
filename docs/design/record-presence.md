@@ -97,10 +97,11 @@ features can share machinery.
   position builds the wider struct (projection plus mask) — §3.1
   below works the example.
 - **Access**: `opts.timeout` on an optional field is a compile error;
-  presence must be consumed through a pattern (§4) or the `??` sugar:
-  `opts.timeout ?? 30_000` compiles to the guarded read and has type
-  `i32`. (This makes the row-types §5.2 access rule real; today the
-  checker does not guard it.)
+  presence is consumed through a pattern (§4) or the `??` sugar:
+  `opts.timeout ?? 30_000` compiles to the guarded read (presence-bit
+  branch, right side lazy). `??` plays the same licensed-consumer role
+  for protocol inline-tuple unions — `m.get(k) ?? 0` — with a
+  Result-shaped union's error lane deliberately discarded.
 
 ### 3.1 Which values carry a mask, and how maskless values acquire one
 

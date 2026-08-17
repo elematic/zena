@@ -18,7 +18,8 @@ import {
   BindingPattern, BlockStatement, BooleanLiteral, CatchClause, Expression, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression,
 } from '../../ast.zena';
 import {
-  ArrayType, ClassType, InterfaceType, Type, VoidType, baseType,
+  ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType,
+  RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
   isOwnershipWrapper, ownershipHandleInner,
 } from '../../types.zena';
@@ -28,11 +29,12 @@ import {
   WasmType, isRefValType, refTargetOf,
 } from '../wasm.zena';
 import {
-  ClassCodegenInfo, WasmFunction, WasmGlobal, WasmTag, asWasmArray, isValSubtype,
+  ClassCodegenInfo, RecordDispatchInfo, WasmFunction, WasmGlobal, WasmTag,
+  asWasmArray, isValSubtype,
 } from '../wasm-module.zena';
 import {
   eraseTypeParameters, findImplementedInterfaceTransitive,
-  typeToValTypeWithSub,
+  getNonNullableType, typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, returnSlotVt, throwStmt, varDecl } from './lowering.zena';
@@ -40,8 +42,9 @@ import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported, noValues,
 } from './lowering-context.zena';
 import {
-  branchUnless, lowerPatternBindings, lowerPatternTest, patternBinds,
-  patternRefutable,
+  branchUnless, lowerPatternBindings, lowerPatternTest, maskBitTest,
+  patternBinds, patternRefutable, propTypeAdmitsNull,
+  recordDispatchOfValue,
 } from './patterns.zena';
 
 /** Bail with the lowering-side message shape (reason @function). */
@@ -1368,7 +1371,144 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
  * flag — which also covers primitive members (the miss produces no
  * value that needs representing).
  */
+/** The two-arm bool-discriminated inline-tuple union (`Iterator.next`
+ * / `Map.get` / Result shapes) that `??` may coalesce. */
+let isProtocolUnion = (t: Type): boolean => {
+  if (!(t is UnionType)) { return false; }
+  let types = t.types;
+  if (types.length != 2) { return false; }
+  var sawTrue = false;
+  var sawFalse = false;
+  for (let member in types) {
+    if (!(member is InlineTupleType)) { return false; }
+    if (member.elementTypes.length < 1) { return false; }
+    let head = member.elementTypes[0];
+    if (!(head is BoolLiteralType)) { return false; }
+    if (head.value) {
+      if (member.elementTypes.length < 2) { return false; }
+      sawTrue = true;
+    } else {
+      sawFalse = true;
+    }
+  }
+  return sawTrue && sawFalse;
+};
+
+/** The shared merge tail of the coalesce lowerings. The caller has
+ * branched, saved the env, switched to the ok block and computed
+ * `okValue` there; the right arm evaluates lazily; both meet at one
+ * merge. */
+let coalesceMerge = (cx: LoweringContext, bin: BinaryExpression,
+    overallVt: ValType, mergeSyms: Array<SymbolId>,
+    rightB: i32, okValue: i32, saved: HashMap<SymbolId, i32>): i32 => {
+  var ok = okValue;
+  if (!isValSubtype(cx.valueTypeOf(ok), overallVt)) {
+    ok = cx.coerceTo(ok, overallVt);
+  }
+  let mergeB = cx.b.newBlock();
+  let mergeParams = cx.addParams(mergeB, mergeSyms);
+  let resultParam = cx.b.blockParam(mergeB, overallVt);
+  let okArgs = cx.envValues(mergeSyms);
+  okArgs.push(ok);
+  cx.b.br(mergeB, okArgs);
+
+  cx.env = cx.copyOf(saved);
+  cx.reachable = true;
+  cx.b.switchTo(rightB);
+  var rightValue = lowerExpr(cx, bin.right, overallVt);
+  if (cx.reachable) {
+    if (!isValSubtype(cx.valueTypeOf(rightValue), overallVt)) {
+      rightValue = cx.coerceTo(rightValue, overallVt);
+    }
+    let rightArgs = cx.envValues(mergeSyms);
+    rightArgs.push(rightValue);
+    cx.b.br(mergeB, rightArgs);
+  }
+
+  cx.env = saved;
+  cx.applyParams(mergeSyms, mergeParams);
+  cx.b.switchTo(mergeB);
+  cx.reachable = true;
+  return resultParam;
+};
+
+/** `opts.f ?? d` on an OPTIONAL record field: the presence-tested
+ * read — the slot value when the bit is set, the default otherwise. */
+let lowerPresenceCoalesce = (cx: LoweringContext, bin: BinaryExpression,
+    member: MemberExpression, rec: RecordType): i32 => {
+  let overallVt = cx.exprVt(bin);
+  let mergeSyms = cx.assignedEnvSyms(bin.right);
+  let name = member.property.name;
+  let recv = lowerExpr(cx, member.object, null);
+  let dispatchOpt = recordDispatchOfValue(cx, recv);
+  if (dispatchOpt == null) {
+    bail(cx, 'presence coalesce operand');
+  }
+  let dispatch = dispatchOpt as RecordDispatchInfo;
+  let bit = dispatch.optionalBitOf(name);
+  if (bit < 0) {
+    bail(cx, 'presence coalesce bit');
+  }
+  let present = maskBitTest(cx, dispatch, bit, recv);
+  let rightB = cx.b.newBlock();
+  let okB = cx.b.newBlock();
+  cx.b.brIf(present, okB, noValues(), rightB, noValues());
+
+  let saved = cx.copyEnv();
+  cx.b.switchTo(okB);
+  var okValue = cx.recordDispatchRead(dispatch, name, recv);
+  let okVt = cx.valueTypeOf(okValue);
+  if (okVt is ValTypeRefNull && !propTypeAdmitsNull(rec, name)) {
+    okValue = cx.reassertNonNull(okValue,
+        new ValTypeRef((okVt as ValTypeRefNull).target) as ValType);
+  }
+  return coalesceMerge(cx, bin, overallVt, mergeSyms, rightB, okValue,
+      saved);
+};
+
+/** A protocol inline-tuple union under `??`: the true arm's payload
+ * when the flag is set, the default otherwise (a Result-shaped
+ * union's error slot plays no part). */
+let lowerProtocolCoalesce = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+  let overallVt = cx.exprVt(bin);
+  let mergeSyms = cx.assignedEnvSyms(bin.right);
+  let values = multiSource(cx, bin.left);
+  if (values.length < 2) {
+    bail(cx, 'protocol coalesce arity');
+  }
+  let flag = values[0];
+  if (!(cx.valueTypeOf(flag) is ValTypeI32)) {
+    bail(cx, 'protocol coalesce flag');
+  }
+  let rightB = cx.b.newBlock();
+  let okB = cx.b.newBlock();
+  cx.b.brIf(flag, okB, noValues(), rightB, noValues());
+  let saved = cx.copyEnv();
+  cx.b.switchTo(okB);
+  return coalesceMerge(cx, bin, overallVt, mergeSyms, rightB,
+      values[1], saved);
+};
+
 export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+  // Optional record field: `opts.f ?? d` is the licensed guarded read.
+  if (bin.left is MemberExpression) {
+    let member = bin.left as MemberExpression;
+    if (!member.optional && !member.isSymbolAccess) {
+      let objT = cx.substitutedNodeType(member.object);
+      if (objT != null) {
+        let nn = baseType(getNonNullableType(objT));
+        if (nn is RecordType && nn.isOptional(member.property.name)) {
+          return lowerPresenceCoalesce(cx, bin, member, nn);
+        }
+      }
+    }
+  }
+  // Protocol inline-tuple union: payload-or-default.
+  let leftSem = cx.substitutedNodeType(bin.left);
+  if (leftSem != null && isProtocolUnion(leftSem)) {
+    return lowerProtocolCoalesce(cx, bin);
+  }
+
   let overallVt = cx.exprVt(bin);
   let mergeSyms = cx.assignedEnvSyms(bin.right);
 

@@ -1,0 +1,43 @@
+// @mode: check
+// `??` is the licensed expression-position consumer of the language's
+// maybe-forms: nullable values, optional record fields, and protocol
+// inline-tuple unions.
+import { HashMap } from 'zena:map';
+
+type Opts = {url: String, timeout?: i32};
+
+// Optional record field: the guarded read, typed at the field type.
+let f = (opts: Opts) => {
+  let t: i32 = opts.timeout ?? 30;
+  return t;
+};
+
+// Direct access stays an error — only `??` licenses the read.
+let g = (opts: Opts) => {
+  return opts.timeout; // @error: optional and may be absent
+};
+
+// The default must combine with the field type.
+let h = (opts: Opts) => {
+  // @error: cannot mix primitive types
+  let t: i32 = opts.timeout ?? 'x'; // @error: Type mismatch
+  return 0;
+};
+
+// Option-shaped protocol union: payload or default.
+let m = new HashMap<String, i32>();
+let hit = (): i32 => m.get('x') ?? 0;
+
+// Result-shaped protocol union: payload or default; the error lane
+// plays no part.
+let checkedSub = (
+  a: i32,
+  b: i32,
+): inline (true, i32, _) | inline (false, _, String) => {
+  if (b > a) {
+    return (false, _, 'underflow');
+  }
+  return (true, a - b, _);
+};
+
+let sub = (a: i32, b: i32): i32 => checkedSub(a, b) ?? 0;

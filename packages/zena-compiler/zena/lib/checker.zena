@@ -13364,6 +13364,18 @@ let checkMemberExpression = (
     }
   }
 
+  // An optional record field is readable only as the immediate left
+  // operand of `??` (the sanction below): there the miss is the
+  // coalesce arm, so the maybe-absent value never escapes. Everywhere
+  // else resolveMemberType rejects the read.
+  if (!isNullable && !optional &&
+      ctx.nullishSanctioned.has(expr.id as i32)) {
+    let recBase = baseType(subtractNullFromType(receiverType));
+    if (recBase is RecordT && recBase.isOptional(propName)) {
+      return recBase.properties[propName];
+    }
+  }
+
   let resultType = resolveMemberType(ctx, receiverType, propName, loc);
 
   if (isNullable && !optional) {
@@ -13912,6 +13924,31 @@ let resolveIndexType = (
   }
 };
 
+/**
+ * The payload of a protocol inline-tuple union — exactly two inline
+ * tuple arms discriminated by literal `true`/`false` at position 0
+ * (the `Iterator.next` / `Map.get` / Result shapes). The payload is
+ * the true arm's element 1; a Result arm's trailing error slot plays
+ * no part. Null when `t` is any other type.
+ */
+let protocolPayloadType = (t: Type): Type | null => {
+  if (!(t is UnionT)) { return null; }
+  let types = t.types;
+  if (types.length != 2) { return null; }
+  var trueArm: InlineTupleT | null = null;
+  var sawFalse = false;
+  for (let member in types) {
+    if (!(member is InlineTupleT)) { return null; }
+    if (member.elementTypes.length < 1) { return null; }
+    let head = member.elementTypes[0];
+    if (!(head is BoolLiteralType)) { return null; }
+    if (head.value) { trueArm = member; } else { sawFalse = true; }
+  }
+  if (trueArm == null || !sawFalse) { return null; }
+  if (trueArm.elementTypes.length < 2) { return null; }
+  return trueArm.elementTypes[1];
+};
+
 let checkBinaryExpression = (
   ctx: CheckerContext,
   expectedType: Type | null,
@@ -14135,9 +14172,20 @@ let checkBinaryExpression = (
   // Returns the left operand if not null, otherwise the right operand.
   // Type is the union of (non-null left type) and right type, or just right type
   // if left is definitely nullable.
+  //
+  // `??` is also the licensed expression-position consumer of the
+  // language's other two maybe-forms (patterns being the general one):
+  //  - an OPTIONAL RECORD FIELD: `opts.timeout ?? d` — direct access
+  //    stays an error; under `??` it is the guarded read.
+  //  - a PROTOCOL INLINE TUPLE: a two-arm `inline (true, V, ...) |
+  //    inline (false, ...)` union — `m.get(k) ?? d` yields the true
+  //    arm's payload or the default (a Result-shaped union drops its
+  //    error, deliberately: `??` means "value or default, regardless
+  //    of why").
   if (operator == "??") {
     // The immediate left operand may be a primitive-yielding optional
-    // chain: sanction exactly this node before typing it (see
+    // chain, an optional record field read, or a protocol inline
+    // tuple: sanction exactly this node before typing it (see
     // CheckerContext.nullishSanctioned).
     ctx.nullishSanctioned.add(left.id as i32);
     let leftType = checkExpression(ctx, left, null);
@@ -14145,6 +14193,33 @@ let checkBinaryExpression = (
     let preRight = ctx.currentFlow;
     let rightType = checkExpression(ctx, right, null);
     ctx.mergeFlow(preRight, ctx.currentFlow);
+
+    // Optional record field read (member check returned the field type
+    // under the sanction): present value, else the default.
+    if (left is MemberExpression) {
+      let member = left as MemberExpression;
+      let objType = ctx.model.getNodeType(member.object);
+      if (objType != null) {
+        let objBase = baseType(subtractNullFromType(objType));
+        if (objBase is RecordT && objBase.isOptional(member.property.name)) {
+          let arms = new Array<Type>();
+          arms.push(leftType);
+          arms.push(rightType);
+          return createUnionType(arms, ctx, loc);
+        }
+      }
+    }
+
+    // Protocol inline tuple: the true arm's payload, or the default (a
+    // Result-shaped union drops its error — `??` means "value or
+    // default, regardless of why").
+    let payloadOpt = protocolPayloadType(leftType);
+    if (payloadOpt != null) {
+      let arms = new Array<Type>();
+      arms.push(payloadOpt as Type);
+      arms.push(rightType);
+      return createUnionType(arms, ctx, loc);
+    }
 
     // Extract non-null part of left type.
     // For T | null, result is T | rightType (simplified to rightType if T = rightType).

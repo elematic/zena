@@ -1712,6 +1712,22 @@ let result = value ?? 'default';    // 'hello'
 `??` has the same precedence as `||`. Unlike JavaScript, Zena allows mixing
 `??` with `||` and `&&` without parentheses.
 
+Beyond nullable values, `??` can consume the language's other two
+maybe-forms (patterns are the general way to consume them):
+
+- **Optional record fields** — `opts.timeout ?? 30_000` reads the
+  field when present, else the default. Direct access to an optional
+  field stays a compile error; only the immediate left operand of
+  `??` may read one.
+- **Protocol inline tuples** — a two-arm
+  `inline (true, V, ...) | inline (false, ...)` union (the
+  `Map.get` / `Iterator.next` / Result shapes) coalesces to the true
+  arm's payload or the default: `m.get(key) ?? 0`. A Result-shaped
+  union's error lane is discarded — `??` means "value or default,
+  regardless of why"; use `if let` or `match` to observe the error.
+
+In all three forms the right side stays lazily evaluated.
+
 ### Optional Chaining (`?.`, `?[]`, `?()`)
 
 Optional chaining operators allow safe access to properties, elements, and
