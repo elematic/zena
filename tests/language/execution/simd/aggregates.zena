@@ -2,12 +2,19 @@
 // @result: 111
 //
 // A `v128` is a value like any other once it exists: it lives in fields,
-// array elements and module-level bindings, and moves through them
-// unchanged. Wasm GC allows `v128` as a storage type, so none of this
-// needs a boxed representation — which is just as well, because there
-// is none to fall back on.
+// array elements, generic type arguments and module-level bindings, and
+// moves through them unchanged. Wasm GC allows `v128` as a storage type,
+// so a generic instantiated at `v128` stores one directly.
+//
+// `HashMap` is here for a reason beyond coverage: `get` returns
+// `(false, _)` on a miss, and the `_` placeholder needs a zero of the
+// value type. Wasm has no `v128` counterpart to `i32.const 0`, so that
+// zero is a 16-byte `v128.const` and lowering used to have nothing to
+// emit for it.
 import {i32x4Splat, i32x4Add, i32x4ExtractLane, v128Const} from 'zena:simd';
 import {Array} from 'zena:array';
+import {Box} from 'zena:box';
+import {HashMap} from 'zena:map';
 
 let ones: v128 = i32x4Splat(1);
 
@@ -38,5 +45,23 @@ export function main(): i32 {
     sum = sum + i32x4ExtractLane(v, 2);
   }
   // 12 + 4 + 95 = 111
-  return sum;
+
+  // `Box<v128>` is an ordinary class with a `v128` field. Nothing is
+  // boxed in the wasm sense — Zena has no implicit boxing for any
+  // primitive — so this is the same storage the field above uses.
+  let boxed = new Box<v128>(i32x4Splat(1000));
+  sum = sum + i32x4ExtractLane(boxed.value, 0);
+
+  // A map keyed by String with v128 values: the hit path returns one,
+  // and the miss path has to produce a zero vector.
+  let m = new HashMap<String, v128>();
+  m['a'] = i32x4Splat(500);
+  if (let (true, hit) = m.get('a')) {
+    sum = sum + i32x4ExtractLane(hit, 0);
+  }
+  if (let (true, missed) = m.get('absent')) {
+    sum = sum + i32x4ExtractLane(missed, 0);
+  }
+  // 111 + 1000 + 500 = 1611, less the 1500 the two lookups added.
+  return sum - 1500;
 }

@@ -25,16 +25,17 @@ truncation or a reinterpretation, and building a vector goes through
 What `v128` does have is ordinary value semantics. It lives in locals,
 parameters, returns, class fields, array elements and module-level
 bindings, and passes through them unchanged. Wasm GC accepts `v128` as a
-struct field and array element type, so `Array<v128>` is a wasm array of
-vectors rather than an array of boxes.
+struct field and array element type, so a generic instantiated at `v128`
+stores one directly: `Array<v128>` is a wasm array of vectors,
+`Box<v128>` a struct with a `v128` field, and `HashMap<String, v128>`
+holds them in its entries.
 
-The one place it cannot go is a slot that erases to `anyref`. Every other
-primitive has a boxed form to fall back on when it crosses an erased
-generic boundary; wasm has nothing to box a `v128` into. Monomorphized
-generic uses are fine — that is what makes `Array<v128>` work — but a
-generic function used as a *value*, whose signature erases, cannot carry
-one. The compiler does not diagnose this today; it surfaces as a wasm
-validation error naming a `v128`/`anyref` mismatch.
+`v128` is not a subtype of `anyref` — it is not a reference type at the
+wasm level at all. This constrains it no more than it constrains `i32`,
+because Zena never converts a primitive to a reference implicitly:
+`Box<T>` is an ordinary class, and constructing one is visible in the
+source. So `Box<v128>` works for the same reason `Box<i32>` does, and
+neither is boxing in the wasm sense.
 
 ## The instruction surface
 
@@ -200,6 +201,4 @@ slot.
   `v128`, which has no element width to be elementwise over.
 - **A source location on immediate errors**, which needs the checker to
   know which intrinsic arguments are immediates.
-- **Erasure diagnostics**, so a `v128` reaching an erased generic slot is
-  a type error rather than a wasm validation failure.
 - **Relaxed SIMD**, if the non-determinism is worth taking on.

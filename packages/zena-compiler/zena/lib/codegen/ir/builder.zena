@@ -4,6 +4,7 @@ import {
   ValType, ValTypeRef, ValTypeRefNull, valTypeToOpcode,
 } from '../wasm.zena';
 import { IrBody, IrBlock, IrOp, IrRef, isIrTerminator } from './ir.zena';
+import { simdInstruction } from '../../simd.zena';
 
 /**
  * Compares ref targets by OBJECT IDENTITY, not type-section index:
@@ -178,6 +179,27 @@ export final class IrBuilder {
   constF32(value: f64, type: ValType): i32 {
     this.body.constF64.push(value);
     return this.emit(IrOp.const_f32, type, this.body.constF64.length - 1, -1);
+  }
+
+  /**
+   * The all-zero vector. Wasm has no `v128` counterpart to `i32.const`
+   * — the only vector constant is the 16-byte `v128.const` — so a zero
+   * `v128` is an instruction with a sixteen-byte immediate rather than
+   * a pooled literal.
+   */
+  constV128Zero(type: ValType): i32 {
+    let instr = simdInstruction('v128.const');
+    if (instr == null) {
+      throw new Error('v128.const is missing from the SIMD table');
+    }
+    let imm = new Array<i32>();
+    imm.push(instr.opcode);
+    var i = 0;
+    while (i < 16) {
+      imm.push(0);
+      i += 1;
+    }
+    return this.emit(IrOp.simd_const, type, -1, this.pushExtra(imm));
   }
 
   binary(op: IrOp, type: ValType, x: i32, y: i32): i32 {
