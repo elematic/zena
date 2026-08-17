@@ -49,7 +49,8 @@ import { OrderedMap } from 'zena:ordered-map';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import {
   FlowNode, FlowStart, FlowAssign, FlowMove, FlowNarrowings, FlowJoin,
-  FlowUnreachable, FlowSuspend, FlowBodyState, PendingEdgeIf, BorrowUseRec
+  FlowUnreachable, FlowSuspend, FlowBodyState, PendingEdgeIf,
+  PendingEdgeMatch, BorrowUseRec
 } from './analysis/flow.zena';
 import { walkEnter } from './visitor.zena';
 import {
@@ -332,6 +333,10 @@ final class CheckerContext {
    */
   var #pendingEdgeIfs = new Array<PendingEdgeIf>();
 
+  /** The matches recorded for the same decision — PendingEdgeIf's
+   * N-ary sibling; same lifecycle. */
+  var #pendingEdgeMatches = new Array<PendingEdgeMatch>();
+
   /** Whether any open scope holds an implicit-drop candidate. */
   #hasOwnCandidates(): boolean {
     for (let frame in this.#ownScopeStack) {
@@ -350,6 +355,14 @@ final class CheckerContext {
     this.#pendingEdgeIfs.push(new PendingEdgeIf(
       ifNode, preBranch, trueEnd, falseEnd,
       !(trueEnd is FlowUnreachable), !(falseEnd is FlowUnreachable)));
+  }
+
+  /** Record a match's arm ends for the branch-join decision. */
+  recordPendingEdgeMatch(matchNode: Node, preBranch: FlowNode,
+      armEnds: Array<FlowNode>): void {
+    if (!this.#hasOwnCandidates()) { return; }
+    this.#pendingEdgeMatches.push(
+      new PendingEdgeMatch(matchNode, preBranch, armEnds));
   }
 
   /**
@@ -2098,9 +2111,33 @@ final class CheckerContext {
           let movedFalse = p.falseReachable &&
             this.findLiveMove(c.sym.id, p.falseEnd, p.preBranch.id) != null;
           if (movedTrue && !movedFalse && p.falseReachable) {
-            this.#addEdgeDrop(p.ifNode, c.sym.id, false, c.resources);
+            this.#addEdgeDrop(p.ifNode, c.sym.id, false, -1, c.resources);
           } else if (movedFalse && !movedTrue && p.trueReachable) {
-            this.#addEdgeDrop(p.ifNode, c.sym.id, true, c.resources);
+            this.#addEdgeDrop(p.ifNode, c.sym.id, true, -1, c.resources);
+          }
+        }
+        // The same rule over a match's N arms: some arm moved it, so
+        // every reachable arm that kept it compensates. A diverged
+        // arm's end is unreachable and needs no drop.
+        for (let pm in this.#pendingEdgeMatches) {
+          var movedCount = 0;
+          var keptCount = 0;
+          let armMoved = new Array<boolean>();
+          for (let end in pm.armEnds) {
+            if (end is FlowUnreachable) {
+              armMoved.push(true);
+            } else {
+              let mv = this.findLiveMove(c.sym.id, end, pm.preBranch.id) != null;
+              armMoved.push(mv);
+              if (mv) { movedCount += 1; } else { keptCount += 1; }
+            }
+          }
+          if (movedCount > 0 && keptCount > 0) {
+            for (var ai = 0; ai < pm.armEnds.length; ai += 1) {
+              if (!armMoved[ai]) {
+                this.#addEdgeDrop(pm.matchNode, c.sym.id, false, ai, c.resources);
+              }
+            }
           }
         }
       }
@@ -2133,16 +2170,22 @@ final class CheckerContext {
    * on a full re-check clears the rest). Roots `:dispose` — the drop is
    * a plain call at the arm's end, so no exception region is needed.
    */
-  #addEdgeDrop(ifNode: Node, symId: SymbolId, onTrue: boolean, resources: Array<ClassType>): void {
-    let existing = this.model.edgeDropsOfDirect(ifNode);
+  #addEdgeDrop(node: Node, symId: SymbolId, onTrue: boolean, armIndex: i32, resources: Array<ClassType>): void {
+    let existing = this.model.edgeDropsOfDirect(node);
     let kept = new Array<EdgeDrop>();
     if (existing != null) {
       for (let d in existing) {
-        if ((d.symbolId as i32) != (symId as i32)) { kept.push(d); }
+        // A match needs one entry per keeping arm for the same
+        // binding, so staleness is per (binding, arm).
+        if ((d.symbolId as i32) != (symId as i32) || d.armIndex != armIndex) {
+          kept.push(d);
+        }
       }
     }
-    kept.push(new EdgeDrop(symId, onTrue));
-    this.model.setEdgeDrops(ifNode, kept);
+    let drop = new EdgeDrop(symId, onTrue);
+    drop.armIndex = armIndex;
+    kept.push(drop);
+    this.model.setEdgeDrops(node, kept);
     let deps = this.currentDependencies();
     if (deps != null) {
       for (let resource in resources) {
@@ -2266,6 +2309,8 @@ final class CheckerContext {
     this.#pendingEdgeIfs = new Array<PendingEdgeIf>();
     saved.borrowUses = this.#bodyBorrowUses;
     this.#bodyBorrowUses = new Array<BorrowUseRec>();
+    saved.pendingEdgeMatches = this.#pendingEdgeMatches;
+    this.#pendingEdgeMatches = new Array<PendingEdgeMatch>();
     return saved;
   }
 
@@ -2274,6 +2319,7 @@ final class CheckerContext {
     // so the borrow-liveness reads collected for it are decidable.
     this.#flushBorrowUses();
     this.#bodyBorrowUses = saved.borrowUses;
+    this.#pendingEdgeMatches = saved.pendingEdgeMatches;
     this.#currentFlow = saved.current;
     this.#currentFlowStart = saved.start;
     this.#flowLoopHeads = saved.loopHeads;
@@ -9675,8 +9721,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
     }
   }
-  case MatchExpression {discriminant, cases, loc}: {
-    checkMatchExpr(ctx, discriminant, cases, loc, expectedType)
+  case MatchExpression as matchExpr: {
+    checkMatchExpr(ctx, matchExpr, expectedType)
   }
   case AwaitExpression as aw: {
     checkAwaitExpression(ctx, aw)
@@ -14911,18 +14957,19 @@ let getNarrowedTypeFromPattern = (ctx: CheckerContext, pattern: Node): Type | nu
  */
 let checkMatchExpr = (
   ctx: CheckerContext,
-  discriminant: Expression,
-  cases: Array<MatchCase>,
-  loc: SourceLocation | null,
+  matchExpr: MatchExpression,
   expectedType: Type | null
 ): Type => {
+  let {discriminant, cases, loc} = matchExpr;
   // Check the discriminant expression.
   let scrutineeType = checkExpression(ctx, discriminant, null);
 
   // Each arm branches from the flow after the discriminant; the arms
-  // join again after the match.
+  // join again after the match. Arm-end flow nodes are kept, aligned
+  // with the cases by index, for the branch-join drop decision.
   let preArmFlow = ctx.currentFlow;
   let armJoin = ctx.newFlowJoin();
+  let armEnds = new Array<FlowNode>();
 
   // Track remaining type for exhaustiveness checking.
   var remainingType: Type = scrutineeType;
@@ -15059,9 +15106,11 @@ let checkMatchExpr = (
     resultTypes.push(bodyType);
 
     ctx.exitScope();
+    armEnds.push(ctx.currentFlow);
     armJoin.add(ctx.currentFlow);
     i += 1;
   }
+  ctx.recordPendingEdgeMatch(matchExpr as Node, preArmFlow, armEnds);
 
   if (armJoin.antecedents.length == 0) {
     ctx.markFlowUnreachable();
@@ -15110,17 +15159,12 @@ let checkMatchCaseBody = (ctx: CheckerContext, body: Node, expectedType: Type | 
           case ExpressionStatement {expression}: {
             lastType = checkExpression(ctx, expression, et);
           }
-          case ReturnStatement {argument}: {
-            if (argument != null) {
-              checkExpression(ctx, argument, ctx.returnType);
-            }
-            // The value leaves the function, it does not flow to the
-            // enclosing match/try expression — which therefore gets no
-            // value from this arm at all. `never`, exactly like an arm
-            // ending in `throw`.
-            lastType = new NeverType();
-          }
           case _: {
+            // A `return` lands here too: checkStatement gives it the
+            // full treatment (return-type inference, async adoption,
+            // and marking the flow unreachable — an arm that returns
+            // must not feed the match join), and definitelyExits makes
+            // the arm `never`, exactly like one ending in `throw`.
             checkStatement(ctx, stmts[si]);
             lastType = if (branchDefinitelyExits(stmts[si])) {
               new NeverType() as Type

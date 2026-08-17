@@ -961,22 +961,23 @@ unrecognized leaves the binding alone and leaks as before) and records the
 verdict in `SemanticModel.scopeExitDrops`; lowering routes a flagged
 declaration into `lowerScopeDropRegion`, `using`'s twin.
 
-The branch-join rule is implemented for `if`/`else`: a candidate moved on
-exactly one arm, both arms completing, gets a compensating drop at the end
-of the arm that kept it — a plain call on that edge, no region — recorded
-in `SemanticModel.edgeDrops` and decided when the enclosing scope closes,
-where the capture and escape facts are complete. The arm-end flow nodes
-recorded per `if` are what let the decision ask, per binding, whether a
-move lies on one arm and not the other; nesting composes because an inner
-if's compensation makes the binding definitely dead at its own merge. A
-diverging arm needs no compensation, which is what keeps the
-conditional-handoff shape working.
+The branch-join rule is implemented for `if`/`else` and for `match`: a
+candidate moved on some arms and kept on others gets a compensating drop
+at the end of each reachable arm that kept it — a plain call on that
+edge, no region — recorded in `SemanticModel.edgeDrops` (an if's entries
+name a side, a match's the case index) and decided when the enclosing
+scope closes, where the capture and escape facts are complete. The
+arm-end flow nodes recorded per `if` and per `match` are what let the
+decision ask, per binding, on which arms a move lies; nesting composes
+because an inner construct's compensation makes the binding definitely
+dead at its own merge. A diverging arm needs no compensation, which is
+what keeps the conditional-handoff shape working — in both constructs.
 
 Not yet released: bindings in value-producing blocks (the region cannot
-carry a result out), parameters, `match`-arm asymmetric moves, and
-anything in a generator or `async` body (part 4's cancellation table).
-`execution/ownership/implicit-drop.zena` pins the behavior; the
-release-timing note now lives in the language reference.
+carry a result out), parameters, and anything in a generator or `async`
+body (part 4's cancellation table). `execution/ownership/implicit-drop.zena`
+and `match-arm-drops.zena` pin the behavior; the release-timing note now
+lives in the language reference.
 
 1. **Unwind paths.** Every scope holding a live resource needs cleanup on
    exception propagation. `finally` makes this expressible; it is still real

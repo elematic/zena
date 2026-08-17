@@ -343,6 +343,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
     }
     let value = lowerValueNode(cx, mc.body, isVoid, resultVt);
     if (cx.reachable) {
+      emitMatchArmDrops(cx, expr, i);
       cx.mergeArm(m, value, 'match arm type');
     }
     if (failB >= 0) {
@@ -357,6 +358,29 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
   }
 
   return cx.finishMerge(m, saved);
+};
+
+/**
+ * The compensating drops one match arm owes at its end: another arm
+ * moved the binding, so releasing here makes it uniformly dead at the
+ * merge — the same rule emitEdgeDrops applies to an if's arms, indexed
+ * by case instead of by side. Plain calls, not a region.
+ */
+let emitMatchArmDrops = (cx: LoweringContext, expr: MatchExpression, armIndex: i32): void => {
+  let dropsOpt = cx.func.model.edgeDropsOf(expr as Node);
+  if (dropsOpt == null) { return; }
+  for (let d in dropsOpt) {
+    if (d.armIndex != armIndex) { continue; }
+    let declType = cx.func.model.getBindingTypeById(d.symbolId);
+    if (declType == null) {
+      bail(cx, 'edge drop untyped binding');
+    }
+    let owners = disposeOwnerClasses(cx, declType);
+    let syms = new Array<SymbolId>();
+    syms.push(d.symbolId);
+    let value = cx.envValues(syms)[0];
+    emitMaybeDispose(cx, value, owners);
+  }
 };
 
 /**

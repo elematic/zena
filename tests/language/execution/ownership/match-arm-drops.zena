@@ -1,0 +1,63 @@
+// @mode: run
+// @result: 57778
+// The branch-join rule for match arms: a candidate moved on some arms
+// and kept on others is released at the end of each keeping arm, so it
+// is uniformly dead at the merge — statement and value matches alike.
+// A moving arm that diverges needs no compensation, and the binding
+// stays usable after the match.
+import {Own, Disposable} from 'zena:ownership';
+
+var released = 0;
+var given = 0;
+
+resource class Res {
+  id: i32;
+  new(this.id);
+  :Disposable.dispose(this: Own<this>): void { released += this.id; }
+}
+
+let sink = (r: Own<Res>): void => { given += r.id; };
+
+let route = (x: i32): void => {
+  let r = new Res(7);
+  match (x) {
+    case 0: { sink(r); }
+    case 1: { }
+    case _: { }
+  }
+};
+
+let handOff = (x: i32): i32 => {
+  let r = new Res(3);
+  match (x) {
+    case 0: { sink(r); return given; }
+    case _: { }
+  }
+  return r.id;
+};
+
+let pick = (x: i32): i32 => {
+  let r = new Res(5);
+  let v = match (x) {
+    case 0: { sink(r); 100 }
+    case _: 200
+  };
+  return v;
+};
+
+export let main = (): i32 => {
+  var score = 0;
+  released = 0; given = 0; route(0);
+  score += released + given * 10;      // moved arm: nothing released here: 70
+  released = 0; route(1);
+  score += released * 100;             // kept arm compensates: 700
+  released = 0; route(2);
+  score += released * 1000;            // wildcard arm compensates: 7000
+  released = 0;
+  score += handOff(1);                 // diverging mover: r usable after: 3
+  released = 0; pick(1);
+  score += released * 10000;           // value-match kept arm: 50000
+  released = 0; given = 0; pick(0);
+  score += released + given;           // moved arm of a value match: 5
+  return score;                        // 57778
+};

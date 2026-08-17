@@ -4125,9 +4125,9 @@ block, a generator, or an `async` body. Left alone means what it always
 meant before implicit drop: the value leaks unless something else releases
 it.
 
-A move on one arm of an `if` releases the binding at the end of the other
-arm, so it is uniformly dead after the merge — and a use there is the
-use-after-move error either way:
+A move on one arm of an `if` or a `match` releases the binding at the
+end of each arm that kept it, so it is uniformly dead after the merge —
+and a use there is the use-after-move error either way:
 
 ```zena
 let f = open(path);
