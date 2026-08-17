@@ -7,6 +7,30 @@ immediately trying to fix it (which can pollute the current task's context).
 ## Format
 
 ````
+### RESOLVED: A generic static called from a generic class method was not registered
+- **Found**: 2026-08-17 (writing `zena:stream`, whose `Stream<T>.read`
+  wanted `Future.of(0)` for already-answered reads); failed as
+  `zir unsupported: static method not found @Stream_…​.read` — a
+  message that names the CALLING method's specialization, not the
+  missing static.
+- **Fixed 2026-08-17**, two causes in `registerGenericMethodUse` (the
+  specialized-body walk's per-call-site registration):
+  1. The `isConcrete` guard returned early for every static call — a
+     static's receiver is the class NAME, which resolves to the
+     non-concrete template. Statics are outside their class's generic
+     scope, so the template receiver is legitimate, and the guard now
+     admits it when the member is static.
+  2. Registration then keyed the specialization by the raw template
+     class while `#lowerStaticCall` looks it up under the ERASED
+     receiver key (`Future_s…` vs `Future_s…_erased`) — a copy parked
+     where nothing looks. The walk now registers against the erased
+     clone, matching the lookup.
+  The concrete-body walk (`discoverNodeTypes`) never had the problem,
+  which is why top-level `Future.of` always worked — one more entry in
+  the "what works depends on where the generic code lives" family.
+  Note for callers: `Future.of(false)` infers `Future<false>` (the
+  boolean literal type); widen with `false as boolean`.
+
 ### RESOLVED: A subclass vtable could permute its base's slot order
 - **Found**: 2026-08-14 (CI on the suspension-region branch: adding six
   test files re-sliced the execution runner's batches and

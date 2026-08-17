@@ -1167,11 +1167,29 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (objType == null) { return; }
     let resolvedObj = resolveType(objType);
     if (!(resolvedObj is ClassType)) { return; }
-    if (!isConcrete(resolvedObj)) { return; }
     let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
     if (!resolvedObj.members.has(propName)) { return; }
     let mi = resolvedObj.members[propName];
     if (!(mi is MethodInfo)) { return; }
+    // A static's receiver is the class NAME, so `resolvedObj` is the
+    // unspecialized template — and that is the right registration
+    // target: a static is outside its class's generic scope and
+    // monomorphizes on its own solved arguments alone
+    // (docs/design/generics.md, statics). Anything else reached
+    // through a non-concrete receiver is an erasure mention and
+    // registers nothing.
+    if (!isConcrete(resolvedObj) && !mi.isStatic) { return; }
+    var targetClass = resolvedObj;
+    if (!isConcrete(targetClass)) {
+      // Register the static's specialization under the ERASED class
+      // key — the receiver key lowering's static lookup computes
+      // (#lowerStaticCall erases the receiver before walking
+      // classMethodMap). Registering under the raw template key parks
+      // the copy where nothing ever looks.
+      let erased = eraseTypeParameters(this.pass.wasm, targetClass as Type);
+      if (!(erased is ClassType)) { return; }
+      targetClass = erased;
+    }
     let miType = mi.type;
     if (!(miType is FunctionType)) { return; }
     if (miType.typeParameters == null ||
@@ -1189,11 +1207,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     for (let a in rawArgs) {
       typeArgs.push(resolveType(a));
     }
-    let unspecId = (resolvedObj.genericSource ?? resolvedObj).symbolId;
+    let unspecId = (targetClass.genericSource ?? targetClass).symbolId;
     let cd = if (let (true, decl) = this.pass.classDecls.get(unspecId)) decl else null;
-    let targetModel = this.pass.getClassModel(resolvedObj);
-    for (let md in this.pass.cha.findImplementingMethods(resolvedObj, propName)) {
-      let fn = this.pass.specializer.instantiateGenericMethod(resolvedObj, cd, propName, md as Node,
+    let targetModel = this.pass.getClassModel(targetClass);
+    for (let md in this.pass.cha.findImplementingMethods(targetClass, propName)) {
+      let fn = this.pass.specializer.instantiateGenericMethod(targetClass, cd, propName, md as Node,
           typeArgs, this.pass.getNodeModel(md as Node, targetModel));
       // Registering is not enough. `WasmModule.layout()` REBUILDS
       // classMethodMap from `wasm.functions`, which RTA has already
