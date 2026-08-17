@@ -219,67 +219,134 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
       bail(cx, 'empty value block');
     }
     cx.precellBindings(body);
-    for (var i = 0; i < body.length - 1; i += 1) {
-      if (body[i] is UsingStatement) {
-        // A `using` scopes the rest of its block, so in a value block it
-        // would have to scope the tail expression that supplies the
-        // arm's value — the region would have to carry a result out
-        // through its join. It does not yet, so this is loud rather
-        // than a release that runs at the wrong time.
-        bail(cx, 'using in a value-producing block');
-      }
-      if (body[i] is VariableDeclaration &&
-          declScopeDrop(cx, body[i] as VariableDeclaration)) {
-        if (isVoid) {
-          // A void block (a try body, a statement arm) takes the region
-          // like any statement list.
-          lowerScopeDropRegion(cx, body[i] as VariableDeclaration,
-              body, i + 1, body.length);
-          return -1;
-        }
-        // A value block has the same carried-result gap `using` bails
-        // on above — but an implicit drop is the compiler's own
-        // insertion, so it is skipped (the binding leaks, exactly as
-        // the language did before implicit drop) rather than made loud.
-      }
-      lowerStmt(cx, body[i]);
-      if (!cx.reachable) {
-        return -1;
-      }
-    }
-    let last = body[body.length - 1];
-    if (last is ExpressionStatement) {
-      let lastExpr = last.expression;
-      if (lastExpr is ThrowExpression) {
-        // A throw in arm-tail position: the arm ends unreachable and
-        // produces no value; callers skip their merge branch.
-        throwStmt(cx, lastExpr);
-        return -1;
-      }
-      if (lastExpr is CallExpression) {
-        // A never-returning call in tail position: same as a throw.
-        let t = cx.func.model.getNodeType(lastExpr);
-        if (t != null && t is NeverType) {
-          lowerStmt(cx, last);
-          return -1;
-        }
-      }
-      let value = lowerExpr(cx, lastExpr, ctxVt);
-      return if (isVoid) -1 else value;
-    }
-    // A non-expression tail supplies no value. That is fine when the
-    // context is void, and fine in a value context when the statement
-    // cannot fall through — `return`/`break`/`continue` end the arm
-    // unreachable, so the caller skips its merge branch and the arm
-    // never has to produce one. Anything that DOES fall through in a
-    // value context is a real gap; bail on it.
-    lowerStmt(cx, last);
-    if (isVoid || !cx.reachable) {
-      return -1;
-    }
-    bail(cx, 'value block tail');
+    return lowerBlockValueFrom(cx, body, 0, isVoid, ctxVt);
   }
   cx.fail('value arm kind');
+};
+
+/**
+ * Statements `start..` of a value block, ending at the tail. A `using`
+ * or an implicit-drop declaration scopes the rest of the block — tail
+ * expression included — so it opens a release region here: a void
+ * block routes through the statement regions, and a value block
+ * carries the tail's value out through the region's result variable,
+ * exactly as a valued try/finally does.
+ */
+let lowerBlockValueFrom = (cx: LoweringContext, body: Array<Statement>,
+    start: i32, isVoid: boolean, ctxVt: ValType | null): i32 => {
+  for (var i = start; i < body.length - 1; i += 1) {
+    if (body[i] is UsingStatement) {
+      let us = body[i] as UsingStatement;
+      if (isVoid) {
+        lowerUsingRegion(cx, us, body, i + 1, body.length);
+        return -1;
+      }
+      // Acquire exactly as lowerUsingRegion does, then wrap the rest
+      // of the block in the result-carrying region.
+      let declType = cx.substitutedNodeType(us.init);
+      if (declType == null) {
+        bail(cx, 'untyped using initializer');
+      }
+      let owners = disposeOwnerClasses(cx, declType);
+      let value = lowerExpr(cx, us.init, null);
+      let pattern = us.pattern;
+      if (pattern != null) {
+        let pat = pattern as Node;
+        if (!(pat is IdentifierPattern)) {
+          bail(cx, 'using destructuring pattern');
+        }
+        let symOpt = cx.func.model.resolveDeclaration(pat);
+        if (symOpt == null) {
+          bail(cx, 'using binding symbol');
+        }
+        cx.bindPatternSym(symOpt, value);
+      }
+      return lowerValueRegionRest(cx, value, owners, body, i + 1, ctxVt);
+    }
+    if (body[i] is VariableDeclaration &&
+        declScopeDrop(cx, body[i] as VariableDeclaration)) {
+      let vd = body[i] as VariableDeclaration;
+      if (isVoid) {
+        // A void block (a try body, a statement arm) takes the region
+        // like any statement list.
+        lowerScopeDropRegion(cx, vd, body, i + 1, body.length);
+        return -1;
+      }
+      let declType = cx.substitutedNodeType(vd.init);
+      if (declType == null) {
+        bail(cx, 'untyped implicit-drop binding');
+      }
+      let owners = disposeOwnerClasses(cx, declType);
+      varDecl(cx, vd);
+      let symOpt = cx.func.model.resolveDeclaration(vd.pattern as Node);
+      if (symOpt == null) {
+        bail(cx, 'implicit-drop binding symbol');
+      }
+      let syms = new Array<SymbolId>();
+      syms.push(symOpt.id);
+      let value = cx.envValues(syms)[0];
+      return lowerValueRegionRest(cx, value, owners, body, i + 1, ctxVt);
+    }
+    lowerStmt(cx, body[i]);
+    if (!cx.reachable) {
+      return -1;
+    }
+  }
+  let last = body[body.length - 1];
+  if (last is ExpressionStatement) {
+    let lastExpr = last.expression;
+    if (lastExpr is ThrowExpression) {
+      // A throw in arm-tail position: the arm ends unreachable and
+      // produces no value; callers skip their merge branch.
+      throwStmt(cx, lastExpr);
+      return -1;
+    }
+    if (lastExpr is CallExpression) {
+      // A never-returning call in tail position: same as a throw.
+      let t = cx.func.model.getNodeType(lastExpr);
+      if (t != null && t is NeverType) {
+        lowerStmt(cx, last);
+        return -1;
+      }
+    }
+    let value = lowerExpr(cx, lastExpr, ctxVt);
+    return if (isVoid) -1 else value;
+  }
+  // A non-expression tail supplies no value. That is fine when the
+  // context is void, and fine in a value context when the statement
+  // cannot fall through — `return`/`break`/`continue` end the arm
+  // unreachable, so the caller skips its merge branch and the arm
+  // never has to produce one. Anything that DOES fall through in a
+  // value context is a real gap; bail on it.
+  lowerStmt(cx, last);
+  if (isVoid || !cx.reachable) {
+    return -1;
+  }
+  bail(cx, 'value block tail');
+};
+
+/**
+ * The rest of a value block behind a release region: the tail value
+ * computes inside, parks in the region's result variable, and rides
+ * out through the dispatch — so the release runs after the value is
+ * read, and every early exit and the unwind path release too.
+ */
+let lowerValueRegionRest = (cx: LoweringContext, value: i32,
+    owners: Array<ClassType>, body: Array<Statement>, start: i32,
+    ctxVt: ValType | null): i32 => {
+  if (ctxVt == null) {
+    bail(cx, 'value region result type');
+  }
+  let mirrored = new Array<SymbolId>();
+  for (var k = start; k < body.length; k += 1) {
+    cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
+  }
+  return lowerFinallyRegion(cx, mirrored, false, ctxVt,
+      (scope, resultVar, saved) => {
+        let v = lowerBlockValueFrom(cx, body, start, false, ctxVt);
+        finishProtectedArm(cx, scope, resultVar, v);
+      },
+      () => { emitMaybeDispose(cx, value, owners); });
 };
 
 /**

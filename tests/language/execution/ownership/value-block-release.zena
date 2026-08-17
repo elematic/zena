@@ -1,0 +1,86 @@
+// @mode: run
+// @result: 65721
+// Release inside value-producing blocks: a `using` or an implicit-drop
+// binding in a match-arm or if-expression arm block scopes the rest of
+// the block INCLUDING the tail expression — the arm's value computes
+// inside the region and rides the region's result out, so the release
+// runs after the value is read but before the enclosing expression
+// continues. A `using` in a void `try` body works the same way.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+
+var released = 0;
+
+resource class Res {
+  id: i32;
+  new(this.id);
+  :Disposable.dispose(this: Own<this>): void { released += this.id; }
+}
+
+let bump = (b: Borrow<Res>): i32 => b.id;
+let bump2 = (a: Borrow<Res>, b: Borrow<Res>): i32 => a.id + b.id;
+
+// `using` in a match-arm value block.
+let viaMatch = (c: i32): i32 => match (c) {
+  case 0: {
+    using r = new Res(1);
+    bump(r)
+  }
+  case _: 0
+};
+
+// Implicit drop in an if-expression arm block.
+let viaIf = (c: boolean): i32 => if (c) {
+  let r = new Res(2);
+  bump(r)
+} else {
+  0
+};
+
+// Nested: two usings in one arm, released in reverse order.
+let nested = (c: i32): i32 => match (c) {
+  case 0: {
+    using a = new Res(3);
+    using b = new Res(4);
+    bump2(a, b)
+  }
+  case _: 0
+};
+
+let throws = (): i32 => {
+  throw new Error('boom');
+};
+
+// `using` in a void try body: unwind releases before the catch runs.
+let viaTry = (): i32 => {
+  try {
+    using r = new Res(5);
+    throws();
+  } catch (e) {
+    return released;
+  }
+  return -1;
+};
+
+// A `return` from inside the arm's region releases before leaving.
+let viaReturn = (c: i32): i32 => match (c) {
+  case 0: {
+    using r = new Res(6);
+    return 9;
+  }
+  case _: 0
+};
+
+export let main = (): i32 => {
+  var score = 0;
+  released = 0;
+  if (viaMatch(0) == 1) { score += released; }        // 1
+  released = 0;
+  if (viaIf(true) == 2) { score += released * 10; }   // 20
+  released = 0;
+  if (nested(0) == 7) { score += released * 100; }    // 700
+  released = 0;
+  if (viaTry() == 5) { score += released * 1000; }    // 5000
+  released = 0;
+  if (viaReturn(0) == 9) { score += released * 10000; } // 60000
+  return score;                                       // 65721
+};

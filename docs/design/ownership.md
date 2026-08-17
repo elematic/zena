@@ -990,12 +990,19 @@ caller. Excluded: constructors (their owned parameters feed fields and
 the super call, which are checked outside the body block), suspending
 bodies, the receiver, and `this.x` field parameters.
 
-Not yet released: bindings in value-producing blocks (the region
-cannot carry a result out), and anything in a generator or `async`
-body (part 4's cancellation table).
-`execution/ownership/implicit-drop.zena`, `match-arm-drops.zena`,
-`param-drops.zena` and `param-drops-expr.zena` pin the behavior; the
-release-timing note now lives in the language reference.
+**Value-producing blocks release too.** A `using` or implicit-drop
+binding in a `match` or `if` arm whose tail supplies the arm's value
+scopes the rest of the block, tail included: the value computes inside
+the release region and rides the region's result variable out through
+the dispatch — the same carriage a valued `try`/`finally` uses — so
+the release runs after the value is read and on every early exit and
+unwind.
+
+Not yet released: anything in a generator or `async` body (part 4's
+cancellation table). `execution/ownership/implicit-drop.zena`,
+`match-arm-drops.zena`, `param-drops.zena`, `param-drops-expr.zena`
+and `value-block-release.zena` pin the behavior; the release-timing
+note now lives in the language reference.
 
 1. **Unwind paths.** Every scope holding a live resource needs cleanup on
    exception propagation. `finally` makes this expressible; it is still real
@@ -1393,11 +1400,12 @@ That is the machinery O3 reuses. What O3 adds is not new codegen but new
 _obligations_: the releases an implicit drop contributes come from move
 checking rather than from a `using` the programmer wrote.
 
-One gap remains, loud rather than silent: a `using` inside a value-producing
-block — a `match` or `if` arm whose tail expression supplies the arm's value —
-bails, since the region would have to carry a result out to the arm's join.
-A function body's value tail _is_ handled, by lowering it where a `return`
-would go.
+A `using` (or an implicit-drop binding) inside a value-producing block — a
+`match` or `if` arm whose tail expression supplies the arm's value — opens
+the same region with the region's result variable carrying the tail's value
+out through the dispatch, exactly as a valued `try`/`finally` does: the
+value computes inside the region, before the release. A function body's
+value tail takes the other spelling, lowering where a `return` would go.
 
 **Second-class-ness is enforced.** A `Borrow<R>` may not be captured by a
 closure, may not be a field's type, a container's element type, a record
