@@ -61,6 +61,17 @@
  *                      okTarget, okArgc, arg*, failTarget, failArgc, arg*]
  *   br_table:    a = selector,
  *                b -> [count, (target, argc, arg*)*]  (last entry = default)
+ *   simd_unary:  a = operand,                b = simd opcode
+ *   simd_binary: a -> [x, y],                b = simd opcode
+ *   simd_ternary: a -> [x, y, z],            b = simd opcode
+ *   simd_extract_lane: a = vector,           b -> [opcode, lane]
+ *   simd_replace_lane: a -> [vector, value], b -> [opcode, lane]
+ *   simd_const:  no operands,                b -> [16 bytes]
+ *   simd_shuffle: a -> [x, y],               b -> [16 lane selectors]
+ *   simd_load:   a = addr,                   b -> [opcode, align]
+ *   simd_store:  a -> [addr, value],         b -> [opcode, align]
+ *   simd_load_lane, simd_store_lane:
+ *                a -> [addr, vector],        b -> [opcode, align, lane]
  *   ret:         a = value, or -1 for void
  *   yield_:      a = yielded value, b -> [target, argc, arg*]
  *   await_:      a = awaited future, b -> [target, argc, arg*]
@@ -214,6 +225,27 @@ export enum IrOp {
   f64_store,
   memory_size,
   memory_grow,
+  /**
+   * SIMD (§ docs/design/simd.md). One op per OPERAND SHAPE rather than
+   * one per instruction: the 236 fixed-width vector instructions differ
+   * only in their opcode, so the opcode rides as an immediate and these
+   * eleven ops carry all of them. An enum case each would triple `IrOp`
+   * and add 236 arms to every match over it for nothing.
+   *
+   * The result type is the instruction's, in `typeId`, so a `v128`
+   * producer and an `i32` one (`i32x4.bitmask`) share `simd_unary`.
+   */
+  simd_unary,
+  simd_binary,
+  simd_ternary,
+  simd_extract_lane,
+  simd_replace_lane,
+  simd_const,
+  simd_shuffle,
+  simd_load,
+  simd_store,
+  simd_load_lane,
+  simd_store_lane,
   // references
   ref_null,
   ref_is_null,
@@ -359,7 +391,39 @@ export let isSingleValueOp = (op: IrOp): boolean => {
       op == IrOp.global_set || op == IrOp.var_set ||
       op == IrOp.struct_get || op == IrOp.iface_pack ||
       op == IrOp.iface_vtable || op == IrOp.iface_instance ||
-      op == IrOp.mv_get;
+      op == IrOp.mv_get ||
+      // The one-operand SIMD shapes. Their slot b holds the opcode
+      // (plus, for the other two, an extra index to the lane or
+      // alignment immediates) — never a value.
+      op == IrOp.simd_unary || op == IrOp.simd_extract_lane ||
+      op == IrOp.simd_load;
+};
+
+/**
+ * Any of the eleven SIMD shapes. They form a contiguous band, so this
+ * is a range check — keep them together in the enum.
+ */
+export let isSimdOp = (op: IrOp): boolean => {
+  let v = op as i32;
+  return v >= IrOp.simd_unary as i32 && v <= IrOp.simd_store_lane as i32;
+};
+
+/**
+ * How many value operands a SIMD op parks in `extra`, starting at slot
+ * a. Zero for the shapes that keep their single operand inline (those
+ * go through `isSingleValueOp`) and for `simd_const`, which reads
+ * nothing. Immediates never appear in this list.
+ */
+export let simdExtraOperandCount = (op: IrOp): i32 => {
+  if (op == IrOp.simd_binary || op == IrOp.simd_shuffle ||
+      op == IrOp.simd_store || op == IrOp.simd_replace_lane ||
+      op == IrOp.simd_load_lane || op == IrOp.simd_store_lane) {
+    return 2;
+  }
+  if (op == IrOp.simd_ternary) {
+    return 3;
+  }
+  return 0;
 };
 
 /**
@@ -523,7 +587,7 @@ export final class IrBody {
         op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
         op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
         op == IrOp.global_get || op == IrOp.var_get ||
-        op == IrOp.struct_new_default ||
+        op == IrOp.struct_new_default || op == IrOp.simd_const ||
         op == IrOp.memory_size || op == IrOp.unreachable) {
       return;
     }
@@ -638,6 +702,17 @@ export final class IrBody {
       this.#appendSuccessorArgs(inst, out);
       return;
     }
+    // SIMD: a fixed-length operand list in `extra`. The wasm opcode and
+    // any lane or alignment immediate ride in slot b, never here.
+    let simdCount = simdExtraOperandCount(op);
+    if (simdCount > 0) {
+      var si = 0;
+      while (si < simdCount) {
+        out.push(this.extra[av + si]);
+        si += 1;
+      }
+      return;
+    }
     throw new Error(`appendValueOperands: unhandled opcode ${irOpName(op)}`);
   }
 
@@ -654,7 +729,7 @@ export final class IrBody {
         op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64 ||
         op == IrOp.ref_null || op == IrOp.ref_func || op == IrOp.str_lit ||
         op == IrOp.global_get || op == IrOp.var_get ||
-        op == IrOp.struct_new_default ||
+        op == IrOp.struct_new_default || op == IrOp.simd_const ||
         op == IrOp.memory_size || op == IrOp.unreachable) {
       return;
     }
@@ -747,6 +822,15 @@ export final class IrBody {
         op == IrOp.yield_ || op == IrOp.await_) {
       this.a[inst] = map(av);
       this.#rewriteSuccessorArgs(inst, map);
+      return;
+    }
+    let simdCount = simdExtraOperandCount(op);
+    if (simdCount > 0) {
+      var si = 0;
+      while (si < simdCount) {
+        this.extra[av + si] = map(this.extra[av + si]);
+        si += 1;
+      }
       return;
     }
     throw new Error(`rewriteValueOperands: unhandled opcode ${irOpName(op)}`);
@@ -976,6 +1060,19 @@ let buildIrOpNames = (): Array<String> => {
   n[IrOp.f64_store as i32] = 'f64.store';
   n[IrOp.memory_size as i32] = 'memory.size';
   n[IrOp.memory_grow as i32] = 'memory.grow';
+  // The shape, not the instruction: the printer appends the wasm name
+  // from the opcode immediate, so a dump reads `simd.binary i32x4.add`.
+  n[IrOp.simd_unary as i32] = 'simd.unary';
+  n[IrOp.simd_binary as i32] = 'simd.binary';
+  n[IrOp.simd_ternary as i32] = 'simd.ternary';
+  n[IrOp.simd_extract_lane as i32] = 'simd.extract_lane';
+  n[IrOp.simd_replace_lane as i32] = 'simd.replace_lane';
+  n[IrOp.simd_const as i32] = 'simd.const';
+  n[IrOp.simd_shuffle as i32] = 'simd.shuffle';
+  n[IrOp.simd_load as i32] = 'simd.load';
+  n[IrOp.simd_store as i32] = 'simd.store';
+  n[IrOp.simd_load_lane as i32] = 'simd.load_lane';
+  n[IrOp.simd_store_lane as i32] = 'simd.store_lane';
   n[IrOp.ref_null as i32] = 'ref.null';
   n[IrOp.ref_is_null as i32] = 'ref.is_null';
   n[IrOp.ref_as_non_null as i32] = 'ref.as_non_null';

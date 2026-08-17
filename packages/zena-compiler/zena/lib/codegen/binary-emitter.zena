@@ -854,6 +854,48 @@ export final class BinaryEmitter implements WasmEmitter {
     (this.currentBuffer as ByteBuffer).writeULEB128(offset);
   }
 
+  /**
+   * The `0xFD` prefix and the ULEB128 opcode every vector instruction
+   * starts with. Half the set has an opcode above 127, so writing it as
+   * a single byte would truncate `i32x4.add` (0xAE) to a different
+   * instruction rather than fail — hence ULEB128, always.
+   */
+  #simdPrefix(opcode: i32): ByteBuffer {
+    let b = this.currentBuffer as ByteBuffer;
+    b.writeByte(Opcode.simd_prefix as i32);
+    b.writeULEB128(opcode);
+    return b;
+  }
+
+  emitSimd(opcode: i32): void {
+    this.#simdPrefix(opcode);
+  }
+
+  emitSimdLane(opcode: i32, lane: i32): void {
+    let b = this.#simdPrefix(opcode);
+    b.writeByte(lane);
+  }
+
+  emitSimdMem(opcode: i32, align: i32, offset: i32): void {
+    let b = this.#simdPrefix(opcode);
+    b.writeULEB128(align);
+    b.writeULEB128(offset);
+  }
+
+  emitSimdMemLane(opcode: i32, align: i32, offset: i32, lane: i32): void {
+    let b = this.#simdPrefix(opcode);
+    b.writeULEB128(align);
+    b.writeULEB128(offset);
+    b.writeByte(lane);
+  }
+
+  emitSimdBytes(opcode: i32, bytes: Array<i32>): void {
+    let b = this.#simdPrefix(opcode);
+    for (let byte in bytes) {
+      b.writeByte(byte);
+    }
+  }
+
   emitArrayType(index: i32, elementType: ValType, isMutable: boolean): void {
     let b = this.currentSection;
     if (b == null) {

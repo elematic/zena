@@ -1,0 +1,411 @@
+/**
+ * The fixed-width WebAssembly SIMD instruction set: the one place that
+ * knows an instruction's opcode, operand shape, result type and natural
+ * alignment. Both the `@intrinsic` name validator (intrinsics.zena) and
+ * the ZIR lowering router (codegen/ir/intrinsics.zena) read this table,
+ * so a name that type-checks is a name that lowers.
+ *
+ * Every row was read back out of an assembled module rather than
+ * transcribed: one function per instruction, assembled with wasm-tools,
+ * and the `0xFD`-prefixed opcode and memarg alignment taken from the
+ * disassembly. See docs/design/simd.md.
+ *
+ * Relaxed SIMD is deliberately absent. Its instructions are
+ * non-deterministic by design and off by default in the engines Zena
+ * targets, so they need their own decision rather than a row here.
+ */
+import { HashMap } from 'zena:map';
+import { String } from 'zena:string';
+import { i32ToString } from 'zena:string-convert';
+
+/**
+ * How an instruction's operands and immediates are laid out. The shape
+ * decides which ZIR op carries it and how many arguments the intrinsic
+ * call must supply — the opcode alone does not.
+ */
+export enum SimdShape {
+  /** One v128 (or scalar, for the splats) operand. */
+  Unary,
+  /** Two operands: v128 pairs, the shifts' (v128, i32), swizzle. */
+  Binary,
+  /** Three v128 operands. Only `v128.bitselect`. */
+  Ternary,
+  /** `(vec, lane)` — the lane index is an immediate, so it must be a literal. */
+  ExtractLane,
+  /** `(vec, lane, value)` — lane immediate, value operand. */
+  ReplaceLane,
+  /** `(ptr)` — the memarg is the compiler's, not the caller's. */
+  Load,
+  /** `(ptr, value)`. */
+  Store,
+  /** `(ptr, vec, lane)`. */
+  LoadLane,
+  /** `(ptr, vec, lane)`. */
+  StoreLane,
+  /** `(lane0, lane1, lane2, lane3)` i32 literals — 16 immediate bytes. */
+  Const,
+  /** `(a, b, l0..l15)` — two operands and sixteen lane literals. */
+  Shuffle,
+}
+
+/** The wasm value type an instruction leaves on the stack. */
+export enum SimdResult {
+  V128,
+  I32,
+  I64,
+  F32,
+  F64,
+  Void,
+}
+
+/** One row of the instruction table. */
+export final class SimdInstruction {
+  /** The wasm name, e.g. `i32x4.add`. */
+  name: String;
+  /** The opcode following the `0xFD` prefix, encoded as a ULEB128. */
+  opcode: i32;
+  shape: SimdShape;
+  result: SimdResult;
+  /** log2 of the natural alignment, or -1 for a non-memory instruction. */
+  align: i32;
+
+  new(this.name, this.opcode, this.shape, this.result, this.align);
+}
+
+var table: HashMap<String, SimdInstruction> | null = null;
+var byOpcode: HashMap<i32, SimdInstruction> | null = null;
+
+/**
+ * Fills both indexes on first use. They are built together so a row can
+ * only ever be in both or neither — the opcode index is the same rows
+ * read the other way, not a second list to keep in step.
+ */
+let buildTable = (): HashMap<String, SimdInstruction> => {
+  let t = new HashMap<String, SimdInstruction>();
+  let byOp = new HashMap<i32, SimdInstruction>();
+  let add = (name: String, opcode: i32, shape: SimdShape, result: SimdResult,
+      align: i32): void => {
+    let instr = new SimdInstruction(name, opcode, shape, result, align);
+    t[name] = instr;
+    byOp[opcode] = instr;
+  };
+  add('v128.load', 0x00, SimdShape.Load, SimdResult.V128, 4);
+  add('v128.load8x8_s', 0x01, SimdShape.Load, SimdResult.V128, 3);
+  add('v128.load8x8_u', 0x02, SimdShape.Load, SimdResult.V128, 3);
+  add('v128.load16x4_s', 0x03, SimdShape.Load, SimdResult.V128, 3);
+  add('v128.load16x4_u', 0x04, SimdShape.Load, SimdResult.V128, 3);
+  add('v128.load32x2_s', 0x05, SimdShape.Load, SimdResult.V128, 3);
+  add('v128.load32x2_u', 0x06, SimdShape.Load, SimdResult.V128, 3);
+  add('v128.load8_splat', 0x07, SimdShape.Load, SimdResult.V128, 0);
+  add('v128.load16_splat', 0x08, SimdShape.Load, SimdResult.V128, 1);
+  add('v128.load32_splat', 0x09, SimdShape.Load, SimdResult.V128, 2);
+  add('v128.load64_splat', 0x0A, SimdShape.Load, SimdResult.V128, 3);
+  add('v128.load32_zero', 0x5C, SimdShape.Load, SimdResult.V128, 2);
+  add('v128.load64_zero', 0x5D, SimdShape.Load, SimdResult.V128, 3);
+  add('v128.store', 0x0B, SimdShape.Store, SimdResult.Void, 4);
+  add('v128.load8_lane', 0x54, SimdShape.LoadLane, SimdResult.V128, 0);
+  add('v128.load16_lane', 0x55, SimdShape.LoadLane, SimdResult.V128, 1);
+  add('v128.load32_lane', 0x56, SimdShape.LoadLane, SimdResult.V128, 2);
+  add('v128.load64_lane', 0x57, SimdShape.LoadLane, SimdResult.V128, 3);
+  add('v128.store8_lane', 0x58, SimdShape.StoreLane, SimdResult.Void, 0);
+  add('v128.store16_lane', 0x59, SimdShape.StoreLane, SimdResult.Void, 1);
+  add('v128.store32_lane', 0x5A, SimdShape.StoreLane, SimdResult.Void, 2);
+  add('v128.store64_lane', 0x5B, SimdShape.StoreLane, SimdResult.Void, 3);
+  add('v128.const', 0x0C, SimdShape.Const, SimdResult.V128, -1);
+  add('i8x16.shuffle', 0x0D, SimdShape.Shuffle, SimdResult.V128, -1);
+  add('i8x16.swizzle', 0x0E, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.splat', 0x0F, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.splat', 0x10, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.splat', 0x11, SimdShape.Unary, SimdResult.V128, -1);
+  add('i64x2.splat', 0x12, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.splat', 0x13, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.splat', 0x14, SimdShape.Unary, SimdResult.V128, -1);
+  add('i8x16.extract_lane_s', 0x15, SimdShape.ExtractLane, SimdResult.I32, -1);
+  add('i8x16.extract_lane_u', 0x16, SimdShape.ExtractLane, SimdResult.I32, -1);
+  add('i8x16.replace_lane', 0x17, SimdShape.ReplaceLane, SimdResult.V128, -1);
+  add('i16x8.extract_lane_s', 0x18, SimdShape.ExtractLane, SimdResult.I32, -1);
+  add('i16x8.extract_lane_u', 0x19, SimdShape.ExtractLane, SimdResult.I32, -1);
+  add('i16x8.replace_lane', 0x1A, SimdShape.ReplaceLane, SimdResult.V128, -1);
+  add('i32x4.extract_lane', 0x1B, SimdShape.ExtractLane, SimdResult.I32, -1);
+  add('i32x4.replace_lane', 0x1C, SimdShape.ReplaceLane, SimdResult.V128, -1);
+  add('i64x2.extract_lane', 0x1D, SimdShape.ExtractLane, SimdResult.I64, -1);
+  add('i64x2.replace_lane', 0x1E, SimdShape.ReplaceLane, SimdResult.V128, -1);
+  add('f32x4.extract_lane', 0x1F, SimdShape.ExtractLane, SimdResult.F32, -1);
+  add('f32x4.replace_lane', 0x20, SimdShape.ReplaceLane, SimdResult.V128, -1);
+  add('f64x2.extract_lane', 0x21, SimdShape.ExtractLane, SimdResult.F64, -1);
+  add('f64x2.replace_lane', 0x22, SimdShape.ReplaceLane, SimdResult.V128, -1);
+  add('i8x16.eq', 0x23, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.ne', 0x24, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.lt_s', 0x25, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.lt_u', 0x26, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.gt_s', 0x27, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.gt_u', 0x28, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.le_s', 0x29, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.le_u', 0x2A, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.ge_s', 0x2B, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.ge_u', 0x2C, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.eq', 0x2D, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.ne', 0x2E, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.lt_s', 0x2F, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.lt_u', 0x30, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.gt_s', 0x31, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.gt_u', 0x32, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.le_s', 0x33, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.le_u', 0x34, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.ge_s', 0x35, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.ge_u', 0x36, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.eq', 0x37, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.ne', 0x38, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.lt_s', 0x39, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.lt_u', 0x3A, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.gt_s', 0x3B, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.gt_u', 0x3C, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.le_s', 0x3D, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.le_u', 0x3E, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.ge_s', 0x3F, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.ge_u', 0x40, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.eq', 0xD6, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.ne', 0xD7, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.lt_s', 0xD8, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.gt_s', 0xD9, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.le_s', 0xDA, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.ge_s', 0xDB, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.eq', 0x41, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.ne', 0x42, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.lt', 0x43, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.gt', 0x44, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.le', 0x45, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.ge', 0x46, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.eq', 0x47, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.ne', 0x48, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.lt', 0x49, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.gt', 0x4A, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.le', 0x4B, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.ge', 0x4C, SimdShape.Binary, SimdResult.V128, -1);
+  add('v128.not', 0x4D, SimdShape.Unary, SimdResult.V128, -1);
+  add('v128.and', 0x4E, SimdShape.Binary, SimdResult.V128, -1);
+  add('v128.andnot', 0x4F, SimdShape.Binary, SimdResult.V128, -1);
+  add('v128.or', 0x50, SimdShape.Binary, SimdResult.V128, -1);
+  add('v128.xor', 0x51, SimdShape.Binary, SimdResult.V128, -1);
+  add('v128.bitselect', 0x52, SimdShape.Ternary, SimdResult.V128, -1);
+  add('v128.any_true', 0x53, SimdShape.Unary, SimdResult.I32, -1);
+  add('i8x16.abs', 0x60, SimdShape.Unary, SimdResult.V128, -1);
+  add('i8x16.neg', 0x61, SimdShape.Unary, SimdResult.V128, -1);
+  add('i8x16.popcnt', 0x62, SimdShape.Unary, SimdResult.V128, -1);
+  add('i8x16.all_true', 0x63, SimdShape.Unary, SimdResult.I32, -1);
+  add('i8x16.bitmask', 0x64, SimdShape.Unary, SimdResult.I32, -1);
+  add('i8x16.narrow_i16x8_s', 0x65, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.narrow_i16x8_u', 0x66, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.shl', 0x6B, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.shr_s', 0x6C, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.shr_u', 0x6D, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.add', 0x6E, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.add_sat_s', 0x6F, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.add_sat_u', 0x70, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.sub', 0x71, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.sub_sat_s', 0x72, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.sub_sat_u', 0x73, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.min_s', 0x76, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.min_u', 0x77, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.max_s', 0x78, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.max_u', 0x79, SimdShape.Binary, SimdResult.V128, -1);
+  add('i8x16.avgr_u', 0x7B, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.extadd_pairwise_i8x16_s', 0x7C, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.extadd_pairwise_i8x16_u', 0x7D, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.abs', 0x80, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.neg', 0x81, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.q15mulr_sat_s', 0x82, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.all_true', 0x83, SimdShape.Unary, SimdResult.I32, -1);
+  add('i16x8.bitmask', 0x84, SimdShape.Unary, SimdResult.I32, -1);
+  add('i16x8.narrow_i32x4_s', 0x85, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.narrow_i32x4_u', 0x86, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.extend_low_i8x16_s', 0x87, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.extend_high_i8x16_s', 0x88, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.extend_low_i8x16_u', 0x89, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.extend_high_i8x16_u', 0x8A, SimdShape.Unary, SimdResult.V128, -1);
+  add('i16x8.shl', 0x8B, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.shr_s', 0x8C, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.shr_u', 0x8D, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.add', 0x8E, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.add_sat_s', 0x8F, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.add_sat_u', 0x90, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.sub', 0x91, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.sub_sat_s', 0x92, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.sub_sat_u', 0x93, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.mul', 0x95, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.min_s', 0x96, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.min_u', 0x97, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.max_s', 0x98, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.max_u', 0x99, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.avgr_u', 0x9B, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.extmul_low_i8x16_s', 0x9C, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.extmul_high_i8x16_s', 0x9D, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.extmul_low_i8x16_u', 0x9E, SimdShape.Binary, SimdResult.V128, -1);
+  add('i16x8.extmul_high_i8x16_u', 0x9F, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.extadd_pairwise_i16x8_s', 0x7E, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.extadd_pairwise_i16x8_u', 0x7F, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.abs', 0xA0, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.neg', 0xA1, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.all_true', 0xA3, SimdShape.Unary, SimdResult.I32, -1);
+  add('i32x4.bitmask', 0xA4, SimdShape.Unary, SimdResult.I32, -1);
+  add('i32x4.extend_low_i16x8_s', 0xA7, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.extend_high_i16x8_s', 0xA8, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.extend_low_i16x8_u', 0xA9, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.extend_high_i16x8_u', 0xAA, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.shl', 0xAB, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.shr_s', 0xAC, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.shr_u', 0xAD, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.add', 0xAE, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.sub', 0xB1, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.mul', 0xB5, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.min_s', 0xB6, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.min_u', 0xB7, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.max_s', 0xB8, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.max_u', 0xB9, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.dot_i16x8_s', 0xBA, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.extmul_low_i16x8_s', 0xBC, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.extmul_high_i16x8_s', 0xBD, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.extmul_low_i16x8_u', 0xBE, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.extmul_high_i16x8_u', 0xBF, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.abs', 0xC0, SimdShape.Unary, SimdResult.V128, -1);
+  add('i64x2.neg', 0xC1, SimdShape.Unary, SimdResult.V128, -1);
+  add('i64x2.all_true', 0xC3, SimdShape.Unary, SimdResult.I32, -1);
+  add('i64x2.bitmask', 0xC4, SimdShape.Unary, SimdResult.I32, -1);
+  add('i64x2.extend_low_i32x4_s', 0xC7, SimdShape.Unary, SimdResult.V128, -1);
+  add('i64x2.extend_high_i32x4_s', 0xC8, SimdShape.Unary, SimdResult.V128, -1);
+  add('i64x2.extend_low_i32x4_u', 0xC9, SimdShape.Unary, SimdResult.V128, -1);
+  add('i64x2.extend_high_i32x4_u', 0xCA, SimdShape.Unary, SimdResult.V128, -1);
+  add('i64x2.shl', 0xCB, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.shr_s', 0xCC, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.shr_u', 0xCD, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.add', 0xCE, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.sub', 0xD1, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.mul', 0xD5, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.extmul_low_i32x4_s', 0xDC, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.extmul_high_i32x4_s', 0xDD, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.extmul_low_i32x4_u', 0xDE, SimdShape.Binary, SimdResult.V128, -1);
+  add('i64x2.extmul_high_i32x4_u', 0xDF, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.ceil', 0x67, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.floor', 0x68, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.trunc', 0x69, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.nearest', 0x6A, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.abs', 0xE0, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.neg', 0xE1, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.sqrt', 0xE3, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.add', 0xE4, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.sub', 0xE5, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.mul', 0xE6, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.div', 0xE7, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.min', 0xE8, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.max', 0xE9, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.pmin', 0xEA, SimdShape.Binary, SimdResult.V128, -1);
+  add('f32x4.pmax', 0xEB, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.ceil', 0x74, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.floor', 0x75, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.trunc', 0x7A, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.nearest', 0x94, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.abs', 0xEC, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.neg', 0xED, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.sqrt', 0xEF, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.add', 0xF0, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.sub', 0xF1, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.mul', 0xF2, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.div', 0xF3, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.min', 0xF4, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.max', 0xF5, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.pmin', 0xF6, SimdShape.Binary, SimdResult.V128, -1);
+  add('f64x2.pmax', 0xF7, SimdShape.Binary, SimdResult.V128, -1);
+  add('i32x4.trunc_sat_f32x4_s', 0xF8, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.trunc_sat_f32x4_u', 0xF9, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.convert_i32x4_s', 0xFA, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.convert_i32x4_u', 0xFB, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.trunc_sat_f64x2_s_zero', 0xFC, SimdShape.Unary, SimdResult.V128, -1);
+  add('i32x4.trunc_sat_f64x2_u_zero', 0xFD, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.convert_low_i32x4_s', 0xFE, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.convert_low_i32x4_u', 0xFF, SimdShape.Unary, SimdResult.V128, -1);
+  add('f32x4.demote_f64x2_zero', 0x5E, SimdShape.Unary, SimdResult.V128, -1);
+  add('f64x2.promote_low_f32x4', 0x5F, SimdShape.Unary, SimdResult.V128, -1);
+  byOpcode = byOp;
+  return t;
+};
+
+/** The name index, built on first use. */
+let nameIndex = (): HashMap<String, SimdInstruction> => {
+  var t = table;
+  if (t == null) {
+    t = buildTable();
+    table = t;
+  }
+  return t;
+};
+
+/**
+ * The instruction named `name`, or null if it is not a SIMD instruction.
+ * A null answer is the caller's cue to keep looking, not an error.
+ */
+export let simdInstruction = (name: String): SimdInstruction | null => {
+  if (let (true, instr) = nameIndex().get(name)) {
+    return instr;
+  }
+  return null;
+};
+
+/**
+ * The wasm name of the instruction with this opcode. Only the WAT
+ * emitter and the ZIR printer need this direction, and both are
+ * printing something a human will read, so an unknown opcode formats as
+ * itself rather than throwing mid-dump.
+ */
+export let simdName = (opcode: i32): String => {
+  nameIndex();
+  let m = byOpcode;
+  if (m != null) {
+    if (let (true, instr) = m.get(opcode)) {
+      return instr.name;
+    }
+  }
+  return 'simd:' + i32ToString(opcode);
+};
+
+/**
+ * How many lanes `instr` sees the vector as having — the bound its lane
+ * immediate must fall under. The lane-MEMORY instructions name the lane
+ * width (`v128.load32_lane` moves one of four 32-bit lanes) while the
+ * lane-ACCESS ones name the shape (`i32x4.extract_lane`), so the count
+ * is read from whichever the name carries.
+ *
+ * `i8x16.shuffle` is not here: its sixteen selectors index the
+ * CONCATENATION of two vectors, so they run to 32 and are bounded at
+ * the call site instead.
+ */
+export let simdLaneCount = (instr: SimdInstruction): i32 => {
+  let n = instr.name;
+  if (n.startsWith('v128.load8_') || n.startsWith('v128.store8_') ||
+      n.startsWith('i8x16')) {
+    return 16;
+  }
+  if (n.startsWith('v128.load16_') || n.startsWith('v128.store16_') ||
+      n.startsWith('i16x8')) {
+    return 8;
+  }
+  if (n.startsWith('v128.load32_') || n.startsWith('v128.store32_') ||
+      n.startsWith('i32x4') || n.startsWith('f32x4')) {
+    return 4;
+  }
+  return 2;
+};
+
+/** How many arguments a call to `instr` must supply. */
+export let simdArgCount = (instr: SimdInstruction): i32 => match (instr.shape) {
+  case SimdShape.Unary: 1
+  case SimdShape.Binary: 2
+  case SimdShape.Ternary: 3
+  case SimdShape.ExtractLane: 2
+  case SimdShape.ReplaceLane: 3
+  case SimdShape.Load: 1
+  case SimdShape.Store: 2
+  case SimdShape.LoadLane: 3
+  case SimdShape.StoreLane: 3
+  case SimdShape.Const: 4
+  case SimdShape.Shuffle: 18
+};

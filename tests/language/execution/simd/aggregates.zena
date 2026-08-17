@@ -1,0 +1,42 @@
+// @mode: run
+// @result: 111
+//
+// A `v128` is a value like any other once it exists: it lives in fields,
+// array elements and module-level bindings, and moves through them
+// unchanged. Wasm GC allows `v128` as a storage type, so none of this
+// needs a boxed representation — which is just as well, because there
+// is none to fall back on.
+import {i32x4Splat, i32x4Add, i32x4ExtractLane, v128Const} from 'zena:simd';
+import {Array} from 'zena:array';
+
+let ones: v128 = i32x4Splat(1);
+
+class Accumulator {
+  var total: v128;
+  new(this.total);
+
+  add(v: v128): void {
+    this.total = i32x4Add(this.total, v);
+  }
+}
+
+export function main(): i32 {
+  // A module-level binding, read back.
+  var sum = i32x4ExtractLane(ones, 0); // 1
+
+  // A mutable field, written through a method.
+  let acc = new Accumulator(v128Const(10, 20, 30, 40));
+  acc.add(ones);
+  sum = sum + i32x4ExtractLane(acc.total, 0); // + 11 = 12
+
+  // An array of vectors, specialized on the element type rather than
+  // boxed: `Array<v128>` is a wasm array whose elements are v128.
+  let vectors = new Array<v128>();
+  vectors.push(i32x4Splat(4));
+  vectors.push(i32x4Splat(95));
+  for (let v in vectors) {
+    sum = sum + i32x4ExtractLane(v, 2);
+  }
+  // 12 + 4 + 95 = 111
+  return sum;
+}

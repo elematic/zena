@@ -135,9 +135,12 @@ See [Strings Design](./strings.md) for details on string implementation.
 - **`ByteArray`**: Maps to `(array (mut i8))`. Used for low-level binary data
   and string implementation.
 
-### Future Consideration: SIMD
+### SIMD
 
-- **`v128`**: 128-bit vector type for SIMD operations.
+- **`v128`**: 128-bit vector type, mapping to wasm's `v128`. A value
+  primitive with no literals, operators or casts — the bits are interpreted
+  by the instruction reading them, not by the type. See
+  [simd.md](simd.md). Shaped types (`f32x4`, `i32x4`) are still future work.
 
 ## 5. Nullability
 

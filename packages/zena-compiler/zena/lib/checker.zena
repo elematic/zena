@@ -89,7 +89,7 @@ import {
 } from './ast.zena';
 import {
   Type, TypeId, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
-  U8Type, U16Type, I8Type, I16Type,
+  U8Type, U16Type, I8Type, I16Type, V128Type,
   BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType,
   AnyRefType, EqRefType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
@@ -732,6 +732,7 @@ final class CheckerContext {
     this.declareBuiltinType("u16", new U16Type());
     this.declareBuiltinType("i8", new I8Type());
     this.declareBuiltinType("i16", new I16Type());
+    this.declareBuiltinType("v128", new V128Type());
     this.declareBuiltinType("boolean", new BooleanType());
     this.declareBuiltinType("void", new VoidType());
     this.declareBuiltinType("null", new NullType());
@@ -5475,6 +5476,10 @@ let isValuePrimitive = (type: Type): boolean => {
     case U16Type: true
     case I8Type: true
     case I16Type: true
+    // A value, not a reference — but one no cast reaches. `isValidCast`
+    // asks separately whether both sides are numeric or both boolean,
+    // and `v128` is neither, so every cast to or from it is rejected.
+    case V128Type: true
     case BooleanType: true
     case BoolLiteralType: true
     case NumLiteralType: true
@@ -5520,6 +5525,13 @@ let isNullableType = (t: Type): boolean => match (t) {
 };
 
 let isValidCast = (sourceType: Type, targetType: Type): boolean => {
+  // `v128` casts to and from nothing but itself. The bits carry no
+  // interpretation to convert, and reinterpreting them is what the
+  // `zena:simd` instructions are for.
+  if (sourceType is V128Type || targetType is V128Type) {
+    return sourceType is V128Type && targetType is V128Type;
+  }
+
   // Primitive → Primitive: VALID only if both are numeric or both are boolean
   if (isValuePrimitive(sourceType) && isValuePrimitive(targetType)) {
     let isSrcNum: boolean = match (sourceType) {
@@ -6433,6 +6445,7 @@ let typesEqual = (a: Type, b: Type): boolean => {
     case U16Type: b is U16Type
     case I8Type: b is I8Type
     case I16Type: b is I16Type
+    case V128Type: b is V128Type
     case BooleanType: b is BooleanType
     case VoidType: b is VoidType
     case NullType: b is NullType

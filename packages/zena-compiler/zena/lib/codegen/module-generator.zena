@@ -1,5 +1,6 @@
 import { collectValueExports } from './lookup.zena';
-import { ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRefNull, ValTypeStructRef, ValTypeRef } from './wasm.zena';
+import { ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRefNull, ValTypeStructRef, ValTypeRef } from './wasm.zena';
+import { simdInstruction } from '../simd.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, StringLiteralLocation,
 } from './wasm-module.zena';
@@ -69,6 +70,8 @@ export final class ModuleGenerator {
       this.emitter.emitF64Const(0.0);
     } else if (type is ValTypeF32) {
       this.emitter.emitF32Const(0.0);
+    } else if (type is ValTypeV128) {
+      this.emitZeroV128();
     } else {
       match (type) {
         case ValTypeRefNull as refNullType: {
@@ -85,6 +88,25 @@ export final class ModuleGenerator {
         }
       }
     }
+  }
+
+  /**
+   * An all-zero vector, the only constant expression a `v128` global or
+   * field can be initialized with — there is no `v128` equivalent of
+   * `i32.const`, only the 16-byte `v128.const`.
+   */
+  emitZeroV128(): void {
+    let zeros = new Array<i32>();
+    var i = 0;
+    while (i < 16) {
+      zeros.push(0);
+      i += 1;
+    }
+    let instr = simdInstruction('v128.const');
+    if (instr == null) {
+      throw new Error('v128.const is missing from the SIMD table');
+    }
+    this.emitter.emitSimdBytes(instr.opcode, zeros);
   }
 
   
@@ -576,6 +598,8 @@ export final class ModuleGenerator {
           this.emitter.emitF64Const(0.0);
         } else if (type is ValTypeF32) {
           this.emitter.emitF32Const(0.0);
+        } else if (type is ValTypeV128) {
+          this.emitZeroV128();
         } else {
           match (type) {
             case ValTypeRefNull as refNullType: {

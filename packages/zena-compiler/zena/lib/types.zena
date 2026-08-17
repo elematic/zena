@@ -75,6 +75,21 @@ export sealed class Type implements Hashable {
   case I8Type
   case I16Type
 
+  /**
+   * The WebAssembly SIMD vector, 128 bits with no interpretation of its
+   * own: what the bits mean is chosen by each instruction that reads
+   * them, not by the type. So there is no literal syntax, no arithmetic,
+   * no conversion to or from anything — a `v128` is produced and consumed
+   * by the `zena:simd` intrinsics and otherwise only moves.
+   *
+   * It is also the one primitive with NO reference form: wasm has
+   * nothing to box a `v128` into, so it cannot cross a boundary that
+   * erases to `anyref`. Monomorphized uses are fine — a wasm array or
+   * struct field may hold a `v128` — but an erased one has no
+   * representation to fall back on.
+   */
+  case V128Type
+
   // Other primitives
   case BooleanType
   case VoidType
@@ -1638,6 +1653,7 @@ export let typeToString = (t: Type): String => match (t) {
   case U16Type: "u16"
   case I8Type: "i8"
   case I16Type: "i16"
+  case V128Type: "v128"
   case BooleanType: "boolean"
   case VoidType: "void"
   case NullType: "null"

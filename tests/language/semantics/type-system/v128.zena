@@ -1,0 +1,26 @@
+// @mode: check
+//
+// `v128` is a value primitive that no conversion reaches. Its 128 bits
+// carry no interpretation of their own — an instruction decides whether
+// they are four floats or sixteen bytes — so there is no meaning for a
+// cast, an arithmetic operator, or a literal to preserve.
+import {i32x4Splat, i32x4Add} from 'zena:simd';
+
+export let main = () => {
+  // A v128 flows through locals, parameters and returns like any value.
+  let v: v128 = i32x4Splat(1);
+  let w = i32x4Add(v, v);
+  let identity = (x: v128): v128 => x;
+  let back: v128 = identity(w);
+
+  // Casting is not reinterpretation: use the instructions for that.
+  let asInt = v as i32; // @error: Cannot cast type 'v128' to 'i32'
+  let fromInt = 1 as v128; // @error: Cannot cast type 'i32' to 'v128'
+
+  // No arithmetic. Elementwise operators are a separate decision, and
+  // silently picking a lane width would be the wrong one to make here.
+  let sum = v + v; // @error: cannot apply operator '+' to v128 and v128
+
+  // No literal syntax — `v128Const` takes the words explicitly.
+  let bad: v128 = 0; // @error: Type mismatch
+};

@@ -169,6 +169,9 @@ Features that distinguish Zena from TypeScript:
 
 - **Ownership & Affine Resources** (Track O): `Own<T>`/`Borrow<T>`/`Unmanaged<T>`, second-class borrows, a checker flow graph, and implicit drop — one release mechanism shared by WIT handles, WASI descriptors, linear-memory allocations and FFI pointers. Plan of record in [ownership.md](docs/design/ownership.md); phase 2 step 4 above is its first milestone.
 - **Numeric Unit Types & Units of Measure**: Statically verified physical units and units of measure (e.g. preventing adding meters to feet at compile time).
-- **SIMD**: Native WebAssembly vector instruction support for high-performance computing.
+- **SIMD**: the `v128` type and all 236 fixed-width vector instructions are
+  implemented — see [simd.md](docs/design/simd.md). What remains is the layer
+  above them: shaped vector types (`f32x4`, `i32x4`) and elementwise
+  operators.
 - **Decorators and Macros**: Metaprogramming capabilities for compile-time code generation and extension.
 - **Contracts**: `requires` and `ensures` pre/post-conditions, enabling runtime assertion checks and future static verification using SMT solvers.

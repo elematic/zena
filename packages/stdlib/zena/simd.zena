@@ -1,0 +1,546 @@
+/**
+ * @file
+ *
+ * WebAssembly fixed-width SIMD: the `v128` vector type's instruction set,
+ * one `@intrinsic` declaration per wasm instruction, lowered to that
+ * single instruction with nothing in between.
+ *
+ * Names follow the wasm names mechanically — `i32x4.add` is
+ * `i32x4Add`, `v128.load8x8_s` is `v128Load8x8S` — so the spec reads
+ * as documentation for this module. See docs/design/simd.md.
+ *
+ * Arguments that wasm takes as IMMEDIATES must be literals: the lane
+ * index of the lane-access and lane-memory instructions, the four words
+ * of `v128Const`, and the sixteen lane selectors of `i8x16Shuffle`.
+ * A non-literal there is a compile error, not a slower path.
+ *
+ * Relaxed SIMD is not here: its results are allowed to differ between
+ * engines, which is a decision to make deliberately rather than inherit.
+ */
+
+// ===========================================================================
+// Loads and stores
+// ===========================================================================
+//
+// The memory argument is the compiler's: every access uses the
+// instruction's natural alignment at offset zero. Alignment is a hint in
+// wasm and never changes what a load returns, so nothing is lost by not
+// exposing it.
+
+@intrinsic('v128.load')
+export declare function v128Load(ptr: i32): v128;
+@intrinsic('v128.load8x8_s')
+export declare function v128Load8x8S(ptr: i32): v128;
+@intrinsic('v128.load8x8_u')
+export declare function v128Load8x8U(ptr: i32): v128;
+@intrinsic('v128.load16x4_s')
+export declare function v128Load16x4S(ptr: i32): v128;
+@intrinsic('v128.load16x4_u')
+export declare function v128Load16x4U(ptr: i32): v128;
+@intrinsic('v128.load32x2_s')
+export declare function v128Load32x2S(ptr: i32): v128;
+@intrinsic('v128.load32x2_u')
+export declare function v128Load32x2U(ptr: i32): v128;
+@intrinsic('v128.load8_splat')
+export declare function v128Load8Splat(ptr: i32): v128;
+@intrinsic('v128.load16_splat')
+export declare function v128Load16Splat(ptr: i32): v128;
+@intrinsic('v128.load32_splat')
+export declare function v128Load32Splat(ptr: i32): v128;
+@intrinsic('v128.load64_splat')
+export declare function v128Load64Splat(ptr: i32): v128;
+@intrinsic('v128.load32_zero')
+export declare function v128Load32Zero(ptr: i32): v128;
+@intrinsic('v128.load64_zero')
+export declare function v128Load64Zero(ptr: i32): v128;
+@intrinsic('v128.store')
+export declare function v128Store(ptr: i32, value: v128): void;
+@intrinsic('v128.load8_lane')
+export declare function v128Load8Lane(ptr: i32, vec: v128, lane: i32): v128;
+@intrinsic('v128.load16_lane')
+export declare function v128Load16Lane(ptr: i32, vec: v128, lane: i32): v128;
+@intrinsic('v128.load32_lane')
+export declare function v128Load32Lane(ptr: i32, vec: v128, lane: i32): v128;
+@intrinsic('v128.load64_lane')
+export declare function v128Load64Lane(ptr: i32, vec: v128, lane: i32): v128;
+@intrinsic('v128.store8_lane')
+export declare function v128Store8Lane(ptr: i32, vec: v128, lane: i32): void;
+@intrinsic('v128.store16_lane')
+export declare function v128Store16Lane(ptr: i32, vec: v128, lane: i32): void;
+@intrinsic('v128.store32_lane')
+export declare function v128Store32Lane(ptr: i32, vec: v128, lane: i32): void;
+@intrinsic('v128.store64_lane')
+export declare function v128Store64Lane(ptr: i32, vec: v128, lane: i32): void;
+
+// ===========================================================================
+// Constants, shuffles and splats
+// ===========================================================================
+
+@intrinsic('v128.const')
+export declare function v128Const(lane0: i32, lane1: i32, lane2: i32, lane3: i32): v128;
+@intrinsic('i8x16.shuffle')
+export declare function i8x16Shuffle(a: v128, b: v128, l0: i32, l1: i32, l2: i32, l3: i32, l4: i32, l5: i32, l6: i32, l7: i32, l8: i32, l9: i32, l10: i32, l11: i32, l12: i32, l13: i32, l14: i32, l15: i32): v128;
+@intrinsic('i8x16.swizzle')
+export declare function i8x16Swizzle(a: v128, b: v128): v128;
+@intrinsic('i8x16.splat')
+export declare function i8x16Splat(x: i32): v128;
+@intrinsic('i16x8.splat')
+export declare function i16x8Splat(x: i32): v128;
+@intrinsic('i32x4.splat')
+export declare function i32x4Splat(x: i32): v128;
+@intrinsic('i64x2.splat')
+export declare function i64x2Splat(x: i64): v128;
+@intrinsic('f32x4.splat')
+export declare function f32x4Splat(x: f32): v128;
+@intrinsic('f64x2.splat')
+export declare function f64x2Splat(x: f64): v128;
+
+// ===========================================================================
+// Lane access
+// ===========================================================================
+
+@intrinsic('i8x16.extract_lane_s')
+export declare function i8x16ExtractLaneS(a: v128, lane: i32): i32;
+@intrinsic('i8x16.extract_lane_u')
+export declare function i8x16ExtractLaneU(a: v128, lane: i32): i32;
+@intrinsic('i8x16.replace_lane')
+export declare function i8x16ReplaceLane(a: v128, lane: i32, value: i32): v128;
+@intrinsic('i16x8.extract_lane_s')
+export declare function i16x8ExtractLaneS(a: v128, lane: i32): i32;
+@intrinsic('i16x8.extract_lane_u')
+export declare function i16x8ExtractLaneU(a: v128, lane: i32): i32;
+@intrinsic('i16x8.replace_lane')
+export declare function i16x8ReplaceLane(a: v128, lane: i32, value: i32): v128;
+@intrinsic('i32x4.extract_lane')
+export declare function i32x4ExtractLane(a: v128, lane: i32): i32;
+@intrinsic('i32x4.replace_lane')
+export declare function i32x4ReplaceLane(a: v128, lane: i32, value: i32): v128;
+@intrinsic('i64x2.extract_lane')
+export declare function i64x2ExtractLane(a: v128, lane: i32): i64;
+@intrinsic('i64x2.replace_lane')
+export declare function i64x2ReplaceLane(a: v128, lane: i32, value: i64): v128;
+@intrinsic('f32x4.extract_lane')
+export declare function f32x4ExtractLane(a: v128, lane: i32): f32;
+@intrinsic('f32x4.replace_lane')
+export declare function f32x4ReplaceLane(a: v128, lane: i32, value: f32): v128;
+@intrinsic('f64x2.extract_lane')
+export declare function f64x2ExtractLane(a: v128, lane: i32): f64;
+@intrinsic('f64x2.replace_lane')
+export declare function f64x2ReplaceLane(a: v128, lane: i32, value: f64): v128;
+
+// ===========================================================================
+// Bitwise
+// ===========================================================================
+
+@intrinsic('v128.not')
+export declare function v128Not(a: v128): v128;
+@intrinsic('v128.and')
+export declare function v128And(a: v128, b: v128): v128;
+@intrinsic('v128.andnot')
+export declare function v128Andnot(a: v128, b: v128): v128;
+@intrinsic('v128.or')
+export declare function v128Or(a: v128, b: v128): v128;
+@intrinsic('v128.xor')
+export declare function v128Xor(a: v128, b: v128): v128;
+@intrinsic('v128.bitselect')
+export declare function v128Bitselect(a: v128, b: v128, c: v128): v128;
+@intrinsic('v128.any_true')
+export declare function v128AnyTrue(a: v128): i32;
+
+// ===========================================================================
+// i8x16
+// ===========================================================================
+
+@intrinsic('i8x16.eq')
+export declare function i8x16Eq(a: v128, b: v128): v128;
+@intrinsic('i8x16.ne')
+export declare function i8x16Ne(a: v128, b: v128): v128;
+@intrinsic('i8x16.lt_s')
+export declare function i8x16LtS(a: v128, b: v128): v128;
+@intrinsic('i8x16.lt_u')
+export declare function i8x16LtU(a: v128, b: v128): v128;
+@intrinsic('i8x16.gt_s')
+export declare function i8x16GtS(a: v128, b: v128): v128;
+@intrinsic('i8x16.gt_u')
+export declare function i8x16GtU(a: v128, b: v128): v128;
+@intrinsic('i8x16.le_s')
+export declare function i8x16LeS(a: v128, b: v128): v128;
+@intrinsic('i8x16.le_u')
+export declare function i8x16LeU(a: v128, b: v128): v128;
+@intrinsic('i8x16.ge_s')
+export declare function i8x16GeS(a: v128, b: v128): v128;
+@intrinsic('i8x16.ge_u')
+export declare function i8x16GeU(a: v128, b: v128): v128;
+@intrinsic('i8x16.abs')
+export declare function i8x16Abs(a: v128): v128;
+@intrinsic('i8x16.neg')
+export declare function i8x16Neg(a: v128): v128;
+@intrinsic('i8x16.popcnt')
+export declare function i8x16Popcnt(a: v128): v128;
+@intrinsic('i8x16.all_true')
+export declare function i8x16AllTrue(a: v128): i32;
+@intrinsic('i8x16.bitmask')
+export declare function i8x16Bitmask(a: v128): i32;
+@intrinsic('i8x16.narrow_i16x8_s')
+export declare function i8x16NarrowI16x8S(a: v128, b: v128): v128;
+@intrinsic('i8x16.narrow_i16x8_u')
+export declare function i8x16NarrowI16x8U(a: v128, b: v128): v128;
+@intrinsic('i8x16.shl')
+export declare function i8x16Shl(a: v128, count: i32): v128;
+@intrinsic('i8x16.shr_s')
+export declare function i8x16ShrS(a: v128, count: i32): v128;
+@intrinsic('i8x16.shr_u')
+export declare function i8x16ShrU(a: v128, count: i32): v128;
+@intrinsic('i8x16.add')
+export declare function i8x16Add(a: v128, b: v128): v128;
+@intrinsic('i8x16.add_sat_s')
+export declare function i8x16AddSatS(a: v128, b: v128): v128;
+@intrinsic('i8x16.add_sat_u')
+export declare function i8x16AddSatU(a: v128, b: v128): v128;
+@intrinsic('i8x16.sub')
+export declare function i8x16Sub(a: v128, b: v128): v128;
+@intrinsic('i8x16.sub_sat_s')
+export declare function i8x16SubSatS(a: v128, b: v128): v128;
+@intrinsic('i8x16.sub_sat_u')
+export declare function i8x16SubSatU(a: v128, b: v128): v128;
+@intrinsic('i8x16.min_s')
+export declare function i8x16MinS(a: v128, b: v128): v128;
+@intrinsic('i8x16.min_u')
+export declare function i8x16MinU(a: v128, b: v128): v128;
+@intrinsic('i8x16.max_s')
+export declare function i8x16MaxS(a: v128, b: v128): v128;
+@intrinsic('i8x16.max_u')
+export declare function i8x16MaxU(a: v128, b: v128): v128;
+@intrinsic('i8x16.avgr_u')
+export declare function i8x16AvgrU(a: v128, b: v128): v128;
+
+// ===========================================================================
+// i16x8
+// ===========================================================================
+
+@intrinsic('i16x8.eq')
+export declare function i16x8Eq(a: v128, b: v128): v128;
+@intrinsic('i16x8.ne')
+export declare function i16x8Ne(a: v128, b: v128): v128;
+@intrinsic('i16x8.lt_s')
+export declare function i16x8LtS(a: v128, b: v128): v128;
+@intrinsic('i16x8.lt_u')
+export declare function i16x8LtU(a: v128, b: v128): v128;
+@intrinsic('i16x8.gt_s')
+export declare function i16x8GtS(a: v128, b: v128): v128;
+@intrinsic('i16x8.gt_u')
+export declare function i16x8GtU(a: v128, b: v128): v128;
+@intrinsic('i16x8.le_s')
+export declare function i16x8LeS(a: v128, b: v128): v128;
+@intrinsic('i16x8.le_u')
+export declare function i16x8LeU(a: v128, b: v128): v128;
+@intrinsic('i16x8.ge_s')
+export declare function i16x8GeS(a: v128, b: v128): v128;
+@intrinsic('i16x8.ge_u')
+export declare function i16x8GeU(a: v128, b: v128): v128;
+@intrinsic('i16x8.extadd_pairwise_i8x16_s')
+export declare function i16x8ExtaddPairwiseI8x16S(a: v128): v128;
+@intrinsic('i16x8.extadd_pairwise_i8x16_u')
+export declare function i16x8ExtaddPairwiseI8x16U(a: v128): v128;
+@intrinsic('i16x8.abs')
+export declare function i16x8Abs(a: v128): v128;
+@intrinsic('i16x8.neg')
+export declare function i16x8Neg(a: v128): v128;
+@intrinsic('i16x8.q15mulr_sat_s')
+export declare function i16x8Q15mulrSatS(a: v128, b: v128): v128;
+@intrinsic('i16x8.all_true')
+export declare function i16x8AllTrue(a: v128): i32;
+@intrinsic('i16x8.bitmask')
+export declare function i16x8Bitmask(a: v128): i32;
+@intrinsic('i16x8.narrow_i32x4_s')
+export declare function i16x8NarrowI32x4S(a: v128, b: v128): v128;
+@intrinsic('i16x8.narrow_i32x4_u')
+export declare function i16x8NarrowI32x4U(a: v128, b: v128): v128;
+@intrinsic('i16x8.extend_low_i8x16_s')
+export declare function i16x8ExtendLowI8x16S(a: v128): v128;
+@intrinsic('i16x8.extend_high_i8x16_s')
+export declare function i16x8ExtendHighI8x16S(a: v128): v128;
+@intrinsic('i16x8.extend_low_i8x16_u')
+export declare function i16x8ExtendLowI8x16U(a: v128): v128;
+@intrinsic('i16x8.extend_high_i8x16_u')
+export declare function i16x8ExtendHighI8x16U(a: v128): v128;
+@intrinsic('i16x8.shl')
+export declare function i16x8Shl(a: v128, count: i32): v128;
+@intrinsic('i16x8.shr_s')
+export declare function i16x8ShrS(a: v128, count: i32): v128;
+@intrinsic('i16x8.shr_u')
+export declare function i16x8ShrU(a: v128, count: i32): v128;
+@intrinsic('i16x8.add')
+export declare function i16x8Add(a: v128, b: v128): v128;
+@intrinsic('i16x8.add_sat_s')
+export declare function i16x8AddSatS(a: v128, b: v128): v128;
+@intrinsic('i16x8.add_sat_u')
+export declare function i16x8AddSatU(a: v128, b: v128): v128;
+@intrinsic('i16x8.sub')
+export declare function i16x8Sub(a: v128, b: v128): v128;
+@intrinsic('i16x8.sub_sat_s')
+export declare function i16x8SubSatS(a: v128, b: v128): v128;
+@intrinsic('i16x8.sub_sat_u')
+export declare function i16x8SubSatU(a: v128, b: v128): v128;
+@intrinsic('i16x8.mul')
+export declare function i16x8Mul(a: v128, b: v128): v128;
+@intrinsic('i16x8.min_s')
+export declare function i16x8MinS(a: v128, b: v128): v128;
+@intrinsic('i16x8.min_u')
+export declare function i16x8MinU(a: v128, b: v128): v128;
+@intrinsic('i16x8.max_s')
+export declare function i16x8MaxS(a: v128, b: v128): v128;
+@intrinsic('i16x8.max_u')
+export declare function i16x8MaxU(a: v128, b: v128): v128;
+@intrinsic('i16x8.avgr_u')
+export declare function i16x8AvgrU(a: v128, b: v128): v128;
+@intrinsic('i16x8.extmul_low_i8x16_s')
+export declare function i16x8ExtmulLowI8x16S(a: v128, b: v128): v128;
+@intrinsic('i16x8.extmul_high_i8x16_s')
+export declare function i16x8ExtmulHighI8x16S(a: v128, b: v128): v128;
+@intrinsic('i16x8.extmul_low_i8x16_u')
+export declare function i16x8ExtmulLowI8x16U(a: v128, b: v128): v128;
+@intrinsic('i16x8.extmul_high_i8x16_u')
+export declare function i16x8ExtmulHighI8x16U(a: v128, b: v128): v128;
+
+// ===========================================================================
+// i32x4
+// ===========================================================================
+
+@intrinsic('i32x4.eq')
+export declare function i32x4Eq(a: v128, b: v128): v128;
+@intrinsic('i32x4.ne')
+export declare function i32x4Ne(a: v128, b: v128): v128;
+@intrinsic('i32x4.lt_s')
+export declare function i32x4LtS(a: v128, b: v128): v128;
+@intrinsic('i32x4.lt_u')
+export declare function i32x4LtU(a: v128, b: v128): v128;
+@intrinsic('i32x4.gt_s')
+export declare function i32x4GtS(a: v128, b: v128): v128;
+@intrinsic('i32x4.gt_u')
+export declare function i32x4GtU(a: v128, b: v128): v128;
+@intrinsic('i32x4.le_s')
+export declare function i32x4LeS(a: v128, b: v128): v128;
+@intrinsic('i32x4.le_u')
+export declare function i32x4LeU(a: v128, b: v128): v128;
+@intrinsic('i32x4.ge_s')
+export declare function i32x4GeS(a: v128, b: v128): v128;
+@intrinsic('i32x4.ge_u')
+export declare function i32x4GeU(a: v128, b: v128): v128;
+@intrinsic('i32x4.extadd_pairwise_i16x8_s')
+export declare function i32x4ExtaddPairwiseI16x8S(a: v128): v128;
+@intrinsic('i32x4.extadd_pairwise_i16x8_u')
+export declare function i32x4ExtaddPairwiseI16x8U(a: v128): v128;
+@intrinsic('i32x4.abs')
+export declare function i32x4Abs(a: v128): v128;
+@intrinsic('i32x4.neg')
+export declare function i32x4Neg(a: v128): v128;
+@intrinsic('i32x4.all_true')
+export declare function i32x4AllTrue(a: v128): i32;
+@intrinsic('i32x4.bitmask')
+export declare function i32x4Bitmask(a: v128): i32;
+@intrinsic('i32x4.extend_low_i16x8_s')
+export declare function i32x4ExtendLowI16x8S(a: v128): v128;
+@intrinsic('i32x4.extend_high_i16x8_s')
+export declare function i32x4ExtendHighI16x8S(a: v128): v128;
+@intrinsic('i32x4.extend_low_i16x8_u')
+export declare function i32x4ExtendLowI16x8U(a: v128): v128;
+@intrinsic('i32x4.extend_high_i16x8_u')
+export declare function i32x4ExtendHighI16x8U(a: v128): v128;
+@intrinsic('i32x4.shl')
+export declare function i32x4Shl(a: v128, count: i32): v128;
+@intrinsic('i32x4.shr_s')
+export declare function i32x4ShrS(a: v128, count: i32): v128;
+@intrinsic('i32x4.shr_u')
+export declare function i32x4ShrU(a: v128, count: i32): v128;
+@intrinsic('i32x4.add')
+export declare function i32x4Add(a: v128, b: v128): v128;
+@intrinsic('i32x4.sub')
+export declare function i32x4Sub(a: v128, b: v128): v128;
+@intrinsic('i32x4.mul')
+export declare function i32x4Mul(a: v128, b: v128): v128;
+@intrinsic('i32x4.min_s')
+export declare function i32x4MinS(a: v128, b: v128): v128;
+@intrinsic('i32x4.min_u')
+export declare function i32x4MinU(a: v128, b: v128): v128;
+@intrinsic('i32x4.max_s')
+export declare function i32x4MaxS(a: v128, b: v128): v128;
+@intrinsic('i32x4.max_u')
+export declare function i32x4MaxU(a: v128, b: v128): v128;
+@intrinsic('i32x4.dot_i16x8_s')
+export declare function i32x4DotI16x8S(a: v128, b: v128): v128;
+@intrinsic('i32x4.extmul_low_i16x8_s')
+export declare function i32x4ExtmulLowI16x8S(a: v128, b: v128): v128;
+@intrinsic('i32x4.extmul_high_i16x8_s')
+export declare function i32x4ExtmulHighI16x8S(a: v128, b: v128): v128;
+@intrinsic('i32x4.extmul_low_i16x8_u')
+export declare function i32x4ExtmulLowI16x8U(a: v128, b: v128): v128;
+@intrinsic('i32x4.extmul_high_i16x8_u')
+export declare function i32x4ExtmulHighI16x8U(a: v128, b: v128): v128;
+@intrinsic('i32x4.trunc_sat_f32x4_s')
+export declare function i32x4TruncSatF32x4S(a: v128): v128;
+@intrinsic('i32x4.trunc_sat_f32x4_u')
+export declare function i32x4TruncSatF32x4U(a: v128): v128;
+@intrinsic('i32x4.trunc_sat_f64x2_s_zero')
+export declare function i32x4TruncSatF64x2SZero(a: v128): v128;
+@intrinsic('i32x4.trunc_sat_f64x2_u_zero')
+export declare function i32x4TruncSatF64x2UZero(a: v128): v128;
+
+// ===========================================================================
+// i64x2
+// ===========================================================================
+
+@intrinsic('i64x2.eq')
+export declare function i64x2Eq(a: v128, b: v128): v128;
+@intrinsic('i64x2.ne')
+export declare function i64x2Ne(a: v128, b: v128): v128;
+@intrinsic('i64x2.lt_s')
+export declare function i64x2LtS(a: v128, b: v128): v128;
+@intrinsic('i64x2.gt_s')
+export declare function i64x2GtS(a: v128, b: v128): v128;
+@intrinsic('i64x2.le_s')
+export declare function i64x2LeS(a: v128, b: v128): v128;
+@intrinsic('i64x2.ge_s')
+export declare function i64x2GeS(a: v128, b: v128): v128;
+@intrinsic('i64x2.abs')
+export declare function i64x2Abs(a: v128): v128;
+@intrinsic('i64x2.neg')
+export declare function i64x2Neg(a: v128): v128;
+@intrinsic('i64x2.all_true')
+export declare function i64x2AllTrue(a: v128): i32;
+@intrinsic('i64x2.bitmask')
+export declare function i64x2Bitmask(a: v128): i32;
+@intrinsic('i64x2.extend_low_i32x4_s')
+export declare function i64x2ExtendLowI32x4S(a: v128): v128;
+@intrinsic('i64x2.extend_high_i32x4_s')
+export declare function i64x2ExtendHighI32x4S(a: v128): v128;
+@intrinsic('i64x2.extend_low_i32x4_u')
+export declare function i64x2ExtendLowI32x4U(a: v128): v128;
+@intrinsic('i64x2.extend_high_i32x4_u')
+export declare function i64x2ExtendHighI32x4U(a: v128): v128;
+@intrinsic('i64x2.shl')
+export declare function i64x2Shl(a: v128, count: i32): v128;
+@intrinsic('i64x2.shr_s')
+export declare function i64x2ShrS(a: v128, count: i32): v128;
+@intrinsic('i64x2.shr_u')
+export declare function i64x2ShrU(a: v128, count: i32): v128;
+@intrinsic('i64x2.add')
+export declare function i64x2Add(a: v128, b: v128): v128;
+@intrinsic('i64x2.sub')
+export declare function i64x2Sub(a: v128, b: v128): v128;
+@intrinsic('i64x2.mul')
+export declare function i64x2Mul(a: v128, b: v128): v128;
+@intrinsic('i64x2.extmul_low_i32x4_s')
+export declare function i64x2ExtmulLowI32x4S(a: v128, b: v128): v128;
+@intrinsic('i64x2.extmul_high_i32x4_s')
+export declare function i64x2ExtmulHighI32x4S(a: v128, b: v128): v128;
+@intrinsic('i64x2.extmul_low_i32x4_u')
+export declare function i64x2ExtmulLowI32x4U(a: v128, b: v128): v128;
+@intrinsic('i64x2.extmul_high_i32x4_u')
+export declare function i64x2ExtmulHighI32x4U(a: v128, b: v128): v128;
+
+// ===========================================================================
+// f32x4
+// ===========================================================================
+
+@intrinsic('f32x4.eq')
+export declare function f32x4Eq(a: v128, b: v128): v128;
+@intrinsic('f32x4.ne')
+export declare function f32x4Ne(a: v128, b: v128): v128;
+@intrinsic('f32x4.lt')
+export declare function f32x4Lt(a: v128, b: v128): v128;
+@intrinsic('f32x4.gt')
+export declare function f32x4Gt(a: v128, b: v128): v128;
+@intrinsic('f32x4.le')
+export declare function f32x4Le(a: v128, b: v128): v128;
+@intrinsic('f32x4.ge')
+export declare function f32x4Ge(a: v128, b: v128): v128;
+@intrinsic('f32x4.ceil')
+export declare function f32x4Ceil(a: v128): v128;
+@intrinsic('f32x4.floor')
+export declare function f32x4Floor(a: v128): v128;
+@intrinsic('f32x4.trunc')
+export declare function f32x4Trunc(a: v128): v128;
+@intrinsic('f32x4.nearest')
+export declare function f32x4Nearest(a: v128): v128;
+@intrinsic('f32x4.abs')
+export declare function f32x4Abs(a: v128): v128;
+@intrinsic('f32x4.neg')
+export declare function f32x4Neg(a: v128): v128;
+@intrinsic('f32x4.sqrt')
+export declare function f32x4Sqrt(a: v128): v128;
+@intrinsic('f32x4.add')
+export declare function f32x4Add(a: v128, b: v128): v128;
+@intrinsic('f32x4.sub')
+export declare function f32x4Sub(a: v128, b: v128): v128;
+@intrinsic('f32x4.mul')
+export declare function f32x4Mul(a: v128, b: v128): v128;
+@intrinsic('f32x4.div')
+export declare function f32x4Div(a: v128, b: v128): v128;
+@intrinsic('f32x4.min')
+export declare function f32x4Min(a: v128, b: v128): v128;
+@intrinsic('f32x4.max')
+export declare function f32x4Max(a: v128, b: v128): v128;
+@intrinsic('f32x4.pmin')
+export declare function f32x4Pmin(a: v128, b: v128): v128;
+@intrinsic('f32x4.pmax')
+export declare function f32x4Pmax(a: v128, b: v128): v128;
+@intrinsic('f32x4.convert_i32x4_s')
+export declare function f32x4ConvertI32x4S(a: v128): v128;
+@intrinsic('f32x4.convert_i32x4_u')
+export declare function f32x4ConvertI32x4U(a: v128): v128;
+@intrinsic('f32x4.demote_f64x2_zero')
+export declare function f32x4DemoteF64x2Zero(a: v128): v128;
+
+// ===========================================================================
+// f64x2
+// ===========================================================================
+
+@intrinsic('f64x2.eq')
+export declare function f64x2Eq(a: v128, b: v128): v128;
+@intrinsic('f64x2.ne')
+export declare function f64x2Ne(a: v128, b: v128): v128;
+@intrinsic('f64x2.lt')
+export declare function f64x2Lt(a: v128, b: v128): v128;
+@intrinsic('f64x2.gt')
+export declare function f64x2Gt(a: v128, b: v128): v128;
+@intrinsic('f64x2.le')
+export declare function f64x2Le(a: v128, b: v128): v128;
+@intrinsic('f64x2.ge')
+export declare function f64x2Ge(a: v128, b: v128): v128;
+@intrinsic('f64x2.ceil')
+export declare function f64x2Ceil(a: v128): v128;
+@intrinsic('f64x2.floor')
+export declare function f64x2Floor(a: v128): v128;
+@intrinsic('f64x2.trunc')
+export declare function f64x2Trunc(a: v128): v128;
+@intrinsic('f64x2.nearest')
+export declare function f64x2Nearest(a: v128): v128;
+@intrinsic('f64x2.abs')
+export declare function f64x2Abs(a: v128): v128;
+@intrinsic('f64x2.neg')
+export declare function f64x2Neg(a: v128): v128;
+@intrinsic('f64x2.sqrt')
+export declare function f64x2Sqrt(a: v128): v128;
+@intrinsic('f64x2.add')
+export declare function f64x2Add(a: v128, b: v128): v128;
+@intrinsic('f64x2.sub')
+export declare function f64x2Sub(a: v128, b: v128): v128;
+@intrinsic('f64x2.mul')
+export declare function f64x2Mul(a: v128, b: v128): v128;
+@intrinsic('f64x2.div')
+export declare function f64x2Div(a: v128, b: v128): v128;
+@intrinsic('f64x2.min')
+export declare function f64x2Min(a: v128, b: v128): v128;
+@intrinsic('f64x2.max')
+export declare function f64x2Max(a: v128, b: v128): v128;
+@intrinsic('f64x2.pmin')
+export declare function f64x2Pmin(a: v128, b: v128): v128;
+@intrinsic('f64x2.pmax')
+export declare function f64x2Pmax(a: v128, b: v128): v128;
+@intrinsic('f64x2.convert_low_i32x4_s')
+export declare function f64x2ConvertLowI32x4S(a: v128): v128;
+@intrinsic('f64x2.convert_low_i32x4_u')
+export declare function f64x2ConvertLowI32x4U(a: v128): v128;
+@intrinsic('f64x2.promote_low_f32x4')
+export declare function f64x2PromoteLowF32x4(a: v128): v128;

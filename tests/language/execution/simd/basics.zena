@@ -1,0 +1,16 @@
+// @mode: run
+// @result: 60
+//
+// Splat, add, extract: enough of the pipeline to show a v128 crossing a
+// local, a call boundary and a lane read.
+import {i32x4Splat, i32x4Add, i32x4ExtractLane, i32x4Mul} from 'zena:simd';
+
+let quadruple = (v: v128): v128 => i32x4Add(v, i32x4Mul(v, i32x4Splat(3)));
+
+export function main(): i32 {
+  let five = i32x4Splat(5);
+  let big = quadruple(five);
+  // Every lane holds 5 + 5*3 = 20; three of them make 60.
+  return i32x4ExtractLane(big, 0) + i32x4ExtractLane(big, 1) +
+      i32x4ExtractLane(big, 3);
+}

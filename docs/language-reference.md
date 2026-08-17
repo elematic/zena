@@ -116,6 +116,13 @@ safety.
 - **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0
 as f64`).
 - **`boolean`**: Boolean value (`true` or `false`).
+- **`v128`**: A 128-bit WebAssembly SIMD vector. It has no literal syntax, no
+  operators and no casts: the bits carry no interpretation of their own — the
+  same vector is four floats to one instruction and sixteen bytes to the next
+  — so there is nothing for `+` or `as` to mean. Values are produced and
+  consumed by the instructions in `zena:simd`, and otherwise behave like any
+  other value in locals, fields, arrays and returns. See
+  [simd.md](design/simd.md).
 - **`String`**: UTF-8 string.
 - **`anyref`**: The top type for all reference types. It can hold any object,
   array, String, function, or `null`. It cannot hold unboxed primitives (`i32`,

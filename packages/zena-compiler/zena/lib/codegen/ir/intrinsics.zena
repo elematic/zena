@@ -12,8 +12,14 @@
  */
 import { Array } from 'zena:array';
 import { String } from 'zena:string';
-import { CallExpression, Expression } from '../../ast.zena';
-import { ValType, ValTypeI32, ValTypeI8, ValTypeI16 } from '../wasm.zena';
+import { CallExpression, Expression, NumberLiteral, UnaryExpression } from '../../ast.zena';
+import { ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeVoid } from '../wasm.zena';
+import {
+  SimdInstruction, SimdShape, SimdResult, simdInstruction, simdArgCount,
+  simdLaneCount,
+} from '../../simd.zena';
+import { parseI32WithHex } from '../codegen-utils.zena';
+import { i32ToString } from 'zena:string-convert';
 import { arrayElementType, isSignedNarrowIntType } from '../../types.zena';
 import {
   WasmFunction, WasmArray, isValSubtype, asWasmArray,
@@ -297,6 +303,200 @@ let lowerWasiWriteString = (cx: LoweringContext, call: CallExpression): i32 => {
 
 
 /**
+ * A wasm IMMEDIATE, which is encoded in the instruction rather than
+ * read off the stack: it has to be a literal here because there is
+ * nowhere else for it to come from. There is no slower dynamic path to
+ * fall back to — `i32x4.extract_lane` with a computed index is not a
+ * different lowering of the same program, it is a different program
+ * (a store, a loop, or a `br_table` over sixteen instructions), and
+ * picking one silently would be the wrong call to make on the author's
+ * behalf.
+ */
+let simdImmediate = (
+  cx: LoweringContext,
+  name: String,
+  what: String,
+  e: Expression,
+  limit: i32
+): i32 => {
+  if (!(e is NumberLiteral)) {
+    cx.fail(name + ': ' + what + ' must be a literal');
+  }
+  let raw = (e as NumberLiteral).raw;
+  let (ok, parsed) = parseI32WithHex(raw);
+  if (!ok || parsed < 0 || parsed >= limit) {
+    cx.fail(name + ': ' + what + ' must be an integer in 0..' +
+        i32ToString(limit - 1) + ', got ' + raw);
+  }
+  return parsed;
+};
+
+/** The wasm value type an instruction leaves on the stack. */
+let simdResultVt = (result: SimdResult): ValType => match (result) {
+  case SimdResult.V128: new ValTypeV128()
+  case SimdResult.I32: new ValTypeI32()
+  case SimdResult.I64: new ValTypeI64()
+  case SimdResult.F32: new ValTypeF32()
+  case SimdResult.F64: new ValTypeF64()
+  case SimdResult.Void: new ValTypeVoid()
+};
+
+/** Lowers `count` arguments starting at `from`, in source order. */
+let simdOperands = (
+  cx: LoweringContext,
+  call: CallExpression,
+  from: i32,
+  count: i32
+): Array<i32> => {
+  let out = new Array<i32>();
+  var i = 0;
+  while (i < count) {
+    out.push(lowerExpr(cx, call.args[from + i], null));
+    i += 1;
+  }
+  return out;
+};
+
+/**
+ * One 32-bit word of a `v128.const`. Unlike a lane index this is a
+ * VALUE, so the whole i32 range is in bounds — including the negatives,
+ * which reach the AST as a negation wrapped around a literal rather
+ * than as a literal of their own.
+ */
+let simdImmediateWord = (
+  cx: LoweringContext,
+  name: String,
+  e: Expression
+): i32 => {
+  var negative = false;
+  var operand = e;
+  match (e) {
+    case UnaryExpression as u: {
+      if (u.operator == '-') {
+        negative = true;
+        operand = u.argument;
+      }
+    }
+    case _: {}
+  }
+  if (!(operand is NumberLiteral)) {
+    cx.fail(name + ': every word must be a literal');
+  }
+  let raw = (operand as NumberLiteral).raw;
+  let (ok, parsed) = parseI32WithHex(raw);
+  if (!ok) {
+    cx.fail(name + ': ' + raw + ' is not an integer word');
+  }
+  return if (negative) 0 - parsed else parsed;
+};
+
+/**
+ * Every SIMD intrinsic, routed by the operand shape its table row
+ * names. The eleven ZIR ops below differ only in where the operands and
+ * immediates sit; which of the 236 instructions this is stays a number
+ * until emission (see ir.zena's encoding table).
+ *
+ * Argument order follows the declarations in `zena:simd`, which put
+ * each immediate next to the operand it qualifies — `replaceLane(vec,
+ * lane, value)` — rather than in wasm's operands-then-immediates order.
+ */
+let lowerSimd = (
+  cx: LoweringContext,
+  instr: SimdInstruction,
+  call: CallExpression
+): i32 => {
+  let {name} = instr;
+  if (call.args.length != simdArgCount(instr)) {
+    cx.fail(name + ': wrong argument count');
+  }
+  let resultVt = simdResultVt(instr.result);
+  return match (instr.shape) {
+    case SimdShape.Unary: {
+      let a = lowerExpr(cx, call.args[0], null);
+      cx.b.emit(IrOp.simd_unary, resultVt, a, instr.opcode)
+    }
+    case SimdShape.Binary: {
+      let ops = simdOperands(cx, call, 0, 2);
+      cx.b.emit(IrOp.simd_binary, resultVt, cx.b.pushExtra(ops), instr.opcode)
+    }
+    case SimdShape.Ternary: {
+      let ops = simdOperands(cx, call, 0, 3);
+      cx.b.emit(IrOp.simd_ternary, resultVt, cx.b.pushExtra(ops), instr.opcode)
+    }
+    case SimdShape.ExtractLane: {
+      let vec = lowerExpr(cx, call.args[0], null);
+      let lane = simdImmediate(cx, name, 'lane index', call.args[1],
+          simdLaneCount(instr));
+      cx.b.emit(IrOp.simd_extract_lane, resultVt, vec,
+          cx.b.pushExtra(twoValues(instr.opcode, lane)))
+    }
+    case SimdShape.ReplaceLane: {
+      let vec = lowerExpr(cx, call.args[0], null);
+      let lane = simdImmediate(cx, name, 'lane index', call.args[1],
+          simdLaneCount(instr));
+      let value = lowerExpr(cx, call.args[2], null);
+      cx.b.emit(IrOp.simd_replace_lane, resultVt,
+          cx.b.pushExtra(twoValues(vec, value)),
+          cx.b.pushExtra(twoValues(instr.opcode, lane)))
+    }
+    case SimdShape.Load: {
+      let addr = lowerExpr(cx, call.args[0], null);
+      cx.b.emit(IrOp.simd_load, resultVt, addr,
+          cx.b.pushExtra(twoValues(instr.opcode, instr.align)))
+    }
+    case SimdShape.Store: {
+      let ops = simdOperands(cx, call, 0, 2);
+      cx.b.emitVoid(IrOp.simd_store, cx.b.pushExtra(ops),
+          cx.b.pushExtra(twoValues(instr.opcode, instr.align)))
+    }
+    case SimdShape.LoadLane: {
+      let ops = simdOperands(cx, call, 0, 2);
+      let lane = simdImmediate(cx, name, 'lane index', call.args[2],
+          simdLaneCount(instr));
+      cx.b.emit(IrOp.simd_load_lane, resultVt, cx.b.pushExtra(ops),
+          cx.b.pushExtra(threeValues(instr.opcode, instr.align, lane)))
+    }
+    case SimdShape.StoreLane: {
+      let ops = simdOperands(cx, call, 0, 2);
+      let lane = simdImmediate(cx, name, 'lane index', call.args[2],
+          simdLaneCount(instr));
+      cx.b.emitVoid(IrOp.simd_store_lane, cx.b.pushExtra(ops),
+          cx.b.pushExtra(threeValues(instr.opcode, instr.align, lane)))
+    }
+    case SimdShape.Const: {
+      // Four i32 literals, little-endian, into the sixteen immediate
+      // bytes — the same order `v128.const i32x4 a b c d` writes them.
+      let imm = new Array<i32>();
+      imm.push(instr.opcode);
+      var w = 0;
+      while (w < 4) {
+        let word = simdImmediateWord(cx, name, call.args[w]);
+        var byte = 0;
+        while (byte < 4) {
+          imm.push((word >> (byte * 8)) & 0xFF);
+          byte += 1;
+        }
+        w += 1;
+      }
+      cx.b.emit(IrOp.simd_const, resultVt, -1, cx.b.pushExtra(imm))
+    }
+    case SimdShape.Shuffle: {
+      let ops = simdOperands(cx, call, 0, 2);
+      let imm = new Array<i32>();
+      imm.push(instr.opcode);
+      var i = 0;
+      while (i < 16) {
+        // Selectors index the two operands end to end, so they run to 31.
+        imm.push(simdImmediate(cx, name, 'lane selector', call.args[2 + i], 32));
+        i += 1;
+      }
+      cx.b.emit(IrOp.simd_shuffle, resultVt, cx.b.pushExtra(ops),
+          cx.b.pushExtra(imm))
+    }
+  };
+};
+
+/**
  * The single name -> lowering router for call-position intrinsics.
  * Array-builtin notes: the __byte_array_* variants differ only in
  * element width — packed i8 elements read unsigned (array.get_u) and
@@ -381,7 +581,15 @@ export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpres
       lowerHashIntrinsic(cx, call)
     }
     case _: {
-      cx.failValue('intrinsic ' + name)
+      // SIMD instructions are not listed above: one table row in
+      // lib/simd.zena carries the opcode, shape and result for all 236,
+      // and the same row is what let the name past the checker.
+      let instr = simdInstruction(name);
+      if (instr != null) {
+        lowerSimd(cx, instr, call)
+      } else {
+        cx.failValue('intrinsic ' + name)
+      }
     }
   };
 };

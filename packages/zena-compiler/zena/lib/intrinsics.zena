@@ -1,4 +1,5 @@
 import { HashSet } from 'zena:set';
+import { simdInstruction } from './simd.zena';
 
 let validIntrinsics = new HashSet<String>();
 let intrinsics = [
@@ -84,5 +85,12 @@ export let isValidIntrinsic = (name: String): boolean => {
       validIntrinsics.add(intrinsic);
     }
   }
-  return validIntrinsics.has(name);
+  if (validIntrinsics.has(name)) {
+    return true;
+  }
+  // The SIMD instructions are not listed above: their names, opcodes and
+  // operand shapes come from one table in simd.zena, which the ZIR
+  // lowering router reads too. Listing them here as well would be a
+  // second place for the set to drift out of.
+  return simdInstruction(name) != null;
 };

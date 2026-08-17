@@ -160,6 +160,7 @@ use `as` to convert to other numeric types.
 | `f32`      | `f32`           | 32-bit float (default for float literals)            |
 | `f64`      | `f64`           | 64-bit float                                         |
 | `boolean`  | `i32`           | `true` or `false`                                    |
+| `v128`     | `v128`          | SIMD vector; no literals, operators or casts         |
 | `String`   | `(ref $String)` | Immutable Unicode string                             |
 | `anyref`   | `anyref`        | Top type for all reference types                     |
 | `any`      | `anyref`        | Can hold any value (primitives are auto-boxed)       |
@@ -2048,6 +2049,25 @@ max(3.0, 7.0); // 7.0
 
 Also includes bit manipulation: `clz` (count leading zeros), `ctz` (count
 trailing zeros), `popcnt` (population count).
+
+### zena:simd
+
+All 236 fixed-width WebAssembly SIMD instructions over the `v128` type, one
+function each, lowered to that single instruction. Names transliterate the
+wasm names: split on `.` and `_`, then capitalize every segment but the
+first, so `i32x4.add` is `i32x4Add` and `v128.load8x8_s` is `v128Load8x8S`.
+
+```zena
+import {i32x4Splat, i32x4Add, i32x4ExtractLane} from 'zena:simd';
+
+let sums = i32x4Add(i32x4Splat(5), i32x4Splat(3));
+i32x4ExtractLane(sums, 0); // 8
+```
+
+Arguments that wasm encodes as immediates must be literals: lane indices,
+the four words of `v128Const`, and the sixteen selectors of `i8x16Shuffle`.
+Loads and stores take an address only — the compiler picks the natural
+alignment. See [simd.md](https://github.com/elematic/zena/blob/main/docs/design/simd.md).
 
 ### zena:console
 

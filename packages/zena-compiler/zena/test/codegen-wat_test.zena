@@ -8,6 +8,7 @@ import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation, createCompiler, CompilerOptions } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { getEnv } from 'zena:cli';
+import { assertFunctionUses } from './wat-invariants.zena';
 
 let assertSnapshot = (name: String, content: String): void => {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
@@ -386,6 +387,51 @@ export let tests = suite('WatGenerator', (): void => {
     `);
     equal(result.contains('_spec_erased'), false);
     equal(result.contains('_erased.'), false);
+  });
+
+  // The five SIMD emitter hooks differ only in which immediates follow
+  // the opcode, and the binary emitter's version of that is checked by
+  // running the programs in tests/language/execution/simd/. Nothing
+  // else reads the WAT emitter's, so this asserts the text forms
+  // directly: the instruction NAME recovered from the opcode, and each
+  // immediate in the position wasm's text format puts it.
+  test('SIMD instructions emit their wasm text forms', (ctx: TestContext): void => {
+    let result = compileAndGenerateWat(`
+      @intrinsic('v128.const')
+      declare function vconst(a: i32, b: i32, c: i32, d: i32): v128;
+      @intrinsic('i32x4.add')
+      declare function vadd(a: v128, b: v128): v128;
+      @intrinsic('i32x4.extract_lane')
+      declare function vext(a: v128, lane: i32): i32;
+      @intrinsic('i8x16.shuffle')
+      declare function vshuf(a: v128, b: v128, l0: i32, l1: i32, l2: i32,
+          l3: i32, l4: i32, l5: i32, l6: i32, l7: i32, l8: i32, l9: i32,
+          l10: i32, l11: i32, l12: i32, l13: i32, l14: i32, l15: i32): v128;
+      @intrinsic('v128.load')
+      declare function vload(ptr: i32): v128;
+      @intrinsic('v128.store8_lane')
+      declare function vstore8lane(ptr: i32, v: v128, lane: i32): void;
+      export let main = (): i32 => {
+        let a = vconst(1, 0, 0, 0);
+        let b = vadd(a, vload(16));
+        let s = vshuf(a, b, 0, 1, 2, 3, 16, 17, 18, 19, 4, 5, 6, 7, 8, 9, 10, 11);
+        vstore8lane(32, s, 5);
+        return vext(s, 2);
+      };
+    `);
+    let ops = new Array<String>();
+    // The 16 bytes of a v128.const are the four words little-endian.
+    ops.push('v128.const i8x16 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0');
+    ops.push('i32x4.add');
+    // Lane index after the name, with no align/offset.
+    ops.push('i32x4.extract_lane 2');
+    ops.push('i8x16.shuffle 0 1 2 3 16 17 18 19 4 5 6 7 8 9 10 11');
+    // Natural alignment for a full vector load is 2^4 = 16 bytes.
+    ops.push('v128.load align=4 offset=0');
+    // A lane store carries the memarg AND the lane, in that order.
+    ops.push('v128.store8_lane align=0 offset=0 5');
+    assertFunctionUses(result, '$main', ops,
+        'the WAT emitter should spell each SIMD shape the way wasm text does');
   });
 });
 

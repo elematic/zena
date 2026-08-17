@@ -14,7 +14,8 @@ import { i32ToString, i64ToString, f64ToString } from 'zena:string-convert';
 import { ValType, ValTypeVoid, ValTypeFunc, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeFuncRef, ValTypeExternRef, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeOptRef, ValTypeRef, ValTypeRefNull, ValTypeI8, ValTypeI16 } from '../wasm.zena';
 import { WasmType } from '../wasm.zena';
 import { WasmStruct } from '../wasm-module.zena';
-import { IrBody, IrOp, IrRef, IrRefFunc, IrRefGlobal, IrRefTag, IrRefType, IrRefField, IrRefClassInterface, IrRefStringLit, irOpName } from './ir.zena';
+import { IrBody, IrOp, IrRef, IrRefFunc, IrRefGlobal, IrRefTag, IrRefType, IrRefField, IrRefClassInterface, IrRefStringLit, irOpName, isSimdOp, simdExtraOperandCount } from './ir.zena';
+import { simdName } from '../../simd.zena';
 
 let typeName = (t: ValType): String => {
   return match (t) {
@@ -264,10 +265,58 @@ export final class IrPrinter {
       }
       return;
     }
+    if (isSimdOp(op)) {
+      this.#printSimdOperands(inst, op);
+      return;
+    }
     // Binary numeric ops and anything else with two inline value operands.
     this.#value(av);
     this.sb.append(',');
     this.#value(bv);
+  }
+
+  /**
+   * `simd.binary i32x4.add %3, %4` — the shape came from `irOpName`, so
+   * this adds the instruction the opcode immediate names, then the
+   * operands, then whatever immediates the shape carries. Without it the
+   * fallback would print an opcode number as if it were a value id.
+   */
+  #printSimdOperands(inst: i32, op: IrOp): void {
+    let {body} = this;
+    let av = body.a[inst];
+    let bv = body.b[inst];
+    // The three shapes with no immediates keep their opcode in slot b
+    // itself; every other shape puts it first in the slot-b payload.
+    let opcodeIsInline = op == IrOp.simd_unary || op == IrOp.simd_binary ||
+        op == IrOp.simd_ternary;
+    let opcode = if (opcodeIsInline) bv else body.extra[bv];
+    this.sb.append(' ').append(simdName(opcode));
+    let operands = simdExtraOperandCount(op);
+    if (operands > 0) {
+      var i = 0;
+      while (i < operands) {
+        if (i > 0) {
+          this.sb.append(',');
+        }
+        this.#value(body.extra[av + i]);
+        i += 1;
+      }
+    } else if (op != IrOp.simd_const) {
+      this.#value(av);
+    }
+    if (opcodeIsInline) {
+      return;
+    }
+    // The immediates, in the order the slot-b payload holds them after
+    // the opcode: an alignment, a lane, or sixteen bytes.
+    let count = if (op == IrOp.simd_const || op == IrOp.simd_shuffle) 16
+        else if (op == IrOp.simd_load_lane || op == IrOp.simd_store_lane) 2
+        else 1;
+    var i = 0;
+    while (i < count) {
+      this.sb.append(' ').append(i32ToString(body.extra[bv + 1 + i]));
+      i += 1;
+    }
   }
 
   #value(id: i32): void {

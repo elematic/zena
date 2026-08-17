@@ -27,7 +27,7 @@ import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTyp
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import {
-  IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator,
+  IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator, simdExtraOperandCount,
 } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
@@ -921,7 +921,15 @@ export final class ZirFunctionEmitter {
         op == IrOp.i32_load || op == IrOp.i32_load8_u ||
         op == IrOp.i64_load || op == IrOp.f32_load || op == IrOp.f64_load ||
         op == IrOp.i32_store || op == IrOp.i32_store8 ||
-        op == IrOp.i64_store || op == IrOp.f32_store || op == IrOp.f64_store;
+        op == IrOp.i64_store || op == IrOp.f32_store || op == IrOp.f64_store ||
+        // Every SIMD shape pushes its operands first and its immediates
+        // last, inside the instruction encoding. simd_const has no
+        // operand to stream, so it is left off.
+        op == IrOp.simd_unary || op == IrOp.simd_binary ||
+        op == IrOp.simd_ternary || op == IrOp.simd_extract_lane ||
+        op == IrOp.simd_replace_lane || op == IrOp.simd_shuffle ||
+        op == IrOp.simd_load || op == IrOp.simd_store ||
+        op == IrOp.simd_load_lane || op == IrOp.simd_store_lane;
   }
 
   /**
@@ -1527,6 +1535,17 @@ export final class ZirFunctionEmitter {
       case IrOp.i64_load: { this.#emitMemLoadInst(inst); }
       case IrOp.f32_load: { this.#emitMemLoadInst(inst); }
       case IrOp.f64_load: { this.#emitMemLoadInst(inst); }
+      case IrOp.simd_unary: { this.#emitSimdInst(inst); }
+      case IrOp.simd_binary: { this.#emitSimdInst(inst); }
+      case IrOp.simd_ternary: { this.#emitSimdInst(inst); }
+      case IrOp.simd_extract_lane: { this.#emitSimdInst(inst); }
+      case IrOp.simd_replace_lane: { this.#emitSimdInst(inst); }
+      case IrOp.simd_const: { this.#emitSimdInst(inst); }
+      case IrOp.simd_shuffle: { this.#emitSimdInst(inst); }
+      case IrOp.simd_load: { this.#emitSimdInst(inst); }
+      case IrOp.simd_store: { this.#emitSimdInst(inst); }
+      case IrOp.simd_load_lane: { this.#emitSimdInst(inst); }
+      case IrOp.simd_store_lane: { this.#emitSimdInst(inst); }
       case IrOp.memory_size: { this.emitter.emitMemorySize(); }
       case IrOp.memory_grow: {
         this.#pushValue(body.a[inst]);
@@ -1806,6 +1825,70 @@ export final class ZirFunctionEmitter {
       case IrOp.i64_store: { this.emitter.emitI64Store(align, 0); }
       case IrOp.f32_store: { this.emitter.emitF32Store(align, 0); }
       case _: { this.emitter.emitF64Store(align, 0); }
+    }
+  }
+
+  /**
+   * Every SIMD shape (ir.zena's encoding table): the value operands in
+   * the order wasm wants them on the stack, then the one emitter hook
+   * that carries this shape's immediates. The wasm opcode is the first
+   * word of the slot-b payload for every shape that has one, and rides
+   * inline in slot b for the three that do not.
+   */
+  #emitSimdInst(inst: i32): void {
+    let {body} = this;
+    let op = body.op(inst);
+    let av = body.a[inst];
+    let operands = simdExtraOperandCount(op);
+    if (operands > 0) {
+      var i = 0;
+      while (i < operands) {
+        this.#pushValue(body.extra[av + i]);
+        i += 1;
+      }
+    } else if (op != IrOp.simd_const) {
+      this.#pushValue(av);
+    }
+    if (op == IrOp.simd_unary || op == IrOp.simd_binary ||
+        op == IrOp.simd_ternary) {
+      this.emitter.emitSimd(body.b[inst]);
+      return;
+    }
+    let payload = body.b[inst];
+    let opcode = body.extra[payload];
+    // Offset is always zero: the intrinsics take an address, and a
+    // constant offset has nothing to fold into it.
+    match (op) {
+      case IrOp.simd_extract_lane: {
+        this.emitter.emitSimdLane(opcode, body.extra[payload + 1]);
+      }
+      case IrOp.simd_replace_lane: {
+        this.emitter.emitSimdLane(opcode, body.extra[payload + 1]);
+      }
+      case IrOp.simd_load: {
+        this.emitter.emitSimdMem(opcode, body.extra[payload + 1], 0);
+      }
+      case IrOp.simd_store: {
+        this.emitter.emitSimdMem(opcode, body.extra[payload + 1], 0);
+      }
+      case IrOp.simd_load_lane: {
+        this.emitter.emitSimdMemLane(opcode, body.extra[payload + 1], 0,
+            body.extra[payload + 2]);
+      }
+      case IrOp.simd_store_lane: {
+        this.emitter.emitSimdMemLane(opcode, body.extra[payload + 1], 0,
+            body.extra[payload + 2]);
+      }
+      case _: {
+        // simd_const and simd_shuffle: sixteen immediate bytes.
+        let bytes = new Array<i32>();
+        var i = 0;
+        while (i < 16) {
+          bytes.push(body.extra[payload + 1 + i]);
+          i += 1;
+        }
+        this.emitter.emitSimdBytes(opcode, bytes);
+      }
     }
   }
 

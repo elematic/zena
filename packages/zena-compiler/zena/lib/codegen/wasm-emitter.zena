@@ -176,6 +176,30 @@ export interface WasmEmitter {
   emitF64Load(align: i32, offset: i32): void;
   emitF64Store(align: i32, offset: i32): void;
 
+  /**
+   * SIMD instructions. `opcode` is the number following the `0xFD`
+   * prefix; the emitter writes the prefix and encodes the opcode as a
+   * ULEB128 (it exceeds one byte past 127, which most of the vector set
+   * does). Five hooks rather than 236 methods, because the operand
+   * shapes are all the instructions differ by at this level —
+   * `simdInstruction` in lib/simd.zena is where a name becomes a number.
+   */
+  emitSimd(opcode: i32): void;
+  /** Lane-immediate forms: extract/replace lane. */
+  emitSimdLane(opcode: i32, lane: i32): void;
+  /** Memory forms: v128.load/store and their splat/extend variants. */
+  emitSimdMem(opcode: i32, align: i32, offset: i32): void;
+  /** Memory forms carrying a lane index too: v128.load8_lane & co. */
+  emitSimdMemLane(opcode: i32, align: i32, offset: i32, lane: i32): void;
+  /**
+   * The two instructions with a 16-byte immediate: `v128.const`, whose
+   * bytes are the vector in little-endian lane order, and
+   * `i8x16.shuffle`, whose bytes are lane selectors. Both take their
+   * opcode from the table like everything else rather than hard-coding
+   * one here.
+   */
+  emitSimdBytes(opcode: i32, bytes: Array<i32>): void;
+
   emitArrayType(index: i32, elementType: ValType, isMutable: boolean): void;
   emitMemorySection(minPages: i32): void;
   emitExportMemory(name: String, memIndex: i32): void;

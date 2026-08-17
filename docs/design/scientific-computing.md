@@ -309,26 +309,26 @@ Small fixed-size vectors (Vec2, Vec3, Vec4) should be treated differently. They 
 
 ## 3. WASM SIMD Support
 
-To achieve high performance, Zena must expose WASM's fixed-width SIMD instructions (128-bit).
+**Status: implemented.** See [simd.md](simd.md) for the design as built; this
+section records what that means for scientific computing.
 
 ### 3.1 The `v128` Type
 
-Zena will introduce a `v128` primitive type.
-
-```zena
-let mask: v128 = ...;
-```
+`v128` is a primitive type. It has no literals, operators or casts: the bits
+carry no interpretation of their own, so an instruction decides whether they
+are four floats or sixteen bytes.
 
 ### 3.2 Intrinsics
 
-We will provide a standard library module `std/simd` that exposes WASM instructions directly.
+`zena:simd` exposes all 236 fixed-width instructions as `@intrinsic`
+functions, named after the wasm instructions.
 
 ```zena
-import { f32x4 } from 'std/simd';
+import { f32x4Splat, f32x4Add } from 'zena:simd';
 
-let a = f32x4.splat(10.0);
-let b = f32x4.splat(20.0);
-let c = f32x4.add(a, b);
+let a = f32x4Splat(10.0 as f32);
+let b = f32x4Splat(20.0 as f32);
+let c = f32x4Add(a, b);
 ```
 
 ### 3.3 High-Level Abstractions

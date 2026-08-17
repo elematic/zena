@@ -4,6 +4,7 @@ import { WasmEmitter } from './wasm-emitter.zena';
 import { ValType } from "./wasm.zena";
 import { WasmFunction } from "./wasm-module.zena";
 import { ByteBuffer } from 'zena:byte-buffer';
+import { simdName } from '../simd.zena';
 
 export final class WatEmitter implements WasmEmitter {
   sb: StringBuilder;
@@ -566,6 +567,37 @@ export final class WatEmitter implements WasmEmitter {
   emitF32Store(align: i32, offset: i32): void { this.indent(); this.sb.append(`f32.store align=${i32ToString(align)} offset=${i32ToString(offset)}\n`); }
   emitF64Load(align: i32, offset: i32): void { this.indent(); this.sb.append(`f64.load align=${i32ToString(align)} offset=${i32ToString(offset)}\n`); }
   emitF64Store(align: i32, offset: i32): void { this.indent(); this.sb.append(`f64.store align=${i32ToString(align)} offset=${i32ToString(offset)}\n`); }
+
+  emitSimd(opcode: i32): void { this.indent(); this.sb.append(simdName(opcode) + '\n'); }
+  emitSimdLane(opcode: i32, lane: i32): void {
+    this.indent();
+    this.sb.append(`${simdName(opcode)} ${i32ToString(lane)}\n`);
+  }
+  emitSimdMem(opcode: i32, align: i32, offset: i32): void {
+    this.indent();
+    this.sb.append(`${simdName(opcode)} align=${i32ToString(align)} offset=${i32ToString(offset)}\n`);
+  }
+  emitSimdMemLane(opcode: i32, align: i32, offset: i32, lane: i32): void {
+    this.indent();
+    this.sb.append(`${simdName(opcode)} align=${i32ToString(align)} offset=${i32ToString(offset)} ${i32ToString(lane)}\n`);
+  }
+  /**
+   * `v128.const` prints in its `i8x16` form because the bytes are what
+   * the instruction actually carries; `i8x16.shuffle`'s bytes are lane
+   * selectors and take no shape prefix.
+   */
+  emitSimdBytes(opcode: i32, bytes: Array<i32>): void {
+    this.indent();
+    let name = simdName(opcode);
+    this.sb.append(name);
+    if (name == 'v128.const') {
+      this.sb.append(' i8x16');
+    }
+    for (let byte in bytes) {
+      this.sb.append(' ' + i32ToString(byte));
+    }
+    this.sb.append('\n');
+  }
 
   emitArrayType(index: i32, elementType: ValType, isMutable: boolean): void {
     this.indent();
