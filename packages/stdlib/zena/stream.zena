@@ -1,0 +1,281 @@
+/**
+ * zena:stream — the rendezvous stream (docs/design/streams.md).
+ *
+ * A stream is a rendezvous, not a queue: a read and a write meet, and
+ * elements move directly from the writer's slice into the reader's
+ * buffer. Both ends are affine — one pending read and one pending
+ * write at a time, matching the WIT ABI, where each end is one
+ * resource with one operation in flight. Fan-in from several
+ * producers, like fan-out to several consumers, is an explicit
+ * adapter over a stream, not a mode the stream carries.
+ *
+ * Reads are batched with the 1..N contract — `read(buf)` completes
+ * with between 1 and `buf.length` elements the moment any exist, and
+ * 0 is end-of-stream. The batch a read drains is the pending write's
+ * slice: `writeAll(buf, count)` is the ABI's buffer-carrying write,
+ * and `write(value)` is its one-element form. Backpressure is the
+ * writer awaiting: a write's future completes when its slice is fully
+ * consumed.
+ *
+ * The ends are capabilities, mirroring `Future`/`Completer`: a
+ * `Stream<T>` reference confers reading, and `StreamWriter<T>` — whose
+ * `.stream` is the value handed out — is the write capability. The
+ * stream's mutation surface is keyed by symbols this module does not
+ * export.
+ *
+ * Errors ride no channel here, matching WIT `stream<T>`: a stream
+ * ends, and whatever produced it exposes how it ended as a future
+ * beside it. A stopped reader is data to the writer (`write` completes
+ * `false`), and a closed writer is data to the reader (`read`
+ * completes 0).
+ */
+import { Error } from 'zena:error';
+import { FixedArray } from 'zena:fixed-array';
+import { Future, Completer } from 'zena:async';
+
+/** The write capability's entry points, unexported so a `Stream`
+ * reference cannot reach them (docs/design/classes.md §9.4). */
+symbol write;
+symbol writeAll;
+symbol close;
+
+/**
+ * The readable end.
+ *
+ * Both operations are exclusive: one read and one write may be
+ * pending at a time — the ends are affine in intent, and until move
+ * checking enforces that, a concurrent operation throws. The read
+ * buffer belongs to the caller: a read overwrites a prefix and
+ * reports the count, and only `[0, count)` is meaningful.
+ */
+export class Stream<T> {
+  /** The one pending write: its slice, the cursor into it, and the
+   * future its writer awaits. The slice belongs to the stream until
+   * the write's future completes; reads drain from `#writeOffset`,
+   * and the write completes once the slice is fully consumed. */
+  var #writeBuf: FixedArray<T> | null;
+  var #writeOffset: i32 = 0;
+  var #writeEnd: i32 = 0;
+  var #writeDone: Completer<boolean> | null;
+  /** The one pending read: its completer and the caller's buffer, set
+   * together. A write rendezvouses with it immediately — latency of
+   * one element through the batch API. */
+  var #pendingRead: Completer<i32> | null;
+  var #pendingBuf: FixedArray<T> | null;
+  var #closed: boolean = false;
+  var #stopped: boolean = false;
+
+  /**
+   * Between 1 and `buf.length` elements into `buf`, or 0 at
+   * end-of-stream. Completes the moment any elements exist — awaiting
+   * it still costs the queue hop, per the always-async rule.
+   */
+  read(buf: FixedArray<T>): Future<i32> {
+    if (this.#pendingRead != null) {
+      throw new Error('zena:stream: one read may be pending at a time');
+    }
+    if (buf.length == 0) {
+      throw new Error('zena:stream: read buffer is empty');
+    }
+    if (this.#stopped) {
+      return Future.of(0);
+    }
+    let src = this.#writeBuf;
+    if (src != null) {
+      let from = src as FixedArray<T>;
+      let remaining = this.#writeEnd - this.#writeOffset;
+      let n = if (remaining < buf.length) remaining else buf.length;
+      var i = 0;
+      while (i < n) {
+        buf[i] = from[this.#writeOffset + i];
+        i += 1;
+      }
+      this.#writeOffset += n;
+      if (this.#writeOffset >= this.#writeEnd) {
+        let done = this.#writeDone as Completer<boolean>;
+        this.#writeBuf = null;
+        this.#writeDone = null;
+        this.#writeOffset = 0;
+        this.#writeEnd = 0;
+        done.complete(true);
+      }
+      return Future.of(n);
+    }
+    if (this.#closed) {
+      return Future.of(0);
+    }
+    let c = new Completer<i32>();
+    this.#pendingRead = c;
+    this.#pendingBuf = buf;
+    return c.future;
+  }
+
+  /**
+   * The reader disclaims the rest of the stream: the pending write
+   * and subsequent writes complete `false`, and subsequent reads
+   * complete 0. Under cancellation this is what releasing the read
+   * end performs; at a component boundary it is the readable-end
+   * drop.
+   */
+  stop(): void {
+    if (this.#stopped) {
+      return;
+    }
+    this.#stopped = true;
+    let done = this.#writeDone;
+    if (done != null) {
+      this.#writeBuf = null;
+      this.#writeDone = null;
+      this.#writeOffset = 0;
+      this.#writeEnd = 0;
+      (done as Completer<boolean>).complete(false);
+    }
+    let pending = this.#pendingRead;
+    if (pending != null) {
+      this.#pendingRead = null;
+      this.#pendingBuf = null;
+      (pending as Completer<i32>).complete(0);
+    }
+  }
+
+  /**
+   * The writer's one-element write: `writeAll` of a slice of one.
+   *
+   * The future completes with `true` once the element has been
+   * consumed by a read, and with `false` if the reader stopped before
+   * consuming it — delivery did not happen.
+   */
+  :write(value: T): Future<boolean> {
+    if (this.#stopped) {
+      return Future.of(false as boolean);
+    }
+    this.#checkWritable();
+    let pending = this.#pendingRead;
+    if (pending != null) {
+      let buf = this.#pendingBuf as FixedArray<T>;
+      buf[0] = value;
+      this.#pendingRead = null;
+      this.#pendingBuf = null;
+      (pending as Completer<i32>).complete(1);
+      return Future.of(true as boolean);
+    }
+    let single = new FixedArray<T>(1, value);
+    return this.#park(single, 1);
+  }
+
+  /**
+   * The writer's batch write: the first `count` elements of `buf`,
+   * which belongs to the stream until the returned future completes.
+   * This is the shape the WIT ABI's `stream.write` carries.
+   *
+   * The future completes with `true` once the LAST element has been
+   * consumed by reads, and with `false` if the reader stopped before
+   * that — in which case a prefix of the slice may already have been
+   * delivered; `false` means "the rest will never be", not "nothing
+   * was".
+   */
+  :writeAll(buf: FixedArray<T>, count: i32 = buf.length): Future<boolean> {
+    if (count <= 0 || count > buf.length) {
+      throw new Error('zena:stream: writeAll count out of range');
+    }
+    if (this.#stopped) {
+      return Future.of(false as boolean);
+    }
+    this.#checkWritable();
+    let pending = this.#pendingRead;
+    if (pending != null) {
+      // Rendezvous with the blocked reader first; the rest parks.
+      let dst = this.#pendingBuf as FixedArray<T>;
+      let n = if (count < dst.length) count else dst.length;
+      var i = 0;
+      while (i < n) {
+        dst[i] = buf[i];
+        i += 1;
+      }
+      this.#pendingRead = null;
+      this.#pendingBuf = null;
+      (pending as Completer<i32>).complete(n);
+      if (n >= count) {
+        return Future.of(true as boolean);
+      }
+      let parked = this.#park(buf, count);
+      this.#writeOffset = n;
+      return parked;
+    }
+    return this.#park(buf, count);
+  }
+
+  /** A write is a programming error after `close` (the writer's own
+   * end) and while another write pends (the ends are exclusive); a
+   * STOPPED reader is not — callers check that first and complete
+   * `false`, because the reader's disclaim is data, not a bug. */
+  #checkWritable(): void {
+    if (this.#closed) {
+      throw new Error('zena:stream: write after close');
+    }
+    if (this.#writeDone != null) {
+      throw new Error('zena:stream: one write may be pending at a time');
+    }
+  }
+
+  /** Installs `buf[0, count)` as the one pending write and returns
+   * the future its writer awaits; reads drain it from `#writeOffset`
+   * until `read` completes it. Callers have already handled the
+   * rendezvous-with-a-blocked-reader case. */
+  #park(buf: FixedArray<T>, count: i32): Future<boolean> {
+    let done = new Completer<boolean>();
+    this.#writeBuf = buf;
+    this.#writeOffset = 0;
+    this.#writeEnd = count;
+    this.#writeDone = done;
+    return done.future;
+  }
+
+  /** The writer's close: end-of-stream. A pending write's remainder
+   * still delivers; once it drains, reads complete 0. */
+  :close(): void {
+    this.#closed = true;
+    let pending = this.#pendingRead;
+    if (pending != null) {
+      this.#pendingRead = null;
+      this.#pendingBuf = null;
+      (pending as Completer<i32>).complete(0);
+    }
+  }
+}
+
+/**
+ * The write capability. Hand out `.stream`; keep this — and keep it
+ * singular: fan-in from several producers is an explicit multiplexing
+ * adapter over one writer, not shared use of this object.
+ *
+ * A write's future is the backpressure: it completes when its
+ * elements are consumed into reads — or with `false` when the reader
+ * has stopped, which is data, not a failure.
+ */
+export class StreamWriter<T> {
+  stream = new Stream<T>();
+
+  /** Delivers `value` to the reader: `true` once it is consumed,
+   * `false` if the reader stopped before consuming it. */
+  write(value: T): Future<boolean> {
+    return this.stream.:write(value);
+  }
+
+  /**
+   * Delivers the first `count` elements of `buf` (all of it by
+   * default); the buffer belongs to the stream until the future
+   * completes. `true` = every element was consumed; `false` = the
+   * reader stopped first, and a prefix may already have been
+   * delivered.
+   */
+  writeAll(buf: FixedArray<T>, count: i32 = buf.length): Future<boolean> {
+    return this.stream.:writeAll(buf, count);
+  }
+
+  /** Ends the stream: after the pending write drains, reads
+   * complete 0. */
+  close(): void {
+    this.stream.:close();
+  }
+}

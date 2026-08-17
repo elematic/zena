@@ -507,7 +507,9 @@ The mapping onto this design, piece by piece:
 - **Streams**: request/response bodies arrive as `stream<u8>`; a
   minimal Zena wrapper with `async read(buf): Future<i32>` (backed by
   `stream.read` + waitable completion) suffices for a web server.
-  Rich `Stream<T>`/`async gen` integration stays post-v1.
+  Rich `Stream<T>`/`async gen` integration is designed in
+  [streams.md](streams.md); the in-language rendezvous core is
+  `zena:stream`.
 
 **The dependency that is NOT async**: Zena emits core modules today,
 and `wasmtime serve` consumes _components_ — WIT-typed exports plus

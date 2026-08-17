@@ -1,0 +1,209 @@
+// zena:stream tests (docs/design/streams.md): the rendezvous, the
+// 1..N read contract over a batch write's slice, exclusivity of both
+// ends, close and stop semantics, and an async consumer over an
+// object stream in the loop shape `for`-in fusion will later
+// generate.
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {Future, drainMicrotasks, runFuture} from 'zena:async';
+import {Stream, StreamWriter} from 'zena:stream';
+import {FixedArray} from 'zena:array';
+
+class Item {
+  n: i32;
+  new(this.n);
+}
+
+/** The read loop fusion will generate: one await per batch, a
+ * synchronous cursor inside. */
+let sumAll = async (s: Stream<Item>, buf: FixedArray<Item>): Future<i32> => {
+  var total = 0;
+  var count = await s.read(buf);
+  while (count > 0) {
+    var i = 0;
+    while (i < count) {
+      total += buf[i].n;
+      i += 1;
+    }
+    count = await s.read(buf);
+  }
+  return total;
+};
+
+export let tests = suite('Stream', (): void => {
+  test('a write with no reader parks; a read drains it', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let buf = new FixedArray<String>(4, '');
+
+    let wa = w.write('a');
+    drainMicrotasks();
+    isFalse(wa.isCompleted);
+
+    let r = w.stream.read(buf);
+    equal(runFuture(r), 1);
+    equal(buf[0], 'a');
+    isTrue(runFuture(wa));
+  });
+
+  test('a pending read completes on the first write, count 1', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let buf = new FixedArray<String>(4, '');
+
+    let r = w.stream.read(buf);
+    drainMicrotasks();
+    isFalse(r.isCompleted);
+
+    let wb = w.write('b');
+    equal(runFuture(r), 1);
+    equal(buf[0], 'b');
+    isTrue(runFuture(wb));
+  });
+
+  test('a batch write drains across reads, up to read capacity', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let src = new FixedArray<String>(5, '');
+    src[0] = 'a';
+    src[1] = 'b';
+    src[2] = 'c';
+    src[3] = 'd';
+    src[4] = 'e';
+    let buf = new FixedArray<String>(3, '');
+
+    let wa = w.writeAll(src, 5);
+    let r1 = w.stream.read(buf);
+    equal(runFuture(r1), 3);
+    equal(buf[0], 'a');
+    equal(buf[2], 'c');
+    // The write is not done until its whole slice is consumed.
+    isFalse(wa.isCompleted);
+
+    let r2 = w.stream.read(buf);
+    equal(runFuture(r2), 2);
+    equal(buf[0], 'd');
+    equal(buf[1], 'e');
+    isTrue(runFuture(wa));
+  });
+
+  test('writeAll without a count writes the whole buffer', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let src = new FixedArray<String>(2, '');
+    src[0] = 'a';
+    src[1] = 'b';
+    let buf = new FixedArray<String>(4, '');
+
+    let wa = w.writeAll(src);
+    let r = w.stream.read(buf);
+    equal(runFuture(r), 2);
+    equal(buf[0], 'a');
+    equal(buf[1], 'b');
+    isTrue(runFuture(wa));
+  });
+
+  test('a batch write rendezvouses with a blocked reader, remainder parks', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let src = new FixedArray<String>(5, '');
+    src[0] = 'a';
+    src[1] = 'b';
+    src[2] = 'c';
+    src[3] = 'd';
+    src[4] = 'e';
+    let buf = new FixedArray<String>(3, '');
+
+    let r1 = w.stream.read(buf);
+    let wa = w.writeAll(src, 5);
+    equal(runFuture(r1), 3);
+    equal(buf[0], 'a');
+    isFalse(wa.isCompleted);
+
+    let r2 = w.stream.read(buf);
+    equal(runFuture(r2), 2);
+    equal(buf[0], 'd');
+    isTrue(runFuture(wa));
+  });
+
+  test('a second write while one pends throws', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let buf = new FixedArray<String>(2, '');
+
+    let first = w.write('a');
+    var wroteTwice = false;
+    try {
+      let ignored = w.write('b');
+      wroteTwice = true;
+    } catch (e) {
+    }
+    isFalse(wroteTwice);
+
+    let r = w.stream.read(buf);
+    equal(runFuture(r), 1);
+    equal(buf[0], 'a');
+    isTrue(runFuture(first));
+  });
+
+  test('close completes a pending read with 0, and every read after', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let buf = new FixedArray<String>(2, '');
+
+    let r = w.stream.read(buf);
+    w.close();
+    equal(runFuture(r), 0);
+    equal(runFuture(w.stream.read(buf)), 0);
+  });
+
+  test('a pending write still delivers after close', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let buf = new FixedArray<String>(2, '');
+
+    let last = w.write('tail');
+    w.close();
+    let r = w.stream.read(buf);
+    equal(runFuture(r), 1);
+    equal(buf[0], 'tail');
+    isTrue(runFuture(last));
+    equal(runFuture(w.stream.read(buf)), 0);
+  });
+
+  test('a stopped reader refuses the pending and later writes', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let buf = new FixedArray<String>(2, '');
+
+    let parked = w.write('never');
+    w.stream.stop();
+    isFalse(runFuture(parked));
+    isFalse(runFuture(w.write('later')));
+    equal(runFuture(w.stream.read(buf)), 0);
+  });
+
+  test('write after close throws', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    w.close();
+    var threw = false;
+    try {
+      let ignored = w.write('x');
+    } catch (e) {
+      threw = true;
+    }
+    isTrue(threw);
+  });
+
+  test('an async consumer drains an object stream in batches', (ctx: TestContext): void => {
+    let w = new StreamWriter<Item>();
+    let placeholder = new Item(0);
+    let buf = new FixedArray<Item>(3, placeholder);
+    let src = new FixedArray<Item>(5, placeholder);
+    src[0] = new Item(100);
+    src[1] = new Item(200);
+    src[2] = new Item(120);
+    src[3] = new Item(140);
+    src[4] = new Item(100);
+
+    let total = sumAll(w.stream, buf);
+    let wa = w.writeAll(src, 5);
+    drainMicrotasks();
+    w.close();
+    drainMicrotasks();
+
+    isTrue(runFuture(wa));
+    equal(runFuture(total), 660);
+  });
+});

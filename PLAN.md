@@ -131,8 +131,9 @@ This document tracks completed work and planned features. For project instructio
     inside `try`/`finally` (finalizers can await too) and after
     `using`, the async-resource pattern.
   - Next: `then`/`map`/`flatMap` (blocked on closures inside
-    generic code), richer fetch (headers, streamed bodies — wants
-    streams), and post-v1 items (cancellation and structured
+    generic code), richer fetch (headers, streamed bodies — streams
+    are designed in [streams.md](docs/design/streams.md) with the
+    `zena:stream` rendezvous core implemented), and post-v1 items (cancellation and structured
     concurrency — designed in
     [cancellation.md](docs/design/cancellation.md), implementation
     not started — the tokio-backed CLI, the WASI P3 backend).

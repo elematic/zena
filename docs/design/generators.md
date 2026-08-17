@@ -579,8 +579,10 @@ Zena inherits the same layering cleanly:
 | `async`     | `Future<T>`        | scheduler       | `await`           |
 | `async gen` | `AsyncIterator<T>` | both            | `yield` + `await` |
 
-`AsyncIterator<T>` (likely `next(): Future<inline (true, T) | (false, _)>`,
-design deferred) answers the prompt's other musing — "async iteration
+`AsyncIterator<T>` (`next(): Future<Option<T>>`, decided in
+[streams.md](streams.md) — the inline-tuple shape sketched earlier has
+no lowering as a `Future` type argument) answers the prompt's other
+musing — "async iteration
 over a standard iterable that might return Promises": in Zena that's not
 a convention layered on sync iterators, it's the third row of the table,
 compiled by the same split pass with both suspension kinds live.
