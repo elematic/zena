@@ -1006,14 +1006,45 @@ through five mechanisms:
      above) — is therefore always avoidable for source-derived CFGs;
      it only exists if the emitter chooses it.
 5. **Init-discipline typing** as the backstop: type every local
-   `(ref $T)` and demote to nullable only what a one-pass simulation
-   of the validator's scoped init tracking rejects. Demotions are
-   counted and reported under `ZENA_ZIR_STATS`. For source-derived
-   CFGs the expected
-   steady state is exactly zero; the counter exists for shapes the
-   OPTIMIZER invents later (post-M3 code motion and CSE can hand a
-   temporary a live range no lexical scope ever had), so a pass that
-   breaks the invariant shows up as a number, not as silent widening.
+   `(ref $T)` and demote to nullable only what a simulation of the
+   validator's scoped init tracking rejects. Demotions are counted
+   and reported under `ZENA_ZIR_STATS`.
+
+Mechanisms 1, 2, and 5 are implemented, plus the label-placement half
+of 3: a block's own instructions emit BEFORE its merge children's
+wrapper labels open (the labels are only needed from the terminator
+on), so a def is set in the scope enclosing the whole dominated
+subtree and stays init-visible through it — with the exception of a
+trailing streamed/teed producer chain that feeds the terminator on the
+operand stack, which must stay adjacent to its consumer because wasm
+frames cannot carry operands across a `block` boundary.
+
+Mechanism 5 works by simulation rather than approximation
+(`#planNonNullLocals` in emit.zena): emission runs twice. A dry pass
+into a scratch `BinaryEmitter` records the exact scope open/else/close
+and local set/get event stream; replaying the stream under the
+validator's own rules — sets forgotten at their block's `end`,
+uniform rollback, enclosing-scope persistence — finds the locals
+whose every get follows a persisting set, and the real pass declares
+those at their precise `(ref $T)`. The two passes take identical
+decisions because declared local types only steer `ref.as_non_null`
+re-assert bytes, never scheduling or structure (stage-2 byte parity
+gates this). A `#copyArgs` move transfers the source local's declared
+type, so a destination graduates only when every source ends at the
+same non-null type — a fixpoint demotes across copy chains, move
+temps included. Mutable variables and multi-value projections need no
+special casing: their sets and gets are events like any other.
+
+On the compiler's own module the split is ~34,100 ref locals
+non-null against ~8,900 kept nullable (~52 KB of re-asserts
+removed). The residue is dominated by conditional-expression join
+values — merge params set on their in-edges, inside the arms'
+scopes — which is exactly mechanism 4's territory (typed labels /
+construct results), still outstanding along with label elision
+proper. The counter also guards shapes the OPTIMIZER invents later
+(post-M3 code motion and CSE can hand a temporary a live range no
+lexical scope ever had): a pass that breaks the invariant shows up
+as a number, not as silent widening.
 
 For a demoted local that does survive, `ref.as_non_null` is inserted
 only where the consumer's type discipline demands non-null (call and

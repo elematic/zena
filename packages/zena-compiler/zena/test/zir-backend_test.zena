@@ -8,6 +8,7 @@ import { String } from 'zena:string';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import {
   assertFunctionUses, assertFunctionUsesTimes, assertNoAllocation,
+  watFunction,
 } from './wat-invariants.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 import { getEnv } from 'zena:cli';
@@ -286,6 +287,43 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('ref.eq'));
     // The narrowed `return primary` re-asserts non-nullness.
     isTrue(result.contains('ref.as_non_null'));
+  });
+
+  test('entry-defined ref local graduates non-null past a join', (ctx: TestContext): void => {
+    // The entry block's own code emits BEFORE the join's wrapper block
+    // opens, so its set persists through the whole function and the
+    // local can be declared at its precise non-null type — reads after
+    // the join then need no ref.as_non_null re-assert. Under the old
+    // block-0 gate any merge child under the entry blocked graduation.
+    let result = compileWithZir(
+        'class Box { x: i32; new(this.x); }\n' +
+        'export let main = (): i32 => {\n' +
+        '  let b = new Box(3);\n' +
+        '  var acc = 0;\n' +
+        '  if (b.x > 1) { acc = 1; } else { acc = 2; }\n' +
+        '  return acc + b.x;\n' +
+        '};');
+    let mainWat = watFunction(result, '$main');
+    isTrue(mainWat.contains('(local (ref '));
+    isTrue(!mainWat.contains('(local (ref null'));
+    isTrue(!mainWat.contains('ref.as_non_null'));
+  });
+
+  test('conditional-join value keeps its nullable local', (ctx: TestContext): void => {
+    // A join param is written on the arms' edges, INSIDE the if/else
+    // scopes — the validator forgets both sets at the join (rollback is
+    // uniform even when every arm assigns), so the init replay must
+    // keep the local nullable and re-assert on the read.
+    let result = compileWithZir(
+        'class Box { x: i32; new(this.x); }\n' +
+        'let pickBox = (c: boolean): i32 => {\n' +
+        '  let b = if (c) new Box(1) else new Box(2);\n' +
+        '  return b.x;\n' +
+        '};\n' +
+        'export let main = (): i32 => pickBox(true);');
+    let pickWat = watFunction(result, '$pickBox');
+    isTrue(pickWat.contains('(local (ref null'));
+    isTrue(pickWat.contains('ref.as_non_null'));
   });
 
   test('new, field reads, and devirtualized method calls', (ctx: TestContext): void => {

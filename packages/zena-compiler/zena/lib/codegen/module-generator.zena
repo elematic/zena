@@ -780,6 +780,8 @@ export final class ModuleGenerator {
     let tEmitCode = performance.start("codegen-emit-code");
     this.emitter.emitCodeSectionStart(wasm.functions.length);
     var zirLowered = 0;
+    var zirGraduated = 0;
+    var zirDemoted = 0;
      for (let wasmFunc in wasm.functions) {
         // Lowering failures throw: a bail is a compiler bug, not a
         // coverage gap.
@@ -796,11 +798,16 @@ export final class ModuleGenerator {
           }
           throw new Error(message);
         }
-        emitZirFunction(wasm, this.emitter, wasmFunc, body);
+        let (graduated, demoted) = emitZirFunction(wasm, this.emitter, wasmFunc, body);
+        zirGraduated += graduated;
+        zirDemoted += demoted;
         zirLowered += 1;
      }
     if (this.zirStats) {
       console.log("zir backend: " + i32ToString(zirLowered) + " lowered");
+      console.log("zir locals: " + i32ToString(zirGraduated) +
+          " ref locals non-null, " + i32ToString(zirDemoted) +
+          " kept nullable (init rollback)");
     }
     if (wasm.datas.length > 0) {
       this.emitter.emitDataCountSection(wasm.datas.length);
