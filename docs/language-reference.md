@@ -4135,6 +4135,27 @@ Release timing is observable when `dispose` has effects: a resource
 declared in an inner block releases at that block's `}`, before the code
 after it runs.
 
+### Borrows and suspension
+
+A `Borrow<R>` of a resource may not be live across a suspension point:
+after an `await` or `yield` the owner's scope may have ended and
+released the resource. An `async` function may use a borrow parameter
+up to its first `await` — the body runs eagerly, inside the caller's
+extent, until then — and a borrow derived after the last suspension is
+fine. A generator may not take a restricted borrow parameter at all:
+its body only runs once the caller holds the iterator.
+
+```zena
+let sizes = async (f: Borrow<File>): Future<i32> => {
+  let n = f.size();          // before the first await: fine
+  let x = await fetchLimit();
+  return min(n, x);          // f itself may no longer be read here
+};
+```
+
+`Borrow<T>` of an unrestricted type (`Borrow<i32>`, `Borrow<String>`)
+has no owner to outlive, so neither rule applies.
+
 ## 13. Compilation
 
 ### Dead Code Elimination

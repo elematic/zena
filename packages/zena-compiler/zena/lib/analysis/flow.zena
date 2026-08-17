@@ -27,7 +27,7 @@ import { Node, SourceLocation } from '../ast.zena';
  */
 export sealed class FlowNode {
   case FlowStart, FlowAssign, FlowMove, FlowNarrowings, FlowJoin,
-    FlowUnreachable
+    FlowUnreachable, FlowSuspend
 
   /** Unique within one CheckerContext; minted by the checker. */
   var id: i32 = 0;
@@ -119,6 +119,32 @@ export final class FlowJoin extends FlowNode {
 }
 
 /**
+ * A suspension point: an `await` or a `yield`. Transparent to
+ * narrowing and to move liveness; a second-class borrow read on a path
+ * through one has outlived the extent it was borrowed from —
+ * ownership.md §"Borrows and suspension".
+ */
+export final class FlowSuspend extends FlowNode {
+  antecedent: FlowNode;
+  new(this.antecedent) : super();
+}
+
+/**
+ * One read of a second-class borrow inside a suspending body, checked
+ * when the body's flow graph is complete (loop back edges included):
+ * a suspension on any backward path from the read to the binding's
+ * birth is the error.
+ */
+export final class BorrowUseRec {
+  symbolId: SymbolId;
+  name: String;
+  node: FlowNode;
+  exprNodeId: i32;
+  loc: SourceLocation | null;
+  new(this.symbolId, this.name, this.node, this.exprNodeId, this.loc);
+}
+
+/**
  * One if/else whose arms may need compensating drops (ownership.md
  * §"The branch-join rule"): recorded while checking, decided when the
  * enclosing scope closes and every capture and escape is known. The
@@ -151,6 +177,7 @@ export final class FlowBodyState {
   loopMoves: Array<Array<FlowMove>>;
   loopDeclared: Array<HashSet<i32>>;
   pendingEdgeIfs: Array<PendingEdgeIf>;
+  var borrowUses = new Array<BorrowUseRec>();
   new(this.current, this.start, this.loopHeads, this.loopExits,
       this.exceptionTargets, this.loopMoves, this.loopDeclared,
       this.pendingEdgeIfs);

@@ -1,0 +1,76 @@
+// @mode: check
+// A Borrow<T> may not be live across a suspension point (ownership.md
+// §"Borrows and suspension"): after an await or yield the owner's
+// scope may have ended and released the resource. An async ramp is
+// eager, so uses before the first await are fine; a generator's ramp
+// is lazy — no body code runs until the caller holds the iterator —
+// so a borrow parameter is rejected outright.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+import {Future} from 'zena:async';
+import {Iterator} from 'zena:iterator';
+
+resource class File {
+  name: String;
+  new(this.name);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+
+let tick = (): Future<i32> => Future.of(1);
+
+// Uses up to the first await run in the caller's extent: fine.
+let ramp = async (f: Borrow<File>): Future<i32> => {
+  let n = f.name.length;
+  let x = await tick();
+  return n + x;
+};
+
+// A read after a suspension: the owner may already be gone.
+let crossed = async (f: Borrow<File>): Future<i32> => {
+  let x = await tick();
+  return f.name.length + x; // @error: suspension
+};
+
+// One arm suspending is enough: some path to the read crosses it.
+let oneArm = async (f: Borrow<File>, c: boolean): Future<i32> => {
+  var x = 0;
+  if (c) { x = await tick(); }
+  return f.name.length + x; // @error: suspension
+};
+
+// A borrow derived after the last suspension is fine.
+let bornAfter = async (o: Own<File>): Future<i32> => {
+  let x = await tick();
+  let b: Borrow<File> = o;
+  return b.name.length + x;
+};
+
+// The loop back edge carries the await into the next iteration's read.
+let looped = async (f: Borrow<File>): Future<i32> => {
+  var total = 0;
+  var i = 0;
+  while (i < 3) {
+    total += f.name.length; // @error: suspension
+    let x = await tick();
+    total += x;
+    i += 1;
+  }
+  return total;
+};
+
+// A generator may not take a restricted borrow parameter at all.
+let g = gen (f: Borrow<File>): Iterator<i32> => { // @error: generator
+  yield 1;
+};
+
+// A borrow local read on the far side of a yield.
+let genLocal = gen (o: Own<File>): Iterator<i32> => {
+  let b: Borrow<File> = o;
+  yield 1;
+  yield b.name.length; // @error: suspension
+};
+
+// Borrow<String> is unrestricted — no owner to outlive — so neither
+// rule applies.
+let plain = gen (s: Borrow<String>): Iterator<i32> => {
+  yield s.length;
+};

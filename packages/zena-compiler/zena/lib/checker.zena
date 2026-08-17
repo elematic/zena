@@ -49,7 +49,7 @@ import { OrderedMap } from 'zena:ordered-map';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import {
   FlowNode, FlowStart, FlowAssign, FlowMove, FlowNarrowings, FlowJoin,
-  FlowUnreachable, FlowBodyState, PendingEdgeIf
+  FlowUnreachable, FlowSuspend, FlowBodyState, PendingEdgeIf, BorrowUseRec
 } from './analysis/flow.zena';
 import { walkEnter } from './visitor.zena';
 import {
@@ -430,6 +430,22 @@ final class CheckerContext {
    * signature), and the second check must not duplicate the error.
    */
   #moveErrorNodes = new HashSet<i32>();
+
+  /**
+   * Second-class borrow reads of the current suspending body, decided
+   * at exitBodyFlow; error dedup by expression node id, because
+   * re-check passes flush the same body again.
+   */
+  var #bodyBorrowUses = new Array<BorrowUseRec>();
+  #borrowSuspendErrorNodes = new HashSet<i32>();
+
+  /**
+   * Where each second-class local was declared, as a flow node id: the
+   * liveness walk stops there, so a borrow derived after the last
+   * suspension is clean. A parameter has no entry — its extent begins
+   * at the body start, so the walk runs to FlowStart.
+   */
+  #borrowBirthNodes = new HashMap<i32, i32>();
 
   /**
    * The identifier node currently being checked as a plain assignment
@@ -1939,6 +1955,87 @@ final class CheckerContext {
   }
 
   /**
+   * Record a suspension point (`await`, `yield`) at the current
+   * position. Transparent to every walk except the borrow-liveness
+   * check flushed at body exit.
+   */
+  recordFlowSuspend(): void {
+    let node = new FlowSuspend(this.#currentFlow);
+    node.id = this.newFlowId();
+    this.#currentFlow = node;
+  }
+
+  /**
+   * Record a read of a second-class borrow. Only suspending bodies
+   * collect these; the check runs at body exit (exitBodyFlow), when
+   * the flow graph is complete — loop back edges included — so a read
+   * at a loop's top still sees a suspension later in the body.
+   */
+  recordBorrowUse(expr: Node, si: Symbol): void {
+    if (this.yieldType == null && this.asyncValueType == null) { return; }
+    this.#bodyBorrowUses.push(new BorrowUseRec(
+      si.id, si.name, this.#currentFlow, expr.id as i32, expr.loc));
+  }
+
+  /** Mark the current position as `id`'s declaration for the walk. */
+  recordBorrowBirth(id: SymbolId): void {
+    this.#borrowBirthNodes[id as i32] = this.#currentFlow.id;
+  }
+
+  /**
+   * Whether a suspension lies on some backward path from `from` to the
+   * binding's birth. An assignment to the binding ends a path cleanly —
+   * the value read was produced after it — exactly as in findLiveMove.
+   */
+  #findFlowSuspend(id: SymbolId, from: FlowNode, stopAtId: i32): boolean {
+    let visited = new HashSet<i32>();
+    let pending = new Array<FlowNode>();
+    pending.push(from);
+    while (pending.length > 0) {
+      let node = pending.pop();
+      if (node.id == stopAtId) { continue; }
+      if (visited.has(node.id)) { continue; }
+      visited.add(node.id);
+      match (node) {
+        case FlowStart: {}
+        case FlowUnreachable: {}
+        case FlowSuspend: { return true; }
+        case FlowNarrowings as nw: { pending.push(nw.antecedent); }
+        case FlowMove as mv: { pending.push(mv.antecedent); }
+        case FlowAssign as assign: {
+          if ((assign.symbolId as i32) != (id as i32)) {
+            pending.push(assign.antecedent);
+          }
+        }
+        case FlowJoin as join: {
+          for (let a in join.antecedents) {
+            pending.push(a);
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Decide the collected borrow reads of the body being exited. */
+  #flushBorrowUses(): void {
+    for (let rec in this.#bodyBorrowUses) {
+      if (this.#borrowSuspendErrorNodes.has(rec.exprNodeId)) { continue; }
+      let birthId = if (let (true, b) =
+          this.#borrowBirthNodes.get(rec.symbolId as i32)) b else -1;
+      if (!this.#findFlowSuspend(rec.symbolId, rec.node, birthId)) { continue; }
+      this.#borrowSuspendErrorNodes.add(rec.exprNodeId);
+      this.error(
+        "'" + rec.name + "' is a borrow read after a suspension point: the " +
+        "owner's scope may have ended and released the resource. A " +
+        "'Borrow' may not be live across an 'await' or 'yield'.",
+        DiagnosticCode.UseAfterMove,
+        rec.loc
+      );
+    }
+  }
+
+  /**
    * Record a move of an owned binding at the current position. Like an
    * assignment, a move feeds the innermost catch entry (the body can
    * throw right after it), and it registers with every open loop for
@@ -2086,6 +2183,10 @@ final class CheckerContext {
           }
           // An assignment to the binding revives it: this path is clean.
         }
+        case FlowSuspend as sp: {
+          // A suspension does not change move liveness.
+          pending.push(sp.antecedent);
+        }
         case FlowJoin as join: {
           for (let a in join.antecedents) {
             pending.push(a);
@@ -2159,10 +2260,16 @@ final class CheckerContext {
     this.#flowLoopMoves = new Array<Array<FlowMove>>();
     this.#flowLoopDeclared = new Array<HashSet<i32>>();
     this.#pendingEdgeIfs = new Array<PendingEdgeIf>();
+    saved.borrowUses = this.#bodyBorrowUses;
+    this.#bodyBorrowUses = new Array<BorrowUseRec>();
     return saved;
   }
 
   exitBodyFlow(saved: FlowBodyState): void {
+    // The body's flow graph is complete here — loop back edges wired —
+    // so the borrow-liveness reads collected for it are decidable.
+    this.#flushBorrowUses();
+    this.#bodyBorrowUses = saved.borrowUses;
     this.#currentFlow = saved.current;
     this.#currentFlowStart = saved.start;
     this.#flowLoopHeads = saved.loopHeads;
@@ -2338,6 +2445,10 @@ final class CheckerContext {
         }
         case FlowMove as mv: {
           n = mv.antecedent;
+        }
+        case FlowSuspend as sp: {
+          // A suspension does not change what holds for the binding.
+          n = sp.antecedent;
         }
         case FlowStart as st: {
           // The declaring body's entry has seen everything that could
@@ -2521,6 +2632,10 @@ final class CheckerContext {
         }
         case FlowMove as mv: {
           n = mv.antecedent;
+        }
+        case FlowSuspend as sp: {
+          // A suspension does not change what holds for the path.
+          n = sp.antecedent;
         }
         case FlowStart as st: {
           // A rooted path stops at its root's declaring body the way a
@@ -3426,6 +3541,36 @@ let isSecondClass = (t: Type): boolean => {
   if (inner is TypeParameterType) { return true; }
   if (inner is ClassType) { return inner.isResource; }
   return false;
+};
+
+/**
+ * A generator may not take a restricted borrow parameter at all: its
+ * ramp is lazy — the frame is allocated, the arguments spill into it and
+ * the iterator returns without running any body code — so every use of
+ * the parameter happens after the caller has taken the iterator, and
+ * there is no prefix in which the borrow is safe. Contrast async, whose
+ * eager ramp makes uses up to the first `await` legal; see ownership.md
+ * §"Borrows and suspension".
+ */
+let rejectGeneratorBorrowParams = (
+  ctx: CheckerContext,
+  params: Array<Parameter>,
+  paramTypes: Array<Type>
+): void => {
+  var i = 0;
+  while (i < paramTypes.length && i < params.length) {
+    if (isSecondClass(paramTypes[i])) {
+      ctx.error(
+        "A generator may not take a '" + typeToString(paramTypes[i]) +
+        "' parameter: the body only runs once the caller holds the " +
+        "iterator, so every use of the borrow would be outside the " +
+        "extent it was borrowed from.",
+        DiagnosticCode.IncompatibleTypes,
+        params[i].loc
+      );
+    }
+    i += 1;
+  }
 };
 
 /**
@@ -7158,6 +7303,9 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
             checkAndRegisterInterfaceAdaptation(ctx, argument, instantiated, expectedYield);
           }
         }
+        // The yielded value evaluated before the suspension; everything
+        // after this statement is post-suspend.
+        ctx.recordFlowSuspend();
       }
     }
     case IfStatement {test, consequent, alternate, loc}: {
@@ -7690,6 +7838,15 @@ let checkVariableDeclaration = (
 
   // Bind the declared names in the pattern.
   bindPattern(ctx, pattern, declType);
+
+  // A borrow's extent begins here: the suspension-liveness walk stops
+  // at the declaration, so deriving one after an `await` is clean.
+  if (pattern is IdentifierPattern && isSecondClass(declType)) {
+    let borrowSym = ctx.model.resolveDeclaration(pattern);
+    if (borrowSym != null) {
+      ctx.recordBorrowBirth(borrowSym.id);
+    }
+  }
 
   // A simple `let` holding an owned resource is an implicit-drop
   // candidate: released at its block's exit unless something moves,
@@ -8496,6 +8653,14 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let moveSym = ctx.model.resolve(expr);
         if (moveSym != null) {
           ctx.checkMoveUse(expr, moveSym);
+        }
+      }
+      // A second-class borrow read in a suspending body is decided at
+      // body exit: live across a suspension is the error.
+      if (isSecondClass(resolved)) {
+        let borrowSym = ctx.model.resolve(expr);
+        if (borrowSym != null) {
+          ctx.recordBorrowUse(expr, borrowSym);
         }
       }
       resolved
@@ -11778,6 +11943,7 @@ let checkMethodBody = (
       }
       case _: {}
     }
+    rejectGeneratorBorrowParams(ctx, md.params, methodType.parameters);
     ctx.setReturnType(new VoidType());
     ctx.setYieldType(yieldT);
     ctx.setAsyncValueType(null);
@@ -15299,6 +15465,9 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
     );
     return new ErrorType();
   }
+  // The operand evaluates before the suspension, so its own reads are
+  // on the safe side; everything after this point is post-suspend.
+  ctx.recordFlowSuspend();
   let direct = extractFutureValueType(ctx, operandType);
   if (direct != null) {
     return direct;
@@ -15552,6 +15721,7 @@ let checkFunctionExpression = (
     }
     retType = new VoidType();
     needsInference = false;
+    rejectGeneratorBorrowParams(ctx, fe.params, paramTypes);
   }
 
   // Async functions: the annotation is the full Future<T> return type

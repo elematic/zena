@@ -462,11 +462,15 @@ That lands differently on the two constructs, because their ramps differ:
   that prefix executes inside the caller's dynamic extent, where the owner is
   provably still alive.
 
-The enforcement mechanism already exists. The split pass computes exactly which
-values are live across suspensions in order to decide which become frame
-fields; a `Borrow<T>` in that set is the error. The checker reports it against
-the flow graph so the diagnostic has a span, with the split pass's liveness as
-a cross-check.
+Enforcement is on the checker flow graph. `await` and `yield` record a
+`FlowSuspend` node; each read of a second-class binding in a suspending body
+is collected and decided when the body's graph is complete (loop back edges
+included): a suspension on any backward path from the read to the binding's
+declaration — a parameter's extent begins at the body start — is the error,
+and an assignment to the binding ends a path cleanly, exactly as in move
+checking. The generator parameter ban is a flat signature check. The split
+pass separately computes which values are live across suspensions to decide
+frame fields; wiring that in as a cross-check remains open.
 
 **Awaiting the call is not by itself sufficient.** `await read(file)` looks safe
 — the caller suspends until the callee finishes, so the borrow's extent appears
