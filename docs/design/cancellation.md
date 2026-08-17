@@ -114,6 +114,11 @@ caller, so the ambient scope at frame creation is the caller's, and
 the frame stores it in one field. After creation, nothing consults the
 ambient — delivery is a frame-field test. Code that starts before any
 scope exists belongs to the root scope, which cannot be cancelled.
+The ambient should be a context record with the scope as its first
+field rather than a lone variable: the signals library needs a
+dependency-tracking cell propagated across suspensions the same way
+(see "Integration with planned systems"), and one record at the same
+two sites serves every such consumer.
 
 Sync code never observes any of this. A compute loop that wants to
 stop early polls explicitly — a `currentScope()` getter, or a context
@@ -256,6 +261,87 @@ cancellation, and only cancellation is deterministic.**
   protocol, inherited rather than designed twice — the yield
   checkpoint uses the same tag, the same region lowering, and the same
   shield.
+
+## Integration with planned systems
+
+Three systems on the roadmap interact with this design. Each needs its
+own document; this section records how the mechanisms here meet their
+most likely directions, and what those directions ask of this design
+now.
+
+### Signals and async computeds
+
+A signals library in the TC39 style tracks a computed's dependencies
+through an ambient "currently computing" cell during evaluation. The
+open question in TC39 — tracking across suspension points, where the
+committee reached for AsyncContext and its tradeoffs — is the same
+problem this design already solves for the cancel scope: an ambient
+value that must follow a logical task across suspensions. The solution
+transfers wholesale, and soundly, for the same reasons: Zena owns its
+executor, execution runs to completion between suspensions, and a
+frame captures its context at creation. The consequence for this
+design is small and worth taking now: the two save/restore sites
+should carry a **context record** rather than a lone scope variable,
+so the cancel scope is the first field of a structure the signals
+library later adds a tracking cell to — frame-propagated ambients as
+one mechanism, not one mechanism per consumer.
+
+An `AsyncComputed` in the
+[signal-utils](https://github.com/proposal-signals/signal-utils#asynccomputed)
+shape then needs no machinery of its own: each run of the async
+computation executes in a fresh child scope, and a dependency change
+cancels that scope and starts the next run. Supersession *is*
+cancellation — the stale run dies at its next checkpoint
+(level-triggered, so however it is shaped), its cleanup runs, and it
+completes as cancelled rather than as an error, which is exactly the
+distinction the computed's status signal wants to surface. The
+unswallowable tag matters here specifically: user code inside a
+computed cannot `catch (e)` its way past supersession and write a
+stale value.
+
+### A stdlib task object
+
+A `Task` in the [Lit task](https://lit.dev/docs/data/task/) shape —
+states for non-started, pending, complete, and error — extends
+naturally with completed-as-cancelled, which is this design's boundary
+state, observed exactly where such an object sits. The non-started
+state also fits: async calls are eager, so a task object that owns a
+not-yet-run computation holds a thunk, and running it is where the
+task creates the child scope that a re-run or supersession later
+cancels — the same shape as `AsyncComputed` minus the signal graph.
+Nothing new is required of this design; the task object is a consumer
+of the scope API and the boundary states.
+
+One naming collision to resolve before that lands: `zena:async`
+already uses `Task` for the executor's queue protocol (the interface
+suspended frames implement). The internal protocol should yield the
+name.
+
+### Streams and Component Model async
+
+WASI 0.3 streams come with the Component Model's own cancellation
+primitives: dropping a stream end signals the peer, and the canonical
+ABI can cancel an in-flight subtask. The integration is a division of
+labor rather than a translation layer:
+
+- **Inside the component**, a pending stream read or write is a
+  checkpoint like any other await; cancelling the scope raises the
+  cancellation channel there.
+- **Across the component boundary**, propagation is the cleanup this
+  design already guarantees: stream ends and other WIT handles are
+  resources released by `using`/ownership, those regions run on the
+  cancellation unwind, and dropping the handle *is* the Component
+  Model's cancel signal to the peer. The unwind's cleanup is the wire
+  protocol; no separate signaling path exists to keep consistent.
+- **In the runtime glue**, a cancelled scope with an in-flight async
+  import can additionally issue the ABI's subtask cancel rather than
+  merely abandoning the waitable, and a host cancelling one of the
+  component's export tasks delivers into that task's root scope — the
+  scope tree gives the host-facing cancel a place to land.
+
+End-of-stream and backpressure stay off this channel: a read that
+returns "closed" is an ordinary `Result`-shaped outcome addressed to
+the caller, not a directive to unwind.
 
 ## Sequencing
 
