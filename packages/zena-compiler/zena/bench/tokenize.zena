@@ -1,0 +1,204 @@
+/**
+ * What does tokenizing the compiler's own sources cost?
+ *
+ * Two runners, answering two different questions:
+ *
+ * 1. **Keyword classification.** The isolated change: a scanned word is
+ *    now matched against a length-bucketed keyword table by comparing
+ *    source bytes in place, where before it was sliced into a `String`
+ *    and looked up in a map keyed by one. Both paths are compiled into
+ *    this benchmark and run over the same words, so the comparison is
+ *    within a single build — an A/B across two builds cannot separate a
+ *    few percent from the noise between them.
+ *
+ * 2. **Whole tokenize.** The absolute number, which is the baseline any
+ *    future reader has to beat. Nothing to compare against here; it
+ *    exists so that a change to how source bytes are read has something
+ *    to be measured against rather than argued about.
+ *
+ * Run from the repository root, which is where the corpus path resolves
+ * from:
+ *
+ *     zena-cli run packages/zena-compiler/zena/bench/tokenize.zena --dir .
+ *
+ * An optional argument overrides the corpus directory (default
+ * `packages/zena-compiler/zena/lib`).
+ */
+import {BenchRunner, BenchContext, reportToString} from 'zena:bench';
+import {console} from 'zena:console';
+import {listDir, readFile} from 'zena:fs';
+import {getArguments} from 'zena:cli';
+import {Array} from 'zena:array';
+import {Map} from 'zena:map';
+import {String} from 'zena:string';
+import {i32ToString} from 'zena:string-convert';
+import {
+  TokenType, tokenize, matchKeyword, isIdentifierPart,
+} from '../lib/tokenizer.zena';
+// Imported for the parse runner below. It also, incidentally, is what
+// makes this file compile: with only the tokenizer reachable, a case
+// class's `==` has no devirtualizable target and ZIR bails with
+// `case eq field dispatch`. Recorded in BUGS.md.
+import {parse} from '../lib/parser.zena';
+
+/** One scanned word, as a range into the file that produced it. */
+final class Word(source: String, start: i32, length: i32)
+
+let loadCorpus = (dir: String): Array<String> => {
+  let sources = new Array<String>();
+  for (let entry in listDir(dir)) {
+    if (entry.name.endsWith('.zena')) {
+      sources.push(readFile(dir + '/' + entry.name));
+    }
+  }
+  return sources;
+};
+
+/**
+ * Every identifier-shaped run of bytes in the corpus, which is exactly
+ * the set of words the tokenizer has to classify.
+ */
+let collectWords = (sources: Array<String>): Array<Word> => {
+  let words = new Array<Word>();
+  for (let source in sources) {
+    let n = source.length;
+    var i = 0;
+    while (i < n) {
+      if (isIdentifierPart(source.getByteAt(i))) {
+        let start = i;
+        while (i < n && isIdentifierPart(source.getByteAt(i))) {
+          i += 1;
+        }
+        words.push(new Word(source, start, i - start));
+      } else {
+        i += 1;
+      }
+    }
+  }
+  return words;
+};
+
+/**
+ * The path this change replaced: slice the word into a `String`, then
+ * ask a map keyed by String whether it is a keyword. Kept here, and
+ * only here, so the two can be timed against each other.
+ */
+let KEYWORDS_BY_TEXT: Map<String, TokenType> = {
+  'let' => TokenType.Let, 'var' => TokenType.Var, 'class' => TokenType.Class,
+  'final' => TokenType.Final, 'import' => TokenType.Import,
+  'export' => TokenType.Export, 'return' => TokenType.Return,
+  'if' => TokenType.If, 'else' => TokenType.Else, 'while' => TokenType.While,
+  'for' => TokenType.For, 'break' => TokenType.Break,
+  'continue' => TokenType.Continue, 'true' => TokenType.True,
+  'false' => TokenType.False, 'null' => TokenType.Null, 'new' => TokenType.New,
+  'this' => TokenType.This, 'extends' => TokenType.Extends,
+  'interface' => TokenType.Interface, 'implements' => TokenType.Implements,
+  'super' => TokenType.Super, 'mixin' => TokenType.Mixin,
+  'with' => TokenType.With, 'on' => TokenType.On,
+  'abstract' => TokenType.Abstract, 'operator' => TokenType.Operator,
+  'declare' => TokenType.Declare, 'function' => TokenType.Function,
+  'from' => TokenType.From, 'type' => TokenType.Type,
+  'distinct' => TokenType.Distinct, 'opaque' => TokenType.Opaque,
+  'as' => TokenType.As, 'is' => TokenType.Is,
+  'extension' => TokenType.Extension, 'static' => TokenType.Static,
+  'throw' => TokenType.Throw, 'try' => TokenType.Try,
+  'catch' => TokenType.Catch, 'finally' => TokenType.Finally,
+  'match' => TokenType.Match, 'case' => TokenType.Case,
+  'symbol' => TokenType.Symbol, 'enum' => TokenType.Enum,
+  'in' => TokenType.In, 'inline' => TokenType.Inline,
+  'sealed' => TokenType.Sealed, 'gen' => TokenType.Gen,
+  'yield' => TokenType.Yield, 'async' => TokenType.Async,
+  'await' => TokenType.Await, 'using' => TokenType.Using
+};
+
+/** Slice first, then look the slice up. Returns a checksum so nothing folds away. */
+let classifyBySlice = (words: Array<Word>): i32 => {
+  var sink = 0;
+  for (let w in words) {
+    let text = w.source.sliceBytes(w.start, w.start + w.length);
+    if (let (true, type) = KEYWORDS_BY_TEXT.get(text)) {
+      sink += type as i32;
+    } else {
+      sink += text.length;
+    }
+  }
+  return sink;
+};
+
+/** Compare bytes in place; allocate only for the identifiers. */
+let classifyByBytes = (words: Array<Word>): i32 => {
+  var sink = 0;
+  for (let w in words) {
+    let keyword = matchKeyword(w.source, w.start, w.length);
+    if (keyword != null) {
+      sink += keyword.type as i32;
+    } else {
+      let text = w.source.sliceBytes(w.start, w.start + w.length);
+      sink += text.length;
+    }
+  }
+  return sink;
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  let dir = if (args.length > 1) args[1] else 'packages/zena-compiler/zena/lib';
+  let sources = loadCorpus(dir);
+  if (sources.length == 0) {
+    console.log('no .zena sources found under ' + dir);
+    return 1;
+  }
+  var bytes = 0;
+  for (let s in sources) {
+    bytes += s.length;
+  }
+  let words = collectWords(sources);
+  var keywords = 0;
+  for (let w in words) {
+    if (matchKeyword(w.source, w.start, w.length) != null) {
+      keywords += 1;
+    }
+  }
+  console.log(i32ToString(sources.length) + ' files, ' + i32ToString(bytes) +
+      ' bytes, ' + i32ToString(words.length) + ' words, ' +
+      i32ToString(keywords) + ' of them keywords');
+
+  // The two classifiers see identical input, so the only difference is
+  // the slice-and-hash the old path does per word.
+  let classifyRunner = new BenchRunner('keyword classification (' + dir + ')');
+  classifyRunner.options.minSamples = 40;
+  classifyRunner.options.timeBudgetMs = 60000.0;
+  classifyRunner.options.horizons = ['1%'];
+  classifyRunner.bench('slice-then-map', (_ctx: BenchContext) => {
+    classifyBySlice(words);
+  });
+  classifyRunner.bench('bytes-in-place', (_ctx: BenchContext) => {
+    classifyByBytes(words);
+  });
+  console.log(reportToString(classifyRunner.run()));
+
+  let tokenizeRunner = new BenchRunner('tokenize (' + dir + ')');
+  tokenizeRunner.options.minSamples = 30;
+  tokenizeRunner.options.timeBudgetMs = 60000.0;
+  tokenizeRunner.options.horizons = ['1%'];
+  tokenizeRunner.bench('tokenize', (_ctx: BenchContext) => {
+    for (let s in sources) {
+      tokenize(s);
+    }
+  });
+  console.log(reportToString(tokenizeRunner.run()));
+
+  // A parse is the tokenize plus an AST an order of magnitude larger,
+  // so this says how much of a front end the lexer actually is.
+  let parseRunner = new BenchRunner('parse (' + dir + ')');
+  parseRunner.options.minSamples = 20;
+  parseRunner.options.timeBudgetMs = 60000.0;
+  parseRunner.options.horizons = ['1%'];
+  parseRunner.bench('parse', (_ctx: BenchContext) => {
+    for (let s in sources) {
+      parse(s, 'bench.zena');
+    }
+  });
+  console.log(reportToString(parseRunner.run()));
+  return 0;
+};
