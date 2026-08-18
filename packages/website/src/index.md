@@ -166,6 +166,28 @@ export function main() {
 </figure>
 
 <figure>
+<figcaption>Async Functions</figcaption>
+
+```zena
+import { sleep } from 'zena:time';
+
+// Async functions return a Future<T> and can await other futures.
+async function fetchUser(id: i32): Future<String> {
+  await sleep(10);
+  return `User #${id}`;
+}
+
+export async function main(): Future<void> {
+  // Calling an async function starts it eagerly.
+  let [userOne, userTwo] = await Future.all([fetchUser(1), fetchUser(2)]);
+
+  console.log(`${userOne}, ${userTwo}`);
+}
+```
+
+</figure>
+
+<figure>
 <figcaption>Types</figcaption>
 
 ```zena
