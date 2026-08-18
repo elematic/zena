@@ -2399,6 +2399,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     var externalModule = "";
     var externalName = "";
     var externalAsync = false;
+    var externalCanonType = "";
     for (let dec in decl.decorators) {
       if (dec.name == "intrinsic") {
         if (dec.args.length == 1) {
@@ -2413,18 +2414,24 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           externalName = dec.args[1].value;
           isExternal = true;
           // A third argument is the import's canonical options, comma
-          // separated. `async` is the only one today; the rest of the
-          // canonical option space (memory, realloc, string-encoding) is
-          // the compiler's business rather than the program's, because
-          // only the compiler knows where the memory lives.
+          // separated. `async` is one; a WIT type spelling (`stream<u8>`,
+          // `future`) names the type a typed canonical builtin operates
+          // on. The rest of the canonical option space (memory, realloc,
+          // string-encoding) is the compiler's business rather than the
+          // program's, because only the compiler knows where the memory
+          // lives.
           if (dec.args.length == 3) {
             for (let option in dec.args[2].value.split(",")) {
               if (option == "async") {
                 externalAsync = true;
+              } else if (option.startsWith("stream") ||
+                  option.startsWith("future")) {
+                externalCanonType = option;
               } else if (option != "") {
                 throw new Error(
                   "Unknown @external option '" + option + "' on '" +
-                  decl.name.name + "' (expected 'async')");
+                  decl.name.name + "' (expected 'async' or a stream/" +
+                  "future type like 'stream<u8>')");
               }
             }
           }
@@ -2515,6 +2522,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         importFunc.importModule = externalModule;
         importFunc.importName = externalName;
         importFunc.importIsAsync = externalAsync;
+        importFunc.importCanonType = externalCanonType;
         importFunc.name = decl.name.name + "_raw_import";
         this.pass.wasm.functionImports.push(importFunc);
 
@@ -2532,6 +2540,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         wasmFunc.importModule = externalModule;
         wasmFunc.importName = externalName;
         wasmFunc.importIsAsync = externalAsync;
+        wasmFunc.importCanonType = externalCanonType;
         this.pass.wasm.functionImports.push(wasmFunc);
         this.pass.wasm.functionMap[sym.id] = wasmFunc;
       }

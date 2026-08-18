@@ -117,7 +117,7 @@ const FIXTURES: Fixture[] = [
   },
   {
     name: 'declared',
-    wasi: [],
+    wasi: ['p3=y'],
     wit: ['declared.wit', 'app'],
     // A program compiled against a declared world: the world is the
     // authority (disagreements are compile errors, unit-tested), the
@@ -135,13 +135,14 @@ const FIXTURES: Fixture[] = [
   },
   {
     name: 'print',
-    wasi: [],
-    // The first component that prints: `zena:console` over p2
-    // `wasi:cli/stdout` and `wasi:io/streams`, with the write's
-    // lowering carrying the canonical memory options and the bytes
-    // landing in the runtime memory module's pages. Two stdout lines,
-    // because the second proves the delegated free list survived the
-    // first; the stderr line proves the two streams are distinct.
+    wasi: ['p3=y'],
+    // The first component that prints: `zena:console` over p3
+    // `wasi:cli/stdout`, the guest-created `stream<u8>` registered
+    // through `write-via-stream` and written with the synchronous
+    // `stream.write` builtin, the bytes staged in the runtime memory
+    // module's pages. Two stdout lines, because the second proves the
+    // delegated free list survived the first; the stderr line proves
+    // the two streams are distinct.
     invocations: [
       {
         invoke: 'main()',

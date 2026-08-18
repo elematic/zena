@@ -38,6 +38,7 @@ if (process.env.HOST_PATH) {
 
 /** The world each fixture's encoding is asked for. */
 const WORLDS = {
+  'async.wit': 'event-host',
   'shapes.wit': 'shapes',
   'resources.wit': 'store',
   'uses.wit': 'web',
@@ -46,9 +47,7 @@ const WORLDS = {
 };
 
 /** What each *.error.wit fixture's failure must mention. */
-const ERRORS = {
-  'futures.error.wit': 'future and stream',
-};
+const ERRORS = {};
 
 mkdirSync(outDir, {recursive: true});
 

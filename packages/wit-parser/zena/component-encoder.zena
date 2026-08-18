@@ -622,8 +622,33 @@ export final class ComponentTypeEncoder {
       return index;
     }
     if (t.tag == TypeTag.Future || t.tag == TypeTag.Stream) {
-      throw new EncodeError(
-          "future and stream types wait on the async runtime (C6)");
+      // `stream<T>`/`future<T>` — a handle to one end. The payload is
+      // optional in the grammar (`0x66 t?`), and the absent form is a
+      // real type (`future` alone signals completion), encoded as a
+      // present/absent byte like a defaulted case payload.
+      let opcode = if (t.tag == TypeTag.Stream) 0x66 else 0x65;
+      let innerType = t.inner;
+      var inner = -1;
+      var key = i32ToString(opcode) + "(";
+      if (innerType != null) {
+        inner = this.#encodeType(scope, innerType as Type);
+        key = key + i32ToString(inner);
+      }
+      key = key + ")";
+      if (let (true, existing) = scope.anon.get(key)) {
+        return existing;
+      }
+      let body = new ByteBuffer();
+      body.writeByte(opcode);
+      if (innerType != null) {
+        body.writeByte(0x01);
+        writeValType(body, inner);
+      } else {
+        body.writeByte(0x00);
+      }
+      let index = this.#declareType(scope, body);
+      scope.anon[key] = index;
+      return index;
     }
     if (t.tag == TypeTag.Map) {
       throw new EncodeError("map types are not encodable yet");
@@ -957,9 +982,10 @@ function flatMetaOfType(
   if (t.tag == TypeTag.Name) {
     return flatMetaOfName(interfaces, itemsOf, (t.name as Id).name);
   }
-  // future/stream/map/error-context: the encoder already refused these
-  // before metadata is asked for; count them as one word so a caller
-  // that asks anyway gets something rather than a lie about memory.
+  // stream/future: a handle end, one core i32, no memory of its own —
+  // the real answer, not a fallback. map/error-context: the encoder
+  // still refuses those before metadata is asked for; one word keeps a
+  // caller that asks anyway from being lied to about memory.
   return new WitFlatMeta(1, false);
 }
 

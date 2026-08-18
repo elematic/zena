@@ -29,7 +29,8 @@ import { i32ToString } from 'zena:string-convert';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc, ComponentFuncType,
   ComponentCanonBuiltin, ComponentValType, noComponentResult, isKebabName,
-  toKebabName, canonNamespace, isKnownCanonBuiltin, componentEntryExport,
+  toKebabName, canonNamespace, isKnownCanonBuiltin, isTypedCanonBuiltin,
+  componentEntryExport,
   componentCallbackExport, componentTypeNeedsMemory,
   componentSignatureNeedsMemory, componentRuntimeNamespace
 } from './component-emitter.zena';
@@ -273,7 +274,25 @@ export let buildComponentShape = (
         throw new Error(
           "'" + field + "' is not a canonical builtin this compiler " +
             "can emit. Known: waitable-set.new, waitable-set.drop, " +
-            "waitable.join, subtask.drop, task.return."
+            "waitable.join, subtask.drop, task.return, and the " +
+            "stream.*/future.* families (new, read, write, " +
+            "drop-readable, drop-writable)."
+        );
+      }
+      if (isTypedCanonBuiltin(field)) {
+        // Per-type: the canon entry's immediate is a component type
+        // index, so the type is part of which builtin this is.
+        if (f.importCanonType == "") {
+          throw new Error(
+            "The canonical builtin '" + field + "' is per-type: name " +
+              "the type as a third @external option, as in " +
+              "@external(\"canon\", \"" + field + "\", \"stream<u8>\")."
+          );
+        }
+      } else if (f.importCanonType != "") {
+        throw new Error(
+          "The canonical builtin '" + field + "' takes no type option; " +
+            "only the stream.* and future.* families are per-type."
         );
       }
       var builtinResult = noComponentResult;
@@ -297,7 +316,30 @@ export let buildComponentShape = (
           );
         }
       }
-      shape.builtins.push(new ComponentCanonBuiltin(field, builtinResult));
+      // One canon entry per distinct builtin: two modules may both
+      // declare `waitable-set.new`, and the synthesized instance
+      // exports each name once. A name redeclared at a different type
+      // cannot share that export, so it is an error rather than a
+      // merge.
+      var duplicate = false;
+      for (let existing in shape.builtins) {
+        if (existing.name != field) { continue; }
+        if (existing.canonType != f.importCanonType ||
+            existing.isAsync != f.importIsAsync) {
+          throw new Error(
+            "The canonical builtin '" + field + "' is declared twice " +
+              "with different options, and the core module imports it " +
+              "by one name. Import the declaration from the module " +
+              "that already has it instead."
+          );
+        }
+        duplicate = true;
+      }
+      if (!duplicate) {
+        shape.builtins.push(
+            new ComponentCanonBuiltin(field, builtinResult,
+                f.importCanonType, f.importIsAsync));
+      }
       continue;
     }
     // The runtime memory module's exports. Not a WIT interface: the

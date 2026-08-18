@@ -593,6 +593,53 @@ world only {
     }
   });
 
+  test('a printing component declares the stream type for its builtins',
+      (ctx: TestContext): void => {
+    // p3 stdio: the guest creates a `stream<u8>` and writes through the
+    // canonical `stream.write`. The stream/future builtins are
+    // per-type — the canon entry's immediate is a component type
+    // index — so a type section right before the builtins declares
+    // `(stream u8)` (0x66, present element, u8), continuing the index
+    // space the import front matter used.
+    let bytes = compileFor(`${fixtures}/print.zena`, 'component');
+    // Front matter declares one instance type per imported interface
+    // (types, stdout, stderr); the fourth type section is the canon
+    // types'.
+    let canonTypes = sectionPayloadAfter(bytes, 7, 3);
+    equal(canonTypes.length, 4, 'the canon-type section payload');
+    equal(canonTypes[0], 0x01); // one type
+    equal(canonTypes[1], 0x66); // stream
+    equal(canonTypes[2], 0x01); // element present
+    equal(canonTypes[3], 0x7d); // u8
+    // The second canon section holds the builtins. stream.write (0x10)
+    // carries the type index and its options — async (0x06), so a full
+    // stream returns BLOCKED rather than gating on wasmtime's
+    // sync-builtins feature, and the memory (0x03) its bytes move
+    // through; waitable-set.wait (0x20) carries the not-cancellable
+    // byte and the memory its event pair lands in; stream.new (0x0e)
+    // carries the type index alone.
+    let builtins = sectionPayloadAfter(bytes, 8, 1);
+    isTrue(builtins.length > 0, 'no builtins canon section');
+    var sawWrite = false;
+    var sawWait = false;
+    var sawNew = false;
+    for (var i = 1; i < builtins.length; i += 1) {
+      if (builtins[i] == 0x10 && builtins[i + 2] == 2 &&
+          builtins[i + 3] == 0x06 && builtins[i + 4] == 0x03) {
+        sawWrite = true;
+      }
+      if (builtins[i] == 0x20 && builtins[i + 1] == 0x00) {
+        sawWait = true;
+      }
+      if (builtins[i] == 0x0e) {
+        sawNew = true;
+      }
+    }
+    isTrue(sawWrite, 'no async+memory stream.write canon entry');
+    isTrue(sawWait, 'no waitable-set.wait canon entry');
+    isTrue(sawNew, 'no stream.new canon entry');
+  });
+
   test('a WIT-typed async import compiles like its @external spelling',
       (ctx: TestContext): void => {
     // `wait-for` is `async` in the package's WIT, so the synthesized

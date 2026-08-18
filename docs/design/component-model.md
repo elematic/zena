@@ -75,8 +75,9 @@ That reorders the tracks:
    them. The canonical builtins (`stream.new`/`read`/`write`/cancel/
    drop, the `future.*` family) join the waitable machinery C2 built,
    and Zena's `Stream<T>` rides the same event loop as `Future<T>`.
-3. **p3 stdio**: `zena:console` flips to `write-via-stream`, retiring
-   the p2 scaffold.
+3. **p3 stdio** — done: `zena:console` flipped to `write-via-stream`
+   over guest-created streams, and the p2 scaffold is retired
+   (component-emission.md, C6's stdio slice).
 4. **C4 = p3 filesystem and CLI**, on interop + streams.
 5. **p3 HTTP** — `wasi:http@0.3.0` is served by the host already.
 

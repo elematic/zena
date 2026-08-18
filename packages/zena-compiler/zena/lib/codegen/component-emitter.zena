@@ -243,10 +243,23 @@ export final class ComponentCanonBuiltin {
   name: String;
   /** Only `task.return` carries one; it is the lifted task's result. */
   result: i32;
+  /**
+   * The WIT type a typed builtin (`stream.*`, `future.*`) operates on,
+   * as declared (`stream<u8>`, `future`). The canon entry's immediate
+   * is a component type index, so the type is part of which builtin
+   * this is. Empty for the untyped builtins.
+   */
+  canonType: String;
+  /**
+   * Whether a read/write builtin's canon entry carries the `async`
+   * option — return BLOCKED instead of waiting for the copy event.
+   */
+  isAsync: boolean;
 
   // -1 is `noComponentResult`, spelled out: a default initializer
   // cannot name a module-level binding.
-  new(this.name, this.result = -1);
+  new(this.name, this.result = -1, this.canonType = "",
+      this.isAsync = false);
 }
 
 /**
@@ -447,24 +460,110 @@ let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => 
 };
 
 /**
- * The canonical-builtin opcodes this emitter knows. They are the four
- * the async event loop needs: create a set to wait on, put a subtask in
- * it, hand a completed subtask back, and deliver the task's result.
- * Everything else in the builtin space belongs to resources, streams
- * and futures, which are C5 and C6.
+ * The canonical-builtin opcodes this emitter knows: the waitable-set
+ * family the async event loop needs, and the stream/future families
+ * (C6). Resources' builtins wait on the interop stages.
  */
 let canonBuiltinOpcode = (name: String): i32 => {
   if (name == "waitable-set.new") { return 0x1f; }
+  if (name == "waitable-set.wait") { return 0x20; }
   if (name == "waitable-set.drop") { return 0x22; }
   if (name == "waitable.join") { return 0x23; }
   if (name == "subtask.drop") { return 0x0d; }
   if (name == "task.return") { return 0x09; }
+  if (name == "stream.new") { return 0x0e; }
+  if (name == "stream.read") { return 0x0f; }
+  if (name == "stream.write") { return 0x10; }
+  if (name == "stream.drop-readable") { return 0x13; }
+  if (name == "stream.drop-writable") { return 0x14; }
+  if (name == "future.new") { return 0x15; }
+  if (name == "future.read") { return 0x16; }
+  if (name == "future.write") { return 0x17; }
+  if (name == "future.drop-readable") { return 0x1a; }
+  if (name == "future.drop-writable") { return 0x1b; }
   return -1;
 };
 
 /** Whether `name` is a canonical builtin this emitter can encode. */
 export let isKnownCanonBuiltin = (name: String): boolean =>
     canonBuiltinOpcode(name) >= 0;
+
+/**
+ * Whether `name` is a builtin whose canon entry carries a component
+ * type index — the stream and future families are per-type, so the
+ * type is part of which builtin the declaration names.
+ */
+export let isTypedCanonBuiltin = (name: String): boolean =>
+    name.startsWith("stream.") || name.startsWith("future.");
+
+/** Whether this typed builtin's canon entry also carries canonopts. */
+let typedBuiltinTakesOpts = (name: String): boolean =>
+    name == "stream.read" || name == "stream.write" ||
+    name == "future.read" || name == "future.write";
+
+/** The WIT spelling of a primitive, as a component primvaltype, or 0. */
+let witPrimByte = (name: String): i32 => {
+  if (name == "bool") { return 0x7f; }
+  if (name == "s8") { return 0x7e; }
+  if (name == "u8") { return 0x7d; }
+  if (name == "s16") { return 0x7c; }
+  if (name == "u16") { return 0x7b; }
+  if (name == "s32") { return 0x7a; }
+  if (name == "u32") { return 0x79; }
+  if (name == "s64") { return 0x78; }
+  if (name == "u64") { return 0x77; }
+  if (name == "f32") { return 0x76; }
+  if (name == "f64") { return 0x75; }
+  return 0;
+};
+
+/**
+ * The component type a typed builtin's `canonType` spells, as the type
+ * section body declaring it: `stream<u8>` → `0x66 0x01 0x7d`, bare
+ * `future` → `0x65 0x00`. Only primitive elements are emittable here —
+ * a richer element stages through linear memory, and describing it is
+ * the interop stages' business, not a builtin option string's.
+ */
+let canonTypeBody = (canonType: String): ByteBuffer => {
+  var head = canonType;
+  var element = "";
+  var open = -1;
+  for (var i = 0; i < canonType.length; i += 1) {
+    if (canonType.getByteAt(i) == 60) { // '<'
+      open = i;
+      break;
+    }
+  }
+  if (open >= 0) {
+    if (!canonType.endsWith(">")) {
+      throw new Error("Malformed canon type '" + canonType + "'");
+    }
+    head = canonType.sliceBytes(0, open);
+    element = canonType.sliceBytes(open + 1, canonType.length - 1);
+  }
+  let body = new ByteBuffer();
+  if (head == "stream") {
+    body.writeByte(0x66);
+  } else if (head == "future") {
+    body.writeByte(0x65);
+  } else {
+    throw new Error(
+      "A canon type names a stream or future, not '" + canonType + "'");
+  }
+  if (element == "") {
+    body.writeByte(0x00);
+    return body;
+  }
+  let prim = witPrimByte(element);
+  if (prim == 0) {
+    throw new Error(
+      "The canon type '" + canonType + "' has a non-primitive element; " +
+      "only primitive elements are emittable today.");
+  }
+  body.writeByte(0x01);
+  body.writeByte(prim);
+  return body;
+};
 
 /** One imported WIT interface and the functions the program calls on it. */
 final class ImportedInterface {
@@ -586,6 +685,18 @@ export let emitComponent = (
   for (let imp in shape.imports) {
     if (imp.needsMemoryLower) { lowersNeedMemory = true; }
   }
+  // A typed read/write builtin moves elements through linear memory,
+  // and `waitable-set.wait` delivers its event pair through it, so
+  // their canon entries name the memory — the same early placement a
+  // memory-carrying lower forces.
+  for (let b in shape.builtins) {
+    if (typedBuiltinTakesOpts(b.name) && b.canonType.contains("<")) {
+      lowersNeedMemory = true;
+    }
+    if (b.name == "waitable-set.wait") {
+      lowersNeedMemory = true;
+    }
+  }
   if (lowersNeedMemory && !shape.needsRuntimeMemory) {
     throw new Error(
       "An import needs the canonical memory options, but the program " +
@@ -690,9 +801,39 @@ export let emitComponent = (
 
   // --- canon: the canonical builtins ---------------------------------------
   // Not WIT functions: they have no interface, no import and no declared
-  // type, only an opcode. `task.return` is the one that carries
-  // anything, and what it carries is the lifted task's own result.
+  // type, only an opcode. `task.return` carries the lifted task's own
+  // result; the stream/future builtins carry the type they operate on
+  // as a component type index — declared in a type section just ahead,
+  // continuing the index space the import front matter used — and the
+  // read/write pairs carry the memory their elements move through.
+  var canonTypeCount = 0;
   if (shape.builtins.length > 0) {
+    let canonTypes = new Array<String>();
+    for (let b in shape.builtins) {
+      if (b.canonType == "") { continue; }
+      var known = false;
+      for (let t in canonTypes) {
+        if (t == b.canonType) { known = true; }
+      }
+      if (!known) { canonTypes.push(b.canonType); }
+    }
+    canonTypeCount = canonTypes.length;
+    if (canonTypes.length > 0) {
+      let types = new ByteBuffer();
+      types.writeULEB128(canonTypes.length);
+      for (let t in canonTypes) {
+        types.writeBuffer(canonTypeBody(t));
+      }
+      writeSection(out, ComponentSectionId.Type as i32, types);
+    }
+    let canonTypeIndexOf = (canonType: String): i32 => {
+      for (var i = 0; i < canonTypes.length; i += 1) {
+        if (canonTypes[i] == canonType) {
+          return encoded.typeCount + i;
+        }
+      }
+      throw new Error("canon type '" + canonType + "' was not declared");
+    };
     let builtins = new ByteBuffer();
     builtins.writeULEB128(shape.builtins.length);
     for (let b in shape.builtins) {
@@ -704,6 +845,29 @@ export let emitComponent = (
       if (b.name == "task.return") {
         writeResultList(builtins, b.result);
         builtins.writeULEB128(0); // no canonical options
+      }
+      if (b.name == "waitable-set.wait") {
+        builtins.writeByte(0x00); // not cancellable
+        builtins.writeULEB128(0); // the event pair lands in memory 0
+      }
+      if (isTypedCanonBuiltin(b.name)) {
+        builtins.writeULEB128(canonTypeIndexOf(b.canonType));
+        if (typedBuiltinTakesOpts(b.name)) {
+          var optionCount = 0;
+          if (b.isAsync) { optionCount += 1; }
+          if (b.canonType.contains("<")) { optionCount += 1; }
+          builtins.writeULEB128(optionCount);
+          if (b.isAsync) {
+            builtins.writeByte(0x06); // async: BLOCKED instead of waiting
+          }
+          if (b.canonType.contains("<")) {
+            // The element moves through linear memory: the runtime
+            // memory module's, aliased as core memory 0 ahead of the
+            // lowers by the same trigger that placed it early.
+            builtins.writeByte(0x03); // memory
+            builtins.writeULEB128(0);
+          }
+        }
       }
     }
     writeSection(out, ComponentSectionId.Canon as i32, builtins);
@@ -932,7 +1096,10 @@ export let emitComponent = (
   // --- canon: lift each export --------------------------------------------
   // The component-level type index continues after everything the
   // encoder defined.
-  let firstExportType = encoded.typeCount;
+  // The export lift types continue the component type index space:
+  // after the import front matter's types, and after the canon-builtin
+  // types section when there was one.
+  let firstExportType = encoded.typeCount + canonTypeCount;
   let lifts = new ByteBuffer();
   lifts.writeULEB128(shape.exports.length);
   for (var i = 0; i < shape.exports.length; i += 1) {

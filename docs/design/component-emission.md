@@ -1170,8 +1170,11 @@ Three decisions worth recording:
   the target-free structural model; `ensureMemory` still only records
   that a memory exists.
 
-The stdio half is built on top of that. The compiler carries the real
-WIT for `wasi:io/error`, `wasi:io/streams`, `wasi:cli/stdout` and
+The stdio half was built on top of that, against p2, and has since
+flipped to p3 (C6's stdio slice below) — the p2 interfaces are gone
+from `wasi-interfaces.zena`, and what follows records the p2 shape
+that proved the marshaling. The compiler carried the real WIT for
+`wasi:io/error`, `wasi:io/streams`, `wasi:cli/stdout` and
 `wasi:cli/stderr` at 0.2.8 (`wasi-interfaces.zena`) — a Zena
 declaration is core-shaped and cannot spell `own` or `list<u8>`, so for
 these interfaces the baked source substitutes for the derived document,
@@ -1235,9 +1238,36 @@ next slices are strings and lists on imports, then async *results*
 
 `stream<T>` and `future<T>`: the canonical builtins join the waitable
 machinery the timers built, and Zena's `Stream<T>` rides the same
-event loop as `Future<T>`. This is what flips `zena:console` to
-`write-via-stream` (retiring the one p2 scaffold in the tree) and is a
-prerequisite of C4, whose p3 interfaces are stream-shaped.
+event loop as `Future<T>`. A prerequisite of C4, whose p3 interfaces
+are stream-shaped.
+
+**The stdio slice is built**, and it retired the p2 scaffold: the
+encoder emits `stream<T>`/`future<T>` value types, the canon section
+emits the typed builtins — the stream/future families carry a
+component type index (declared in a type section just ahead,
+continuing the front matter's index space) and the read/write pairs
+carry canonopts — and `zena:console` speaks `wasi:cli@0.3.0`:
+`stream.new` a `stream<u8>`, hand the readable end to
+`write-via-stream`, write on the kept writable end. The stream
+machinery lives in `zena:component-stream` — the guest side of the
+canonical stream protocol, and the module the `Stream<T>` binding
+extends next — so the console holds only its two imports and the kept
+ends. The write is async-lowered (the synchronous form is the
+extension — wasmtime gates it as 🚝) and a BLOCKED write waits *in
+place* on `component-stream`'s own waitable set via the blocking
+`waitable-set.wait` builtin — separate from the event loop's set, so
+printing needs no event loop, a sync `main` still prints, and a
+blocking wait can never swallow an event the loop is owed. The outcome
+future's handle is deliberately left unread (a console cannot report
+stdout's failure to stdout). Typed builtins are declared once —
+`@external("canon", "stream.write", "stream<u8>,async")` — and a
+module needing one another module already declares imports the
+declaration, because a component rejects duplicate core import names.
+
+Still C6: `zena:stream`'s `Stream<T>` crossing the boundary — async
+reads and writes joined to `zena:component-async`'s set, its callback
+dispatching stream and future events beside subtasks — and
+`future.read` for outcomes that are actually wanted.
 
 ---
 

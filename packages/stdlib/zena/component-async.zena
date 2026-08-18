@@ -31,14 +31,19 @@ import { Future, Completer, drainMicrotasks } from 'zena:async';
 // The canonical builtins
 // ============================================================================
 
+// Exported: a core module may not import one canonical builtin under
+// the same name twice, so any other module needing these — the
+// console's blocked-write wait, say — imports the declarations from
+// here rather than redeclaring them.
+
 @external("canon", "waitable-set.new")
-declare function waitableSetNew(): i32;
+export declare function waitableSetNew(): i32;
 
 @external("canon", "waitable-set.drop")
 declare function waitableSetDrop(set: i32): void;
 
 @external("canon", "waitable.join")
-declare function waitableJoin(waitable: i32, set: i32): void;
+export declare function waitableJoin(waitable: i32, set: i32): void;
 
 @external("canon", "subtask.drop")
 declare function subtaskDrop(subtask: i32): void;
@@ -63,6 +68,15 @@ let WAIT = 2;
  */
 let STATE_MASK = 15;
 let STATE_RETURNED = 2;
+
+/**
+ * The event kind the callback's first argument carries. Only SUBTASK
+ * events resolve anything here today: `code` means a `CallState` for a
+ * subtask and a packed copy result for a stream or future end, so
+ * dispatching on the kind is what keeps the two from being confused
+ * when the stream events arrive (the async-stream slice).
+ */
+let EVENT_SUBTASK = 1;
 
 // ============================================================================
 // The driver
@@ -141,7 +155,7 @@ export function componentPoll(): i32 {
  * waiting, without draining, because nothing has completed.
  */
 export function componentResume(event: i32, waitable: i32, code: i32): i32 {
-  if (code != STATE_RETURNED) {
+  if (event != EVENT_SUBTASK || code != STATE_RETURNED) {
     return WAIT | (waitableSet << 4);
   }
   if (let (true, completer) = pending.get(waitable)) {

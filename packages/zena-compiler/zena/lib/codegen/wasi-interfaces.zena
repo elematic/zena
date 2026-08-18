@@ -12,8 +12,11 @@
  * Only the declarations the standard library reaches are spelled out —
  * the encoder emits whole interfaces, so anything listed is part of
  * the component's import surface, and a minimal subset is a smaller
- * contract for a host to satisfy (design 1.2). The p2 version is
- * 0.2.8, the one 1.4's evidence ran against `wasmtime 46`.
+ * contract for a host to satisfy (design 1.2). Everything here is p3
+ * (0.3.0): the p2 stdio scaffold this file used to carry retired when
+ * `zena:console` flipped to `write-via-stream` — p2's blocking calls
+ * stall the event loop, which is the reason p2 is skipped outright
+ * (component-model.md's sequencing section).
  *
  * Where this goes next: out of compiler source. These are excerpts of
  * upstream WASI WIT, and the honest home for them is `.wit` files
@@ -41,40 +44,31 @@ import { String } from 'zena:string';
  * The package blocks for every known interface, spliced into the
  * derived document when any of them is imported.
  */
-export let knownWasiPackagesWit = (): String => `package wasi:io@0.2.8 {
-  interface error {
-    resource error;
-  }
-  interface streams {
-    use wasi:io/error@0.2.8.{error};
-    variant stream-error {
-      last-operation-failed(error),
-      closed,
-    }
-    resource output-stream {
-      blocking-write-and-flush: func(contents: list<u8>) -> result<_, stream-error>;
+export let knownWasiPackagesWit = (): String => `package wasi:cli@0.3.0 {
+  interface types {
+    enum error-code {
+      io,
+      illegal-byte-sequence,
+      pipe,
     }
   }
-}
-package wasi:cli@0.2.8 {
   interface stdout {
-    use wasi:io/streams@0.2.8.{output-stream};
-    get-stdout: func() -> output-stream;
+    use wasi:cli/types@0.3.0.{error-code};
+    write-via-stream: func(data: stream<u8>) -> future<result<_, error-code>>;
   }
   interface stderr {
-    use wasi:io/streams@0.2.8.{output-stream};
-    get-stderr: func() -> output-stream;
+    use wasi:cli/types@0.3.0.{error-code};
+    write-via-stream: func(data: stream<u8>) -> future<result<_, error-code>>;
   }
 }
 `;
 
 /** The interfaces the blocks above declare, by qualified name. */
 export let isKnownWasiInterface = (name: String): boolean =>
-  name == "wasi:io/error@0.2.8" ||
-  name == "wasi:io/streams@0.2.8" ||
-  name == "wasi:cli/stdout@0.2.8" ||
-  name == "wasi:cli/stderr@0.2.8";
+  name == "wasi:cli/types@0.3.0" ||
+  name == "wasi:cli/stdout@0.3.0" ||
+  name == "wasi:cli/stderr@0.3.0";
 
 /** The packages the blocks above declare, as `ns:pkg@version` keys. */
 export let isKnownWasiPackage = (packageKey: String): boolean =>
-  packageKey == "wasi:io@0.2.8" || packageKey == "wasi:cli@0.2.8";
+  packageKey == "wasi:cli@0.3.0";

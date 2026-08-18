@@ -1,0 +1,179 @@
+/**
+ * @file
+ *
+ * The component target's guest side of `stream<u8>`: create the pair,
+ * move bytes through the canonical `stream.write`, and — for callers
+ * with no event loop — wait for a blocked write in place.
+ *
+ * Two kinds of consumer meet the canonical stream protocol, and they
+ * wait differently. Async code joins its ends to
+ * `zena:component-async`'s waitable set and is resumed through the
+ * callback; that binding — `zena:stream`'s `Stream<T>` crossing the
+ * boundary — is the next slice of this module. Synchronous code cannot
+ * be resumed, so it *blocks*, on this module's own waitable set via
+ * the blocking `waitable-set.wait` builtin — a separate set, so a
+ * blocking wait here can never swallow an event the program's event
+ * loop is owed. `zena:console` is the blocking consumer: a print from
+ * a sync `main` must complete before the next statement, event loop or
+ * none.
+ *
+ * The write is lowered with the `async` canonical option even on the
+ * blocking path, because the synchronous form of the builtin is the
+ * extension (wasmtime gates it as 🚝): a BLOCKED result parks on the
+ * set, everything else returns packed progress directly.
+ */
+
+import { String } from 'zena:string';
+import { Error } from 'zena:error';
+import { Memory, defaultAllocator } from 'zena:memory';
+// A core module may not import one canonical builtin under the same
+// name twice, so the waitable builtins have exactly one declaring
+// module — the driver — and everyone else imports the declarations.
+import { waitableSetNew, waitableJoin } from 'zena:component-async';
+
+/**
+ * The two ends of a `stream<u8>`, as unforgeable handle types: a
+ * readable end is what a WIT import like `write-via-stream` is handed,
+ * a writable end is what the guest keeps and writes, and nothing but
+ * `newByteStreamPair` can produce either. On the wire each is a
+ * component-model handle index (a core `i32`).
+ */
+export opaque type ReadableByteStream = i32;
+export opaque type WritableByteStream = i32;
+
+/** A fresh stream's two ends. */
+export final class ByteStreamPair {
+  readable: ReadableByteStream;
+  writable: WritableByteStream;
+  new(this.readable, this.writable);
+}
+
+/** The raw builtin packs both end indices into one integer: the
+ * readable end in the low 32 bits, the writable end in the high 32. */
+@external("canon", "stream.new", "stream<u8>")
+declare function streamNew(): u64;
+
+export function newByteStreamPair(): ByteStreamPair {
+  let pair = streamNew();
+  let readable = (pair as i32) as ReadableByteStream;
+  let writable = ((pair >> 32) as i32) as WritableByteStream;
+  return new ByteStreamPair(readable, writable);
+}
+
+/**
+ * The copy: up to `len` bytes at `ptr` into the stream, returning
+ * `(progress << 4) | result` — COMPLETED with how many bytes the host
+ * consumed, DROPPED when the readable end is gone — or BLOCKED when
+ * nothing could move yet, in which case the copy is in flight and its
+ * completion arrives as a STREAM_WRITE event.
+ */
+@external("canon", "stream.write", "stream<u8>,async")
+declare function streamWrite(
+  end: WritableByteStream,
+  ptr: i32,
+  len: i32
+): i32;
+
+/**
+ * The blocking wait: suspends this task until something in the set
+ * fires, returns the event's kind, and stores the waitable index and
+ * the payload as two u32s at `ptr`. This is how synchronous code
+ * waits — no callback, no event loop.
+ */
+@external("canon", "waitable-set.wait")
+declare function waitableSetWait(set: i32, ptr: i32): i32;
+
+// From the Component Model's canonical ABI (design/mvp/CanonicalABI.md).
+// A copy's packed result is `(progress << 4) | CopyResult`, where
+// CopyResult is COMPLETED = 0, DROPPED = 1, CANCELLED = 2; BLOCKED is
+// the all-ones sentinel an async-lowered copy returns instead when
+// nothing has moved yet. An event is `(EventCode, waitable, payload)`,
+// and EventCode.STREAM_WRITE = 3 (SUBTASK = 1 is the driver's case).
+let RESULT_MASK = 15;
+let RESULT_COMPLETED = 0;
+let BLOCKED = -1;
+let EVENT_STREAM_WRITE = 3;
+
+let mem = Memory.default;
+
+/** The blocking writers' waitable set, created on first block. Zero is
+ * not a valid set index, so it doubles as "not yet created". */
+var blockingSet = 0;
+
+/**
+ * A blocked write's completion, waited for in place. Only the end
+ * being waited on is ever in the blocking set, so the one event a
+ * wait can deliver is that write's — anything else is a protocol
+ * breakdown worth trapping over.
+ */
+let awaitWrite = (end: WritableByteStream): i32 => {
+  if (blockingSet == 0) {
+    blockingSet = waitableSetNew();
+  }
+  waitableJoin(end as i32, blockingSet);
+  if (let (true, eventArea) = defaultAllocator.alloc(8)) {
+    let event = waitableSetWait(blockingSet, eventArea);
+    let waitable = mem.getI32(eventArea);
+    let payload = mem.getI32(eventArea + 4);
+    defaultAllocator.free(eventArea);
+    if (event != EVENT_STREAM_WRITE || waitable != end as i32) {
+      throw new Error("a blocking wait delivered someone else's event");
+    }
+    return payload;
+  }
+  throw new Error('could not allocate the blocking wait event area');
+};
+
+/**
+ * Drain `len` bytes at `ptr` into a writable end, returning only once
+ * every byte is consumed — blocking, not parking, when the host
+ * cannot take them at once. A copy event may report partial progress,
+ * so the drain loops. A DROPPED result means the peer let go of the
+ * readable end, which a synchronous writer has no way to wait out, so
+ * it throws.
+ */
+let flushBlocking = (end: WritableByteStream, ptr: i32, len: i32): void => {
+  var at = 0;
+  while (at < len) {
+    var packed = streamWrite(end, ptr + at, len - at);
+    if (packed == BLOCKED) {
+      packed = awaitWrite(end);
+    }
+    if ((packed & RESULT_MASK) != RESULT_COMPLETED) {
+      throw new Error('the stream was dropped by its reader');
+    }
+    let progress = packed >> 4;
+    if (progress <= 0) {
+      throw new Error('the stream write made no progress');
+    }
+    at += progress;
+  }
+};
+
+/**
+ * Write a String's bytes to a writable end, appending a newline when
+ * asked, blocking until every byte is consumed. The String staging is
+ * the one convenience the current consumer (`zena:console`) needs; a
+ * byte-buffer entry point over the same `flushBlocking` core arrives
+ * with its first consumer, the `Stream<u8>` boundary binding.
+ */
+export function writeStringBlocking(
+  end: WritableByteStream,
+  s: String,
+  newline: boolean
+): void {
+  let len = s.length + (if (newline) 1 else 0);
+  if (len == 0) {
+    return;
+  }
+  if (let (true, buffer) = defaultAllocator.alloc(len)) {
+    for (var i = 0; i < s.length; i += 1) {
+      mem[buffer + i] = s.getByteAt(i);
+    }
+    if (newline) {
+      mem[buffer + len - 1] = 10;
+    }
+    flushBlocking(end, buffer, len);
+    defaultAllocator.free(buffer);
+  }
+}

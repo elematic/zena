@@ -1,135 +1,94 @@
 // Console Standard Library - Component Implementation
 //
-// Prints through WASI p2 stdio: `wasi:cli/stdout`'s stream, written
-// with `wasi:io/streams`' blocking-write-and-flush. The declarations
-// here are core-shaped — resource handles and the list's pointer/length
-// pair are `i32`s — because a Zena signature cannot spell `own`,
-// `borrow` or `list<u8>`; the compiler knows these interfaces' real WIT
-// (`wasi-interfaces.zena`) and emits the true instance types, with the
-// canonical memory options on the write's lowering.
+// Prints through WASI p3 stdio: `wasi:cli/stdout@0.3.0` takes a
+// `stream<u8>` the guest creates, and the bytes flow through
+// `zena:component-stream`'s blocking writer. The import declarations
+// here are core-shaped in the compiler's eyes — a stream end and a
+// future are handle `i32`s on the wire, spelled with
+// `component-stream`'s handle types — and the compiler knows these
+// interfaces' real WIT (`wasi-interfaces.zena`), emitting the true
+// instance types.
 //
-// The marshaling is manual and small: the message's bytes are copied
-// into linear memory (the runtime memory module's pages, reached
-// through `zena:memory`'s delegating allocator), handed to the stream
-// in chunks of at most 4096 bytes — the contract of
-// blocking-write-and-flush — and freed. The stream handles are fetched
-// once and kept for the program's lifetime; a component's stdout does
-// not close under it, and dropping an `own` handle needs a canonical
-// builtin nothing here has a reason to import yet.
+// One stream per standard stream, created on first use and handed to
+// the host once: `write-via-stream(readable)` registers the readable
+// end, and every later print is a blocking write on the kept writable
+// end. Blocking is what a console wants — output ordered with the
+// program, no event loop required to print, exactly as every other
+// target's console blocks; how a blocked write waits is
+// `zena:component-stream`'s business. The returned outcome future is
+// deliberately not read: a console cannot report stdout's failure to
+// stdout, and the write itself already fails loudly when the host end
+// is gone. The handle it leaks is one per standard stream per program.
 
 import { String } from 'zena:string';
-import { Error } from 'zena:error';
-import { Memory, defaultAllocator } from 'zena:memory';
+import {
+  ByteStreamPair, ReadableByteStream, WritableByteStream,
+  newByteStreamPair, writeStringBlocking
+} from 'zena:component-stream';
 import { Console } from './interface.zena';
 
 export * from './interface.zena';
 
-@external("wasi:cli/stdout@0.2.8", "get-stdout")
-declare function getStdout(): i32;
+/** The outcome future's handle, unread by design (header). */
+@external("wasi:cli/stdout@0.3.0", "write-via-stream")
+declare function stdoutWriteViaStream(data: ReadableByteStream): i32;
 
-@external("wasi:cli/stderr@0.2.8", "get-stderr")
-declare function getStderr(): i32;
+@external("wasi:cli/stderr@0.3.0", "write-via-stream")
+declare function stderrWriteViaStream(data: ReadableByteStream): i32;
 
-/**
- * `[method]output-stream.blocking-write-and-flush: func(contents:
- * list<u8>) -> result<_, stream-error>`, flattened: the borrowed self
- * handle, the list's pointer and length, and — because the result
- * flattens to more than one core value — the address of a return area
- * the host writes the result into.
- */
-@external("wasi:io/streams@0.2.8", "[method]output-stream.blocking-write-and-flush")
-declare function blockingWriteAndFlush(
-  stream: i32,
-  ptr: i32,
-  len: i32,
-  returnArea: i32
-): void;
+/** The kept streams, each created and registered on first use. */
+var stdoutPair: ByteStreamPair | null = null;
+var stderrPair: ByteStreamPair | null = null;
 
-let mem = Memory.default;
-
-var stdoutHandle = -1;
-var stderrHandle = -1;
-
-let stdoutStream = (): i32 => {
-  if (stdoutHandle < 0) {
-    stdoutHandle = getStdout();
+let stdoutEnd = (): WritableByteStream => {
+  let existing = stdoutPair;
+  if (existing != null) {
+    return (existing as ByteStreamPair).writable;
   }
-  return stdoutHandle;
+  let pair = newByteStreamPair();
+  stdoutWriteViaStream(pair.readable);
+  stdoutPair = pair;
+  return pair.writable;
 };
 
-let stderrStream = (): i32 => {
-  if (stderrHandle < 0) {
-    stderrHandle = getStderr();
+let stderrEnd = (): WritableByteStream => {
+  let existing = stderrPair;
+  if (existing != null) {
+    return (existing as ByteStreamPair).writable;
   }
-  return stderrHandle;
+  let pair = newByteStreamPair();
+  stderrWriteViaStream(pair.readable);
+  stderrPair = pair;
+  return pair.writable;
 };
 
-/**
- * Write a String's bytes to a stream, appending a newline when asked.
- *
- * The return area is 12 bytes: the result's discriminant, then the
- * `stream-error` payload (its own discriminant at +4, the error handle
- * at +8). Only the outer discriminant is read — a closed stdout is not
- * something a console can report to, so it throws, which traps.
- */
-let writeAll = (stream: i32, s: String, newline: boolean): void => {
-  let len = s.length + (if (newline) 1 else 0);
-  if (len == 0) {
-    return;
-  }
-  if (let (true, buffer) = defaultAllocator.alloc(len)) {
-    for (var i = 0; i < s.length; i += 1) {
-      mem[buffer + i] = s.getByteAt(i);
-    }
-    if (newline) {
-      mem[buffer + len - 1] = 10;
-    }
-    if (let (true, returnArea) = defaultAllocator.alloc(12)) {
-      var at = 0;
-      while (at < len) {
-        var chunk = len - at;
-        if (chunk > 4096) {
-          chunk = 4096;
-        }
-        blockingWriteAndFlush(stream, buffer + at, chunk, returnArea);
-        if (mem.getU8(returnArea) != 0) {
-          throw new Error('the output stream reported an error');
-        }
-        at += chunk;
-      }
-      defaultAllocator.free(returnArea);
-    }
-    defaultAllocator.free(buffer);
-  }
-};
-
-// ComponentConsole - the p2 stdio implementation
+// ComponentConsole - the p3 stdio implementation
 export class ComponentConsole implements Console {
   log(message: String): void {
-    writeAll(stdoutStream(), message, true);
+    writeStringBlocking(stdoutEnd(), message, true);
   }
 
   error(message: String): void {
-    writeAll(stderrStream(), message, true);
+    writeStringBlocking(stderrEnd(), message, true);
   }
 
   warn(message: String): void {
-    writeAll(stderrStream(), message, true);
+    writeStringBlocking(stderrEnd(), message, true);
   }
 
   info(message: String): void {
-    writeAll(stdoutStream(), message, true);
+    writeStringBlocking(stdoutEnd(), message, true);
   }
 
   debug(message: String): void {
-    writeAll(stdoutStream(), message, true);
+    writeStringBlocking(stdoutEnd(), message, true);
   }
 }
 
-// Global console instance - connected to p2 stdio
+// Global console instance - connected to p3 stdio
 export let console = new ComponentConsole();
 
 /** Write without the newline, mirroring the other targets' helper. */
 export let logString = (val: String) => {
-  writeAll(stdoutStream(), val, false);
+  writeStringBlocking(stdoutEnd(), val, false);
 };
