@@ -245,8 +245,91 @@ let isIdentifierStart = (c: i32): boolean => {
   return isAlpha(c) || c == 95 || c == 36;
 };
 
-let isIdentifierPart = (c: i32): boolean => {
+export let isIdentifierPart = (c: i32): boolean => {
   return isAlpha(c) || isDigit(c) || c == 95 || c == 36;
+};
+
+// ============================================================================
+// Keyword recognition
+// ============================================================================
+
+/** One row of the keyword table: the canonical text and what it scans as. */
+export final class Keyword(text: String, type: TokenType)
+
+/**
+ * Keywords bucketed by byte length. A scanned word is compared only
+ * against keywords that could possibly match it, and a word longer than
+ * the longest keyword is rejected by the length alone.
+ */
+var keywordBuckets: Array<Array<Keyword>> | null = null;
+
+let buildKeywordBuckets = (): Array<Array<Keyword>> => {
+  let texts = new Array<String>();
+  var longest = 0;
+  for (let text in KEYWORDS.keys()) {
+    texts.push(text);
+    if (text.length > longest) {
+      longest = text.length;
+    }
+  }
+  let buckets = new Array<Array<Keyword>>();
+  var i = 0;
+  while (i <= longest) {
+    buckets.push(new Array<Keyword>());
+    i += 1;
+  }
+  // Bucket order follows the map's iteration order, which is not fixed.
+  // It does not need to be: a word matches at most one keyword, so the
+  // order candidates are tried in cannot change the answer.
+  for (let text in texts) {
+    if (let (true, type) = KEYWORDS.get(text)) {
+      buckets[text.length].push(new Keyword(text, type));
+    }
+  }
+  return buckets;
+};
+
+/**
+ * The keyword a byte range spells, or null if it spells an identifier.
+ *
+ * This reads the source bytes in place: recognizing `let` must not cost
+ * a `String` that the token type makes redundant. In the compiler's own
+ * sources one scanned word in three is a keyword, and materializing
+ * each one allocated a wrapper nothing ever read.
+ *
+ * Bucketing by length first is what keeps the comparison cheap. Hashing
+ * every byte to look the word up — which is what a map keyed by String
+ * does — costs more than the compare that has to follow it anyway.
+ */
+export let matchKeyword = (source: String, start: i32, length: i32): Keyword | null => {
+  var buckets = keywordBuckets;
+  if (buckets == null) {
+    buckets = buildKeywordBuckets();
+    keywordBuckets = buckets;
+  }
+  if (length >= buckets.length) {
+    return null;
+  }
+  let first = source.getByteAt(start);
+  for (let candidate in buckets[length]) {
+    let {text} = candidate;
+    if (text.getByteAt(0) != first) {
+      continue;
+    }
+    var i = 1;
+    var same = true;
+    while (i < length) {
+      if (source.getByteAt(start + i) != text.getByteAt(i)) {
+        same = false;
+        break;
+      }
+      i += 1;
+    }
+    if (same) {
+      return candidate;
+    }
+  }
+  return null;
 };
 
 // ============================================================================
@@ -424,10 +507,15 @@ export final class Tokenizer {
       this.#advance();
     }
 
-    let value = this.#reader.sliceFrom(start);
-    if (let (true, tokenType) = KEYWORDS.get(value)) {
-      this.#addToken(tokenType, value, startPos, startCol);
+    // Classify before materializing: a keyword's text is already in the
+    // table, so a hit reuses that instance and allocates nothing. Only
+    // an identifier needs a slice of its own.
+    let keyword = matchKeyword(
+        this.#reader.source, start, this.#reader.position - start);
+    if (keyword != null) {
+      this.#addToken(keyword.type, keyword.text, startPos, startCol);
     } else {
+      let value = this.#reader.sliceFrom(start);
       let interner = this.#interner;
       let name = if (interner != null) interner.intern(value) else value;
       this.#addToken(TokenType.Identifier, name, startPos, startCol);
