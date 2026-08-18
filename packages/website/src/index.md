@@ -128,7 +128,8 @@ for WebAssembly GC</span>
   </div>
 </div>
 
-<div class="prose container">
+<div class="home-section">
+  <div class="container prose">
 
 ## Features
 
@@ -589,4 +590,5 @@ Zena is under active development and not yet ready for production use. The
 language reference describes what is implemented today; anything still being
 designed is marked as such on the page.
 
+  </div>
 </div>
