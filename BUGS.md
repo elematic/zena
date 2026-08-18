@@ -255,6 +255,38 @@ and (4) and it compiles and runs. The first await is _not_ required —
 
 ## Active Bugs
 
+### A case class's `==` bails unless enough of the program is reachable
+
+- **Found**: 2026-08-17, writing a benchmark that imports the compiler's
+  own tokenizer.
+- **Severity**: medium — a loud compile failure, but the message names a
+  class the author never wrote and the fix is unrelated to the error.
+- **Details**: a program whose only compiler import is the tokenizer
+  fails to compile:
+
+  ```zena
+  import {tokenize} from '../zena-compiler/zena/lib/tokenizer.zena';
+  export let main = (): i32 => tokenize(readFile(path)).length;
+  ```
+
+  ```
+  zir unsupported: case eq field dispatch @MatchCase_s1548.== [in MatchCase_s1548.==]
+  ```
+
+  A synthesized case-class `==` compares a field that is itself a case
+  class, and `resolveDevirtualizedMethod(fct, "==")` returns null, so
+  `equality.zena` bails. Whether it returns null depends on how much of
+  the program RTA reached: adding `import {parse} from
+  '../lib/parser.zena'` to the same file makes it compile, because the
+  wider reachability gives the field's `==` a devirtualizable target.
+
+  The compiler builds itself because its own entry point reaches
+  everything. A narrow consumer of one compiler module does not, which
+  is why nothing noticed.
+
+- **Workaround**: import more of the compiler. `zena/bench/tokenize.zena`
+  imports the parser partly for this reason.
+
 ### Destructuring a sealed-base-typed value compiles and then traps
 
 - **Found**: 2026-08-17, converting `let loc = node.loc;` hoists to
