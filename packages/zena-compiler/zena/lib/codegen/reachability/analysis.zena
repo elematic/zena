@@ -20,7 +20,7 @@ import {
 } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeFuncRef,
+  ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeFuncRef, refTargetOf,
 } from '../wasm.zena';
 import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
@@ -360,6 +360,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             this.notePendingMemberReach(getClassMethodKey(sKey, "=="));
             this.notePendingMemberReach(getClassMethodKey(sKey, "hashCode"));
           }
+          // A field whose own class declares == is compared by calling
+          // it, and `synthFieldEq` can only express that as a
+          // DEVIRTUALIZED direct call — so the callee has to exist.
+          // Rooting the outer == without rooting the fields' left it
+          // resolving to nothing and bailing `case eq field dispatch`,
+          // and only for programs narrow enough that nothing else
+          // happened to reach the field's ==. Root what lowering calls.
+          this.#reachFieldEquality(func);
         }
         if (!func.isImport) {
           this.wasm.addFunction(func);
@@ -2109,6 +2117,38 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (!this.#namedCompositeKeys.has(key)) {
       this.#namedCompositeKeys.add(key);
       this.#namedCompositeTypes.push(t);
+    }
+  }
+
+  /**
+   * Roots the `==`/`hashCode` that a synthesized case-class `==` or
+   * `hashCode` will call on its own fields.
+   *
+   * Mirrors `synthFieldEq` in ir/equality.zena, which walks the same
+   * struct fields and, for a field whose class declares `==`, emits a
+   * direct call to it. That call has to be devirtualizable, so the
+   * method must have been reached — RTA has to walk the edge lowering
+   * will.
+   */
+  #reachFieldEquality(func: WasmFunction): void {
+    let owner = func.structType;
+    if (owner == null) {
+      return;
+    }
+    for (let field in owner.fields) {
+      let target = refTargetOf(field.type);
+      if (target is WasmStruct) {
+        let fieldClass = target.classType;
+        if (fieldClass != null) {
+          let key = getClassKey(fieldClass);
+          if (fieldClass.members.has("==")) {
+            this.notePendingMemberReach(getClassMethodKey(key, "=="));
+          }
+          if (fieldClass.members.has("hashCode")) {
+            this.notePendingMemberReach(getClassMethodKey(key, "hashCode"));
+          }
+        }
+      }
     }
   }
 

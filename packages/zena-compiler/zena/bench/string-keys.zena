@@ -1,0 +1,174 @@
+/**
+ * Do canonical strings pay off as `HashMap` keys?
+ *
+ * Interning costs a probe per identifier in the lexer, which
+ * `zena/bench/tokenize.zena` shows is real. The case for paying it is
+ * downstream: a canonical instance is hashed once for the life of the
+ * table rather than once per occurrence, and `String.==` short-circuits
+ * on `===` instead of comparing bytes. This measures that claim
+ * directly, over the identifiers the compiler actually scans.
+ *
+ * Two runners, because "canonical keys are faster" hides two effects
+ * that pay off under different conditions:
+ *
+ * 1. **Cold keys.** Each key instance is used once. A fresh slice has
+ *    no cached hash, so it computes FNV over its bytes; a canonical one
+ *    was hashed when it entered the table. This is the effect interning
+ *    is really selling.
+ * 2. **Warm keys.** Each key instance is used many times, so both sides
+ *    have a cached hash and the only difference left is `===` against a
+ *    byte compare.
+ *
+ * Runner 1 must build its fresh instances INSIDE the timed region.
+ * `String` caches its hash in a field, so instances reused across
+ * samples would be warm from the second sample onward and the runner
+ * would silently turn into runner 2.
+ *
+ * Neither runner charges interning for its own probe — that cost is
+ * measured in the interning work itself. These answer only what the
+ * probe would have to be cheaper than.
+ *
+ * Run from the repository root:
+ *
+ *     zena-cli run packages/zena-compiler/zena/bench/string-keys.zena --dir .
+ */
+import {BenchRunner, BenchContext, reportToString} from 'zena:bench';
+import {console} from 'zena:console';
+import {listDir, readFile} from 'zena:fs';
+import {getArguments} from 'zena:cli';
+import {Array} from 'zena:array';
+import {HashMap} from 'zena:map';
+import {String} from 'zena:string';
+import {i32ToString} from 'zena:string-convert';
+import {div} from 'zena:math';
+import {matchKeyword, isIdentifierPart} from '../lib/tokenizer.zena';
+
+/** One identifier occurrence, as a range into the file that produced it. */
+final class Occurrence(source: String, start: i32, length: i32)
+
+let loadCorpus = (dir: String): Array<String> => {
+  let sources = new Array<String>();
+  for (let entry in listDir(dir)) {
+    if (entry.name.endsWith('.zena')) {
+      sources.push(readFile(dir + '/' + entry.name));
+    }
+  }
+  return sources;
+};
+
+/** Every identifier in the corpus, keywords excluded — interning's actual input. */
+let collectIdentifiers = (sources: Array<String>): Array<Occurrence> => {
+  let out = new Array<Occurrence>();
+  for (let source in sources) {
+    let n = source.length;
+    var i = 0;
+    while (i < n) {
+      if (isIdentifierPart(source.getByteAt(i))) {
+        let start = i;
+        while (i < n && isIdentifierPart(source.getByteAt(i))) {
+          i += 1;
+        }
+        if (matchKeyword(source, start, i - start) == null) {
+          out.push(new Occurrence(source, start, i - start));
+        }
+      } else {
+        i += 1;
+      }
+    }
+  }
+  return out;
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  let dir = if (args.length > 1) args[1] else 'packages/zena-compiler/zena/lib';
+  let sources = loadCorpus(dir);
+  if (sources.length == 0) {
+    console.log('no .zena sources found under ' + dir);
+    return 1;
+  }
+  let occurrences = collectIdentifiers(sources);
+
+  // The table a checker would probe, keyed by canonical instances, plus
+  // the canonical instance for each occurrence.
+  let table = new HashMap<String, i32>();
+  let distinctTexts = new Array<String>();
+  let canonical = new Array<String>();
+  for (let o in occurrences) {
+    let text = o.source.sliceBytes(o.start, o.start + o.length);
+    if (let (true, idx) = table.get(text)) {
+      canonical.push(distinctTexts[idx]);
+    } else {
+      table[text] = distinctTexts.length;
+      distinctTexts.push(text);
+      canonical.push(text);
+    }
+  }
+  let distinct = distinctTexts.length;
+  console.log(i32ToString(occurrences.length) + ' identifier occurrences, ' +
+      i32ToString(distinct) + ' distinct (' +
+      i32ToString(div(occurrences.length, distinct)) + ':1 reuse)');
+
+  // ---- Runner 1: each key instance used once ----
+  // The fresh arm slices inside the timed region so its instances start
+  // with no cached hash, which is the state a freshly-scanned
+  // identifier is in.
+  let coldRunner = new BenchRunner('map lookup, each key used once');
+  coldRunner.options.minSamples = 30;
+  coldRunner.options.timeBudgetMs = 60000.0;
+  coldRunner.options.horizons = ['1%'];
+  coldRunner.bench('fresh-slice', (_ctx: BenchContext) => {
+    var sink = 0;
+    for (let o in occurrences) {
+      let key = o.source.sliceBytes(o.start, o.start + o.length);
+      if (let (true, v) = table.get(key)) {
+        sink += v;
+      }
+    }
+  });
+  coldRunner.bench('canonical', (_ctx: BenchContext) => {
+    var sink = 0;
+    for (let key in canonical) {
+      if (let (true, v) = table.get(key)) {
+        sink += v;
+      }
+    }
+  });
+  console.log(reportToString(coldRunner.run()));
+
+  // ---- Runner 2: key instances reused, hashes already warm ----
+  // Both arms hold instances whose hash was cached by the loop above,
+  // so what is left is `===` against a length-and-bytes comparison.
+  let warm = new Array<String>();
+  for (let o in occurrences) {
+    warm.push(o.source.sliceBytes(o.start, o.start + o.length));
+  }
+  var prime = 0;
+  for (let k in warm) {
+    if (let (true, v) = table.get(k)) {
+      prime += v;
+    }
+  }
+  let warmRunner = new BenchRunner('map lookup, keys already hashed');
+  warmRunner.options.minSamples = 30;
+  warmRunner.options.timeBudgetMs = 60000.0;
+  warmRunner.options.horizons = ['1%'];
+  warmRunner.bench('equal-but-distinct', (_ctx: BenchContext) => {
+    var sink = 0;
+    for (let key in warm) {
+      if (let (true, v) = table.get(key)) {
+        sink += v;
+      }
+    }
+  });
+  warmRunner.bench('canonical', (_ctx: BenchContext) => {
+    var sink = 0;
+    for (let key in canonical) {
+      if (let (true, v) = table.get(key)) {
+        sink += v;
+      }
+    }
+  });
+  console.log(reportToString(warmRunner.run()));
+  return 0;
+};

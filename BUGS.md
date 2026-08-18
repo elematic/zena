@@ -244,18 +244,7 @@ and (4) and it compiles and runs. The first await is _not_ required —
     whichever ruling lands, and the ZIR bail becomes either a checker
     diagnostic or a real lowering.
 
-### [Short description]
-
-- **Found**: [Date]
-- **Severity**: [low/medium/high/blocking]
-- **Workaround**: [if any]
-- **Details**: [description of the bug and how to reproduce]
-
-````
-
-## Active Bugs
-
-### A case class's `==` bails unless enough of the program is reachable
+### RESOLVED: A case class's `==` bailed unless enough of the program was reachable
 
 - **Found**: 2026-08-17, writing a benchmark that imports the compiler's
   own tokenizer.
@@ -284,8 +273,21 @@ and (4) and it compiles and runs. The first await is _not_ required —
   everything. A narrow consumer of one compiler module does not, which
   is why nothing noticed.
 
-- **Workaround**: import more of the compiler. `zena/bench/tokenize.zena`
-  imports the parser partly for this reason.
+- **Fixed**: RTA now roots the `==`/`hashCode` of a case class's own
+  class-typed FIELDS when it roots the synthesized `==`/`hashCode` that
+  will call them (`#reachFieldEquality` in `reachability/analysis.zena`),
+  mirroring the walk `synthFieldEq` does at lowering time.
+
+### [Short description]
+
+- **Found**: [Date]
+- **Severity**: [low/medium/high/blocking]
+- **Workaround**: [if any]
+- **Details**: [description of the bug and how to reproduce]
+
+````
+
+## Active Bugs
 
 ### Destructuring a sealed-base-typed value compiles and then traps
 
