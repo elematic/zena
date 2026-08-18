@@ -8917,6 +8917,66 @@ let argumentAdaptsToParameter = (arg: Expression, target: Type): boolean => {
   };
 };
 
+/**
+ * Fills `applicableRaw`/`applicableRes` with the operator candidates
+ * the given operands are applicable to — the `[]` read sites, whose
+ * one operand is the index, and the `[]=` write site, whose two are
+ * the index and the value.
+ *
+ * Same two tiers as a call (member-lookup.md §5.1): operands are
+ * first judged by the types they already have, and only if that
+ * leaves nothing applicable does a bare numeric literal operand adapt
+ * to the parameter facing it. Without the second tier `t[10]` cannot
+ * reach an `operator [](k: u32)` at all.
+ *
+ * Only the first `adaptableCount` operands may adapt. `[]=` passes 1,
+ * so its index adapts and its value does not: under a compound
+ * assignment the value operand is the right side of the `+=`, not the
+ * value being stored, and its type is already `effectiveType`.
+ *
+ * The two output arrays are parallel because callers need both forms:
+ * the declared signature to record the selection for codegen, and the
+ * substituted one to compare specificity.
+ */
+let collectApplicableOperatorOverloads = (
+  ctx: CheckerContext,
+  candidates: Array<FunctionType>,
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null,
+  operandTypes: Array<Type>,
+  operands: Array<Expression>,
+  adaptableCount: i32,
+  applicableRaw: Array<FunctionType>,
+  applicableRes: Array<FunctionType>
+): void => {
+  for (var tier = 0; tier < 2; tier += 1) {
+    let adaptLiterals = tier == 1;
+    for (let candidate in candidates) {
+      let resolvedCandidate =
+          substituteTypeParams(typeParams, typeArgs, candidate) as FunctionType;
+      if (resolvedCandidate.parameters.length != operandTypes.length) {
+        continue;
+      }
+      var matchOk = true;
+      for (var i = 0; i < operandTypes.length; i += 1) {
+        let param = resolvedCandidate.parameters[i];
+        if (!isAssignableTo(ctx, operandTypes[i], param) &&
+            !(adaptLiterals && i < adaptableCount &&
+              argumentAdaptsToParameter(operands[i], param))) {
+          matchOk = false;
+        }
+      }
+      if (matchOk) {
+        applicableRaw.push(candidate);
+        applicableRes.push(resolvedCandidate);
+      }
+    }
+    if (applicableRaw.length > 0) {
+      return;
+    }
+  }
+};
+
 let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
@@ -9376,15 +9436,15 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             }
             let applicableRaw = new Array<FunctionType>();
             let applicableRes = new Array<FunctionType>();
-            for (let candidate in candidates) {
-              let resolvedCandidate = substituteTypeParams(ownerParams, ownerArgs, candidate) as FunctionType;
-              if (resolvedCandidate.parameters.length == 2 &&
-                  isAssignableTo(ctx, idxNodeType, resolvedCandidate.parameters[0]) &&
-                  isAssignableTo(ctx, effectiveType, resolvedCandidate.parameters[1])) {
-                applicableRaw.push(candidate);
-                applicableRes.push(resolvedCandidate);
-              }
-            }
+            let operandTypes = new Array<Type>();
+            operandTypes.push(idxNodeType);
+            operandTypes.push(effectiveType);
+            let operands = new Array<Expression>();
+            operands.push(left.index);
+            operands.push(value);
+            collectApplicableOperatorOverloads(
+                ctx, candidates, ownerParams, ownerArgs,
+                operandTypes, operands, 1, applicableRaw, applicableRes);
             let selIdx = selectMostSpecificIndex(ctx, applicableRes, 2, loc);
             if (selIdx >= 0) {
               ctx.model.setResolvedOverload(expr, applicableRaw[selIdx]);
@@ -14367,6 +14427,13 @@ let resolveIndexType = (
   // Check the index.
   let indexType = checkExpression(ctx, index, null);
 
+  // The single operand every overloaded `[]` below selects over,
+  // shared by the class, extension and interface branches.
+  let operandTypes = new Array<Type>();
+  operandTypes.push(indexType);
+  let operands = new Array<Expression>();
+  operands.push(index);
+
   match (objectType) {
     case ArrayType {elementType}: {
       // Check for extension class operator[] on Array types (e.g., FixedArray<T>.operator[](Range))
@@ -14393,14 +14460,9 @@ let resolveIndexType = (
           // (member-lookup.md §5.1).
           let applicableRaw = new Array<FunctionType>();
           let applicableRes = new Array<FunctionType>();
-          for (let candidate in candidates) {
-            let resolvedCandidate = substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate) as FunctionType;
-            if (resolvedCandidate.parameters.length == 1 &&
-                isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])) {
-              applicableRaw.push(candidate);
-              applicableRes.push(resolvedCandidate);
-            }
-          }
+          collectApplicableOperatorOverloads(
+              ctx, candidates, ct.typeParameters, ct.typeArguments,
+              operandTypes, operands, 1, applicableRaw, applicableRes);
           if (applicableRaw.length > 0) {
             let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
             if (node != null && candidates.length > 1) {
@@ -14472,14 +14534,9 @@ let resolveIndexType = (
         var selectedMethod = baseMethod;
         let applicableRaw = new Array<FunctionType>();
         let applicableRes = new Array<FunctionType>();
-        for (let candidate in candidates) {
-          let resolvedCandidate = substituteTypeParams(ct.typeParameters, ct.typeArguments, candidate) as FunctionType;
-          if (resolvedCandidate.parameters.length == 1 &&
-              isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])) {
-            applicableRaw.push(candidate);
-            applicableRes.push(resolvedCandidate);
-          }
-        }
+        collectApplicableOperatorOverloads(
+            ctx, candidates, ct.typeParameters, ct.typeArguments,
+            operandTypes, operands, 1, applicableRaw, applicableRes);
         let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
         if (selIdx >= 0) {
           selectedMethod = applicableRaw[selIdx];
@@ -14517,14 +14574,9 @@ let resolveIndexType = (
         var selectedMethod = baseMethod;
         let applicableRaw = new Array<FunctionType>();
         let applicableRes = new Array<FunctionType>();
-        for (let candidate in candidates) {
-          let resolvedCandidate = substituteTypeParams(it.typeParameters, it.typeArguments, candidate) as FunctionType;
-          if (resolvedCandidate.parameters.length == 1 &&
-              isAssignableTo(ctx, indexType, resolvedCandidate.parameters[0])) {
-            applicableRaw.push(candidate);
-            applicableRes.push(resolvedCandidate);
-          }
-        }
+        collectApplicableOperatorOverloads(
+            ctx, candidates, it.typeParameters, it.typeArguments,
+            operandTypes, operands, 1, applicableRaw, applicableRes);
         let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
         if (selIdx >= 0) {
           selectedMethod = applicableRaw[selIdx];

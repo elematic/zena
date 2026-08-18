@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 0
+// A bare numeric literal index reaches an overloaded `[]` / `[]=` the
+// same way a literal argument reaches an overloaded call
+// (member-lookup.md §5.1). Before this, `t[10]` against a set whose
+// u32 signature was not the one the index typed against selected
+// nothing, reported no error, and then failed in ZIR lowering with
+// "index unsupported: index operand type".
+//
+// The u32 signatures are declared SECOND on purpose: reaching them is
+// what requires the literal to adapt.
+
+class Table {
+  var lastKey: u32 = 0 as u32;
+  var lastValue: i32 = 0;
+
+  operator [](k: String): i32 {
+    return 100;
+  }
+  operator [](k: u32): i32 {
+    return (k as i32) * 2;
+  }
+  operator []=(k: String, v: i32) {
+    this.lastValue = -1;
+  }
+  operator []=(k: u32, v: i32) {
+    this.lastKey = k;
+    this.lastValue = v;
+  }
+}
+
+export let main = (): i32 => {
+  let t = new Table();
+
+  // Read through the u32 signature.
+  if (t[10] != 20) {
+    return 1;
+  }
+
+  // A typed index still selects on its own, without the literal tier.
+  let k: u32 = 7 as u32;
+  if (t[k] != 14) {
+    return 2;
+  }
+
+  // The String signature is still reachable and unaffected.
+  if (t["x"] != 100) {
+    return 3;
+  }
+
+  // Write through the u32 signature.
+  t[3] = 42;
+  if (t.lastValue != 42) {
+    return 4;
+  }
+  if (t.lastKey != 3 as u32) {
+    return 5;
+  }
+
+  return 0;
+};

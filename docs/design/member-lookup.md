@@ -186,11 +186,21 @@ whichever tier produced the candidates, so a literal that reaches two
 incomparable signatures is still an ambiguity error. Because the
 second tier only ever runs on an empty applicable set, it can only
 turn a call that was an error into one that compiles — it can never
-move a call from one signature to another. Arguments beyond the ones
-the caller wrote (defaults spliced in from the first-declared
-signature) do not adapt: they are never re-checked against the
-signature that wins, so adapting one would select an overload on the
-strength of a different overload's default.
+move a call from one signature to another. The same two tiers apply at
+the `[]` and `[]=` sites, where the adapting operand is the index —
+without them `t[10]` cannot reach an `operator [](k: u32)` at all, and
+before they existed such a read selected nothing, reported nothing,
+and failed in ZIR lowering.
+
+Three operand positions are deliberately excluded from the second
+tier. Arguments beyond the ones the caller wrote — defaults spliced in
+from the first-declared signature — do not adapt, because they are
+never re-checked against the signature that wins, so adapting one
+would select an overload on the strength of a _different_ overload's
+default. Neither does the value operand of `[]=`: under a compound
+assignment that expression is the right side of the `+=` rather than
+the value being stored, and its type is already settled by the read
+half.
 
 **Union-typed arguments don't blur selection.** Assignability of a
 union requires _every_ arm to be assignable, so an argument of type
