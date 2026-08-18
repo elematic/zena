@@ -8866,6 +8866,57 @@ let checkIntegerLiteral = (
   return expectedType;
 };
 
+/**
+ * Whether a bare numeric literal written as `raw` can be typed
+ * `target`. Mirrors `checkIntegerLiteral`'s acceptance exactly, minus
+ * the reporting: overload resolution asks this of candidates it will
+ * not choose, so a candidate that loses must not leave a diagnostic
+ * behind. Keeping the two in step is what guarantees that a candidate
+ * accepted here type-checks when the argument is re-checked against
+ * the signature that won.
+ */
+let numericLiteralAdaptsTo = (raw: String, negative: boolean, target: Type): boolean => {
+  if (raw.contains('.')) {
+    // A float literal takes its type from the float types only.
+    return target is F32Type || target is F64Type;
+  }
+  if (target is I32Type || target is I64Type ||
+      target is F32Type || target is F64Type) {
+    return true;
+  }
+  if (!isRangeCheckedIntType(target)) {
+    return false;
+  }
+  return integerLiteralFits(raw, negative, target);
+};
+
+/**
+ * Whether `arg` is an argument whose type is decided by its context
+ * rather than by the expression itself, and whether that context can
+ * be `target`. Two forms qualify: a bare numeric literal (see
+ * "Contextual Typing for Numeric Literals" in the language reference)
+ * and any literal a literal *type* names exactly. A unary minus
+ * directly on a numeric literal belongs to the literal, so `-128` is
+ * measured against i8's lower bound rather than its upper one — the
+ * same way `checkExpressionInner` measures it.
+ */
+let argumentAdaptsToParameter = (arg: Expression, target: Type): boolean => {
+  if (getMatchedLiteralType(arg, target) != null) {
+    return true;
+  }
+  return match (arg) {
+    case NumberLiteral {raw}: numericLiteralAdaptsTo(raw, false, target)
+    case UnaryExpression {operator, argument}: {
+      if (operator != "-") { return false; }
+      match (argument) {
+        case NumberLiteral {raw}: numericLiteralAdaptsTo(raw, true, target)
+        case _: false
+      }
+    }
+    case _: false
+  };
+};
+
 let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
@@ -10123,6 +10174,64 @@ let selectMostSpecificIndex = (
     }
   }
   return 0;
+};
+
+/**
+ * The candidates a call's arguments are applicable to: right arity,
+ * and every argument assignable to the parameter facing it.
+ *
+ * `adaptLiterals` selects the second tier of call overload resolution.
+ * With it off, each argument is judged by the type it already has in
+ * `argTypes`. With it on, an argument whose type is decided by context
+ * — a bare numeric literal — is instead judged by whether it *could*
+ * be written at the parameter's type, which is what lets
+ * `div(someU32, 10)` reach the `(u32, u32)` signature. See the call
+ * site for why that is a second tier rather than the only rule.
+ *
+ * Only the first `callerArgCount` arguments may adapt. Beyond that sit
+ * default initializers spliced in from the first-declared signature,
+ * which are never re-checked against the signature that wins; letting
+ * one of those adapt would select an overload on the strength of
+ * another overload's default.
+ */
+let collectApplicableOverloads = (
+  ctx: CheckerContext,
+  candidates: Array<FunctionType>,
+  args: Array<Expression>,
+  argTypes: Array<Type>,
+  callerArgCount: i32,
+  adaptLiterals: boolean
+): Array<FunctionType> => {
+  let applicable = new Array<FunctionType>();
+  for (let candidate in candidates) {
+    let expectedCount = candidate.parameters.length;
+    var requiredCount = expectedCount;
+    let optionals = candidate.optionalParameters;
+    if (optionals != null) {
+      requiredCount = 0;
+      for (let optional in optionals) {
+        if (!optional) {
+          requiredCount = requiredCount + 1;
+        }
+      }
+    }
+
+    if (args.length >= requiredCount && args.length <= expectedCount) {
+      var matchOk = true;
+      for (var i = 0; i < args.length && i < expectedCount; i += 1) {
+        let param = candidate.parameters[i];
+        if (!isAssignableTo(ctx, argTypes[i], param) &&
+            !(adaptLiterals && i < callerArgCount &&
+              argumentAdaptsToParameter(args[i], param))) {
+          matchOk = false;
+        }
+      }
+      if (matchOk) {
+        applicable.push(candidate);
+      }
+    }
+  }
+  return applicable;
 };
 
 /**
@@ -16571,32 +16680,22 @@ let checkCallExpressionInner = (
         // at least as specific as all others. Declaration order
         // carries no meaning; an applicable set with no unique
         // maximum is an ambiguity error.
+        //
+        // Applicability is collected in two tiers. The first judges
+        // each argument by the type it has on its own, where a bare
+        // `10` is i32 — so `div(10, 3)` still means the i32 division
+        // and an all-literal call never becomes ambiguous across four
+        // numeric signatures. Only when that leaves nothing applicable
+        // does the second tier let a bare numeric literal take its
+        // type from the parameter facing it, which is what resolves
+        // `div(someU32, 10)`. The second tier can therefore only turn
+        // a call that used to be an error into one that compiles.
         var bestMatch: FunctionType | null = null;
-        let applicable = new Array<FunctionType>();
-        for (let candidate in candidates) {
-          let expectedCount = candidate.parameters.length;
-          var requiredCount = expectedCount;
-          let optionals = candidate.optionalParameters;
-          if (optionals != null) {
-            requiredCount = 0;
-            for (let optional in optionals) {
-              if (!optional) {
-                requiredCount = requiredCount + 1;
-              }
-            }
-          }
-
-          if (args.length >= requiredCount && args.length <= expectedCount) {
-            var matchOk = true;            
-            for (var i = 0; i < args.length && i < expectedCount; i += 1) {
-              if (!isAssignableTo(ctx, argTypes[i], candidate.parameters[i])) {
-                matchOk = false;
-              }
-            }
-            if (matchOk) {
-              applicable.push(candidate);
-            }
-          }
+        var applicable =
+            collectApplicableOverloads(ctx, candidates, args, argTypes, callerArgCount, false);
+        if (applicable.length == 0) {
+          applicable =
+              collectApplicableOverloads(ctx, candidates, args, argTypes, callerArgCount, true);
         }
         let selIdx = selectMostSpecificIndex(ctx, applicable, args.length, call.loc);
         if (selIdx >= 0) {

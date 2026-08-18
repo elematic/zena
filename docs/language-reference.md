@@ -280,6 +280,20 @@ literals.
 A negated literal is measured as a whole, so `let low: i8 = -128;` is accepted
 even though `128` alone would not fit.
 
+**Overloaded calls**: contextual typing reaches overload resolution as well. A
+literal argument first types on its own, and only if no signature matches that
+way does it take its type from the parameter it faces:
+
+```zena
+let value: u32 = 100 as u32;
+let half = div(value, 10);   // 10 is typed u32, selecting div(u32, u32)
+let third = div(10, 3);      // all literals: still the i32 signature
+```
+
+A literal that could adapt to two signatures neither of which is more specific
+is an ambiguity error; cast one argument to choose. See
+[member-lookup.md §5.1](./design/member-lookup.md) for the full rule.
+
 > Earlier versions of this document stated that contextual typing did _not_
 > apply to annotated declarations and that `let a: i64 = 1;` was an error.
 > That has never matched the compiler's behaviour; the rule above is what

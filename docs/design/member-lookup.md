@@ -169,6 +169,29 @@ checker selects exactly one signature from the callee's overload set
    **ambiguity error** (resolve with a cast or an exactly-typed
    argument). Declaration order carries no meaning.
 
+**Applicability runs in two tiers, so literals don't blur selection.**
+A bare numeric literal has no type of its own until a context supplies
+one, so judging every candidate against an adapting literal at once
+would make `div(10, 3)` applicable to all four of `zena:math`'s
+integer signatures, and therefore ambiguous. Instead the first tier
+types each argument on its own — a literal without a `.` is `i32`, one
+with a `.` is `f64` — and applies rule 1 exactly as written. Only when
+that tier leaves the applicable set **empty** does a second tier run,
+in which an argument the caller wrote as a bare numeric literal is
+judged by whether it _could_ be written at the parameter's type,
+range included for the range-checked types, rather than by the type it
+took on its own. That is what resolves `div(someU32, 10)` to
+`(u32, u32)` instead of failing. Rules 2 and 3 then apply unchanged to
+whichever tier produced the candidates, so a literal that reaches two
+incomparable signatures is still an ambiguity error. Because the
+second tier only ever runs on an empty applicable set, it can only
+turn a call that was an error into one that compiles — it can never
+move a call from one signature to another. Arguments beyond the ones
+the caller wrote (defaults spliced in from the first-declared
+signature) do not adapt: they are never re-checked against the
+signature that wins, so adapting one would select an overload on the
+strength of a different overload's default.
+
 **Union-typed arguments don't blur selection.** Assignability of a
 union requires _every_ arm to be assignable, so an argument of type
 `Dog | String` is applicable only to candidates whose parameter

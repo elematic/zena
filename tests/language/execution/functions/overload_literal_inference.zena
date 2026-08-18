@@ -1,0 +1,81 @@
+// @mode: run
+// @result: 0
+// An untyped numeric literal passed to an overloaded function takes
+// its type from the signature it is being passed to. Before this,
+// `div(someU32, 10)` did not compile: the literal was typed against
+// the first-declared signature (i32), after which no signature was
+// applicable, and every call site had to write `10 as u32` instead.
+//
+// Resolution keeps two tiers, and the i32 cases at the bottom pin the
+// first one: a call whose arguments are all literals still means the
+// i32 signature rather than becoming ambiguous across all four.
+
+import { div } from 'zena:math';
+
+// A range-checked parameter declared second, so reaching it requires
+// the literal to adapt rather than the first signature to accept it.
+class Sink {
+  take(v: String): i32 {
+    return 100;
+  }
+  take(v: u8): i32 {
+    return v as i32;
+  }
+}
+
+export let main = (): i32 => {
+  // The issue's own case.
+  var u: u32 = 100 as u32;
+  u = div(u, 10);
+  if (u != 10 as u32) {
+    return 1;
+  }
+
+  // Symmetric: the literal in the first position resolves too.
+  let half: u32 = div(100, 5 as u32);
+  if (half != 20 as u32) {
+    return 2;
+  }
+
+  // The wider signatures are reachable the same way.
+  let i: i64 = 100 as i64;
+  if (div(i, 10) != 10 as i64) {
+    return 3;
+  }
+  let w: u64 = 100 as u64;
+  if (div(w, 10) != 10 as u64) {
+    return 4;
+  }
+
+  // A unary minus belongs to the literal, so the whole `-10` is
+  // measured against the parameter.
+  if (div(i, -10) != -10 as i64) {
+    return 5;
+  }
+
+  // Range-checked parameters accept only a literal that fits, and
+  // that is part of applicability: 200 selects take(u8) even though
+  // take(String) is declared first.
+  let s = new Sink();
+  if (s.take(200) != 200) {
+    return 6;
+  }
+
+  // Tier one is unchanged. With nothing but literals the i32
+  // signature still wins.
+  if (div(10, 3) != 3) {
+    return 7;
+  }
+  if (div(-10, 3) != -3) {
+    return 8;
+  }
+
+  // And an argument that already has a type still decides on its own,
+  // without the literal tier being consulted at all.
+  let n: i32 = 10;
+  if (div(n, 3) != 3) {
+    return 9;
+  }
+
+  return 0;
+};

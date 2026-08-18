@@ -1,0 +1,45 @@
+// @mode: check
+// The edges of literal-adapting overload resolution: a literal that
+// reaches two incomparable signatures is ambiguous, and one that fits
+// no signature's range is still an argument type error.
+
+class Amb {
+  // Declared first so the literals below are typed i32 by the first
+  // tier and nothing is applicable there, which is what hands the
+  // call to the literal-adapting tier.
+  g(a: String, b: String): i32 {
+    return 0;
+  }
+  g(a: u8, b: i32): i32 {
+    return 1;
+  }
+  g(a: i32, b: u8): i32 {
+    return 2;
+  }
+}
+
+// Each literal can adapt to the u8 in one signature, so both are
+// applicable and neither is more specific.
+let ambiguous = (m: Amb): i32 => {
+  return m.g(1, 2); // @error: Ambiguous overload call
+};
+
+class Narrow {
+  h(v: String): i32 {
+    return 0;
+  }
+  h(v: u8): i32 {
+    return 1;
+  }
+}
+
+// 300 does not fit u8, so h(u8) is not applicable and the call is
+// reported against the signature it was checked with.
+let outOfRange = (n: Narrow): i32 => {
+  return n.h(300); // @error: is not assignable to parameter 'String'
+};
+
+// In range, so it selects h(u8) with no diagnostic at all.
+let inRange = (n: Narrow): i32 => {
+  return n.h(200);
+};
