@@ -1931,6 +1931,23 @@ class ValidationError extends Error {
 }
 ```
 
+### The `cancel` Clause (async only)
+
+A `try` in an `async` function may add `cancel { ... }` between the try block
+and any `catch`: the block runs when a cancellation unwinds the try, and the
+unwind then continues — `catch (e)` never sees a cancellation, and leaving the
+block with `return`/`break`/`continue` is rejected.
+
+```zena
+try {
+  let rows = await db.query(q);
+} cancel {
+  metrics.increment('query-abandoned');
+} finally {
+  releaseBuffers();
+}
+```
+
 ## Resource Management
 
 ### `using`

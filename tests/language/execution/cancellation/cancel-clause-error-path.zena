@@ -1,0 +1,65 @@
+// @mode: run
+// @result: 42
+
+// The `cancel` block is a sibling of `finally`, not of `catch`: a
+// FAILURE runs the catch handler and never the cancel block, on both
+// sides of a suspension. A try with only a cancel clause (no catch,
+// no finally) is also legal — errors pass through it untouched.
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+var trace = '';
+
+let failing = async (gate: Future<i32>): Future<i32> => {
+  try {
+    trace += 'a';
+    let v = await gate;
+    trace += 'b';
+    throw new Error('boom');
+  } cancel {
+    trace += 'C';
+  } catch (e) {
+    trace += 'e';
+    return 7;
+  }
+};
+
+let passesThrough = async (gate: Future<i32>): Future<i32> => {
+  try {
+    let v = await gate;
+    throw new Error('through');
+  } cancel {
+    trace += 'C';
+  }
+};
+
+export function main(): i32 {
+  let c = new Completer<i32>();
+  let f = failing(c.future);
+  c.complete(1);
+  drainMicrotasks();
+  if (runFuture(f) != 7) {
+    return 2;
+  }
+  if (trace != 'abe') {
+    return 3;
+  }
+
+  let c2 = new Completer<i32>();
+  let g = passesThrough(c2.future);
+  c2.complete(1);
+  drainMicrotasks();
+  var caught = false;
+  try {
+    let ignored = runFuture(g);
+  } catch (e) {
+    caught = true;
+  }
+  if (!caught) {
+    return 4;
+  }
+  if (trace != 'abe') {
+    return 5;
+  }
+  return 42;
+}

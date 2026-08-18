@@ -136,8 +136,8 @@ This document tracks completed work and planned features. For project instructio
     `zena:stream` rendezvous core implemented), and post-v1 items (cancellation and structured
     concurrency — designed in
     [cancellation.md](docs/design/cancellation.md); the tag, scopes,
-    checkpoints, and completed-as-cancelled are implemented, the
-    `cancel`/`shielded` syntax and `TaskGroup` are not — the
+    checkpoints, completed-as-cancelled, and the `cancel` clause are
+    implemented, `shielded` and `TaskGroup` are not — the
     tokio-backed CLI, the WASI P3 backend).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and

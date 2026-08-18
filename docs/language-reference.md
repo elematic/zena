@@ -4080,6 +4080,33 @@ let x: i32 = throw new Error("Boom"); // Valid, x is never assigned
 
 The expression thrown must be an instance of the `Error` class (or a subclass).
 
+### The `cancel` Clause
+
+A `try` in an `async` function may carry a `cancel` clause — a
+cancellation-specific sibling of `finally`, written between the try block and
+any `catch`:
+
+```zena
+try {
+  let rows = await db.query(q);
+  return render(rows);
+} cancel {
+  metrics.increment('query-abandoned');
+} catch (e) {
+  return errorPage(e);
+} finally {
+  releaseBuffers();
+}
+```
+
+The block runs when a cancellation unwinds the try, and the unwind then
+continues unconditionally: `return`, `break`, and `continue` out of the block
+are rejected, and `catch (e)` never observes a cancellation — cancellation
+rides its own exception channel and cannot be swallowed. `finally` runs on all
+three paths, after the cancel block. In sync code the clause is rejected,
+because cancellation is delivered only at checkpoints (suspension points); see
+[cancellation.md](design/cancellation.md).
+
 ### Error Class
 
 The `Error` class is part of the standard library and is available globally.

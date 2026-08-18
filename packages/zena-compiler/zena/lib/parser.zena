@@ -1206,8 +1206,18 @@ export final class Parser {
     let body = this.#parseBlockAsExpression(this.#previous());
     
     var handler: CatchClause | null = null;
+    var cancelBlock: BlockStatement | null = null;
     var finalizer: BlockStatement | null = null;
-    
+
+    // `cancel { ... }` — a contextual keyword, legal only between the
+    // try block and any catch (docs/design/cancellation.md).
+    if (this.#check(TokenType.Identifier) && this.#peek().value == 'cancel' &&
+        this.#peek2().kind == TokenType.LBrace) {
+      this.#advance();
+      this.#consume(TokenType.LBrace, "Expected '{' after 'cancel'");
+      cancelBlock = this.#parseBlockAsExpression(this.#previous());
+    }
+
     if (this.#match(TokenType.Catch)) {
       let catchToken = this.#previous();
       var param: Identifier | null = null;
@@ -1228,11 +1238,13 @@ export final class Parser {
       finalizer = this.#parseBlockAsExpression(this.#previous());
     }
     
-    if (handler == null && finalizer == null) {
-      throw this.#error("Expected 'catch' or 'finally' after try block");
+    if (handler == null && cancelBlock == null && finalizer == null) {
+      throw this.#error(
+          "Expected 'cancel', 'catch' or 'finally' after try block");
     }
-    
-    return new TryExpression(body, handler, finalizer, this.#makeLocation(startToken));
+
+    return new TryExpression(body, handler, cancelBlock, finalizer,
+        this.#makeLocation(startToken));
   }
   
   #parseExpressionStatement(): ExpressionStatement {

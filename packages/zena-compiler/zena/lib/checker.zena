@@ -1776,6 +1776,23 @@ final class CheckerContext {
   enterLoop(): void { this.#loopDepth = this.#loopDepth + 1; }
   exitLoop(): void { this.#loopDepth = this.#loopDepth - 1; }
   inLoop(): boolean { return this.#loopDepth > 0; }
+  loopDepth: i32 {
+    get { return this.#loopDepth; }
+  }
+
+  /**
+   * Loop depth at entry to the innermost enclosing `cancel` block, or
+   * -1 outside one. `return` is rejected inside, and `break`/
+   * `continue` are rejected unless their loop opened inside the block:
+   * the cancellation unwind continues unconditionally, so nothing may
+   * leave through the clause (docs/design/cancellation.md). Reset per
+   * function body — a closure inside the block returns from itself.
+   */
+  var #cancelBlockFloor: i32 = -1;
+  cancelBlockFloor: i32 {
+    get { return this.#cancelBlockFloor; }
+  }
+  setCancelBlockFloor(d: i32): void { this.#cancelBlockFloor = d; }
 
   // --- Class stack ---
 
@@ -7444,6 +7461,11 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       ctx.exitScope();
     }
     case ReturnStatement {argument, loc}: {
+      if (ctx.cancelBlockFloor >= 0) {
+        ctx.error(
+          "Cannot 'return' out of a 'cancel' block; the cancellation unwind continues.",
+          DiagnosticCode.TypeMismatch, loc);
+      }
       let expectedReturn = ctx.returnType;
       if (ctx.yieldType != null && argument != null) {
         // Generators complete via bare `return;` or falling off the end;
@@ -7692,12 +7714,22 @@ case _: {
     case BreakStatement {loc}: {
       if (!ctx.inLoop()) {
         ctx.error("'break' outside of loop.", DiagnosticCode.BreakOutsideLoop, loc);
+      } else if (ctx.cancelBlockFloor >= 0 &&
+          ctx.loopDepth <= ctx.cancelBlockFloor) {
+        ctx.error(
+          "Cannot 'break' out of a 'cancel' block; the cancellation unwind continues.",
+          DiagnosticCode.BreakOutsideLoop, loc);
       }
       ctx.recordFlowBreak();
     }
     case ContinueStatement {loc}: {
       if (!ctx.inLoop()) {
         ctx.error("'continue' outside of loop.", DiagnosticCode.ContinueOutsideLoop, loc);
+      } else if (ctx.cancelBlockFloor >= 0 &&
+          ctx.loopDepth <= ctx.cancelBlockFloor) {
+        ctx.error(
+          "Cannot 'continue' out of a 'cancel' block; the cancellation unwind continues.",
+          DiagnosticCode.ContinueOutsideLoop, loc);
       }
       ctx.recordFlowContinue();
     }
@@ -9830,7 +9862,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     ctx.markFlowUnreachable();
     new NeverType()
   }
-  case TryExpression {body, handler, finalizer, loc}: {
+  case TryExpression {body, handler, cancelBlock, finalizer, loc}: {
     let deps = ctx.currentDependencies();
     if (deps != null) {
       deps.needsExceptionInfra = true;
@@ -9864,6 +9896,28 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       // No handler: code after the try runs only when the body
       // completed normally.
       ctx.setFlow(bodyEnd);
+    }
+    if (cancelBlock != null) {
+      let cb = cancelBlock;
+      if (ctx.asyncFutureType == null) {
+        ctx.error(
+          "A 'cancel' clause is only legal in an async function: " +
+          "cancellation is delivered only at checkpoints, so in sync code " +
+          "the clause is unreachable.",
+          DiagnosticCode.TypeMismatch, loc);
+      }
+      // The block runs on a cancellation unwind and the unwind then
+      // continues, so it contributes no value and no flow to the code
+      // after the try. Its entry is the catch entry's ("anywhere in
+      // the body"); leaving it early is rejected at the return/break/
+      // continue sites via the floor.
+      let afterFlow = ctx.currentFlow;
+      ctx.setFlow(catchEntry);
+      let prevFloor = ctx.cancelBlockFloor;
+      ctx.setCancelBlockFloor(ctx.loopDepth);
+      checkMatchCaseBody(ctx, cb as Node, new VoidType());
+      ctx.setCancelBlockFloor(prevFloor);
+      ctx.setFlow(afterFlow);
     }
     if (finalizer != null) {
       // The finalizer also runs on the unwind paths, so its entry joins
@@ -16063,6 +16117,8 @@ let checkFunctionExpression = (
   let prevAsyncValue = ctx.asyncValueType;
   let prevAsyncFuture = ctx.asyncFutureType;
   let prevTryDepth = ctx.tryDepth;
+  let prevCancelBlockFloor = ctx.cancelBlockFloor;
+  ctx.setCancelBlockFloor(-1);
   ctx.setReturnType(retType);
   ctx.setInferredReturnTypes(new Array<Type>());
   var newYieldType: Type | null = null;
@@ -16222,6 +16278,7 @@ let checkFunctionExpression = (
   ctx.setAsyncValueType(prevAsyncValue);
   ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.setTryDepth(prevTryDepth);
+  ctx.setCancelBlockFloor(prevCancelBlockFloor);
   ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
 

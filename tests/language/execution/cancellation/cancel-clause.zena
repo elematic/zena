@@ -1,0 +1,52 @@
+// @mode: run
+// @result: 42
+
+// The `cancel` clause runs on a cancellation unwind and the unwind
+// then continues: the cancel block first, then the finalizer, and the
+// frame still completes as cancelled — the clause observed, it did not
+// suppress. `catch (e)` sees failures only and stays silent here.
+
+import {
+  Future, FutureState, Completer, CancelScope, drainMicrotasks,
+} from 'zena:async';
+
+var trace = '';
+var fut: Future<i32> | null = null;
+
+let work = async (gate: Future<i32>): Future<i32> => {
+  try {
+    trace += 'a';
+    let v = await gate;
+    trace += 'X';
+    return v;
+  } cancel {
+    trace += 'c';
+  } catch (e) {
+    trace += 'E';
+  } finally {
+    trace += 'f';
+  }
+  return 0;
+};
+
+export function main(): i32 {
+  let c = new Completer<i32>();
+  let scope = new CancelScope();
+  scope.run(() => {
+    fut = work(c.future);
+  });
+  scope.cancel();
+  c.complete(9);
+  drainMicrotasks();
+  if (trace != 'acf') {
+    return 2;
+  }
+  let f = fut;
+  if (f == null) {
+    return 3;
+  }
+  if (!((f as Future<i32>).state == FutureState.Cancelled)) {
+    return 4;
+  }
+  return 42;
+}

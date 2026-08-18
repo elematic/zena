@@ -346,7 +346,7 @@ let lowerValueRegionRest = (cx: LoweringContext, value: i32,
         let v = lowerBlockValueFrom(cx, body, start, false, ctxVt);
         finishProtectedArm(cx, scope, resultVar, v);
       },
-      () => { emitMaybeDispose(cx, value, owners); });
+      (fscope) => { emitMaybeDispose(cx, value, owners); });
 };
 
 /**
@@ -808,7 +808,7 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
     isVoid: boolean, resultVt: ValType | null,
     lowerProtected: (scope: FinallyScope, resultVar: i32,
         saved: HashMap<SymbolId, i32>) => void,
-    lowerFinalizer: () => void): i32 => {
+    lowerFinalizer: (scope: FinallyScope) => void): i32 => {
   if (cx.wasm.exceptionTag == null || cx.wasm.exceptionPayload == null) {
     bail(cx, 'exception infra missing');
   }
@@ -879,7 +879,7 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
   for (let symId in mirrored) {
     cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
   }
-  lowerFinalizer();
+  lowerFinalizer(scope);
   // The mirrors this try owns go out of scope here: an exit replayed
   // below belongs to whatever encloses this try. An enclosing try's
   // stay live — its handler is still reachable.
@@ -963,6 +963,12 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
   }
 
   // A pending cancellation continues on its own tag, payload-free.
+  // Through an ENCLOSING finalizer it parks rather than rethrows —
+  // the same routing a return uses — because in a split body this
+  // dispatch block can be re-entered from the dispatcher and hoist
+  // outside the enclosing region, where a rethrow would silently skip
+  // it. Parking is placement-independent; only the outermost region
+  // rethrows, into step()'s cancellation capture (or the caller).
   if (ehCancelB >= 0) {
     cx.b.switchTo(elseB);
     let armB = cx.b.newBlock();
@@ -971,8 +977,13 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
             cx.b.constI32(finallyExitCancel, i32vt)),
         armB, noValues(), nextB, noValues());
     cx.b.switchTo(armB);
-    cx.b.throwWithTag(noValues(),
-        cx.b.addRef(new IrRefTag(cancelTagOpt as WasmTag)));
+    if (cx.finallyScopes.length > 0) {
+      let outer = cx.finallyScopes[cx.finallyScopes.length - 1];
+      parkExit(cx, outer, finallyExitCancel);
+    } else {
+      cx.b.throwWithTag(noValues(),
+          cx.b.addRef(new IrRefTag(cancelTagOpt as WasmTag)));
+    }
     elseB = nextB;
   }
 
@@ -993,13 +1004,25 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
 };
 
 /**
- * `try` with a finalizer, in value or statement position — the shape
- * above, with the protected part being the body (and its `catch`, which
- * nests INSIDE the region in its own try_br so a handler that throws
- * still runs the finalizer) and the finalizer being the written block.
+ * `try` with a finalizer and/or a `cancel` clause, in value or
+ * statement position — the finalizer-region shape above, with the
+ * protected part being the body (and its `catch`, which nests INSIDE
+ * the region in its own try_br so a handler that throws still runs
+ * the finalizer).
+ *
+ * The `cancel` clause is a finalizer that runs only on the CANCEL
+ * exit code (docs/design/cancellation.md): its region parks the
+ * cancellation like any exit, runs the block at the one dispatch
+ * copy, and the replay continues the unwind — parked outward through
+ * any enclosing finalizer, so with both clauses present the cancel
+ * block runs first (inner region), then the written finalizer (outer
+ * region), then the unwind continues. It is NOT a region-plus-rethrow
+ * on the handler edge: a rethrow relies on the handler's placement
+ * inside the enclosing regions, and in a split body a re-entered
+ * dispatch target gives these blocks extra predecessors that hoist
+ * them outside — the park-and-replay shape is placement-independent.
  */
 let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
-  let finalizer = expr.finalizer as Node;
   let nodeType = cx.func.model.getNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped try expression');
@@ -1022,37 +1045,83 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   if (expr.handler != null) {
     cx.appendAssignedEnvSyms((expr.handler as CatchClause).body as Node, mirrored);
   }
-  cx.appendAssignedEnvSyms(finalizer, mirrored);
+  if (expr.cancelBlock != null) {
+    cx.appendAssignedEnvSyms(expr.cancelBlock as Node, mirrored);
+  }
+  if (expr.finalizer != null) {
+    cx.appendAssignedEnvSyms(expr.finalizer as Node, mirrored);
+  }
 
   let tag = cx.wasm.exceptionTag as WasmTag;
-  return lowerFinallyRegion(cx, mirrored, isVoid, resultVt,
-      (scope, resultVar, saved) => {
-        let handler = expr.handler;
-        if (handler == null) {
-          let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
-          finishProtectedArm(cx, scope, resultVar, bodyValue);
-          return;
-        }
-        let bodyB = cx.b.newBlock();
-        let catchB = cx.b.newBlock();
-        cx.b.tryBr(cx.b.addRef(new IrRefTag(tag)), bodyB, noValues(),
-            catchB, noValues());
+  let lowerArmsInto = (scope: FinallyScope, resultVar: i32,
+      saved: HashMap<SymbolId, i32>): void => {
+    let handler = expr.handler;
+    if (handler == null) {
+      let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
+      finishProtectedArm(cx, scope, resultVar, bodyValue);
+      return;
+    }
+    let bodyB = cx.b.newBlock();
+    let catchB = cx.b.newBlock();
+    cx.b.tryBr(cx.b.addRef(new IrRefTag(tag)), bodyB, noValues(),
+        catchB, noValues());
 
-        cx.b.switchTo(bodyB);
-        let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
-        finishProtectedArm(cx, scope, resultVar, bodyValue);
+    cx.b.switchTo(bodyB);
+    let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
+    finishProtectedArm(cx, scope, resultVar, bodyValue);
 
-        cx.env = cx.copyOf(saved);
-        cx.reachable = true;
-        cx.b.switchTo(catchB);
-        for (let symId in bodyAssigned) {
-          cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
-        }
-        bindCatchParam(cx, handler);
-        let catchValue = lowerValueNode(cx, handler.body as Node, isVoid, resultVt);
-        finishProtectedArm(cx, scope, resultVar, catchValue);
-      },
-      () => { lowerValueNode(cx, finalizer, true, null); });
+    cx.env = cx.copyOf(saved);
+    cx.reachable = true;
+    cx.b.switchTo(catchB);
+    for (let symId in bodyAssigned) {
+      cx.env[symId] = cx.b.varGet(cx.tryVars[symId]);
+    }
+    bindCatchParam(cx, handler);
+    let catchValue = lowerValueNode(cx, handler.body as Node, isVoid, resultVt);
+    finishProtectedArm(cx, scope, resultVar, catchValue);
+  };
+
+  // The cancel clause's region: its "finalizer" runs the block only
+  // when the parked exit is CANCEL, and passes every other exit
+  // through untouched.
+  let lowerCancelClauseRegion = (): i32 => {
+    return lowerFinallyRegion(cx, mirrored, isVoid, resultVt,
+        lowerArmsInto,
+        (scope) => {
+          let i32vt = new ValTypeI32() as ValType;
+          let code = cx.b.varGet(scope.codeVar);
+          let runB = cx.b.newBlock();
+          let skipB = cx.b.newBlock();
+          cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, code,
+                  cx.b.constI32(finallyExitCancel, i32vt)),
+              runB, noValues(), skipB, noValues());
+          cx.b.switchTo(runB);
+          lowerValueNode(cx, expr.cancelBlock as Node, true, null);
+          if (cx.reachable) {
+            cx.b.br(skipB, noValues());
+          }
+          cx.b.switchTo(skipB);
+          cx.reachable = true;
+        });
+  };
+
+  let finalizerOpt = expr.finalizer;
+  if (finalizerOpt == null) {
+    // A cancel clause without a finalizer (lowerTryExpression only
+    // routes here when at least one of the two is present).
+    return lowerCancelClauseRegion();
+  }
+  let finalizer = finalizerOpt as Node;
+  if (expr.cancelBlock != null) {
+    return lowerFinallyRegion(cx, mirrored, isVoid, resultVt,
+        (outerScope, resultVar, saved) => {
+          let v = lowerCancelClauseRegion();
+          finishProtectedArm(cx, outerScope, resultVar, v);
+        },
+        (fscope) => { lowerValueNode(cx, finalizer, true, null); });
+  }
+  return lowerFinallyRegion(cx, mirrored, isVoid, resultVt, lowerArmsInto,
+      (fscope) => { lowerValueNode(cx, finalizer, true, null); });
 };
 
 /**
@@ -1075,7 +1144,10 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
  * the enclosing function being `async`/`gen`) and never reach here.
  */
 export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 => {
-  if (expr.finalizer != null) {
+  if (expr.finalizer != null || expr.cancelBlock != null) {
+    // A `cancel` clause takes the finalizer-region shape too — its
+    // block is a finalizer that runs only on the CANCEL exit code —
+    // so both clauses route to the same construction.
     return lowerTryFinally(cx, expr);
   }
   if (expr.handler == null) {
@@ -1390,7 +1462,7 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
         }
         finishProtectedArm(cx, scope, resultVar, -1);
       },
-      () => { emitMaybeDispose(cx, value, ownerClasses); });
+      (fscope) => { emitMaybeDispose(cx, value, ownerClasses); });
 };
 
 /** Whether the checker marked this declaration for release at scope exit. */
@@ -1446,7 +1518,7 @@ export let lowerParamDropRegions = (cx: LoweringContext,
         lowerParamDropRegions(cx, dropSyms, idx + 1, body, start, end);
         finishProtectedArm(cx, scope, resultVar, -1);
       },
-      () => { emitMaybeDispose(cx, value, owners); });
+      (fscope) => { emitMaybeDispose(cx, value, owners); });
 };
 
 /**
@@ -1499,7 +1571,7 @@ export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
         }
         finishProtectedArm(cx, scope, resultVar, -1);
       },
-      () => { emitMaybeDispose(cx, value, ownerClasses); });
+      (fscope) => { emitMaybeDispose(cx, value, ownerClasses); });
 };
 
 export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {

@@ -1,0 +1,77 @@
+// @mode: check
+
+// The `cancel` clause observes a cancellation without suppressing it:
+// the unwind continues, so nothing may leave the function through the
+// block, and in sync code — where cancellation is never delivered —
+// the clause is rejected rather than accepted as dead ceremony.
+
+import { Future } from 'zena:async';
+
+let work = (): void => {};
+let note = (): void => {};
+
+let sync = (): i32 => {
+  try { // @error: A 'cancel' clause is only legal in an async function: cancellation is delivered only at checkpoints, so in sync code the clause is unreachable.
+    work();
+  } cancel {
+    note();
+  }
+  return 2;
+};
+
+let returnsOut = async (): Future<i32> => {
+  try {
+    work();
+  } cancel {
+    return 2; // @error: Cannot 'return' out of a 'cancel' block; the cancellation unwind continues.
+  }
+  return 3;
+};
+
+let breaksOut = async (): Future<i32> => {
+  var i = 0;
+  while (i < 3) {
+    i += 1;
+    try {
+      work();
+    } cancel {
+      break; // @error: Cannot 'break' out of a 'cancel' block; the cancellation unwind continues.
+    }
+  }
+  return 0;
+};
+
+let continuesOut = async (): Future<i32> => {
+  var i = 0;
+  while (i < 3) {
+    i += 1;
+    try {
+      work();
+    } cancel {
+      continue; // @error: Cannot 'continue' out of a 'cancel' block; the cancellation unwind continues.
+    }
+  }
+  return 0;
+};
+
+/** Leaving a loop that OPENED inside the block is fine, as is a
+ * return from a closure defined inside it. */
+let legal = async (): Future<i32> => {
+  try {
+    work();
+  } cancel {
+    var j = 0;
+    while (j < 2) {
+      j += 1;
+      if (j == 1) {
+        continue;
+      }
+      break;
+    }
+    let f = (): i32 => {
+      return 9;
+    };
+    let ignored = f();
+  }
+  return 0;
+};
