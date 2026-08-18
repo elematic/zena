@@ -3,22 +3,7 @@ import {hoverTooltip, EditorView} from '@codemirror/view';
 import {customElement} from 'lit/decorators.js';
 import {CodeMirrorExtensionElement} from 'codemirror-elements/lib/cm-extension-element.js';
 
-const keywords = new Set([
-  'let',
-  'var',
-  'function',
-  'class',
-  'sealed',
-  'case',
-  'interface',
-  'mixin',
-  'enum',
-  'type',
-  'new',
-  'export',
-  'import',
-  'from',
-  'declare',
+const controlKeywords = new Set([
   'if',
   'else',
   'while',
@@ -26,20 +11,53 @@ const keywords = new Set([
   'in',
   'return',
   'match',
+  'case',
   'throw',
   'try',
   'catch',
-  'is',
+  'finally',
+  'break',
+  'continue',
+  'yield',
+  'await',
+]);
+
+const definitionKeywords = new Set([
+  'let',
+  'var',
+  'function',
+  'class',
+  'sealed',
+  'interface',
+  'mixin',
+  'enum',
+  'type',
+  'distinct',
+  'opaque',
+  'extension',
+  'symbol',
+  'using',
+]);
+
+const moduleKeywords = new Set(['export', 'import', 'from', 'declare']);
+
+const modifierKeywords = new Set([
+  'async',
+  'gen',
+  'static',
+  'final',
+  'abstract',
+  'inline',
+]);
+
+const operatorKeywords = new Set([
+  'new',
   'as',
+  'is',
   'extends',
   'implements',
   'with',
   'on',
-  'true',
-  'false',
-  'null',
-  'this',
-  'super',
 ]);
 
 /**
@@ -177,12 +195,14 @@ export const zenaLanguage = StreamLanguage.define<ZenaState>({
     // 7. Keywords / Types / Identifiers
     if (stream.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*/)) {
       const word = stream.current();
-      if (keywords.has(word)) {
-        if (word === 'true' || word === 'false' || word === 'null')
-          return 'atom';
-        if (word === 'this' || word === 'super') return 'keyword';
-        return 'keyword';
-      }
+      if (controlKeywords.has(word)) return 'controlKeyword';
+      if (definitionKeywords.has(word)) return 'definitionKeyword';
+      if (moduleKeywords.has(word)) return 'moduleKeyword';
+      if (modifierKeywords.has(word)) return 'modifier';
+      if (operatorKeywords.has(word)) return 'operatorKeyword';
+      if (word === 'this' || word === 'super') return 'self';
+      if (word === 'null') return 'null';
+      if (word === 'true' || word === 'false') return 'bool';
       if (primitiveTypes.has(word) || /^[A-Z]/.test(word)) {
         return 'typeName';
       }
