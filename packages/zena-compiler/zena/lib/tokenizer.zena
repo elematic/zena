@@ -442,7 +442,7 @@ export final class Tokenizer {
           break;
         }
         let escaped = this.#advance();
-        // 'n'=110, 'r'=114, 't'=116, '\\'=92, '\''=39, '"'=34
+        // 'n'=110, 'r'=114, 't'=116, '\\'=92, '\''=39, '"'=34, '0'=48, '\n'=10, '\r'=13
         if (escaped == 110) {
           builder.appendByte(10); // newline
         } else if (escaped == 114) {
@@ -455,6 +455,15 @@ export final class Tokenizer {
           builder.appendByte(39); // single quote
         } else if (escaped == 34) {
           builder.appendByte(34); // double quote
+        } else if (escaped == 48) {
+          builder.appendByte(0); // null
+        } else if (escaped == 10) {
+          // Line continuation (LF) - omit from string
+        } else if (escaped == 13) {
+          // Line continuation (CR or CRLF) - omit from string
+          if (this.#peek() == 10) {
+            this.#advance();
+          }
         } else {
           // Unknown escape - keep as-is
           builder.appendByte(92);
@@ -513,11 +522,7 @@ export final class Tokenizer {
       if (c == 92) {
         // backslash=92
         raw.appendByte(this.#advance());
-        if (!this.#reader.isAtEnd) {
-          let next = this.#peek();
-          raw.appendByte(next);
-          this.#processEscape(cooked);
-        }
+        this.#processTemplateEscape(cooked, raw);
       } else {
         let ch = this.#advance();
         cooked.appendByte(ch);
@@ -533,30 +538,39 @@ export final class Tokenizer {
     this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
   }
 
-  #processEscape(builder: StringBuilder): void {
+  #processTemplateEscape(cooked: StringBuilder, raw: StringBuilder): void {
     if (this.#reader.isAtEnd) {
       return;
     }
     let escaped = this.#advance();
-    // 'n'=110, 'r'=114, 't'=116, '\\'=92, '`'=96, '$'=36, '0'=48
+    raw.appendByte(escaped);
+    // 'n'=110, 'r'=114, 't'=116, '\\'=92, '`'=96, '$'=36, '0'=48, '\n'=10, '\r'=13
     if (escaped == 110) {
-      builder.appendByte(10); // newline
+      cooked.appendByte(10); // newline
     } else if (escaped == 114) {
-      builder.appendByte(13); // carriage return
+      cooked.appendByte(13); // carriage return
     } else if (escaped == 116) {
-      builder.appendByte(9); // tab
+      cooked.appendByte(9); // tab
     } else if (escaped == 92) {
-      builder.appendByte(92); // backslash
+      cooked.appendByte(92); // backslash
     } else if (escaped == 96) {
-      builder.appendByte(96); // backtick
+      cooked.appendByte(96); // backtick
     } else if (escaped == 36) {
-      builder.appendByte(36); // dollar
+      cooked.appendByte(36); // dollar
     } else if (escaped == 48) {
-      builder.appendByte(0); // null
+      cooked.appendByte(0); // null
+    } else if (escaped == 10) {
+      // Line continuation (LF) - omitted from cooked, raw already has \ and \n
+    } else if (escaped == 13) {
+      // Line continuation (CR or CRLF)
+      if (this.#peek() == 10) {
+        raw.appendByte(this.#advance());
+      }
+      // omitted from cooked
     } else {
       // Unknown escape - keep as-is
-      builder.appendByte(92);
-      builder.appendByte(escaped);
+      cooked.appendByte(92);
+      cooked.appendByte(escaped);
     }
   }
 

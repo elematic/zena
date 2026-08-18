@@ -152,6 +152,12 @@ export let tests = suite('Tokenizer', (): void => {
       equal(tokens[0].value.length, 11); // "hello" + newline + "world"
       assertTokenType(tokens[0], TokenType.String);
     });
+
+    test('should handle line continuation', (ctx: TestContext): void => {
+      let input = '"hello\\\nworld"';
+      let tokens = tokenize(input);
+      assertToken(tokens[0], TokenType.String, 'helloworld');
+    });
   });
 
   // ==========================================================================
@@ -373,6 +379,16 @@ export let tests = suite('Tokenizer', (): void => {
       assertTokenType(tokens[7], TokenType.EOF);
 
       equal(tokens.length, 8);
+    });
+
+    test('should handle line continuation in template literal', (ctx: TestContext): void => {
+      let input = '`Foo\\\nBar`';
+      let tokens = tokenize(input);
+
+      assertToken(tokens[0], TokenType.NoSubstitutionTemplate, 'FooBar');
+      equal(tokens[0].rawValue, 'Foo\\\nBar');
+      assertTokenType(tokens[1], TokenType.EOF);
+      equal(tokens.length, 2);
     });
   });
 
