@@ -109,3 +109,29 @@ export type WorkerResponse =
   | HoverResponse
   | CompletionsResponse
   | ErrorResponse;
+
+export type PlaygroundStatus = 'loading' | 'ready' | 'checking' | 'error';
+
+/** Represents a single project file in a playground project. */
+export interface SampleFile {
+  name: string;
+  content: string;
+  contentType?: string;
+  label?: string;
+  hidden?: boolean;
+  selected?: boolean;
+}
+
+/** Project configuration / manifest format. */
+export interface ProjectManifest {
+  files?: Record<
+    string,
+    {
+      content?: string;
+      contentType?: string;
+      label?: string;
+      hidden?: boolean;
+      selected?: boolean;
+    }
+  >;
+}

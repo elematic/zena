@@ -192,9 +192,21 @@ export interface LspExports extends WebAssembly.Exports {
   [key: string]: any;
 }
 
-/** Paths the compiler asks for are absolute; open documents may not be. */
-const normalizePath = (path: string): string =>
-  path.startsWith('/') || path.startsWith('zena:') ? path : '/' + path;
+/** Normalizes paths to leading slash (e.g. '/math.zena') for absolute compiler lookups. */
+const normalizePath = (path: string): string => {
+  let p = path;
+  while (p.startsWith('./')) p = p.slice(2);
+  while (p.startsWith('/./')) p = '/' + p.slice(3);
+  return p.startsWith('/') || p.startsWith('zena:') ? p : '/' + p;
+};
+
+/** Normalizes paths to clean relative filename (e.g. 'math.zena'). */
+const cleanPath = (path: string): string => {
+  let p = path;
+  while (p.startsWith('./')) p = p.slice(2);
+  if (p.startsWith('/')) p = p.slice(1);
+  return p;
+};
 
 /**
  * Loads `lsp.wasm` and returns a service bound to it.
@@ -222,11 +234,17 @@ export async function createLanguageService(
   const openDocuments = new Map<string, string>();
 
   const readFileImport = (pathRef: unknown, pathLen: number): unknown => {
-    const path = readString!(pathRef, pathLen);
+    const rawPath = readString!(pathRef, pathLen);
+    const cleaned = cleanPath(rawPath);
+    const normalized = normalizePath(rawPath);
     const contents =
-      openDocuments.get(path) ??
-      openDocuments.get(normalizePath(path)) ??
-      readFile?.(path);
+      openDocuments.get(rawPath) ??
+      openDocuments.get(cleaned) ??
+      openDocuments.get(normalized) ??
+      openDocuments.get('./' + cleaned) ??
+      readFile?.(rawPath) ??
+      readFile?.(cleaned) ??
+      readFile?.(normalized);
     if (contents == null) {
       return null;
     }
@@ -374,20 +392,40 @@ export class ZenaLanguageService {
    * shadowing whatever the `readFile` hook would return.
    */
   openDocument(path: string, source: string): void {
+    const cleaned = cleanPath(path);
+    const normalized = normalizePath(path);
     this.#openDocuments.set(path, source);
-    this.#openDocuments.set(normalizePath(path), source);
+    this.#openDocuments.set(cleaned, source);
+    this.#openDocuments.set(normalized, source);
+    this.#openDocuments.set('./' + cleaned, source);
     if (this.#exports.openDocument) {
       this.#exports.openDocument(
         this.#writeString(path),
         this.#writeString(source),
       );
+      if (cleaned !== path) {
+        this.#exports.openDocument(
+          this.#writeString(cleaned),
+          this.#writeString(source),
+        );
+      }
+      if (normalized !== path && normalized !== cleaned) {
+        this.#exports.openDocument(
+          this.#writeString(normalized),
+          this.#writeString(source),
+        );
+      }
     }
   }
 
   /** Drops an open document, so `path` resolves through `readFile` again. */
   closeDocument(path: string): void {
+    const cleaned = cleanPath(path);
+    const normalized = normalizePath(path);
     this.#openDocuments.delete(path);
-    this.#openDocuments.delete(normalizePath(path));
+    this.#openDocuments.delete(cleaned);
+    this.#openDocuments.delete(normalized);
+    this.#openDocuments.delete('./' + cleaned);
     if (this.#exports.closeDocument) {
       this.#exports.closeDocument(this.#writeString(path));
     }

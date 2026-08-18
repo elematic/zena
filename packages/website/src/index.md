@@ -544,7 +544,21 @@ The compiler runs in your browser as a WebAssembly module — nothing is uploade
 Type-checking and diagnostics come from the self-hosted Zena language server in a
 background worker.
 
-<zena-playground></zena-playground>
+<zena-playground>
+  <script type="sample/zena" filename="main.zena">
+    import { add, greet } from './math.zena';
+    export let main = () => {
+      console.log(greet('Zena Developer'));
+      console.log(`1 + 2 = ${add(1, 2)}`);
+    };
+  </script>
+  <script type="sample/zena" filename="math.zena">
+    export let add = (a: i32, b: i32): i32 => a + b;
+    export let greet = (name: String): String => {
+      return 'Hello ' + name + '!';
+    };
+  </script>
+</zena-playground>
 
 There is a larger editor on the [playground page](/playground/).
 
