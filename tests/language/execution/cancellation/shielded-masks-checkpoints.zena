@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 42
+
+// Inside `shielded`, checkpoints do not deliver: a frame parked inside
+// the region resumes and runs even though its scope was cancelled
+// while it waited. At the closing brace level-triggering resumes, and
+// the next checkpoint — entering the following await — raises.
+
+import {
+  Future, FutureState, Completer, CancelScope, drainMicrotasks,
+} from 'zena:async';
+
+var trace = '';
+var fut: Future<i32> | null = null;
+
+let work = async (bye: Future<i32>, never: Future<i32>): Future<i32> => {
+  trace += 'a';
+  shielded {
+    trace += 's';
+    let b = await bye;
+    trace += 'g';
+  }
+  let v = await never;
+  trace += 'X';
+  return v;
+};
+
+export function main(): i32 {
+  let bye = new Completer<i32>();
+  let never = new Completer<i32>();
+  let scope = new CancelScope();
+  scope.run(() => {
+    fut = work(bye.future, never.future);
+  });
+  trace += '1';
+  scope.cancel();
+  bye.complete(5);
+  drainMicrotasks();
+  if (trace != 'as1g') {
+    return 2;
+  }
+  let f = fut;
+  if (f == null) {
+    return 3;
+  }
+  if (!((f as Future<i32>).state == FutureState.Cancelled)) {
+    return 4;
+  }
+  return 42;
+}

@@ -1,0 +1,59 @@
+// @mode: run
+// @result: 42
+
+// Async work created inside `shielded` binds to the shield scope, so
+// a cancellation of the enclosing scope never reaches it: the child
+// runs across its own suspensions and the shielded caller consumes
+// its value, completing normally — cleanup outside every cancellation
+// domain. An enclosing local assigned inside the region survives the
+// suspension (the shielded body's assignments are celled like a try
+// body's).
+
+import {
+  Future, FutureState, Completer, CancelScope, drainMicrotasks, runFuture,
+} from 'zena:async';
+
+var trace = '';
+var fut: Future<i32> | null = null;
+
+let child = async (g: Future<i32>): Future<i32> => {
+  trace += 'c';
+  let v = await g;
+  trace += 'd';
+  return v;
+};
+
+let work = async (g: Future<i32>): Future<i32> => {
+  var got = 0;
+  shielded {
+    let cf = child(g);
+    got = await cf;
+    trace += 'e';
+  }
+  return got;
+};
+
+export function main(): i32 {
+  let g = new Completer<i32>();
+  let scope = new CancelScope();
+  scope.run(() => {
+    fut = work(g.future);
+  });
+  scope.cancel();
+  g.complete(7);
+  drainMicrotasks();
+  if (trace != 'cde') {
+    return 2;
+  }
+  let f = fut;
+  if (f == null) {
+    return 3;
+  }
+  if (!((f as Future<i32>).state == FutureState.Resolved)) {
+    return 4;
+  }
+  if (runFuture(f as Future<i32>) != 7) {
+    return 5;
+  }
+  return 42;
+}

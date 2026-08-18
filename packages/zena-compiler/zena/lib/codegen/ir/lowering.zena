@@ -17,7 +17,7 @@ import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import { parseF64, parseI32, i32ToString } from 'zena:string-convert';
 import {
-  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression,
+  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression,
 } from '../../ast.zena';
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
@@ -73,7 +73,7 @@ import {
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
   lowerLetCondition, lowerMatch, lowerParamDropRegions,
   lowerScopeDropRegion, lowerTryExpression,
-  lowerUsingRegion, lowerValueNode, lowerWhile,
+  lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
 } from './control-flow.zena';
 
 // ZirUnsupported now lives in lowering-context.zena (imported above):
@@ -935,6 +935,14 @@ export final class FunctionLowerer {
    * split pass schedules the frame directly instead of subscribing
    * to a future (async.md §1, the always-async rule). */
   awaitHopTerms = new HashSet<i32>();
+  /** Await terminators lexically inside a `shielded { }` region: the
+   * split pass emits no checkpoint for them, and their resumes
+   * re-install the shield scope as the ambient instead
+   * (docs/design/cancellation.md §Shields). */
+  shieldedAwaits = new HashSet<i32>();
+  /** Nesting depth of `shielded` regions during presplit lowering;
+   * the await sites read it to fill `shieldedAwaits`. */
+  var shieldDepth = 0;
 
   new(this.wasm, this.func);
 
@@ -2316,6 +2324,9 @@ export final class FunctionLowerer {
         // first and hands it the rest of the block.
         lowerUsingRegion(this.#cx(), us, new Array<Statement>(0), 0, 0);
       }
+      case ShieldedStatement as ss: {
+        lowerShieldedRegion(this.#cx(), ss);
+      }
       case ExpressionStatement {expression}: {
         if (expression is ThrowExpression) {
           this.#lowerThrowStatement(expression);
@@ -3107,6 +3118,9 @@ export final class FunctionLowerer {
     let resume = this.b.newBlock();
     let suspend = this.b.awaitTo(future, resume, new Array<i32>(0));
     this.awaitSubscribeTargets[suspend] = subOpt as WasmFunction;
+    if (this.shieldDepth > 0) {
+      this.shieldedAwaits.add(suspend);
+    }
     this.b.switchTo(resume);
 
     let args = new Array<i32>();
@@ -3238,6 +3252,9 @@ export final class FunctionLowerer {
       let resume = this.b.newBlock();
       let suspend = this.b.awaitTo(opVal, resume, noArgs);
       this.awaitHopTerms.add(suspend);
+      if (this.shieldDepth > 0) {
+        this.shieldedAwaits.add(suspend);
+      }
       this.b.switchTo(resume);
       let conformed = this.#conformUnionArm(opVal, resultVt);
       let joinArgs = new Array<i32>();

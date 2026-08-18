@@ -1948,6 +1948,13 @@ try {
 }
 ```
 
+### `shielded` Blocks (async only)
+
+`shielded { ... }` masks cancellation checkpoints for its extent — cleanup
+that must await after cancellation has arrived runs to completion, and async
+work created inside binds to a scope no cancellation reaches. At the closing
+brace, delivery resumes.
+
 ## Resource Management
 
 ### `using`

@@ -4121,6 +4121,23 @@ three paths, after the cancel block. In sync code the clause is rejected,
 because cancellation is delivered only at checkpoints (suspension points); see
 [cancellation.md](design/cancellation.md).
 
+### `shielded` Blocks
+
+Cleanup that must await after cancellation has arrived needs a region where
+checkpoints do not deliver:
+
+```zena
+shielded {
+  await connection.sendGoodbye();
+}
+```
+
+Inside `shielded`, the frame's checkpoints are masked and async work created
+inside binds to the shield scope, which no cancellation reaches. At the
+closing brace level-triggering resumes: the next checkpoint in a cancelled
+scope raises. Like the `cancel` clause, `shielded` is legal only in async
+functions.
+
 ### Error Class
 
 The `Error` class is part of the standard library and is available globally.

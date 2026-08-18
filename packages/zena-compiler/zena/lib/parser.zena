@@ -26,6 +26,7 @@ import {
   AssignmentExpression,
   VariableDeclaration,
   UsingStatement,
+  ShieldedStatement,
   FunctionDeclaration,
   ExpressionStatement,
   BlockStatement,
@@ -562,6 +563,17 @@ export final class Parser {
     // `using` bindings, bound or not
     if (this.#match(TokenType.Using)) {
       return this.#parseUsingStatement(startToken);
+    }
+
+    // `shielded { ... }` — a contextual keyword, like `cancel`
+    // (docs/design/cancellation.md §Shields).
+    if (this.#check(TokenType.Identifier) &&
+        this.#peek().value == 'shielded' &&
+        this.#peek2().kind == TokenType.LBrace) {
+      this.#advance();
+      this.#consume(TokenType.LBrace, "Expected '{' after 'shielded'");
+      let body = this.#parseBlockAsExpression(this.#previous());
+      return new ShieldedStatement(body, this.#makeLocation(startToken));
     }
 
     // Variable declarations

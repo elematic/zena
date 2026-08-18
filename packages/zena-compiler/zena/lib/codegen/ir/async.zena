@@ -505,6 +505,7 @@ let prepareOne = (
   let presplit = fl.lower();
   let subscribeOf = fl.awaitSubscribeTargets;
   let hopTerms = fl.awaitHopTerms;
+  let shieldedAwaits = fl.shieldedAwaits;
   // A union await's bare arm parks the frame directly on the queue
   // (async.md §1); the stdlib entry for that is only linked when a
   // program contains one.
@@ -522,6 +523,7 @@ let prepareOne = (
   // Suspension analysis on the pristine CFG.
   let awaitBlocks = new Array<i32>();
   let resumeOf = new Array<i32>();
+  let shieldedResumes = new HashSet<i32>();
   var bi = 0;
   while (bi < presplit.blocks.length) {
     let insts = presplit.blocks[bi].insts;
@@ -529,10 +531,18 @@ let prepareOne = (
       let term = insts[insts.length - 1];
       if (presplit.op(term) == IrOp.await_) {
         awaitBlocks.push(bi);
-        resumeOf.push(presplit.successors(term)[0].target);
+        let resumeTarget = presplit.successors(term)[0].target;
+        resumeOf.push(resumeTarget);
+        if (shieldedAwaits.has(term)) {
+          shieldedResumes.add(resumeTarget);
+        }
       }
     }
     bi += 1;
+  }
+  var shieldFn: WasmFunction | null = null;
+  if (shieldedResumes.size > 0) {
+    shieldFn = stdlibFn(wasm, 'shieldedScope', name);
   }
 
   // pc assignment: resume blocks get their suspend-state value;
@@ -709,7 +719,8 @@ let prepareOne = (
       entryParamIds, currentScopeFn, scopeVt);
   let stepBody = buildStepBody(presplit, cfg, frame, futureStruct, spilled,
       pcOfBlock, dTargets, subscribeOf, hopTerms, scheduleFn, completeFn,
-      failFn, cancelFn, checkpointFn, scopeVt, resumeOf, valueVt, fatPtr,
+      failFn, cancelFn, checkpointFn, scopeVt, resumeOf, shieldedAwaits,
+      shieldedResumes, shieldFn, swapScopeFn, valueVt, fatPtr,
       vtableGlobal, wasm.exceptionTag as WasmTag,
       wasm.cancellationTag as WasmTag,
       wasm.exceptionPayload as WasmGlobal, dispatchRegions);
@@ -811,6 +822,10 @@ let buildStepBody = (
   checkpointFn: WasmFunction,
   scopeVt: ValType,
   resumeTargets: Array<i32>,
+  shieldedAwaits: HashSet<i32>,
+  shieldedResumes: HashSet<i32>,
+  shieldFn: WasmFunction | null,
+  swapFn: WasmFunction,
   valueVt: ValType | null,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal,
@@ -1254,8 +1269,11 @@ let buildStepBody = (
       }
       // Entering an await is a checkpoint: a cancelled scope raises
       // here, before the frame parks, and the unwind runs the user's
-      // finalizers on its way to the cancellation capture.
-      checkpointInto(blockId, rebuilt);
+      // finalizers on its way to the cancellation capture. Awaits
+      // inside a `shielded` region get none — the mask IS the shield.
+      if (!shieldedAwaits.has(term)) {
+        checkpointInto(blockId, rebuilt);
+      }
       // $state = the resume pc.
       let pcConst = rawInst(body, IrOp.const_i32, i32Idx, pc, -1);
       rebuilt.push(pcConst);
@@ -1365,7 +1383,28 @@ let buildStepBody = (
   for (let rt in resumeTargets) {
     let block = body.blocks[rt];
     let rebuilt = new Array<i32>();
-    checkpointInto(rt, rebuilt);
+    if (shieldedResumes.has(rt)) {
+      // Resuming inside a `shielded` region: no checkpoint, and the
+      // ambient — which the run() interposer set to the frame's scope —
+      // is re-swapped to the shield scope, so work created after the
+      // resume still binds outside every cancellation domain.
+      let sf = shieldFn as WasmFunction;
+      let scIdx = body.extra.length;
+      body.extra.push(0);
+      let sc = rawInst(body, IrOp.call, internVt(body, scopeVt), scIdx,
+          addRawRef(body, new IrRefFunc(sf)));
+      body.instBlock[sc] = rt;
+      rebuilt.push(sc);
+      let swIdx = body.extra.length;
+      body.extra.push(1);
+      body.extra.push(sc);
+      let sw = rawInst(body, IrOp.call, internVt(body, scopeVt), swIdx,
+          addRawRef(body, new IrRefFunc(swapFn)));
+      body.instBlock[sw] = rt;
+      rebuilt.push(sw);
+    } else {
+      checkpointInto(rt, rebuilt);
+    }
     for (let inst in block.insts) {
       rebuilt.push(inst);
     }

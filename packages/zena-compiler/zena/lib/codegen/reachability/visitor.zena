@@ -7,7 +7,7 @@ import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
 } from '../../types.zena';
 import {
-  Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, StringLiteral, TemplateLiteral,
+  Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
 } from '../../ast.zena';
 import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction,
@@ -1090,6 +1090,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    */
   registerAsyncNode(n: Node, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
+    if (n is ShieldedStatement) {
+      // The shield's ambient swaps are emitted by lowering (and by the
+      // split pass at resumes inside the region), with no call node
+      // for RTA to find them by.
+      this.queueStdlibFunction('zena:async', 'shieldedScope');
+      this.queueStdlibFunction('zena:async', 'swapScope');
+      return;
+    }
     if (n is AwaitExpression) {
       let awaited = model.getNodeType(n.argument);
       if (awaited != null) {

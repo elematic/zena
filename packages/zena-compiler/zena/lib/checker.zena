@@ -62,7 +62,7 @@ import {
   ThisExpression, SuperExpression, NewExpression, AsExpression, IsExpression,
   ArrayLiteral, RecordLiteral, TupleLiteral, MapLiteral,
   TemplateLiteral, TaggedTemplateExpression, MatchExpression, IfExpression,
-  ThrowExpression, TryExpression, AwaitExpression, RangeExpression, PipelineExpression,
+  ThrowExpression, TryExpression, AwaitExpression, ShieldedStatement, RangeExpression, PipelineExpression,
   PipePlaceholder,
   // Statements
   Statement, VariableDeclaration, UsingStatement, FunctionDeclaration, ExpressionStatement, BlockStatement,
@@ -7423,6 +7423,28 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     }
     case UsingStatement {pattern, typeAnnotation, init, loc}: {
       checkUsingStatement(ctx, pattern, typeAnnotation, init, loc);
+    }
+    case ShieldedStatement {body, loc}: {
+      if (ctx.asyncFutureType == null) {
+        ctx.error(
+          "'shielded' is only legal in an async function: it masks " +
+          "cancellation checkpoints, and sync code has none.",
+          DiagnosticCode.TypeMismatch, loc);
+      }
+      // The region lowers through the finalizer machinery (the
+      // ambient-scope restore is its finalizer), so it needs the
+      // exception infra, and enclosing locals its body assigns need
+      // cells across suspensions exactly as a try body's do.
+      let deps = ctx.currentDependencies();
+      if (deps != null) {
+        deps.needsExceptionInfra = true;
+      }
+      checkStatement(ctx, body);
+      if (deps != null && ctx.asyncFutureType != null) {
+        for (let symId in analyzeTryBodyAssignments(body as Node, ctx.model)) {
+          deps.tryMutatedSymbols.add(symId);
+        }
+      }
     }
     case FunctionDeclaration {name as namePat, func}: {
       // A `function` is a `let` binding of a function value that happens to

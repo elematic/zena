@@ -15,7 +15,7 @@ import {
 import { HashMap } from 'zena:map';
 import { String } from 'zena:string';
 import {
-  BindingPattern, BlockStatement, BooleanLiteral, CatchClause, Expression, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression,
+  BindingPattern, BlockStatement, BooleanLiteral, CatchClause, Expression, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression,
 } from '../../ast.zena';
 import {
   ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType,
@@ -1122,6 +1122,59 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   }
   return lowerFinallyRegion(cx, mirrored, isVoid, resultVt, lowerArmsInto,
       (fscope) => { lowerValueNode(cx, finalizer, true, null); });
+};
+
+/**
+ * `shielded { ... }` (docs/design/cancellation.md §Shields): the body
+ * runs with the ambient scope swapped to the shield scope — the
+ * uncancellable root, so async work created inside binds to a scope
+ * no cancellation reaches — and the split pass emits no checkpoint
+ * for awaits inside the extent (`FunctionLowerer.shieldDepth` marks
+ * their terminators; their resumes re-install the shield ambient).
+ * The restore is a finalizer region, so every exit — normal, early,
+ * error unwind, a raised cancellation crossing the region — puts the
+ * ambient back, and level-triggering resumes at the closing brace.
+ */
+export let lowerShieldedRegion = (cx: LoweringContext,
+    stmt: ShieldedStatement): void => {
+  let swapOpt = cx.wasm.getStdlibFunc('zena:async', 'swapScope');
+  let shieldOpt = cx.wasm.getStdlibFunc('zena:async', 'shieldedScope');
+  if (swapOpt == null || shieldOpt == null) {
+    bail(cx, 'shielded without scope infra');
+  }
+  let swapFn = swapOpt as WasmFunction;
+  let shieldFn = shieldOpt as WasmFunction;
+  if (shieldFn.signature.returns.length != 1) {
+    bail(cx, 'shieldedScope does not return a scope');
+  }
+  let scopeVt = shieldFn.signature.returns[0];
+
+  let shield = cx.b.callFunc(cx.b.addRef(new IrRefFunc(shieldFn)),
+      noValues(), scopeVt);
+  let swapArgs = new Array<i32>();
+  swapArgs.push(shield);
+  let prev = cx.b.callFunc(cx.b.addRef(new IrRefFunc(swapFn)), swapArgs,
+      scopeVt);
+
+  let mirrored = cx.assignedEnvSyms(stmt.body as Node);
+  lowerFinallyRegion(cx, mirrored, true, null,
+      (scope, resultVar, saved) => {
+        let fl = cx.host;
+        if (fl != null) {
+          fl.shieldDepth = fl.shieldDepth + 1;
+        }
+        lowerValueNode(cx, stmt.body as Node, true, null);
+        if (fl != null) {
+          fl.shieldDepth = fl.shieldDepth - 1;
+        }
+        finishProtectedArm(cx, scope, resultVar, -1);
+      },
+      (fscope) => {
+        let restoreArgs = new Array<i32>();
+        restoreArgs.push(prev);
+        let ignored = cx.b.callFunc(cx.b.addRef(new IrRefFunc(swapFn)),
+            restoreArgs, scopeVt);
+      });
 };
 
 /**
