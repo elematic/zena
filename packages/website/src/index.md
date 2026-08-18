@@ -14,6 +14,11 @@ title: Home
 <div class="hero">
   <div class="container">
     <div class="main">
+      <div class="hero-warning-banner">
+        <span class="badge danger">Warning</span>
+        <span>Zena is under active development, changing rapidly, and not ready for use.</span>
+        <a href="#project-status">See Project Status &rarr;</a>
+      </div>
       <h1 class="heading">
         <span class="name clip">Zena</span>
         <span class="text">A fast, familiar, modern language
@@ -61,7 +66,7 @@ for WebAssembly GC</span>
               <h2 class="title">Tiny, fast binaries</h2>
             </div>
             <p class="details">The combination of direct Wasm mapping and aggressive optimizations produces compact modules. Monomorphization eliminates boxing for generic code.</p>
-            <p class="details">And when speed and size are in tension, compiler options let you control the trade-offs.</p>
+            <p class="details">And when speed and size are in tension, compiler options let you control the balance.</p>
             <div class="link-text">
               <p class="link-text-value">Performance <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
@@ -105,7 +110,7 @@ for WebAssembly GC</span>
             </div>
             <p class="details">Expression-oriented control flow, pattern matching, algebraic data types, multi-value returns, pipelines, automatic resource management, and more.</p>
             <div class="link-text">
-              <p class="link-text-value">Borrowed from other languages <span class="icon-arrow-right link-text-icon"></span></p>
+              <p class="link-text-value">Inspiration <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
           </article>
         </a>
@@ -119,7 +124,7 @@ for WebAssembly GC</span>
             </div>
             <p class="details">Compiler, test runner, formatter, and language server in a single CLI, all written in Zena and running natively on Wasm.</p>
             <div class="link-text">
-              <p class="link-text-value">CLI reference <span class="icon-arrow-right link-text-icon"></span></p>
+              <p class="link-text-value">Zena CLI <span class="icon-arrow-right link-text-icon"></span></p>
             </div>
           </article>
         </a>
@@ -539,11 +544,7 @@ export let main = () => {
 
 </zena-code-group>
 
-## Try it here
-
-The compiler runs in your browser as a WebAssembly module — nothing is uploaded.
-Type-checking and diagnostics come from the self-hosted Zena language server in a
-background worker.
+## Try Zena
 
 <zena-playground>
   <script type="sample/zena" filename="main.zena">
@@ -561,34 +562,301 @@ background worker.
   </script>
 </zena-playground>
 
-There is a larger editor on the [playground page](/playground/).
+## Project Status
 
-## An experiment in AI-built software
+Zena is under active development and not ready for any real use. Large parts of the
+language and standard library are still being designed, and breaking changes
+happen frequently.
 
-Zena is implemented almost entirely by generative AI, with human oversight. It is
-a real language with real goals, and simultaneously a test of whether AI can
-build well-constructed, reliable software — not just a compiler, but the whole
-ecosystem a language needs.
+<div class="status-grid">
+  <div class="status-col">
+    <h3>Tooling</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Area</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Bootstrap compiler (TypeScript)</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Self-hosted compiler</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>ZIR backend</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Devirtualization, RTA, GVN</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Reachability & dead code removal</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Advanced optimizations</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>CLI</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Formatter</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Test runner</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Benchmark runner</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Compiler benchmarks</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Language benchmarks</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Language server</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>IDE extensions</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Online playground</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>WASI support</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Packages</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Package manager</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="status-col">
+    <h3>Language</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Functions, closures, multi-value returns</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Records &amp; tuples</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Classes, interfaces &amp; mixins</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Operator overloading</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Enums and case classes</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Union, distinct, &amp; opaque types</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Monomophized generics</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Exceptions</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Pattern matching</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>SIMD</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Generators</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Async functions</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Async cancellation</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Values types</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Ownership, borrows, &amp; resources</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Decorators &amp; macros</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>F-bounded polymorphism</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Variance annotations</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Units of measure</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Contracts &amp; pre/post-conditions</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Context parameters</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Concurrency</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Builder syntax</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="status-col">
+    <h3>Standard Library</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Module</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>String, StringReader, StringBuilder</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Arrays, Maps, Sets</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Iterables</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Math: WebAssembly intrinsics</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Math: Trigonometry, etc</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Regular expressions</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>JSON</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Async: Futures &amp; timers</td>
+          <td><span class="badge success">Complete</span></td>
+        </tr>
+        <tr>
+          <td>Streams</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>File system</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>URL</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>HTTP &amp; Fetch</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>JavaScript interop</td>
+          <td><span class="badge warning">In progress</span></td>
+        </tr>
+        <tr>
+          <td>Swift-style String revamp</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Date &amp; time</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>Signals</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+        <tr>
+          <td>DOM bindings</td>
+          <td><span class="badge info">Planned</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
 
-That shapes the design. Static types, unusually specific diagnostics, and a
-sound type system are not only good for people; they are the feedback loop an
-agent needs to make progress without guessing. See
-[Working with AI agents](/guide/ai-agents/).
+Note: "Complete" is relative to the very early stage of Zena's development. Completed items
+have been implemented in their initial forms, but still need a lot more testing, documentation,
+benchmarking, and optimization. All features change significantly based on feedback and real-world
+usage.
 
-## Where the project stands
+Zena needs feedback from real developers! If you are interested in trying it out, check out the
+[Quick Start](/guide/quick-start/), the [Playground](/playground), or the
+[GitHub repository](https://github.com/elematic/zena), and join us on the the [`#zena` channel on the WebAssembly Discord](https://discord.gg/r6gxeGkr5).
 
-| Phase                           | Status                                         |
-| ------------------------------- | ---------------------------------------------- |
-| Bootstrap compiler (TypeScript) | <span class="badge tip">Complete</span>        |
-| Self-hosted compiler            | <span class="badge tip">Complete</span>        |
-| ZIR optimizing backend          | <span class="badge warning">In progress</span> |
-| Async functions and WASI P3     | <span class="badge info">Planned</span>        |
-| In-browser playground           | <span class="badge tip">Working</span>         |
-| Package manager                 | <span class="badge info">Planned</span>        |
+## AI usage
 
-Zena is under active development and not yet ready for production use. The
-language reference describes what is implemented today; anything still being
-designed is marked as such on the page.
+Zena is implemented almost entirely by generative AI, with human guidance, oversight, and design.
+Zena is a real language with real goals, meant to be used by real humans, but also something of a
+test of how much AI can help build complex, reliable software — and not just a compiler, but the
+whole ecosystem a language needs. See [Built with AI](/development/built-with-ai/).
 
   </div>
 </div>
