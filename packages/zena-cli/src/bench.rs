@@ -24,11 +24,16 @@ pub(crate) fn run_bench(
     verbose: bool,
     debug: bool,
 ) -> Result<()> {
+    let repo_root = repo_root()?;
     let config_abs = std::fs::canonicalize(config_path)
         .with_context(|| format!("bench config not found: {config_path}"))?;
+    let config_rel = config_abs
+        .strip_prefix(&repo_root)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| config_abs.to_string_lossy().into_owned());
     let self_exe = std::env::current_exe()?;
     let guest_args = vec![
-        config_abs.to_string_lossy().into_owned(),
+        config_rel,
         out.unwrap_or("-").to_string(),
         self_exe.to_string_lossy().into_owned(),
         if debug { "1" } else { "0" }.to_string(),
@@ -89,10 +94,12 @@ fn sample_wasm(engine: &Engine, module: &Module, invoke: &str, _debug: bool) -> 
     let func = instance
         .get_func(&mut store, invoke)
         .with_context(|| format!("failed to find `{invoke}` export"))?;
+    let params_count = func.ty(&store).params().len();
+    let params = vec![Val::I32(0); params_count];
     let results_count = func.ty(&store).results().len();
     let mut results = vec![Val::I32(0); results_count];
 
     let t = std::time::Instant::now();
-    func.call(&mut store, &[], &mut results)?;
+    func.call(&mut store, &params, &mut results)?;
     Ok(t.elapsed().as_secs_f64() * 1000.0)
 }

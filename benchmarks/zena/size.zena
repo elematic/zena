@@ -1,0 +1,339 @@
+/**
+ * Cross-language Wasm Binary Size Analyzer in Zena.
+ *
+ * Measures raw wasm file size, gzip compressed size, and section breakdown
+ * (code, type, data, import, export, custom) for each compiled workload.
+ */
+
+import { getArguments, exit } from 'zena:cli';
+import { exists, readFileBytes, writeFile } from 'zena:fs';
+import { run } from 'zena:process';
+import { Array } from 'zena:growable-array';
+import { StringBuilder } from 'zena:string-builder';
+import { parseI32, i32ToString } from 'zena:string-convert';
+
+let workloads = [
+  'minimal',
+  'hello-world',
+  'array-sum',
+  'fib',
+  'sum-loop',
+  'sieve',
+];
+
+export class WasmSectionInfo {
+  id: i32;
+  name: String;
+  size: i32;
+
+  new(this.id, this.name, this.size);
+}
+
+export class WasmModuleInfo {
+  totalBytes: i32;
+  sections: Array<WasmSectionInfo>;
+  codeBytes: i32;
+  typeBytes: i32;
+  dataBytes: i32;
+  importBytes: i32;
+  exportBytes: i32;
+  customBytes: i32;
+  otherBytes: i32;
+
+  new(
+    this.totalBytes,
+    this.sections,
+    this.codeBytes,
+    this.typeBytes,
+    this.dataBytes,
+    this.importBytes,
+    this.exportBytes,
+    this.customBytes,
+    this.otherBytes,
+  );
+}
+
+let sectionIdToName = (id: i32): String => {
+  return match (id) {
+    case 0: 'custom'
+    case 1: 'type'
+    case 2: 'import'
+    case 3: 'func'
+    case 4: 'table'
+    case 5: 'memory'
+    case 6: 'global'
+    case 7: 'export'
+    case 8: 'start'
+    case 9: 'elem'
+    case 10: 'code'
+    case 11: 'data'
+    case 12: 'data-count'
+    case 13: 'tag'
+    case _: 'unknown'
+  };
+};
+
+export let parseWasmSections = (bytes: ByteArray): WasmModuleInfo => {
+  let sections = new Array<WasmSectionInfo>();
+  var codeBytes = 0;
+  var typeBytes = 0;
+  var dataBytes = 0;
+  var importBytes = 0;
+  var exportBytes = 0;
+  var customBytes = 0;
+  var otherBytes = 0;
+
+  if (bytes.length < 8) {
+    return new WasmModuleInfo(
+      bytes.length, sections, codeBytes, typeBytes, dataBytes, importBytes, exportBytes, customBytes, otherBytes);
+  }
+
+  // Magic \0asm
+  if (bytes[0] != 0 || bytes[1] != 97 || bytes[2] != 115 || bytes[3] != 109) {
+    return new WasmModuleInfo(
+      bytes.length, sections, codeBytes, typeBytes, dataBytes, importBytes, exportBytes, customBytes, otherBytes);
+  }
+
+  var pos = 8;
+  while (pos < bytes.length) {
+    let sectionId = bytes[pos] as i32;
+    pos += 1;
+
+    var size = 0;
+    var shift = 0;
+    while (pos < bytes.length) {
+      let b = bytes[pos] as i32;
+      pos += 1;
+      size = size | ((b & 0x7f) << shift);
+      shift += 7;
+      if ((b & 0x80) == 0) {
+        break;
+      }
+    }
+
+    var secName = sectionIdToName(sectionId);
+
+    if (sectionId == 0 && size > 0 && pos < bytes.length) {
+      var nameLen = 0;
+      var nameShift = 0;
+      var namePos = pos;
+      while (namePos < bytes.length && namePos < pos + size) {
+        let nb = bytes[namePos] as i32;
+        namePos += 1;
+        nameLen = nameLen | ((nb & 0x7f) << nameShift);
+        nameShift += 7;
+        if ((nb & 0x80) == 0) {
+          break;
+        }
+      }
+      if (nameLen > 0 && namePos + nameLen <= bytes.length && namePos + nameLen <= pos + size) {
+        let sb = new StringBuilder();
+        var k = 0;
+        while (k < nameLen) {
+          sb.appendByte(bytes[namePos + k] as i32);
+          k += 1;
+        }
+        secName = `custom("${sb.toString()}")`;
+      }
+    }
+
+    sections.push(new WasmSectionInfo(sectionId, secName, size));
+
+    if (sectionId == 0) {
+      customBytes += size;
+    } else if (sectionId == 1) {
+      typeBytes += size;
+    } else if (sectionId == 2) {
+      importBytes += size;
+    } else if (sectionId == 7) {
+      exportBytes += size;
+    } else if (sectionId == 10) {
+      codeBytes += size;
+    } else if (sectionId == 11) {
+      dataBytes += size;
+    } else {
+      otherBytes += size;
+    }
+
+    pos += size;
+  }
+
+  return new WasmModuleInfo(
+    bytes.length,
+    sections,
+    codeBytes,
+    typeBytes,
+    dataBytes,
+    importBytes,
+    exportBytes,
+    customBytes,
+    otherBytes,
+  );
+};
+
+class VariantMeasurement {
+  workload: String;
+  variant: String;
+  path: String;
+  rawBytes: i32;
+  gzipBytes: i32;
+  info: WasmModuleInfo;
+
+  new(this.workload, this.variant, this.path, this.rawBytes, this.gzipBytes, this.info);
+}
+
+let isWhitespaceByte = (b: i32): boolean => {
+  return b == 32 || b == 9 || b == 13 || b == 10;
+};
+
+let trim = (s: String): String => {
+  var start = 0;
+  var end = s.length;
+  while (start < end && isWhitespaceByte(s.getByteAt(start))) {
+    start += 1;
+  }
+  while (end > start && isWhitespaceByte(s.getByteAt(end - 1))) {
+    end -= 1;
+  }
+  return s.sliceBytes(start, end);
+};
+
+let getGzipSize = (path: String): i32 => {
+  let argv = new Array<String>();
+  argv.push('sh');
+  argv.push('-c');
+  argv.push(`gzip -9 -c "${path}" | wc -c`);
+  let res = run(argv);
+  if (res.exitCode != 0) {
+    return 0;
+  }
+  let s = trim(res.stdout);
+  if (let (true, v) = parseI32(s)) {
+    return v;
+  }
+  return 0;
+};
+
+let padLeft = (s: String, width: i32): String => {
+  if (s.length >= width) { return s; }
+  let sb = new StringBuilder();
+  var i = s.length;
+  while (i < width) {
+    sb.appendByte(32); // ' '
+    i += 1;
+  }
+  sb.append(s);
+  return sb.toString();
+};
+
+let padRight = (s: String, width: i32): String => {
+  if (s.length >= width) { return s; }
+  let sb = new StringBuilder();
+  sb.append(s);
+  var i = s.length;
+  while (i < width) {
+    sb.appendByte(32); // ' '
+    i += 1;
+  }
+  return sb.toString();
+};
+
+let formatDelta = (bytes: i32, baseline: i32): String => {
+  if (baseline <= 0) { return '-'; }
+  if (bytes == baseline) { return 'baseline'; }
+  let diff = bytes - baseline;
+  let pct = ((diff as f64) / (baseline as f64)) * 100.0;
+  let sign = if (diff > 0) { '+' } else { '' };
+  let pctI32 = pct as i32;
+  return `${sign}${i32ToString(pctI32)}%`;
+};
+
+export let main = (): i32 => {
+  console.log('=== WebAssembly Binary Size Analysis ===\n');
+
+  let measurements = new Array<VariantMeasurement>();
+
+  let variantNames = [
+    'zena',
+    'asc-size',
+    'asc-speed',
+    'rust-nostd',
+    'rust-std',
+    'milestone',
+  ];
+
+  for (let workload in workloads) {
+    for (let variant in variantNames) {
+      let path = `benchmarks/out/${workload}/${variant}.wasm`;
+      if (exists(path)) {
+        let bytes = readFileBytes(path);
+        let info = parseWasmSections(bytes);
+        let gzip = getGzipSize(path);
+        measurements.push(new VariantMeasurement(workload, variant, path, bytes.length, gzip, info));
+      }
+    }
+  }
+
+  if (measurements.length == 0) {
+    console.error('No compiled .wasm files found in benchmarks/out/. Run build first!');
+    return 1;
+  }
+
+  let md = new StringBuilder();
+  md.append('# Wasm Binary Size Comparison\n\n');
+  md.append('| Workload | Variant | Raw (Bytes) | Gzip (Bytes) | Code | Type | Data | Custom | vs Zena |\n');
+  md.append('|---|---|---:|---:|---:|---:|---:|---:|---:|\n');
+
+  // Print tables per workload
+  for (let workload in workloads) {
+    console.log(`## Workload: ${workload}`);
+    console.log(
+      padRight('Variant', 14) + ' | ' +
+      padLeft('Raw (B)', 9) + ' | ' +
+      padLeft('Gzip (B)', 9) + ' | ' +
+      padLeft('Code', 7) + ' | ' +
+      padLeft('Type', 7) + ' | ' +
+      padLeft('Data', 7) + ' | ' +
+      padLeft('Custom', 7) + ' | ' +
+      padLeft('vs Zena', 9)
+    );
+    console.log('--------------------------------------------------------------------------------------');
+
+    var zenaBaseline = 0;
+    for (let m in measurements) {
+      if (m.workload == workload && m.variant == 'zena') {
+        zenaBaseline = m.rawBytes;
+        break;
+      }
+    }
+
+    for (let m in measurements) {
+      if (m.workload == workload) {
+        let delta = formatDelta(m.rawBytes, zenaBaseline);
+        console.log(
+          padRight(m.variant, 14) + ' | ' +
+          padLeft(i32ToString(m.rawBytes), 9) + ' | ' +
+          padLeft(i32ToString(m.gzipBytes), 9) + ' | ' +
+          padLeft(i32ToString(m.info.codeBytes), 7) + ' | ' +
+          padLeft(i32ToString(m.info.typeBytes), 7) + ' | ' +
+          padLeft(i32ToString(m.info.dataBytes), 7) + ' | ' +
+          padLeft(i32ToString(m.info.customBytes), 7) + ' | ' +
+          padLeft(delta, 9)
+        );
+
+        md.append(
+          `| ${workload} | ${m.variant} | ${i32ToString(m.rawBytes)} | ${i32ToString(m.gzipBytes)} | ` +
+          `${i32ToString(m.info.codeBytes)} | ${i32ToString(m.info.typeBytes)} | ${i32ToString(m.info.dataBytes)} | ` +
+          `${i32ToString(m.info.customBytes)} | ${delta} |\n`
+        );
+      }
+    }
+    console.log('\n');
+  }
+
+  let reportPath = 'benchmarks/out/size-report.md';
+  writeFile(reportPath, md.toString());
+  console.log(`Markdown report written to ${reportPath}`);
+
+  return 0;
+};

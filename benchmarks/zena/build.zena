@@ -1,0 +1,213 @@
+/**
+ * Cross-language Wasm Benchmark Builder in Zena.
+ *
+ * Discovers workloads in `benchmarks/workloads/` and compiles them across
+ * Zena, AssemblyScript, and Rust into `benchmarks/out/<workload>/<variant>.wasm`.
+ */
+
+import { getArguments, exit } from 'zena:cli';
+import { exists, mkdir } from 'zena:fs';
+import { run } from 'zena:process';
+import { Array } from 'zena:growable-array';
+
+let workloads = [
+  'minimal',
+  'hello-world',
+  'array-sum',
+  'fib',
+  'sum-loop',
+  'sieve',
+];
+
+let ensureDir = (path: String): void => {
+  if (!exists(path)) {
+    mkdir(path);
+  }
+};
+
+let execCommand = (cmd: Array<String>, desc: String): boolean => {
+  let res = run(cmd);
+  if (res.exitCode != 0) {
+    console.error(`❌ [FAILED] ${desc}`);
+    if (res.stderr.length > 0) {
+      console.error(res.stderr);
+    }
+    if (res.stdout.length > 0) {
+      console.error(res.stdout);
+    }
+    return false;
+  }
+  console.log(`  ✓ ${desc}`);
+  return true;
+};
+
+let buildZena = (workload: String): boolean => {
+  let src = `benchmarks/workloads/${workload}/main.zena`;
+  let out = `benchmarks/out/${workload}/zena.wasm`;
+  if (!exists(src)) {
+    return true;
+  }
+  let argv = new Array<String>();
+  argv.push('./target/release/zena-cli');
+  argv.push('build');
+  argv.push(src);
+  argv.push('-o');
+  argv.push(out);
+  return execCommand(argv, `${workload}: Zena -> ${out}`);
+};
+
+let buildAscSize = (workload: String): boolean => {
+  let src = `benchmarks/workloads/${workload}/main.as.ts`;
+  let out = `benchmarks/out/${workload}/asc-size.wasm`;
+  if (!exists(src)) {
+    return true;
+  }
+  let argv = new Array<String>();
+  argv.push('./node_modules/.bin/asc');
+  argv.push(src);
+  argv.push('-o');
+  argv.push(out);
+  argv.push('-O3z');
+  argv.push('--runtime');
+  argv.push('stub');
+  argv.push('--converge');
+  return execCommand(argv, `${workload}: AssemblyScript (size) -> ${out}`);
+};
+
+let buildAscSpeed = (workload: String): boolean => {
+  let src = `benchmarks/workloads/${workload}/main.as.ts`;
+  let out = `benchmarks/out/${workload}/asc-speed.wasm`;
+  if (!exists(src)) {
+    return true;
+  }
+  let argv = new Array<String>();
+  argv.push('./node_modules/.bin/asc');
+  argv.push(src);
+  argv.push('-o');
+  argv.push(out);
+  argv.push('-O3');
+  argv.push('--runtime');
+  argv.push('incremental');
+  return execCommand(argv, `${workload}: AssemblyScript (speed) -> ${out}`);
+};
+
+let buildRustNostd = (workload: String): boolean => {
+  var src = `benchmarks/workloads/${workload}/main_nostd.rs`;
+  if (!exists(src)) {
+    src = `benchmarks/workloads/${workload}/main.rs`;
+  }
+  let out = `benchmarks/out/${workload}/rust-nostd.wasm`;
+  if (!exists(src)) {
+    return true;
+  }
+  let argv = new Array<String>();
+  argv.push('rustc');
+  argv.push('--target');
+  argv.push('wasm32-unknown-unknown');
+  argv.push('--crate-type');
+  argv.push('cdylib');
+  argv.push('-C');
+  argv.push('opt-level=z');
+  argv.push('-C');
+  argv.push('lto=fat');
+  argv.push('-C');
+  argv.push('panic=abort');
+  argv.push('-C');
+  argv.push('codegen-units=1');
+  argv.push('-C');
+  argv.push('strip=symbols');
+  argv.push(src);
+  argv.push('-o');
+  argv.push(out);
+  return execCommand(argv, `${workload}: Rust (nostd) -> ${out}`);
+};
+
+let buildRustStd = (workload: String): boolean => {
+  var src = `benchmarks/workloads/${workload}/main_std.rs`;
+  if (!exists(src)) {
+    src = `benchmarks/workloads/${workload}/main.rs`;
+  }
+  let out = `benchmarks/out/${workload}/rust-std.wasm`;
+  if (!exists(src)) {
+    return true;
+  }
+  let argv = new Array<String>();
+  argv.push('rustc');
+  argv.push('--target');
+  argv.push('wasm32-unknown-unknown');
+  argv.push('--crate-type');
+  argv.push('cdylib');
+  argv.push('-C');
+  argv.push('opt-level=z');
+  argv.push('-C');
+  argv.push('lto=fat');
+  argv.push('-C');
+  argv.push('panic=abort');
+  argv.push('-C');
+  argv.push('codegen-units=1');
+  argv.push('-C');
+  argv.push('strip=symbols');
+  argv.push(src);
+  argv.push('-o');
+  argv.push(out);
+  return execCommand(argv, `${workload}: Rust (std) -> ${out}`);
+};
+
+let buildWatMilestone = (workload: String): boolean => {
+  let src = `benchmarks/workloads/${workload}/milestones/${workload}.wat`;
+  let out = `benchmarks/out/${workload}/milestone.wasm`;
+  if (!exists(src)) {
+    return true;
+  }
+  let argv = new Array<String>();
+  argv.push('wasm-tools');
+  argv.push('parse');
+  argv.push(src);
+  argv.push('-o');
+  argv.push(out);
+  return execCommand(argv, `${workload}: WAT milestone -> ${out}`);
+};
+
+export let main = (): i32 => {
+  console.log('=== Building Cross-Language Wasm Benchmarks ===\n');
+
+  ensureDir('benchmarks/out');
+
+  let args = getArguments();
+  let targetWorkloads = new Array<String>();
+  if (args.length > 1) {
+    var i = 1;
+    while (i < args.length) {
+      targetWorkloads.push(args[i]);
+      i += 1;
+    }
+  } else {
+    for (let w in workloads) {
+      targetWorkloads.push(w);
+    }
+  }
+
+  var failures = 0;
+
+  for (let workload in targetWorkloads) {
+    console.log(`Building workload [${workload}]...`);
+    ensureDir(`benchmarks/out/${workload}`);
+
+    if (!buildZena(workload)) { failures += 1; }
+    if (!buildAscSize(workload)) { failures += 1; }
+    if (!buildAscSpeed(workload)) { failures += 1; }
+    if (!buildRustNostd(workload)) { failures += 1; }
+    if (!buildRustStd(workload)) { failures += 1; }
+    if (!buildWatMilestone(workload)) { failures += 1; }
+
+    console.log('');
+  }
+
+  if (failures > 0) {
+    console.error(`\nBuild completed with ${failures} failure(s).`);
+    return 1;
+  }
+
+  console.log('All benchmark binaries built successfully into benchmarks/out/!');
+  return 0;
+};

@@ -1,44 +1,77 @@
-# Language benchmarks
+# Cross-Language Wasm Benchmarks (Size & Speed)
 
-Tachometer-style benchmarks for Zena-generated code, run with
-`zena-cli bench` (see `docs/design/benchmarking.md` for the design).
+This suite benchmarks **Binary Size** and **Execution Speed** across WebAssembly-compiled languages.
+
+Languages supported in Phase 1:
+
+- **Zena** (WASM-GC)
+- **AssemblyScript** (`asc-size` with `--runtime stub -O3z`, `asc-speed` with `--runtime incremental -O3`)
+- **Rust** (`rust-nostd` with `#![no_std]` size-optimized, `rust-std` with standard library)
+- **Frozen WAT Milestones** (hand-written core-wasm baseline)
+- **Node.js / V8** (JIT baseline with self-reported timing)
+
+Future languages planned: JavaScript, Python, Dart, Swift, Go, Kotlin, and Zig.
+
+---
+
+## Running Benchmarks
+
+All benchmark orchestration tools are written in **Zena** and executed via `zena-cli`.
+
+### Quick Commands
 
 ```sh
-# from the repo root, after `npm run build` and a zena-cli build:
-./target/release/zena-cli bench benchmarks/fib.json
+# Build all workload variants and run size analysis
+npm run bench
+
+# Build all workload variants across Zena, AssemblyScript, and Rust
+npm run bench:build
+
+# Run binary size analysis and generate comparison table
+npm run bench:size
+
+# Run speed benchmarks (Tachometer-style statistical sampling)
+npm run bench:speed
+
+# Target a specific workload
+./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/run.zena fib
 ```
 
-Each workload is a triple that computes the same thing:
+---
 
-- `<name>.zena` — the Zena implementation, compiled by the current
-  compiler at run time. This is the thing being measured.
-- `milestones/<name>.wat` — a hand-written core-wasm reference,
-  **frozen forever**. Never regenerate, reformat, or "optimize" a
-  milestone: its entire value is that it is identical across years and
-  machines, so results from different eras can both be expressed
-  relative to it ("zena is within 3% of milestone" survives a hardware
-  change; "zena took 1.38ms" does not).
-- `<name>-node.js` — a Node/V8 baseline. It self-reports its inner
-  measurement (last stdout line, in ms) so Node startup is excluded;
-  each sample is still one fresh process.
+## Workloads
 
-Results land in `<suite>.results.json` (gitignored — they are
-per-machine artifacts). The report only claims one variant is faster
-than another when the 95% confidence interval of the difference of
-means excludes zero; "unsure" is an honest and common answer on a
-loaded machine, and the runner auto-extends sampling until conclusions
-resolve or the time budget runs out.
+| Workload          | Exercises                            | Description                                     |
+| ----------------- | ------------------------------------ | ----------------------------------------------- |
+| **`minimal`**     | Runtime & prelude baseline           | Smallest valid module returning integer `42`.   |
+| **`hello-world`** | String literals & host boundary      | Program returning string `"Hello World"`.       |
+| **`array-sum`**   | Collections & iteration              | Fixed array literal `[1, 2, 3]` summed in loop. |
+| **`fib`**         | Function calls & recursion           | Recursive `fib(27)`.                            |
+| **`sum-loop`**    | Branching & integer arithmetic       | Iterative loop accumulation up to 5,000,000.    |
+| **`sieve`**       | Memory / array allocation & indexing | Sieve of Eratosthenes up to 300,000.            |
 
-Workloads:
+---
 
-| suite      | exercises                                                                                                                           |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `fib`      | call overhead, recursion, scalar arithmetic                                                                                         |
-| `sum-loop` | loop/branch codegen, integer ops, no calls                                                                                          |
-| `sieve`    | allocation + indexed array reads/writes (GC array in Zena, linear memory in the milestone — a frozen reference, not a codegen twin) |
+## Workload Directory Structure
 
-When adding a workload: keep all three variants semantically identical,
-make the Zena and WAT versions return the same small exit code so a
-mismatch is visible, and size the work so one invocation lands in
-roughly the 1–20ms range — big enough for stable samples, small enough
-that auto-sampling can afford hundreds of them.
+Each workload lives under `benchmarks/workloads/<name>/`:
+
+```
+benchmarks/workloads/minimal/
+├── main.zena          # Zena implementation
+├── main.as.ts         # AssemblyScript implementation
+├── main_nostd.rs      # Rust no_std implementation
+├── main_std.rs        # Rust standard library implementation
+└── bench.json         # Speed benchmark configuration for zena-cli bench
+```
+
+---
+
+## Speed Benchmarking Methodology
+
+Speed benchmarks use `zena-cli bench` (powered by `zena:bench`):
+
+- **Tachometer-style round-robin sampling**: Variants are sampled in rotation to eliminate bias from CPU throttling and background noise.
+- **Fresh instantiation**: Each `.wasm` sample is freshly instantiated and timed host-side (`Instant`), excluding compilation and module load time.
+- **Distributions & Welch's t-difference of means**: 95% confidence intervals and hypothesis testing determine whether differences are statistically significant or "unsure".
+- **Result Output**: Outputs detailed comparison and writes `<workload>.results.json`.

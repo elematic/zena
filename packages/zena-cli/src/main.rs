@@ -1063,10 +1063,12 @@ fn run_internal_tool(
 
     let mut args = vec![src_repo_rel.to_string()];
     args.extend_from_slice(guest_args);
+    let repo_root = repo_root()?;
     let wasi = WasiCtxBuilder::new()
         .inherit_stdio()
         .inherit_env()
         .args(&args)
+        .preopened_dir(&repo_root, ".", DirPerms::all(), FilePerms::all())?
         .preopened_dir("/", "/", DirPerms::all(), FilePerms::all())?
         .build_p1();
     let mut store = Store::new(&engine, MyState { wasi });

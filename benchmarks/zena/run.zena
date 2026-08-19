@@ -1,0 +1,126 @@
+/**
+ * Unified Cross-Language Benchmark Runner in Zena.
+ *
+ * Usage:
+ *   run [--build] [--size] [--speed] [workload-name]
+ */
+
+import { getArguments, exit } from 'zena:cli';
+import { exists } from 'zena:fs';
+import { run } from 'zena:process';
+import { Array } from 'zena:growable-array';
+
+let allWorkloads = [
+  'minimal',
+  'hello-world',
+  'array-sum',
+  'fib',
+  'sum-loop',
+  'sieve',
+];
+
+export let main = (): i32 => {
+  let args = getArguments();
+
+  var doBuild = false;
+  var doSize = false;
+  var doSpeed = false;
+  let selectedWorkloads = new Array<String>();
+
+  var i = 1;
+  while (i < args.length) {
+    let arg = args[i];
+    if (arg == '--build') {
+      doBuild = true;
+    } else if (arg == '--size') {
+      doSize = true;
+    } else if (arg == '--speed') {
+      doSpeed = true;
+    } else if (arg == '--all') {
+      doBuild = true;
+      doSize = true;
+      doSpeed = true;
+    } else if (!arg.startsWith('--')) {
+      selectedWorkloads.push(arg);
+    }
+    i += 1;
+  }
+
+  // If no specific mode chosen, default to build + size
+  if (!doBuild && !doSize && !doSpeed) {
+    doBuild = true;
+    doSize = true;
+  }
+
+  let workloads = new Array<String>();
+  if (selectedWorkloads.length > 0) {
+    for (let w in selectedWorkloads) {
+      workloads.push(w);
+    }
+  } else {
+    for (let w in allWorkloads) {
+      workloads.push(w);
+    }
+  }
+
+  if (doBuild) {
+    console.log('>>> [1/3] Compiling benchmark binaries...\n');
+    let buildArgs = new Array<String>();
+    buildArgs.push('./target/release/zena-cli');
+    buildArgs.push('run');
+    buildArgs.push('--allow-spawn');
+    buildArgs.push('--dir');
+    buildArgs.push('.::.');
+    buildArgs.push('benchmarks/zena/build.zena');
+    for (let w in workloads) {
+      buildArgs.push(w);
+    }
+    let res = run(buildArgs);
+    if (res.exitCode != 0) {
+      console.error(res.stderr);
+      console.error('Build step failed!');
+      return res.exitCode;
+    }
+    console.log(res.stdout);
+  }
+
+  if (doSize) {
+    console.log('>>> [2/3] Analyzing binary sizes...\n');
+    let sizeArgs = new Array<String>();
+    sizeArgs.push('./target/release/zena-cli');
+    sizeArgs.push('run');
+    sizeArgs.push('--allow-spawn');
+    sizeArgs.push('--dir');
+    sizeArgs.push('.::.');
+    sizeArgs.push('benchmarks/zena/size.zena');
+    let res = run(sizeArgs);
+    if (res.exitCode != 0) {
+      console.error(res.stderr);
+      console.error('Size analysis failed!');
+      return res.exitCode;
+    }
+    console.log(res.stdout);
+  }
+
+  if (doSpeed) {
+    console.log('>>> [3/3] Running speed benchmarks (zena-cli bench)...\n');
+    for (let workload in workloads) {
+      let configPath = `benchmarks/workloads/${workload}/bench.json`;
+      if (exists(configPath)) {
+        console.log(`\n--- Benchmark Suite: ${workload} ---`);
+        let benchArgs = new Array<String>();
+        benchArgs.push('./target/release/zena-cli');
+        benchArgs.push('bench');
+        benchArgs.push(configPath);
+        let res = run(benchArgs);
+        if (res.exitCode != 0) {
+          console.error(res.stderr);
+        } else {
+          console.log(res.stdout);
+        }
+      }
+    }
+  }
+
+  return 0;
+};

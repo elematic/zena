@@ -1,0 +1,157 @@
+/**
+ * WebAssembly binary section parser in Zena.
+ *
+ * Reads a compiled .wasm module's raw bytes and extracts section breakdown
+ * (code, type, data, import, export, custom, etc.).
+ */
+
+import { ByteArray } from 'zena:byte-array';
+import { Array } from 'zena:growable-array';
+import { StringBuilder } from 'zena:string-builder';
+
+export class WasmSectionInfo {
+  id: i32;
+  name: String;
+  size: i32;
+
+  new(this.id, this.name, this.size);
+}
+
+export class WasmModuleInfo {
+  totalBytes: i32;
+  sections: Array<WasmSectionInfo>;
+  codeBytes: i32;
+  typeBytes: i32;
+  dataBytes: i32;
+  importBytes: i32;
+  exportBytes: i32;
+  customBytes: i32;
+  otherBytes: i32;
+
+  new(
+    this.totalBytes,
+    this.sections,
+    this.codeBytes,
+    this.typeBytes,
+    this.dataBytes,
+    this.importBytes,
+    this.exportBytes,
+    this.customBytes,
+    this.otherBytes,
+  );
+}
+
+let sectionIdToName = (id: i32): String => {
+  return match (id) {
+    case 0: 'custom'
+    case 1: 'type'
+    case 2: 'import'
+    case 3: 'func'
+    case 4: 'table'
+    case 5: 'memory'
+    case 6: 'global'
+    case 7: 'export'
+    case 8: 'start'
+    case 9: 'elem'
+    case 10: 'code'
+    case 11: 'data'
+    case 12: 'data-count'
+    case 13: 'tag'
+    case _: 'unknown'
+  };
+};
+
+export let parseWasmSections = (bytes: ByteArray): WasmModuleInfo => {
+  let sections = new Array<WasmSectionInfo>();
+  var codeBytes = 0;
+  var typeBytes = 0;
+  var dataBytes = 0;
+  var importBytes = 0;
+  var exportBytes = 0;
+  var customBytes = 0;
+  var otherBytes = 0;
+
+  // Minimum valid wasm: 4-byte magic + 4-byte version = 8 bytes
+  if (bytes.length < 8) {
+    return new WasmModuleInfo(
+      bytes.length, sections, codeBytes, typeBytes, dataBytes, importBytes, exportBytes, customBytes, otherBytes);
+  }
+
+  // Verify magic \0asm (0x00, 0x61, 0x73, 0x6d)
+  if (bytes[0] != 0 || bytes[1] != 97 || bytes[2] != 115 || bytes[3] != 109) {
+    return new WasmModuleInfo(
+      bytes.length, sections, codeBytes, typeBytes, dataBytes, importBytes, exportBytes, customBytes, otherBytes);
+  }
+
+  var pos = 8;
+  while (pos < bytes.length) {
+    let sectionId = bytes[pos];
+    pos += 1;
+
+    // Decode uleb128 section size
+    var size = 0;
+    var shift = 0;
+    while (pos < bytes.length) {
+      let b = bytes[pos];
+      pos += 1;
+      size = size | ((b & 0x7f) << shift);
+      shift += 7;
+      if ((b & 0x80) == 0) {
+        break;
+      }
+    }
+
+    var secName = sectionIdToName(sectionId);
+
+    // If custom section, inspect the name string inside the custom section
+    if (sectionId == 0 && size > 0 && pos < bytes.length) {
+      var nameLen = 0;
+      var nameShift = 0;
+      var namePos = pos;
+      while (namePos < bytes.length && namePos < pos + size) {
+        let nb = bytes[namePos];
+        namePos += 1;
+        nameLen = nameLen | ((nb & 0x7f) << nameShift);
+        nameShift += 7;
+        if ((nb & 0x80) == 0) {
+          break;
+        }
+      }
+      if (nameLen > 0 && namePos + nameLen <= bytes.length && namePos + nameLen <= pos + size) {
+        let sb = new StringBuilder();
+        var k = 0;
+        while (k < nameLen) {
+          sb.appendByte(bytes[namePos + k]);
+          k += 1;
+        }
+        secName = `custom("${sb.toString()}")`;
+      }
+    }
+
+    sections.push(new WasmSectionInfo(sectionId, secName, size));
+
+    match (sectionId) {
+      case 0: customBytes += size;
+      case 1: typeBytes += size;
+      case 2: importBytes += size;
+      case 7: exportBytes += size;
+      case 10: codeBytes += size;
+      case 11: dataBytes += size;
+      case _: otherBytes += size;
+    };
+
+    pos += size;
+  }
+
+  return new WasmModuleInfo(
+    bytes.length,
+    sections,
+    codeBytes,
+    typeBytes,
+    dataBytes,
+    importBytes,
+    exportBytes,
+    customBytes,
+    otherBytes,
+  );
+};
