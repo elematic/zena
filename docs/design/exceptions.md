@@ -186,7 +186,7 @@ using region`).
 
 1. **Tag with payload parameter**: `(tag (param eqref))` — Rejected due to catch target block arity issues.
 
-2. **Multiple tags per exception type**: One tag per class. Would require knowing all exception types at compile time and complex pattern matching. Rejected in favor of single tag + runtime type checking. (The cancellation tag is not this: it is a second *channel* with different catchability, not a per-type discriminator.)
+2. **Multiple tags per exception type**: One tag per class. Would require knowing all exception types at compile time and complex pattern matching. Rejected in favor of single tag + runtime type checking. (The cancellation tag is not this: it is a second _channel_ with different catchability, not a per-type discriminator.)
 
 3. **Using `exnref` with `catch_ref`**: Could enable rethrowing with full context. May revisit when more widely supported.
 

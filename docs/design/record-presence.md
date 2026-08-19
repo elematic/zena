@@ -172,13 +172,14 @@ members statically with no shape dispatch; TypeScript's `in` narrowing
 is the lone structural-dispatch precedent, and TS is structural
 everywhere — and it keeps Zena's own nominal/structural line
 (records-and-tuples.md §8.4): shape dispatch on classes would make
-`{z}` mean runtime presence on records but a runtime *type* test on
+`{z}` mean runtime presence on records but a runtime _type_ test on
 classes, and on open hierarchies its truth set would be a whole-program
 CHA fact rather than a property of the scrutinee's type. "Any variant
 with a `z`" dispatch belongs to the nominal side (an interface, or a
 future row existential). Irrefutable destructuring of class instances
 (`let {x, y} = point`) remains legal: statically resolved field
 access, no dispatch — the C# property-pattern shape.
+
 - Exhaustiveness over presence follows the composite rules
   (pattern-exhaustiveness-composite.md): `case {timeout}` and
   `case {}` cover an optional field.

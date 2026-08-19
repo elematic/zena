@@ -215,20 +215,22 @@ for (const fixture of FIXTURES) {
     // preopen, and zena-cli relativizes only the source file.
     buildArgs.push(
       '--wit',
-      join('packages', 'zena-compiler', 'test-files', 'component', fixture.wit[0]),
+      join(
+        'packages',
+        'zena-compiler',
+        'test-files',
+        'component',
+        fixture.wit[0],
+      ),
     );
     buildArgs.push('--world', fixture.wit[1]);
   }
   try {
-    execFileSync(
-      zenaCli,
-      buildArgs,
-      {
-        stdio: 'pipe',
-        cwd: repoRoot,
-        env,
-      },
-    );
+    execFileSync(zenaCli, buildArgs, {
+      stdio: 'pipe',
+      cwd: repoRoot,
+      env,
+    });
   } catch (e) {
     const err = e as {stdout?: Buffer; stderr?: Buffer};
     fail(

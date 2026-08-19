@@ -100,7 +100,7 @@ AST in the class's own module (no cross-module inlining):
 - **`$B.<init>` — a superclass's value phase.** Signature
   `(args...) -> (ownFieldValues..., evaluatedSuperArgs...)`: the
   class's field defaults and initializer list, in its own-struct field
-  order, plus the arguments it evaluates for *its* super constructor.
+  order, plus the arguments it evaluates for _its_ super constructor.
   Returning the super args is what lets the factory continue the chain
   and later hand `$A.<ctorBody>` the same values — each level's
   constructor arguments are evaluated exactly once. Minted only for
@@ -132,7 +132,7 @@ the allocation moves from before everything to after all value
 phases, and allocation itself has no observable effects.
 
 Synthesized default constructors change order to match the documented
-semantics: today they call super *first* and store their own defaults
+semantics: today they call super _first_ and store their own defaults
 after, which contradicts the language reference's "subclass fields are
 initialized before the superclass constructor runs". Under the
 factory, default-constructor classes evaluate their own defaults

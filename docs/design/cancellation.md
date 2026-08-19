@@ -236,7 +236,7 @@ the concern that shaped the web's controller/signal split, answered
 here structurally. Nothing on `Future` cancels. `Future.race` over
 already-started futures therefore keeps its current semantics: losers
 are ignored, not cancelled, because race does not own them. The
-loser-cancelling form is a scope API over computations race *does*
+loser-cancelling form is a scope API over computations race _does_
 own — spawn the candidates in a child scope, cancel the scope when
 the first settles. That form arrives with the structured half of
 `TaskGroup`.
@@ -341,7 +341,7 @@ An `AsyncComputed` in the
 [signal-utils](https://github.com/proposal-signals/signal-utils#asynccomputed)
 shape then needs no machinery of its own: each run of the async
 computation executes in a fresh child scope, and a dependency change
-cancels that scope and starts the next run. Supersession *is*
+cancels that scope and starts the next run. Supersession _is_
 cancellation — the stale run dies at its next checkpoint
 (level-triggered, so however it is shaped), its cleanup runs, and it
 completes as cancelled rather than as an error, which is exactly the
@@ -383,7 +383,7 @@ labor rather than a translation layer:
 - **Across the component boundary**, propagation is the cleanup this
   design already guarantees: stream ends and other WIT handles are
   resources released by `using`/ownership, those regions run on the
-  cancellation unwind, and dropping the handle *is* the Component
+  cancellation unwind, and dropping the handle _is_ the Component
   Model's cancel signal to the peer. The unwind's cleanup is the wire
   protocol; no separate signaling path exists to keep consistent.
 - **In the runtime glue**, a cancelled scope with an in-flight async

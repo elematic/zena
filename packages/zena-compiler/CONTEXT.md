@@ -26,8 +26,7 @@ Code generation separates semantic discovery from lowering and emission
 - **`wasm-emitter.zena`**: `WasmEmitter` interface. The required hooks for
   generating Wasm modules and instructions.
 - **`../simd.zena`** (outside `codegen/`): the fixed-width SIMD instruction
-  table — opcode, operand shape, result type and natural alignment for all
-  236. Both the `@intrinsic` name validator and the ZIR lowering router read
+  table — opcode, operand shape, result type and natural alignment for all 236. Both the `@intrinsic` name validator and the ZIR lowering router read
   it, so a name that type-checks is a name that lowers. Rows were read back
   out of an assembled module rather than transcribed; see
   `docs/design/simd.md`.

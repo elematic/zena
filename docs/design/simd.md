@@ -48,11 +48,11 @@ neither is boxing in the wasm sense.
 mechanical transliterations of the wasm names, so the specification reads
 as documentation for the module:
 
-| wasm                   | Zena                   |
-| ---------------------- | ---------------------- |
-| `i32x4.add`            | `i32x4Add`             |
-| `v128.load8x8_s`       | `v128Load8x8S`         |
-| `i8x16.extract_lane_u` | `i8x16ExtractLaneU`    |
+| wasm                      | Zena                   |
+| ------------------------- | ---------------------- |
+| `i32x4.add`               | `i32x4Add`             |
+| `v128.load8x8_s`          | `v128Load8x8S`         |
+| `i8x16.extract_lane_u`    | `i8x16ExtractLaneU`    |
 | `f64x2.promote_low_f32x4` | `f64x2PromoteLowF32x4` |
 
 The rule: split on `.` and `_`, keep the first segment, capitalize the
@@ -71,7 +71,7 @@ allocation.
 
 ### Immediates
 
-Some instructions encode an operand *in the instruction* rather than
+Some instructions encode an operand _in the instruction_ rather than
 reading it off the stack. Those arguments must be literals:
 
 - the lane index of `extract_lane`, `replace_lane`, and the `_lane`
@@ -232,17 +232,17 @@ disassembly of the result.
 
 ZIR has eleven SIMD ops, one per operand shape, not 236:
 
-| op                                     | operands            | immediates          |
-| -------------------------------------- | ------------------- | ------------------- |
-| `simd_unary`                           | 1                   | opcode              |
-| `simd_binary`                          | 2                   | opcode              |
-| `simd_ternary`                         | 3                   | opcode              |
-| `simd_extract_lane`                    | 1                   | opcode, lane        |
-| `simd_replace_lane`                    | 2                   | opcode, lane        |
-| `simd_const`                           | 0                   | opcode, 16 bytes    |
-| `simd_shuffle`                         | 2                   | opcode, 16 selectors |
-| `simd_load` / `simd_store`             | 1 / 2               | opcode, alignment   |
-| `simd_load_lane` / `simd_store_lane`   | 2                   | opcode, alignment, lane |
+| op                                   | operands | immediates              |
+| ------------------------------------ | -------- | ----------------------- |
+| `simd_unary`                         | 1        | opcode                  |
+| `simd_binary`                        | 2        | opcode                  |
+| `simd_ternary`                       | 3        | opcode                  |
+| `simd_extract_lane`                  | 1        | opcode, lane            |
+| `simd_replace_lane`                  | 2        | opcode, lane            |
+| `simd_const`                         | 0        | opcode, 16 bytes        |
+| `simd_shuffle`                       | 2        | opcode, 16 selectors    |
+| `simd_load` / `simd_store`           | 1 / 2    | opcode, alignment       |
+| `simd_load_lane` / `simd_store_lane` | 2        | opcode, alignment, lane |
 
 The wasm opcode rides as an immediate, so the instruction stays a number
 from lowering to emission. Enum cases for all 236 would have tripled

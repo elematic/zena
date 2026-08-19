@@ -154,7 +154,7 @@ w.close();                   // end-of-stream: reads complete with 0
 
 The stream carries no error channel, matching WIT. Whatever produced
 the stream exposes how it ended as an ordinary future beside it — the
-`wasi:http` trailers shape generalized. The iteration layer *can*
+`wasi:http` trailers shape generalized. The iteration layer _can_
 fail, because `next()` returns a future and futures fail: an
 `async gen` body's throw ends its stream and fails its outcome
 future, and the `for`-in desugaring awaits both, so the throw
@@ -182,7 +182,7 @@ attributed to per-element promise and result-object allocation).
 `async gen` bodies (generators.md §8) produce through the same
 machinery from the other side: `yield` writes, with the generator's
 laziness preserved — the body runs when read, which is also what the
-rendezvous wants. The eager-start rule is async *functions'*; an
+rendezvous wants. The eager-start rule is async _functions'_; an
 async generator starts at first read, matching `gen`.
 
 ## The WIT boundary

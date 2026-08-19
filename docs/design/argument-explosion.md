@@ -19,7 +19,7 @@ fetch({url: u, retries: 5});   // no record is ever allocated
 [records-and-tuples.md](records-and-tuples.md) §4.2.1 sketched this;
 [record-presence.md](record-presence.md) §7 defined how presence masks
 ride exploded signatures. This document is the implementation design.
-Multi-value *returns* (records-and-tuples.md §4.2's other half) are out
+Multi-value _returns_ (records-and-tuples.md §4.2's other half) are out
 of scope here.
 
 ## Semantics
@@ -28,7 +28,7 @@ V0 (records-and-tuples.md §3.1) made record and tuple identity
 unobservable — `===`/`!==` on them is a compile error — so dissolving
 the argument record is a semantics-preserving rewrite everywhere, not
 an optimization guarded by escape analysis. What escape analysis still
-decides is *where the rewrite is profitable and simple*: a callee that
+decides is _where the rewrite is profitable and simple_: a callee that
 stores the record somewhere would need it re-boxed inside, which moves
 the allocation instead of removing it. Such parameters stay boxed.
 
@@ -43,7 +43,7 @@ Explosion must preserve:
   representation the boxed layout uses.
 - **Width adaptation.** A call site holding a wider record than the
   parameter type reads just the fields the signature wants. This
-  *replaces* fat-pointer adaptation at exploded edges — the callee
+  _replaces_ fat-pointer adaptation at exploded edges — the callee
   never sees a view, only values.
 
 ## Costs
@@ -53,11 +53,11 @@ cap, no call-site heuristic. The cost table justifies that. For a
 record with N fields (every record field read today is a two-`call_ref`
 getter dispatch; there is no direct `struct.get` path for records):
 
-| per call, argument is a…  | boxed signature                        | exploded signature                    |
-| ------------------------- | -------------------------------------- | ------------------------------------- |
-| record literal            | `struct.new` + `iface_pack` + field evals | field evals only                   |
-| already-boxed value       | one reference                          | one call (the boxed forwarder, below) |
-| callee, per field **use** | getter dispatch (2 `call_ref`s)        | `local.get`                           |
+| per call, argument is a…  | boxed signature                           | exploded signature                    |
+| ------------------------- | ----------------------------------------- | ------------------------------------- |
+| record literal            | `struct.new` + `iface_pack` + field evals | field evals only                      |
+| already-boxed value       | one reference                             | one call (the boxed forwarder, below) |
+| callee, per field **use** | getter dispatch (2 `call_ref`s)           | `local.get`                           |
 
 For literal arguments explosion deletes the allocation and, inside the
 callee, replaces every field use's double indirection with a local
@@ -126,7 +126,7 @@ reference is one of:
 
 - the receiver of a field read (`opts.timeout`), including under `??`;
 - the source of a record destructuring or record pattern (`let {a, b =
-  d} = opts`, `if (let {t} = opts)`, `match (opts)` with record arms —
+d} = opts`, `if (let {t} = opts)`, `match (opts)` with record arms —
   presence and absence patterns included);
 
 and rejects anything else: passed whole to another call, stored in a
@@ -165,9 +165,9 @@ byte parity gates any nondeterminism here.
 
 ### Callee lowering
 
-`#bindParams` currently maps source parameter *i* to one signature
+`#bindParams` currently maps source parameter _i_ to one signature
 slot; with a spec present it maps an exploding parameter to its slot
-*range*. The parameter's symbol binds not to a value but to an
+_range_. The parameter's symbol binds not to a value but to an
 exploded-record binding in the lowering context: field name → param
 value, plus mask param values. Then:
 
@@ -262,7 +262,7 @@ the kind of illegible cost model this project avoids.
 
 **A hint to enable explosion.** Automatic-where-legal needs no
 opt-in. The useful explicit form is the opposite polarity — a
-*guarantee*, below.
+_guarantee_, below.
 
 ### The `inline` parameter guarantee
 

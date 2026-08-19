@@ -129,6 +129,7 @@ as f64`).
   classes](#operators-on-extension-classes) over `v128` and are erased, so
   they cost nothing beyond the instructions they issue. See
   [simd.md](design/simd.md).
+
 - **`String`**: UTF-8 string.
 - **`anyref`**: The top type for all reference types. It can hold any object,
   array, String, function, or `null`. It cannot hold unboxed primitives (`i32`,
@@ -1715,6 +1716,7 @@ let result = (1 + 2) * 3;
 records and tuples are values with no observable identity (the
 compiler is free to copy or dissolve them), so `==` is their equality
 and `== null` their null test.
+
 - `<` (Less Than) - Signed comparison for `i32`, unsigned for `u32`.
 - `<=` (Less Than or Equal) - Signed comparison for `i32`, unsigned for `u32`.
 - `>` (Greater Than) - Signed comparison for `i32`, unsigned for `u32`.
@@ -3469,11 +3471,11 @@ Absence is observable and consumed through patterns:
 
 - Destructuring an optional field requires a default
   (`let {timeout = 30_000} = opts`) in irrefutable positions.
-- Naming it *without* a default in an `if (let ...)` or `match`
+- Naming it _without_ a default in an `if (let ...)` or `match`
   pattern is a presence test — the branch is taken only when the
   field is present, and the binding holds its value.
 - Prefixing it with `!` is the absence test: `if (let {!timeout} =
-  opts)` and `case {a, !b}:` match only when the field is absent, and
+opts)` and `case {a, !b}:` match only when the field is absent, and
   bind nothing. `!` requires an optional field (it is vacuous on a
   required one, and class fields have no presence — match
   `field: null` there instead). Absence patterns make presence
@@ -3494,7 +3496,7 @@ compile error. Presence is tracked per field, so an explicit
 `{timeout: 0}` is present — `0` never triggers a default — and spread
 propagates presence (`{...partial, retries: 2}` keeps `timeout`
 present or absent as it was in `partial`). For a field that is always
-present but whose *value* may be missing, use `Option<T>` from
+present but whose _value_ may be missing, use `Option<T>` from
 `zena:option`.
 
 #### Shorthand Syntax

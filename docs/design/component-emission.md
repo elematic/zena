@@ -1231,7 +1231,7 @@ resolved by the shared callback), and a synthesized WIT module renders
 an async function as the raw async-lowered declaration plus a wrapper
 over `awaitPacked`, so what the program imports is an ordinary
 function returning `Future<void>`. The
-next slices are strings and lists on imports, then async *results*
+next slices are strings and lists on imports, then async _results_
 (the subtask-read machinery, C6-adjacent).
 
 ### C6 — p3 streams and futures. Ahead of C4, after the interop async slice.
@@ -1253,8 +1253,8 @@ machinery lives in `zena:component-stream` — the guest side of the
 canonical stream protocol, and the module the `Stream<T>` binding
 extends next — so the console holds only its two imports and the kept
 ends. The write is async-lowered (the synchronous form is the
-extension — wasmtime gates it as 🚝) and a BLOCKED write waits *in
-place* on `component-stream`'s own waitable set via the blocking
+extension — wasmtime gates it as 🚝) and a BLOCKED write waits _in
+place_ on `component-stream`'s own waitable set via the blocking
 `waitable-set.wait` builtin — separate from the event loop's set, so
 printing needs no event loop, a sync `main` still prints, and a
 blocking wait can never swallow an event the loop is owed. The outcome

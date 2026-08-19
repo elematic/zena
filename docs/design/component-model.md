@@ -22,16 +22,16 @@
 
 ## What exists today
 
-| Piece                                   | State                                                                                                                                                   |
-| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| WIT lexer / parser / resolver           | ✅ Done — [wit-parser.md](./wit-parser.md), 211/211 wasm-tools UI tests                                                                                 |
-| WIT → component type sections           | ✅ Done — the component encoder round-trips through `wasm-tools component wit` and drives every imported interface                                      |
-| Parser in the compiler's build          | ✅ Done — injected as `ImportTypeEncoder`, kept out of the language service's graph                                                                     |
-| Component emission                      | ✅ Done — C0–C3 of [component-emission.md](./component-emission.md): components print, `--wit`/`--world` declare a world the program is checked against |
-| Stage 0a–0d prerequisites               | ✅ Done — `Result`, narrow ints with `Array<u8>`/`FixedArray<u8>`, `ByteArrayType` retired, `Disposable` + `resource class` (Track O)                   |
-| Canonical flattening metadata           | ✅ Done for counts and memory-need (`funcFlatMeta`); full type flattening is stage 2's                                                                  |
+| Piece                                   | State                                                                                                                                                                                       |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WIT lexer / parser / resolver           | ✅ Done — [wit-parser.md](./wit-parser.md), 211/211 wasm-tools UI tests                                                                                                                     |
+| WIT → component type sections           | ✅ Done — the component encoder round-trips through `wasm-tools component wit` and drives every imported interface                                                                          |
+| Parser in the compiler's build          | ✅ Done — injected as `ImportTypeEncoder`, kept out of the language service's graph                                                                                                         |
+| Component emission                      | ✅ Done — C0–C3 of [component-emission.md](./component-emission.md): components print, `--wit`/`--world` declare a world the program is checked against                                     |
+| Stage 0a–0d prerequisites               | ✅ Done — `Result`, narrow ints with `Array<u8>`/`FixedArray<u8>`, `ByteArrayType` retired, `Disposable` + `resource class` (Track O)                                                       |
+| Canonical flattening metadata           | ✅ Done for counts and memory-need (`funcFlatMeta`); full type flattening is stage 2's                                                                                                      |
 | WIT-typed modules (stage 1)             | 🚧 First slices landed — flat-scalar functions, sync and `async`-without-result (imported as functions returning `Future<void>`, over `zena:component-async`); strings/lists/resources next |
-| Canonical ABI lift/lower for rich types | ❌ Hand-written per function so far (`zena:console`'s component entry); stage 2 makes the compiler synthesize it                                        |
+| Canonical ABI lift/lower for rich types | ❌ Hand-written per function so far (`zena:console`'s component entry); stage 2 makes the compiler synthesize it                                                                            |
 
 So: everything _around_ interop has landed, several pieces earlier than
 this document expected, and the remaining work is exactly stages 1–2.
