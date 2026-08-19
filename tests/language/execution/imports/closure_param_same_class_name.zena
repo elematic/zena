@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 17
+
+// Two modules each export a NON-generic class named `Payload`. A generic
+// class's struct is named for its full specialization key, but a
+// non-generic one is named for the class alone, so both `Payload` structs
+// carry the name "Payload". Closure structs are interned by a key built
+// from their parameter valtypes; when that key spelled a struct by name,
+// `(x: A.Payload) => i32` and `(x: B.Payload) => i32` collided and the
+// second specialization of `apply` was handed the first one's struct.
+
+import { Payload as PayloadA } from './closure_param_same_class_name_a.zena';
+import { Payload as PayloadB } from './closure_param_same_class_name_b.zena';
+
+class Holder<T> {
+  item: T;
+  new(this.item);
+  apply(f: (x: T) => i32): i32 {
+    return f(this.item);
+  }
+}
+
+export let main = (): i32 => {
+  let a = new Holder<PayloadA>(new PayloadA(10));
+  let b = new Holder<PayloadB>(new PayloadB(7));
+  return a.apply((p) => p.value) + b.apply((p) => p.label);
+};

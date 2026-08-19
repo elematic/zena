@@ -1066,7 +1066,15 @@ let getWasmTypeKey = (target: WasmType): String => {
   if (target is WasmStruct) {
     let {name} = target;
     if (name != null) {
-      return name;
+      // The uid, not the name alone. A specialized class's struct is
+      // named for its full class key, but a non-generic class's struct
+      // is named for the class alone, so two same-named classes from
+      // different modules produce two structs both called (say)
+      // "Payload". These keys intern closure and cell structs, so the
+      // bare name handed `(x: A.Payload) => i32` the struct built for
+      // `(x: B.Payload) => i32`. uid is the identity WasmType hashes
+      // on everywhere else.
+      return (name as String) + "#" + i32ToString(target.uid);
     }
     var structKey = "struct_anon_";
     for (let f in target.fields) {
