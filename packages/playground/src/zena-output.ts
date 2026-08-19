@@ -21,7 +21,7 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       min-width: 280px;
       min-height: 120px;
       height: 100%;
-      background: var(--rad-color-surface-sunken, #090d16);
+      background: var(--rad-surface-sunken);
       font-family: var(
         --rad-font-family-mono,
         'JetBrains Mono',
@@ -31,18 +31,16 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       );
       font-size: 0.85rem;
       border-radius: var(--rad-border-radius-medium, 8px);
-      border: 1px solid
-        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.08));
+      border: 1px solid var(--rad-neutral-stroke-faint);
       overflow: hidden;
-      color: var(--rad-neutral-text-normal, #f8fafc);
+      color: var(--rad-neutral-text-normal);
     }
 
     .output-header {
       grid-row: 1;
       padding: 0 12px;
-      background: var(--rad-surface-panel, #0f172a);
-      border-bottom: 1px solid
-        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.08));
+      background: var(--rad-surface-chrome);
+      border-bottom: 1px solid var(--rad-neutral-stroke-faint);
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -67,7 +65,7 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      color: var(--rad-neutral-text-muted, #64748b);
+      color: var(--rad-neutral-text-muted);
     }
 
     .diag-badge {

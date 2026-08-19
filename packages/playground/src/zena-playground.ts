@@ -47,15 +47,11 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
         Roboto,
         sans-serif
       );
-      background: var(--rad-surface-base, #0f172a);
-      color: var(--rad-neutral-text-normal, #f8fafc);
+      background: var(--rad-surface);
+      color: var(--rad-neutral-text-normal);
       border-radius: var(--rad-border-radius-large, 12px);
       overflow: hidden;
-      box-shadow:
-        0 20px 25px -5px rgba(0, 0, 0, 0.5),
-        0 8px 10px -6px rgba(0, 0, 0, 0.4);
-      border: 1px solid
-        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.1));
+      border: 1px solid var(--rad-neutral-stroke-faint);
     }
 
     zena-project {
@@ -68,9 +64,8 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       min-width: 0;
       min-height: 0;
       height: 100%;
-      background: #1e293b;
-      border-right: 1px solid
-        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.08));
+      background: var(--rad-surface-sunken);
+      border-right: 1px solid var(--rad-neutral-stroke-faint);
       overflow: hidden;
     }
 

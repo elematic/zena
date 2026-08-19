@@ -55,11 +55,11 @@ export class ZenaLocalOutline extends BehaviorElement {
     if (open) {
       const navHeight = parseInt(
         getComputedStyle(document.documentElement).getPropertyValue(
-          '--vp-nav-height',
+          '--zena-nav-height',
         ),
       );
       const vh = window.innerHeight + Math.min(window.scrollY - navHeight, 0);
-      this.style.setProperty('--vp-vh', `${vh}px`);
+      this.style.setProperty('--zena-vh', `${vh}px`);
     }
   }
 }

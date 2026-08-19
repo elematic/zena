@@ -25,9 +25,8 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
   static override styles = css`
     :host {
       display: block;
-      background: var(--rad-surface-panel, #0f172a);
-      border-bottom: 1px solid
-        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.08));
+      background: var(--rad-surface-chrome);
+      border-bottom: 1px solid var(--rad-neutral-stroke-faint);
       box-sizing: border-box;
     }
 
@@ -48,7 +47,7 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
       min-width: 0;
       height: 40px;
       --track-color: transparent;
-      --indicator-color: var(--rad-primary-fill-solid, #38bdf8);
+      --indicator-color: var(--zena-c-brand-1, var(--rad-primary-fill-solid));
       --track-width: 2px;
     }
 
@@ -67,7 +66,7 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
       justify-content: center;
       font-size: 13px;
       font-weight: 500;
-      color: var(--rad-neutral-text-muted, #94a3b8);
+      color: var(--rad-neutral-text-muted);
       border-radius: 0;
       transition:
         color 0.15s ease,
@@ -75,11 +74,11 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
     }
 
     rad-tab:hover:not([disabled]) {
-      color: var(--rad-neutral-text-normal, #f1f5f9);
+      color: var(--rad-neutral-text-normal);
     }
 
     rad-tab[active] {
-      color: var(--rad-primary-fill-solid, #38bdf8);
+      color: var(--zena-c-brand-1, var(--rad-primary-fill-solid));
     }
 
     rad-tab-group::part(body),

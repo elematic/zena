@@ -847,10 +847,6 @@ have been implemented in their initial forms, but still need a lot more testing,
 benchmarking, and optimization. All features change significantly based on feedback and real-world
 usage.
 
-Zena needs feedback from real developers! If you are interested in trying it out, check out the
-[Quick Start](/guide/quick-start/), the [Playground](/playground), or the
-[GitHub repository](https://github.com/elematic/zena), and join us on the the [`#zena` channel on the WebAssembly Discord](https://discord.gg/r6gxeGkr5).
-
 ## AI usage
 
 Zena is implemented almost entirely by generative AI, with human guidance, oversight, and design.

@@ -22,7 +22,7 @@ export class ZenaConsole extends PlaygroundConnectedElement {
       min-width: 280px;
       min-height: 0;
       height: 100%;
-      background: var(--rad-color-surface-sunken, #090d16);
+      background: var(--rad-surface-sunken);
       font-family: var(
         --rad-font-family-mono,
         'JetBrains Mono',
@@ -32,7 +32,7 @@ export class ZenaConsole extends PlaygroundConnectedElement {
       );
       font-size: 0.85rem;
       overflow: hidden;
-      color: var(--rad-neutral-text-normal, #f8fafc);
+      color: var(--rad-neutral-text-normal);
     }
 
     .console-header {
@@ -42,9 +42,8 @@ export class ZenaConsole extends PlaygroundConnectedElement {
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      color: var(--rad-neutral-text-muted, #64748b);
-      border-bottom: 1px solid
-        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.06));
+      color: var(--rad-neutral-text-muted);
+      border-bottom: 1px solid var(--rad-neutral-stroke-faint);
       display: flex;
       justify-content: space-between;
       align-items: center;
