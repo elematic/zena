@@ -168,6 +168,7 @@ and (4) and it compiles and runs. The first await is _not_ required —
   set is non-empty and the second tier never runs. (Reporting the error
   twice is a separate symptom of the same double-check — the argument is
   typed once for selection and again against the winner.)
+
 - **Fix sketch**: the first tier should not report while it is deciding.
   Either type literal arguments context-free there and let the tiers pick,
   or thread a non-reporting mode through `checkIntegerLiteral` for the
@@ -697,31 +698,19 @@ member expression itself is a tracked narrowing subject.
   `Expected error ... but found none there`, which is the signal to
   delete the second directive — not a regression.
 
-### Six type checks the semantics tests expected and the checker does not make
+### A type check the semantics tests expect and the checker does not make
 
 - **Found**: 2026-08-08, tightening the semantics runner's `@error`
-  matching. Each of these had a directive that had been passing against
-  an unrelated error in the same file.
-- **Severity**: medium — they are real holes in the type system, and
-  they were being reported as covered.
-- **Missing**:
-  - `p1 != "hello"` where `p1` is a class instance is accepted, while
-    `p1 == 1` is rejected — `!=` is not checked the way `==` is
-    (`classes/operators/operator-eq.zena`).
-  - `42 == null` and `null != true` are accepted
-    (`operators/equality-type-check.zena`). Comparing a non-nullable
-    operand against `null` looks like the null-check idiom and skips the
-    incompatibility check.
-  - `arr["string"]` and `arr["key"] = 42` do not check the key against
-    the declared index-operator parameter type
-    (`classes/operators/operator-index.zena`, `operator-index-set.zena`).
-  - `Box<Box<i32>>` is not rejected for a function returning a
-    deduplicated generic union
-    (`generics/union-dedup-generic.zena`).
-- **Tracking**: each site carries a `// @missing-error:` directive,
-  which asserts the error is still _absent_. Implementing any of these
-  fails its test with a message saying to promote the directive to
-  `@error:`, so the marker retires itself.
+  matching. The directive had been passing against an unrelated error
+  in the same file.
+- **Severity**: medium — a real hole in the type system, and it was
+  being reported as covered.
+- **Missing**: `Box<Box<i32>>` is not rejected for a function returning
+  a deduplicated generic union (`generics/union-dedup-generic.zena`).
+- **Tracking**: the site carries a `// @missing-error:` directive,
+  which asserts the error is still _absent_. Implementing it fails its
+  test with a message saying to promote the directive to `@error:`, so
+  the marker retires itself.
 
 ### Default parameters are not applied to forward-referenced callees
 
@@ -1639,10 +1628,9 @@ found, returning false`, so the reachability pass is probably
   the value is checked against the [] return type (so a []= overload
   whose value parameter is not assignable-compatible with the read
   type is unreachable), and a PURE write whose index only matches a
-  []= overload (not any [] read) is a type error under the bootstrap
-  ("Type mismatch in index") while the self-hosted checker silently
-  falls back to the primary [] signature — a divergence. Writes
-  should be typed by []= selection (member-lookup.md §5.1): for
+  []= overload (not any [] read) is rejected rather than selecting
+  that []= — the read finds no applicable overload and reports.
+  Writes should be typed by []= selection (member-lookup.md §5.1): for
   non-compound index assignments, select the []= overload over
   (index, value) directly and use its value parameter as the
   assignment's expected/result type; compound assignments legitimately

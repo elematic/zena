@@ -1,0 +1,95 @@
+// @mode: check
+// A class that declares `operator ==` decides what it may be compared
+// with: an operand that operator accepts settles `==` and `!=`. That
+// WIDENS what is comparable — an operator taking an interface accepts
+// every implementation of it, well past what the fallback rule allows.
+//
+// The fallback, for a class with no `operator ==` or an operand its
+// operator does not take, is reference equality, and that needs the two
+// types to be RELATED: one assignable to the other. Two unrelated
+// classes name disjoint sets of objects, so the answer is statically
+// false.
+
+class Point {
+  x: i32;
+  new(this.x);
+
+  operator ==(other: Point): boolean {
+    return this.x == other.x;
+  }
+}
+
+class Point3 extends Point {
+  z: i32;
+  new(x: i32, this.z) : super(x);
+}
+
+class Unrelated {}
+
+let p = new Point(1);
+let q = new Point(2);
+let sub = new Point3(1, 2);
+let maybe: Point | null = null;
+let other = new Unrelated();
+
+// The declared parameter type, and anything assignable to it.
+let a = p == q;
+let b = p != q;
+let c = p == sub;
+
+// Null is subtracted from the operand: `p == maybe` is a legitimate
+// comparison that happens to be false when the right side is null.
+let d = p == maybe;
+let e = p != maybe;
+
+// Not the parameter type, and not related either.
+let f = p != "hello"; // @error: Type mismatch
+let g = p == other; // @error: Type mismatch
+
+// Reference equality needs relatedness, so a class with no
+// `operator ==` gets the same answer.
+let h = other == p; // @error: cannot apply operator
+
+// `===` is identity and does not route through `operator ==`, but it
+// is subject to the same relatedness rule.
+let i = p === q;
+let j = p === other; // @error: cannot apply operator
+
+// An operand the operator does not accept falls through to relatedness
+// rather than being rejected outright. A generic case class needs that:
+// its synthesized `operator ==` carries the raw template as its
+// parameter, and `Pair<i32, i32>` is not assignable to `Pair`.
+class Pair<A, B>(first: A, second: B)
+
+let k = new Pair(1, 2) == new Pair(1, 2);
+
+// An `operator ==` declared over an INTERFACE accepts every
+// implementation, including classes unrelated to the receiver and to
+// each other. This is the widening: relatedness alone would reject
+// every one of these.
+interface Tagged {
+  tag(): i32;
+}
+
+class Coin implements Tagged {
+  tag(): i32 { return 1; }
+
+  operator ==(other: Tagged): boolean {
+    return this.tag() == other.tag();
+  }
+}
+
+class Stamp implements Tagged {
+  tag(): i32 { return 2; }
+}
+
+let coin = new Coin();
+let stamp = new Stamp();
+let tagged: Tagged = stamp;
+
+let l = coin == stamp;
+let m = coin != tagged;
+
+// The receiver's operator is what decides, so the reverse direction is
+// still reference equality — and Stamp is not related to Coin.
+let n = stamp == coin; // @error: cannot apply operator

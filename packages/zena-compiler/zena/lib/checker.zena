@@ -46,6 +46,7 @@
 
 import { isValidIntrinsic } from './intrinsics.zena';
 import { OrderedMap } from 'zena:ordered-map';
+import { StringBuilder } from 'zena:string-builder';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import {
   FlowNode, FlowStart, FlowAssign, FlowMove, FlowNarrowings, FlowJoin,
@@ -14437,6 +14438,27 @@ let checkIndexExpression = (
 };
 
 /**
+ * The index types an `operator []` accepts, for a diagnostic: the
+ * first parameter of every candidate, joined with " or ".
+ */
+let describeIndexParameters = (
+  candidates: Array<FunctionType>,
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null
+): String => {
+  let described = new StringBuilder();
+  var first = true;
+  for (let candidate in candidates) {
+    let resolved = substituteTypeParams(typeParams, typeArgs, candidate) as FunctionType;
+    if (resolved.parameters.length == 0) { continue; }
+    if (!first) { described.append(" or "); }
+    described.append(`'${typeToString(resolved.parameters[0])}'`);
+    first = false;
+  }
+  return described.toString();
+};
+
+/**
  * Resolve the result type of an index operation.
  */
 let resolveIndexType = (
@@ -14562,6 +14584,18 @@ let resolveIndexType = (
         let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
         if (selIdx >= 0) {
           selectedMethod = applicableRaw[selIdx];
+        } else if (!(indexType is ErrorType)) {
+          // No overload accepts this index. Falling back to the
+          // first-declared signature would type the expression off a
+          // method the call can never reach, so say so instead.
+          ctx.error(
+            `Type mismatch: '${ct.name}' cannot be indexed by \
+'${typeToString(indexType)}'; 'operator []' expects \
+${describeIndexParameters(candidates, ct.typeParameters, ct.typeArguments)}.`,
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+          return new ErrorType();
         }
         if (node != null && candidates.length > 1) {
           // Record the subtype-sensitive selection for codegen.
@@ -14602,6 +14636,15 @@ let resolveIndexType = (
         let selIdx = selectMostSpecificIndex(ctx, applicableRes, 1, loc);
         if (selIdx >= 0) {
           selectedMethod = applicableRaw[selIdx];
+        } else if (!(indexType is ErrorType)) {
+          ctx.error(
+            `Type mismatch: '${it.name}' cannot be indexed by \
+'${typeToString(indexType)}'; 'operator []' expects \
+${describeIndexParameters(candidates, it.typeParameters, it.typeArguments)}.`,
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+          return new ErrorType();
         }
         if (node != null && candidates.length > 1) {
           ctx.model.setResolvedOverload(node, selectedMethod);
@@ -14845,18 +14888,94 @@ let checkBinaryExpression = (
         return new BooleanType();
       }
     }
+    // Comparing against `null` is the null test, and a value primitive
+    // has no null to find: `42 == null` is not a cautious check, it is
+    // a mistake, and it had been passing because a `null` operand
+    // skipped the comparison rule entirely.
+    //
+    // A REFERENCE operand is left alone even when its static type says
+    // non-null. The narrowing that produces that claim is known to
+    // outlive the fact that established it (BUGS.md, "Narrowing
+    // survives an assignment that invalidates it"), so a redundant
+    // null check on a reference is defensive code against a hole the
+    // compiler still has — not something to reject. It also fires on
+    // ~40 sites across the compiler and stdlib, which is a warning's
+    // worth of churn, not an error's.
+    if (leftType is NullType || rightType is NullType) {
+      let other = if (leftType is NullType) { rightType } else { leftType };
+      if (isValuePrimitive(baseType(other))) {
+        ctx.error(
+          `Type mismatch: cannot apply operator '${operator}' to \
+'${typeToString(leftType)}' and '${typeToString(rightType)}'.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+      return new BooleanType();
+    }
+
+    // A class that declares `operator ==` says what it may be compared
+    // with, so an operand that operator accepts settles `==`/`!=` —
+    // overloads and all, by the same most-specific selection `[]` uses.
+    // `===`/`!==` are identity and never route through it.
+    //
+    // This WIDENS what is comparable, it does not narrow it: an
+    // operator taking an interface makes every implementation of that
+    // interface a valid operand, well past what relatedness allows. An
+    // operand the operator does not accept falls through to the
+    // relatedness rule rather than being rejected here, because a
+    // generic case class's synthesized `==` carries the raw template as
+    // its parameter — `Pair<i32, i32>` is not assignable to `Pair` —
+    // and reference equality is a perfectly good answer for it.
+    //
+    // Null is already gone from both sides above, and is subtracted
+    // from the operand because `p == maybeP` is a legitimate comparison
+    // that happens to be false when the right side is null.
+    let receiver = baseType(subtractNullFromType(leftType));
+    if ((operator == "==" || operator == "!=") &&
+        receiver is ClassType && receiver.members.has("==")) {
+      let baseMethod = receiver.members["=="].type as FunctionType;
+      let candidates = new Array<FunctionType>();
+      candidates.push(baseMethod);
+      let {overloads} = baseMethod;
+      if (overloads != null) {
+        for (let ov in overloads as Array<FunctionType>) {
+          candidates.push(ov);
+        }
+      }
+      let operandTypes = new Array<Type>();
+      operandTypes.push(subtractNullFromType(rightType));
+      let operands = new Array<Expression>();
+      operands.push(right);
+      let applicableRaw = new Array<FunctionType>();
+      let applicableRes = new Array<FunctionType>();
+      collectApplicableOperatorOverloads(
+          ctx, candidates, receiver.typeParameters, receiver.typeArguments,
+          operandTypes, operands, 1, applicableRaw, applicableRes);
+      if (applicableRaw.length > 0) {
+        return new BooleanType();
+      }
+    }
+
     // Validate that types are comparable:
     // - Both boolean: always allowed
     // - Both numeric: always allowed
-    // - Both class or interface: always allowed (reference equality)
+    // - Both interface: always allowed. A value typed as one interface
+    //   may dynamically be a class implementing the other as well, so
+    //   the comparison can genuinely be true.
     // - Otherwise: at least one direction must be assignable
+    //
+    // Two CLASS types used to be allowed unconditionally, on the
+    // grounds that reference equality always makes sense. It does not:
+    // two unrelated classes name disjoint sets of objects, so the
+    // answer is statically false. That blanket is what let
+    // `p1 != "hello"` through — String is a class — for every class
+    // without an `operator ==` to catch it above.
     let typesMatch = (leftType is BooleanType && rightType is BooleanType) ||
       (leftType is BoolLiteralType && (rightType is BooleanType || rightType is BoolLiteralType)) ||
       (rightType is BoolLiteralType && (leftType is BooleanType || leftType is BoolLiteralType)) ||
       (isNumericType(leftType) && isNumericType(rightType)) ||
-      (leftType is ClassType && rightType is ClassType) ||
       (leftType is InterfaceType && rightType is InterfaceType) ||
-      leftType is NullType || rightType is NullType ||
       leftType is ErrorType || rightType is ErrorType ||
       isAssignableTo(ctx, leftType, rightType) ||
       isAssignableTo(ctx, rightType, leftType);

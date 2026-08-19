@@ -1,0 +1,39 @@
+// @mode: check
+// An index whose type no `operator []` overload accepts is an error.
+// It used to fall back to the first-declared signature, which typed
+// the expression off a method the call could never reach.
+
+class Table {
+  operator [](key: String): i32 {
+    throw new Error("stub");
+  }
+
+  operator [](key: i32): i32 {
+    throw new Error("stub");
+  }
+}
+
+class ByIndex {
+  operator [](i: i32): String {
+    throw new Error("stub");
+  }
+}
+
+let t = new Table();
+let s = new ByIndex();
+
+// Either declared key type selects.
+let a: i32 = t["name"];
+let b: i32 = t[0];
+
+// A key no overload accepts.
+let c = t[1.5]; // @error: cannot be indexed by
+
+// With one overload, the diagnostic names the single expected type.
+let d: String = s[0];
+let e = s["nope"]; // @error: cannot be indexed by
+
+// A write is typed by its READ half (BUGS.md, "Index assignment
+// typing is driven by the [] READ selection"), so closing the read
+// hole rejects the same key on the write side too — pinned in
+// operator-index-set.zena.
