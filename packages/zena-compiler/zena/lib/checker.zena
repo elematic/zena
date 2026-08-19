@@ -13274,27 +13274,25 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             thisType.members["set#" + accName] = si;
           }
         } else {
-          let fdInfo = new FieldInfo(
-            accType,
-            false, // isMutable
-            false, // isAbstract
-            acc.isStatic,
-            isPrivate,
-            false // hasInitializer
-          );
-          mixinType.members[accName] = fdInfo;
-          thisType.members[accName] = fdInfo;
+          // Public accessors register get#/set# too, like class
+          // accessors and like the private ones above. A bare-name
+          // entry does not describe an accessor: a FieldInfo mints a
+          // phantom struct field at application, and a getter
+          // MethodInfo reads as '() => T' at the use site instead of
+          // T. The setter had no entry at all.
           if (acc.getter != null) {
             let getterFt = new FunctionType(new Array<Type>(), null, accType);
-            let mi = new MethodInfo(
-              getterFt,
-              false, // isAbstract
-              acc.isStatic,
-              isPrivate,
-              acc.isFinal
-            );
-            mixinType.members[accName] = mi;
-            thisType.members[accName] = mi;
+            let gi = new MethodInfo(getterFt, false, acc.isStatic, isPrivate, acc.isFinal);
+            mixinType.members["get#" + accName] = gi;
+            thisType.members["get#" + accName] = gi;
+          }
+          if (acc.setter != null) {
+            let setterParams = new Array<Type>();
+            setterParams.push(accType);
+            let setterFt = new FunctionType(setterParams, null, new VoidType());
+            let si = new MethodInfo(setterFt, false, acc.isStatic, isPrivate, acc.isFinal);
+            mixinType.members["set#" + accName] = si;
+            thisType.members["set#" + accName] = si;
           }
         }
       }

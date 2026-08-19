@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 47
+
+// A mixin's public accessor is an accessor on the host, not a member
+// holding a function: `t.label` reads as i32, and `t.tally = n` runs the
+// setter. Both halves register under get#/set#, the way a class accessor
+// and a mixin's own private accessor do.
+
+mixin Meta {
+  var #tally: i32 = 0;
+  label: i32 {
+    get { return 4; }
+  }
+  tally: i32 {
+    get { return this.#tally; }
+    set (v) { this.#tally = v; }
+  }
+}
+
+class Tagged with Meta {
+  new();
+}
+
+export let main = (): i32 => {
+  let t = new Tagged();
+  t.tally = 7;
+  return t.label * 10 + t.tally;
+};

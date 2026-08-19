@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 45
+
+// The method case in class_overrides_mixin_method, for accessors: a class
+// accessor shadowing a mixin's registers under the same get# name, and the
+// mixin's private scope must not follow onto the class's getter body.
+// `hiddenLabel` is not overridden, so it keeps the mixin's scope and still
+// reaches the mixin's own `#hidden`.
+
+mixin Meta {
+  var #hidden: i32 = 5;
+  label: i32 {
+    get { return 1; }
+  }
+  hiddenLabel: i32 {
+    get { return this.#hidden; }
+  }
+}
+
+class Tagged with Meta {
+  var #own: i32;
+  new(own: i32) : #own = own;
+  label: i32 {
+    get { return this.#own; }
+  }
+}
+
+export let main = (): i32 => {
+  let t = new Tagged(4);
+  return t.label * 10 + t.hiddenLabel;
+};

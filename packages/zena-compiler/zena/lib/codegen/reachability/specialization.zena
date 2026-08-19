@@ -35,6 +35,28 @@ final class ErasedFieldBake {
 }
 
 /**
+ * Records a mixin's private scope on the function that holds `node`'s body.
+ *
+ * A mixin member and a class member can share a name; the class's wins, the
+ * way an override does. Both still register under that one name, and
+ * `registerClassMethod` hands the second caller the function the first one
+ * created. Writing the mixin's scope onto it unconditionally would make the
+ * class's own body resolve its `#` names in the mixin's namespace, where
+ * lowering cannot find them.
+ */
+export let applyMixinPrivateScope = (
+    fn: WasmFunction, node: Node | null, scope: String | null): void => {
+  if (scope == null) {
+    return;
+  }
+  let key = scope as String;
+  if (key == "" || fn.node !== node) {
+    return;
+  }
+  fn.privateScopeKey = key;
+};
+
+/**
  * Specializer handles the monomorphization of generic classes and functions,
  * generating runtime specialized structures, vtables, and method wrappers.
  */
@@ -613,7 +635,7 @@ export final class Specializer implements SpecializerInterface {
           regName = msScope + "::" + methName;
         }
         let regFn = this.registerClassMethod(ct, classDecl, regName, ms as Node, false, false, null, sourceModel);
-        if (msScope != "") { regFn.privateScopeKey = msScope; }
+        applyMixinPrivateScope(regFn, ms as Node, msScope);
       } else if (ms is AccessorDeclaration) {
         let accName = match (ms.name) {
           case Identifier {name}: name
@@ -631,7 +653,7 @@ export final class Specializer implements SpecializerInterface {
             getterRegName = msScope + "::" + getterRegName;
           }
           let regG = this.registerClassMethod(ct, classDecl, getterRegName, ms as Node, false, false, null, sourceModel);
-          if (msScope != "") { regG.privateScopeKey = msScope; }
+          applyMixinPrivateScope(regG, ms as Node, msScope);
         }
         let {setter} = ms;
         if (setter != null) {
@@ -640,7 +662,7 @@ export final class Specializer implements SpecializerInterface {
             setterRegName = msScope + "::" + setterRegName;
           }
           let regS = this.registerClassMethod(ct, classDecl, setterRegName, setter, false, false, null, sourceModel);
-          if (msScope != "") { regS.privateScopeKey = msScope; }
+          applyMixinPrivateScope(regS, setter, msScope);
         }
       } else if (ms is FieldDefinition) {
         let fieldName = match (ms.name) {
@@ -1503,7 +1525,7 @@ export final class Specializer implements SpecializerInterface {
               regName = msScope + "::" + methName;
             }
             let regFn = this.registerClassMethod(ct, cdDecl, regName, ms, false, false, null, sourceModel);
-            if (msScope != "") { regFn.privateScopeKey = msScope; }
+            applyMixinPrivateScope(regFn, ms, msScope);
           }
         } else if (ms is AccessorDeclaration) {
           if (ms.isStatic) { continue; }
@@ -1531,7 +1553,7 @@ export final class Specializer implements SpecializerInterface {
                 getterName = msScope + "::" + getterName;
               }
               let regG = this.registerClassMethod(ct, cdDecl, getterName, ms as Node, false, false, null, sourceModel);
-              if (msScope != "") { regG.privateScopeKey = msScope; }
+              applyMixinPrivateScope(regG, ms as Node, msScope);
             }
             let {setter} = ms;
             if (setter != null) {
@@ -1544,7 +1566,7 @@ export final class Specializer implements SpecializerInterface {
                 setterName = msScope + "::" + setterName;
               }
               let regS = this.registerClassMethod(ct, cdDecl, setterName, setter, false, false, null, sourceModel);
-              if (msScope != "") { regS.privateScopeKey = msScope; }
+              applyMixinPrivateScope(regS, setter, msScope);
             }
           }
         } else if (ms is FieldDefinition) {

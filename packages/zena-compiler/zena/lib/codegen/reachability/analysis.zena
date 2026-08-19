@@ -24,7 +24,7 @@ import {
 } from '../wasm.zena';
 import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
-import { Specializer } from './specialization.zena';
+import { Specializer, applyMixinPrivateScope } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
 import { performance } from '../../time.zena';
 import { componentAbiModule } from '../component-emitter.zena';
@@ -3069,7 +3069,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   methName = mixScope + "::" + methName;
                 }
                 let regF = specializer.registerClassMethod(ct, cd, methName, node, false, false, null, this.classModels[lookupId], null);
-                if (mixScope != null) { regF.privateScopeKey = mixScope; }
+                applyMixinPrivateScope(regF, node, mixScope);
                 // A REACHABLE member referrer is the evidence that
                 // used to be implied by the vtable force-reach:
                 // registration alone is erased by layout()'s
@@ -3155,7 +3155,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   };
                   if (node.getter != null) {
                     let regG = specializer.registerClassMethod(ct, cd, accPrefix + "get#" + accName, node, false, false, null, this.classModels[lookupId], null);
-                    if (mixScope != null) { regG.privateScopeKey = mixScope; }
+                    applyMixinPrivateScope(regG, node, mixScope);
                     if (refItem.isReachable && isConcrete(ct)) {
                       this.wasm.addFunction(regG);
                       this.markFunctionReached(regG);
@@ -3163,7 +3163,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   }
                   if (node.setter != null) {
                     let regS = specializer.registerClassMethod(ct, cd, accPrefix + "set#" + accName, node.setter, false, false, null, this.classModels[lookupId], null);
-                    if (mixScope != null) { regS.privateScopeKey = mixScope; }
+                    applyMixinPrivateScope(regS, node.setter, mixScope);
                     if (refItem.isReachable && isConcrete(ct)) {
                       this.wasm.addFunction(regS);
                       this.markFunctionReached(regS);

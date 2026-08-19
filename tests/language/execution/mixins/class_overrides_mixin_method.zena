@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 73
+
+// A class member with the same name as one the mixin supplies wins, the
+// way an override does. Both register under that one name, so the mixin
+// must not stamp its private scope onto the function that ends up holding
+// the class's body: `#size` is the class's field, not one of the mixin's.
+// `tagged` is not overridden, so it keeps the mixin's scope and still
+// reaches the mixin's own `#tag`.
+
+mixin Util {
+  var #tag: i32 = 3;
+  describe(): i32 {
+    return 1;
+  }
+  tagged(): i32 {
+    return this.#tag;
+  }
+}
+
+class Widget with Util {
+  var #size: i32;
+  new(size: i32) : #size = size;
+  describe(): i32 {
+    return this.#size;
+  }
+}
+
+export let main = (): i32 => {
+  let w = new Widget(7);
+  return w.describe() * 10 + w.tagged();
+};
