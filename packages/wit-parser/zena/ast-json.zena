@@ -6,7 +6,7 @@
  */
 
 import {JsonBuilder} from 'zena:json';
-import {Array} from 'zena:growable-array';
+import {GrowableArray} from 'zena:growable-array';
 import {HashMap} from 'zena:map';
 import {HashSet} from 'zena:set';
 import {Option, Some, some, none} from 'zena:option';
@@ -23,7 +23,7 @@ let isExcluded = (docs: Docs | null, pkgName: PackageName | null): boolean => {
   if (docs == null || docs.attributes == null) {
     return false;
   }
-  let attrs = docs.attributes as Array<Attribute>;
+  let attrs = docs.attributes as GrowableArray<Attribute>;
   var hasUnstable = false;
   var unstableActive = false;
   var hasSince = false;
@@ -73,7 +73,7 @@ let isExcluded = (docs: Docs | null, pkgName: PackageName | null): boolean => {
 };
 
 let filterInterfaceItems = (iface: InterfaceDef, pkgName: PackageName | null): void => {
-  let filtered = new Array<InterfaceItem>();
+  let filtered = new GrowableArray<InterfaceItem>();
   for (let item in iface.items) {
     var keep = true;
     if (item.tag == InterfaceItemTag.TypeDef) {
@@ -100,7 +100,7 @@ let filterInterfaceItems = (iface: InterfaceDef, pkgName: PackageName | null): v
 };
 
 let filterWorldItems = (world: WorldDef, pkgName: PackageName | null): void => {
-  let filtered = new Array<WorldItem>();
+  let filtered = new GrowableArray<WorldItem>();
   for (let item in world.items) {
     var keep = true;
     if (item.tag == WorldItemTag.Import) {
@@ -137,7 +137,7 @@ let filterWorldItems = (world: WorldDef, pkgName: PackageName | null): void => {
 };
 
 let filterGatedItems = (ast: Ast): void => {
-  let filteredItems = new Array<AstItem>();
+  let filteredItems = new GrowableArray<AstItem>();
   for (let item in ast.items) {
     var keep = true;
     if (item.tag == AstItemTag.Interface) {
@@ -162,7 +162,7 @@ let filterGatedItems = (ast: Ast): void => {
   ast.items = filteredItems;
   
   for (let np in ast.nestedPackages) {
-    let npItems = new Array<AstItem>();
+    let npItems = new GrowableArray<AstItem>();
     for (let item in np.items) {
       var keep = true;
       if (item.tag == AstItemTag.Interface) {
@@ -197,10 +197,10 @@ let filterGatedItems = (ast: Ast): void => {
  * along with their resolved indices and aliases during JSON serialization.
  */
 class SerializeContext {
-  var interfaces = new Array<InterfaceDef>();
-  var worlds = new Array<WorldDef>();
-  var types = new Array<TypeEntry>();
-  var packages = new Array<PackageEntry>();
+  var interfaces = new GrowableArray<InterfaceDef>();
+  var worlds = new GrowableArray<WorldDef>();
+  var types = new GrowableArray<TypeEntry>();
+  var packages = new GrowableArray<PackageEntry>();
   var interfaceIndices = new HashMap<String, i32>();
   var worldIndices = new HashMap<String, i32>();
   var typeIndices = new HashMap<String, i32>();
@@ -406,8 +406,8 @@ class SerializeContext {
   registerAnonymousTypeEx(t: Type, resolveResourceAsOwn: boolean): i32 {
     return match (t.tag) {
       case TypeTag.Tuple: {
-        let types = t.types as Array<Type>;
-        let refs = new Array<TypeRef>();
+        let types = t.types as GrowableArray<Type>;
+        let refs = new GrowableArray<TypeRef>();
         var keyParts = "tuple:";
         for (var idx = 0; idx < types.length; idx += 1) {
           let ref = this.getTypeRefEx(types[idx], resolveResourceAsOwn);
@@ -565,8 +565,8 @@ let isStabilityEqual = (d1: Docs | null, d2: Docs | null): boolean => {
   if (d1 == null || d2 == null) return false;
   if (d1.attributes == null && d2.attributes == null) return true;
   if (d1.attributes == null || d2.attributes == null) return false;
-  let attrs1 = d1.attributes as Array<Attribute>;
-  let attrs2 = d2.attributes as Array<Attribute>;
+  let attrs1 = d1.attributes as GrowableArray<Attribute>;
+  let attrs2 = d2.attributes as GrowableArray<Attribute>;
   if (attrs1.length != attrs2.length) return false;
   
   for (var i = 0; i < attrs1.length; i += 1) {
@@ -769,7 +769,7 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
     if (!hasExplicitDocs) {
       var isUnstable = false;
       if (combinedDocs != null && combinedDocs.attributes != null) {
-        let attrs = combinedDocs.attributes as Array<Attribute>;
+        let attrs = combinedDocs.attributes as GrowableArray<Attribute>;
         for (let attr in attrs) {
           if (attr.tag == AttributeTag.Unstable) {
             isUnstable = true;
@@ -818,7 +818,7 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
           var isUnstable = false;
           let uDocs = u.docs;
           if (uDocs != null && uDocs.attributes != null) {
-            let attrs = uDocs.attributes as Array<Attribute>;
+            let attrs = uDocs.attributes as GrowableArray<Attribute>;
             for (let attr in attrs) {
               if (attr.tag == AttributeTag.Unstable) {
                 isUnstable = true;
@@ -838,12 +838,12 @@ let findWorldItemDocs = (ctx: SerializeContext, world: WorldDef, ifaceIdx: i32, 
   return null;
 };
 
-let collectTypeDeps = (t: Type, deps: Array<String>): void => {
+let collectTypeDeps = (t: Type, deps: GrowableArray<String>): void => {
   if (t.tag == TypeTag.Name) {
     let id = t.name as Id;
     deps.push(normalizeId(id.name));
   } else if (t.tag == TypeTag.Tuple) {
-    let types = t.types as Array<Type>;
+    let types = t.types as GrowableArray<Type>;
     for (let subtype in types) {
       collectTypeDeps(subtype, deps);
     }
@@ -870,16 +870,16 @@ let collectTypeDeps = (t: Type, deps: Array<String>): void => {
   }
 };
 
-let collectTypeDefDeps = (td: TypeDef, deps: Array<String>): void => {
+let collectTypeDefDeps = (td: TypeDef, deps: GrowableArray<String>): void => {
   if (td.tag == TypeDefTag.Record) {
-    let fields = td.fields as Array<Field>;
+    let fields = td.fields as GrowableArray<Field>;
     for (let f in fields) {
       collectTypeDeps(f.type, deps);
     }
   } else if (td.tag == TypeDefTag.Alias) {
     collectTypeDeps(td.aliasType as Type, deps);
   } else if (td.tag == TypeDefTag.Variant) {
-    let cases = td.cases as Array<Case>;
+    let cases = td.cases as GrowableArray<Case>;
     for (let c in cases) {
       if (c.type != null) {
         collectTypeDeps(c.type as Type, deps);
@@ -888,7 +888,7 @@ let collectTypeDefDeps = (td: TypeDef, deps: Array<String>): void => {
   }
 };
 
-let collectInterfaceDeps = (ctx: SerializeContext, iface: InterfaceDef, deps: Array<String>): void => {
+let collectInterfaceDeps = (ctx: SerializeContext, iface: InterfaceDef, deps: GrowableArray<String>): void => {
   let pkgName = ctx.packages[iface.packageIndex].name;
   for (let item in iface.items) {
     if (item.tag == InterfaceItemTag.Use) {
@@ -899,7 +899,7 @@ let collectInterfaceDeps = (ctx: SerializeContext, iface: InterfaceDef, deps: Ar
 };
 
 let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): Array<InterfaceDef> => {
-  let sorted = new Array<InterfaceDef>();
+  let sorted = new GrowableArray<InterfaceDef>();
   let visited = new HashMap<String, i32>();
   
   let ifaceMap = new HashMap<String, InterfaceDef>();
@@ -923,7 +923,7 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
       let iface = ifaceObj as InterfaceDef;
       visited[key] = 1;
       
-      let deps = new Array<String>();
+      let deps = new GrowableArray<String>();
       collectInterfaceDeps(ctx, iface, deps);
       
       for (var dIdx = 0; dIdx < deps.length; dIdx += 1) {
@@ -979,7 +979,7 @@ let sortInterfaces = (ctx: SerializeContext, interfaces: Array<InterfaceDef>): A
   return sorted;
 };
 
-let collectWorldDeps = (world: WorldDef, deps: Array<String>): void => {
+let collectWorldDeps = (world: WorldDef, deps: GrowableArray<String>): void => {
   for (var idx = 0; idx < world.items.length; idx += 1) {
     let item = world.items[idx];
     if (item.tag == WorldItemTag.Include) {
@@ -992,7 +992,7 @@ let collectWorldDeps = (world: WorldDef, deps: Array<String>): void => {
 };
 
 let sortWorlds = (worlds: Array<WorldDef>): Array<WorldDef> => {
-  let sorted = new Array<WorldDef>();
+  let sorted = new GrowableArray<WorldDef>();
   let visited = new HashMap<String, i32>();
   
   let worldMap = new HashMap<String, WorldDef>();
@@ -1013,7 +1013,7 @@ let sortWorlds = (worlds: Array<WorldDef>): Array<WorldDef> => {
       let world = worldObj as WorldDef;
       visited[key] = 1;
       
-      let deps = new Array<String>();
+      let deps = new GrowableArray<String>();
       collectWorldDeps(world, deps);
       
       for (var dIdx = 0; dIdx < deps.length; dIdx += 1) {
@@ -1081,7 +1081,7 @@ let registerInterfaceTypes = (ctx: SerializeContext, iface: InterfaceDef, ifaceI
       var typeIdx = -1;
       if (elem.isTypeDef()) {
         let td = elem.typeDef() as TypeDef;
-        let deps = new Array<String>();
+        let deps = new GrowableArray<String>();
         collectTypeDefDeps(td, deps);
 
         for (var dIdx = 0; dIdx < deps.length; dIdx += 1) {
@@ -1224,8 +1224,8 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
   
   if (t.tag == TypeTag.Tuple) {
     var changed = false;
-    let newTypes = new Array<Type>();
-    for (let originalType in (t.types as Array<Type>)) {
+    let newTypes = new GrowableArray<Type>();
+    for (let originalType in (t.types as GrowableArray<Type>)) {
       let renamedType = renameType(originalType, renames);
       if (renamedType != originalType) {
         changed = true;
@@ -1260,7 +1260,7 @@ let renameParam = (p: Param, renames: Array<IncludeName>): Param => {
 
 let renameFunc = (f: Func, renames: Array<IncludeName>): Func => {
   var changed = false;
-  let newParams = new Array<Param>();
+  let newParams = new GrowableArray<Param>();
   for (let p in f.params) {
     let renamedParam = renameParam(p, renames);
     if (renamedParam != p) {
@@ -1312,8 +1312,8 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   
   var newFields = td.fields;
   if (td.tag == TypeDefTag.Record && td.fields != null) {
-    let oldFields = td.fields as Array<Field>;
-    let fields = new Array<Field>();
+    let oldFields = td.fields as GrowableArray<Field>;
+    let fields = new GrowableArray<Field>();
     for (let f in oldFields) {
       let renamedType = renameType(f.type, renames);
       if (renamedType != f.type) {
@@ -1328,8 +1328,8 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   
   var newCases = td.cases;
   if (td.tag == TypeDefTag.Variant && td.cases != null) {
-    let oldCases = td.cases as Array<Case>;
-    let cases = new Array<Case>();
+    let oldCases = td.cases as GrowableArray<Case>;
+    let cases = new GrowableArray<Case>();
     for (let c in oldCases) {
       var renamedType = c.type;
       if (c.type != null) {
@@ -1351,8 +1351,8 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   
   var newResourceFuncs = td.resourceFuncs;
   if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
-    let oldFuncs = td.resourceFuncs as Array<ResourceFunc>;
-    let funcs = new Array<ResourceFunc>();
+    let oldFuncs = td.resourceFuncs as GrowableArray<ResourceFunc>;
+    let funcs = new GrowableArray<ResourceFunc>();
     for (let rf in oldFuncs) {
       let renamedRf = renameResourceFunc(rf, renames);
       if (renamedRf != rf) {
@@ -1366,11 +1366,11 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   if (changed) {
     let tdClone = match (td.tag) {
       case TypeDefTag.Alias: TypeDef.alias(td.docs, new Id(newName, td.name.span), newAlias as Type)
-      case TypeDefTag.Record: TypeDef.record(td.docs, new Id(newName, td.name.span), newFields as Array<Field>)
-      case TypeDefTag.Flags: TypeDef.flagsDef(td.docs, new Id(newName, td.name.span), td.flags as Array<FlagDef>)
-      case TypeDefTag.Variant: TypeDef.variant(td.docs, new Id(newName, td.name.span), newCases as Array<Case>)
-      case TypeDefTag.Enum: TypeDef.enumDef(td.docs, new Id(newName, td.name.span), td.enumCases as Array<EnumCaseDef>)
-      case TypeDefTag.Resource: TypeDef.resource(td.docs, new Id(newName, td.name.span), newResourceFuncs as Array<ResourceFunc>)
+      case TypeDefTag.Record: TypeDef.record(td.docs, new Id(newName, td.name.span), newFields as GrowableArray<Field>)
+      case TypeDefTag.Flags: TypeDef.flagsDef(td.docs, new Id(newName, td.name.span), td.flags as GrowableArray<FlagDef>)
+      case TypeDefTag.Variant: TypeDef.variant(td.docs, new Id(newName, td.name.span), newCases as GrowableArray<Case>)
+      case TypeDefTag.Enum: TypeDef.enumDef(td.docs, new Id(newName, td.name.span), td.enumCases as GrowableArray<EnumCaseDef>)
+      case TypeDefTag.Resource: TypeDef.resource(td.docs, new Id(newName, td.name.span), newResourceFuncs as GrowableArray<ResourceFunc>)
     };
     return tdClone;
   }
@@ -1401,7 +1401,7 @@ let renameImport = (imp: Import, renames: Array<IncludeName>): Import => {
   
   if (changed) {
     let kindClone = match (kind.tag) {
-      case ExternKindTag.Interface: ExternKind.iface(newName as Id, kind.items as Array<InterfaceItem>)
+      case ExternKindTag.Interface: ExternKind.iface(newName as Id, kind.items as GrowableArray<InterfaceItem>)
       case ExternKindTag.Path: ExternKind.fromPath(kind.path as UsePath)
       case ExternKindTag.Func: ExternKind.makeFunc(newName as Id, newFuncDef as Func)
     };
@@ -1433,7 +1433,7 @@ let renameExport = (exp: Export, renames: Array<IncludeName>): Export => {
   
   if (changed) {
     let kindClone = match (kind.tag) {
-      case ExternKindTag.Interface: ExternKind.iface(newName as Id, kind.items as Array<InterfaceItem>)
+      case ExternKindTag.Interface: ExternKind.iface(newName as Id, kind.items as GrowableArray<InterfaceItem>)
       case ExternKindTag.Path: ExternKind.fromPath(kind.path as UsePath)
       case ExternKindTag.Func: ExternKind.makeFunc(newName as Id, newFuncDef as Func)
     };
@@ -1444,7 +1444,7 @@ let renameExport = (exp: Export, renames: Array<IncludeName>): Export => {
 
 let renameUse = (u: Use, renames: Array<IncludeName>): Use => {
   var changed = false;
-  let newNames = new Array<UseName>();
+  let newNames = new GrowableArray<UseName>();
   for (let un in u.names) {
     let originalName = if (un.asName != null) (un.asName as Id).name else un.name.name;
     let newName = applyRename(originalName, renames);
@@ -1503,10 +1503,10 @@ let combineDocs = (parent: Docs | null, child: Docs | null): Docs | null => {
   if (parent.attributes == null) return child;
   if (child.attributes == null) return parent;
   
-  let pattrs = parent.attributes as Array<Attribute>;
-  let cattrs = child.attributes as Array<Attribute>;
+  let pattrs = parent.attributes as GrowableArray<Attribute>;
+  let cattrs = child.attributes as GrowableArray<Attribute>;
   
-  let newAttrs = new Array<Attribute>();
+  let newAttrs = new GrowableArray<Attribute>();
   
   var parentUnstable: Attribute | null = null;
   var childUnstable: Attribute | null = null;
@@ -1568,10 +1568,10 @@ let mergeDocs = (parent: Docs | null, child: Docs | null): Docs | null => {
   if (parent.attributes == null) return child;
   if (child.attributes == null) return parent;
   
-  let pattrs = parent.attributes as Array<Attribute>;
-  let cattrs = child.attributes as Array<Attribute>;
+  let pattrs = parent.attributes as GrowableArray<Attribute>;
+  let cattrs = child.attributes as GrowableArray<Attribute>;
   
-  let newAttrs = new Array<Attribute>();
+  let newAttrs = new GrowableArray<Attribute>();
   
   var parentUnstable: Attribute | null = null;
   var childUnstable: Attribute | null = null;
@@ -1629,8 +1629,8 @@ let mergeDocs = (parent: Docs | null, child: Docs | null): Docs | null => {
 
 let filterUnstableOnly = (docs: Docs | null): Docs | null => {
   if (docs == null || docs.attributes == null) return null;
-  let attrs = docs.attributes as Array<Attribute>;
-  let newAttrs = new Array<Attribute>();
+  let attrs = docs.attributes as GrowableArray<Attribute>;
+  let newAttrs = new GrowableArray<Attribute>();
   for (var i = 0; i < attrs.length; i += 1) {
     let attr = attrs[i];
     if (attr.tag == AttributeTag.Unstable) {
@@ -1645,8 +1645,8 @@ let filterUnstableOnly = (docs: Docs | null): Docs | null => {
 
 let filterStableOnly = (docs: Docs | null): Docs | null => {
   if (docs == null || docs.attributes == null) return null;
-  let attrs = docs.attributes as Array<Attribute>;
-  let newAttrs = new Array<Attribute>();
+  let attrs = docs.attributes as GrowableArray<Attribute>;
+  let newAttrs = new GrowableArray<Attribute>();
   for (var i = 0; i < attrs.length; i += 1) {
     let attr = attrs[i];
     if (attr.tag == AttributeTag.Since || attr.tag == AttributeTag.Deprecated) {
@@ -1660,7 +1660,7 @@ let filterStableOnly = (docs: Docs | null): Docs | null => {
 };
 
 let expandWorldItems = (ctx: SerializeContext, world: WorldDef): Array<WorldItem> => {
-  let result = new Array<WorldItem>();
+  let result = new GrowableArray<WorldItem>();
   let visited = new HashMap<String, boolean>();
   
   let rec = (w: WorldDef, renames: Array<IncludeName>, inheritedDocs: Docs | null): void => {
@@ -1679,7 +1679,7 @@ let expandWorldItems = (ctx: SerializeContext, world: WorldDef): Array<WorldItem
         let inc = item.include as Include;
         let incWorld = findWorldByUsePath(ctx, inc.from);
         if (incWorld != null) {
-          let nestedRenames = new Array<IncludeName>();
+          let nestedRenames = new GrowableArray<IncludeName>();
           for (var rIdx = 0; rIdx < inc.names.length; rIdx += 1) {
             let n = inc.names[rIdx];
             let renamedAs = applyRename(n.asName.name, renames);
@@ -1752,7 +1752,7 @@ let expandWorldItems = (ctx: SerializeContext, world: WorldDef): Array<WorldItem
   
   let prevWorldPackageIndex = ctx.currentWorldPackageIndex;
   ctx.currentWorldPackageIndex = world.packageIndex;
-  rec(world, new Array<IncludeName>(), null);
+  rec(world, new GrowableArray<IncludeName>(), null);
   ctx.currentWorldPackageIndex = prevWorldPackageIndex;
   return result;
 };
@@ -1800,7 +1800,7 @@ let registerWorldTypes = (ctx: SerializeContext, world: WorldDef, worldIdx: i32,
       var typeIdx = -1;
       if (elem.isTypeDef()) {
         let td = elem.typeDef() as TypeDef;
-        let deps = new Array<String>();
+        let deps = new GrowableArray<String>();
         collectTypeDefDeps(td, deps);
 
         for (var dIdx = 0; dIdx < deps.length; dIdx += 1) {
@@ -1889,7 +1889,7 @@ let typeContainsBorrowFor = (t: Type, resourceName: String): boolean => {
     }
   }
   if (t.tag == TypeTag.Tuple) {
-    let types = t.types as Array<Type>;
+    let types = t.types as GrowableArray<Type>;
     for (var idx = 0; idx < types.length; idx += 1) {
       if (typeContainsBorrowFor(types[idx], resourceName)) {
         return true;
@@ -1951,7 +1951,7 @@ let registerInterfaceAllScopeTypes = (ctx: SerializeContext, iface: InterfaceDef
   registerInterfaceTypes(ctx, iface, ifaceIdx);
   
   // Identify all local resources
-  let resources = new Array<TypeDef>();
+  let resources = new GrowableArray<TypeDef>();
   for (var idx = 0; idx < iface.items.length; idx += 1) {
     let item = iface.items[idx];
     if (item.tag == InterfaceItemTag.TypeDef) {
@@ -1968,7 +1968,7 @@ let registerInterfaceAllScopeTypes = (ctx: SerializeContext, iface: InterfaceDef
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
-        let funcs = td.resourceFuncs as Array<ResourceFunc>;
+        let funcs = td.resourceFuncs as GrowableArray<ResourceFunc>;
         for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           
@@ -2036,7 +2036,7 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
   registerWorldTypes(ctx, world, worldIdx, expandedItems);
   
   // Identify all local/included resources
-  let resources = new Array<WorldItem>();
+  let resources = new GrowableArray<WorldItem>();
   for (var idx = 0; idx < expandedItems.length; idx += 1) {
     let item = expandedItems[idx];
     if (item.tag == WorldItemTag.TypeDef) {
@@ -2053,7 +2053,7 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
     if (!item.isIncluded) {
       let r = item.typeDef as TypeDef;
       if (r.resourceFuncs != null) {
-        let funcs = r.resourceFuncs as Array<ResourceFunc>;
+        let funcs = r.resourceFuncs as GrowableArray<ResourceFunc>;
         for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           
@@ -2133,7 +2133,7 @@ let registerWorldAllScopeTypes = (ctx: SerializeContext, world: WorldDef, worldI
     if (item.isIncluded) {
       let r = item.typeDef as TypeDef;
       if (r.resourceFuncs != null) {
-        let funcs = r.resourceFuncs as Array<ResourceFunc>;
+        let funcs = r.resourceFuncs as GrowableArray<ResourceFunc>;
         for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           
@@ -2260,8 +2260,8 @@ let buildTypeKind = (ctx: SerializeContext, t: Type, resolveResourceAsOwn: boole
     let err = if (t.errType != null) ctx.getTypeRef(t.errType as Type) else null;
     return new ResultKind(ok, err);
   } else if (t.tag == TypeTag.Tuple) {
-    let types = t.types as Array<Type>;
-    let refs = new Array<TypeRef>();
+    let types = t.types as GrowableArray<Type>;
+    let refs = new GrowableArray<TypeRef>();
     for (var idx = 0; idx < types.length; idx += 1) {
       refs.push(ctx.getTypeRef(types[idx]));
     }
@@ -2292,8 +2292,8 @@ let buildTypeKind = (ctx: SerializeContext, t: Type, resolveResourceAsOwn: boole
 
 let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i32 => {
   let kind = if (td.tag == TypeDefTag.Record) {
-    let fieldsArr = new Array<RecordField>();
-    let fields = td.fields as Array<Field>;
+    let fieldsArr = new GrowableArray<RecordField>();
+    let fields = td.fields as GrowableArray<Field>;
     for (var idx = 0; idx < fields.length; idx += 1) {
       let field = fields[idx];
       let typeRef = ctx.getTypeRef(field.type);
@@ -2303,8 +2303,8 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
   } else if (td.tag == TypeDefTag.Alias) {
     buildTypeKind(ctx, td.aliasType as Type, false)
   } else if (td.tag == TypeDefTag.Enum) {
-    let casesArr = new Array<EnumCase>();
-    let cases = td.enumCases as Array<EnumCaseDef>;
+    let casesArr = new GrowableArray<EnumCase>();
+    let cases = td.enumCases as GrowableArray<EnumCaseDef>;
     for (var idx = 0; idx < cases.length; idx += 1) {
       let ec = cases[idx];
       var docs: Docs | null = null;
@@ -2315,15 +2315,15 @@ let registerTypeDef = (ctx: SerializeContext, td: TypeDef, owner: TypeOwner): i3
     }
     new EnumKind(casesArr)
   } else if (td.tag == TypeDefTag.Flags) {
-    let flagsArr = new Array<String>();
-    let flags = td.flags as Array<FlagDef>;
+    let flagsArr = new GrowableArray<String>();
+    let flags = td.flags as GrowableArray<FlagDef>;
     for (var idx = 0; idx < flags.length; idx += 1) {
       flagsArr.push(normalizeId(flags[idx].name.name));
     }
     new FlagsKind(flagsArr)
   } else if (td.tag == TypeDefTag.Variant) {
-    let casesArr = new Array<VariantCase>();
-    let cases = td.cases as Array<Case>;
+    let casesArr = new GrowableArray<VariantCase>();
+    let cases = td.cases as GrowableArray<Case>;
     for (var idx = 0; idx < cases.length; idx += 1) {
       let c = cases[idx];
       var typeRef: TypeRef | null = null;
@@ -2710,7 +2710,7 @@ let serializeWorld = (b: JsonBuilder, ctx: SerializeContext, world: WorldDef, in
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
         let resourceName = normalizeId(td.name.name);
-        let funcs = td.resourceFuncs as Array<ResourceFunc>;
+        let funcs = td.resourceFuncs as GrowableArray<ResourceFunc>;
         for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           if (rf.tag == ResourceFuncTag.Method) {
@@ -2933,7 +2933,7 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
       let td = item.typeDef as TypeDef;
       if (td.tag == TypeDefTag.Resource && td.resourceFuncs != null) {
         let resourceName = normalizeId(td.name.name);
-        let funcs = td.resourceFuncs as Array<ResourceFunc>;
+        let funcs = td.resourceFuncs as GrowableArray<ResourceFunc>;
         for (var fIdx = 0; fIdx < funcs.length; fIdx += 1) {
           let rf = funcs[fIdx];
           if (rf.tag == ResourceFuncTag.Method) {
@@ -2973,7 +2973,7 @@ let serializeInterface = (b: JsonBuilder, ctx: SerializeContext, iface: Interfac
   b.endObject();
 };
 
-let collectPackageDepFromUsePath = (aliases: HashMap<String, String>, pkgName: String, path: UsePath, deps: Array<String>): void => {
+let collectPackageDepFromUsePath = (aliases: HashMap<String, String>, pkgName: String, path: UsePath, deps: GrowableArray<String>): void => {
   if (path.tag == UsePathTag.Package) {
     let pkg = path.packageId as PackageName;
     deps.push(formatPackageName(pkg));
@@ -2997,7 +2997,7 @@ let collectPackageDepFromUsePath = (aliases: HashMap<String, String>, pkgName: S
   }
 };
 
-let collectInterfaceDepsOnly = (aliases: HashMap<String, String>, pkgName: String, items: Array<InterfaceItem>, deps: Array<String>): void => {
+let collectInterfaceDepsOnly = (aliases: HashMap<String, String>, pkgName: String, items: Array<InterfaceItem>, deps: GrowableArray<String>): void => {
   for (var j = 0; j < items.length; j += 1) {
     let ifaceItem = items[j];
     if (ifaceItem.tag == InterfaceItemTag.Use) {
@@ -3007,7 +3007,7 @@ let collectInterfaceDepsOnly = (aliases: HashMap<String, String>, pkgName: Strin
   }
 };
 
-let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, items: Array<AstItem>, deps: Array<String>): void => {
+let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, items: Array<AstItem>, deps: GrowableArray<String>): void => {
   for (var idx = 0; idx < items.length; idx += 1) {
     let item = items[idx];
     if (item.tag == AstItemTag.Interface) {
@@ -3022,7 +3022,7 @@ let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, ite
           if (imp.kind.tag == ExternKindTag.Path) {
             collectPackageDepFromUsePath(aliases, pkgName, imp.kind.path as UsePath, deps);
           } else if (imp.kind.tag == ExternKindTag.Interface) {
-            let inlineItems = imp.kind.items as Array<InterfaceItem>;
+            let inlineItems = imp.kind.items as GrowableArray<InterfaceItem>;
             collectInterfaceDepsOnly(aliases, pkgName, inlineItems, deps);
           }
         } else if (worldItem.tag == WorldItemTag.Export) {
@@ -3030,7 +3030,7 @@ let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, ite
           if (exp.kind.tag == ExternKindTag.Path) {
             collectPackageDepFromUsePath(aliases, pkgName, exp.kind.path as UsePath, deps);
           } else if (exp.kind.tag == ExternKindTag.Interface) {
-            let inlineItems = exp.kind.items as Array<InterfaceItem>;
+            let inlineItems = exp.kind.items as GrowableArray<InterfaceItem>;
             collectInterfaceDepsOnly(aliases, pkgName, inlineItems, deps);
           }
         } else if (worldItem.tag == WorldItemTag.Use) {
@@ -3045,15 +3045,15 @@ let collectPackageDeps = (aliases: HashMap<String, String>, pkgName: String, ite
   }
 };
 
-let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<AstItem>}>, pkgDeps: HashMap<String, Array<String>>, pkgOrder: Array<String>): Array<{name: PackageName | null, items: Array<AstItem>}> => {
-  let sorted = new Array<{name: PackageName | null, items: Array<AstItem>}>();
+let sortPackages = (pkgSources: GrowableArray<{name: PackageName | null, items: GrowableArray<AstItem>}>, pkgDeps: HashMap<String, GrowableArray<String>>, pkgOrder: GrowableArray<String>): GrowableArray<{name: PackageName | null, items: GrowableArray<AstItem>}> => {
+  let sorted = new GrowableArray<{name: PackageName | null, items: GrowableArray<AstItem>}>();
   if (pkgSources.length == 0) {
     return sorted;
   }
   
   // First, map package names to their pkgSources elements
-  let pkgMap = new HashMap<String, {name: PackageName | null, items: Array<AstItem>}>();
-  let keys = new Array<String>();
+  let pkgMap = new HashMap<String, {name: PackageName | null, items: GrowableArray<AstItem>}>();
+  let keys = new GrowableArray<String>();
   
   for (var idx = 0; idx < pkgSources.length; idx += 1) {
     let src = pkgSources[idx];
@@ -3088,7 +3088,7 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
     
     // Visit dependencies
     if (let (true, depsList) = pkgDeps.get(key)) {
-      let deps = depsList as Array<String>;
+      let deps = depsList as GrowableArray<String>;
       
       // Sort dependencies alphabetically/semver for deterministic visit order
       for (var dI = 0; dI < deps.length; dI += 1) {
@@ -3111,7 +3111,7 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
     
     visited[key] = 2;
     if (let (true, srcObj) = pkgMap.get(key)) {
-      sorted.push(srcObj as {name: PackageName | null, items: Array<AstItem>});
+      sorted.push(srcObj as {name: PackageName | null, items: GrowableArray<AstItem>});
     }
   };
   
@@ -3123,8 +3123,8 @@ let sortPackages = (pkgSources: Array<{name: PackageName | null, items: Array<As
   return sorted;
 };
 
-let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, Array<String>>, pkgOrder: Array<String>): void => {
-  let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
+let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, GrowableArray<String>>, pkgOrder: GrowableArray<String>): void => {
+  let pkgSources = new GrowableArray<{name: PackageName | null, items: GrowableArray<AstItem>}>();
   pkgSources.push({name: ast.packageName, items: ast.items});
   
   for (var pIdx = 0; pIdx < ast.nestedPackages.length; pIdx += 1) {
@@ -3134,8 +3134,8 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
 
   let finalPkgSources = sortPackages(pkgSources, pkgDeps, pkgOrder);
   
-  let globalInterfaces = new Array<InterfaceDef>();
-  let globalWorlds = new Array<WorldDef>();
+  let globalInterfaces = new GrowableArray<InterfaceDef>();
+  let globalWorlds = new GrowableArray<WorldDef>();
   
   for (var pIdxVar = 0; pIdxVar < finalPkgSources.length; pIdxVar += 1) {
     let src = finalPkgSources[pIdxVar];
@@ -3143,8 +3143,8 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
     let pkg = new PackageEntry(pkgName);
     ctx.packages.push(pkg);
     
-    let rawInterfaces = new Array<InterfaceDef>();
-    let rawWorlds = new Array<WorldDef>();
+    let rawInterfaces = new GrowableArray<InterfaceDef>();
+    let rawWorlds = new GrowableArray<WorldDef>();
     
     for (var idx = 0; idx < src.items.length; idx += 1) {
       let item = src.items[idx];
@@ -3171,7 +3171,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
             let name = kind.name as Id;
             let nameId = new Id("[import]" + name.name, name.span);
             let inlineIface = new InterfaceDef(imp.docs, nameId);
-            inlineIface.items = kind.items as Array<InterfaceItem>;
+            inlineIface.items = kind.items as GrowableArray<InterfaceItem>;
             inlineIface.isInline = true;
             inlineIface.packageIndex = pIdxVar;
             rawInterfaces.push(inlineIface);
@@ -3183,7 +3183,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
             let name = kind.name as Id;
             let nameId = new Id("[export]" + name.name, name.span);
             let inlineIface = new InterfaceDef(exp.docs, nameId);
-            inlineIface.items = kind.items as Array<InterfaceItem>;
+            inlineIface.items = kind.items as GrowableArray<InterfaceItem>;
             inlineIface.isInline = true;
             inlineIface.packageIndex = pIdxVar;
             rawInterfaces.push(inlineIface);
@@ -3240,7 +3240,7 @@ let collectFromAst = (ctx: SerializeContext, ast: Ast, pkgDeps: HashMap<String, 
 export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): String => {
   let aliases = new HashMap<String, String>();
   
-  let pkgSources = new Array<{name: PackageName | null, items: Array<AstItem>}>();
+  let pkgSources = new GrowableArray<{name: PackageName | null, items: GrowableArray<AstItem>}>();
   pkgSources.push({name: ast.packageName, items: ast.items});
   for (var pIdxVar = 0; pIdxVar < ast.nestedPackages.length; pIdxVar += 1) {
     let np = ast.nestedPackages[pIdxVar];
@@ -3268,22 +3268,22 @@ export let serializeAstToJson = (ast: Ast, pkgOrderStr: String | null = null): S
       }
   }
 
-  let pkgDeps = new HashMap<String, Array<String>>();
+  let pkgDeps = new HashMap<String, GrowableArray<String>>();
   
   let mainKey = formatPackageName(ast.packageName);
-  let mainDeps = new Array<String>();
+  let mainDeps = new GrowableArray<String>();
   collectPackageDeps(aliases, mainKey, ast.items, mainDeps);
   pkgDeps[mainKey] = mainDeps;
   
   for (var pkgDepIdx = 0; pkgDepIdx < ast.nestedPackages.length; pkgDepIdx += 1) {
     let np = ast.nestedPackages[pkgDepIdx];
     let key = formatPackageName(np.name);
-    let deps = new Array<String>();
+    let deps = new GrowableArray<String>();
     collectPackageDeps(aliases, key, np.items, deps);
     pkgDeps[key] = deps;
   }
 
-  let pkgOrder = new Array<String>();
+  let pkgOrder = new GrowableArray<String>();
   if (pkgOrderStr != null) {
     let str = pkgOrderStr as String;
     var start = 0;

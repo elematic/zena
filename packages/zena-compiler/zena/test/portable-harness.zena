@@ -25,7 +25,7 @@ export type Directive = { name: String, line: i32, value: String };
  * only the first directive on a line is read.
  */
 export let parseDirectives = (source: String): Array<Directive> => {
-  let results = new Array<Directive>(4);
+  let results = new GrowableArray<Directive>(4);
   let marker = '// @';
   if (!source.contains(marker)) {
     return results;
@@ -120,7 +120,7 @@ export class TestFile {
 
   /** Every `@name:` directive, in file order. */
   all(name: String): Array<Directive> {
-    let matches = new Array<Directive>(2);
+    let matches = new GrowableArray<Directive>(2);
     for (let d in this.directives) {
       if (d.name == name) {
         matches.push(d);
@@ -150,17 +150,17 @@ export class TestFile {
  */
 export class Discovery {
   /** Files handed to the runner as tests. */
-  tests = new Array<TestFile>(64);
+  tests = new GrowableArray<TestFile>(64);
   /** Files held back by an explicit `@skip:` directive. */
-  skipped = new Array<TestFile>(4);
+  skipped = new GrowableArray<TestFile>(4);
   /** Files that are not tests at all — modules a test imports. */
-  support = new Array<TestFile>(8);
+  support = new GrowableArray<TestFile>(8);
 
   new();
 
   /** Every file seen, whichever bucket it landed in. */
   all(): Array<TestFile> {
-    let files = new Array<TestFile>(this.total());
+    let files = new GrowableArray<TestFile>(this.total());
     for (let f in this.tests) {
       files.push(f);
     }
@@ -209,7 +209,7 @@ let lexLess = (a: String, b: String): boolean => {
 };
 
 /** Insertion sort by entry name (byte-wise ascending). */
-let sortByName = (entries: Array<DirEntry>): void => {
+let sortByName = (entries: GrowableArray<DirEntry>): void => {
   for (var i = 1; i < entries.length; i += 1) {
     let e = entries[i];
     var j = i - 1;
@@ -223,8 +223,8 @@ let sortByName = (entries: Array<DirEntry>): void => {
 
 /** The `.zena` files and the subdirectories of `dirPath`, each sorted by name. */
 class DirContents {
-  files = new Array<DirEntry>(8);
-  subdirs = new Array<DirEntry>(4);
+  files = new GrowableArray<DirEntry>(8);
+  subdirs = new GrowableArray<DirEntry>(4);
 
   new(dirPath: String) {
     for (let entry in listDir(dirPath)) {
@@ -332,7 +332,7 @@ export let collect = (
  */
 export let siblingImports = (f: TestFile): Array<String> => {
   let dir = f.path.sliceBytes(0, f.path.length - f.name.length - 1);
-  let found = new Array<String>(2);
+  let found = new GrowableArray<String>(2);
   let marker = "from './";
   var i = 0;
   while (i + marker.length <= f.source.length) {

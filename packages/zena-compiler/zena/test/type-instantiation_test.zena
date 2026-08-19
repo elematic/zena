@@ -32,7 +32,7 @@ import { SymbolId } from '../lib/scope/symbol.zena';
 /** A generic `interface Box<T>`, standing in for `Iterable<T>`. */
 let genericInterface = (id: i32, symId: i32, name: String): InterfaceType => {
   let it = new InterfaceType(id as TypeId, symId as SymbolId, name);
-  let params = new Array<TypeParameterType>();
+  let params = new GrowableArray<TypeParameterType>();
   params.push(new TypeParameterType('T', null, null));
   it.typeParameters = params;
   return it;
@@ -41,14 +41,14 @@ let genericInterface = (id: i32, symId: i32, name: String): InterfaceType => {
 /** A generic `class Holder<T>`. */
 let genericClass = (id: i32, symId: i32, name: String): ClassType => {
   let ct = new ClassType(id as TypeId, symId as SymbolId, name);
-  let params = new Array<TypeParameterType>();
+  let params = new GrowableArray<TypeParameterType>();
   params.push(new TypeParameterType('T', null, null));
   ct.typeParameters = params;
   return ct;
 };
 
 let args = (t: Type): Array<Type> => {
-  let a = new Array<Type>();
+  let a = new GrowableArray<Type>();
   a.push(t);
   return a;
 };
@@ -65,8 +65,8 @@ export let tests = suite('Generic instantiation caching', (): void => {
     let b = instantiateInterfaceType(iterable, args(itemB));
 
     isFalse(a === b, 'Iterable<ItemA> and Iterable<ItemB> must be distinct types');
-    isTrue((a.typeArguments as Array<Type>)[0] === itemA, 'Iterable<ItemA> lost its type argument');
-    isTrue((b.typeArguments as Array<Type>)[0] === itemB, 'Iterable<ItemB> lost its type argument');
+    isTrue((a.typeArguments as GrowableArray<Type>)[0] === itemA, 'Iterable<ItemA> lost its type argument');
+    isTrue((b.typeArguments as GrowableArray<Type>)[0] === itemB, 'Iterable<ItemB> lost its type argument');
   });
 
   test('two same-named classes do not share a class instantiation', (ctx: TestContext): void => {
@@ -78,7 +78,7 @@ export let tests = suite('Generic instantiation caching', (): void => {
     let b = instantiateClassType(holder, args(itemB));
 
     isFalse(a === b, 'Holder<ItemA> and Holder<ItemB> must be distinct types');
-    isTrue((a.typeArguments as Array<Type>)[0] === itemA, 'Holder<ItemA> lost its type argument');
+    isTrue((a.typeArguments as GrowableArray<Type>)[0] === itemA, 'Holder<ItemA> lost its type argument');
   });
 
   test('the same class still hits the cache', (ctx: TestContext): void => {

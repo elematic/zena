@@ -8,7 +8,7 @@ on individual methods.
 
 ```zena
 class Box<T> { ... }
-interface Sequence<T> { ... }
+interface Array<T> { ... }
 let id = <T>(x: T): T => x;
 type Pair<T> = (T, T);
 distinct type Handle<T> = Box<T>;
@@ -65,18 +65,18 @@ type and they become indistinguishable, and the
 ## Generic methods
 
 A method may introduce a type parameter the class does not have, such as
-`map<U>` on a `Sequence<T>`.
+`map<U>` on a `Array<T>`.
 
 ```zena
-interface Sequence<T> {
-  map<U>(f: (item: T) => U): Sequence<U>;
+interface Array<T> {
+  map<U>(f: (item: T) => U): Array<U>;
 }
 ```
 
 ::: warning The method type parameter is erased
 This is a bug. Erasing `U` forces a box on every element, and `map`'s result
-type mentions `U`, so an erased `map` returns a `Sequence` of boxed values whose
-Wasm type does not match the `Sequence<i32>` the caller holds. The mismatch
+type mentions `U`, so an erased `map` returns a `Array` of boxed values whose
+Wasm type does not match the `Array<i32>` the caller holds. The mismatch
 propagates to every use of the result.
 
 The fix is to reify the method's type parameter like any other, which means

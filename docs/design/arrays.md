@@ -79,7 +79,7 @@ element, which is now `u8` rather than `i32` — what a byte always was in fact.
 Combining one with an `i32` therefore needs an explicit `as`, like any other
 mixed-signedness pair.
 
-`FixedArray<u8>` is the same storage with the full `Sequence` API (slicing,
+`FixedArray<u8>` is the same storage with the full `Array` API (slicing,
 iteration, `map`) on top, and is the better choice for new code; `ByteArray`
 remains the low-level spelling used by `String` and the byte-buffer plumbing.
 

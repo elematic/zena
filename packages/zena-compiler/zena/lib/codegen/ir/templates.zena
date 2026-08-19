@@ -4,6 +4,7 @@
  * bodies are streaming's shapes exactly (see the per-function docs).
  */
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
@@ -75,7 +76,7 @@ export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i
     return lowerStringLiteral(cx,
         new StringLiteral(tpl.quasis[0].cooked, tpl.loc));
   }
-  let parts = new Array<i32>();
+  let parts = new GrowableArray<i32>();
   for (var i = 0; i < tpl.expressions.length; i += 1) {
     parts.push(lowerStringLiteral(cx,
         new StringLiteral(tpl.quasis[i].cooked, tpl.quasis[i].loc)));
@@ -128,7 +129,7 @@ export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i
   if (!isValSubtype(cx.valueTypeOf(arrValue), fsig.params[0])) {
     cx.fail('fromParts operand type');
   }
-  let args = new Array<i32>();
+  let args = new GrowableArray<i32>();
   args.push(arrValue);
   let call = cx.b.callFunc(
       cx.b.addRef(new IrRefFunc(fromParts)), args, fsig.returns[0]);
@@ -222,7 +223,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   cx.b.brIf(isNull, initB, noValues(), doneB, noValues());
 
   cx.b.switchTo(initB);
-  let cookedParts = new Array<i32>();
+  let cookedParts = new GrowableArray<i32>();
   for (let quasi in expr.quasi.quasis) {
     cookedParts.push(lowerStringLiteral(cx,
         new StringLiteral(quasi.cooked, quasi.loc)));
@@ -231,7 +232,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
       new ValTypeRef(stringsArr) as ValType,
       cx.b.pushArgList(cookedParts),
       cx.b.addRef(new IrRefType(stringsArr)));
-  let rawParts = new Array<i32>();
+  let rawParts = new GrowableArray<i32>();
   for (let quasi in expr.quasi.quasis) {
     rawParts.push(lowerStringLiteral(cx,
         new StringLiteral(quasi.raw, quasi.loc)));
@@ -240,7 +241,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
       new ValTypeRef(stringsArr) as ValType,
       cx.b.pushArgList(rawParts),
       cx.b.addRef(new IrRefType(stringsArr)));
-  let tsaArgs = new Array<i32>();
+  let tsaArgs = new GrowableArray<i32>();
   let {vtableGlobal} = tsaInfo;
   if (vtableGlobal != null) {
     let vtG = vtableGlobal;
@@ -293,8 +294,8 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
       // lowering without them (BUGS.md "nullable member null-tested
       // after `is`-narrowing").
       if (vp is ClassType && (vp as ClassType).typeArguments != null &&
-          ((vp as ClassType).typeArguments as Array<Type>).length > 0) {
-        valueType = ((vp as ClassType).typeArguments as Array<Type>)[0];
+          ((vp as ClassType).typeArguments as GrowableArray<Type>).length > 0) {
+        valueType = ((vp as ClassType).typeArguments as GrowableArray<Type>)[0];
       } else if (vp is ArrayType) {
         valueType = vp.elementType;
       }
@@ -303,7 +304,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   let valVt = typeToValTypeWithSub(cx.wasm, valueType, cx.func);
   cx.requireSupported(valVt, 'tagged template value type');
   let valuesArr = cx.wasm.getArray(valVt, true);
-  let valueParts = new Array<i32>();
+  let valueParts = new GrowableArray<i32>();
   for (let sub in expr.quasi.expressions) {
     let v = lowerExpr(cx, sub, valVt);
     if (!isValSubtype(cx.valueTypeOf(v), valVt)) {
@@ -360,7 +361,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
       callee, cx.b.addRef(new IrRefField(closureStruct, 'ctx')));
   let funcVal = cx.b.emit(IrOp.struct_get, closureStruct.fields[0].type,
       callee, cx.b.addRef(new IrRefField(closureStruct, 'func')));
-  let clArgs = new Array<i32>();
+  let clArgs = new GrowableArray<i32>();
   clArgs.push(ctxVal);
   clArgs.push(tsa);
   clArgs.push(values);

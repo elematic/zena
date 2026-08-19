@@ -167,8 +167,8 @@ suite('lsp.wasm integration', () => {
 
   test('resolves stdlib imports without errors', () => {
     const source = `
-      import { Array } from 'zena:array';
-      let arr = new Array<i32>();
+      import { GrowableArray } from 'zena:growable-array';
+      let arr = new GrowableArray<i32>();
     `;
     let diags;
     try {

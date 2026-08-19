@@ -9,6 +9,7 @@
  * and seams. Bodies are streaming's shapes.
  */
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import {
   getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases,
 } from '../codegen-utils.zena';
@@ -74,13 +75,13 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
       bail(cx, 'let-condition pattern');
     }
     let value = lowerExpr(cx, lpc.init, null);
-    let patterns = new Array<Node>();
+    let patterns = new GrowableArray<Node>();
     patterns.push(pat);
-    let patternValues = new Array<i32>();
+    let patternValues = new GrowableArray<i32>();
     patternValues.push(value);
     let cond = cx.b.constI32(1, new ValTypeI32() as ValType);
-    return new LetCondBinds(cond, new Array<Symbol>(), new Array<i32>(),
-        new Array<ValType>(), patterns, patternValues);
+    return new LetCondBinds(cond, new GrowableArray<Symbol>(), new GrowableArray<i32>(),
+        new GrowableArray<ValType>(), patterns, patternValues);
   }
   let values = multiSource(cx, lpc.init);
   if (values.length != pat.elements.length) {
@@ -103,11 +104,11 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
       cond = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
     }
   }
-  let syms = new Array<Symbol>();
-  let bindValues = new Array<i32>();
-  let vts = new Array<ValType>();
-  let patterns = new Array<Node>();
-  let patternValues = new Array<i32>();
+  let syms = new GrowableArray<Symbol>();
+  let bindValues = new GrowableArray<i32>();
+  let vts = new GrowableArray<ValType>();
+  let patterns = new GrowableArray<Node>();
+  let patternValues = new GrowableArray<i32>();
   for (var i = 0; i < pat.elements.length; i += 1) {
     let el = pat.elements[i];
     if (el == null || el is LiteralPattern || el is BooleanLiteral ||
@@ -282,7 +283,7 @@ let lowerBlockValueFrom = (cx: LoweringContext, body: Array<Statement>,
       if (symOpt == null) {
         bail(cx, 'implicit-drop binding symbol');
       }
-      let syms = new Array<SymbolId>();
+      let syms = new GrowableArray<SymbolId>();
       syms.push(symOpt.id);
       let value = cx.envValues(syms)[0];
       return lowerValueRegionRest(cx, value, owners, body, i + 1, ctxVt);
@@ -337,7 +338,7 @@ let lowerValueRegionRest = (cx: LoweringContext, value: i32,
   if (ctxVt == null) {
     bail(cx, 'value region result type');
   }
-  let mirrored = new Array<SymbolId>();
+  let mirrored = new GrowableArray<SymbolId>();
   for (var k = start; k < body.length; k += 1) {
     cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
   }
@@ -377,7 +378,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
 
   let disc = lowerExpr(cx, expr.discriminant, null);
 
-  let mergeSyms = new Array<SymbolId>();
+  let mergeSyms = new GrowableArray<SymbolId>();
   for (let mc in expr.cases) {
     cx.appendAssignedEnvSyms(mc.body, mergeSyms);
     if (mc.guard != null) {
@@ -443,7 +444,7 @@ let emitMatchArmDrops = (cx: LoweringContext, expr: MatchExpression, armIndex: i
       bail(cx, 'edge drop untyped binding');
     }
     let owners = disposeOwnerClasses(cx, declType);
-    let syms = new Array<SymbolId>();
+    let syms = new GrowableArray<SymbolId>();
     syms.push(d.symbolId);
     let value = cx.envValues(syms)[0];
     emitMaybeDispose(cx, value, owners);
@@ -466,7 +467,7 @@ let emitEdgeDrops = (cx: LoweringContext, stmt: IfStatement, onTrue: boolean): v
       bail(cx, 'edge drop untyped binding');
     }
     let ownerClasses = disposeOwnerClasses(cx, declType);
-    let syms = new Array<SymbolId>();
+    let syms = new GrowableArray<SymbolId>();
     syms.push(d.symbolId);
     let value = cx.envValues(syms)[0];
     emitMaybeDispose(cx, value, ownerClasses);
@@ -804,7 +805,7 @@ let finishProtectedArm = (cx: LoweringContext, scope: FinallyScope,
  * one level up: the cancel handler edge is a predecessor, and the
  * emitter streams it past the outer region's end.
  */
-let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
+let lowerFinallyRegion = (cx: LoweringContext, mirrored: GrowableArray<SymbolId>,
     isVoid: boolean, resultVt: ValType | null,
     lowerProtected: (scope: FinallyScope, resultVar: i32,
         saved: HashMap<SymbolId, i32>) => void,
@@ -812,7 +813,7 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: Array<SymbolId>,
   if (cx.wasm.exceptionTag == null || cx.wasm.exceptionPayload == null) {
     bail(cx, 'exception infra missing');
   }
-  let ownedVars = new Array<SymbolId>();
+  let ownedVars = new GrowableArray<SymbolId>();
   for (let symId in mirrored) {
     if (cx.tryVars.has(symId)) { continue; }
     let vt = cx.bindingValType(symId);
@@ -1151,7 +1152,7 @@ export let lowerShieldedRegion = (cx: LoweringContext,
 
   let shield = cx.b.callFunc(cx.b.addRef(new IrRefFunc(shieldFn)),
       noValues(), scopeVt);
-  let swapArgs = new Array<i32>();
+  let swapArgs = new GrowableArray<i32>();
   swapArgs.push(shield);
   let prev = cx.b.callFunc(cx.b.addRef(new IrRefFunc(swapFn)), swapArgs,
       scopeVt);
@@ -1170,7 +1171,7 @@ export let lowerShieldedRegion = (cx: LoweringContext,
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       (fscope) => {
-        let restoreArgs = new Array<i32>();
+        let restoreArgs = new GrowableArray<i32>();
         restoreArgs.push(prev);
         let ignored = cx.b.callFunc(cx.b.addRef(new IrRefFunc(swapFn)),
             restoreArgs, scopeVt);
@@ -1239,7 +1240,7 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
   // assigning). An enclosing try already mirroring a symbol keeps
   // ownership of its variable — one per symbol, always holding the
   // last value written.
-  let ownedVars = new Array<SymbolId>();
+  let ownedVars = new GrowableArray<SymbolId>();
   for (let symId in bodyAssigned) {
     if (cx.tryVars.has(symId)) { continue; }
     let vt = cx.bindingValType(symId);
@@ -1309,7 +1310,7 @@ let disposeOwnerClasses = (cx: LoweringContext, t: Type): Array<ClassType> => {
     target = inner;
   }
   let base = unwrapAliases(target);
-  let result = new Array<ClassType>();
+  let result = new GrowableArray<ClassType>();
   match (base) {
     case ClassType as ct: { result.push(ct); }
     case UnionType {types}: {
@@ -1366,7 +1367,7 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
   }
 
   let receiver = cx.conformToSlot(value, sig.params[0], 'dispose receiver type');
-  let args = new Array<i32>();
+  let args = new GrowableArray<i32>();
   args.push(receiver);
 
   if (!cx.exactValues.has(value) &&
@@ -1492,7 +1493,7 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
     cx.bindPatternSym(symOpt, value);
   }
 
-  let mirrored = new Array<SymbolId>();
+  let mirrored = new GrowableArray<SymbolId>();
   for (var k = restStart; k < restEnd; k += 1) {
     cx.appendAssignedEnvSyms(rest[k] as Node, mirrored);
   }
@@ -1557,11 +1558,11 @@ export let lowerParamDropRegions = (cx: LoweringContext,
     bail(cx, 'param drop untyped binding');
   }
   let owners = disposeOwnerClasses(cx, declType);
-  let syms = new Array<SymbolId>();
+  let syms = new GrowableArray<SymbolId>();
   syms.push(dropSyms[idx].id);
   let value = cx.envValues(syms)[0];
 
-  let mirrored = new Array<SymbolId>();
+  let mirrored = new GrowableArray<SymbolId>();
   for (var k = start; k < end; k += 1) {
     cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
   }
@@ -1597,11 +1598,11 @@ export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
   if (symOpt == null) {
     bail(cx, 'implicit-drop binding symbol');
   }
-  let syms = new Array<SymbolId>();
+  let syms = new GrowableArray<SymbolId>();
   syms.push(symOpt.id);
   let value = cx.envValues(syms)[0];
 
-  let mirrored = new Array<SymbolId>();
+  let mirrored = new GrowableArray<SymbolId>();
   for (var k = restStart; k < restEnd; k += 1) {
     cx.appendAssignedEnvSyms(rest[k] as Node, mirrored);
   }
@@ -1704,7 +1705,7 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
     }
   }
 
-  let carried = new Array<SymbolId>();
+  let carried = new GrowableArray<SymbolId>();
   let test = stmt.test;
   if (test != null) {
     cx.appendAssignedEnvSyms(test, carried);
@@ -1792,7 +1793,7 @@ let isProtocolUnion = (t: Type): boolean => {
  * `okValue` there; the right arm evaluates lazily; both meet at one
  * merge. */
 let coalesceMerge = (cx: LoweringContext, bin: BinaryExpression,
-    overallVt: ValType, mergeSyms: Array<SymbolId>,
+    overallVt: ValType, mergeSyms: GrowableArray<SymbolId>,
     rightB: i32, okValue: i32, saved: HashMap<SymbolId, i32>): i32 => {
   var ok = okValue;
   if (!isValSubtype(cx.valueTypeOf(ok), overallVt)) {
@@ -2091,7 +2092,7 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
  * The general iterator protocol needs multi-value next() calls, which
  * ZIR does not carry yet, so everything else bails.
  *
- * TODO(coverage): a Sequence whose `:iterator` is NOT overridden away
+ * TODO(coverage): a Array whose `:iterator` is NOT overridden away
  * from the default (CHA query, same machinery as devirt) can compile
  * to a `.length` + `[]` indexed loop against the interface — no
  * multi-value needed — and M3 inlining then collapses those calls to
@@ -2123,13 +2124,13 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
       if (canonical.name == 'FixedArray' ||
           canonical.name == 'ImmutableArray') {
         isFixed = true;
-      } else if (canonical.name == 'Array') {
+      } else if (canonical.name == 'Array' || canonical.name == 'GrowableArray') {
         isArray = true;
         arrayCt = resolved;
       }
-      if ((isFixed || isArray) && resolved.typeArguments != null &&
-          (resolved.typeArguments as Array<Type>).length > 0) {
-        elemType = (resolved.typeArguments as Array<Type>)[0];
+      let targs = resolved.typeArguments;
+      if ((isFixed || isArray) && targs != null && targs.length > 0) {
+        elemType = targs[0];
       }
     }
   }

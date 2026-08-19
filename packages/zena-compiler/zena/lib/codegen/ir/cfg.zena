@@ -10,17 +10,17 @@ import { IrBody } from './ir.zena';
 export final class IrCfg {
   body: IrBody;
   /** Predecessor block ids per block. */
-  preds = new Array<Array<i32>>();
+  preds = new GrowableArray<GrowableArray<i32>>();
   /** Successor block ids per block (edge order, duplicates preserved). */
-  succs = new Array<Array<i32>>();
+  succs = new GrowableArray<GrowableArray<i32>>();
   /** Blocks in reverse postorder (entry first). */
-  rpo = new Array<i32>();
+  rpo = new GrowableArray<i32>();
   /** Reverse-postorder number per block; -1 = unreachable from entry. */
-  rpoIndex = new Array<i32>();
+  rpoIndex = new GrowableArray<i32>();
   /** Immediate dominator per block; entry's is itself; -1 = unreachable. */
-  idom = new Array<i32>();
+  idom = new GrowableArray<i32>();
   /** Dominator-tree children per block, in ascending RPO order. */
-  domChildren = new Array<Array<i32>>();
+  domChildren = new GrowableArray<GrowableArray<i32>>();
 
   new(this.body) {
     this.#computePreds();
@@ -74,8 +74,8 @@ export final class IrCfg {
     let {body} = this;
     var blockId = 0;
     while (blockId < body.blocks.length) {
-      this.preds.push(new Array<i32>());
-      this.succs.push(new Array<i32>());
+      this.preds.push(new GrowableArray<i32>());
+      this.succs.push(new GrowableArray<i32>());
       blockId += 1;
     }
     blockId = 0;
@@ -111,10 +111,10 @@ export final class IrCfg {
     // each stack entry keeps a cursor into its successor list — the
     // simpler push-all-successors form finishes nodes too early and
     // produces orderings where a forward edge looks like a back edge.
-    let postorder = new Array<i32>();
-    let stack = new Array<i32>();
-    let cursor = new Array<i32>();
-    let visited = new Array<boolean>();
+    let postorder = new GrowableArray<i32>();
+    let stack = new GrowableArray<i32>();
+    let cursor = new GrowableArray<i32>();
+    let visited = new GrowableArray<boolean>();
     i = 0;
     while (i < body.blocks.length) {
       visited.push(false);
@@ -203,7 +203,7 @@ export final class IrCfg {
   #computeDomChildren(): void {
     var i = 0;
     while (i < this.body.blocks.length) {
-      this.domChildren.push(new Array<i32>());
+      this.domChildren.push(new GrowableArray<i32>());
       i += 1;
     }
     // Walk in RPO so children lists come out in ascending RPO order.

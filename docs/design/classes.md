@@ -761,7 +761,7 @@ Interfaces will be able to define static methods (in addition to static symbols)
 
 ```zena
 interface ArrayBuilder<T> {
-  static create(capacity: i32): Sequence<T>;
+  static create(capacity: i32): Array<T>;
 }
 ```
 
@@ -773,7 +773,7 @@ You will be able to assign a class to a variable or pass it to a function if the
 
 ```zena
 class GrowableArray<T> implements ArrayBuilder<T> {
-  static create(capacity: i32): Sequence<T> {
+  static create(capacity: i32): Array<T> {
     return new GrowableArray<T>(capacity);
   }
 }

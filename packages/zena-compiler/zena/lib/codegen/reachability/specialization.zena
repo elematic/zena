@@ -14,6 +14,7 @@ import { SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { String } from 'zena:string';
 import { i32ToString } from 'zena:string-convert';
 import { getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, containsErasedType } from '../codegen-utils.zena';
@@ -64,7 +65,7 @@ export final class Specializer implements SpecializerInterface {
   pass: ReachabilityContext;
 
   /** Fields baked erased before their class type existed; see ErasedFieldBake. */
-  #erasedFieldBakes = new Array<ErasedFieldBake>();
+  #erasedFieldBakes = new GrowableArray<ErasedFieldBake>();
 
   new(this.pass);
 
@@ -310,7 +311,7 @@ export final class Specializer implements SpecializerInterface {
       let ifaceId = unspecI.symbolId;
       
       if (!this.pass.instantiatedClassesByInterface.has(ifaceId)) {
-        this.pass.instantiatedClassesByInterface[ifaceId] = new Array<ClassInterfacePair>();
+        this.pass.instantiatedClassesByInterface[ifaceId] = new GrowableArray<ClassInterfacePair>();
       }
       let list = this.pass.instantiatedClassesByInterface[ifaceId];
       var hasC = false;
@@ -366,13 +367,13 @@ export final class Specializer implements SpecializerInterface {
 
     // 1. Pre-register empty structs
     let structName = cKey as String;
-    let emptyStruct = new WasmStruct(structName, new Array<WasmField>());
+    let emptyStruct = new WasmStruct(structName, new GrowableArray<WasmField>());
     emptyStruct.classType = ct;
     this.pass.wasm.types.push(emptyStruct);
     let info = new ClassCodegenInfo(emptyStruct);
     this.pass.wasm.classInfos[cKey] = info;
 
-    let emptyVTableStruct = new WasmStruct(structName + "_VTable", new Array<WasmField>());
+    let emptyVTableStruct = new WasmStruct(structName + "_VTable", new GrowableArray<WasmField>());
     emptyVTableStruct.classType = ct;
     this.pass.wasm.types.push(emptyVTableStruct);
     info.vtableStructType = emptyVTableStruct;
@@ -394,7 +395,7 @@ export final class Specializer implements SpecializerInterface {
 
       let superVtable = this.pass.wasm.classVtable(superKey);
       if (superVtable.length > 0 || ctVtable.length > 0) {
-        let newVTable = new Array<String>();
+        let newVTable = new GrowableArray<String>();
         for (let methName in superVtable) {
           newVTable.push(methName);
         }
@@ -460,20 +461,23 @@ export final class Specializer implements SpecializerInterface {
     }
 
     // 4. Populate VTable slots and structs
-    let mixinMembers = new Array<Node>();
-    let mixinScopes = new Array<String>();
+    let mixinMembers = new GrowableArray<Node>();
+    let mixinScopes = new GrowableArray<String>();
+    let mixinModels = new GrowableArray<SemanticModel>();
     let seenMixins = new HashMap<MixinKey, boolean>();
     let classDeclCd = if (classDecl is ClassDeclaration) classDecl else null;
     if (classDeclCd != null) {
-      collectMixinMembers(this.pass.program, sourceModel, classDeclCd.mixins, mixinMembers, seenMixins, mixinScopes);
+      collectMixinMembers(this.pass.program, sourceModel, classDeclCd.mixins, mixinMembers, seenMixins, mixinScopes, mixinModels);
     }
 
-    let allMembers = new Array<Node>();
-    let allScopes = new Array<String>();
+    let allMembers = new GrowableArray<Node>();
+    let allScopes = new GrowableArray<String>();
+    let allModels = new GrowableArray<SemanticModel>();
     if (classDeclCd != null) {
       for (let ms in classDeclCd.body) {
         allMembers.push(ms);
         allScopes.push("");
+        allModels.push(sourceModel);
       }
     }
     
@@ -481,6 +485,7 @@ export final class Specializer implements SpecializerInterface {
     for (var mmi = 0; mmi < mixinMembers.length; mmi += 1) {
       allMembers.push(mixinMembers[mmi]);
       allScopes.push(mixinScopes[mmi]);
+      allModels.push(mixinModels[mmi]);
     }
 
     for (let ms in allMembers) {
@@ -519,7 +524,7 @@ export final class Specializer implements SpecializerInterface {
           // of one signature, and a generic method has no single body
           // — it exists once per specialization, each with its own.
           let isGenericMeth = ms.typeParameters != null &&
-              (ms.typeParameters as Array<TypeParameter>).length > 0;
+              (ms.typeParameters as GrowableArray<TypeParameter>).length > 0;
           if (!found && methName != "<constructor>" && !isPrivateMeth && !isGenericMeth) {
             ctVtable.push(vtableMethName);
           }
@@ -634,7 +639,7 @@ export final class Specializer implements SpecializerInterface {
         if (msScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
           regName = msScope + "::" + methName;
         }
-        let regFn = this.registerClassMethod(ct, classDecl, regName, ms as Node, false, false, null, sourceModel);
+        let regFn = this.registerClassMethod(ct, classDecl, regName, ms as Node, false, false, null, allModels[msIdx]);
         applyMixinPrivateScope(regFn, ms as Node, msScope);
       } else if (ms is AccessorDeclaration) {
         let accName = match (ms.name) {
@@ -652,7 +657,7 @@ export final class Specializer implements SpecializerInterface {
           if (isPrivateAcc && msScope != "") {
             getterRegName = msScope + "::" + getterRegName;
           }
-          let regG = this.registerClassMethod(ct, classDecl, getterRegName, ms as Node, false, false, null, sourceModel);
+          let regG = this.registerClassMethod(ct, classDecl, getterRegName, ms as Node, false, false, null, allModels[msIdx]);
           applyMixinPrivateScope(regG, ms as Node, msScope);
         }
         let {setter} = ms;
@@ -661,7 +666,7 @@ export final class Specializer implements SpecializerInterface {
           if (isPrivateAcc && msScope != "") {
             setterRegName = msScope + "::" + setterRegName;
           }
-          let regS = this.registerClassMethod(ct, classDecl, setterRegName, setter, false, false, null, sourceModel);
+          let regS = this.registerClassMethod(ct, classDecl, setterRegName, setter, false, false, null, allModels[msIdx]);
           applyMixinPrivateScope(regS, setter, msScope);
         }
       } else if (ms is FieldDefinition) {
@@ -676,22 +681,22 @@ export final class Specializer implements SpecializerInterface {
         };
         if (fieldName != "") {
           if (!fieldName.startsWith("#")) {
-            this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, sourceModel);
+            this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, allModels[msIdx]);
             if (ms.mutability != null && ms.mutability == "var") {
-              this.registerClassMethod(ct, classDecl, "set#" + fieldName, null, false, true, fieldName, sourceModel);
+              this.registerClassMethod(ct, classDecl, "set#" + fieldName, null, false, true, fieldName, allModels[msIdx]);
             }
           } else {
             if (ms.setterName != null) {
-              this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, sourceModel);
+              this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, allModels[msIdx]);
             }
             if (ms.isAbstract) {
-              this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, sourceModel);
+              this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, allModels[msIdx]);
               if (ms.mutability != null && ms.mutability == "var") {
-                this.registerClassMethod(ct, classDecl, "set#" + fieldName, null, false, true, fieldName, sourceModel);
+                this.registerClassMethod(ct, classDecl, "set#" + fieldName, null, false, true, fieldName, allModels[msIdx]);
               }
             }
             if (ms.isDeclare) {
-              this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, sourceModel);
+              this.registerClassMethod(ct, classDecl, "get#" + fieldName, null, true, false, fieldName, allModels[msIdx]);
             }
           }
         }
@@ -774,11 +779,11 @@ export final class Specializer implements SpecializerInterface {
 
     // 1. Pre-register empty vtable and fat ptr structs
     let structName = iKey as String;
-    let emptyVTableStruct = new WasmStruct(structName + "_VTable", new Array<WasmField>());
+    let emptyVTableStruct = new WasmStruct(structName + "_VTable", new GrowableArray<WasmField>());
     this.pass.wasm.types.push(emptyVTableStruct);
     this.pass.wasm.interfaceVTableStructs[iKey] = emptyVTableStruct;
 
-    let fatPtrFields = new Array<WasmField>();
+    let fatPtrFields = new GrowableArray<WasmField>();
     fatPtrFields.push(new WasmField("instance", new ValTypeAnyRef(), false));
     fatPtrFields.push(new WasmField("vtable", new ValTypeRef(emptyVTableStruct), false));
     let emptyStruct = new WasmStruct(structName + "_FatPtr", fatPtrFields);
@@ -1003,7 +1008,7 @@ export final class Specializer implements SpecializerInterface {
                   } else if (getSignatureKey(ft) == sigKey) {
                     methodTypeNode = ft;
                   } else if (ft.overloads != null) {
-                    let ovs = ft.overloads as Array<FunctionType>;
+                    let ovs = ft.overloads as GrowableArray<FunctionType>;
                     for (let ov in ovs) {
                       if (getSignatureKey(ov) == sigKey) {
                         methodTypeNode = ov;
@@ -1036,11 +1041,11 @@ export final class Specializer implements SpecializerInterface {
 
         if (methodTypeNode == null) {
           if (methName == "==") {
-            let eqParams = new Array<Type>();
+            let eqParams = new GrowableArray<Type>();
             eqParams.push(cType);
             methodTypeNode = new FunctionType(eqParams, null, new BooleanType());
           } else if (methName == "hashCode") {
-            methodTypeNode = new FunctionType(new Array<Type>(), null, new I32Type());
+            methodTypeNode = new FunctionType(new GrowableArray<Type>(), null, new I32Type());
           } else if (methName.startsWith("get#")) {
             let fieldName = methName.sliceBytes(4, methName.length);
             var pType: Type | null = null;
@@ -1066,7 +1071,7 @@ export final class Specializer implements SpecializerInterface {
               curr = cc.superType;
             }
             if (pType != null) {
-              methodTypeNode = new FunctionType(new Array<Type>(), null, pType);
+              methodTypeNode = new FunctionType(new GrowableArray<Type>(), null, pType);
             }
           } else if (methName.startsWith("set#")) {
             let fieldName = methName.sliceBytes(4, methName.length);
@@ -1098,7 +1103,7 @@ export final class Specializer implements SpecializerInterface {
               curr = cc.superType;
             }
             if (pType != null) {
-              let params = new Array<Type>();
+              let params = new GrowableArray<Type>();
               params.push(pType);
               methodTypeNode = new FunctionType(params, null, new VoidType());
             }
@@ -1140,8 +1145,8 @@ export final class Specializer implements SpecializerInterface {
       this.pass.suppressNameEvidence = savedSuppress;
     }
 
-    let params = new Array<ValType>();
-    let returns = new Array<ValType>();
+    let params = new GrowableArray<ValType>();
+    let returns = new GrowableArray<ValType>();
 
     let rootClass = if (methName == "<constructor>") cType else getMemberRootClass(cType, methName);
 
@@ -1291,7 +1296,7 @@ export final class Specializer implements SpecializerInterface {
 
     let isGenericTemplate = cType != null &&
                             cType.typeParameters != null && 
-                            (cType.typeParameters as Array<TypeParameterType>).length > 0 && 
+                            (cType.typeParameters as GrowableArray<TypeParameterType>).length > 0 && 
                             (cType.typeArguments == null || !isConcrete(cType));
 
     let registeredKey = getClassMethodKey(getClassKey(cType), realMethName);
@@ -1341,7 +1346,7 @@ export final class Specializer implements SpecializerInterface {
     this.pass.wasm.classMethodMap[registeredKey] = wasmFunc;
     let cKey = getClassKey(cType) as String;
     if (!this.pass.wasm.classMethods.has(cKey)) {
-      this.pass.wasm.classMethods[cKey] = new Array<WasmFunction>();
+      this.pass.wasm.classMethods[cKey] = new GrowableArray<WasmFunction>();
     }
     this.pass.wasm.classMethods[cKey].push(wasmFunc);
     return wasmFunc;
@@ -1438,9 +1443,9 @@ export final class Specializer implements SpecializerInterface {
 
     if (ct.isCaseClass) {
       if (!ct.members.has("==")) {
-        let eqParams = new Array<Type>();
+        let eqParams = new GrowableArray<Type>();
         eqParams.push(ct);
-        let eqNames = new Array<String>();
+        let eqNames = new GrowableArray<String>();
         eqNames.push("other");
         ct.members["=="] = new MethodInfo(new FunctionType(eqParams, eqNames, new BooleanType()), false, false, false, false);
       }
@@ -1450,7 +1455,7 @@ export final class Specializer implements SpecializerInterface {
       }
 
       if (!ct.members.has("hashCode")) {
-        ct.members["hashCode"] = new MethodInfo(new FunctionType(new Array<Type>(), null, new I32Type()), false, false, false, false);
+        ct.members["hashCode"] = new MethodInfo(new FunctionType(new GrowableArray<Type>(), null, new I32Type()), false, false, false, false);
       }
       if (!vtableSet.has("hashCode")) {
         ctVtable.push("hashCode");
@@ -1462,20 +1467,24 @@ export final class Specializer implements SpecializerInterface {
     // An erasure gets a struct and no methods — see registerSpecializedClass.
     let isErasedCt = containsErasedType(ct as Type);
     if (cdDecl != null && !isErasedCt) {
-      let mixinMembers = new Array<Node>();
-      let mixinScopes = new Array<String>();
+      let mixinMembers = new GrowableArray<Node>();
+      let mixinScopes = new GrowableArray<String>();
+      let mixinModels = new GrowableArray<SemanticModel>();
       let seenMixins = new HashMap<MixinKey, boolean>();
-      collectMixinMembers(this.pass.program, sourceModel, cdDecl.mixins, mixinMembers, seenMixins, mixinScopes);
+      collectMixinMembers(this.pass.program, sourceModel, cdDecl.mixins, mixinMembers, seenMixins, mixinScopes, mixinModels);
 
-      let allMembers = new Array<Node>();
-      let allScopes = new Array<String>();
+      let allMembers = new GrowableArray<Node>();
+      let allScopes = new GrowableArray<String>();
+      let allModels = new GrowableArray<SemanticModel>();
       for (let ms in cdDecl.body) {
         allMembers.push(ms);
         allScopes.push("");
+        allModels.push(sourceModel);
       }
       for (var mmi = 0; mmi < mixinMembers.length; mmi += 1) {
         allMembers.push(mixinMembers[mmi]);
         allScopes.push(mixinScopes[mmi]);
+        allModels.push(mixinModels[mmi]);
       }
 
       var msIdx = -1;
@@ -1503,7 +1512,7 @@ export final class Specializer implements SpecializerInterface {
               let mInfo = ct.members[methName];
               if (mInfo.type is FunctionType) {
                 let ft = mInfo.type as FunctionType;
-                let specificType = matchOverload(sourceModel, ft, ms);
+                let specificType = matchOverload(allModels[msIdx], ft, ms);
                 if (specificType != null) {
                   vtableMethName = methName + getSignatureKey(specificType);
                 }
@@ -1515,7 +1524,7 @@ export final class Specializer implements SpecializerInterface {
             let isPrivateMeth = methName.length > 0 && methName.sliceBytes(0, 1) == "#";
             // See above: a generic method has no single body to hold.
             let isGenericMeth = ms.typeParameters != null &&
-                (ms.typeParameters as Array<TypeParameter>).length > 0;
+                (ms.typeParameters as GrowableArray<TypeParameter>).length > 0;
             if (!ms.isStatic && !vtableSet.has(vtableMethName) && methName != "<constructor>" && !isPrivateMeth && !isGenericMeth) {
               ctVtable.push(vtableMethName);
               vtableSet.add(vtableMethName);
@@ -1524,7 +1533,7 @@ export final class Specializer implements SpecializerInterface {
             if (msScope != "" && isPrivateMeth) {
               regName = msScope + "::" + methName;
             }
-            let regFn = this.registerClassMethod(ct, cdDecl, regName, ms, false, false, null, sourceModel);
+            let regFn = this.registerClassMethod(ct, cdDecl, regName, ms, false, false, null, allModels[msIdx]);
             applyMixinPrivateScope(regFn, ms, msScope);
           }
         } else if (ms is AccessorDeclaration) {
@@ -1552,7 +1561,7 @@ export final class Specializer implements SpecializerInterface {
               if (isPrivateAcc && msScope != "") {
                 getterName = msScope + "::" + getterName;
               }
-              let regG = this.registerClassMethod(ct, cdDecl, getterName, ms as Node, false, false, null, sourceModel);
+              let regG = this.registerClassMethod(ct, cdDecl, getterName, ms as Node, false, false, null, allModels[msIdx]);
               applyMixinPrivateScope(regG, ms as Node, msScope);
             }
             let {setter} = ms;
@@ -1565,7 +1574,7 @@ export final class Specializer implements SpecializerInterface {
               if (isPrivateAcc && msScope != "") {
                 setterName = msScope + "::" + setterName;
               }
-              let regS = this.registerClassMethod(ct, cdDecl, setterName, setter, false, false, null, sourceModel);
+              let regS = this.registerClassMethod(ct, cdDecl, setterName, setter, false, false, null, allModels[msIdx]);
               applyMixinPrivateScope(regS, setter, msScope);
             }
           }
@@ -1587,14 +1596,14 @@ export final class Specializer implements SpecializerInterface {
                 ctVtable.push(getterName);
                 vtableSet.add(getterName);
               }
-              this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, sourceModel);
+              this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, allModels[msIdx]);
               if (ms.mutability != null && ms.mutability == "var") {
                 let setterName = "set#" + fieldName;
                 if (!vtableSet.has(setterName)) {
                   ctVtable.push(setterName);
                   vtableSet.add(setterName);
                 }
-                this.registerClassMethod(ct, cdDecl, setterName, null, false, true, fieldName, sourceModel);
+                this.registerClassMethod(ct, cdDecl, setterName, null, false, true, fieldName, allModels[msIdx]);
               }
             } else {
               if (ms.setterName != null) {
@@ -1603,6 +1612,7 @@ export final class Specializer implements SpecializerInterface {
                   ctVtable.push(getterName);
                   vtableSet.add(getterName);
                 }
+                this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, allModels[msIdx]);
               }
               if (ms.isAbstract) {
                 let getterName = "get#" + fieldName;
@@ -1610,14 +1620,14 @@ export final class Specializer implements SpecializerInterface {
                   ctVtable.push(getterName);
                   vtableSet.add(getterName);
                 }
-                this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, sourceModel);
+                this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, allModels[msIdx]);
                 if (ms.mutability != null && ms.mutability == "var") {
                   let setterName = "set#" + fieldName;
                   if (!vtableSet.has(setterName)) {
                     ctVtable.push(setterName);
                     vtableSet.add(setterName);
                   }
-                  this.registerClassMethod(ct, cdDecl, setterName, null, false, true, fieldName, sourceModel);
+                  this.registerClassMethod(ct, cdDecl, setterName, null, false, true, fieldName, allModels[msIdx]);
                 }
               }
               if (ms.isDeclare) {
@@ -1626,7 +1636,7 @@ export final class Specializer implements SpecializerInterface {
                   ctVtable.push(getterName);
                   vtableSet.add(getterName);
                 }
-                this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, sourceModel);
+                this.registerClassMethod(ct, cdDecl, getterName, null, true, false, fieldName, allModels[msIdx]);
               }
             }
           }
@@ -1645,7 +1655,7 @@ export final class Specializer implements SpecializerInterface {
       // Re-derive the factory's return at the now-registered struct;
       // the first registration may have preceded it and fallen back to
       // structref.
-      let returns = new Array<ValType>();
+      let returns = new GrowableArray<ValType>();
       returns.push(new ValTypeRef(st));
       let sig = this.pass.wasm.getSignature(
           wasmFunc.signature.params, returns);
@@ -1691,7 +1701,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
-    let fields = new Array<WasmField>();
+    let fields = new GrowableArray<WasmField>();
     if (ct.superType != null) {
       let superKey = getClassKey(ct.superType as ClassType);
       if (let (true, superInfo) = this.pass.wasm.classInfos.get(superKey)) {
@@ -1807,7 +1817,7 @@ export final class Specializer implements SpecializerInterface {
    * re-derives the signature once the struct exists — the same
    * two-step the receiver parameter used.
    */
-  #pushCtorReturn(cType: ClassType, returns: Array<ValType>): void {
+  #pushCtorReturn(cType: ClassType, returns: GrowableArray<ValType>): void {
     if (let (true, cInfo) = this.pass.wasm.classInfos.get(getClassKey(cType))) {
       returns.push(new ValTypeRef(cInfo.structType));
     } else {
@@ -1829,7 +1839,7 @@ export final class Specializer implements SpecializerInterface {
    */
   mintConstructorPhases(): void {
     // Snapshot the reached constructors: minting appends functions.
-    let ctors = new Array<WasmFunction>();
+    let ctors = new GrowableArray<WasmFunction>();
     for (let f in this.pass.wasm.functions) {
       if (f.methodName != null &&
           (f.methodName as String) == '<constructor>' &&
@@ -1870,7 +1880,7 @@ export final class Specializer implements SpecializerInterface {
     if (structType.superStruct != null) {
       ownStart = (structType.superStruct as WasmStruct).fields.length;
     }
-    let initReturns = new Array<ValType>();
+    let initReturns = new GrowableArray<ValType>();
     var fi = ownStart;
     while (fi < structType.fields.length) {
       initReturns.push(structType.fields[fi].type);
@@ -1899,13 +1909,13 @@ export final class Specializer implements SpecializerInterface {
     this.pass.markFunctionReached(initFn);
 
     if (ctorHasRunnableBody(factory)) {
-      let bodyParams = new Array<ValType>();
+      let bodyParams = new GrowableArray<ValType>();
       bodyParams.push(new ValTypeRefNull(structType));
       for (let p in factory.signature.params) {
         bodyParams.push(p);
       }
       let bodySig = this.pass.wasm.getSignature(
-          bodyParams, new Array<ValType>());
+          bodyParams, new GrowableArray<ValType>());
       let bodyFn = new WasmFunction(bodySig, factory.node, factory.model);
       bodyFn.name = (cKey as String) + '.<ctor-body>';
       bodyFn.methodName = '<ctor-body>';
@@ -1947,11 +1957,11 @@ export final class Specializer implements SpecializerInterface {
     
     // Resolve the original generic FunctionType
     let funcTypeNode = model.getNodeType(funcExpr) as FunctionType;
-    let typeParams = funcTypeNode.typeParameters as Array<TypeParameterType>;
+    let typeParams = funcTypeNode.typeParameters;
     
     // Substitute typeParams with typeArgs in the function signature
-    let concreteParams = new Array<ValType>();
-    let concreteReturns = new Array<ValType>();
+    let concreteParams = new GrowableArray<ValType>();
+    let concreteReturns = new GrowableArray<ValType>();
     
     for (let p in funcTypeNode.parameters) {
       let subType = substituteTypeParamsInCodegen(this.pass.wasm, typeParams, typeArgs, p);

@@ -503,7 +503,7 @@ minting a container of them is no better than minting one:
 
 ```zena
 let launderAll = <T>(xs: Array<i32>): Array<T> => xs as Array<T>; // Error
-let relabel = <T>(xs: Array<T>): Sequence<T> => xs as Sequence<T>; // OK
+let relabel = <T>(xs: Array<T>): Iterable<T> => xs as Iterable<T>; // OK
 ```
 
 The difference is whether the source already supplies the type arguments. The
@@ -2215,12 +2215,12 @@ for (let n in numbers) {
 }
 
 // Works with any class implementing Iterable<T>
-class Counter implements Iterable<i32> {
+class Counter with IterableUtils<i32> implements Iterable<i32> {
   #max: i32;
 
   new(max: i32) { this.#max = max; }
 
-  iterator(): Iterator<i32> {
+  :Iterable.iterator(): Iterator<i32> {
     return new CounterIterator(this.#max);
   }
 }
@@ -3984,8 +3984,67 @@ actually used.
 
 ## 10. Standard Library
 
-Zena includes a small standard library of utility classes. These are
-automatically imported into every module.
+Zena includes a standard library of utility classes and collection types.
+
+### Iterables & Iterators
+
+Array traversal is defined by `Iterator<T>` and `Iterable<T>` in `zena:iterator`, along with the `IterableUtils<T>` mixin in `zena:iterable-utils`.
+
+#### Iterator\<T\>
+
+An `Iterator<T>` yields elements sequentially using inline tuples for zero-allocation iteration:
+
+```zena
+export interface Iterator<T> {
+  next(): inline (true, T) | inline (false, _);
+}
+```
+
+Calls to `next()` return `(true, value)` for each element until the iterator is exhausted, returning `(false, _)`.
+
+#### Iterable\<T\>
+
+`Iterable<T>` is the base interface implemented by all iterable collections:
+
+```zena
+export interface Iterable<T> {
+  static symbol iterator;
+
+  /** Returns a fresh iterator starting from the beginning. */
+  :iterator(): Iterator<T>;
+
+  /** Returns true if the collection contains the specified value. */
+  contains(value: T): boolean;
+
+  /** Returns true if all elements match the predicate. */
+  all(predicate: (item: T) => boolean): boolean;
+
+  /** Returns true if at least one element matches the predicate. */
+  some(predicate: (item: T) => boolean): boolean;
+
+  /** Reduces the collection to a single value by accumulating state. */
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R;
+
+  /** Finds the first element matching the predicate, or (false, _) if none. */
+  find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _);
+}
+```
+
+#### IterableUtils\<T\>
+
+`IterableUtils<T>` is a mixin on `Iterable<T>` that provides standard implementations of `contains`, `all`, `some`, `fold`, and `find` using `for (let item in this)` loops:
+
+```zena
+export mixin IterableUtils<T> on Iterable<T> {
+  contains(value: T): boolean { ... }
+  all(predicate: (item: T) => boolean): boolean { ... }
+  some(predicate: (item: T) => boolean): boolean { ... }
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R { ... }
+  find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _) { ... }
+}
+```
+
+Collections like `FixedArray<T>`, `GrowableArray<T>`, `HashMap<K, V>`, `HashSet<T>`, `OrderedHashMap<K, V>`, and `OrderedHashSet<T>` implement `Iterable<T>` either directly or via `IterableUtils<T>`.
 
 ### Arrays
 

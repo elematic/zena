@@ -46,29 +46,29 @@ export final class ZirFunctionEmitter {
   body: IrBody;
   cfg: IrCfg;
   /** Per instruction id: assigned wasm local index, or -1. */
-  localOf = new Array<i32>();
+  localOf = new GrowableArray<i32>();
   /** Per block-param instruction id: cycle-breaking temp local, or -1. */
-  tempOf = new Array<i32>();
+  tempOf = new GrowableArray<i32>();
   /** Per instruction id: copy-coalescing class representative. */
-  #classOf = new Array<i32>();
+  #classOf = new GrowableArray<i32>();
   /**
    * Residual copy sequence per branch edge, keyed by the edge's
    * argStart (unique per successor record): flat (src, dst) local
    * pairs. Edges whose moves all coalesced away have no entry.
    */
-  #movePlans = new HashMap<i32, Array<i32>>();
+  #movePlans = new HashMap<i32, GrowableArray<i32>>();
   /** Locals beyond the signature params, in index order. */
-  localTypes = new Array<ValType>();
+  localTypes = new GrowableArray<ValType>();
   /**
    * Per mutable variable id: its dedicated wasm local. Allocated
    * before any SSA value gets one and never entered into a coalescing
    * class, so nothing else can land in it — the whole point is that
    * the stored value survives an unwind to a handler in this frame.
    */
-  #varLocal = new Array<i32>();
+  #varLocal = new GrowableArray<i32>();
   /** Multi-result call -> its mv_get projections, ascending index. */
-  #mvProjections = new HashMap<i32, Array<i32>>();
-  frames = new Array<EmitFrame>();
+  #mvProjections = new HashMap<i32, GrowableArray<i32>>();
+  frames = new GrowableArray<EmitFrame>();
   /**
    * Stack-scheduled values (ir.md §12, first step): used exactly
    * once, by the next emitting instruction in the block, as one of a
@@ -78,7 +78,7 @@ export final class ZirFunctionEmitter {
    * re-assert. `[1, 2, 3]` is three constants streamed straight into
    * array.new_fixed; `a * b` streams both operands.
    */
-  streamed = new Array<boolean>();
+  streamed = new GrowableArray<boolean>();
   /**
    * Streamed values currently on the wasm stack, in push order, and
    * how many of them the consuming instruction has already claimed
@@ -86,7 +86,7 @@ export final class ZirFunctionEmitter {
    * streams a LEADING operand run, so operand order is push order —
    * and the queue resets once every pending value is claimed.
    */
-  pendingStreamed = new Array<i32>();
+  pendingStreamed = new GrowableArray<i32>();
   var claimedStreamed = 0;
   /**
    * Per streamed/teed producer: the consumer its on-stack copy is
@@ -96,7 +96,7 @@ export final class ZirFunctionEmitter {
    * it would consume a stack slot that sits below its own other
    * operands and call with its arguments swapped.
    */
-  #streamedFor = new Array<i32>();
+  #streamedFor = new GrowableArray<i32>();
   /**
    * Rematerialized constants: a numeric constant or ref.null gets no
    * local and emits NOTHING at its definition — every #pushValue of it
@@ -107,7 +107,7 @@ export final class ZirFunctionEmitter {
    * (the shared `1` of an array literal and its loop increment). Edge
    * args keep their locals: #planMoves copies locals, not values.
    */
-  remat = new Array<boolean>();
+  remat = new GrowableArray<boolean>();
   /**
    * Whether each wasm local has had a set emitted, and whether emission
    * is still in the function's straight-line PROLOGUE (no control
@@ -116,7 +116,7 @@ export final class ZirFunctionEmitter {
    * local already holds its type's default, so a prologue store of
    * the default into a never-written local is a no-op (#259).
    */
-  #localEverSet = new Array<boolean>();
+  #localEverSet = new GrowableArray<boolean>();
   var #prologue = true;
   /**
    * Multi-use values consumed like streamed ones: the producer emits
@@ -124,7 +124,7 @@ export final class ZirFunctionEmitter {
    * (for the later uses) and stays on the stack for the adjacent
    * consumer, which claims it through the same pending queue (#258).
    */
-  teed = new Array<boolean>();
+  teed = new GrowableArray<boolean>();
   /**
    * Entry-block default-constant definitions — the candidates for
    * prologue default-store elision. The stack scheduler treats them
@@ -134,7 +134,7 @@ export final class ZirFunctionEmitter {
    * const+local.set, which is stack-net-zero and so cannot disturb a
    * pending streamed run — the optimistic skip stays sound.
    */
-  #elisionCandidate = new Array<boolean>();
+  #elisionCandidate = new GrowableArray<boolean>();
   /**
    * A `return` at the outermost level (no open frames) is emitted
    * LAZILY: its values are pushed, and the opcode is written only if
@@ -159,11 +159,11 @@ export final class ZirFunctionEmitter {
    * (#finishNonNullLocals). All of it is off (#trackInit) when the
    * static writer check leaves no candidates.
    */
-  #candTarget = new Array<WasmType | null>();
-  #ownerDepth = new Array<i32>();
-  #scopeSets = new Array<Array<i32>>();
-  #copyEdgeDst = new Array<i32>();
-  #copyEdgeSrc = new Array<i32>();
+  #candTarget = new GrowableArray<WasmType | null>();
+  #ownerDepth = new GrowableArray<i32>();
+  #scopeSets = new GrowableArray<GrowableArray<i32>>();
+  #copyEdgeDst = new GrowableArray<i32>();
+  #copyEdgeSrc = new GrowableArray<i32>();
   var #trackInit = false;
   /** Source local of the #copyArgs move currently being emitted, or -1. */
   var #copyRecordSrc = -1;
@@ -263,7 +263,7 @@ export final class ZirFunctionEmitter {
         if (let (true, list) = this.#mvProjections.get(callInst)) {
           list.push(i);
         } else {
-          let list = new Array<i32>();
+          let list = new GrowableArray<i32>();
           list.push(i);
           this.#mvProjections[callInst] = list;
         }
@@ -351,7 +351,7 @@ export final class ZirFunctionEmitter {
       this.#ownerDepth.push(-1);
       li += 1;
     }
-    this.#scopeSets.push(new Array<i32>());
+    this.#scopeSets.push(new GrowableArray<i32>());
   }
 
   /** Demotes a candidate whose stored value is not exactly (ref target). */
@@ -374,7 +374,7 @@ export final class ZirFunctionEmitter {
     if (!this.#trackInit) {
       return;
     }
-    this.#scopeSets.push(new Array<i32>());
+    this.#scopeSets.push(new GrowableArray<i32>());
   }
 
   /**
@@ -406,7 +406,7 @@ export final class ZirFunctionEmitter {
     if (popScope) {
       this.#scopeSets.pop();
     } else {
-      this.#scopeSets[depth] = new Array<i32>();
+      this.#scopeSets[depth] = new GrowableArray<i32>();
     }
   }
 
@@ -471,7 +471,7 @@ export final class ZirFunctionEmitter {
         c += 1;
       }
     }
-    let graduated = new Array<boolean>();
+    let graduated = new GrowableArray<boolean>();
     var li = 0;
     while (li < paramCount) {
       graduated.push(false);
@@ -522,9 +522,9 @@ export final class ZirFunctionEmitter {
     let {streamed} = this;
     let {localOf} = this;
     // Decoded value operands (uses) per instruction, computed once.
-    let usesOf = new Array<Array<i32>>();
+    let usesOf = new GrowableArray<Array<i32>>();
     for (var i = 0; i < count; i += 1) {
-      let ops = new Array<i32>();
+      let ops = new GrowableArray<i32>();
       body.appendValueOperands(i, ops);
       usesOf.push(ops);
     }
@@ -533,7 +533,7 @@ export final class ZirFunctionEmitter {
     // before every instruction. mv_get projections adopt their call's
     // position: the call's emission is what writes projection locals,
     // so their live ranges must start there.
-    let posOf = new Array<i32>();
+    let posOf = new GrowableArray<i32>();
     for (var i = 0; i < count; i += 1) {
       posOf.push(-1);
     }
@@ -551,10 +551,10 @@ export final class ZirFunctionEmitter {
 
     // Block-granularity liveness bitsets, flattened [block * words + w].
     let words = (count + 31) >> 5;
-    let liveIn = new Array<i32>();
-    let liveOut = new Array<i32>();
-    let defs = new Array<i32>();
-    let upUse = new Array<i32>();
+    let liveIn = new GrowableArray<i32>();
+    let liveOut = new GrowableArray<i32>();
+    let defs = new GrowableArray<i32>();
+    let upUse = new GrowableArray<i32>();
     for (var i = 0; i < nb * words; i += 1) {
       liveIn.push(0);
       liveOut.push(0);
@@ -563,7 +563,7 @@ export final class ZirFunctionEmitter {
     }
     let bitGet = (arr: Array<i32>, blk: i32, v: i32): boolean =>
         (arr[blk * words + (v >> 5)] & (1 << (v & 31))) != 0;
-    let bitSet = (arr: Array<i32>, blk: i32, v: i32): void => {
+    let bitSet = (arr: GrowableArray<i32>, blk: i32, v: i32): void => {
       let at = blk * words + (v >> 5);
       arr[at] = arr[at] | (1 << (v & 31));
     };
@@ -678,12 +678,12 @@ export final class ZirFunctionEmitter {
       }
       return c;
     };
-    let membersOf = new HashMap<i32, Array<i32>>();
-    let members = (root: i32): Array<i32> => {
+    let membersOf = new HashMap<i32, GrowableArray<i32>>();
+    let members = (root: i32): GrowableArray<i32> => {
       if (let (true, list) = membersOf.get(root)) {
         return list;
       }
-      let list = new Array<i32>();
+      let list = new GrowableArray<i32>();
       list.push(root);
       membersOf[root] = list;
       return list;
@@ -779,9 +779,9 @@ export final class ZirFunctionEmitter {
         if (params.length == 0) {
           continue;
         }
-        let srcL = new Array<i32>();
-        let dstL = new Array<i32>();
-        let paramIds = new Array<i32>();
+        let srcL = new GrowableArray<i32>();
+        let dstL = new GrowableArray<i32>();
+        let paramIds = new GrowableArray<i32>();
         var i = 0;
         while (i < params.length) {
           let arg = body.extra[s.argStart + i];
@@ -801,8 +801,8 @@ export final class ZirFunctionEmitter {
         if (srcL.length == 0) {
           continue;
         }
-        let plan = new Array<i32>();
-        let done = new Array<boolean>();
+        let plan = new GrowableArray<i32>();
+        let done = new GrowableArray<boolean>();
         i = 0;
         while (i < srcL.length) {
           done.push(false);
@@ -912,12 +912,12 @@ export final class ZirFunctionEmitter {
   #scheduleStack(): void {
     let {body} = this;
     let count = body.instCount();
-    let useCount = new Array<i32>();
+    let useCount = new GrowableArray<i32>();
     for (var i = 0; i < count; i += 1) {
       useCount.push(0);
     }
     for (var i = 0; i < count; i += 1) {
-      let operands = new Array<i32>();
+      let operands = new GrowableArray<i32>();
       body.appendValueOperands(i, operands);
       for (let v in operands) {
         if (v >= 0 && v < count) {
@@ -929,7 +929,7 @@ export final class ZirFunctionEmitter {
     // teed value leaves one copy on the stack (later uses read the
     // local), so a second consumer matching it in its prefix would
     // find the copy already consumed and read its operands swapped.
-    let stackClaimed = new Array<boolean>();
+    let stackClaimed = new GrowableArray<boolean>();
     for (var sc = 0; sc < count; sc += 1) {
       stackClaimed.push(false);
     }
@@ -940,7 +940,7 @@ export final class ZirFunctionEmitter {
         let cop = body.op(consumer);
         if (cop == IrOp.nop || cop == IrOp.mv_get) { continue; }
         if (!this.#streamsFirstOperand(cop)) { continue; }
-        let ops = new Array<i32>();
+        let ops = new GrowableArray<i32>();
         body.appendValueOperands(consumer, ops);
         if (ops.length == 0) { continue; }
         // A LEADING run of operands streams when its producers are
@@ -1234,14 +1234,14 @@ export final class ZirFunctionEmitter {
       // that reaches a latch without passing the header is in the
       // loop) — RPO ranges are not reliable here: the DFS can order
       // an exit block between the header and the loop body.
-      let inLoop = new Array<boolean>();
+      let inLoop = new GrowableArray<boolean>();
       var b = 0;
       while (b < this.body.blocks.length) {
         inLoop.push(false);
         b += 1;
       }
       inLoop[x] = true;
-      let work = new Array<i32>();
+      let work = new GrowableArray<i32>();
       for (let p in this.cfg.preds[x]) {
         if (this.cfg.rpoIndex[p] >= this.cfg.rpoIndex[x]) {
           work.push(p);
@@ -1256,8 +1256,8 @@ export final class ZirFunctionEmitter {
           }
         }
       }
-      let inLoopMerge = new Array<i32>();
-      let exits = new Array<i32>();
+      let inLoopMerge = new GrowableArray<i32>();
+      let exits = new GrowableArray<i32>();
       for (let c in this.cfg.domChildren[x]) {
         if (!inLoop[c]) {
           exits.push(c);
@@ -1267,7 +1267,7 @@ export final class ZirFunctionEmitter {
       }
       this.#loopWithExits(x, inLoopMerge, exits, exits.length);
     } else {
-      let mergeChildren = new Array<i32>();
+      let mergeChildren = new GrowableArray<i32>();
       for (let c in this.cfg.domChildren[x]) {
         if (this.cfg.isMergeNode(c)) {
           mergeChildren.push(c);
@@ -1392,7 +1392,7 @@ export final class ZirFunctionEmitter {
       // operands first, through #pushValue, which claims pending
       // values in order. Anything else with pending values is a
       // schedule violation.
-      let operands = new Array<i32>();
+      let operands = new GrowableArray<i32>();
       body.appendValueOperands(inst, operands);
       let pendingCount = this.pendingStreamed.length - this.claimedStreamed;
       var ok = this.#streamsFirstOperand(op) &&
@@ -2107,7 +2107,7 @@ export final class ZirFunctionEmitter {
       }
       case _: {
         // simd_const and simd_shuffle: sixteen immediate bytes.
-        let bytes = new Array<i32>();
+        let bytes = new GrowableArray<i32>();
         var i = 0;
         while (i < 16) {
           bytes.push(body.extra[payload + 1 + i]);

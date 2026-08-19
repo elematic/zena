@@ -17,7 +17,7 @@ This document tracks completed work and planned features. For project instructio
 - **Functional Programming**: Closures and captures, inline tuples, and the pipeline operator (`|>`).
 - **Control Flow & Pattern Matching**:
   - Exhaustive pattern matching (`match` expression) supporting literals, variables, records, classes, logical combinators, and guards.
-  - Pattern conditions (`if let`, `while let`) and `for-in` loops over `Iterator`/`Sequence`.
+  - Pattern conditions (`if let`, `while let`) and `for-in` loops over `Iterator`/`Array`.
 - **Error Handling**: WASM-GC exception handling (`throw` and `try`/`catch`).
 - **Standard Library**: Core library modules (`String`, `StringBuilder`, `Array`, `Map`, `HashSet`, `Option`, `JSON`, `Regex`, file I/O).
 - **Optimization**: Compiler-driven dead code elimination (DCE) for functions, classes, methods, and WASM types.

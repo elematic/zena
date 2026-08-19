@@ -17,6 +17,7 @@
  */
 
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { HashMap, Map } from 'zena:map';
 import { HashSet } from 'zena:set';
 import {
@@ -118,7 +119,7 @@ export final class CompilerOptions {
 /** The result of a compilation. */
 export final class CompilationResult(
   /** All source files in topological order (dependencies before dependents). */
-  files: Array<SourceFile>,
+  files: GrowableArray<SourceFile>,
 
   /** The entry point source file. */
   entry: SourceFile,
@@ -151,7 +152,7 @@ export final class ProgramCheckResult {
   exportSignatures: HashMap<String, HashMap<String, Type>>;
 
   /** Aggregated diagnostics from all modules. */
-  diagnostics = new Array<Diagnostic>();
+  diagnostics = new GrowableArray<Diagnostic>();
 
   /** The entry module's check result (convenience accessor). */
   entry: CheckResult;
@@ -289,7 +290,7 @@ export final class Compiler {
    * In pull-based environments, call `refreshCache()` first.
    */
   compile(entryPoint: String, version: String | null = null): CompilationResult {
-    let entries = new Array<SourceFile>();
+    let entries = new GrowableArray<SourceFile>();
 
     // Load prelude modules first.
     let prelude = getStandardPrelude(this.#resolver.target);
@@ -353,7 +354,7 @@ export final class Compiler {
    * scope tree (source unchanged), but wiring still runs — a changed
    * dependency may carry fresh symbols.
    */
-  #resolveScopes(files: Array<SourceFile>): void {
+  #resolveScopes(files: GrowableArray<SourceFile>): void {
     // Only the prelude's own transitive closure is denied the prelude —
     // those are the modules where injecting it would be circular. Every
     // other stdlib module (zena:fs, zena:regex, zena:benchmark, ...) is
@@ -408,14 +409,14 @@ export final class Compiler {
    *
    * Computed rather than listed, so it cannot drift as the prelude changes.
    */
-  #preludeClosure(files: Array<SourceFile>): HashSet<String> {
+  #preludeClosure(files: GrowableArray<SourceFile>): HashSet<String> {
     let byPath = new HashMap<String, SourceFile>();
     for (let lib in files) {
       byPath[lib.path] = lib;
     }
 
     let closure = new HashSet<String>();
-    let pending = new Array<String>();
+    let pending = new GrowableArray<String>();
 
     let prelude = getStandardPrelude(this.#resolver.target);
     let specifierIter = prelude.keys();
@@ -446,7 +447,7 @@ export final class Compiler {
    * Repeat import wiring until no pass makes progress. When `only` is
    * non-null, wiring is restricted to that set of module paths.
    */
-  #wireToFixpoint(files: Array<SourceFile>, only: HashSet<String> | null): void {
+  #wireToFixpoint(files: GrowableArray<SourceFile>, only: HashSet<String> | null): void {
     var changed = true;
     while (changed) {
       changed = false;
@@ -1139,8 +1140,8 @@ let functionTypeEquals = (
   // Compare optional parameters.
   if (fa.optionalParameters == null && fb.optionalParameters == null) { return true; }
   if (fa.optionalParameters == null || fb.optionalParameters == null) { return false; }
-  let optA = fa.optionalParameters as Array<boolean>;
-  let optB = fb.optionalParameters as Array<boolean>;
+  let optA = fa.optionalParameters as GrowableArray<boolean>;
+  let optB = fb.optionalParameters as GrowableArray<boolean>;
   if (optA.length != optB.length) { return false; }
   var oi = 0;
   while (oi < optA.length) {
@@ -1203,8 +1204,8 @@ let classTypeEquals = (
   // Sealed variants.
   if (ca.sealedVariants == null && cb.sealedVariants == null) { return true; }
   if (ca.sealedVariants == null || cb.sealedVariants == null) { return false; }
-  let sva = ca.sealedVariants as Array<ClassType>;
-  let svb = cb.sealedVariants as Array<ClassType>;
+  let sva = ca.sealedVariants as GrowableArray<ClassType>;
+  let svb = cb.sealedVariants as GrowableArray<ClassType>;
   if (sva.length != svb.length) { return false; }
   var svi = 0;
   while (svi < sva.length) {
@@ -1279,16 +1280,14 @@ let mixinTypeEquals = (
  * For each file, records which files depend on it AND which names they
  * import. This enables precise invalidation: when a dependency's export
  * signature changes, a dependent is only invalidated if one of the names
- * it actually imports was affected.
- *
- * Structure: depPath → HashMap<importerPath, Array<String>>
- * where the Array<String> contains the imported names (prefixed "v:" or
+ * it actually i * Structure: depPath → HashMap<importerPath, GrowableArray<String>>
+ * where the GrowableArray<String> contains the imported names (prefixed "v:" or
  * "t:" to match signature keys).
  */
 let buildReverseDeps = (
-  files: Array<SourceFile>
-): HashMap<String, HashMap<String, Array<String>>> => {
-  let reverseDeps = new HashMap<String, HashMap<String, Array<String>>>();
+  files: GrowableArray<SourceFile>
+): HashMap<String, HashMap<String, GrowableArray<String>>> => {
+  let reverseDeps = new HashMap<String, HashMap<String, GrowableArray<String>>>();
 
   for (let file in files) {
     // Walk the AST to find import/re-export declarations and their names.
@@ -1299,11 +1298,11 @@ let buildReverseDeps = (
           if (file.imports.has(specifier)) {
             let depPath = file.imports[specifier];
             if (!reverseDeps.has(depPath)) {
-              reverseDeps[depPath] = new HashMap<String, Array<String>>();
+              reverseDeps[depPath] = new HashMap<String, GrowableArray<String>>();
             }
             let depMap = reverseDeps[depPath];
             if (!depMap.has(file.path)) {
-              depMap[file.path] = new Array<String>(4);
+              depMap[file.path] = new GrowableArray<String>(4);
             }
             let names = depMap[file.path];
             var k = 0;
@@ -1324,11 +1323,11 @@ let buildReverseDeps = (
           if (file.imports.has(specifier)) {
             let depPath = file.imports[specifier];
             if (!reverseDeps.has(depPath)) {
-              reverseDeps[depPath] = new HashMap<String, Array<String>>();
+              reverseDeps[depPath] = new HashMap<String, GrowableArray<String>>();
             }
             let depMap = reverseDeps[depPath];
             if (!depMap.has(file.path)) {
-              depMap[file.path] = new Array<String>(4);
+              depMap[file.path] = new GrowableArray<String>(4);
             }
             let names = depMap[file.path];
             names.push("*");
@@ -1339,11 +1338,11 @@ let buildReverseDeps = (
           if (file.imports.has(specifier)) {
             let depPath = file.imports[specifier];
             if (!reverseDeps.has(depPath)) {
-              reverseDeps[depPath] = new HashMap<String, Array<String>>();
+              reverseDeps[depPath] = new HashMap<String, GrowableArray<String>>();
             }
             let depMap = reverseDeps[depPath];
             if (!depMap.has(file.path)) {
-              depMap[file.path] = new Array<String>(4);
+              depMap[file.path] = new GrowableArray<String>(4);
             }
             let names = depMap[file.path];
             var m = 0;
@@ -1359,7 +1358,6 @@ let buildReverseDeps = (
       }
     }
   }
-
   return reverseDeps;
 };
 
@@ -1369,7 +1367,7 @@ let buildReverseDeps = (
 let checkFile = (
   file: SourceFile,
   allResults: HashMap<String, CheckResult>,
-  allFiles: Array<SourceFile>,
+  allFiles: GrowableArray<SourceFile>,
   emitLocations: boolean,
   sharedState: SharedCheckerState,
   warnUnnecessaryCasts: boolean,

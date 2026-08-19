@@ -6,6 +6,7 @@ import {
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { String } from 'zena:string';
 import { SymbolId } from '../../scope/symbol.zena';
 import { SemanticModel } from '../../semantic-model.zena';
@@ -32,7 +33,7 @@ export final class ClassHierarchyAnalysis {
   implementingAccessorCache = new HashMap<TypeId, HashMap<String, AccessorDeclaration>>();
   implementingAccessorNulls = new HashMap<TypeId, HashSet<String>>();
   subclassRelationCache = new HashMap<i32, boolean>();
-  subclassesByBaseId = new HashMap<SymbolId, Array<ClassType>>();
+  subclassesByBaseId = new HashMap<SymbolId, GrowableArray<ClassType>>();
   classDeclTypeCache = new HashMap<NodeId, ClassType>();
   classMixinIdsCache = new HashMap<SymbolId, HashMap<SymbolId, boolean>>();
   classModels: HashMap<SymbolId, SemanticModel>;
@@ -80,11 +81,11 @@ export final class ClassHierarchyAnalysis {
       if (model != null) {
         if (model.classDeclarations.has(lookupId)) {
           let cd = model.classDeclarations[lookupId];
-          let mixinMembers = new Array<Node>();
+          let mixinMembers = new GrowableArray<Node>();
           let seenMixins = new HashMap<MixinKey, boolean>();
           collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
           
-          let allMembers = new Array<Node>();
+          let allMembers = new GrowableArray<Node>();
           for (let member in cd.body) {
             allMembers.push(member);
           }
@@ -124,7 +125,7 @@ export final class ClassHierarchyAnalysis {
       }
     }
 
-    let methods = new Array<MethodDefinition>();
+    let methods = new GrowableArray<MethodDefinition>();
     let seenSigs = new HashSet<String>();
     var curr: ClassType | null = cType;
     while (curr != null) {
@@ -144,11 +145,11 @@ export final class ClassHierarchyAnalysis {
       if (model != null) {
         if (model.classDeclarations.has(lookupId)) {
           let cd = model.classDeclarations[lookupId];
-          let mixinMembers = new Array<Node>();
+          let mixinMembers = new GrowableArray<Node>();
           let seenMixins = new HashMap<MixinKey, boolean>();
           collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
           
-          let allMembers = new Array<Node>();
+          let allMembers = new GrowableArray<Node>();
           for (let member in cd.body) {
             allMembers.push(member);
           }
@@ -214,11 +215,11 @@ export final class ClassHierarchyAnalysis {
       if (model != null) {
         if (model.classDeclarations.has(lookupId)) {
           let cd = model.classDeclarations[lookupId];
-          let mixinMembers = new Array<Node>();
+          let mixinMembers = new GrowableArray<Node>();
           let seenMixins = new HashMap<MixinKey, boolean>();
           collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
           
-          let allMembers = new Array<Node>();
+          let allMembers = new GrowableArray<Node>();
           for (let member in cd.body) {
             allMembers.push(member);
           }
@@ -289,11 +290,11 @@ export final class ClassHierarchyAnalysis {
       if (model != null) {
         if (model.classDeclarations.has(lookupId)) {
           let cd = model.classDeclarations[lookupId];
-          let mixinMembers = new Array<Node>();
+          let mixinMembers = new GrowableArray<Node>();
           let seenMixins = new HashMap<MixinKey, boolean>();
           collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
           
-          let allMembers = new Array<Node>();
+          let allMembers = new GrowableArray<Node>();
           for (let member in cd.body) {
             allMembers.push(member);
           }
@@ -417,7 +418,7 @@ export final class ClassHierarchyAnalysis {
     this.collectAllBaseClassIds(ct, baseIds);
     for (let baseId in baseIds) {
       if (!this.subclassesByBaseId.has(baseId)) {
-        this.subclassesByBaseId[baseId] = new Array<ClassType>();
+        this.subclassesByBaseId[baseId] = new GrowableArray<ClassType>();
       }
       this.subclassesByBaseId[baseId].push(ct);
     }
@@ -428,11 +429,11 @@ export final class ClassHierarchyAnalysis {
     if (let (true, list) = this.subclassesByBaseId.get(baseSymId)) {
       return list;
     }
-    return new Array<ClassType>();
+    return new GrowableArray<ClassType>();
   }
 
   collectAllImplementedInterfaces(ct: ClassType): Array<InterfaceType> {
-    let list = new Array<InterfaceType>();
+    let list = new GrowableArray<InterfaceType>();
     let seen = new HashMap<InterfaceKey, boolean>();
     
     let ctParams = getClassTypeParameters(ct);
@@ -455,7 +456,7 @@ export final class ClassHierarchyAnalysis {
     return list;
   }
 
-  addInterfaceToTransitiveList(it: InterfaceType, list: Array<InterfaceType>, seen: HashMap<InterfaceKey, boolean>): void {
+  addInterfaceToTransitiveList(it: InterfaceType, list: GrowableArray<InterfaceType>, seen: HashMap<InterfaceKey, boolean>): void {
     let key = getInterfaceKey(it);
     if (!seen.has(key)) {
       seen[key] = true;
@@ -505,7 +506,7 @@ let getAccessorName = (acc: AccessorDeclaration): String => {
 let collectMixinSymbolIds = (
   program: Program,
   model: SemanticModel,
-  mixinAnns: Array<TypeAnnotation> | null,
+  mixinAnns: GrowableArray<TypeAnnotation> | null,
   seenIds: HashMap<SymbolId, boolean>
 ): void => {
   if (mixinAnns == null) { return; }

@@ -1,10 +1,10 @@
-import { Sequence, MutableSequence } from 'zena:sequence';
+import { Array, MutableArray } from 'zena:array';
 import { Iterable, Iterator } from 'zena:iterator';
 import { IterableUtils } from 'zena:iterable-utils';
 import { ArrayIterator } from 'zena:array-iterator';
 import { BoundedRange, FromRange, ToRange, FullRange } from 'zena:range';
 
-export final extension class FixedArray<T> on array<T> with IterableUtils<T> implements MutableSequence<T>, Iterable<T> {
+export final extension class FixedArray<T> on array<T> with IterableUtils<T> implements MutableArray<T>, Iterable<T> {
   @intrinsic('array.len')
   declare length: i32;
 
@@ -44,13 +44,11 @@ export final extension class FixedArray<T> on array<T> with IterableUtils<T> imp
     return this.slice(0, this.length);
   }
 
-  static from<A>(seq: Sequence<A>): FixedArray<A> {
+  static from<A>(seq: Array<A>): FixedArray<A> {
     let len = seq.length;
     let result = __array_new_empty<A>(len) as FixedArray<A>;
-    var i = 0;
-    while (i < len) {
+    for (var i = 0; i < len; i += 1) {
       result[i] = seq[i];
-      i += 1;
     }
     return result;
   }
@@ -58,21 +56,25 @@ export final extension class FixedArray<T> on array<T> with IterableUtils<T> imp
   map<U>(f: (item: T, index: i32, seq: FixedArray<T>) => U): FixedArray<U> {
     let len = this.length;
     let result = __array_new_empty<U>(len) as FixedArray<U>;
-    var i = 0;
-    while (i < len) {
+    for (var i = 0; i < len; i += 1) {
       result[i] = f(this[i], i, this as FixedArray<T>);
-      i += 1;
     }
     return result;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R {
+    var acc = initial;    
+    for (let item in this) {
+      acc = combine(acc, item);
+    }
+    return acc;
   }
 
   reverse(): FixedArray<T> {
     let len = this.length;
     let result = __array_new_empty<T>(len) as FixedArray<T>;
-    var i = 0;
-    while (i < len) {
+    for (var i = 0; i < len; i += 1) {
       result[i] = this[len - 1 - i];
-      i += 1;
     }
     return result;
   }
@@ -95,10 +97,8 @@ export final extension class FixedArray<T> on array<T> with IterableUtils<T> imp
 
     let resultLen = e - s;
     let result = __array_new_empty<T>(resultLen) as FixedArray<T>;
-    var i = 0;
-    while (i < resultLen) {
+    for (var i = 0; i < resultLen; i += 1) {
       result[i] = this[s + i];
-      i += 1;
     }
     return result;
   }

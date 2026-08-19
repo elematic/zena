@@ -1,19 +1,18 @@
-import { Sequence, MutableSequence } from 'zena:sequence';
+import { Array, MutableArray } from 'zena:array';
 import { Iterable, Iterator } from 'zena:iterator';
 import { FixedArray } from 'zena:fixed-array';
 import { GrowableArrayIterator } from 'zena:growable-array-iterator';
-import { IterableUtils } from 'zena:iterable-utils';
 import { IndexOutOfBoundsError } from 'zena:error';
 
-export final class Array<T> with IterableUtils<T> implements MutableSequence<T>, Iterable<T> {
+export final class GrowableArray<T> implements MutableArray<T>, Iterable<T> {
   var #buffer: FixedArray<T>;
   var #length = 0;
 
   new(capacity: i32 = 8) : #buffer = __array_new_empty<T>(capacity) as FixedArray<T>;
 
-  static from<A>(seq: Sequence<A>): Array<A> {
+  static from<A>(seq: Array<A>): GrowableArray<A> {
     let len = seq.length;
-    let result = new Array<A>(len);
+    let result = new GrowableArray<A>(len);
     var i = 0;
     while (i < len) {
       result.push(seq[i]);
@@ -55,15 +54,59 @@ export final class Array<T> with IterableUtils<T> implements MutableSequence<T>,
     this.#buffer[index] = value;
   }
 
-  map<U>(f: (item: T, index: i32, seq: Array<T>) => U): Array<U> {
+  map<U>(f: (item: T, index: i32, seq: GrowableArray<T>) => U): GrowableArray<U> {
     let len = this.#length;
-    let result = new Array<U>(len);
+    let result = new GrowableArray<U>(len);
     var i = 0;
     while (i < len) {
-      result.push(f(this[i], i, this as Array<T>));
+      result.push(f(this[i], i, this as GrowableArray<T>));
       i += 1;
     }
     return result;
+  }
+
+  contains(value: T): boolean {
+    for (var i = 0; i < this.#length; i += 1) {
+      if (this[i] == value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  all(predicate: (item: T) => boolean): boolean {
+    for (var i = 0; i < this.#length; i += 1) {
+      if (!predicate(this[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: T) => boolean): boolean {
+    for (var i = 0; i < this.#length; i += 1) {
+      if (predicate(this[i])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R {
+    var acc = initial;
+    for (var i = 0; i < this.#length; i += 1) {
+      acc = combine(acc, this[i]);
+    }
+    return acc;
+  }
+
+  find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _) {
+    for (var i = 0; i < this.#length; i += 1) {
+      if (predicate(this[i])) {
+        return (true, this[i]);
+      }
+    }
+    return (false, _);
   }
 
   :Iterable.iterator(): Iterator<T> {

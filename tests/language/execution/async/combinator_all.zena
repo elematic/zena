@@ -27,11 +27,8 @@ export async function main(): Future<i32> {
   let c1 = new Completer<i32>();
   let c2 = new Completer<i32>();
   let c3 = new Completer<i32>();
-  let futures = new Array<Future<i32>>();
-  futures.push(c1.future);
-  futures.push(c2.future);
-  futures.push(c3.future);
-  let combined = Future.all(futures);
+  // Pass fixed array literal directly:
+  let combined = Future.all([c1.future, c2.future, c3.future]);
   c3.complete(3);
   c1.complete(1);
   c2.complete(2);
@@ -44,20 +41,31 @@ export async function main(): Future<i32> {
     return 0 - 2;
   }
 
-  // Nothing to wait for resolves with nothing in it.
-  let none = await Future.all(new Array<Future<i32>>());
+  // Nothing to wait for resolves with nothing in it (empty literal).
+  let none = await Future.all<i32>([]);
   if (!(none.length == 0)) {
     return 0 - 3;
+  }
+
+  // Growable Array also works:
+  let g1 = new Completer<i32>();
+  let g2 = new Completer<i32>();
+  let growable = new GrowableArray<Future<i32>>();
+  growable.push(g1.future);
+  growable.push(g2.future);
+  let gCombined = Future.all(growable);
+  g1.complete(10);
+  g2.complete(20);
+  let gValues = await gCombined;
+  if (!(gValues.length == 2 && gValues[0] == 10 && gValues[1] == 20)) {
+    return 0 - 5;
   }
 
   // A reference payload works the same way — a different
   // specialization, and the one whose empty slots are really null.
   let s1 = new Completer<String>();
   let s2 = new Completer<String>();
-  let strings = new Array<Future<String>>();
-  strings.push(s1.future);
-  strings.push(s2.future);
-  let joined = Future.all(strings);
+  let joined = Future.all([s1.future, s2.future]);
   s2.complete('b');
   s1.complete('a');
   let words = await joined;
@@ -70,10 +78,7 @@ export async function main(): Future<i32> {
   // awaiting the inputs one after another would deadlock here instead.
   let slow = new Completer<i32>();
   let doomed = new Completer<i32>();
-  let mixed = new Array<Future<i32>>();
-  mixed.push(slow.future);
-  mixed.push(doomed.future);
-  let failing = Future.all(mixed);
+  let failing = Future.all([slow.future, doomed.future]);
   doomed.fail(new Error('boom'));
   if (!(await settlementOf(failing) == 'boom')) {
     return 0 - 4;

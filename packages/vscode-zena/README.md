@@ -7,7 +7,7 @@ This extension provides syntax highlighting for the Zena programming language.
 - **Syntax Highlighting** for all Zena language constructs:
   - Keywords (`let`, `var`, `class`, `interface`, `mixin`, `enum`, `type`, `if`, `else`, `while`, `for`, `match`, `case`, etc.)
   - Primitive types (`i32`, `i64`, `u32`, `u64`, `i8`, `i16`, `u8`, `u16`, `f32`, `f64`, `v128`, `boolean`, `void`, `never`, `anyref`, `ByteArray`)
-  - Built-in types (`Array`, `Map`, `Box`, `Error`, `FixedArray`, `GrowableArray`, `ImmutableArray`, `Sequence`, `Iterator`)
+  - Built-in types (`Array`, `Map`, `Box`, `Error`, `FixedArray`, `GrowableArray`, `ImmutableArray`, `Iterator`)
   - String literals (single/double quotes)
   - Template literals with interpolation (backticks with `${}`)
   - Numeric literals (integers, floats, hexadecimal)

@@ -1,7 +1,7 @@
 // FixedArray stdlib tests using zena:test
 import {suite, test, TestContext} from 'zena:test';
 import {equal} from 'zena:assert';
-import {FixedArray} from 'zena:array';
+import {FixedArray} from 'zena:fixed-array';
 
 export let tests = suite('FixedArray', (): void => {
   test('constructor with length creates array of given size', (ctx: TestContext): void => {
@@ -71,6 +71,22 @@ export let tests = suite('FixedArray', (): void => {
     });
     
     equal(arr[0], 999);
+  });
+
+  test('fold aggregates elements', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(4, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    arr[3] = 4;
+    let sum = arr.fold<i32>(0, (acc: i32, x: i32): i32 => acc + x);
+    equal(sum, 10);
+  });
+
+  test('fold on empty array returns initial value', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(0, 0);
+    let sum = arr.fold<i32>(42, (acc: i32, x: i32): i32 => acc + x);
+    equal(sum, 42);
   });
 
   // === Slice tests ===
@@ -211,5 +227,43 @@ export let tests = suite('FixedArray', (): void => {
     // Verify it's a copy
     arr[0] = 999;
     equal(copy[0], 1);
+  });
+
+  test('fold aggregates elements', (ctx: TestContext): void => {
+    let arr = new FixedArray<i32>(4, 0);
+    arr[0] = 1;
+    arr[1] = 2;
+    arr[2] = 3;
+    arr[3] = 4;
+    let sum = arr.fold<i32>(0, (acc: i32, x: i32): i32 => acc + x);
+    equal(sum, 10);
+  });
+
+  test('from copies elements from an array', (ctx: TestContext): void => {
+    let src = [10, 20, 30];
+    let arr = FixedArray.from<i32>(src);
+    equal(arr.length, 3);
+    equal(arr[0], 10);
+    equal(arr[1], 20);
+    equal(arr[2], 30);
+  });
+
+  test('all returns true when all elements match', (ctx: TestContext): void => {
+    let arr = [2, 4, 6];
+    equal(arr.all((x: i32) => x % 2 == 0), true);
+  });
+
+  test('some returns true when at least one element matches', (ctx: TestContext): void => {
+    let arr = [1, 3, 4];
+    equal(arr.some((x: i32) => x % 2 == 0), true);
+  });
+
+  test('find returns element when predicate matches', (ctx: TestContext): void => {
+    let arr = [10, 25, 30];
+    if (let (true, found) = arr.find((x: i32) => x > 20)) {
+      equal(found, 25);
+    } else {
+      equal(1, 0);
+    }
   });
 });

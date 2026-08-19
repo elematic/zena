@@ -983,7 +983,7 @@ let f: (i32, i32) => i32 = (a) => a;  // f ignores second param
 When the concrete type implementing an interface is known:
 
 ```zena
-func process(seq: Sequence<i32>): void {
+func process(seq: Array<i32>): void {
   for (let x in seq) { ... }
 }
 

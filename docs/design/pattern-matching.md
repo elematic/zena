@@ -230,7 +230,7 @@ let dispatch = (cb: Callback) => {
 - **Tuple Patterns**: Implemented for Tuples (immutable structs).
 - **`as` Patterns**: Implemented for renaming (`case let Point { x } as p`).
 
-### 8.2 Array & Sequence Matching
+### 8.2 Array Matching
 
 Matching on arrays (e.g., `case let [a, b]`) presents a challenge compared to Tuples.
 

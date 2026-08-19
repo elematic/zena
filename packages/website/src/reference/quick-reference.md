@@ -191,26 +191,26 @@ let back: u8 = sum as u8;     // 0 — narrowing is explicit and truncates
 The following types are automatically available in every Zena module—no import
 needed. They come from the _prelude_, which is implicitly imported.
 
-| Type                    | Description                                        |
-| ----------------------- | -------------------------------------------------- |
-| `String`                | Immutable Unicode string                           |
-| `Error`                 | Base class for all errors (thrown with `throw`)    |
-| `IndexOutOfBoundsError` | Thrown on invalid array/string index access        |
-| `Option<T>`             | Represents an optional value (`Some<T>` or `None`) |
-| `Some<T>`               | Variant of `Option` containing a value             |
-| `None`                  | Variant of `Option` representing no value          |
-| `Array<T>`              | Growable array (`Array.from([1, 2, 3])`)           |
-| `FixedArray<T>`         | Fixed-size array (literal syntax: `[1, 2, 3]`)     |
-| `ImmutableArray<T>`     | Read-only array view                               |
-| `Map<K, V>`             | Hash map (literal syntax: `{"a" => 1}`)            |
-| `Box<T>`                | Wraps a primitive for use in a union or `anyref`   |
-| `BoundedRange`          | Range with start and end (`1..10`)                 |
-| `FromRange`             | Range with start only (`5..`)                      |
-| `ToRange`               | Range with end only (`..10`)                       |
-| `FullRange`             | Unbounded range (`..`)                             |
-| `Sequence<T>`           | Interface for iterable collections                 |
-| `MutableSequence<T>`    | Interface for mutable iterable collections         |
-| `console`               | Console output (`console.log(...)`)                |
+| Type                    | Description                                                  |
+| ----------------------- | ------------------------------------------------------------ |
+| `String`                | Immutable Unicode string                                     |
+| `Error`                 | Base class for all errors (thrown with `throw`)              |
+| `IndexOutOfBoundsError` | Thrown on invalid array/string index access                  |
+| `Option<T>`             | Represents an optional value (`Some<T>` or `None`)           |
+| `Some<T>`               | Variant of `Option` containing a value                       |
+| `None`                  | Variant of `Option` representing no value                    |
+| `Array<T>`              | Universal read-only array interface (`length`, `[i]`, `map`) |
+| `MutableArray<T>`       | Mutable array interface (`[i] = v`)                          |
+| `GrowableArray<T>`      | Resizable array (`new GrowableArray<T>()`, `push`)           |
+| `FixedArray<T>`         | Fixed-size array (literal syntax: `[1, 2, 3]`)               |
+| `ImmutableArray<T>`     | Read-only fixed array view                                   |
+| `Map<K, V>`             | Hash map (literal syntax: `{"a" => 1}`)                      |
+| `Box<T>`                | Wraps a primitive for use in a union or `anyref`             |
+| `BoundedRange`          | Range with start and end (`1..10`)                           |
+| `FromRange`             | Range with start only (`5..`)                                |
+| `ToRange`               | Range with end only (`..10`)                                 |
+| `FullRange`             | Unbounded range (`..`)                                       |
+| `console`               | Console output (`console.log(...)`)                          |
 
 Helper functions `some(value)` and `none()` are also available for creating
 `Option` values.
@@ -1772,34 +1772,46 @@ export class HashMap<K, V> with IterableUtils<MapEntry<K, V>> implements Map<K, 
 
 ## Arrays & Collections
 
-Zena provides both fixed-size and growable arrays, plus a hash map. All
-collections are generic and type-safe.
+Zena provides universal interfaces for indexed collections (`Array<T>` and `MutableArray<T>`), along with concrete implementations for fixed-size and resizable arrays, plus a hash map. All collections are generic and type-safe.
+
+### Array Hierarchy
+
+- **`Array<T>`**: The universal indexed read-only interface (`length`, `operator [](i32): T`, `map`, `:Iterable.iterator()`). Implemented by `FixedArray<T>`, `GrowableArray<T>`, and `ImmutableArray<T>`.
+- **`MutableArray<T>`**: The mutable indexed interface extending `Array<T>` (`operator []=(i32, T): void`). Implemented by `FixedArray<T>` and `GrowableArray<T>`.
 
 ### FixedArray
 
-`FixedArray<T>` has a fixed size set at creation and maps directly to a WASM-GC
-array. The `[...]` literal creates a `FixedArray`.
+`FixedArray<T>` has a fixed size set at creation and maps directly to a native WebAssembly GC array (`array<T>`). The `[...]` literal syntax creates a `FixedArray`.
 
 ```zena
 let nums = [1, 2, 3]; // FixedArray<i32>
-let arr = new FixedArray<i32>(10); // Size 10, initialized to 0
+let arr = new FixedArray<i32>(10, 0); // Size 10, initialized to 0
 arr[0] = 42;
 let len = arr.length; // 10
 ```
 
-### Array
+### GrowableArray
 
-`Array<T>` is a growable array that automatically resizes. Use `Array.from()`
-to create one from a fixed array, or `new Array<T>()` for an empty growable
-array. A literal syntax for growable arrays is planned.
+`GrowableArray<T>` is a dynamic, resizable array. Use `new GrowableArray<T>()` or `GrowableArray.from(...)`.
 
 ```zena
-let arr = Array.from([1, 2, 3]); // Growable array from FixedArray
+let arr = GrowableArray.from([1, 2, 3]); // Growable array from FixedArray
 arr.push(4); // [1, 2, 3, 4]
 let len = arr.length; // 4
 let first = arr[0]; // 1
+let last = arr.pop(); // 4
 
-let empty = new Array<i32>(); // Empty growable array
+let empty = new GrowableArray<i32>(); // Empty growable array
+```
+
+### ImmutableArray
+
+`ImmutableArray<T>` provides a read-only view over a fixed array.
+
+```zena
+let fixed = [1, 2, 3];
+let immutable = fixed as ImmutableArray<i32>;
+let first = immutable[0];
 ```
 
 ### Slicing

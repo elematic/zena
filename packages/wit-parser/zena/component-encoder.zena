@@ -174,7 +174,7 @@ final class Scope {
 /** What `encodeWorld` produced. */
 export final class EncodedWorld {
   /** The component-head sections, in order. */
-  pieces = new Array<SectionPiece>();
+  pieces = new GrowableArray<SectionPiece>();
   /** How many component-level types the pieces defined. */
   var typeCount = 0;
   /** How many instances the pieces imported. */
@@ -189,7 +189,7 @@ export final class EncodedWorld {
    */
   instanceIndices = new HashMap<String, i32>();
   /** World exports the encoding skipped, for the caller to report. */
-  skippedExports = new Array<String>();
+  skippedExports = new GrowableArray<String>();
   new();
 }
 
@@ -197,7 +197,7 @@ export final class ComponentTypeEncoder {
   #ast: Ast;
   #result = new EncodedWorld();
   /** Everything importable by qualified name, main package and nested. */
-  #interfaces = new Array<RegisteredInterface>();
+  #interfaces = new GrowableArray<RegisteredInterface>();
   /** Qualified interface name → component-level instance index. */
   #instanceIndex = new HashMap<String, i32>();
   /**
@@ -273,7 +273,7 @@ export final class ComponentTypeEncoder {
       // An inline interface: the same encoding, imported under the
       // plain name its declaration gave it.
       this.#importNamedInterface(new RegisteredInterface(
-          (kind.name as Id).name, kind.items as Array<InterfaceItem>));
+          (kind.name as Id).name, kind.items as GrowableArray<InterfaceItem>));
     }
   }
 
@@ -509,7 +509,7 @@ export final class ComponentTypeEncoder {
       scope.typeCount += 1;
       scope.named[name] = resourceIndex;
       scope.resourceIndices[resourceIndex] = true;
-      for (let rf in td.resourceFuncs as Array<ResourceFunc>) {
+      for (let rf in td.resourceFuncs as GrowableArray<ResourceFunc>) {
         this.#encodeResourceFunc(scope, rf, name, resourceIndex);
       }
       return;
@@ -517,8 +517,8 @@ export final class ComponentTypeEncoder {
 
     var code = 0;
     if (td.tag == TypeDefTag.Record) {
-      let fields = td.fields as Array<Field>;
-      let fieldCodes = new Array<i32>();
+      let fields = td.fields as GrowableArray<Field>;
+      let fieldCodes = new GrowableArray<i32>();
       for (let f in fields) {
         fieldCodes.push(this.#encodeType(scope, f.type));
       }
@@ -531,8 +531,8 @@ export final class ComponentTypeEncoder {
       }
       code = this.#declareType(scope, body);
     } else if (td.tag == TypeDefTag.Variant) {
-      let cases = td.cases as Array<Case>;
-      let caseCodes = new Array<i32>();
+      let cases = td.cases as GrowableArray<Case>;
+      let caseCodes = new GrowableArray<i32>();
       for (let c in cases) {
         let payload = c.type;
         caseCodes.push(
@@ -553,7 +553,7 @@ export final class ComponentTypeEncoder {
       }
       code = this.#declareType(scope, body);
     } else if (td.tag == TypeDefTag.Enum) {
-      let cases = td.enumCases as Array<EnumCaseDef>;
+      let cases = td.enumCases as GrowableArray<EnumCaseDef>;
       let body = new ByteBuffer();
       body.writeByte(0x6d);
       body.writeULEB128(cases.length);
@@ -562,7 +562,7 @@ export final class ComponentTypeEncoder {
       }
       code = this.#declareType(scope, body);
     } else if (td.tag == TypeDefTag.Flags) {
-      let flags = td.flags as Array<FlagDef>;
+      let flags = td.flags as GrowableArray<FlagDef>;
       let body = new ByteBuffer();
       body.writeByte(0x6e);
       body.writeULEB128(flags.length);
@@ -684,8 +684,8 @@ export final class ComponentTypeEncoder {
       return this.#handleType(scope, opcode, resource);
     }
     if (t.tag == TypeTag.Tuple) {
-      let members = t.types as Array<Type>;
-      let codes = new Array<i32>();
+      let members = t.types as GrowableArray<Type>;
+      let codes = new GrowableArray<i32>();
       var key = "tuple(";
       for (let m in members) {
         let c = this.#encodeType(scope, m);
@@ -747,7 +747,7 @@ export final class ComponentTypeEncoder {
     selfBorrow: i32,
     isAsync: boolean
   ): i32 {
-    let paramCodes = new Array<i32>();
+    let paramCodes = new GrowableArray<i32>();
     for (let p in func.params) {
       paramCodes.push(this.#encodeType(scope, p.type));
     }
@@ -807,7 +807,7 @@ export final class ComponentTypeEncoder {
       // `own` of the resource it builds.
       let ownIndex = this.#handleType(scope, 0x69, resourceIndex);
       let func = rf.func.func;
-      let paramCodes = new Array<i32>();
+      let paramCodes = new GrowableArray<i32>();
       for (let p in func.params) {
         paramCodes.push(this.#encodeType(scope, p.type));
       }
@@ -948,7 +948,7 @@ function flatMetaOfType(
   }
   if (t.tag == TypeTag.Tuple) {
     let meta = new WitFlatMeta();
-    for (let m in t.types as Array<Type>) {
+    for (let m in t.types as GrowableArray<Type>) {
       let inner = flatMetaOfType(interfaces, itemsOf, m);
       meta.flatCount += inner.flatCount;
       if (inner.needsMemory) { meta.needsMemory = true; }
@@ -1007,7 +1007,7 @@ function flatMetaOfName(
       }
       if (td.tag == TypeDefTag.Record) {
         let meta = new WitFlatMeta();
-        for (let f in td.fields as Array<Field>) {
+        for (let f in td.fields as GrowableArray<Field>) {
           let inner = flatMetaOfType(interfaces, itemsOf, f.type);
           meta.flatCount += inner.flatCount;
           if (inner.needsMemory) { meta.needsMemory = true; }
@@ -1017,7 +1017,7 @@ function flatMetaOfName(
       if (td.tag == TypeDefTag.Variant) {
         var payload = 0;
         var mem = false;
-        for (let c in td.cases as Array<Case>) {
+        for (let c in td.cases as GrowableArray<Case>) {
           let payloadType = c.type;
           if (payloadType != null) {
             let m = flatMetaOfType(interfaces, itemsOf, payloadType as Type);
@@ -1092,7 +1092,7 @@ export let funcFlatMeta = (
   interfaceName: String,
   fieldName: String
 ): WitFuncMeta | null => {
-  let interfaces = new Array<FlatIface>();
+  let interfaces = new GrowableArray<FlatIface>();
   let register = (pkg: PackageName | null, items: Array<AstItem>): void => {
     for (let item in items) {
       if (item.tag == AstItemTag.Interface) {
@@ -1119,7 +1119,7 @@ export let funcFlatMeta = (
         let td = item.typeDef as TypeDef;
         if (td.tag != TypeDefTag.Resource) { continue; }
         let resourceName = td.name.name;
-        for (let rf in td.resourceFuncs as Array<ResourceFunc>) {
+        for (let rf in td.resourceFuncs as GrowableArray<ResourceFunc>) {
           var exported = "";
           var selfParams = 0;
           if (rf.tag == ResourceFuncTag.Constructor) {
@@ -1147,7 +1147,7 @@ export let funcFlatMeta = (
 
 /** The names of the worlds the document's main package defines. */
 export let worldNames = (ast: Ast): Array<String> => {
-  let names = new Array<String>();
+  let names = new GrowableArray<String>();
   for (let item in ast.items) {
     if (item.tag == AstItemTag.World) {
       names.push((item.worldDef as WorldDef).name.name);

@@ -133,7 +133,7 @@ and each signature has its own implementation body.
   import — the original motivation for the feature (unboxed
   `print_i32` / `print_f32` style bindings).
 - **Interfaces**: interfaces may declare overloaded methods, e.g.
-  `Sequence` declaring both `[](i: i32)` and `[](r: Range)`.
+  `Array` declaring both `[](i: i32)` and `[](r: Range)`.
   Conformance and dispatch are per-signature (§5.4).
 
   > **Status.** Interface overloads are not implemented: a second
@@ -388,7 +388,7 @@ paths converge instead of accreting:
    the `array.get` intrinsic, and inlines — the "array fast path"
    becomes an optimization outcome. The standalone intrinsic
    functions keep their §-noted role: real bodies only where a
-   funcref slot can reach them (`array.len` via `Sequence.length`),
+   funcref slot can reach them (`array.len` via `Array.length`),
    trapping tripwires elsewhere.
 
 4. **Callable classes (future).** A call operator member would give
@@ -432,7 +432,7 @@ that phase is lowering. Once the pipeline exists, the fusion should
 retire — passes seeing pre-fused ops instead of calls would hide
 exactly the devirtualization opportunities the uniform call form
 exposes. (Devirtualizing an INTERFACE dispatch down to `array.get` —
-proving a `Sequence` is always a `FixedArray` — is by contrast a
+proving a `Array` is always a `FixedArray` — is by contrast a
 genuine future optimization no backend attempts today.)
 
 Status: the checker shares the selection tail across all sites; the

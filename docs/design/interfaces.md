@@ -149,12 +149,12 @@ a **more specific return type** than the interface requires. This is called
 ### Example
 
 ```zena
-interface Sequence<T> {
-  map<U>(f: (item: T) => U): Sequence<U>;
+interface Array<T> {
+  map<U>(f: (item: T) => U): Array<U>;
 }
 
-class Array<T> implements Sequence<T> {
-  // Return type refined from Sequence<U> to Array<U> — allowed!
+class GrowableArray<T> implements Array<T> {
+  // Return type refined from Array<U> to Array<U> — allowed!
   map<U>(f: (item: T) => U): Array<U> {
     // ...
   }
@@ -163,8 +163,8 @@ class Array<T> implements Sequence<T> {
 
 ### Why It's Sound
 
-If a caller expects `Sequence<U>` and receives `Array<U>`, that's fine —
-`Array<U>` is a subtype of `Sequence<U>`. The caller can always treat a more
+If a caller expects `Array<U>` and receives `MutableArray<U>`, that's fine —
+`MutableArray<U>` is a subtype of `Array<U>`. The caller can always treat a more
 specific type as the less specific interface type.
 
 ### Variance Rules for Interface Implementation

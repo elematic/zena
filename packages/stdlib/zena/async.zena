@@ -113,7 +113,7 @@ class ClosureTask implements Task {
 }
 
 class TaskQueue {
-  #items = new Array<Task>();
+  #items = new GrowableArray<Task>();
   var #head = 0;
 
   schedule(task: Task): void {
@@ -252,7 +252,7 @@ let rootScope = new CancelScope();
 export class CancelScope {
   #parent: CancelScope | null;
   var #cancelled: boolean = false;
-  #children = new Array<CancelScope>();
+  #children = new GrowableArray<CancelScope>();
 
   /** A child of the current scope, sharing its cancelled level. */
   new() : #parent = ambientScope {
@@ -361,7 +361,7 @@ export class Future<T> {
   var #waiter: Task | null = null;
   /** Waiters beyond the first. Null until a second one arrives, so an
    * ordinary future allocates no list and no backing storage. */
-  var #more: Array<Task> | null = null;
+  var #more: GrowableArray<Task> | null = null;
 
   new();
 
@@ -444,9 +444,9 @@ export class Future<T> {
       return;
     }
     if (this.#more == null) {
-      this.#more = new Array<Task>();
+      this.#more = new GrowableArray<Task>();
     }
-    (this.#more as Array<Task>).push(t);
+    (this.#more as GrowableArray<Task>).push(t);
   }
 
   /**
@@ -568,7 +568,7 @@ export class Future<T> {
     }
     let m = this.#more;
     if (m != null) {
-      let list = m as Array<Task>;
+      let list = m as GrowableArray<Task>;
       this.#more = null;
       var i = 0;
       while (i < list.length) {
@@ -777,7 +777,7 @@ export let runFuture = <T>(f: Future<T>): T => {
  * outstanding, and the future they all settle. */
 class AllState<T> {
   result = new Future<Array<T>>();
-  inputs = new Array<Future<T>>();
+  inputs = new GrowableArray<Future<T>>();
   var remaining = 0;
 
   new();
@@ -798,7 +798,7 @@ class AllState<T> {
   attach(futures: Array<Future<T>>): Future<Array<T>> {
     this.remaining = futures.length;
     if (futures.length == 0) {
-      this.result.:complete(new Array<T>());
+      this.result.:complete(new GrowableArray<T>());
       return this.result;
     }
     var i = 0;
@@ -828,7 +828,7 @@ class AllState<T> {
     }
     this.remaining -= 1;
     if (this.remaining == 0) {
-      let values = new Array<T>();
+      let values = new GrowableArray<T>();
       var i = 0;
       while (i < this.inputs.length) {
         values.push(this.inputs[i].:valueOrThrow());

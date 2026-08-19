@@ -83,8 +83,8 @@ export enum Flags {
 export final class Ast {
   var op: Op;
   var flags = Flags.None;
-  var sub = new Array<Ast>();
-  var runes = new Array<i32>();
+  var sub = new GrowableArray<Ast>();
+  var runes = new GrowableArray<i32>();
   var min = 0;
   var max = 0;
   var cap = 0;
@@ -105,7 +105,7 @@ export final class Ast {
 // ============================================================================
 
 final class Parser {
-  #stack = new Array<Ast>();
+  #stack = new GrowableArray<Ast>();
   var #flags: Flags;
   var #numCap = 0;
   var #pattern = '';
@@ -377,7 +377,7 @@ final class Parser {
     }
 
     // Extract everything above the marker
-    let subs = new Array<Ast>();
+    let subs = new GrowableArray<Ast>();
     var j = i;
     while (j < this.#stack.length) {
       subs.push(this.#stack[j]);
@@ -414,7 +414,7 @@ final class Parser {
     }
 
     // Extract everything above the marker
-    let subs = new Array<Ast>();
+    let subs = new GrowableArray<Ast>();
     var j = i;
     while (j < this.#stack.length) {
       subs.push(this.#stack[j]);
@@ -490,7 +490,7 @@ final class Parser {
           this.#appendClass(ast.runes, negated);
           pos = pos + 2;
         } else if (nextC == 87) { // \W (non-word)
-          let wordClass = new Array<i32>();
+          let wordClass = new GrowableArray<i32>();
           this.#appendClassRange(wordClass, 48, 57);  // 0-9
           this.#appendClassRange(wordClass, 65, 90);  // A-Z
           this.#appendClassRange(wordClass, 97, 122); // a-z
@@ -499,7 +499,7 @@ final class Parser {
           this.#appendClass(ast.runes, negated);
           pos = pos + 2;
         } else if (nextC == 83) { // \S (non-whitespace)
-          let wsClass = new Array<i32>();
+          let wsClass = new GrowableArray<i32>();
           this.#appendClassRange(wsClass, 9, 13);
           this.#appendClassRange(wsClass, 32, 32);
           let negated = this.#negateClass(wsClass);
@@ -546,13 +546,13 @@ final class Parser {
   }
 
   // Append a range [lo, hi] to the class
-  #appendClassRange(class_: Array<i32>, lo: i32, hi: i32): void {
+  #appendClassRange(class_: GrowableArray<i32>, lo: i32, hi: i32): void {
     class_.push(lo);
     class_.push(hi);
   }
 
   // Append one class to another
-  #appendClass(dst: Array<i32>, src: Array<i32>): void {
+  #appendClass(dst: GrowableArray<i32>, src: Array<i32>): void {
     var i = 0;
     while (i < src.length) {
       dst.push(src[i]);
@@ -561,8 +561,8 @@ final class Parser {
   }
 
   // Create a digit class [0-9]
-  #makeDigitClass(): Array<i32> {
-    let class_ = new Array<i32>();
+  #makeDigitClass(): GrowableArray<i32> {
+    let class_ = new GrowableArray<i32>();
     class_.push(48);
     class_.push(57);
     return class_;
@@ -571,12 +571,12 @@ final class Parser {
   // Negate a character class
   // Input: pairs of [lo, hi] ranges
   // Output: complementary ranges from 0 to MAX_RUNE
-  #negateClass(class_: Array<i32>): Array<i32> {
+  #negateClass(class_: GrowableArray<i32>): GrowableArray<i32> {
     // First, sort and merge the ranges
     let sorted = this.#cleanClass(class_);
 
     // Then complement
-    let result = new Array<i32>();
+    let result = new GrowableArray<i32>();
     var nextLo = 0;
     var i = 0;
 
@@ -603,7 +603,7 @@ final class Parser {
   }
 
   // Sort and merge overlapping ranges in a character class
-  #cleanClass(class_: Array<i32>): Array<i32> {
+  #cleanClass(class_: GrowableArray<i32>): GrowableArray<i32> {
     if (class_.length == 0) {
       return class_;
     }
@@ -628,7 +628,7 @@ final class Parser {
     }
 
     // Merge overlapping ranges
-    let result = new Array<i32>();
+    let result = new GrowableArray<i32>();
     var lo = class_[0];
     var hi = class_[1];
 
@@ -715,7 +715,7 @@ final class Parser {
       return pos + 2;
     }
     if (c == 87) { // 'W' - non-word character
-      let wordClass = new Array<i32>();
+      let wordClass = new GrowableArray<i32>();
       this.#appendClassRange(wordClass, 48, 57);
       this.#appendClassRange(wordClass, 65, 90);
       this.#appendClassRange(wordClass, 97, 122);
@@ -733,7 +733,7 @@ final class Parser {
       return pos + 2;
     }
     if (c == 83) { // 'S' - non-whitespace
-      let wsClass = new Array<i32>();
+      let wsClass = new GrowableArray<i32>();
       this.#appendClassRange(wsClass, 9, 13);
       this.#appendClassRange(wsClass, 32, 32);
       let ast = Ast.create(Op.CharClass, this.#flags);
@@ -1000,7 +1000,7 @@ enum StateType {
 final class State {
   var kind: StateType;
   var c = 0;
-  ranges = new Array<i32>();
+  ranges = new GrowableArray<i32>();
   var cap = 0;
   var out1: State | null = null;
   var out2: State | null = null;
@@ -1020,7 +1020,7 @@ final class PatchEntry {
 // NFA fragment (used during construction)
 final class Frag {
   var start: State;
-  var patches = new Array<PatchEntry>();
+  var patches = new GrowableArray<PatchEntry>();
 
   new(start: State) : start = start;
 
@@ -1505,7 +1505,7 @@ var nfaEpoch: i32 = 0;
 // Following Go's implementation, each thread carries its own capture array.
 final class Thread {
   state: State;
-  cap = new Array<i32>();
+  cap = new GrowableArray<i32>();
 
   new(state: State, numCap: i32) : state = state {
     // Initialize all captures to -1 (unmatched)
@@ -1539,7 +1539,7 @@ final class NfaRunner {
   var #listId = 0;
   var #numCap: i32;
   var #matched = false;
-  #matchCap = new Array<i32>();
+  #matchCap = new GrowableArray<i32>();
 
   new(start: State, matchState: State, numCap: i32)
       : #start = start, #matchState = matchState, #numCap = numCap {
@@ -1586,12 +1586,12 @@ final class NfaRunner {
   #matchAt(input: String, startPos: i32, offset: i32): boolean {
     let inputLen = input.length;
     // Two lists for current and next threads
-    var runq = new Array<Thread>();
-    var nextq = new Array<Thread>();
+    var runq = new GrowableArray<Thread>();
+    var nextq = new GrowableArray<Thread>();
 
     // Create initial thread and set capture 0 (whole match start) to startPos
     this.#listId = this.#listId + 1;
-    let initCap = new Array<i32>();
+    let initCap = new GrowableArray<i32>();
     var i = 0;
     while (i < this.#numCap) {
       initCap.push(0 - 1);
@@ -1615,7 +1615,7 @@ final class NfaRunner {
       }
 
       this.#listId = this.#listId + 1;
-      nextq = new Array<Thread>();
+      nextq = new GrowableArray<Thread>();
 
       // Process each thread in current queue
       i = 0;
@@ -1701,7 +1701,7 @@ final class NfaRunner {
 
   // Add a thread to the queue, following epsilon transitions (splits, captures, anchors)
   // This follows Go's add() function which handles InstCapture specially
-  #addThread(q: Array<Thread>, s: State, pos: i32, cap: Array<i32>, input: String, inputLen: i32): void {
+  #addThread(q: GrowableArray<Thread>, s: State, pos: i32, cap: GrowableArray<i32>, input: String, inputLen: i32): void {
     if (s.lastList == this.#listId) {
       return; // Already processed this state in this step
     }
@@ -1943,7 +1943,7 @@ export final class Regex {
   #matchState = new State(StateType.Match);
   var #isLiteral = false;
   var #numCap = 2;
-  #groupNames = new Array<String>();
+  #groupNames = new GrowableArray<String>();
 
   new(pattern: String, flags: String = '')
       : #pattern = pattern, #flags = flags {
@@ -2026,8 +2026,8 @@ export final class Regex {
       return new Match(
         input.sliceBytes(index, index + this.#pattern.length),
         index,
-        new Array<String>(),
-        new Array<String>()  // No named groups in literal mode
+        new GrowableArray<String>(),
+        new GrowableArray<String>()  // No named groups in literal mode
       );
     }
     let runner = new NfaRunner(this.#start as State, this.#matchState, this.#numCap);
@@ -2051,7 +2051,7 @@ export final class Regex {
     }
 
     // Extract group strings from captures[2], captures[3], etc.
-    let groups = new Array<String>();
+    let groups = new GrowableArray<String>();
     var i = 2;
     while (i < caps.length) {
       let groupStart = caps[i];
@@ -2077,8 +2077,8 @@ export final class Regex {
     // Run NFA to find the shortest/longest match
     // For now, find the longest match (greedy)
     let inputLen = input.length;
-    var clist = new Array<State>();
-    var nlist = new Array<State>();
+    var clist = new GrowableArray<State>();
+    var nlist = new GrowableArray<State>();
     // Use global epoch to avoid conflicts with NfaRunner's listId
     nfaEpoch = nfaEpoch + 1000;
     var listId = nfaEpoch;
@@ -2098,7 +2098,7 @@ export final class Regex {
     while (pos < inputLen && clist.length > 0) {
       let c = input.getByteAt(pos);
       listId = listId + 1;
-      nlist = new Array<State>();
+      nlist = new GrowableArray<State>();
       i = 0;
       while (i < clist.length) {
         let s = clist[i];
@@ -2140,7 +2140,7 @@ export final class Regex {
     return lastMatchPos - startPos;
   }
 
-  #addStateForLength(list: Array<State>, s: State, listId: i32): void {
+  #addStateForLength(list: GrowableArray<State>, s: State, listId: i32): void {
     if (s.lastList == listId) {
       return;
     }
@@ -2187,14 +2187,14 @@ export final class Regex {
   }
 
   matchAll(input: String): Array<Match> {
-    let matches = new Array<Match>();
+    let matches = new GrowableArray<Match>();
     if (this.#isLiteral) {
       let patternLen = this.#pattern.length;
       if (patternLen == 0) {
         // Empty pattern matches at every position (0, 1, 2, ..., input.length)
         var i = 0;
         while (i <= input.length) {
-          matches.push(new Match('', i, new Array<String>(), new Array<String>()));
+          matches.push(new Match('', i, new GrowableArray<String>(), new GrowableArray<String>()));
           i += 1;
         }
         return matches;
@@ -2208,8 +2208,8 @@ export final class Regex {
         matches.push(new Match(
           input.sliceBytes(index, index + patternLen),
           index,
-          new Array<String>(),
-          new Array<String>()  // No named groups in literal mode
+          new GrowableArray<String>(),
+          new GrowableArray<String>()  // No named groups in literal mode
         ));
         pos = index + patternLen;
       }
@@ -2246,7 +2246,7 @@ export final class Regex {
       }
 
       // Extract group strings from captures[2], captures[3], etc.
-      let groups = new Array<String>();
+      let groups = new GrowableArray<String>();
       var capIdx = 2;
       while (capIdx < caps.length) {
         let groupStart = caps[capIdx];
@@ -2314,7 +2314,7 @@ export final class Regex {
     // but should produce one replacement
     if (matches.length == 0) {
       if (this.#pattern.length == 0 && input.length == 0) {
-        return replacer(new Match('', 0, new Array<String>(), new Array<String>()));
+        return replacer(new Match('', 0, new GrowableArray<String>(), new GrowableArray<String>()));
       }
       return input;
     }
@@ -2344,7 +2344,7 @@ export final class Regex {
   }
 
   split(input: String): Array<String> {
-    let parts = new Array<String>();
+    let parts = new GrowableArray<String>();
     if (this.#isLiteral) {
       let patternLen = this.#pattern.length;
       if (patternLen == 0) {
@@ -2448,7 +2448,7 @@ export let regex = (strings: TemplateStringsArray, values: FixedArray<String>) =
     return new Regex(strings.raw[0]);
   }
   let numParts = strings.length * 2 - 1;
-  let parts = new Array<String>(numParts);
+  let parts = new GrowableArray<String>(numParts);
   // With interpolation: interleave strings and values
   let pattern = strings.raw[0];
   var i = 0;

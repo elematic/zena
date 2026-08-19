@@ -96,7 +96,7 @@ export final class ModuleGenerator {
    * `i32.const`, only the 16-byte `v128.const`.
    */
   emitZeroV128(): void {
-    let zeros = new Array<i32>();
+    let zeros = new GrowableArray<i32>();
     var i = 0;
     while (i < 16) {
       zeros.push(0);
@@ -160,7 +160,7 @@ export final class ModuleGenerator {
         new ValTypeRefNull(stringStruct);
 
         // Sort stringLiterals by length descending
-        let sortedStrings = new Array<String>();
+        let sortedStrings = new GrowableArray<String>();
         let litKeys = wasm.stringLiterals.keys();
         while (let (true, val) = litKeys.next()) {
           sortedStrings.push(val);
@@ -175,7 +175,7 @@ export final class ModuleGenerator {
         // literal's first four bytes; the first verified candidate is the
         // same offset the full scan would have found.
         let accumulatedBytes = new ByteBuffer();
-        let windowIndex = new HashMap<i32, Array<i32>>();
+        let windowIndex = new HashMap<i32, GrowableArray<i32>>();
         // Window starts below this offset are indexed; it trails the end of
         // the buffer by up to 3 bytes so windows spanning an append
         // boundary are indexed once the bytes after them exist.
@@ -238,7 +238,7 @@ export final class ModuleGenerator {
               if (let (true, list) = windowIndex.get(wKey)) {
                 list.push(w);
               } else {
-                let list = new Array<i32>();
+                let list = new GrowableArray<i32>();
                 list.push(w);
                 windowIndex[wKey] = list;
               }
@@ -295,7 +295,7 @@ export final class ModuleGenerator {
     }
     
     if (needsStartFunction) {
-      let startSig = wasm.getSignature(new Array<ValType>(), new Array<ValType>());
+      let startSig = wasm.getSignature(new GrowableArray<ValType>(), new GrowableArray<ValType>());
       let firstModel = this.program.units[0].model;
       let startFunc = new WasmFunction(startSig, null, firstModel);
       startFunc.name = "__start";
@@ -338,7 +338,7 @@ export final class ModuleGenerator {
                 let f = wasm.functionMap[sym.id];
                 f.isReferenceTaken = true;
                 if (f.closureTrampoline == null) {
-                  let tParams = new Array<ValType>();
+                  let tParams = new GrowableArray<ValType>();
                   tParams.push(new ValTypeStructRef());
                   for (let p in f.signature.params) {
                     tParams.push(p);
@@ -619,7 +619,7 @@ export final class ModuleGenerator {
     }
     this.emitter.emitGlobalSectionEnd();
     
-    let exports = new Array<WasmExport>();
+    let exports = new GrowableArray<WasmExport>();
     let expKeys = wasm.exportMap.keys();
     while (let (true, k) = expKeys.next()) {
       let f = wasm.exportMap[k];
@@ -725,13 +725,13 @@ export final class ModuleGenerator {
     
     // Compute total exports = functions + globals + tags
     var totalExports = exports.length;
-    let globalExports = new Array<WasmGlobal>();
+    let globalExports = new GrowableArray<WasmGlobal>();
     for (let gName in wasm.exportGlobalMap.keys()) {
       globalExports.push(wasm.exportGlobalMap[gName]);
     }
     totalExports += globalExports.length;
     
-    let tagExports = new Array<String>();
+    let tagExports = new GrowableArray<String>();
     let tagKeys = wasm.exportTagMap.keys();
     while (let (true, k) = tagKeys.next()) {
       tagExports.push(k);
@@ -766,7 +766,7 @@ export final class ModuleGenerator {
       this.emitter.emitStartSection(sf.index);
     }
 
-    let elemIndices = new Array<i32>();
+    let elemIndices = new GrowableArray<i32>();
     for (let f in wasm.functions) {
       if (f.isReferenceTaken) {
         elemIndices.push(f.index);

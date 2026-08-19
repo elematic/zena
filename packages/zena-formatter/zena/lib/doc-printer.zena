@@ -4,7 +4,7 @@
 // Converts a Doc IR into a formatted string, handling line breaking,
 // indentation, and group flattening.
 
-import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { StringBuilder } from 'zena:string-builder';
 import {
   Doc,
@@ -73,10 +73,10 @@ class PrintCommand {
 let MAX_GROUPS: i32 = 1024;
 
 class GroupBreakMap {
-  #broken: Array<boolean>;
+  #broken: GrowableArray<boolean>;
 
   new()
-    : #broken = new Array<boolean>()
+    : #broken = new GrowableArray<boolean>()
   {
     var i = 0;
     while (i < MAX_GROUPS) {
@@ -114,8 +114,8 @@ class PropagateEntry {
 }
 
 let propagateBreaks = (doc: Doc): void => {
-  let stack = new Array<PropagateEntry>();
-  let groupStack = new Array<GroupDoc>();
+  let stack = new GrowableArray<PropagateEntry>();
+  let groupStack = new GrowableArray<GroupDoc>();
 
   stack.push(new PropagateEntry(doc, false));
 
@@ -197,8 +197,8 @@ let propagateBreaks = (doc: Doc): void => {
 // ============================================================================
 
 let fits = (
-  cmds: Array<PrintCommand>,
-  restCmds: Array<PrintCommand>,
+  cmds: GrowableArray<PrintCommand>,
+  restCmds: GrowableArray<PrintCommand>,
   groupBreaks: GroupBreakMap,
   hasLineSuffix: boolean,
   width: i32
@@ -302,9 +302,9 @@ let fits = (
 export let printDocToString = (doc: Doc, options: PrintOptions): String => {
   propagateBreaks(doc);
   let out = new StringBuilder();
-  let cmds = new Array<PrintCommand>();
+  let cmds = new GrowableArray<PrintCommand>();
   let groupBreaks = new GroupBreakMap();
-  var lineSuffixes = new Array<PrintCommand>();
+  var lineSuffixes = new GrowableArray<PrintCommand>();
 
   cmds.push(new PrintCommand(0, Mode.Break, doc));
 
@@ -339,7 +339,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
         cmds.push(new PrintCommand(indentLevel, Mode.Break, gd.contents));
       } else {
         // Try flat: build a temporary stack and check fits
-        let fitsCmds = new Array<PrintCommand>();
+        let fitsCmds = new GrowableArray<PrintCommand>();
         fitsCmds.push(new PrintCommand(indentLevel, Mode.Flat, gd.contents));
         let hasSuffix = lineSuffixes.length > 0;
 
@@ -397,7 +397,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
         let whitespace = parts[1];
 
         // Build remaining parts (parts[2..])
-        let remaining = new Array<Doc>();
+        let remaining = new GrowableArray<Doc>();
         var j = 2;
         while (j < parts.length) {
           remaining.push(parts[j]);
@@ -410,16 +410,16 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
           cmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
         } else {
           // Greedy: check if content fits flat
-          let contentFitsCmds = new Array<PrintCommand>();
+          let contentFitsCmds = new GrowableArray<PrintCommand>();
           contentFitsCmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
-          let emptyRest = new Array<PrintCommand>();
+          let emptyRest = new GrowableArray<PrintCommand>();
           let contentFits = fits(contentFitsCmds, emptyRest, groupBreaks, false, options.printWidth - pos);
 
           let remainingFill = new FillDoc(remaining);
 
           if (contentFits) {
             // Check if content + whitespace(flat) + nextContent also fits
-            let bothCmds = new Array<PrintCommand>();
+            let bothCmds = new GrowableArray<PrintCommand>();
             // Push in reverse for stack (LIFO): content processed first
             bothCmds.push(new PrintCommand(indentLevel, Mode.Flat, remaining[0]));
             bothCmds.push(new PrintCommand(indentLevel, Mode.Flat, whitespace));
@@ -461,7 +461,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
             cmds.push(lineSuffixes[i]);
             i += 1;
           }
-          lineSuffixes = new Array<PrintCommand>();
+          lineSuffixes = new GrowableArray<PrintCommand>();
         } else {
           out.append('\n');
           pos = 0;
@@ -489,7 +489,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
             cmds.push(lineSuffixes[i]);
             i += 1;
           }
-          lineSuffixes = new Array<PrintCommand>();
+          lineSuffixes = new GrowableArray<PrintCommand>();
         } else {
           out.append('\n');
           pos = 0;
@@ -513,7 +513,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
           cmds.push(lineSuffixes[i]);
           i += 1;
         }
-        lineSuffixes = new Array<PrintCommand>();
+        lineSuffixes = new GrowableArray<PrintCommand>();
       } else {
         out.append('\n');
         pos = 0;
@@ -542,7 +542,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
           cmds.push(lineSuffixes[i]);
           i += 1;
         }
-        lineSuffixes = new Array<PrintCommand>();
+        lineSuffixes = new GrowableArray<PrintCommand>();
       }
 
     } else if (d.kind == DocKind.BreakParent) {

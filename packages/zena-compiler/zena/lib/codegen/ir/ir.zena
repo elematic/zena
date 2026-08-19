@@ -499,8 +499,8 @@ export sealed class IrRef {
  * (later milestone).
  */
 export final class IrBlock {
-  params = new Array<i32>();
-  insts = new Array<i32>();
+  params = new GrowableArray<i32>();
+  insts = new GrowableArray<i32>();
 }
 
 /** One decoded control-flow edge: target block + branch arguments. */
@@ -521,24 +521,24 @@ export final class IrBody {
   // and growth copies are amortized and cheap (array.copy). Lowering will
   // pre-size them from the AST node count via a builder capacity hint
   // (ir.md §4), which should make mid-build growth rare.
-  opcode = new Array<i32>();
-  typeId = new Array<i32>();
-  a = new Array<i32>();
-  b = new Array<i32>();
+  opcode = new GrowableArray<i32>();
+  typeId = new GrowableArray<i32>();
+  a = new GrowableArray<i32>();
+  b = new GrowableArray<i32>();
   /** Block id owning each instruction. */
-  instBlock = new Array<i32>();
+  instBlock = new GrowableArray<i32>();
   /** Overflow operand pool. */
-  extra = new Array<i32>();
+  extra = new GrowableArray<i32>();
 
-  blocks = new Array<IrBlock>();
+  blocks = new GrowableArray<IrBlock>();
 
   // Indirection tables (ir.md §4).
-  typeTable = new Array<ValType>();
-  refTable = new Array<IrRef>();
+  typeTable = new GrowableArray<ValType>();
+  refTable = new GrowableArray<IrRef>();
 
   // Constant pools.
-  constI64 = new Array<i64>();
-  constF64 = new Array<f64>();
+  constI64 = new GrowableArray<i64>();
+  constF64 = new GrowableArray<f64>();
 
   /**
    * Mutable variables (§5.1), indexed by var id: the declared type of
@@ -548,7 +548,7 @@ export final class IrBody {
    * handler edge leaves from anywhere in the protected region and can
    * only carry values live at its entry.
    */
-  varTypes = new Array<ValType>();
+  varTypes = new GrowableArray<ValType>();
 
   instCount(): i32 {
     return this.opcode.length;
@@ -575,7 +575,7 @@ export final class IrBody {
    * Appends every value operand of `inst` (instruction ids read by it,
    * including branch arguments) to `out`.
    */
-  appendValueOperands(inst: i32, out: Array<i32>): void {
+  appendValueOperands(inst: i32, out: GrowableArray<i32>): void {
     let op = this.op(inst);
     let av = this.a[inst];
     // Each branch below corresponds to one shape from the operand-encoding
@@ -846,7 +846,7 @@ export final class IrBody {
     }
   }
 
-  #appendSuccessorArgs(inst: i32, out: Array<i32>): void {
+  #appendSuccessorArgs(inst: i32, out: GrowableArray<i32>): void {
     let succs = this.successors(inst);
     for (let s in succs) {
       var i = 0;
@@ -860,7 +860,7 @@ export final class IrBody {
 
   /** Decodes the control-flow successors of a terminator instruction. */
   successors(inst: i32): Array<IrSuccessor> {
-    let result = new Array<IrSuccessor>();
+    let result = new GrowableArray<IrSuccessor>();
     let op = this.op(inst);
     if (op == IrOp.ret || op == IrOp.ret_multi || op == IrOp.throw ||
         op == IrOp.unreachable) {
@@ -926,7 +926,7 @@ export final class IrBody {
  */
 let buildIrOpNames = (): Array<String> => {
   let count = IrOp.op_count as i32;
-  let n = new Array<String>(count);
+  let n = new GrowableArray<String>(count);
   for (var i = 0; i < count; i += 1) {
     n.push('');
   }

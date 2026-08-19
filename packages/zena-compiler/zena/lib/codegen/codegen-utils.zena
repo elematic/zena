@@ -12,7 +12,9 @@ import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
-import { Array, FixedArray } from 'zena:array';
+import { Array } from 'zena:array';
+import { FixedArray } from 'zena:fixed-array';
+import { GrowableArray } from 'zena:growable-array';
 import { HashMap } from 'zena:map';
 import { Program } from '../program.zena';
 import { Hashable } from 'zena:hashable';
@@ -677,7 +679,7 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
   if (ft.overloads == null) {
     return null;
   }
-  let paramTypes = new Array<Type>();
+  let paramTypes = new GrowableArray<Type>();
   for (let p in mDef.params) {
     let sym = moduleModel.resolveDeclaration(p as Node);
     if (sym != null) {
@@ -710,7 +712,7 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
     }
   }
   
-  let ovs = ft.overloads as Array<FunctionType>;
+  let ovs = ft.overloads as GrowableArray<FunctionType>;
   for (let ov in ovs) {
     if (ov.parameters.length == paramTypes.length) {
       var match = true;
@@ -744,10 +746,11 @@ export let findMixinDeclaration = (program: Program, mt: MixinType): MixinDeclar
 export let collectMixinMembers = (
   program: Program,
   model: SemanticModel,
-  mixinAnns: Array<TypeAnnotation> | null,
-  methods: Array<Node>,
+  mixinAnns: GrowableArray<TypeAnnotation> | null,
+  methods: GrowableArray<Node>,
   seen: HashMap<MixinKey, boolean>,
-  scopes: Array<String> | null = null
+  scopes: GrowableArray<String> | null = null,
+  models: GrowableArray<SemanticModel> | null = null
 ): void => {
   if (mixinAnns == null) { return; }
   for (let ann in mixinAnns) {
@@ -760,7 +763,7 @@ export let collectMixinMembers = (
           let mixinKey = getMixinKey(mt);
           if (!seen.has(mixinKey)) {
             seen[mixinKey] = true;
-            collectMixinMembers(program, model, md.mixins, methods, seen, scopes);
+            collectMixinMembers(program, model, md.mixins, methods, seen, scopes, models);
             // The mixin's private scope key, parallel to `methods`
             // when the caller asks for it: functions compiled from
             // these nodes resolve their "#" fields under this scope
@@ -773,11 +776,18 @@ export let collectMixinMembers = (
             } else {
               mt.name + "_This"
             };
+            var mixinModel: SemanticModel = model;
+            if (let (true, unit) = program.unitsByPath.get(mt.sourcePath)) {
+              mixinModel = unit.model;
+            }
             for (let member in md.body) {
               if (member is MethodDefinition || member is AccessorDeclaration || member is FieldDefinition) {
                 methods.push(member);
                 if (scopes != null) {
                   scopes.push(scope);
+                }
+                if (models != null) {
+                  models.push(mixinModel);
                 }
               }
             }
@@ -804,13 +814,37 @@ export let mixinScopeOfMember = (
   match (cd) {
     case ClassDeclaration as cdd: {
       if (cdd.mixins == null) { return null; }
-      let members = new Array<Node>();
-      let scopes = new Array<String>();
+      let members = new GrowableArray<Node>();
+      let scopes = new GrowableArray<String>();
       let seen = new HashMap<MixinKey, boolean>();
       collectMixinMembers(program, model, cdd.mixins, members, seen, scopes);
       for (var i = 0; i < members.length; i += 1) {
         if (members[i] == member) {
           return scopes[i];
+        }
+      }
+    }
+    case _: {}
+  }
+  return null;
+};
+
+export let mixinModelOfMember = (
+  program: Program,
+  model: SemanticModel,
+  cd: Node | null,
+  member: Node
+): SemanticModel | null => {
+  match (cd) {
+    case ClassDeclaration as cdd: {
+      if (cdd.mixins == null) { return null; }
+      let members = new GrowableArray<Node>();
+      let seen = new HashMap<MixinKey, boolean>();
+      let models = new GrowableArray<SemanticModel>();
+      collectMixinMembers(program, model, cdd.mixins, members, seen, null, models);
+      for (var i = 0; i < members.length; i += 1) {
+        if (members[i] == member) {
+          return models[i];
         }
       }
     }
@@ -862,9 +896,9 @@ export let mixinScopeOfNode = (model: SemanticModel, node: Node): String | null 
 export let collectMixinFields = (
   program: Program,
   model: SemanticModel,
-  mixinAnns: Array<TypeAnnotation> | null,
-  fields: Array<FieldDefinition>,
-  scopes: Array<String>,
+  mixinAnns: GrowableArray<TypeAnnotation> | null,
+  fields: GrowableArray<FieldDefinition>,
+  scopes: GrowableArray<String>,
   seen: HashMap<MixinKey, boolean>
 ): void => {
   if (mixinAnns == null) { return; }
@@ -922,7 +956,7 @@ export let substituteTypeParams = (
       t
     }
     case UnionType {types}: {
-      let substituted = new Array<Type>();
+      let substituted = new GrowableArray<Type>();
       for (let subtype in types) {
         substituted.push(substituteTypeParams(typeParams, typeArgs, subtype));
       }
@@ -933,14 +967,14 @@ export let substituteTypeParams = (
       new ArrayType(subElem)
     }
     case TupleType {elementTypes}: {
-      let subElems = new Array<Type>();
+      let subElems = new GrowableArray<Type>();
       for (let elem in elementTypes) {
         subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
       new TupleType(subElems)
     }
     case InlineTupleType {elementTypes}: {
-      let subElems = new Array<Type>();
+      let subElems = new GrowableArray<Type>();
       for (let elem in elementTypes) {
         subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
@@ -955,7 +989,7 @@ export let substituteTypeParams = (
       res
     }
     case FunctionType as ft: {
-      let subParams = new Array<Type>();
+      let subParams = new GrowableArray<Type>();
       for (let param in ft.parameters) {
         subParams.push(substituteTypeParams(typeParams, typeArgs, param));
       }
@@ -978,7 +1012,7 @@ export let substituteTypeParams = (
       let {typeArguments} = ct;
       if (typeArguments != null) {
         let srcArgs = typeArguments;
-        let subArgs = new Array<Type>();
+        let subArgs = new GrowableArray<Type>();
         for (let arg in srcArgs) {
           subArgs.push(substituteTypeParams(typeParams, typeArgs, arg));
         }
@@ -1214,11 +1248,11 @@ export let getFunctionValueWrapperKey = (keyName: String, ft: FunctionType): Fun
   return new FunctionValueWrapperKey(keyName, getSignatureKey(ft));
 };
 
-export let sortStringsByLengthDescending = (arr: Array<String>): void => {
+export let sortStringsByLengthDescending = (arr: GrowableArray<String>): void => {
   quickSortStringsByLengthDescending(arr, 0, arr.length - 1);
 };
 
-let quickSortStringsByLengthDescending = (arr: Array<String>, low: i32, high: i32): void => {
+let quickSortStringsByLengthDescending = (arr: GrowableArray<String>, low: i32, high: i32): void => {
   if (low < high) {
     let pIdx = partitionStringsByLengthDescending(arr, low, high);
     quickSortStringsByLengthDescending(arr, low, pIdx);
@@ -1226,7 +1260,7 @@ let quickSortStringsByLengthDescending = (arr: Array<String>, low: i32, high: i3
   }
 };
 
-let partitionStringsByLengthDescending = (arr: Array<String>, low: i32, high: i32): i32 => {
+let partitionStringsByLengthDescending = (arr: GrowableArray<String>, low: i32, high: i32): i32 => {
   let mid = low + ((high - low) >> 1);
   let pivot = arr[mid];
   let pivotLen = pivot.length;

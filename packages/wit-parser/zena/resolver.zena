@@ -123,7 +123,7 @@ class PackageRegistry {
   /** Map from package key (namespace:name) to package content. */
   #packages = new HashMap<String, PackageContent>();
   /** List of all package keys for error messages. */
-  #knownPackages = new Array<String>();
+  #knownPackages = new GrowableArray<String>();
 
   /** Build a registry from an AST. */
   static build(ast: Ast): PackageRegistry {
@@ -313,7 +313,7 @@ let isGated = (docs: Docs): boolean => {
   if (docs.attributes == null) {
     return false;
   }
-  let attrs = docs.attributes as Array<Attribute>;
+  let attrs = docs.attributes as GrowableArray<Attribute>;
   for (var i = 0; i < attrs.length; i += 1) {
     if (attrs[i].tag == AttributeTag.Unstable) {
       return true;
@@ -341,13 +341,13 @@ let getFullPath = (path: UsePath): String => {
  * A scope for name resolution. Contains symbols defined at this level.
  */
 class Scope {
-  symbols = new Array<SymbolEntry>();
+  symbols = new GrowableArray<SymbolEntry>();
   /** Types defined in this scope (for cycle detection). */
-  types = new Array<TypeDef>();
+  types = new GrowableArray<TypeDef>();
   /** Worlds defined in this scope (for include cycle detection). */
-  worlds = new Array<WorldDef>();
+  worlds = new GrowableArray<WorldDef>();
   /** Interfaces defined in this scope (for use validation). */
-  interfaces = new Array<InterfaceDef>();
+  interfaces = new GrowableArray<InterfaceDef>();
 
   /** Find a symbol by name (case-insensitive for kebab-case). */
   find(name: String): SymbolEntry | null {
@@ -423,18 +423,18 @@ class Scope {
  */
 export class Resolver {
   /** Stack of scopes for nested name resolution. */
-  #scopes = new Array<Scope>();
+  #scopes = new GrowableArray<Scope>();
   /** Current package name (for error messages). */
   var #packageName: PackageName | null = null;
   
   /** Current package being resolved (for cross-package cycle detection). */
   var #currentResolvePackage: PackageName | null = null;
   /** Types being resolved (for cycle detection). */
-  #resolving = new Array<String>();
+  #resolving = new GrowableArray<String>();
   /** Interfaces being resolved (for use cycle detection). Uses qualified names: "pkg:name/iface". */
-  #resolvingInterfaces = new Array<String>();
+  #resolvingInterfaces = new GrowableArray<String>();
   /** Worlds being included (for include cycle detection). */
-  #includingWorlds = new Array<String>();
+  #includingWorlds = new GrowableArray<String>();
   /** Whether we're currently inside a gated context (@unstable). */
   var #inGatedContext = false;
   /** Registry of all packages for cross-package resolution. */
@@ -799,8 +799,8 @@ export class Resolver {
     this.#pushScope();
 
     // Track import/export names separately for conflict detection
-    let imports = new Array<SymbolEntry>();
-    let exports = new Array<SymbolEntry>();
+    let imports = new GrowableArray<SymbolEntry>();
+    let exports = new GrowableArray<SymbolEntry>();
 
     // First pass: collect names from type definitions
     for (var i = 0; i < world.items.length; i += 1) {
@@ -825,7 +825,7 @@ export class Resolver {
     this.#includingWorlds.pop();
   }
 
-  #resolveWorldItem(item: WorldItem, imports: Array<SymbolEntry>, exports: Array<SymbolEntry>, worldName: String): void {
+  #resolveWorldItem(item: WorldItem, imports: GrowableArray<SymbolEntry>, exports: GrowableArray<SymbolEntry>, worldName: String): void {
     if (item.tag == WorldItemTag.Import) {
       let imp = item.importItem as Import;
       // Set gated context based on the import's docs
@@ -875,7 +875,7 @@ export class Resolver {
   }
 
   /** Check if an include statement would shadow existing imports/exports. */
-  #checkIncludeShadowing(include: Include, imports: Array<SymbolEntry>, exports: Array<SymbolEntry>): void {
+  #checkIncludeShadowing(include: Include, imports: GrowableArray<SymbolEntry>, exports: GrowableArray<SymbolEntry>): void {
     // Only check for local world references
     if (include.from.tag != UsePathTag.Id) {
       return;
@@ -1003,7 +1003,7 @@ export class Resolver {
     return name;
   }
 
-  #resolveExternKind(kind: ExternKind, isImport: boolean, symbols: Array<SymbolEntry>, worldName: String): void {
+  #resolveExternKind(kind: ExternKind, isImport: boolean, symbols: GrowableArray<SymbolEntry>, worldName: String): void {
     if (kind.tag == ExternKindTag.Func) {
       let funcName = kind.name as Id;
       // Check for duplicates in this category (imports or exports)
@@ -1062,7 +1062,7 @@ export class Resolver {
       }
       // Resolve interface items in their own scope (inline interfaces have their own namespace)
       this.#pushScope();
-      let items = kind.items as Array<InterfaceItem>;
+      let items = kind.items as GrowableArray<InterfaceItem>;
       for (var j = 0; j < items.length; j += 1) {
         this.#resolveInterfaceItem(items[j]);
       }
@@ -1125,7 +1125,7 @@ export class Resolver {
   #resolveTypeDef(td: TypeDef): void {
     // Check for empty enum
     if (td.tag == TypeDefTag.Enum) {
-      let cases = td.enumCases as Array<EnumCaseDef>;
+      let cases = td.enumCases as GrowableArray<EnumCaseDef>;
       if (cases.length == 0) {
         throw new ResolveError("empty enum", td.name.span);
       }
@@ -1135,7 +1135,7 @@ export class Resolver {
 
     // Check for empty variant
     if (td.tag == TypeDefTag.Variant) {
-      let cases = td.cases as Array<Case>;
+      let cases = td.cases as GrowableArray<Case>;
       if (cases.length == 0) {
         throw new ResolveError("empty variant", td.name.span);
       }
@@ -1161,7 +1161,7 @@ export class Resolver {
 
     // Resolve record fields
     if (td.tag == TypeDefTag.Record) {
-      let fields = td.fields as Array<Field>;
+      let fields = td.fields as GrowableArray<Field>;
       this.#checkDuplicateFieldNames(fields, td.name.span);
       for (var i = 0; i < fields.length; i += 1) {
         this.#resolveType(fields[i].type, false);
@@ -1170,7 +1170,7 @@ export class Resolver {
 
     // Resolve resource methods
     if (td.tag == TypeDefTag.Resource) {
-      let funcs = td.resourceFuncs as Array<ResourceFunc>;
+      let funcs = td.resourceFuncs as GrowableArray<ResourceFunc>;
       // Check for duplicate constructors and method names
       this.#checkDuplicateResourceFuncs(funcs);
 
@@ -1208,7 +1208,7 @@ export class Resolver {
 
     // Check for duplicate flags
     if (td.tag == TypeDefTag.Flags) {
-      let flags = td.flags as Array<FlagDef>;
+      let flags = td.flags as GrowableArray<FlagDef>;
       this.#checkDuplicateFlagNames(flags);
     }
   }
@@ -1255,7 +1255,7 @@ export class Resolver {
   #checkDuplicateResourceFuncs(funcs: Array<ResourceFunc>): void {
     var constructorCount = 0;
     var constructorSpan: Span | null = null;
-    var methodNames = new Array<SymbolEntry>();
+    var methodNames = new GrowableArray<SymbolEntry>();
 
     for (var i = 0; i < funcs.length; i += 1) {
       let rf = funcs[i];
@@ -1422,7 +1422,7 @@ export class Resolver {
         } else if (typeDef.tag == TypeDefTag.Record) {
           // Check record fields for cycles and borrow usage
           this.#resolving.push(name);
-          let fields = typeDef.fields as Array<Field>;
+          let fields = typeDef.fields as GrowableArray<Field>;
           for (var i = 0; i < fields.length; i += 1) {
             // Propagate inReturnPosition to catch borrow<T> in record fields
             this.#resolveType(fields[i].type, inReturnPosition);
@@ -1471,7 +1471,7 @@ export class Resolver {
     }
 
     if (t.tag == TypeTag.Tuple) {
-      let types = t.types as Array<Type>;
+      let types = t.types as GrowableArray<Type>;
       for (var i = 0; i < types.length; i += 1) {
         this.#resolveType(types[i], inReturnPosition);
       }
@@ -1603,14 +1603,14 @@ export class Resolver {
   /** Check if a TypeDef contains a borrow type. */
   #typeDefContainsBorrow(td: TypeDef, sourceIface: InterfaceDef): boolean {
     if (td.tag == TypeDefTag.Record) {
-      let fields = td.fields as Array<Field>;
+      let fields = td.fields as GrowableArray<Field>;
       for (var i = 0; i < fields.length; i += 1) {
         if (this.#typeContainsBorrow(fields[i].type, sourceIface)) {
           return true;
         }
       }
     } else if (td.tag == TypeDefTag.Variant) {
-      let cases = td.cases as Array<Case>;
+      let cases = td.cases as GrowableArray<Case>;
       for (var i = 0; i < cases.length; i += 1) {
         if (cases[i].type != null) {
           if (this.#typeContainsBorrow(cases[i].type as Type, sourceIface)) {
@@ -1630,7 +1630,7 @@ export class Resolver {
       return true;
     }
     if (t.tag == TypeTag.Tuple) {
-      let types = t.types as Array<Type>;
+      let types = t.types as GrowableArray<Type>;
       for (var i = 0; i < types.length; i += 1) {
         if (this.#typeContainsBorrow(types[i], sourceIface)) {
           return true;
@@ -2250,17 +2250,17 @@ export class Resolver {
    */
   #checkTransitiveDependencyConflicts(world: WorldDef): void {
     // Collect names of inline interface imports (all, for path export conflict detection)
-    let inlineImports = new Array<String>();
+    let inlineImports = new GrowableArray<String>();
     // Collect non-empty inline imports (for inline export conflict detection)
     // Empty inline imports don't cause conflicts with inline exports because
     // uses would resolve to the package-level interface instead
-    let nonEmptyInlineImports = new Array<String>();
+    let nonEmptyInlineImports = new GrowableArray<String>();
     // Collect names of path imports
-    let pathImports = new Array<String>();
+    let pathImports = new GrowableArray<String>();
     // Collect names of path exports (interfaces exported by path reference)
-    let pathExports = new Array<String>();
+    let pathExports = new GrowableArray<String>();
     // Collect inline interface exports (export name: interface {...})
-    let inlineExports = new Array<String>();
+    let inlineExports = new GrowableArray<String>();
 
     for (var i = 0; i < world.items.length; i += 1) {
       let item = world.items[i];
@@ -2271,7 +2271,7 @@ export class Resolver {
           let name = imp.kind.name as Id;
           inlineImports.push(name.name);
           // Track non-empty ones separately for Check 3
-          let items = imp.kind.items as Array<InterfaceItem>;
+          let items = imp.kind.items as GrowableArray<InterfaceItem>;
           if (items.length > 0) {
             nonEmptyInlineImports.push(name.name);
           }
@@ -2367,7 +2367,7 @@ export class Resolver {
             let name = exp.kind.name as Id;
             if (name.name == exportName) {
               // Check the items in this inline interface for use statements
-              let items = exp.kind.items as Array<InterfaceItem>;
+              let items = exp.kind.items as GrowableArray<InterfaceItem>;
               let deps = this.#collectDependenciesFromItems(items);
               
               // Check if any dependency is also an inline import
@@ -2406,14 +2406,14 @@ export class Resolver {
 
   /** Collect transitive interface dependencies from an interface definition. */
   #collectTransitiveDependencies(iface: InterfaceDef): Array<String> {
-    let visited = new Array<String>();
-    let result = new Array<String>();
+    let visited = new GrowableArray<String>();
+    let result = new GrowableArray<String>();
     this.#collectDepsRecursive(iface, visited, result);
     return result;
   }
 
   /** Recursively collect interface dependencies. */
-  #collectDepsRecursive(iface: InterfaceDef, visited: Array<String>, result: Array<String>): void {
+  #collectDepsRecursive(iface: InterfaceDef, visited: GrowableArray<String>, result: GrowableArray<String>): void {
     let name = iface.name.name;
     if (this.#containsString(visited, name)) {
       return;  // Already visited
@@ -2443,8 +2443,8 @@ export class Resolver {
 
   /** Collect direct dependencies from interface items (for inline interfaces). */
   #collectDependenciesFromItems(items: Array<InterfaceItem>): Array<String> {
-    let result = new Array<String>();
-    let visited = new Array<String>();
+    let result = new GrowableArray<String>();
+    let visited = new GrowableArray<String>();
     
     for (var i = 0; i < items.length; i += 1) {
       let item = items[i];

@@ -4,20 +4,11 @@
 // standalone runs need --allow-spawn / ZENA_ALLOW_SPAWN=1).
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Array} from 'zena:growable-array';
 import {run, runIn, spawn} from 'zena:process';
-
-let argvOf = (parts: FixedArray<String>): Array<String> => {
-  let out = new Array<String>();
-  for (let p in parts) {
-    out.push(p);
-  }
-  return out;
-};
 
 export let tests = suite('zena:process', (): void => {
   test('run captures stdout, stderr, and the exit code', (ctx: TestContext): void => {
-    let res = run(argvOf(['/bin/sh', '-c', 'printf out; printf err >&2; exit 3']));
+    let res = run(['/bin/sh', '-c', 'printf out; printf err >&2; exit 3']);
     equal(res.exitCode, 3);
     equal(res.stdout, 'out');
     equal(res.stderr, 'err');
@@ -26,13 +17,13 @@ export let tests = suite('zena:process', (): void => {
   });
 
   test('succeeded on a zero exit', (ctx: TestContext): void => {
-    let res = run(argvOf(['/bin/sh', '-c', 'true']));
+    let res = run(['/bin/sh', '-c', 'true']);
     equal(res.exitCode, 0);
     isTrue(res.succeeded());
   });
 
   test('runIn sets the working directory', (ctx: TestContext): void => {
-    let res = runIn(argvOf(['/bin/sh', '-c', 'pwd']), '/tmp');
+    let res = runIn(['/bin/sh', '-c', 'pwd'], '/tmp');
     equal(res.exitCode, 0);
     // /tmp may be a symlink (e.g. to /private/tmp); accept a suffix match.
     isTrue(res.stdout.contains('tmp'), `pwd printed ${res.stdout}`);
@@ -42,8 +33,8 @@ export let tests = suite('zena:process', (): void => {
     // Two 0.2s sleeps in parallel should finish well under 0.4s of
     // combined wall time each; mostly this asserts both complete and
     // report independently.
-    let a = spawn(argvOf(['/bin/sh', '-c', 'sleep 0.2; printf a']));
-    let b = spawn(argvOf(['/bin/sh', '-c', 'sleep 0.2; printf b']));
+    let a = spawn(['/bin/sh', '-c', 'sleep 0.2; printf a']);
+    let b = spawn(['/bin/sh', '-c', 'sleep 0.2; printf b']);
     let ra = a.wait();
     let rb = b.wait();
     equal(ra.stdout, 'a');
@@ -53,7 +44,7 @@ export let tests = suite('zena:process', (): void => {
   });
 
   test('wait() twice returns the same result', (ctx: TestContext): void => {
-    let p = spawn(argvOf(['/bin/sh', '-c', 'printf once']));
+    let p = spawn(['/bin/sh', '-c', 'printf once']);
     let first = p.wait();
     let second = p.wait();
     equal(first.stdout, 'once');
@@ -62,7 +53,7 @@ export let tests = suite('zena:process', (): void => {
   });
 
   test('a process that finishes in time is not flagged as timed out', (ctx: TestContext): void => {
-    let res = spawn(argvOf(['/bin/sh', '-c', 'printf quick'])).waitFor(30000 as i64);
+    let res = spawn(['/bin/sh', '-c', 'printf quick']).waitFor(30000 as i64);
     equal(res.exitCode, 0);
     equal(res.stdout, 'quick');
     isFalse(res.timedOut);
@@ -71,7 +62,7 @@ export let tests = suite('zena:process', (): void => {
 
   test('waitFor kills a process that overruns its deadline', (ctx: TestContext): void => {
     // Would sleep for 30s; the deadline must cut it far shorter.
-    let p = spawn(argvOf(['/bin/sh', '-c', 'exec sleep 30']));
+    let p = spawn(['/bin/sh', '-c', 'exec sleep 30']);
     let res = p.waitFor(200 as i64);
     isTrue(res.timedOut, 'expected timedOut');
     isFalse(res.succeeded(), 'a killed process has not succeeded');
@@ -81,23 +72,24 @@ export let tests = suite('zena:process', (): void => {
   });
 
   test('output written before the deadline survives the kill', (ctx: TestContext): void => {
-    let p = spawn(argvOf(['/bin/sh', '-c', 'printf early; exec sleep 30']));
+    let p = spawn(['/bin/sh', '-c', 'printf early; exec sleep 30']);
     let res = p.waitFor(400 as i64);
     isTrue(res.timedOut, 'expected timedOut');
     equal(res.stdout, 'early');
   });
 
   test('a non-positive deadline waits indefinitely', (ctx: TestContext): void => {
-    let res = spawn(argvOf(['/bin/sh', '-c', 'sleep 0.2; printf done'])).waitFor(0 as i64);
+    let res = spawn(['/bin/sh', '-c', 'sleep 0.2; printf done']).waitFor(0 as i64);
     equal(res.stdout, 'done');
     isFalse(res.timedOut);
   });
 
   test('waitFor twice returns the same result', (ctx: TestContext): void => {
-    let p = spawn(argvOf(['/bin/sh', '-c', 'exec sleep 30']));
+    let p = spawn(['/bin/sh', '-c', 'exec sleep 30']);
     let first = p.waitFor(200 as i64);
     let second = p.waitFor(200 as i64);
     isTrue(first.timedOut);
     isTrue(second.timedOut, 'the cached result keeps the timed-out flag');
   });
 });
+

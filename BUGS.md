@@ -1154,14 +1154,14 @@ member expression itself is a tracked narrowing subject.
 
 ### Index writes through an interface are unsupported in ZIR
 
-- **Found**: 2026-08-05 (writing a portable test for Sequence indexing
+- **Found**: 2026-08-05 (writing a portable test for Array indexing
   through the trampoline)
 - **Severity**: medium (loud bail, so no silent miscompile; blocks
-  `MutableSequence`-typed writes)
-- **Workaround**: operate on the concrete type (`FixedArray`, `Array`)
-  instead of a `MutableSequence`-typed value when writing.
-- **Details**: `parts[0] = v` where `parts: MutableSequence<T>` bails with
-  `zir unsupported: interface index write`. Reads through `Sequence<T>`
+  `MutableArray`-typed writes)
+- **Workaround**: operate on the concrete type (`FixedArray`, `GrowableArray`)
+  instead of a `MutableArray`-typed value when writing.
+- **Details**: `parts[0] = v` where `parts: MutableArray<T>` bails with
+  `zir unsupported: interface index write`. Reads through `Array<T>`
   work (the `[]` trampoline inlines `array.get` as of 2026-08-05); the
   write-side call-site lowering was never implemented. The `[]=`
   trampoline body is already synthesized, so this is call-site work in
@@ -1543,16 +1543,16 @@ found, returning false`, so the reachability pass is probably
   direct calls monomorphize per inferred type argument (map_spec_i32
   etc., covered by tests/language/execution/arrays/
   generic-method-primitive-mono.zena).
-- **Details**: `Sequence<T>` declares `map<U>(...)`, but generic
+- **Details**: `Array<T>` declares `map<U>(...)`, but generic
   methods get no interface vtable slot (one slot cannot serve every
   U). Codegen used to crash internally on
-  `(s: Sequence<i32>).map(f)`; both checkers now reject it ("Generic
-  method 'map' cannot be called through interface 'Sequence'...",
+  `(s: Array<i32>).map(f)`; both checkers now reject it ("Generic
+  method 'map' cannot be called through interface 'Array'...",
   Z2008/NotCallable — pinned by tests/language/semantics/interfaces/
   generic-method-virtual-dispatch.zena). Still needs a ruling on the
   feature itself: implement erased virtual dispatch (box U through
   anyref via the class-vtable copies that already exist), or drop
-  map from the Sequence interface so the declaration stops promising
+  map from the Array interface so the declaration stops promising
   something uncallable.
 
 ### Exhaustiveness false-positive (Z2022) on large sealed matches

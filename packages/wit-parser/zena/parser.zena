@@ -13,6 +13,7 @@ import {String} from 'zena:string';
 import {StringBuilder} from 'zena:string-builder';
 import {Option} from 'zena:option';
 import {parseI32} from 'zena:string-convert';
+import {GrowableArray} from 'zena:growable-array';
 import {TokenType, Span, Token} from './token.zena';
 import {Lexer, LexError} from './lexer.zena';
 
@@ -39,7 +40,7 @@ let normalizeDocs = (contents: String): String => {
   }
   
   // 1. Split into lines and trim trailing whitespace
-  let lines = new Array<String>();
+  let lines = new GrowableArray<String>();
   var lineStart = 0;
   for (var i = 0; i <= contents.length; i += 1) {
     if (i == contents.length || contents.getByteAt(i) == 10) { // 10 is '\n'
@@ -111,7 +112,7 @@ export class Docs {
   span: Span;
   var contents: String | null = null;
   /** Annotations that appeared before this item. */
-  var attributes: Array<Attribute> | null = null;
+  var attributes: GrowableArray<Attribute> | null = null;
 
   new(span: Span) : span = span;
 }
@@ -305,7 +306,7 @@ export sealed class Type {
   var fixedLength = 0 - 1; // -1
   var okType: Type | null = null;
   var errType: Type | null = null;
-  var types: Array<Type> | null = null;
+  var types: GrowableArray<Type> | null = null;
   var keyType: Type | null = null;
   var valueType: Type | null = null;
   var name: Id | null = null;
@@ -344,7 +345,7 @@ export sealed class Type {
     return new ResultType(ok, err, span);
   }
 
-  static tuple(types: Array<Type>, span: Span): Type {
+  static tuple(types: GrowableArray<Type>, span: Span): Type {
     return new TupleType(types, span);
   }
 
@@ -401,7 +402,7 @@ export final class ResultType extends Type {
   }
 }
 export final class TupleType extends Type {
-  new(types: Array<Type>, span: Span) : super(TypeTag.Tuple, span) { this.types = types; }
+  new(types: GrowableArray<Type>, span: Span) : super(TypeTag.Tuple, span) { this.types = types; }
 }
 export final class FutureType extends Type {
   new(inner: Type | null, span: Span) : super(TypeTag.Future, span) { this.inner = inner; }
@@ -445,7 +446,7 @@ export class Param {
 export class Func {
   var span: Span;
   var isAsync = false;
-  var params = new Array<Param>();
+  var params = new GrowableArray<Param>();
   var result: Type | null = null;
 
   new(span: Span) : span = span;
@@ -550,11 +551,11 @@ export sealed class TypeDef {
   var name: Id;
 
   var aliasType: Type | null = null;
-  var fields: Array<Field> | null = null;
-  var flags: Array<FlagDef> | null = null;
-  var cases: Array<Case> | null = null;
-  var enumCases: Array<EnumCaseDef> | null = null;
-  var resourceFuncs: Array<ResourceFunc> | null = null;
+  var fields: GrowableArray<Field> | null = null;
+  var flags: GrowableArray<FlagDef> | null = null;
+  var cases: GrowableArray<Case> | null = null;
+  var enumCases: GrowableArray<EnumCaseDef> | null = null;
+  var resourceFuncs: GrowableArray<ResourceFunc> | null = null;
 
   new(this.docs, this.tag, this.name);
 
@@ -562,23 +563,23 @@ export sealed class TypeDef {
     return new AliasDef(docs, name, type);
   }
 
-  static record(docs: Docs, name: Id, fields: Array<Field>): TypeDef {
+  static record(docs: Docs, name: Id, fields: GrowableArray<Field>): TypeDef {
     return new RecordDef(docs, name, fields);
   }
 
-  static flagsDef(docs: Docs, name: Id, flags: Array<FlagDef>): TypeDef {
+  static flagsDef(docs: Docs, name: Id, flags: GrowableArray<FlagDef>): TypeDef {
     return new FlagsDef(docs, name, flags);
   }
 
-  static variant(docs: Docs, name: Id, cases: Array<Case>): TypeDef {
+  static variant(docs: Docs, name: Id, cases: GrowableArray<Case>): TypeDef {
     return new VariantDef(docs, name, cases);
   }
 
-  static enumDef(docs: Docs, name: Id, cases: Array<EnumCaseDef>): TypeDef {
+  static enumDef(docs: Docs, name: Id, cases: GrowableArray<EnumCaseDef>): TypeDef {
     return new EnumDef(docs, name, cases);
   }
 
-  static resource(docs: Docs, name: Id, funcs: Array<ResourceFunc>): TypeDef {
+  static resource(docs: Docs, name: Id, funcs: GrowableArray<ResourceFunc>): TypeDef {
     return new ResourceDef(docs, name, funcs);
   }
 }
@@ -590,31 +591,31 @@ export final class AliasDef extends TypeDef {
 }
 
 export final class RecordDef extends TypeDef {
-  new(docs: Docs, name: Id, fields: Array<Field>) : super(docs, TypeDefTag.Record, name) {
+  new(docs: Docs, name: Id, fields: GrowableArray<Field>) : super(docs, TypeDefTag.Record, name) {
     this.fields = fields;
   }
 }
 
 export final class FlagsDef extends TypeDef {
-  new(docs: Docs, name: Id, flags: Array<FlagDef>) : super(docs, TypeDefTag.Flags, name) {
+  new(docs: Docs, name: Id, flags: GrowableArray<FlagDef>) : super(docs, TypeDefTag.Flags, name) {
     this.flags = flags;
   }
 }
 
 export final class VariantDef extends TypeDef {
-  new(docs: Docs, name: Id, cases: Array<Case>) : super(docs, TypeDefTag.Variant, name) {
+  new(docs: Docs, name: Id, cases: GrowableArray<Case>) : super(docs, TypeDefTag.Variant, name) {
     this.cases = cases;
   }
 }
 
 export final class EnumDef extends TypeDef {
-  new(docs: Docs, name: Id, enumCases: Array<EnumCaseDef>) : super(docs, TypeDefTag.Enum, name) {
+  new(docs: Docs, name: Id, enumCases: GrowableArray<EnumCaseDef>) : super(docs, TypeDefTag.Enum, name) {
     this.enumCases = enumCases;
   }
 }
 
 export final class ResourceDef extends TypeDef {
-  new(docs: Docs, name: Id, resourceFuncs: Array<ResourceFunc>) : super(docs, TypeDefTag.Resource, name) {
+  new(docs: Docs, name: Id, resourceFuncs: GrowableArray<ResourceFunc>) : super(docs, TypeDefTag.Resource, name) {
     this.resourceFuncs = resourceFuncs;
   }
 }
@@ -682,9 +683,9 @@ export final class InterfaceUse extends InterfaceItem {
 export class Use {
   var docs: Docs;
   var from: UsePath;
-  var names: Array<UseName>;
+  var names: GrowableArray<UseName>;
 
-  new(docs: Docs, from: UsePath, names: Array<UseName>) : docs = docs, from = from, names = names;
+  new(docs: Docs, from: UsePath, names: GrowableArray<UseName>) : docs = docs, from = from, names = names;
 }
 
 /**
@@ -693,7 +694,7 @@ export class Use {
 export class InterfaceDef {
   var docs: Docs;
   var name: Id;
-  var items = new Array<InterfaceItem>();
+  var items = new GrowableArray<InterfaceItem>();
   var isInline = false;
   var packageIndex = 0;
 
@@ -721,13 +722,13 @@ export sealed class ExternKind {
 
   var tag: ExternKindTag;
   var name: Id | null = null;           // For Interface and Func
-  var items: Array<InterfaceItem> | null = null;  // For Interface
+  var items: GrowableArray<InterfaceItem> | null = null;  // For Interface
   var path: UsePath | null = null;      // For Path
   var funcDef: Func | null = null;      // For Func
 
   new(this.tag);
 
-  static iface(name: Id, items: Array<InterfaceItem>): ExternKind {
+  static iface(name: Id, items: GrowableArray<InterfaceItem>): ExternKind {
     return new InterfaceExtern(name, items);
   }
 
@@ -741,7 +742,7 @@ export sealed class ExternKind {
 }
 
 export final class InterfaceExtern extends ExternKind {
-  new(name: Id, items: Array<InterfaceItem>) : super(ExternKindTag.Interface) {
+  new(name: Id, items: GrowableArray<InterfaceItem>) : super(ExternKindTag.Interface) {
     this.name = name;
     this.items = items;
   }
@@ -786,9 +787,9 @@ export class Export {
 export class Include {
   var docs: Docs;
   var from: UsePath;
-  var names: Array<IncludeName>;
+  var names: GrowableArray<IncludeName>;
 
-  new(docs: Docs, from: UsePath, names: Array<IncludeName>) : docs = docs, from = from, names = names;
+  new(docs: Docs, from: UsePath, names: GrowableArray<IncludeName>) : docs = docs, from = from, names = names;
 }
 
 /**
@@ -888,7 +889,7 @@ export final class WorldInclude extends WorldItem {
 export class WorldDef {
   var docs: Docs;
   var name: Id;
-  var items = new Array<WorldItem>();
+  var items = new GrowableArray<WorldItem>();
   var packageIndex = 0;
 
   new(docs: Docs, name: Id) : docs = docs, name = name;
@@ -914,7 +915,7 @@ export class ToplevelUse {
 export class NestedPackage {
   var docs: Docs;
   var name: PackageName;
-  var items = new Array<AstItem>();
+  var items = new GrowableArray<AstItem>();
 
   new(docs: Docs, name: PackageName) : docs = docs, name = name;
 }
@@ -979,9 +980,9 @@ export class Ast {
   var packageName: PackageName | null = null;
   /** Doc comments on the package declaration. */
   var packageDocs: Docs | null = null;
-  var items = new Array<AstItem>();
+  var items = new GrowableArray<AstItem>();
   /** Nested packages defined inline: `package foo:bar { ... }` */
-  var nestedPackages = new Array<NestedPackage>();
+  var nestedPackages = new GrowableArray<NestedPackage>();
 }
 
 // ============================================================================
@@ -1166,7 +1167,7 @@ export class Parser {
     
     // Parse any attributes
     if (this.#check(TokenType.At)) {
-      let attrs = new Array<Attribute>();
+      let attrs = new GrowableArray<Attribute>();
       while (this.#check(TokenType.At)) {
         attrs.push(this.#parseAttribute());
       }
@@ -1474,7 +1475,7 @@ export class Parser {
     if (token.type == TokenType.Tuple) {
       this.#advance();
       this.#expect(TokenType.LessThan);
-      let types = new Array<Type>();
+      let types = new GrowableArray<Type>();
       
       if (!this.#check(TokenType.GreaterThan)) {
         types.push(this.#parseType());
@@ -1689,7 +1690,7 @@ export class Parser {
       let name = this.#parseId();
       
       // Resources can be empty (just a declaration) or have a body
-      let funcs = new Array<ResourceFunc>();
+      let funcs = new GrowableArray<ResourceFunc>();
       if (this.#eat(TokenType.LeftBrace)) {
         while (!this.#check(TokenType.RightBrace)) {
           let funcDocs = this.#parseDocs();
@@ -1753,7 +1754,7 @@ export class Parser {
       this.#advance();
       this.#expect(TokenType.LeftParen);
       
-      let params = new Array<Param>();
+      let params = new GrowableArray<Param>();
       if (!this.#check(TokenType.RightParen)) {
         params.push(this.#parseParam());
         while (this.#eat(TokenType.Comma)) {
@@ -1945,7 +1946,7 @@ export class Parser {
       if (this.#eat(TokenType.Colon)) {
         // name: interface { ... }
         if (this.#eat(TokenType.Interface)) {
-          let items = new Array<InterfaceItem>();
+          let items = new GrowableArray<InterfaceItem>();
           this.#expect(TokenType.LeftBrace);
           while (!this.#check(TokenType.RightBrace)) {
             let itemDocs = this.#parseDocs();
@@ -1981,7 +1982,7 @@ export class Parser {
     this.#expect(TokenType.Include);
     let from = this.#parseUsePath();
     
-    var names = new Array<IncludeName>();
+    var names: GrowableArray<IncludeName> = new GrowableArray<IncludeName>();
     if (this.#eat(TokenType.With)) {
       names = this.#parseList<IncludeName>(
         TokenType.LeftBrace,
@@ -2110,7 +2111,7 @@ export class Parser {
   }
 
   /** Find an existing nested package by key. */
-  #findNestedPackage(packages: Array<NestedPackage>, key: String): NestedPackage | null {
+  #findNestedPackage(packages: GrowableArray<NestedPackage>, key: String): NestedPackage | null {
     for (let pkg in packages) {
       let pkgKey = this.#packageKey(pkg.name);
       if (pkgKey == key) {
@@ -2160,8 +2161,8 @@ export class Parser {
     open: TokenType,
     close: TokenType,
     parseItem: () => T
-  ): Array<T> {
-    let items = new Array<T>();
+  ): GrowableArray<T> {
+    let items = new GrowableArray<T>();
     this.#expect(open);
     
     if (!this.#check(close)) {

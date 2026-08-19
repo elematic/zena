@@ -55,7 +55,7 @@ The second phase introduces type-transforming and collection-allocating methods
 (`map`, `filter`, `flatMap`).
 
 For data structures like `FixedArray<T>`, we want `map<U>` to return a
-`FixedArray<U>`, not a generic `Sequence<U>` or `GrowableArray<U>`.
+`FixedArray<U>`, not a generic `Array<U>` or `GrowableArray<U>`.
 
 ### The Challenge
 

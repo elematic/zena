@@ -11,22 +11,22 @@ F-bounded polymorphism patterns.
 
 ### Problem: Imprecise Interface Signatures
 
-Consider the `Sequence<T>` interface:
+Consider the `Array<T>` interface:
 
 ```zena
-interface Sequence<T> {
-  map<U>(f: (item: T, index: i32, seq: Sequence<T>) => U): Sequence<U>;
+interface Array<T> {
+  map<U>(f: (item: T, index: i32, seq: Array<T>) => U): Array<U>;
 }
 ```
 
-When `Array<T>` implements `Sequence<T>`, the callback receives `Sequence<T>`
-rather than `Array<T>`. This loses type information:
+When `GrowableArray<T>` implements `Array<T>`, the callback receives `Array<T>`
+rather than `GrowableArray<T>`. This loses type information:
 
 ```zena
-class Array<T> implements Sequence<T> {
-  map<U>(f: (item: T, index: i32, seq: Sequence<T>) => U): Sequence<U> {
-    // Inside f, the user only knows they have a Sequence<T>,
-    // not the concrete Array<T> they're actually working with
+class GrowableArray<T> implements Array<T> {
+  map<U>(f: (item: T, index: i32, seq: Array<T>) => U): Array<U> {
+    // Inside f, the user only knows they have a Array<T>,
+    // not the concrete GrowableArray<T> they're actually working with
   }
 }
 ```
@@ -37,16 +37,16 @@ With a `this` type, we can express that the callback receives the actual
 implementing type:
 
 ```zena
-interface Sequence<T> {
-  map<U>(f: (item: T, index: i32, seq: this) => U): Sequence<U>;
+interface Array<T> {
+  map<U>(f: (item: T, index: i32, seq: this) => U): Array<U>;
 }
 ```
 
-Now when `Array<T>` implements this interface, `this` resolves to `Array<T>`:
+Now when `GrowableArray<T>` implements this interface, `this` resolves to `GrowableArray<T>`:
 
 ```zena
-class Array<T> implements Sequence<T> {
-  // Effectively: map<U>(f: (item: T, index: i32, seq: Array<T>) => U): Sequence<U>
+class GrowableArray<T> implements Array<T> {
+  // Effectively: map<U>(f: (item: T, index: i32, seq: GrowableArray<T>) => U): Array<U>
 }
 ```
 
@@ -57,11 +57,11 @@ class Array<T> implements Sequence<T> {
 The primary motivating use case — callbacks that receive the collection itself:
 
 ```zena
-interface Sequence<T> {
+interface Array<T> {
   length: i32 { get; }
   operator [](index: i32): T;
-  map<U>(f: (item: T, index: i32, seq: this) => U): Sequence<U>;
-  filter(predicate: (item: T, index: i32, seq: this) => bool): Sequence<T>;
+  map<U>(f: (item: T, index: i32, seq: this) => U): Array<U>;
+  filter(predicate: (item: T, index: i32, seq: this) => bool): Array<T>;
   forEach(f: (item: T, index: i32, seq: this) => void): void;
 }
 ```
@@ -162,13 +162,13 @@ interface Foo {
    type when the interface is implemented.
 
    ```zena
-   interface Sequence<T> {
+   interface Array<T> {
      forEach(f: (item: T, seq: this) => void): void;
    }
 
-   class Array<T> implements Sequence<T> {
-     // `this` becomes Array<T>
-     forEach(f: (item: T, seq: Array<T>) => void): void { ... }
+   class GrowableArray<T> implements Array<T> {
+     // `this` becomes GrowableArray<T>
+     forEach(f: (item: T, seq: GrowableArray<T>) => void): void { ... }
    }
    ```
 
@@ -219,7 +219,7 @@ When `this` appears as a parameter to a callback, it's being _provided_ by the
 implementation, not _received_ from the caller:
 
 ```zena
-interface Sequence<T> {
+interface Array<T> {
   forEach(f: (item: T, seq: this) => void): void;
 }
 ```
@@ -239,7 +239,7 @@ receives a more specific type than declared, which is always safe.
    map<U>(f: (item: T) => U): this;  // ❌ What would this<U> even mean?
 
    // Allowed - this is just passed through, not constructed
-   map<U>(f: (item: T, seq: this) => U): Sequence<U>;  // ✅
+   map<U>(f: (item: T, seq: this) => U): Array<U>;  // ✅
    ```
 
 3. **Cannot be used in top-level function signatures**: Only meaningful in
@@ -251,18 +251,18 @@ F-bounded polymorphism achieves similar goals but with more boilerplate:
 
 ```zena
 // F-bounded approach
-interface Sequence<T, Self extends Sequence<T, Self>> {
-  map<U>(f: (item: T, index: i32, seq: Self) => U): Sequence<U, ???>;
+interface Array<T, Self extends Array<T, Self>> {
+  map<U>(f: (item: T, index: i32, seq: Self) => U): Array<U, ???>;
 }
 
-class Array<T> implements Sequence<T, Array<T>> { ... }
+class GrowableArray<T> implements Array<T, GrowableArray<T>> { ... }
 ```
 
 Problems with F-bounded polymorphism:
 
-- **Verbose**: Every type must repeat itself (`Sequence<T, Array<T>>`)
+- **Verbose**: Every type must repeat itself (`Array<T, GrowableArray<T>>`)
 - **Viral**: The `Self` parameter propagates through the type hierarchy
-- **No enforcement**: `class A implements Sequence<T, B>` compiles but is wrong
+- **No enforcement**: `class A implements Array<T, B>` compiles but is wrong
 - **Awkward with multiple inheritance**: Each interface needs its own `Self` param
 
 The `this` type provides the same expressiveness with:
@@ -303,23 +303,23 @@ interface ThisType {
 ### Example Resolution
 
 ```zena
-interface Sequence<T> {
+interface Array<T> {
   forEach(f: (item: T, seq: this) => void): void;
 }
 
-class Array<T> implements Sequence<T> {
-  forEach(f: (item: T, seq: Array<T>) => void): void {
+class GrowableArray<T> implements Array<T> {
+  forEach(f: (item: T, seq: GrowableArray<T>) => void): void {
     for (var i = 0; i < this.length; i = i + 1) {
-      f(this[i], i, this);  // `this` has type Array<T>
+      f(this[i], i, this);  // `this` has type GrowableArray<T>
     }
   }
 }
 ```
 
-When checking that `Array<T>.forEach` implements `Sequence<T>.forEach`:
+When checking that `GrowableArray<T>.forEach` implements `Array<T>.forEach`:
 
 1. Take interface signature: `(f: (item: T, seq: this) => void) => void`
-2. Substitute `this` → `Array<T>`: `(f: (item: T, seq: Array<T>) => void) => void`
+2. Substitute `this` → `GrowableArray<T>`: `(f: (item: T, seq: GrowableArray<T>) => void) => void`
 3. Check implementation matches this resolved signature ✅
 
 ### WASM Codegen: Closure Type Adaptation

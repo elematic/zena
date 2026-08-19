@@ -28,46 +28,46 @@ export final class CommentMap {
   // Keyed by NodeId (via NodeMap): node ids are assigned during parse, and id
   // keys give identity semantics with a real hash — Node itself is not
   // Hashable.
-  #leading = new NodeMap<Array<Comment>>();
-  #trailing = new NodeMap<Array<Comment>>();
-  #inner = new NodeMap<Array<Comment>>();
+  #leading = new NodeMap<GrowableArray<Comment>>();
+  #trailing = new NodeMap<GrowableArray<Comment>>();
+  #inner = new NodeMap<GrowableArray<Comment>>();
 
   addLeading(node: Node, comment: Comment) {
     if (!this.#leading.has(node)) {
-      this.#leading[node] = new Array<Comment>(2);
+      this.#leading[node] = new GrowableArray<Comment>(2);
     }
     this.#leading[node].push(comment);
   }
 
   addTrailing(node: Node, comment: Comment) {
     if (!this.#trailing.has(node)) {
-      this.#trailing[node] = new Array<Comment>(2);
+      this.#trailing[node] = new GrowableArray<Comment>(2);
     }
     this.#trailing[node].push(comment);
   }
 
   addInner(node: Node, comment: Comment) {
     if (!this.#inner.has(node)) {
-      this.#inner[node] = new Array<Comment>(2);
+      this.#inner[node] = new GrowableArray<Comment>(2);
     }
     this.#inner[node].push(comment);
   }
 
-  getLeading(node: Node): Array<Comment> | null {
+  getLeading(node: Node): GrowableArray<Comment> | null {
     if (this.#leading.has(node)) {
       return this.#leading[node];
     }
     return null;
   }
 
-  getTrailing(node: Node): Array<Comment> | null {
+  getTrailing(node: Node): GrowableArray<Comment> | null {
     if (this.#trailing.has(node)) {
       return this.#trailing[node];
     }
     return null;
   }
 
-  getInner(node: Node): Array<Comment> | null {
+  getInner(node: Node): GrowableArray<Comment> | null {
     if (this.#inner.has(node)) {
       return this.#inner[node];
     }
@@ -128,8 +128,8 @@ let hasBlankLineBetween = (source: String, from: i32, to: i32): boolean => {
 };
 
 /** Convert Array<Statement> to Array<Node> (WASM-GC arrays are invariant). */
-let statementsToNodes = (stmts: Array<Statement>): Array<Node> => {
-  let result = new Array<Node>(stmts.length);
+let statementsToNodes = (stmts: Array<Statement>): GrowableArray<Node> => {
+  let result = new GrowableArray<Node>(stmts.length);
   var i: i32 = 0;
   while (i < stmts.length) {
     result.push(stmts[i]);
@@ -138,9 +138,10 @@ let statementsToNodes = (stmts: Array<Statement>): Array<Node> => {
   return result;
 };
 
+
 /** Convert Array<EnumMember> to Array<Node> (WASM-GC arrays are invariant). */
-let enumMembersToNodes = (members: Array<EnumMember>): Array<Node> => {
-  let result = new Array<Node>(members.length);
+let enumMembersToNodes = (members: Array<EnumMember>): GrowableArray<Node> => {
+  let result = new GrowableArray<Node>(members.length);
   var i: i32 = 0;
   while (i < members.length) {
     result.push(members[i]);
@@ -152,15 +153,15 @@ let enumMembersToNodes = (members: Array<EnumMember>): Array<Node> => {
 /**
  * Wrap a single node as a one-element Array<Node>.
  */
-let singleNode = (node: Node): Array<Node> => {
-  let arr = new Array<Node>();
+let singleNode = (node: Node): GrowableArray<Node> => {
+  let arr = new GrowableArray<Node>();
   arr.push(node);
   return arr;
 };
 
 /** Convert Array<Expression> to Array<Node>. */
-let expressionsToNodes = (exprs: Array<Expression>): Array<Node> => {
-  let result = new Array<Node>(exprs.length);
+let expressionsToNodes = (exprs: Array<Expression>): GrowableArray<Node> => {
+  let result = new GrowableArray<Node>(exprs.length);
   var i: i32 = 0;
   while (i < exprs.length) {
     result.push(exprs[i]);
@@ -170,8 +171,8 @@ let expressionsToNodes = (exprs: Array<Expression>): Array<Node> => {
 };
 
 /** Build a two-element Array<Node>. */
-let twoNodes = (a: Node, b: Node): Array<Node> => {
-  let arr = new Array<Node>(2);
+let twoNodes = (a: Node, b: Node): GrowableArray<Node> => {
+  let arr = new GrowableArray<Node>(2);
   arr.push(a);
   arr.push(b);
   return arr;
@@ -183,7 +184,7 @@ let twoNodes = (a: Node, b: Node): Array<Node> => {
  * comments inside nested blocks (e.g. `let f = () => { ... };`)
  * are correctly attached.
  */
-let getChildBody = (node: Node): Array<Node> | null => match (node) {
+let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
   case BlockStatement {body}: statementsToNodes(body)
   case ClassDeclaration {body}: body
   case InterfaceDeclaration {body}: body
@@ -196,7 +197,7 @@ let getChildBody = (node: Node): Array<Node> | null => match (node) {
   case AssignmentExpression {left, value}: twoNodes(left, value)
   case UnaryExpression {argument}: singleNode(argument)
   case CallExpression {callee, args}: {
-    let result = new Array<Node>(args.length + 1);
+    let result = new GrowableArray<Node>(args.length + 1);
     result.push(callee);
     var i: i32 = 0;
     while (i < args.length) {
@@ -206,7 +207,7 @@ let getChildBody = (node: Node): Array<Node> | null => match (node) {
     result
   }
   case NewExpression {callee, args}: {
-    let result = new Array<Node>(args.length + 1);
+    let result = new GrowableArray<Node>(args.length + 1);
     result.push(callee);
     var i: i32 = 0;
     while (i < args.length) {
@@ -219,7 +220,7 @@ let getChildBody = (node: Node): Array<Node> | null => match (node) {
   case IndexExpression {object, index}: twoNodes(object, index)
   case ArrayLiteral {elements}: expressionsToNodes(elements)
   case IfExpression {test, consequent, alternate}: {
-    let result = new Array<Node>(3);
+    let result = new GrowableArray<Node>(3);
     result.push(test);
     result.push(consequent);
     if (alternate != null) { result.push(alternate); }
@@ -258,7 +259,7 @@ let attachToNodeList = (
         let nStart = getNodeStart(node);
         let nEnd = getNodeEnd(node);
         if (nStart >= 0 && nEnd >= 0 && comment.start > nStart && comment.end < nEnd) {
-          let singleComment = new Array<Comment>(1);
+          let singleComment = new GrowableArray<Comment>(1);
           singleComment.push(comment);
           attachToNodeList(singleComment, childBody, source, map);
           // If the body was empty, the comment dangles — attach as inner
@@ -365,7 +366,7 @@ export let attachComments = (module: Module): CommentMap => {
   }
 
   // Build the remaining comments array (skip file-level ones)
-  let remaining = new Array<Comment>(comments.length - fileLevelEnd);
+  let remaining = new GrowableArray<Comment>(comments.length - fileLevelEnd);
   var ri: i32 = fileLevelEnd;
   while (ri < comments.length) {
     remaining.push(comments[ri]);

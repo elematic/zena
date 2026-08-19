@@ -1,6 +1,6 @@
 import {HashMap} from 'zena:map';
 import {OrderedMap} from './collections/hash-map.zena';
-import {Array} from 'zena:growable-array';
+import {GrowableArray} from 'zena:growable-array';
 import {Box} from 'zena:box';
 import {Error} from 'zena:error';
 import {StringReader} from 'zena:string-reader';
@@ -96,8 +96,8 @@ export class JsonObject {
 }
 
 export class JsonArray {
-  #elements = new Array<JsonValue>();
-  #locations: Array<SourceLocation> | null = null;
+  #elements = new GrowableArray<JsonValue>();
+  #locations: GrowableArray<SourceLocation> | null = null;
 
   static withLocations(): JsonArray {
     return new JsonArray(true);
@@ -105,7 +105,7 @@ export class JsonArray {
 
   new(withLocations: boolean = false)
     : #locations = 
-        if (withLocations) { new Array<SourceLocation>() }
+        if (withLocations) { new GrowableArray<SourceLocation>() }
         else { null } {}
 
   operator [](index: i32): JsonValue {
@@ -585,7 +585,7 @@ class JsonParser {
     // TODO: Implement proper string unescaping
     // For now, handle common escapes
     let reader = new StringReader(raw);
-    let parts = new Array<String>();
+    let parts = new GrowableArray<String>();
     var start = reader.mark();
     
     while (!reader.isAtEnd) {
@@ -917,8 +917,8 @@ let TEN_I64: i64 = 10 as i64;
  */
 export class JsonBuilder {
   #sb = new StringBuilder();
-  #stack = new Array<i32>();    // Track nesting: STACK_OBJECT or STACK_ARRAY
-  #counts = new Array<i32>();   // Track item count at each level (for comma handling)
+  #stack = new GrowableArray<i32>();    // Track nesting: STACK_OBJECT or STACK_ARRAY
+  #counts = new GrowableArray<i32>();   // Track item count at each level (for comma handling)
   var #needsValue = false;  // True after key(), expecting a value next
 
   // === Object methods ===
@@ -1118,7 +1118,7 @@ export class JsonBuilder {
     }
     
     // Build digits in reverse using growable array
-    let digits = new Array<i32>();
+    let digits = new GrowableArray<i32>();
     while (num > 0) {
       digits.push(48 + (num % 10));  // ASCII '0' = 48
       num = div(num, 10);
@@ -1149,7 +1149,7 @@ export class JsonBuilder {
     }
     
     // Build digits in reverse using growable array
-    let digits = new Array<i32>();
+    let digits = new GrowableArray<i32>();
     while (num > ZERO_I64) {
       digits.push(48 + ((num % TEN_I64) as i32));
       num = div(num, TEN_I64);

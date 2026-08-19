@@ -47,17 +47,17 @@ essential for any Zena program.
 Types needed for building real programs. A parser, for example, needs growable
 lists and key-value storage.
 
-| Type               | Description                              | Priority |
-| ------------------ | ---------------------------------------- | -------- |
-| `Sequence<T>`      | Read-only indexed collection (interface) | High     |
-| `Array<T>`         | Growable array (interface/class)         | High     |
-| `ReadonlyArray<T>` | Immutable fixed-length array             | Medium   |
-| `Map<K, V>`        | Key-value store (interface or class)     | High     |
-| `HashMap<K,V>`     | Hash-based Map implementation            | High     |
-| `Set<T>`           | Unique collection (interface or class)   | Medium   |
-| `HashSet<T>`       | Hash-based Set implementation            | Medium   |
-| `Option<T>`        | Optional value wrapper (Some/None)       | Medium   |
-| `Result<T,E>`      | Success/Error wrapper                    | Medium   |
+| Type                | Description                              | Priority |
+| ------------------- | ---------------------------------------- | -------- |
+| `Array<T>`          | Read-only indexed collection (interface) | High     |
+| `GrowableArray<T>`  | Growable array (interface/class)         | High     |
+| `ImmutableArray<T>` | Immutable fixed-length array             | Medium   |
+| `Map<K, V>`         | Key-value store (interface or class)     | High     |
+| `HashMap<K,V>`      | Hash-based Map implementation            | High     |
+| `Set<T>`            | Unique collection (interface or class)   | Medium   |
+| `HashSet<T>`        | Hash-based Set implementation            | Medium   |
+| `Option<T>`         | Optional value wrapper (Some/None)       | Medium   |
+| `Result<T,E>`       | Success/Error wrapper                    | Medium   |
 
 **Design Decision: Interface vs Class**
 
@@ -73,14 +73,14 @@ JavaScript/TypeScript uses `Array` for growable arrays, and most developers expe
 We adopt JS-familiar naming while introducing interfaces for read-only access:
 
 - `FixedArray<T>`: The WASM GC array primitive. Fixed-length, mutable, zero overhead.
-- `Array<T>`: Growable array (interface or class). The most common collection type.
-- `Sequence<T>`: Read-only indexed access interface. Common abstraction over `Array`, `FixedArray`, and `ReadonlyArray`.
-- `ReadonlyArray<T>`: Immutable, fixed-length array (wrapper around `FixedArray`).
+- `GrowableArray<T>`: Growable array (interface or class). The most common collection type.
+- `Array<T>`: Read-only indexed access interface. Common abstraction over `Array`, `FixedArray`, and `ReadonlyArray`.
+- `ImmutableArray<T>`: Immutable, fixed-length array (wrapper around `FixedArray`).
 
 **Interface Hierarchy**:
 
 ```zena
-interface Sequence<T> extends Iterable<T> {
+interface Array<T> extends Iterable<T> {
   length: i32 {
     get();
   };
@@ -90,7 +90,7 @@ interface Sequence<T> extends Iterable<T> {
   indexOf(element: T): i32;
 }
 
-interface Array<T> extends Sequence<T> {
+interface MutableArray<T> extends Array<T> {
   // Mutation operations
   set(index: i32, value: T): void;
   add(element: T): void;
@@ -103,13 +103,13 @@ interface Array<T> extends Sequence<T> {
 
 **Rationale**:
 
-1. `Sequence<T>` provides a common interface for read-only indexed access, enabling
+1. `Array<T>` provides a common interface for read-only indexed access, enabling
    code to work with any indexed collection without caring about mutability.
 2. `FixedArray<T>` is the WASM primitive - useful for performance-critical code
    and as the backing store for `Array<T>`.
-3. `ReadonlyArray<T>` is useful for APIs that want to return immutable data.
+3. `ImmutableArray<T>` is useful for APIs that want to return immutable data.
 4. Fixed-length mutable arrays (`FixedArray`) are an edge case; most users want
-   growable (`Array`) or fully immutable (`ReadonlyArray`) collections.
+   growable (`GrowableArray`) or fully immutable (`ImmutableArray`) collections.
 
 ### Phase 3: Iteration & Utilities
 
@@ -191,13 +191,13 @@ See `docs/design/host-interop.md` for full details.
 
 ### Collection Classes (Phase 2)
 
-#### Sequence<T> (Interface)
+#### Array<T> (Interface)
 
 A read-only interface for indexed collections. This is the common abstraction
-over `Array<T>`, `FixedArray<T>`, and `ReadonlyArray<T>`.
+over `GrowableArray<T>`, `FixedArray<T>`, and `ImmutableArray<T>`.
 
 ```zena
-interface Sequence<T> extends Iterable<T> {
+interface Array<T> extends Iterable<T> {
   length: i32 {
     get();
   };
@@ -215,7 +215,7 @@ interface Sequence<T> extends Iterable<T> {
 The growable array interface. This is the most commonly used collection type.
 
 ```zena
-interface Array<T> extends Sequence<T> {
+interface MutableArray<T> extends Array<T> {
   // Mutation operations
   set(index: i32, value: T): void;
   add(element: T): void;
@@ -264,14 +264,14 @@ class GrowableArray<T> implements Array<T> {
 An immutable, fixed-length array wrapper.
 
 ```zena
-class ReadonlyArray<T> implements Sequence<T> {
+class ReadonlyArray<T> implements Array<T> {
   #data: FixedArray<T>;
 
   new(data: FixedArray<T>) {
     this.#data = data;
   }
 
-  // Read-only Sequence<T> implementation
+  // Read-only Array<T> implementation
   // No mutation methods exposed
 }
 ```
@@ -757,7 +757,7 @@ import {HashMap} from 'zena:collections';
 5.  [ ] `HashSet<T>` - Unique collections
 6.  [ ] `Option<T>` - Type-safe optionals
 7.  [ ] `zena:math` - Basic math functions (intrinsics first, then library)
-8.  [ ] `Sequence<T>` interface - Abstract over indexed collections
+8.  [ ] `Array<T>` interface - Abstract over indexed collections
 9.  [ ] `ReadonlyArray<T>` - Immutable array wrapper
 
 ### Medium-term (Language Completeness)
@@ -849,7 +849,7 @@ followed by iteration utilities and finally advanced features.
 Key design decisions:
 
 - **JS-familiar naming**: `Array<T>` is the growable array (like JS), `FixedArray<T>` is the WASM primitive
-- **Interface hierarchy**: `Sequence<T>` provides read-only indexed access across all array types
+- **Interface hierarchy**: `Array<T>` provides read-only indexed access across all array types
 - **Dart-inspired**: Clean separation of interfaces and implementations
 - **Zero-overhead**: Dead code elimination ensures unused stdlib code isn't shipped
 - **Pragmatic**: Start simple, expand based on real needs

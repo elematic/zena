@@ -23,7 +23,7 @@ let settlementOf = async (f: Future<i32>): Future<String> => {
  * and so needs no async machinery to observe. */
 let emptyRaceRefused = (): boolean => {
   try {
-    let never = Future.race(new Array<Future<i32>>());
+    let never = Future.race(new GrowableArray<Future<i32>>());
     return false;
   } catch (e) {
     return true;
@@ -36,10 +36,8 @@ export async function main(): Future<i32> {
   // "already completed" — losing a race is normal, not an error.
   let a = new Completer<i32>();
   let b = new Completer<i32>();
-  let pair = new Array<Future<i32>>();
-  pair.push(a.future);
-  pair.push(b.future);
-  let first = Future.race(pair);
+  // Pass fixed array literal directly:
+  let first = Future.race([a.future, b.future]);
   b.complete(70);
   a.complete(1);
   let won = await first;
@@ -50,14 +48,25 @@ export async function main(): Future<i32> {
   // A failure wins a race exactly the way a value does.
   let c = new Completer<i32>();
   let d = new Completer<i32>();
-  let second = new Array<Future<i32>>();
-  second.push(c.future);
-  second.push(d.future);
-  let raced = Future.race(second);
+  let raced = Future.race([c.future, d.future]);
   d.fail(new Error('lost'));
   c.complete(5);
   if (!(await settlementOf(raced) == 'lost')) {
     return 0 - 2;
+  }
+
+  // Growable array also works:
+  let e = new Completer<i32>();
+  let f = new Completer<i32>();
+  let growable = new GrowableArray<Future<i32>>();
+  growable.push(e.future);
+  growable.push(f.future);
+  let third = Future.race(growable);
+  e.complete(42);
+  f.complete(99);
+  let growableWon = await third;
+  if (!(growableWon == 42)) {
+    return 0 - 4;
   }
 
   // An empty race can never settle, so it is refused where the mistake

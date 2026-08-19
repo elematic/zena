@@ -152,7 +152,7 @@ export class DocumentSymbol {
   end: i32;
   selStart: i32;
   selEnd: i32;
-  var children: Array<DocumentSymbol> = new Array<DocumentSymbol>();
+  var children: GrowableArray<DocumentSymbol> = new GrowableArray<DocumentSymbol>();
 
   new(this.name, this.kind, this.start, this.end, this.selStart, this.selEnd);
 }
@@ -204,8 +204,8 @@ let extractClassMembers = (body: Array<Node>, sym: DocumentSymbol): void => {
  * For test files (importing zena:test), suite() and test() calls
  * produce nested symbols that appear in the outline.
  */
-let extractSymbols = (ast: Module): Array<DocumentSymbol> => {
-  let symbols = new Array<DocumentSymbol>();
+let extractSymbols = (ast: Module): GrowableArray<DocumentSymbol> => {
+  let symbols = new GrowableArray<DocumentSymbol>();
   let isTestFile = hasTestImport(ast);
 
   var i = 0;
@@ -876,7 +876,7 @@ export class LanguageService {
       // Recovering from a parse error does not excuse it. The file was
       // analyzed anyway, so report what the parser had to work around
       // ahead of what the checker went on to find.
-      let diagnostics = new Array<Diagnostic>(checkResult.diagnostics.length);
+      let diagnostics = new GrowableArray<Diagnostic>(checkResult.diagnostics.length);
       for (let sf in result.files) {
         for (let parseError in sf.parseErrors) {
           diagnostics.push(parseError);
@@ -888,7 +888,7 @@ export class LanguageService {
       diagnostics
     } catch (e) {
       let msg = "Compiler error: " + e.message;
-      let arr = new Array<Diagnostic>();
+      let arr = new GrowableArray<Diagnostic>();
       arr.push(new Diagnostic(DiagnosticCode.ModuleNotFound, msg, DiagnosticSeverity.Error, null));
       arr
     };
@@ -932,7 +932,7 @@ export class LanguageService {
         return null;
       }
 
-      let units = new Array<CompilationUnit>();
+      let units = new GrowableArray<CompilationUnit>();
       var entryUnit: CompilationUnit | null = null;
       var fi = 0;
       while (fi < compResult.files.length) {
@@ -1234,7 +1234,7 @@ export class LanguageService {
           if (me != null) {
             let objType = resolveObjectType(me.object, model, scopeResult, me.loc, ast, checkResult.sharedState);
             if (objType != null) {
-              let memberItems = new Array<CompletionItem>();
+              let memberItems = new GrowableArray<CompletionItem>();
               let addedMembers = new HashMap<String, boolean>();
 
               if (objType is ClassType) {
@@ -1296,7 +1296,7 @@ export class LanguageService {
                 case _: ""
               };
               if (prefix != "") {
-                let filtered = new Array<CompletionItem>();
+                let filtered = new GrowableArray<CompletionItem>();
                 var fi = 0;
                 while (fi < memberItems.length) {
                   let item = memberItems[fi];
@@ -1314,7 +1314,7 @@ export class LanguageService {
       }
     }
 
-    let items = new Array<CompletionItem>();
+    let items = new GrowableArray<CompletionItem>();
 
     let keywords = [
       "let", "var", "class", "sealed", "enum", "type", "import", "export",
@@ -1342,11 +1342,13 @@ export class LanguageService {
       ("any", "primitive any"),
       ("ByteArray", "array<u8>"),
       ("Map", "class Map<K, V>"),
+      ("Array", "interface Array<T>"),
+      ("MutableArray", "interface MutableArray<T>"),
       ("GrowableArray", "class GrowableArray<T>"),
       ("FixedArray", "class FixedArray<T>"),
       ("ImmutableArray", "class ImmutableArray<T>"),
       ("Range", "class Range"),
-      ("Sequence", "interface Sequence<T>"),
+      ("Iterable", "interface Iterable<T>"),
       ("Iterator", "interface Iterator<T>"),
       ("console", "WasiConsole / Console")
     ];
@@ -1426,7 +1428,7 @@ export class LanguageService {
       let ast = parseSource(source, path);
       extractSymbols(ast)
     } catch (e) {
-      new Array<DocumentSymbol>()
+      new GrowableArray<DocumentSymbol>()
     };
     return symbols;
   }

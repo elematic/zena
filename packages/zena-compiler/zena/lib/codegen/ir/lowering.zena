@@ -13,6 +13,7 @@ import { findDeclaration, collectValueExports, isArrayIntrinsic } from '../looku
  * variable assigned anywhere in the loop.
  */
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import { parseF64, parseI32, i32ToString } from 'zena:string-convert';
@@ -97,7 +98,7 @@ export let NO_VALUE = -1;
  * field values keyed by resolved struct field name, and the evaluated
  * super() arguments.
  */
-type CtorLevel = {values: HashMap<String, i32>, superArgs: Array<i32>};
+type CtorLevel = {values: HashMap<String, i32>, superArgs: GrowableArray<i32>};
 
 /** Bail-reason tag for expression kinds without a dispatch arm. */
 
@@ -136,7 +137,7 @@ let lowerImportWrapper = (func: WasmFunction): IrBody => {
   let target = func.importWrapperTarget as WasmFunction;
   let b = new IrBuilder();
   let entry = b.newBlock();
-  let args = new Array<i32>();
+  let args = new GrowableArray<i32>();
   for (let vt in func.signature.params) {
     args.push(b.blockParam(entry, vt));
   }
@@ -199,7 +200,7 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
   }
   let b = new IrBuilder();
   let entry = b.newBlock();
-  let params = new Array<i32>();
+  let params = new GrowableArray<i32>();
   for (let vt in func.signature.params) {
     params.push(b.blockParam(entry, vt));
   }
@@ -208,7 +209,7 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
   let pair = b.emit(IrOp.ref_cast, pairVt, params[0], b.internType(pairVt));
   let ctxVal = b.emit(IrOp.struct_get, actualStruct.fields[1].type, pair,
       b.addRef(new IrRefField(actualStruct, 'ctx')));
-  let args = new Array<i32>();
+  let args = new GrowableArray<i32>();
   args.push(ctxVal);
   // The wrapper's own params cover the target arity; the source
   // consumes a prefix of them.
@@ -266,7 +267,7 @@ final class DefaultArgInfo {
   originalCount: i32;
   paramSymbols: Array<SymbolId> | null;
   owner: ClassType | null;
-  values = new Array<i32>();
+  values = new GrowableArray<i32>();
   new(this.originalCount, this.paramSymbols, this.owner);
 }
 
@@ -316,7 +317,7 @@ export let lowerFunction = (wasm: WasmModule, func: WasmFunction): IrBody => {
 /** Entry block with one param per signature slot; leaves it current. */
 let synthEntryParams = (b: IrBuilder, func: WasmFunction): Array<i32> => {
   let entry = b.newBlock();
-  let params = new Array<i32>();
+  let params = new GrowableArray<i32>();
   for (let vt in func.signature.params) {
     params.push(b.blockParam(entry, vt));
   }
@@ -356,7 +357,7 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
       return b.finish();
     }
     // Array element access through an interface (FixedArray/ImmutableArray
-    // as Sequence): inline the op, like every direct call site does.
+    // as Array): inline the op, like every direct call site does.
     if (intrinsic == 'array.get' || intrinsic == 'array.set') {
       let arrType = asWasmArray(target.signature.params[0]);
       if (arrType != null) {
@@ -380,7 +381,7 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
         if (!isWasmSubtype(func.signature.params[2], arrType.elementType)) {
           elem = castToConcreteRef(b, elem, arrType.elementType);
         }
-        let triple = new Array<i32>();
+        let triple = new GrowableArray<i32>();
         triple.push(recv);
         triple.push(params[1]);
         triple.push(elem);
@@ -400,7 +401,7 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
   if (func.signature.params.length != target.signature.params.length) {
     throw new ZirUnsupported('trampoline shape');
   }
-  let args = new Array<i32>();
+  let args = new GrowableArray<i32>();
   args.push(castToConcreteRef(b, params[0], target.signature.params[0]));
   for (var i = 1; i < params.length; i += 1) {
     var v = params[i];
@@ -565,7 +566,7 @@ let synthesizeClosureTrampoline = (func: WasmFunction): IrBody => {
   }
   let b = new IrBuilder();
   let params = synthEntryParams(b, func);
-  let args = new Array<i32>();
+  let args = new GrowableArray<i32>();
   for (var i = 1; i < params.length; i += 1) {
     args.push(params[i]);
   }
@@ -596,7 +597,7 @@ let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
   }
   let b = new IrBuilder();
   let params = synthEntryParams(b, func);
-  let args = new Array<i32>();
+  let args = new GrowableArray<i32>();
   for (var i = 1; i < params.length; i += 1) {
     args.push(params[i]);
   }
@@ -641,8 +642,8 @@ let synthesizeIntrinsic = (func: WasmFunction): IrBody => {
   return b.finish();
 };
 
-let twoValuesOf = (a: i32, bVal: i32): Array<i32> => {
-  let result = new Array<i32>();
+let twoValuesOf = (a: i32, bVal: i32): GrowableArray<i32> => {
+  let result = new GrowableArray<i32>();
   result.push(a);
   result.push(bVal);
   return result;
@@ -991,13 +992,13 @@ export final class FunctionLowerer {
       if (node.getter == null) {
         this.#bail('accessor without getter body');
       }
-      params = new Array<Parameter>();
+      params = new GrowableArray<Parameter>();
       bodyNode = node.getter as Node;
       paramOffset = 1;
     } else if (node is SetterInfo) {
       // Written setter body: `this` plus the single value parameter
       // (a bare Identifier, bound manually after the entry params).
-      params = new Array<Parameter>();
+      params = new GrowableArray<Parameter>();
       bodyNode = node.body;
       paramOffset = 1;
       setterParamIdent = node.param;
@@ -1017,7 +1018,7 @@ export final class FunctionLowerer {
     // parameters that survived, and the erased ones bind no value.
     // Source parameter index -> signature index, or -1 when the
     // parameter is zero-width and has no slot at all.
-    let paramSigIndex = new Array<i32>();
+    let paramSigIndex = new GrowableArray<i32>();
     var liveParamCount = 0;
     for (var pi = 0; pi < params.length; pi += 1) {
       if (this.#isZeroWidthParam(params[pi])) {
@@ -1053,8 +1054,8 @@ export final class FunctionLowerer {
         needsThisDowncast = true;
       }
     }
-    let patternParams = new Array<Node>();
-    let patternValues = new Array<i32>();
+    let patternParams = new GrowableArray<Node>();
+    let patternValues = new GrowableArray<i32>();
     for (var i = 0; i < params.length; i += 1) {
       let p = params[i];
       // this-params bind like plain params — the parser already
@@ -1184,7 +1185,7 @@ export final class FunctionLowerer {
     let body = bodyNode as Node;
     // Owned parameters the checker marked for release wrap the whole
     // body in regions, first parameter outermost.
-    let dropParamSyms = new Array<Symbol>();
+    let dropParamSyms = new GrowableArray<Symbol>();
     for (var pi = 0; pi < params.length; pi += 1) {
       if (this.func.model.hasScopeExitDrop(params[pi] as Node)) {
         let ds = this.func.model.resolveDeclaration(params[pi].name);
@@ -1231,7 +1232,7 @@ export final class FunctionLowerer {
         // release — or it would read a resource that is already gone.
         // Spelling it as a return is what puts it there, and reuses the
         // one path that already knows what a return owes.
-        let withReturn = new Array<Statement>();
+        let withReturn = new GrowableArray<Statement>();
         for (var si = 0; si < bodyCount; si += 1) {
           withReturn.push(stmts[si]);
         }
@@ -1296,7 +1297,7 @@ export final class FunctionLowerer {
           this.#bail('param drop multi-return');
         }
         let bodyExpr = body as Expression;
-        let synthesized = new Array<Statement>();
+        let synthesized = new GrowableArray<Statement>();
         if (sig.returns.length == 1) {
           synthesized.push(
               new ReturnStatement(bodyExpr, bodyExpr.loc) as Statement);
@@ -1441,7 +1442,7 @@ export final class FunctionLowerer {
     let dispatch = this.wasm.getRecordDispatch(
         moduleModel, fields, sortedOptionalNames(rt));
 
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     for (let field in fields) {
       let fieldName = if (field.name != null) field.name as String else '';
       var value = -1;
@@ -1614,7 +1615,7 @@ export final class FunctionLowerer {
     }
 
     let entry = this.b.newBlock();
-    let params = new Array<i32>();
+    let params = new GrowableArray<i32>();
     for (let vt in sig.params) {
       this.#requireSupported(vt, 'constructor param type');
       params.push(this.b.blockParam(entry, vt));
@@ -1653,7 +1654,7 @@ export final class FunctionLowerer {
       }
       this.#mixinFieldValues(values, ct, structType, cd, false);
     }
-    let superArgs = new Array<i32>();
+    let superArgs = new GrowableArray<i32>();
     if (ct.superType != null) {
       let superType = ct.superType as ClassType;
       let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
@@ -1684,11 +1685,11 @@ export final class FunctionLowerer {
       structType: WasmStruct, cd: ClassDeclaration,
       mapSetterNames: boolean): void {
     if (cd.mixins == null ||
-        (cd.mixins as Array<TypeAnnotation>).length == 0) {
+        (cd.mixins as GrowableArray<TypeAnnotation>).length == 0) {
       return;
     }
-    let mixinFields = new Array<FieldDefinition>();
-    let mixinFieldScopes = new Array<String>();
+    let mixinFields = new GrowableArray<FieldDefinition>();
+    let mixinFieldScopes = new GrowableArray<String>();
     let seenMixins = new HashMap<MixinKey, boolean>();
     collectMixinFields(this.wasm.program as Program, this.func.model,
         cd.mixins, mixinFields, mixinFieldScopes, seenMixins);
@@ -1758,7 +1759,7 @@ export final class FunctionLowerer {
         }
       }
     }
-    return {values: values, superArgs: new Array<i32>()};
+    return {values: values, superArgs: new GrowableArray<i32>()};
   }
 
   /**
@@ -1849,7 +1850,7 @@ export final class FunctionLowerer {
         }
       }
     }
-    let superArgs = new Array<i32>();
+    let superArgs = new GrowableArray<i32>();
     let {superInitializer} = md;
     if (superInitializer != null) {
       let si = superInitializer as SuperInitializer;
@@ -1994,12 +1995,12 @@ export final class FunctionLowerer {
    * default — the same contents struct.new_default gave it.
    */
   #ctorOwnFieldValues(structType: WasmStruct,
-      values: HashMap<String, i32>): Array<i32> {
+      values: HashMap<String, i32>): GrowableArray<i32> {
     var ownStart = 1;
     if (structType.superStruct != null) {
       ownStart = (structType.superStruct as WasmStruct).fields.length;
     }
-    let list = new Array<i32>();
+    let list = new GrowableArray<i32>();
     var fi = ownStart;
     while (fi < structType.fields.length) {
       let f = structType.fields[fi];
@@ -2045,10 +2046,10 @@ export final class FunctionLowerer {
     let ct = this.func.classType as ClassType;
     let structType = this.func.structType as WasmStruct;
     // Per-level own-field values, own class first, root last.
-    let levelValues = new Array<Array<i32>>();
+    let levelValues = new GrowableArray<Array<i32>>();
     levelValues.push(this.#ctorOwnFieldValues(structType, level.values));
-    let bodyFns = new Array<WasmFunction | null>();
-    let bodyArgs = new Array<Array<i32>>();
+    let bodyFns = new GrowableArray<WasmFunction | null>();
+    let bodyArgs = new GrowableArray<Array<i32>>();
     var args = level.superArgs;
     var anc = ct.superType;
     while (anc != null) {
@@ -2069,14 +2070,14 @@ export final class FunctionLowerer {
       let rets = initFn.signature.returns;
       let projs = this.b.callFuncMulti(
           this.b.addRef(new IrRefFunc(initFn)), args, rets);
-      let vals = new Array<i32>();
+      let vals = new GrowableArray<i32>();
       var k = 0;
       while (k < ownCount) {
         vals.push(projs[k]);
         k += 1;
       }
       levelValues.push(vals);
-      let nextArgs = new Array<i32>();
+      let nextArgs = new GrowableArray<i32>();
       while (k < projs.length) {
         nextArgs.push(projs[k]);
         k += 1;
@@ -2088,7 +2089,7 @@ export final class FunctionLowerer {
       args = nextArgs;
       anc = ancCt.superType;
     }
-    let structArgs = new Array<i32>();
+    let structArgs = new GrowableArray<i32>();
     structArgs.push(this.#ctorVtableValue(structType));
     var li = levelValues.length - 1;
     while (li >= 0) {
@@ -2110,7 +2111,7 @@ export final class FunctionLowerer {
     while (bi >= 0) {
       let bf = bodyFns[bi];
       if (bf != null) {
-        let callArgs = new Array<i32>();
+        let callArgs = new GrowableArray<i32>();
         callArgs.push(inst);
         for (let a in bodyArgs[bi]) {
           callArgs.push(a);
@@ -2159,7 +2160,7 @@ export final class FunctionLowerer {
       // Forwarding form: `return f(...)` where the callee returns the
       // same multi-value shape — projections flow straight through.
       let sig = this.func.signature;
-      let outs = new Array<i32>();
+      let outs = new GrowableArray<i32>();
       this.#lowerCall(arg, outs);
       if (outs.length != sig.returns.length) {
         this.#bail('multi-value return arity');
@@ -2185,7 +2186,7 @@ export final class FunctionLowerer {
     if (nt == null || !(baseType(nt) is InlineTupleType)) {
       this.#bail('boxed tuple return');
     }
-    let values = new Array<i32>();
+    let values = new GrowableArray<i32>();
     for (var i = 0; i < arg.elements.length; i += 1) {
       let el = arg.elements[i];
       let expected = sig.returns[i];
@@ -2322,7 +2323,7 @@ export final class FunctionLowerer {
         // nothing after it, so the region is empty and the release runs
         // immediately. Inside a block, #lowerStatementList gets there
         // first and hands it the rest of the block.
-        lowerUsingRegion(this.#cx(), us, new Array<Statement>(0), 0, 0);
+        lowerUsingRegion(this.#cx(), us, new GrowableArray<Statement>(0), 0, 0);
       }
       case ShieldedStatement as ss: {
         lowerShieldedRegion(this.#cx(), ss);
@@ -2405,7 +2406,7 @@ export final class FunctionLowerer {
         }
         let value = this.#lowerExpressionCtx(argument, this.presplitYieldVt);
         let resume = this.b.newBlock();
-        this.b.yieldTo(value, resume, new Array<i32>(0));
+        this.b.yieldTo(value, resume, new GrowableArray<i32>(0));
         this.b.switchTo(resume);
       }
       case IfStatement as ifStmt: {
@@ -2505,7 +2506,7 @@ export final class FunctionLowerer {
    * sources come back as one-element lists.
    */
   #lowerMultiSource(init: Expression): Array<i32> {
-    let out = new Array<i32>();
+    let out = new GrowableArray<i32>();
     if (init is TupleLiteral) {
       for (let el in init.elements) {
         out.push(this.#lowerExpression(el));
@@ -2588,7 +2589,7 @@ export final class FunctionLowerer {
     if (st == null) {
       return null;
     }
-    let out = new Array<i32>();
+    let out = new GrowableArray<i32>();
     for (var i = 0; i < n; i += 1) {
       let fieldName = i32ToString(i);
       if (st.fieldIndexByName(fieldName) < 0) {
@@ -2715,7 +2716,7 @@ export final class FunctionLowerer {
       if (declInfo.type is FunctionType) {
         let declFt = declInfo.type as FunctionType;
         if (declFt.typeParameters != null &&
-            (declFt.typeParameters as Array<TypeParameterType>).length > 0) {
+            (declFt.typeParameters as GrowableArray<TypeParameterType>).length > 0) {
           let targs = this.#solvedCallTypeArguments(call);
           if (targs == null) {
             this.#bail('generic static call');
@@ -2752,7 +2753,7 @@ export final class FunctionLowerer {
     if (sig.params.length != this.#liveArgCount(call.args)) {
       this.#bail('static call arity');
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -2771,7 +2772,7 @@ export final class FunctionLowerer {
         this.#requireSupported(r, 'method result type');
       }
       let projs = this.b.callFuncMulti(fr, args, sig.returns);
-      let outs = multiOut as Array<i32>;
+      let outs = multiOut as GrowableArray<i32>;
       for (let p in projs) {
         outs.push(p);
       }
@@ -2803,7 +2804,7 @@ export final class FunctionLowerer {
     if (raw.length == 0) {
       return null;
     }
-    let out = new Array<Type>();
+    let out = new GrowableArray<Type>();
     for (let a in raw) {
       out.push(substituteTypeParamsInFunctionContext(this.wasm, this.func, a));
     }
@@ -2827,7 +2828,7 @@ export final class FunctionLowerer {
       this.#bail('specialized call arity');
     }
     let defaults = this.#defaultArgInfo(call);
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -2846,7 +2847,7 @@ export final class FunctionLowerer {
         this.#requireSupported(r, 'method result type');
       }
       let projs = this.b.callFuncMulti(fr, args, sig.returns);
-      let outs = multiOut as Array<i32>;
+      let outs = multiOut as GrowableArray<i32>;
       for (let p in projs) {
         outs.push(p);
       }
@@ -3116,14 +3117,14 @@ export final class FunctionLowerer {
           (getClassKey(ct) as String));
     }
     let resume = this.b.newBlock();
-    let suspend = this.b.awaitTo(future, resume, new Array<i32>(0));
+    let suspend = this.b.awaitTo(future, resume, new GrowableArray<i32>(0));
     this.awaitSubscribeTargets[suspend] = subOpt as WasmFunction;
     if (this.shieldDepth > 0) {
       this.shieldedAwaits.add(suspend);
     }
     this.b.switchTo(resume);
 
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(future);
     let g = getter as WasmFunction;
     let sig = g.signature;
@@ -3164,7 +3165,7 @@ export final class FunctionLowerer {
     // source passes through would be awaited), so that divergence is
     // detected below and refused loudly (async.md §1: an instantiation
     // where T = Future<U> is rejected at the use site).
-    let futureArms = new Array<ClassType>();
+    let futureArms = new GrowableArray<ClassType>();
     var bareCount = 0;
     for (let arm in union.types) {
       let armR = eraseTypeParameters(this.wasm, baseType(arm));
@@ -3184,7 +3185,7 @@ export final class FunctionLowerer {
       // bare arm — i.e. the result contains no future. A future in the
       // result means a bare arm was substituted into a Future (or the
       // rare explicit Future<Future<U>> payload, refused with it).
-      let resultArms = new Array<Type>();
+      let resultArms = new GrowableArray<Type>();
       if (resultT is UnionType) {
         for (let ra in resultT.types) {
           resultArms.push(ra);
@@ -3206,7 +3207,7 @@ export final class FunctionLowerer {
     let opVal = this.#lowerExpression(aw.argument);
     let join = this.b.newBlock();
     let joinParam = this.b.blockParam(join, resultVt);
-    let noArgs = new Array<i32>(0);
+    let noArgs = new GrowableArray<i32>(0);
 
     var fi = 0;
     while (fi < futureArms.length) {
@@ -3236,7 +3237,7 @@ export final class FunctionLowerer {
           this.b.internType(castVt));
       let v = this.#suspendOnFuture(ct, cast);
       let conformed = this.#conformUnionArm(v, resultVt);
-      let joinArgs = new Array<i32>();
+      let joinArgs = new GrowableArray<i32>();
       joinArgs.push(conformed);
       this.b.br(join, joinArgs);
       if (armEntry >= 0) {
@@ -3257,7 +3258,7 @@ export final class FunctionLowerer {
       }
       this.b.switchTo(resume);
       let conformed = this.#conformUnionArm(opVal, resultVt);
-      let joinArgs = new Array<i32>();
+      let joinArgs = new GrowableArray<i32>();
       joinArgs.push(conformed);
       this.b.br(join, joinArgs);
     }
@@ -3275,7 +3276,7 @@ export final class FunctionLowerer {
     if (!(bt is TupleType)) {
       this.#bail('inline tuple in value position');
     }
-    let fields = new Array<WasmField>();
+    let fields = new GrowableArray<WasmField>();
     for (var i = 0; i < bt.elementTypes.length; i += 1) {
       fields.push(new WasmField(i32ToString(i),
           typeToValTypeWithSub(this.wasm, bt.elementTypes[i], this.func),
@@ -3285,7 +3286,7 @@ export final class FunctionLowerer {
     if (tl.elements.length != fields.length) {
       this.#bail('tuple literal arity');
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     for (var i = 0; i < tl.elements.length; i += 1) {
       let fieldVt = fields[i].type;
       var v = this.#lowerExpressionCtx(tl.elements[i], fieldVt);
@@ -3314,29 +3315,29 @@ export final class FunctionLowerer {
     let dispatch = this.#cx().recordDispatchOf(bt);
     // Spread sources evaluate first, once each (streaming's order);
     // their values are looked up per field below.
-    let spreadIds = new Array<i32>();
-    let spreadVals = new Array<i32>();
+    let spreadIds = new GrowableArray<i32>();
+    let spreadVals = new GrowableArray<i32>();
     for (let prop in lit.properties) {
       if (prop is SpreadElement) {
         spreadIds.push((prop as Node).id as i32);
         spreadVals.push(this.#lowerExpression(prop.argument));
       }
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     let i64Vt: ValType = new ValTypeI64();
     // Presence contributions for the `$present` mask words: constant
     // bits for definitely-provided optional fields, dynamic parts for
     // optional fields fed by a spread source that itself tracks
     // presence. Bits are globally indexed; word = bit >> 6.
     let wordCount = presentWordCount(dispatch.optionalNames.length);
-    let maskConstWords = new Array<i64>();
-    let presentWordSlots = new Array<i32>();
+    let maskConstWords = new GrowableArray<i64>();
+    let presentWordSlots = new GrowableArray<i32>();
     for (var w = 0; w < wordCount; w += 1) {
       maskConstWords.push(0);
       presentWordSlots.push(-1);
     }
-    let maskDynWords = new Array<i32>();
-    let maskDynVals = new Array<i32>();
+    let maskDynWords = new GrowableArray<i32>();
+    let maskDynVals = new GrowableArray<i32>();
     for (var fi = 0; fi < dispatch.fields.length; fi += 1) {
       let f = dispatch.fields[fi];
       let key = if (f.name != null) f.name as String else '';
@@ -3434,9 +3435,7 @@ export final class FunctionLowerer {
           this.#bail('record literal field missing');
         }
       }
-      if (!isValSubtype(this.#valueType(v), f.type)) {
-        this.#failConformance(v, f.type, 'record literal field type');
-      }
+      v = this.#conformToSlot(v, f.type, 'record literal field type');
       args.push(v);
     }
     for (var w = 0; w < wordCount; w += 1) {
@@ -3491,7 +3490,7 @@ export final class FunctionLowerer {
       this.#bail('array literal type');
     }
     let elemVt = arr.elementType;
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     for (let el in lit.elements) {
       let v = this.#lowerExpressionCtx(el, elemVt);
       // Packed i8 elements store i32 values; everything else must
@@ -3645,9 +3644,9 @@ export final class FunctionLowerer {
       let identT = this.#substitutedNodeType(ident);
       if (identT is FunctionType) {
         let isSpecialized = identT.typeArguments != null &&
-            (identT.typeArguments as Array<Type>).length > 0;
+            (identT.typeArguments as GrowableArray<Type>).length > 0;
         let keyName = if (isSpecialized) {
-          getSpecializedName(ident.name, identT.typeArguments as Array<Type>)
+          getSpecializedName(ident.name, identT.typeArguments as GrowableArray<Type>)
         } else {
           i32ToString(resolved.id as i32)
         };
@@ -3786,7 +3785,7 @@ export final class FunctionLowerer {
   }
 
   /** All symbols a pattern binds (see ir/patterns.zena). */
-  #collectPatternBindSyms(pattern: Node, out: Array<SymbolId>): void {
+  #collectPatternBindSyms(pattern: Node, out: GrowableArray<SymbolId>): void {
     collectPatternBindSyms(this.#cx(), pattern, out);
   }
 
@@ -3925,7 +3924,7 @@ export final class FunctionLowerer {
           sig.params.length != this.#liveArgCount(expr.args)) {
         this.#bail('extension constructor shape');
       }
-      let args = new Array<i32>();
+      let args = new GrowableArray<i32>();
       var sIdx = 0;
       for (var i = 0; i < expr.args.length; i += 1) {
         if (this.#dropZeroWidthArg(expr.args[i])) {
@@ -3979,7 +3978,7 @@ export final class FunctionLowerer {
         sig.returns.length != 1) {
       this.#bail('constructor arity adaptation');
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     var sIdx = 0;
     for (var i = 0; i < argExprs.length; i += 1) {
       if (this.#dropZeroWidthArg(argExprs[i])) {
@@ -4047,7 +4046,7 @@ export final class FunctionLowerer {
       key = this.#conformToSlot(key, setSig.params[1], 'map key type');
       var value = this.#lowerExpressionCtx(entry.value, setSig.params[2]);
       value = this.#conformToSlot(value, setSig.params[2], 'map value type');
-      let args = new Array<i32>();
+      let args = new GrowableArray<i32>();
       args.push(inst);
       args.push(key);
       args.push(value);
@@ -4100,7 +4099,7 @@ export final class FunctionLowerer {
     // nothing to dispatch on — the checker already resolved the class
     // for this shape, and the constructor arity check below catches
     // any operand mismatch loudly.
-    let operands = new Array<Expression>();
+    let operands = new GrowableArray<Expression>();
     if (expr.start != null) {
       operands.push(expr.start as Expression);
     }
@@ -4146,7 +4145,7 @@ export final class FunctionLowerer {
       let it = this.#resolveSelfType(objT) as InterfaceType;
       let propName2 = getMemberPropertyName(
           member.isSymbolAccess, member.property.name);
-      let setterArgs = new Array<Expression>();
+      let setterArgs = new GrowableArray<Expression>();
       setterArgs.push(assign.value);
       // Setter dispatch returns no value; assignment-as-expression on
       // an interface member would need the value replayed — the
@@ -4301,7 +4300,7 @@ export final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(value), valueVt)) {
       this.#failConformance(value, valueVt, 'setter value type');
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(receiver);
     args.push(value);
     if (setterVirtual) {
@@ -4388,7 +4387,7 @@ export final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(value), valueVt)) {
       this.#failConformance(value, valueVt, 'setter value type');
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(receiver);
     args.push(value);
     this.#lowerVtableCall(receiver, info, 'set#' + propName, sig, args, null);
@@ -4711,7 +4710,7 @@ export final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
       this.#failConformance(receiver, sig.params[0], 'super receiver type');
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(receiver);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
@@ -5117,8 +5116,8 @@ export final class FunctionLowerer {
       case ArrayType as at: { arrayElem = at.elementType; }
       case ClassType as arrCt: {
         if (arrCt.name == "array" && arrCt.typeArguments != null &&
-            (arrCt.typeArguments as Array<Type>).length > 0) {
-          arrayElem = (arrCt.typeArguments as Array<Type>)[0];
+            (arrCt.typeArguments as GrowableArray<Type>).length > 0) {
+          arrayElem = (arrCt.typeArguments as GrowableArray<Type>)[0];
         }
       }
       case _: {}
@@ -5191,7 +5190,7 @@ export final class FunctionLowerer {
       if (declInfo.type is FunctionType) {
         let declFt = declInfo.type as FunctionType;
         if (declFt.typeParameters != null &&
-            (declFt.typeParameters as Array<TypeParameterType>).length > 0) {
+            (declFt.typeParameters as GrowableArray<TypeParameterType>).length > 0) {
           let targs = this.#solvedCallTypeArguments(call);
           if (targs == null) {
             this.#bail('generic method call');
@@ -5308,7 +5307,7 @@ export final class FunctionLowerer {
       this.#failConformance(receiver, sig.params[0], 'method receiver type');
     }
     let defaults = this.#defaultArgInfo(call);
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(receiver);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
@@ -5331,7 +5330,7 @@ export final class FunctionLowerer {
       } else {
         this.b.callFuncMulti(this.b.addRef(new IrRefFunc(method)), args, sig.returns)
       };
-      let outs = multiOut as Array<i32>;
+      let outs = multiOut as GrowableArray<i32>;
       for (let p in projs) {
         outs.push(p);
       }
@@ -5378,7 +5377,7 @@ export final class FunctionLowerer {
     let selfResolved = this.#resolveSelfType(objectType);
 
     if (selfResolved is InterfaceType) {
-      let args = new Array<Expression>();
+      let args = new GrowableArray<Expression>();
       args.push(idx.index);
       let result = this.#lowerInterfaceDispatch(
           selfResolved, '[]', idx.object, args);
@@ -5598,7 +5597,7 @@ export final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(inst), sig.params[0])) {
       this.#failConformance(inst, sig.params[0], 'interface receiver adaptation');
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(inst);
     if (argExprs != null) {
       var sIdx = 1;
@@ -5623,7 +5622,7 @@ export final class FunctionLowerer {
         this.#requireSupported(r, 'interface result type');
       }
       let projs = this.b.callRefMulti(callee, args, sig.returns);
-      let outs = multiOut as Array<i32>;
+      let outs = multiOut as GrowableArray<i32>;
       for (let pj in projs) {
         outs.push(pj);
       }
@@ -5788,7 +5787,7 @@ export final class FunctionLowerer {
   }
 
   #lowerVtableCall(receiver: i32, classInfo: ClassCodegenInfo,
-      slotName: String, sig: WasmSignature, args: Array<i32>,
+      slotName: String, sig: WasmSignature, args: GrowableArray<i32>,
       resultType: ValType | null): i32 {
     return this.#cx().lowerVtableCall(receiver, classInfo, slotName, sig,
         args, resultType);
@@ -6044,7 +6043,7 @@ export final class FunctionLowerer {
       if ((method.intrinsic as String) == 'i32.store8') {
         let addr = this.#lowerExpression(idx.index);
         let sv = this.#lowerExpressionCtx(assign.value, new ValTypeI32());
-        let pair = new Array<i32>();
+        let pair = new GrowableArray<i32>();
         pair.push(addr);
         pair.push(sv);
         this.b.emitVoid(IrOp.i32_store8, this.b.pushExtra(pair), 0);
@@ -6067,7 +6066,7 @@ export final class FunctionLowerer {
     var value = this.#lowerExpressionCtx(assign.value, sig.params[2]);
     value = this.#conformToSlot(value, sig.params[2], 'index write type');
     let funcRef = this.b.addRef(new IrRefFunc(method));
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(receiver);
     args.push(index);
     args.push(value);
@@ -6275,7 +6274,7 @@ export final class FunctionLowerer {
     }
     var receiver = this.#lowerExpressionCtx(member.object, sig.params[0]);
     receiver = this.#conformToSlot(receiver, sig.params[0], 'array extension receiver');
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(receiver);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
@@ -6293,16 +6292,16 @@ export final class FunctionLowerer {
     return this.#reassertCallResult(call, raw, resultType);
   }
 
-  #threeValues(a: i32, b: i32, c: i32): Array<i32> {
-    let out = new Array<i32>();
+  #threeValues(a: i32, b: i32, c: i32): GrowableArray<i32> {
+    let out = new GrowableArray<i32>();
     out.push(a);
     out.push(b);
     out.push(c);
     return out;
   }
 
-  #twoValues(a: i32, b: i32): Array<i32> {
-    let result = new Array<i32>();
+  #twoValues(a: i32, b: i32): GrowableArray<i32> {
+    let result = new GrowableArray<i32>();
     result.push(a);
     result.push(b);
     return result;
@@ -6435,8 +6434,8 @@ export final class FunctionLowerer {
     }
     let savedThis = this.#cx().thisValue;
     let savedClass = this.func.classType;
-    let savedSyms = new Array<SymbolId>();
-    let savedVals = new Array<i32>();
+    let savedSyms = new GrowableArray<SymbolId>();
+    let savedVals = new GrowableArray<i32>();
     let syms = info.paramSymbols;
     if (syms != null) {
       for (var j = 0; j < info.values.length && j < syms.length; j += 1) {
@@ -6593,7 +6592,7 @@ export final class FunctionLowerer {
       this.#requireSupported(sig.params[i], 'call param type');
     }
     let defaults = this.#defaultArgInfo(call);
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -6611,7 +6610,7 @@ export final class FunctionLowerer {
         this.#requireSupported(r, 'call result type');
       }
       let projs = this.b.callFuncMulti(funcRef, args, sig.returns);
-      let outs = multiOut as Array<i32>;
+      let outs = multiOut as GrowableArray<i32>;
       for (let p in projs) {
         outs.push(p);
       }
@@ -6672,7 +6671,7 @@ export final class FunctionLowerer {
 
     var ctxVal = -1;
     if (contextStruct.fields.length > 0) {
-      let ctxArgs = new Array<i32>();
+      let ctxArgs = new GrowableArray<i32>();
       var fieldIdx = 0;
       if (impl.capturesThis) {
         if (this.#cx().thisValue < 0) {
@@ -6741,7 +6740,7 @@ export final class FunctionLowerer {
     // callee node, but the runtime value may be any member — the
     // normal identifier read would re-assert the wrong closure struct.
     let callee = this.#lowerChainReceiver(call.callee);
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     for (let a in call.args) {
       args.push(this.#lowerExpression(a));
     }
@@ -6785,7 +6784,7 @@ export final class FunctionLowerer {
       }
       let ctxVal = this.b.emit(IrOp.struct_get, cs.fields[1].type, cv,
           this.b.addRef(new IrRefField(cs, 'ctx')));
-      let callArgs = new Array<i32>();
+      let callArgs = new GrowableArray<i32>();
       callArgs.push(ctxVal);
       for (var i = 0; i < arity; i += 1) {
         if (!isValSubtype(this.#valueType(args[i]), sig.params[i + 1])) {
@@ -6854,7 +6853,7 @@ export final class FunctionLowerer {
     let ctxRef = this.b.addRef(new IrRefField(closureStruct, 'ctx'));
     let ctxVal = this.b.emit(IrOp.struct_get,
         closureStruct.fields[1].type, callee, ctxRef);
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     args.push(ctxVal);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
@@ -7228,11 +7227,11 @@ export final class FunctionLowerer {
     return this.#lowerExpression(expr);
   }
 
-  #assignedEnvSyms(node: Node): Array<SymbolId> {
+  #assignedEnvSyms(node: Node): GrowableArray<SymbolId> {
     return this.#cx().assignedEnvSyms(node);
   }
 
-  #appendAssignedEnvSyms(node: Node, out: Array<SymbolId>): void {
+  #appendAssignedEnvSyms(node: Node, out: GrowableArray<SymbolId>): void {
     this.#cx().appendAssignedEnvSyms(node, out);
   }
 
@@ -7245,15 +7244,15 @@ export final class FunctionLowerer {
     return this.#cx().finishMerge(m, saved);
   }
 
-  #addParams(block: i32, syms: Array<SymbolId>): Array<i32> {
+  #addParams(block: i32, syms: GrowableArray<SymbolId>): GrowableArray<i32> {
     return this.#cx().addParams(block, syms);
   }
 
-  #applyParams(syms: Array<SymbolId>, params: Array<i32>): void {
+  #applyParams(syms: GrowableArray<SymbolId>, params: GrowableArray<i32>): void {
     this.#cx().applyParams(syms, params);
   }
 
-  #envValues(syms: Array<SymbolId>): Array<i32> {
+  #envValues(syms: GrowableArray<SymbolId>): GrowableArray<i32> {
     return this.#cx().envValues(syms);
   }
 
@@ -7265,12 +7264,12 @@ export final class FunctionLowerer {
     return this.#cx().copyOf(source);
   }
 
-  #noArgs(): Array<i32> {
-    return new Array<i32>();
+  #noArgs(): GrowableArray<i32> {
+    return new GrowableArray<i32>();
   }
 
-  #oneArg(value: i32): Array<i32> {
-    let result = new Array<i32>();
+  #oneArg(value: i32): GrowableArray<i32> {
+    let result = new GrowableArray<i32>();
     result.push(value);
     return result;
   }

@@ -11,6 +11,7 @@
  */
 
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import {
@@ -98,7 +99,7 @@ export class SourceFile {
    * to recover. A file lands here with a usable AST *and* real errors:
    * whoever reports diagnostics has to include these.
    */
-  var parseErrors = new Array<Diagnostic>(0);
+  var parseErrors: GrowableArray<Diagnostic> = new GrowableArray<Diagnostic>(0);
 
   /**
    * What this file's AST is fit for. Ask this rather than inferring it
@@ -124,7 +125,7 @@ export class SourceFile {
 /** Result of topologically sorting source files by their dependencies. */
 export class SourceFileGraph(
   /** Source files in topological order (dependencies before dependents). */
-  files: Array<SourceFile>,
+  files: GrowableArray<SourceFile>,
 
   /** True if a cycle was detected (libraries still returned, best-effort order). */
   hasCycle: boolean
@@ -210,7 +211,7 @@ export class LibraryLoader {
     this.loadTime = this.loadTime + performance.end(tLoad);
 
     let tParse = performance.start("parse");
-    var parseErrors = new Array<Diagnostic>(0);
+    var parseErrors: GrowableArray<Diagnostic> = new GrowableArray<Diagnostic>(0);
     var completeness = ParseCompleteness.Complete;
     let ast = if (this.#recover) {
       let result = parseRecovering(source, path, this.#nodeIdGenerator);
@@ -342,7 +343,7 @@ export class LibraryLoader {
    */
   refreshCache(): void {
     // Collect paths first — can't mutate the map during iteration.
-    let paths = new Array<String>();
+    let paths = new GrowableArray<String>();
     let iter = this.#cache.keys();
     while (let (true, path) = iter.next()) {
       paths.push(path);
@@ -412,10 +413,10 @@ export class LibraryLoader {
    * before A. This ordering is required for correct type checking (a module's
    * dependencies must be checked before the module itself).
    */
-  computeGraph(entries: Array<SourceFile>): SourceFileGraph {
+  computeGraph(entries: GrowableArray<SourceFile>): SourceFileGraph {
     let visited = new HashMap<String, i32>();
     let stack = new HashMap<String, i32>();
-    let sorted = new Array<SourceFile>();
+    let sorted = new GrowableArray<SourceFile>();
     var hasCycle = false;
     for (let entry in entries) {
       if (this.#topoVisit(entry, visited, stack, sorted)) {
@@ -429,7 +430,7 @@ export class LibraryLoader {
     lib: SourceFile,
     visited: HashMap<String, i32>,
     stack: HashMap<String, i32>,
-    sorted: Array<SourceFile>
+    sorted: GrowableArray<SourceFile>
   ): boolean {
     if (visited.has(lib.path)) {
       return false;

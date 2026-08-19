@@ -65,7 +65,7 @@ export final class LoopCtx {
   /** Where `continue` jumps: the header for while, the update block for for. */
   continueTarget: i32;
   exit: i32;
-  carried: Array<SymbolId>;
+  carried: GrowableArray<SymbolId>;
   new(this.continueTarget, this.exit, this.carried);
 }
 
@@ -109,11 +109,11 @@ export final class FinallyScope {
  * position); it exists only once some arm actually reaches it.
  */
 export final class MergeState {
-  syms: Array<SymbolId>;
+  syms: GrowableArray<SymbolId>;
   isVoid: boolean;
   resultVt: ValType | null;
   var block = -1;
-  var params: Array<i32> | null = null;
+  var params: GrowableArray<i32> | null = null;
   var resultParam = -1;
   new(this.syms, this.isVoid, this.resultVt);
 }
@@ -123,12 +123,12 @@ export final class MergeState {
  * would trap if emitted before the flag branch. */
 export final class LetCondBinds {
   cond: i32;
-  syms: Array<Symbol>;
-  values: Array<i32>;
-  vts: Array<ValType>;
+  syms: GrowableArray<Symbol>;
+  values: GrowableArray<i32>;
+  vts: GrowableArray<ValType>;
   /** Nested destructuring elements, tested/bound in the taken block. */
-  patterns: Array<Node>;
-  patternValues: Array<i32>;
+  patterns: GrowableArray<Node>;
+  patternValues: GrowableArray<i32>;
   new(this.cond, this.syms, this.values, this.vts, this.patterns,
       this.patternValues);
 }
@@ -144,9 +144,9 @@ export final class LoweringContext {
   var env = new HashMap<SymbolId, i32>();
   /** Symbols behind env entries, for binding-type lookups at merges. */
   symbols = new HashMap<SymbolId, Symbol>();
-  loops = new Array<LoopCtx>();
+  loops = new GrowableArray<LoopCtx>();
   /** Values piped by enclosing |> expressions; $ reads the top. */
-  pipelineValues = new Array<i32>();
+  pipelineValues = new GrowableArray<i32>();
   /**
    * Values known to be EXACTLY their class (freshly constructed by
    * struct.new in this function, or a singleton global). A method
@@ -339,7 +339,7 @@ export final class LoweringContext {
    * signature hands the loop the Iterator fat-pointer type for free.
    * Returns the call's result values (empty for void).
    */
-  slotCallOnValue(recv: i32, memberName: String): Array<i32> {
+  slotCallOnValue(recv: i32, memberName: String): GrowableArray<i32> {
     let fatOpt = asWasmStruct(this.valueTypeOf(recv));
     if (fatOpt == null || fatOpt.fields.length != 2) {
       this.fail('interface receiver type');
@@ -380,7 +380,7 @@ export final class LoweringContext {
     }
     let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
     let result = this.b.callRef(callee, args, resultType);
-    let out = new Array<i32>();
+    let out = new GrowableArray<i32>();
     if (resultType != null) {
       out.push(result);
     }
@@ -397,7 +397,7 @@ export final class LoweringContext {
   }
 
   /** #slotCallOnValue for members with multi-value returns. */
-  slotCallMulti(recv: i32, memberName: String): Array<i32> {
+  slotCallMulti(recv: i32, memberName: String): GrowableArray<i32> {
     return this.slotCallOnValue(recv, memberName);
   }
 
@@ -512,7 +512,7 @@ export final class LoweringContext {
    */
   accessorOverriddenBySubclass(classInfo: ClassCodegenInfo, slotName: String,
       fieldName: String): boolean {
-    let subclasses = new Array<ClassCodegenInfo>();
+    let subclasses = new GrowableArray<ClassCodegenInfo>();
     classInfo.getTransitiveSubclasses(subclasses);
     for (let sub in subclasses) {
       let subClassType = sub.structType.classType;
@@ -549,7 +549,7 @@ export final class LoweringContext {
 
   /** True if any transitive subclass provides its own `methodName`. */
   memberProvidedBySubclass(classInfo: ClassCodegenInfo, methodName: String): boolean {
-    let subclasses = new Array<ClassCodegenInfo>();
+    let subclasses = new GrowableArray<ClassCodegenInfo>();
     classInfo.getTransitiveSubclasses(subclasses);
     for (let sub in subclasses) {
       let subClassType = sub.structType.classType;
@@ -584,7 +584,7 @@ export final class LoweringContext {
    * the vtable-init adapters.
    */
   lowerVtableCall(receiver: i32, classInfo: ClassCodegenInfo,
-      slotName: String, sig: WasmSignature, args: Array<i32>,
+      slotName: String, sig: WasmSignature, args: GrowableArray<i32>,
       resultType: ValType | null): i32 {
     let slot = this.#vtableSlotCallee(receiver, classInfo, slotName, sig);
     return this.b.callRef(slot, args, resultType);
@@ -593,7 +593,7 @@ export final class LoweringContext {
   /** lowerVtableCall for multi-value slot signatures: same slot load,
    * callRefMulti's projection contract. */
   lowerVtableCallMulti(receiver: i32, classInfo: ClassCodegenInfo,
-      slotName: String, sig: WasmSignature, args: Array<i32>): Array<i32> {
+      slotName: String, sig: WasmSignature, args: GrowableArray<i32>): GrowableArray<i32> {
     let slot = this.#vtableSlotCallee(receiver, classInfo, slotName, sig);
     return this.b.callRefMulti(slot, args, sig.returns);
   }
@@ -843,7 +843,7 @@ export final class LoweringContext {
       let recv = this.coerceTo(left, sig.params[0]);
       let arg = this.coerceTo(right, sig.params[1]);
       let funcRef = this.b.addRef(new IrRefFunc(method));
-      let args = new Array<i32>();
+      let args = new GrowableArray<i32>();
       args.push(recv);
       args.push(arg);
       return this.b.callFunc(funcRef, args, sig.returns[0]);
@@ -883,7 +883,7 @@ export final class LoweringContext {
     }
     let vrecv = this.coerceTo(left, vsig.params[0]);
     let varg = this.coerceTo(right, vsig.params[1]);
-    let vargs = new Array<i32>();
+    let vargs = new GrowableArray<i32>();
     vargs.push(vrecv);
     vargs.push(varg);
     return this.lowerVtableCall(vrecv, classInfo, opMember, vsig,
@@ -891,13 +891,13 @@ export final class LoweringContext {
   }
 
   /** Symbols assigned anywhere inside `node` that are locals in scope. */
-  assignedEnvSyms(node: Node): Array<SymbolId> {
-    let result = new Array<SymbolId>();
+  assignedEnvSyms(node: Node): GrowableArray<SymbolId> {
+    let result = new GrowableArray<SymbolId>();
     this.appendAssignedEnvSyms(node, result);
     return result;
   }
 
-  appendAssignedEnvSyms(node: Node, out: Array<SymbolId>): void {
+  appendAssignedEnvSyms(node: Node, out: GrowableArray<SymbolId>): void {
     let seen = new HashSet<SymbolId>();
     for (let existing in out) {
       seen.add(existing);
@@ -1056,7 +1056,7 @@ export final class LoweringContext {
    * which `returnThroughFinally`/`breakThroughFinally`/
    * `continueThroughFinally` (control-flow.zena) arrange.
    */
-  finallyScopes = new Array<FinallyScope>();
+  finallyScopes = new GrowableArray<FinallyScope>();
 
   /**
    * Mirrors a newly stored value into the symbol's try variable, when
@@ -1081,7 +1081,7 @@ export final class LoweringContext {
    * shapes keep the declaration-time allocation (and closures created
    * before it keep failing loudly, as before).
    */
-  precellBindings(body: Array<Statement>): void {
+  precellBindings(body: GrowableArray<Statement>): void {
     for (let stmt in body) {
       if (!(stmt is VariableDeclaration)) { continue; }
       var pat = stmt.pattern;
@@ -1200,14 +1200,14 @@ export final class LoweringContext {
       return -1;
     }
     this.env = saved;
-    this.applyParams(m.syms, m.params as Array<i32>);
+    this.applyParams(m.syms, m.params as GrowableArray<i32>);
     this.b.switchTo(m.block);
     this.reachable = true;
     return m.resultParam;
   }
 
-  addParams(block: i32, syms: Array<SymbolId>): Array<i32> {
-    let params = new Array<i32>();
+  addParams(block: i32, syms: GrowableArray<SymbolId>): GrowableArray<i32> {
+    let params = new GrowableArray<i32>();
     for (let symId in syms) {
       // The binding's declared type is the stable merge type: incoming
       // values may be wasm subtypes (non-null refs, subclass structs,
@@ -1230,14 +1230,14 @@ export final class LoweringContext {
     return vt;
   }
 
-  applyParams(syms: Array<SymbolId>, params: Array<i32>): void {
+  applyParams(syms: GrowableArray<SymbolId>, params: GrowableArray<i32>): void {
     for (var i = 0; i < syms.length; i += 1) {
       this.env[syms[i]] = params[i];
     }
   }
 
-  envValues(syms: Array<SymbolId>): Array<i32> {
-    let values = new Array<i32>();
+  envValues(syms: GrowableArray<SymbolId>): GrowableArray<i32> {
+    let values = new GrowableArray<i32>();
     for (let symId in syms) {
       // Branch arguments must conform to the params addParams typed
       // from the DECLARED binding: env narrowing (a nullable value
@@ -1265,18 +1265,18 @@ export final class LoweringContext {
 }
 
 /** An empty argument list (branch with no args, nullary call). */
-export let noValues = (): Array<i32> => new Array<i32>();
+export let noValues = (): GrowableArray<i32> => new GrowableArray<i32>();
 
 /** A one-element argument list (single branch arg or call operand). */
-export let oneValue = (a: i32): Array<i32> => {
-  let list = new Array<i32>();
+export let oneValue = (a: i32): GrowableArray<i32> => {
+  let list = new GrowableArray<i32>();
   list.push(a);
   return list;
 };
 
 /** A two-element argument list, in push order. */
-export let twoValues = (a: i32, b: i32): Array<i32> => {
-  let list = new Array<i32>();
+export let twoValues = (a: i32, b: i32): GrowableArray<i32> => {
+  let list = new GrowableArray<i32>();
   list.push(a);
   list.push(b);
   return list;

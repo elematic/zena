@@ -141,7 +141,7 @@ let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): InterfaceT
 // suspension-kind neutral.
 // ---------------------------------------------------------------------------
 
-export let truncate = (a: Array<i32>): void => {
+export let truncate = (a: GrowableArray<i32>): void => {
   while (a.length > 0) {
     a.pop();
   }
@@ -166,8 +166,8 @@ export final class TryRegion(bodyTarget: i32, catchTarget: i32, tagRef: i32)
  * re-entry try_brs below — are built later and are not in here; this
  * sees only regions the user wrote.
  */
-export let collectTryRegions = (body: IrBody): Array<TryRegion> => {
-  let regions = new Array<TryRegion>();
+export let collectTryRegions = (body: IrBody): GrowableArray<TryRegion> => {
+  let regions = new GrowableArray<TryRegion>();
   var bi = 0;
   while (bi < body.blocks.length) {
     let insts = body.blocks[bi].insts;
@@ -195,8 +195,8 @@ export let enclosingRegionsOf = (
   cfg: IrCfg,
   regions: Array<TryRegion>,
   block: i32
-): Array<TryRegion> => {
-  let hits = new Array<TryRegion>();
+): GrowableArray<TryRegion> => {
+  let hits = new GrowableArray<TryRegion>();
   for (let r in regions) {
     if (cfg.dominates(r.bodyTarget, block)) {
       hits.push(r);
@@ -234,9 +234,9 @@ export let dispatchRegionsOf = (
   body: IrBody,
   cfg: IrCfg,
   pcOfBlock: HashMap<i32, i32>
-): HashMap<i32, Array<TryRegion>> => {
+): HashMap<i32, GrowableArray<TryRegion>> => {
   let regions = collectTryRegions(body);
-  let out = new HashMap<i32, Array<TryRegion>>();
+  let out = new HashMap<i32, GrowableArray<TryRegion>>();
   var b = 0;
   while (b < body.blocks.length) {
     if (pcOfBlock.has(b)) {
@@ -262,10 +262,10 @@ export let dispatchRegionsOf = (
  */
 export let spillCatchLiveIns = (
   liveIn: Array<HashSet<i32>>,
-  dispatchRegions: HashMap<i32, Array<TryRegion>>,
+  dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>,
   spilled: HashSet<i32>
 ): void => {
-  dispatchRegions.forEach((target: i32, regions: Array<TryRegion>): void => {
+  dispatchRegions.forEach((target: i32, regions: GrowableArray<TryRegion>): void => {
     for (let r in regions) {
       for (let v in liveIn[r.catchTarget]) {
         spilled.add(v);
@@ -285,7 +285,7 @@ export let spillCatchLiveIns = (
  * instead: one nullable-weakened field per var index, with the ops
  * rewritten by rewriteVarsToFrame.
  */
-export let varFieldsOf = (body: IrBody, fields: Array<WasmField>): void => {
+export let varFieldsOf = (body: IrBody, fields: GrowableArray<WasmField>): void => {
   var i = 0;
   while (i < body.varTypes.length) {
     fields.push(new WasmField('$var' + i32ToString(i),
@@ -319,7 +319,7 @@ export let rewriteVarsToFrame = (
   }
   for (let blockId in bodyBlocks) {
     let block = body.blocks[blockId];
-    let rebuilt = new Array<i32>();
+    let rebuilt = new GrowableArray<i32>();
     for (let inst in block.insts) {
       let op = body.op(inst);
       if (op == IrOp.var_get) {
@@ -371,7 +371,7 @@ export let rewriteVarsToFrame = (
 
 /** Replaces dst's contents with src's, in place (IrBlock fields are
  * immutable bindings; the arrays themselves are mutable). */
-export let replaceContents = (dst: Array<i32>, src: Array<i32>): void => {
+export let replaceContents = (dst: GrowableArray<i32>, src: Array<i32>): void => {
   truncate(dst);
   for (let v in src) {
     dst.push(v);
@@ -452,9 +452,9 @@ let rawDefaultOf = (body: IrBody, vt: ValType): i32 => {
 /** live-in set per block: values live on entry (block params excluded). */
 export let computeLiveIn = (body: IrBody, cfg: IrCfg): Array<HashSet<i32>> => {
   let n = body.blocks.length;
-  let uses = new Array<HashSet<i32>>(n);
-  let defs = new Array<HashSet<i32>>(n);
-  let liveIn = new Array<HashSet<i32>>(n);
+  let uses = new GrowableArray<HashSet<i32>>(n);
+  let defs = new GrowableArray<HashSet<i32>>(n);
+  let liveIn = new GrowableArray<HashSet<i32>>(n);
   var bi = 0;
   while (bi < n) {
     let use = new HashSet<i32>();
@@ -463,7 +463,7 @@ export let computeLiveIn = (body: IrBody, cfg: IrCfg): Array<HashSet<i32>> => {
     for (let p in block.params) {
       def.add(p);
     }
-    let ops = new Array<i32>();
+    let ops = new GrowableArray<i32>();
     for (let inst in block.insts) {
       truncate(ops);
       body.appendValueOperands(inst, ops);
@@ -597,8 +597,8 @@ let prepareOne = (
 
   // Suspension analysis on the pristine CFG: yields (in block order),
   // dispatch targets, spill set.
-  let yieldBlocks = new Array<i32>();
-  let resumeOf = new Array<i32>();
+  let yieldBlocks = new GrowableArray<i32>();
+  let resumeOf = new GrowableArray<i32>();
   var bi = 0;
   while (bi < presplit.blocks.length) {
     let insts = presplit.blocks[bi].insts;
@@ -642,12 +642,12 @@ let prepareOne = (
   // target's block params, and every function parameter (the ramp
   // stores them all; unused fields cost a few bytes).
   let spilled = new HashSet<i32>();
-  let entryParamIds = new Array<i32>();
+  let entryParamIds = new GrowableArray<i32>();
   for (let p in presplit.blocks[0].params) {
     entryParamIds.push(p);
     spilled.add(p);
   }
-  let dTargets = new Array<i32>();
+  let dTargets = new GrowableArray<i32>();
   dTargets.push(0);
   var db = 0;
   while (db < presplit.blocks.length) {
@@ -669,7 +669,7 @@ let prepareOne = (
 
   // The frame struct: $state plus one nullable-weakened field per
   // spilled value, ascending value id (deterministic layout).
-  let fields = new Array<WasmField>();
+  let fields = new GrowableArray<WasmField>();
   fields.push(new WasmField('$state', new ValTypeI32(), true));
   var vid = 0;
   while (vid < presplit.instCount()) {
@@ -690,7 +690,7 @@ let prepareOne = (
   pass.markTypeReached(frame);
 
   // next(): (ref null $Frame) -> Iterator.next's scalarized results.
-  let nextParams = new Array<ValType>();
+  let nextParams = new GrowableArray<ValType>();
   nextParams.push(new ValTypeRefNull(frame));
   let nextSig = wasm.getSignature(nextParams, slotSig.returns);
   let nextFunc = new WasmFunction(nextSig, null, func.model);
@@ -702,7 +702,7 @@ let prepareOne = (
   // Iterator<T> vtable global for the frame: trampoline per slot,
   // mirroring RTA's class-interface vtable construction.
   let frameKey = frameName as ClassKey;
-  let methods = new Array<WasmFunction>();
+  let methods = new GrowableArray<WasmFunction>();
   for (let field in vst.fields) {
     if ((field.name as String) != 'next') {
       throw new Error('unexpected Iterator vtable member for generator: ' +
@@ -760,7 +760,7 @@ export let loopContainsSuspend = (
   // source without passing through h.
   let inLoop = new HashSet<i32>();
   inLoop.add(h);
-  let work = new Array<i32>();
+  let work = new GrowableArray<i32>();
   for (let p in cfg.preds[h]) {
     if (cfg.isReachable(p) && cfg.dominates(h, p)) {
       if (!inLoop.has(p)) {
@@ -806,7 +806,7 @@ let buildRamp = (
 ): IrBody => {
   let b = new IrBuilder();
   let entry = b.newBlock();
-  let params = new Array<i32>();
+  let params = new GrowableArray<i32>();
   for (let vt in func.signature.params) {
     params.push(b.blockParam(entry, vt));
   }
@@ -818,7 +818,7 @@ let buildRamp = (
   while (i < params.length) {
     let fieldRef = b.addRef(new IrRefField(frame,
         '$v' + i32ToString(entryParamIds[i])));
-    let pair = new Array<i32>();
+    let pair = new GrowableArray<i32>();
     pair.push(inst);
     pair.push(params[i]);
     b.emitVoid(IrOp.struct_set, b.pushExtra(pair), fieldRef);
@@ -844,7 +844,7 @@ let buildNextBody = (
   dTargetsIn: Array<i32>,
   slotSig: WasmSignature,
   resumeOf: Array<i32>,
-  dispatchRegions: HashMap<i32, Array<TryRegion>>
+  dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>
 ): IrBody => {
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
@@ -854,7 +854,7 @@ let buildNextBody = (
   // them turn into frame stores).
   let dParams = new HashMap<i32, Array<i32>>();
   for (let d in dTargetsIn) {
-    let copy = new Array<i32>();
+    let copy = new GrowableArray<i32>();
     for (let p in body.blocks[d].params) {
       copy.push(p);
     }
@@ -968,7 +968,7 @@ let buildNextBody = (
   // enter: $state = RUNNING; dispatch on the saved state.
   let runningConst = emitIn(enterBlock, IrOp.const_i32, i32Idx, STATE_RUNNING, -1);
   storeState(enterBlock, runningConst);
-  let dispatchArgs = new Array<i32>();
+  let dispatchArgs = new GrowableArray<i32>();
   dispatchArgs.push(stateVal);
   brTo(enterBlock, dispatcher, dispatchArgs);
 
@@ -987,7 +987,7 @@ let buildNextBody = (
   let reenterRegions = (dispatchTarget: i32): i32 => {
     let regions =
         if (let (true, rs) = dispatchRegions.get(dispatchTarget)) rs
-        else new Array<TryRegion>(0);
+        else new GrowableArray<TryRegion>(0);
     var target = dispatchTarget;
     // Innermost first, so the outermost try_br ends up on the outside.
     var ri = regions.length - 1;
@@ -1010,8 +1010,8 @@ let buildNextBody = (
   // dispatcher(pc): br_if chain over the dispatch targets, ascending
   // pc. The final fall-through is an invalid state — trap.
   let pcParam = rawParam(body, dispatcher, i32Vt);
-  let chainTargets = new Array<i32>();
-  let chainPcs = new Array<i32>();
+  let chainTargets = new GrowableArray<i32>();
+  let chainPcs = new GrowableArray<i32>();
   chainTargets.push(entryCopyId);
   chainPcs.push(0);
   var scanPc = STATE_FIRST_SUSPEND;
@@ -1045,7 +1045,7 @@ let buildNextBody = (
   }
 
   // The body blocks the remaining passes operate on.
-  let bodyBlocks = new Array<i32>();
+  let bodyBlocks = new GrowableArray<i32>();
   bodyBlocks.push(entryCopyId);
   var obi = 1;
   while (obi < origCount) {
@@ -1070,7 +1070,7 @@ let buildNextBody = (
   let skipRemap = new HashSet<i32>();
   for (let blockId in bodyBlocks) {
     let block = body.blocks[blockId];
-    let rebuilt = new Array<i32>();
+    let rebuilt = new GrowableArray<i32>();
     // Spilled params of non-dispatch blocks: store at block top.
     for (let p in block.params) {
       if (spilled.has(p)) {
@@ -1105,8 +1105,8 @@ let buildNextBody = (
   // never merges struct_gets, so resumes reload).
   for (let blockId in bodyBlocks) {
     let block = body.blocks[blockId];
-    let rebuilt = new Array<i32>();
-    let ops = new Array<i32>();
+    let rebuilt = new GrowableArray<i32>();
+    let ops = new GrowableArray<i32>();
     for (let inst in block.insts) {
       if (skipRemap.has(inst)) {
         rebuilt.push(inst);
@@ -1160,7 +1160,7 @@ let buildNextBody = (
       let resumeTarget = body.successors(term)[0].target;
       let pc = pcOfBlock[resumeTarget];
       let yieldVal = body.a[term];
-      let rebuilt = new Array<i32>();
+      let rebuilt = new GrowableArray<i32>();
       var k = 0;
       while (k < block.insts.length - 1) {
         rebuilt.push(block.insts[k]);
@@ -1190,7 +1190,7 @@ let buildNextBody = (
       yieldIndex += 1;
     } else if (op == IrOp.ret) {
       // Bare return / fell off the end: DONE forever.
-      let rebuilt = new Array<i32>();
+      let rebuilt = new GrowableArray<i32>();
       var k = 0;
       while (k < block.insts.length - 1) {
         rebuilt.push(block.insts[k]);
@@ -1262,14 +1262,14 @@ export let rerouteEdges = (
   // Decode all successors up front (re-encoding appends to extra).
   let succs = body.successors(term);
   var touchesDispatch = false;
-  let targets = new Array<i32>();
-  let argLists = new Array<Array<i32>>();
+  let targets = new GrowableArray<i32>();
+  let argLists = new GrowableArray<Array<i32>>();
   for (let s in succs) {
     var target = s.target;
     if (target == 0) {
       target = entryCopyId;
     }
-    let args = new Array<i32>();
+    let args = new GrowableArray<i32>();
     var ai = 0;
     while (ai < s.argCount) {
       args.push(body.extra[s.argStart + ai]);
@@ -1289,7 +1289,7 @@ export let rerouteEdges = (
   }
 
   // Inserted instructions go right before the terminator.
-  let inserted = new Array<i32>();
+  let inserted = new GrowableArray<i32>();
   var si = 0;
   while (si < targets.length) {
     let target = targets[si];
@@ -1316,7 +1316,7 @@ export let rerouteEdges = (
       inserted.push(pcConst);
       body.instBlock[pcConst] = blockId;
       targets[si] = dispatcher;
-      let newArgs = new Array<i32>();
+      let newArgs = new GrowableArray<i32>();
       newArgs.push(pcConst);
       argLists[si] = newArgs;
     }
@@ -1364,7 +1364,7 @@ export let rerouteEdges = (
 
   // Place the inserted spills/consts before the terminator.
   if (inserted.length > 0) {
-    let rebuilt = new Array<i32>();
+    let rebuilt = new GrowableArray<i32>();
     var k = 0;
     while (k < block.insts.length - 1) {
       rebuilt.push(block.insts[k]);

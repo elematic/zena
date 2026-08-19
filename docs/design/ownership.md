@@ -1618,7 +1618,7 @@ resource class Descriptor {
 }
 ```
 
-`this` is already a type in Zena — `Sequence.map` takes `seq: this` — and
+`this` is already a type in Zena — `Array.map` takes `seq: this` — and
 `Own<this>` is what makes the receiver correct under inheritance: on a subclass
 it means `Own<Subclass>`, which a written-out `Own<Descriptor>` would not give.
 

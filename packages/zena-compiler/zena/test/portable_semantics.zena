@@ -83,7 +83,7 @@ let severityMatches = (d: Diagnostic, wanted: DiagnosticSeverity): boolean =>
 let filterBySeverity = (
     diagnostics: Array<Diagnostic>,
     wanted: DiagnosticSeverity): Array<Diagnostic> => {
-  let matches = new Array<Diagnostic>(4);
+  let matches = new GrowableArray<Diagnostic>(4);
   for (let d in diagnostics) {
     if (severityMatches(d, wanted)) {
       matches.push(d);
@@ -148,7 +148,7 @@ let runSemanticTest = (f: TestFile): void => {
   // Aggregate diagnostics from every non-stdlib module of this
   // compilation, not just the entry: import-cycle diagnostics land in
   // the cycle member that evaluates first, which is never the entry.
-  let diagnostics = new Array<Diagnostic>(4);
+  let diagnostics = new GrowableArray<Diagnostic>(4);
   for (let file in result.files) {
     if (!file.isStdlib && checkResult.results.has(file.path)) {
       for (let diag in checkResult.results[file.path].diagnostics) {
@@ -165,7 +165,7 @@ let runSemanticTest = (f: TestFile): void => {
   // errors hid 58 more across the suite.
   let errors = filterBySeverity(diagnostics, DiagnosticSeverity.Error);
   let lines = f.source.split('\n');
-  let claimedErrors = new Array<boolean>(errors.length);
+  let claimedErrors = new GrowableArray<boolean>(errors.length);
   for (var i = 0; i < errors.length; i += 1) {
     claimedErrors.push(false);
   }
@@ -217,7 +217,7 @@ let runSemanticTest = (f: TestFile): void => {
     }
   }
 
-  let unexpected = new Array<Diagnostic>(4);
+  let unexpected = new GrowableArray<Diagnostic>(4);
   for (var i = 0; i < errors.length; i += 1) {
     if (!claimedErrors[i]) { unexpected.push(errors[i]); }
   }
@@ -229,7 +229,7 @@ let runSemanticTest = (f: TestFile): void => {
   // Warnings match one-for-one: two `@warning:` directives require two
   // distinct warnings, not one warning matching both.
   let warnings = filterBySeverity(diagnostics, DiagnosticSeverity.Warning);
-  let claimed = new Array<boolean>(warnings.length);
+  let claimed = new GrowableArray<boolean>(warnings.length);
   for (var i = 0; i < warnings.length; i += 1) {
     claimed.push(false);
   }
@@ -252,7 +252,7 @@ let runSemanticTest = (f: TestFile): void => {
 
   // Unexpected warnings only fail tests that opted into checking them.
   if (expectedWarnings.length > 0) {
-    let unclaimed = new Array<Diagnostic>(4);
+    let unclaimed = new GrowableArray<Diagnostic>(4);
     for (var i = 0; i < warnings.length; i += 1) {
       if (!claimed[i]) {
         unclaimed.push(warnings[i]);

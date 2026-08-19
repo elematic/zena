@@ -329,7 +329,7 @@ This tiered approach means most `is` checks remain fast, and only fully-specifie
 - **Classes & Structs**: Both compilers currently use **Full Specialization (Monomorphization)** for class struct layouts and fields. For every concrete class type argument combination (e.g., `Box<i32>`, `Box<String>`), a unique WASM struct layout is generated. There is no shared code layout for reference types yet.
 - **Generic Methods on VTables (Type Erasure)**: For generic methods on classes and interfaces (e.g. `map<U>`), the current compilers simplify vtable generation by erasing the method's generic type parameters to `anyref` inside the vtable slot.
   - **Static Dispatch**: Direct calls are monomorphized (e.g., `map_spec_i32`), avoiding boxing. This includes _inferred_ type arguments — the checker records the solved type args on the call's FunctionType and reachability instantiates the `_spec_` copy. Pinned by `tests/language/execution/arrays/generic-method-primitive-mono.zena` with erasure-hostile values (i32 near ±2³¹, f64, U≠T).
-  - **Virtual/Interface Dispatch**: NOT IMPLEMENTED (status corrected 2026-07-26). The erased copies (`Array_i32.map` over `anyref`) exist and occupy _class_-vtable slots, but no boxing or unboxing adapters were ever generated, generic methods get no _interface_ vtable slot at all, and both compilers crashed with internal errors on a dispatch site like `(s: Sequence<i32>).map(f)`. Both checkers now reject it with a NotCallable diagnostic instead (see BUGS.md "Generic interface methods are not virtually dispatchable"; semantics test `interfaces/generic-method-virtual-dispatch.zena`). The diagnostic is a stopgap until §"Generic interface dispatch" below is implemented.
+  - **Virtual/Interface Dispatch**: NOT IMPLEMENTED (status corrected 2026-07-26). The erased copies (`Array_i32.map` over `anyref`) exist and occupy _class_-vtable slots, but no boxing or unboxing adapters were ever generated, generic methods get no _interface_ vtable slot at all, and both compilers crashed with internal errors on a dispatch site like `(s: Array<i32>).map(f)`. Both checkers now reject it with a NotCallable diagnostic instead (see BUGS.md "Generic interface methods are not virtually dispatchable"; semantics test `interfaces/generic-method-virtual-dispatch.zena`). The diagnostic is a stopgap until §"Generic interface dispatch" below is implemented.
 
 ### Future Path (Eliminating Auto-Boxing)
 
@@ -340,7 +340,7 @@ We intend to move to **Pure Monomorphization** to completely eliminate implicit 
 
 ## Generic interface dispatch: implementation plan (2026-07-26)
 
-Ruling: higher-order interface methods like `Sequence<T>.map<U>` MUST
+Ruling: higher-order interface methods like `Array<T>.map<U>` MUST
 work — they are table stakes for this language class. Of the two
 implementation families, vtable expansion is chosen; erasure is
 rejected.
@@ -354,10 +354,10 @@ A single erased slot (`U → anyref`) fails in two independent ways:
    including inside the loop body, per element. This contradicts the
    pure-monomorphization pillar (Box exists for unions only).
 2. **Representation leak** (the fatal one): `map`'s RESULT type
-   mentions U (`Sequence<U>`). The erased callee returns a
-   Sequence-of-boxed-anyref whose interface struct type is
-   `$Sequence_anyref` — but the caller's static type is
-   `Sequence<i32>`, whose fat pointer and slot signatures are
+   mentions U (`Array<U>`). The erased callee returns a
+   Array-of-boxed-anyref whose interface struct type is
+   `$Array_anyref` — but the caller's static type is
+   `Array<i32>`, whose fat pointer and slot signatures are
    DIFFERENT WASM TYPES with unboxed element accessors. Bridging
    requires a wrapper object per boundary crossing that re-boxes and
    unboxes on every access, forever. Erasure does not stay contained
@@ -397,11 +397,11 @@ member, type-argument tuple) pair that is ever dispatched:
 
 ### The one real wrinkle: `this` inside function-typed parameters
 
-`Sequence.map`'s callback is `(item: T, index: i32, seq: this) => U`.
+`Array.map`'s callback is `(item: T, index: i32, seq: this) => U`.
 At the slot level `this` means the INTERFACE fat pointer
-(`Sequence<T>`), but the concrete implementation
+(`Array<T>`), but the concrete implementation
 (`FixedArray<T>.map_spec_*`) invokes the callback with its raw
-receiver. A caller-supplied closure typed `seq: Sequence<T>` cannot
+receiver. A caller-supplied closure typed `seq: Array<T>` cannot
 receive a bare array ref. The dispatch trampoline therefore does
 double adaptation:
 
@@ -411,7 +411,7 @@ double adaptation:
    nothing);
 2. call the direct `_spec_` implementation with `g`;
 3. `iface_pack` the concrete result (`FixedArray<U>`) into the
-   declared `Sequence<U>` fat pointer — the same covariant-result
+   declared `Array<U>` fat pointer — the same covariant-result
    packing `:iterator` trampolines do today.
 
 Only parameters whose function type mentions `this` (or otherwise

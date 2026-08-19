@@ -1,4 +1,5 @@
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { Error } from 'zena:error';
 import {
   ValType, ValTypeRef, ValTypeRefNull, valTypeToOpcode,
@@ -141,7 +142,7 @@ export final class IrBuilder {
   }
 
   /** Copies `values` into the extra pool, returning the start index. */
-  pushExtra(values: Array<i32>): i32 {
+  pushExtra(values: GrowableArray<i32>): i32 {
     let start = this.body.extra.length;
     for (let v in values) {
       this.body.extra.push(v);
@@ -150,7 +151,7 @@ export final class IrBuilder {
   }
 
   /** Copies [argc, args...] into the extra pool. */
-  pushArgList(args: Array<i32>): i32 {
+  pushArgList(args: GrowableArray<i32>): i32 {
     let start = this.body.extra.length;
     this.body.extra.push(args.length);
     for (let v in args) {
@@ -192,7 +193,7 @@ export final class IrBuilder {
     if (instr == null) {
       throw new Error('v128.const is missing from the SIMD table');
     }
-    let imm = new Array<i32>();
+    let imm = new GrowableArray<i32>();
     imm.push(instr.opcode);
     var i = 0;
     while (i < 16) {
@@ -206,7 +207,7 @@ export final class IrBuilder {
     return this.emit(op, type, x, y);
   }
 
-  callFunc(funcRef: i32, args: Array<i32>, resultType: ValType | null): i32 {
+  callFunc(funcRef: i32, args: GrowableArray<i32>, resultType: ValType | null): i32 {
     let argsIdx = this.pushArgList(args);
     if (resultType == null) {
       return this.#emitInCurrent(IrOp.call, -1, argsIdx, funcRef);
@@ -220,10 +221,10 @@ export final class IrBuilder {
    * mv_get projection per result is emitted immediately after it, in
    * ascending result order (emission relies on that adjacency+order).
    */
-  callFuncMulti(funcRef: i32, args: Array<i32>, resultTypes: Array<ValType>): Array<i32> {
+  callFuncMulti(funcRef: i32, args: GrowableArray<i32>, resultTypes: GrowableArray<ValType>): GrowableArray<i32> {
     let argsIdx = this.pushArgList(args);
     let call = this.#emitInCurrent(IrOp.call, -1, argsIdx, funcRef);
-    let projections = new Array<i32>();
+    let projections = new GrowableArray<i32>();
     for (var k = 0; k < resultTypes.length; k += 1) {
       projections.push(this.#emitInCurrent(IrOp.mv_get,
           this.internType(resultTypes[k]), call, k));
@@ -232,7 +233,7 @@ export final class IrBuilder {
   }
 
   /** Multi-value return. */
-  retMulti(values: Array<i32>): void {
+  retMulti(values: GrowableArray<i32>): void {
     let idx = this.body.extra.length;
     this.body.extra.push(values.length);
     for (let v in values) {
@@ -254,7 +255,7 @@ export final class IrBuilder {
   }
 
   /** Multi-result call_ref; same projection contract as callFuncMulti. */
-  callRefMulti(callee: i32, args: Array<i32>, resultTypes: Array<ValType>): Array<i32> {
+  callRefMulti(callee: i32, args: GrowableArray<i32>, resultTypes: GrowableArray<ValType>): GrowableArray<i32> {
     let start = this.body.extra.length;
     this.body.extra.push(callee);
     this.body.extra.push(args.length);
@@ -262,7 +263,7 @@ export final class IrBuilder {
       this.body.extra.push(v);
     }
     let call = this.#emitInCurrent(IrOp.call_ref, -1, start, -1);
-    let projections = new Array<i32>();
+    let projections = new GrowableArray<i32>();
     for (var k = 0; k < resultTypes.length; k += 1) {
       projections.push(this.#emitInCurrent(IrOp.mv_get,
           this.internType(resultTypes[k]), call, k));
@@ -271,7 +272,7 @@ export final class IrBuilder {
   }
 
   /** call_ref through a funcref value: extra = [callee, argc, arg*]. */
-  callRef(callee: i32, args: Array<i32>, resultType: ValType | null): i32 {
+  callRef(callee: i32, args: GrowableArray<i32>, resultType: ValType | null): i32 {
     let start = this.body.extra.length;
     this.body.extra.push(callee);
     this.body.extra.push(args.length);
@@ -287,7 +288,7 @@ export final class IrBuilder {
 
   // -- Terminators ---------------------------------------------------------
 
-  br(target: i32, args: Array<i32>): void {
+  br(target: i32, args: GrowableArray<i32>): void {
     let idx = this.body.extra.length;
     this.body.extra.push(target);
     this.body.extra.push(args.length);
@@ -297,8 +298,8 @@ export final class IrBuilder {
     this.#emitInCurrent(IrOp.br, -1, idx, -1);
   }
 
-  brIf(cond: i32, thenTarget: i32, thenArgs: Array<i32>,
-       elseTarget: i32, elseArgs: Array<i32>): void {
+  brIf(cond: i32, thenTarget: i32, thenArgs: GrowableArray<i32>,
+       elseTarget: i32, elseArgs: GrowableArray<i32>): void {
     let idx = this.body.extra.length;
     this.body.extra.push(thenTarget);
     this.body.extra.push(thenArgs.length);
@@ -315,8 +316,8 @@ export final class IrBuilder {
 
   /** try_br: a = tag ref, b = [bodyTarget, argc, arg*, catchTarget,
    * argc, arg*]. Terminator; both edges carry block arguments. */
-  tryBr(tagRef: i32, bodyTarget: i32, bodyArgs: Array<i32>,
-      catchTarget: i32, catchArgs: Array<i32>): void {
+  tryBr(tagRef: i32, bodyTarget: i32, bodyArgs: GrowableArray<i32>,
+      catchTarget: i32, catchArgs: GrowableArray<i32>): void {
     let idx = this.body.extra.length;
     this.body.extra.push(bodyTarget);
     this.body.extra.push(bodyArgs.length);
@@ -338,7 +339,7 @@ export final class IrBuilder {
   /** yield_: a = yielded value, b = [resumeTarget, argc, arg*].
    * Suspension terminator for presplit generator bodies; the split
    * pass rewrites every yield before emission. */
-  yieldTo(value: i32, resumeTarget: i32, args: Array<i32>): void {
+  yieldTo(value: i32, resumeTarget: i32, args: GrowableArray<i32>): void {
     let idx = this.body.extra.length;
     this.body.extra.push(resumeTarget);
     this.body.extra.push(args.length);
@@ -351,7 +352,7 @@ export final class IrBuilder {
   /** await_: a = awaited future, b = [resumeTarget, argc, arg*].
    * Suspension terminator for presplit async bodies; the split pass
    * rewrites every await before emission. */
-  awaitTo(future: i32, resumeTarget: i32, args: Array<i32>): i32 {
+  awaitTo(future: i32, resumeTarget: i32, args: GrowableArray<i32>): i32 {
     let idx = this.body.extra.length;
     this.body.extra.push(resumeTarget);
     this.body.extra.push(args.length);
@@ -370,7 +371,7 @@ export final class IrBuilder {
   }
 
   /** throw: extra = [argc, arg*], b = tag ref. Terminator. */
-  throwWithTag(args: Array<i32>, tagRef: i32): void {
+  throwWithTag(args: GrowableArray<i32>, tagRef: i32): void {
     let idx = this.body.extra.length;
     this.body.extra.push(args.length);
     for (let v in args) {

@@ -1,4 +1,5 @@
 import { Array } from 'zena:array';
+import { GrowableArray } from 'zena:growable-array';
 import { HashMap } from 'zena:map';
 import { HashSet } from 'zena:set';
 import { Iterator } from 'zena:iterator';
@@ -131,7 +132,7 @@ export final class ScopeResult(
    * Value names that couldn't be resolved.
    * Each entry is an error: missing import or undeclared name.
    */
-  unresolvedNames: Array<UnresolvedName>,
+  unresolvedNames: GrowableArray<UnresolvedName>,
 
   /**
    * All successfully resolved references and declarations in this module.
@@ -146,14 +147,14 @@ export final class ScopeResult(
    * Names that were declared twice in the same scope.
    * Each entry is an error: same-scope redeclaration.
    */
-  duplicateDeclarations: Array<UnresolvedName>,
+  duplicateDeclarations: GrowableArray<UnresolvedName>,
 
-  unusedVariables: Array<Symbol>,
-  neverMutatedVariables: Array<Symbol>,
-  unusedImportDeclarations: Array<ImportDeclaration>,
-  unusedImportedSymbols: Array<Symbol>,
-  unnecessaryImports: Array<Symbol>,
-  duplicateImports: Array<Symbol>,
+  unusedVariables: GrowableArray<Symbol>,
+  neverMutatedVariables: GrowableArray<Symbol>,
+  unusedImportDeclarations: GrowableArray<ImportDeclaration>,
+  unusedImportedSymbols: GrowableArray<Symbol>,
+  unnecessaryImports: GrowableArray<Symbol>,
+  duplicateImports: GrowableArray<Symbol>,
 
   /**
    * Parent pointer map from node → parent node.
@@ -190,14 +191,14 @@ export final class ScopeBuilder {
    * Unresolved identifiers found during the walk.
    * These may be resolved later when cross-module imports are wired up.
    */
-  #unresolvedNames = new Array<UnresolvedName>();
+  #unresolvedNames = new GrowableArray<UnresolvedName>();
   #symbols = new SymbolMap();
-  #duplicateDeclarations = new Array<UnresolvedName>();
+  #duplicateDeclarations = new GrowableArray<UnresolvedName>();
   #parents = new NodeMap<Node>();
   #isRead = new HashMap<SymbolId, boolean>();
   #isWritten = new HashMap<SymbolId, boolean>();
-  #allVariables = new Array<Symbol>();
-  #allImportDeclarations = new Array<ImportDeclaration>();
+  #allVariables = new GrowableArray<Symbol>();
+  #allImportDeclarations = new GrowableArray<ImportDeclaration>();
 
   new(modulePath: String, preludeScope: Scope | null = null, symbolIdGenerator: IdGenerator<SymbolId> | null = null)
     : #modulePath = modulePath {
@@ -242,8 +243,8 @@ export final class ScopeBuilder {
       case _: {}
     }
 
-    let unused = new Array<Symbol>();
-    let neverMutated = new Array<Symbol>();
+    let unused = new GrowableArray<Symbol>();
+    let neverMutated = new GrowableArray<Symbol>();
 
     for (let sym in this.#allVariables) {
       if (!this.#isRead.has(sym.id) && !this.#isUnusedButAllowed(sym)) {
@@ -254,16 +255,16 @@ export final class ScopeBuilder {
     }
 
     let seenImportedNames = new HashSet<String>();
-    let unusedImportDeclarations = new Array<ImportDeclaration>();
-    let unusedImportedSymbols = new Array<Symbol>();
-    let unnecessaryImports = new Array<Symbol>();
-    let duplicateImports = new Array<Symbol>();
+    let unusedImportDeclarations = new GrowableArray<ImportDeclaration>();
+    let unusedImportedSymbols = new GrowableArray<Symbol>();
+    let unnecessaryImports = new GrowableArray<Symbol>();
+    let duplicateImports = new GrowableArray<Symbol>();
 
     for (let importDecl in this.#allImportDeclarations) {
       if (importDecl.imports.length == 0) {
         continue;
       }
-      let declUnusedSymbols = new Array<Symbol>();
+      let declUnusedSymbols = new GrowableArray<Symbol>();
       var hasUsedOrSuppressedOrSpecial = false;
 
       for (let spec in importDecl.imports) {
@@ -686,7 +687,7 @@ export final class ScopeBuilder {
         if (sealedVariants != null) {
           for (let variant in sealedVariants) {
             if (variant.params != null) {
-              for (let param in variant.params as Array<CaseClassParam>) {
+              for (let param in variant.params as GrowableArray<CaseClassParam>) {
                 this.#processTypeAnnotation(param.typeAnnotation);
               }
             }

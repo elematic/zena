@@ -6,7 +6,7 @@
 // we use a class hierarchy with a DocKind discriminator.
 
 import { Array } from 'zena:array';
-import { Sequence } from 'zena:sequence';
+import { GrowableArray } from 'zena:growable-array';
 
 // ============================================================================
 // Doc Kind Discriminator
@@ -54,9 +54,9 @@ export class TextDoc extends Doc {
 }
 
 export class ArrayDoc extends Doc {
-  parts: Sequence<Doc>;
+  parts: Array<Doc>;
 
-  new(parts: Sequence<Doc>) : parts = parts, super(DocKind.Array);
+  new(parts: Array<Doc>) : parts = parts, super(DocKind.Array);
 }
 
 export class GroupDoc extends Doc {
@@ -105,9 +105,9 @@ export class IfBreakDoc extends Doc {
 }
 
 export class FillDoc extends Doc {
-  parts: Sequence<Doc>;
+  parts: Array<Doc>;
 
-  new(parts: Sequence<Doc>)
+  new(parts: Array<Doc>)
     : parts = parts, super(DocKind.Fill);
 }
 
@@ -118,23 +118,10 @@ export class LineSuffixDoc extends Doc {
     : contents = contents, super(DocKind.LineSuffix);
 }
 
-export class IndentIfBreakDoc extends Doc {
-  contents: Doc;
-  groupId: i32;
-
-  new(contents: Doc, groupId: i32)
-    : contents = contents, groupId = groupId, super(DocKind.IndentIfBreak);
+export class LineSuffixBoundaryDoc extends Doc {
+  new() : super(DocKind.LineSuffixBoundary);
 }
 
-export class LabelDoc extends Doc {
-  label: String;
-  contents: Doc;
-
-  new(label: String, contents: Doc)
-    : label = label, contents = contents, super(DocKind.Label);
-}
-
-// Singleton line variants (no extra data)
 export class LineDoc extends Doc {
   new() : super(DocKind.Line);
 }
@@ -151,10 +138,6 @@ export class LiteralLineDoc extends Doc {
   new() : super(DocKind.LiteralLine);
 }
 
-export class LineSuffixBoundaryDoc extends Doc {
-  new() : super(DocKind.LineSuffixBoundary);
-}
-
 export class BreakParentDoc extends Doc {
   new() : super(DocKind.BreakParent);
 }
@@ -163,25 +146,28 @@ export class TrimDoc extends Doc {
   new() : super(DocKind.Trim);
 }
 
+export class IndentIfBreakDoc extends Doc {
+  contents: Doc;
+  groupId: i32;
+
+  new(contents: Doc, groupId: i32)
+    : contents = contents, groupId = groupId, super(DocKind.IndentIfBreak);
+}
+
+export class LabelDoc extends Doc {
+  tag: String;
+  contents: Doc;
+
+  new(tag: String, contents: Doc)
+    : tag = tag, contents = contents, super(DocKind.Label);
+}
+
 // ============================================================================
-// Singletons
+// Doc Builder Functions
 // ============================================================================
 
-export let line: Doc = new LineDoc();
-export let softline: Doc = new SoftlineDoc();
-export let hardline: Doc = new HardlineDoc();
-export let literalline: Doc = new LiteralLineDoc();
-export let lineSuffixBoundary: Doc = new LineSuffixBoundaryDoc();
-export let breakParent: Doc = new BreakParentDoc();
-export let trim: Doc = new TrimDoc();
-
-// ============================================================================
-// Builder Functions
-// ============================================================================
-
-var nextGroupId: i32 = 1;
-
-export let text = (value: String): Doc => new TextDoc(value);
+export let text = (value: String): Doc =>
+  new TextDoc(value);
 
 export let group = (contents: Doc): Doc =>
   new GroupDoc(contents, false, 0);
@@ -189,11 +175,11 @@ export let group = (contents: Doc): Doc =>
 export let groupBreak = (contents: Doc): Doc =>
   new GroupDoc(contents, true, 0);
 
-export let groupWithId = (contents: Doc): GroupDoc => {
-  let id = nextGroupId;
-  nextGroupId = nextGroupId + 1;
-  return new GroupDoc(contents, false, id);
-};
+export let groupWithBreak = (contents: Doc, shouldBreak: boolean): Doc =>
+  new GroupDoc(contents, shouldBreak, 0);
+
+export let groupWithId = (contents: Doc, id: i32): Doc =>
+  new GroupDoc(contents, false, id);
 
 export let indent = (contents: Doc): Doc =>
   new IndentDoc(contents);
@@ -210,7 +196,7 @@ export let ifBreak = (breakContents: Doc, flatContents: Doc): Doc =>
 export let ifBreakWithId = (breakContents: Doc, flatContents: Doc, groupId: i32): Doc =>
   new IfBreakDoc(breakContents, flatContents, groupId);
 
-export let fill = (parts: Sequence<Doc>): Doc =>
+export let fill = (parts: Array<Doc>): Doc =>
   new FillDoc(parts);
 
 export let lineSuffix = (contents: Doc): Doc =>
@@ -223,12 +209,12 @@ export let label = (tag: String, contents: Doc): Doc =>
   new LabelDoc(tag, contents);
 
 // Concat an array of docs
-export let concat = (parts: Sequence<Doc>): Doc =>
+export let concat = (parts: Array<Doc>): Doc =>
   new ArrayDoc(parts);
 
 // Join docs with a separator
-export let join = (sep: Doc, docs: Sequence<Doc>): Doc => {
-  let parts = new Array<Doc>();
+export let join = (sep: Doc, docs: Array<Doc>): Doc => {
+  let parts = new GrowableArray<Doc>();
   var i = 0;
   while (i < docs.length) {
     if (i > 0) {
@@ -239,3 +225,11 @@ export let join = (sep: Doc, docs: Sequence<Doc>): Doc => {
   }
   return new ArrayDoc(parts);
 };
+
+export let line: Doc = new LineDoc();
+export let softline: Doc = new SoftlineDoc();
+export let hardline: Doc = new HardlineDoc();
+export let literalline: Doc = new LiteralLineDoc();
+export let lineSuffixBoundary: Doc = new LineSuffixBoundaryDoc();
+export let breakParent: Doc = new BreakParentDoc();
+export let trim: Doc = new TrimDoc();

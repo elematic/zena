@@ -259,7 +259,7 @@ final class CheckerContext {
    * Only index 0 is meaningful; the stack structure is retained because
    * enterScope/exitScope still push/pop frames for narrowing bookkeeping.
    */
-  #typeScopes = new Array<HashMap<String, Type>>();
+  #typeScopes = new GrowableArray<HashMap<String, Type>>();
 
   /**
    * Optional-chain nodes sanctioned as the immediate left operand of
@@ -324,7 +324,7 @@ final class CheckerContext {
    * popping decides each candidate's verdict and records it on the
    * declaration for lowering.
    */
-  #ownScopeStack = new Array<Array<OwnDropCandidate>>();
+  #ownScopeStack = new GrowableArray<GrowableArray<OwnDropCandidate>>();
 
   /**
    * If/else joins recorded while checking, awaiting the branch-join
@@ -332,11 +332,11 @@ final class CheckerContext {
    * the complete capture and escape facts). Per body, swapped with the
    * rest of the flow state.
    */
-  var #pendingEdgeIfs = new Array<PendingEdgeIf>();
+  var #pendingEdgeIfs = new GrowableArray<PendingEdgeIf>();
 
   /** The matches recorded for the same decision — PendingEdgeIf's
    * N-ary sibling; same lifecycle. */
-  var #pendingEdgeMatches = new Array<PendingEdgeMatch>();
+  var #pendingEdgeMatches = new GrowableArray<PendingEdgeMatch>();
 
   /** Whether any open scope holds an implicit-drop candidate. */
   #hasOwnCandidates(): boolean {
@@ -375,14 +375,14 @@ final class CheckerContext {
    * the loop was open, via the write log.
    */
   #flowTypeMemo = new HashMap<i64, Type>();
-  #flowTypeMemoLog = new Array<i64>();
-  #flowLoopMemoMarks = new Array<i32>();
+  #flowTypeMemoLog = new GrowableArray<i64>();
+  #flowLoopMemoMarks = new GrowableArray<i32>();
 
   /** The path walk's memo, keyed "<join id>|<path>"; #pathVeto included. */
   #flowPathMemo = new HashMap<String, Type>();
-  #flowPathMemoLog = new Array<String>();
-  #flowPathMemoLogIds = new Array<i32>();
-  #flowLoopPathMemoMarks = new Array<i32>();
+  #flowPathMemoLog = new GrowableArray<String>();
+  #flowPathMemoLogIds = new GrowableArray<i32>();
+  #flowLoopPathMemoMarks = new GrowableArray<i32>();
 
   /**
    * The FlowStart id of the body each binding was declared in. A walk
@@ -410,10 +410,10 @@ final class CheckerContext {
   #flowUnreachable = new FlowUnreachable();
 
   /** Loop header joins (continue targets), innermost last. */
-  var #flowLoopHeads = new Array<FlowJoin>();
+  var #flowLoopHeads = new GrowableArray<FlowJoin>();
 
   /** Loop exit joins (break targets), innermost last. */
-  var #flowLoopExits = new Array<FlowJoin>();
+  var #flowLoopExits = new GrowableArray<FlowJoin>();
 
   /**
    * Catch-entry joins of enclosing `try` bodies, innermost last. Every
@@ -422,21 +422,21 @@ final class CheckerContext {
    * The arrays are swapped (not shared) across nested bodies, hence
    * `var`.
    */
-  var #flowExceptionTargets = new Array<FlowJoin>();
+  var #flowExceptionTargets = new GrowableArray<FlowJoin>();
 
   /**
    * Moves recorded while each enclosing loop is open, innermost last. A
    * move registers with every entry, because an outer loop's back edge
    * re-runs an inner loop's body. Checked by exitFlowLoop.
    */
-  var #flowLoopMoves = new Array<Array<FlowMove>>();
+  var #flowLoopMoves = new GrowableArray<GrowableArray<FlowMove>>();
 
   /**
    * Symbols declared while each enclosing loop is open. A binding
    * declared inside the loop is fresh every iteration, so its moves are
    * exempt from the back-edge rule.
    */
-  var #flowLoopDeclared = new Array<HashSet<i32>>();
+  var #flowLoopDeclared = new GrowableArray<HashSet<i32>>();
 
   /**
    * Nodes that already reported use-after-move. Several call paths check
@@ -450,7 +450,7 @@ final class CheckerContext {
    * at exitBodyFlow; error dedup by expression node id, because
    * re-check passes flush the same body again.
    */
-  var #bodyBorrowUses = new Array<BorrowUseRec>();
+  var #bodyBorrowUses = new GrowableArray<BorrowUseRec>();
   #borrowSuspendErrorNodes = new HashSet<i32>();
 
   /**
@@ -481,7 +481,7 @@ final class CheckerContext {
    * Inferred return types collected from return statements.
    * Used when a function has no explicit return type annotation.
    */
-  var #inferredReturnTypes = new Array<Type>();
+  var #inferredReturnTypes = new GrowableArray<Type>();
 
   /**
    * The current generator's expected yield type, or null when the
@@ -494,7 +494,7 @@ final class CheckerContext {
    * Inferred yield types collected from yield statements.
    * Used when a generator has no explicit yield type annotation.
    */
-  var #inferredYieldTypes = new Array<Type>();
+  var #inferredYieldTypes = new GrowableArray<Type>();
 
   /**
    * Depth of enclosing try blocks within the current function body.
@@ -521,7 +521,7 @@ final class CheckerContext {
    * Stack of class types being checked. The top is the innermost class.
    * Used by ThisExpression, super resolution, and member access validation.
    */
-  #classStack = new Array<ClassType>();
+  #classStack = new GrowableArray<ClassType>();
 
   /** Whether we are currently checking an interface declaration body. */
   var #inInterface = false;
@@ -556,12 +556,12 @@ final class CheckerContext {
    * Pipeline value stack for `|>` operator.
    * `$` placeholder resolves to the top of this stack.
    */
-  #pipelineStack = new Array<Type>();
+  #pipelineStack = new GrowableArray<Type>();
 
-  #referrerStack = new Array<String>();
-  #referrerSymbolStack = new Array<SymbolId>();
-  #referrerNodeStack = new Array<i32>();
-  #dependencyStack = new Array<SymbolDependencies>();
+  #referrerStack = new GrowableArray<String>();
+  #referrerSymbolStack = new GrowableArray<SymbolId>();
+  #referrerNodeStack = new GrowableArray<i32>();
+  #dependencyStack = new GrowableArray<SymbolDependencies>();
 
   enterSymbolReferrer(symId: SymbolId): void {
     this.#referrerStack.push("sym");
@@ -613,7 +613,7 @@ final class CheckerContext {
     }
   }
 
-  referrerStack: Array<String> {
+  referrerStack: GrowableArray<String> {
     get { return this.#referrerStack; }
   }
 
@@ -971,8 +971,8 @@ final class CheckerContext {
    * Used for fully-annotated functions and recursive references.
    */
   resolveFunctionFromAnnotations(
-    typeParameters: Array<TypeParameter> | null,
-    params: Array<Parameter>,
+    typeParameters: GrowableArray<TypeParameter> | null,
+    params: GrowableArray<Parameter>,
     returnTypeAnn: TypeAnnotation,
     si: Symbol
   ): Type {
@@ -980,7 +980,7 @@ final class CheckerContext {
     this.enterScope();
     var resolvedTypeParams: Array<TypeParameterType> | null = null;
     if (typeParameters != null) {
-      resolvedTypeParams = new Array<TypeParameterType>();
+      resolvedTypeParams = new GrowableArray<TypeParameterType>();
       for (let tp in typeParameters) {
         var constraint: Type | null = null;
         if (tp.constraint != null) {
@@ -997,8 +997,8 @@ final class CheckerContext {
     }
 
     // Resolve parameter types.
-    let paramTypes = new Array<Type>();
-    let paramNames = new Array<String>();
+    let paramTypes = new GrowableArray<Type>();
+    let paramNames = new GrowableArray<String>();
     for (let param in params) {
       paramNames.push(param.name.name);
       let {typeAnnotation} = param;
@@ -1464,11 +1464,11 @@ final class CheckerContext {
    * comparison) match later.
    */
   #declaredTypeParameters(
-      declared: Array<TypeParameter> | null): Array<TypeParameterType> | null {
+      declared: GrowableArray<TypeParameter> | null): Array<TypeParameterType> | null {
     if (declared == null) {
       return null;
     }
-    let params = new Array<TypeParameterType>(declared.length);
+    let params = new GrowableArray<TypeParameterType>(declared.length);
     for (let tp in declared) {
       params.push(this.getOrCreateTypeParameter(tp, null, null));
     }
@@ -1516,7 +1516,7 @@ final class CheckerContext {
         ct.typeParameters = this.#declaredTypeParameters(cd.typeParameters);
         // Pre-register forward variant names for sealed classes.
         if (cd.isSealed && cd.sealedVariants != null) {
-          let variants = cd.sealedVariants as Array<SealedVariant>;
+          let variants = cd.sealedVariants as GrowableArray<SealedVariant>;
           for (let variant in variants) {
             if (variant.params == null) {
               let forwardVariantNames = ct.forwardVariantNames ??= new HashSet<String>();
@@ -1577,7 +1577,7 @@ final class CheckerContext {
         let declarationParams = ta.typeParameters;
         var typeParams: Array<TypeParameterType> | null = null;
         if (declarationParams != null) {
-          let tempTypeParams = new Array<TypeParameterType>();
+          let tempTypeParams = new GrowableArray<TypeParameterType>();
           typeParams = tempTypeParams;
           for (let param in declarationParams) {
             let tpType = this.getOrCreateTypeParameter(param, null, null);
@@ -1707,11 +1707,11 @@ final class CheckerContext {
 
   // --- Inferred return types ---
 
-  inferredReturnTypes: Array<Type> {
+  inferredReturnTypes: GrowableArray<Type> {
     get { return this.#inferredReturnTypes; }
   }
 
-  setInferredReturnTypes(a: Array<Type>): void {
+  setInferredReturnTypes(a: GrowableArray<Type>): void {
     this.#inferredReturnTypes = a;
   }
 
@@ -1729,11 +1729,11 @@ final class CheckerContext {
     this.#yieldType = t;
   }
 
-  inferredYieldTypes: Array<Type> {
+  inferredYieldTypes: GrowableArray<Type> {
     get { return this.#inferredYieldTypes; }
   }
 
-  setInferredYieldTypes(a: Array<Type>): void {
+  setInferredYieldTypes(a: GrowableArray<Type>): void {
     this.#inferredYieldTypes = a;
   }
 
@@ -1889,7 +1889,7 @@ final class CheckerContext {
     let exit = this.newFlowJoin();
     this.#flowLoopHeads.push(head);
     this.#flowLoopExits.push(exit);
-    this.#flowLoopMoves.push(new Array<FlowMove>());
+    this.#flowLoopMoves.push(new GrowableArray<FlowMove>());
     this.#flowLoopDeclared.push(new HashSet<i32>());
     this.#flowLoopMemoMarks.push(this.#flowTypeMemoLog.length);
     this.#flowLoopPathMemoMarks.push(this.#flowPathMemoLog.length);
@@ -2021,7 +2021,7 @@ final class CheckerContext {
    */
   #findFlowSuspend(id: SymbolId, from: FlowNode, stopAtId: i32): boolean {
     let visited = new HashSet<i32>();
-    let pending = new Array<FlowNode>();
+    let pending = new GrowableArray<FlowNode>();
     pending.push(from);
     while (pending.length > 0) {
       let node = pending.pop();
@@ -2090,7 +2090,7 @@ final class CheckerContext {
   // --- Implicit drop (ownership.md §Implicit drop) ---
 
   enterOwnScope(): void {
-    this.#ownScopeStack.push(new Array<OwnDropCandidate>());
+    this.#ownScopeStack.push(new GrowableArray<OwnDropCandidate>());
   }
 
   /** A simple-`let` `Own<resource>` declaration in the current block. */
@@ -2141,7 +2141,7 @@ final class CheckerContext {
         for (let pm in this.#pendingEdgeMatches) {
           var movedCount = 0;
           var keptCount = 0;
-          let armMoved = new Array<boolean>();
+          let armMoved = new GrowableArray<boolean>();
           for (let end in pm.armEnds) {
             if (end is FlowUnreachable) {
               armMoved.push(true);
@@ -2191,7 +2191,7 @@ final class CheckerContext {
    */
   #addEdgeDrop(node: Node, symId: SymbolId, onTrue: boolean, armIndex: i32, resources: Array<ClassType>): void {
     let existing = this.model.edgeDropsOfDirect(node);
-    let kept = new Array<EdgeDrop>();
+    let kept = new GrowableArray<EdgeDrop>();
     if (existing != null) {
       for (let d in existing) {
         // A match needs one entry per keeping arm for the same
@@ -2225,7 +2225,7 @@ final class CheckerContext {
    */
   findLiveMove(id: SymbolId, from: FlowNode, stopAtId: i32): FlowMove | null {
     let visited = new HashSet<i32>();
-    let pending = new Array<FlowNode>();
+    let pending = new GrowableArray<FlowNode>();
     pending.push(from);
     while (pending.length > 0) {
       let node = pending.pop();
@@ -2320,16 +2320,16 @@ final class CheckerContext {
     start.sharesThis = sharesThis;
     this.#currentFlow = start;
     this.#currentFlowStart = start;
-    this.#flowLoopHeads = new Array<FlowJoin>();
-    this.#flowLoopExits = new Array<FlowJoin>();
-    this.#flowExceptionTargets = new Array<FlowJoin>();
-    this.#flowLoopMoves = new Array<Array<FlowMove>>();
-    this.#flowLoopDeclared = new Array<HashSet<i32>>();
-    this.#pendingEdgeIfs = new Array<PendingEdgeIf>();
+    this.#flowLoopHeads = new GrowableArray<FlowJoin>();
+    this.#flowLoopExits = new GrowableArray<FlowJoin>();
+    this.#flowExceptionTargets = new GrowableArray<FlowJoin>();
+    this.#flowLoopMoves = new GrowableArray<GrowableArray<FlowMove>>();
+    this.#flowLoopDeclared = new GrowableArray<HashSet<i32>>();
+    this.#pendingEdgeIfs = new GrowableArray<PendingEdgeIf>();
     saved.borrowUses = this.#bodyBorrowUses;
-    this.#bodyBorrowUses = new Array<BorrowUseRec>();
+    this.#bodyBorrowUses = new GrowableArray<BorrowUseRec>();
     saved.pendingEdgeMatches = this.#pendingEdgeMatches;
-    this.#pendingEdgeMatches = new Array<PendingEdgeMatch>();
+    this.#pendingEdgeMatches = new GrowableArray<PendingEdgeMatch>();
     return saved;
   }
 
@@ -2397,7 +2397,7 @@ final class CheckerContext {
     this.#walkCycleMin = 2147483647;
     this.#walkBudget = 100000;
     let r = this.#walkBindingType(
-      this.#currentFlow, si.id, pathKey, declared, new Array<i32>());
+      this.#currentFlow, si.id, pathKey, declared, new GrowableArray<i32>());
     if (r == null) { return declared; }
     // A narrowing can only narrow. A join can manufacture something
     // wider — a statically-false `x == null` arm narrows a
@@ -2435,9 +2435,9 @@ final class CheckerContext {
    * at stack depth d pops, buckets >= d are purged.
    */
   #taintedBindingMemo = new HashMap<i64, Type>();
-  #taintedBindingBuckets = new Array<Array<i64>>();
+  #taintedBindingBuckets = new GrowableArray<GrowableArray<i64>>();
   #taintedPathMemo = new HashMap<String, Type>();
-  #taintedPathBuckets = new Array<Array<String>>();
+  #taintedPathBuckets = new GrowableArray<GrowableArray<String>>();
 
   #purgeTaintedFrom(depth: i32): void {
     var b = depth;
@@ -2445,7 +2445,7 @@ final class CheckerContext {
       for (let bKey in this.#taintedBindingBuckets[b]) {
         this.#taintedBindingMemo.delete(bKey);
       }
-      this.#taintedBindingBuckets[b] = new Array<i64>();
+      this.#taintedBindingBuckets[b] = new GrowableArray<i64>();
       b += 1;
     }
     var pb = depth;
@@ -2453,21 +2453,21 @@ final class CheckerContext {
       for (let pKey in this.#taintedPathBuckets[pb]) {
         this.#taintedPathMemo.delete(pKey);
       }
-      this.#taintedPathBuckets[pb] = new Array<String>();
+      this.#taintedPathBuckets[pb] = new GrowableArray<String>();
       pb += 1;
     }
   }
 
   #taintedBucketAdd(depth: i32, bindingKey: i64): void {
     while (this.#taintedBindingBuckets.length <= depth) {
-      this.#taintedBindingBuckets.push(new Array<i64>());
+      this.#taintedBindingBuckets.push(new GrowableArray<i64>());
     }
     this.#taintedBindingBuckets[depth].push(bindingKey);
   }
 
   #taintedPathBucketAdd(depth: i32, pathKey: String): void {
     while (this.#taintedPathBuckets.length <= depth) {
-      this.#taintedPathBuckets.push(new Array<String>());
+      this.#taintedPathBuckets.push(new GrowableArray<String>());
     }
     this.#taintedPathBuckets[depth].push(pathKey);
   }
@@ -2487,7 +2487,7 @@ final class CheckerContext {
     symId: SymbolId,
     pathKey: String,
     declared: Type,
-    inProgress: Array<i32>
+    inProgress: GrowableArray<i32>
   ): Type | null {
     var n = from;
     while (true) {
@@ -2570,7 +2570,7 @@ final class CheckerContext {
           // from what the siblings already saw.
           let outerMin = this.#walkCycleMin;
           this.#walkCycleMin = 2147483647;
-          let results = new Array<Type>();
+          let results = new GrowableArray<Type>();
           var sawCycle = false;
           for (let a in join.antecedents) {
             let r = this.#walkBindingType(
@@ -2643,7 +2643,7 @@ final class CheckerContext {
    */
   #dropSubsumed(results: Array<Type>): Array<Type> {
     if (results.length < 2) { return results; }
-    let kept = new Array<Type>();
+    let kept = new GrowableArray<Type>();
     var i = 0;
     while (i < results.length) {
       var subsumed = false;
@@ -2667,7 +2667,7 @@ final class CheckerContext {
     this.#walkCycleMin = 2147483647;
     this.#walkBudget = 100000;
     let r = this.#walkPathType(
-      this.#currentFlow, path, pathRootSymbolId(path), new Array<i32>());
+      this.#currentFlow, path, pathRootSymbolId(path), new GrowableArray<i32>());
     if (r == null) { return null; }
     // Identity via uid: Type equality is structural, and any ErrorType
     // would otherwise look like the veto marker.
@@ -2679,7 +2679,7 @@ final class CheckerContext {
     from: FlowNode,
     path: String,
     rootId: SymbolId,
-    inProgress: Array<i32>
+    inProgress: GrowableArray<i32>
   ): Type | null {
     var n = from;
     while (true) {
@@ -2757,7 +2757,7 @@ final class CheckerContext {
           inProgress.push(join.id);
           let outerMin = this.#walkCycleMin;
           this.#walkCycleMin = 2147483647;
-          let results = new Array<Type>();
+          let results = new GrowableArray<Type>();
           var vetoed = false;
           for (let a in join.antecedents) {
             let r = this.#walkPathType(a, path, rootId, inProgress);
@@ -2872,26 +2872,26 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   ctx.registerPreludeType("ByteArray", byteArrayType);
 
   // __byte_array_new(size: i32): ByteArray
-  let baNewParams = new Array<Type>();
+  let baNewParams = new GrowableArray<Type>();
   baNewParams.push(new I32Type());
   let baNewType = new FunctionType(baNewParams, null, byteArrayType);
   ctx.registerPreludeValue("__byte_array_new", baNewType);
 
   // __byte_array_length(arr: ByteArray): i32
-  let baLenParams = new Array<Type>();
+  let baLenParams = new GrowableArray<Type>();
   baLenParams.push(byteArrayType);
   let baLenType = new FunctionType(baLenParams, null, new I32Type());
   ctx.registerPreludeValue("__byte_array_length", baLenType);
 
   // __byte_array_get(arr: ByteArray, index: i32): i32
-  let baGetParams = new Array<Type>();
+  let baGetParams = new GrowableArray<Type>();
   baGetParams.push(byteArrayType);
   baGetParams.push(new I32Type());
   let baGetType = new FunctionType(baGetParams, null, new I32Type());
   ctx.registerPreludeValue("__byte_array_get", baGetType);
 
   // __byte_array_set(arr: ByteArray, index: i32, value: i32): void
-  let baSetParams = new Array<Type>();
+  let baSetParams = new GrowableArray<Type>();
   baSetParams.push(byteArrayType);
   baSetParams.push(new I32Type());
   baSetParams.push(new I32Type());
@@ -2899,7 +2899,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   ctx.registerPreludeValue("__byte_array_set", baSetType);
 
   // __byte_array_copy(dest: ByteArray, destOffset: i32, src: ByteArray, srcOffset: i32, len: i32): void
-  let baCopyParams = new Array<Type>();
+  let baCopyParams = new GrowableArray<Type>();
   baCopyParams.push(byteArrayType);
   baCopyParams.push(new I32Type());
   baCopyParams.push(byteArrayType);
@@ -2910,20 +2910,20 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
 
   // Primitive array intrinsics
   let primArrayTParam = new TypeParameterType("T", null, null);
-  let primArrayTParams = new Array<TypeParameterType>();
+  let primArrayTParams = new GrowableArray<TypeParameterType>();
   primArrayTParams.push(primArrayTParam);
   let primArrayType = new ArrayType(primArrayTParam);
   ctx.registerPreludeType("array", primArrayType);
 
   // __array_len<T>(arr: array<T>): i32
-  let arrLenParams = new Array<Type>();
+  let arrLenParams = new GrowableArray<Type>();
   arrLenParams.push(primArrayType);
   let arrLenType = new FunctionType(arrLenParams, null, new I32Type());
   arrLenType.typeParameters = primArrayTParams;
   ctx.registerPreludeValue("__array_len", arrLenType);
 
   // __array_get<T>(arr: array<T>, index: i32): T
-  let arrGetParams = new Array<Type>();
+  let arrGetParams = new GrowableArray<Type>();
   arrGetParams.push(primArrayType);
   arrGetParams.push(new I32Type());
   let arrGetType = new FunctionType(arrGetParams, null, primArrayTParam);
@@ -2931,7 +2931,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   ctx.registerPreludeValue("__array_get", arrGetType);
 
   // __array_set<T>(arr: array<T>, index: i32, value: T): void
-  let arrSetParams = new Array<Type>();
+  let arrSetParams = new GrowableArray<Type>();
   arrSetParams.push(primArrayType);
   arrSetParams.push(new I32Type());
   arrSetParams.push(primArrayTParam);
@@ -2940,7 +2940,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   ctx.registerPreludeValue("__array_set", arrSetType);
 
   // __array_new<T>(size: i32, value: T): array<T>
-  let arrNewParams = new Array<Type>();
+  let arrNewParams = new GrowableArray<Type>();
   arrNewParams.push(new I32Type());
   arrNewParams.push(primArrayTParam);
   let arrNewType = new FunctionType(arrNewParams, null, primArrayType);
@@ -2948,7 +2948,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   ctx.registerPreludeValue("__array_new", arrNewType);
 
   // __array_new_empty<T>(size: i32): array<T>
-  let arrNewEmptyParams = new Array<Type>();
+  let arrNewEmptyParams = new GrowableArray<Type>();
   arrNewEmptyParams.push(new I32Type());
   let arrNewEmptyType = new FunctionType(arrNewEmptyParams, null, primArrayType);
   arrNewEmptyType.typeParameters = primArrayTParams;
@@ -2967,7 +2967,7 @@ export final class CheckResult(
   diagnostics: Array<Diagnostic>
 )
 
-let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: Array<Symbol>): void => {
+let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: GrowableArray<Symbol>): void => {
   match (pattern) {
     case IdentifierPattern as ip: {
       let sym = ctx.model.resolveDeclaration(ip);
@@ -3105,7 +3105,7 @@ let checkCyclicImportRules = (
  * closures, forward references between siblings) resolve through the
  * same pending-function machinery.
  */
-let prescanPendingFunctions = (ctx: CheckerContext, body: Array<Statement>): void => {
+let prescanPendingFunctions = (ctx: CheckerContext, body: GrowableArray<Statement>): void => {
   var fi = 0;
   while (fi < body.length) {
     match (body[fi]) {
@@ -3316,7 +3316,7 @@ export let checkModule = (
       }
       // Everything else: variable declarations, expression statements, etc.
       case VariableDeclaration as vd: {
-        let syms = new Array<Symbol>();
+        let syms = new GrowableArray<Symbol>();
         collectPatternSymbols(ctx, vd.pattern, syms);
         if (syms.length > 0) {
           for (let s in syms) {
@@ -3559,7 +3559,7 @@ let wrapResourceInOwn = (ctx: CheckerContext, t: Type, loc: SourceLocation | nul
     return t;
   }
   if (own.typeParameters == null) { return t; }
-  let args = new Array<Type>();
+  let args = new GrowableArray<Type>();
   args.push(t);
   return instantiateTypeAliasType(own, args);
 };
@@ -3581,7 +3581,7 @@ let wrapResourceInBorrow = (ctx: CheckerContext, ct: ClassType): Type => {
   let borrow = ctx.resolveTypeName("Borrow");
   if (borrow == null || !(borrow is TypeAliasType)) { return ct as Type; }
   if (borrow.typeParameters == null) { return ct as Type; }
-  let args = new Array<Type>();
+  let args = new GrowableArray<Type>();
   args.push(ct as Type);
   return instantiateTypeAliasType(borrow, args);
 };
@@ -3638,7 +3638,7 @@ let borrowInnerRestricts = (inner: Type): boolean => {
  */
 let rejectGeneratorBorrowParams = (
   ctx: CheckerContext,
-  params: Array<Parameter>,
+  params: GrowableArray<Parameter>,
   paramTypes: Array<Type>
 ): void => {
   var i = 0;
@@ -3692,7 +3692,7 @@ let rejectSecondClassStorage = (
  * Every type argument of a class is a storage position, because the class
  * is a heap object that outlives the scope constructing it. Applied where
  * a class is instantiated rather than only where one is spelled, so
- * `new Array<Borrow<File>>()` and a `T` inferred from a borrow argument
+ * `new GrowableArray<Borrow<File>>()` and a `T` inferred from a borrow argument
  * are caught alike.
  */
 let rejectSecondClassTypeArguments = (
@@ -3922,11 +3922,11 @@ final class OwnDropCandidate {
  * the binding is not an implicit-drop candidate).
  */
 let ownedResourceClasses = (inner: Type): Array<ClassType> | null => {
-  let result = new Array<ClassType>();
-  let members = match (inner) {
+  let result = new GrowableArray<ClassType>();
+  let members: Array<Type> = match (inner) {
     case UnionT {types}: types
     case _: {
-      let one = new Array<Type>();
+      let one = new GrowableArray<Type>();
       one.push(inner);
       one
     }
@@ -3951,7 +3951,7 @@ let ownedResourceClasses = (inner: Type): Array<ClassType> | null => {
  */
 let registerOwnParamCandidates = (
   ctx: CheckerContext,
-  params: Array<Parameter>,
+  params: GrowableArray<Parameter>,
   paramTypes: Array<Type>
 ): void => {
   if (ctx.yieldType != null || ctx.asyncValueType != null) { return; }
@@ -4092,7 +4092,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     }
 
     // Handle generic type arguments
-    let resolvedArgs = new Array<Type>();
+    let resolvedArgs = new GrowableArray<Type>();
     var hasTypeArgs = false;
     let argsMayBeResource = isOwnershipWrapper(resolved);
 
@@ -4193,7 +4193,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     // carries applies to each member, not only the first one resolved
     // (the NamedTypeAnnotation arm consumes the flag per name).
     let memberResourceOk = ctx.resourceMentionOk;
-    let resolved = new Array<Type>();
+    let resolved = new GrowableArray<Type>();
     var i = 0;
     while (i < types.length) {
       ctx.resourceMentionOk = memberResourceOk;
@@ -4262,14 +4262,14 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
       );
       new ErrorType() as Type
     } else {
-      let arms = new Array<Type>(2);
+      let arms = new GrowableArray<Type>(2);
       arms.push(inner);
       arms.push(new NullType());
       createUnionType(arms, ctx, ann.loc)
     }
   }
   case FunctionTypeAnnotation {params, returnType}: {
-    let paramTypes = new Array<Type>();
+    let paramTypes = new GrowableArray<Type>();
     var i = 0;
     while (i < params.length) {
       let paramType = resolveTypeAnnotation(ctx, params[i], allowInlineTuple);
@@ -4307,7 +4307,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     new RecordT(props, optionals)
   }
   case TupleTypeAnnotation {elementTypes}: {
-    let elTypes = new Array<Type>();
+    let elTypes = new GrowableArray<Type>();
     var i = 0;
     while (i < elementTypes.length) {
       let resolved = resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple);
@@ -4318,7 +4318,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     new TupleT(elTypes)
   }
   case InlineTupleTypeAnnotation {elementTypes}: {
-    let elTypes = new Array<Type>();
+    let elTypes = new GrowableArray<Type>();
     var i = 0;
     while (i < elementTypes.length) {
       elTypes.push(resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple));
@@ -4392,18 +4392,24 @@ let mergeHandleMembers = (
   members: Array<Type>,
   ctx: CheckerContext | null,
   loc: SourceLocation | null
-): Array<Type> => {
+): GrowableArray<Type> => {
   var mergeable = 0;
   for (let m in members) {
     if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
       mergeable += 1;
     }
   }
-  if (mergeable < 2) { return members; }
+  if (mergeable < 2) {
+    let out = new GrowableArray<Type>();
+    for (let m in members) {
+      out.push(m);
+    }
+    return out;
+  }
 
   // Group the handle members' inner types by handle name.
-  let names = new Array<String>();
-  let inners = new Array<Array<Type>>();
+  let names = new GrowableArray<String>();
+  let inners = new GrowableArray<GrowableArray<Type>>();
   for (let m in members) {
     if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
       let alias = m as TypeAliasType;
@@ -4413,7 +4419,7 @@ let mergeHandleMembers = (
       }
       if (idx == -1) {
         names.push(alias.name);
-        inners.push(new Array<Type>());
+        inners.push(new GrowableArray<Type>());
         idx = names.length - 1;
       }
       inners[idx].push(ownershipHandleInner(m) as Type);
@@ -4423,7 +4429,7 @@ let mergeHandleMembers = (
   // Rebuild in member order: each handle name appears once, at its
   // first position, wrapping the union of its inners.
   let emitted = new HashSet<String>();
-  let result = new Array<Type>();
+  let result = new GrowableArray<Type>();
   for (let m in members) {
     if (isOwnershipWrapper(m) && ownershipHandleInner(m) != null) {
       let alias = m as TypeAliasType;
@@ -4437,7 +4443,7 @@ let mergeHandleMembers = (
         result.push(m);
       } else {
         let mergedInner = createUnionType(inners[idx], ctx, loc);
-        let mergedArgs = new Array<Type>();
+        let mergedArgs = new GrowableArray<Type>();
         mergedArgs.push(mergedInner);
         result.push(new TypeAliasType(
           alias.name, alias.typeParameters, mergedInner, true, mergedArgs,
@@ -4451,7 +4457,7 @@ let mergeHandleMembers = (
 };
 
 let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, loc: SourceLocation | null = null): Type => {
-  var deduped = new Array<Type>();
+  var deduped = new GrowableArray<Type>();
   var hasBoolean = false;
 
   // Flatten nested unions and collect types
@@ -4476,7 +4482,7 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
 
   // If the union contains boolean, remove BoolLiteralTypes.
   if (hasBoolean) {
-    let withoutLits = new Array<Type>();
+    let withoutLits = new GrowableArray<Type>();
     for (let t in deduped) {
       if (!(t is BoolLiteralType)) {
         withoutLits.push(t);
@@ -4503,7 +4509,7 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
     var hasPrimitive = false;
     var hasReference = false;
     var hasInlineTuple = false;
-    let primitiveBases = new Array<String>();
+    let primitiveBases = new GrowableArray<String>();
 
     for (let t in deduped) {
       if (t is InlineTupleT) {
@@ -4569,11 +4575,11 @@ let forInLowersToIndexLoop = (ct: ClassType): boolean => {
     canonical = canonical.genericSource as ClassType;
   }
   if (canonical.name != "FixedArray" && canonical.name != "ImmutableArray" &&
-      canonical.name != "Array") {
+      canonical.name != "Array" && canonical.name != "GrowableArray") {
     return false;
   }
-  return ct.typeArguments != null &&
-      (ct.typeArguments as Array<Type>).length > 0;
+  let targs = ct.typeArguments;
+  return targs != null && targs.length > 0;
 };
 
 let getElementType = (
@@ -4739,7 +4745,7 @@ let substituteTypeParams = (
       return t;
     }
     case UnionT {types}: {
-      let substituted = new Array<Type>();
+      let substituted = new GrowableArray<Type>();
       for (let t in types) {
         substituted.push(substituteTypeParams(typeParams, typeArgs, t));
       }
@@ -4750,14 +4756,14 @@ let substituteTypeParams = (
       return new ArrayType(subElem);
     }
     case TupleT {elementTypes}: {
-      let subElems = new Array<Type>();
+      let subElems = new GrowableArray<Type>();
       for (let elem in elementTypes) {
         subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
       return new TupleT(subElems);
     }
     case InlineTupleT {elementTypes}: {
-      let subElems = new Array<Type>();
+      let subElems = new GrowableArray<Type>();
       for (let elem in elementTypes) {
         subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
@@ -4771,7 +4777,7 @@ let substituteTypeParams = (
       return new RecordT(subProps, optionalProperties);
     }
     case FunctionType as ft: {
-      let subParams = new Array<Type>();
+      let subParams = new GrowableArray<Type>();
       for (let param in ft.parameters) {
         subParams.push(substituteTypeParams(typeParams, typeArgs, param));
       }
@@ -4783,7 +4789,7 @@ let substituteTypeParams = (
       res.parameterSymbols = ft.parameterSymbols;
       let {overloads} = ft;
       if (overloads != null) {
-        let subOvs = new Array<FunctionType>();
+        let subOvs = new GrowableArray<FunctionType>();
         let ovs = overloads;
         for (let ov in ovs) {
           if (ov == ft) {
@@ -4806,7 +4812,7 @@ let substituteTypeParams = (
       let {typeArguments} = ct;
       if (typeArguments != null) {
         let srcArgs = typeArguments;
-        let subArgs = new Array<Type>();
+        let subArgs = new GrowableArray<Type>();
         var changed = false;
         for (let arg in srcArgs) {
           let sub = substituteTypeParams(typeParams, typeArgs, arg);
@@ -4825,7 +4831,7 @@ let substituteTypeParams = (
       let {typeArguments} = it;
       if (typeArguments != null) {
         let srcArgs = typeArguments;
-        let subArgs = new Array<Type>();
+        let subArgs = new GrowableArray<Type>();
         var changed = false;
         for (let arg in srcArgs) {
           let sub = substituteTypeParams(typeParams, typeArgs, arg);
@@ -4844,7 +4850,7 @@ let substituteTypeParams = (
       let {typeArguments} = mt;
       if (typeArguments != null) {
         let srcArgs = typeArguments;
-        let subArgs = new Array<Type>();
+        let subArgs = new GrowableArray<Type>();
         var changed = false;
         for (let arg in srcArgs) {
           let sub = substituteTypeParams(typeParams, typeArgs, arg);
@@ -4878,7 +4884,7 @@ let substituteTypeParams = (
       let {typeArguments} = ta;
       if (typeArguments != null) {
         let srcArgs = typeArguments;
-        let subArgs = new Array<Type>();
+        let subArgs = new GrowableArray<Type>();
         var changed = false;
         for (let arg in srcArgs) {
           let sub = substituteTypeParams(typeParams, typeArgs, arg);
@@ -4915,7 +4921,7 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
   match (t) {
     case ThisType: { return receiverType; }
     case FunctionType as ft: {
-      let subParams = new Array<Type>();
+      let subParams = new GrowableArray<Type>();
       var changed = false;
       for (let param in ft.parameters) {
         let sub = substituteThisType(receiverType, param);
@@ -4931,7 +4937,7 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       newFt.parameterSymbols = ft.parameterSymbols;
       let {overloads} = ft;
       if (overloads != null) {
-        let subOvs = new Array<FunctionType>();
+        let subOvs = new GrowableArray<FunctionType>();
         let ovs = overloads;
         for (let ov in ovs) {
           if (ov == ft) {
@@ -4949,7 +4955,7 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       return newFt;
     }
     case UnionT {types}: {
-      let substituted = new Array<Type>();
+      let substituted = new GrowableArray<Type>();
       for (let type in types) {
         substituted.push(substituteThisType(receiverType, type));
       }
@@ -4986,7 +4992,7 @@ let anyTypeParamConstrained = (typeParams: Array<TypeParameterType>): boolean =>
 let applyAndCheckTypeArguments = (
   ctx: CheckerContext,
   typeParams: Array<TypeParameterType>,
-  typeArgs: Array<Type>,
+  typeArgs: GrowableArray<Type>,
   loc: SourceLocation | null
 ): void => {
   // Apply defaults if type arguments are missing
@@ -5244,8 +5250,8 @@ let rejectClassTypeParamsInStatic = (
   loc: SourceLocation | null
 ): void => {
   if (classType.typeParameters == null) { return; }
-  for (let tp in classType.typeParameters as Array<TypeParameterType>) {
-    let one = new Array<TypeParameterType>();
+  for (let tp in classType.typeParameters as GrowableArray<TypeParameterType>) {
+    let one = new GrowableArray<TypeParameterType>();
     one.push(tp);
     if (!mentionsTypeParams(t, one)) { continue; }
     let advice = if (kind == "field") {
@@ -5277,8 +5283,8 @@ let rejectClassTypeParamsInStatic = (
 let instantiateGenericClass = (
   ctx: CheckerContext,
   ct: ClassType,
-  explicitTypeArgs: Array<TypeAnnotation> | null,
-  args: Array<Expression>,
+  explicitTypeArgs: GrowableArray<TypeAnnotation> | null,
+  args: GrowableArray<Expression>,
   loc: SourceLocation | null
 ): ClassType => {
   let typeParams = ct.typeParameters;
@@ -5287,7 +5293,7 @@ let instantiateGenericClass = (
 
   // If explicit type arguments provided, use those.
   if (explicitTypeArgs != null) {
-    let typeArgs = new Array<Type>();
+    let typeArgs = new GrowableArray<Type>();
     var i = 0;
     while (i < explicitTypeArgs.length) {
       typeArgs.push(resolveExplicitTypeArgument(ctx, explicitTypeArgs[i]));
@@ -5318,7 +5324,7 @@ let instantiateGenericClass = (
   ctx.setFlow(preInferFlow);
 
   // Build typeArguments array from inferred map.
-  let typeArgs = new Array<Type>();
+  let typeArgs = new GrowableArray<Type>();
   for (let param in typeParams) {
     let paramName = param.name;
     if (let (true, t) = inferred.get(paramName)) {
@@ -5361,10 +5367,10 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
       }
     }
     case InterfaceType as pt: {
-      // Sequence<T> against FixedArray<i32> → infer T = i32, through the
+      // Array<T> against FixedArray<i32> → infer T = i32, through the
       // interface the argument implements. Without this, a signature
       // that takes an interface OF its own type parameter — which is
-      // what `Array.from(seq: Sequence<T>)` is — inferred nothing, and
+      // what `Array.from(seq: Array<T>)` is — inferred nothing, and
       // the call was then rejected against its own parameter.
       let ptName = if (pt.genericSource != null) {
         (pt.genericSource as InterfaceType).name
@@ -5476,6 +5482,15 @@ let isPreludeClassType = (ctx: CheckerContext, ct: ClassType, preludeName: Strin
   if (prelude == null) { return false; }
   match (prelude) {
     case ClassType as pt: { return ct.id == pt.id; }
+    case _: { return false; }
+  }
+};
+
+let isPreludeInterfaceType = (ctx: CheckerContext, it: InterfaceType, preludeName: String): boolean => {
+  let prelude = ctx.resolvePreludeType(preludeName);
+  if (prelude == null) { return false; }
+  match (prelude) {
+    case InterfaceType as pt: { return it.id == pt.id; }
     case _: { return false; }
   }
 };
@@ -5851,33 +5866,31 @@ let typesOverlap = (ctx: CheckerContext, a: Type, b: Type): boolean => {
  * them constantly.
  */
 let castTypeArguments = (t: Type): Array<Type> | null => {
-  return match (t) {
-    case ClassType as ct: ct.typeArguments
-    case InterfaceType as it: it.typeArguments
-    case MixinType as mt: mt.typeArguments
-    case TypeAliasType as ta: ta.typeArguments
-    case ArrayType {elementType}: {
-      let one = new Array<Type>();
-      one.push(elementType);
-      one
-    }
-    case _: null
-  };
+  if (t is ClassType) { return (t as ClassType).typeArguments; }
+  if (t is InterfaceType) { return (t as InterfaceType).typeArguments; }
+  if (t is MixinType) { return (t as MixinType).typeArguments; }
+  if (t is TypeAliasType) { return (t as TypeAliasType).typeArguments; }
+  if (t is ArrayType) {
+    let one = new GrowableArray<Type>();
+    one.push((t as ArrayType).elementType);
+    return one;
+  }
+  return null;
 };
 
 /** Same nominal head, ignoring type arguments? */
 let sameGenericHead = (a: Type, b: Type): boolean => {
-  return match (a) {
-    case ClassType as ca: match (b) {
-      case ClassType as cb: (ca.genericSource ?? ca).symbolId == (cb.genericSource ?? cb).symbolId
-      case _: false
-    }
-    case InterfaceType as ia: match (b) {
-      case InterfaceType as ib: (ia.genericSource ?? ia).symbolId == (ib.genericSource ?? ib).symbolId
-      case _: false
-    }
-    case _: false
-  };
+  if (a is ClassType && b is ClassType) {
+    let ca = a as ClassType;
+    let cb = b as ClassType;
+    return (ca.genericSource ?? ca).symbolId == (cb.genericSource ?? cb).symbolId;
+  }
+  if (a is InterfaceType && b is InterfaceType) {
+    let ia = a as InterfaceType;
+    let ib = b as InterfaceType;
+    return (ia.genericSource ?? ia).symbolId == (ib.genericSource ?? ib).symbolId;
+  }
+  return false;
 };
 
 /**
@@ -6107,7 +6120,7 @@ let tryInstantiateGenericFunction = (
         }
       }
       if (inferred.size == tps.length) {
-        let typeArgs = new Array<Type>();
+        let typeArgs = new GrowableArray<Type>();
         for (let tp in tps) {
           typeArgs.push(inferred[tp.name]);
         }
@@ -6437,7 +6450,7 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case ArrayType {elementType}: {
       match (target) {
         case ClassType as tgtClass: {
-          let isArrayLike = isPreludeClassType(ctx, tgtClass, "Array") || isPreludeClassType(ctx, tgtClass, "FixedArray");
+          let isArrayLike = isPreludeClassType(ctx, tgtClass, "GrowableArray") || isPreludeClassType(ctx, tgtClass, "Array") || isPreludeClassType(ctx, tgtClass, "FixedArray") || isPreludeClassType(ctx, tgtClass, "ImmutableArray");
           if (isArrayLike && tgtClass.typeArguments != null) {
             let tgtArgs = tgtClass.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {
@@ -6446,6 +6459,18 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
           }
           // Also match uninstantiated Array/FixedArray (bare type)
           if (isArrayLike) {
+            return true;
+          }
+        }
+        case InterfaceType as tgtIface: {
+          let isIfaceLike = isPreludeInterfaceType(ctx, tgtIface, "Array") || isPreludeInterfaceType(ctx, tgtIface, "MutableArray") || isPreludeInterfaceType(ctx, tgtIface, "Iterable");
+          if (isIfaceLike && tgtIface.typeArguments != null) {
+            let tgtArgs = tgtIface.typeArguments as Array<Type>;
+            if (tgtArgs.length > 0) {
+              return isAssignableTo(ctx, elementType, tgtArgs[0]);
+            }
+          }
+          if (isIfaceLike) {
             return true;
           }
         }
@@ -6779,7 +6804,7 @@ let branchDefinitelyExits = (stmt: Statement, model: SemanticModel | null = null
 let subtractNullFromType = (t: Type): Type => {
   match (t) {
     case UnionT as u: {
-      let remaining = new Array<Type>();
+      let remaining = new GrowableArray<Type>();
       let {types} = u;
       var i = 0;
       while (i < types.length) {
@@ -6806,7 +6831,7 @@ let subtractNullFromType = (t: Type): Type => {
 let subtractTypeFromUnion = (original: Type, toRemove: Type): Type => {
   match (original) {
     case UnionT as u: {
-      let remaining = new Array<Type>();
+      let remaining = new GrowableArray<Type>();
       let {types} = u;
       var i = 0;
       while (i < types.length) {
@@ -6832,7 +6857,7 @@ let unwrapNullableForMemberLookup = (t: Type): Type | null => {
       return null;
     }
     case UnionT as u: {
-      let remaining = new Array<Type>();
+      let remaining = new GrowableArray<Type>();
       let members = u.types;
       for (let member in members) {
         if (!(member is NullType)) {
@@ -7145,7 +7170,7 @@ let intersectNarrowings = (
   for (let id in left.bindings.keys()) {
     if (let (true, leftType) = left.bindings.get(id)) {
       if (let (true, rightType) = right.bindings.get(id)) {
-        let types = new Array<Type>();
+        let types = new GrowableArray<Type>();
         types.push(leftType);
         types.push(rightType);
         dest.bindings[id] = createUnionType(types, ctx, null);
@@ -7155,7 +7180,7 @@ let intersectNarrowings = (
   for (let path in left.paths.keys()) {
     if (let (true, leftType) = left.paths.get(path)) {
       if (let (true, rightType) = right.paths.get(path)) {
-        let types = new Array<Type>();
+        let types = new GrowableArray<Type>();
         types.push(leftType);
         types.push(rightType);
         dest.paths[path] = createUnionType(types, ctx, null);
@@ -7338,7 +7363,7 @@ let extractIsPathNarrowing = (
  * body can run on any iteration.
  */
 let collectAssignedSymbolIds = (ctx: CheckerContext, node: Node): Array<SymbolId> => {
-  let ids = new Array<SymbolId>();
+  let ids = new GrowableArray<SymbolId>();
   let seen = new HashSet<i32>();
   walkEnter(node, (n: Node): void => {
     if (n is AssignmentExpression) {
@@ -7379,7 +7404,7 @@ let unwrapAliases = (t: Type): Type => {
 
 let findImplementedInterfaceTransitiveInChecker = (ct: ClassType, name: String): InterfaceType | null => {
   let seen = new HashMap<String, boolean>();
-  let queue = new Array<InterfaceType>();
+  let queue = new GrowableArray<InterfaceType>();
   
   for (let impl in ct.implementsList) {
     let resolved = substituteTypeParams(ct.typeParameters, ct.typeArguments, impl) as InterfaceType;
@@ -8294,7 +8319,7 @@ let requireDisposable = (ctx: CheckerContext, t: Type, loc: SourceLocation | nul
     if (inner == null) { break; }
     target = unwrapAliases(inner);
   }
-  let targets = new Array<Type>();
+  let targets = new GrowableArray<Type>();
   match (target) {
     case UnionT {types}: {
       for (let m in types) { targets.push(unwrapAliases(m)); }
@@ -8391,7 +8416,7 @@ let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {
  * Extract element types for tuple-pattern binding/checking.
  * Supports TupleType, InlineTupleType, and unions of tuple-like members.
  */
-let getTuplePatternElementTypes = (t: Type): Array<Type> | null => {
+let getTuplePatternElementTypes = (t: Type): GrowableArray<Type> | null => {
   match (t) {
     case TupleT {elementTypes}: {
       return elementTypes;
@@ -8404,7 +8429,7 @@ let getTuplePatternElementTypes = (t: Type): Array<Type> | null => {
         return null;
       }
 
-      let tupleMembers = new Array<Array<Type>>();
+      let tupleMembers = new GrowableArray<GrowableArray<Type>>();
       for (let member in types) {
         match (member) {
           case TupleT {elementTypes}: {
@@ -8430,10 +8455,10 @@ let getTuplePatternElementTypes = (t: Type): Array<Type> | null => {
         }
       }
 
-      let merged = new Array<Type>();
+      let merged = new GrowableArray<Type>();
       
       for (var i = 0; i < arity; i += 1) {
-        let atIndex = new Array<Type>();
+        let atIndex = new GrowableArray<Type>();
         for (let member in tupleMembers) {
           let slotType = member[i];
           if (slotType is NeverType) {
@@ -8562,7 +8587,7 @@ let patternCanMatchType = (ctx: CheckerContext, pattern: Node, t: Type): boolean
 let narrowTypeByPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): Type => {
   match (t) {
     case UnionT {types}: {
-      let matched = new Array<Type>();
+      let matched = new GrowableArray<Type>();
       for (let member in types) {
         if (patternCanMatchType(ctx, pattern, member)) {
           matched.push(member);
@@ -8966,11 +8991,11 @@ let collectApplicableOperatorOverloads = (
   candidates: Array<FunctionType>,
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
-  operandTypes: Array<Type>,
-  operands: Array<Expression>,
+  operandTypes: GrowableArray<Type>,
+  operands: GrowableArray<Expression>,
   adaptableCount: i32,
-  applicableRaw: Array<FunctionType>,
-  applicableRes: Array<FunctionType>
+  applicableRaw: GrowableArray<FunctionType>,
+  applicableRes: GrowableArray<FunctionType>
 ): void => {
   for (var tier = 0; tier < 2; tier += 1) {
     let adaptLiterals = tier == 1;
@@ -9068,7 +9093,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (name == "__LOCATION__") {
       let stringType = ctx.resolveTypeName("String");
       if (stringType != null) {
-        let uTypes = new Array<Type>();
+        let uTypes = new GrowableArray<Type>();
         uTypes.push(stringType);
         uTypes.push(new NullType());
         return createUnionType(uTypes);
@@ -9452,17 +9477,17 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             case _: {}
           }
           if (setterFt != null && setterFt.overloads != null) {
-            let candidates = new Array<FunctionType>();
+            let candidates = new GrowableArray<FunctionType>();
             candidates.push(setterFt);
-            for (let ov in setterFt.overloads as Array<FunctionType>) {
+            for (let ov in setterFt.overloads as GrowableArray<FunctionType>) {
               candidates.push(ov);
             }
-            let applicableRaw = new Array<FunctionType>();
-            let applicableRes = new Array<FunctionType>();
-            let operandTypes = new Array<Type>();
+            let applicableRaw = new GrowableArray<FunctionType>();
+            let applicableRes = new GrowableArray<FunctionType>();
+            let operandTypes = new GrowableArray<Type>();
             operandTypes.push(idxNodeType);
             operandTypes.push(effectiveType);
-            let operands = new Array<Expression>();
+            let operands = new GrowableArray<Expression>();
             operands.push(left.index);
             operands.push(value);
             collectApplicableOperatorOverloads(
@@ -9531,7 +9556,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         if (expectedType is VoidType) {
           return new VoidType();
         }
-        let branches = new Array<Type>();
+        let branches = new GrowableArray<Type>();
         branches.push(consType);
         branches.push(altType);
         createUnionType(branches, ctx, loc)
@@ -9561,7 +9586,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         if (expectedType is VoidType) {
           return new VoidType();
         }
-        let branches = new Array<Type>();
+        let branches = new GrowableArray<Type>();
         branches.push(consType);
         branches.push(altType);
         createUnionType(branches, ctx, loc)
@@ -9678,8 +9703,19 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       if (expectedType != null) {
         match (expectedType) {
           case ClassType as ct: {
-            if ((isPreludeClassType(ctx, ct, "Array") || isPreludeClassType(ctx, ct, "FixedArray")) && ct.typeArguments != null) {
+            if ((isPreludeClassType(ctx, ct, "GrowableArray") || isPreludeClassType(ctx, ct, "Array") || isPreludeClassType(ctx, ct, "FixedArray") || isPreludeClassType(ctx, ct, "ImmutableArray")) && ct.typeArguments != null) {
               let typeArgs = ct.typeArguments as Array<Type>;
+              if (typeArgs.length > 0) {
+                inferredElementType = typeArgs[0];
+              }
+            }
+          }
+          case InterfaceType as it: {
+            if ((isPreludeInterfaceType(ctx, it, "Array") ||
+                 isPreludeInterfaceType(ctx, it, "MutableArray") ||
+                 isPreludeInterfaceType(ctx, it, "Iterable")) &&
+                it.typeArguments != null) {
+              let typeArgs = it.typeArguments as Array<Type>;
               if (typeArgs.length > 0) {
                 inferredElementType = typeArgs[0];
               }
@@ -9723,7 +9759,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     }
     match (faType) {
       case ClassType as faCt: {
-        let typeArgs = new Array<Type>();
+        let typeArgs = new GrowableArray<Type>();
         typeArgs.push(inferredElementType);
         instantiateClassType(faCt, typeArgs) as Type
       }
@@ -9815,7 +9851,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // Inline tuple literals are parsed as TupleLiteral nodes.
     // If the expected type is an inline tuple (or union of inline tuples),
     // check against those element expectations and produce an InlineTupleType.
-    var expectedElementTypes: Array<Type> | null = null;
+    var expectedElementTypes: GrowableArray<Type> | null = null;
     var useInlineTuple = false;
     if (expectedType != null) {
       let maybeElems = getTuplePatternElementTypes(expectedType);
@@ -9839,7 +9875,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     }
 
     // Check each element and collect their types.
-    let elementTypes = new Array<Type>();
+    let elementTypes = new GrowableArray<Type>();
     var i = 0;
     while (i < elements.length) {
       var elemExpected: Type | null = null;
@@ -9900,7 +9936,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       if (hashMapType != null) {
         match (hashMapType) {
           case ClassType as hm: {
-            let typeArgs = new Array<Type>();
+            let typeArgs = new GrowableArray<Type>();
             typeArgs.push(firstKeyType);
             typeArgs.push(firstValType);
             instantiateClassType(hm, typeArgs) as Type
@@ -10077,7 +10113,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
     }
     if (catchType != null) {
-      let types = new Array<Type>();
+      let types = new GrowableArray<Type>();
       types.push(tryType);
       types.push(catchType);
       combineArmTypes(types)
@@ -10157,7 +10193,7 @@ let findMatchingOverload = (
     return method;
   }
   if (method.overloads != null) {
-    let overloads = method.overloads as Array<FunctionType>;
+    let overloads = method.overloads as GrowableArray<FunctionType>;
     for (let overload in overloads) {
       if (hasSameSignature(overload, signature)) {
         return overload;
@@ -10280,12 +10316,12 @@ let selectMostSpecificIndex = (
 let collectApplicableOverloads = (
   ctx: CheckerContext,
   candidates: Array<FunctionType>,
-  args: Array<Expression>,
-  argTypes: Array<Type>,
+  args: GrowableArray<Expression>,
+  argTypes: GrowableArray<Type>,
   callerArgCount: i32,
   adaptLiterals: boolean
 ): Array<FunctionType> => {
-  let applicable = new Array<FunctionType>();
+  let applicable = new GrowableArray<FunctionType>();
   for (let candidate in candidates) {
     let expectedCount = candidate.parameters.length;
     var requiredCount = expectedCount;
@@ -10412,10 +10448,10 @@ let signaturesMayOverlap = (
  * initializers, or accessor bodies — that happens in checkClassBodies.
  */
 let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
-  let hashType = new FunctionType(new Array<Type>(), null, new I32Type());
+  let hashType = new FunctionType(new GrowableArray<Type>(), null, new I32Type());
   ct.members["hashCode"] = new MethodInfo(hashType, false, false, false, false);
 
-  let eqParams = new Array<Type>();
+  let eqParams = new GrowableArray<Type>();
   eqParams.push(ct);
   let eqType = new FunctionType(eqParams, null, new BooleanType());
   ct.members["=="] = new MethodInfo(eqType, false, false, false, false);
@@ -10470,8 +10506,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   // in particular a stale own-field entry in `members` would be
   // mistaken for an inherited field.
   classType.members.clear();
-  classType.implementsList = new Array<InterfaceType>();
-  classType.mixins = new Array<MixinType>();
+  classType.implementsList = new GrowableArray<InterfaceType>();
+  classType.mixins = new GrowableArray<MixinType>();
   classType.constructorType = null;
   classType.fieldSetterNames = null;
   classType.declaredFields = null;
@@ -10481,7 +10517,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   let {typeParameters} = cd;
   if (typeParameters != null) {
     let tps = typeParameters;
-    let freshParams = new Array<TypeParameterType>();
+    let freshParams = new GrowableArray<TypeParameterType>();
     var tpi = 0;
     while (tpi < tps.length) {
       let tp = tps[tpi];
@@ -10525,7 +10561,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
   // Sealed classes: register forward variant names.
   if (cd.isSealed && cd.sealedVariants != null) {
-    let variants = cd.sealedVariants as Array<SealedVariant>;
+    let variants = cd.sealedVariants as GrowableArray<SealedVariant>;
     var fvi = 0;
     while (fvi < variants.length) {
       let variant = variants[fvi];
@@ -10622,9 +10658,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             // Dedup by name: re-check passes revisit this declaration
             // against the same shared ClassType.
             if (st.sealedVariants == null) {
-              st.sealedVariants = new Array<ClassType>();
+              st.sealedVariants = new GrowableArray<ClassType>();
             }
-            let variantList = st.sealedVariants as Array<ClassType>;
+            let variantList = st.sealedVariants as GrowableArray<ClassType>;
             var alreadyLinked = false;
             for (let v in variantList) {
               if (v.name == className) {
@@ -10839,10 +10875,10 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
   // Process case class parameters → generate fields and constructor.
   if (cd.caseParams != null) {
-    let caseParams = cd.caseParams as Array<CaseClassParam>;
-    let ctorParamTypes = new Array<Type>();
-    let ctorParamNames = new Array<String>();
-    let ctorOptionalParams = new Array<boolean>();
+    let caseParams = cd.caseParams as GrowableArray<CaseClassParam>;
+    let ctorParamTypes = new GrowableArray<Type>();
+    let ctorParamNames = new GrowableArray<String>();
+    let ctorOptionalParams = new GrowableArray<boolean>();
 
     var cpi = 0;
     while (cpi < caseParams.length) {
@@ -10853,7 +10889,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
       // Optional case params get nullable field type
       if (cp.optional) {
-        let unionTypes = new Array<Type>();
+        let unionTypes = new GrowableArray<Type>();
         unionTypes.push(fieldType);
         unionTypes.push(new NullType());
         fieldType = createUnionType(unionTypes);
@@ -10976,7 +11012,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           if (!classType.members.has(getterName)) {
             let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
             classType.members[getterName] = new MethodInfo(
-              new FunctionType(new Array<Type>(), null, fieldType),
+              new FunctionType(new GrowableArray<Type>(), null, fieldType),
               true, // isAbstract
               fd.isStatic,
               isPrivate,
@@ -10988,7 +11024,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           if (fd.mutability != null && fd.mutability == "var") {
             let setterName = "set#" + fieldName;
             if (!classType.members.has(setterName)) {
-              let setterParams = new Array<Type>();
+              let setterParams = new GrowableArray<Type>();
               setterParams.push(fieldType);
               let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
               classType.members[setterName] = new MethodInfo(
@@ -11073,7 +11109,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             if (!classType.members.has(getterName)) {
               let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
               classType.members[getterName] = new MethodInfo(
-                new FunctionType(new Array<Type>(), null, fieldType),
+                new FunctionType(new GrowableArray<Type>(), null, fieldType),
                 false, // isAbstract
                 fd.isStatic,
                 isPrivate,
@@ -11199,11 +11235,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             let existingInfo = classType.members[methodName];
             let existing = existingInfo.type as FunctionType;
             if (existing.overloads == null) {
-              let ovArray = new Array<FunctionType>();
+              let ovArray = new GrowableArray<FunctionType>();
               ovArray.push(existing);
               existing.overloads = ovArray;
             }
-            let ovs = existing.overloads as Array<FunctionType>;
+            let ovs = existing.overloads as GrowableArray<FunctionType>;
             ovs.push(methodType);
           } else {
             let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
@@ -11220,7 +11256,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                   );
                 }
 
-                let newOverloads = new Array<FunctionType>();
+                let newOverloads = new GrowableArray<FunctionType>();
                 if (!hasSameSignature(superMethod, methodType)) {
                   newOverloads.push(superMethod);
                 }
@@ -11258,7 +11294,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 let inheritedMethod = inheritedMethodInfo.type as FunctionType;
                 var overlapsInherited = signaturesMayOverlap(ctx, methodType, inheritedMethod);
                 if (!overlapsInherited && inheritedMethod.overloads != null) {
-                  let inhOvs = inheritedMethod.overloads as Array<FunctionType>;
+                  let inhOvs = inheritedMethod.overloads as GrowableArray<FunctionType>;
                   for (let inh in inhOvs) {
                     if (signaturesMayOverlap(ctx, methodType, inh)) {
                       overlapsInherited = true;
@@ -11273,11 +11309,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                   );
                 }
                 if (inheritedMethod.overloads == null) {
-                  let ovArray = new Array<FunctionType>();
+                  let ovArray = new GrowableArray<FunctionType>();
                   ovArray.push(inheritedMethod);
                   inheritedMethod.overloads = ovArray;
                 }
-                let ovs = inheritedMethod.overloads as Array<FunctionType>;
+                let ovs = inheritedMethod.overloads as GrowableArray<FunctionType>;
                 ovs.push(methodType);
 
                 ownMethodNames.add(methodName);
@@ -11337,7 +11373,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               }
             }
           }
-          let getterType = new FunctionType(new Array<Type>(), null, accType);
+          let getterType = new FunctionType(new GrowableArray<Type>(), null, accType);
           getterType.isFinal = acc.isFinal;
           let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
           classType.members[getterName] = new MethodInfo(
@@ -11372,7 +11408,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               }
             }
           }
-          let setterParams = new Array<Type>();
+          let setterParams = new GrowableArray<Type>();
           setterParams.push(accType);
           let setterType = new FunctionType(setterParams, null, new VoidType());
           setterType.isFinal = acc.isFinal;
@@ -11398,8 +11434,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               ms.loc
             );
           } else {
-            let paramTypes = new Array<Type>();
-            let paramNames = new Array<String>();
+            let paramTypes = new GrowableArray<Type>();
+            let paramNames = new GrowableArray<String>();
             var pi = 0;
             while (pi < ms.params.length) {
               let param = ms.params[pi];
@@ -11426,7 +11462,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             classType.constructorType = ctorType;
           }
         } else {
-          let paramTypes = new Array<Type>();
+          let paramTypes = new GrowableArray<Type>();
           var pi = 0;
           while (pi < ms.params.length) {
             let param = ms.params[pi];
@@ -11459,8 +11495,8 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
   // Handle sealed class variants.
   if (cd.isSealed && cd.sealedVariants != null) {
-    let variants = cd.sealedVariants as Array<SealedVariant>;
-    classType.sealedVariants = new Array<ClassType>();
+    let variants = cd.sealedVariants as GrowableArray<SealedVariant>;
+    classType.sealedVariants = new GrowableArray<ClassType>();
     for (let variant in variants) {
       let variantName = variant.name.name;
 
@@ -11507,16 +11543,16 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
         // Process variant parameters as fields + constructor.
         let vParams = params;
-        let vCtorParams = new Array<Type>();
-        let vCtorNames = new Array<String>();
-        let vCtorOptionalParams = new Array<boolean>();
+        let vCtorParams = new GrowableArray<Type>();
+        let vCtorNames = new GrowableArray<String>();
+        let vCtorOptionalParams = new GrowableArray<boolean>();
         var vpi = 0;
         while (vpi < vParams.length) {
           let vp = vParams[vpi];
           var vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
 
           if (vp.optional) {
-            let unionTypes = new Array<Type>();
+            let unionTypes = new GrowableArray<Type>();
             unionTypes.push(vpType);
             unionTypes.push(new NullType());
             vpType = createUnionType(unionTypes);
@@ -11536,7 +11572,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         variantType.constructorType = vCtorType;
         synthesizeCaseClassMembers(ctx, variantType);
 
-        (classType.sealedVariants as Array<ClassType>).push(variantType);
+        (classType.sealedVariants as GrowableArray<ClassType>).push(variantType);
 
         // Register variant in type and value namespaces (module scope
         // so the name is visible in match patterns outside the class).
@@ -11576,13 +11612,13 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 }
                 if (ct.constructorType == null) {
                   ct.constructorType = new FunctionType(
-                    new Array<Type>(), new Array<String>(), ct
+                    new GrowableArray<Type>(), new GrowableArray<String>(), ct
                   );
                 }
                 synthesizeCaseClassMembers(ctx, ct);
               }
             }
-            let sealedVars = classType.sealedVariants as Array<ClassType>;
+            let sealedVars = classType.sealedVariants as GrowableArray<ClassType>;
             sealedVars.push(ct);
           }
           case _: {
@@ -11598,11 +11634,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             }
             // Unit variant: zero-arg constructor.
             unitType.constructorType = new FunctionType(
-              new Array<Type>(), new Array<String>(), unitType
+              new GrowableArray<Type>(), new GrowableArray<String>(), unitType
             );
             synthesizeCaseClassMembers(ctx, unitType);
 
-            (classType.sealedVariants as Array<ClassType>).push(unitType);
+            (classType.sealedVariants as GrowableArray<ClassType>).push(unitType);
             ctx.declareModuleTypeName(variantName, unitType);
           }
         }
@@ -11653,7 +11689,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
 
   // Check method bodies and field initializers.
   // Collect field names in declaration order for forward-reference detection.
-  let fieldOrder = new Array<String>();
+  let fieldOrder = new GrowableArray<String>();
   for (let bodyMember in cd.body) {
     match (bodyMember) {
       case FieldDefinition as fd: {
@@ -11693,7 +11729,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
           // Temporarily hide fields declared after this one or inherited from superclasses,
           // so that they cannot be accessed within the field's default initializer.
           let hiddenFields = new HashMap<String, MemberInfo>();
-          let keysToHide = new Array<String>();
+          let keysToHide = new GrowableArray<String>();
           
           let allFieldKeys = classType.members.keys();
           while (let (true, k) = allFieldKeys.next()) {
@@ -11884,7 +11920,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
                 let tParams = classType.typeParameters;
                 if (tParams != null) {
                   if (tParams.length > 0) {
-                    let typeArgs = new Array<Type>();
+                    let typeArgs = new GrowableArray<Type>();
                     for (let tp in tParams) { typeArgs.push(tp as Type); }
                     receiverType = instantiateClassType(classType, typeArgs) as Type;
                   }
@@ -12042,7 +12078,7 @@ let checkMethodSignature = (
   let astTypeParameters = md.typeParameters;
   var resolvedTypeParams: Array<TypeParameterType> | null = null;
   if (astTypeParameters != null) {
-    let typeParameters = new Array<TypeParameterType>();
+    let typeParameters = new GrowableArray<TypeParameterType>();
     for (let astParam in astTypeParameters) {
       let tpType = ctx.getOrCreateTypeParameter(astParam, null, null);
       typeParameters.push(tpType);
@@ -12052,12 +12088,12 @@ let checkMethodSignature = (
     resolvedTypeParams = typeParameters;
   }
 
-  let paramTypes = new Array<Type>();
-  let paramNames = new Array<String>();
+  let paramTypes = new GrowableArray<Type>();
+  let paramNames = new GrowableArray<String>();
   var hasOptionals = false;
-  let optionals = new Array<boolean>();
+  let optionals = new GrowableArray<boolean>();
   var hasInitializers = false;
-  let initializers = new Array<Expression | null>();
+  let initializers = new GrowableArray<Expression | null>();
 
   var i = 0;
   while (i < md.params.length) {
@@ -12130,7 +12166,7 @@ let checkMethodSignature = (
           case _: {}
         }
         if (!alreadyNullable) {
-          let unionTypes = new Array<Type>();
+          let unionTypes = new GrowableArray<Type>();
           unionTypes.push(paramType);
           unionTypes.push(new NullType());
           paramType = createUnionType(unionTypes);
@@ -12196,14 +12232,14 @@ let checkMethodSignature = (
     }
   }
 
-  let paramSymbols = new Array<SymbolId>();
+  let paramSymbols = new GrowableArray<SymbolId>();
   var pi = 0;
   while (pi < md.params.length) {
     let paramInfo = ctx.model.resolveDeclaration(md.params[pi].name);
     if (paramInfo != null) {
       let symId = paramInfo.id;
       // Mark as -1 if the parameter is never actually referenced in subsequent default parameters.
-      let isReferenced = new Array<boolean>();
+      let isReferenced = new GrowableArray<boolean>();
       isReferenced.push(false);
       var pi2 = pi + 1;
       while (pi2 < md.params.length) {
@@ -12300,6 +12336,7 @@ let checkSuperInitArgs = (
   // Fill in missing arguments with default values.
   let {parameterInitializers} = ctorType;
   if (parameterInitializers != null) {
+    let mutArgs = args as GrowableArray<Expression>;
     var a = args.length;
     while (a < ctorType.parameters.length) {
       let init = parameterInitializers[a];
@@ -12313,19 +12350,19 @@ let checkSuperInitArgs = (
                 } else {
                   `${ctx.filePath}:0`
                 };
-                args.push(new StringLiteral(locStr, loc));
+                mutArgs.push(new StringLiteral(locStr, loc));
               } else {
-                args.push(new NullLiteral(loc));
+                mutArgs.push(new NullLiteral(loc));
               }
             } else {
-              args.push(init);
+              mutArgs.push(init);
             }
           }
-          case _: { args.push(init); }
+          case _: { mutArgs.push(init); }
         }
       } else {
         // Optional but no default? Inject null.
-        args.push(new NullLiteral(loc));
+        mutArgs.push(new NullLiteral(loc));
       }
       a += 1;
     }
@@ -12677,7 +12714,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   let {typeParameters} = id;
   if (typeParameters != null) {
     let tps = typeParameters;
-    ifaceType.typeParameters = new Array<TypeParameterType>();
+    ifaceType.typeParameters = new GrowableArray<TypeParameterType>();
     for (let tp in tps) {
       var constraint: Type | null = null;
       if (tp.constraint != null) {
@@ -12689,7 +12726,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       }
       let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
       ctx.declareTypeName(tp.name, tpType);
-      (ifaceType.typeParameters as Array<TypeParameterType>).push(tpType);
+      (ifaceType.typeParameters as GrowableArray<TypeParameterType>).push(tpType);
     }
   }
 
@@ -12744,8 +12781,8 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         ctx.enterScope();
         var typeParams: Array<TypeParameterType> | null = null;
         if (ms.typeParameters != null) {
-          let tpArr = new Array<TypeParameterType>();
-          let tps = ms.typeParameters as Array<TypeParameter>;
+          let tpArr = new GrowableArray<TypeParameterType>();
+          let tps = ms.typeParameters as GrowableArray<TypeParameter>;
           for (let tp in tps) {
             var constraint: Type | null = null;
             if (tp.constraint != null) {
@@ -12761,7 +12798,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           }
           typeParams = tpArr;
         }
-        let paramTypes = new Array<Type>();
+        let paramTypes = new GrowableArray<Type>();
         for (let param in ms.params) {
           var paramType: Type = new ErrorType();
           let {typeAnnotation} = param;
@@ -12833,7 +12870,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       case AccessorSignature as as_: {
         let accType = resolveTypeAnnotation(ctx, as_.typeAnnotation);
         if (as_.hasGetter) {
-          let getterFt = new FunctionType(new Array<Type>(), null, accType);
+          let getterFt = new FunctionType(new GrowableArray<Type>(), null, accType);
           let isPrivate = as_.name.name.length > 0 && as_.name.name.sliceBytes(0, 1) == "#";
           ifaceType.members["get#" + as_.name.name] = new MethodInfo(
             getterFt,
@@ -13005,7 +13042,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   let {typeParameters} = md;
   if (typeParameters != null) {
     let tps = typeParameters;
-    let resolvedTps = new Array<TypeParameterType>();
+    let resolvedTps = new GrowableArray<TypeParameterType>();
     for (let tp in tps) {
       var constraint: Type | null = null;
       if (tp.constraint != null) {
@@ -13260,13 +13297,13 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           // application, and the bare getter-MethodInfo mistyped
           // reads as '() => T').
           if (acc.getter != null) {
-            let getterFt = new FunctionType(new Array<Type>(), null, accType);
+            let getterFt = new FunctionType(new GrowableArray<Type>(), null, accType);
             let gi = new MethodInfo(getterFt, false, acc.isStatic, true, acc.isFinal);
             mixinType.members["get#" + accName] = gi;
             thisType.members["get#" + accName] = gi;
           }
           if (acc.setter != null) {
-            let setterParams = new Array<Type>();
+            let setterParams = new GrowableArray<Type>();
             setterParams.push(accType);
             let setterFt = new FunctionType(setterParams, null, new VoidType());
             let si = new MethodInfo(setterFt, false, acc.isStatic, true, acc.isFinal);
@@ -13281,13 +13318,13 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           // MethodInfo reads as '() => T' at the use site instead of
           // T. The setter had no entry at all.
           if (acc.getter != null) {
-            let getterFt = new FunctionType(new Array<Type>(), null, accType);
+            let getterFt = new FunctionType(new GrowableArray<Type>(), null, accType);
             let gi = new MethodInfo(getterFt, false, acc.isStatic, isPrivate, acc.isFinal);
             mixinType.members["get#" + accName] = gi;
             thisType.members["get#" + accName] = gi;
           }
           if (acc.setter != null) {
-            let setterParams = new Array<Type>();
+            let setterParams = new GrowableArray<Type>();
             setterParams.push(accType);
             let setterFt = new FunctionType(setterParams, null, new VoidType());
             let si = new MethodInfo(setterFt, false, acc.isStatic, isPrivate, acc.isFinal);
@@ -13446,7 +13483,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   let {typeParameters} = df;
   if (typeParameters != null) {
     let tps = typeParameters;
-    resolvedTypeParams = new Array<TypeParameterType>();
+    resolvedTypeParams = new GrowableArray<TypeParameterType>();
     var tpi = 0;
     while (tpi < tps.length) {
       let tp = tps[tpi];
@@ -13466,10 +13503,10 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   }
 
   // Parameter types.
-  let paramTypes = new Array<Type>();
-  let paramNames = new Array<String>();
-  let optionals = new Array<boolean>();
-  let initializers = new Array<Expression | null>();
+  let paramTypes = new GrowableArray<Type>();
+  let paramNames = new GrowableArray<String>();
+  let optionals = new GrowableArray<boolean>();
+  let initializers = new GrowableArray<Expression | null>();
   var pi = 0;
   while (pi < df.params.length) {
     let param = df.params[pi];
@@ -13505,11 +13542,11 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
     let existingType = ctx.model.getBindingType(info);
     if (existingType is FunctionType) {
       if (existingType.overloads == null) {
-        let ovArray = new Array<FunctionType>();
+        let ovArray = new GrowableArray<FunctionType>();
         ovArray.push(existingType);
         existingType.overloads = ovArray;
       }
-      let ovs = existingType.overloads as Array<FunctionType>;
+      let ovs = existingType.overloads as GrowableArray<FunctionType>;
       ovs.push(funcType);
       ctx.setNodeType(df, funcType);
     } else {
@@ -13546,8 +13583,8 @@ let checkNewExpression = (
   ctx: CheckerContext,
   newExpr: NewExpression,
   callee: Identifier,
-  typeArguments: Array<TypeAnnotation> | null,
-  args: Array<Expression>,
+  typeArguments: GrowableArray<TypeAnnotation> | null,
+  args: GrowableArray<Expression>,
   loc: SourceLocation | null
 ): Type => {
   let className = callee.name;
@@ -13600,7 +13637,7 @@ let checkNewExpression = (
       // Instantiate generic class (infers type arguments if not explicit),
       // inferring only from caller-written arguments.
       let inferArgs = if (callerArgCount < args.length) {
-        let trimmed = new Array<Expression>();
+        let trimmed = new GrowableArray<Expression>();
         var ti = 0;
         while (ti < callerArgCount) { trimmed.push(args[ti]); ti += 1; }
         trimmed
@@ -13631,6 +13668,7 @@ let checkNewExpression = (
       // Fill in missing arguments with default values
       let {parameterInitializers} = ctorType;
       if (parameterInitializers != null) {
+        let mutArgs = args as GrowableArray<Expression>;
         var a = args.length;
         while (a < ctorType.parameters.length) {
           let init = parameterInitializers[a];
@@ -13644,19 +13682,19 @@ let checkNewExpression = (
                     } else {
                       `${ctx.filePath}:0`
                     };
-                    args.push(new StringLiteral(locStr, loc));
+                    mutArgs.push(new StringLiteral(locStr, loc));
                   } else {
-                    args.push(new NullLiteral(loc));
+                    mutArgs.push(new NullLiteral(loc));
                   }
                 } else {
-                  args.push(init);
+                  mutArgs.push(init);
                 }
               }
-              case _: { args.push(init); }
+              case _: { mutArgs.push(init); }
             }
           } else {
             // Optional but no default? Inject null.
-            args.push(new NullLiteral(loc));
+            mutArgs.push(new NullLiteral(loc));
           }
           a += 1;
         }
@@ -13799,7 +13837,7 @@ let recordSymbolKeyedMemberIdentities = (
     if (sym == null) { continue; }
     let id = sym.id as i32;
     let key = ":" + (ref as Identifier).name;
-    let candidates = new Array<String>();
+    let candidates = new GrowableArray<String>();
     candidates.push(key);
     candidates.push("get#" + key);
     candidates.push("set#" + key);
@@ -14004,7 +14042,7 @@ let checkMemberExpression = (
   match (objectType) {
     case UnionT {types}: {
       // If the union includes null, strip it for the member check.
-      let nonNull = new Array<Type>();
+      let nonNull = new GrowableArray<Type>();
       var ui = 0;
       while (ui < types.length) {
         if (types[ui] is NullType) {
@@ -14116,7 +14154,7 @@ let checkMemberExpression = (
       );
       return new ErrorType();
     }
-    let types = new Array<Type>();
+    let types = new GrowableArray<Type>();
     types.push(resultType);
     types.push(new NullType());
     return createUnionType(types);
@@ -14330,7 +14368,7 @@ let resolveMemberType = (
             }
 
             // Build type arguments [elementType] for substitution.
-            let typeArgs = new Array<Type>();
+            let typeArgs = new GrowableArray<Type>();
             typeArgs.push(elementType);
             // Check getter first.
             let getterName = "get#" + propName;
@@ -14394,7 +14432,7 @@ let checkIndexExpression = (
   var isNullable = false;
   match (objectType) {
     case UnionT {types}: {
-      let nonNull = new Array<Type>();
+      let nonNull = new GrowableArray<Type>();
       var ui = 0;
       while (ui < types.length) {
         if (types[ui] is NullType) {
@@ -14426,7 +14464,7 @@ let checkIndexExpression = (
       );
       return new ErrorType();
     }
-    let types = new Array<Type>();
+    let types = new GrowableArray<Type>();
     types.push(resultType);
     types.push(new NullType());
     return createUnionType(types);
@@ -14471,9 +14509,9 @@ let resolveIndexType = (
 
   // The single operand every overloaded `[]` below selects over,
   // shared by the class, extension and interface branches.
-  let operandTypes = new Array<Type>();
+  let operandTypes = new GrowableArray<Type>();
   operandTypes.push(indexType);
-  let operands = new Array<Expression>();
+  let operands = new GrowableArray<Expression>();
   operands.push(index);
 
   match (objectType) {
@@ -14481,13 +14519,13 @@ let resolveIndexType = (
       // Check for extension class operator[] on Array types (e.g., FixedArray<T>.operator[](Range))
       let fixedArrayPrelude = ctx.resolvePreludeType("FixedArray");
       if (fixedArrayPrelude is ClassType) {
-        let typeArgs = new Array<Type>();
+        let typeArgs = new GrowableArray<Type>();
         typeArgs.push(elementType);
         let ct = instantiateClassType(fixedArrayPrelude, typeArgs);
         if (ct.members.has("[]")) {
           let opMethodInfo = ct.members["[]"];
           let baseMethod = opMethodInfo.type as FunctionType;
-          let candidates = new Array<FunctionType>();
+          let candidates = new GrowableArray<FunctionType>();
           candidates.push(baseMethod);
           let {overloads} = baseMethod;
           if (overloads != null) {
@@ -14500,8 +14538,8 @@ let resolveIndexType = (
           }
           // Most-specific selection over the applicable candidates
           // (member-lookup.md §5.1).
-          let applicableRaw = new Array<FunctionType>();
-          let applicableRes = new Array<FunctionType>();
+          let applicableRaw = new GrowableArray<FunctionType>();
+          let applicableRes = new GrowableArray<FunctionType>();
           collectApplicableOperatorOverloads(
               ctx, candidates, ct.typeParameters, ct.typeArguments,
               operandTypes, operands, 1, applicableRaw, applicableRes);
@@ -14560,7 +14598,7 @@ let resolveIndexType = (
         }
         let opMethodInfo = ct.members["[]"];
         let baseMethod = opMethodInfo.type as FunctionType;
-        let candidates = new Array<FunctionType>();
+        let candidates = new GrowableArray<FunctionType>();
         candidates.push(baseMethod);
         let {overloads} = baseMethod;
         if (overloads != null) {
@@ -14574,8 +14612,8 @@ let resolveIndexType = (
         // Most-specific selection over the applicable candidates
         // (member-lookup.md §5.1).
         var selectedMethod = baseMethod;
-        let applicableRaw = new Array<FunctionType>();
-        let applicableRes = new Array<FunctionType>();
+        let applicableRaw = new GrowableArray<FunctionType>();
+        let applicableRes = new GrowableArray<FunctionType>();
         collectApplicableOperatorOverloads(
             ctx, candidates, ct.typeParameters, ct.typeArguments,
             operandTypes, operands, 1, applicableRaw, applicableRes);
@@ -14612,7 +14650,7 @@ ${describeIndexParameters(candidates, ct.typeParameters, ct.typeArguments)}.`,
       if (it.members.has("[]")) {
         let opMethodInfo = it.members["[]"];
         let baseMethod = opMethodInfo.type as FunctionType;
-        let candidates = new Array<FunctionType>();
+        let candidates = new GrowableArray<FunctionType>();
         candidates.push(baseMethod);
         let {overloads} = baseMethod;
         if (overloads != null) {
@@ -14626,8 +14664,8 @@ ${describeIndexParameters(candidates, ct.typeParameters, ct.typeArguments)}.`,
         // Most-specific selection over the applicable candidates
         // (member-lookup.md §5.1).
         var selectedMethod = baseMethod;
-        let applicableRaw = new Array<FunctionType>();
-        let applicableRes = new Array<FunctionType>();
+        let applicableRaw = new GrowableArray<FunctionType>();
+        let applicableRes = new GrowableArray<FunctionType>();
         collectApplicableOperatorOverloads(
             ctx, candidates, it.typeParameters, it.typeArguments,
             operandTypes, operands, 1, applicableRaw, applicableRes);
@@ -14720,7 +14758,7 @@ let checkBinaryExpression = (
     let rightType = checkExpression(ctx, right, null);
     ctx.mergeFlow(preRight, ctx.currentFlow);
     // || returns union of both types.
-    let types = new Array<Type>();
+    let types = new GrowableArray<Type>();
     types.push(leftType);
     types.push(rightType);
     return createUnionType(types, ctx, left.loc);
@@ -14933,7 +14971,7 @@ let checkBinaryExpression = (
     if ((operator == "==" || operator == "!=") &&
         receiver is ClassType && receiver.members.has("==")) {
       let baseMethod = receiver.members["=="].type as FunctionType;
-      let candidates = new Array<FunctionType>();
+      let candidates = new GrowableArray<FunctionType>();
       candidates.push(baseMethod);
       let {overloads} = baseMethod;
       if (overloads != null) {
@@ -14941,12 +14979,12 @@ let checkBinaryExpression = (
           candidates.push(ov);
         }
       }
-      let operandTypes = new Array<Type>();
+      let operandTypes = new GrowableArray<Type>();
       operandTypes.push(subtractNullFromType(rightType));
-      let operands = new Array<Expression>();
+      let operands = new GrowableArray<Expression>();
       operands.push(right);
-      let applicableRaw = new Array<FunctionType>();
-      let applicableRes = new Array<FunctionType>();
+      let applicableRaw = new GrowableArray<FunctionType>();
+      let applicableRes = new GrowableArray<FunctionType>();
       collectApplicableOperatorOverloads(
           ctx, candidates, receiver.typeParameters, receiver.typeArguments,
           operandTypes, operands, 1, applicableRaw, applicableRes);
@@ -15042,7 +15080,7 @@ let checkBinaryExpression = (
       if (objType != null) {
         let objBase = baseType(subtractNullFromType(objType));
         if (objBase is RecordT && objBase.isOptional(member.property.name)) {
-          let arms = new Array<Type>();
+          let arms = new GrowableArray<Type>();
           arms.push(leftType);
           arms.push(rightType);
           return createUnionType(arms, ctx, loc);
@@ -15055,7 +15093,7 @@ let checkBinaryExpression = (
     // default, regardless of why").
     let payloadOpt = protocolPayloadType(leftType);
     if (payloadOpt != null) {
-      let arms = new Array<Type>();
+      let arms = new GrowableArray<Type>();
       arms.push(payloadOpt as Type);
       arms.push(rightType);
       return createUnionType(arms, ctx, loc);
@@ -15066,7 +15104,7 @@ let checkBinaryExpression = (
     match (leftType) {
       case UnionT as u: {
         // Filter out null from union members.
-        let nonNullMembers = new Array<Type>();
+        let nonNullMembers = new GrowableArray<Type>();
         let members = u.types;
         var i = 0;
         while (i < members.length) {
@@ -15113,10 +15151,10 @@ let checkBinaryExpression = (
  * Collect all concrete (non-sealed) leaf variants of a sealed class type,
  * recursing into sub-sealed variants (sum of sums).
  */
-let collectLeafVariants = (ct: ClassType): Array<ClassType> => {
-  let result = new Array<ClassType>();
+let collectLeafVariants = (ct: ClassType): GrowableArray<ClassType> => {
+  let result = new GrowableArray<ClassType>();
   if (ct.sealedVariants == null) { return result; }
-  let variants = ct.sealedVariants as Array<ClassType>;
+  let variants = ct.sealedVariants as GrowableArray<ClassType>;
   var i = 0;
   while (i < variants.length) {
     let v = variants[i];
@@ -15272,8 +15310,8 @@ let subtractClassFromType = (ctx: CheckerContext, t: Type, patClass: ClassType):
       }
       // If the scrutinee is a sealed class, subtract the variant from its set.
       if (scrutClass.isSealed && scrutClass.sealedVariants != null) {
-        let variants = scrutClass.sealedVariants as Array<ClassType>;
-        let remaining = new Array<ClassType>();
+        let variants = scrutClass.sealedVariants as GrowableArray<ClassType>;
+        let remaining = new GrowableArray<ClassType>();
         var i = 0;
         while (i < variants.length) {
           let v = variants[i];
@@ -15419,16 +15457,16 @@ let checkMatchExpr = (
   // with the cases by index, for the branch-join drop decision.
   let preArmFlow = ctx.currentFlow;
   let armJoin = ctx.newFlowJoin();
-  let armEnds = new Array<FlowNode>();
+  let armEnds = new GrowableArray<FlowNode>();
 
   // Track remaining type for exhaustiveness checking.
   var remainingType: Type = scrutineeType;
 
   // Collect result types from each case.
-  let resultTypes = new Array<Type>();
+  let resultTypes = new GrowableArray<Type>();
   
   // Track matched pattern types for ambiguity detection.
-  let matchedTypes = new Array<Type>();
+  let matchedTypes = new GrowableArray<Type>();
 
   var i = 0;
   while (i < cases.length) {
@@ -15644,8 +15682,8 @@ let editDistance = (a: String, b: String): i32 => {
   let m = b.length;
   if (n == 0) { return m; }
   if (m == 0) { return n; }
-  let prev = new Array<i32>(m + 1);
-  let curr = new Array<i32>(m + 1);
+  let prev = new GrowableArray<i32>(m + 1);
+  let curr = new GrowableArray<i32>(m + 1);
   var j = 0;
   while (j <= m) {
     prev.push(j);
@@ -15681,7 +15719,7 @@ let editDistance = (a: String, b: String): i32 => {
  * matched: the type's own name plus, for a sealed class, its variants.
  * Unions contribute the candidates of each member.
  */
-let collectPatternNameCandidates = (t: Type, out: Array<String>): void => {
+let collectPatternNameCandidates = (t: Type, out: GrowableArray<String>): void => {
   match (t) {
     case ClassType as ct: {
       out.push(ct.name);
@@ -15720,7 +15758,7 @@ let unresolvedPatternNameMessage = (
     return "'" + name + "' names a type, but only classes can be matched by name. " +
       "Write 'let " + name + "' to bind the matched value to a new variable.";
   }
-  let candidates = new Array<String>(8);
+  let candidates = new GrowableArray<String>(8);
   collectPatternNameCandidates(expectedType, candidates);
   var closest: String | null = null;
   var closestDistance = 0;
@@ -16040,7 +16078,7 @@ let makeIteratorType = (
     );
     return new ErrorType();
   }
-  let args = new Array<Type>();
+  let args = new GrowableArray<Type>();
   args.push(yieldType);
   return instantiateInterfaceType(prelude, args);
 };
@@ -16089,7 +16127,7 @@ let makeFutureType = (
     );
     return new ErrorType();
   }
-  let args = new Array<Type>();
+  let args = new GrowableArray<Type>();
   args.push(valueType);
   return instantiateClassType(prelude, args);
 };
@@ -16123,7 +16161,7 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
     // is the union of bare arms and payloads; T | Future<T> collapses
     // to T through the dedup in createUnionType.
     let arms = operandType.types;
-    let resultArms = new Array<Type>();
+    let resultArms = new GrowableArray<Type>();
     var futureCount = 0;
     for (let arm in arms) {
       let fv = extractFutureValueType(ctx, arm);
@@ -16135,7 +16173,7 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
       }
     }
     if (futureCount > 0) {
-      let dedup = new Array<Type>();
+      let dedup = new GrowableArray<Type>();
       for (let arm in resultArms) {
         var seen = false;
         for (let existing in dedup) {
@@ -16211,7 +16249,7 @@ let checkFunctionExpression = (
   var resolvedTypeParams: Array<TypeParameterType> | null = null;
   if (typeParameters != null) {
     if (typeParameters.length > 0) {
-      let tpTypes = new Array<TypeParameterType>();
+      let tpTypes = new GrowableArray<TypeParameterType>();
       var tpi = 0;
       while (tpi < typeParameters.length) {
         let tp = typeParameters[tpi];
@@ -16233,8 +16271,8 @@ let checkFunctionExpression = (
   }
 
   // Resolve parameter types.
-  let paramTypes = new Array<Type>();
-  let paramNames = new Array<String>();
+  let paramTypes = new GrowableArray<Type>();
+  let paramNames = new GrowableArray<String>();
 
   // If there's a contextual function type, use it for parameter inference.
   var contextualFn: FunctionType | null = null;
@@ -16247,9 +16285,9 @@ let checkFunctionExpression = (
 
   var i = 0;
   var hasOptionals = false;
-  let optionals = new Array<boolean>();
+  let optionals = new GrowableArray<boolean>();
   var hasInitializers = false;
-  let initializers = new Array<Expression | null>();
+  let initializers = new GrowableArray<Expression | null>();
   while (i < params.length) {
     let param = params[i];
     let paramName = param.name.name;
@@ -16319,7 +16357,7 @@ let checkFunctionExpression = (
           case _: {}
         }
         if (!alreadyNullable) {
-          let unionTypes = new Array<Type>();
+          let unionTypes = new GrowableArray<Type>();
           unionTypes.push(paramType);
           unionTypes.push(new NullType());
           paramType = createUnionType(unionTypes);
@@ -16420,13 +16458,13 @@ let checkFunctionExpression = (
   let prevCancelBlockFloor = ctx.cancelBlockFloor;
   ctx.setCancelBlockFloor(-1);
   ctx.setReturnType(retType);
-  ctx.setInferredReturnTypes(new Array<Type>());
+  ctx.setInferredReturnTypes(new GrowableArray<Type>());
   var newYieldType: Type | null = null;
   if (isGenerator) {
     newYieldType = declaredYieldType;
   }
   ctx.setYieldType(newYieldType);
-  ctx.setInferredYieldTypes(new Array<Type>());
+  ctx.setInferredYieldTypes(new GrowableArray<Type>());
   var newAsyncValue: Type | null = null;
   if (isAsync) {
     newAsyncValue = retType;
@@ -16582,14 +16620,14 @@ let checkFunctionExpression = (
   ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
 
-  let paramSymbols = new Array<SymbolId>();
+  let paramSymbols = new GrowableArray<SymbolId>();
   var pi = 0;
   while (pi < params.length) {
     let paramInfo = ctx.model.resolveDeclaration(params[pi].name);
     if (paramInfo != null) {
       let symId = paramInfo.id;
       // Mark as -1 if the parameter is never actually referenced in subsequent default parameters.
-      let isReferenced = new Array<boolean>();
+      let isReferenced = new GrowableArray<boolean>();
       isReferenced.push(false);
       var pi2 = pi + 1;
       while (pi2 < params.length) {
@@ -16652,7 +16690,7 @@ let checkFunctionExpression = (
       );
     }
 
-    let capSyms = new Array<SymbolId>();
+    let capSyms = new GrowableArray<SymbolId>();
     for (let c in captureInfo.captures) {
       capSyms.push(c.id);
       // A closure is a heap object: it may be returned, stored in a field
@@ -16691,7 +16729,7 @@ let checkCallExpression = (
   var isNullable = false;
   match (calleeType) {
     case UnionT {types}: {
-      let nonNull = new Array<Type>();
+      let nonNull = new GrowableArray<Type>();
       var ui = 0;
       while (ui < types.length) {
         if (types[ui] is NullType) {
@@ -16725,7 +16763,7 @@ let checkCallExpression = (
       );
       return new ErrorType();
     }
-    let types = new Array<Type>();
+    let types = new GrowableArray<Type>();
     types.push(resultType);
     types.push(new NullType());
     return createUnionType(types);
@@ -16842,7 +16880,7 @@ let checkCallExpressionInner = (
       // found it — otherwise the re-check would run downstream of this
       // pass's flow nodes and see a different (post-argument) state.
       let preArgsFlow = ctx.currentFlow;
-      let argTypes = new Array<Type>();
+      let argTypes = new GrowableArray<Type>();
       for (var i = 0; i < args.length; i += 1) {
         if (i >= callerArgCount && i < ft.parameters.length) {
           argTypes.push(ft.parameters[i]);
@@ -16860,7 +16898,7 @@ let checkCallExpressionInner = (
       // Overload resolution
       let {overloads} = ft;
       if (overloads != null) {
-        let candidates = new Array<FunctionType>();
+        let candidates = new GrowableArray<FunctionType>();
         candidates.push(ft);
         for (let overload in overloads) {
           candidates.push(overload);
@@ -16907,7 +16945,7 @@ let checkCallExpressionInner = (
       if (typeParams != null) {
         if (typeParams.length > 0) {
           if (typeArguments != null) {
-            let typeArgs = new Array<Type>();
+            let typeArgs = new GrowableArray<Type>();
             for (let typeArg in typeArguments) {
               typeArgs.push(resolveExplicitTypeArgument(ctx, typeArg));
             }
@@ -16919,7 +16957,7 @@ let checkCallExpressionInner = (
               applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
             }
             // Substitute type parameters in params and return type.
-            let subParams = new Array<Type>();
+            let subParams = new GrowableArray<Type>();
             for (let param in effectiveFt.parameters) {
               subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
@@ -16942,16 +16980,15 @@ let checkCallExpressionInner = (
               inferTypeArg(effectiveFt.parameters[i], argType, inferred);
             }
             // Build type args array from inferred map.
-            let typeArgs = typeParams.map((typeParam) => {
+            let typeArgs = new GrowableArray<Type>(typeParams.length);
+            for (let typeParam in typeParams) {
               let paramName = typeParam.name;
-              return if (inferred.has(paramName)) {
-                  inferred[paramName];
-                } else {
-                  // TODO: This is a bug that Array<Type | ErrorType> is not
-                  // assignable to Array<Type>
-                  new ErrorType() as Type;
-                };
-            });
+              typeArgs.push(if (inferred.has(paramName)) {
+                inferred[paramName];
+              } else {
+                new ErrorType() as Type;
+              });
+            }
             // Same check as the explicit-argument branch above. A parameter
             // nothing could be inferred for is an ErrorType here, which
             // satisfies every constraint, so an inference failure reports
@@ -16960,7 +16997,7 @@ let checkCallExpressionInner = (
               applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
             }
             // Substitute type parameters in params and return type.
-            let subParams = new Array<Type>();
+            let subParams = new GrowableArray<Type>();
             for (let param in effectiveFt.parameters) {
               subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
@@ -16987,6 +17024,7 @@ let checkCallExpressionInner = (
       var hasDefaults = false;
       let {parameterInitializers} = effectiveFt;
       if (parameterInitializers != null) {
+        let mutArgs = args as GrowableArray<Expression>;
         var a = args.length;
         while (a < effectiveFt.parameters.length) {
           let init = parameterInitializers[a];
@@ -17000,20 +17038,20 @@ let checkCallExpressionInner = (
                     } else {
                       `${ctx.filePath}:0`
                     };
-                    args.push(new StringLiteral(locStr, loc));
+                    mutArgs.push(new StringLiteral(locStr, loc));
                   } else {
-                    args.push(new NullLiteral(loc));
+                    mutArgs.push(new NullLiteral(loc));
                   }
                 } else {
-                  args.push(init);
+                  mutArgs.push(init);
                 }
               }
-              case _: { args.push(init); }
+              case _: { mutArgs.push(init); }
             }
             hasDefaults = true;
           } else {
             // Optional but no default? Inject null.
-            args.push(new NullLiteral(loc));
+            mutArgs.push(new NullLiteral(loc));
           }
           a += 1;
         }
