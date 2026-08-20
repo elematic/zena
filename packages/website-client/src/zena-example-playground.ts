@@ -188,11 +188,6 @@ export class ZenaExamplePlayground extends BehaviorElement {
 
       select.value = String(index);
 
-      // Scroll active tab into view in desktop sidebar
-      if (tabs[index]) {
-        tabs[index].scrollIntoView({block: 'nearest', behavior: 'smooth'});
-      }
-
       const activeExample = this.examples[index];
       if (activeExample) {
         playground.files = {...activeExample.currentFiles};
