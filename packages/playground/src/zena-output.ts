@@ -2,11 +2,13 @@ import {html, css} from 'lit';
 import {customElement, property} from 'lit/decorators.js';
 import '@radica/ui/components/button/button.js';
 import {PlaygroundConnectedElement} from './connected-element.js';
+import './zena-console.js';
 
 /**
- * An output console element with integrated status indicator and Run/Clear controls.
+ * An output console pane element with integrated status indicator and Run/Clear controls.
  *
- * Connects to a `<zena-project>` (via ancestor DOM, shadow DOM, or `project="id"` attribute).
+ * Connects to a `<zena-project>` (via ancestor DOM, shadow DOM, or `project="id"` attribute)
+ * and composes `<zena-console>` for log output streaming.
  *
  * ```html
  * <zena-output project="my-project"></zena-output>
@@ -159,51 +161,18 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       grid-row: 2;
       min-height: 0;
       height: 100%;
-      overflow-y: auto;
-      padding: 8px 12px;
+      overflow: hidden;
       display: flex;
       flex-direction: column;
-      gap: 2px;
       box-sizing: border-box;
-      text-align: left;
     }
 
-    .log-item {
-      padding: 2px 6px;
-      border-radius: var(--rad-border-radius-small, 4px);
-      white-space: pre-wrap;
-      word-break: break-word;
-      line-height: 1.4;
-      font-size: 0.85rem;
-      text-align: left;
-    }
-
-    .log-item-log {
-      color: var(--rad-neutral-text-normal, #f8fafc);
-    }
-
-    .log-item-info {
-      color: var(--rad-primary-text-normal, #38bdf8);
-      background: var(--rad-primary-fill-ghost, rgba(56, 189, 248, 0.06));
-    }
-
-    .log-item-warn {
-      color: var(--rad-warning-text-normal, #fbbf24);
-      background: rgba(251, 191, 36, 0.06);
-      border-left: 2px solid var(--rad-warning-text-normal, #fbbf24);
-    }
-
-    .log-item-error {
-      color: var(--rad-danger-text-normal, #f87171);
-      background: rgba(248, 113, 113, 0.09);
-      border-left: 2px solid var(--rad-danger-text-normal, #f87171);
-    }
-
-    .empty-hint {
-      color: var(--rad-neutral-text-muted, #475569);
-      font-style: italic;
-      padding: 4px;
-      text-align: left;
+    .output-body zena-console {
+      flex: 1;
+      height: 100%;
+      min-height: 0;
+      border: none;
+      background: transparent;
     }
   `;
 
@@ -218,16 +187,6 @@ export class ZenaOutput extends PlaygroundConnectedElement {
         navigator.userAgent || navigator.platform || '',
       )
     );
-  }
-
-  protected override onProjectUpdate() {
-    super.onProjectUpdate();
-    this.updateComplete.then(() => {
-      const body = this.shadowRoot?.querySelector('.output-body');
-      if (body) {
-        body.scrollTop = body.scrollHeight;
-      }
-    });
   }
 
   private runProgram() {
@@ -246,7 +205,6 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       (d) => d.severity === 'warning',
     ).length;
     const status = project?.status ?? 'loading';
-    const logs = project?.consoleLogs ?? [];
     const shortcutLabel = this.isMac ? '⌘↵' : 'Ctrl+Enter';
 
     return html`
@@ -322,16 +280,7 @@ export class ZenaOutput extends PlaygroundConnectedElement {
         : ''}
 
       <div class="output-body">
-        ${logs.length === 0
-          ? html`<div class="empty-hint">
-              Click ▶ Run or press ${shortcutLabel} to execute program.
-            </div>`
-          : logs.map(
-              (log) =>
-                html`<div class="log-item log-item-${log.level}">
-                  ${log.message}
-                </div>`,
-            )}
+        <zena-console .project=${project}></zena-console>
       </div>
     `;
   }

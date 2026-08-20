@@ -1650,7 +1650,6 @@ found, returning false`, so the reachability pass is probably
   bootstrap follow) or the self-hosted parser should enforce
   super-last. Decide, then pin with a semantics test.
 
-
 ### No narrowing from destructured tuple elements
 
 - **Found**: 2026-07-21 (repeatedly, writing compiler code)
