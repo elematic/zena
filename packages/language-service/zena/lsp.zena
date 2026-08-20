@@ -788,6 +788,33 @@ let resolveImportedSymbol = (sym: Symbol, compiler: Compiler): Symbol | null => 
 };
 
 /**
+ * Computes a 0-based byte offset in source from 1-based targetLine and targetCol.
+ */
+let computeOffsetForLineCol = (source: String, targetLine: i32, targetCol: i32): i32 => {
+  var curLine = 1;
+  var curCol = 1;
+  var i = 0;
+  let len = source.length;
+  while (i < len) {
+    if (curLine == targetLine && curCol == targetCol) {
+      return i;
+    }
+    let b = source.getByteAt(i);
+    if (b == 10) {
+      curLine += 1;
+      curCol = 1;
+    } else {
+      curCol += 1;
+    }
+    i += 1;
+  }
+  if (curLine == targetLine) {
+    return i;
+  }
+  return 0;
+};
+
+/**
  * Stateful language service backed by a persistent Compiler.
  *
  * Owns the compiler host, compiler instance, and cached analysis
@@ -820,8 +847,8 @@ export class LanguageService {
     let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
     this.#host.setDocument(path, source);
     this.#host.setDocument(normPath, source);
-    this.#compiler.invalidate(path);
-    this.#compiler.invalidate(normPath);
+    this.#compiler.delete(path);
+    this.#compiler.delete(normPath);
   }
 
   /**
@@ -887,9 +914,31 @@ export class LanguageService {
       }
       diagnostics
     } catch (e) {
-      let msg = "Compiler error: " + e.message;
+      var diagLocation: SourceSpan | null = null;
+      let rawMsg = e.message;
+      var cleanMsg = rawMsg;
+      let firstLine = if (rawMsg.contains("\n")) {
+        rawMsg.split("\n")[0]
+      } else {
+        rawMsg
+      };
+      let parts = firstLine.split(":");
+      if (parts.length >= 4) {
+        let errFile = parts[0];
+        if (let (true, line) = parseI32(parts[1])) {
+          if (let (true, col) = parseI32(parts[2])) {
+            let offset = computeOffsetForLineCol(source, line, col);
+            diagLocation = new SourceSpan(errFile, offset, 1, line, col);
+            let prefixLen = errFile.length + parts[1].length + parts[2].length + 4;
+            if (firstLine.length > prefixLen) {
+              cleanMsg = firstLine.sliceBytes(prefixLen, firstLine.length);
+            }
+          }
+        }
+      }
+
       let arr = new GrowableArray<Diagnostic>();
-      arr.push(new Diagnostic(DiagnosticCode.ModuleNotFound, msg, DiagnosticSeverity.Error, null));
+      arr.push(new Diagnostic(DiagnosticCode.UnexpectedToken, cleanMsg, DiagnosticSeverity.Error, diagLocation));
       arr
     };
     return diagnostics;

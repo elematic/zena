@@ -13,7 +13,7 @@ import {
   type Diagnostic as CMLintDiagnostic,
 } from '@codemirror/lint';
 import {Prec} from '@codemirror/state';
-import {keymap} from '@codemirror/view';
+import {EditorView, keymap, type ViewUpdate} from '@codemirror/view';
 import 'codemirror-elements';
 import '@zena-lang/codemirror';
 import type {ZenaHoverProvider} from '@zena-lang/codemirror';
@@ -178,9 +178,13 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
       this.isSwitchingFile = false;
       this.#updateDiagnostics();
     } else {
+      const editorDoc =
+        this.codeMirrorEl?.editorView?.state?.doc?.toString() ??
+        this.codeMirrorEl?.value;
       if (
         this.codeMirrorEl &&
-        this.codeMirrorEl.value !== content &&
+        editorDoc !== undefined &&
+        editorDoc !== content &&
         !this.codeMirrorEl.editorView?.hasFocus
       ) {
         this.isSwitchingFile = true;
@@ -210,6 +214,21 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
       {key: 'Tab', run: acceptCompletion},
       ...completionKeymap,
     ]);
+
+    const updateListener = EditorView.updateListener.of(
+      (update: ViewUpdate) => {
+        if (update.docChanged && !this.isSwitchingFile) {
+          const newContent = update.state.doc.toString();
+          const project = this.projectElement;
+          if (project) {
+            const existing = project.getAllFiles()[this.effectiveFilename];
+            if (existing !== newContent) {
+              project.setFileContent(this.effectiveFilename, newContent);
+            }
+          }
+        }
+      },
+    );
 
     const zenaCompletions = async (
       context: CompletionContext,
@@ -258,6 +277,7 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
           lintGutter(),
           runKeymap,
           tabCompletionKeymap,
+          updateListener,
           autocompletion({
             override: [zenaCompletions],
             selectOnOpen: true,
@@ -273,11 +293,18 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
     }
   }
 
-  private onCodeInput = () => {
+  private onCodeInput = (e?: Event) => {
     if (this.isSwitchingFile) return;
     const project = this.projectElement;
     if (!project) return;
-    const currentVal = this.codeMirrorEl?.value;
+    let currentVal: string | undefined;
+    if (e && 'transaction' in e && (e as any).transaction?.newDoc) {
+      currentVal = (e as any).transaction.newDoc.toString();
+    } else if (this.codeMirrorEl?.editorView?.state?.doc) {
+      currentVal = this.codeMirrorEl.editorView.state.doc.toString();
+    } else {
+      currentVal = this.codeMirrorEl?.value;
+    }
     if (currentVal !== undefined) {
       const existing = project.getAllFiles()[this.effectiveFilename];
       if (existing !== currentVal) {

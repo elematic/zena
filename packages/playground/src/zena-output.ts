@@ -165,6 +165,7 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       flex-direction: column;
       gap: 2px;
       box-sizing: border-box;
+      text-align: left;
     }
 
     .log-item {
@@ -174,6 +175,7 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       word-break: break-word;
       line-height: 1.4;
       font-size: 0.85rem;
+      text-align: left;
     }
 
     .log-item-log {
@@ -201,6 +203,7 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       color: var(--rad-neutral-text-muted, #475569);
       font-style: italic;
       padding: 4px;
+      text-align: left;
     }
   `;
 
@@ -320,11 +323,9 @@ export class ZenaOutput extends PlaygroundConnectedElement {
 
       <div class="output-body">
         ${logs.length === 0
-          ? html`
-              <div class="empty-hint">
-                Click ▶ Run or press ${shortcutLabel} to execute program.
-              </div>
-            `
+          ? html`<div class="empty-hint">
+              Click ▶ Run or press ${shortcutLabel} to execute program.
+            </div>`
           : logs.map(
               (log) =>
                 html`<div class="log-item log-item-${log.level}">

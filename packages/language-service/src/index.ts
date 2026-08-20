@@ -399,21 +399,25 @@ export class ZenaLanguageService {
     this.#openDocuments.set(normalized, source);
     this.#openDocuments.set('./' + cleaned, source);
     if (this.#exports.openDocument) {
-      this.#exports.openDocument(
-        this.#writeString(path),
-        this.#writeString(source),
-      );
-      if (cleaned !== path) {
+      try {
         this.#exports.openDocument(
-          this.#writeString(cleaned),
+          this.#writeString(path),
           this.#writeString(source),
         );
-      }
-      if (normalized !== path && normalized !== cleaned) {
-        this.#exports.openDocument(
-          this.#writeString(normalized),
-          this.#writeString(source),
-        );
+        if (cleaned !== path) {
+          this.#exports.openDocument(
+            this.#writeString(cleaned),
+            this.#writeString(source),
+          );
+        }
+        if (normalized !== path && normalized !== cleaned) {
+          this.#exports.openDocument(
+            this.#writeString(normalized),
+            this.#writeString(source),
+          );
+        }
+      } catch {
+        // Document content is registered in JS openDocuments; subsequent check() handles errors.
       }
     }
   }
@@ -427,7 +431,11 @@ export class ZenaLanguageService {
     this.#openDocuments.delete(normalized);
     this.#openDocuments.delete('./' + cleaned);
     if (this.#exports.closeDocument) {
-      this.#exports.closeDocument(this.#writeString(path));
+      try {
+        this.#exports.closeDocument(this.#writeString(path));
+      } catch {
+        // Best-effort cache cleanup.
+      }
     }
   }
 

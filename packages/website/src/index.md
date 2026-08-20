@@ -138,9 +138,9 @@ for WebAssembly GC</span>
 
 ## Features
 
-Explore Zena's features through examples. Zena is designed to be familiar and readable.
+Explore Zena's features through interactive examples. All examples are editable and runnable in WebAssembly.
 
-<zena-code-group class="code-group vertical">
+<zena-example-playground>
 
 <figure>
 <figcaption>Functions</figcaption>
@@ -285,9 +285,9 @@ class Cat {
   id: String;                  // public, immutable
   #greeting = 'Meow';          // private
   var name = 'Bob';            // public, mutable
-  var(#mood) mood = 'grumpy';  // public getter, private setter
+  var(#mood) mood: String;     // public getter, private setter
 
-  new(this.id, name: String) : name = name {
+  new(this.id, this.name, mood: String) : #mood = mood {
     console.log(`Created cat: ${this.name}`);
   }
 
@@ -297,7 +297,7 @@ class Cat {
 }
 
 export let main = () => {
-  let cat = new Cat('c-1', 'Whiskers');
+  let cat = new Cat('c-1', 'Whiskers', 'grumpy');
   console.log(cat.sayHi());
   console.log(cat.mood);
 };
@@ -379,13 +379,9 @@ let describe = (shape: Shape): String => match (shape) {
 
 export let main = () => {
   console.log(describe(new Circle(20.0)));
+  console.log(describe(new Circle(5.0)));
   console.log(describe(new Rect(3.0, 3.0)));
-
-  // Patterns bind in loops, too.
-  let points = [{x: 1.0, y: 2.0}, {x: 3.0, y: 4.0}];
-  for (let {x, y} in points) {
-    console.log(`${x}, ${y}`);
-  }
+  console.log(describe(new Rect(4.0, 5.0)));
 };
 ```
 
@@ -542,25 +538,36 @@ export let main = () => {
 
 </figure>
 
-</zena-code-group>
+<figure>
+<figcaption>Modules</figcaption>
 
-## Try Zena
+<script type="sample/zena" filename="main.zena">
+import { add, greet } from './math.zena';
 
-<zena-playground>
-  <script type="sample/zena" filename="main.zena">
-    import { add, greet } from './math.zena';
-    export let main = () => {
-      console.log(greet('Zena Developer'));
-      console.log(`1 + 2 = ${add(1, 2)}`);
-    };
-  </script>
-  <script type="sample/zena" filename="math.zena">
-    export let add = (a: i32, b: i32): i32 => a + b;
-    export let greet = (name: String): String => {
-      return 'Hello ' + name + '!';
-    };
-  </script>
-</zena-playground>
+export let main = () => {
+  console.log(greet('Zena Developer'));
+  console.log(`1 + 2 = ${add(1, 2)}`);
+};
+</script>
+<script type="sample/zena" filename="math.zena">
+export let add = (a: i32, b: i32): i32 => a + b;
+export let greet = (name: String): String => {
+  return 'Hello ' + name + '!';
+};
+</script>
+
+```zena
+import { add, greet } from './math.zena';
+
+export let main = () => {
+  console.log(greet('Zena Developer'));
+  console.log(`1 + 2 = ${add(1, 2)}`);
+};
+```
+
+</figure>
+
+</zena-example-playground>
 
 ## Project Status
 

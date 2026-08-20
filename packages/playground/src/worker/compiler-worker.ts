@@ -44,8 +44,20 @@ const post = (message: WorkerResponse) => self.postMessage(message);
 const sendLog = (level: ConsoleLevel, message: string) =>
   post({type: 'console', level, message});
 
-const errorMessage = (err: unknown): string =>
-  err instanceof Error ? err.message : String(err);
+const errorMessage = (err: unknown): string => {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    return String((err as any).message);
+  }
+  if (
+    typeof WebAssembly !== 'undefined' &&
+    'Exception' in WebAssembly &&
+    err instanceof (WebAssembly as any).Exception
+  ) {
+    return 'WebAssembly execution exception';
+  }
+  return String(err);
+};
 
 async function init(request: InitRequest): Promise<void> {
   if (!request.wasmBytes && !request.wasmUrl) {
@@ -134,26 +146,34 @@ function check(request: CheckRequest): void {
 function hover(request: HoverRequest): void {
   withService(request.id, (service) => {
     syncFiles(service, request.files);
-    post({
-      type: 'hover',
-      id: request.id,
-      hover: service.hover(request.path, request.offset),
-    });
+    try {
+      post({
+        type: 'hover',
+        id: request.id,
+        hover: service.hover(request.path, request.offset),
+      });
+    } catch {
+      post({type: 'hover', id: request.id, hover: null});
+    }
   });
 }
 
 function completions(request: CompletionsRequest): void {
   withService(request.id, (service) => {
     syncFiles(service, request.files);
-    post({
-      type: 'completions',
-      id: request.id,
-      completions: service.completions(
-        request.path,
-        request.offset,
-        request.source,
-      ),
-    });
+    try {
+      post({
+        type: 'completions',
+        id: request.id,
+        completions: service.completions(
+          request.path,
+          request.offset,
+          request.source,
+        ),
+      });
+    } catch {
+      post({type: 'completions', id: request.id, completions: []});
+    }
   });
 }
 

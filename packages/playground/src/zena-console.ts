@@ -113,6 +113,7 @@ export class ZenaConsole extends PlaygroundConnectedElement {
       display: flex;
       flex-direction: column;
       gap: 6px;
+      text-align: left;
     }
 
     .log-item {
@@ -124,6 +125,7 @@ export class ZenaConsole extends PlaygroundConnectedElement {
       display: flex;
       flex-direction: column;
       gap: 2px;
+      text-align: left;
     }
 
     .log-item-log {
@@ -253,13 +255,11 @@ export class ZenaConsole extends PlaygroundConnectedElement {
 
       <div class="console-body">
         ${logs.length === 0
-          ? html`
-              <div
-                style="color: var(--rad-neutral-text-muted, #475569); font-style: italic; padding: 4px;"
-              >
-                Click ▶ Run or press ${shortcutLabel} to execute program.
-              </div>
-            `
+          ? html`<div
+              style="color: var(--rad-neutral-text-muted, #475569); font-style: italic; padding: 4px; text-align: left;"
+            >
+              Click ▶ Run or press ${shortcutLabel} to execute program.
+            </div>`
           : logs.map(
               (log) =>
                 html`<div class="log-item log-item-${log.level}">
