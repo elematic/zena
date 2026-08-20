@@ -40,22 +40,19 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main
 
 An npm monorepo managed with [Wireit](https://github.com/google/wireit).
 
-| Path                        | What it is                                |
-| --------------------------- | ----------------------------------------- |
-| `packages/compiler`         | Bootstrap compiler, written in TypeScript |
-| `packages/zena-compiler`    | Self-hosted compiler, written in Zena     |
-| `packages/stdlib`           | Standard library                          |
-| `packages/cli`              | Node-based CLI                            |
-| `packages/zena-cli`         | Native Rust CLI, runs Zena via Wasmtime   |
-| `packages/runtime`          | JS runtime helpers                        |
-| `packages/language-service` | Language server                           |
-| `packages/website`          | This site                                 |
-| `tests/language/`           | Portable tests, shared by both compilers  |
-| `docs/design/`              | Design documents, written while deciding  |
+| Path                        | What it is                               |
+| --------------------------- | ---------------------------------------- |
+| `packages/zena-compiler`    | Self-hosted compiler, written in Zena    |
+| `packages/stdlib`           | Standard library                         |
+| `packages/zena-cli`         | Native Rust CLI, runs Zena via Wasmtime  |
+| `packages/runtime`          | JS runtime helpers                       |
+| `packages/language-service` | Language server                          |
+| `packages/website`          | This site                                |
+| `tests/language/`           | Portable tests                           |
+| `docs/design/`              | Design documents, written while deciding |
 
-There are **two compilers**, and both must pass the same portable tests. The
-self-hosted one is the future; the bootstrap one is being retired. See
-[Status and roadmap](/development/roadmap/).
+The compiler is **self-hosted**: written in Zena, running on Wasmtime via `zena-cli`.
+See [Status and roadmap](/development/roadmap/).
 
 ## Tests and formatting
 
@@ -68,9 +65,7 @@ comment directives, in three categories:
 | `semantics/` | Type checking | `// @mode: check`, `// @error:` on failing lines    |
 | `execution/` | Codegen       | `// @mode: run`, `// @result:` for the return value |
 
-**Prefer a portable test over a TypeScript-only one.** A portable test validates
-both compilers against the same spec; a test in `packages/compiler/src/test/`
-only ever covers one of them.
+**Prefer portable tests.** All new features and bugfixes should add portable tests under `tests/language/`.
 
 Formatting is Prettier, and CI checks it:
 

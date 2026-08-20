@@ -29,11 +29,11 @@ npm install
 npm run build
 ```
 
-That produces the CLI at `packages/cli/lib/cli.js`. Add a shell alias so the
+That produces the CLI at `target/release/zena-cli`. Add a shell alias so the
 rest of these docs read the way they eventually will:
 
 ```bash
-alias zena="node $(pwd)/packages/cli/lib/cli.js"
+alias zena="$(pwd)/target/release/zena-cli"
 ```
 
 ::: tip Nix users

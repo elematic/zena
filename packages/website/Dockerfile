@@ -15,16 +15,25 @@
 # specifiers -- so the final image is Node plus _site/ and a dependency-free
 # static server. Nothing else is carried over.
 #
-# Note that only Node is required. `stdlib:build` and `cli:build` are plain
-# `tsc`, and lsp.wasm is produced by running the Zena CLI under Node.
-# wasmtime, wasm-tools and the Rust toolchain are used by tests, not by this
-# build, so the flake is not needed here.
+# Note that Node and Rust are required for the builder stage: `zena-cli` builds
+# via Cargo, which executes the bootstrap compiler to produce `lsp.wasm` for the
+# language service and playground.
 #
 #   Build and run locally:  npm run docker:run
 #   Deploy to Cloud Run:    npm run deploy
 
 # Node 26 to match the repo's `engines: {node: '>=25.0.0'}` and the flake.
 FROM node:26-slim AS builder
+
+# Install build dependencies and Rust toolchain for zena-cli
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    ca-certificates \
+  && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /app
 
@@ -33,9 +42,7 @@ WORKDIR /app
 # to resolve the workspace tree, hence the file-by-file copy: a wildcard COPY
 # would flatten them into one directory.
 COPY package.json package-lock.json ./
-COPY packages/cli/package.json packages/cli/
 COPY packages/codemirror/package.json packages/codemirror/
-COPY packages/compiler/package.json packages/compiler/
 COPY packages/language-service/package.json packages/language-service/
 COPY packages/playground/package.json packages/playground/
 COPY packages/runtime/package.json packages/runtime/
@@ -54,8 +61,8 @@ RUN npm ci
 # out of the context.
 COPY . .
 
-# wireit walks the dependency graph from here: compiler, stdlib, runtime and
-# cli via tsc, then lsp.wasm via the Zena CLI, then esbuild and Eleventy.
+# wireit walks the dependency graph from here: stdlib, runtime, zena-cli via
+# cargo, then lsp.wasm via the Zena CLI, then esbuild and Eleventy.
 #
 # NODE_ENV is set on this command rather than with ENV, deliberately. The
 # esbuild config in eleventy.config.js minifies and drops sourcemaps only when
