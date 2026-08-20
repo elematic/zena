@@ -84,7 +84,7 @@
 
           src = ./.;
 
-          npmDepsHash = "sha256-uTBrDOytZNGE5lmdHp2oHomv1gp1GHcyUk/Ph5xJRmU=";
+          npmDepsHash = "sha256-tsRpn/YCBW0aVtUen1lfBMpIkzEmoAuS2aw6aH+umGA=";
 
           # Don't compile native addons. buildNpmPackage runs `npm rebuild`
           # after the install, which tries to build keytar's native binding
