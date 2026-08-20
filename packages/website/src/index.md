@@ -233,7 +233,15 @@ Zena is a garbage-collected language, providing memory safety and developer
 convenience for everyday programming. Zena compiles directly to WebAssembly GC,
 so no garbage colelctor is bundled with your binary.
 
-Uniquely, Zena pairs its garbage collector with an affine ownership system (`Own<T>`, `Borrow<T>`), allowing safe, automatic management of foreign handles and non-GC resources alongside standard managed objects.
+Uniquely, Zena pairs its garbage collector with an affine ownership system
+(`Own<T>`, `Borrow<T>`), allowing safe, automatic management of foreign handles
+and non-GC resources alongside standard managed objects. Zena also allows direct
+WebAssembly linear memory access with the `zena:memory` library for integration
+with WASI and other systems.
+
+In the near future Zena-allocated linear memory will be automatically managed by
+the affine type system, and value types will allow declaring structured data
+that can live in linear memory or in the GC heap, freely mixed.
 
 </details>
 
