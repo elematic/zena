@@ -50,7 +50,15 @@ function scanDir(dir: string) {
 scanDir(stdlibDir);
 
 const outFile = join(outDir, 'stdlib-data.json');
-writeFileSync(outFile, JSON.stringify(stdlibFiles, null, 2), 'utf8');
+const newContent = JSON.stringify(stdlibFiles, null, 2);
+try {
+  const existingContent = readFileSync(outFile, 'utf8');
+  if (existingContent === newContent) {
+    process.exit(0);
+  }
+} catch {}
+
+writeFileSync(outFile, newContent, 'utf8');
 console.log(
   `Generated ${outFile} with ${Object.keys(stdlibFiles).length} stdlib keys.`,
 );
