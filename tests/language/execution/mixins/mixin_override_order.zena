@@ -1,0 +1,39 @@
+// @mode: run
+// @invoke: main
+// @result: 2110
+
+class Base {
+  new();
+  value(): i32 { return 1; }
+  baseOnly(): i32 { return 1000; }
+}
+
+mixin M1 {
+  value(): i32 { return 10; }
+  m1Only(): i32 { return 100; }
+}
+
+mixin M2 {
+  value(): i32 { return 20; }
+  m2Only(): i32 { return 1000; }
+}
+
+class C1 extends Base with M1, M2 {
+  new() : super();
+}
+
+class C2 extends Base with M1, M2 {
+  new() : super();
+  value(): i32 { return 30; }
+}
+
+export let main = (): i32 => {
+  let c1 = new C1();
+  let c2 = new C2();
+  // c1.value() should be 20 (M2 overrides M1 and Base)
+  // c1.baseOnly() should be 1000
+  // c1.m1Only() should be 100
+  // c1.m2Only() should be 1000
+  // Total: 20 + 1000 + 100 + 1000 - 10 = 2110
+  return c1.value() + c1.baseOnly() + c1.m1Only() + c1.m2Only() - 10;
+};

@@ -79,21 +79,14 @@ export final class ClassHierarchyAnalysis {
         }
       }
       if (model != null) {
+        var body: Array<Node> | null = null;
         if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
-          let mixinMembers = new GrowableArray<Node>();
-          let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
-          
-          let allMembers = new GrowableArray<Node>();
-          for (let member in cd.body) {
-            allMembers.push(member);
-          }
-          for (let member in mixinMembers) {
-            allMembers.push(member);
-          }
-          
-          for (let member in allMembers) {
+          body = model.classDeclarations[lookupId].body;
+        } else if (model.mixinDeclarations.has(lookupId)) {
+          body = model.mixinDeclarations[lookupId].body;
+        }
+        if (body != null) {
+          for (let member in (body as Array<Node>)) {
             if (member is MethodDefinition) {
               if (member.isAbstract) { continue; }
               let name = getMethodName(member);
@@ -143,21 +136,14 @@ export final class ClassHierarchyAnalysis {
         }
       }
       if (model != null) {
+        var body: Array<Node> | null = null;
         if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
-          let mixinMembers = new GrowableArray<Node>();
-          let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
-          
-          let allMembers = new GrowableArray<Node>();
-          for (let member in cd.body) {
-            allMembers.push(member);
-          }
-          for (let member in mixinMembers) {
-            allMembers.push(member);
-          }
-          
-          for (let member in allMembers) {
+          body = model.classDeclarations[lookupId].body;
+        } else if (model.mixinDeclarations.has(lookupId)) {
+          body = model.mixinDeclarations[lookupId].body;
+        }
+        if (body != null) {
+          for (let member in (body as Array<Node>)) {
             if (member is MethodDefinition) {
               if (member.isAbstract) { continue; }
               let name = getMethodName(member);
@@ -213,21 +199,14 @@ export final class ClassHierarchyAnalysis {
         }
       }
       if (model != null) {
+        var body: Array<Node> | null = null;
         if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
-          let mixinMembers = new GrowableArray<Node>();
-          let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
-          
-          let allMembers = new GrowableArray<Node>();
-          for (let member in cd.body) {
-            allMembers.push(member);
-          }
-          for (let member in mixinMembers) {
-            allMembers.push(member);
-          }
-          
-          for (let member in allMembers) {
+          body = model.classDeclarations[lookupId].body;
+        } else if (model.mixinDeclarations.has(lookupId)) {
+          body = model.mixinDeclarations[lookupId].body;
+        }
+        if (body != null) {
+          for (let member in (body as Array<Node>)) {
             if (member is FieldDefinition) {
               if (member.isAbstract) { continue; }
               let name = match (member.name) {
@@ -288,21 +267,14 @@ export final class ClassHierarchyAnalysis {
         }
       }
       if (model != null) {
+        var body: Array<Node> | null = null;
         if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
-          let mixinMembers = new GrowableArray<Node>();
-          let seenMixins = new HashMap<MixinKey, boolean>();
-          collectMixinMembers(this.program, model, cd.mixins, mixinMembers, seenMixins);
-          
-          let allMembers = new GrowableArray<Node>();
-          for (let member in cd.body) {
-            allMembers.push(member);
-          }
-          for (let member in mixinMembers) {
-            allMembers.push(member);
-          }
-          
-          for (let member in allMembers) {
+          body = model.classDeclarations[lookupId].body;
+        } else if (model.mixinDeclarations.has(lookupId)) {
+          body = model.mixinDeclarations[lookupId].body;
+        }
+        if (body != null) {
+          for (let member in (body as Array<Node>)) {
             if (member is AccessorDeclaration) {
               let name = getAccessorName(member);
               if (accName.length > 4 && member.getter != null && accName.sliceBytes(0, 4) == "get#") {
@@ -355,33 +327,8 @@ export final class ClassHierarchyAnalysis {
       let currVal = curr;
       if (currVal.id == baseType.id) return true;
       if (currVal.genericSource != null && (currVal.genericSource as ClassType).id == baseType.id) return true;
-      
-      // Check mixins
-      let lookupId = (currVal.genericSource ?? currVal).symbolId;
-      var model: SemanticModel | null = null;
-      if (currVal.sourcePath != "") {
-        if (let (true, unit) = this.program.unitsByPath.get(currVal.sourcePath)) {
-          model = unit.model;
-        }
-      }
-      if (model == null && this.classModels.has(lookupId)) {
-        model = this.classModels[lookupId];
-      }
-      if (model == null) {
-        if (let (true, m) = this.program.modelIndex.symbolToModel.get(lookupId)) {
-          model = m;
-        }
-      }
-      if (model != null) {
-        if (model.classDeclarations.has(lookupId)) {
-          let cd = model.classDeclarations[lookupId];
-          let seenIds = this.getClassMixinIds(cd, lookupId, model);
-          if (seenIds.has(baseType.symbolId)) {
-            return true;
-          }
-        }
-      }
-      
+      if (currVal.symbolId == baseType.symbolId) return true;
+      if (currVal.genericSource != null && (currVal.genericSource as ClassType).symbolId == baseType.symbolId) return true;
       curr = currVal.superType;
     }
     return false;
@@ -396,19 +343,6 @@ export final class ClassHierarchyAnalysis {
       if (genericSource != null) {
         list.add(genericSource.symbolId);
       }
-      
-      let lookupId = (currVal.genericSource ?? currVal).symbolId;
-      if (let (true, m) = this.classModels.get(lookupId)) {
-        if (m.classDeclarations.has(lookupId)) {
-          let cd = m.classDeclarations[lookupId];
-          let seenIds = this.getClassMixinIds(cd, lookupId, m);
-          let keys = seenIds.keys();
-          while (let (true, k) = keys.next()) {
-            list.add(k);
-          }
-        }
-      }
-      
       curr = currVal.superType;
     }
   }

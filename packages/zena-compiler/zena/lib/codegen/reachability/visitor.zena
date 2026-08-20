@@ -275,9 +275,10 @@ export final class TypeLowerer implements TypeLowererInterface {
         this.pass.wasm.templateStringsArrayClass = t;
       }
       
-      // Register specialized class struct & methods if generic instantiation
+      // Register specialized class struct & methods if generic instantiation or mixin intermediate
       let typeArguments = t.typeArguments;
-      if (typeArguments != null && typeArguments.length > 0 && isConcrete(t)) {
+      let isGenericInst = typeArguments != null && typeArguments.length > 0 && isConcrete(t);
+      if (isGenericInst || (t.isMixinIntermediate && !t.isExtension)) {
         // An ERASURE is not a specialization. A mention of one is
         // made by code that does not run: `#linkSuperAndVT` naming a
         // subclass template's supertype, or the walk of a generic
@@ -962,6 +963,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     var demandCt: ClassType | null = resolved;
     while (demandCt != null) {
       let dc = demandCt;
+      if (dc.isMixinIntermediate) {
+        demandCt = dc.superType;
+        continue;
+      }
       this.pass.ctorDemandedGenerics.add((dc.genericSource ?? dc).symbolId);
       if (isConcrete(dc)) {
         this.pass.notePendingMemberReach(
@@ -1213,8 +1218,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     let miType = mi.type;
     if (!(miType is FunctionType)) { return; }
-    if (miType.typeParameters == null ||
-        (miType.typeParameters as GrowableArray<TypeParameterType>).length == 0) {
+    let {typeParameters} = miType;
+    if (typeParameters == null || typeParameters.length == 0) {
       return;
     }
     // The checker solved the arguments onto the member's node type;

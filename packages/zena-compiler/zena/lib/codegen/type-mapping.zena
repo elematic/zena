@@ -321,6 +321,8 @@ export let substituteTypeParamsInCodegen = (
         inst.isAbstract = ct.isAbstract;
         inst.isExtension = ct.isExtension;
         inst.isSealed = ct.isSealed;
+        inst.isMixinIntermediate = ct.isMixinIntermediate;
+        inst.privateScopeKey = ct.privateScopeKey;
         inst.sealedVariants = ct.sealedVariants;
         inst.declaredFields = ct.declaredFields;
         inst.forwardVariantNames = ct.forwardVariantNames;
@@ -715,13 +717,23 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var memberType: Type | null = null;
     if (it.members.has(propName)) {
-      let fi = it.members[propName] as FieldInfo;
-      memberType = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, fi.type);
+      let fi = it.members[propName];
+      if (fi is FieldInfo) {
+        memberType = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, fi.type);
+      } else if (fi is MethodInfo) {
+        let ft = fi.type as FunctionType;
+        let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
+        memberType = resolvedFt.returnType;
+      }
     } else if (it.members.has(fieldName)) {
-      let mi = it.members[fieldName] as MethodInfo;
-      let ft = mi.type as FunctionType;
-      let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
-      memberType = resolvedFt.returnType;
+      let mi = it.members[fieldName];
+      if (mi is MethodInfo) {
+        let ft = mi.type as FunctionType;
+        let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
+        memberType = resolvedFt.returnType;
+      } else if (mi is FieldInfo) {
+        memberType = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, mi.type);
+      }
     }
     if (memberType == null) {
       throw new Error("Interface getter member " + fieldName + " not found on interface " + it.name);
@@ -735,14 +747,26 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     let propName = fieldName.sliceBytes(4, fieldName.length);
     var memberType: Type | null = null;
     if (it.members.has(propName)) {
-      let fi = it.members[propName] as FieldInfo;
-      memberType = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, fi.type);
+      let fi = it.members[propName];
+      if (fi is FieldInfo) {
+        memberType = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, fi.type);
+      } else if (fi is MethodInfo) {
+        let ft = fi.type as FunctionType;
+        let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
+        if (resolvedFt.parameters.length > 0) {
+          memberType = resolvedFt.parameters[0];
+        }
+      }
     } else if (it.members.has(fieldName)) {
-      let mi = it.members[fieldName] as MethodInfo;
-      let ft = mi.type as FunctionType;
-      let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
-      if (resolvedFt.parameters.length > 0) {
-        memberType = resolvedFt.parameters[0];
+      let mi = it.members[fieldName];
+      if (mi is MethodInfo) {
+        let ft = mi.type as FunctionType;
+        let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
+        if (resolvedFt.parameters.length > 0) {
+          memberType = resolvedFt.parameters[0];
+        }
+      } else if (mi is FieldInfo) {
+        memberType = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, mi.type);
       }
     }
     if (memberType == null) {
@@ -754,16 +778,25 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     let returns = new GrowableArray<ValType>();
     return wasm.getSignature(params, returns);
   } else {
-    let mi = it.members[fieldName] as MethodInfo;
-    let ft = mi.type as FunctionType;
-    let resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
+    var resolvedFt: FunctionType | null = null;
+    if (it.members.has(fieldName)) {
+      let mi = it.members[fieldName];
+      if (mi.type is FunctionType) {
+        let ft = mi.type as FunctionType;
+        resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
+      }
+    }
+    if (resolvedFt == null) {
+      throw new Error("Interface method " + fieldName + " not found on interface " + it.name);
+    }
+    let rFt = resolvedFt;
     let params = new GrowableArray<ValType>();
     params.push(new ValTypeAnyRef());
-    for (let p in resolvedFt.parameters) {
+    for (let p in rFt.parameters) {
       mapParamTypeToWasmParams(wasm, p, params);
     }
     let returns = new GrowableArray<ValType>();
-    mapReturnTypeToWasmResults(wasm, resolvedFt.returnType, returns);
+    mapReturnTypeToWasmResults(wasm, rFt.returnType, returns);
     return wasm.getSignature(params, returns);
   }
 };
@@ -824,6 +857,8 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
         }
         inst.genericSource = ct.genericSource ?? ct;
         inst.sourcePath = ct.sourcePath;
+        inst.isMixinIntermediate = ct.isMixinIntermediate;
+        inst.privateScopeKey = ct.privateScopeKey;
         for (let impl in ct.implementsList) {
           inst.implementsList.push(eraseTypeParameters(wasm, impl) as InterfaceType);
         }
@@ -854,6 +889,8 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
         } else {
           null
         };
+        inst.isMixinIntermediate = ct.isMixinIntermediate;
+        inst.privateScopeKey = ct.privateScopeKey;
         inst as Type
       } else {
         t as Type
@@ -1695,6 +1732,8 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
           inst.sealedVariants = resolvedCt.sealedVariants;
           inst.declaredFields = resolvedCt.declaredFields;
           inst.forwardVariantNames = resolvedCt.forwardVariantNames;
+          inst.isMixinIntermediate = resolvedCt.isMixinIntermediate;
+          inst.privateScopeKey = resolvedCt.privateScopeKey;
           inst as Type
         } else {
           resolvedCt as Type

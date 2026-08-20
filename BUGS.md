@@ -1650,25 +1650,6 @@ found, returning false`, so the reachability pass is probably
   bootstrap follow) or the self-hosted parser should enforce
   super-last. Decide, then pin with a semantics test.
 
-### Mixin method bodies are re-typed per application on shared AST nodes
-
-- **Found**: 2026-07-22 (while fixing the mixin private field collision)
-- **Severity**: medium (latent miscompile risk; blocks node-type reasoning)
-- **Workaround**: none needed for privates (WasmFunction.privateScopeKey
-  bypasses node types); avoid type-divergent host-dependent typing in
-  mixin bodies.
-- **Details**: A mixin's body AST is shared by every application, but
-  the checker re-checks it per application and setNodeType overwrites
-  the shared nodes — observed directly: getNodeType(this) inside a
-  mixin method returned the HOST class (e.g. HostA), not the mixin's
-  synthetic This. Consequences: (1) codegen cannot derive lexical
-  identity from node types for mixin code (why the private-field fix
-  stores the scope on WasmFunction instead); (2) if two applications
-  give a mixin-body expression genuinely different types (e.g. via
-  the on-type), the LAST application's types win for every copy —
-  a latent wrong-types miscompile for earlier copies. Consider
-  per-application node-type maps for mixin bodies, or checking mixin
-  bodies once against This like classes.
 
 ### No narrowing from destructured tuple elements
 

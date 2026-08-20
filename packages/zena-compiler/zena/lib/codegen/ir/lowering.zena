@@ -18,7 +18,7 @@ import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import { parseF64, parseI32, i32ToString } from 'zena:string-convert';
 import {
-  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression,
+  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression,
 } from '../../ast.zena';
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
@@ -1655,8 +1655,12 @@ export final class FunctionLowerer {
       this.#mixinFieldValues(values, ct, structType, cd, false);
     }
     let superArgs = new GrowableArray<i32>();
-    if (ct.superType != null) {
-      let superType = ct.superType as ClassType;
+    var superWithCtor: ClassType | null = ct.superType;
+    while (superWithCtor != null && superWithCtor.isMixinIntermediate) {
+      superWithCtor = superWithCtor.superType;
+    }
+    if (superWithCtor != null) {
+      let superType = superWithCtor as ClassType;
       let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
       if (let (true, superCtor) = this.wasm.classMethodMap.get(ctorKey)) {
         // The default constructor forwards its own params to super.
@@ -1708,8 +1712,12 @@ export final class FunctionLowerer {
 
   #synthCaseLevel(ct: ClassType, structType: WasmStruct,
       cd: ClassDeclaration | null, params: Array<i32>): CtorLevel {
-    if (ct.superType != null) {
-      let superType = ct.superType as ClassType;
+    var superWithCtor: ClassType | null = ct.superType;
+    while (superWithCtor != null && superWithCtor.isMixinIntermediate) {
+      superWithCtor = superWithCtor.superType;
+    }
+    if (superWithCtor != null) {
+      let superType = superWithCtor as ClassType;
       let ctorKey = getClassMethodKey(getClassKey(superType), '<constructor>');
       if (let (true, superCtor) = this.wasm.classMethodMap.get(ctorKey)) {
         // The case-class constructor passes nothing to super: the
@@ -1854,11 +1862,15 @@ export final class FunctionLowerer {
     let {superInitializer} = md;
     if (superInitializer != null) {
       let si = superInitializer as SuperInitializer;
-      if (ct.superType == null) {
+      var superWithCtor: ClassType | null = ct.superType;
+      while (superWithCtor != null && superWithCtor.isMixinIntermediate) {
+        superWithCtor = superWithCtor.superType;
+      }
+      if (superWithCtor == null) {
         this.#bail('super without superclass');
       }
       let superKey = getClassMethodKey(
-          getClassKey(ct.superType as ClassType), '<constructor>');
+          getClassKey(superWithCtor), '<constructor>');
       let superCtor = if (let (true, sc) = this.wasm.classMethodMap.get(superKey)) sc else null;
       if (superCtor == null) {
         this.#bail('super constructor not found');
@@ -1997,8 +2009,15 @@ export final class FunctionLowerer {
   #ctorOwnFieldValues(structType: WasmStruct,
       values: HashMap<String, i32>): GrowableArray<i32> {
     var ownStart = 1;
-    if (structType.superStruct != null) {
-      ownStart = (structType.superStruct as WasmStruct).fields.length;
+    var s: WasmStruct | null = structType.superStruct;
+    while (s != null) {
+      let curr = s;
+      if (curr.classType != null && (curr.classType as ClassType).isMixinIntermediate) {
+        s = curr.superStruct;
+        continue;
+      }
+      ownStart = curr.fields.length;
+      break;
     }
     let list = new GrowableArray<i32>();
     var fi = ownStart;
@@ -2054,6 +2073,10 @@ export final class FunctionLowerer {
     var anc = ct.superType;
     while (anc != null) {
       let ancCt = anc;
+      if (ancCt.isMixinIntermediate) {
+        anc = ancCt.superType;
+        continue;
+      }
       let ancKey = getClassKey(ancCt);
       let initFn = if (let (true, f) = this.wasm.classMethodMap.get(
           getClassMethodKey(ancKey, '<ctor-init>'))) f else null;
@@ -2063,8 +2086,15 @@ export final class FunctionLowerer {
       }
       let ancStruct = initFn.structType as WasmStruct;
       var ancOwnStart = 1;
-      if (ancStruct.superStruct != null) {
-        ancOwnStart = (ancStruct.superStruct as WasmStruct).fields.length;
+      var s: WasmStruct | null = ancStruct.superStruct;
+      while (s != null) {
+        let curr = s;
+        if (curr.classType != null && (curr.classType as ClassType).isMixinIntermediate) {
+          s = curr.superStruct;
+          continue;
+        }
+        ancOwnStart = curr.fields.length;
+        break;
       }
       let ownCount = ancStruct.fields.length - ancOwnStart;
       let rets = initFn.signature.returns;
@@ -2715,8 +2745,8 @@ export final class FunctionLowerer {
     if (let (true, declInfo) = ct.members.get(propName)) {
       if (declInfo.type is FunctionType) {
         let declFt = declInfo.type as FunctionType;
-        if (declFt.typeParameters != null &&
-            (declFt.typeParameters as GrowableArray<TypeParameterType>).length > 0) {
+        let {typeParameters} = declFt;
+        if (typeParameters != null && typeParameters.length > 0) {
           let targs = this.#solvedCallTypeArguments(call);
           if (targs == null) {
             this.#bail('generic static call');
@@ -5189,8 +5219,8 @@ export final class FunctionLowerer {
     if (let (true, declInfo) = ct.members.get(propName)) {
       if (declInfo.type is FunctionType) {
         let declFt = declInfo.type as FunctionType;
-        if (declFt.typeParameters != null &&
-            (declFt.typeParameters as GrowableArray<TypeParameterType>).length > 0) {
+        let {typeParameters} = declFt;
+        if (typeParameters != null && typeParameters.length > 0) {
           let targs = this.#solvedCallTypeArguments(call);
           if (targs == null) {
             this.#bail('generic method call');

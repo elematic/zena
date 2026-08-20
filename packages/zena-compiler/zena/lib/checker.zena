@@ -196,6 +196,12 @@ export final class SharedCheckerState {
   declaredSymbolTypes = new HashMap<String, Type>();
 
   /**
+   * Intermediate class types created for mixin applications, keyed by
+   * "<base type id>&<mixin type id><type arguments>".
+   */
+  mixinApplications = new HashMap<String, ClassType>();
+
+  /**
    * Which model owns each node and binding checked under this state.
    * Lives here because that is a property of the check: every
    * `Program` built over these `CheckResult`s would compute the same
@@ -755,6 +761,10 @@ final class CheckerContext {
     return this.#sharedState.typeIdGenerator.next();
   }
 
+  mixinApplications(): HashMap<String, ClassType> {
+    return this.#sharedState.mixinApplications;
+  }
+
   /**
    * The caller-written argument count for a node whose args the checker
    * extended with spliced default initializers. Splicing MUTATES the
@@ -1219,6 +1229,7 @@ final class CheckerContext {
     match (d) {
       case ClassDeclaration: { nominal = true; }
       case InterfaceDeclaration: { nominal = true; }
+      case MixinDeclaration: { nominal = true; }
       case SealedVariant: { nominal = true; }
       case _: {}
     }
@@ -1294,6 +1305,14 @@ final class CheckerContext {
         }
       }
       case InterfaceDeclaration: {
+        if (let (true, cached) = this.#sharedState.declaredNominalTypes.get(target.id)) {
+          this.#materializedTypes[info.id] = cached;
+          this.#materializedTypes[target.id] = cached;
+          this.model.setBindingType(info, cached);
+          return cached;
+        }
+      }
+      case MixinDeclaration: {
         if (let (true, cached) = this.#sharedState.declaredNominalTypes.get(target.id)) {
           this.#materializedTypes[info.id] = cached;
           this.#materializedTypes[target.id] = cached;
@@ -1550,8 +1569,26 @@ final class CheckerContext {
         return it;
       }
       case MixinDeclaration as md: {
+        var symbolId = info.id;
+        let sym = this.model.resolve(md);
+        if (sym != null) {
+          symbolId = sym.id;
+        } else {
+          let isPrelude = this.filePath.startsWith("zena:");
+          if (isPrelude) {
+            if (let (true, stub) = this.#sharedState.preludeTypes.get(md.name.name)) {
+              match (stub) {
+                case MixinType as pt: { symbolId = pt.symbolId; }
+                case _: {}
+              }
+            }
+          }
+        }
         let mt = new MixinType(md.name.name);
+        let isPrelude = this.filePath.startsWith("zena:");
+        if (isPrelude) { this.#sharedState.preludeTypes[md.name.name] = mt; }
         mt.sourcePath = this.filePath;
+        mt.symbolId = symbolId;
         mt.typeParameters = this.#declaredTypeParameters(md.typeParameters);
         return mt;
       }
@@ -7933,6 +7970,21 @@ case _: {
                             ctx.declareBinding(localTypeInfo, it);
                           }
                         }
+                        case MixinDeclaration {name}: {
+                          let preludeType = ctx.resolveTypeName(name.name);
+                          if (preludeType != null) {
+                            ctx.declareTypeName(localName, preludeType);
+                            if (localTypeInfo != null) {
+                              ctx.declareBinding(localTypeInfo, preludeType);
+                            }
+                          } else {
+                            let mt = new MixinType(name.name);
+                            ctx.declareTypeName(localName, mt);
+                            if (localTypeInfo != null) {
+                              ctx.declareBinding(localTypeInfo, mt);
+                            }
+                          }
+                        }
                         case SealedVariant {name}: {
                           let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
                           ct.isCaseClass = true;
@@ -10471,6 +10523,143 @@ let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
   }
 };
 
+let inheritMembersFrom = (fromClass: ClassType, toClass: ClassType): void => {
+  let memberKeys = fromClass.members.keys();
+  while (let (true, key) = memberKeys.next()) {
+    // Privates are never inherited: skip "#..." members, the get##/set##
+    // entries of private accessors, and mixin-scoped private members.
+    let isPrivate = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
+        key.startsWith("get##") || key.startsWith("set##") ||
+        key.contains("::#") || key.contains("::get##") || key.contains("::set##");
+    if (!isPrivate) {
+      let parentMember = fromClass.members[key];
+      let fromParams = fromClass.typeParameters;
+      var noSubstitution = true;
+      if (fromParams != null) {
+        noSubstitution = fromParams.length == 0;
+      }
+      if (noSubstitution) {
+        toClass.members[key] = parentMember;
+        continue;
+      }
+      let subType = substituteTypeParams(fromClass.typeParameters, fromClass.typeArguments, parentMember.type);
+      toClass.members[key] = match (parentMember) {
+        case FieldInfo as fi: {
+          new FieldInfo(
+            subType,
+            fi.isMutable,
+            fi.isAbstract,
+            fi.isStatic,
+            fi.isPrivate,
+            fi.hasInitializer
+          ) as MemberInfo
+        }
+        case MethodInfo as mi: {
+          new MethodInfo(
+            subType,
+            mi.isAbstract,
+            mi.isStatic,
+            mi.isPrivate,
+            mi.isFinal
+          ) as MemberInfo
+        }
+        case _: parentMember
+      };
+    }
+  }
+};
+
+let getOrCreateMixinApplication = (
+  ctx: CheckerContext,
+  superClass: ClassType | null,
+  mixinAnn: TypeAnnotation,
+  mt: MixinType,
+): ClassType => {
+  let baseKey = if (superClass != null) {
+    superClass.sourcePath + "#" + superClass.name
+  } else {
+    ""
+  };
+  let mixinSource = mt.genericSource ?? mt;
+  let mixinKey = mixinSource.sourcePath + "#" + mixinSource.name;
+  let appKey = baseKey + "&" + mixinKey;
+
+  var intermediateTemplate: ClassType | null = null;
+  if (let (true, cached) = ctx.mixinApplications().get(appKey)) {
+    intermediateTemplate = cached;
+  } else {
+    let intermediateName = (if (superClass != null) (superClass.name + "$") else "$") + mixinSource.name;
+    let intermediate = new ClassType(ctx.freshTypeId(), mixinSource.symbolId, intermediateName);
+    intermediate.isMixinIntermediate = true;
+    intermediate.sourcePath = mixinSource.sourcePath;
+    intermediate.superType = superClass;
+    intermediate.typeParameters = mixinSource.typeParameters;
+    intermediate.typeArguments = null;
+    intermediate.genericSource = null;
+    intermediate.privateScopeKey = mixinSource.privateScopeKey;
+    intermediate.onType = mixinSource.onType;
+    intermediate.mixins = mixinSource.mixins;
+
+    // Inherit members from superclass if present
+    if (superClass != null) {
+      inheritMembersFrom(superClass, intermediate);
+    }
+
+    // Copy members from generic mixin source
+    let memberKeys = mixinSource.members.keys();
+    while (let (true, key) = memberKeys.next()) {
+      let mtMember = mixinSource.members[key];
+      let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
+          key.startsWith("get##") || key.startsWith("set##");
+      if (mtMember.isAbstract && intermediate.members.has(key) && !intermediate.members[key].isAbstract) {
+        continue;
+      }
+      var storeKey = key;
+      if (isPrivateKey && (mtMember is FieldInfo || mtMember is MethodInfo)) {
+        let scope = mixinSource.privateScopeKey;
+        storeKey = if (scope != null) {
+          scope + "::" + key
+        } else {
+          mixinSource.name + "_This::" + key
+        };
+      }
+      intermediate.members[storeKey] = mtMember;
+    }
+
+    ctx.mixinApplications()[appKey] = intermediate;
+    intermediateTemplate = intermediate;
+  }
+
+  let template = intermediateTemplate as ClassType;
+
+  // Validate method override types
+  let memberKeys = mt.members.keys();
+  while (let (true, key) = memberKeys.next()) {
+    let mtMember = mt.members[key];
+    let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
+        key.startsWith("get##") || key.startsWith("set##");
+    if (mtMember is MethodInfo && !isPrivateKey && superClass != null) {
+      if (superClass.members.has(key)) {
+        let existingMember = superClass.members[key];
+        if (!isAssignableTo(ctx, mtMember.type, existingMember.type)) {
+          ctx.error(
+            "Type mismatch in overridden method '" + key + "' is not compatible.",
+            DiagnosticCode.TypeMismatch,
+            mixinAnn.loc
+          );
+        }
+      }
+    }
+  }
+
+  let {typeArguments} = mt;
+  if (typeArguments != null && typeArguments.length > 0) {
+    return instantiateClassType(template, typeArguments as Array<Type>);
+  } else {
+    return template;
+  }
+};
+
 let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   // Access Identifier.name directly. In Zena AST, ClassDeclaration.name is an Identifier
   // which has a .name: String field. Use cd.name.name directly.
@@ -10580,6 +10769,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   }
 
   // Resolve superclass.
+  var currentSuper: ClassType | null = null;
   let {superClass} = cd;
   if (superClass != null) {
     let superAnn = superClass;
@@ -10672,56 +10862,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             }
           }
         }
-        classType.superType = st;
-        // Inherit members from superclass.
-        let memberKeys = st.members.keys();
-        while (let (true, key) = memberKeys.next()) {
-          // Privates are never inherited: skip "#..." members and the
-          // get##/set## entries of private accessors.
-          if ((key.length == 0 || key.sliceBytes(0, 1) != "#") &&
-              !key.startsWith("get##") && !key.startsWith("set##")) {
-            let parentMember = st.members[key];
-            // With no type parameters to substitute, share the parent's
-            // MemberInfo instead of cloning it. An unannotated field holds
-            // an ErrorType placeholder until its initializer is inferred,
-            // and that inference patches the FieldInfo in place — a clone
-            // taken by a subclass materialized on demand before the base's
-            // body check (e.g. a sealed variant mentioned by an earlier
-            // base method) would keep the stale placeholder forever.
-            let stParams = st.typeParameters;
-            var noSubstitution = true;
-            if (stParams != null) {
-              noSubstitution = stParams.length == 0;
-            }
-            if (noSubstitution) {
-              classType.members[key] = parentMember;
-              continue;
-            }
-            let subType = substituteTypeParams(st.typeParameters, st.typeArguments, parentMember.type);
-            classType.members[key] = match (parentMember) {
-              case FieldInfo as fi: {
-                new FieldInfo(
-                  subType,
-                  fi.isMutable,
-                  fi.isAbstract,
-                  fi.isStatic,
-                  fi.isPrivate,
-                  fi.hasInitializer
-                ) as MemberInfo
-              }
-              case MethodInfo as mi: {
-                new MethodInfo(
-                  subType,
-                  mi.isAbstract,
-                  mi.isStatic,
-                  mi.isPrivate,
-                  mi.isFinal
-                ) as MemberInfo
-              }
-              case _: parentMember
-            };
-          }
-        }
+        currentSuper = st;
       }
       case _: {
         ctx.error(
@@ -10765,15 +10906,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           if (onType != null) {
             let mtOnType = onType;
             var satisfied = false;
-            var st: Type | null = null;
-            if (cd.superClass != null && classType.superType != null) {
-              st = classType.superType as Type;
-            }
-            if (st != null && isAssignableTo(ctx, st, mtOnType)) {
+            if (currentSuper != null && isAssignableTo(ctx, currentSuper as Type, mtOnType)) {
               satisfied = true;
             }
 
-            if (!satisfied && cd.implementsList != null && classType.implementsList != null) {
+            if (!satisfied && classType.implementsList != null) {
               var i = 0;
               while (i < classType.implementsList.length) {
                 if (isAssignableTo(ctx, classType.implementsList[i] as Type, mtOnType)) {
@@ -10792,72 +10929,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               );
             }
           }
-          
-          // Copy members
-          let memberKeys = mt.members.keys();
-          while (let (true, key) = memberKeys.next()) {
-            let mtMember = mt.members[key];
-            let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
-                key.startsWith("get##") || key.startsWith("set##");
-            if (mtMember is MethodInfo && !isPrivateKey) {
-              if (classType.members.has(key)) {
-                let existingMember = classType.members[key];
-                if (!isAssignableTo(ctx, mtMember.type, existingMember.type)) {
-                  ctx.error(
-                    "Type mismatch in overridden method '" + key + "' is not compatible.",
-                    DiagnosticCode.TypeMismatch,
-                    mixinAnn.loc
-                  );
-                }
-              }
-            }
-            if (mtMember.isAbstract && classType.members.has(key) && !classType.members[key].isAbstract) {
-              continue;
-            }
-            let subType = substituteTypeParams(mt.typeParameters, mt.typeArguments, mtMember.type);
-            // Mixin private FIELDS are stored under a mixin-scoped
-            // key ("<scopeKey>::#name") so they never collide with a
-            // host class's same-named private: privacy is lexical to
-            // the mixin declaration, and code in mixin bodies reaches
-            // these through the mixin's This type (whose
-            // privateScopeKey matches). Private methods are not yet
-            // namespaced this way (tracked in BUGS.md).
-            // Mixin private FIELDS AND METHODS are stored under a
-            // mixin-scoped key: privacy is lexical to the mixin
-            // declaration, so a host's same-named private is a
-            // different member entirely.
-            var storeKey = key;
-            if (isPrivateKey && (mtMember is FieldInfo || mtMember is MethodInfo)) {
-              let scope = (mt.genericSource ?? mt).privateScopeKey;
-              storeKey = if (scope != null) {
-                scope + "::" + key
-              } else {
-                mt.name + "_This::" + key
-              };
-            }
-            classType.members[storeKey] = match (mtMember) {
-              case FieldInfo as fi: {
-                new FieldInfo(
-                  subType,
-                  fi.isMutable,
-                  fi.isAbstract,
-                  fi.isStatic,
-                  fi.isPrivate,
-                  fi.hasInitializer
-                ) as MemberInfo
-              }
-              case MethodInfo as mi: {
-                new MethodInfo(
-                  subType,
-                  mi.isAbstract,
-                  mi.isStatic,
-                  mi.isPrivate,
-                  mi.isFinal
-                ) as MemberInfo
-              }
-              case _: mtMember
-            };
+          let intermediate = getOrCreateMixinApplication(ctx, currentSuper, mixinAnn, mt);
+          if (cd.isExtension) {
+            intermediate.isExtension = true;
           }
+          currentSuper = intermediate;
         }
         case _: {
           if (!(resolvedMixin is ErrorType)) {
@@ -10871,6 +10947,11 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
       }
       mi += 1;
     }
+  }
+
+  classType.superType = currentSuper;
+  if (classType.superType != null) {
+    inheritMembersFrom(classType.superType as ClassType, classType);
   }
 
   // Process case class parameters → generate fields and constructor.
@@ -11647,9 +11728,12 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   }
 
   if (classType.constructorType == null && classType.superType != null && !classType.isExtension && cd.caseParams == null) {
-    let superCtor = (classType.superType as ClassType).constructorType;
-    if (superCtor != null) {
-      classType.constructorType = superCtor;
+    var scWalk: ClassType | null = classType.superType;
+    while (scWalk != null && scWalk.isMixinIntermediate && scWalk.constructorType == null) {
+      scWalk = scWalk.superType;
+    }
+    if (scWalk != null && scWalk.constructorType != null) {
+      classType.constructorType = scWalk.constructorType;
     }
   }
 
@@ -11814,13 +11898,16 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
             // `Resource` declares no constructor, so there is nothing for
             // `super()` to call and requiring it would be an artifact of the
             // desugaring rather than anything the author owes.
-            var superNeedsInit = classType.superType != null;
-            if (superNeedsInit) {
-              let st = classType.superType as ClassType;
-              if (st.constructorType == null && st.name == "Resource" &&
-                  st.sourcePath == "zena:ownership") {
-                superNeedsInit = false;
+            var superNeedsInit = false;
+            var scWalk: ClassType | null = classType.superType;
+            while (scWalk != null) {
+              if (!scWalk.isMixinIntermediate) {
+                if (scWalk.constructorType != null || scWalk.name != "Resource" || scWalk.sourcePath != "zena:ownership") {
+                  superNeedsInit = true;
+                }
+                break;
               }
+              scWalk = scWalk.superType;
             }
             if (superNeedsInit && md.superInitializer == null && !classType.isCaseClass) {
               ctx.error(
@@ -12299,7 +12386,11 @@ let checkSuperInitArgs = (
 ): void => {
   let args = superInit.args;
   let loc = superInit.loc;
-  let superCt = classType.superType;
+  var superWithCtor: ClassType | null = classType.superType;
+  while (superWithCtor != null && superWithCtor.isMixinIntermediate && superWithCtor.constructorType == null) {
+    superWithCtor = superWithCtor.superType;
+  }
+  let superCt = superWithCtor;
   if (superCt == null) {
     // Never legal, but keep the arguments checked so their own errors
     // still surface.
@@ -13343,6 +13434,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   ctx.declareTypeName(mixinName, mixinType);
   let info = ctx.model.resolveDeclaration(md);
   if (info != null) {
+    mixinType.symbolId = info.id;
     ctx.declareBinding(info, mixinType);
     ctx.model.addDeclaredMixin(info.id, md);
   }

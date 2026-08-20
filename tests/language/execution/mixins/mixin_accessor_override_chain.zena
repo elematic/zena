@@ -1,0 +1,42 @@
+// @mode: run
+// @invoke: main
+// @result: 222
+
+class Base {
+  var #raw: i32 = 0;
+  new();
+  num: i32 {
+    get { return this.#raw + 1; }
+    set(v) { this.#raw = v; }
+  }
+}
+
+mixin M1 on Base {
+  num: i32 {
+    get { return super.num * 2; }
+    set(v) { super.num = v + 10; }
+  }
+}
+
+mixin M2 on Base {
+  num: i32 {
+    get { return super.num + 100; }
+    set(v) { super.num = v; }
+  }
+}
+
+class C extends Base with M1, M2 {
+  new() : super();
+}
+
+export let main = (): i32 => {
+  let c = new C();
+  c.num = 50;
+  // c.num = 50 -> M2.set(50) -> M1.set(50) -> super.num = 60 -> Base.#raw = 60
+  // c.num get: M2.get -> M1.get + 100 -> (Base.get * 2) + 100 -> (61 * 2) + 100 = 122 + 100 = 222 (or similar)
+  // Let's trace:
+  // Base.get returns #raw + 1 = 61
+  // M1.get returns super.num * 2 = 61 * 2 = 122
+  // M2.get returns super.num + 100 = 122 + 100 = 222
+  return c.num;
+};
