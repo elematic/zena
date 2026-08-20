@@ -136,7 +136,207 @@ for WebAssembly GC</span>
 <div class="home-section">
   <div class="container prose">
 
-## Features
+## Language features
+
+<details>
+  <summary>TypeScript-inspired syntax</summary>
+
+Zena's syntax is immediately recognizable to anyone who has written TypeScript, Dart, or modern JavaScript. It adopts familiar arrow functions, structural records, type annotations, template literals, and standard ES module imports and exports. This familiarity makes Zena code intuitive to read and write for developers and AI agents alike, with virtually no ramp-up time for syntax.
+
+However, Zena deliberately avoids JavaScript's historical baggage: `let` binds immutable values (as in Swift and Rust), conditions strictly require `boolean` expressions (no truthiness or implicit type coercion), and there are no confusing operators like `++` or loose equality. You get the concise elegance of modern web syntax paired with predictable, strict semantics.
+
+</details>
+
+<details>
+  <summary>Sound static typing & machine primitives</summary>
+
+Unlike languages with optional or unsound type systems, Zena is strictly and soundly typed from the ground up. References are non-nullable by default (with explicit `?` nullable types), type casts are checked, and there is no unsafe `any` escape hatch to bypass checking. Local variables and closures benefit from bidirectional contextual inference, giving you safety without annotation clutter.
+
+Zena also distinguishes itself by offering real numeric machine types (`i32`, `i64`, `u32`, `f32`, `f64`) alongside structural records and arrays. Primitives are never implicitly boxed, ensuring that types accurately describe exact memory representations and eliminate runtime type errors.
+
+</details>
+
+<details>
+  <summary>Distinct & opaque types</summary>
+
+Zena provides zero-cost nominal newtypes to prevent bugs caused by accidentally mixing interchangeable primitives and IDs. Declaring a `distinct type` (e.g., `distinct type Meters = i32;`) creates a unique compile-time type that cannot be implicitly assigned to or from its underlying type, while erasing completely at runtime with zero memory or indirection overhead.
+
+For security-sensitive or domain-critical values, `opaque type` creates an unforgeable newtype. Unlike ordinary distinct types where any code can explicitly cast to the target type, opaque types strictly prohibit external casts _to_ the type outside the declaring module. The defining module acts as the sole minting authority, guaranteeing invariants for tokens, verified handles, and sanitized inputs.
+
+</details>
+
+<details>
+  <summary>Value types <span class="badge warning">In progress</span></summary>
+
+Zena is expanding its type system to support first-class value types with inline, unboxed storage. While objects are managed by the host garbage collector by default, value types provide deterministic, copy-on-write stack layouts and flat memory representations without pointer indirection.
+
+This allows performance-critical algorithms, geometric calculations, and numerical workloads to define composite data structures (such as `Vec3`, `Matrix4x4`, or high-frequency telemetry events) that achieve bare-metal efficiency without generating GC pressure or heap allocations.
+
+</details>
+
+<details>
+  <summary>Garbage collection</summary>
+
+Zena is a garbage-collected language, providing memory safety and developer convenience for everyday programming. Automatic reference tracking and reclamation eliminate vulnerabilities like use-after-free and double-free errors without requiring lifetime annotations.
+
+Uniquely, Zena pairs its garbage collector with an affine ownership system (`Own<T>`, `Borrow<T>`), allowing safe, automatic management of foreign handles and non-GC resources alongside standard managed objects.
+
+</details>
+
+<details>
+  <summary>Functional programming & expression orientation</summary>
+
+Zena treats expressions as first-class citizens. Control flow structures like `if-else`, `match`, `try-catch`, and blocks all produce values and compose cleanly into larger expressions without temporary variable declarations. Immutability is the default for both local bindings (`let`) and class fields, encouraging pure, side-effect-free data flow.
+
+First-class arrow closures, lexical scoping, and rich immutable collections give functional programming patterns equal footing alongside object-oriented ones. You can model transformations and complex logic declaratively while maintaining predictable compile-time optimizations.
+
+</details>
+
+<details>
+  <summary>Pipelines & data transformation</summary>
+
+Zena introduces the pipeline operator (`|>`) for readable, left-to-right data transformation chains. Instead of deeply nesting function calls or introducing ephemeral intermediate variables, pipelines pass values forward directly. The dedicated `$` placeholder allows piping values into arbitrary argument positions and method calls without anonymous closure overhead.
+
+This syntax bridges functional chaining and object-oriented idioms into a uniform, readable pipeline style. Whether normalizing input data, executing query pipelines, or chaining mathematical operations, code reads in the natural order of execution.
+
+</details>
+
+<details>
+  <summary>Modern OOP, constructors & mixins</summary>
+
+Zena provides an ergonomic object-oriented model designed to eliminate boilerplate. Borrowing from Dart, classes feature concise constructor parameter properties (`this.field`), initializer lists, and field immutability by default. True encapsulation is supported natively through `#` private fields and flexible access control declarations (such as `var(#field) prop` for public getters with private mutation).
+
+Rather than relying on fragile deep class inheritance hierarchies, Zena emphasizes composition through interfaces and linearizable mixins with `on` supertype constraints. This enables expressive, reusable behavior across class families without the diamond problem or multiple-inheritance complexity.
+
+</details>
+
+<details>
+  <summary>Extension classes</summary>
+
+Extension classes (`extension class ... on Type`) allow you to enrich existing types—including built-in primitives, arrays, records, and library classes—with new methods, computed properties, and zero-cost constructors without modifying their original definitions or introducing runtime wrapper overhead.
+
+Extension methods are resolved statically at compile time and erased into direct function calls, guaranteeing zero allocation and predictable execution. This enables clean, fluent domain APIs across existing data structures while avoiding the fragility and global namespace pollution of prototype monkey-patching.
+
+</details>
+
+<details>
+  <summary>Pervasive pattern matching, sealed & case classes</summary>
+
+Data modeling in Zena leverages algebraic data types through sealed class hierarchies and concise case classes, drawing inspiration from Scala and Rust. A `sealed class` defines a closed set of subtypes, allowing the compiler to enforce compile-time exhaustiveness checking on `match` expressions—if a case is added or missing, the compiler immediately flags it.
+
+Pattern matching in Zena goes beyond basic switches. It supports nested record and tuple destructuring, typed patterns, and conditional `if` guards. Patterns are integrated throughout the language, including pattern-matching conditionals like `if (let Some {value} = maybe)` and `while (let (true, item) = iter.next())` loops.
+
+</details>
+
+<details>
+  <summary>Generators & lazy iteration</summary>
+
+Zena supports generator functions (`gen`) with `yield` statements, enabling concise, stateful creation of custom `Iterator<T>` sequences. Generators integrate seamlessly with `for-in` loops and collection pipelines, executing lazily and suspending execution between yielded values.
+
+When consumed in loops, compiler optimizations lower generators into zero-allocation state machines without heap iterator objects. Generators also participate in the language's resource management and cancellation protocols, ensuring that enclosing `finally` and `using` blocks run deterministically even if iteration is abandoned early.
+
+</details>
+
+<details>
+  <summary>Async functions & cancellation</summary>
+
+Zena builds asynchronous programming directly into the language with `async`/`await` and structured cancellation scopes. Instead of threading explicit cancellation tokens or signal objects through every function signature, cancellation is ambiently inherited from parent scopes and delivered deterministically at `await` checkpoints.
+
+Cancellation is integrated as a dedicated control-flow channel—distinct from normal returns and thrown errors—which prevents `catch (e)` blocks from accidentally swallowing cancellation directives. To handle cancellation cleanly, `try` blocks can include a `cancel` clause (parallel to `catch` and `finally`) to run teardown logic when work is abandoned. For cleanup operations that must still perform asynchronous work during a cancellation unwind, `shielded` blocks temporarily suppress cancellation delivery so teardown can complete safely.
+
+</details>
+
+<details>
+  <summary>Affine ownership & resource tracking</summary>
+
+For non-GC resources—such as WASI file descriptors, WebAssembly Component Model handles, linear-memory allocations, foreign pointers, and thread-isolated data—Zena provides an affine ownership model inspired by Rust and the Wasm Component Model. Types declared as `resource class` cannot be implicitly copied, dropped, or aliased without restriction; they exist strictly in owned (`Own<T>`), borrowed (`Borrow<T>`), or unmanaged forms.
+
+Ownership is tracked statically by the compiler to enforce strict move semantics and automatic, single-owner lifecycle management. When an owned resource leaves scope without being transferred, the compiler automatically invokes its destructor, guaranteeing that foreign and system resources are freed promptly and deterministically without runtime leaks.
+
+</details>
+
+<details>
+  <summary>Explicit scoped resource cleanup with using</summary>
+
+Alongside automatic ownership tracking, Zena provides the explicit `using` declaration for structured, block-scoped lifecycle management—analogous to modern JavaScript/TypeScript and C#. Any value implementing the `Disposable` protocol can be bound with `using` to ensure its disposal action is executed deterministically upon exiting the enclosing lexical block.
+
+Cleanup is guaranteed even across exceptions or early returns, with multiple `using` bindings released in reverse declaration order. This provides a clean, declarative alternative to verbose `try/finally` blocks for managing locks, open transactions, temporary contexts, and disposable objects.
+
+</details>
+
+<details>
+  <summary>Multi-value returns & structural tuples</summary>
+
+Zena natively supports multi-value returns, mapping directly to WebAssembly's multi-value function capabilities without heap allocation. Functions can return multiple values as lightweight, unboxed tuples `(T1, T2)` that are destructured at call sites with zero runtime cost.
+
+Standard library APIs use this to eliminate sentinel values and boxing overhead—for instance, `Map.get()` returns an inline `(value, found)` tuple. Combined with structural records `{x: 1, y: 2}`, Zena gives you flexible, lightweight data grouping without declaring dedicated nominal classes for temporary aggregations.
+
+</details>
+
+<details>
+  <summary>Hardware SIMD vector primitives</summary>
+
+Zena provides direct access to 128-bit hardware vector instructions through the `v128` primitive type and the `zena:simd` standard library module. Over 200 fixed-width SIMD instructions—including `i32x4`, `f32x4`, `f64x2`, lanes, shuffles, and bitwise operations—map directly to WebAssembly SIMD bytecode.
+
+This gives numerical algorithms, graphics rendering, cryptography, and scientific computing direct access to CPU vector units with zero abstraction penalty, combining the high-level syntax of a modern language with the throughput of low-level SIMD intrinsics.
+
+</details>
+
+<details>
+  <summary>Native WebAssembly GC architecture</summary>
+
+Zena is engineered specifically for the WebAssembly GC standard rather than retrofitted from a legacy virtual machine. Language constructs—primitives, references, structural records, arrays, and classes—map directly 1:1 to native Wasm GC types and instructions. Because Zena relies on the host's native garbage collector, your compiled modules ship with no bundled GC, runtime allocator, or heavy runtime engine.
+
+The compiler leverages this direct mapping alongside whole-program optimizations, generic monomorphization, and dead-code elimination to produce exceptionally compact `.wasm` binaries that start instantly. Zena provides direct, GC-visible interoperability with JavaScript and the browser DOM without data marshaling overhead.
+
+</details>
+
+<details>
+  <summary>First class WIT integration <span class="badge warning">In progress</span></summary>
+
+Zena is building native compiler support for the WebAssembly Component Model and WebAssembly Interface Type (`.wit`) specifications. Rather than relying on external code generators or clumsy glue layers, the Zena compiler directly parses, types, and binds WIT world interfaces.
+
+This enables Zena modules to import and export standard WASI interfaces and third-party components as native Zena interfaces, types, and functions with zero runtime marshaling overhead, making Zena a tier-one language for composable Wasm ecosystems.
+
+</details>
+
+<details>
+  <summary>Numeric unit types / units of measure <span class="badge info">Planned</span></summary>
+
+Zena plans to incorporate type-level dimensional analysis and units of measure (such as `Meters`, `Seconds`, `Pixels`, or `Radians`). This allows calculations to track physical and logical dimensions at compile time, catching dimensional mismatch bugs before code ever runs.
+
+Unit arithmetic is validated automatically by the compiler—multiplying distance by time produces speed, while adding meters to seconds triggers a compile error. At runtime, unit metadata is completely erased, executing as standard unboxed machine numbers with zero performance penalty.
+
+</details>
+
+<details>
+  <summary>Contracts <span class="badge info">Planned</span></summary>
+
+Zena plans to introduce first-class Design-by-Contract capabilities, including function pre-conditions (`requires`), post-conditions (`ensures`), and class invariants. Contracts make interface expectations and system boundaries explicit and machine-checkable.
+
+Contract clauses are integrated directly into function signatures and class definitions, enabling compile-time formal verification where feasible and configurable runtime assertion checks during testing and development.
+
+</details>
+
+<details>
+  <summary>Compile-time meta-programming <span class="badge info">Planned</span></summary>
+
+Zena will introduce a hygienic, compile-time macro and meta-programming system that executes during compilation. Developers can inspect AST structures, generate boilerplate, derive traits, and construct types programmatically without external build steps or source preprocessors.
+
+Because meta-programming executes entirely at compile time, it eliminates the performance costs, security issues, and packaging overhead of runtime reflection while preserving full IDE autocompletion, type checking, and error diagnostics.
+
+</details>
+
+<details>
+  <summary>Declarative syntax(es) <span class="badge info">Planned</span></summary>
+
+Zena will support embedded declarative syntaxes for expressing hierarchical structures, UI component trees, document markup, and database queries in an intuitive, readable format.
+
+Unlike string-based template engines or runtime interpreters, declarative blocks in Zena integrate directly into the language grammar, offering full static type checking, scoped variable bindings, and compiler-driven optimizations without runtime parsing overhead.
+
+</details>
+
+## Examples
 
 Explore Zena's features through interactive examples. All examples are editable and runnable in WebAssembly.
 
