@@ -17,6 +17,7 @@ import {
   createVirtualFileReader,
   type ZenaLanguageService,
 } from '../index.js';
+import {instantiate, run, createStringReader} from '@zena-lang/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const wasmPath = resolve(__dirname, '../lsp.wasm');
@@ -136,6 +137,43 @@ suite('language service API', () => {
     // The sink is wired to the *service* instance, so nothing should arrive
     // from compiling alone — running the program is the embedder's job.
     assert.deepStrictEqual(logs, []);
+  });
+
+  test('runs snippet with top-level records and tuples', async () => {
+    const source = `// Records are anonymous structures of named fields:
+let origin = {x: 10.0, y: 20.0};
+
+// Tuples are anonymous, ordered sets of values:
+let point = (10.0, 20.0);
+
+export let main = () => {
+  console.log(\`x = \${origin.x}, y = \${origin.y}\`);
+  console.log(\`p[0] = \${point[0]}, p[1] = \${point[1]}\`);
+};
+`;
+    const docPath = 'main.zena';
+    service.openDocument(docPath, source);
+    const diags = service.check(docPath, source);
+    assert.strictEqual(diags.length, 0, `Unexpected diagnostics: ${JSON.stringify(diags)}`);
+    const bytes = service.compileToWasm(docPath, source);
+    assert.ok(bytes, 'expected a binary');
+    let programExports: WebAssembly.Exports | undefined;
+    const output: string[] = [];
+    const result = await instantiate(bytes, {
+      console: {
+        log_string: (strRef: unknown, length: number) => {
+          const reader = createStringReader(programExports!);
+          output.push(reader(strRef, length));
+        },
+      },
+    });
+    const instance = 'instance' in result ? result.instance : result;
+    programExports = instance.exports;
+    await run(instance);
+    assert.deepStrictEqual(output, [
+      'x = 10, y = 20',
+      'p[0] = 10, p[1] = 20',
+    ]);
   });
 
   test('formats source', () => {

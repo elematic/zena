@@ -143,6 +143,9 @@ export final class ProgramCheckResult {
   /** Source text at the time each module was checked, keyed by file path. */
   sources: HashMap<String, String>;
 
+  /** AST Module at the time each module was checked, keyed by file path. */
+  asts: HashMap<String, Module>;
+
   /**
    * Export signatures at the time each module was checked, keyed by file path.
    * Each value maps exported names (prefixed "v:" or "t:") to their resolved
@@ -163,6 +166,7 @@ export final class ProgramCheckResult {
   new(
     this.results: HashMap<String, CheckResult>,
     this.sources: HashMap<String, String>,
+    this.asts: HashMap<String, Module>,
     this.exportSignatures: HashMap<String, HashMap<String, Type>>,
     this.entry: CheckResult,
     this.sharedState: SharedCheckerState
@@ -1467,6 +1471,7 @@ export let checkCompilation = (
 ): ProgramCheckResult => {
   let allResults = new HashMap<String, CheckResult>();
   let allSources = new HashMap<String, String>();
+  let allAsts = new HashMap<String, Module>();
   let allSignatures = new HashMap<String, HashMap<String, Type>>();
 
   let sharedState = if (previous != null) {
@@ -1568,9 +1573,11 @@ export let checkCompilation = (
     let inRecheckClosure = recheckPaths != null
       && recheckPaths.has(file.path);
     if (previous != null && !mustCheck.has(file.path) && !inRecheckClosure) {
-      if (previous.sources.has(file.path) && previous.results.has(file.path)) {
+      if (previous.sources.has(file.path) && previous.results.has(file.path) &&
+          previous.asts.has(file.path) && previous.asts[file.path] == file.ast) {
         allResults[file.path] = previous.results[file.path];
         allSources[file.path] = file.source;
+        allAsts[file.path] = file.ast;
         if (previous.exportSignatures.has(file.path)) {
           allSignatures[file.path] = previous.exportSignatures[file.path];
         }
@@ -1582,6 +1589,7 @@ export let checkCompilation = (
     let checkResult = checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths);
     allResults[file.path] = checkResult;
     allSources[file.path] = file.source;
+    allAsts[file.path] = file.ast;
 
     // Fast-path: register stdlib types with the shared state as they compile.
     if (file.isStdlib && file.scopeResult != null) {
@@ -1674,7 +1682,7 @@ export let checkCompilation = (
 
   // The entry module's result is always the last in topo order.
   let entryResult = allResults[result.entry.path];
-  return new ProgramCheckResult(allResults, allSources, allSignatures, entryResult, sharedState);
+  return new ProgramCheckResult(allResults, allSources, allAsts, allSignatures, entryResult, sharedState);
 };
 
 // ============================================================================
