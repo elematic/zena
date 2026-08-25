@@ -189,6 +189,11 @@ fn base_config(debug: bool) -> Config {
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
+    // The wide-arithmetic proposal (i64.mul_wide_u and friends). The
+    // compiler only emits these under ZENA_WIDE_ARITHMETIC=1 and
+    // otherwise emits the sequences they replace, but accepting them
+    // here is what makes that flag runnable rather than emit-only.
+    config.wasm_wide_arithmetic(true);
     config.wasm_backtrace_details(wasmtime::WasmBacktraceDetails::Enable);
     if std::env::var("ZENA_PROFILE").is_ok() {
         config.profiler(wasmtime::ProfilingStrategy::PerfMap);
