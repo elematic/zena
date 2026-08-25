@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 7430
+// Index writes through an interface receiver dispatch through the []=
+// vtable slot, like reads through [] and property writes through set#
+// (this was the "interface index write" lowering bail). Covers a
+// user-defined interface and the stdlib Map, whose values only ever
+// appear behind the interface.
+
+import { Map } from 'zena:map';
+
+interface Store {
+  operator [](key: i32): i32;
+  operator []=(key: i32, value: i32): void;
+}
+
+class Cell implements Store {
+  var stored: i32 = 0;
+  var lastKey: i32 = 0;
+  operator [](key: i32): i32 {
+    return this.stored;
+  }
+  operator []=(key: i32, value: i32) {
+    this.lastKey = key;
+    this.stored = value;
+  }
+}
+
+export let main = (): i32 => {
+  let cell = new Cell();
+  let s: Store = cell;
+  s[7] = 42;
+  let scores: Map<String, i32> = {'Alice' => 95};
+  scores['Chris'] = 90;
+  scores['Alice'] = 80;
+  return cell.lastKey * 1000 + cell.stored * 10 +
+      (scores['Chris'] - scores['Alice']);
+};

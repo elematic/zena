@@ -5395,8 +5395,7 @@ export final class FunctionLowerer {
    * interface receivers dispatch through the [] vtable slot; class
    * receivers resolve the [] overload by mangled signature key exactly
    * like streaming (intrinsics preferred per class, supertype and
-   * generic-source walk) and call it directly. Index WRITES still bail
-   * at the assignment-target gate.
+   * generic-source walk) and call it directly.
    */
   #lowerIndexRead(idx: IndexExpression): i32 {
     if (idx.optional) {
@@ -5980,6 +5979,7 @@ export final class FunctionLowerer {
 
   /**
    * Index writes `recv[i] = v`: array.set for wasm-array receivers,
+   * vtable dispatch through the []= slot for interface receivers,
    * else a direct call to the checker-selected `[]=` overload (the
    * selection is recorded on the ASSIGNMENT node — the read
    * selection of a compound assignment lives on the IndexExpression,
@@ -5996,8 +5996,20 @@ export final class FunctionLowerer {
       this.#bail('untyped index receiver');
     }
     let selfResolved = this.#resolveSelfType(objectType);
+    // Interface receivers write through the []= vtable slot, like
+    // reads through [] and property writes through set#.
     if (selfResolved is InterfaceType) {
-      this.#bail('interface index write');
+      if (assign.operator != null) {
+        this.#bail('compound index write');
+      }
+      let dispatchArgs = new GrowableArray<Expression>();
+      dispatchArgs.push(idx.index);
+      dispatchArgs.push(assign.value);
+      // Setter dispatch returns no value; assignment-as-expression on
+      // an interface index would need the value replayed — the
+      // verifier's produces-no-value check trips loudly if used.
+      return this.#lowerInterfaceDispatch(
+          selfResolved, '[]=', idx.object, dispatchArgs);
     }
 
     let receiver = this.#lowerExpression(idx.object);
