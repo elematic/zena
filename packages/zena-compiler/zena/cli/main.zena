@@ -202,11 +202,17 @@ export let main = (): i32 => {
     // fatal error. ZENA_ZIR_STATS=1 prints the lowered count.
     let zirStats = getEnv("ZENA_ZIR_STATS") != null;
 
+    // ZENA_WIDE_ARITHMETIC=1 emits the wide-arithmetic proposal's
+    // instructions instead of the sequences that mean the same thing.
+    // Opt-in because V8 does not implement the proposal yet.
+    let wideArithmetic = getEnv("ZENA_WIDE_ARITHMETIC") != null;
+
     // `-o out.wat` emits the WAT text directly — the readable form of
     // exactly what the binary build would contain, for inspecting a
     // program's emitted shape (`zena build hello.zena -o hello.wat`).
     if (outPath.endsWith(".wat")) {
       let watOnly = new WatGenerator(target, zirStats);
+      watOnly.wideArithmetic = wideArithmetic;
       writeFile(outPath, watOnly.generate(program));
       performance.end(tCodegen);
       console.log("Success: wrote " + outPath);
@@ -214,6 +220,7 @@ export let main = (): i32 => {
     }
 
     let generator = new BinaryGenerator(target, zirStats, debugNames);
+    generator.wideArithmetic = wideArithmetic;
     if (targetEmitsComponent(target)) {
       // The component's second core module, owning linear memory and
       // the allocator. Compiled up front — whether the program needs it

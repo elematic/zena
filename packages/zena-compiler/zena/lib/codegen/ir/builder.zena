@@ -232,6 +232,27 @@ export final class IrBuilder {
     return projections;
   }
 
+  /**
+   * A wide-arithmetic instruction: two i64 results, low half first,
+   * read through mv_get projections under the same contract as a
+   * multi-result call (emitted immediately after, ascending order).
+   * `operands` is the pair for the multiplies and the
+   * [lhsLo, lhsHi, rhsLo, rhsHi] quadruple for add128/sub128.
+   */
+  wideArith(op: IrOp, operands: GrowableArray<i32>, resultType: ValType): GrowableArray<i32> {
+    let producer = if (operands.length == 2) {
+      this.#emitInCurrent(op, -1, operands[0], operands[1])
+    } else {
+      this.#emitInCurrent(op, -1, this.pushExtra(operands), -1)
+    };
+    let projections = new GrowableArray<i32>();
+    for (var k = 0; k < 2; k += 1) {
+      projections.push(this.#emitInCurrent(IrOp.mv_get,
+          this.internType(resultType), producer, k));
+    }
+    return projections;
+  }
+
   /** Multi-value return. */
   retMulti(values: GrowableArray<i32>): void {
     let idx = this.body.extra.length;

@@ -11,12 +11,22 @@ export class WatGenerator implements CodeGenerator<String> {
 
   backendName(): String { return 'wat'; }
 
+  /**
+   * Emit the wide-arithmetic proposal's instructions (`i64.mul_wide_u`
+   * and friends) instead of the 32-bit-halves sequences that mean the
+   * same thing. Off by default: wasmtime, wasmi, JavaScriptCore and
+   * SpiderMonkey implement the proposal, V8 does not yet, and the
+   * stdlib has to run under `node`. ZENA_WIDE_ARITHMETIC=1 turns it on.
+   */
+  var wideArithmetic: boolean = false;
+
   new(this.target = "zena-cli", this.zirStats = false);
 
   generate(program: Program): String {
     this.sb = new StringBuilder();
     let emitter = new WatEmitter(this.sb);
     let generator = new ModuleGenerator(program, emitter, this.target, this.zirStats);
+    generator.wideArithmetic = this.wideArithmetic;
     generator.compile();
     return this.sb.toString();
   }

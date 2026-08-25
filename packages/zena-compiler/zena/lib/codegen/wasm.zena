@@ -1,4 +1,7 @@
 import { Hashable } from 'zena:hashable';
+import { Error } from 'zena:error';
+import { String } from 'zena:string';
+import { i32ToString } from 'zena:string-convert';
 export enum SectionId {
   Type = 1,
   Import = 2,
@@ -362,6 +365,29 @@ export enum SatOpcode {
   i64_trunc_sat_f64_s = 0x06,
   i64_trunc_sat_f64_u = 0x07
 }
+
+/**
+ * The wide-arithmetic proposal, which shares `sat_prefix` (0xFC) with
+ * the saturating truncations — 0..7 are those, 8..17 are bulk-memory
+ * and reference-types, 18 is the proposed `memory.discard`, and these
+ * four sit above it. Values are the proposal's, in DECIMAL, and are
+ * written as a ULEB128 u32 after the prefix byte.
+ */
+export enum WideArithOpcode {
+  i64_add128 = 19,
+  i64_sub128 = 20,
+  i64_mul_wide_s = 21,
+  i64_mul_wide_u = 22
+}
+
+/** The text-format mnemonic for a wide-arithmetic opcode. */
+export let wideArithName = (opcode: i32): String => {
+  if (opcode == WideArithOpcode.i64_add128 as i32) { return 'i64.add128'; }
+  if (opcode == WideArithOpcode.i64_sub128 as i32) { return 'i64.sub128'; }
+  if (opcode == WideArithOpcode.i64_mul_wide_s as i32) { return 'i64.mul_wide_s'; }
+  if (opcode == WideArithOpcode.i64_mul_wide_u as i32) { return 'i64.mul_wide_u'; }
+  throw new Error('not a wide-arithmetic opcode: ' + i32ToString(opcode));
+};
 
 // TODO: Return typed references instead of anyref for references. To do this
 // we need to change ValType from a simple enum to a sealed class with

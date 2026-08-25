@@ -26,7 +26,7 @@ import {
 } from '../wasm-module.zena';
 import { ValTypeI64, ValTypeF32, ValTypeF64 } from '../wasm.zena';
 import { IrRefFunc } from './ir.zena';
-import { IrOp, IrRefTag, IrRefType } from './ir.zena';
+import { IrOp, IrRefTag, IrRefType, isWideMulOp } from './ir.zena';
 import { LoweringContext } from './lowering-context.zena';
 import { lowerEqIntrinsic, lowerHashIntrinsic } from './equality.zena';
 import { lowerExpr } from './lowering.zena';
@@ -318,6 +318,174 @@ let lowerWasiWriteString = (cx: LoweringContext, call: CallExpression): i32 => {
 
 
 
+// -- The wide-arithmetic proposal ------------------------------------------
+//
+// Four instructions, each two i64 operands-or-pairs in and two i64 out
+// (low half first). `WasmModule.wideArithmetic` picks between emitting
+// them and emitting the sequence they replace; both produce the same
+// two values for every input, which is what makes turning the flag on
+// a decision about size and speed rather than about semantics.
+//
+// The polyfills are the textbook ones. For the multiplies the low half
+// is just `i64.mul` — wasm's wrapping multiply IS the low 64 bits of
+// the 128-bit product — and only the high half needs the four
+// 32x32->64 partial products.
+
+let i64vt = (): ValType => new ValTypeI64();
+
+/** `x op y` on i64s. */
+let i64bin = (cx: LoweringContext, op: IrOp, x: i32, y: i32): i32 => {
+  return cx.b.binary(op, i64vt(), x, y);
+};
+
+/** An i64 constant. */
+let i64const = (cx: LoweringContext, v: i64): i32 => {
+  return cx.b.constI64(v, i64vt());
+};
+
+/** The low 32 bits of an i64, zero-extended. */
+let lowHalf = (cx: LoweringContext, x: i32): i32 => {
+  return i64bin(cx, IrOp.i64_and, x, i64const(cx, 0xFFFFFFFF as i64));
+};
+
+/** The high 32 bits of an i64, shifted down (unsigned). */
+let highHalf = (cx: LoweringContext, x: i32): i32 => {
+  return i64bin(cx, IrOp.i64_shr_u, x, i64const(cx, 32 as i64));
+};
+
+/**
+ * The high 64 bits of the unsigned 128-bit product x*y, from the four
+ * 32x32->64 partial products. `mid` cannot overflow: it is at most
+ * (2^32-1) + 2*(2^32-1) < 2^34.
+ */
+let mulHighU = (cx: LoweringContext, x: i32, y: i32): i32 => {
+  let x0 = lowHalf(cx, x);
+  let x1 = highHalf(cx, x);
+  let y0 = lowHalf(cx, y);
+  let y1 = highHalf(cx, y);
+  let p00 = i64bin(cx, IrOp.i64_mul, x0, y0);
+  let p01 = i64bin(cx, IrOp.i64_mul, x0, y1);
+  let p10 = i64bin(cx, IrOp.i64_mul, x1, y0);
+  let p11 = i64bin(cx, IrOp.i64_mul, x1, y1);
+  let mid = i64bin(cx, IrOp.i64_add,
+      i64bin(cx, IrOp.i64_add, highHalf(cx, p00), lowHalf(cx, p01)),
+      lowHalf(cx, p10));
+  return i64bin(cx, IrOp.i64_add,
+      i64bin(cx, IrOp.i64_add, p11, highHalf(cx, p01)),
+      i64bin(cx, IrOp.i64_add, highHalf(cx, p10), highHalf(cx, mid)));
+};
+
+/**
+ * The signed high half, from the unsigned one: reading a negative
+ * operand as unsigned overcounts the product by 2^64 times the other
+ * operand, so subtract each operand masked by the other's sign
+ * (`x >> 63` is 0 or all-ones).
+ */
+let mulHighS = (cx: LoweringContext, x: i32, y: i32): i32 => {
+  let hi = mulHighU(cx, x, y);
+  let sx = i64bin(cx, IrOp.i64_shr_s, x, i64const(cx, 63 as i64));
+  let sy = i64bin(cx, IrOp.i64_shr_s, y, i64const(cx, 63 as i64));
+  return i64bin(cx, IrOp.i64_sub,
+      i64bin(cx, IrOp.i64_sub, hi, i64bin(cx, IrOp.i64_and, sx, y)),
+      i64bin(cx, IrOp.i64_and, sy, x));
+};
+
+/**
+ * A 0-or-1 i64 from an i64 comparison. `i64.lt_u` leaves an i32, and
+ * sign-extending it is exact for 0 and 1.
+ */
+let carryBit = (cx: LoweringContext, op: IrOp, x: i32, y: i32): i32 => {
+  let cmp = cx.b.binary(op, new ValTypeI32(), x, y);
+  return cx.b.emit(IrOp.i64_extend_i32_s, i64vt(), cmp, -1);
+};
+
+/** The polyfill for one wide-arithmetic op: [lo, hi]. */
+let wideArithPolyfill = (
+  cx: LoweringContext,
+  op: IrOp,
+  ops: GrowableArray<i32>
+): GrowableArray<i32> => {
+  let out = new GrowableArray<i32>();
+  if (op == IrOp.i64_mul_wide_u || op == IrOp.i64_mul_wide_s) {
+    let x = ops[0];
+    let y = ops[1];
+    out.push(i64bin(cx, IrOp.i64_mul, x, y));
+    out.push(if (op == IrOp.i64_mul_wide_u) {
+      mulHighU(cx, x, y)
+    } else {
+      mulHighS(cx, x, y)
+    });
+    return out;
+  }
+  let aLo = ops[0];
+  let aHi = ops[1];
+  let bLo = ops[2];
+  let bHi = ops[3];
+  if (op == IrOp.i64_add128) {
+    let lo = i64bin(cx, IrOp.i64_add, aLo, bLo);
+    // The sum wrapped exactly when it came out below either addend.
+    let carry = carryBit(cx, IrOp.i64_lt_u, lo, aLo);
+    out.push(lo);
+    out.push(i64bin(cx, IrOp.i64_add,
+        i64bin(cx, IrOp.i64_add, aHi, bHi), carry));
+    return out;
+  }
+  let lo = i64bin(cx, IrOp.i64_sub, aLo, bLo);
+  let borrow = carryBit(cx, IrOp.i64_lt_u, aLo, bLo);
+  out.push(lo);
+  out.push(i64bin(cx, IrOp.i64_sub,
+      i64bin(cx, IrOp.i64_sub, aHi, bHi), borrow));
+  return out;
+};
+
+/** The ZIR op an `@intrinsic` name in the wide-arithmetic set names. */
+let wideArithOp = (name: String): IrOp => {
+  return match (name) {
+    case 'i64.mul_wide_u': IrOp.i64_mul_wide_u
+    case 'i64.mul_wide_s': IrOp.i64_mul_wide_s
+    case 'i64.add128': IrOp.i64_add128
+    case _: IrOp.i64_sub128
+  };
+};
+
+/** Whether `name` is one of the four. */
+export let isWideArithIntrinsic = (name: String): boolean => {
+  return name == 'i64.mul_wide_u' || name == 'i64.mul_wide_s' ||
+      name == 'i64.add128' || name == 'i64.sub128';
+};
+
+/**
+ * Lowers a wide-arithmetic intrinsic to its two result values. The
+ * declarations return `inline (u64, u64)`, so the call must be in a
+ * destructuring position — `let (lo, hi) = mulWide(a, b)`. Anywhere
+ * else there is no pair of slots to land in, and the checker's
+ * inline-tuple type has no single wasm value type to fall back on.
+ */
+let lowerWideArith = (
+  cx: LoweringContext,
+  name: String,
+  call: CallExpression,
+  outs: GrowableArray<i32>
+): void => {
+  let op = wideArithOp(name);
+  let arity = if (isWideMulOp(op)) 2 else 4;
+  if (call.args.length != arity) {
+    cx.fail(name + ': wrong argument count');
+  }
+  let ops = new GrowableArray<i32>();
+  for (var i = 0; i < arity; i += 1) {
+    ops.push(lowerExpr(cx, call.args[i], null));
+  }
+  let results = if (cx.wasm.wideArithmetic) {
+    cx.b.wideArith(op, ops, i64vt())
+  } else {
+    wideArithPolyfill(cx, op, ops)
+  };
+  for (let r in results) {
+    outs.push(r);
+  }
+};
+
 /**
  * A wasm IMMEDIATE, which is encoded in the instruction rather than
  * read off the stack: it has to be a literal here because there is
@@ -523,7 +691,17 @@ let lowerSimd = (
  * both length builtins are the width-agnostic array.len, and
  * __array_new_empty / __byte_array_new are both array.new_default.
  */
-export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpression): i32 => {
+export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpression, multiOut: Array<i32> | null): i32 => {
+  if (isWideArithIntrinsic(name)) {
+    if (multiOut == null) {
+      // `inline (u64, u64)` has no single wasm value type, so there is
+      // no result to hand back here. The destructuring form is the
+      // only one that can consume this.
+      cx.failValue(name + ': result must be destructured');
+    }
+    lowerWideArith(cx, name, call, multiOut as GrowableArray<i32>);
+    return -1;
+  }
   return match (name) {
     case '__array_len': lowerArrayLen(cx, call)
     case '__byte_array_length': lowerArrayLen(cx, call)

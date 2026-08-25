@@ -20,7 +20,7 @@ import { i32ToString } from 'zena:string-convert';
 import {
   ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeRefNull,
 } from '../wasm.zena';
-import { IrBody, IrOp, isIrTerminator, irOpName } from './ir.zena';
+import { IrBody, IrOp, isIrTerminator, irOpName, isWideArithOp } from './ir.zena';
 import { isValSubtype, WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
 
@@ -254,10 +254,12 @@ export final class IrVerifier {
       return;
     }
     if (!body.producesValue(value)) {
-      // Exception: mv_get projects results out of a multi-result call,
-      // which itself produces no single value.
+      // Exception: mv_get projects results out of a multi-result
+      // producer, which itself produces no single value — a call, or
+      // one of the two-result wide-arithmetic instructions.
       let mvOk = body.op(user) == IrOp.mv_get &&
-          (body.op(value) == IrOp.call || body.op(value) == IrOp.call_ref);
+          (body.op(value) == IrOp.call || body.op(value) == IrOp.call_ref ||
+              isWideArithOp(body.op(value)));
       if (!mvOk) {
         this.#error('%' + i32ToString(user) + ' uses %' + i32ToString(value) +
             ' (' + irOpName(body.op(value)) + '), which produces no value');

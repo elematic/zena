@@ -27,7 +27,7 @@ import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTyp
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import {
-  IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator, simdExtraOperandCount,
+  IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator, simdExtraOperandCount, isWideArithOp, isWideMulOp, wideArithOpcode,
 } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
@@ -1083,7 +1083,11 @@ export final class ZirFunctionEmitter {
         op == IrOp.simd_ternary || op == IrOp.simd_extract_lane ||
         op == IrOp.simd_replace_lane || op == IrOp.simd_shuffle ||
         op == IrOp.simd_load || op == IrOp.simd_store ||
-        op == IrOp.simd_load_lane || op == IrOp.simd_store_lane;
+        op == IrOp.simd_load_lane || op == IrOp.simd_store_lane ||
+        // The wide-arithmetic ops push every operand and take no
+        // immediate off the stack, so a leading run streams into them
+        // exactly as it does into a binary numeric.
+        isWideArithOp(op);
   }
 
   /**
@@ -1777,6 +1781,10 @@ export final class ZirFunctionEmitter {
         this.#pushValue(body.a[inst]);
         this.emitter.emitMemoryGrow();
       }
+      case IrOp.i64_mul_wide_s: { this.#emitWideArithInst(inst); }
+      case IrOp.i64_mul_wide_u: { this.#emitWideArithInst(inst); }
+      case IrOp.i64_add128: { this.#emitWideArithInst(inst); }
+      case IrOp.i64_sub128: { this.#emitWideArithInst(inst); }
       case _: {
         if (isUnaryNumericOp(op)) {
           this.#pushValue(body.a[inst]);
@@ -2061,6 +2069,30 @@ export final class ZirFunctionEmitter {
    * word of the slot-b payload for every shape that has one, and rides
    * inline in slot b for the three that do not.
    */
+  /**
+   * A wide-arithmetic instruction: push its operands, emit it, then
+   * store its two results into the projections' locals — the same
+   * shape as a multi-result call, and the reason `#storeMultiResults`
+   * is keyed on the producer rather than on `IrOp.call`.
+   */
+  #emitWideArithInst(inst: i32): void {
+    let {body} = this;
+    let op = body.op(inst);
+    if (isWideMulOp(op)) {
+      this.#pushValue(body.a[inst]);
+      this.#pushValue(body.b[inst]);
+    } else {
+      let av = body.a[inst];
+      var i = 0;
+      while (i < 4) {
+        this.#pushValue(body.extra[av + i]);
+        i += 1;
+      }
+    }
+    this.emitter.emitWideArith(wideArithOpcode(op));
+    this.#storeMultiResults(inst);
+  }
+
   #emitSimdInst(inst: i32): void {
     let {body} = this;
     let op = body.op(inst);

@@ -37,12 +37,22 @@ export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
    */
   var importEncoder: ImportTypeEncoder | null = null;
 
+  /**
+   * Emit the wide-arithmetic proposal's instructions (`i64.mul_wide_u`
+   * and friends) instead of the 32-bit-halves sequences that mean the
+   * same thing. Off by default: wasmtime, wasmi, JavaScriptCore and
+   * SpiderMonkey implement the proposal, V8 does not yet, and the
+   * stdlib has to run under `node`. ZENA_WIDE_ARITHMETIC=1 turns it on.
+   */
+  var wideArithmetic: boolean = false;
+
   new(this.target = "zena-cli", this.zirStats = false, this.debugNames = false);
 
   generate(program: Program): ByteBuffer {
     let bb = new ByteBuffer();
     let emitter = new BinaryEmitter(bb, this.debugNames);
     let generator = new ModuleGenerator(program, emitter, this.target, this.zirStats);
+    generator.wideArithmetic = this.wideArithmetic;
     generator.importEncoder = this.importEncoder;
     generator.compile();
     // A component is the same core module with a wrapper around it: the

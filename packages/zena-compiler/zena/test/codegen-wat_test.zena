@@ -8,7 +8,7 @@ import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation, createCompiler, CompilerOptions } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { getEnv } from 'zena:cli';
-import { assertFunctionUses, assertNoAllocation } from './wat-invariants.zena';
+import { assertFunctionUses, assertFunctionOmits, assertNoAllocation } from './wat-invariants.zena';
 
 let assertSnapshot = (name: String, content: String): void => {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
@@ -28,7 +28,7 @@ let assertSnapshot = (name: String, content: String): void => {
   }
 };
 
-let compileAndGenerateWat = (source: String): String => {
+let compileAndGenerateWatWith = (source: String, wideArithmetic: boolean): String => {
   let host = new MockHost();
   host.addFile("test.zena", source);
   
@@ -55,7 +55,12 @@ let compileAndGenerateWat = (source: String): String => {
   
   let program = new Program(units, entryUnit);
   let generator = new WatGenerator();
+  generator.wideArithmetic = wideArithmetic;
   return generator.generate(program);
+};
+
+let compileAndGenerateWat = (source: String): String => {
+  return compileAndGenerateWatWith(source, false);
 };
 
 export let tests = suite('WatGenerator', (): void => {
@@ -466,6 +471,60 @@ export let tests = suite('WatGenerator', (): void => {
     // The shape must still be a v128 in the signature: that is what says
     // it was not widened to a reference somewhere along the way.
     equal(result.contains('(param v128) (param v128) (result v128)'), true);
+  });
+
+  // -- the wide-arithmetic proposal ------------------------------------
+  //
+  // `WasmModule.wideArithmetic` chooses between emitting the
+  // proposal's instructions and emitting the sequences that mean the
+  // same thing. Both directions are pinned here: the point of the flag
+  // is that it is the ONLY thing that decides, so a lowering that
+  // ignored it — or one that emitted the instructions by default,
+  // which V8 would reject — has to fail something.
+  let wideSource = `
+    @intrinsic('i64.mul_wide_u')
+    declare function mulWide(x: u64, y: u64): inline (u64, u64);
+    @intrinsic('i64.add128')
+    declare function add128(al: u64, ah: u64, bl: u64, bh: u64): inline (u64, u64);
+    export let main = (): i64 => {
+      let (lo, hi) = mulWide(7 as u64, 9 as u64);
+      let (sl, sh) = add128(lo, hi, 1 as u64, 0 as u64);
+      return (sl + sh) as i64;
+    };
+  `;
+
+  test('wide arithmetic lowers to a software sequence by default', (ctx: TestContext): void => {
+    let result = compileAndGenerateWatWith(wideSource, false);
+    let absent = new GrowableArray<String>();
+    absent.push('i64.mul_wide_u');
+    absent.push('i64.add128');
+    assertFunctionOmits(result, '$main', absent,
+        'the proposal is off by default — V8 does not implement it yet, ' +
+        'and the stdlib has to run under node');
+    // What it emits instead: the 32x32 partial products and the
+    // compare-and-add carry.
+    let present = new GrowableArray<String>();
+    present.push('i64.mul');
+    present.push('i64.shr_u');
+    present.push('i64.lt_u');
+    assertFunctionUses(result, '$main', present,
+        'the software lowering multiplies 32-bit halves and derives ' +
+        'the carry from an unsigned compare');
+  });
+
+  test('wide arithmetic lowers to the real instructions when enabled', (ctx: TestContext): void => {
+    let result = compileAndGenerateWatWith(wideSource, true);
+    let present = new GrowableArray<String>();
+    present.push('i64.mul_wide_u');
+    present.push('i64.add128');
+    assertFunctionUses(result, '$main', present,
+        'with the flag on, each intrinsic is one instruction');
+    // And the partial-product sequence is gone entirely.
+    let absent = new GrowableArray<String>();
+    absent.push('i64.shr_u');
+    assertFunctionOmits(result, '$main', absent,
+        'the native instructions replace the halves-and-carries sequence, ' +
+        'they do not sit alongside it');
   });
 });
 
