@@ -19,6 +19,11 @@ The compiler treats `array<T>` (and its extension `FixedArray<T>`) specially:
 1.  **Type Checking**: The checker resolves `array<T>` to an internal `ArrayType`.
 2.  **Code Generation**: The generator maps `array<T>` directly to a WASM array type index.
 
+`ImmutableArray<T>` is an extension on the same `array<T>`, so it maps to the
+same `(array (mut T))` and a cast converts between the two. Giving it the
+distinct Wasm type `(array T)` is proposed in
+[array-mutability.md](array-mutability.md), gated on optimizer work.
+
 `Array<T>` is a standard library class that wraps `FixedArray<T>` to provide a growable array.
 
 ## Implementation Details
