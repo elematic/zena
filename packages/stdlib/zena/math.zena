@@ -8,6 +8,38 @@ export let I64_MAX: i64 = 9223372036854775807 as i64;
 export let U64_MIN: u64 = 0 as u64;
 export let U64_MAX: u64 = 18446744073709551615 as u64;
 
+// ---------------------------------------------------------------------------
+// 128-bit arithmetic
+//
+// These are the WebAssembly wide-arithmetic proposal, one for one: two
+// i64 results each, LOW HALF FIRST, which is why they return
+// `inline (u64, u64)` and must be destructured at the call site.
+//
+// Whether they compile to the proposal's instructions or to the
+// equivalent 32-bit-halves sequences is a compiler flag
+// (ZENA_WIDE_ARITHMETIC=1); the two produce identical results for
+// every input, so nothing written against these needs to know which
+// it got.
+// ---------------------------------------------------------------------------
+
+/** The full 128-bit unsigned product of two u64s, as (low, high). */
+@intrinsic('i64.mul_wide_u')
+export declare function mulWide(x: u64, y: u64): inline (u64, u64);
+
+/** The full 128-bit signed product of two i64s, as (low, high). */
+@intrinsic('i64.mul_wide_s')
+export declare function mulWideSigned(x: i64, y: i64): inline (i64, i64);
+
+/** 128-bit addition of (aLow, aHigh) + (bLow, bHigh), wrapping. */
+@intrinsic('i64.add128')
+export declare function add128(
+  aLow: u64, aHigh: u64, bLow: u64, bHigh: u64): inline (u64, u64);
+
+/** 128-bit subtraction of (aLow, aHigh) - (bLow, bHigh), wrapping. */
+@intrinsic('i64.sub128')
+export declare function sub128(
+  aLow: u64, aHigh: u64, bLow: u64, bHigh: u64): inline (u64, u64);
+
 @intrinsic('i32.clz')
 export declare function clz(x: i32): i32;
 @intrinsic('i64.clz')
