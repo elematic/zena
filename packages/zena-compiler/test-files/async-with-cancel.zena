@@ -1,0 +1,20 @@
+import {
+  Future, CancelScope, drainMicrotasks, runFuture,
+} from 'zena:async';
+
+let work = async (gate: Future<i32>): Future<i32> => {
+  let v = await gate;
+  return v * 2;
+};
+
+export let main = (): i32 => {
+  let scope = new CancelScope();
+  var got = 0;
+  scope.run(() => {
+    let f = work(Future.of(21));
+    drainMicrotasks();
+    got = runFuture(f);
+  });
+  scope.cancel();
+  return got;
+};

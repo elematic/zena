@@ -1056,22 +1056,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.queueExplicitCtor(futureType);
       this.queuePrivateMethod(futureType, ':complete');
       this.queuePrivateMethod(futureType, ':fail');
-      // A cancellation unwinding a frame completes it as cancelled,
-      // and the frame binds to a scope at creation, tests it at each
-      // checkpoint, and swaps it current scope around each resumed step
-      // (docs/design/cancellation.md). `checkpoint`'s body raises on
-      // the cancellation channel, so reaching it is also what mints
-      // the cancellation tag for every async program.
-      this.queuePrivateMethod(futureType, ':cancelComplete');
-      this.queueStdlibFunction('zena:async', 'currentScope');
-      let scopeCt = this.cancelScopeType();
-      if (scopeCt != null) {
-        let sct = scopeCt as ClassType;
-        this.pass.specializer.instantiateClassType(sct, model);
-        this.queueExplicitCtor(sct);
-        this.queuePrivateMethod(sct, ':install');
-        this.queuePrivateMethod(sct, ':checkpoint');
-        this.queuePrivateMethod(sct, ':registerTask');
+      // The cancellation machinery is queued only when a reached body
+      // can cause a cancellation (the whole-program gate). The frame
+      // future is recorded either way, so a cause discovered in a
+      // later round still equips every frame; with the machinery
+      // already active, a newly discovered async function queues its
+      // share immediately.
+      this.pass.asyncFrameFutures.push(futureType as Type);
+      this.pass.asyncFrameFutureModels.push(model);
+      if (this.pass.cancellationMachineryActive) {
+        this.queueCancellationMachinery(futureType, model);
       }
       // An async `main` is driven by a synthesized export wrapper that
       // drains the queue and unwraps the result (async.md §4, Level 0).
@@ -1124,6 +1118,29 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   /**
+   * Queues everything an async function's frame needs once the
+   * program is known to cause cancellations: the frame future's
+   * cancelled-completion, the scope accessor, and CancelScope's
+   * symbol-keyed methods (docs/design/cancellation.md). The
+   * reachability pass calls this for every recorded frame when a
+   * cause is first reached; later-discovered frames queue their own.
+   */
+  queueCancellationMachinery(futureType: ClassType, model: SemanticModel): void {
+    this.queuePrivateMethod(futureType, ':cancelComplete');
+    this.queueStdlibFunction('zena:async', 'currentScope');
+    let scopeCt = this.cancelScopeType();
+    if (scopeCt != null) {
+      let sct = scopeCt as ClassType;
+      this.pass.specializer.instantiateClassType(sct, model);
+      this.queueExplicitCtor(sct);
+      this.queuePrivateMethod(sct, ':install');
+      this.queuePrivateMethod(sct, ':checkpoint');
+      this.queuePrivateMethod(sct, ':registerTask');
+      this.queuePrivateMethod(sct, ':shieldScope');
+    }
+  }
+
+  /**
    * The `CancelScope` class type, read off `currentScope`'s checked
    * return type — the same no-registry approach as the Task interface,
    * which is read off `subscribe`'s parameter. Null when `zena:async`
@@ -1159,18 +1176,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    */
   registerAsyncNode(n: Node, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
-    if (n is ShieldedStatement) {
-      // The shield's current scope swaps are emitted by lowering (and by the
-      // split pass at resumes inside the region), with no call node
-      // for RTA to find them by.
-      this.queueStdlibFunction('zena:async', 'currentScope');
-      let scopeCt = this.cancelScopeType();
-      if (scopeCt != null) {
-        this.queuePrivateMethod(scopeCt as ClassType, ':shieldScope');
-        this.queuePrivateMethod(scopeCt as ClassType, ':install');
-      }
-      return;
-    }
     if (n is AwaitExpression) {
       let awaited = model.getNodeType(n.argument);
       if (awaited != null) {
@@ -2531,9 +2536,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             if (dfIntrinsicName == "wasi_write_string") {
               this.registerWasiInfra(moduleModel);
             } else if (dfIntrinsicName == "cancel.raise") {
-              // The cancellation tag exists exactly when something can
-              // raise on it; finalizer-region lowering consults it.
-              this.pass.wasm.ensureCancellationInfra();
+              // The cancellation tag exists exactly when the program
+              // can cancel; finalizer-region lowering consults it.
+              // The stdlib's own raise sites (a cancelled future's
+              // reads) are reached by every async program, so the
+              // whole-program gate decides, not reachability alone —
+              // under a closed gate those sites lower to unreachable.
+              if (this.pass.cancellationPossible) {
+                this.pass.wasm.ensureCancellationInfra();
+              }
             } else if (dfIntrinsicName == "eq") {
               // The eq intrinsic lowers through the equality diamond,
               // whose string tier resolves String.== by name.

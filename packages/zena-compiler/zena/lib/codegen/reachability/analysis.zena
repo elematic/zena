@@ -7,7 +7,7 @@ import {
   Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType,
 } from '../../types.zena';
 import {
-  Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator,
+  Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
 } from '../../ast.zena';
 import { HashSet } from 'zena:set';
 import { Array } from 'zena:array';
@@ -28,6 +28,7 @@ import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterfa
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer, applyMixinPrivateScope } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
+import { walkEnter } from '../../visitor.zena';
 import { performance } from '../../time.zena';
 import { componentAbiModule } from '../component-emitter.zena';
 import { targetEmitsComponent } from '../../targets.zena';
@@ -216,6 +217,45 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   var instantiationClosed = false;
 
   var currentReachable = true;
+  /** Whether a reached body can cause a cancellation (a call to
+   * CancelScope's cancel, or to raiseCancellation from outside
+   * zena:async) — the whole-program gate the async machinery is
+   * emitted under. Aggregated from dependency records as bodies are
+   * reached; `#activateCancellationMachinery` reacts to it at each
+   * fixpoint juncture. */
+  var cancellationPossible: boolean = false;
+  /** Whether the machinery has been minted and queued. */
+  var cancellationMachineryActive: boolean = false;
+  /** Every async function's frame Future instantiation, recorded so a
+   * cause discovered late can still equip every frame. */
+  asyncFrameFutures = new GrowableArray<Type>();
+  asyncFrameFutureModels = new GrowableArray<SemanticModel>();
+
+  /**
+   * Mints the tag and queues the scope machinery for every recorded
+   * async function, once, when a cancellation cause has been reached.
+   * Called between queue drains: a cause can surface in any round,
+   * and the machinery's own members never introduce one, so the
+   * fixpoint still terminates.
+   */
+  activateCancellationMachinery(): void {
+    if (this.cancellationMachineryActive || !this.cancellationPossible) {
+      return;
+    }
+    if (!this.program.unitsByPath.has('zena:async')) {
+      return;
+    }
+    this.cancellationMachineryActive = true;
+    this.wasm.ensureCancellationInfra();
+    var i = 0;
+    while (i < this.asyncFrameFutures.length) {
+      this.visitor.queueCancellationMachinery(
+          this.asyncFrameFutures[i] as ClassType,
+          this.asyncFrameFutureModels[i]);
+      i += 1;
+    }
+  }
+
 
   parsedClassMethodRefs = new HashMap<String, ParsedMethodRef>();
   parsedInterfaceMemberRefs = new HashMap<String, ParsedInterfaceMemberRef>();
@@ -1404,6 +1444,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let tQueues2 = performance.start("codegen-discovery-queues");
     this.processQueues();
     performance.end(tQueues2);
+    this.activateCancellationMachinery();
+    this.processQueues();
     let tLayout2 = performance.start("codegen-discovery-layout");
 
     // Pass 2 and the queue drain feed each other; run them to fixpoint.
@@ -1411,6 +1453,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     while (vtRound) {
       vtRound = this.#buildClassInterfaceVTables();
       this.processQueues();
+      this.activateCancellationMachinery();
     }
     
     performance.end(tLayout2);
@@ -1434,6 +1477,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     this.processQueues();
+    this.activateCancellationMachinery();
+    this.processQueues();
 
     // The drains above can instantiate classes and record interface
     // adaptations the earlier vtable fixpoint never saw — a generic
@@ -1444,6 +1489,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     while (lateVtRound) {
       lateVtRound = this.#buildClassInterfaceVTables();
       this.processQueues();
+      this.activateCancellationMachinery();
     }
 
     // Discovery is settled. Catch layout up with anything the vtable
@@ -2339,6 +2385,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     if (deps.needsExceptionInfra) {
       this.noteExceptionInfra(model);
+    }
+    if (deps.causesCancellation) {
+      this.cancellationPossible = true;
     }
 
     // Enclosing locals assigned inside a `try` body live in heap cells,

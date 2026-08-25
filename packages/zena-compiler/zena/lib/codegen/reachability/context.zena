@@ -4,6 +4,7 @@ import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType } from '../../types.zena';
 import { Node, ClassDeclaration, InterfaceDeclaration, ImportDeclaration, VariableDeclaration, FunctionDeclaration, DeclareFunction } from '../../ast.zena';
 import { HashMap } from 'zena:map';
+import { GrowableArray } from 'zena:growable-array';
 import { HashSet } from 'zena:set';
 import { OrderedMap } from 'zena:ordered-map';
 import { Array } from 'zena:array';
@@ -92,6 +93,7 @@ export interface ReachabilityVisitorInterface {
   discoverDeclareFunction(decl: DeclareFunction, moduleModel: SemanticModel): void;
   registerWrapper(keyName: String, ft: FunctionType, targetWasmFunc: WasmFunction, model: SemanticModel): void;
   discoverFunctionValueWrapper(ft: FunctionType, model: SemanticModel): void;
+  queueCancellationMachinery(futureType: ClassType, model: SemanticModel): void;
 }
 
 /**
@@ -169,6 +171,15 @@ export interface ReachabilityContext {
   interfaceModels: HashMap<SymbolId, SemanticModel>;
   program: Program;
   wasm: WasmModule;
+  /** Whether a reached body can cause a cancellation — the
+   * whole-program gate the async machinery is emitted under. */
+  cancellationPossible: boolean;
+  /** Whether the cancellation machinery has been minted and queued. */
+  cancellationMachineryActive: boolean;
+  /** Every async function's frame Future instantiation, recorded so a
+   * cause discovered late still equips every frame. */
+  asyncFrameFutures: GrowableArray<Type>;
+  asyncFrameFutureModels: GrowableArray<SemanticModel>;
   symbolIdToModel: HashMap<SymbolId, SemanticModel>;
   symbolIdToDecl: HashMap<SymbolId, Node>;
   symbolIdToTargetId: HashMap<SymbolId, SymbolId>;

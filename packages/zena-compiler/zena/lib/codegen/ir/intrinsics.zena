@@ -79,7 +79,12 @@ let lowerInstr = (cx: LoweringContext, call: CallExpression, op: IrOp, resultVt:
 let lowerCancelRaise = (cx: LoweringContext, call: CallExpression): i32 => {
   let tagOpt = cx.wasm.cancellationTag;
   if (tagOpt == null) {
-    cx.fail('cancellation infra missing');
+    // The whole-program gate is closed: nothing can cancel, so this
+    // raise site can never run — a cancelled future cannot exist.
+    // Emit a trap rather than a tag the program does not carry.
+    cx.b.unreachable();
+    cx.reachable = false;
+    return -1;
   }
   cx.b.throwWithTag(new GrowableArray<i32>(),
       cx.b.addRef(new IrRefTag(tagOpt as WasmTag)));

@@ -120,6 +120,13 @@ dependency-tracking cell propagated across suspensions the same way
 (see "Integration with planned systems"), and one record at the same
 two sites serves every such consumer.
 
+A scope with no parent, wherever it is created, comes from
+`CancelScope.detached()`: cancelling any other scope never reaches
+it, and only its holder can cancel it. This is the scope for work
+that must outlive its callers — a cache's shared fills — where the
+plain constructor would quietly parent to whichever scope happens to
+be current at construction.
+
 Sync code never observes any of this. A compute loop that wants to
 stop early polls explicitly — a `currentScope()` getter, or a context
 parameter once [context-parameters.md](context-parameters.md) lands —
@@ -150,6 +157,34 @@ guard, a running frame has parked or completed by the time the queue
 reaches it, and a resume checkpoint tests the scope before touching
 its still-pending future. Inside `shielded`, where the checkpoint is
 masked, a spuriously woken frame re-parks.
+
+## The whole-program gate
+
+Async code carries the cancellation machinery — the second tag, the
+frame's scope field, the checkpoints, the wake registration, the run()
+interposer — only when the program can actually cause a cancellation.
+The evidence is a reached call that raises or leads to a raise: a call
+to `cancel` on a `CancelScope` (which covers `TaskGroup`, whose
+failure handling calls it), or a call to `raiseCancellation` from
+outside `zena:async` — the library's own raise sites observe
+cancellation rather than cause it. The checker records the evidence on
+each body's dependency record, reachability aggregates it over reached
+bodies, and the machinery is minted and queued the moment a cause
+surfaces, equipping every async frame discovered before or after.
+
+Handler syntax is deliberately not evidence. A `cancel` clause or a
+`shielded` region in a program where nothing can raise is dead code,
+and the compiler elides it — the clause lowers as if absent, the
+region as its bare body — rather than paying for machinery whose
+events cannot occur. Importing or constructing a scope is not evidence
+either: a scope nobody cancels changes nothing.
+
+Under a closed gate, async functions compile exactly as they compiled
+before cancellation existed, and the stdlib's own raise sites (a
+cancelled future's reads) lower to a trap: a cancelled future cannot
+exist in such a program. The finer-grained refinement — marking
+individual functions reachable under a cancellable scope — layers on
+the same reachability machinery if profiles ever ask for it.
 
 ## The cancellation exception tag
 

@@ -94,6 +94,25 @@ let STATE_FIRST_SUSPEND = 3;
 final class AsyncArtifacts(rampBody: IrBody, stepBody: IrBody)
 
 /**
+ * The cancellation machinery an async function's lowering uses,
+ * present only when the program can cause a cancellation (the
+ * whole-program gate, decided by the reachability pass before
+ * anything is queued): the scope accessor, CancelScope's symbol-keyed
+ * methods, the frame future's cancelled-completion, and the tag. Null
+ * means the program cannot cancel, and async code is emitted exactly
+ * as it was before cancellation existed — no scope field, no
+ * checkpoints, no wake registration, no second capture region.
+ */
+final class ScopeMachinery(
+  currentScopeFn: WasmFunction,
+  scopeVt: ValType,
+  installFn: WasmFunction,
+  checkpointFn: WasmFunction,
+  registerFn: WasmFunction,
+  cancelFn: WasmFunction,
+  tag: WasmTag)
+
+/**
  * Prep-time registry: prepareAsyncFunctions fills it, the per-function
  * loop reads it back through lowerAsyncRamp/lowerAsyncStep. Cleared at
  * the start of every prepare so repeated compiles in one process stay
@@ -475,24 +494,30 @@ let prepareOne = (
   let name = funcDisplayName(func);
   let completeFn = methodOf(wasm, fKey, ':complete', name);
   let failFn = methodOf(wasm, fKey, ':fail', name);
-  let cancelFn = methodOf(wasm, fKey, ':cancelComplete', name);
   let futureCtor = methodOf(wasm, fKey, '<constructor>', name);
 
-  // The scope machinery (docs/design/cancellation.md): the frame binds
-  // to the current scope at creation, tests it at each checkpoint, and
-  // swaps it current scope around each executor-driven step. RTA queued all
-  // three for every async function.
-  let currentScopeFn = stdlibFn(wasm, 'currentScope', name);
-  if (currentScopeFn.signature.returns.length != 1) {
-    throw new Error('async lowering: currentScope does not return a scope');
+  // The cancellation machinery, present only when the program can
+  // cause a cancellation — the tag's existence is the gate's signal
+  // (docs/design/cancellation.md).
+  var sm: ScopeMachinery | null = null;
+  if (wasm.cancellationTag != null) {
+    let currentScopeFn = stdlibFn(wasm, 'currentScope', name);
+    if (currentScopeFn.signature.returns.length != 1) {
+      throw new Error('async lowering: currentScope does not return a scope');
+    }
+    let scopeVt = currentScopeFn.signature.returns[0];
+    // The scope's own operations are symbol-keyed methods on
+    // CancelScope, so nothing here is callable from user code.
+    let scopeKey = scopeClassKeyOf(scopeVt, name);
+    sm = new ScopeMachinery(
+        currentScopeFn,
+        scopeVt,
+        methodOf(wasm, scopeKey, ':install', name),
+        methodOf(wasm, scopeKey, ':checkpoint', name),
+        methodOf(wasm, scopeKey, ':registerTask', name),
+        methodOf(wasm, fKey, ':cancelComplete', name),
+        wasm.cancellationTag as WasmTag);
   }
-  let scopeVt = currentScopeFn.signature.returns[0];
-  // The scope's own operations are symbol-keyed methods on
-  // CancelScope, so nothing here is callable from user code.
-  let scopeKey = scopeClassKeyOf(scopeVt, name);
-  let installFn = methodOf(wasm, scopeKey, ':install', name);
-  let checkpointFn = methodOf(wasm, scopeKey, ':checkpoint', name);
-  let registerFn = methodOf(wasm, scopeKey, ':registerTask', name);
   // `complete(this, value: T)` is where the value type comes from.
   // `Future<void>` (async.md §8 question 1) needs nothing special here:
   // `void` is a zero-width type argument, so `complete` specializes to
@@ -509,11 +534,6 @@ let prepareOne = (
     // checker marks every async function as requiring it.
     throw new Error('async lowering: exception infrastructure missing for ' +
         name);
-  }
-  if (wasm.cancellationTag == null) {
-    // Reaching `checkpoint` reaches its raise, which mints the tag —
-    // every async program has one.
-    throw new Error('async lowering: cancellation tag missing for ' + name);
   }
 
   // Presplit lowering: the body as an ordinary CFG with await_
@@ -571,6 +591,13 @@ let prepareOne = (
   }
   var shieldFn: WasmFunction | null = null;
   if (shieldedResumes.size > 0) {
+    // `shielded` in the source enables the whole-program gate, so the
+    // machinery is present whenever a shielded resume exists.
+    if (sm == null) {
+      throw new Error('async lowering: shielded region without the ' +
+          'cancellation machinery in ' + name);
+    }
+    let scopeKey = scopeClassKeyOf((sm as ScopeMachinery).scopeVt, name);
     shieldFn = methodOf(wasm, scopeKey, ':shieldScope', name);
   }
 
@@ -632,8 +659,11 @@ let prepareOne = (
   fields.push(new WasmField('$state', new ValTypeI32(), true));
   fields.push(new WasmField('$future',
       new ValTypeRefNull(futureStruct), true));
-  // The scope the frame bound to at creation; checkpoints test it.
-  fields.push(new WasmField('$scope', weakenToNullable(scopeVt), true));
+  if (sm != null) {
+    // The scope the frame bound to at creation; checkpoints test it.
+    fields.push(new WasmField('$scope',
+        weakenToNullable((sm as ScopeMachinery).scopeVt), true));
+  }
   var vid = 0;
   while (vid < presplit.instCount()) {
     if (spilled.has(vid)) {
@@ -662,40 +692,44 @@ let prepareOne = (
   wasm.addFunction(stepFunc);
   pass.markFunctionReached(stepFunc);
 
-  // run(): the Task entry the executor calls. It swaps the current scope
-  // scope to the frame's around the step, so work the step runs
-  // synchronously — ramps of new async calls, explicit polls — sees
-  // the frame's scope rather than whatever ran last. The ramp calls
-  // step() directly instead: during the eager first segment the
-  // current scope IS the caller's scope, which is what the frame just bound
-  // to. step() never unwinds (both tags are captured), so the linear
-  // swap/step/restore shape needs no protection region.
-  let stepOuterFunc = new WasmFunction(stepSig, null, func.model);
-  stepOuterFunc.name = frameName + '.run';
-  stepOuterFunc.isAsyncStep = true;
-  wasm.addFunction(stepOuterFunc);
-  pass.markFunctionReached(stepOuterFunc);
-  {
+  // run(): the Task entry the executor calls. With the machinery
+  // present it installs the frame's scope around the step, so work
+  // the step runs synchronously — new async calls, explicit polls —
+  // sees the frame's scope rather than whatever ran last. The ramp
+  // calls step() directly instead: during the eager first segment the
+  // current scope IS the caller's scope, which is what the frame just
+  // bound to. step() never unwinds (its tags are captured), so the
+  // linear install/step/restore shape needs no protection region.
+  // With no machinery the executor calls step() itself.
+  var runTarget = stepFunc;
+  if (sm != null) {
+    let m = sm as ScopeMachinery;
+    let stepOuterFunc = new WasmFunction(stepSig, null, func.model);
+    stepOuterFunc.name = frameName + '.run';
+    stepOuterFunc.isAsyncStep = true;
+    wasm.addFunction(stepOuterFunc);
+    pass.markFunctionReached(stepOuterFunc);
     let ob = new IrBuilder();
     let oEntry = ob.newBlock();
     let oFrame = ob.blockParam(oEntry, new ValTypeRefNull(frame));
     ob.switchTo(oEntry);
-    let scopeWeak = ob.emit(IrOp.struct_get, weakenToNullable(scopeVt),
+    let scopeWeak = ob.emit(IrOp.struct_get, weakenToNullable(m.scopeVt),
         oFrame, ob.addRef(new IrRefField(frame, '$scope')));
-    let scope = ob.emit(IrOp.ref_as_non_null, scopeVt, scopeWeak, -1);
+    let scope = ob.emit(IrOp.ref_as_non_null, m.scopeVt, scopeWeak, -1);
     let swapArgs = new GrowableArray<i32>();
     swapArgs.push(scope);
-    let prev = ob.callFunc(ob.addRef(new IrRefFunc(installFn)), swapArgs,
-        scopeVt);
+    let prev = ob.callFunc(ob.addRef(new IrRefFunc(m.installFn)), swapArgs,
+        m.scopeVt);
     let stepArgs = new GrowableArray<i32>();
     stepArgs.push(oFrame);
     ob.callFunc(ob.addRef(new IrRefFunc(stepFunc)), stepArgs, null);
     let restoreArgs = new GrowableArray<i32>();
     restoreArgs.push(prev);
-    let ignored = ob.callFunc(ob.addRef(new IrRefFunc(installFn)),
-        restoreArgs, scopeVt);
+    let ignored = ob.callFunc(ob.addRef(new IrRefFunc(m.installFn)),
+        restoreArgs, m.scopeVt);
     ob.retVoid();
     stepOuterBodies[stepOuterFunc.uid] = ob.finish();
+    runTarget = stepOuterFunc;
   }
 
   // The frame implements Task: run() steps the machine. One
@@ -721,7 +755,7 @@ let prepareOne = (
     }
     let tramp = new WasmFunction(slotSig, null, func.model);
     tramp.name = getInterfaceTrampolineName(frameKey, iKey, 'run');
-    tramp.interfaceTrampolineTarget = stepOuterFunc;
+    tramp.interfaceTrampolineTarget = runTarget;
     wasm.addFunction(tramp);
     pass.markFunctionReached(tramp);
     methods.push(tramp);
@@ -745,15 +779,13 @@ let prepareOne = (
 
   // The two bodies.
   let rampBody = buildRamp(func, frame, futureInfo, futureCtor, stepFunc,
-      entryParamIds, currentScopeFn, scopeVt, registerFn, fatPtr,
-      vtableGlobal);
+      entryParamIds, sm, fatPtr, vtableGlobal);
   let stepBody = buildStepBody(presplit, cfg, frame, futureStruct, spilled,
       pcOfBlock, dTargets, subscribeOf, hopTerms, scheduleFn, completeFn,
-      failFn, cancelFn, checkpointFn, scopeVt, resumeOf, shieldedAwaits,
-      shieldedResumes, shieldedResumeFuture, shieldFn, installFn,
+      failFn, sm, resumeOf, shieldedAwaits,
+      shieldedResumes, shieldedResumeFuture, shieldFn,
       valueVt, fatPtr,
       vtableGlobal, wasm.exceptionTag as WasmTag,
-      wasm.cancellationTag as WasmTag,
       wasm.exceptionPayload as WasmGlobal, dispatchRegions);
   let artifacts = new AsyncArtifacts(rampBody, stepBody);
   func.isAsyncRamp = true;
@@ -773,9 +805,7 @@ let buildRamp = (
   futureCtor: WasmFunction,
   stepFunc: WasmFunction,
   entryParamIds: Array<i32>,
-  currentScopeFn: WasmFunction,
-  scopeVt: ValType,
-  registerFn: WasmFunction,
+  sm: ScopeMachinery | null,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal
 ): IrBody => {
@@ -813,27 +843,29 @@ let buildRamp = (
   futPair.push(fut);
   b.emitVoid(IrOp.struct_set, b.pushExtra(futPair), futField);
 
-  // Bind to the current scope, once. Eager start does the
-  // inheritance: this ramp runs synchronously inside its caller, so
-  // the current scope here is the caller's scope. After this, nothing
-  // consults the current scope for this frame — delivery is a field test.
-  let scope = b.callFunc(b.addRef(new IrRefFunc(currentScopeFn)),
-      new GrowableArray<i32>(), scopeVt);
-  let scopeField = b.addRef(new IrRefField(frame, '$scope'));
-  let scopePair = new GrowableArray<i32>();
-  scopePair.push(inst);
-  scopePair.push(scope);
-  b.emitVoid(IrOp.struct_set, b.pushExtra(scopePair), scopeField);
-
-  // Register on the scope's wake list, as the Task the executor runs:
-  // cancelling the scope schedules the frame, so delivery does not
-  // wait on a future that may never settle.
-  let packed = b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr), inst,
-      b.addRef(new IrRefGlobal(vtableGlobal)));
-  let bindArgs = new GrowableArray<i32>();
-  bindArgs.push(scope);
-  bindArgs.push(packed);
-  b.callFunc(b.addRef(new IrRefFunc(registerFn)), bindArgs, null);
+  if (sm != null) {
+    let m = sm as ScopeMachinery;
+    // Bind to the current scope, once. Eager start does the
+    // inheritance: this ramp runs synchronously inside its caller, so
+    // the current scope here is the caller's. After this, nothing
+    // consults the current scope for this frame — delivery is a field
+    // test. Then register on the scope's wake list, as the Task the
+    // executor runs: cancelling the scope schedules the frame, so
+    // delivery does not wait on a future that may never settle.
+    let scope = b.callFunc(b.addRef(new IrRefFunc(m.currentScopeFn)),
+        new GrowableArray<i32>(), m.scopeVt);
+    let scopeField = b.addRef(new IrRefField(frame, '$scope'));
+    let scopePair = new GrowableArray<i32>();
+    scopePair.push(inst);
+    scopePair.push(scope);
+    b.emitVoid(IrOp.struct_set, b.pushExtra(scopePair), scopeField);
+    let packed = b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr), inst,
+        b.addRef(new IrRefGlobal(vtableGlobal)));
+    let bindArgs = new GrowableArray<i32>();
+    bindArgs.push(scope);
+    bindArgs.push(packed);
+    b.callFunc(b.addRef(new IrRefFunc(m.registerFn)), bindArgs, null);
+  }
 
   // Eager start: the body runs synchronously up to the first await.
   let stepArgs = new GrowableArray<i32>();
@@ -862,27 +894,27 @@ let buildStepBody = (
   scheduleFn: WasmFunction | null,
   completeFn: WasmFunction,
   failFn: WasmFunction,
-  cancelFn: WasmFunction,
-  checkpointFn: WasmFunction,
-  scopeVt: ValType,
+  sm: ScopeMachinery | null,
   resumeTargets: Array<i32>,
   shieldedAwaits: HashSet<i32>,
   shieldedResumes: HashSet<i32>,
   shieldedResumeFuture: HashMap<i32, i32>,
   shieldFn: WasmFunction | null,
-  installFn: WasmFunction,
   valueVt: ValType | null,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal,
   exceptionTag: WasmTag,
-  cancellationTag: WasmTag,
   exceptionPayload: WasmGlobal,
   dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>
 ): IrBody => {
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
   let futureRef = addRawRef(body, new IrRefField(frame, '$future'));
-  let scopeFieldRef = addRawRef(body, new IrRefField(frame, '$scope'));
+  let scopeFieldRef = if (sm != null) {
+    addRawRef(body, new IrRefField(frame, '$scope'))
+  } else {
+    -1
+  };
   let i32Vt: ValType = new ValTypeI32();
 
   // Snapshot the dispatch targets' params (cleared below; edges into
@@ -941,8 +973,12 @@ let buildStepBody = (
   let enterBlock = newBlockId();
   let trapBlock = newBlockId();
   let dispatcher = newBlockId();
-  let errRegion = newBlockId();
-  let cancelCatch = newBlockId();
+  var errRegion = -1;
+  var cancelCatch = -1;
+  if (sm != null) {
+    errRegion = newBlockId();
+    cancelCatch = newBlockId();
+  }
 
   let emitIn = (blockId: i32, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
     let inst = rawInst(body, op, typeIdx, a, b);
@@ -999,18 +1035,23 @@ let buildStepBody = (
 
   let i32Idx = internVt(body, i32Vt);
 
-  // b0: enter the capture regions — the cancellation region outside,
-  // the failure region inside, matching finalizer regions' nesting.
+  // b0: enter the capture regions. With the cancellation machinery
+  // present, the cancellation region sits outside the failure region,
+  // matching finalizer regions' nesting; without it there is only the
+  // failure region, the shape async had before cancellation existed.
   // Every suspension and every completion RETURNS from inside them, so
   // the regions stay properly nested (§3) — nothing branches out.
-  let cancelIdx = body.extra.length;
-  body.extra.push(errRegion);
-  body.extra.push(0);
-  body.extra.push(cancelCatch);
-  body.extra.push(0);
-  let cancelInst = rawInst(body, IrOp.try_br, -1,
-      addRawRef(body, new IrRefTag(cancellationTag)), cancelIdx);
-  placeInst(body, 0, cancelInst);
+  if (sm != null) {
+    let cancelIdx = body.extra.length;
+    body.extra.push(errRegion);
+    body.extra.push(0);
+    body.extra.push(cancelCatch);
+    body.extra.push(0);
+    let cancelInst = rawInst(body, IrOp.try_br, -1,
+        addRawRef(body, new IrRefTag((sm as ScopeMachinery).tag)),
+        cancelIdx);
+    placeInst(body, 0, cancelInst);
+  }
   let tryIdx = body.extra.length;
   body.extra.push(tryBody);
   body.extra.push(0);
@@ -1018,7 +1059,7 @@ let buildStepBody = (
   body.extra.push(0);
   let tryInst = rawInst(body, IrOp.try_br, -1,
       addRawRef(body, new IrRefTag(exceptionTag)), tryIdx);
-  placeInst(body, errRegion, tryInst);
+  placeInst(body, if (sm != null) errRegion else 0, tryInst);
 
   // tryBody: state = frame.$state; already DONE ? return : enter.
   let stateVal = emitIn(tryBody, IrOp.struct_get, i32Idx, frameParam, stateRef);
@@ -1066,13 +1107,15 @@ let buildStepBody = (
   // frame as cancelled and finish; the unwind continues to the frame's
   // awaiters when their resumes observe the cancelled future. No
   // payload: nothing may observe a cancellation.
-  let cDoneC = emitIn(cancelCatch, IrOp.const_i32, i32Idx, STATE_DONE, -1);
-  storeState(cancelCatch, cDoneC);
-  let cancelFut = loadFuture(cancelCatch);
-  let cancelArgs = new GrowableArray<i32>();
-  cancelArgs.push(cancelFut);
-  callIn(cancelCatch, cancelFn, cancelArgs);
-  retVoidIn(cancelCatch);
+  if (sm != null) {
+    let cDoneC = emitIn(cancelCatch, IrOp.const_i32, i32Idx, STATE_DONE, -1);
+    storeState(cancelCatch, cDoneC);
+    let cancelFut = loadFuture(cancelCatch);
+    let cancelArgs = new GrowableArray<i32>();
+    cancelArgs.push(cancelFut);
+    callIn(cancelCatch, (sm as ScopeMachinery).cancelFn, cancelArgs);
+    retVoidIn(cancelCatch);
+  }
 
   /**
    * One checkpoint: frame.$scope handed to the stdlib's `checkpoint`,
@@ -1084,19 +1127,26 @@ let buildStepBody = (
    * ramp, because code between suspensions is never interrupted.
    */
   let checkpointInto = (blockId: i32, out: GrowableArray<i32>): void => {
+    if (sm == null) {
+      // Nothing in the program can cancel: suspension points carry no
+      // checkpoint at all.
+      return;
+    }
+    let m = sm as ScopeMachinery;
     let weak = rawInst(body, IrOp.struct_get,
-        internVt(body, weakenToNullable(scopeVt)), frameParam, scopeFieldRef);
+        internVt(body, weakenToNullable(m.scopeVt)), frameParam,
+        scopeFieldRef);
     body.instBlock[weak] = blockId;
     out.push(weak);
-    let strong = rawInst(body, IrOp.ref_as_non_null, internVt(body, scopeVt),
-        weak, -1);
+    let strong = rawInst(body, IrOp.ref_as_non_null,
+        internVt(body, m.scopeVt), weak, -1);
     body.instBlock[strong] = blockId;
     out.push(strong);
     let callIdx = body.extra.length;
     body.extra.push(1);
     body.extra.push(strong);
     let call = rawInst(body, IrOp.call, -1, callIdx,
-        addRawRef(body, new IrRefFunc(checkpointFn)));
+        addRawRef(body, new IrRefFunc(m.checkpointFn)));
     body.instBlock[call] = blockId;
     out.push(call);
   };
@@ -1433,28 +1483,29 @@ let buildStepBody = (
       // current scope — which the run() interposer set to the frame's scope —
       // is re-swapped to the shield scope, so work created after the
       // resume still binds outside every cancellation domain.
+      let m = sm as ScopeMachinery;
       let sf = shieldFn as WasmFunction;
       let scopeWeak = rawInst(body, IrOp.struct_get,
-          internVt(body, weakenToNullable(scopeVt)), frameParam,
+          internVt(body, weakenToNullable(m.scopeVt)), frameParam,
           scopeFieldRef);
       body.instBlock[scopeWeak] = rt;
       rebuilt.push(scopeWeak);
       let scopeVal = rawInst(body, IrOp.ref_as_non_null,
-          internVt(body, scopeVt), scopeWeak, -1);
+          internVt(body, m.scopeVt), scopeWeak, -1);
       body.instBlock[scopeVal] = rt;
       rebuilt.push(scopeVal);
       let scIdx = body.extra.length;
       body.extra.push(1);
       body.extra.push(scopeVal);
-      let sc = rawInst(body, IrOp.call, internVt(body, scopeVt), scIdx,
+      let sc = rawInst(body, IrOp.call, internVt(body, m.scopeVt), scIdx,
           addRawRef(body, new IrRefFunc(sf)));
       body.instBlock[sc] = rt;
       rebuilt.push(sc);
       let swIdx = body.extra.length;
       body.extra.push(1);
       body.extra.push(sc);
-      let sw = rawInst(body, IrOp.call, internVt(body, scopeVt), swIdx,
-          addRawRef(body, new IrRefFunc(installFn)));
+      let sw = rawInst(body, IrOp.call, internVt(body, m.scopeVt), swIdx,
+          addRawRef(body, new IrRefFunc(m.installFn)));
       body.instBlock[sw] = rt;
       rebuilt.push(sw);
       if (let (true, fvId) = shieldedResumeFuture.get(rt)) {

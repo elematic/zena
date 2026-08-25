@@ -1,0 +1,57 @@
+// @mode: run
+// @result: 42
+
+// A scope created with CancelScope.detached() has no parent wherever
+// it is created: cancelling the scope that was current at its
+// construction does not reach it, while its holder still can cancel
+// it. This is the scope for work that must outlive its callers — a
+// cache's shared fills, for example.
+
+import {
+  Future, FutureState, Completer, CancelScope, drainMicrotasks,
+} from 'zena:async';
+
+var trace = '';
+var fut: Future<i32> | null = null;
+var held: CancelScope | null = null;
+
+let work = async (gate: Future<i32>): Future<i32> => {
+  trace += 'a';
+  let v = await gate;
+  trace += 'b';
+  return v;
+};
+
+export function main(): i32 {
+  let outer = new CancelScope();
+  let g = new Completer<i32>();
+  outer.run(() => {
+    let detached = CancelScope.detached();
+    held = detached;
+    detached.run(() => {
+      fut = work(g.future);
+    });
+  });
+  outer.cancel();
+  g.complete(21);
+  drainMicrotasks();
+  let f = fut;
+  if (f == null) {
+    return 2;
+  }
+  if (!((f as Future<i32>).state == FutureState.Resolved)) {
+    return 3;
+  }
+  if (trace != 'ab') {
+    return 4;
+  }
+  let c = held;
+  if (c == null) {
+    return 5;
+  }
+  (c as CancelScope).cancel();
+  if (!(c as CancelScope).isCancelled) {
+    return 6;
+  }
+  return 42;
+}

@@ -285,6 +285,25 @@ export class CancelScope {
     }
   }
 
+  /**
+   * A scope with no parent, wherever it is created: cancelling any
+   * other scope never reaches it, and only its holder can cancel it.
+   * This is the scope for work that must outlive its callers — a
+   * cache's shared fills, for example — where `new CancelScope()`
+   * would quietly parent to whichever scope happens to be current at
+   * construction.
+   */
+  static detached(): CancelScope {
+    // The constructor reads the current scope; hide it for the one
+    // construction. Single-threaded, and nothing between the two
+    // writes can observe the slot.
+    let prev = current;
+    current = null;
+    let scope = new CancelScope();
+    current = prev;
+    return scope;
+  }
+
   isCancelled: boolean {
     get {
       return this.#cancelled;

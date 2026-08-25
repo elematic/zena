@@ -16809,12 +16809,62 @@ let checkFunctionExpression = (
   return fnType;
 };
 
+/**
+ * Records the whole-program cancellation gate's evidence: a call that
+ * can cause a cancellation — `cancel` on a `CancelScope`, or
+ * `raiseCancellation` from outside `zena:async`, whose own raise
+ * sites observe cancellation rather than cause it. The reachability
+ * pass aggregates the flag over reached bodies; handler syntax
+ * (`cancel` clauses, `shielded`) is deliberately not evidence, since
+ * handling a cancellation that nothing can raise is dead code to
+ * elide, not a reason to emit the machinery.
+ */
+let noteCancellationCause = (ctx: CheckerContext, call: CallExpression): void => {
+  let deps = ctx.currentDependencies();
+  if (deps == null || deps.causesCancellation) {
+    return;
+  }
+  let callee = call.callee;
+  if (callee is MemberExpression) {
+    if (callee.property.name != 'cancel') {
+      return;
+    }
+    let objType = ctx.model.getNodeType(callee.object);
+    if (objType == null) {
+      return;
+    }
+    let bt = baseType(objType);
+    if (bt is ClassType && bt.name == 'CancelScope' &&
+        bt.sourcePath == 'zena:async') {
+      deps.causesCancellation = true;
+    }
+    return;
+  }
+  if (callee is Identifier) {
+    let sym = ctx.model.resolve(callee);
+    if (sym == null) {
+      return;
+    }
+    // The unresolved declaration keeps the local view: a same-module
+    // call binds the declare directly — which is zena:async's own
+    // observe-sites (a cancelled future's reads, the checkpoint),
+    // none of which cause a cancellation — while every use from
+    // another module binds an import specifier, and that is the
+    // cause signal.
+    let decl = sym.declaration;
+    if (decl is ImportSpecifier && decl.imported.name == 'raiseCancellation') {
+      deps.causesCancellation = true;
+    }
+  }
+};
+
 let checkCallExpression = (
   ctx: CheckerContext,
   call: CallExpression,
   expectedType: Type | null
 ): Type => {
   let calleeType = checkExpression(ctx, call.callee, null);
+  noteCancellationCause(ctx, call);
 
   // Handle optional chaining on nullable callee.
   var baseCalleeType: Type = calleeType;

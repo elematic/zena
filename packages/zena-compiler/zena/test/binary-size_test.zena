@@ -21,7 +21,7 @@
  */
 
 import { suite, test, TestContext } from 'zena:test';
-import { isTrue, equal } from 'zena:assert';
+import { isTrue, isFalse, equal } from 'zena:assert';
 import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import { Array } from 'zena:array';
 import { CompilerHost } from '../lib/library-loader.zena';
@@ -261,6 +261,28 @@ export let tests = suite('Binary size', (): void => {
     isTrue(!wat.contains('FixedArray'),
       `${arrayTarget} carries FixedArray's placeholder struct — an ` +
       `extension value is the raw array, so the struct is unreferenceable.`);
+  });
+
+  test('async without a way to cancel carries no cancellation machinery', (ctx: TestContext): void => {
+    // The whole-program gate: this program awaits but has no way to
+    // cause a cancellation, so the module must not carry the second
+    // exception tag (its export is the machinery's one stable,
+    // name-section-independent marker).
+    let bytes = compile('packages/zena-compiler/test-files/async-no-cancel.zena');
+    isFalse(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('a reachable cancel call enables the cancellation machinery', (ctx: TestContext): void => {
+    let bytes = compile('packages/zena-compiler/test-files/async-with-cancel.zena');
+    isTrue(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('a cancel clause alone does not enable the machinery', (ctx: TestContext): void => {
+    // Handler syntax is not a cause: with no way to raise a
+    // cancellation the clause is elided, and the module carries no
+    // machinery.
+    let bytes = compile('packages/zena-compiler/test-files/async-cancel-clause-only.zena');
+    isFalse(hasExport(bytes, '__zena_cancellation'));
   });
 
   test('a subclassed generic emits no erased specialization', (ctx: TestContext): void => {

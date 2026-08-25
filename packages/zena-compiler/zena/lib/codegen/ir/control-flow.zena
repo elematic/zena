@@ -1046,7 +1046,9 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   if (expr.handler != null) {
     cx.appendAssignedEnvSyms((expr.handler as CatchClause).body as Node, mirrored);
   }
-  if (expr.cancelBlock != null) {
+  let clauseActive =
+      expr.cancelBlock != null && cx.wasm.cancellationTag != null;
+  if (clauseActive) {
     cx.appendAssignedEnvSyms(expr.cancelBlock as Node, mirrored);
   }
   if (expr.finalizer != null) {
@@ -1108,12 +1110,12 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
 
   let finalizerOpt = expr.finalizer;
   if (finalizerOpt == null) {
-    // A cancel clause without a finalizer (lowerTryExpression only
-    // routes here when at least one of the two is present).
+    // An active cancel clause without a finalizer (lowerTryExpression
+    // only routes here when at least one of the two is live).
     return lowerCancelClauseRegion();
   }
   let finalizer = finalizerOpt as Node;
-  if (expr.cancelBlock != null) {
+  if (clauseActive) {
     return lowerFinallyRegion(cx, mirrored, isVoid, resultVt,
         (outerScope, resultVar, saved) => {
           let v = lowerCancelClauseRegion();
@@ -1138,6 +1140,12 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
  */
 export let lowerShieldedRegion = (cx: LoweringContext,
     stmt: ShieldedStatement): void => {
+  if (cx.wasm.cancellationTag == null) {
+    // Under a closed cancellation gate there are no checkpoints to
+    // mask and no scopes to rebind: the region is only its body.
+    lowerValueNode(cx, stmt.body as Node, true, null);
+    return;
+  }
   let curOpt = cx.wasm.getStdlibFunc('zena:async', 'currentScope');
   if (curOpt == null) {
     bail(cx, 'shielded without scope infra');
@@ -1219,13 +1227,35 @@ export let lowerShieldedRegion = (cx: LoweringContext,
  * the enclosing function being `async`/`gen`) and never reach here.
  */
 export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 => {
-  if (expr.finalizer != null || expr.cancelBlock != null) {
+  // Under a closed cancellation gate a `cancel` clause is dead code:
+  // nothing in the program can raise on the cancellation channel, so
+  // the clause is elided rather than lowered.
+  let cancelActive =
+      expr.cancelBlock != null && cx.wasm.cancellationTag != null;
+  if (expr.finalizer != null || cancelActive) {
     // A `cancel` clause takes the finalizer-region shape too — its
     // block is a finalizer that runs only on the CANCEL exit code —
     // so both clauses route to the same construction.
     return lowerTryFinally(cx, expr);
   }
   if (expr.handler == null) {
+    if (expr.cancelBlock != null) {
+      // A cancel-only try whose clause was elided: only the body
+      // remains.
+      let bodyType = cx.func.model.getNodeType(expr);
+      if (bodyType == null) {
+        bail(cx, 'untyped try expression');
+      }
+      let bodyIsVoid = isVoidOrNeverType(bodyType);
+      let bodyVt = if (!bodyIsVoid) {
+        let vt = typeToValTypeWithSub(cx.wasm, bodyType, cx.func);
+        cx.requireSupported(vt, 'try result type');
+        vt
+      } else {
+        null
+      };
+      return lowerValueNode(cx, expr.body as Node, bodyIsVoid, bodyVt);
+    }
     bail(cx, 'try without handler');
   }
   if (cx.wasm.exceptionTag == null || cx.wasm.exceptionPayload == null) {

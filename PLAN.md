@@ -137,9 +137,11 @@ This document tracks completed work and planned features. For project instructio
     concurrency — designed in
     [cancellation.md](docs/design/cancellation.md); the tag, scopes,
     checkpoints, completed-as-cancelled, the `cancel` clause,
-    `shielded`, cancel-wakes-parked-frames, and the `TaskGroup` core
-    (spawn/join, first failure cancels siblings) are implemented;
-    the loser-cancelling race and `OwnedFuture` are not — the
+    `shielded`, cancel-wakes-parked-frames, the `TaskGroup` core
+    (spawn/join, first failure cancels siblings),
+    `CancelScope.detached()`, and the whole-program gate (async
+    without a way to cancel carries none of the machinery) are
+    implemented; the loser-cancelling race and `OwnedFuture` are not — the
     tokio-backed CLI, the WASI P3 backend).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
