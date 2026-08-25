@@ -1,5 +1,14 @@
 # Non-Nullable WASM References
 
+## Status
+
+- **Status**: **Complete** — all three storage tiers (signature params/returns,
+  locals, and struct fields via single-shot `struct.new` constructor protocol)
+  emit precise non-nullable `(ref $T)` types.
+- **Issue**: https://github.com/elematic/zena/issues/67
+
+## Overview
+
 Zena's checker distinguishes `T` from `T | null`, but codegen has
 historically widened both to nullable wasm references. Precise types
 matter at the uses: a read of a nullable-typed slot whose IR type is
