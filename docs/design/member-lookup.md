@@ -1,5 +1,15 @@
 # Member Lookup and Overload Resolution
 
+## Status
+
+- **Status**: **Partially Implemented** — core overload resolution (most-specific
+  selection, two-tier literal adaptation, subclass overlap restrictions,
+  per-signature vtable mangling, lexical private `#` access) is fully implemented
+  and tested. Namespace separation, interface overloads, contextual tear-offs,
+  and cross-arm union access remain open.
+- **Issue**: https://github.com/elematic/zena/issues/70
+- **Gaps**: See [§9. Implementation-gap index](#9-implementation-gap-index)
+
 This is the authoritative specification for how Zena resolves member
 accesses (`recv.name`, `recv[i]`, operators) and how overloaded
 callables are selected — for methods, free functions, and `declare`
