@@ -11,4 +11,37 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: nix flake check
-        run: nix flake check --print-build-logs
+        run: |
+          set -euo pipefail
+
+          # Tick while we work. `nix flake check` spends a long stretch inside
+          # zena's wireit build, which prints nothing at all between `> wireit`
+          # and `Ran 20 scripts and skipped 0 in NNNs` -- 404s even on an idle
+          # runner (run #1129), 382-551s across the 11 healthy runs measured on
+          # 2026-08-13.
+          #
+          # The homelab CI guest is deliberately deprioritised on its host
+          # (CPUWeight=10, IOWeight=10, Nice=15), so when that host is busy the
+          # very same gap stretches: 977s measured on ci-snout 2026-08-25, on a
+          # docs-only PR. The fleet's CI supervisor reads log silence as a
+          # stalled job and pages a human at 720s, so a build that is merely
+          # slow pages -- and until earlier today it also power-cycled the
+          # runner mid-build, which is what failed runs #1131/#1133 and the
+          # zena main run of 08-25 (homelab/fleet#532, homelab/fleet#629).
+          #
+          # The ticker runs INSIDE the CI guest, so it stops when the guest
+          # really dies. That is the point: it removes the false
+          # "silent => wedged" inference without masking a genuine wedge, and a
+          # real hang is still bounded by the guest's own job wall-clock cap.
+          heartbeat() {
+            local elapsed=0
+            while sleep 60; do
+              elapsed=$((elapsed + 60))
+              echo "... still working (${elapsed}s elapsed in this step)"
+            done
+          }
+          heartbeat &
+          heartbeat_pid=$!
+          trap 'kill "$heartbeat_pid" 2>/dev/null || true' EXIT
+
+          nix flake check --print-build-logs
