@@ -27,6 +27,22 @@ Skip intensifiers that signal importance without adding information:
 "critically", "importantly", "the key insight", "load-bearing". If a fact
 matters, lead with it.
 
+Do not correct a belief you have not given the reader. "Not merely
+imprecise", "contrary to what you might expect", "it is not, actually"
+and "this is more than just X" all presuppose the reader arrived holding
+a wrong view, and the reader usually did not. State what is true and
+stop:
+
+- "Both directions were wrong, not merely imprecise." → "Parsing and
+  printing both returned incorrect results."
+- "This is not just a size win — it is also faster." → "It is smaller
+  and faster."
+
+Anticipating a misreading is worth doing when the misreading is likely
+and specific, but say so plainly and say why: "Writing `2^(e-1)` gives
+the width in units of the lower binade's ulp" beats "the natural
+misreading".
+
 ## Self-contained documents
 
 A document should make sense to someone who has only the repository — not
@@ -38,6 +54,22 @@ context is missing.
 - If a document depends on a plan, milestone, or alternative described
   elsewhere, either summarize it inline or link the document that defines
   it. Never assume the reader knows internal shorthand or roadmap labels.
+- Name the thing. A general word standing in for something specific —
+  "both directions", "the mechanism", "the one gap", "this behaviour" —
+  reads as precise to the author, who knows the referent, and as vague
+  to everyone else. Write the referent out at least once per section,
+  even when it makes the sentence longer:
+
+  - "the `p` range both directions index" → "printing indexes `p` over
+    `[-292, 324]` and parsing over `[-344, 309]`"
+  - "the mechanism was general" → "`mv_get` already worked for any
+    producer"
+  - "which is what says the flag is the only thing that decides" →
+    "a lowering that ignored the flag fails one of the two"
+
+  This applies hardest to the first sentence of a section, where the
+  reader has the least context to resolve a pronoun or a category noun
+  against.
 
 ## Design documents
 
