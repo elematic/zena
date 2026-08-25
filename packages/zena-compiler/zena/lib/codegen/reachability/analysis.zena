@@ -1435,6 +1435,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     this.processQueues();
 
+    // The drains above can instantiate classes and record interface
+    // adaptations the earlier vtable fixpoint never saw — a generic
+    // method reached late packs a generic class at an interface slot,
+    // and without another round the pair has a struct and no vtable
+    // (lowering's iface_pack then fails). Re-run to fixpoint.
+    var lateVtRound = true;
+    while (lateVtRound) {
+      lateVtRound = this.#buildClassInterfaceVTables();
+      this.processQueues();
+    }
+
     // Discovery is settled. Catch layout up with anything the vtable
     // pass or the final drain instantiated, then CLOSE: from here a
     // new class cannot get a struct, so becoming instantiated now is a

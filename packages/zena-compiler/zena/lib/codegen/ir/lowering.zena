@@ -938,7 +938,7 @@ export final class FunctionLowerer {
   awaitHopTerms = new HashSet<i32>();
   /** Await terminators lexically inside a `shielded { }` region: the
    * split pass emits no checkpoint for them, and their resumes
-   * re-install the shield scope as the ambient instead
+   * re-install the shield scope as the current scope instead
    * (docs/design/cancellation.md §Shields). */
   shieldedAwaits = new HashSet<i32>();
   /** Nesting depth of `shielded` regions during presplit lowering;
@@ -3013,12 +3013,14 @@ export final class FunctionLowerer {
         }
       }
     }
-    let {classType} = this.func;
-    if (classType != null) {
-      let ct = classType;
-      srcType = substituteTypeParamsInClassContext(this.wasm, ct, srcType);
-      tgtType = substituteTypeParamsInClassContext(this.wasm, ct, tgtType);
-    }
+    // Function context, not class context alone: a monomorphized
+    // generic body (_spec_ copy) carries its own solved type
+    // arguments, and an adaptation source like `W<T>` must key the
+    // vtable lookup at `W<i32>`, not at the template.
+    srcType = substituteTypeParamsInFunctionContext(this.wasm, this.func,
+        srcType);
+    tgtType = substituteTypeParamsInFunctionContext(this.wasm, this.func,
+        tgtType);
     if (!(srcType is ClassType) || !(tgtType is InterfaceType)) {
       this.#bail('interface adaptation shape');
     }

@@ -1,0 +1,107 @@
+// TaskGroup (docs/design/cancellation.md, the structured half):
+// children spawn into the group's scope, the first failure cancels
+// the siblings, cancelling the group wakes parked children, and join
+// completes once every child has settled — with the first failure if
+// there was one, and normally otherwise.
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  Future, FutureState, Completer, TaskGroup, drainMicrotasks, runFuture,
+} from 'zena:async';
+import { Error } from 'zena:error';
+
+let doubled = async (gate: Future<i32>): Future<i32> => {
+  let v = await gate;
+  return v * 2;
+};
+
+let failing = async (gate: Future<i32>): Future<i32> => {
+  let v = await gate;
+  throw new Error('child failed');
+};
+
+export let tests = suite('TaskGroup', (): void => {
+  test('children complete and join settles', (ctx: TestContext): void => {
+    let g1 = new Completer<i32>();
+    let g2 = new Completer<i32>();
+    let group = new TaskGroup();
+    let a = group.spawn(() => doubled(g1.future));
+    let b = group.spawn(() => doubled(g2.future));
+    let j = group.join();
+    drainMicrotasks();
+    isFalse(j.isCompleted);
+
+    g1.complete(1);
+    g2.complete(2);
+    drainMicrotasks();
+    isTrue(j.isCompleted);
+    equal(runFuture(a), 2);
+    equal(runFuture(b), 4);
+  });
+
+  test('a child failure cancels its siblings and surfaces at join', (ctx: TestContext): void => {
+    let g1 = new Completer<i32>();
+    let g2 = new Completer<i32>();
+    let group = new TaskGroup();
+    let a = group.spawn(() => failing(g1.future));
+    let b = group.spawn(() => doubled(g2.future));
+    let j = group.join();
+
+    // Only the failing child's gate completes; the sibling is parked
+    // and must be WOKEN by the cancellation.
+    g1.complete(1);
+    drainMicrotasks();
+
+    isTrue(a.state == FutureState.Rejected);
+    isTrue(b.state == FutureState.Cancelled);
+    isTrue(group.isCancelled);
+    isTrue(j.isCompleted);
+    var msg = '';
+    try {
+      runFuture(j);
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'child failed');
+  });
+
+  test('cancelling the group wakes parked children; join completes normally', (ctx: TestContext): void => {
+    let g1 = new Completer<i32>();
+    let g2 = new Completer<i32>();
+    let group = new TaskGroup();
+    let a = group.spawn(() => doubled(g1.future));
+    let b = group.spawn(() => doubled(g2.future));
+    let j = group.join();
+    drainMicrotasks();
+    isFalse(j.isCompleted);
+
+    // Neither gate ever completes: only the wake can deliver.
+    group.cancel();
+    drainMicrotasks();
+    isTrue(a.state == FutureState.Cancelled);
+    isTrue(b.state == FutureState.Cancelled);
+    isTrue(j.isCompleted);
+    var raised = false;
+    try {
+      runFuture(j);
+    } catch (e) {
+      raised = true;
+    }
+    isFalse(raised);
+  });
+
+  test('join after everything settled is already settled', (ctx: TestContext): void => {
+    let g1 = new Completer<i32>();
+    let group = new TaskGroup();
+    let a = group.spawn(() => doubled(g1.future));
+    g1.complete(5);
+    drainMicrotasks();
+    equal(runFuture(a), 10);
+    isTrue(group.join().isCompleted);
+  });
+
+  test('an empty group joins immediately', (ctx: TestContext): void => {
+    let group = new TaskGroup();
+    isTrue(group.join().isCompleted);
+  });
+});

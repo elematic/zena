@@ -30,8 +30,8 @@ import {
   ValTypeOptRef, WasmType, isRefValType, refTargetOf,
 } from '../wasm.zena';
 import {
-  ClassCodegenInfo, RecordDispatchInfo, WasmFunction, WasmGlobal, WasmTag,
-  asWasmArray, isValSubtype,
+  ClassCodegenInfo, RecordDispatchInfo, WasmFunction, WasmGlobal, WasmStruct,
+  WasmTag, asWasmArray, isValSubtype,
 } from '../wasm-module.zena';
 import {
   eraseTypeParameters, findImplementedInterfaceTransitive,
@@ -1127,35 +1127,56 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
 
 /**
  * `shielded { ... }` (docs/design/cancellation.md §Shields): the body
- * runs with the ambient scope swapped to the shield scope — the
+ * runs with the current scope swapped to the shield scope — the
  * uncancellable root, so async work created inside binds to a scope
  * no cancellation reaches — and the split pass emits no checkpoint
  * for awaits inside the extent (`FunctionLowerer.shieldDepth` marks
- * their terminators; their resumes re-install the shield ambient).
+ * their terminators; their resumes re-install the shield current scope).
  * The restore is a finalizer region, so every exit — normal, early,
  * error unwind, a raised cancellation crossing the region — puts the
- * ambient back, and level-triggering resumes at the closing brace.
+ * current scope back, and level-triggering resumes at the closing brace.
  */
 export let lowerShieldedRegion = (cx: LoweringContext,
     stmt: ShieldedStatement): void => {
-  let swapOpt = cx.wasm.getStdlibFunc('zena:async', 'swapScope');
-  let shieldOpt = cx.wasm.getStdlibFunc('zena:async', 'shieldedScope');
-  if (swapOpt == null || shieldOpt == null) {
+  let curOpt = cx.wasm.getStdlibFunc('zena:async', 'currentScope');
+  if (curOpt == null) {
     bail(cx, 'shielded without scope infra');
   }
-  let swapFn = swapOpt as WasmFunction;
-  let shieldFn = shieldOpt as WasmFunction;
-  if (shieldFn.signature.returns.length != 1) {
-    bail(cx, 'shieldedScope does not return a scope');
+  let currentScopeFn = curOpt as WasmFunction;
+  if (currentScopeFn.signature.returns.length != 1) {
+    bail(cx, 'currentScope does not return a scope');
   }
-  let scopeVt = shieldFn.signature.returns[0];
+  let scopeVt = currentScopeFn.signature.returns[0];
+  // The scope operations are symbol-keyed CancelScope methods, so no
+  // user-callable function is involved.
+  let targetOpt = refTargetOf(scopeVt);
+  if (targetOpt == null || !(targetOpt is WasmStruct)) {
+    bail(cx, 'scope type is not a class');
+  }
+  let sctOpt = (targetOpt as WasmStruct).classType;
+  if (sctOpt == null) {
+    bail(cx, 'scope struct has no class type');
+  }
+  let sKey = getClassKey(sctOpt as ClassType);
+  let shieldKey = getClassMethodKey(sKey, ':shieldScope');
+  let installKey = getClassMethodKey(sKey, ':install');
+  if (!cx.wasm.classMethodMap.has(shieldKey) ||
+      !cx.wasm.classMethodMap.has(installKey)) {
+    bail(cx, 'shielded without scope methods');
+  }
+  let shieldFn = cx.wasm.classMethodMap[shieldKey];
+  let installFn = cx.wasm.classMethodMap[installKey];
 
-  let shield = cx.b.callFunc(cx.b.addRef(new IrRefFunc(shieldFn)),
+  let cur = cx.b.callFunc(cx.b.addRef(new IrRefFunc(currentScopeFn)),
       noValues(), scopeVt);
-  let swapArgs = new GrowableArray<i32>();
-  swapArgs.push(shield);
-  let prev = cx.b.callFunc(cx.b.addRef(new IrRefFunc(swapFn)), swapArgs,
-      scopeVt);
+  let shieldArgs = new GrowableArray<i32>();
+  shieldArgs.push(cur);
+  let shield = cx.b.callFunc(cx.b.addRef(new IrRefFunc(shieldFn)),
+      shieldArgs, scopeVt);
+  let installArgs = new GrowableArray<i32>();
+  installArgs.push(shield);
+  let prev = cx.b.callFunc(cx.b.addRef(new IrRefFunc(installFn)),
+      installArgs, scopeVt);
 
   let mirrored = cx.assignedEnvSyms(stmt.body as Node);
   lowerFinallyRegion(cx, mirrored, true, null,
@@ -1173,7 +1194,7 @@ export let lowerShieldedRegion = (cx: LoweringContext,
       (fscope) => {
         let restoreArgs = new GrowableArray<i32>();
         restoreArgs.push(prev);
-        let ignored = cx.b.callFunc(cx.b.addRef(new IrRefFunc(swapFn)),
+        let ignored = cx.b.callFunc(cx.b.addRef(new IrRefFunc(installFn)),
             restoreArgs, scopeVt);
       });
 };

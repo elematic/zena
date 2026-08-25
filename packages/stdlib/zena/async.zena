@@ -70,18 +70,27 @@ symbol fail;
 symbol tryComplete;
 symbol tryFail;
 symbol cancelComplete;
+symbol childSettled;
+symbol registerTask;
+symbol install;
+symbol checkpoint;
+symbol shieldScope;
 
 /** A future is Pending until it settles as Resolved or Rejected. */
 export enum FutureState {
-  Pending,
-  Resolved,
-  Rejected,
+  /** Explicitly zero: the compiler's shielded-resume guard reads a
+   * future's `#state` field directly and compares it to this value
+   * (this module is not importable from the compiler, so the
+   * dependency is by name and by this declared value). */
+  Pending = 0,
+  Resolved = 1,
+  Rejected = 2,
   /** The work was cancelled before it produced a value or a failure.
    * Observing the result of a cancelled future raises on the
    * cancellation channel — being downstream of cancelled work is
    * inside the cancellation's blast radius
    * (docs/design/cancellation.md, "Observation at the boundary"). */
-  Cancelled,
+  Cancelled = 3,
 }
 
 // ---------------------------------------------------------------------------
@@ -226,17 +235,19 @@ export declare function raiseCancellation(): never;
 // ---------------------------------------------------------------------------
 
 /**
- * The ambient current scope: ordinary module state, maintained at
- * exactly two control-transfer sites — a frame's trampoline swaps it
- * around each step() (compiler-emitted, via `swapScope`), and a
- * scope's own `run` swaps it around its body. Null until the root is
- * constructed; `currentScope` resolves null to the root.
+ * The current scope: ordinary module state, changed at exactly two
+ * kinds of control-transfer site — a frame's run() installs the
+ * frame's scope around each step() (compiler-emitted, via
+ * `:install`), and a scope's own `run` installs itself around its
+ * body. Null until the root is constructed; `currentScope` resolves
+ * null to the root.
  */
-var ambientScope: CancelScope | null = null;
+var current: CancelScope | null = null;
 
 /**
  * The root scope: what `currentScope()` reports before any scope has
- * been entered. Constructed while the ambient is still null, which is
+ * been entered. Constructed while the current scope is still null,
+ * which is
  * what makes it parentless.
  */
 let rootScope = new CancelScope();
@@ -245,7 +256,7 @@ let rootScope = new CancelScope();
  * A cancellation scope: a level-triggered cancelled flag and a parent
  * link. Cancelling a scope marks it and every descendant, and every
  * checkpoint in a cancelled scope raises — however many already have.
- * Async frames bind to the ambient scope at creation and test it at
+ * Async frames bind to the current scope at creation and test it at
  * each checkpoint; sync code that wants to stop early polls
  * `currentScope()` explicitly.
  */
@@ -253,9 +264,19 @@ export class CancelScope {
   #parent: CancelScope | null;
   var #cancelled: boolean = false;
   #children = new GrowableArray<CancelScope>();
+  /** The frames bound to this scope, registered by their ramps so
+   * `cancel` can WAKE them: a parked frame's next checkpoint only
+   * runs when something schedules it, and the future it awaits may
+   * never settle. Scheduling is safe whatever the frame is doing —
+   * a completed frame's step returns at its DONE guard, a running
+   * frame has parked or completed by the time the queue reaches it,
+   * and a parked frame's resume checkpoint tests the scope before
+   * touching its still-pending future. The root registers nothing:
+   * it cannot be cancelled, so uncancellable work pays no tracking. */
+  #tasks = new GrowableArray<Task>();
 
   /** A child of the current scope, sharing its cancelled level. */
-  new() : #parent = ambientScope {
+  new() : #parent = current {
     let p = this.#parent;
     if (p != null) {
       let parent = p as CancelScope;
@@ -285,24 +306,85 @@ export class CancelScope {
       return;
     }
     this.#cancelled = true;
+    // Wake every registered task, so a parked frame runs its next
+    // checkpoint and observes the cancellation.
+    while (this.#tasks.length > 0) {
+      scheduleTask(this.#tasks.pop());
+    }
     for (let child in this.#children) {
       child.cancel();
     }
   }
 
   /**
-   * Runs `body` with this scope as the ambient, so async frames
-   * created inside bind to it. Eager start does the inheritance: a
-   * frame's ramp runs synchronously here, reads the ambient once, and
-   * stores it — after creation nothing consults the ambient again.
+   * Registers `t` to be scheduled when this scope is cancelled. The
+   * compiler emits a call in every async function's ramp with the new
+   * frame as the task: a frame parked on a future that never settles
+   * would otherwise never reach the checkpoint that delivers its
+   * cancellation. The root never cancels, so frames bound to it are
+   * not tracked; an already-cancelled scope needs no wake either,
+   * because the frame raises at its first checkpoint.
+   */
+  :registerTask(t: Task): void {
+    if (this == rootScope || this.#cancelled) {
+      return;
+    }
+    this.#tasks.push(t);
+  }
+
+  /**
+   * Makes this scope the current scope and returns the one it
+   * replaced. Compiler-emitted code is the only caller, always in
+   * pairs: a frame's run() installs the frame's scope, calls step(),
+   * then installs the returned previous scope again, and `shielded`
+   * regions do the same around their extent. The pairs nest strictly
+   * — the executor runs one task at a time, and installs happen only
+   * on the way into and out of a region — so the saved previous
+   * scopes on the callers' stacks are the stack; no separate
+   * structure is needed.
+   */
+  :install(): CancelScope {
+    let p = current;
+    current = this;
+    return if (p != null) p else rootScope;
+  }
+
+  /**
+   * Raises on the cancellation channel if this scope has been
+   * cancelled, and does nothing otherwise. The compiler calls this at
+   * each suspension point — on entering an await and on resuming from
+   * one. Those calls are the only places cancellation is delivered.
+   */
+  :checkpoint(): void {
+    if (this.#cancelled) {
+      raiseCancellation();
+    }
+  }
+
+  /**
+   * The scope `shielded { }` regions run under: the root, which no
+   * cancellation reaches, so shielded cleanup and any work it starts
+   * run to completion. Level-triggering resumes at the region's
+   * closing brace.
+   */
+  :shieldScope(): CancelScope {
+    return rootScope;
+  }
+
+  /**
+   * Runs `body` with this scope as the current scope, so async
+   * frames created inside bind to it. Eager start does the
+   * inheritance: a frame's ramp runs synchronously here, reads the
+   * current scope once, and stores it — after creation the frame
+   * never consults it again.
    */
   run(body: () => void): void {
-    let prev = ambientScope;
-    ambientScope = this;
+    let prev = current;
+    current = this;
     try {
       body();
     } finally {
-      ambientScope = prev;
+      current = prev;
     }
   }
 }
@@ -310,42 +392,8 @@ export class CancelScope {
 /** The scope new async work would bind to; sync code polls this to
  * stop early without any signature change. */
 export let currentScope = (): CancelScope => {
-  let s = ambientScope;
+  let s = current;
   return if (s != null) s as CancelScope else rootScope;
-};
-
-/**
- * Installs `s` as the ambient and returns the previous scope. This is
- * the trampoline's half of the two save/restore sites: the compiler
- * emits a swap to the frame's scope around each step(), so work the
- * step runs synchronously — ramps of new async calls, explicit polls —
- * sees the frame's scope rather than whatever ran last.
- */
-export let swapScope = (s: CancelScope): CancelScope => {
-  let prev = currentScope();
-  ambientScope = s;
-  return prev;
-};
-
-/**
- * The scope `shielded { }` regions run under: never cancelled, so
- * work created inside the region binds to a scope no cancellation
- * reaches. This is the root scope — shielded cleanup runs outside
- * every cancellation domain, and level-triggering resumes at the
- * region's closing brace.
- */
-export let shieldedScope = (): CancelScope => rootScope;
-
-/**
- * One checkpoint: raises on the cancellation channel when `scope` is
- * cancelled. The split pass calls this at every suspension point —
- * entering an await and resuming from one — which is the only place
- * cancellation is delivered.
- */
-export let checkpoint = (scope: CancelScope): void => {
-  if (scope.isCancelled) {
-    raiseCancellation();
-  }
 };
 
 // ---------------------------------------------------------------------------
@@ -353,6 +401,8 @@ export let checkpoint = (scope: CancelScope): void => {
 // ---------------------------------------------------------------------------
 
 export class Future<T> {
+  /** Read by name by the compiler's shielded-resume guard — see the
+   * note on `FutureState.Pending`. */
   var #state = FutureState.Pending;
   var #value: Box<T> | null = null;
   var #error: Error | null = null;
@@ -920,3 +970,129 @@ class RaceWaiter<T> implements Task {
 // types (T could be a primitive). Concrete unions like
 // `i32 | Future<i32>` work directly, and `await` accepts them
 // (async.md §1).
+
+// ---------------------------------------------------------------------------
+// TaskGroup: the structured half (docs/design/cancellation.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * The task a group subscribes to each future it watches: when the
+ * future settles, `run` reads whether it failed and reports that to
+ * the group. It reads `state` before touching the result, because
+ * reading a cancelled future's result raises on the cancellation
+ * channel — and the group needs to record that outcome, not unwind.
+ */
+class GroupWaiter<T> implements Task {
+  group: TaskGroup;
+  future: Future<T>;
+  new(this.group, this.future);
+  run(): void {
+    let f = this.future;
+    var err: Error | null = null;
+    if (f.state == FutureState.Rejected) {
+      err = f.:failure();
+    }
+    this.group.:childSettled(err);
+  }
+}
+
+/**
+ * A group of async calls that are cancelled and awaited together.
+ *
+ * `spawn` starts a call and makes it a member: the group holds one
+ * `CancelScope`, each member's frame binds to that scope, and the
+ * group watches each member's future. `cancel` cancels every member;
+ * one member's failure cancels the rest; and `join` gives a future
+ * that completes once every member has settled — failing with the
+ * first member failure, if there was one. A member that ends
+ * cancelled is a recorded outcome, not an error.
+ */
+export class TaskGroup {
+  /** The group's scope: a child of the scope current at construction,
+   * so cancelling an ancestor cancels the group's children too. */
+  #scope = new CancelScope();
+  var #outstanding: i32 = 0;
+  var #firstError: Error | null = null;
+  var #joinWaiter: Completer<void> | null = null;
+
+  new();
+
+  isCancelled: boolean {
+    get {
+      return this.#scope.isCancelled;
+    }
+  }
+
+  /** Cancels every child (and work they spawned): marks the group's
+   * scope, so each child raises at its next checkpoint. */
+  cancel(): void {
+    this.#scope.cancel();
+  }
+
+  /**
+   * Starts `body` as a member of the group. The call begins here,
+   * synchronously, with the group's scope installed as current,
+   * so the new frame binds to it. The returned future is an ordinary
+   * future — anyone may await it — and the group watches it either
+   * way.
+   */
+  spawn<T>(body: () => Future<T>): Future<T> {
+    this.#outstanding += 1;
+    let prev = current;
+    current = this.#scope;
+    var fut: Future<T> | null = null;
+    try {
+      fut = body();
+    } finally {
+      current = prev;
+    }
+    let f = fut as Future<T>;
+    f.subscribe(new GroupWaiter<T>(this, f));
+    return f;
+  }
+
+  :childSettled(err: Error | null): void {
+    if (err != null && this.#firstError == null) {
+      // One member's failure cancels the rest; the error itself
+      // surfaces at join, once.
+      this.#firstError = err;
+      this.#scope.cancel();
+    }
+    this.#outstanding -= 1;
+    if (this.#outstanding == 0) {
+      let w = this.#joinWaiter;
+      if (w != null) {
+        this.#joinWaiter = null;
+        this.#settle(w);
+      }
+    }
+  }
+
+  #settle(c: Completer<void>): void {
+    let e = this.#firstError;
+    if (e != null) {
+      c.fail(e);
+    } else {
+      c.complete();
+    }
+  }
+
+  /**
+   * A future that completes once every member has settled — failing
+   * with the first member failure, if there was one. Joins while
+   * members are outstanding share one future. A join with nothing
+   * outstanding gets a fresh, already-settled future: settling and
+   * keeping the shared completer instead would break a group that
+   * spawns again after going idle, whose next drain would settle it a
+   * second time.
+   */
+  join(): Future<void> {
+    if (this.#outstanding == 0) {
+      let c = new Completer<void>();
+      this.#settle(c);
+      return c.future;
+    }
+    let w = this.#joinWaiter ??= new Completer<void>();
+    return w.future;
+  }
+}

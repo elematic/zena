@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 42
+
+// A value of a generic class is used where an interface is expected,
+// inside a generic method's body. The compiler discovers m's i32 copy
+// late (through the call in main), and used to leave W<i32> without
+// the table that dispatches its interface methods, so this failed to
+// compile. The result comes through the interface call, checking that
+// dispatch really reaches W.run.
+
+interface I {
+  run(): i32;
+}
+
+class W<T> implements I {
+  v: T;
+  new(this.v);
+  run(): i32 {
+    return 40;
+  }
+}
+
+class Host {
+  new();
+  take(i: I): i32 {
+    return i.run() + 2;
+  }
+  m<T>(v: T): i32 {
+    return this.take(new W<T>(v));
+  }
+}
+
+export function main(): i32 {
+  let h = new Host();
+  return h.m(true);
+}

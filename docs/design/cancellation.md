@@ -139,6 +139,18 @@ await, so a task in a just-cancelled scope still executes its ramp
 segment. That is the checkpoint contract, not a leak — code between
 suspensions is never interrupted anywhere in this design.
 
+Cancelling a scope also **wakes** its parked frames. Delivery is a
+checkpoint test, and a parked frame's next checkpoint runs only when
+something schedules it — the future it awaits may never settle. Each
+frame registers with its scope at creation (the root registers
+nothing, so uncancellable work pays no tracking), and cancel
+schedules the registered tasks and clears the list. A wake is safe
+whatever the frame is doing: a completed frame returns at its DONE
+guard, a running frame has parked or completed by the time the queue
+reaches it, and a resume checkpoint tests the scope before touching
+its still-pending future. Inside `shielded`, where the checkpoint is
+masked, a spuriously woken frame re-parks.
+
 ## The cancellation exception tag
 
 Zena exceptions are one wasm tag carrying an `Error` payload

@@ -32,7 +32,7 @@
  *         not hit the region-surgery problem user-level try/await
  *         would. Each suspension point is a checkpoint: entering an
  *         await and the head of each resume block test the frame's
- *         scope, and the frame binds to the ambient scope in the ramp.
+ *         scope, and the frame binds to the current scope in the ramp.
  *
  * $state encoding matches generators: 0 = START, 1 = RUNNING,
  * 2 = DONE, 3+k = suspended at await k, with await-containing loop
@@ -101,7 +101,7 @@ final class AsyncArtifacts(rampBody: IrBody, stepBody: IrBody)
  */
 var rampBodies = new HashMap<i32, AsyncArtifacts>();
 var stepBodies = new HashMap<i32, AsyncArtifacts>();
-/** Bodies of the per-frame run() interposer that swaps the ambient
+/** Bodies of the per-frame run() interposer that swaps the current scope
  * scope around an executor-driven step (docs/design/cancellation.md),
  * by uid. */
 var stepOuterBodies = new HashMap<i32, IrBody>();
@@ -198,6 +198,22 @@ let methodOf = (
   }
   throw new Error('async lowering: ' + (cKey as String) + '.' + name +
       ' was not reached (needed by ' + who + ')');
+};
+
+/** The class key of the scope struct behind `currentScope`'s return
+ * type, for looking up CancelScope's symbol-keyed methods. */
+let scopeClassKeyOf = (scopeVt: ValType, who: String): ClassKey => {
+  let target = refTargetOf(scopeVt);
+  if (target == null || !(target is WasmStruct)) {
+    throw new Error('async lowering: scope type is not a class (' +
+        who + ')');
+  }
+  let ct = (target as WasmStruct).classType;
+  if (ct == null) {
+    throw new Error('async lowering: scope struct has no class type (' +
+        who + ')');
+  }
+  return getClassKey(ct as ClassType);
 };
 
 /** A `zena:async` module function RTA queued, or a loud miss. */
@@ -463,16 +479,20 @@ let prepareOne = (
   let futureCtor = methodOf(wasm, fKey, '<constructor>', name);
 
   // The scope machinery (docs/design/cancellation.md): the frame binds
-  // to the ambient scope at creation, tests it at each checkpoint, and
-  // swaps it ambient around each executor-driven step. RTA queued all
+  // to the current scope at creation, tests it at each checkpoint, and
+  // swaps it current scope around each executor-driven step. RTA queued all
   // three for every async function.
   let currentScopeFn = stdlibFn(wasm, 'currentScope', name);
-  let swapScopeFn = stdlibFn(wasm, 'swapScope', name);
-  let checkpointFn = stdlibFn(wasm, 'checkpoint', name);
   if (currentScopeFn.signature.returns.length != 1) {
     throw new Error('async lowering: currentScope does not return a scope');
   }
   let scopeVt = currentScopeFn.signature.returns[0];
+  // The scope's own operations are symbol-keyed methods on
+  // CancelScope, so nothing here is callable from user code.
+  let scopeKey = scopeClassKeyOf(scopeVt, name);
+  let installFn = methodOf(wasm, scopeKey, ':install', name);
+  let checkpointFn = methodOf(wasm, scopeKey, ':checkpoint', name);
+  let registerFn = methodOf(wasm, scopeKey, ':registerTask', name);
   // `complete(this, value: T)` is where the value type comes from.
   // `Future<void>` (async.md §8 question 1) needs nothing special here:
   // `void` is a zero-width type argument, so `complete` specializes to
@@ -524,6 +544,12 @@ let prepareOne = (
   let awaitBlocks = new GrowableArray<i32>();
   let resumeOf = new GrowableArray<i32>();
   let shieldedResumes = new HashSet<i32>();
+  // For a shielded resume, the awaited future's value id: a cancel
+  // WAKES parked frames, and with the checkpoint masked the resume
+  // must re-park when the wake was spurious (the future still
+  // pending) rather than read a result that is not there. Hop
+  // resumes carry a plain value and need no guard.
+  let shieldedResumeFuture = new HashMap<i32, i32>();
   var bi = 0;
   while (bi < presplit.blocks.length) {
     let insts = presplit.blocks[bi].insts;
@@ -535,6 +561,9 @@ let prepareOne = (
         resumeOf.push(resumeTarget);
         if (shieldedAwaits.has(term)) {
           shieldedResumes.add(resumeTarget);
+          if (!hopTerms.has(term)) {
+            shieldedResumeFuture[resumeTarget] = presplit.a[term];
+          }
         }
       }
     }
@@ -542,7 +571,7 @@ let prepareOne = (
   }
   var shieldFn: WasmFunction | null = null;
   if (shieldedResumes.size > 0) {
-    shieldFn = stdlibFn(wasm, 'shieldedScope', name);
+    shieldFn = methodOf(wasm, scopeKey, ':shieldScope', name);
   }
 
   // pc assignment: resume blocks get their suspend-state value;
@@ -633,12 +662,12 @@ let prepareOne = (
   wasm.addFunction(stepFunc);
   pass.markFunctionReached(stepFunc);
 
-  // run(): the Task entry the executor calls. It swaps the ambient
+  // run(): the Task entry the executor calls. It swaps the current scope
   // scope to the frame's around the step, so work the step runs
   // synchronously — ramps of new async calls, explicit polls — sees
   // the frame's scope rather than whatever ran last. The ramp calls
   // step() directly instead: during the eager first segment the
-  // ambient IS the caller's scope, which is what the frame just bound
+  // current scope IS the caller's scope, which is what the frame just bound
   // to. step() never unwinds (both tags are captured), so the linear
   // swap/step/restore shape needs no protection region.
   let stepOuterFunc = new WasmFunction(stepSig, null, func.model);
@@ -656,14 +685,14 @@ let prepareOne = (
     let scope = ob.emit(IrOp.ref_as_non_null, scopeVt, scopeWeak, -1);
     let swapArgs = new GrowableArray<i32>();
     swapArgs.push(scope);
-    let prev = ob.callFunc(ob.addRef(new IrRefFunc(swapScopeFn)), swapArgs,
+    let prev = ob.callFunc(ob.addRef(new IrRefFunc(installFn)), swapArgs,
         scopeVt);
     let stepArgs = new GrowableArray<i32>();
     stepArgs.push(oFrame);
     ob.callFunc(ob.addRef(new IrRefFunc(stepFunc)), stepArgs, null);
     let restoreArgs = new GrowableArray<i32>();
     restoreArgs.push(prev);
-    let ignored = ob.callFunc(ob.addRef(new IrRefFunc(swapScopeFn)),
+    let ignored = ob.callFunc(ob.addRef(new IrRefFunc(installFn)),
         restoreArgs, scopeVt);
     ob.retVoid();
     stepOuterBodies[stepOuterFunc.uid] = ob.finish();
@@ -716,11 +745,13 @@ let prepareOne = (
 
   // The two bodies.
   let rampBody = buildRamp(func, frame, futureInfo, futureCtor, stepFunc,
-      entryParamIds, currentScopeFn, scopeVt);
+      entryParamIds, currentScopeFn, scopeVt, registerFn, fatPtr,
+      vtableGlobal);
   let stepBody = buildStepBody(presplit, cfg, frame, futureStruct, spilled,
       pcOfBlock, dTargets, subscribeOf, hopTerms, scheduleFn, completeFn,
       failFn, cancelFn, checkpointFn, scopeVt, resumeOf, shieldedAwaits,
-      shieldedResumes, shieldFn, swapScopeFn, valueVt, fatPtr,
+      shieldedResumes, shieldedResumeFuture, shieldFn, installFn,
+      valueVt, fatPtr,
       vtableGlobal, wasm.exceptionTag as WasmTag,
       wasm.cancellationTag as WasmTag,
       wasm.exceptionPayload as WasmGlobal, dispatchRegions);
@@ -743,7 +774,10 @@ let buildRamp = (
   stepFunc: WasmFunction,
   entryParamIds: Array<i32>,
   currentScopeFn: WasmFunction,
-  scopeVt: ValType
+  scopeVt: ValType,
+  registerFn: WasmFunction,
+  fatPtr: WasmStruct,
+  vtableGlobal: WasmGlobal
 ): IrBody => {
   let b = new IrBuilder();
   let entry = b.newBlock();
@@ -779,10 +813,10 @@ let buildRamp = (
   futPair.push(fut);
   b.emitVoid(IrOp.struct_set, b.pushExtra(futPair), futField);
 
-  // Bind to the ambient scope, once. Eager start does the
+  // Bind to the current scope, once. Eager start does the
   // inheritance: this ramp runs synchronously inside its caller, so
-  // the ambient here is the caller's scope. After this, nothing
-  // consults the ambient for this frame — delivery is a field test.
+  // the current scope here is the caller's scope. After this, nothing
+  // consults the current scope for this frame — delivery is a field test.
   let scope = b.callFunc(b.addRef(new IrRefFunc(currentScopeFn)),
       new GrowableArray<i32>(), scopeVt);
   let scopeField = b.addRef(new IrRefField(frame, '$scope'));
@@ -790,6 +824,16 @@ let buildRamp = (
   scopePair.push(inst);
   scopePair.push(scope);
   b.emitVoid(IrOp.struct_set, b.pushExtra(scopePair), scopeField);
+
+  // Register on the scope's wake list, as the Task the executor runs:
+  // cancelling the scope schedules the frame, so delivery does not
+  // wait on a future that may never settle.
+  let packed = b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr), inst,
+      b.addRef(new IrRefGlobal(vtableGlobal)));
+  let bindArgs = new GrowableArray<i32>();
+  bindArgs.push(scope);
+  bindArgs.push(packed);
+  b.callFunc(b.addRef(new IrRefFunc(registerFn)), bindArgs, null);
 
   // Eager start: the body runs synchronously up to the first await.
   let stepArgs = new GrowableArray<i32>();
@@ -824,8 +868,9 @@ let buildStepBody = (
   resumeTargets: Array<i32>,
   shieldedAwaits: HashSet<i32>,
   shieldedResumes: HashSet<i32>,
+  shieldedResumeFuture: HashMap<i32, i32>,
   shieldFn: WasmFunction | null,
-  swapFn: WasmFunction,
+  installFn: WasmFunction,
   valueVt: ValType | null,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal,
@@ -1385,12 +1430,22 @@ let buildStepBody = (
     let rebuilt = new GrowableArray<i32>();
     if (shieldedResumes.has(rt)) {
       // Resuming inside a `shielded` region: no checkpoint, and the
-      // ambient — which the run() interposer set to the frame's scope —
+      // current scope — which the run() interposer set to the frame's scope —
       // is re-swapped to the shield scope, so work created after the
       // resume still binds outside every cancellation domain.
       let sf = shieldFn as WasmFunction;
+      let scopeWeak = rawInst(body, IrOp.struct_get,
+          internVt(body, weakenToNullable(scopeVt)), frameParam,
+          scopeFieldRef);
+      body.instBlock[scopeWeak] = rt;
+      rebuilt.push(scopeWeak);
+      let scopeVal = rawInst(body, IrOp.ref_as_non_null,
+          internVt(body, scopeVt), scopeWeak, -1);
+      body.instBlock[scopeVal] = rt;
+      rebuilt.push(scopeVal);
       let scIdx = body.extra.length;
-      body.extra.push(0);
+      body.extra.push(1);
+      body.extra.push(scopeVal);
       let sc = rawInst(body, IrOp.call, internVt(body, scopeVt), scIdx,
           addRawRef(body, new IrRefFunc(sf)));
       body.instBlock[sc] = rt;
@@ -1399,9 +1454,82 @@ let buildStepBody = (
       body.extra.push(1);
       body.extra.push(sc);
       let sw = rawInst(body, IrOp.call, internVt(body, scopeVt), swIdx,
-          addRawRef(body, new IrRefFunc(swapFn)));
+          addRawRef(body, new IrRefFunc(installFn)));
       body.instBlock[sw] = rt;
       rebuilt.push(sw);
+      if (let (true, fvId) = shieldedResumeFuture.get(rt)) {
+        // A cancel WAKES parked frames, and here the checkpoint is
+        // masked — so a spurious wake would fall through to reading a
+        // future that has not settled. Guard: still pending means
+        // re-park (the frame stays subscribed; the real resume comes
+        // when the future settles). The rest of the resume moves to a
+        // continuation block the guard branches to.
+        let contB = newBlockId();
+        // The moved tail still carries var ops; step 7's
+        // frame-rewrite walks bodyBlocks, so the new block joins it.
+        bodyBlocks.push(contB);
+        let cont = body.blocks[contB];
+        for (let inst in block.insts) {
+          cont.insts.push(inst);
+          body.instBlock[inst] = contB;
+        }
+        truncate(block.insts);
+        let reparkB = newBlockId();
+        let pcC = emitIn(reparkB, IrOp.const_i32, i32Idx, pcOfBlock[rt], -1);
+        storeState(reparkB, pcC);
+        retVoidIn(reparkB);
+
+        let fvVt = body.resultType(fvId) as ValType;
+        let weakVt = weakenToNullable(fvVt);
+        var fv = rawInst(body, IrOp.struct_get, internVt(body, weakVt),
+            frameParam,
+            addRawRef(body, new IrRefField(frame, '$v' + i32ToString(fvId))));
+        body.instBlock[fv] = rt;
+        rebuilt.push(fv);
+        if (!valTypesStrictlyEqual(weakVt, fvVt)) {
+          fv = rawInst(body, IrOp.ref_as_non_null, internVt(body, fvVt),
+              fv, -1);
+          body.instBlock[fv] = rt;
+          rebuilt.push(fv);
+        }
+        let futStructOpt = refTargetOf(fvVt);
+        if (futStructOpt == null || !(futStructOpt is WasmStruct)) {
+          throw new Error('shielded resume guard: awaited value is not ' +
+              'a future struct');
+        }
+        let futStruct = futStructOpt as WasmStruct;
+        // Future's `#state` field (stored under its class-scoped key,
+        // `<classKey>::#state`), FutureState.Pending == 0 — pinned by
+        // a comment on the declaration in zena:async.
+        var stateField: String | null = null;
+        for (let f in futStruct.fields) {
+          let fn = f.name;
+          if (fn != null) {
+            let n = fn as String;
+            if (n == '#state' || (n.length > 8 &&
+                n.sliceBytes(n.length - 8, n.length) == '::#state')) {
+              stateField = n;
+            }
+          }
+        }
+        if (stateField == null) {
+          throw new Error('shielded resume guard: no #state field on ' +
+              'the awaited future struct');
+        }
+        let st = rawInst(body, IrOp.struct_get, i32Idx, fv,
+            addRawRef(body, new IrRefField(futStruct, stateField as String)));
+        body.instBlock[st] = rt;
+        rebuilt.push(st);
+        let zero = rawInst(body, IrOp.const_i32, i32Idx, 0, -1);
+        body.instBlock[zero] = rt;
+        rebuilt.push(zero);
+        let isPending = rawInst(body, IrOp.i32_eq, i32Idx, st, zero);
+        body.instBlock[isPending] = rt;
+        rebuilt.push(isPending);
+        replaceContents(block.insts, rebuilt);
+        brIfTo(rt, isPending, reparkB, contB);
+        continue;
+      }
     } else {
       checkpointInto(rt, rebuilt);
     }

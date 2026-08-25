@@ -726,6 +726,30 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is TemplateLiteral) {
         this.registerTemplateLiteral(n, model, resolveType);
       }
+      // Interface adaptations (a class value packed at an interface
+      // slot) are node-level facts the dependency records never carry
+      // — the fourth organ. Without this, a generic class packed into
+      // an interface from a specialized body has a struct and no
+      // class-interface vtable, and lowering's iface_pack fails. The
+      // unspec key is what the vtable phase gates on, so recording it
+      // is sufficient even where the resolver leaves a method type
+      // parameter unsubstituted.
+      if (n is Expression) {
+        let ifaceAdaptation = model.getInterfaceAdaptation(n);
+        if (ifaceAdaptation != null) {
+          let srcT = resolveType(ifaceAdaptation.source);
+          let tgtT = resolveType(ifaceAdaptation.target);
+          if (srcT is ClassType && tgtT is InterfaceType) {
+            this.pass.wasm.usedInterfaceAdaptations[
+                getClassInterfaceKey(getClassKey(srcT),
+                    getInterfaceKey(tgtT))] = true;
+            let unspecCName = getClassKey(srcT.genericSource ?? srcT);
+            let unspecIName = getInterfaceKey(tgtT.genericSource ?? tgtT);
+            this.pass.wasm.usedInterfaceAdaptations[
+                getClassInterfaceKey(unspecCName, unspecIName)] = true;
+          }
+        }
+      }
       // Cast/test targets and local binding types are the types a
       // BODY names without any signature or dependency record naming
       // them — a lowered `as` is a ref.cast to the target's struct,
@@ -1034,14 +1058,21 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.queuePrivateMethod(futureType, ':fail');
       // A cancellation unwinding a frame completes it as cancelled,
       // and the frame binds to a scope at creation, tests it at each
-      // checkpoint, and swaps it ambient around each resumed step
+      // checkpoint, and swaps it current scope around each resumed step
       // (docs/design/cancellation.md). `checkpoint`'s body raises on
       // the cancellation channel, so reaching it is also what mints
       // the cancellation tag for every async program.
       this.queuePrivateMethod(futureType, ':cancelComplete');
       this.queueStdlibFunction('zena:async', 'currentScope');
-      this.queueStdlibFunction('zena:async', 'swapScope');
-      this.queueStdlibFunction('zena:async', 'checkpoint');
+      let scopeCt = this.cancelScopeType();
+      if (scopeCt != null) {
+        let sct = scopeCt as ClassType;
+        this.pass.specializer.instantiateClassType(sct, model);
+        this.queueExplicitCtor(sct);
+        this.queuePrivateMethod(sct, ':install');
+        this.queuePrivateMethod(sct, ':checkpoint');
+        this.queuePrivateMethod(sct, ':registerTask');
+      }
       // An async `main` is driven by a synthesized export wrapper that
       // drains the queue and unwraps the result (async.md §4, Level 0).
       // Whether THIS function is that main is not knowable here, so
@@ -1093,17 +1124,51 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   /**
+   * The `CancelScope` class type, read off `currentScope`'s checked
+   * return type — the same no-registry approach as the Task interface,
+   * which is read off `subscribe`'s parameter. Null when `zena:async`
+   * is not part of the program.
+   */
+  cancelScopeType(): ClassType | null {
+    let prog = this.pass.program;
+    if (!prog.unitsByPath.has('zena:async')) {
+      return null;
+    }
+    let unit = prog.unitsByPath['zena:async'];
+    for (let stmt in unit.ast.body) {
+      if (stmt is VariableDeclaration) {
+        let vd = stmt;
+        if (vd.pattern is IdentifierPattern &&
+            (vd.pattern as IdentifierPattern).name == 'currentScope') {
+          let t = unit.model.getNodeType(vd.init);
+          if (t != null && t is FunctionType) {
+            let ret = t.returnType;
+            if (ret is ClassType) {
+              return ret;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * An async function or an await expression, from either RTA walk.
    * Both reduce to "which Future instantiation does this need?".
    */
   registerAsyncNode(n: Node, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
     if (n is ShieldedStatement) {
-      // The shield's ambient swaps are emitted by lowering (and by the
+      // The shield's current scope swaps are emitted by lowering (and by the
       // split pass at resumes inside the region), with no call node
       // for RTA to find them by.
-      this.queueStdlibFunction('zena:async', 'shieldedScope');
-      this.queueStdlibFunction('zena:async', 'swapScope');
+      this.queueStdlibFunction('zena:async', 'currentScope');
+      let scopeCt = this.cancelScopeType();
+      if (scopeCt != null) {
+        this.queuePrivateMethod(scopeCt as ClassType, ':shieldScope');
+        this.queuePrivateMethod(scopeCt as ClassType, ':install');
+      }
       return;
     }
     if (n is AwaitExpression) {
