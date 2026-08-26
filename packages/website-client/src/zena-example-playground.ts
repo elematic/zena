@@ -38,6 +38,16 @@ function unindent(text: string): string {
   return lines.join('\n');
 }
 
+function slugify(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/[^\w\s-]/g, '')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-');
+}
+
 /**
  * An interactive example playground with desktop vertical sidebar navigation
  * and mobile dropdown selection.
@@ -47,7 +57,7 @@ function unindent(text: string): string {
  *
  * ```html
  * <zena-example-playground>
- *   <figure>
+ *   <figure id="example-functions">
  *     <figcaption>Functions</figcaption>
  *     ```zena
  *     export function main() { console.log('Hello'); }
@@ -75,6 +85,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
     this.examples = figures.map((figure, i) => {
       const caption = figure.querySelector('figcaption');
       const title = caption?.textContent?.trim() || `Example ${i + 1}`;
+      const slug = figure.id || `example-${slugify(title)}`;
       const allowUnused =
         figure.hasAttribute('allow-unused') ||
         figure.hasAttribute('allow-unused-variables') ||
@@ -100,12 +111,14 @@ export class ZenaExamplePlayground extends BehaviorElement {
         files['main.zena'] = unindent(rawCode);
       }
 
-      // Hide static figures so only the upgraded playground is displayed
+      // Hide static figures so only the upgraded playground is displayed.
+      // Remove id from hidden figure to avoid duplicate element IDs.
+      figure.removeAttribute('id');
       figure.setAttribute('hidden', '');
       figure.style.display = 'none';
 
       return {
-        id: `${id}-ex-${i}`,
+        id: slug,
         title,
         files: {...files},
         currentFiles: {...files},
@@ -155,10 +168,10 @@ export class ZenaExamplePlayground extends BehaviorElement {
     tabsList.setAttribute('aria-orientation', 'vertical');
     tabsList.setAttribute('aria-label', 'Code examples');
 
-    const tabs = this.examples.map((ex, i) => {
+    const tabs = this.examples.map((ex) => {
       const tab = document.createElement('button');
       tab.type = 'button';
-      tab.id = `${id}-tab-${i}`;
+      tab.id = ex.id;
       tab.className = 'example-tab-button';
       tab.setAttribute('role', 'tab');
       tab.textContent = ex.title;
@@ -182,7 +195,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
     wrapper.append(dropdownWrapper, tabsList, playgroundPane);
     this.append(wrapper);
 
-    const selectExample = (index: number) => {
+    const selectExample = (index: number, updateUrl = false) => {
       if (index < 0 || index >= this.examples.length) return;
       this.activeIndex = index;
 
@@ -199,6 +212,28 @@ export class ZenaExamplePlayground extends BehaviorElement {
         playground.files = {...activeExample.currentFiles};
         playground.allowUnusedVariables = !!activeExample.allowUnused;
         playground.clearConsole();
+
+        if (updateUrl && window.location.hash !== `#${activeExample.id}`) {
+          history.pushState(null, '', `#${activeExample.id}`);
+        }
+      }
+    };
+
+    const syncFromHash = (smooth = true) => {
+      const hash = window.location.hash;
+      if (!hash) return;
+      const targetId = decodeURIComponent(hash.slice(1));
+      if (!targetId) return;
+
+      const matchingIndex = this.examples.findIndex((ex) => ex.id === targetId);
+      if (matchingIndex >= 0) {
+        selectExample(matchingIndex, false);
+        requestAnimationFrame(() => {
+          this.scrollIntoView({
+            block: 'start',
+            behavior: smooth ? 'smooth' : 'auto',
+          });
+        });
       }
     };
 
@@ -227,7 +262,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
       (e) => {
         const tab = (e.target as HTMLElement).closest('button');
         const index = tab ? tabs.indexOf(tab as HTMLButtonElement) : -1;
-        if (index >= 0) selectExample(index);
+        if (index >= 0) selectExample(index, true);
       },
       {signal},
     );
@@ -250,7 +285,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
 
         if (nextIndex >= 0) {
           e.preventDefault();
-          selectExample(nextIndex);
+          selectExample(nextIndex, true);
           tabs[nextIndex]?.focus();
         }
       },
@@ -261,13 +296,31 @@ export class ZenaExamplePlayground extends BehaviorElement {
     select.addEventListener(
       'change',
       () => {
-        selectExample(Number(select.value));
+        selectExample(Number(select.value), true);
       },
       {signal},
     );
 
-    // Initialize with first example
-    selectExample(0);
+    // Hash sync
+    window.addEventListener('hashchange', () => syncFromHash(true), {signal});
+    window.addEventListener('popstate', () => syncFromHash(true), {signal});
+
+    // Initialize with target hash or first example
+    let initialIndex = 0;
+    if (window.location.hash) {
+      const initialTargetId = decodeURIComponent(window.location.hash.slice(1));
+      const foundIdx = this.examples.findIndex(
+        (ex) => ex.id === initialTargetId,
+      );
+      if (foundIdx >= 0) {
+        initialIndex = foundIdx;
+      }
+    }
+    selectExample(initialIndex, false);
+
+    if (window.location.hash) {
+      setTimeout(() => syncFromHash(false), 50);
+    }
   }
 }
 

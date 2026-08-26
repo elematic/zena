@@ -451,7 +451,7 @@ Explore Zena's features through interactive examples. All examples are editable 
 
 <zena-example-playground>
 
-<figure>
+<figure id="example-functions">
 <figcaption>Functions</figcaption>
 
 ```zena
@@ -480,7 +480,7 @@ export function main() {
 
 </figure>
 
-<figure>
+<figure id="example-records-and-tuples">
 <figcaption>Records &amp; Tuples</figcaption>
 
 ```zena
@@ -514,7 +514,7 @@ export function main() {
 
 </figure>
 
-<figure>
+<figure id="example-arrays">
 <figcaption>Arrays</figcaption>
 
 ```zena
@@ -546,7 +546,7 @@ function logInts(numbers: Array<i32>, label: String) {
 
 </figure>
 
-<figure>
+<figure id="example-maps">
 <figcaption>Maps</figcaption>
 
 ```zena
@@ -581,7 +581,7 @@ function logScores(scores: Map<String, i32>) {
 
 </figure>
 
-<figure>
+<figure id="example-async-functions">
 <figcaption>Async Functions</figcaption>
 
 ```zena
@@ -611,7 +611,7 @@ export async function main(): Future<void> {
 
 </figure>
 
-<figure allow-unused>
+<figure id="example-types" allow-unused>
 <figcaption>Types</figcaption>
 
 ```zena
@@ -654,7 +654,7 @@ type V = String | Box<i32>; // OK
 
 </figure>
 
-<figure>
+<figure id="example-classes">
 <figcaption>Classes</figcaption>
 
 ```zena
@@ -683,7 +683,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-mixins-and-interfaces">
 <figcaption>Mixins &amp; Interfaces</figcaption>
 
 ```zena
@@ -713,7 +713,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-sealed-classes">
 <figcaption>Sealed Classes</figcaption>
 
 ```zena
@@ -738,7 +738,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-pattern-matching">
 <figcaption>Pattern Matching</figcaption>
 
 ```zena
@@ -765,7 +765,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-enums">
 <figcaption>Enums</figcaption>
 
 ```zena
@@ -784,7 +784,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-expression-oriented">
 <figcaption>Expression Oriented</figcaption>
 
 ```zena
@@ -812,7 +812,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-loops">
 <figcaption>Loops</figcaption>
 
 ```zena
@@ -834,7 +834,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-pipelines">
 <figcaption>Pipelines</figcaption>
 
 ```zena
@@ -858,7 +858,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-extension-classes">
 <figcaption>Extension Classes</figcaption>
 
 ```zena
@@ -880,7 +880,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-regular-expressions">
 <figcaption>Regular Expressions</figcaption>
 
 ```zena
@@ -896,7 +896,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-imports-and-exports">
 <figcaption>Imports &amp; Exports</figcaption>
 
 ```zena
@@ -916,7 +916,7 @@ export let main = () => {
 
 </figure>
 
-<figure>
+<figure id="example-modules">
 <figcaption>Modules</figcaption>
 
 <script type="sample/zena" filename="main.zena">
