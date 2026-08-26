@@ -64,9 +64,14 @@ This document tracks completed work and planned features. For project instructio
   - **`yield` inside `try` now works as well.** It was a v1 generator
     restriction waiting on exactly this region construction, so
     generators inherit it: both split passes share one implementation.
-    See [generators.md](docs/design/generators.md) §6 — what remains
-    deferred there is the `return()`/disposal protocol and `finally` on
-    abandonment, which are decided with cancellation.
+    See [generators.md](docs/design/generators.md) §6.
+  - **Generator disposal is implemented** (cancellation step 5, the
+    last piece): leaving a `for`-in early delivers a cancellation at
+    the suspended `yield` — the generator's `finally`/`using` regions
+    run and the frame is exhausted — behind its own whole-program gate
+    (a protocol `for`-in plus a generator), with no `return()` method
+    on `Iterator`. `yield` inside a `finally` block is now a checker
+    error, and a dropped, hand-iterated generator still runs nothing.
   - **`Future<void>` works** — the fire-and-forget shape. It needed no
     async machinery: the blocker was that `void` could not be a type
     argument at all. `void` is now a zero-width type argument (it takes

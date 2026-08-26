@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 0
+
+// Disposal is a cancellation, so it releases `using` resources held
+// across the suspended yield — the same region machinery finally
+// rides (docs/design/ownership.md §using).
+
+import { Iterator } from 'zena:iterator';
+
+import { Disposable } from 'zena:ownership';
+
+var log = '';
+
+class Guard implements Disposable {
+  #id: i32;
+  new(id: i32) : #id = id;
+  :Disposable.dispose(): void {
+    log = log + 'd' + i32ToString(this.#id);
+  }
+}
+
+let guarded = gen (): Iterator<i32> => {
+  using g = new Guard(7);
+  yield 1;
+  yield 2;
+};
+
+export let main = (): i32 => {
+  for (let v in guarded()) {
+    log = log + i32ToString(v);
+    break;
+  }
+  if (log == '1d7') {
+    return 0;
+  }
+  console.log('log was: ' + log);
+  return 1;
+};

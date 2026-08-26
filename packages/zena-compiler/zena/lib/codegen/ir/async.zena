@@ -497,10 +497,12 @@ let prepareOne = (
   let futureCtor = methodOf(wasm, fKey, '<constructor>', name);
 
   // The cancellation machinery, present only when the program can
-  // cause a cancellation — the tag's existence is the gate's signal
-  // (docs/design/cancellation.md).
+  // cause a scope cancellation (docs/design/cancellation.md). Keyed
+  // on the flag rather than the tag: generator disposal mints the
+  // tag alone, and the scope methods resolved here exist only when
+  // RTA queued them under the flag.
   var sm: ScopeMachinery | null = null;
-  if (wasm.cancellationTag != null) {
+  if (wasm.scopeCancellationActive) {
     let currentScopeFn = stdlibFn(wasm, 'currentScope', name);
     if (currentScopeFn.signature.returns.length != 1) {
       throw new Error('async lowering: currentScope does not return a scope');

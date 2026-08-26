@@ -794,6 +794,28 @@ export final class WasmModule {
   var exceptionTag: WasmTag | null = null;
   var exceptionPayload: WasmGlobal | null = null;
   var cancellationTag: WasmTag | null = null;
+  /**
+   * The async half of the cancellation gate: the program can cause a
+   * scope cancellation, so async frames carry scopes, checkpoints,
+   * and wake registration. Distinct from the tag's existence, because
+   * generator disposal mints the tag without any of that — the scope
+   * methods the async split pass resolves exist only when RTA queued
+   * them under this flag.
+   */
+  var scopeCancellationActive: boolean = false;
+  /**
+   * The generator half: a reached protocol `for`-in plus a reached
+   * generator make disposal possible, so generator frames carry the
+   * `$disposing` machinery and protocol loops the disposal finalizer.
+   */
+  var generatorDisposalActive: boolean = false;
+  /**
+   * The common supertype of every generator frame struct, minted when
+   * disposal is active: the for-in disposal finalizer tests and casts
+   * against it, so `$state` and `$disposing` sit at a shape every
+   * generator shares whatever its own spill fields are.
+   */
+  var generatorFrameSuper: WasmStruct | null = null;
   var isLayoutLocked: boolean = false;
   var startFunction: WasmFunction | null = null;
   

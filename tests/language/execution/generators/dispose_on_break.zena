@@ -1,0 +1,42 @@
+// @mode: run
+// @result: 0
+
+// Leaving a for-in early disposes a suspended generator: the exit
+// delivers the cancellation channel at the suspended yield, the
+// generator's finally runs, and the frame completes as exhausted
+// (docs/design/cancellation.md, "Abandonment and generator
+// disposal"). The break happens with the generator parked after its
+// first yield, so 'b' and 'c' never run and 'F' does.
+
+import { Iterator } from 'zena:iterator';
+
+var log = '';
+
+let counting = gen (): Iterator<i32> => {
+  try {
+    log = log + 'a';
+    yield 1;
+    log = log + 'b';
+    yield 2;
+    log = log + 'c';
+  } finally {
+    log = log + 'F';
+  }
+};
+
+export let main = (): i32 => {
+  let it = counting();
+  log = log + 's';
+  for (let v in it) {
+    log = log + i32ToString(v);
+    if (v == 1) {
+      break;
+    }
+  }
+  log = log + 'x';
+  if (log == 'sa1Fx') {
+    return 0;
+  }
+  console.log('log was: ' + log);
+  return 1;
+};

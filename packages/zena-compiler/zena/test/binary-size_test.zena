@@ -285,6 +285,18 @@ export let tests = suite('Binary size', (): void => {
     isFalse(hasExport(bytes, '__zena_cancellation'));
   });
 
+  test('a generator without a protocol for-in stays gate-closed', (ctx: TestContext): void => {
+    // Manual next() consumption cannot dispose, so the generator
+    // carries no disposal machinery and no tag.
+    let bytes = compile('packages/zena-compiler/test-files/gen-no-protocol-forin.zena');
+    isFalse(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('a generator iterated by a protocol for-in opens the disposal gate', (ctx: TestContext): void => {
+    let bytes = compile('packages/zena-compiler/test-files/gen-with-protocol-forin.zena');
+    isTrue(hasExport(bytes, '__zena_cancellation'));
+  });
+
   test('a subclassed generic emits no erased specialization', (ctx: TestContext): void => {
     // `Counted<T> extends Cell<T>` names `Cell<T>` from inside generic
     // code — linking the subclass template's supertype — and the

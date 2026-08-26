@@ -72,6 +72,7 @@ import {
 import {
   declScopeDrop, lowerFor, lowerForIn, lowerIf, lowerIfExpression,
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
+  returnMultiThroughFinally,
   lowerLetCondition, lowerMatch, lowerParamDropRegions,
   lowerScopeDropRegion, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
@@ -2186,6 +2187,16 @@ export final class FunctionLowerer {
    * forwarding still bail.
    */
   #lowerMultiReturn(arg: Expression): void {
+    let values = this.#lowerMultiReturnValues(arg);
+    if (this.#cx().reachable) {
+      this.b.retMulti(values);
+    }
+  }
+
+  /** The conformed component values of a multi-value return operand,
+   * without emitting the return — so a `return` inside a finalizer
+   * region can park them instead (one variable per slot). */
+  #lowerMultiReturnValues(arg: Expression): GrowableArray<i32> {
     if (arg is CallExpression) {
       // Forwarding form: `return f(...)` where the callee returns the
       // same multi-value shape — projections flow straight through.
@@ -2201,9 +2212,7 @@ export final class FunctionLowerer {
               'multi-value return type');
         }
       }
-      this.b.retMulti(outs);
-      this.#cx().reachable = false;
-      return;
+      return outs;
     }
     if (!(arg is TupleLiteral)) {
       this.#bail('multi-value return');
@@ -2231,7 +2240,7 @@ export final class FunctionLowerer {
       }
       values.push(v);
     }
-    this.b.retMulti(values);
+    return values;
   }
 
   /** The zero value of a result slot (for `_` tuple placeholders). */
@@ -2410,12 +2419,11 @@ export final class FunctionLowerer {
           }
         } else if (!this.presplitAsync &&
             this.func.signature.returns.length > 1) {
-          if (this.#cx().finallyScopes.length > 0) {
-            // One variable per result would park these too; nothing
-            // needs it yet.
-            this.#bail('multi-value return through a finalizer');
+          let values = this.#lowerMultiReturnValues(argument);
+          if (this.#cx().reachable &&
+              !returnMultiThroughFinally(this.#cx(), values)) {
+            this.b.retMulti(values);
           }
-          this.#lowerMultiReturn(argument);
         } else {
           let ctx = this.#returnSlotVt();
           let value = this.#lowerExpressionCtx(argument, ctx);

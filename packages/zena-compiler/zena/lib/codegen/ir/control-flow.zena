@@ -38,6 +38,7 @@ import {
   getNonNullableType, typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
+import { emitGeneratorDispose } from './generators.zena';
 import { inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, returnSlotVt, throwStmt, varDecl } from './lowering.zena';
 import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported, noValues,
@@ -715,6 +716,37 @@ export let returnThroughFinally = (cx: LoweringContext, value: i32): boolean => 
 };
 
 /**
+ * The multi-value sibling of `returnThroughFinally`: one variable per
+ * result slot, allocated on the first multi-value return out of the
+ * region. The replay arm reads them back and either parks them into
+ * the next enclosing region or emits the ret_multi itself.
+ */
+export let returnMultiThroughFinally = (cx: LoweringContext,
+    values: GrowableArray<i32>): boolean => {
+  if (cx.finallyScopes.length == 0) {
+    return false;
+  }
+  let scope = cx.finallyScopes[cx.finallyScopes.length - 1];
+  var vars = scope.returnVars;
+  if (vars == null) {
+    let created = new GrowableArray<i32>();
+    for (let slot in cx.func.signature.returns) {
+      created.push(cx.b.newVar(slot));
+    }
+    scope.returnVars = created;
+    vars = created;
+  }
+  let rv = vars as GrowableArray<i32>;
+  for (var i = 0; i < values.length; i += 1) {
+    cx.b.varSet(rv[i], cx.conformToSlot(values[i],
+        cx.b.body.varTypes[rv[i]], 'multi-value return through a finalizer'));
+  }
+  scope.exitsByReturn = true;
+  parkExit(cx, scope, finallyExitReturn);
+  return true;
+};
+
+/**
  * The innermost finalizer a `break`/`continue` here owes, or null.
  * A loop opened INSIDE the region is left without leaving the region,
  * and `loopDepth` is what tells the two apart.
@@ -918,12 +950,24 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: GrowableArray<SymbolId>
             cx.b.constI32(finallyExitReturn, i32vt)),
         armB, noValues(), nextB, noValues());
     cx.b.switchTo(armB);
-    let value = if (scope.returnVar >= 0) cx.b.varGet(scope.returnVar) else -1;
-    if (!returnThroughFinally(cx, value)) {
-      if (value >= 0) {
-        cx.b.ret(value);
-      } else {
-        cx.b.retVoid();
+    let multiVars = scope.returnVars;
+    if (multiVars != null) {
+      let parked = multiVars as GrowableArray<i32>;
+      let values = new GrowableArray<i32>();
+      for (let rv in parked) {
+        values.push(cx.b.varGet(rv));
+      }
+      if (!returnMultiThroughFinally(cx, values)) {
+        cx.b.retMulti(values);
+      }
+    } else {
+      let value = if (scope.returnVar >= 0) cx.b.varGet(scope.returnVar) else -1;
+      if (!returnThroughFinally(cx, value)) {
+        if (value >= 0) {
+          cx.b.ret(value);
+        } else {
+          cx.b.retVoid();
+        }
       }
     }
     elseB = nextB;
@@ -1140,9 +1184,12 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
  */
 export let lowerShieldedRegion = (cx: LoweringContext,
     stmt: ShieldedStatement): void => {
-  if (cx.wasm.cancellationTag == null) {
-    // Under a closed cancellation gate there are no checkpoints to
-    // mask and no scopes to rebind: the region is only its body.
+  if (!cx.wasm.scopeCancellationActive) {
+    // Under a closed scope-cancellation gate there are no checkpoints
+    // to mask and no scopes to rebind: the region is only its body.
+    // The flag, not the tag — generator disposal mints the tag alone,
+    // and the scope functions resolved below exist only under the
+    // flag.
     lowerValueNode(cx, stmt.body as Node, true, null);
     return;
   }
@@ -2081,6 +2128,31 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
     bindVtOpt = vt;
   }
 
+  // Generator disposal (docs/design/cancellation.md, "Abandonment and
+  // generator disposal"): when the gate is open, every exit from a
+  // protocol loop — exhaustion, break, return, throw, a cancellation —
+  // runs a finalizer that disposes the iterator if it is a generator
+  // frame. The finalizer region is the same one `using` rides;
+  // `emitGeneratorDispose` is a no-op-shaped state write for anything
+  // already finished and for non-generator iterators.
+  if (cx.wasm.generatorDisposalActive && cx.wasm.generatorFrameSuper != null) {
+    let mirrored = new GrowableArray<SymbolId>();
+    cx.appendAssignedEnvSyms(stmt.body as Node, mirrored);
+    lowerFinallyRegion(cx, mirrored, true, null,
+        (scope, resultVar, saved) => {
+          lowerForInIteratorLoop(cx, stmt, iter, symOpt, bindVtOpt, pat);
+          finishProtectedArm(cx, scope, resultVar, -1);
+        },
+        (fscope) => { emitGeneratorDispose(cx, iter); });
+    return;
+  }
+  lowerForInIteratorLoop(cx, stmt, iter, symOpt, bindVtOpt, pat);
+};
+
+/** The protocol loop itself: next() in the header, bind, body, back. */
+let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
+    iter: i32, symOpt: Symbol | null, bindVtOpt: ValType | null,
+    pat: Node): void => {
   let carried = cx.assignedEnvSyms(stmt.body);
   let header = cx.b.newBlock();
   let headerParams = cx.addParams(header, carried);
@@ -2117,19 +2189,18 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
     lowerPatternBindings(cx, pat, cx.stripNonNull(elem));
   }
 
-  let updateB = cx.b.newBlock();
-  let updateParams = cx.addParams(updateB, carried);
-  cx.loops.push(new LoopCtx(updateB, exitB, carried));
+  // No separate update block: the protocol loop has no per-iteration
+  // update work, so `continue` and the body's fallthrough both branch
+  // straight to the header. A dedicated update block whose only
+  // content was that branch became an unreachable block — a verifier
+  // error — whenever the body always left the loop (an unconditional
+  // `break` or `return`).
+  cx.loops.push(new LoopCtx(header, exitB, carried));
   lowerStmt(cx, stmt.body);
   if (cx.reachable) {
-    cx.b.br(updateB, cx.envValues(carried));
+    cx.b.br(header, cx.envValues(carried));
   }
   cx.loops.pop();
-
-  cx.b.switchTo(updateB);
-  cx.reachable = true;
-  cx.applyParams(carried, updateParams);
-  cx.b.br(header, cx.envValues(carried));
 
   cx.applyParams(carried, exitParams);
   cx.b.switchTo(exitB);

@@ -464,7 +464,11 @@ the caller, not a directive to unwind.
    failure cancels its siblings, and the loser-cancelling race and
    `FutureClaim` arrive. This changes no mechanism above; it adds
    policy over the same scope object.
-5. **Generator disposal** over the same machinery.
+5. **Generator disposal** over the same machinery — its own gate
+   (a protocol `for`-in plus a generator) mints the tag without the
+   scope machinery, the `for`-in exit finalizer drives a suspended
+   frame's delivery, and `yield` inside `finally` became an error so
+   finalizers always run to completion.
 
 ## Alternatives considered
 

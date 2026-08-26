@@ -1402,8 +1402,15 @@ Rules:
 - Generators require a block body (no expression bodies).
 - Value returns are rejected; complete with bare `return;` or by
   falling off the end.
-- `yield` inside `try`/`catch`/`finally` is rejected (v1 restriction).
+- `yield` inside `try` and `catch` works; `yield` lexically inside a
+  `finally` block is rejected — a generator's finalizer must run to
+  completion when the generator is disposed.
 - `yield` inside a non-`gen` closure nested in a generator is an error.
+- Leaving a `for`-in early — `break`, `return`, or a thrown exception —
+  **disposes** a suspended generator it was iterating: the generator's
+  `finally` and `using` regions run, and the generator is exhausted
+  from then on. A generator consumed by calling `next()` by hand and
+  then dropped runs no cleanup; only disposal is deterministic.
 
 The keywords `gen`, `yield`, `async`, and `await` are reserved words in
 the self-hosted compiler (`async`/`await` are reserved for future async

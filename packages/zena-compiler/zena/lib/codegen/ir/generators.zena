@@ -39,15 +39,16 @@ import {
 } from '../wasm.zena';
 import {
   WasmModule, WasmStruct, WasmField, WasmFunction, WasmGlobal,
-  WasmSignature, VTableInit,
+  WasmSignature, WasmTag, VTableInit,
 } from '../wasm-module.zena';
 import {
   IrOp, IrBody, IrBlock, IrRef, IrRefField, IrRefType, IrRefGlobal,
-  isIrTerminator,
+  IrRefTag, isIrTerminator,
 } from './ir.zena';
 import { IrBuilder, valTypesStrictlyEqual } from './builder.zena';
 import { IrCfg } from './cfg.zena';
 import { FunctionLowerer } from './lowering.zena';
+import { LoweringContext } from './lowering-context.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
   getInterfaceMemberSignature, getClassTypeParameters,
@@ -524,6 +525,18 @@ export let prepareGenerators = (
 ): void => {
   rampBodies = new HashMap<i32, GeneratorArtifacts>();
   nextBodies = new HashMap<i32, GeneratorArtifacts>();
+  // With disposal active, every frame struct subtypes one shared
+  // shape holding the two disposal-relevant fields, so a for-in's
+  // finalizer can test and drive any generator without knowing which.
+  if (wasm.generatorDisposalActive && wasm.generatorFrameSuper == null) {
+    let superFields = new GrowableArray<WasmField>();
+    superFields.push(new WasmField('$state', new ValTypeI32(), true));
+    superFields.push(new WasmField('$disposing', new ValTypeI32(), true));
+    let sup = new WasmStruct('$GenFrame', superFields);
+    wasm.types.push(sup);
+    pass.markTypeReached(sup);
+    wasm.generatorFrameSuper = sup;
+  }
   // Index loop: prepareOne appends trampoline/next functions.
   var i = 0;
   while (i < wasm.functions.length) {
@@ -538,6 +551,77 @@ export let prepareGenerators = (
     }
     prepareOne(wasm, pass, func, i - 1);
   }
+};
+
+/**
+ * The consumer half of generator disposal, emitted into a for-in's
+ * exit finalizer (control-flow.zena): if the loop's iterator instance
+ * is a generator frame, drive the frame's cancellation delivery. In
+ * this file so the $state encoding it tests (header comment: 0 START,
+ * 1 RUNNING, 2 DONE, 3+ suspended) has one home.
+ *
+ * A frame that never ran or already finished is only marked DONE —
+ * nothing is pending in it, and a generator that completed normally
+ * already ran its finalizers on the way out. A suspended frame gets
+ * $disposing set and one next() call: the resume head raises on the
+ * cancellation channel, the raise unwinds through the re-entered user
+ * regions — the finalizers the suspended yield was under run — and
+ * next()'s cancellation capture marks the frame DONE and returns
+ * exhausted. RUNNING means this loop is somehow inside the generator
+ * it is disposing; that is the reentrancy poison next() traps on, and
+ * this traps the same way.
+ */
+export let emitGeneratorDispose = (cx: LoweringContext, iter: i32): void => {
+  let supOpt = cx.wasm.generatorFrameSuper;
+  if (supOpt == null) {
+    return;
+  }
+  let sup = supOpt as WasmStruct;
+  let none = new GrowableArray<i32>();
+  let i32vt = new ValTypeI32() as ValType;
+  let obj = cx.unwrapFatPointerValue(iter);
+  let isFrame = cx.b.emit(IrOp.ref_test, i32vt, obj,
+      cx.b.internType(new ValTypeRef(sup) as ValType));
+  let genB = cx.b.newBlock();
+  let contB = cx.b.newBlock();
+  cx.b.brIf(isFrame, genB, none, contB, none);
+
+  cx.b.switchTo(genB);
+  let frameVt = new ValTypeRef(sup) as ValType;
+  let g = cx.b.emit(IrOp.ref_cast, frameVt, obj, cx.b.internType(frameVt));
+  let stateRef = cx.b.addRef(new IrRefField(sup, '$state'));
+  let s = cx.b.emit(IrOp.struct_get, i32vt, g, stateRef);
+  let suspB = cx.b.newBlock();
+  let idleB = cx.b.newBlock();
+  let isSusp = cx.b.binary(IrOp.i32_ge_s, i32vt, s,
+      cx.b.constI32(STATE_FIRST_SUSPEND, i32vt));
+  cx.b.brIf(isSusp, suspB, none, idleB, none);
+
+  cx.b.switchTo(suspB);
+  let disposingRef = cx.b.addRef(new IrRefField(sup, '$disposing'));
+  let setDisposing = new GrowableArray<i32>();
+  setDisposing.push(g);
+  setDisposing.push(cx.b.constI32(1, i32vt));
+  cx.b.emitVoid(IrOp.struct_set, cx.b.pushExtra(setDisposing), disposingRef);
+  cx.slotCallMulti(iter, 'next');
+  cx.b.br(contB, none);
+
+  cx.b.switchTo(idleB);
+  let markB = cx.b.newBlock();
+  let trapB = cx.b.newBlock();
+  let isRunning = cx.b.binary(IrOp.i32_eq, i32vt, s,
+      cx.b.constI32(STATE_RUNNING, i32vt));
+  cx.b.brIf(isRunning, trapB, none, markB, none);
+  cx.b.switchTo(trapB);
+  cx.b.unreachable();
+  cx.b.switchTo(markB);
+  let setDone = new GrowableArray<i32>();
+  setDone.push(g);
+  setDone.push(cx.b.constI32(STATE_DONE, i32vt));
+  cx.b.emitVoid(IrOp.struct_set, cx.b.pushExtra(setDone), stateRef);
+  cx.b.br(contB, none);
+
+  cx.b.switchTo(contB);
 };
 
 export let lowerGeneratorRamp = (wasm: WasmModule, func: WasmFunction): IrBody => {
@@ -668,9 +752,16 @@ let prepareOne = (
   spillCatchLiveIns(liveIn, dispatchRegions, spilled);
 
   // The frame struct: $state plus one nullable-weakened field per
-  // spilled value, ascending value id (deterministic layout).
+  // spilled value, ascending value id (deterministic layout). With
+  // disposal active the frame subtypes the shared $GenFrame shape, so
+  // $disposing sits right after $state, matching the supertype's
+  // field prefix.
+  let disposal = wasm.generatorDisposalActive;
   let fields = new GrowableArray<WasmField>();
   fields.push(new WasmField('$state', new ValTypeI32(), true));
+  if (disposal) {
+    fields.push(new WasmField('$disposing', new ValTypeI32(), true));
+  }
   var vid = 0;
   while (vid < presplit.instCount()) {
     if (spilled.has(vid)) {
@@ -686,6 +777,9 @@ let prepareOne = (
   varFieldsOf(presplit, fields);
   let frameName = funcDisplayName(func) + '$' + i32ToString(funcIndex) + '$Frame';
   let frame = new WasmStruct(frameName, fields);
+  if (disposal) {
+    frame.superStruct = wasm.generatorFrameSuper;
+  }
   wasm.types.push(frame);
   pass.markTypeReached(frame);
 
@@ -735,7 +829,8 @@ let prepareOne = (
   // The two bodies.
   let rampBody = buildRamp(func, frame, fatPtr, vtableGlobal, entryParamIds);
   let nextBody = buildNextBody(presplit, cfg, frame, spilled, pcOfBlock,
-      dTargets, slotSig, resumeOf, dispatchRegions);
+      dTargets, slotSig, resumeOf, dispatchRegions,
+      if (disposal) wasm.cancellationTag else null);
   let artifacts = new GeneratorArtifacts(rampBody, nextBody);
   func.isGeneratorRamp = true;
   rampBodies[func.uid] = artifacts;
@@ -844,7 +939,8 @@ let buildNextBody = (
   dTargetsIn: Array<i32>,
   slotSig: WasmSignature,
   resumeOf: Array<i32>,
-  dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>
+  dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>,
+  cancelTag: WasmTag | null
 ): IrBody => {
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
@@ -939,11 +1035,36 @@ let buildNextBody = (
 
   let i32Idx = internVt(body, i32Vt);
 
-  // b0: state = frame.$state; state == DONE ?
-  let stateVal = emitIn(0, IrOp.struct_get, i32Idx, frameParam, stateRef);
-  let doneConst = emitIn(0, IrOp.const_i32, i32Idx, STATE_DONE, -1);
-  let isDone = emitIn(0, IrOp.i32_eq, i32Idx, stateVal, doneConst);
-  brIfTo(0, isDone, doneBlock, runCheckBlock);
+  // With disposal active, block 0 enters a cancellation region whose
+  // body is the whole state machine (mirroring async's cancel-capture
+  // nesting): the disposal raise at a resume head unwinds through the
+  // re-entered user regions — their finalizers run — and lands here,
+  // where the frame is marked DONE. Every suspension and completion
+  // RETURNS from inside the region; the one branch out (the DONE
+  // check's exit) is a return block dominated by the region head.
+  var headBlock = 0;
+  var cancelCatchB = -1;
+  var disposingRef = -1;
+  var cancelTagRef = -1;
+  if (cancelTag != null) {
+    headBlock = newBlockId();
+    cancelCatchB = newBlockId();
+    disposingRef = addRawRef(body, new IrRefField(frame, '$disposing'));
+    cancelTagRef = addRawRef(body, new IrRefTag(cancelTag));
+    let cIdx = body.extra.length;
+    body.extra.push(headBlock);
+    body.extra.push(0);
+    body.extra.push(cancelCatchB);
+    body.extra.push(0);
+    let cInst = rawInst(body, IrOp.try_br, -1, cancelTagRef, cIdx);
+    placeInst(body, 0, cInst);
+  }
+
+  // head: state = frame.$state; state == DONE ?
+  let stateVal = emitIn(headBlock, IrOp.struct_get, i32Idx, frameParam, stateRef);
+  let doneConst = emitIn(headBlock, IrOp.const_i32, i32Idx, STATE_DONE, -1);
+  let isDone = emitIn(headBlock, IrOp.i32_eq, i32Idx, stateVal, doneConst);
+  brIfTo(headBlock, isDone, doneBlock, runCheckBlock);
 
   // done: politely exhausted forever: (false, default).
   let doneFlag = emitIn(doneBlock, IrOp.const_i32, i32Idx, 0, -1);
@@ -965,6 +1086,35 @@ let buildNextBody = (
   let trapInst = rawInst(body, IrOp.unreachable, -1, -1, -1);
   placeInst(body, trapBlock, trapInst);
 
+  // cancel catch: a cancellation unwound the body, its finalizers
+  // already run by the re-entered regions' handlers. Mark the frame
+  // exhausted either way. A DISPOSAL raise ends here — the disposer
+  // asked for exactly this — so it returns (false, default); any
+  // other cancellation is just passing through sync code and
+  // continues to the caller.
+  if (cancelTag != null) {
+    let dv = emitIn(cancelCatchB, IrOp.struct_get, i32Idx, frameParam,
+        disposingRef);
+    let ccDone = emitIn(cancelCatchB, IrOp.const_i32, i32Idx, STATE_DONE, -1);
+    storeState(cancelCatchB, ccDone);
+    let cancelDoneB = newBlockId();
+    let rethrowB = newBlockId();
+    brIfTo(cancelCatchB, dv, cancelDoneB, rethrowB);
+    let cdFlag = emitIn(cancelDoneB, IrOp.const_i32, i32Idx, 0, -1);
+    let cdDflt = rawDefaultOf(body, slotSig.returns[1]);
+    placeInst(body, cancelDoneB, cdDflt);
+    let cdExtra = body.extra.length;
+    body.extra.push(2);
+    body.extra.push(cdFlag);
+    body.extra.push(cdDflt);
+    let cdRet = rawInst(body, IrOp.ret_multi, -1, cdExtra, -1);
+    placeInst(body, cancelDoneB, cdRet);
+    let rtIdx = body.extra.length;
+    body.extra.push(0);
+    let rtInst = rawInst(body, IrOp.throw, -1, rtIdx, cancelTagRef);
+    placeInst(body, rethrowB, rtInst);
+  }
+
   // enter: $state = RUNNING; dispatch on the saved state.
   let runningConst = emitIn(enterBlock, IrOp.const_i32, i32Idx, STATE_RUNNING, -1);
   storeState(enterBlock, runningConst);
@@ -984,11 +1134,15 @@ let buildNextBody = (
    * enclosing region is instead re-entered through a fresh `try_br`
    * whose catch is that region's own handler, innermost last.
    */
-  let reenterRegions = (dispatchTarget: i32): i32 => {
+  let reenterRegions = (dispatchTarget: i32, entry: i32): i32 => {
+    // Regions are keyed by the ORIGINAL dispatch target; `entry` is
+    // what the chain actually branches to — the target itself, or the
+    // disposal check block prefixed in front of it, which must sit
+    // inside the same regions so its raise runs their finalizers.
     let regions =
         if (let (true, rs) = dispatchRegions.get(dispatchTarget)) rs
         else new GrowableArray<TryRegion>(0);
-    var target = dispatchTarget;
+    var target = entry;
     // Innermost first, so the outermost try_br ends up on the outside.
     var ri = regions.length - 1;
     while (ri >= 0) {
@@ -1012,7 +1166,7 @@ let buildNextBody = (
   let pcParam = rawParam(body, dispatcher, i32Vt);
   let chainTargets = new GrowableArray<i32>();
   let chainPcs = new GrowableArray<i32>();
-  chainTargets.push(entryCopyId);
+  chainTargets.push(reenterRegions(entryCopyId, entryCopyId));
   chainPcs.push(0);
   var scanPc = STATE_FIRST_SUSPEND;
   var remaining = pcOfBlock.size - 1;
@@ -1027,7 +1181,33 @@ let buildNextBody = (
       fb += 1;
     }
     if (found >= 0) {
-      chainTargets.push(reenterRegions(found));
+      // Disposal delivery: a resume head first tests the frame's
+      // $disposing flag and raises on the cancellation channel when
+      // it is set. The check block sits INSIDE the re-entered user
+      // regions, so the raise unwinds through the finalizers the
+      // suspended yield was under — that is the disposal contract
+      // (docs/design/cancellation.md, "Abandonment and generator
+      // disposal"). Only genuine resume points get the check: loop
+      // headers are mid-execution re-entries, and pc 0 is the start.
+      var target = found;
+      if (cancelTag != null &&
+          scanPc < STATE_FIRST_SUSPEND + resumeOf.length) {
+        let checkB = newBlockId();
+        // One raise block per check, so each stays dominated by its
+        // check and the stackifier keeps it inside that region nest —
+        // a shared raise block would be placed outside them all and
+        // the throw would skip the finalizers.
+        let raiseB = newBlockId();
+        let dv = emitIn(checkB, IrOp.struct_get, i32Idx, frameParam,
+            disposingRef);
+        brIfTo(checkB, dv, raiseB, found);
+        let rIdx = body.extra.length;
+        body.extra.push(0);
+        let rInst = rawInst(body, IrOp.throw, -1, rIdx, cancelTagRef);
+        placeInst(body, raiseB, rInst);
+        target = checkB;
+      }
+      chainTargets.push(reenterRegions(found, target));
       chainPcs.push(scanPc);
       remaining -= 1;
     }

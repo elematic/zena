@@ -1,0 +1,29 @@
+// @mode: check
+
+// A generator's finalizer must run to completion during disposal —
+// disposal delivers a cancellation at the suspended yield and unwinds
+// through the enclosing finalizers, and a suspension point inside one
+// would park the generator mid-cleanup with nothing obliged to resume
+// it. Yields in the protected part are fine (yield_in_try_finally
+// exercises them); the finalizer itself may not suspend.
+
+let counting = gen (): Iterator<i32> => {
+  try {
+    yield 1;
+  } finally {
+    yield 2; // @error: 'yield' is not allowed inside a 'finally' block.
+  }
+};
+
+// A closure inside a finalizer is its own function: its yield is
+// rejected for being outside a gen body, not for the finalizer.
+let nested = gen (): Iterator<i32> => {
+  try {
+    yield 1;
+  } finally {
+    let f = (): void => {
+      yield 3; // @error: 'yield' is only valid inside the body of a 'gen' function.
+    };
+    f();
+  }
+};

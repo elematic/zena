@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 0
+
+// Every early way out of a for-in disposes: a `return` from the
+// enclosing function and an exception thrown by the loop body both
+// run the generator's finally before leaving, and the exception
+// keeps propagating afterwards.
+
+import { Iterator } from 'zena:iterator';
+
+var log = '';
+
+let ticking = gen (): Iterator<i32> => {
+  try {
+    yield 1;
+    yield 2;
+  } finally {
+    log = log + 'F';
+  }
+};
+
+let leaveByReturn = (): i32 => {
+  for (let v in ticking()) {
+    return v * 10;
+  }
+  return -1;
+};
+
+let leaveByThrow = (): void => {
+  for (let v in ticking()) {
+    throw new Error('out');
+  }
+};
+
+export let main = (): i32 => {
+  let r = leaveByReturn();
+  log = log + i32ToString(r);
+  var caught = '';
+  try {
+    leaveByThrow();
+  } catch (e) {
+    caught = e.message;
+  }
+  log = log + caught;
+  if (log == 'F10Fout') {
+    return 0;
+  }
+  console.log('log was: ' + log);
+  return 1;
+};

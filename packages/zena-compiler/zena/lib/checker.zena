@@ -1831,6 +1831,20 @@ final class CheckerContext {
   }
   setCancelBlockFloor(d: i32): void { this.#cancelBlockFloor = d; }
 
+  /**
+   * Whether checking is inside a `finally` block. Read only by
+   * `yield`: a generator's finalizer must run to completion during
+   * disposal, and a suspension point inside it would let a disposed
+   * generator park mid-cleanup. Saved and restored around each
+   * finalizer, and reset per function body — a closure or nested
+   * `gen` inside a finalizer is its own function.
+   */
+  var #inFinalizer = false;
+  inFinalizer: boolean {
+    get { return this.#inFinalizer; }
+  }
+  setInFinalizer(v: boolean): void { this.#inFinalizer = v; }
+
   // --- Class stack ---
 
   enterClass(ct: ClassType): void { this.#classStack.push(ct); }
@@ -7634,6 +7648,18 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       ctx.markFlowUnreachable();
     }
     case YieldStatement {argument, loc}: {
+      if (ctx.inFinalizer) {
+        // Disposal delivers a cancellation at the suspended yield and
+        // the unwind runs the enclosing finalizers; a yield inside one
+        // would park the generator mid-cleanup, where nothing is
+        // obliged to ever resume it (docs/design/cancellation.md,
+        // "Abandonment and generator disposal").
+        ctx.error(
+          "'yield' is not allowed inside a 'finally' block.",
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
       let expectedYield = ctx.yieldType;
       if (expectedYield == null) {
         // Not in a `gen` body. A closure nested inside a generator hits
@@ -8124,6 +8150,18 @@ case _: {
     case ForInStatement {pattern, iterable, body, loc}: {
       let iterableType = checkExpression(ctx, iterable, null);
       let baseT = unwrapAliases(iterableType);
+      // Half of the generator-disposal gate: a loop that iterates
+      // through the Iterator protocol may be handed a generator, and
+      // its early exits then need the disposal finalizer. Conservative
+      // in the same direction as lowering's dispatch — anything not
+      // certainly an index loop counts.
+      if (!(baseT is ArrayType) &&
+          !(baseT is ClassType && forInLowersToIndexLoop(baseT))) {
+        let feDeps = ctx.currentDependencies();
+        if (feDeps != null) {
+          feDeps.hasIteratorForIn = true;
+        }
+      }
       // Codegen compiles a for-in over FixedArray, ImmutableArray or
       // Array to a direct index loop (lowerForIn) and ignores the
       // top-level Iterable adaptation, so registering one here would
@@ -10324,7 +10362,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       // block's TAIL statement. With no expectation there, a tail
       // `if` without an `else` types as `T | void` — which has no
       // wasm value type, so lowering it in a void context bails.
+      let prevInFinalizer = ctx.inFinalizer;
+      ctx.setInFinalizer(true);
       checkMatchCaseBody(ctx, finalizer as Node, new VoidType());
+      ctx.setInFinalizer(prevInFinalizer);
     }
     ctx.exitTry();
     if (deps != null && (ctx.yieldType != null || ctx.asyncFutureType != null)) {
@@ -12747,6 +12788,12 @@ let checkMethodBody = (
   let prevFlowState = ctx.enterBodyFlow(false);
 
   if (md.isGenerator) {
+    // The other half of the generator-disposal gate (see the
+    // ForInStatement arm): the program creates a generator.
+    let genDeps = ctx.currentDependencies();
+    if (genDeps != null) {
+      genDeps.createsGenerator = true;
+    }
     var yieldT: Type = new ErrorType();
     match (effectiveReturnType) {
       case InterfaceType {typeArguments}: {
@@ -16666,6 +16713,12 @@ let checkFunctionExpression = (
   var declaredYieldType: Type = new VoidType();
   var declaredIteratorType: Type | null = null;
   if (isGenerator) {
+    // The other half of the generator-disposal gate (see the
+    // ForInStatement arm): the program creates a generator.
+    let genDeps = ctx.currentDependencies();
+    if (genDeps != null) {
+      genDeps.createsGenerator = true;
+    }
     if (returnTypeAnn != null) {
       let extracted = extractIteratorYieldType(ctx, retType);
       if (extracted == null) {
@@ -16737,6 +16790,8 @@ let checkFunctionExpression = (
   let prevTryDepth = ctx.tryDepth;
   let prevCancelBlockFloor = ctx.cancelBlockFloor;
   ctx.setCancelBlockFloor(-1);
+  let prevInFinalizer = ctx.inFinalizer;
+  ctx.setInFinalizer(false);
   ctx.setReturnType(retType);
   ctx.setInferredReturnTypes(new GrowableArray<Type>());
   var newYieldType: Type | null = null;
@@ -16901,6 +16956,7 @@ let checkFunctionExpression = (
   ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.setTryDepth(prevTryDepth);
   ctx.setCancelBlockFloor(prevCancelBlockFloor);
+  ctx.setInFinalizer(prevInFinalizer);
   ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
 

@@ -1,0 +1,46 @@
+// @mode: run
+// @result: 0
+
+// A multi-value return leaving a finalizer region parks one variable
+// per result slot, the finalizer runs, and the replay emits the
+// multi-value return — including through NESTED finalizers, where the
+// inner replay parks into the outer region.
+
+var log = '';
+
+let viaFinally = (flag: boolean): inline (i32, i32) => {
+  try {
+    if (flag) {
+      return (10, 20);
+    }
+    return (1, 2);
+  } finally {
+    log = log + 'F';
+  }
+};
+
+let viaNested = (): inline (i32, i32) => {
+  try {
+    try {
+      return (7, 8);
+    } finally {
+      log = log + 'i';
+    }
+  } finally {
+    log = log + 'o';
+  }
+};
+
+export let main = (): i32 => {
+  let (a, b) = viaFinally(true);
+  let (c, d) = viaFinally(false);
+  let (e, f) = viaNested();
+  if (a == 10 && b == 20 && c == 1 && d == 2 && e == 7 && f == 8 &&
+      log == 'FFio') {
+    return 0;
+  }
+  console.log('got ' + i32ToString(a) + ',' + i32ToString(b) + ',' +
+      i32ToString(c) + ',' + i32ToString(d) + ',' + i32ToString(e) + ',' +
+      i32ToString(f) + ' log=' + log);
+  return 1;
+};

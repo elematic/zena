@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 0
+
+// The two boundaries of the disposal rule. Exhaustion: a generator
+// consumed to completion ran its finally on the way out, and the
+// loop-exit disposal is a no-op on the finished frame — F appears
+// exactly once. Abandonment: a generator iterated by hand and then
+// dropped runs NOTHING — cleanup runs at cancellation, and only
+// cancellation is deterministic (docs/design/cancellation.md).
+
+import { Iterator } from 'zena:iterator';
+
+var log = '';
+
+let counting = gen (): Iterator<i32> => {
+  try {
+    yield 1;
+    yield 2;
+  } finally {
+    log = log + 'F';
+  }
+};
+
+export let main = (): i32 => {
+  for (let v in counting()) {
+    log = log + i32ToString(v);
+  }
+  log = log + '|';
+  let abandoned = counting();
+  if (let (true, first) = abandoned.next()) {
+    log = log + i32ToString(first);
+  }
+  // `abandoned` is parked at its first yield and never touched again:
+  // its finally must NOT have run by the time we check.
+  if (log == '12F|1') {
+    return 0;
+  }
+  console.log('log was: ' + log);
+  return 1;
+};

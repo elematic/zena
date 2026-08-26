@@ -1,0 +1,39 @@
+// @mode: run
+// @result: 55
+
+// With the disposal gate open (a generator exists and protocol loops
+// run), a for-in over an ordinary hand-written iterator still works:
+// the exit finalizer tests the instance, finds no generator frame,
+// and does nothing.
+
+import { Iterator } from 'zena:iterator';
+
+class Countdown implements Iterator<i32> {
+  var #n: i32;
+  new(n: i32) : #n = n;
+  next(): inline (true, i32) | inline (false, _) {
+    if (this.#n == 0) {
+      return (false, _);
+    }
+    let v = this.#n;
+    this.#n -= 1;
+    return (true, v);
+  }
+}
+
+let tens = gen (): Iterator<i32> => {
+  yield 10;
+};
+
+export let main = (): i32 => {
+  var sum = 0;
+  let hand: Iterator<i32> = new Countdown(9);
+  for (let v in hand) {
+    sum += v;
+  }
+  for (let v in tens()) {
+    sum += v;
+    break;
+  }
+  return sum;
+};

@@ -226,6 +226,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   var cancellationPossible: boolean = false;
   /** Whether the machinery has been minted and queued. */
   var cancellationMachineryActive: boolean = false;
+  /** Whether a reached body has a `for`-in through the Iterator
+   * protocol — half of the generator-disposal gate. */
+  var iteratorForInReached: boolean = false;
+  /** Whether a reached body creates a generator — the other half. */
+  var generatorReached: boolean = false;
   /** Every async function's frame Future instantiation, recorded so a
    * cause discovered late can still equip every frame. */
   asyncFrameFutures = new GrowableArray<Type>();
@@ -247,6 +252,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     this.cancellationMachineryActive = true;
     this.wasm.ensureCancellationInfra();
+    this.wasm.scopeCancellationActive = true;
     var i = 0;
     while (i < this.asyncFrameFutures.length) {
       this.visitor.queueCancellationMachinery(
@@ -254,6 +260,30 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           this.asyncFrameFutureModels[i]);
       i += 1;
     }
+  }
+
+  /**
+   * Opens the generator-disposal gate: a reached protocol `for`-in in
+   * a program that also creates a generator means a loop may be
+   * handed one and leave early. The tag is minted alone — disposal
+   * raises and catches it entirely inside a generator's `next()`, so
+   * none of the scope machinery is queued (`scopeCancellationActive`
+   * stays with the causes gate). Called at the late-fixpoint juncture
+   * because the exception-infra mint queues reaches that the next
+   * drain must pick up; the split pass and the for-in lowering read
+   * the flag after RTA.
+   */
+  activateGeneratorDisposal(): void {
+    if (this.wasm.generatorDisposalActive ||
+        !this.iteratorForInReached || !this.generatorReached) {
+      return;
+    }
+    this.wasm.generatorDisposalActive = true;
+    this.wasm.ensureCancellationInfra();
+    // The for-in disposal finalizer is a full finally region: its
+    // throw arm needs the exception infrastructure even in a program
+    // that never throws.
+    this.noteExceptionInfra(this.program.units[0].model);
   }
 
 
@@ -1490,6 +1520,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       lateVtRound = this.#buildClassInterfaceVTables();
       this.processQueues();
       this.activateCancellationMachinery();
+      // Generator disposal activates here too: its exception-infra
+      // mint queues reaches, and the loop's next round drains them
+      // (the activation is once-only, so the fixpoint terminates).
+      this.activateGeneratorDisposal();
     }
 
     // Discovery is settled. Catch layout up with anything the vtable
@@ -2388,6 +2422,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     if (deps.causesCancellation) {
       this.cancellationPossible = true;
+    }
+    if (deps.hasIteratorForIn) {
+      this.iteratorForInReached = true;
+    }
+    if (deps.createsGenerator) {
+      this.generatorReached = true;
     }
 
     // Enclosing locals assigned inside a `try` body live in heap cells,

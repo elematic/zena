@@ -417,13 +417,36 @@ the whole difficulty and one of which turned out not to bind:
   forbids `yield` in `catch` for cousin
   reasons; having the region construction, we don't need to.
 
-So the standing restriction is narrower than "no yield in try": there is
-still **no `return()` / disposal protocol**, so `for-in` over generators
-needs no early-exit hook — `break` just drops the frame (or, fused, is a
-plain branch). Pending `finally` on abandonment is now decided in
-[cancellation.md](cancellation.md): disposal is a cancellation
-delivered at the suspended `yield`, over the same tag and region
-machinery, and a frame that is merely dropped runs no finalizers.
+Disposal is implemented as [cancellation.md](cancellation.md) decided:
+a cancellation delivered at the suspended `yield`, over the same tag
+and region machinery, with no `return()` protocol method — `Iterator`
+still has one member, and plain iterators pay nothing. The pieces:
+
+- Every frame struct subtypes one shared `$GenFrame` shape holding
+  `$state` and a `$disposing` flag, so a consumer can test and drive
+  any generator without knowing which.
+- A `for`-in that iterates through the Iterator protocol wraps the
+  loop in the shared finally region (`using`'s region), and every exit
+  — exhaustion, `break`, `return`, a throw, a cancellation — runs a
+  finalizer that checks the instance against `$GenFrame`. A suspended
+  frame gets `$disposing` set and one `next()` call; anything already
+  finished, and any non-generator iterator, is left alone.
+- Inside `next()`, each resume head tests `$disposing` and raises on
+  the cancellation channel — inside the re-entered user regions, so
+  the `finally`/`using` regions the suspended yield was under run —
+  and an outer region on the cancellation tag marks the frame DONE.
+  A disposal raise ends there, returning exhausted; a cancellation
+  merely passing through sync code rethrows to the caller.
+- `yield` lexically inside a `finally` block is a checker error: the
+  finalizer must run to completion during disposal, and a suspension
+  inside it would park the generator mid-cleanup with nothing obliged
+  to resume it (C# forbids the same shape).
+- All of it sits behind a whole-program gate: the machinery is
+  emitted only when a reached body has a protocol `for`-in AND a
+  reached body creates a generator. Manual `next()` consumption
+  cannot dispose, and a frame that is merely dropped runs no
+  finalizers — cleanup runs at cancellation, and only cancellation is
+  deterministic.
 
 ## 7. The fast path: for-in fusion
 
