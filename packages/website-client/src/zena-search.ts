@@ -50,13 +50,33 @@ export class ZenaSearch extends LightElement {
       this.#setOpen(false);
     } else if (
       e.key === '/' &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
       !this.open &&
-      !/^(INPUT|TEXTAREA|SELECT)$/.test((e.target as HTMLElement).tagName) &&
-      !(e.target as HTMLElement).isContentEditable
+      !this.#isEditableTarget(e)
     ) {
       e.preventDefault();
       this.#setOpen(true);
     }
+  };
+
+  #isEditableTarget(e: KeyboardEvent): boolean {
+    for (const node of e.composedPath()) {
+      if (node instanceof HTMLElement) {
+        if (
+          node.isContentEditable ||
+          /^(INPUT|TEXTAREA|SELECT)$/.test(node.tagName) ||
+          node.classList.contains('cm-content') ||
+          node.classList.contains('cm-editor') ||
+          node.tagName.toLowerCase().includes('editor') ||
+          node.tagName.toLowerCase().includes('playground')
+        ) {
+          return true;
+        }
+      }
+    }
+    return false;
   };
 
   async #setOpen(open: boolean): Promise<void> {

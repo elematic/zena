@@ -90,6 +90,12 @@ export interface ZenaState {
 
 export const zenaLanguage = StreamLanguage.define<ZenaState>({
   name: 'zena',
+  languageData: {
+    commentTokens: {
+      line: '//',
+      block: {open: '/*', close: '*/'},
+    },
+  },
   startState(): ZenaState {
     return {
       inBlockComment: 0,
