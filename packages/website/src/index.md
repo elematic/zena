@@ -455,25 +455,126 @@ Explore Zena's features through interactive examples. All examples are editable 
 <figcaption>Functions</figcaption>
 
 ```zena
-// Top-level functions are declared with the `function` keyword:
-function greet (name: String, prefix: String = 'Hello') {
-  return `${prefix}, ${name}`;
+// Top-level declarations use `function` (never a closure):
+function greet(name: String, prefix: String = 'Hello'): String {
+  return `${prefix}, ${name}!`;
 }
 
-// Closures can be written with arrow syntax:
-let add = (a: i32, b: i32): i32 => a + b;
+export function main() {
+  let names = ['Alice', 'Bob'];
+  var count = 0;
+
+  // Arrow functions are closures and can be assigned to variables
+  let addCount = (text: String) => `(${count += 1}) ${text}!`;
+
+  console.log(addCount(greet('World')));
+
+  // Inline closures are contextually typed (`n` needs no annotation):
+  let messages = names.map((n) => addCount(greet(n, 'Hi')));
+
+  for (let msg in messages) {
+    console.log(msg);
+  }
+}
+```
+
+</figure>
+
+<figure>
+<figcaption>Records &amp; Tuples</figcaption>
+
+```zena
+// Records are anonymous structures of named fields:
+let origin = {x: 10.0, y: 20.0};
+
+// Tuples are anonymous, ordered sets of values:
+let result = (true, 'Hello');
+
+// Record types can have optional fields
+type Opts = {timeout?: i32, retry?: boolean};
+
+function getTimeout(opts: Opts) {
+  // Optional fields must be read with a default
+  return opts.timeout ?? 5000;
+}
 
 export function main() {
-  console.log(greet('Zena'));
-  console.log(greet('Zena', 'Hi'));
+  // Records are read with property access
+  let x = origin.x;
 
-  let names = ['Alice', 'Bob'];
+  // Tuples are read with index access
+  let isValid = result[0];
 
-  // Inline closures are contextually typed — `n` needs no annotation.
-  let upper = names.map((n) => n.asciiUpperCase());
+  // Optional fields are optional
+  let timeout = getTimeout({});
 
-  for (let n in upper) {
-    console.log(n);
+  console.log(`${x}, ${isValid}, ${timeout}`);
+}
+```
+
+</figure>
+
+<figure>
+<figcaption>Arrays</figcaption>
+
+```zena
+export function main() {
+  // Array literals create a FixedArray, which is an unwrapped Wasm GC array
+  let numbers: FixedArray<i32> = [10, 20, 30];
+
+  console.log(`numbers[1]: ${numbers[1]}`);
+
+  logInts(numbers, 'Array');
+
+  // Growable arrays use the GrowableArray class (literal coming soon!)
+  let myNumbers = new GrowableArray<i32>();
+  myNumbers.push(42);
+
+  logInts(myNumbers, 'GrowableArray');
+}
+
+// The base array interface is Array:
+function logInts(numbers: Array<i32>, label: String) {
+  console.log(label + ':');
+
+  // Iteration can be done with for/in:
+  for (let n in numbers) {
+    console.log(`- ${n}`);
+  }
+}
+```
+
+</figure>
+
+<figure>
+<figcaption>Maps</figcaption>
+
+```zena
+export function main() {
+  // Zena has map literals, which create a HashMap
+  let scores: Map<String, i32> = {'Alice' => 95, 'Bob' => 87};
+
+  // Maps support the [] operator, which either returns a value or _throws_, so
+  // check if the value exists with .has()
+  if (scores.has('Alice')) {
+    console.log(`Alice scored ${scores['Alice']}`);
+  }
+
+  // To avoid throwing use .get(), which returns an inline (boolean, value)
+  if (let (true, score) = scores.get('Bob')) {
+    console.log(`Bob scored ${score}`);
+  }
+
+  // Add values to a Map with []=
+  scores['Chris'] = 90;
+
+  logScores(scores);
+}
+
+function logScores(scores: Map<String, i32>) {
+  // Maps are iterable, yielding MapEntry with `.key` and `.value` fields
+  for (let {key as name, value as score} in scores) {
+    console.log(`${name}: ${score}`);
   }
 }
 ```
@@ -485,6 +586,7 @@ export function main() {
 
 ```zena
 import { sleep } from 'zena:time';
+import { Future } from 'zena:async';
 
 // Async functions return a Future<T> and can await other futures.
 async function fetchUser(id: i32): Future<String> {
@@ -493,94 +595,60 @@ async function fetchUser(id: i32): Future<String> {
 }
 
 export async function main(): Future<void> {
-  // Calling an async function starts it eagerly.
-  let [userOne, userTwo] = await Future.all([fetchUser(1), fetchUser(2)]);
+  // await waits for an async function call to complete.
+  let userOne = await fetchUser(1);
 
-  console.log(`${userOne}, ${userTwo}`);
+  // async functions return Futures when not awaited
+  let userTwoFuture: Future<String> = fetchUser(2);
+
+  // Combinators like Future.all() can wait for multiple Futures in parallel
+  let [userTwo, userThree] = await Future.all([userTwoFuture, fetchUser(3)]);
+
+  console.log(`${userOne}, ${userTwo}, ${userThree}`);
 }
 ```
 
 </figure>
 
-<figure>
+<figure allow-unused>
 <figcaption>Types</figcaption>
 
 ```zena
-// Aliases name a structural shape.
+// Types can be primitives
+let x: i32 = 123;
+
+// Or concrete classes. FixedArray is a class
+let a: FixedArray<i32> = [1, 2, 3];
+
+// Or interface types. Map is an interface type. Mixins define interfaces too.
+let m: Map<String, i32> = {'Alice' => 95, 'Bob' => 87};
+
+// Type aliases can define new types
+
+// Like record types:
 type Point = {x: f64, y: f64};
+
+// Tuple types:
+type Pair = (String, i32);
+
+// Literal types:
+type Success = 'success';
+
+// Union types:
 type Status = 'success' | 'failure';
 
-// Distinct types are nominal — a new type, not an alias.
+// Function types:
+type IntToString = (x: i32) => String;
+
+// Distinct types are new nominal names for an existing type
 distinct type UserId = i32;
 
-export let main = () => {
-  let origin: Point = {x: 0.0, y: 0.0};
-  let status: Status = 'success';
-  let id: UserId = 123 as UserId;
-  // let wrong: UserId = 123;  // error: i32 is not assignable to UserId
+// Opaque types hide implementation details
+opaque type RecordId = String;
 
-  console.log(`${origin.x} ${status} ${id as i32}`);
-};
-```
-
-</figure>
-
-<figure>
-<figcaption>Primitives &amp; Arrays</figcaption>
-
-```zena
-export let main = () => {
-  // Primitives map straight onto Wasm types — no boxed numbers.
-  let count: i32 = 42;
-  let factor: f64 = 3.14159;
-  console.log(`${count} ${factor}`);
-
-  // FixedArray<T> is backed directly by a Wasm GC array.
-  var nums: FixedArray<i32> = [10, 20, 30];
-  nums[1] = 99;
-  console.log(`${nums[0]} ${nums[1]} ${nums.length}`);
-};
-```
-
-</figure>
-
-<figure>
-<figcaption>Records &amp; Tuples</figcaption>
-
-```zena
-// Records have a fixed structural shape, and destructure by name.
-let origin = {x: 10.0, y: 20.0};
-
-// Functions can return unboxed tuples; destructure the call directly.
-let getCoordinates = (): inline (f64, f64) => (37.77, -122.41);
-
-export let main = () => {
-  let {x, y} = origin;
-  console.log(`${x}, ${y}`);
-
-  let (lat, lng) = getCoordinates();
-  console.log(`${lat}, ${lng}`);
-};
-```
-
-</figure>
-
-<figure>
-<figcaption>Maps</figcaption>
-
-```zena
-export let main = () => {
-  let scores: Map<String, i32> = {'Alice' => 95, 'Bob' => 87};
-
-  // Map.get returns an inline tuple of (found, value) — no allocation.
-  if (let (true, score) = scores.get('Alice')) {
-    console.log(`Alice scored ${score}`);
-  }
-
-  for (let name in scores.keys()) {
-    console.log(name);
-  }
-};
+// Unions can not mix primitives and references
+type U = String | i32; // error
+type V = String | Box<i32>; // OK
 ```
 
 </figure>
