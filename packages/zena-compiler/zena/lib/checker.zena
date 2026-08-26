@@ -1647,12 +1647,11 @@ final class CheckerContext {
           ta.isOpaque, info.modulePath);
         this.#materializedTypes[info.id] = aliasType;
         
-        // Permitted here for the same reason as in checkTypeAliasDeclaration:
-        // naming an inline tuple is legal, using it outside a return type is
-        // not, and containsInlineTuple sees through the alias at each use.
+        aliasType.resolving = true;
         let targetType: Type = resolveTypeAnnotation(this, ta.typeAnnotation, true);
         checkAliasTargetInlineTuples(this, targetType, ta.typeAnnotation.loc);
         aliasType.target = targetType;
+        aliasType.resolving = false;
         this.exitScope();
         
         return aliasType;
@@ -8097,9 +8096,6 @@ case _: {
       checkMixinDeclaration(ctx, md);
     }
     case TypeAliasDeclaration as ta: {
-      // Force materialization so errors inside constraints or the target type
-      // are reported once (in their proper generic scope).
-      ctx.materializeDeclaration(ta, ta.name.name);
       checkTypeAliasDeclaration(ctx, ta);
     }
     case DeclareFunction as df: {
@@ -12997,32 +12993,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
 // ============================================================================
 
 let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration): void => {
-  let tat = ctx.materializeDeclaration(ta, ta.name.name);
-  if (tat != null) {
-    match (tat) {
-      case TypeAliasType as t: {
-        ctx.enterScope();
-        let typeParameters = t.typeParameters;
-        if (typeParameters != null) {
-          for (let param in typeParameters) {
-            ctx.declareTypeName(param.name, param);
-          }
-        }
-        
-        t.resolving = true;
-        // An alias may name an inline tuple. The alias is a name for the
-        // type, not a new position for it: `containsInlineTuple` looks
-        // through TypeAliasType, so every use site still reports the
-        // restriction after expansion.
-        t.target = resolveTypeAnnotation(ctx, ta.typeAnnotation, true);
-        checkAliasTargetInlineTuples(ctx, t.target, ta.typeAnnotation.loc);
-        t.resolving = false;
-        
-        ctx.exitScope();
-      }
-      case _: {}
-    }
-  }
+  ctx.materializeDeclaration(ta, ta.name.name);
 };
 
 // ============================================================================

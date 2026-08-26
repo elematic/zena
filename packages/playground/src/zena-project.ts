@@ -119,6 +119,10 @@ export class ZenaProject extends LitElement {
   @property({type: String, attribute: 'wasm-url'})
   wasmUrl = lspWasmUrl;
 
+  /** Whether to suppress unused variable / never-mutated variable warnings. */
+  @property({type: Boolean, attribute: 'allow-unused-variables'})
+  allowUnusedVariables = false;
+
   /** Current execution / compilation status. */
   @state()
   status: PlaygroundStatus = 'loading';
@@ -170,6 +174,19 @@ export class ZenaProject extends LitElement {
     super.firstUpdated(_changedProperties);
     if (!this._isUserProvidedFiles && this._files.length === 0) {
       this.#parseScriptsFromDom();
+    }
+  }
+
+  override updated(changedProperties: PropertyValues) {
+    super.updated(changedProperties);
+    if (changedProperties.has('allowUnusedVariables')) {
+      this.dispatchEvent(
+        new CustomEvent('diagnostics-changed', {
+          bubbles: true,
+          composed: true,
+          detail: {diagnostics: this.diagnostics},
+        }),
+      );
     }
   }
 
@@ -466,14 +483,32 @@ export class ZenaProject extends LitElement {
 
   /** Returns diagnostics that apply to a specific filename. */
   getFileDiagnostics(filename: string): Diagnostic[] {
+    const fileContent = this._fileMap[filename] ?? '';
+    const ignoreUnused =
+      this.allowUnusedVariables ||
+      fileContent.includes('// @allow-unused') ||
+      fileContent.includes('// @allow-unused-variables') ||
+      fileContent.includes('// @no-unused-warnings');
+
     return this.diagnostics.filter((d) => {
       if (!d.file) return false;
-      return (
+      const matchesFile =
         d.file === filename ||
         d.file === `./${filename}` ||
         d.file.replace(/^\.\//, '') === filename.replace(/^\.\//, '') ||
-        d.file.endsWith(`/${filename}`)
-      );
+        d.file.endsWith(`/${filename}`);
+      if (!matchesFile) return false;
+
+      if (ignoreUnused && d.severity === 'warning') {
+        if (
+          d.message.includes('is never read') ||
+          d.message.includes('is declared as mutable but never written to')
+        ) {
+          return false;
+        }
+      }
+
+      return true;
     });
   }
 

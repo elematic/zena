@@ -163,6 +163,10 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
   @property({type: String})
   theme = 'one-dark';
 
+  /** Whether to suppress unused variable warnings. */
+  @property({type: Boolean, attribute: 'allow-unused-variables'})
+  allowUnusedVariables = false;
+
   @query('zena-project')
   private internalProjectEl?: ZenaProject;
 
@@ -215,6 +219,9 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       }
       if (changedProperties.has('wasmUrl') && this.wasmUrl) {
         target.wasmUrl = this.wasmUrl;
+      }
+      if (changedProperties.has('allowUnusedVariables')) {
+        target.allowUnusedVariables = this.allowUnusedVariables;
       }
     }
   }
@@ -277,7 +284,11 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
 
       ${!this.project
         ? html`
-            <zena-project id="internal-project" .wasmUrl=${this.wasmUrl}>
+            <zena-project
+              id="internal-project"
+              .wasmUrl=${this.wasmUrl}
+              ?allow-unused-variables=${this.allowUnusedVariables}
+            >
               <slot></slot>
             </zena-project>
           `

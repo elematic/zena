@@ -92,4 +92,51 @@ suite('ZenaProject file management', () => {
     assert.strictEqual(mathDiags.length, 1);
     assert.strictEqual(mathDiags[0].message, 'Math warning');
   });
+
+  test('filters unused variable diagnostics when allowUnusedVariables is true', () => {
+    const project = new ZenaProject();
+    project.allowUnusedVariables = true;
+    project.diagnostics = [
+      {
+        file: 'main.zena',
+        line: 1,
+        column: 1,
+        length: 5,
+        severity: 'warning',
+        message: "Variable 'x' is never read.",
+      },
+      {
+        file: 'main.zena',
+        line: 2,
+        column: 1,
+        length: 5,
+        severity: 'error',
+        message: 'Type error',
+      },
+    ];
+
+    const mainDiags = project.getFileDiagnostics('main.zena');
+    assert.strictEqual(mainDiags.length, 1);
+    assert.strictEqual(mainDiags[0].message, 'Type error');
+  });
+
+  test('filters unused variable diagnostics when file contains // @allow-unused', () => {
+    const project = new ZenaProject();
+    project.files = {
+      'main.zena': '// @allow-unused\nlet x = 1;',
+    };
+    project.diagnostics = [
+      {
+        file: 'main.zena',
+        line: 2,
+        column: 1,
+        length: 5,
+        severity: 'warning',
+        message: "Variable 'x' is never read.",
+      },
+    ];
+
+    const mainDiags = project.getFileDiagnostics('main.zena');
+    assert.strictEqual(mainDiags.length, 0);
+  });
 });

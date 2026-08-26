@@ -65,6 +65,41 @@ suite('language service API', () => {
     assert.ok(diagnostics.some((d) => d.severity === 'warning'));
   });
 
+  test('reports exactly one error for an illegal union type alias', () => {
+    const diagnostics = service.check(PATH, 'type U = String | i32;\n');
+    const errors = diagnostics.filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      errors.length,
+      1,
+      `expected exactly 1 error in ${JSON.stringify(diagnostics)}`,
+    );
+    assert.strictEqual(errors[0].line, 1);
+    assert.match(
+      errors[0].message,
+      /cannot mix primitive types with reference types/,
+    );
+  });
+
+  test('reports errors for both earlier statements and illegal union aliases', () => {
+    const diagnostics = service.check(
+      PATH,
+      'let _x: i32 = "hello";\ntype U = String | i32;\n',
+    );
+    const errors = diagnostics.filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      errors.length,
+      2,
+      `expected exactly 2 errors in ${JSON.stringify(diagnostics)}`,
+    );
+    assert.strictEqual(errors[0].line, 1);
+    assert.match(errors[0].message, /not assignable/);
+    assert.strictEqual(errors[1].line, 2);
+    assert.match(
+      errors[1].message,
+      /cannot mix primitive types with reference types/,
+    );
+  });
+
   test('resolves stdlib imports through the stdlib root', () => {
     const diagnostics = service.check(
       PATH,
@@ -154,7 +189,11 @@ export let main = () => {
     const docPath = 'main.zena';
     service.openDocument(docPath, source);
     const diags = service.check(docPath, source);
-    assert.strictEqual(diags.length, 0, `Unexpected diagnostics: ${JSON.stringify(diags)}`);
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Unexpected diagnostics: ${JSON.stringify(diags)}`,
+    );
     const bytes = service.compileToWasm(docPath, source);
     assert.ok(bytes, 'expected a binary');
     let programExports: WebAssembly.Exports | undefined;
@@ -170,10 +209,7 @@ export let main = () => {
     const instance = 'instance' in result ? result.instance : result;
     programExports = instance.exports;
     await run(instance);
-    assert.deepStrictEqual(output, [
-      'x = 10, y = 20',
-      'p[0] = 10, p[1] = 20',
-    ]);
+    assert.deepStrictEqual(output, ['x = 10, y = 20', 'p[0] = 10, p[1] = 20']);
   });
 
   test('formats source', () => {

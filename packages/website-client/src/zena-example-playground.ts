@@ -8,6 +8,7 @@ interface ExampleItem {
   title: string;
   files: Record<string, string>;
   currentFiles: Record<string, string>;
+  allowUnused?: boolean;
 }
 
 function unindent(text: string): string {
@@ -74,6 +75,10 @@ export class ZenaExamplePlayground extends BehaviorElement {
     this.examples = figures.map((figure, i) => {
       const caption = figure.querySelector('figcaption');
       const title = caption?.textContent?.trim() || `Example ${i + 1}`;
+      const allowUnused =
+        figure.hasAttribute('allow-unused') ||
+        figure.hasAttribute('allow-unused-variables') ||
+        figure.hasAttribute('no-unused-warnings');
 
       const sampleScripts = Array.from(
         figure.querySelectorAll<HTMLScriptElement>('script[type^="sample/"]'),
@@ -104,6 +109,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
         title,
         files: {...files},
         currentFiles: {...files},
+        allowUnused,
       };
     });
 
@@ -191,6 +197,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
       const activeExample = this.examples[index];
       if (activeExample) {
         playground.files = {...activeExample.currentFiles};
+        playground.allowUnusedVariables = !!activeExample.allowUnused;
         playground.clearConsole();
       }
     };

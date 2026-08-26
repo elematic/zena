@@ -471,6 +471,12 @@ export class ZenaLanguageService {
         message: this.#readRef(this.#exports.getDiagnosticMessage(handle, i)),
       });
     }
+    diagnostics.sort((a, b) => {
+      if (a.file !== b.file) return a.file.localeCompare(b.file);
+      if (a.line !== b.line) return a.line - b.line;
+      if (a.column !== b.column) return a.column - b.column;
+      return a.start - b.start;
+    });
     return diagnostics;
   }
 

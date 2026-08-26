@@ -321,7 +321,7 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
     const doc = view.state?.doc;
     if (!doc) return;
 
-    const cmDiagnostics: CMLintDiagnostic[] = diagnostics.map((d) => {
+    const rawDiagnostics: CMLintDiagnostic[] = diagnostics.map((d) => {
       const lineNo = Math.min(Math.max(d.line, 1), doc.lines);
       const line = doc.line(lineNo);
       const from = Math.min(line.from + Math.max(d.column - 1, 0), line.to);
@@ -338,6 +338,25 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
         message: d.message,
       };
     });
+
+    // CodeMirror setDiagnostics requires diagnostics to be sorted by `from` position.
+    rawDiagnostics.sort((a, b) => a.from - b.from || a.to - b.to);
+
+    // Deduplicate identical diagnostics at the same position.
+    const cmDiagnostics: CMLintDiagnostic[] = [];
+    for (const d of rawDiagnostics) {
+      const last = cmDiagnostics[cmDiagnostics.length - 1];
+      if (
+        last &&
+        last.from === d.from &&
+        last.to === d.to &&
+        last.severity === d.severity &&
+        last.message === d.message
+      ) {
+        continue;
+      }
+      cmDiagnostics.push(d);
+    }
 
     try {
       view.dispatch(setDiagnostics(view.state, cmDiagnostics));
