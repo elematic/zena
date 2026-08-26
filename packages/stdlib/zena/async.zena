@@ -38,6 +38,8 @@
  * written with waiter objects rather than callbacks.
  */
 
+import { Disposable } from 'zena:ownership';
+
 /**
  * The runtime's own reads of a settled future, keyed by symbols this
  * module does not export so that no other module can name them
@@ -1113,5 +1115,198 @@ export class TaskGroup {
     }
     let w = this.#joinWaiter ??= new Completer<void>();
     return w.future;
+  }
+
+  /**
+   * Runs every body as a member of a fresh group and gives the first
+   * settled outcome — value or failure — cancelling the rest. This is
+   * the loser-cancelling form of `Future.race`: `race` over
+   * already-started futures ignores its losers, because it does not
+   * own them, while this form starts the candidates itself and so may
+   * cancel the ones that lost. If cancellation instead arrives from
+   * outside — an ancestor scope cancels the group before any
+   * candidate settles — the returned future completes cancelled.
+   *
+   * An empty array is refused: its future could never settle.
+   */
+  static race<A>(bodies: Array<() => Future<A>>): Future<A> {
+    if (bodies.length == 0) {
+      throw new Error('TaskGroup.race needs at least one candidate');
+    }
+    let group = new TaskGroup();
+    let state = new RaceGroupState<A>(group, bodies.length);
+    for (let body in bodies) {
+      let f = group.spawn(body);
+      f.subscribe(new RaceGroupWaiter<A>(state, f));
+    }
+    return state.result;
+  }
+}
+
+/**
+ * What a loser-cancelling race's watchers share: the group holding
+ * the candidates and the future the race settles.
+ */
+class RaceGroupState<T> {
+  group: TaskGroup;
+  result = new Future<T>();
+  /** Candidates that have not ended cancelled. When it reaches zero
+   * with no winner, cancellation came from outside the race, and the
+   * race's own future completes cancelled too. */
+  var #undecided: i32;
+  new(this.group, count: i32) : #undecided = count;
+
+  /** Called once per candidate, when it settles. */
+  settled(f: Future<T>): void {
+    if (f.state == FutureState.Cancelled) {
+      this.#undecided -= 1;
+      if (this.#undecided == 0 && this.result.state == FutureState.Pending) {
+        this.result.:cancelComplete();
+      }
+      return;
+    }
+    // A value or a failure. The first one settles the race; the rest
+    // lose. tryComplete/tryFail make the settle first-wins, and
+    // cancelling an already-cancelled group does nothing.
+    let e = f.:failure();
+    if (e == null) {
+      this.result.:tryComplete(f.:valueOrThrow());
+    } else {
+      this.result.:tryFail(e as Error);
+    }
+    this.group.cancel();
+  }
+}
+
+/** One candidate's subscription into a `RaceGroupState`, holding the
+ * future it reads — the same shape as `RaceWaiter`. */
+class RaceGroupWaiter<T> implements Task {
+  state: RaceGroupState<T>;
+  future: Future<T>;
+  new(this.state, this.future);
+  run(): void {
+    this.state.settled(this.future);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// FutureClaim: consumer interest (docs/design/cancellation.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * The claim count behind a set of `FutureClaim` handles: how many
+ * handles have not been released, and the scope to cancel when the
+ * count reaches zero. Not generic — the release path runs inside
+ * `FutureClaim<T>`'s methods, and keeping the count on a plain class
+ * means no closures are created in generic code (the same constraint
+ * the combinators live under). It is its own deferred zero check:
+ * releasing the last claim schedules the Interest itself, so a
+ * release allocates nothing.
+ */
+class Interest implements Task {
+  scope: CancelScope;
+  var count: i32 = 1;
+  new(this.scope);
+
+  release(): void {
+    this.count -= 1;
+    if (this.count == 0) {
+      // Deferred one queue turn rather than cancelling here, so a
+      // release never cancels from inside the releaser's stack, and a
+      // handoff that re-establishes interest in the same turn never
+      // observes the transient zero.
+      scheduleTask(this);
+    }
+  }
+
+  /** The deferred check: if the count is still zero a turn after it
+   * got there, nobody holds a claim, and the work is cancelled. */
+  run(): void {
+    if (this.count == 0 && !this.scope.isCancelled) {
+      this.scope.cancel();
+    }
+  }
+}
+
+/**
+ * A future plus a counted claim on the work producing it. Work
+ * spawned on behalf of several consumers should keep running while
+ * any of them still wants the result and stop when none does; holding
+ * an `FutureClaim` is declaring that want. Releasing the handle —
+ * `using`, `:dispose`, or an explicit `release()` — gives the claim
+ * up, and when the last claim is gone the work's scope is cancelled,
+ * one queue turn later.
+ *
+ * Sharing is an explicit `split()`: the count goes up before the
+ * second handle exists, so claims never pass through zero during a
+ * handoff. Releasing is per-handle and idempotent.
+ *
+ * The bare `future` stays an ordinary value. Holding it confers
+ * awaiting and nothing else: if every claim is released, a bystander
+ * mid-await gets the cancellation raise at its checkpoint. Awaiting
+ * without holding a claim is awaiting at the claim holders' pleasure
+ * — which is the honest version of the contract, and why nothing on
+ * `Future` itself can cancel.
+ */
+export class FutureClaim<T> implements Disposable {
+  future: Future<T>;
+  #interest: Interest;
+  var #released: boolean = false;
+
+  new(this.future, interest: Interest) : #interest = interest;
+
+  /**
+   * Starts `body` as owned work: the call runs under a new scope — a
+   * child of the current scope, so enclosing cancellation still
+   * reaches it — and the returned handle carries the one initial
+   * claim. Work that must not inherit the caller's cancellation runs
+   * the spawn under `CancelScope.detached()`.
+   */
+  static spawn<A>(body: () => Future<A>): FutureClaim<A> {
+    let scope = new CancelScope();
+    let prev = current;
+    current = scope;
+    var fut: Future<A> | null = null;
+    try {
+      fut = body();
+    } finally {
+      current = prev;
+    }
+    return new FutureClaim<A>(fut as Future<A>, new Interest(scope));
+  }
+
+  /** Whether this handle still holds its claim. */
+  isReleased: boolean {
+    get {
+      return this.#released;
+    }
+  }
+
+  /**
+   * A second claim on the same work. Throws if this handle was
+   * already released — a released handle has nothing to share.
+   */
+  split(): FutureClaim<T> {
+    if (this.#released) {
+      throw new Error('FutureClaim was already released');
+    }
+    this.#interest.count += 1;
+    return new FutureClaim<T>(this.future, this.#interest);
+  }
+
+  /**
+   * Gives this handle's claim up. Releasing the last claim cancels
+   * the work's scope one queue turn later. Idempotent, per handle.
+   */
+  release(): void {
+    if (this.#released) {
+      return;
+    }
+    this.#released = true;
+    this.#interest.release();
+  }
+
+  :Disposable.dispose(): void {
+    this.release();
   }
 }

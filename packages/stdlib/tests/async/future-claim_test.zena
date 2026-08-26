@@ -1,0 +1,126 @@
+// FutureClaim (docs/design/cancellation.md, "Consumer interest"):
+// holding a handle is a counted claim on the work; releasing the last
+// claim cancels the work's scope one queue turn later; splitting is
+// an explicit second claim; the bare future stays an ordinary value.
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  Future, FutureState, Completer, FutureClaim, CancelScope, drainMicrotasks,
+  runFuture,
+} from 'zena:async';
+import { Error } from 'zena:error';
+
+let doubled = async (gate: Future<i32>): Future<i32> => {
+  let v = await gate;
+  return v * 2;
+};
+
+export let tests = suite('FutureClaim', (): void => {
+  test('releasing the only claim cancels the work', (ctx: TestContext): void => {
+    let gate = new Completer<i32>();
+    let h = FutureClaim.spawn(() => doubled(gate.future));
+    drainMicrotasks();
+    isTrue(h.future.state == FutureState.Pending);
+
+    h.release();
+    // The cancel is deferred: nothing happens inside release itself.
+    isTrue(h.future.state == FutureState.Pending);
+    drainMicrotasks();
+    isTrue(h.future.state == FutureState.Cancelled);
+  });
+
+  test('a split claim keeps the work alive', (ctx: TestContext): void => {
+    let gate = new Completer<i32>();
+    let h = FutureClaim.spawn(() => doubled(gate.future));
+    let h2 = h.split();
+    h.release();
+    drainMicrotasks();
+    isTrue(h2.future.state == FutureState.Pending);
+
+    gate.complete(3);
+    drainMicrotasks();
+    equal(runFuture(h2.future), 6);
+    h2.release();
+  });
+
+  test('release is idempotent per handle', (ctx: TestContext): void => {
+    let gate = new Completer<i32>();
+    let h = FutureClaim.spawn(() => doubled(gate.future));
+    let h2 = h.split();
+    h.release();
+    h.release();
+    drainMicrotasks();
+    // The double release did not consume h2's claim.
+    isTrue(h2.future.state == FutureState.Pending);
+    isFalse(h2.isReleased);
+    isTrue(h.isReleased);
+
+    h2.release();
+    drainMicrotasks();
+    isTrue(h2.future.state == FutureState.Cancelled);
+  });
+
+  test('a released handle cannot split', (ctx: TestContext): void => {
+    let gate = new Completer<i32>();
+    let h = FutureClaim.spawn(() => doubled(gate.future));
+    h.release();
+    var msg = '';
+    try {
+      h.split();
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'FutureClaim was already released');
+    drainMicrotasks();
+  });
+
+  test('`using` releases the claim at the end of the block', (ctx: TestContext): void => {
+    let gate = new Completer<i32>();
+    var f: Future<i32> | null = null;
+    {
+      using h = FutureClaim.spawn(() => doubled(gate.future));
+      f = h.future;
+      drainMicrotasks();
+      isTrue((f as Future<i32>).state == FutureState.Pending);
+    }
+    drainMicrotasks();
+    isTrue((f as Future<i32>).state == FutureState.Cancelled);
+  });
+
+  test('enclosing cancellation still reaches owned work', (ctx: TestContext): void => {
+    let gate = new Completer<i32>();
+    let outer = new CancelScope();
+    var h: FutureClaim<i32> | null = null;
+    outer.run(() => {
+      h = FutureClaim.spawn(() => doubled(gate.future));
+    });
+    let handle = h as FutureClaim<i32>;
+    outer.cancel();
+    drainMicrotasks();
+    // The claim was never released; the ancestor cancelled anyway.
+    isTrue(handle.future.state == FutureState.Cancelled);
+    handle.release();
+    drainMicrotasks();
+  });
+
+  test('work spawned under a detached scope ignores enclosing cancellation', (ctx: TestContext): void => {
+    let gate = new Completer<i32>();
+    let outer = new CancelScope();
+    let shared = CancelScope.detached();
+    var h: FutureClaim<i32> | null = null;
+    outer.run(() => {
+      shared.run(() => {
+        h = FutureClaim.spawn(() => doubled(gate.future));
+      });
+    });
+    let handle = h as FutureClaim<i32>;
+    outer.cancel();
+    drainMicrotasks();
+    isTrue(handle.future.state == FutureState.Pending);
+
+    gate.complete(4);
+    drainMicrotasks();
+    equal(runFuture(handle.future), 8);
+    handle.release();
+  });
+});

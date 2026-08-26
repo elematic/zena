@@ -6,7 +6,8 @@
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {
-  Future, FutureState, Completer, TaskGroup, drainMicrotasks, runFuture,
+  Future, FutureState, Completer, TaskGroup, CancelScope, drainMicrotasks,
+  runFuture,
 } from 'zena:async';
 import { Error } from 'zena:error';
 
@@ -103,5 +104,64 @@ export let tests = suite('TaskGroup', (): void => {
   test('an empty group joins immediately', (ctx: TestContext): void => {
     let group = new TaskGroup();
     isTrue(group.join().isCompleted);
+  });
+
+  test('race takes the first settled value and cancels the losers', (ctx: TestContext): void => {
+    let g1 = new Completer<i32>();
+    let g2 = new Completer<i32>();
+    let r = TaskGroup.race([
+      () => doubled(g1.future),
+      () => doubled(g2.future),
+    ]);
+    drainMicrotasks();
+    isFalse(r.isCompleted);
+
+    // The second candidate settles first and wins; the first is
+    // parked forever, so only the loser-cancelling reaches it.
+    g2.complete(21);
+    drainMicrotasks();
+    equal(runFuture(r), 42);
+  });
+
+  test('a failing winner surfaces through the race future', (ctx: TestContext): void => {
+    let g1 = new Completer<i32>();
+    let g2 = new Completer<i32>();
+    let r = TaskGroup.race([
+      () => failing(g1.future),
+      () => doubled(g2.future),
+    ]);
+    g1.complete(1);
+    drainMicrotasks();
+    var msg = '';
+    try {
+      runFuture(r);
+      msg = 'settled normally';
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'child failed');
+  });
+
+  test('cancellation from outside completes the race cancelled', (ctx: TestContext): void => {
+    let g1 = new Completer<i32>();
+    let outer = new CancelScope();
+    var race: Future<i32> | null = null;
+    outer.run(() => {
+      race = TaskGroup.race([() => doubled(g1.future)]);
+    });
+    outer.cancel();
+    drainMicrotasks();
+    isTrue((race as Future<i32>).state == FutureState.Cancelled);
+  });
+
+  test('a race of nothing is refused', (ctx: TestContext): void => {
+    var msg = '';
+    try {
+      TaskGroup.race<i32>([]);
+      msg = 'not refused';
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'TaskGroup.race needs at least one candidate');
   });
 });
