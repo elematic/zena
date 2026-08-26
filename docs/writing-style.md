@@ -59,7 +59,6 @@ context is missing.
   reads as precise to the author, who knows the referent, and as vague
   to everyone else. Write the referent out at least once per section,
   even when it makes the sentence longer:
-
   - "the `p` range both directions index" → "printing indexes `p` over
     `[-292, 324]` and parsing over `[-344, 309]`"
   - "the mechanism was general" → "`mv_get` already worked for any

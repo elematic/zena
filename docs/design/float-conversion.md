@@ -15,12 +15,12 @@ and truncated to 15 significant digits. `parseF64` accumulated digits
 into an `f64` and divided the fractional ones by a running power of
 ten. Measured against correctly-rounded conversions:
 
-| | failure rate |
-| --- | --- |
-| `f64ToString` round-trip, random f64 | 94.2% |
-| `parseF64` on correctly-shortest text, random f64 | 85.7% |
-| `parseF64` on decimal literals of ≤17 digits | 2.2% |
-| `f64ToString` round-trip on those same values | 10.4% |
+|                                                   | failure rate |
+| ------------------------------------------------- | ------------ |
+| `f64ToString` round-trip, random f64              | 94.2%        |
+| `parseF64` on correctly-shortest text, random f64 | 85.7%        |
+| `parseF64` on decimal literals of ≤17 digits      | 2.2%         |
+| `f64ToString` round-trip on those same values     | 10.4%        |
 
 `f64ToString(0.30000000000000004)` printed `0.3` — a different number.
 `f64ToString(9007199254740992)` printed `9007199254740990`, an
@@ -44,7 +44,7 @@ underlies everything:
 uscale(x, e, p) = an unrounded x * 2^e * 10^p
 ```
 
-An *unrounded number* is the value times four, with bit 1 saying the
+An _unrounded number_ is the value times four, with bit 1 saying the
 fraction reaches one half and bit 0 sticky — some fraction beyond that.
 Every rounding mode is then an add and a shift: `floor` is `u >> 2`,
 `ceil` is `(u + 3) >> 2`, round-half-to-even is
@@ -93,7 +93,7 @@ quarter ulp down and half an ulp up.
 
 The decimal exponent estimate for that case is therefore
 `floor(log10(3 * 2^(e-2)))`. Writing `2^(e-1)` gives the width in units
-of the *lower* binade's ulp, which is 1.5 of them — the same interval
+of the _lower_ binade's ulp, which is 1.5 of them — the same interval
 measured against the wrong ulp. That picks a grid one power of ten too
 coarse and prints a value that does not round-trip, for about one value
 in 2,500.
@@ -106,8 +106,7 @@ bytes of data and more as emitted wasm: as an array of `i64` constants
 it compiles to 15,166 bytes.
 
 Instead the table stores 26 anchors — `10^(27q)` truncated to 192 bits
-— and the 27 exact values `5^r` for `r` in `[0, 26]`, normalized to bit
-63. Any entry is `10^p = 10^(27q) * 5^r * 2^r`, recovered with one
+— and the 27 exact values `5^r` for `r` in `[0, 26]`, normalized to bit 63. Any entry is `10^p = 10^(27q) * 5^r * 2^r`, recovered with one
 192×64 multiply and a normalize by one bit or none: the anchor is at
 least `2^191` and the multiplier at least `2^63`, so the product's top
 bit is bit 255 or bit 254 and never lower. The same shape of module
@@ -163,12 +162,12 @@ projection's operand produces a value, and `#storeMultiResults` in
 and compares against JavaScript's conversions, which are correctly
 rounded and shortest. Over 584,995 cases:
 
-| | cases | failures |
-| --- | --- | --- |
-| `f64ToString` | ~265,000 | 0 |
-| `f32ToString` | ~30,000 | 0 |
-| `parseF64`, inputs of ≤19 significant digits | 260,057 | 0 |
-| `parseF64`, longer inputs | 29,955 | 6 |
+|                                              | cases    | failures |
+| -------------------------------------------- | -------- | -------- |
+| `f64ToString`                                | ~265,000 | 0        |
+| `f32ToString`                                | ~30,000  | 0        |
+| `parseF64`, inputs of ≤19 significant digits | 260,057  | 0        |
+| `parseF64`, longer inputs                    | 29,955   | 6        |
 
 The corpus covers every binade at its edges, the subnormals from both
 ends, the powers of ten, and the values that have historically broken
@@ -193,13 +192,13 @@ any `f64`, so nothing `f64ToString` produces reaches this case.
 Float conversion is reachable from the prelude, so its cost is worth
 stating: a program that does not call it pays nothing.
 
-| program | bytes |
-| --- | --- |
-| `main` returning a constant | 51 |
-| `console.log` of a string literal | 632 |
-| ...plus `i64ToString` | 1,306 |
-| ...plus `f64ToString` | 7,246 |
-| ...plus `parseF64` | 9,459 |
+| program                           | bytes |
+| --------------------------------- | ----- |
+| `main` returning a constant       | 51    |
+| `console.log` of a string literal | 632   |
+| ...plus `i64ToString`             | 1,306 |
+| ...plus `f64ToString`             | 7,246 |
+| ...plus `parseF64`                | 9,459 |
 
 ## Gaps
 

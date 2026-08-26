@@ -36,8 +36,7 @@ export const uCeil = (u) => (u + 3n) >> 2n;
 export const uRound = (u) => (u + 1n + ((u >> 2n) & 1n)) >> 2n;
 export const uNudge = (u, d) => u + BigInt(d);
 /** Right shift keeping the sticky bit. */
-export const uRsh = (u, s) =>
-  (u >> BigInt(s)) | (u & mask(s) ? 1n : 0n);
+export const uRsh = (u, s) => (u >> BigInt(s)) | (u & mask(s) ? 1n : 0n);
 
 // ---------------------------------------------------------------------------
 // Powers of ten: 10^p's significand rounded UP to 128 bits, so that
@@ -48,7 +47,8 @@ export function pow10Mantissa(p) {
   const pe = BigInt(log2Pow10(p) - 127);
   let num = p >= 0 ? 10n ** BigInt(p) : 1n;
   let den = p >= 0 ? 1n : 10n ** BigInt(-p);
-  if (pe >= 0n) den <<= pe; else num <<= -pe;
+  if (pe >= 0n) den <<= pe;
+  else num <<= -pe;
   const q = num / den;
   const pm = num % den === 0n ? q : q + 1n;
   if (pm < 1n << 127n || pm >= 1n << 128n) {
@@ -81,18 +81,22 @@ export const P_MIN = -344;
 export const P_MAX = 324;
 
 export function prescale(e, p) {
-  if (p < P_MIN || p > P_MAX) throw new Error(`prescale: p=${p} outside the table`);
+  if (p < P_MIN || p > P_MAX)
+    throw new Error(`prescale: p=${p} outside the table`);
   const lp = log2Pow10(p);
   const pm = pow10Mantissa(p);
   const lo = pm % (1n << 64n) === 0n ? 0n : (1n << 64n) - (pm % (1n << 64n));
   const hi = (pm + lo) >> 64n;
   if (hi >= 1n << 64n) throw new Error(`prescale(${p}): hi overflowed`);
-  return { hi, lo, s: -(e + lp + 3), p, lp };
+  return {hi, lo, s: -(e + lp + 3), p, lp};
 }
 
 const U64 = (1n << 64n) - 1n;
 /** The 128-bit product of two u64s, as [high, low]. */
-const mulWide = (a, b) => { const t = a * b; return [t >> 64n, t & U64]; };
+const mulWide = (a, b) => {
+  const t = a * b;
+  return [t >> 64n, t & U64];
+};
 
 /**
  * An unrounded x * 2^e * 10^p, for x with its high bit set.
@@ -103,7 +107,7 @@ const mulWide = (a, b) => { const t = a * b; return [t >> 64n, t & U64]; };
  * table's error cannot have carried that far.
  */
 export function uscale(x, pre) {
-  const { hi: pmHi, lo: pmLo, s } = pre;
+  const {hi: pmHi, lo: pmLo, s} = pre;
   if (s < 0) throw new Error(`uscale: negative shift ${s}`);
   // Everything shifts out: x >= 2^63 and pm >= 2^127 make the product
   // nonzero, and 4*value < 1, so the answer is "zero, but not exactly".
@@ -122,8 +126,10 @@ export function uscale(x, pre) {
 export function uscaleRef(x, e, p) {
   let num = 4n * x;
   let den = 1n;
-  if (e >= 0) num <<= BigInt(e); else den <<= BigInt(-e);
-  if (p >= 0) num *= 10n ** BigInt(p); else den *= 10n ** BigInt(-p);
+  if (e >= 0) num <<= BigInt(e);
+  else den <<= BigInt(-e);
+  if (p >= 0) num *= 10n ** BigInt(p);
+  else den *= 10n ** BigInt(-p);
   const q = num / den;
   return q | (num % den ? 1n : 0n);
 }
@@ -133,12 +139,21 @@ export function uscaleRef(x, e, p) {
 // ---------------------------------------------------------------------------
 
 const buf = new DataView(new ArrayBuffer(8));
-export const f64Bits = (f) => { buf.setFloat64(0, f); return buf.getBigUint64(0); };
-export const bitsF64 = (b) => { buf.setBigUint64(0, b & mask(64)); return buf.getFloat64(0); };
+export const f64Bits = (f) => {
+  buf.setFloat64(0, f);
+  return buf.getBigUint64(0);
+};
+export const bitsF64 = (b) => {
+  buf.setBigUint64(0, b & mask(64));
+  return buf.getFloat64(0);
+};
 
 export function bitLen(x) {
   let n = 0;
-  while (x > 0n) { x >>= 1n; n++; }
+  while (x > 0n) {
+    x >>= 1n;
+    n++;
+  }
   return n;
 }
 
@@ -151,7 +166,12 @@ export function unpack64(f) {
   const biased = Number((bits >> 52n) & 0x7ffn);
   let m = bits & mask(52);
   let e;
-  if (biased === 0) { e = -1074; } else { m |= 1n << 52n; e = biased - 1075; }
+  if (biased === 0) {
+    e = -1074;
+  } else {
+    m |= 1n << 52n;
+    e = biased - 1075;
+  }
   const shift = 64 - bitLen(m);
   return [m << BigInt(shift), e - shift];
 }
@@ -163,9 +183,12 @@ export function unpack64(f) {
 export function pack64(mant, e) {
   // value = mant * 2^-e, and IEEE writes a normal as
   // significand * 2^(biased-1075) with significand in [2^52, 2^53).
-  if (mant >= 1n << 53n) { mant >>= 1n; e -= 1; }
+  if (mant >= 1n << 53n) {
+    mant >>= 1n;
+    e -= 1;
+  }
   let be = 1075 - e;
-  if (mant < 1n << 52n) be = 0;            // subnormal: no implicit bit
+  if (mant < 1n << 52n) be = 0; // subnormal: no implicit bit
   if (be >= 0x7ff) return Infinity;
   return bitsF64((BigInt(be) << 52n) | (mant & mask(52)));
 }
@@ -197,7 +220,10 @@ export function parse(d, p) {
 // ---------------------------------------------------------------------------
 
 export function trimZeros(d, p) {
-  while (d % 10n === 0n && d !== 0n) { d /= 10n; p += 1; }
+  while (d % 10n === 0n && d !== 0n) {
+    d /= 10n;
+    p += 1;
+  }
   return [d, p];
 }
 
