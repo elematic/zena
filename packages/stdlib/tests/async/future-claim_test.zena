@@ -5,8 +5,7 @@
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {
-  Future, FutureState, Completer, FutureClaim, CancelScope, drainMicrotasks,
-  runFuture,
+  Future, Completer, FutureClaim, CancelScope, drainMicrotasks, runFuture,
 } from 'zena:async';
 import { Error } from 'zena:error';
 
@@ -15,18 +14,40 @@ let doubled = async (gate: Future<i32>): Future<i32> => {
   return v * 2;
 };
 
+/** Records how awaiting `f` ends — the observation `state` used to
+ * shortcut. A cancelled future cancels the probe's own frame too;
+ * the record survives it. */
+var outcomes = '';
+let probe = async (f: Future<i32>): Future<void> => {
+  try {
+    let v = await f;
+    outcomes = outcomes + 'v' + i32ToString(v);
+  } cancel {
+    outcomes = outcomes + 'C';
+  } catch (e) {
+    outcomes = outcomes + 'e';
+  }
+};
+
+let assertCancelled = (f: Future<i32>): void => {
+  outcomes = '';
+  probe(f);
+  drainMicrotasks();
+  equal(outcomes, 'C');
+};
+
 export let tests = suite('FutureClaim', (): void => {
   test('releasing the only claim cancels the work', (ctx: TestContext): void => {
     let gate = new Completer<i32>();
     let h = FutureClaim.spawn(() => doubled(gate.future));
     drainMicrotasks();
-    isTrue(h.future.state == FutureState.Pending);
+    isFalse(h.future.isCompleted);
 
     h.release();
     // The cancel is deferred: nothing happens inside release itself.
-    isTrue(h.future.state == FutureState.Pending);
+    isFalse(h.future.isCompleted);
     drainMicrotasks();
-    isTrue(h.future.state == FutureState.Cancelled);
+    assertCancelled(h.future);
   });
 
   test('a split claim keeps the work alive', (ctx: TestContext): void => {
@@ -35,7 +56,7 @@ export let tests = suite('FutureClaim', (): void => {
     let h2 = h.split();
     h.release();
     drainMicrotasks();
-    isTrue(h2.future.state == FutureState.Pending);
+    isFalse(h2.future.isCompleted);
 
     gate.complete(3);
     drainMicrotasks();
@@ -51,13 +72,13 @@ export let tests = suite('FutureClaim', (): void => {
     h.release();
     drainMicrotasks();
     // The double release did not consume h2's claim.
-    isTrue(h2.future.state == FutureState.Pending);
+    isFalse(h2.future.isCompleted);
     isFalse(h2.isReleased);
     isTrue(h.isReleased);
 
     h2.release();
     drainMicrotasks();
-    isTrue(h2.future.state == FutureState.Cancelled);
+    assertCancelled(h2.future);
   });
 
   test('a released handle cannot split', (ctx: TestContext): void => {
@@ -81,10 +102,10 @@ export let tests = suite('FutureClaim', (): void => {
       using h = FutureClaim.spawn(() => doubled(gate.future));
       f = h.future;
       drainMicrotasks();
-      isTrue((f as Future<i32>).state == FutureState.Pending);
+      isFalse((f as Future<i32>).isCompleted);
     }
     drainMicrotasks();
-    isTrue((f as Future<i32>).state == FutureState.Cancelled);
+    assertCancelled((f as Future<i32>));
   });
 
   test('enclosing cancellation still reaches owned work', (ctx: TestContext): void => {
@@ -98,7 +119,7 @@ export let tests = suite('FutureClaim', (): void => {
     outer.cancel();
     drainMicrotasks();
     // The claim was never released; the ancestor cancelled anyway.
-    isTrue(handle.future.state == FutureState.Cancelled);
+    assertCancelled(handle.future);
     handle.release();
     drainMicrotasks();
   });
@@ -116,7 +137,7 @@ export let tests = suite('FutureClaim', (): void => {
     let handle = h as FutureClaim<i32>;
     outer.cancel();
     drainMicrotasks();
-    isTrue(handle.future.state == FutureState.Pending);
+    isFalse(handle.future.isCompleted);
 
     gate.complete(4);
     drainMicrotasks();

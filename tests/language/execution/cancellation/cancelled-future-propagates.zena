@@ -9,7 +9,7 @@
 // as cancelled in turn.
 
 import {
-  Future, FutureState, Completer, CancelScope, drainMicrotasks,
+  Future, Completer, CancelScope, drainMicrotasks,
 } from 'zena:async';
 
 var trace = '';
@@ -33,6 +33,22 @@ let outer = async (of: Future<i32>): Future<i32> => {
   }
 };
 
+
+/** With `state` gone, an outcome is observed by awaiting: the cancel
+ * clause records the third settlement (and the probe's own frame then
+ * completes cancelled, which is fine — the record survives). */
+var probeLog = '';
+let probeOutcome = async (pf: Future<i32>): Future<void> => {
+  try {
+    let v = await pf;
+    probeLog = probeLog + 'v';
+  } cancel {
+    probeLog = probeLog + 'C';
+  } catch (e) {
+    probeLog = probeLog + 'e';
+  }
+};
+
 export function main(): i32 {
   let c = new Completer<i32>();
   let scope = new CancelScope();
@@ -51,11 +67,11 @@ export function main(): i32 {
   if (trace != 'io1f') {
     return 2;
   }
-  if (!(((if_ as Future<i32>)).state == FutureState.Cancelled)) {
+  probeOutcome(if_ as Future<i32>);
+  probeOutcome(outerFut);
+  drainMicrotasks();
+  if (probeLog != 'CC') {
     return 4;
-  }
-  if (!(outerFut.state == FutureState.Cancelled)) {
-    return 5;
   }
   return 42;
 }

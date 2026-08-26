@@ -7,7 +7,7 @@
 // suppress. `catch (e)` sees failures only and stays silent here.
 
 import {
-  Future, FutureState, Completer, CancelScope, drainMicrotasks,
+  Future, Completer, CancelScope, drainMicrotasks,
 } from 'zena:async';
 
 var trace = '';
@@ -29,6 +29,22 @@ let work = async (gate: Future<i32>): Future<i32> => {
   return 0;
 };
 
+
+/** With `state` gone, an outcome is observed by awaiting: the cancel
+ * clause records the third settlement (and the probe's own frame then
+ * completes cancelled, which is fine — the record survives). */
+var probeLog = '';
+let probeOutcome = async (pf: Future<i32>): Future<void> => {
+  try {
+    let v = await pf;
+    probeLog = probeLog + 'v';
+  } cancel {
+    probeLog = probeLog + 'C';
+  } catch (e) {
+    probeLog = probeLog + 'e';
+  }
+};
+
 export function main(): i32 {
   let c = new Completer<i32>();
   let scope = new CancelScope();
@@ -45,7 +61,9 @@ export function main(): i32 {
   if (f == null) {
     return 3;
   }
-  if (!((f as Future<i32>).state == FutureState.Cancelled)) {
+  probeOutcome(f as Future<i32>);
+  drainMicrotasks();
+  if (probeLog != 'C') {
     return 4;
   }
   return 42;

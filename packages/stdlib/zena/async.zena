@@ -37,7 +37,7 @@ import { Disposable } from 'zena:ownership';
 import { Task, scheduleTask } from './async/executor.zena';
 import {
   result, failure, valueOrThrow, tryComplete, tryFail, cancelComplete,
-  FutureState, Future, Completer,
+  settledState, FutureState, Future, Completer,
 } from './async/future.zena';
 
 export {
@@ -45,7 +45,7 @@ export {
   drainMicrotasks,
 } from './async/executor.zena';
 export {
-  FutureState, Future, AnyCompleter, Completer, runFuture,
+  Future, AnyCompleter, Completer, runFuture,
 } from './async/future.zena';
 
 /** TaskGroup's child-settlement report, and the CancelScope methods
@@ -274,7 +274,7 @@ class GroupWaiter<T> implements Task {
   run(): void {
     let f = this.future;
     var err: Error | null = null;
-    if (f.state == FutureState.Rejected) {
+    if (f.:settledState() == FutureState.Rejected) {
       err = f.:failure();
     }
     this.group.:childSettled(err);
@@ -422,9 +422,9 @@ class RaceGroupState<T> {
 
   /** Called once per candidate, when it settles. */
   settled(f: Future<T>): void {
-    if (f.state == FutureState.Cancelled) {
+    if (f.:settledState() == FutureState.Cancelled) {
       this.#undecided -= 1;
-      if (this.#undecided == 0 && this.result.state == FutureState.Pending) {
+      if (this.#undecided == 0 && this.result.:settledState() == FutureState.Pending) {
         this.result.:cancelComplete();
       }
       return;

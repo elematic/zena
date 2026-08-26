@@ -5,7 +5,7 @@
 // step()'s failure-capture region, and rejects the frame's own future.
 // A throw before any suspension takes the same path.
 import {
-  Future, FutureState, Completer, drainMicrotasks,
+  Future, Completer, drainMicrotasks, runFuture,
 } from 'zena:async';
 
 let awaitsFailure = async (c: Completer<i32>): Future<i32> => {
@@ -25,7 +25,14 @@ export let main = (): i32 => {
   let f = awaitsFailure(c);
   c.fail(new Error('nope'));
   drainMicrotasks();
-  if (f.state == FutureState.Rejected) {
+  var fMsg = '';
+  try {
+    runFuture(f);
+    fMsg = 'no throw';
+  } catch (e) {
+    fMsg = e.message;
+  }
+  if (fMsg == 'nope') {
     score += 1;
   }
 
@@ -35,14 +42,21 @@ export let main = (): i32 => {
   let g = awaitsFailure(ok);
   ok.complete(5);
   drainMicrotasks();
-  if (g.state == FutureState.Resolved) {
+  if (runFuture(g) == 6) {
     score += 2;
   }
 
   // A body that throws before its first suspension rejects too — the
   // ramp runs that segment eagerly, inside the same region.
   let h = throwsEagerly();
-  if (h.state == FutureState.Rejected) {
+  var hMsg = '';
+  try {
+    runFuture(h);
+    hMsg = 'no throw';
+  } catch (e) {
+    hMsg = e.message;
+  }
+  if (hMsg == 'eager') {
     score += 4;
   }
 

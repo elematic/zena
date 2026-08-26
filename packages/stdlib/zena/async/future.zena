@@ -51,6 +51,7 @@ declare function raiseCancellation(): never;
  * (`tests/language/semantics/async/private-settled-read.zena`).
  */
 export symbol result;
+export symbol settledState;
 export symbol failure;
 export symbol valueOrThrow;
 /**
@@ -102,12 +103,24 @@ export class Future<T> {
 
   new();
 
-  state: FutureState {
-    get {
-      return this.#state;
-    }
+  /**
+   * The settled/pending state, for the module's own waiters. User
+   * code observes a future only by subscribing — the affordance that
+   * lets code branch on WHICH outcome, synchronously, is the one
+   * worth withholding (async-runtime-shape.md, "Why hiding completion
+   * state is worth it").
+   */
+  :settledState(): FutureState {
+    return this.#state;
   }
 
+  /**
+   * Whether this future has settled. The one synchronous observation
+   * kept public: runtime infrastructure needs it (a `Parker` deciding
+   * whether a wake is already armed — zena:time/p3.zena), and unlike
+   * the settled STATE it does not let a result channel branch on an
+   * outcome it should only learn by subscribing.
+   */
   isCompleted: boolean {
     get {
       return !(this.#state == FutureState.Pending);
@@ -501,7 +514,7 @@ class ThenWaiter<T, R> implements Task {
   new(this.source, this.derived, this.onValue, this.onError);
   run(): void {
     let f = this.source;
-    if (f.state == FutureState.Cancelled) {
+    if (f.:settledState() == FutureState.Cancelled) {
       this.derived.:cancelComplete();
       return;
     }
@@ -543,7 +556,7 @@ class FlatMapWaiter<T, R> implements Task {
   new(this.source, this.derived, this.onValue);
   run(): void {
     let f = this.source;
-    if (f.state == FutureState.Cancelled) {
+    if (f.:settledState() == FutureState.Cancelled) {
       this.derived.:cancelComplete();
       return;
     }
@@ -572,7 +585,7 @@ class ForwardWaiter<R> implements Task {
   new(this.source, this.target);
   run(): void {
     let f = this.source;
-    if (f.state == FutureState.Cancelled) {
+    if (f.:settledState() == FutureState.Cancelled) {
       this.target.:cancelComplete();
       return;
     }

@@ -12,7 +12,7 @@
 // which completes the frame as cancelled, so the executor continues
 // and main observes the state as data.
 
-import { Future, FutureState, Completer, drainMicrotasks, raiseCancellation } from 'zena:async';
+import { Future, Completer, drainMicrotasks, raiseCancellation } from 'zena:async';
 
 var trace = '';
 
@@ -29,6 +29,22 @@ let work = async (gate: Future<i32>): Future<i32> => {
   return 0;
 };
 
+
+/** With `state` gone, an outcome is observed by awaiting: the cancel
+ * clause records the third settlement (and the probe's own frame then
+ * completes cancelled, which is fine — the record survives). */
+var probeLog = '';
+let probeOutcome = async (pf: Future<i32>): Future<void> => {
+  try {
+    let v = await pf;
+    probeLog = probeLog + 'v';
+  } cancel {
+    probeLog = probeLog + 'C';
+  } catch (e) {
+    probeLog = probeLog + 'e';
+  }
+};
+
 export function main(): i32 {
   let c = new Completer<i32>();
   let fut = work(c.future);
@@ -38,7 +54,9 @@ export function main(): i32 {
   if (trace != 'a1bf') {
     return 2;
   }
-  if (!(fut.state == FutureState.Cancelled)) {
+  probeOutcome(fut);
+  drainMicrotasks();
+  if (probeLog != 'C') {
     return 3;
   }
   return 42;
