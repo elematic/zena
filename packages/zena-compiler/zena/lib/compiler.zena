@@ -1591,24 +1591,33 @@ export let checkCompilation = (
     allSources[file.path] = file.source;
     allAsts[file.path] = file.ast;
 
-    // Fast-path: register stdlib types with the shared state as they compile.
+    // Register prelude types with the shared state as prelude modules compile.
     if (file.isStdlib && file.scopeResult != null) {
       let exports = (file.scopeResult as ScopeResult).exports;
-      let iter = exports.keys();
-      while (let (true, name) = iter.next()) {
-        let exp = (if (let (true, val) = exports.get(name)) { val } else { null }) as Symbol;
-        if (exp.isType()) {
-          let bt = checkResult.model.getExportType(name);
-          let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
-          if (t != null) {
-            sharedState.preludeTypes[name] = t;
+      let stdlibPrelude = getStandardPrelude("host");
+      let specIter = stdlibPrelude.keys();
+      while (let (true, specifier) = specIter.next()) {
+        let names = stdlibPrelude[specifier];
+        var ni = 0;
+        while (ni < names.length) {
+          let name = names[ni];
+          if (exports.has(name)) {
+            let exp = exports[name] as Symbol;
+            if (exp.isType()) {
+              let bt = checkResult.model.getExportType(name);
+              let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
+              if (t != null) {
+                sharedState.preludeTypes[name] = t;
+              }
+            }
+            if (exp.isValue()) {
+              let t = checkResult.model.getBindingType(exp);
+              if (t != null) {
+                sharedState.preludeValues[name] = t;
+              }
+            }
           }
-        }
-        if (exp.isValue()) {
-          let t = checkResult.model.getBindingType(exp);
-          if (t != null) {
-            sharedState.preludeValues[name] = t;
-          }
+          ni += 1;
         }
       }
     }

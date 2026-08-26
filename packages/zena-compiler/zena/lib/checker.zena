@@ -45,6 +45,7 @@
  */
 
 import { isValidIntrinsic } from './intrinsics.zena';
+import { HashSet } from 'zena:set';
 import { OrderedMap } from 'zena:ordered-map';
 import { StringBuilder } from 'zena:string-builder';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
@@ -1506,20 +1507,8 @@ final class CheckerContext {
         let sym = this.model.resolve(cd);
         if (sym != null) {
           symbolId = sym.id;
-        } else {
-          let isPrelude = this.filePath.startsWith("zena:");
-          if (isPrelude) {
-            if (let (true, stub) = this.#sharedState.preludeTypes.get(cd.name.name)) {
-              match (stub) {
-                case ClassType as pt: { symbolId = pt.symbolId; }
-                case _: {}
-              }
-            }
-          }
         }
         let ct = new ClassType(typeId, symbolId, cd.name.name);
-        let isPrelude = this.filePath.startsWith("zena:");
-        if (isPrelude) { this.#sharedState.preludeTypes[cd.name.name] = ct; }
         ct.isFinal = cd.isFinal;
         ct.isAbstract = cd.isAbstract;
         ct.isSealed = cd.isSealed;
@@ -1551,20 +1540,8 @@ final class CheckerContext {
         let sym = this.model.resolve(id);
         if (sym != null) {
           symbolId = sym.id;
-        } else {
-          let isPrelude = this.filePath.startsWith("zena:");
-          if (isPrelude) {
-            if (let (true, stub) = this.#sharedState.preludeTypes.get(id.name.name)) {
-              match (stub) {
-                case InterfaceType as pt: { symbolId = pt.symbolId; }
-                case _: {}
-              }
-            }
-          }
         }
         let it = new InterfaceType(typeId, symbolId, id.name.name);
-        let isPrelude = this.filePath.startsWith("zena:");
-        if (isPrelude) { this.#sharedState.preludeTypes[id.name.name] = it; }
         it.typeParameters = this.#declaredTypeParameters(id.typeParameters);
         return it;
       }
@@ -1573,20 +1550,8 @@ final class CheckerContext {
         let sym = this.model.resolve(md);
         if (sym != null) {
           symbolId = sym.id;
-        } else {
-          let isPrelude = this.filePath.startsWith("zena:");
-          if (isPrelude) {
-            if (let (true, stub) = this.#sharedState.preludeTypes.get(md.name.name)) {
-              match (stub) {
-                case MixinType as pt: { symbolId = pt.symbolId; }
-                case _: {}
-              }
-            }
-          }
         }
         let mt = new MixinType(md.name.name);
-        let isPrelude = this.filePath.startsWith("zena:");
-        if (isPrelude) { this.#sharedState.preludeTypes[md.name.name] = mt; }
         mt.sourcePath = this.filePath;
         mt.symbolId = symbolId;
         mt.typeParameters = this.#declaredTypeParameters(md.typeParameters);

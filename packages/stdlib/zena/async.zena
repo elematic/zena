@@ -38,6 +38,9 @@
  * written with waiter objects rather than callbacks.
  */
 
+import { Error } from 'zena:error';
+import { GrowableArray } from 'zena:growable-array';
+import { Box } from 'zena:box';
 import { Disposable } from 'zena:ownership';
 
 /**
@@ -147,7 +150,16 @@ class TaskQueue {
   }
 }
 
-let queue = new TaskQueue();
+var queue: TaskQueue | null = null;
+let getQueue = (): TaskQueue => {
+  let q = queue;
+  if (q != null) {
+    return q as TaskQueue;
+  }
+  let newQueue = new TaskQueue();
+  queue = newQueue;
+  return newQueue;
+};
 
 /**
  * A source of completions that arrive from outside the queue, and that
@@ -193,12 +205,12 @@ export let setParker = (p: Parker): void => {
 
 /** Enqueue a task on the microtask queue. */
 export let scheduleTask = (task: Task): void => {
-  queue.schedule(task);
+  getQueue().schedule(task);
 };
 
 /** Enqueue a callback on the microtask queue. */
 export let scheduleMicrotask = (cb: () => void): void => {
-  queue.schedule(new ClosureTask(cb));
+  getQueue().schedule(new ClosureTask(cb));
 };
 
 /**
@@ -211,12 +223,13 @@ export let scheduleMicrotask = (cb: () => void): void => {
  * outstanding.
  */
 export let drainMicrotasks = (): void => {
-  queue.drain();
+  let q = getQueue();
+  q.drain();
   let p = parker;
   if (p != null) {
     let source = p as Parker;
     while (source.park()) {
-      queue.drain();
+      q.drain();
     }
   }
 };
@@ -245,14 +258,16 @@ export declare function raiseCancellation(): never;
  * null to the root.
  */
 var current: CancelScope | null = null;
-
-/**
- * The root scope: what `currentScope()` reports before any scope has
- * been entered. Constructed while the current scope is still null,
- * which is
- * what makes it parentless.
- */
-let rootScope = new CancelScope();
+var rootScope: CancelScope | null = null;
+let getRootScope = (): CancelScope => {
+  let s = rootScope;
+  if (s != null) {
+    return s as CancelScope;
+  }
+  let newScope = CancelScope.detached();
+  rootScope = newScope;
+  return newScope;
+};
 
 /**
  * A cancellation scope: a level-triggered cancelled flag and a parent
@@ -320,7 +335,7 @@ export class CancelScope {
    * it, and cancelling everything is not a meaningful request.
    */
   cancel(): void {
-    if (this == rootScope) {
+    if (rootScope != null && this == rootScope) {
       throw new Error('The root scope cannot be cancelled');
     }
     if (this.#cancelled) {
@@ -347,7 +362,7 @@ export class CancelScope {
    * because the frame raises at its first checkpoint.
    */
   :registerTask(t: Task): void {
-    if (this == rootScope || this.#cancelled) {
+    if ((rootScope != null && this == rootScope) || this.#cancelled) {
       return;
     }
     this.#tasks.push(t);
@@ -367,7 +382,7 @@ export class CancelScope {
   :install(): CancelScope {
     let p = current;
     current = this;
-    return if (p != null) p else rootScope;
+    return if (p != null) p else getRootScope();
   }
 
   /**
@@ -389,7 +404,7 @@ export class CancelScope {
    * closing brace.
    */
   :shieldScope(): CancelScope {
-    return rootScope;
+    return getRootScope();
   }
 
   /**
@@ -414,7 +429,7 @@ export class CancelScope {
  * stop early without any signature change. */
 export let currentScope = (): CancelScope => {
   let s = current;
-  return if (s != null) s as CancelScope else rootScope;
+  return if (s != null) s as CancelScope else getRootScope();
 };
 
 // ---------------------------------------------------------------------------

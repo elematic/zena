@@ -22,7 +22,7 @@ import { checkModule, CheckResult, SharedCheckerState } from '../lib/checker.zen
 import { SemanticModel } from '../lib/semantic-model.zena';
 import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
 import {
-  Type, I32Type, BooleanType, VoidType, TypeParameterType, FieldInfo, MethodInfo, BoolLiteralType, ClassType, FunctionType, UnionType, InlineTupleType, HoleType, typeToString, TypeId,
+  Type, I32Type, BooleanType, VoidType, TypeParameterType, FieldInfo, MethodInfo, BoolLiteralType, ClassType, InterfaceType, FunctionType, UnionType, InlineTupleType, HoleType, typeToString, TypeId,
 } from '../lib/types.zena';
 import { VariableDeclaration, Identifier, Node } from '../lib/ast.zena';
 
@@ -93,6 +93,35 @@ let createTestSharedState = (): SharedCheckerState => {
   idxParams.push(mapK as Type);
   mapClass.members["[]"] = new MethodInfo(new FunctionType(idxParams, null, mapV as Type), false, false, false, false);
   sharedState.preludeTypes["HashMap"] = mapClass as Type;
+
+  let futureClass = new ClassType(9007 as TypeId, noSymbolId, "Future");
+  let futureT = new TypeParameterType("T", null, null);
+  let futureTArr = new GrowableArray<TypeParameterType>();
+  futureTArr.push(futureT);
+  futureClass.typeParameters = futureTArr;
+  sharedState.preludeTypes["Future"] = futureClass as Type;
+
+  let iterT = new TypeParameterType("T", null, null);
+  let iterTArr = new GrowableArray<TypeParameterType>();
+  iterTArr.push(iterT);
+
+  let iteratorIface = new InterfaceType(9008 as TypeId, noSymbolId, "Iterator");
+  iteratorIface.typeParameters = iterTArr;
+  sharedState.preludeTypes["Iterator"] = iteratorIface as Type;
+
+  let iterableIface = new InterfaceType(9009 as TypeId, noSymbolId, "Iterable");
+  iterableIface.typeParameters = iterTArr;
+  sharedState.preludeTypes["Iterable"] = iterableIface as Type;
+
+  let resourceClass = new ClassType(9010 as TypeId, noSymbolId, "Resource");
+  resourceClass.isAbstract = true;
+  resourceClass.isResource = true;
+  sharedState.preludeTypes["Resource"] = resourceClass as Type;
+
+  let hashableIface = new InterfaceType(9011 as TypeId, noSymbolId, "Hashable");
+  let hashMethodType = new FunctionType(new GrowableArray<Type>(), null, new I32Type());
+  hashableIface.members["hashCode"] = new MethodInfo(hashMethodType, false, false, false, false);
+  sharedState.preludeTypes["Hashable"] = hashableIface as Type;
   
   return sharedState;
 };

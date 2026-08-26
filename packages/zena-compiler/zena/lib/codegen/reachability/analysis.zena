@@ -15,7 +15,7 @@ import { GrowableArray } from 'zena:growable-array';
 import { OrderedMap } from 'zena:ordered-map';
 import { StringBuilder } from 'zena:string-builder';
 import {
-  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType,
+  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, isBoxablePrimitive,
 } from '../codegen-utils.zena';
 import {
   typeToValType, getClosureStruct, getInterfaceMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext,
@@ -990,7 +990,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         var isMain = false;
         
         if (decl is VariableDeclaration) {
-          isExported = rootsExports && decl.exported;
+          let isFunction = decl.init is FunctionExpression;
+          isExported = rootsExports && (decl.exported || (isEntry && !isFunction));
           if (isEntry && decl.pattern is IdentifierPattern && (decl.pattern as IdentifierPattern).name == "main") {
             isMain = true;
           }
@@ -1633,8 +1634,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let ct = cPair.value.structType.classType;
         if (ct != null) {
           isBoxSpecialization = isConcrete(ct) &&
-              (ct.genericSource ?? ct).symbolId ==
-                  boxClass.symbolId;
+              (ct.genericSource ?? ct).symbolId == boxClass.symbolId &&
+              ct.typeArguments != null &&
+              (ct.typeArguments as Array<Type>).length == 1 &&
+              isBoxablePrimitive((ct.typeArguments as Array<Type>)[0]);
         }
       }
       // An EXTENSION class's struct is a placeholder: a value of the
@@ -1658,6 +1661,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     
+    let keptGlobals = new GrowableArray<WasmGlobal>();
+    for (let g in this.wasm.globals) {
+      if (g.symbolId == noSymbolId || this.reachedGlobals.has(g.symbolId)) {
+        keptGlobals.push(g);
+      }
+    }
+    while (this.wasm.globals.length > 0) { this.wasm.globals.pop(); }
+    for (let g in keptGlobals) { this.wasm.globals.push(g); }
+
     for (let g in this.wasm.globals) {
       this.markValTypeReached(g.type);
       let {initVTable} = g;
@@ -3118,7 +3130,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           if (refItem.isSymbol) {
             let {symId} = refItem;
             let {model} = refItem;
-            this.reachedGlobals.add(symId);
+            if (refItem.isReachable) {
+              this.reachedGlobals.add(symId);
+            }
             
             var funcExpr: Node | null = null;
             if (let (true, decl) = model.globalDeclarations.get(symId)) {

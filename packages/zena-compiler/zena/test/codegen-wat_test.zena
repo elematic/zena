@@ -1,5 +1,5 @@
 import { suite, test, TestContext } from 'zena:test';
-import { equal } from 'zena:assert';
+import { equal, isTrue } from 'zena:assert';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { Module } from '../lib/ast.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
@@ -295,11 +295,16 @@ export let tests = suite('WatGenerator', (): void => {
 
   test('compile console with target host generates JS console imports', (ctx: TestContext): void => {
     let host = new MockHost();
-    host.addFile("zena:string", "export enum Encoding { WTF8, WTF16 } export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
-    host.addFile("zena:array", "export class Array {}");
-    host.addFile("zena:console/interface.zena", "export interface Console { log(message: String): void; }");
-    host.addFile("zena:console/host.zena", "import { Console } from './interface.zena'; @external('console', 'log_string') declare function log_string(s: String, len: i32): void; export class HostConsole implements Console { log(message: String): void { log_string(message, 0); } } export let console = new HostConsole();");
-    host.addFile("zena:console/wasi.zena", "import { Console } from './interface.zena'; @intrinsic('wasi_write_string') declare function wasi_write_string(fd: i32, s: String): void; export class WasiConsole implements Console { log(message: String): void { wasi_write_string(1, message); } } export let console = new WasiConsole();");
+    host.addFile("zena:string", "export enum Encoding { WTF8, WTF16 } export class ByteArray {} export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
+    host.addFile("zena:array", "export class Array {} export class FixedArray<T> {} export class GrowableArray<T> {}");
+    host.addFile("zena:console/interface.zena", "import { String } from 'zena:string'; export interface Console { log(message: String): void; }");
+    host.addFile("zena:console/host.zena", "import { String } from 'zena:string'; import { Console } from './interface.zena'; @external('console', 'log_string') declare function log_string(s: String, len: i32): void; export class HostConsole implements Console { log(message: String): void { log_string(message, 0); } } export let console = new HostConsole();");
+    host.addFile("zena:console/wasi.zena", "import { String } from 'zena:string'; import { Console } from './interface.zena'; @intrinsic('wasi_write_string') declare function wasi_write_string(fd: i32, s: String): void; export class WasiConsole implements Console { log(message: String): void { wasi_write_string(1, message); } } export let console = new WasiConsole();");
+    host.addFile("zena:console", host.readFile("zena:console/host.zena"));
+    host.addFile("zena:iterator", "export interface Iterator<T> {} export interface Iterable<T> {}");
+    host.addFile("zena:ownership", "export class Resource {}");
+    host.addFile("zena:hashable", "export interface Hashable {}");
+    host.addFile("zena:async", "export class Future<T> {}");
     host.addFile("test.zena", "export let main = (): void => { console.log('hello'); };");
 
     let packages = new HashMap<String, PackageConfig>();
@@ -308,7 +313,8 @@ export let tests = suite('WatGenerator', (): void => {
 
     let compResult = compiler.compile("test.zena");
     let checkRes = checkCompilation(compResult, null, false);
-    equal(errorDiagnostics(checkRes.diagnostics).length, 0);
+    let errs = errorDiagnostics(checkRes.diagnostics);
+    isTrue(errs.length == 0, if (errs.length > 0) errs[0].message else "");
     
     let entryAst = compResult.entry.ast;
     let units = new GrowableArray<CompilationUnit>();
@@ -334,11 +340,16 @@ export let tests = suite('WatGenerator', (): void => {
 
   test('compile console with target zena-cli generates WASI imports', (ctx: TestContext): void => {
     let host = new MockHost();
-    host.addFile("zena:string", "export enum Encoding { WTF8, WTF16 } export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
-    host.addFile("zena:array", "export class Array {}");
-    host.addFile("zena:console/interface.zena", "export interface Console { log(message: String): void; }");
-    host.addFile("zena:console/host.zena", "import { Console } from './interface.zena'; @external('console', 'log_string') declare function log_string(s: String, len: i32): void; export class HostConsole implements Console { log(message: String): void { log_string(message, 0); } } export let console = new HostConsole();");
-    host.addFile("zena:console/wasi.zena", "import { Console } from './interface.zena'; @intrinsic('wasi_write_string') declare function wasi_write_string(fd: i32, s: String): void; export class WasiConsole implements Console { log(message: String): void { wasi_write_string(1, message); } } export let console = new WasiConsole();");
+    host.addFile("zena:string", "export enum Encoding { WTF8, WTF16 } export class ByteArray {} export class String { #data: ByteArray; #start: i32; #end: i32; #encoding: Encoding; }");
+    host.addFile("zena:array", "export class Array {} export class FixedArray<T> {} export class GrowableArray<T> {}");
+    host.addFile("zena:console/interface.zena", "import { String } from 'zena:string'; export interface Console { log(message: String): void; }");
+    host.addFile("zena:console/host.zena", "import { String } from 'zena:string'; import { Console } from './interface.zena'; @external('console', 'log_string') declare function log_string(s: String, len: i32): void; export class HostConsole implements Console { log(message: String): void { log_string(message, 0); } } export let console = new HostConsole();");
+    host.addFile("zena:console/wasi.zena", "import { String } from 'zena:string'; import { Console } from './interface.zena'; @intrinsic('wasi_write_string') declare function wasi_write_string(fd: i32, s: String): void; export class WasiConsole implements Console { log(message: String): void { wasi_write_string(1, message); } } export let console = new WasiConsole();");
+    host.addFile("zena:console", host.readFile("zena:console/wasi.zena"));
+    host.addFile("zena:iterator", "export interface Iterator<T> {} export interface Iterable<T> {}");
+    host.addFile("zena:ownership", "export class Resource {}");
+    host.addFile("zena:hashable", "export interface Hashable {}");
+    host.addFile("zena:async", "export class Future<T> {}");
     host.addFile("test.zena", "export let main = (): void => { console.log('hello'); };");
 
     let packages = new HashMap<String, PackageConfig>();
@@ -347,7 +358,8 @@ export let tests = suite('WatGenerator', (): void => {
 
     let compResult = compiler.compile("test.zena");
     let checkRes = checkCompilation(compResult, null, false);
-    equal(errorDiagnostics(checkRes.diagnostics).length, 0);
+    let errs = errorDiagnostics(checkRes.diagnostics);
+    isTrue(errs.length == 0, if (errs.length > 0) errs[0].message else "");
     
     let entryAst = compResult.entry.ast;
     let units = new GrowableArray<CompilationUnit>();
