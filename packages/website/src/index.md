@@ -586,17 +586,18 @@ function logScores(scores: Map<String, i32>) {
 
 ```zena
 import { sleep } from 'zena:time';
-import { Future } from 'zena:async';
 
 // Async functions return a Future<T> and can await other futures.
 async function fetchUser(id: i32): Future<String> {
-  await sleep(10);
+  await sleep(1000);
   return `User #${id}`;
 }
 
 export async function main(): Future<void> {
+  console.log('starting...');
   // await waits for an async function call to complete.
   let userOne = await fetchUser(1);
+  console.log(userOne);
 
   // async functions return Futures when not awaited
   let userTwoFuture: Future<String> = fetchUser(2);
@@ -604,7 +605,7 @@ export async function main(): Future<void> {
   // Combinators like Future.all() can wait for multiple Futures in parallel
   let [userTwo, userThree] = await Future.all([userTwoFuture, fetchUser(3)]);
 
-  console.log(`${userOne}, ${userTwo}, ${userThree}`);
+  console.log(`${userTwo}, ${userThree}`);
 }
 ```
 
