@@ -1,0 +1,145 @@
+/**
+ * The zena:async executor: a FIFO queue of runnable tasks, and the
+ * `Parker` hook that lets an empty queue mean "wait for the next
+ * external completion" rather than "done" (docs/design/async.md §4).
+ *
+ * A file of `zena:async` (../async.zena), which re-exports the public
+ * surface; not importable as a module of its own.
+ */
+
+import { GrowableArray } from 'zena:growable-array';
+
+// The executor: a FIFO queue of runnable tasks.
+// ---------------------------------------------------------------------------
+
+/**
+ * One unit of queued work.
+ *
+ * The same type serves every role: a suspended async frame (the split
+ * pass synthesizes an implementation per async function), a callback
+ * bridge, a combinator's subscription, and a bare closure. Because a
+ * waiter reads the settled value out of the future rather than being
+ * handed it, this needs no type parameter, so one implementation per
+ * frame serves every await site in a function whatever it awaits.
+ */
+export interface Task {
+  run(): void;
+}
+
+/** Wraps a plain callback for non-generic callers. */
+class ClosureTask implements Task {
+  cb: () => void;
+  new(this.cb);
+  run(): void {
+    let f = this.cb;
+    f();
+  }
+}
+
+class TaskQueue {
+  #items = new GrowableArray<Task>();
+  var #head = 0;
+
+  schedule(task: Task): void {
+    this.#items.push(task);
+  }
+
+  /** Runs queued tasks in FIFO order until the queue is empty
+   * (including tasks scheduled while draining). */
+  drain(): void {
+    while (this.#head < this.#items.length) {
+      let task = this.#items[this.#head];
+      this.#head += 1;
+      task.run();
+    }
+    // Empty: release the backlog so long drains don't accrete.
+    while (this.#items.length > 0) {
+      this.#items.pop();
+    }
+    this.#head = 0;
+  }
+}
+
+var queue: TaskQueue | null = null;
+let getQueue = (): TaskQueue => {
+  let q = queue;
+  if (q != null) {
+    return q as TaskQueue;
+  }
+  let newQueue = new TaskQueue();
+  queue = newQueue;
+  return newQueue;
+};
+
+/**
+ * A source of completions that arrive from outside the queue, and that
+ * the drain loop can wait for (async.md §4, Level 1).
+ *
+ * The microtask queue alone can only run work that already exists. A
+ * timer, or host I/O, settles a `Completer` at a moment nothing in the
+ * queue can cause — so when the queue empties, the drain loop asks the
+ * parker to block until the next such completion is ready.
+ *
+ * `park()` returns true if it delivered a completion (the drain loop
+ * then runs the microtasks that produced and asks again) and false if
+ * there is nothing outstanding to wait for. Returning false is what
+ * ends the drain; a parker that always returns true never terminates.
+ */
+export interface Parker {
+  park(): boolean;
+}
+
+/**
+ * The one registered parker, or null when nothing external can
+ * complete — which is the plain case, and the one the deadlock message
+ * in `Future.valueOrThrow` describes.
+ *
+ * A single slot rather than a list, deliberately: waiting on several
+ * sources means waiting on whichever is ready *first*, which a loop
+ * over independent parkers gets wrong (it would block on the first one
+ * while the second was already ready). When a target has more than one
+ * source, it registers one parker that knows how to wait on all of
+ * them — which is exactly what a host event loop already is.
+ *
+ * The mechanism does not enforce that premise: a second registration
+ * silently replaces the first, which would strand whatever the first
+ * one was waiting on. Only `zena:time`'s WASI entry registers today —
+ * see async-runtime-shape.md, "Parking".
+ */
+var parker: Parker | null = null;
+
+/** Register the drain loop's park source, replacing any previous one. */
+export let setParker = (p: Parker): void => {
+  parker = p;
+};
+
+/** Enqueue a task on the microtask queue. */
+export let scheduleTask = (task: Task): void => {
+  getQueue().schedule(task);
+};
+
+/** Enqueue a callback on the microtask queue. */
+export let scheduleMicrotask = (cb: () => void): void => {
+  getQueue().schedule(new ClosureTask(cb));
+};
+
+/**
+ * Run microtasks until the queue is empty and nothing external is left
+ * to wait for.
+ *
+ * With no parker registered this is exactly "drain the queue". With
+ * one, an empty queue is not the end: the loop parks, and whatever
+ * that delivers is drained in turn, until the parker reports nothing
+ * outstanding.
+ */
+export let drainMicrotasks = (): void => {
+  let q = getQueue();
+  q.drain();
+  let p = parker;
+  if (p != null) {
+    let source = p as Parker;
+    while (source.park()) {
+      q.drain();
+    }
+  }
+};
