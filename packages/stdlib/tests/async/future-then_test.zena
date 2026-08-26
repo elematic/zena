@@ -1,0 +1,124 @@
+// Future.then / Future.flatMap: derived futures settle from the
+// source's outcome — transformed value, recovered or propagated
+// failure — and cancellation forwards structurally, running no
+// callback (docs/design/cancellation.md: a result channel must not be
+// able to swallow an unwind).
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  Future, Completer, CancelScope, drainMicrotasks, runFuture,
+} from 'zena:async';
+import { Error } from 'zena:error';
+
+var log = '';
+
+let doubled = async (gate: Future<i32>): Future<i32> => {
+  let v = await gate;
+  return v * 2;
+};
+
+/** Awaits `f`, recording how the await ends — the effect-based way to
+ * observe an outcome, cancellation included. */
+let probe = async (f: Future<i32>): Future<void> => {
+  try {
+    let v = await f;
+    log = log + 'v' + i32ToString(v);
+  } cancel {
+    log = log + 'C';
+  } catch (e) {
+    log = log + 'e' + e.message;
+  }
+};
+
+export let tests = suite('Future.then', (): void => {
+  test('then transforms the value', (ctx: TestContext): void => {
+    let f = Future.of(21).then((v: i32) => v * 2);
+    equal(runFuture(f), 42);
+  });
+
+  test('then chains', (ctx: TestContext): void => {
+    let f = Future.of(1)
+      .then((v: i32) => v + 1)
+      .then((v: i32) => v * 10);
+    equal(runFuture(f), 20);
+  });
+
+  test('a failure propagates past then untransformed', (ctx: TestContext): void => {
+    var ran = false;
+    let f = Future.failed<i32>(new Error('boom')).then((v: i32): i32 => {
+      ran = true;
+      return v;
+    });
+    var msg = '';
+    try {
+      runFuture(f);
+      msg = 'no throw';
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'boom');
+    isFalse(ran);
+  });
+
+  test('onError recovers the chain', (ctx: TestContext): void => {
+    let f = Future.failed<i32>(new Error('boom')).then(
+      (v: i32) => v,
+      (e: Error) => 7);
+    equal(runFuture(f), 7);
+  });
+
+  test('a throwing callback fails the derived future', (ctx: TestContext): void => {
+    let f = Future.of(1).then((v: i32): i32 => {
+      throw new Error('cb threw');
+    });
+    var msg = '';
+    try {
+      runFuture(f);
+      msg = 'no throw';
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'cb threw');
+  });
+
+  test('flatMap settles from the inner future', (ctx: TestContext): void => {
+    let gate = new Completer<i32>();
+    let f = Future.of(5).flatMap((v: i32) => doubled(gate.future));
+    drainMicrotasks();
+    gate.complete(6);
+    equal(runFuture(f), 12);
+  });
+
+  test('a flatMap inner failure propagates', (ctx: TestContext): void => {
+    let f = Future.of(1).flatMap(
+      (v: i32) => Future.failed<i32>(new Error('inner')));
+    var msg = '';
+    try {
+      runFuture(f);
+      msg = 'no throw';
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'inner');
+  });
+
+  test('cancellation forwards without running callbacks', (ctx: TestContext): void => {
+    log = '';
+    let gate = new Completer<i32>();
+    let scope = new CancelScope();
+    var src: Future<i32> | null = null;
+    scope.run(() => {
+      src = doubled(gate.future);
+    });
+    var ran = false;
+    let derived = (src as Future<i32>).then((v: i32): i32 => {
+      ran = true;
+      return v;
+    });
+    probe(derived);
+    scope.cancel();
+    drainMicrotasks();
+    isFalse(ran);
+    equal(log, 'C');
+  });
+});

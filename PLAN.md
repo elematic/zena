@@ -135,7 +135,12 @@ This document tracks completed work and planned features. For project instructio
     `try`/`finally` and `using` suspension bails. `await` now works
     inside `try`/`finally` (finalizers can await too) and after
     `using`, the async-resource pattern.
-  - Next: `then`/`map`/`flatMap`, richer fetch (headers, streamed bodies — streams
+  - **`Future.then` and `Future.flatMap` are done** (closure
+    specialization unblocked them): derived futures settle from the
+    source's outcome — transformed value, recovered or propagated
+    failure — and cancellation forwards structurally, running no
+    callback. No separate `map`: it is `then` with one argument.
+  - Next: richer fetch (headers, streamed bodies — streams
     are designed in [streams.md](docs/design/streams.md) with the
     `zena:stream` rendezvous core implemented), and post-v1 items (cancellation and structured
     concurrency — designed in

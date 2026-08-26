@@ -203,6 +203,45 @@ export class Future<T> {
   }
 
   /**
+   * A future of this future's value, transformed: once this settles
+   * with a value, the derived future settles with `onValue(value)`. A
+   * failure propagates to the derived future untransformed unless
+   * `onError` is given, whose result then RECOVERS the chain — the
+   * derived future resolves with it. A callback that throws fails the
+   * derived future with what it threw. Either callback runs from the
+   * microtask queue, never synchronously here.
+   *
+   * Cancellation is not an error and has no callback: if this future
+   * completes cancelled, the derived future completes cancelled too,
+   * and neither callback runs. Reacting to a cancellation belongs to
+   * the scope that caused it, or to a finalizer (`cancel`, `using`) in
+   * the work being unwound — never to a result channel, where a
+   * handler could swallow the unwind (docs/design/cancellation.md).
+   */
+  then<R>(
+    onValue: (value: T) => R,
+    onError: ((error: Error) => R) | null = null
+  ): Future<R> {
+    let derived = new Future<R>();
+    this.subscribe(new ThenWaiter<T, R>(
+      this as Future<T>, derived, onValue, onError));
+    return derived;
+  }
+
+  /**
+   * `then` for a callback that starts more async work: the derived
+   * future settles the way the callback's future does, rather than
+   * with the future itself. Failures and cancellation propagate from
+   * BOTH stages — this future and the one the callback returns.
+   */
+  flatMap<R>(onValue: (value: T) => Future<R>): Future<R> {
+    let derived = new Future<R>();
+    this.subscribe(new FlatMapWaiter<T, R>(
+      this as Future<T>, derived, onValue));
+    return derived;
+  }
+
+  /**
    * The settled value, or a throw of the stored failure.
    *
    * Async frames call this at each resume point, which is what makes a
@@ -448,6 +487,104 @@ export class Completer<T> extends AnyCompleter {
  * hands a waiter nothing, so the waiter keeps the reference it reads back
  * through.
  */
+/**
+ * A `then` subscription: reads the source's outcome and settles the
+ * derived future. Cancellation forwards structurally — no callback
+ * sees it — which is what keeps a result channel unable to swallow an
+ * unwind.
+ */
+class ThenWaiter<T, R> implements Task {
+  source: Future<T>;
+  derived: Future<R>;
+  onValue: (value: T) => R;
+  onError: ((error: Error) => R) | null;
+  new(this.source, this.derived, this.onValue, this.onError);
+  run(): void {
+    let f = this.source;
+    if (f.state == FutureState.Cancelled) {
+      this.derived.:cancelComplete();
+      return;
+    }
+    let e = f.:failure();
+    if (e == null) {
+      let ok = this.onValue;
+      try {
+        let v = ok(f.:valueOrThrow());
+        this.derived.:complete(v);
+      } catch (thrown) {
+        this.derived.:fail(thrown);
+      }
+      return;
+    }
+    let bad = this.onError;
+    if (bad == null) {
+      this.derived.:fail(e as Error);
+      return;
+    }
+    let recover = bad as (error: Error) => R;
+    try {
+      let v = recover(e as Error);
+      this.derived.:complete(v);
+    } catch (thrown) {
+      this.derived.:fail(thrown);
+    }
+  }
+}
+
+/**
+ * A `flatMap` subscription: runs the callback, then forwards the
+ * INNER future's settlement to the derived one — value, failure, or
+ * cancellation alike.
+ */
+class FlatMapWaiter<T, R> implements Task {
+  source: Future<T>;
+  derived: Future<R>;
+  onValue: (value: T) => Future<R>;
+  new(this.source, this.derived, this.onValue);
+  run(): void {
+    let f = this.source;
+    if (f.state == FutureState.Cancelled) {
+      this.derived.:cancelComplete();
+      return;
+    }
+    let e = f.:failure();
+    if (e != null) {
+      this.derived.:fail(e as Error);
+      return;
+    }
+    let start = this.onValue;
+    var inner: Future<R> | null = null;
+    try {
+      inner = start(f.:valueOrThrow());
+    } catch (thrown) {
+      this.derived.:fail(thrown);
+      return;
+    }
+    let innerF = inner as Future<R>;
+    innerF.subscribe(new ForwardWaiter<R>(innerF, this.derived));
+  }
+}
+
+/** Forwards one future's settlement to another, whole. */
+class ForwardWaiter<R> implements Task {
+  source: Future<R>;
+  target: Future<R>;
+  new(this.source, this.target);
+  run(): void {
+    let f = this.source;
+    if (f.state == FutureState.Cancelled) {
+      this.target.:cancelComplete();
+      return;
+    }
+    let e = f.:failure();
+    if (e == null) {
+      this.target.:complete(f.:valueOrThrow());
+      return;
+    }
+    this.target.:fail(e as Error);
+  }
+}
+
 class CallbackTask<T> implements Task {
   future: Future<T>;
   valueCb: (value: T) => void;
