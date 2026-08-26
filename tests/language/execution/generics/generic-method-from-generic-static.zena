@@ -1,0 +1,26 @@
+// @mode: run
+// @result: 42
+
+// A generic METHOD called from inside a generic STATIC, with the
+// static's own type parameter as the solved argument. The static's
+// body walk must substitute its own type parameters when registering
+// the inner method's specialization: walked open, the mention is a
+// template (registering at the erasure is wrong), and skipping it
+// entirely loses the `pair_spec_i32` this call needs — lowering then
+// fails with "method not found".
+
+class Pairer {
+  new();
+  pair<T>(v: T): (T, T) {
+    return (v, v);
+  }
+
+  static both<A>(p: Pairer, v: A): (A, A) {
+    return p.pair(v);
+  }
+}
+
+export let main = (): i32 => {
+  let (a, b) = Pairer.both(new Pairer(), 21);
+  return a + b;
+};

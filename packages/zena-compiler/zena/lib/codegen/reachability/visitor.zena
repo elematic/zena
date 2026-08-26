@@ -1303,6 +1303,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     for (let a in rawArgs) {
       typeArgs.push(resolveType(a));
     }
+    // A solved argument that is still a bare type parameter means this
+    // walk is a generic body's TEMPLATE — a call in a generic function
+    // whose own parameter feeds the method's. The mention is the
+    // template of a call, not a call: every value it stands for
+    // belongs to a specialization some real walk registers with its
+    // own solved arguments. Minting at the erasure instead fails
+    // loudly at lowering ("method not found @..._spec_erased").
+    if (!noOpenTypeParameters(typeArgs)) { return; }
     let unspecId = (targetClass.genericSource ?? targetClass).symbolId;
     let cd = if (let (true, decl) = this.pass.classDecls.get(unspecId)) decl else null;
     let targetModel = this.pass.getClassModel(targetClass);

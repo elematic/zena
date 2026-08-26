@@ -3140,11 +3140,23 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let {specializer} = this;
               let resolver = (t: Type): Type => {
                 var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
-                if (refItem.typeArguments != null && node is FunctionExpression) {
-                  let ft = model.getNodeType(node) as FunctionType;
-                  let {typeParameters} = ft;
-                  if (typeParameters != null) {
-                    res = substituteTypeParamsInCodegen(this.wasm, typeParameters, refItem.typeArguments as Array<Type>, res);
+                // The walked function's OWN type parameters, when this
+                // referrer is one monomorphization of it. Both node
+                // shapes that carry them count — a generic arrow
+                // (FunctionExpression) and a generic METHOD
+                // (MethodDefinition) — the same pair
+                // traverseDependencies substitutes. Recognizing only
+                // the arrow here left a generic method's body walked
+                // with its parameters open, so a generic call inside
+                // it registered nothing (open arguments are a template
+                // mention) and lowering missed the specialization.
+                if (refItem.typeArguments != null) {
+                  let nodeT = model.getNodeType(node);
+                  if (nodeT is FunctionType) {
+                    let {typeParameters} = nodeT;
+                    if (typeParameters != null) {
+                      res = substituteTypeParamsInCodegen(this.wasm, typeParameters, refItem.typeArguments as Array<Type>, res);
+                    }
                   }
                 }
                 return res;
