@@ -20,7 +20,6 @@
  */
 
 import { Error } from 'zena:error';
-import { String } from 'zena:string';
 import { GrowableArray } from 'zena:growable-array';
 import { Box } from 'zena:box';
 import { Task, scheduleTask, drainMicrotasks } from './executor.zena';
@@ -51,6 +50,7 @@ declare function raiseCancellation(): never;
  * (`tests/language/semantics/async/private-settled-read.zena`).
  */
 export symbol result;
+export symbol subscribe;
 export symbol settledState;
 export symbol failure;
 export symbol valueOrThrow;
@@ -180,11 +180,15 @@ export class Future<T> {
    * always-async rule holds here too, so a frame awaiting a completed
    * future still yields one queue hop).
    *
-   * This is what the `await` transform emits. It is deliberately
-   * untyped in T: the waiter reads the settled result back with
-   * `result()` when it runs.
+   * This is what the `await` transform emits, and the primitive the
+   * combinators build on. Symbol-keyed because it is the PROTOCOL,
+   * not the API: user code composes with `then`/`flatMap` and
+   * observes with `onComplete`, while frames — which already are
+   * objects — subscribe themselves here so an await allocates
+   * nothing. It is deliberately untyped in T: the waiter reads the
+   * settled result back with `result()` when it runs.
    */
-  subscribe(t: Task): void {
+  :subscribe(t: Task): void {
     if (!(this.#state == FutureState.Pending)) {
       scheduleTask(t);
       return;
@@ -211,7 +215,7 @@ export class Future<T> {
     // `this as Future<T>`: inside a generic class's own method `this`
     // types as the raw template `Future`, so the cast is what names the
     // instantiation. Same idiom as `AllState.attach` below.
-    this.subscribe(
+    this.:subscribe(
       new CallbackTask<T>(this as Future<T>, onValue, onError));
   }
 
@@ -236,7 +240,7 @@ export class Future<T> {
     onError: ((error: Error) => R) | null = null
   ): Future<R> {
     let derived = new Future<R>();
-    this.subscribe(new ThenWaiter<T, R>(
+    this.:subscribe(new ThenWaiter<T, R>(
       this as Future<T>, derived, onValue, onError));
     return derived;
   }
@@ -249,7 +253,7 @@ export class Future<T> {
    */
   flatMap<R>(onValue: (value: T) => Future<R>): Future<R> {
     let derived = new Future<R>();
-    this.subscribe(new FlatMapWaiter<T, R>(
+    this.:subscribe(new FlatMapWaiter<T, R>(
       this as Future<T>, derived, onValue));
     return derived;
   }
@@ -574,7 +578,7 @@ class FlatMapWaiter<T, R> implements Task {
       return;
     }
     let innerF = inner as Future<R>;
-    innerF.subscribe(new ForwardWaiter<R>(innerF, this.derived));
+    innerF.:subscribe(new ForwardWaiter<R>(innerF, this.derived));
   }
 }
 
@@ -700,7 +704,7 @@ class AllState<T> {
     // `AllState<T>`.
     i = 0;
     while (i < futures.length) {
-      futures[i].subscribe(new AllWaiter<T>(this as AllState<T>, i));
+      futures[i].:subscribe(new AllWaiter<T>(this as AllState<T>, i));
       i += 1;
     }
     return this.result;
@@ -769,7 +773,7 @@ class RaceState<T> {
     // is cast for the same reason as in AllState.attach.
     var i = 0;
     while (i < futures.length) {
-      futures[i].subscribe(
+      futures[i].:subscribe(
         new RaceWaiter<T>(this as RaceState<T>, futures[i]));
       i += 1;
     }

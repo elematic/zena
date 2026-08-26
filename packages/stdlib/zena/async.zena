@@ -36,7 +36,8 @@ import { GrowableArray } from 'zena:growable-array';
 import { Disposable } from 'zena:ownership';
 import { Task, scheduleTask } from './async/executor.zena';
 import {
-  result, failure, valueOrThrow, tryComplete, tryFail, cancelComplete,
+  subscribe, failure, valueOrThrow, tryComplete, tryFail,
+  cancelComplete,
   settledState, FutureState, Future, Completer,
 } from './async/future.zena';
 
@@ -332,7 +333,7 @@ export class TaskGroup {
       current = prev;
     }
     let f = fut as Future<T>;
-    f.subscribe(new GroupWaiter<T>(this, f));
+    f.:subscribe(new GroupWaiter<T>(this, f));
     return f;
   }
 
@@ -401,7 +402,7 @@ export class TaskGroup {
     let state = new RaceGroupState<A>(group, bodies.length);
     for (let body in bodies) {
       let f = group.spawn(body);
-      f.subscribe(new RaceGroupWaiter<A>(state, f));
+      f.:subscribe(new RaceGroupWaiter<A>(state, f));
     }
     return state.result;
   }
