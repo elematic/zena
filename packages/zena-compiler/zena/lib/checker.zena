@@ -3990,7 +3990,12 @@ let registerOwnParamCandidates = (
   params: GrowableArray<Parameter>,
   paramTypes: Array<Type>
 ): void => {
-  if (ctx.yieldType != null || ctx.asyncValueType != null) { return; }
+  // Async bodies qualify: the release regions spill into the frame and
+  // catch both tags, so they release across suspensions and on
+  // cancellation. Generators stay out until generator disposal exists —
+  // an abandoned frame runs no finalizers, so a release pinned to scope
+  // exit would never run for a consumer that stops iterating.
+  if (ctx.yieldType != null) { return; }
   var i = 0;
   while (i < params.length && i < paramTypes.length) {
     let param = params[i];
@@ -8219,16 +8224,17 @@ let checkVariableDeclaration = (
 
   // A simple `let` holding an owned resource is an implicit-drop
   // candidate: released at its block's exit unless something moves,
-  // reassigns, captures or escapes it (exitOwnScope decides). Not in a
-  // generator or async body: the release region rides wasm locals,
-  // which do not survive a suspension — those drops are the
-  // cancellation table's chapter of ownership.md §Implicit drop.
+  // reassigns, captures or escapes it (exitOwnScope decides). Async
+  // bodies qualify — the release regions spill into the frame and
+  // catch both tags — but generators stay out until generator disposal
+  // exists: an abandoned frame runs no finalizers, so a release pinned
+  // to scope exit would never run for a consumer that stops iterating.
   // A nullable handle qualifies too — the release is null-guarded — but
   // not one initialized to literal null: an immutable binding of null
   // never holds a resource, so there is nothing to release.
   let dropHandleType = soleNonNullMember(declType) ?? declType;
   if (kind == "let" && pattern is IdentifierPattern &&
-      ctx.yieldType == null && ctx.asyncValueType == null &&
+      ctx.yieldType == null &&
       !(initType is NullType) &&
       ownershipHandleName(dropHandleType) == "Own") {
     let innerOpt = ownershipHandleInner(dropHandleType);
@@ -12752,7 +12758,9 @@ let checkMethodBody = (
     }
     case Expression as bodyExpr: {
       ctx.enterOwnScope();
-      if (methodName != "<constructor>") {
+      // Async expression bodies stay out: their lowering completes the
+      // frame's future directly, before the parameter regions exist.
+      if (methodName != "<constructor>" && ctx.asyncValueType == null) {
         registerOwnParamCandidates(ctx, md.params, methodType.parameters);
       }
       let bodyType = checkExpression(ctx, bodyExpr, effectiveReturnType);
@@ -16605,7 +16613,11 @@ let checkFunctionExpression = (
     }
     case Expression as bodyExpr: {
       ctx.enterOwnScope();
-      registerOwnParamCandidates(ctx, fe.params, paramTypes);
+      // Async expression bodies stay out: their lowering completes the
+      // frame's future directly, before the parameter regions exist.
+      if (ctx.asyncValueType == null) {
+        registerOwnParamCandidates(ctx, fe.params, paramTypes);
+      }
       // If we don't have an expected type, don't pass retType (which is VoidType by default).
       let expectedBodyType = if (needsInference) { null } else { retType };
       let bodyType = checkExpression(ctx, bodyExpr, expectedBodyType);

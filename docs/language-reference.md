@@ -4314,15 +4314,16 @@ the function received ownership, so the function releases unless its
 body moves the value onward. Passing a resource to `Own<R>` parameter
 is therefore a complete handoff — the caller's binding dies at the
 call, and the callee disposes what it was handed (or moves it further).
-Constructors and `async`/`gen` bodies are not yet covered.
+Constructors, async expression bodies, and `gen` bodies are not yet
+covered.
 
 The compiler releases a binding only when it still owns the value at every
 exit. A binding is left alone when anything moves it (a call taking
 `Own<R>`, `disown`, a consuming method, rebinding), reassigns it, captures
 it in a closure, or uses it in a position the compiler does not recognize
-as a borrow — and, for now, when it was declared in a generator or an
-`async` body. Left alone means what it always meant before implicit drop:
-the value leaks unless something else releases it.
+as a borrow — and, for now, when it was declared in a generator body.
+Left alone means what it always meant before implicit drop: the value
+leaks unless something else releases it.
 
 A move on one arm of an `if` or a `match` releases the binding at the
 end of each arm that kept it, so it is uniformly dead after the merge —

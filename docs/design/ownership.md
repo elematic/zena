@@ -998,8 +998,19 @@ the dispatch — the same carriage a valued `try`/`finally` uses — so
 the release runs after the value is read and on every early exit and
 unwind.
 
-Not yet released: anything in a generator or `async` body (part 4's
-cancellation table). `execution/ownership/implicit-drop.zena`,
+**Async bodies release too.** The release regions spill their state
+into the frame and catch the cancel tag as well as the error tag, so an
+owned local or parameter in an `async` body releases across
+suspensions, on a failure surfacing at a resume point, on early
+returns, and on cancellation — lifting the gate needed no lowering
+work, only the checker's candidacy. Async expression bodies stay out
+(their lowering completes the frame's future before the parameter
+regions exist).
+
+Not yet released: anything in a generator body — an abandoned frame
+runs no finalizers, so releasing at scope exit waits on generator
+disposal (cancel-at-yield, cancellation.md §"Abandonment and generator
+disposal"). `execution/ownership/implicit-drop.zena`,
 `match-arm-drops.zena`, `param-drops.zena`, `param-drops-expr.zena`
 and `value-block-release.zena` pin the behavior; the release-timing
 note now lives in the language reference.

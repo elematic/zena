@@ -1,0 +1,113 @@
+// @mode: run
+// @result: 888
+// Implicit drop inside `async` bodies: an owned resource local (or an
+// owned parameter) releases at scope exit exactly as in a synchronous
+// body — after the body's last event, in reverse declaration order —
+// across suspension points, on a failure surfacing at a resume point,
+// and on an early return. The release rides the same frame-surviving
+// finally regions `using` proved out.
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+import { Own, Disposable } from 'zena:ownership';
+
+/** Records events as decimal digits, so ordering is observable. */
+class Log {
+  var seq: i32 = 0;
+  add(d: i32): void {
+    this.seq = this.seq * 10 + d;
+  }
+}
+
+resource class Res {
+  #log: Log;
+  id: i32;
+  new(log: Log, this.id) : #log = log;
+  :Disposable.dispose(this: Own<this>): void {
+    this.#log.add(this.id);
+  }
+}
+
+/** Two locals, awaits between and after; releases in reverse order,
+ * after the body's last event. */
+let normal = async (c: Completer<i32>, log: Log): Future<i32> => {
+  let a = new Res(log, 1);
+  let v = await c.future;
+  let b = new Res(log, 2);
+  log.add(3);
+  return v;
+};
+
+/** The awaited future fails after acquisition: still released. */
+let failing = async (c: Completer<i32>, log: Log): Future<i32> => {
+  let a = new Res(log, 4);
+  await c.future;
+  return 0 - 1;
+};
+
+/** An early return after a suspension: still released. */
+let early = async (c: Completer<i32>, log: Log): Future<i32> => {
+  let a = new Res(log, 5);
+  let v = await c.future;
+  if (v > 0) {
+    return v;
+  }
+  log.add(9);
+  return 0;
+};
+
+/** An owned parameter of an async function releases at exit too. */
+let takes = async (r: Own<Res>, c: Completer<i32>, log: Log): Future<i32> => {
+  let v = await c.future;
+  log.add(7);
+  return v;
+};
+
+let observeFailure = async (f: Future<i32>): Future<i32> => {
+  try {
+    await f;
+    return 0 - 2;
+  } catch (e) {
+    return 6;
+  }
+};
+
+export let main = (): i32 => {
+  let log = new Log();
+
+  let c1 = new Completer<i32>();
+  let a = normal(c1, log);
+  c1.complete(10);
+  drainMicrotasks();
+  if (runFuture(a) != 10 || log.seq != 321) {
+    return 0 - 1;
+  }
+
+  log.seq = 0;
+  let c2 = new Completer<i32>();
+  let b = observeFailure(failing(c2, log));
+  c2.fail(new Error('lost'));
+  drainMicrotasks();
+  if (runFuture(b) != 6 || log.seq != 4) {
+    return 0 - 2;
+  }
+
+  log.seq = 0;
+  let c3 = new Completer<i32>();
+  let e = early(c3, log);
+  c3.complete(70);
+  drainMicrotasks();
+  if (runFuture(e) != 70 || log.seq != 5) {
+    return 0 - 3;
+  }
+
+  log.seq = 0;
+  let c4 = new Completer<i32>();
+  let t = takes(new Res(log, 8), c4, log);
+  c4.complete(40);
+  drainMicrotasks();
+  if (runFuture(t) != 40 || log.seq != 78) {
+    return 0 - 4;
+  }
+
+  return 888;
+};
