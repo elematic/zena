@@ -4467,7 +4467,7 @@ Operator ::= "+" | "-" | "*" | "/" | "%" | "&" | "|" | "&&" | "||"
 
 ### Destructuring
 
-Zena supports destructuring for Records, Tuples, and Classes.
+Zena supports destructuring for Records, Tuples, Arrays, and Classes.
 
 #### Record Destructuring
 
@@ -4483,6 +4483,22 @@ let { x as a, y as b } = p; // Renaming
 let t = (10, 20);
 let (a, b) = t;
 let (first, , third) = (1, 2, 3); // Skipping elements
+```
+
+#### Array Destructuring
+
+Arrays (`FixedArray`, `GrowableArray`, and `Array` interface) can be destructured using bracket syntax `[...]`:
+
+```zena
+let [first, second] = [10, 20, 30];
+let [a, , c] = [1, 2, 3]; // Skipping elements
+
+// Rest patterns extract the remaining elements as a FixedArray
+let [head, ...tail] = [1, 2, 3, 4];
+let [...all] = [10, 20, 30];
+
+// Destructuring in function parameters
+let sumFirstTwo = ([x, y]: Array<i32>) => x + y;
 ```
 
 #### Class Destructuring

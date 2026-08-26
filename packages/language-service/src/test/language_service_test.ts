@@ -212,6 +212,30 @@ export let main = () => {
     assert.deepStrictEqual(output, ['x = 10, y = 20', 'p[0] = 10, p[1] = 20']);
   });
 
+  test('test async functions homepage snippet with import Future', async () => {
+    const source = `import { sleep } from 'zena:time';
+import { Future } from 'zena:async';
+
+async function fetchUser(id: i32): Future<String> {
+  await sleep(10);
+  return \`User #\${id}\`;
+}
+
+export async function main(): Future<void> {
+  let userOne = await fetchUser(1);
+  let userTwoFuture: Future<String> = fetchUser(2);
+  let [userTwo, userThree] = await Future.all([userTwoFuture, fetchUser(3)]);
+  console.log(\`\${userOne}, \${userTwo}, \${userThree}\`);
+}
+`;
+    const docPath = 'async_home.zena';
+    service.openDocument(docPath, source);
+    const diags = service.check(docPath, source).filter((d) => d.severity === 'error');
+    assert.strictEqual(diags.length, 0);
+    const bytes = service.compileToWasm(docPath, source);
+    assert.ok(bytes, 'async home: expected a binary');
+  });
+
   test('formats source', () => {
     const formatted = service.format('let    x=1;');
     assert.ok(formatted.includes('let x = 1;'), formatted);

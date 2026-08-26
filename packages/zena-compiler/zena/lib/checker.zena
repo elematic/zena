@@ -74,7 +74,7 @@ import {
   ExportFromDeclaration, DeclareFunction, SymbolDeclaration, Decorator,
   SymbolPropertyName,
   // Patterns
-  Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern,
+  Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern,
   // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation,
@@ -3021,6 +3021,18 @@ let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: Gro
         if (el is Pattern) {
           collectPatternSymbols(ctx, el, symbols);
         }
+      }
+    }
+    case ArrayPattern {elements}: {
+      for (let el in elements) {
+        if (el is Pattern) {
+          collectPatternSymbols(ctx, el, symbols);
+        }
+      }
+    }
+    case RestPattern {pattern}: {
+      if (pattern is Pattern) {
+        collectPatternSymbols(ctx, pattern as Pattern, symbols);
       }
     }
     case AsPattern {pattern as inner, name}: {
@@ -8463,7 +8475,96 @@ let isRefutableDeclarationPattern = (pattern: Pattern): boolean => {
       }
       return false;
     }
+    case ArrayPattern {elements}: {
+      for (let element in elements) {
+        if (element != null) {
+          if (element is RestPattern) {
+            if (isRefutableDeclarationPattern((element as RestPattern).pattern as Pattern)) {
+              return true;
+            }
+          } else if (isRefutableDeclarationPattern((element) as Pattern)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case RestPattern {pattern}: {
+      return isRefutableDeclarationPattern(pattern as Pattern);
+    }
   }
+};
+
+/**
+ * Extract element type for array-pattern binding/checking.
+ * Supports ArrayType, FixedArray, GrowableArray, ImmutableArray,
+ * Array, MutableArray, Iterable, Iterator, and unions thereof.
+ */
+let getArrayPatternElementType = (ctx: CheckerContext, t: Type): Type | null => {
+  let unwrapped = unwrapAliases(t);
+  match (unwrapped) {
+    case ArrayType {elementType}: {
+      return elementType;
+    }
+    case ClassType as ct: {
+      let iteratorPrelude = ctx.resolvePreludeType("Iterator");
+      if (iteratorPrelude is InterfaceType && ct.id == (iteratorPrelude as InterfaceType).id) {
+        let {typeArguments} = ct;
+        if (typeArguments != null && typeArguments.length > 0) {
+          return typeArguments[0];
+        }
+      }
+      for (let iface in ct.implementsList) {
+        let elemType = findIterableInterface(ctx, iface);
+        if (elemType != null) {
+          return substituteTypeParams(ct.typeParameters, ct.typeArguments, elemType);
+        }
+      }
+      if (ct.superType != null) {
+        return getArrayPatternElementType(ctx, ct.superType as Type);
+      }
+      return null;
+    }
+    case InterfaceType as it: {
+      if (it.name == "Iterator" || it.name == "Iterable" || it.name == "Array" || it.name == "MutableArray") {
+        let {typeArguments} = it;
+        if (typeArguments != null && typeArguments.length > 0) {
+          return typeArguments[0];
+        }
+      }
+      return findIterableInterface(ctx, it);
+    }
+    case UnionT {types}: {
+      if (types.length == 0) { return null; }
+      let memberElemTypes = new GrowableArray<Type>();
+      for (let member in types) {
+        let elemType = getArrayPatternElementType(ctx, member);
+        if (elemType == null) { return null; }
+        memberElemTypes.push(elemType);
+      }
+      return createUnionType(memberElemTypes);
+    }
+    case _: {
+      return null;
+    }
+  }
+};
+
+/**
+ * Computes the rest slice type for array destructuring.
+ */
+let getArrayPatternRestType = (ctx: CheckerContext, t: Type, elemType: Type): Type => {
+  let unwrapped = unwrapAliases(t);
+  if (unwrapped is ArrayType) {
+    return new ArrayType(elemType);
+  }
+  let faType = ctx.resolvePreludeType("FixedArray");
+  if (faType is ClassType) {
+    let args = new GrowableArray<Type>();
+    args.push(elemType);
+    return instantiateClassType(faType as ClassType, args);
+  }
+  return new ArrayType(elemType);
 };
 
 /**
@@ -8631,6 +8732,26 @@ let patternCanMatchType = (ctx: CheckerContext, pattern: Node, t: Type): boolean
         }
       }
     }
+    case ArrayPattern {elements}: {
+      let elemType = getArrayPatternElementType(ctx, t);
+      if (elemType == null) { return false; }
+      let restType = getArrayPatternRestType(ctx, t, elemType);
+      for (let elem in elements) {
+        if (elem != null) {
+          if (elem is RestPattern) {
+            if (!patternCanMatchType(ctx, (elem as RestPattern).pattern, restType)) {
+              return false;
+            }
+          } else if (!patternCanMatchType(ctx, elem, elemType)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+    case RestPattern {pattern}: {
+      return patternCanMatchType(ctx, pattern, t);
+    }
     case _: {
       // Keep non-literal complex patterns conservative for narrowing.
       return true;
@@ -8727,6 +8848,14 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
           }
         }
         case _: {
+          if (!(t is ErrorType) && !(t is UnknownType)) {
+            ctx.error(
+              "A record pattern cannot match a value of type '" +
+                  typeToString(t) + "'.",
+              DiagnosticCode.TypeMismatch,
+              recordPat.loc
+            );
+          }
           // If not a record or class, just bind the property names as unknown.
           for (let property in properties) {
             bindPattern(ctx, property.value as Pattern, new ErrorType());
@@ -8737,6 +8866,14 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
     case TuplePattern {elements, loc}: {
       let elementTypes = getTuplePatternElementTypes(t);
       if (elementTypes == null) {
+        if (!(t is ErrorType) && !(t is UnknownType)) {
+          ctx.error(
+            "A tuple pattern cannot match a value of type '" +
+                typeToString(t) + "'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        }
         for (let element in elements) {
           if (element != null) {
             bindPattern(ctx, element as Pattern, new ErrorType());
@@ -8754,7 +8891,6 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
         );
       }
 
-      
       for (var i = 0; i < elements.length; i += 1) {
         let element = elements[i];
         if (element != null) {
@@ -8765,6 +8901,42 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
           }
         }
       }
+    }
+    case ArrayPattern {elements, loc}: {
+      let elemType = getArrayPatternElementType(ctx, t);
+      if (elemType == null) {
+        if (!(t is ErrorType) && !(t is UnknownType)) {
+          ctx.error(
+            "An array pattern cannot match a value of type '" +
+                typeToString(t) + "'.",
+            DiagnosticCode.TypeMismatch,
+            loc
+          );
+        }
+        for (let element in elements) {
+          if (element != null) {
+            if (element is RestPattern) {
+              bindPattern(ctx, (element as RestPattern).pattern as Pattern, new ErrorType());
+            } else {
+              bindPattern(ctx, element as Pattern, new ErrorType());
+            }
+          }
+        }
+        return;
+      }
+      let restType = getArrayPatternRestType(ctx, t, elemType);
+      for (let element in elements) {
+        if (element != null) {
+          if (element is RestPattern) {
+            bindPattern(ctx, (element as RestPattern).pattern as Pattern, restType);
+          } else {
+            bindPattern(ctx, element as Pattern, elemType);
+          }
+        }
+      }
+    }
+    case RestPattern {pattern}: {
+      bindPattern(ctx, pattern as Pattern, t);
     }
     case AsPattern {pattern as inner, name}: {
       // `pattern as name` — bind both the inner pattern and the alias.
@@ -16002,6 +16174,43 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
           }
         }
       }
+    }
+    case ArrayPattern as arrayPat: {
+      let {elements} = arrayPat;
+      let elemType = getArrayPatternElementType(ctx, expectedType);
+      if (elemType == null) {
+        if (!(expectedType is ErrorType) && !(expectedType is UnknownType)) {
+          ctx.error(
+            "An array pattern cannot match a value of type '" +
+                typeToString(expectedType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            arrayPat.loc
+          );
+        }
+        for (let element in elements) {
+          if (element != null) {
+            if (element is RestPattern) {
+              checkPattern(ctx, (element as RestPattern).pattern, new ErrorType());
+            } else {
+              checkPattern(ctx, element, new ErrorType());
+            }
+          }
+        }
+        return;
+      }
+      let restType = getArrayPatternRestType(ctx, expectedType, elemType);
+      for (let element in elements) {
+        if (element != null) {
+          if (element is RestPattern) {
+            checkPattern(ctx, (element as RestPattern).pattern, restType);
+          } else {
+            checkPattern(ctx, element, elemType);
+          }
+        }
+      }
+    }
+    case RestPattern {pattern}: {
+      checkPattern(ctx, pattern, expectedType);
     }
     case AssignmentPattern {left, right}: {
       // `{x = default}` in a refutable position: the irrefutable form —

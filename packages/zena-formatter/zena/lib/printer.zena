@@ -13,7 +13,7 @@ import {
   Comment, Node, Module, // Expressions
   Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, CallExpression, MemberExpression, IndexExpression, ThisExpression, SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral, TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, // Statements
   Statement, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, // Patterns
-  Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, // Type Annotations
+  Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
   TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, SymbolPropertyName,
 } from 'zena-compiler:ast';
@@ -1642,6 +1642,8 @@ let printPattern = (pat: Pattern): Doc => match (pat) {
   case IdentifierPattern {name}: text(name)
   case RecordPattern {}: printRecordPattern(pat)
   case TuplePattern {}: printTuplePattern(pat)
+  case ArrayPattern {}: printArrayPattern(pat)
+  case RestPattern {pattern}: concat(docs2(text('...'), printNode(pattern)))
   case AsPattern {pattern, name}: {
     concat(docs3(printNode(pattern), text(' as '), text(name.name)))
   }
@@ -1710,6 +1712,21 @@ let printTuplePattern = (pattern: TuplePattern): Doc => {
     i += 1;
   }
   return concat(docs3(text('('), join(text(', '), elemDocs), text(')')));
+};
+
+let printArrayPattern = (pattern: ArrayPattern): Doc => {
+  let elemDocs = new GrowableArray<Doc>();
+  var i = 0;
+  while (i < pattern.elements.length) {
+    let elem = pattern.elements[i];
+    if (elem != null) {
+      elemDocs.push(printNode(elem));
+    } else {
+      elemDocs.push(text(''));
+    }
+    i += 1;
+  }
+  return concat(docs3(text('['), join(text(', '), elemDocs), text(']')));
 };
 
 // ============================================================================
@@ -1914,6 +1931,8 @@ let printNode = (node: Node): Doc => match (node) {
   case IdentifierPattern {}: printPattern(node as Pattern)
   case RecordPattern {}: printPattern(node as Pattern)
   case TuplePattern {}: printPattern(node as Pattern)
+  case ArrayPattern {}: printPattern(node as Pattern)
+  case RestPattern {}: printPattern(node as Pattern)
   case AsPattern {}: printPattern(node as Pattern)
   case ClassPattern {}: printPattern(node as Pattern)
   case LogicalPattern {}: printPattern(node as Pattern)

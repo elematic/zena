@@ -18,7 +18,7 @@ import { HashMap } from 'zena:map';
 import { Error } from 'zena:error';
 import { parseF64, parseI32, i32ToString } from 'zena:string-convert';
 import {
-  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression,
+  Node, Statement, Expression, FunctionExpression, BlockStatement, UsingStatement, ShieldedStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ExpressionStatement, VariableDeclaration, BinaryExpression, UnaryExpression, AssignmentExpression, Identifier, NumberLiteral, BooleanLiteral, IdentifierPattern, BindingPattern, CallExpression, IfExpression, AsExpression, ForStatement, ForInStatement, IndexExpression, TemplateLiteral, NullLiteral, StringLiteral, NewExpression, MemberExpression, MethodDefinition, ThisExpression, Parameter, ClassDeclaration, MixinDeclaration, FieldDefinition, FieldInitializer, SuperInitializer, TypeAnnotation, AccessorDeclaration, SetterInfo, MatchExpression, LiteralPattern, TupleLiteral, EnumDeclaration, getMemberPropertyName, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, SuperExpression, ArrayLiteral, RecordLiteral, MapLiteral, ThrowExpression, TryExpression, TaggedTemplateExpression, ImportDeclaration, ImportSpecifier, Module, SpreadElement, LetPatternCondition, TuplePattern, ArrayPattern, RestPattern, PropertyAssignment, SealedVariant, RecordPattern, BindingProperty, AwaitExpression,
 } from '../../ast.zena';
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
@@ -64,7 +64,7 @@ import {
 import {
   bindRecordProp, branchUnless, collectPatternBindSyms,
   lowerPatternBindings, lowerPatternTest, patternBinds,
-  patternRefutable,
+  patternRefutable, arrayLengthRead, arrayElementRead, arraySliceRead,
 } from './patterns.zena';
 import {
   isUnsignedNode, lowerAs, lowerBinary, lowerUnary, mapBinaryOp,
@@ -2488,6 +2488,10 @@ export final class FunctionLowerer {
       this.#lowerTupleDeclaration(vd, pat);
       return;
     }
+    if (pat is ArrayPattern) {
+      this.#lowerArrayDeclaration(vd, pat);
+      return;
+    }
     if (pat is RecordPattern) {
       this.#lowerObjectPatternDeclaration(vd, pat.properties);
       return;
@@ -2605,6 +2609,34 @@ export final class FunctionLowerer {
       }
       if (this.#patternBinds(el)) {
         this.#lowerPatternBindings(el, values[i]);
+      }
+    }
+  }
+
+  /**
+   * `let [a, b, ...rest] = init;` — evaluates the init array once and binds
+   * each element and/or rest slice.
+   */
+  #lowerArrayDeclaration(vd: VariableDeclaration, ap: ArrayPattern): void {
+    if (vd.init == null) {
+      this.#bail('uninitialized array destructuring');
+    }
+    let arrVal = this.#lowerExpression(vd.init as Expression);
+    for (var i = 0; i < ap.elements.length; i += 1) {
+      let el = ap.elements[i];
+      if (el == null || el is LiteralPattern || el is BooleanLiteral ||
+          el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
+        continue;
+      }
+      if (el is RestPattern) {
+        let restPat = (el as RestPattern).pattern;
+        if (this.#patternBinds(restPat)) {
+          let sliceVal = arraySliceRead(this.#cx(), arrVal, i);
+          this.#lowerPatternBindings(restPat, sliceVal);
+        }
+      } else if (this.#patternBinds(el)) {
+        let elemVal = arrayElementRead(this.#cx(), arrVal, i);
+        this.#lowerPatternBindings(el, elemVal);
       }
     }
   }

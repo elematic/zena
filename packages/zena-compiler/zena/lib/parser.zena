@@ -67,6 +67,8 @@ import {
   RecordPattern,
   BindingProperty,
   TuplePattern,
+  ArrayPattern,
+  RestPattern,
   AsPattern,
   ClassPattern,
   LogicalPattern,
@@ -1104,6 +1106,11 @@ export final class Parser {
     if (this.#match(TokenType.LParen)) {
       return this.#parseMatchTuplePattern(startToken);
     }
+
+    // Array pattern: [a, b]
+    if (this.#match(TokenType.LBracket)) {
+      return this.#parseMatchArrayPattern(startToken);
+    }
     
     // Identifier, wildcard, class pattern, or member expression pattern
     if (this.#isIdentifier()) {
@@ -1176,6 +1183,46 @@ export final class Parser {
       return elements[0] as Node;
     }
     return new TuplePattern(elements, this.#makeLocation(startToken));
+  }
+
+  #parseMatchArrayPattern(startToken: Token): Node {
+    let elements = new GrowableArray<Node | null>(4);
+    var hasRest = false;
+
+    while (!this.#check(TokenType.RBracket) && !this.#isAtEnd()) {
+      if (this.#match(TokenType.Comma)) {
+        if (hasRest) {
+          throw this.#error("Rest element cannot be followed by another element");
+        }
+        elements.push(null);
+        continue;
+      }
+
+      if (this.#match(TokenType.DotDotDot)) {
+        let restToken = this.#previous();
+        if (hasRest) {
+          throw this.#error("An array pattern may only contain one rest element");
+        }
+        hasRest = true;
+        let restPat = this.#parseMatchPattern();
+        elements.push(new RestPattern(restPat, this.#makeLocation(restToken)));
+        if (this.#match(TokenType.Comma)) {
+          if (!this.#check(TokenType.RBracket)) {
+            throw this.#error("Rest element must be the last element in an array pattern");
+          }
+        }
+        break;
+      }
+
+      elements.push(this.#parseMatchPattern());
+
+      if (!this.#check(TokenType.RBracket)) {
+        this.#consume(TokenType.Comma, "Expected ',' in array pattern");
+      }
+    }
+
+    this.#consume(TokenType.RBracket, "Expected ']' after array pattern");
+    return new ArrayPattern(elements, this.#makeLocation(startToken));
   }
   
   // ==========================================================================
@@ -1331,9 +1378,9 @@ export final class Parser {
       return this.#parseRecordPattern(startToken, isUnderLet, false);
     }
     
-    // Tuple pattern: [a, b]
+    // Array pattern: [a, b]
     if (this.#match(TokenType.LBracket)) {
-      return this.#parseTuplePattern(startToken, isUnderLet);
+      return this.#parseArrayPattern(startToken, isUnderLet);
     }
     
     // Tuple pattern with parens: (a, b)
@@ -1498,25 +1545,45 @@ export final class Parser {
     return new RecordPattern(bindingProps, this.#makeLocation(startToken));
   }
   
-  #parseTuplePattern(startToken: Token, isUnderLet: boolean): TuplePattern {
+  #parseArrayPattern(startToken: Token, isUnderLet: boolean): ArrayPattern {
     let elements = new GrowableArray<Node | null>(4);
+    var hasRest = false;
     
     while (!this.#check(TokenType.RBracket) && !this.#isAtEnd()) {
       // Support holes: [a, , c]
       if (this.#match(TokenType.Comma)) {
+        if (hasRest) {
+          throw this.#error("Rest element cannot be followed by another element");
+        }
         elements.push(null);
         continue;
+      }
+
+      if (this.#match(TokenType.DotDotDot)) {
+        let restToken = this.#previous();
+        if (hasRest) {
+          throw this.#error("An array pattern may only contain one rest element");
+        }
+        hasRest = true;
+        let restPat = this.#parsePattern(isUnderLet);
+        elements.push(new RestPattern(restPat, this.#makeLocation(restToken)));
+        if (this.#match(TokenType.Comma)) {
+          if (!this.#check(TokenType.RBracket)) {
+            throw this.#error("Rest element must be the last element in an array pattern");
+          }
+        }
+        break;
       }
 
       elements.push(this.#parsePattern(isUnderLet));
 
       if (!this.#check(TokenType.RBracket)) {
-        this.#consume(TokenType.Comma, "Expected ',' in tuple pattern");
+        this.#consume(TokenType.Comma, "Expected ',' in array pattern");
       }
     }
     
-    this.#consume(TokenType.RBracket, "Expected ']' after tuple pattern");
-    return new TuplePattern(elements, this.#makeLocation(startToken));
+    this.#consume(TokenType.RBracket, "Expected ']' after array pattern");
+    return new ArrayPattern(elements, this.#makeLocation(startToken));
   }
   
   #parseParenTuplePattern(startToken: Token, isUnderLet: boolean, matchContext: boolean): Pattern {
@@ -2448,6 +2515,30 @@ export final class Parser {
       let syntheticName = new Identifier(`$$destruct_${this.#destructParamCounter}`, this.#makeLocation(startToken));
       this.#destructParamCounter = this.#destructParamCounter + 1;
       return new Parameter(syntheticName, pattern, typeAnnotation2, optional2, defaultValue2, false, this.#makeLocation(startToken));
+    }
+
+    // Destructured array parameter: [a, b]: Type or [a, b]
+    if (this.#check(TokenType.LBracket)) {
+      let bracketToken = this.#advance(); // consume '['
+      let pattern = this.#parseArrayPattern(bracketToken, false);
+      
+      // Type annotation (optional - contextual typing)
+      var typeAnnotation3: TypeAnnotation | null = null;
+      if (this.#match(TokenType.Colon)) {
+        typeAnnotation3 = this.#parseTypeAnnotation();
+      }
+      
+      // Default value
+      var optional3 = false;
+      var defaultValue3: Expression | null = null;
+      if (this.#match(TokenType.Equals)) {
+        defaultValue3 = this.#parseExpression();
+        optional3 = true;
+      }
+      
+      let syntheticName = new Identifier(`$$destruct_${this.#destructParamCounter}`, this.#makeLocation(startToken));
+      this.#destructParamCounter = this.#destructParamCounter + 1;
+      return new Parameter(syntheticName, pattern, typeAnnotation3, optional3, defaultValue3, false, this.#makeLocation(startToken));
     }
     
     // Check for this.field constructor parameter
