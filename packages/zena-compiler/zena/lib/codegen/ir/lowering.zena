@@ -5981,10 +5981,9 @@ export final class FunctionLowerer {
    * Index writes `recv[i] = v`: array.set for wasm-array receivers,
    * vtable dispatch through the []= slot for interface receivers,
    * else a direct call to the checker-selected `[]=` overload (the
-   * selection is recorded on the ASSIGNMENT node — the read
-   * selection of a compound assignment lives on the IndexExpression,
-   * but compound index writes bail for now). Yields the assigned
-   * value, like every assignment expression.
+   * selection is recorded on the ASSIGNMENT node; the read selection
+   * of a compound assignment lives on the IndexExpression). Yields
+   * the assigned value, like every assignment expression.
    */
   #lowerIndexWrite(assign: AssignmentExpression): i32 {
     let idx = assign.left as IndexExpression;
@@ -6000,7 +5999,7 @@ export final class FunctionLowerer {
     // reads through [] and property writes through set#.
     if (selfResolved is InterfaceType) {
       if (assign.operator != null) {
-        this.#bail('compound index write');
+        return this.#lowerInterfaceCompoundIndexWrite(assign, idx, selfResolved);
       }
       let dispatchArgs = new GrowableArray<Expression>();
       dispatchArgs.push(idx.index);
@@ -6068,9 +6067,6 @@ export final class FunctionLowerer {
     if (ct == null) {
       this.#bail('index receiver kind');
     }
-    if (assign.operator != null) {
-      this.#bail('compound index write');
-    }
     let chosenFt = this.func.model.getResolvedOverload(assign);
     let mangled = if (chosenFt != null) {
       '[]=' + getSignatureKey(chosenFt)
@@ -6082,6 +6078,9 @@ export final class FunctionLowerer {
       this.#bail('index setter not found');
     }
     if (method.intrinsic != null) {
+      if (assign.operator != null) {
+        this.#bail('compound index intrinsic');
+      }
       // Linear-memory byte store (mem[i] = v): one store instruction,
       // align 0 — streaming's shape.
       if ((method.intrinsic as String) == 'i32.store8') {
@@ -6107,7 +6106,45 @@ export final class FunctionLowerer {
     }
     var index = this.#lowerExpressionCtx(idx.index, sig.params[1]);
     index = this.#conformToSlot(index, sig.params[1], 'index operand type');
-    var value = this.#lowerExpressionCtx(assign.value, sig.params[2]);
+    var value = -1;
+    if (assign.operator == null) {
+      value = this.#lowerExpressionCtx(assign.value, sig.params[2]);
+    } else {
+      // Compound: the checker records the read [] overload on the
+      // IndexExpression; the receiver and index values feed the read
+      // and the write, so each evaluates once.
+      let readFt = this.func.model.getResolvedOverload(idx);
+      let readMangled = if (readFt != null) {
+        '[]' + getSignatureKey(readFt)
+      } else {
+        '[]'
+      };
+      let readMethod = this.#resolveIndexMethod(ct, readMangled, readFt != null);
+      if (readMethod == null) {
+        this.#bail('index method not found');
+      }
+      if (readMethod.intrinsic != null) {
+        this.#bail('compound index intrinsic');
+      }
+      if (readMethod.isStatic || readMethod.typeParameters != null) {
+        this.#bail('index method shape');
+      }
+      let readSig = readMethod.signature;
+      if (readSig.params.length != 2 || readSig.returns.length != 1) {
+        this.#bail('index method arity');
+      }
+      if (!isValSubtype(this.#valueType(receiver), readSig.params[0])) {
+        this.#failConformance(receiver, readSig.params[0], 'index receiver type');
+      }
+      if (!isValSubtype(this.#valueType(index), readSig.params[1])) {
+        this.#failConformance(index, readSig.params[1], 'index operand type');
+      }
+      this.#requireSupported(readSig.returns[0], 'index result type');
+      let current = this.b.callFunc(
+          this.b.addRef(new IrRefFunc(readMethod)),
+          this.#twoValues(receiver, index), readSig.returns[0]);
+      value = this.#combineCompound(current, assign, idx as Expression);
+    }
     value = this.#conformToSlot(value, sig.params[2], 'index write type');
     let funcRef = this.b.addRef(new IrRefFunc(method));
     let args = new GrowableArray<i32>();
@@ -6115,6 +6152,70 @@ export final class FunctionLowerer {
     args.push(index);
     args.push(value);
     this.b.callFunc(funcRef, args, null);
+    return value;
+  }
+
+  /**
+   * A compound index write through an interface receiver
+   * (`recv[i] op= v`): the [] vtable slot reads the current element,
+   * #combineCompound applies the operator, and the []= slot writes
+   * the result. The receiver and index lower once, feeding both
+   * dispatches. Yields the assigned value.
+   */
+  #lowerInterfaceCompoundIndexWrite(assign: AssignmentExpression,
+      idx: IndexExpression, it: InterfaceType): i32 {
+    let iName = getInterfaceKey(it);
+    let vst = if (let (true, v) = this.wasm.interfaceVTableStructs.get(iName)) v else null;
+    let fatPtr = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
+    if (vst == null || fatPtr == null) {
+      this.#bail('interface not discovered');
+    }
+    let readSlot = vst.fieldIndexByName('[]');
+    let writeSlot = vst.fieldIndexByName('[]=');
+    if (readSlot < 0 || writeSlot < 0) {
+      this.#bail('interface member not in vtable');
+    }
+    let readSig = asWasmSignature(vst.fields[readSlot].type);
+    let writeSig = asWasmSignature(vst.fields[writeSlot].type);
+    if (readSig == null || writeSig == null) {
+      this.#bail('interface slot shape');
+    }
+    if (readSig.params.length != 2 || readSig.returns.length != 1 ||
+        writeSig.params.length != 3 || writeSig.returns.length != 0) {
+      this.#bail('interface call arity adaptation');
+    }
+    let recv = this.#lowerExpression(idx.object);
+    if (!isValSubtype(this.#valueType(recv),
+        new ValTypeRefNull(fatPtr) as ValType)) {
+      this.#bail('interface receiver type');
+    }
+    let inst = this.b.emit(
+        IrOp.iface_instance, fatPtr.fields[0].type, recv, -1);
+    if (!isValSubtype(this.#valueType(inst), readSig.params[0]) ||
+        !isValSubtype(this.#valueType(inst), writeSig.params[0])) {
+      this.#failConformance(inst, writeSig.params[0],
+          'interface receiver adaptation');
+    }
+    this.#requireSupported(writeSig.params[1], 'interface param type');
+    this.#requireSupported(writeSig.params[2], 'interface param type');
+    this.#requireSupported(readSig.returns[0], 'interface result type');
+    var index = this.#lowerExpressionCtx(idx.index, writeSig.params[1]);
+    index = this.#conformToSlot(index, writeSig.params[1],
+        'interface argument type');
+    if (!isValSubtype(this.#valueType(index), readSig.params[1])) {
+      this.#failConformance(index, readSig.params[1],
+          'interface argument type');
+    }
+    let vt = this.b.emit(IrOp.iface_vtable, fatPtr.fields[1].type, recv, -1);
+    let readCallee = this.b.emit(IrOp.struct_get, vst.fields[readSlot].type,
+        vt, this.b.addRef(new IrRefField(vst, '[]')));
+    let current = this.b.callRef(
+        readCallee, this.#twoValues(inst, index), readSig.returns[0]);
+    var value = this.#combineCompound(current, assign, idx as Expression);
+    value = this.#conformToSlot(value, writeSig.params[2], 'index write type');
+    let writeCallee = this.b.emit(IrOp.struct_get, vst.fields[writeSlot].type,
+        vt, this.b.addRef(new IrRefField(vst, '[]=')));
+    this.b.callRef(writeCallee, this.#threeValues(inst, index, value), null);
     return value;
   }
 

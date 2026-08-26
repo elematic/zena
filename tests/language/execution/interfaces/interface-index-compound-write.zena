@@ -1,0 +1,45 @@
+// @mode: run
+// @result: 85315
+// Compound index writes through an interface receiver (`s[i] += v`):
+// the [] vtable slot reads the current element, #combineCompound
+// applies the operator, and the []= slot writes the result. The
+// receiver and index evaluate once, feeding both dispatches —
+// nextIndex() must run once per compound write.
+
+import { Map } from 'zena:map';
+
+var indexEvals = 0;
+
+function nextIndex(): i32 {
+  indexEvals += 1;
+  return 0;
+}
+
+interface Store {
+  operator [](key: i32): i32;
+  operator []=(key: i32, value: i32): void;
+}
+
+class Cell implements Store {
+  var stored: i32 = 10;
+  var reads: i32 = 0;
+  operator [](key: i32): i32 {
+    this.reads += 1;
+    return this.stored;
+  }
+  operator []=(key: i32, value: i32) {
+    this.stored = value;
+  }
+}
+
+export let main = (): i32 => {
+  let cell = new Cell();
+  let s: Store = cell;
+  s[0] += 32;                // read 10, write 42
+  s[0] *= 2;                 // 84
+  s[nextIndex()] += 1;       // 85; the index expression runs once
+  let scores: Map<String, i32> = {'Alice' => 95};
+  scores['Alice'] += 5;      // 100
+  return cell.stored * 1000 + cell.reads * 100 + indexEvals * 10 +
+      (scores['Alice'] - 95);
+};

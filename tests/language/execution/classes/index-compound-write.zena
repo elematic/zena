@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 12165
+// Compound index writes on class receivers (`p[i] op= v`): the
+// checker records the read [] overload on the IndexExpression and the
+// []= overload on the assignment, so both calls bind the exact
+// registered slots; the receiver and index values feed the read and
+// the write, each evaluating once. #combineCompound applies the
+// operator, like the array-element and member compound paths.
+
+import { GrowableArray } from 'zena:growable-array';
+
+class Tag {
+  n: i32;
+  new(this.n);
+}
+
+class Grid {
+  var a: i32 = 3;
+  var b: i32 = 4;
+  operator [](i: i32): i32 {
+    return if (i == 0) this.a else this.b;
+  }
+  operator []=(i: i32, v: i32) {
+    if (i == 0) {
+      this.a = v;
+    } else {
+      this.b = v;
+    }
+  }
+}
+
+class Pen {
+  var last: i32 = 6;
+  operator [](i: i32): i32 {
+    return this.last;
+  }
+  operator [](t: Tag): i32 {
+    return this.last * 2;
+  }
+  operator []=(i: i32, v: i32) {
+    this.last = v;
+  }
+  operator []=(t: Tag, v: i32) {
+    this.last = v + 1;
+  }
+}
+
+export let main = (): i32 => {
+  let g = new Grid();
+  g[0] += 7;                  // a = 10
+  g[1] *= 5;                  // b = 20
+  let p = new Pen();
+  let t = new Tag(9);
+  // Overloaded compound: reads via [](Tag) = 12, writes via []=(Tag)
+  // with 12 + 3, so last = 16.
+  p[t] += 3;
+  let arr = new GrowableArray<i32>();
+  arr.push(6);
+  arr[0] += 4;                // 10
+  return g.a * 1000 + g.b * 100 + p.last * 10 + arr[0] - 5;
+};
