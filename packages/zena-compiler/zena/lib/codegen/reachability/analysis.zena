@@ -2353,15 +2353,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // to `State<anyref>`, and the `State<i32>` the call really needs was
     // never discovered. Lowering then bailed "class not discovered" on
     // the specialization it had just been handed.
+    // A CLOSURE's walk carries the ENCLOSING generic function's
+    // arguments and has no parameters of its own, so the lookup walks
+    // up to the nearest node that declares some.
     let ownTypeParams = if (node == null || typeArguments == null) {
       null
     } else {
-      let nodeT = model.getNodeType(node);
-      if (nodeT is FunctionType) {
-        nodeT.typeParameters
-      } else {
-        null
-      }
+      enclosingOwnTypeParameters(model, node as Node)
     };
 
     let resolveType = (t: Type): Type => {
@@ -2683,23 +2681,42 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.nodeIdToNode[funcExpr.id as i32] = funcExpr;
       this.nodeIdToModel[funcExpr.id as i32] = model;
       let classKey = if (classType != null) getClassKey(classType) else "" as ClassKey;
-      let closureKey = getClosureSpecializationKey(funcExpr.id, classKey);
+      // A closure inside a generic FUNCTION (or generic method, or
+      // generic static) exists once per instantiation of it: the
+      // captures' and signature's types mention the function's type
+      // parameters, and at a primitive argument nothing can share the
+      // erased impl (i32 is not a subtype of anyref). The enclosing
+      // function's argument vector is the key's second axis, next to
+      // the class specialization.
+      let enclosingFnParams = enclosingOwnTypeParameters(model, funcExpr as Node);
+      let closureKey = getClosureSpecializationKey(funcExpr.id, classKey,
+          enclosingFnParams, typeArguments);
 
       if (this.wasm.specializedClosures.has(closureKey)) {
         let existingFunc = this.wasm.specializedClosures[closureKey];
-        if (this.currentReachable) {
+        // The function-axis template (registered by a walk of the
+        // generic function's own body) is never a function to reach —
+        // marking it here would emit the erased impl after all.
+        let existingIsFuncTemplate = enclosingFnParams != null &&
+            typeArguments == null;
+        if (this.currentReachable && !existingIsFuncTemplate) {
           this.markFunctionReached(existingFunc);
         }
-        this.queueReferrer(new Referrer(false, noSymbolId, funcExpr.id as i32, model, classType, this.currentReachable));
+        this.queueReferrer(new Referrer(false, noSymbolId, funcExpr.id as i32, model, classType, this.currentReachable, typeArguments));
         continue;
       }
-      
+
       let rawFuncTypeNode = model.getNodeType(funcExpr);
-      let funcTypeNode = if (classType != null && ctParams != null) {
+      var funcTypeNode = if (classType != null && ctParams != null) {
         substituteTypeParamsInCodegen(this.wasm, ctParams, ctArgs, rawFuncTypeNode as Type)
       } else {
         rawFuncTypeNode
       };
+      if (closureKey.specializesFunction() && funcTypeNode != null) {
+        funcTypeNode = substituteTypeParamsInCodegen(this.wasm,
+            enclosingFnParams as Array<TypeParameterType>,
+            typeArguments as Array<Type>, funcTypeNode as Type);
+      }
       
       let params = new GrowableArray<ValType>();
       params.push(new ValTypeStructRef()); // ctx
@@ -2719,8 +2736,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       wasmFunc.isClosure = true;
       wasmFunc.isReferenceTaken = true;
       wasmFunc.classType = classType;
-      
-      let suffix = if ((classKey as String).length > 0) "_" + (classKey as String) else "";
+      if (closureKey.specializesFunction()) {
+        // The impl's body mentions the enclosing function's type
+        // parameters too; carrying the binding here is what routes
+        // its lowering (and its body's own RTA walk, via
+        // markFunctionReached) through the same substitution the
+        // enclosing specialization uses.
+        wasmFunc.typeParameters = enclosingFnParams;
+        wasmFunc.typeArguments = typeArguments;
+      }
+
+      var suffix = if ((classKey as String).length > 0) "_" + (classKey as String) else "";
+      suffix += closureKey.funcKey as String;
 
       let fileBase = sanitizeName(getFileNameBase(getNodeFilePath(model, funcExpr)));
       let locStr = if (funcExpr.loc != null) {
@@ -2774,11 +2801,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       
       for (let symId in closureDep.captures) {
         let rawSymType = model.getBindingTypeById(symId);
-        let symType = if (classType != null && ctParams != null) {
+        var symType = if (classType != null && ctParams != null) {
           substituteTypeParamsInCodegen(this.wasm, ctParams, ctArgs, rawSymType as Type)
         } else {
           rawSymType
         };
+        if (closureKey.specializesFunction() && symType != null) {
+          symType = substituteTypeParamsInCodegen(this.wasm,
+              enclosingFnParams as Array<TypeParameterType>,
+              typeArguments as Array<Type>, symType as Type);
+        }
         let valType = typeToValType(this.wasm, symType as Type);
         var fieldType: ValType = valType;
         if (closureDep.mutableCaptures.has(symId)) {
@@ -2790,24 +2822,36 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       
       let typeParameters = if (classType != null) classType.typeParameters else null;
       let isGenericTemplate = classType != null &&
-                              typeParameters != null && 
-                              typeParameters.length > 0 && 
+                              typeParameters != null &&
+                              typeParameters.length > 0 &&
                               (classType.typeArguments == null || !isConcrete(classType));
+      // The walk of a generic function's own body — its parameters
+      // still open — is the FUNCTION-axis template, not a function:
+      // registered so the erased shape exists, never emitted. The real
+      // impls are minted above, one per instantiation, when the
+      // specialized bodies are walked with their argument vectors.
+      let isFuncTemplate = enclosingFnParams != null && typeArguments == null;
       let contextStructName = "ClosureCtx_" + fileBase + suffix + "_" + locStr;
       let contextStruct = new WasmStruct(contextStructName, fields);
       wasmFunc.contextStruct = contextStruct;
-      if (!isGenericTemplate) {
+      if (!isGenericTemplate && !isFuncTemplate) {
         this.wasm.types.push(contextStruct);
         this.markTypeReached(contextStruct);
 
         this.wasm.addFunction(wasmFunc);
         this.markFunctionReached(wasmFunc);
       }
-      this.wasm.closureFunctions[funcExpr] = wasmFunc;
-      
+      if (!closureKey.specializesFunction()) {
+        // The by-node fallback stays the per-node template; a
+        // function-specialized impl must never be found through it,
+        // or a missed specialization would silently reuse another
+        // instantiation's context layout.
+        this.wasm.closureFunctions[funcExpr] = wasmFunc;
+      }
+
       this.wasm.specializedClosures[closureKey] = wasmFunc;
 
-      this.queueReferrer(new Referrer(false, noSymbolId, funcExpr.id as i32, model, classType, this.currentReachable));
+      this.queueReferrer(new Referrer(false, noSymbolId, funcExpr.id as i32, model, classType, this.currentReachable, typeArguments));
     }
 
     // 6. Record function adaptations
@@ -3194,23 +3238,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let {specializer} = this;
               let resolver = (t: Type): Type => {
                 var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
-                // The walked function's OWN type parameters, when this
-                // referrer is one monomorphization of it. Both node
-                // shapes that carry them count — a generic arrow
-                // (FunctionExpression) and a generic METHOD
-                // (MethodDefinition) — the same pair
-                // traverseDependencies substitutes. Recognizing only
-                // the arrow here left a generic method's body walked
-                // with its parameters open, so a generic call inside
-                // it registered nothing (open arguments are a template
-                // mention) and lowering missed the specialization.
+                // The parameters these arguments bind, when this
+                // referrer is one monomorphization of the walked node:
+                // the node's own — a generic arrow (FunctionExpression)
+                // or a generic METHOD (MethodDefinition) — or, for a
+                // CLOSURE specialized per enclosing instantiation, the
+                // enclosing generic function's. The same lookup
+                // traverseDependencies uses.
                 if (refItem.typeArguments != null) {
-                  let nodeT = model.getNodeType(node);
-                  if (nodeT is FunctionType) {
-                    let {typeParameters} = nodeT;
-                    if (typeParameters != null) {
-                      res = substituteTypeParamsInCodegen(this.wasm, typeParameters, refItem.typeArguments as Array<Type>, res);
-                    }
+                  let typeParameters = enclosingOwnTypeParameters(model, node);
+                  if (typeParameters != null) {
+                    res = substituteTypeParamsInCodegen(this.wasm, typeParameters, refItem.typeArguments as Array<Type>, res);
                   }
                 }
                 return res;
@@ -3413,6 +3451,37 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 }
+
+/**
+ * The function-own type-parameter list a node's walk substitutes
+ * against: the node's own, when its checked type carries one, else the
+ * nearest enclosing FunctionExpression or MethodDefinition's. A
+ * closure has no parameters of its own, so this is how its walk finds
+ * the axis its Referrer's typeArguments belong to — the enclosing
+ * generic function's. Stops at a class boundary: the class's
+ * parameters are a separate axis, substituted from the walk's
+ * classType.
+ */
+let enclosingOwnTypeParameters = (model: SemanticModel, node: Node): Array<TypeParameterType> | null => {
+  var curr: Node | null = node;
+  while (curr != null) {
+    let c = curr as Node;
+    if (c is FunctionExpression || c is MethodDefinition) {
+      let t = model.getNodeType(c);
+      if (t is FunctionType) {
+        let tps = t.typeParameters;
+        if (tps != null && tps.length > 0) {
+          return tps;
+        }
+      }
+    }
+    if (c is ClassDeclaration) {
+      return null;
+    }
+    curr = model.getParent(c);
+  }
+  return null;
+};
 
 let getMethodName = (md: MethodDefinition): String => {
   return match (md.name) {

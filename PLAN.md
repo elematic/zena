@@ -135,8 +135,7 @@ This document tracks completed work and planned features. For project instructio
     `try`/`finally` and `using` suspension bails. `await` now works
     inside `try`/`finally` (finalizers can await too) and after
     `using`, the async-resource pattern.
-  - Next: `then`/`map`/`flatMap` (blocked on closures inside
-    generic code), richer fetch (headers, streamed bodies — streams
+  - Next: `then`/`map`/`flatMap`, richer fetch (headers, streamed bodies — streams
     are designed in [streams.md](docs/design/streams.md) with the
     `zena:stream` rendezvous core implemented), and post-v1 items (cancellation and structured
     concurrency — designed in

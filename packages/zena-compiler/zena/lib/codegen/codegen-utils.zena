@@ -117,6 +117,7 @@ export distinct type CellKey = String;
 export distinct type ClosureKey = String;
 export distinct type ExportKey = String;
 export distinct type ExportGlobalKey = String;
+export distinct type FunctionArgsKey = String;
 
 export final class ClassInterfaceKey implements Hashable {
   classKey: ClassKey;
@@ -163,14 +164,28 @@ export final class ClassMethodKey implements Hashable {
 export final class ClosureSpecializationKey implements Hashable {
   closureId: NodeId;
   classKey: ClassKey;
-  new(this.closureId, this.classKey);
+  // The enclosing FUNCTION's specialization axis, next to the class
+  // one: a closure inside `make<T>` exists once per instantiation of
+  // `make`, exactly as one inside `Box<T>.method` exists once per Box
+  // specialization. Empty outside generic functions.
+  funcKey: FunctionArgsKey;
+  new(this.closureId, this.classKey, this.funcKey = "" as FunctionArgsKey);
+
+  /**
+   * Whether this key names one function-instantiation's copy rather
+   * than the per-node template or a class-only specialization.
+   */
+  specializesFunction(): boolean {
+    return (this.funcKey as String).length > 0;
+  }
 
   hashCode(): i32 {
-    return (this.closureId as i32) ^ hash(this.classKey);
+    return (this.closureId as i32) ^ hash(this.classKey) ^ hash(this.funcKey);
   }
 
   operator ==(other: ClosureSpecializationKey): boolean {
-    return this.closureId == other.closureId && this.classKey == other.classKey;
+    return this.closureId == other.closureId && this.classKey == other.classKey &&
+        this.funcKey == other.funcKey;
   }
 }
 
@@ -1259,8 +1274,28 @@ export let getSpecializedFunctionKey = (baseName: String, typeArgs: Array<Type>)
   return new SpecializedFunctionKey(baseName, typeArgs);
 };
 
-export let getClosureSpecializationKey = (closureId: NodeId, classKey: ClassKey): ClosureSpecializationKey => {
-  return new ClosureSpecializationKey(closureId, classKey);
+/**
+ * The function axis of a closure specialization key: the enclosing
+ * function's argument vector, spelled the way `getSpecializedName`
+ * spells it, or empty when the context has no function-own arguments
+ * to bind (a non-generic enclosing function, or its template walked
+ * with parameters still open).
+ */
+export let getFunctionArgsKey = (
+    typeParameters: Array<TypeParameterType> | null,
+    typeArguments: Array<Type> | null): FunctionArgsKey => {
+  if (typeParameters == null || typeParameters.length == 0 ||
+      typeArguments == null) {
+    return "" as FunctionArgsKey;
+  }
+  return getSpecializedName("", typeArguments) as FunctionArgsKey;
+};
+
+export let getClosureSpecializationKey = (closureId: NodeId, classKey: ClassKey,
+    typeParameters: Array<TypeParameterType> | null = null,
+    typeArguments: Array<Type> | null = null): ClosureSpecializationKey => {
+  return new ClosureSpecializationKey(closureId, classKey,
+      getFunctionArgsKey(typeParameters, typeArguments));
 };
 
 export let getFunctionValueWrapperKey = (keyName: String, ft: FunctionType): FunctionValueWrapperKey => {

@@ -3,6 +3,7 @@
 This file tracks known bugs as a lightweight alternative to GitHub issues.
 When you encounter a bug during development, add it here rather than
 immediately trying to fix it (which can pollute the current task's context).
+When a bug is fixed, delete its entry — git history is the archive.
 
 ## Format
 
@@ -548,37 +549,6 @@ member expression itself is a tracked narrowing subject.
   feature behaves — and it is the same shared-storage question that made
   `static var stored: Array<T>` an error on a generic class.
 - **Workaround**: put the static on the host class.
-
-### A body specialized on its own type parameter cannot instantiate an interface implementation
-
-- **Found**: 2026-08-12, checking which of `zena:async`'s shapes were
-  still forced now that `86e63185` and the statics commits have landed.
-  The restriction predates that work — it is why the combinators route
-  construction through `AllState`/`RaceState` — but it had never been
-  filed on its own.
-- **Severity**: medium. Loud (a lowering bail, no wrong answers), but it
-  dictates code structure: any generic factory that returns an interface
-  has to be a method on some generic class, so the class exists to host
-  the method rather than to hold anything.
-- **Details**: a generic FUNCTION, or a `static` with its own type
-  parameter, that constructs a class implementing an interface bails:
-
-  ```
-  zir unsupported: interface vtable global not found @make_spec_i32
-  ```
-
-  A generic CLASS's own method doing the same thing lowers fine. So what
-  works depends on where the generic code lives, not on what it does.
-  Test: `execution/generics/vtable-in-generic-fn.zena` (`@skip`ped, so
-  it self-retires).
-
-- **Not the same bug as** "A generic static's body cannot reach any
-  generic construct" (RESOLVED below). That one was RTA walking a
-  generic method's body with its type parameters still open; this one
-  survives it — verified by inlining `RaceState.attach` into
-  `Future.race` after the fix and getting this bail.
-- **Workaround**: host the construction on a generic class's method, as
-  `AllState.attach` and `RaceState.attach` do.
 
 ### A stdlib module's exported type names resolve without an import
 
@@ -1900,28 +1870,6 @@ found, returning false`, so the reachability pass is probably
   same-shape forward reference WITHOUT the generic field initializer
   (plain scalar fields) works, so the initializer's type resolution
   order is implicated. The bootstrap compiler accepts both orders.
-
-### Closures inside generic class methods are not specialized by RTA
-
-- **Found**: 2026-08-05 (writing zena:async's Future<V>)
-- **Severity**: medium (loud: "non-concrete function reached:
-  closure*impl*...")
-- **Details**: A closure created inside a method of a generic class
-  (e.g. `scheduleMicrotask(() => { cb(value); })` inside
-  `Future<V>.complete`) registers one closure implementation for the
-  template; RTA never produces per-instantiation specialized copies,
-  so reaching it fails with "non-concrete function reached". Applies
-  to the self-hosted compiler's RTA; the checker accepts the code.
-- **A generic FUNCTION hits the same wall by another road**, with a
-  different message: a closure created in one bails
-  `zir unsupported: celled capture @twice_spec_i32`, not "non-concrete
-  function reached". Same restriction, so fixing one without the other
-  leaves half of "avoid closures in generic code" standing. Test:
-  `execution/generics/closure-in-generic-function.zena` (`@skip`ped, so
-  it self-retires).
-- **Workaround**: avoid closures in generic code — use small generic
-  classes implementing an interface (see zena:async's waiter objects).
-  This is what keeps `Future.then`/`map`/`flatMap` unwritten.
 
 ### Generic templates: `this` and generic-typed fields check as the raw template type
 

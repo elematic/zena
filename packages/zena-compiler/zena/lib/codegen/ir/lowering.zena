@@ -6831,12 +6831,22 @@ export final class FunctionLowerer {
     } else {
       "" as ClassKey
     };
-    let closureKey = getClosureSpecializationKey(fExpr.id, classKey);
+    // Inside a specialized generic function (or method, or a closure
+    // impl minted for one), the closure exists per instantiation: the
+    // key's function axis is this function's own argument vector,
+    // mirroring what RTA keyed when it walked this specialization's
+    // body. The by-node fallback is the erasure's template and must
+    // not stand in — its context fields are anyref, which a primitive
+    // capture cannot inhabit.
+    let closureKey = getClosureSpecializationKey(fExpr.id, classKey,
+        this.func.typeParameters, this.func.typeArguments);
     var impl: WasmFunction | null = null;
     if (let (true, sc) = this.wasm.specializedClosures.get(closureKey)) {
       impl = sc;
-    } else if (let (true, cf) = this.wasm.closureFunctions.get(fExpr)) {
-      impl = cf;
+    } else if (!closureKey.specializesFunction()) {
+      if (let (true, cf) = this.wasm.closureFunctions.get(fExpr)) {
+        impl = cf;
+      }
     }
     if (impl == null) {
       this.#bail('closure not registered');
