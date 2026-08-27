@@ -209,6 +209,41 @@ export final class SharedCheckerState {
    * index, and the models outlive any one compile.
    */
   modelIndex = new ModelIndex();
+
+  invalidatePath(path: String): void {
+    let tpKeys = this.typeParameterTypes.keys();
+    let toDeleteTp = new GrowableArray<String>();
+    while (let (true, k) = tpKeys.next()) {
+      if (k.startsWith(path + "#")) {
+        toDeleteTp.push(k);
+      }
+    }
+    for (let k in toDeleteTp) {
+      this.typeParameterTypes.delete(k);
+    }
+
+    let symKeys = this.declaredSymbolTypes.keys();
+    let toDeleteSym = new GrowableArray<String>();
+    while (let (true, k) = symKeys.next()) {
+      if (k.startsWith(path + "#")) {
+        toDeleteSym.push(k);
+      }
+    }
+    for (let k in toDeleteSym) {
+      this.declaredSymbolTypes.delete(k);
+    }
+
+    let mixKeys = this.mixinApplications.keys();
+    let toDeleteMix = new GrowableArray<String>();
+    while (let (true, k) = mixKeys.next()) {
+      if (k.contains(path + "#")) {
+        toDeleteMix.push(k);
+      }
+    }
+    for (let k in toDeleteMix) {
+      this.mixinApplications.delete(k);
+    }
+  }
 }
 
 /**
@@ -13290,6 +13325,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       case _: {}
     }
   }
+
+  // Record the declaring file for cross-module lookup and reachability.
+  mixinType.sourcePath = ctx.filePath;
 
   // Type parameters.
   ctx.enterScope();

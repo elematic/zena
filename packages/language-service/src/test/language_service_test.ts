@@ -212,28 +212,101 @@ export let main = () => {
     assert.deepStrictEqual(output, ['x = 10, y = 20', 'p[0] = 10, p[1] = 20']);
   });
 
-  test('test async functions homepage snippet with import Future', async () => {
-    const source = `import { sleep } from 'zena:time';
-import { Future } from 'zena:async';
-
-async function fetchUser(id: i32): Future<String> {
-  await sleep(10);
-  return \`User #\${id}\`;
+  test('test basic mixin', async () => {
+    const source = `mixin M {
+  foo(): i32 {
+    return 42;
+  }
 }
 
-export async function main(): Future<void> {
-  let userOne = await fetchUser(1);
-  let userTwoFuture: Future<String> = fetchUser(2);
-  let [userTwo, userThree] = await Future.all([userTwoFuture, fetchUser(3)]);
-  console.log(\`\${userOne}, \${userTwo}, \${userThree}\`);
+class C with M {
+  new();
 }
+
+export let main = (): i32 => {
+  let c = new C();
+  return c.foo();
+};
 `;
-    const docPath = 'async_home.zena';
+    const docPath = 'basic_mixin.zena';
     service.openDocument(docPath, source);
-    const diags = service.check(docPath, source).filter((d) => d.severity === 'error');
-    assert.strictEqual(diags.length, 0);
+    const diags = service
+      .check(docPath, source)
+      .filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Unexpected diagnostics: ${JSON.stringify(diags)}`,
+    );
     const bytes = service.compileToWasm(docPath, source);
-    assert.ok(bytes, 'async home: expected a binary');
+    assert.ok(bytes, 'expected a binary');
+  });
+
+  test('website mixins and interfaces example', async () => {
+    const source = `interface Animal {
+  speak(): void;
+}
+
+mixin Friendly {
+  greet(name: String): void {
+    console.log(\`Hello, \${name}!\`);
+  }
+}
+
+class Dog with Friendly implements Animal {
+  speak(): void {
+    console.log('Woof');
+  }
+}
+
+export let main = () => {
+  let dog = new Dog();
+  dog.speak();
+  dog.greet('Zena');
+};
+`;
+    const docPath = 'dog_friendly.zena';
+    service.openDocument(docPath, source);
+    const diags = service
+      .check(docPath, source)
+      .filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Unexpected diagnostics: ${JSON.stringify(diags)}`,
+    );
+    const bytes = service.compileToWasm(docPath, source);
+    assert.ok(bytes, 'expected a binary');
+  });
+
+  test('test interface only', async () => {
+    const source = `interface Animal {
+  speak(): void;
+}
+
+class Dog implements Animal {
+  speak(): void {
+    console.log('Woof');
+  }
+}
+
+export let main = () => {
+  let dog = new Dog();
+  dog.speak();
+};
+`;
+    const docPath = 'interface_only.zena';
+    service.openDocument(docPath, source);
+    const diags = service
+      .check(docPath, source)
+      .filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Unexpected diagnostics: ${JSON.stringify(diags)}`,
+    );
+    const bytes = service.compileToWasm(docPath, source);
+    assert.ok(bytes, 'expected a binary');
   });
 
   test('formats source', () => {

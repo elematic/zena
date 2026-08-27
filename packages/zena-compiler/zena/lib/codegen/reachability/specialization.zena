@@ -262,7 +262,11 @@ export final class Specializer implements SpecializerInterface {
 
     typeLowerer.discoverType(classType, model);
 
-    let classDecl = this.pass.classDecls[classId];
+    let classDecl: Node | null = if (this.pass.classDecls.has(classId)) {
+      this.pass.classDecls[classId]
+    } else {
+      null
+    };
 
     if (classDecl is ClassDeclaration) {
       this.discoverStaticFields(classType, classDecl, model);
@@ -298,7 +302,7 @@ export final class Specializer implements SpecializerInterface {
       if (!classType.isExtension && !classType.isMixinIntermediate) {
         this.registerClassMethod(classType, null, "<constructor>", null, false, false, null, model);
       }
-    } else {
+    } else if (classDecl != null) {
       if (!classType.isExtension && !classType.isMixinIntermediate) {
         this.registerClassMethod(classType, null, "<constructor>", null, false, false, null, model);
       }
@@ -455,13 +459,7 @@ export final class Specializer implements SpecializerInterface {
 
     // An ERASURE gets a struct and nothing else. Erased signatures and
     // fields name the struct, so it has to exist — but no value is ever
-    // of the erased class, so no method on it can be called. Registering
-    // them anyway put one dead body per method per erased class in every
-    // module (87 in the compiler's own, referenced by nothing), and gave
-    // the vtable slots an erased body of every method to force-reach —
-    // which is what fails to lower when a method uses `hash`/`eq`, since
-    // those dispatch on their operand's type.
-    if (isErasedClass || (ct.isMixinIntermediate && ct.superType == null)) {
+    if (isErasedClass || ct.isMixinIntermediate) {
       this.populateClassStructAndMethods(ct, classDecl, sourceModel);
       return;
     }
@@ -471,12 +469,13 @@ export final class Specializer implements SpecializerInterface {
     let allScopes = new GrowableArray<String>();
     let allModels = new GrowableArray<SemanticModel>();
     let allDecls = new GrowableArray<Node>();
+    let allDeclaringTypes = new GrowableArray<ClassType | null>();
     let classDeclCd = if (classDecl is ClassDeclaration) classDecl else null;
     let mixinDeclMd = if (classDecl is MixinDeclaration) classDecl else null;
     if (classDeclCd != null) {
       var mixinSup: ClassType | null = ct.superType;
       let mixinChain = new GrowableArray<ClassType>();
-      while (mixinSup != null && mixinSup.isMixinIntermediate && mixinSup.superType == null) {
+      while (mixinSup != null && mixinSup.isMixinIntermediate) {
         mixinChain.push(mixinSup);
         mixinSup = mixinSup.superType;
       }
@@ -498,6 +497,7 @@ export final class Specializer implements SpecializerInterface {
                     allScopes.push(composed.privateScopeKey ?? "");
                     allModels.push(compModel);
                     allDecls.push(cDecl);
+                    allDeclaringTypes.push(mSup);
                   }
                 }
               }
@@ -508,6 +508,7 @@ export final class Specializer implements SpecializerInterface {
               allScopes.push(mSup.privateScopeKey ?? "");
               allModels.push(mModel);
               allDecls.push(mDecl);
+              allDeclaringTypes.push(mSup);
             }
           }
         }
@@ -518,6 +519,7 @@ export final class Specializer implements SpecializerInterface {
         allScopes.push("");
         allModels.push(sourceModel);
         allDecls.push(classDeclCd);
+        allDeclaringTypes.push(null);
       }
     } else if (mixinDeclMd != null) {
       for (let composed in ct.mixins) {
@@ -531,6 +533,7 @@ export final class Specializer implements SpecializerInterface {
               allScopes.push(composed.privateScopeKey ?? "");
               allModels.push(compModel);
               allDecls.push(cDecl);
+              allDeclaringTypes.push(ct);
             }
           }
         }
@@ -540,6 +543,7 @@ export final class Specializer implements SpecializerInterface {
         allScopes.push(ct.privateScopeKey ?? "");
         allModels.push(sourceModel);
         allDecls.push(mixinDeclMd);
+        allDeclaringTypes.push(ct);
       }
     }
 
@@ -700,6 +704,7 @@ export final class Specializer implements SpecializerInterface {
           regName = msScope + "::" + methName;
         }
         let regFn = this.registerClassMethod(ct, declNode, regName, ms as Node, false, false, null, allModels[msIdx]);
+        regFn.declaringType = allDeclaringTypes[msIdx];
         applyMixinPrivateScope(regFn, ms as Node, msScope);
       } else if (ms is AccessorDeclaration) {
         let declNode = allDecls[msIdx];
@@ -719,6 +724,7 @@ export final class Specializer implements SpecializerInterface {
             getterRegName = msScope + "::" + getterRegName;
           }
           let regG = this.registerClassMethod(ct, declNode, getterRegName, ms as Node, false, false, null, allModels[msIdx]);
+          regG.declaringType = allDeclaringTypes[msIdx];
           applyMixinPrivateScope(regG, ms as Node, msScope);
         }
         let {setter} = ms;
@@ -728,6 +734,7 @@ export final class Specializer implements SpecializerInterface {
             setterRegName = msScope + "::" + setterRegName;
           }
           let regS = this.registerClassMethod(ct, declNode, setterRegName, setter, false, false, null, allModels[msIdx]);
+          regS.declaringType = allDeclaringTypes[msIdx];
           applyMixinPrivateScope(regS, setter, msScope);
         }
       } else if (ms is FieldDefinition) {
@@ -912,7 +919,7 @@ export final class Specializer implements SpecializerInterface {
     var c: ClassType | null = ct;
     while (c != null) {
       let cc = c;
-      if (cc.isMixinIntermediate && cc.superType == null) {
+      if (cc.isMixinIntermediate) {
         c = cc.superType;
         continue;
       }
@@ -921,17 +928,6 @@ export final class Specializer implements SpecializerInterface {
         let decl = this.pass.classDecls[lookupId];
         if (decl is ClassDeclaration) {
           for (let member in (decl as ClassDeclaration).body) {
-            if (member == node) {
-              return cc;
-            }
-            if (member is AccessorDeclaration &&
-                (member as AccessorDeclaration).setter != null &&
-                ((member as AccessorDeclaration).setter as Node) == node) {
-              return cc;
-            }
-          }
-        } else if (decl is MixinDeclaration) {
-          for (let member in (decl as MixinDeclaration).body) {
             if (member == node) {
               return cc;
             }
@@ -1635,10 +1631,11 @@ export final class Specializer implements SpecializerInterface {
       let allScopes = new GrowableArray<String>();
       let allModels = new GrowableArray<SemanticModel>();
       let allDecls = new GrowableArray<Node>();
+      let allDeclaringTypes = new GrowableArray<ClassType | null>();
       if (cdDecl != null) {
         var mixinSup: ClassType | null = ct.superType;
         let mixinChain = new GrowableArray<ClassType>();
-        while (mixinSup != null && mixinSup.isMixinIntermediate && mixinSup.superType == null) {
+        while (mixinSup != null && mixinSup.isMixinIntermediate) {
           mixinChain.push(mixinSup);
           mixinSup = mixinSup.superType;
         }
@@ -1660,6 +1657,7 @@ export final class Specializer implements SpecializerInterface {
                       allScopes.push(composed.privateScopeKey ?? "");
                       allModels.push(compModel);
                       allDecls.push(cDecl);
+                      allDeclaringTypes.push(mSup);
                     }
                   }
                 }
@@ -1670,6 +1668,7 @@ export final class Specializer implements SpecializerInterface {
                 allScopes.push(mSup.privateScopeKey ?? "");
                 allModels.push(mModel);
                 allDecls.push(mDecl);
+                allDeclaringTypes.push(mSup);
               }
             }
           }
@@ -1680,6 +1679,7 @@ export final class Specializer implements SpecializerInterface {
           allScopes.push("");
           allModels.push(sourceModel);
           allDecls.push(cdDecl);
+          allDeclaringTypes.push(null);
         }
       } else if (mdDecl != null) {
         for (let composed in ct.mixins) {
@@ -1693,6 +1693,7 @@ export final class Specializer implements SpecializerInterface {
                 allScopes.push(composed.privateScopeKey ?? "");
                 allModels.push(compModel);
                 allDecls.push(cDecl);
+                allDeclaringTypes.push(ct);
               }
             }
           }
@@ -1702,13 +1703,16 @@ export final class Specializer implements SpecializerInterface {
           allScopes.push(ct.privateScopeKey ?? "");
           allModels.push(sourceModel);
           allDecls.push(mdDecl);
+          allDeclaringTypes.push(ct);
         }
       }
 
-      var msIdx = -1;
-      for (let ms in allMembers) {
-        msIdx += 1;
-        let msScope = allScopes[msIdx];
+      var vtableMethIdx = 0;
+      while (vtableMethIdx < allMembers.length) {
+        let ms = allMembers[vtableMethIdx];
+        let msScope = allScopes[vtableMethIdx];
+        let msIdx = vtableMethIdx;
+        vtableMethIdx += 1;
         if (ms is MethodDefinition) {
           if (ms.isAbstract) { continue; }
           let {typeParameters} = ms;
@@ -1753,6 +1757,7 @@ export final class Specializer implements SpecializerInterface {
               regName = msScope + "::" + methName;
             }
             let regFn = this.registerClassMethod(ct, declNode, regName, ms as Node, false, false, null, allModels[msIdx]);
+            regFn.declaringType = allDeclaringTypes[msIdx];
             applyMixinPrivateScope(regFn, ms as Node, msScope);
           }
         } else if (ms is AccessorDeclaration) {
@@ -1773,6 +1778,7 @@ export final class Specializer implements SpecializerInterface {
               getterRegName = msScope + "::" + getterRegName;
             }
             let regG = this.registerClassMethod(ct, declNode, getterRegName, ms as Node, false, false, null, allModels[msIdx]);
+            regG.declaringType = allDeclaringTypes[msIdx];
             applyMixinPrivateScope(regG, ms as Node, msScope);
           }
           let {setter} = ms;
@@ -1782,6 +1788,7 @@ export final class Specializer implements SpecializerInterface {
               setterRegName = msScope + "::" + setterRegName;
             }
             let regS = this.registerClassMethod(ct, declNode, setterRegName, setter, false, false, null, allModels[msIdx]);
+            regS.declaringType = allDeclaringTypes[msIdx];
             applyMixinPrivateScope(regS, setter, msScope);
           }
         } else if (ms is FieldDefinition) {

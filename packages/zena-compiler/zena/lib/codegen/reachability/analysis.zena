@@ -51,6 +51,30 @@ final class ParsedAdaptationRef {
   new(this.classSymId, this.ifaceSymId);
 }
 
+let findDeclaringMixinIntermediate = (ct: ClassType, classDecls: HashMap<SymbolId, Node>, node: Node): ClassType | null => {
+  var scWalk: ClassType | null = ct.superType;
+  while (scWalk != null && scWalk.isMixinIntermediate) {
+    let sc = scWalk;
+    let scId = (sc.genericSource ?? sc).symbolId;
+    if (classDecls.has(scId)) {
+      let scDecl = classDecls[scId];
+      if (scDecl is MixinDeclaration) {
+        for (let m in (scDecl as MixinDeclaration).body) {
+          if (m == node) {
+            return sc;
+          }
+          if (m is AccessorDeclaration &&
+              ((m as AccessorDeclaration).setter as Node) == node) {
+            return sc;
+          }
+        }
+      }
+    }
+    scWalk = sc.superType;
+  }
+  return null;
+};
+
 /**
  * ReachabilityAnalysis manages the whole-program reachability tracking,
  * driving queues of reachable functions/types and triggering monomorphization.
@@ -813,10 +837,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   let currV = vWalk;
                   let vKey = getClassKey(currV);
                   if (!this.wasm.classInfos.has(vKey)) {
-                    let isIntermediateWithoutSuper = currV.isMixinIntermediate && currV.superType == null;
+                    let isIntermediate = currV.isMixinIntermediate;
                     let emptyStruct = new WasmStruct(currV.name, new GrowableArray<WasmField>());
                     emptyStruct.classType = currV;
-                    if (!currV.isExtension && !isIntermediateWithoutSuper) {
+                    if (!currV.isExtension && !isIntermediate) {
                       this.wasm.types.push(emptyStruct);
                     }
                     let info = new ClassCodegenInfo(emptyStruct);
@@ -824,7 +848,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     
                     let emptyVTableStruct = new WasmStruct(currV.name + "_VTable", new GrowableArray<WasmField>());
                     emptyVTableStruct.classType = currV;
-                    if (!currV.isExtension && !isIntermediateWithoutSuper) {
+                    if (!currV.isExtension && !isIntermediate) {
                       this.wasm.types.push(emptyVTableStruct);
                     }
                     info.vtableStructType = emptyVTableStruct;
@@ -3283,6 +3307,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   methName = mixScope + "::" + methName;
                 }
                 let regF = specializer.registerClassMethod(ct, cd, methName, node, false, false, null, nodeModel, null);
+                regF.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, node);
                 applyMixinPrivateScope(regF, node, mixScope);
                 // A REACHABLE member referrer is the evidence that
                 // used to be implied by the vtable force-reach:
@@ -3371,6 +3396,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   };
                   if (node.getter != null) {
                     let regG = specializer.registerClassMethod(ct, cd, accPrefix + "get#" + accName, node, false, false, null, nodeModel, null);
+                    regG.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, node);
                     applyMixinPrivateScope(regG, node, mixScope);
                     if (refItem.isReachable && isConcrete(ct)) {
                       this.wasm.addFunction(regG);
@@ -3380,6 +3406,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   let {setter} = node;
                   if (setter != null) {
                     let regS = specializer.registerClassMethod(ct, cd, accPrefix + "set#" + accName, setter, false, false, null, nodeModel, null);
+                    regS.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, setter as Node);
                     applyMixinPrivateScope(regS, setter, mixScope);
                     if (refItem.isReachable && isConcrete(ct)) {
                       this.wasm.addFunction(regS);

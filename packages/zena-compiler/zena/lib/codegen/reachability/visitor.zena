@@ -1908,25 +1908,30 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             var isMethod = false;
             var isGenericMethod = false;
             var methodTypeArgs: Array<Type> | null = null;
-            if (resolvedObj.members.has(propName)) {
-              let mi = resolvedObj.members[propName];
-              if (mi is MethodInfo) {
-                isMethod = true;
-                if (mi.type is FunctionType) {
-                  let ft = mi.type as FunctionType;
-                  let {typeParameters} = ft;
-                  if (typeParameters != null && typeParameters.length > 0) {
-                    isGenericMethod = true;
-                    let nodeTypeRaw = model.getNodeType(n);
-                    if (nodeTypeRaw is FunctionType) {
-                      let {typeArguments} = nodeTypeRaw;
-                      if (typeArguments != null) {
-                        methodTypeArgs = typeArguments;
+            var currClassWalk: ClassType | null = resolvedObj;
+            while (currClassWalk != null && !isMethod) {
+              let cc = currClassWalk;
+              if (cc.members.has(propName)) {
+                let mi = cc.members[propName];
+                if (mi is MethodInfo) {
+                  isMethod = true;
+                  if (mi.type is FunctionType) {
+                    let ft = mi.type as FunctionType;
+                    let {typeParameters} = ft;
+                    if (typeParameters != null && typeParameters.length > 0) {
+                      isGenericMethod = true;
+                      let nodeTypeRaw = model.getNodeType(n);
+                      if (nodeTypeRaw is FunctionType) {
+                        let {typeArguments} = nodeTypeRaw;
+                        if (typeArguments != null) {
+                          methodTypeArgs = typeArguments;
+                        }
                       }
                     }
                   }
                 }
               }
+              currClassWalk = cc.superType;
             }
             
             let cha = this.pass.cha;

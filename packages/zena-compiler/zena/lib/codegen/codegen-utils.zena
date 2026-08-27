@@ -16,7 +16,7 @@ import { Array } from 'zena:array';
 import { FixedArray } from 'zena:fixed-array';
 import { GrowableArray } from 'zena:growable-array';
 import { HashMap } from 'zena:map';
-import { Program } from '../program.zena';
+import { Program, CompilationUnit } from '../program.zena';
 import { Hashable } from 'zena:hashable';
 
 export { MixinKey } from '../types.zena';
@@ -765,8 +765,29 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
 
 export let findMixinDeclaration = (program: Program, mt: MixinType): MixinDeclaration | null => {
   let path = mt.sourcePath;
+  var unitOpt: CompilationUnit | null = null;
   if (let (true, unit) = program.unitsByPath.get(path)) {
-    for (let stmt in (unit).ast.body) {
+    unitOpt = unit;
+  } else if (path.startsWith("/")) {
+    if (let (true, unit) = program.unitsByPath.get(path.sliceBytes(1, path.length))) {
+      unitOpt = unit;
+    }
+  } else {
+    if (let (true, unit) = program.unitsByPath.get("/" + path)) {
+      unitOpt = unit;
+    }
+  }
+  if (unitOpt != null) {
+    for (let stmt in (unitOpt as CompilationUnit).ast.body) {
+      if (stmt is MixinDeclaration) {
+        if (stmt.name.name == mt.name) {
+          return stmt;
+        }
+      }
+    }
+  }
+  for (let u in program.units) {
+    for (let stmt in u.ast.body) {
       if (stmt is MixinDeclaration) {
         if (stmt.name.name == mt.name) {
           return stmt;

@@ -986,13 +986,14 @@ export class LanguageService {
       var fi = 0;
       while (fi < compResult.files.length) {
         let file = compResult.files[fi];
-        let res = checkResult.results[file.path];
-        if (res != null) {
+        if (let (true, res) = checkResult.results.get(file.path)) {
           let unit = {ast: file.ast, model: res.model};
           units.push(unit);
           if (file.path == compResult.entry.path || file.ast.path == compResult.entry.ast.path) {
             entryUnit = unit;
           }
+        } else {
+          console.error('File not in checkResult: ' + file.path);
         }
         fi += 1;
       }
@@ -1001,9 +1002,11 @@ export class LanguageService {
       }
 
       let program = new Program(units, entryUnit);
-      let generator = new BinaryGenerator("host", false);
+      let generator = new BinaryGenerator("host", false, true);
       generator.generate(program).toByteArray()
     } catch (e) {
+      let err = e as Error;
+      console.error('compileToWasm failed: ' + err.message + '\n' + (err.getStackTrace() ?? ''));
       null
     };
     return wasmBytes;
