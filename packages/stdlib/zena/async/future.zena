@@ -94,12 +94,12 @@ export class Future<T> {
   var #state = FutureState.Pending;
   var #value: Box<T> | null = null;
   var #error: Error | null = null;
-  /** The single waiter, which is the overwhelmingly common case: an
-   * awaited future has exactly one frame parked on it. */
-  var #waiter: Task | null = null;
-  /** Waiters beyond the first. Null until a second one arrives, so an
-   * ordinary future allocates no list and no backing storage. */
-  var #more: GrowableArray<Task> | null = null;
+  /** The registered waiters: null, a single Task — the overwhelmingly
+   * common case, an awaited future has exactly one frame parked on
+   * it — or a list once a second arrives. One field, discriminated on
+   * read; sound because GrowableArray does not implement Task, so the
+   * class test cannot claim a lone waiter. */
+  var #waiters: Task | GrowableArray<Task> | null = null;
 
   new();
 
@@ -193,14 +193,19 @@ export class Future<T> {
       scheduleTask(t);
       return;
     }
-    if (this.#waiter == null) {
-      this.#waiter = t;
+    let w = this.#waiters;
+    if (w == null) {
+      this.#waiters = t;
       return;
     }
-    if (this.#more == null) {
-      this.#more = new GrowableArray<Task>();
+    if (w is GrowableArray<Task>) {
+      w.push(t);
+      return;
     }
-    (this.#more as GrowableArray<Task>).push(t);
+    let list = new GrowableArray<Task>();
+    list.push(w);
+    list.push(t);
+    this.#waiters = list;
   }
 
   /**
@@ -354,21 +359,20 @@ export class Future<T> {
    * dropped rather than cleared.
    */
   #notify(): void {
-    let w = this.#waiter;
-    if (w != null) {
-      this.#waiter = null;
-      scheduleTask(w as Task);
+    let w = this.#waiters;
+    if (w == null) {
+      return;
     }
-    let m = this.#more;
-    if (m != null) {
-      let list = m as GrowableArray<Task>;
-      this.#more = null;
+    this.#waiters = null;
+    if (w is GrowableArray<Task>) {
       var i = 0;
-      while (i < list.length) {
-        scheduleTask(list[i]);
+      while (i < w.length) {
+        scheduleTask(w[i]);
         i += 1;
       }
+      return;
     }
+    scheduleTask(w);
   }
 
   // -------------------------------------------------------------------
