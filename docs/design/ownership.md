@@ -1036,6 +1036,86 @@ behavior; the release-timing note now lives in the language reference.
    `dispose()` walks for its current `$state`. **Open**: who calls it when a
    task is abandoned rather than cancelled?
 
+<a id="affine-fields"></a>
+
+### Affine fields
+
+Storing an `Own<T>` in a field is one of the moves §Affine types lists, and
+the universe table already places "types containing one" in the affine
+universe. This section pins what that containment means for the class that
+declares the field, for reads and writes of it, and for release. None of it
+is enforced today: an `Own` field in a plain class is silently legal, the
+object aliases freely, and the only guard on the loose obligation is the
+runtime lifecycle flag.
+
+**Containment is an obligation, so the container is a resource.** A class
+value is a reference, and duplicating the reference does not duplicate the
+field's obligation — the hazard is aliasing: two references to the object,
+each positioned to move the field out, or one outliving the release. An
+object's affineness is enforceable only if every reference to it is
+governed, and that is exactly what resource-ness provides — and, per
+§"Resource-ness and affineness are separate", it can only be provided at the
+class, uniformly across every mention. So the rule:
+
+> **A concrete field of affine type is legal only in a `resource class`.**
+
+"Concrete" means the affineness is visible at the declaration: `Own<R>`,
+`Own<R> | null`, or a class this rule has already made a resource. A plain
+class declaring one is an error that names the fix. There is no
+affine-but-not-resource category for such a class: it has something to
+release — the field — so resource-ness is the honest description, and every
+piece of existing machinery applies transitively. Construction yields
+`Own<C>`, mentions go through handles, implicit drop and `using` release the
+object, and releasing the object releases its fields (glue below).
+
+**Extent is transitive; no scope is declared.** An owner carries its extent
+with it, so ownership forms a tree — field to object, object to whichever
+handle holds it — and every path is grounded in a binding the release
+machinery already covers: a local, a parameter, a frame slot of a suspended
+body, or another resource's field. `disown` remains the deliberate exit into
+the unmanaged regime. A module-level `Own` binding is legal and never
+implicitly released: its extent is the whole program, and teardown has
+nothing to run.
+
+**Reads borrow; consuming methods move out.** A read of an affine field
+(`r.file`, `this.file`) yields `Borrow<R>` — a read must not mint a second
+owner. This is §"Derived borrows" field projection applied to the receiver.
+Inside a consuming method (`this: Own<this>`, `:dispose` above all) a field
+may instead be moved out, at most once per field per path, checked by the
+same flow machinery that move-checks locals — the `this.file` path keys
+exist. A `var` affine field may be overwritten, and the store releases the
+previous value first; a `let` affine field is set once, in construction.
+
+**Release is glue after `:dispose`.** The resource contract already requires
+the class to write `:dispose` for its own obligation. The compiler appends
+releases for every affine field the dispose body did not move out, in
+reverse declaration order — the same compensation shape implicit drop
+applies to locals, decided by the same verdict machinery. A dispose that
+needs a different order moves the fields out and releases them itself, and
+the glue then has nothing left to do.
+
+**Structural types reject affine members.** A record or tuple member of
+affine type is an error: structural values convert by adaptation,
+adaptation copies, and a copy would duplicate the obligation — and there is
+no dispose slot to hang glue on. This is the affine twin of the
+second-class storage rule: borrows are rejected from structural types for
+extent reasons, owns for duplication reasons.
+
+**Generic fields are the other half, and defer to `affine T`.**
+`class Box<affine T> { var value: T }` stays an ordinary class; the
+*instantiation* `Box<Own<File>>` is affine by "types containing one" and is
+held from a provably exclusive source under `Resource<T>` (§Containers),
+with glue derived per instantiation by monomorphization. A concrete field
+needs the class-level rule because its affineness is unconditional; a
+generic field earns it per instantiation. Whether `Resource<T>` and
+`Own<T>` are one type spelled two ways is the open question §Containers
+records, and nothing here forecloses it.
+
+Implementation stages, in order: the field rule with reads-as-borrows and
+dispose glue; consuming-method move-out with per-field path checking; then
+`affine T` and the container work, which waits on member-level `where`
+bounds (equality.md D4).
+
 ### Affine type arguments
 
 A generic body is checked once, before it knows what `T` will be, so it must be
@@ -1361,6 +1441,7 @@ of surface syntax.
 | **O1**   | Checker flow graph                                                                                        | nothing                           | everything     |
 | **O2**   | Move checking on the flow graph                                                                           | O0, O1                            | G, V, A        |
 | **O3**   | Implicit drop                                                                                             | O2; G1 for the cancellation table | V, A           |
+| **O3.2** | Affine fields: the resource-class rule, reads borrow, dispose glue                                        | O3                                | V, A           |
 | **O3.5** | `affine T` type parameters + container opt-in                                                             | O2, A0's `where` bounds           | G, V           |
 | **O4**   | `isolated<T>`/`frozen<T>`/regions                                                                         | O2                                | V, A           |
 
