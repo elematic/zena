@@ -215,8 +215,20 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
     selfC: i32): i32 => {
   let i32vt = new ValTypeI32() as ValType;
   let ft = f.type;
-  if (ft is ValTypeF32 || ft is ValTypeF64) {
-    bail(cx, 'case hash float field');
+  if (ft is ValTypeF32) {
+    let fieldRef = cx.b.addRef(new IrRefField(st, f.name as String));
+    let v = cx.b.emit(IrOp.struct_get, ft, selfC, fieldRef);
+    let zero32 = cx.b.constF32(0.0, new ValTypeF32());
+    let norm32 = cx.b.binary(IrOp.f32_add, new ValTypeF32() as ValType, v, zero32);
+    return cx.b.emit(IrOp.i32_reinterpret_f32, new ValTypeI32(), norm32, -1);
+  }
+  if (ft is ValTypeF64) {
+    let fieldRef = cx.b.addRef(new IrRefField(st, f.name as String));
+    let v = cx.b.emit(IrOp.struct_get, ft, selfC, fieldRef);
+    let zero64 = cx.b.constF64(0.0, new ValTypeF64());
+    let norm64 = cx.b.binary(IrOp.f64_add, new ValTypeF64() as ValType, v, zero64);
+    let bits = cx.b.emit(IrOp.i64_reinterpret_f64, new ValTypeI64(), norm64, -1);
+    return hashI64Fold(cx, bits);
   }
   if (ft is ValTypeI32) {
     let fieldRef = cx.b.addRef(new IrRefField(st, f.name as String));

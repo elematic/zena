@@ -279,6 +279,100 @@ export let main = () => {
     assert.ok(bytes, 'expected a binary');
   });
 
+  test('website sealed classes example', async () => {
+    const source = `sealed class Expr {
+  case Lit(value: i32)
+  case Add(left: Expr, right: Expr)
+  case Neg(operand: Expr)
+}
+
+let eval = (e: Expr): i32 => match (e) {
+  case Lit {value}: value
+  case Add {left, right}: eval(left) + eval(right)
+  case Neg {operand}: -eval(operand)
+};
+
+export let main = () => {
+  let expr = new Add(new Lit(2), new Neg(new Lit(5)));
+  console.log(\`\${eval(expr)}\`);
+};
+`;
+    const docPath = 'sealed_classes.zena';
+    service.openDocument(docPath, source);
+    const diags = service
+      .check(docPath, source)
+      .filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Unexpected diagnostics: ${JSON.stringify(diags)}`,
+    );
+    const bytes = service.compileToWasm(docPath, source);
+    assert.ok(bytes, 'expected a binary');
+  });
+
+  test('website pattern matching example', async () => {
+    const source = `sealed class Shape {
+  case Circle(radius: f64)
+  case Rect(width: f64, height: f64)
+}
+
+// Guards run after the pattern matches; \`_\` is the wildcard.
+let describe = (shape: Shape): String => match (shape) {
+  case Circle {radius} if radius > 10.0: 'a large circle'
+  case Circle: 'a circle'
+  case Rect {width, height} if width == height: 'a square'
+  case _: 'a rectangle'
+};
+
+export let main = () => {
+  console.log(describe(new Circle(20.0)));
+  console.log(describe(new Circle(5.0)));
+  console.log(describe(new Rect(3.0, 3.0)));
+  console.log(describe(new Rect(4.0, 5.0)));
+};
+`;
+    const docPath = 'pattern_matching.zena';
+    service.openDocument(docPath, source);
+    const diags = service
+      .check(docPath, source)
+      .filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Unexpected diagnostics: ${JSON.stringify(diags)}`,
+    );
+    const bytes = service.compileToWasm(docPath, source);
+    assert.ok(bytes, 'expected a binary');
+  });
+
+  test('website modules example (multi-file)', async () => {
+    const mathSource = `export let add = (a: i32, b: i32): i32 => a + b;
+export let greet = (name: String): String => {
+  return 'Hello ' + name + '!';
+};
+`;
+    const mainSource = `import { add, greet } from './math.zena';
+
+export let main = () => {
+  console.log(greet('Zena Developer'));
+  console.log(\`1 + 2 = \${add(1, 2)}\`);
+};
+`;
+    service.openDocument('math.zena', mathSource);
+    service.openDocument('main.zena', mainSource);
+    const diags = service
+      .check('main.zena', mainSource)
+      .filter((d) => d.severity === 'error');
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Unexpected diagnostics: ${JSON.stringify(diags)}`,
+    );
+    const bytes = service.compileToWasm('main.zena', mainSource);
+    assert.ok(bytes, 'expected a binary');
+  });
+
   test('test interface only', async () => {
     const source = `interface Animal {
   speak(): void;
