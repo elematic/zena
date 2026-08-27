@@ -140,19 +140,81 @@ This document tracks completed work and planned features. For project instructio
     source's outcome — transformed value, recovered or propagated
     failure — and cancellation forwards structurally, running no
     callback. No separate `map`: it is `then` with one argument.
-  - Next: richer fetch (headers, streamed bodies — streams
-    are designed in [streams.md](docs/design/streams.md) with the
-    `zena:stream` rendezvous core implemented), and post-v1 items (cancellation and structured
-    concurrency — designed in
-    [cancellation.md](docs/design/cancellation.md); the tag, scopes,
+  - **Cancellation and structured concurrency are done**, end to end
+    ([cancellation.md](docs/design/cancellation.md)): the tag, scopes,
     checkpoints, completed-as-cancelled, the `cancel` clause,
     `shielded`, cancel-wakes-parked-frames, the `TaskGroup` core
     (spawn/join, first failure cancels siblings),
-    `CancelScope.detached()`, the whole-program gate (async
-    without a way to cancel carries none of the machinery),
-    `TaskGroup.race` (loser-cancelling), and `FutureClaim` (counted
-    consumer interest; releasing the last claim cancels the work) are
-    implemented — the tokio-backed CLI, the WASI P3 backend).
+    `CancelScope.detached()`, the whole-program gate (async without a
+    way to cancel carries none of the machinery), `TaskGroup.race`
+    (loser-cancelling), `FutureClaim` (counted consumer interest), and
+    generator disposal.
+  - **The async roadmap**, roughly in order:
+    1. **Reseed.** The bootstrap predates per-instantiation closure
+       specialization, so the stdlib itself cannot yet create closures
+       in generic code. Everything stylistic below waits on this.
+    2. **Library cleanup.** Drop `onComplete` (`then` covers it),
+       rewrite the internal waiter classes as closures where the cost
+       is equal — they run once per settle — and document the
+       zero-allocation await invariant where the code enforces it: a
+       frame subscribes ITSELF (it implements `Task`), a settle
+       allocates nothing (waiters pull), and the only allocation is
+       the async call's own frame-plus-future.
+    3. **Async iteration**: `async gen` functions (the two split
+       passes already share their machinery), an `AsyncIterator<T>`
+       protocol (`next(): Future<...>` — streams.md's convenience
+       layer), and an explicit `for await` loop — explicit because
+       suspension points are where cancellation delivers, and loop
+       syntax should not hide one. Early exit disposes through the
+       generator-disposal machinery, which for an async generator is
+       exactly right: its pending `next()` is real work.
+    4. **`await` on tuple and record literals of futures** —
+       `let (a, b) = await (getA(), getB());` and
+       `let {x, y} = await {x: fx(), y: fy()};` — the typed form of
+       JS's `all`/`allKeyed`/`await*`, heterogeneous and with no
+       combinator name to learn. Alongside, the library batch:
+       `allSettled` (which needs an `Outcome<T>` sealed type — the
+       principled outcomes-as-data counterpart to hiding `state`),
+       `any`, and the composable resilience combinators below.
+    5. **Composable resilience over real cancellation.** One shape,
+       `type Op<T> = () => Future<T>`, and combinators from `Op<T>`
+       to `Op<T>` — `timeout(ms, op)`, `deadline(t, op)`,
+       `retry(n, op)` (with backoff), `fallback(op, alt)`,
+       `hedge(delay, op)` — so composition order is syntax:
+       `retry(3, timeout(100, op))` is a per-attempt budget,
+       `timeout(500, retry(3, op))` an overall one. `TaskGroup.race`
+       already has the `Array<Op<T>>` shape. Two rules make the
+       algebra sound: policies act on FAILURES and never on
+       cancellation (an ambient cancel passes through everything,
+       untouched — retrying cancelled work would violate the scope
+       tree), and every attempt runs in a child scope, so losers and
+       expired attempts are actually cancelled rather than abandoned —
+       the thing JS resilience libraries cannot do.
+    6. **Unhandled rejections.** A rejected future nobody observes
+       currently vanishes, which is a fuzzy fallback. Design: a
+       rejected future with no waiters joins a pending-unhandled
+       list, any observation clears it, and drain quiescence reports
+       the remainder through a settable handler, loud by default.
+    7. **`async { ... }` blocks** — an expression of type `Future<T>`
+       desugaring to an immediately-called async function expression,
+       for awaiting inside sync contexts.
+    8. **JS interop**: Zena async exports surfacing as Promises, and
+       the `AbortSignal` ↔ `CancelScope` bridge in both directions
+       (a signal cancels a scope; a scope hands `fetch` a signal).
+    9. **WASI p3 as the primary parker** for the wasi target,
+       retiring `poll_oneoff` — rides the components track's
+       `Stream<T>`-across-the-boundary work.
+  - Open type-system threads feeding this roadmap (from the #335
+    review): `WithDefault<T>` (the honest type of a default-initialized
+    generic field; de-boxes `Future.#value` and gives collections an
+    honest empty-slot element type), `Awaited<R>` (folds `flatMap`
+    into a flattening `then`), and in-place sealed variants (the
+    general typestate answer: cases sharing one flat object, `match`
+    binding copies, in-place transitions).
+  - Also next: richer fetch (headers, streamed bodies — streams are
+    designed in [streams.md](docs/design/streams.md) with the
+    `zena:stream` rendezvous core implemented), the tokio-backed CLI,
+    and the WASI P3 backend.
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running
