@@ -190,18 +190,27 @@ This document tracks completed work and planned features. For project instructio
        tree), and every attempt runs in a child scope, so losers and
        expired attempts are actually cancelled rather than abandoned —
        the thing JS resilience libraries cannot do.
-    6. **Unhandled rejections.** A rejected future nobody observes
+    6. **`checkCancellation()`** — the opt-in sync checkpoint for
+       CPU-bound work with no natural suspension point (a parser's
+       token loop): raises on the cancellation channel, so cleanup and
+       propagation work exactly as at a real suspension point, where
+       `currentScope().isCancelled` remains the poll-only form.
+       `shielded` composes automatically (the ambient is rebound), and
+       it is an observe site, so it never opens the whole-program
+       gate. Kotlin's `ensureActive`, .NET's
+       `ThrowIfCancellationRequested`.
+    7. **Unhandled rejections.** A rejected future nobody observes
        currently vanishes, which is a fuzzy fallback. Design: a
        rejected future with no waiters joins a pending-unhandled
        list, any observation clears it, and drain quiescence reports
        the remainder through a settable handler, loud by default.
-    7. **`async { ... }` blocks** — an expression of type `Future<T>`
+    8. **`async { ... }` blocks** — an expression of type `Future<T>`
        desugaring to an immediately-called async function expression,
        for awaiting inside sync contexts.
-    8. **JS interop**: Zena async exports surfacing as Promises, and
+    9. **JS interop**: Zena async exports surfacing as Promises, and
        the `AbortSignal` ↔ `CancelScope` bridge in both directions
        (a signal cancels a scope; a scope hands `fetch` a signal).
-    9. **WASI p3 as the primary parker** for the wasi target,
+    10. **WASI p3 as the primary parker** for the wasi target,
        retiring `poll_oneoff` — rides the components track's
        `Stream<T>`-across-the-boundary work.
   - Open type-system threads feeding this roadmap (from the #335
