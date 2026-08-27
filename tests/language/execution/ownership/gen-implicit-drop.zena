@@ -1,0 +1,85 @@
+// @mode: run
+// @result: 888
+// Implicit drop inside `gen` bodies: an owned resource local (or an
+// owned parameter) releases at scope exit when the generator runs to
+// completion, and through disposal — a cancellation at the suspended
+// yield — when the consumer stops early. The same region machinery
+// `using` in generators proved out.
+
+import { Iterator } from 'zena:iterator';
+import { Own, Disposable } from 'zena:ownership';
+
+/** Records events as decimal digits, so ordering is observable. */
+class Log {
+  var seq: i32 = 0;
+  add(d: i32): void {
+    this.seq = this.seq * 10 + d;
+  }
+}
+
+resource class Res {
+  #log: Log;
+  id: i32;
+  new(log: Log, this.id) : #log = log;
+  :Disposable.dispose(this: Own<this>): void {
+    this.#log.add(this.id);
+  }
+}
+
+/** Two locals around a yield; a full run releases both, in reverse
+ * order, after the body's last event. */
+let exhausted = gen (log: Log): Iterator<i32> => {
+  let a = new Res(log, 1);
+  yield 5;
+  let b = new Res(log, 2);
+  log.add(3);
+  yield 6;
+};
+
+/** The consumer breaks at the first yield: disposal releases what the
+ * suspended frame holds. */
+let abandoned = gen (log: Log): Iterator<i32> => {
+  let a = new Res(log, 4);
+  yield 5;
+  log.add(9);
+};
+
+/** An owned parameter of a generator releases the same way. */
+let takes = gen (r: Own<Res>, log: Log): Iterator<i32> => {
+  yield 5;
+  log.add(7);
+};
+
+export let main = (): i32 => {
+  let log = new Log();
+
+  for (let v in exhausted(log)) {
+    log.add(v);
+  }
+  // Consumer sees 5; the body then logs 3 and yields 6; exit releases
+  // b (2) then a (1).
+  if (log.seq != 53621) {
+    return 0 - 1;
+  }
+
+  log.seq = 0;
+  for (let v in abandoned(log)) {
+    log.add(v);
+    break;
+  }
+  // 5, then disposal releases a (4); the body's 9 never runs.
+  if (log.seq != 54) {
+    return 0 - 2;
+  }
+
+  log.seq = 0;
+  for (let v in takes(new Res(log, 8), log)) {
+    log.add(v);
+  }
+  // 5, then 7 from the body, then the parameter (8) at exit.
+  if (log.seq != 578) {
+    return 0 - 3;
+  }
+
+  return 888;
+};

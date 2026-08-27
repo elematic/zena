@@ -1007,13 +1007,17 @@ work, only the checker's candidacy. Async expression bodies stay out
 (their lowering completes the frame's future before the parameter
 regions exist).
 
-Not yet released: anything in a generator body — an abandoned frame
-runs no finalizers, so releasing at scope exit waits on generator
-disposal (cancel-at-yield, cancellation.md §"Abandonment and generator
-disposal"). `execution/ownership/implicit-drop.zena`,
-`match-arm-drops.zena`, `param-drops.zena`, `param-drops-expr.zena`
-and `value-block-release.zena` pin the behavior; the release-timing
-note now lives in the language reference.
+**Generator bodies release too**, now that disposal exists
+(cancellation.md §"Abandonment and generator disposal"): a full run
+releases at scope exit like any body, and a consumer that stops early
+disposes the iterator, which cancels the frame at its suspended yield
+and unwinds through the same regions. With that, the release story is
+complete: every body form — blocks, value blocks, expression bodies,
+async, generators — releases owned locals and parameters.
+`execution/ownership/implicit-drop.zena`, `match-arm-drops.zena`,
+`param-drops.zena`, `param-drops-expr.zena`, `value-block-release.zena`,
+`async-implicit-drop.zena` and `gen-implicit-drop.zena` pin the
+behavior; the release-timing note now lives in the language reference.
 
 1. **Unwind paths.** Every scope holding a live resource needs cleanup on
    exception propagation. `finally` makes this expressible; it is still real

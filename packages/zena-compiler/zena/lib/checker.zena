@@ -4016,12 +4016,10 @@ let registerOwnParamCandidates = (
   params: GrowableArray<Parameter>,
   paramTypes: Array<Type>
 ): void => {
-  // Async bodies qualify: the release regions spill into the frame and
-  // catch both tags, so they release across suspensions and on
-  // cancellation. Generators stay out until generator disposal exists —
-  // an abandoned frame runs no finalizers, so a release pinned to scope
-  // exit would never run for a consumer that stops iterating.
-  if (ctx.yieldType != null) { return; }
+  // Suspending bodies qualify: the release regions spill into the
+  // frame and catch both tags, so they release across suspensions, on
+  // cancellation, and — for a generator — through disposal, which
+  // cancels the frame at its suspended yield.
   var i = 0;
   while (i < params.length && i < paramTypes.length) {
     let param = params[i];
@@ -8274,17 +8272,16 @@ let checkVariableDeclaration = (
 
   // A simple `let` holding an owned resource is an implicit-drop
   // candidate: released at its block's exit unless something moves,
-  // reassigns, captures or escapes it (exitOwnScope decides). Async
-  // bodies qualify — the release regions spill into the frame and
-  // catch both tags — but generators stay out until generator disposal
-  // exists: an abandoned frame runs no finalizers, so a release pinned
-  // to scope exit would never run for a consumer that stops iterating.
+  // reassigns, captures or escapes it (exitOwnScope decides).
+  // Suspending bodies qualify: the release regions spill into the
+  // frame and catch both tags, so they release across suspensions, on
+  // cancellation, and — for a generator — through disposal, which
+  // cancels the frame at its suspended yield.
   // A nullable handle qualifies too — the release is null-guarded — but
   // not one initialized to literal null: an immutable binding of null
   // never holds a resource, so there is nothing to release.
   let dropHandleType = soleNonNullMember(declType) ?? declType;
   if (kind == "let" && pattern is IdentifierPattern &&
-      ctx.yieldType == null &&
       !(initType is NullType) &&
       ownershipHandleName(dropHandleType) == "Own") {
     let innerOpt = ownershipHandleInner(dropHandleType);
