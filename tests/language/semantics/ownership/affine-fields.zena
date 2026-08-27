@@ -1,0 +1,95 @@
+// @mode: check
+// Affine fields (ownership.md §Affine fields): a field holding an
+// owner makes the class carry the obligation, so only a resource
+// class may declare one, the field is immutable, and the class
+// declares its own dispose for the release glue to follow. Reads
+// borrow — a read must not mint a second owner.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+
+resource class File {
+  name: String;
+  new(this.name);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+
+// The blessed shape: resource class, immutable owner field, own dispose.
+resource class Dir {
+  entry: Own<File>;
+  new(this.entry);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+
+// A class whose only release action is its fields needs no written
+// dispose at all: the compiler synthesizes one that releases them.
+resource class JustHolds {
+  entry: Own<File>;
+  new(this.entry);
+}
+
+// A field read is a borrow, so member forwarding works...
+let peek = (d: Borrow<Dir>): i32 => d.entry.name.length;
+
+// ...and the read is not an owner.
+let steal = (d: Borrow<Dir>): void => {
+  let o: Own<File> = d.entry; // @error: not assignable
+};
+
+// A nullable owner field is fine, and reads as a nullable borrow.
+resource class MaybeDir {
+  entry: Own<File> | null;
+  new(this.entry);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+let peekMaybe = (d: Borrow<MaybeDir>): i32 => {
+  let e = d.entry;
+  if (e != null) {
+    return e.name.length;
+  }
+  return 0;
+};
+
+// A plain class may not hold an owner.
+class Plain {
+  entry: Own<File>; // @error: only a resource class
+  new(this.entry);
+}
+
+// The field is immutable: overwriting would need to release first.
+resource class Mut {
+  var entry: Own<File>; // @error: immutable
+  new(this.entry);
+  :Disposable.dispose(this: Own<this>): void {}
+}
+
+// With an INHERITED dispose, an override is required: how the
+// subclass's field releases compose with the superclass's cleanup is
+// its decision to write down.
+resource class Sub extends File { // @error: Declare an override
+  extra: Own<File>;
+  new(name: String, this.extra) : super(name);
+}
+
+// Structural members reject owners: adaptation copies.
+let intoRecord = (r: {h: Own<File>}): void => {}; // @error: record member
+
+// Containment is decided aggressively: a distinct alias over an owner
+// and a union with an owner arm both carry the obligation.
+distinct type Token = Own<File>;
+
+class SneakAlias {
+  t: Token; // @error: only a resource class
+  new(this.t);
+}
+
+class SneakUnion {
+  u: Own<File> | String; // @error: only a resource class
+  new(this.u);
+}
+
+// Even a resource class only supports the shapes reads and glue
+// handle: `Own<R>` and `Own<R> | null`.
+resource class UnionField {
+  u: Own<File> | String; // @error: not support
+  new(this.u);
+  :Disposable.dispose(this: Own<this>): void {}
+}

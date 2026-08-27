@@ -65,14 +65,19 @@ let recorded = (f: Borrow<File>): i32 => {
 let box = <T>(x: T): FixedArray<T> => [x];
 let escapes = (f: Borrow<File>): i32 => box(f).length; // @missing-error: may not be stored
 
-// An owner may be stored anywhere: `Own<R>` is first-class, and affine
-// rather than second-class. Nothing here is restricted.
-class OwnerCache {
-  var slot: Own<File>;
+// An owner may be stored in a resource class's field — affine rather
+// than second-class, the class carries the obligation onward
+// (ownership.md §Affine fields).
+resource class OwnerCache {
+  slot: Own<File>;
   new(this.slot);
+  :Disposable.dispose(this: Own<this>): void {}
 }
 
 export function main(): i32 {
   let f = new File('a');
-  return boxed(f) + inferred(f) + new OwnerCache(f).slot.name.length;
+  // Borrowing uses first: constructing the cache moves `f` into it.
+  let borrowedUses = boxed(f) + inferred(f);
+  let cache = new OwnerCache(f);
+  return borrowedUses + cache.slot.name.length;
 }

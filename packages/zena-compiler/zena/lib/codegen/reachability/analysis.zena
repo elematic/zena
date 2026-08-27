@@ -2626,10 +2626,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 let acc = cha.findImplementingAccessor(subCt, mName);
                 if (acc != null) {
                   this.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable));
-                } else if (mName == "==" || mName == "hashCode") {
-                  // A case class's synthesized ==/hashCode have no AST
-                  // node to find — reach the registered function by
-                  // key, deferred past its registration.
+                } else if (mName == "==" || mName == "hashCode" ||
+                    (mName == ":dispose" && subCt.hasSyntheticDispose)) {
+                  // A case class's synthesized ==/hashCode — and a
+                  // resource's synthesized :dispose — have no AST node
+                  // to find; reach the registered function by key,
+                  // deferred past its registration.
                   if (this.currentReachable) {
                     this.notePendingMemberReach(getClassMethodKey(getClassKey(subCt), mName));
                   }

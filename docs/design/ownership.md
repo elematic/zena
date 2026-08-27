@@ -1059,14 +1059,35 @@ class, uniformly across every mention. So the rule:
 
 > **A concrete field of affine type is legal only in a `resource class`.**
 
-"Concrete" means the affineness is visible at the declaration: `Own<R>`,
-`Own<R> | null`, or a class this rule has already made a resource. A plain
-class declaring one is an error that names the fix. There is no
-affine-but-not-resource category for such a class: it has something to
-release — the field — so resource-ness is the honest description, and every
-piece of existing machinery applies transitively. Construction yields
-`Own<C>`, mentions go through handles, implicit drop and `using` release the
-object, and releasing the object releases its fields (glue below).
+"Affine type" is decided by **containment, not spelling**: the check walks
+every union member and pierces distinct aliases, so `Own<R> | String` and
+`distinct type Token = Own<R>` are caught carrying an owner exactly as
+`Own<R>` is. Detection being general is what keeps the rule independent of
+how the formation rules for owner-containing types loosen later — a new way
+to build such a type does not need a matching update here. Support is
+narrower than detection, deliberately: the shapes reads and glue handle are
+`Own<R>` and `Own<R> | null`, and a field carrying an owner in any other
+shape is an error naming those, rather than a silently loose obligation. A
+plain class declaring any owner-carrying field is an error that names the
+fix. There is no affine-but-not-resource category for such a class: it has
+something to release — the field — so resource-ness is the honest
+description, and every piece of existing machinery applies transitively.
+Construction yields `Own<C>`, mentions go through handles, implicit drop
+and `using` release the object, and releasing the object releases its
+fields (glue below).
+
+**Borrow fields stay rejected, and that is forced rather than
+provisional.** A field lives in the heap and outlives any extent, so a
+borrow in one has outlived its lender — the second-class storage rule fires
+on every field, resource class or not. The derived-borrow *object* — a view
+holding a borrow plus derived state, built by a function that maps one
+borrow to another — is real, and it is the scoped-class future rather than
+an exception here: scopedness derives structurally exactly as affineness
+does, so a class containing second-class members would itself be
+second-class, its constructor's result deriving its extent from its borrow
+arguments the way a returned borrow derives from a borrow parameter today.
+Nothing in this section forecloses that; it arrives with `scoped T`
+(§"The two axes, side by side").
 
 **Extent is transitive; no scope is declared.** An owner carries its extent
 with it, so ownership forms a tree — field to object, object to whichever
@@ -1086,13 +1107,20 @@ same flow machinery that move-checks locals — the `this.file` path keys
 exist. A `var` affine field may be overwritten, and the store releases the
 previous value first; a `let` affine field is set once, in construction.
 
-**Release is glue after `:dispose`.** The resource contract already requires
-the class to write `:dispose` for its own obligation. The compiler appends
-releases for every affine field the dispose body did not move out, in
-reverse declaration order — the same compensation shape implicit drop
-applies to locals, decided by the same verdict machinery. A dispose that
-needs a different order moves the fields out and releases them itself, and
-the glue then has nothing left to do.
+**Release is glue after `:dispose`, and the dispose itself may be
+implicit.** A class whose only release action is its fields writes no
+`:dispose` at all: the compiler synthesizes one whose whole body is the
+field glue, which is what satisfies the resource contract — the fields
+ARE the release action, so holding owners costs no ceremony. A written
+dispose runs first, and the compiler appends releases for every affine
+field it did not move out, in reverse declaration order — the same
+compensation shape implicit drop applies to locals. A dispose that needs
+a different order moves the fields out and releases them itself, and the
+glue then has nothing left to do. The one case that still requires
+writing something is a subclass with owner fields under an *inherited*
+dispose: an override does not chain to the superclass's automatically,
+so how the two compose is the subclass's decision, and the override
+(possibly empty) is where it is written down.
 
 **Structural types reject affine members.** A record or tuple member of
 affine type is an error: structural values convert by adaptation,

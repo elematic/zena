@@ -3673,6 +3673,32 @@ let wrapResourceInBorrow = (ctx: CheckerContext, ct: ClassType): Type => {
 };
 
 /**
+ * The type a READ of a field of type `t` yields. An affine field reads
+ * as a borrow — a read must not mint a second owner; moving a field
+ * out is a consuming method's privilege (ownership.md §Affine fields).
+ * A nullable owner keeps its null arm: `Own<R> | null` reads as
+ * `Borrow<R> | null`. Everything else reads as itself.
+ */
+let borrowWrapFieldRead = (ctx: CheckerContext, t: Type): Type => {
+  let nonNull = soleNonNullMember(t);
+  let core = nonNull ?? t;
+  if (ownershipHandleName(core) != "Own") { return t; }
+  let inner = ownershipHandleInner(core);
+  if (inner == null) { return t; }
+  let borrow = ctx.resolveTypeName("Borrow");
+  if (borrow == null || !(borrow is TypeAliasType)) { return t; }
+  if (borrow.typeParameters == null) { return t; }
+  let args = new GrowableArray<Type>();
+  args.push(inner);
+  let borrowed = instantiateTypeAliasType(borrow, args);
+  if (nonNull == null) { return borrowed; }
+  let arms = new GrowableArray<Type>();
+  arms.push(borrowed);
+  arms.push(new NullType());
+  return createUnionType(arms, null, null);
+};
+
+/**
  * Whether `t` is **second-class**: a value of it may not outlive the extent
  * it was borrowed from, so it may not be stored in the heap or returned
  * except to the caller that supplied the borrow it derives from.
@@ -3694,6 +3720,32 @@ let isSecondClass = (t: Type): boolean => {
   let inner = ownershipHandleInner(t);
   if (inner == null) { return false; }
   return borrowInnerRestricts(inner);
+};
+
+/**
+ * Whether a value of `t` can carry an owner — the general containment
+ * test behind ownership.md's "types containing one". Aggressive on
+ * purpose: it pierces distinct aliases and walks every union member,
+ * so the affine-field and structural-member rules stay accurate
+ * however the formation rules for owner-containing types loosen later.
+ * `Borrow` and `Unmanaged` carry no obligation, and a class type never
+ * appears bare while carrying one — a resource class has no unwrapped
+ * form, and a class holding an owner is forced to be a resource.
+ */
+let typeCarriesOwner = (t: Type): boolean => {
+  if (ownershipHandleName(t) == "Own") { return true; }
+  if (t is UnionT) {
+    for (let m in t.types) {
+      if (typeCarriesOwner(m)) { return true; }
+    }
+    return false;
+  }
+  if (t is TypeAliasType) {
+    if (isOwnershipWrapper(t)) { return false; }
+    if (t.resolving) { return false; }
+    return typeCarriesOwner(t.target);
+  }
+  return false;
 };
 
 /**
@@ -3769,6 +3821,31 @@ let rejectSecondClassStorage = (
     "A '" + typeToString(t) + "' may not be stored in " + where + ". A borrow may not " +
     "outlive the scope it was borrowed from, and " + where + " outlives every scope one " +
     "could have been lent for.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
+};
+
+/**
+ * Rejects an affine type as a structural member — a record field or a
+ * tuple element. Structural values convert by adaptation, adaptation
+ * copies, and a copy would duplicate the owner; there is also no
+ * dispose slot to hang release glue on. The affine twin of
+ * rejectSecondClassStorage: borrows are kept out of structural types
+ * for extent reasons, owners for duplication reasons
+ * (ownership.md §Affine fields).
+ */
+let rejectAffineStructuralMember = (
+  ctx: CheckerContext,
+  t: Type,
+  where: String,
+  loc: SourceLocation | null
+): void => {
+  if (!typeCarriesOwner(t)) { return; }
+  ctx.error(
+    "A '" + typeToString(t) + "' may not be " + where + ": structural " +
+    "values copy when they adapt, and a copy would duplicate the owner. " +
+    "Hold it in a resource class's field instead.",
     DiagnosticCode.TypeMismatch,
     loc
   );
@@ -4395,6 +4472,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     for (let prop in properties) {
       let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, allowInlineTuple);
       rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
+      rejectAffineStructuralMember(ctx, resolved, "a record member", prop.typeAnnotation.loc);
             props[prop.name.name] = resolved;
       if (prop.optional) {
         optionals ??= new HashSet<String>();
@@ -4409,6 +4487,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     while (i < elementTypes.length) {
       let resolved = resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple);
       rejectSecondClassStorage(ctx, resolved, "a tuple", elementTypes[i].loc);
+      rejectAffineStructuralMember(ctx, resolved, "a tuple element", elementTypes[i].loc);
             elTypes.push(resolved);
       i += 1;
     }
@@ -12317,6 +12396,119 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   // way case classes nominally implement Hashable — but the member must
   // exist, or implicit drop would have nothing to call and `Own<R>` would
   // mean "unique but never released". See docs/design/ownership.md §Resource.
+  // Affine fields (ownership.md §Affine fields): a field of affine type
+  // is an obligation the object carries, so only a resource class may
+  // declare one — resource-ness is what governs every reference to the
+  // object. The field is immutable (moving out and overwriting are a
+  // consuming method's privilege, not yet implemented). Runs before the
+  // dispose-contract check below, because a class whose only release
+  // action is its fields gets `:dispose` SYNTHESIZED here.
+  var ownAffineFields = 0;
+  var sawOwnDispose = false;
+  for (let member in cd.body) {
+    if (member is MethodDefinition) {
+      let mName = match (member.name) {
+        case Identifier {name}: name
+        case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+          case Identifier {name}: name
+          case MemberExpression {property}: property.name
+          case _: "<symbol>"
+        }
+        case _: ""
+      };
+      if (mName == ":dispose") { sawOwnDispose = true; }
+    }
+    if (member is FieldDefinition && !member.isStatic && !member.isAbstract &&
+        !member.isDeclare) {
+      let fName = match (member.name) {
+        case Identifier {name}: name
+        case _: ""
+      };
+      if (fName == "" || !classType.members.has(fName)) { continue; }
+      let fType = classType.members[fName].type;
+      // Detection is deliberately broader than support: anything that
+      // can carry an owner is caught, so no alias or union shape
+      // smuggles an obligation past the rule.
+      if (!typeCarriesOwner(fType)) { continue; }
+      if (!cd.isResource) {
+        ctx.error(
+          "Field '" + fName + "' holds an owner, so '" + className +
+          "' carries its release obligation — only a resource class may " +
+          "hold one. Declare 'resource class " + className + "'.",
+          DiagnosticCode.IncompatibleTypes,
+          member.loc
+        );
+        continue;
+      }
+      let fCore = soleNonNullMember(fType) ?? fType;
+      if (ownershipHandleName(fCore) != "Own") {
+        ctx.error(
+          "Field '" + fName + "' carries an owner in a shape the field " +
+          "rules do not support yet. Declare it as 'Own<R>' or " +
+          "'Own<R> | null' directly.",
+          DiagnosticCode.IncompatibleTypes,
+          member.loc
+        );
+        continue;
+      }
+      if (member.mutability != null && member.mutability == "var") {
+        ctx.error(
+          "An owner field is immutable: overwriting one would need to " +
+          "release the previous value first, which is not implemented " +
+          "yet. Declare '" + fName + "' without 'var'.",
+          DiagnosticCode.IncompatibleTypes,
+          member.loc
+        );
+      }
+      ownAffineFields += 1;
+      // The release glue is synthesized by lowering, so nothing in the
+      // AST names the fields' `:dispose` — root it the way `using`
+      // does, and the region needs the exception infrastructure.
+      let inner = ownershipHandleInner(fCore);
+      if (inner != null) {
+        let resources = ownedResourceClasses(inner);
+        if (resources != null) {
+          let deps = ctx.currentDependencies();
+          if (deps != null) {
+            deps.needsExceptionInfra = true;
+            for (let resource in resources) {
+              let rSymId = (resource.genericSource ?? resource).symbolId;
+              deps.referencedSymbols.add(rSymId);
+              deps.referencedClassMethods.add(
+                i32ToString(rSymId as i32) + ".:dispose");
+            }
+          }
+        }
+      }
+    }
+  }
+  if (ownAffineFields > 0 && !sawOwnDispose) {
+    if (classType.members.has(":dispose")) {
+      // An inherited dispose releases only the superclass's state, and
+      // an override does not chain to it automatically, so how the two
+      // compose is the subclass's decision. Requiring the override
+      // keeps that decision written down.
+      ctx.error(
+        "Resource class '" + className + "' holds owner fields but " +
+        "inherits ':dispose' from a superclass. Declare an override " +
+        "(its body may be empty) so the fields release after it.",
+        DiagnosticCode.IncompatibleTypes,
+        cd.loc
+      );
+    } else {
+      // The fields ARE the release action: synthesize the `:dispose`
+      // the resource contract asks for. Lowering emits the field glue
+      // as its whole body, so holding owners needs no ceremony.
+      let dt = new FunctionType(
+        new GrowableArray<Type>(), new GrowableArray<String>(),
+        new VoidType());
+      let dm = new MethodInfo(dt);
+      dm.receiverKind = ReceiverKind.Owning;
+      classType.members[":dispose"] = dm;
+      classType.hasSyntheticDispose = true;
+    }
+  }
+
   if (cd.isResource && !cd.isAbstract) {
     if (!classType.members.has(":dispose")) {
       ctx.error(
@@ -12349,6 +12541,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       }
     }
   }
+
 
   // Check for unimplemented abstract fields in non-abstract classes.
   if (!cd.isAbstract && !cd.isSealed) {
@@ -14594,7 +14787,7 @@ let resolveMemberType = (
         let fieldType = ct.members[propName].type;
         // Substitute type parameters if this is an instantiated generic class.
         let subField = substituteTypeParams(ct.typeParameters, ct.typeArguments, fieldType);
-        return substituteThisType(ct as Type, subField);
+        return borrowWrapFieldRead(ctx, substituteThisType(ct as Type, subField));
       }
       // Check methods.
       if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
@@ -14637,7 +14830,7 @@ let resolveMemberType = (
       if (it.members.has(propName) && it.members[propName] is FieldInfo) {
         let fieldType = it.members[propName].type;
         let subField = substituteTypeParams(it.typeParameters, it.typeArguments, fieldType);
-        return substituteThisType(it as Type, subField);
+        return borrowWrapFieldRead(ctx, substituteThisType(it as Type, subField));
       }
       if (it.members.has(propName) && it.members[propName] is MethodInfo) {
         let methodInfo = it.members[propName];

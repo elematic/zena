@@ -1,0 +1,94 @@
+// @mode: run
+// @result: 888
+// Affine fields end to end: releasing a resource releases its owner
+// fields through compiler glue — after the user's dispose body, in
+// reverse declaration order — transitively through the ownership
+// tree, with a nullable field skipped when null.
+import {Own, Disposable} from 'zena:ownership';
+
+/** Records events as decimal digits, so ordering is observable. */
+class Log {
+  var seq: i32 = 0;
+  add(d: i32): void {
+    this.seq = this.seq * 10 + d;
+  }
+}
+
+resource class Res {
+  #log: Log;
+  id: i32;
+  new(log: Log, this.id) : #log = log;
+  :Disposable.dispose(this: Own<this>): void {
+    this.#log.add(this.id);
+  }
+}
+
+/** Two owner fields; its own dispose logs first, then the glue
+ * releases b (2) and a (1). */
+resource class Wrap {
+  #log: Log;
+  a: Own<Res>;
+  b: Own<Res>;
+  new(log: Log, this.a, this.b) : #log = log;
+  :Disposable.dispose(this: Own<this>): void {
+    this.#log.add(9);
+  }
+}
+
+/** No written dispose at all: the synthesized one releases the
+ * fields, in reverse declaration order. */
+resource class Bare {
+  a: Own<Res>;
+  b: Own<Res>;
+  new(this.a, this.b);
+}
+
+/** A nullable owner field: released when present, skipped when null. */
+resource class Opt {
+  #log: Log;
+  m: Own<Res> | null;
+  new(log: Log, this.m) : #log = log;
+  :Disposable.dispose(this: Own<this>): void {
+    this.#log.add(8);
+  }
+}
+
+export let main = (): i32 => {
+  let log = new Log();
+
+  if (true) {
+    let w = new Wrap(log, new Res(log, 1), new Res(log, 2));
+  }
+  // Implicit drop released w at the inner exit: dispose (9), then the
+  // glue in reverse declaration order (2, then 1).
+  if (log.seq != 921) {
+    return 0 - 1;
+  }
+
+  log.seq = 0;
+  if (true) {
+    let w = new Bare(new Res(log, 4), new Res(log, 5));
+  }
+  // The synthesized dispose is just the glue: b (5), then a (4).
+  if (log.seq != 54) {
+    return 0 - 4;
+  }
+
+  log.seq = 0;
+  if (true) {
+    let o = new Opt(log, null);
+  }
+  if (log.seq != 8) {
+    return 0 - 2;
+  }
+
+  log.seq = 0;
+  if (true) {
+    let o = new Opt(log, new Res(log, 3));
+  }
+  if (log.seq != 83) {
+    return 0 - 3;
+  }
+
+  return 888;
+};

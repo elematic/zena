@@ -75,6 +75,7 @@ import {
   declScopeDrop, lowerFor, lowerForIn, lowerIf, lowerIfExpression,
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
   returnMultiThroughFinally,
+  collectAffineDropFields, lowerFieldDropRegions, lowerSyntheticDispose,
   lowerLetCondition, lowerMatch, lowerParamDropRegions,
   lowerScopeDropRegion, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
@@ -678,6 +679,10 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     let lowerer = new FunctionLowerer(wasm, func);
     return lowerer.lowerCaseClassHash();
   }
+  if (func.isSyntheticDispose) {
+    let lowerer = new FunctionLowerer(wasm, func);
+    return lowerer.lowerSyntheticDispose();
+  }
   // Constructor phases (non-nullable-refs.md, Construction protocol):
   // the value phase and written-body phase of a superclass
   // constructor, lowered from the same AST (or synthesized shape) as
@@ -1197,6 +1202,14 @@ export final class FunctionLowerer {
         }
       }
     }
+    // A resource's `:dispose` wraps its body in release regions for
+    // the class's own affine fields (ownership.md §Affine fields).
+    let dropFieldNames = new GrowableArray<String>();
+    let dropFieldTypes = new GrowableArray<Type>();
+    if (this.func.methodName != null &&
+        (this.func.methodName as String) == ':dispose') {
+      collectAffineDropFields(this.#cx(), dropFieldNames, dropFieldTypes);
+    }
     if (body is BlockStatement) {
       // Value-block function bodies: a trailing expression statement
       // that conforms to the return type IS the return value (the
@@ -1241,7 +1254,10 @@ export final class FunctionLowerer {
         }
         withReturn.push(new ReturnStatement(tailExpr,
             tailExpr.loc) as Statement);
-        if (dropParamSyms.length > 0) {
+        if (dropFieldNames.length > 0) {
+          lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
+              0, dropParamSyms, withReturn, 0, withReturn.length);
+        } else if (dropParamSyms.length > 0) {
           lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
               withReturn, 0, withReturn.length);
         } else {
@@ -1249,7 +1265,10 @@ export final class FunctionLowerer {
         }
         tailExpr = null;
       } else {
-        if (dropParamSyms.length > 0) {
+        if (dropFieldNames.length > 0) {
+          lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
+              0, dropParamSyms, stmts, 0, bodyCount);
+        } else if (dropParamSyms.length > 0) {
           lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
               stmts, 0, bodyCount);
         } else {
@@ -1291,7 +1310,7 @@ export final class FunctionLowerer {
         }
         return this.b.finish();
       }
-      if (dropParamSyms.length > 0) {
+      if (dropParamSyms.length > 0 || dropFieldNames.length > 0) {
         // The release region wraps a statement list; spell the
         // expression body as one — a return when the function produces
         // a value (the value computes inside the region, before the
@@ -1308,8 +1327,8 @@ export final class FunctionLowerer {
           synthesized.push(
               new ExpressionStatement(bodyExpr, bodyExpr.loc) as Statement);
         }
-        lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
-            synthesized, 0, synthesized.length);
+        lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
+            0, dropParamSyms, synthesized, 0, synthesized.length);
         if (this.#cx().reachable) {
           if (sig.returns.length == 0) {
             this.b.retVoid();
@@ -1352,6 +1371,11 @@ export final class FunctionLowerer {
   /** Synthesized case-class operator== (see ir/equality.zena). */
   lowerCaseClassEq(): IrBody {
     return lowerCaseClassEq(this.#cx());
+  }
+
+  /** Synthesized resource `:dispose` (see ir/control-flow.zena). */
+  lowerSyntheticDispose(): IrBody {
+    return lowerSyntheticDispose(this.#cx());
   }
 
   /** Synthesized case-class hashCode (see ir/equality.zena). */

@@ -16,13 +16,14 @@ import {
 import { HashMap } from 'zena:map';
 import { String } from 'zena:string';
 import {
-  BindingPattern, BlockStatement, BooleanLiteral, CatchClause, Expression, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression,
+  BindingPattern, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression,
 } from '../../ast.zena';
 import {
   ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType,
   RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
-  isOwnershipWrapper, ownershipHandleInner, soleNonNullMember, UnionType,
+  isOwnershipWrapper, ownershipHandleInner, ownershipHandleName,
+  soleNonNullMember, UnionType,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -37,7 +38,7 @@ import {
   eraseTypeParameters, findImplementedInterfaceTransitive,
   getNonNullableType, typeToValTypeWithSub,
 } from '../type-mapping.zena';
-import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
+import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
 import { inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, returnSlotVt, throwStmt, varDecl } from './lowering.zena';
 import {
@@ -1457,7 +1458,7 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
   if (method == null) {
     // The checker required the member, so this means RTA pruned it —
     // the dependency `checkUsingStatement` records is what roots it.
-    bail(cx, 'using dispose method not found');
+    bail(cx, 'using dispose method not found ' + (cKey as String));
   }
   let sig = method.signature;
   if (sig.params.length != 1) {
@@ -1620,6 +1621,125 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
 /** Whether the checker marked this declaration for release at scope exit. */
 export let declScopeDrop = (cx: LoweringContext, vd: VariableDeclaration): boolean => {
   return cx.func.model.hasScopeExitDrop(vd.pattern as Node);
+};
+
+/**
+ * The dispose glue's field list: the affine fields the lowered
+ * function's class declares itself, in declaration order, with their
+ * (instantiated) member types. Empty for anything but a `:dispose` of
+ * a class with such fields.
+ */
+export let collectAffineDropFields = (cx: LoweringContext,
+    names: GrowableArray<String>, types: GrowableArray<Type>): void => {
+  let ctOpt = cx.func.classType;
+  if (ctOpt == null) { return; }
+  let ct = ctOpt;
+  let declOpt = cx.func.classDecl;
+  if (declOpt == null || !(declOpt is ClassDeclaration)) { return; }
+  for (let member in declOpt.body) {
+    if (!(member is FieldDefinition)) { continue; }
+    if (member.isStatic || member.isAbstract || member.isDeclare) { continue; }
+    let nameNode = member.name;
+    if (!(nameNode is Identifier)) { continue; }
+    let fName = nameNode.name;
+    if (!ct.members.has(fName)) { continue; }
+    let fType = ct.members[fName].type;
+    let core = soleNonNullMember(fType) ?? fType;
+    if (ownershipHandleName(core) != "Own") { continue; }
+    names.push(fName);
+    types.push(fType);
+  }
+};
+
+/**
+ * The synthesized `:dispose` of a resource class whose only release
+ * action is its owner fields: no written body, just the field release
+ * regions around nothing (ownership.md §Affine fields). The signature
+ * is the consuming receiver alone.
+ */
+export let lowerSyntheticDispose = (cx: LoweringContext): IrBody => {
+  let sig = cx.func.signature;
+  if (sig.params.length != 1) {
+    bail(cx, 'synthetic dispose shape');
+  }
+  let entry = cx.b.newBlock();
+  let thisParam = cx.b.blockParam(entry, sig.params[0]);
+  cx.b.switchTo(entry);
+  cx.thisValue = thisParam;
+
+  let names = new GrowableArray<String>();
+  let types = new GrowableArray<Type>();
+  collectAffineDropFields(cx, names, types);
+  if (names.length == 0) {
+    bail(cx, 'synthetic dispose without owner fields');
+  }
+  let emptyBody = new GrowableArray<Statement>();
+  let emptySyms = new GrowableArray<Symbol>();
+  lowerFieldDropRegions(cx, names, types, 0, emptySyms, emptyBody, 0, 0);
+  if (cx.reachable) {
+    cx.b.retVoid();
+  }
+  return cx.b.finish();
+};
+
+/**
+ * Release regions for a resource's affine fields, wrapped around its
+ * `:dispose` body: the user's release action runs inside, and each
+ * field releases after it, in reverse declaration order — first field
+ * outermost, exactly like parameters (ownership.md §Affine fields).
+ * Past the last field, owned parameters take their regions, then the
+ * statements. Fields are immutable, so reading each once at region
+ * entry reads the value the finalizer releases.
+ */
+export let lowerFieldDropRegions = (cx: LoweringContext,
+    names: Array<String>, types: Array<Type>, idx: i32,
+    paramSyms: Array<Symbol>,
+    body: Array<Statement>, start: i32, end: i32): void => {
+  if (idx >= names.length) {
+    lowerParamDropRegions(cx, paramSyms, 0, body, start, end);
+    return;
+  }
+  let ctOpt = cx.func.classType;
+  if (ctOpt == null) {
+    bail(cx, 'field drop without class');
+  }
+  let ct = ctOpt;
+  let cKey = getClassKey(ct);
+  let info = if (let (true, ci) = cx.wasm.classInfos.get(cKey)) ci else null;
+  if (info == null) {
+    bail(cx, 'field drop class not discovered');
+  }
+  let st = info.structType;
+  var lookupName = names[idx];
+  if (ct.fieldSetterNames != null) {
+    let mapping = ct.fieldSetterNames as HashMap<String, String>;
+    if (let (true, mapped) = mapping.get(lookupName)) {
+      lookupName = mapped;
+    }
+  }
+  if (lookupName.length > 0 && lookupName.sliceBytes(0, 1) == "#") {
+    lookupName = getClassPrivateFieldKey(cKey, lookupName);
+  }
+  let fieldIdx = st.fieldIndexByName(lookupName);
+  if (fieldIdx < 0) {
+    bail(cx, 'field drop slot missing');
+  }
+  let fieldRef = cx.b.addRef(new IrRefField(st, lookupName));
+  let value = cx.b.emit(IrOp.struct_get, st.fields[fieldIdx].type,
+      cx.thisValue, fieldRef);
+  let owners = disposeOwnerClasses(cx, types[idx]);
+
+  let mirrored = new GrowableArray<SymbolId>();
+  for (var k = start; k < end; k += 1) {
+    cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
+  }
+  lowerFinallyRegion(cx, mirrored, true, null,
+      (scope, resultVar, saved) => {
+        lowerFieldDropRegions(cx, names, types, idx + 1, paramSyms,
+            body, start, end);
+        finishProtectedArm(cx, scope, resultVar, -1);
+      },
+      () => { emitMaybeDispose(cx, value, owners); });
 };
 
 /**

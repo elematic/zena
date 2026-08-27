@@ -301,6 +301,14 @@ export final class ClassType extends Type {
    * properties".
    */
   var isResource: boolean = false;
+
+  /**
+   * Whether the checker synthesized this resource class's `:dispose` —
+   * the class holds owner fields and wrote no release action of its
+   * own, so the implicit dispose is just the fields' release glue.
+   * RTA registers the node-less method from this flag.
+   */
+  var hasSyntheticDispose: boolean = false;
   /**
    * The members of the class (fields, methods, and accessors).
    * Fields are preserved in their concrete memory layout order.
@@ -528,6 +536,7 @@ let substituteInType = (
         // off this flag, and an instantiation that dropped it would get
         // no field and silently skip disown/adopt's state check.
         inst.isResource = ct.isResource;
+        inst.hasSyntheticDispose = ct.hasSyntheticDispose;
         inst.isAbstract = ct.isAbstract;
         inst.isExtension = ct.isExtension;
         inst.isSealed = ct.isSealed;
@@ -939,6 +948,7 @@ export let instantiateClassType = (
   // See the matching copy in instantiateClassType: resource-ness is
   // declared at the class and survives instantiation.
   result.isResource = source.isResource;
+  result.hasSyntheticDispose = source.hasSyntheticDispose;
   result.isAbstract = source.isAbstract;
   result.isExtension = source.isExtension;
   if (source.isExtension) {

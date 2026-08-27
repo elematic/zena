@@ -4333,6 +4333,46 @@ Constructors and async expression bodies are not yet covered. In an
 generator disposal — a consumer that stops iterating cancels the frame
 at its suspended yield, and the releases unwind with it.
 
+### Owner fields
+
+A field may hold an owner — but only in a `resource class`, because the
+field's release obligation becomes the object's:
+
+```zena
+resource class Dir {
+  entry: Own<File>;
+  new(this.entry);
+}   // disposing a Dir releases entry — no written dispose needed
+```
+
+A class whose only release action is its fields needs no written
+`:dispose` at all: the compiler synthesizes one that releases them.
+Write your own when you have cleanup of your own — it runs first, and
+the fields still release after it:
+
+```zena
+resource class LoggedDir {
+  entry: Own<File>;
+  new(this.entry);
+  :Disposable.dispose(this: Own<this>): void { log('closing'); }
+}   // dispose runs, then entry releases
+```
+
+The rules: the class must be a `resource class`; the field is immutable
+(`var` owner fields are rejected); reading the field yields a `Borrow`
+— `d.entry` is a `Borrow<File>`, never a second owner — and a nullable
+owner field (`Own<File> | null`) reads as a nullable borrow and is
+skipped by the release when null. Owner fields release in reverse
+declaration order after the dispose body, so disposal is transitive
+through whole ownership trees without forwarding code. One case still
+asks for ceremony: a subclass with owner fields under an *inherited*
+`:dispose` must declare an override (its body may be empty), because
+how its releases compose with the superclass's cleanup is its decision
+to write down.
+
+Records and tuples may not hold owners: structural values copy when
+they adapt, and a copy would duplicate the obligation.
+
 The compiler releases a binding only when it still owns the value at every
 exit. A binding is left alone when anything moves it (a call taking
 `Own<R>`, `disown`, a consuming method, rebinding), reassigns it, captures

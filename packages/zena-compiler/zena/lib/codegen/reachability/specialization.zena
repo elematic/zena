@@ -285,6 +285,14 @@ export final class Specializer implements SpecializerInterface {
         this.registerClassMethod(classType, classDecl, "<constructor>", null, false, false, null, model);
       }
 
+      if (classType.hasSyntheticDispose) {
+        // A resource class whose only release action is its owner
+        // fields: the checker synthesized its `:dispose`, and lowering
+        // emits the field glue as its whole body.
+        let dFunc = this.registerClassMethod(classType, classDecl, ":dispose", null, false, false, null, model);
+        dFunc.isSyntheticDispose = true;
+      }
+
       // Discover constructor and field initializers
       for (let member in classDecl.body) {
         if (member is MethodDefinition) {
@@ -803,6 +811,17 @@ export final class Specializer implements SpecializerInterface {
 
       let hashFunc = this.registerClassMethod(ct, classDecl, "hashCode", null, false, false, null, sourceModel);
       hashFunc.isCaseClassHash = true;
+    }
+    if (ct.name == "Bare") {
+      throw new Error("DEBUG site1 Bare hasSynth=" +
+          (if (ct.hasSyntheticDispose) "y" else "n"));
+    }
+    if (ct.hasSyntheticDispose) {
+      // A resource class whose only release action is its owner
+      // fields: the checker synthesized its `:dispose`, and lowering
+      // emits the field glue as its whole body.
+      let dFunc = this.registerClassMethod(ct, classDecl, ":dispose", null, false, false, null, sourceModel);
+      dFunc.isSyntheticDispose = true;
     }
 
     // Register implicit interface getters/setters for specialized classes
@@ -1879,6 +1898,10 @@ export final class Specializer implements SpecializerInterface {
         eqFunc.isCaseClassEq = true;
         let hashFunc = this.registerClassMethod(ct, cd, "hashCode", null, false, false, null, sourceModel);
         hashFunc.isCaseClassHash = true;
+      }
+      if (ct.hasSyntheticDispose) {
+        let dFunc = this.registerClassMethod(ct, cd, ":dispose", null, false, false, null, sourceModel);
+        dFunc.isSyntheticDispose = true;
       }
     }
 
