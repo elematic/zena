@@ -256,7 +256,7 @@ This document tracks completed work and planned features. For project instructio
 Features that distinguish Zena from TypeScript:
 
 - **Ownership & Affine Resources** (Track O): `Own<T>`/`Borrow<T>`/`Unmanaged<T>`, second-class borrows, a checker flow graph, and implicit drop — one release mechanism shared by WIT handles, WASI descriptors, linear-memory allocations and FFI pointers. Plan of record in [ownership.md](docs/design/ownership.md); phase 2 step 4 above is its first milestone.
-- **Numeric Unit Types & Units of Measure**: Statically verified physical units and units of measure (e.g. preventing adding meters to feet at compile time).
+- **Numeric Unit Types & Units of Measure**: Statically verified physical units and units of measure (e.g. preventing adding meters to feet at compile time). Design in [units-of-measure.md](docs/design/units-of-measure.md).
 - **SIMD**: the `v128` type, all 236 fixed-width vector instructions, and the
   signed and float shaped types (`I32x4`, `F32x4` and siblings) with
   elementwise operators are implemented — see [simd.md](docs/design/simd.md).

@@ -4,97 +4,14 @@ This document outlines the design for making Zena a first-class language for sci
 
 ## 1. Units of Measure
 
-Inspired by F#, Zena will support a static "Units of Measure" system. This allows numeric types to be annotated with units (like meters, seconds, kg) to prevent accidental mixing of incompatible units and to enforce dimensional correctness.
+Numeric types annotated with units — meters, seconds, kilograms — so that the
+checker rejects adding a length to a time and derives the unit of a product or
+quotient. Erased before code generation.
 
-### 1.1 Core Concepts
-
-- **Compile-Time Only**: Units are erased at compile time. They have zero runtime cost. `10<m>` compiles to a plain `i32` or `f64`.
-- **Dimensional Analysis**: The compiler checks that units match in assignments and additions, and calculates the resulting unit for multiplication and division.
-- **Generics**: Functions can be generic over units.
-
-### 1.2 Syntax
-
-#### Defining Units
-
-We introduce a `unit` keyword (or reuse `distinct type` with a modifier) to define base units.
-
-```zena
-// Base units
-unit Meter;
-unit Second;
-unit Kilogram;
-
-// Derived units
-type Speed = Meter / Second;
-type Acceleration = Speed / Second; // or Meter / Second^2
-```
-
-#### Annotating Types
-
-Numeric types can be parameterized by a unit.
-
-```zena
-let dist: f64<Meter> = 100.0;
-let time: f64<Second> = 9.58;
-```
-
-#### Literals
-
-The user experience for literals is critical. We aim for a syntax that feels natural, like `100 m`.
-
-**Proposal A: Postfix Identifier (Preferred)**
-Allow a numeric literal to be immediately followed by a unit identifier.
-
-```zena
-let d = 100 m;      // 100 with unit Meter
-let t = 9.8 s;      // 9.8 with unit Second
-let v = 10 m/s;     // 10 with unit Meter/Second
-```
-
-_Parsing Challenge_: `100 m` could be ambiguous in some contexts (e.g., `return 100 m` vs `return 100; m;`).
-_Resolution_: Since `Literal Identifier` is currently invalid syntax (missing operator), we can parse this as a single unit-literal expression. We must ensure it doesn't conflict with future syntax.
-
-**Proposal B: Angle Brackets**
-Use the generic syntax.
-
-```zena
-let d = 100<m>;
-```
-
-**Proposal C: User-Defined Suffixes**
-Allow registering suffixes.
-
-```zena
-let d = 100m; // Requires 'm' to be a registered suffix, distinct from hex '0x...'
-```
-
-### 1.3 Arithmetic Semantics
-
-Units propagate through arithmetic operations:
-
-- `+`, `-`: Operands must have the same unit. Result has that unit.
-- `*`: Result unit is the product of operand units (`m * m = m^2`).
-- `/`: Result unit is the quotient (`m / s = m/s`).
-- Scalars: Dimensionless numbers (scalars) are the identity element.
-
-```zena
-let d = 100.0 m;
-let t = 10.0 s;
-let v = d / t; // Type is f64<Meter / Second>
-```
-
-### 1.4 Generic Units
-
-Functions should be able to operate on values with arbitrary units.
-
-```zena
-// 'u' is a unit variable
-func square<u>(x: f64<u>) -> f64<u^2> {
-  x * x
-}
-
-let area = square(10.0 m); // Returns 100.0 m^2
-```
+The design lives in [units-of-measure.md](units-of-measure.md): the split
+between dimension and unit, the operator and conversion rules, literal suffix
+syntax, unit polymorphism, and an incremental plan. That document supersedes
+the sketch that was here.
 
 ## 2. Vectors and Matrices
 
