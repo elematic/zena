@@ -133,7 +133,11 @@ function check(request: CheckRequest): void {
     // line of this document happened to be closest — so only the ones
     // that belong here become markers, and an error somewhere else goes
     // to the console pane, where it can say which file it came from.
-    post({type: 'diagnostics', id: request.id, diagnostics: all});
+    // stdlib (zena:*) warnings are excluded from project diagnostics.
+    const filtered = all.filter(
+      (d) => !d.file?.startsWith('zena:') || d.severity === 'error',
+    );
+    post({type: 'diagnostics', id: request.id, diagnostics: filtered});
 
     // Gated on *all* errors: an error in an imported module fails the
     // compile too, however far from this document it is.

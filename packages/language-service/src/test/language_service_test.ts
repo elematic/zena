@@ -373,6 +373,28 @@ export let main = () => {
     assert.ok(bytes, 'expected a binary');
   });
 
+  test('website regular expressions example', async () => {
+    const source = `import {regex} from 'zena:regex';
+
+export let main = () => {
+  // The \`regex\` template tag takes raw text — no double-escaped backslashes.
+  let pattern = regex\`^[a-z]+$\`;
+  console.log(\`\${pattern.test('hello')}\`);
+  console.log(\`\${pattern.test('Hello')}\`);
+};
+`;
+    const docPath = 'regex_example.zena';
+    service.openDocument(docPath, source);
+    const diags = service.check(docPath, source);
+    assert.strictEqual(
+      diags.length,
+      0,
+      `Unexpected diagnostics: ${JSON.stringify(diags)}`,
+    );
+    const bytes = service.compileToWasm(docPath, source);
+    assert.ok(bytes, 'expected a binary');
+  });
+
   test('test interface only', async () => {
     const source = `interface Animal {
   speak(): void;
