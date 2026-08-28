@@ -1,9 +1,97 @@
-import { Iterable } from 'zena:iterator';
+import { Iterable, Iterator } from 'zena:iterator';
+
+/**
+ * An Iterator that yields elements matching a predicate.
+ */
+export final class FilterIterator<T> implements Iterator<T> {
+  #iter: Iterator<T>;
+  #predicate: (item: T) => boolean;
+
+  new(iter: Iterator<T>, predicate: (item: T) => boolean) : #iter = iter, #predicate = predicate;
+
+  next(): inline (true, T) | inline (false, _) {
+    while (let (true, item) = this.#iter.next()) {
+      if (this.#predicate(item)) {
+        return (true, item);
+      }
+    }
+    return (false, _);
+  }
+}
+
+/**
+ * An Iterable that lazily filters elements using a predicate.
+ */
+export final class FilteredIterable<T> implements Iterable<T> {
+  #source: Iterable<T>;
+  #predicate: (item: T) => boolean;
+
+  new(source: Iterable<T>, predicate: (item: T) => boolean) : #source = source, #predicate = predicate;
+
+  :Iterable.iterator(): Iterator<T> {
+    return new FilterIterator<T>(this.#source.:Iterable.iterator(), this.#predicate);
+  }
+
+  filter(predicate: (item: T) => boolean): Iterable<T> {
+    return new FilteredIterable<T>(this, predicate);
+  }
+
+  contains(value: T): boolean {
+    for (let item in this) {
+      if (item == value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  all(predicate: (item: T) => boolean): boolean {
+    for (let item in this) {
+      if (!predicate(item)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: T) => boolean): boolean {
+    for (let item in this) {
+      if (predicate(item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R {
+    var acc = initial;
+    for (let item in this) {
+      acc = combine(acc, item);
+    }
+    return acc;
+  }
+
+  find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _) {
+    for (let item in this) {
+      if (predicate(item)) {
+        return (true, item);
+      }
+    }
+    return (false, _);
+  }
+}
 
 /**
  * Common iteration utilities for any collection that implements Iterable<T>.
  */
 export mixin IterableUtils<T> on Iterable<T> {
+  /**
+   * Returns a new iterable containing only the elements that match the predicate.
+   */
+  filter(predicate: (item: T) => boolean): Iterable<T> {
+    return new FilteredIterable<T>(this, predicate);
+  }
+
   /**
    * Checks if the collection contains the specified value using equality.
    */
@@ -66,3 +154,4 @@ export mixin IterableUtils<T> on Iterable<T> {
     return (false, _);
   }
 }
+

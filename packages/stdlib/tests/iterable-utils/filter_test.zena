@@ -1,0 +1,159 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {FixedArray} from 'zena:fixed-array';
+import {GrowableArray} from 'zena:growable-array';
+import {HashSet, OrderedHashSet} from 'zena:collections';
+import {FilteredIterable} from 'zena:iterable-utils';
+
+export let tests = suite('IterableUtils.filter', (): void => {
+  test('filters FixedArray elements', (ctx: TestContext): void => {
+    let arr = [1, 2, 3, 4, 5, 6];
+    let evens = arr.filter((x: i32) => x % 2 == 0);
+    
+    let result = new GrowableArray<i32>();
+    for (let x in evens) {
+      result.push(x);
+    }
+    
+    equal(result.length, 3);
+    equal(result[0], 2);
+    equal(result[1], 4);
+    equal(result[2], 6);
+  });
+
+  test('filters GrowableArray elements', (ctx: TestContext): void => {
+    let arr = new GrowableArray<i32>();
+    arr.push(10);
+    arr.push(15);
+    arr.push(20);
+    arr.push(25);
+    
+    let big = arr.filter((x: i32) => x > 15);
+    
+    let result = new GrowableArray<i32>();
+    for (let x in big) {
+      result.push(x);
+    }
+    
+    equal(result.length, 2);
+    equal(result[0], 20);
+    equal(result[1], 25);
+  });
+
+  test('returns empty iterable when no elements match', (ctx: TestContext): void => {
+    let arr = [1, 3, 5];
+    let evens = arr.filter((x: i32) => x % 2 == 0);
+    
+    var count = 0;
+    for (let _x in evens) {
+      count += 1;
+    }
+    equal(count, 0);
+  });
+
+  test('returns all elements when all match', (ctx: TestContext): void => {
+    let arr = [2, 4, 6];
+    let evens = arr.filter((x: i32) => x % 2 == 0);
+    
+    var count = 0;
+    for (let _x in evens) {
+      count += 1;
+    }
+    equal(count, 3);
+  });
+
+  test('filters HashSet elements', (ctx: TestContext): void => {
+    let set = new HashSet<String>();
+    set.add('apple');
+    set.add('banana');
+    set.add('avocado');
+    set.add('cherry');
+    
+    let aWords = set.filter((s: String) => s.startsWith('a'));
+    var count = 0;
+    for (let s in aWords) {
+      isTrue(s.startsWith('a'));
+      count += 1;
+    }
+    equal(count, 2);
+  });
+
+  test('filters OrderedHashSet elements preserving order', (ctx: TestContext): void => {
+    let set = new OrderedHashSet<i32>();
+    set.add(10);
+    set.add(3);
+    set.add(8);
+    set.add(15);
+    set.add(2);
+    
+    let evens = set.filter((x: i32) => x % 2 == 0);
+    let result = new GrowableArray<i32>();
+    for (let x in evens) {
+      result.push(x);
+    }
+    equal(result.length, 3);
+    equal(result[0], 10);
+    equal(result[1], 8);
+    equal(result[2], 2);
+  });
+
+  test('supports chained filtering', (ctx: TestContext): void => {
+    let arr = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    let filtered = arr
+      .filter((x: i32) => x % 2 == 0)
+      .filter((x: i32) => x > 5);
+    
+    let result = new GrowableArray<i32>();
+    for (let x in filtered) {
+      result.push(x);
+    }
+    
+    equal(result.length, 3);
+    equal(result[0], 6);
+    equal(result[1], 8);
+    equal(result[2], 10);
+  });
+
+  test('supports combinators on FilteredIterable', (ctx: TestContext): void => {
+    let arr = [1, 2, 3, 4, 5, 6];
+    let evens = arr.filter((x: i32) => x % 2 == 0);
+    
+    isTrue(evens.contains(4));
+    isFalse(evens.contains(3));
+    
+    isTrue(evens.all((x: i32) => x % 2 == 0));
+    isFalse(evens.all((x: i32) => x > 4));
+    
+    isTrue(evens.some((x: i32) => x == 6));
+    isFalse(evens.some((x: i32) => x == 5));
+    
+    let sum = (evens as FilteredIterable<i32>).fold<i32>(0, (acc: i32, x: i32) => acc + x);
+    equal(sum, 12);
+    
+    if (let (true, val) = evens.find((x: i32) => x > 2)) {
+      equal(val, 4);
+    } else {
+      isTrue(false);
+    }
+  });
+
+  test('is lazily evaluated', (ctx: TestContext): void => {
+    var evaluations = 0;
+    let arr = [1, 2, 3, 4, 5];
+    let filtered = arr.filter((x: i32) => {
+      evaluations += 1;
+      return x % 2 == 0;
+    });
+    
+    // Creating the filtered iterable should not run the predicate
+    equal(evaluations, 0);
+    
+    // Finding the first match stops after evaluating up to that element
+    if (let (true, _found) = filtered.find((x: i32) => x == 2)) {
+      // Elements 1 and 2 evaluated
+      equal(evaluations, 2);
+    } else {
+      isTrue(false);
+    }
+  });
+});

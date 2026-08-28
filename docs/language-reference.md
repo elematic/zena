@@ -4034,15 +4034,19 @@ export interface Iterable<T> {
 
   /** Finds the first element matching the predicate, or (false, _) if none. */
   find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _);
+
+  /** Returns a new iterable containing only the elements that match the predicate. */
+  filter(predicate: (item: T) => boolean): Iterable<T>;
 }
 ```
 
 #### IterableUtils\<T\>
 
-`IterableUtils<T>` is a mixin on `Iterable<T>` that provides standard implementations of `contains`, `all`, `some`, `fold`, and `find` using `for (let item in this)` loops:
+`IterableUtils<T>` is a mixin on `Iterable<T>` that provides standard implementations of `contains`, `all`, `some`, `fold`, `find`, and `filter` using `for (let item in this)` loops:
 
 ```zena
 export mixin IterableUtils<T> on Iterable<T> {
+  filter(predicate: (item: T) => boolean): Iterable<T> { ... }
   contains(value: T): boolean { ... }
   all(predicate: (item: T) => boolean): boolean { ... }
   some(predicate: (item: T) => boolean): boolean { ... }

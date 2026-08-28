@@ -41,6 +41,9 @@ be applied to any class implementing `Iterable<T>`.
   Finds the first matching element. Uses Zena's zero-allocation inline
   multi-value returns instead of `Option<T>` for maximum performance (matching
   `Map.get()`).
+- **`filter(predicate: (T) => boolean): Iterable<T>`**:
+  Returns a lazy `FilteredIterable<T>` backed by a generator that yields only
+  matching elements.
 
 ### Intentional Omissions
 
