@@ -16,7 +16,7 @@ title: Home
     <div class="main">
       <div class="hero-warning-banner">
         <span class="badge danger">Warning</span>
-        <span>Zena is under active development, changing rapidly, and not ready for use.</span>
+        <span>Zena is under active development, changing rapidly, full of bugs, and not ready for use.</span>
         <a href="#project-status">See Project Status &rarr;</a>
       </div>
       <h1 class="heading">
@@ -1227,17 +1227,41 @@ happen frequently.
   </div>
 </div>
 
-Note: "Complete" is relative to the very early stage of Zena's development. Completed items
-have been implemented in their initial forms, but still need a lot more testing, documentation,
-benchmarking, and optimization. All features change significantly based on feedback and real-world
-usage.
+::: note
+"Complete" is relative to the very early stage of Zena's development.
+Completed items have been implemented in their initial forms, but contain many
+bugs and still need significantly more testing, documentation, benchmarking, and
+optimization. All features, "completed" or not, may change based on feedback
+and real-world usage.
+:::
+
+Zena's development is currently very informal: plans and bugs are tracked in
+various documents in and out of the repo; code changes are committed directly
+or via private branches; and there is a single human developer with no external
+contributions. For Zena to be a reliable and truly open project, it will need to
+graduate to a more standard development process with issues, pull-requests with
+reviews, and a contribution process.
 
 ## AI usage
 
-Zena is implemented almost entirely by generative AI, with human guidance, oversight, and design.
-Zena is a real language with real goals, meant to be used by real humans, but also something of a
-test of how much AI can help build complex, reliable software — and not just a compiler, but the
-whole ecosystem a language needs. See [Built with AI](/development/built-with-ai/).
+Zena is implemented almost entirely by generative AI, with human guidance,
+oversight, and design. It is an active language project with real goals, meant
+for real-world use rather than a one-off code dump.
+
+Zena is also a test of how AI can help build complex, reliable software across
+an entire language ecosystem.
+
+Code review is currently uneven—some code is reviewed closely, some is not.
+Because of this, the codebase contains rough implementations and many bugs.
+The goal is to converge on syntax, semantics, and performance first, and
+improve the implementation over time.
+
+Documentation, especially the design docs, is also AI-generated and often
+suffers from outdated references and verbose, flowery AI-speak.
+
+Major cleanup is needed across the board.
+
+See [Built with AI](/development/built-with-ai/).
 
   </div>
 </div>
