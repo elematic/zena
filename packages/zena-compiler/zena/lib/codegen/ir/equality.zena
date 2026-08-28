@@ -14,7 +14,7 @@ import {
   instantiateClassType,
 } from '../../types.zena';
 import {
-  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeRef, ValTypeRefNull, ValTypeStructRef, refTargetOf,
+  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeStructRef, refTargetOf,
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, WasmField, WasmFunction, WasmSignature, WasmStruct,
@@ -608,6 +608,10 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
   if (va is ValTypeF64 && vb is ValTypeF64) {
     return cx.b.binary(IrOp.f64_eq, i32vt, a, b2);
   }
+  if (va is ValTypeV128 && vb is ValTypeV128) {
+    let eqVec = cx.b.emit(IrOp.simd_binary, new ValTypeV128(), cx.b.pushExtra(twoValues(a, b2)), 0x23);
+    return cx.b.emit(IrOp.simd_unary, i32vt, eqVec, 0x63);
+  }
   // Reference operands: String content equality, or a class
   // operator== behind the reference fast path.
   let ctA = cx.classTypeOfValue(a);
@@ -673,6 +677,16 @@ export let lowerHashIntrinsic = (cx: LoweringContext, call: CallExpression): i32
     let norm64 = cx.b.binary(IrOp.f64_add, new ValTypeF64() as ValType, v, zero64);
     let bits = cx.b.emit(IrOp.i64_reinterpret_f64, new ValTypeI64(), norm64, -1);
     return hashI64Fold(cx, bits);
+  }
+  if (vv is ValTypeV128) {
+    let i32vt = new ValTypeI32() as ValType;
+    let e0 = cx.b.emit(IrOp.simd_extract_lane, i32vt, v, cx.b.pushExtra(twoValues(0x1B, 0)));
+    let e1 = cx.b.emit(IrOp.simd_extract_lane, i32vt, v, cx.b.pushExtra(twoValues(0x1B, 1)));
+    let e2 = cx.b.emit(IrOp.simd_extract_lane, i32vt, v, cx.b.pushExtra(twoValues(0x1B, 2)));
+    let e3 = cx.b.emit(IrOp.simd_extract_lane, i32vt, v, cx.b.pushExtra(twoValues(0x1B, 3)));
+    let x01 = cx.b.binary(IrOp.i32_xor, i32vt, e0, e1);
+    let x23 = cx.b.binary(IrOp.i32_xor, i32vt, e2, e3);
+    return cx.b.binary(IrOp.i32_xor, i32vt, x01, x23);
   }
   let ctV = cx.classTypeOfValue(v);
   if (ctV == null) {

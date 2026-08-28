@@ -21,13 +21,13 @@ import {
   typeToString, isNarrowIntType, isUnsignedIntType, narrowIntBits,
 } from '../../types.zena';
 import {
-  ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeRef, isRefValType, valTypeEquals,
+  ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, isRefValType, valTypeEquals,
 } from '../wasm.zena';
 import { eraseTypeParameters, typeToValTypeWithSub } from '../type-mapping.zena';
 import { getClassKey, parseI64OrU64Literal } from '../codegen-utils.zena';
 import { IrOp, IrRefField } from './ir.zena';
 import {
-  LoweringContext, ZirUnsupported, noValues, oneValue,
+  LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
 import { lowerErasedEq } from './equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
@@ -384,6 +384,18 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   if (bin.operator == "==" || bin.operator == "!=") {
     let lb2 = substitutedBaseType(cx, bin.left);
     let rb2 = substitutedBaseType(cx, bin.right);
+    let lvt = if (lb2 != null) typeToValTypeWithSub(cx.wasm, lb2, cx.func) else null;
+    let rvt = if (rb2 != null) typeToValTypeWithSub(cx.wasm, rb2, cx.func) else null;
+    if (lvt is ValTypeV128 && rvt is ValTypeV128) {
+      let left = lowerExpr(cx, bin.left, null);
+      let right = lowerExpr(cx, bin.right, null);
+      let eqVec = cx.b.emit(IrOp.simd_binary, new ValTypeV128(), cx.b.pushExtra(twoValues(left, right)), 0x23);
+      let same = cx.b.emit(IrOp.simd_unary, new ValTypeI32(), eqVec, 0x63);
+      if (bin.operator == "!=") {
+        return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+      }
+      return same;
+    }
     if (lb2 != null && rb2 != null &&
         refReprType(cx, lb2) && refReprType(cx, rb2)) {
       var eqL = lowerExpr(cx, bin.left, null);
