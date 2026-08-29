@@ -77,7 +77,7 @@ export class ZenaSearch extends LightElement {
       }
     }
     return false;
-  };
+  }
 
   async #setOpen(open: boolean): Promise<void> {
     this.open = open;

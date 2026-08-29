@@ -9,6 +9,7 @@
 
 import '@zena-lang/playground';
 import './zena-appearance.js';
+import './zena-code-carousel.js';
 import './zena-code-copy.js';
 import './zena-code-group.js';
 import './zena-example-playground.js';
@@ -19,6 +20,7 @@ import './zena-search.js';
 import './zena-sidebar.js';
 
 export {ZenaAppearance} from './zena-appearance.js';
+export {ZenaCodeCarousel} from './zena-code-carousel.js';
 export {ZenaCodeCopy} from './zena-code-copy.js';
 export {ZenaCodeGroup} from './zena-code-group.js';
 export {ZenaExamplePlayground} from './zena-example-playground.js';

@@ -13,30 +13,164 @@ title: Home
 -->
 <div class="hero">
   <div class="container">
-    <div class="main">
-      <div class="hero-warning-banner">
-        <span class="badge danger">Warning</span>
-        <span>Zena is under active development, changing rapidly, full of bugs, and not ready for use.</span>
-        <a href="#project-status">See Project Status &rarr;</a>
+    <div class="hero-warning-banner">
+      <span class="badge danger">Warning</span>
+      <span>Zena is under active development, changing rapidly, full of bugs, and not ready for use.</span>
+      <a href="#project-status">See Project Status &rarr;</a>
+    </div>
+    <div class="hero-grid">
+      <div class="main">
+        <div class="text">
+          <h1>Zena</h1>
+          <p class="title">A fast, familiar, modern language for WebAssembly GC</p>
+          <p class="tagline">Syntax inspired by TypeScript. Modern features from Rust, Swift, Dart, and Kotlin. Designed from the ground up for ergonomics, safety, short compile times, and small binaries.</p>
+        </div>
+        <div class="actions">
+          <div class="action">
+            <a class="button medium brand" href="/guide/getting-started/">Get started</a>
+          </div>
+          <div class="action">
+            <a class="button medium alt" href="/guide/why-zena/">Why Zena?</a>
+          </div>
+          <div class="action">
+            <a class="button medium alt" href="https://github.com/elematic/zena" target="_blank" rel="noreferrer">View on GitHub</a>
+          </div>
+        </div>
       </div>
-      <h1 class="heading">
-        <span class="name clip">Zena</span>
-        <span class="text">A fast, familiar, modern language
-for WebAssembly GC</span>
-      </h1>
-      <p class="tagline">Syntax inspired by TypeScript. Modern features from Rust, Swift, Dart, and Kotlin. Designed from the ground up for ergonomics, safety, short compile times, and small binaries.</p>
-      <div class="actions">
-        <div class="action">
-          <a class="button medium brand" href="/guide/getting-started/">Get started</a>
-        </div>
-        <div class="action">
-          <a class="button medium alt" href="/guide/why-zena/">Why Zena?</a>
-        </div>
-        <div class="action">
-          <a class="button medium alt" href="https://github.com/elematic/zena" target="_blank" rel="noreferrer">View on GitHub</a>
-        </div>
+      <div class="hero-code">
+        <zena-code-carousel>
+
+<figure>
+<figcaption>Arrays &amp; records</figcaption>
+
+```zena
+let user = {
+  name: 'Ada',
+  roles: ['admin', 'developer', 'guest'],
+};
+
+let activeRoles = user.roles
+  .filter((r) => r != 'guest')
+  .map((r) => r.toUpperCase());
+
+for (let role in activeRoles) {
+  console.log(`${user.name}: ${role}`);
+}
+```
+
+<div class="carousel-output">
+  <div class="output-label">Output</div>
+  <pre><code>&rarr; Ada: ADMIN
+&rarr; Ada: DEVELOPER</code></pre>
+</div>
+</figure>
+
+<figure>
+<figcaption>Classes</figcaption>
+
+```zena
+class Counter {
+  var count: i32 = 0;
+  #step: i32;
+
+  new(this.#step);
+
+  increment() {
+    this.count += this.#step;
+  }
+}
+
+let c = new Counter(5);
+c.increment();
+console.log(`Count: ${c.count}`);
+```
+
+<div class="carousel-output">
+  <div class="output-label">Output</div>
+  <pre><code>&rarr; Count: 5</code></pre>
+</div>
+</figure>
+
+<figure>
+<figcaption>Pattern matching</figcaption>
+
+```zena
+sealed class Shape {
+  case Circle(radius: f64)
+  case Rect(width: f64, height: f64)
+}
+
+let area = (shape: Shape): f64 => match (shape) {
+  case Circle {radius}: 3.14159 * radius * radius
+  case Rect {width, height}: width * height
+};
+
+let shape = new Circle(10.0);
+console.log(`Area: ${area(shape)}`);
+```
+
+<div class="carousel-output">
+  <div class="output-label">Output</div>
+  <pre><code>&rarr; Area: 314.159</code></pre>
+</div>
+</figure>
+
+<figure>
+<figcaption>Pipelines</figcaption>
+
+```zena
+"Echo!"
+  |> shout($)
+  |> repeat($, 2)
+  |> console.log($);
+```
+
+<div class="carousel-output">
+  <div class="output-label">Output</div>
+  <pre><code>&rarr; ECHO!ECHO!</code></pre>
+</div>
+</figure>
+
+<figure>
+<figcaption>Maps</figcaption>
+
+```zena
+let scores = {'José' => 99, 'Kim' => 97};
+scores['Xavier'] = 98;
+
+if (let (true, score) = scores.get('Xavier'))) {
+  console.log(`Xavier scored ${score}`);
+} else {
+  console.log(`No score for Xavier`);
+}
+```
+
+<div class="carousel-output">
+  <div class="output-label">Output</div>
+  <pre><code>&rarr; Xavier scored 98</code></pre>
+</div>
+</figure>
+
+<figure>
+<figcaption>Expressions</figcaption>
+
+```zena
+let count = try { parseI32(input) } catch (e) { 0 };
+console.log(
+  if (count == 1) { '1 item' } else { `${count} items`}
+)
+```
+
+<div class="carousel-output">
+  <div class="output-label">Output</div>
+  <pre><code>&rarr; 5 items</code></pre>
+</div>
+</figure>
+
+        </zena-code-carousel>
       </div>
     </div>
+
   </div>
 </div>
 
@@ -1239,8 +1373,7 @@ Zena's development is currently very informal: plans and bugs are tracked in
 various documents in and out of the repo; code changes are committed directly
 or via private branches; and there is a single human developer with no external
 contributions. For Zena to be a reliable and truly open project, it will need to
-graduate to a more standard development process with issues, pull-requests with
-reviews, and a contribution process.
+graduate to a standard development process.
 
 ## AI usage
 
