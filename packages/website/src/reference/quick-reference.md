@@ -415,8 +415,9 @@ typed—you cannot mix `i32` and `u32` without explicit casting.
 let a = 1 + 2; // Addition
 let b = 5 - 3; // Subtraction
 let c = 2 * 3; // Multiplication
-let d = 10 / 3; // Division (integer: 3)
+let d = 10 / 3; // Division (float: 3.333...)
 let e = 10 % 3; // Modulo (1)
+let f = 2 ** 10; // Exponentiation (1024)
 ```
 
 ### Compound Assignment
@@ -428,6 +429,7 @@ x -= 3; // x is now 12
 x *= 2; // x is now 24
 x /= 4; // x is now 6
 x %= 4; // x is now 2
+x **= 3; // x is now 8
 ```
 
 Nullish assignment assigns only when the left side is `null`:

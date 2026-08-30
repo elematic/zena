@@ -1670,6 +1670,7 @@ export final class Parser {
   #matchCompoundAssignment(): String | null {
     if (this.#match(TokenType.PlusEquals)) { return '+'; }
     if (this.#match(TokenType.MinusEquals)) { return '-'; }
+    if (this.#match(TokenType.StarStarEquals)) { return '**'; }
     if (this.#match(TokenType.StarEquals)) { return '*'; }
     if (this.#match(TokenType.SlashEquals)) { return '/'; }
     if (this.#match(TokenType.PercentEquals)) { return '%'; }
@@ -1863,7 +1864,7 @@ export final class Parser {
   }
   
   #parseFactor(): Expression {
-    var expr = this.#parseUnary();
+    var expr = this.#parseExponentiation();
     
     while (this.#check(TokenType.Star) || this.#check(TokenType.Slash) || this.#check(TokenType.Percent)) {
       let op = this.#advance();
@@ -1871,7 +1872,25 @@ export final class Parser {
         let st = this.#peek();
         new Identifier("", this.#makeLocation(st))
       } else {
-        this.#parseUnary()
+        this.#parseExponentiation()
+      };
+      let opStr = op.value;
+      expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));
+    }
+    
+    return expr;
+  }
+  
+  #parseExponentiation(): Expression {
+    var expr = this.#parseUnary();
+    
+    if (this.#match(TokenType.StarStar)) {
+      let op = this.#previous();
+      let right = if (this.#check(TokenType.Semi) || this.#check(TokenType.RParen) || this.#check(TokenType.Comma) || this.#check(TokenType.RBrace) || this.#isAtEnd()) {
+        let st = this.#peek();
+        new Identifier("", this.#makeLocation(st))
+      } else {
+        this.#parseExponentiation()
       };
       let opStr = op.value;
       expr = new BinaryExpression(opStr, expr, right, this.#makeLocation(op));

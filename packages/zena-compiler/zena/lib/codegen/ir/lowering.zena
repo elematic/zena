@@ -69,6 +69,7 @@ import {
 } from './patterns.zena';
 import {
   isUnsignedNode, lowerAs, lowerBinary, lowerUnary, mapBinaryOp,
+  lowerIntPow, lowerFloatPow,
 } from './operators.zena';
 import {
   declScopeDrop, lowerFor, lowerForIn, lowerIf, lowerIfExpression,
@@ -6322,6 +6323,16 @@ export final class FunctionLowerer {
     }
     if (!valTypeEquals(vt, this.#valueType(rhs))) {
       this.#bail('mixed compound assignment types');
+    }
+    if (opName == "**") {
+      let unsigned = this.#isUnsignedNode(target) ||
+          this.#isUnsignedNode(assign.value);
+      if (vt is ValTypeI32 || vt is ValTypeI64) {
+        return lowerIntPow(this.#cx(), current, rhs, vt, unsigned);
+      }
+      if (vt is ValTypeF32 || vt is ValTypeF64) {
+        return lowerFloatPow(this.#cx(), current, rhs, vt);
+      }
     }
     let unsigned = this.#isUnsignedNode(target) ||
         this.#isUnsignedNode(assign.value);

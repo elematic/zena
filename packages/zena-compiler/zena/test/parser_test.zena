@@ -116,23 +116,48 @@ export let tests = suite('Parser', (): void => {
       equal(expr.operator, '/');
     });
 
-    test('should respect operator precedence', (ctx: TestContext): void => {
-      let source = 'a + b * c;';
+    test('should parse exponentiation', (ctx: TestContext): void => {
+      let source = 'a ** b;';
       let mod = parse(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BinaryExpression;
       
-      // Should be a + (b * c), so outer is +
-      equal(expr.operator, '+');
+      equal(expr.operator, '**');
+    });
+
+    test('should parse right-associative exponentiation', (ctx: TestContext): void => {
+      let source = 'a ** b ** c;';
+      let mod = parse(source, 'test.zena');
       
-      // Left should be identifier a
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BinaryExpression;
+      
+      // Should be a ** (b ** c), so outer is **
+      equal(expr.operator, '**');
       let left = expr.left as Identifier;
       equal(left.name, 'a');
-      
-      // Right should be b * c
       let right = expr.right as BinaryExpression;
-      equal(right.operator, '*');
+      equal(right.operator, '**');
+      let rLeft = right.left as Identifier;
+      equal(rLeft.name, 'b');
+      let rRight = right.right as Identifier;
+      equal(rRight.name, 'c');
+    });
+
+    test('should respect exponentiation over multiplication precedence', (ctx: TestContext): void => {
+      let source = 'a * b ** c;';
+      let mod = parse(source, 'test.zena');
+      
+      let stmt = mod.body[0] as ExpressionStatement;
+      let expr = stmt.expression as BinaryExpression;
+      
+      // Should be a * (b ** c), so outer is *
+      equal(expr.operator, '*');
+      let left = expr.left as Identifier;
+      equal(left.name, 'a');
+      let right = expr.right as BinaryExpression;
+      equal(right.operator, '**');
     });
   });
 

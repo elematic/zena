@@ -9,6 +9,7 @@
  * shapes exactly.
  */
 import { String } from 'zena:string';
+import { GrowableArray } from 'zena:growable-array';
 import { parseF64 } from 'zena:string-convert';
 import {
   AsExpression, BinaryExpression, Expression, NullLiteral,
@@ -457,6 +458,16 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     let divOp = if (resVt is ValTypeF32) IrOp.f32_div else IrOp.f64_div;
     return cx.b.binary(divOp, resVt, lConv, rConv);
   }
+  if (bin.operator == "**") {
+    let unsigned = isUnsignedNode(cx, bin.left) || isUnsignedNode(cx, bin.right);
+    if (leftType is ValTypeI32 || leftType is ValTypeI64) {
+      return lowerIntPow(cx, left, right, leftType, unsigned);
+    }
+    if (leftType is ValTypeF32 || leftType is ValTypeF64) {
+      return lowerFloatPow(cx, left, right, leftType);
+    }
+    bail(cx, 'pow on non-numeric scalar');
+  }
   let unsigned = isUnsignedNode(cx, bin.left) || isUnsignedNode(cx, bin.right);
   let op = mapBinaryOp(cx, bin.operator, leftType, unsigned);
   let isComparison = bin.operator == "==" || bin.operator == "!=" ||
@@ -464,6 +475,180 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
       bin.operator == ">" || bin.operator == ">=";
   let resultType = if (isComparison) new ValTypeI32() as ValType else leftType;
   return cx.b.binary(op, resultType, left, right);
+};
+
+export let lowerIntPow = (cx: LoweringContext, baseVal: i32, expVal: i32,
+    vt: ValType, unsigned: boolean): i32 => {
+  let is64 = vt is ValTypeI64;
+  let zero = if (is64) cx.b.constI64(0 as i64, vt) else cx.b.constI32(0, vt);
+  let one = if (is64) cx.b.constI64(1 as i64, vt) else cx.b.constI32(1, vt);
+  let shiftOne = if (is64) cx.b.constI64(1 as i64, vt) else cx.b.constI32(1, vt);
+
+  let mulOp = if (is64) IrOp.i64_mul else IrOp.i32_mul;
+  let andOp = if (is64) IrOp.i64_and else IrOp.i32_and;
+  let shrOp = if (is64) (if (unsigned) IrOp.i64_shr_u else IrOp.i64_shr_s)
+              else (if (unsigned) IrOp.i32_shr_u else IrOp.i32_shr_s);
+  let neOp = if (is64) IrOp.i64_ne else IrOp.i32_ne;
+  let gtOp = if (is64) (if (unsigned) IrOp.i64_gt_u else IrOp.i64_gt_s)
+             else (if (unsigned) IrOp.i32_gt_u else IrOp.i32_gt_s);
+
+  let header = cx.b.newBlock();
+  let loopBody = cx.b.newBlock();
+  let mulB = cx.b.newBlock();
+  let nextB = cx.b.newBlock();
+  let exitB = cx.b.newBlock();
+
+  let accParam = cx.b.blockParam(header, vt);
+  let baseParam = cx.b.blockParam(header, vt);
+  let expParam = cx.b.blockParam(header, vt);
+
+  let initArgs = new GrowableArray<i32>();
+  initArgs.push(one);
+  initArgs.push(baseVal);
+  initArgs.push(expVal);
+  cx.b.br(header, initArgs);
+
+  cx.b.switchTo(header);
+  let cond = cx.b.binary(gtOp, new ValTypeI32(), expParam, zero);
+  let exitArgs = new GrowableArray<i32>();
+  exitArgs.push(accParam);
+  cx.b.brIf(cond, loopBody, noValues(), exitB, exitArgs);
+
+  cx.b.switchTo(loopBody);
+  let isOddBit = cx.b.binary(andOp, vt, expParam, one);
+  let isOdd = cx.b.binary(neOp, new ValTypeI32(), isOddBit, zero);
+  let nextAccParam = cx.b.blockParam(nextB, vt);
+  let notOddArgs = new GrowableArray<i32>();
+  notOddArgs.push(accParam);
+  cx.b.brIf(isOdd, mulB, noValues(), nextB, notOddArgs);
+
+  cx.b.switchTo(mulB);
+  let newAcc = cx.b.binary(mulOp, vt, accParam, baseParam);
+  let oddArgs = new GrowableArray<i32>();
+  oddArgs.push(newAcc);
+  cx.b.br(nextB, oddArgs);
+
+  cx.b.switchTo(nextB);
+  let nextBase = cx.b.binary(mulOp, vt, baseParam, baseParam);
+  let nextExp = cx.b.binary(shrOp, vt, expParam, shiftOne);
+  let loopArgs = new GrowableArray<i32>();
+  loopArgs.push(nextAccParam);
+  loopArgs.push(nextBase);
+  loopArgs.push(nextExp);
+  cx.b.br(header, loopArgs);
+
+  let result = cx.b.blockParam(exitB, vt);
+  cx.b.switchTo(exitB);
+  return result;
+};
+
+export let lowerFloatPow = (cx: LoweringContext, baseVal: i32, expVal: i32,
+    vt: ValType): i32 => {
+  let is64 = vt is ValTypeF64;
+  let oneF = if (is64) cx.b.constF64(1.0, vt) else cx.b.constF32(1.0, vt);
+  let mulOp = if (is64) IrOp.f64_mul else IrOp.f32_mul;
+  let divOp = if (is64) IrOp.f64_div else IrOp.f32_div;
+  let truncOp = if (is64) IrOp.i32_trunc_sat_f64_s else IrOp.i32_trunc_sat_f32_s;
+  let eqOp = if (is64) IrOp.f64_eq else IrOp.f32_eq;
+  let sqrtOp = if (is64) IrOp.f64_sqrt else IrOp.f32_sqrt;
+
+  let zeroI = cx.b.constI32(0, new ValTypeI32());
+  let oneI = cx.b.constI32(1, new ValTypeI32());
+  let halfF = if (is64) cx.b.constF64(0.5, vt) else cx.b.constF32(0.5, vt);
+
+  // Check if exp == 0.5 for sqrt
+  let isHalf = cx.b.binary(eqOp, new ValTypeI32(), expVal, halfF);
+  let notSqrtB = cx.b.newBlock();
+  let sqrtB = cx.b.newBlock();
+  let finalMergeB = cx.b.newBlock();
+  let finalResult = cx.b.blockParam(finalMergeB, vt);
+
+  cx.b.brIf(isHalf, sqrtB, noValues(), notSqrtB, noValues());
+
+  cx.b.switchTo(sqrtB);
+  let sqrtRes = cx.b.emit(sqrtOp, vt, baseVal, -1);
+  cx.b.br(finalMergeB, oneValue(sqrtRes));
+
+  cx.b.switchTo(notSqrtB);
+  // Truncate exponent to integer
+  let expI = cx.b.emit(truncOp, new ValTypeI32(), expVal, -1);
+  let isNeg = cx.b.binary(IrOp.i32_lt_s, new ValTypeI32(), expI, zeroI);
+  let negB = cx.b.newBlock();
+  let posB = cx.b.newBlock();
+  let absExpParam = cx.b.blockParam(posB, new ValTypeI32());
+
+  cx.b.brIf(isNeg, negB, noValues(), posB, oneValue(expI));
+
+  cx.b.switchTo(negB);
+  let posExp = cx.b.binary(IrOp.i32_sub, new ValTypeI32(), zeroI, expI);
+  cx.b.br(posB, oneValue(posExp));
+
+  cx.b.switchTo(posB);
+  // Repeated squaring on float base
+  let header = cx.b.newBlock();
+  let loopBody = cx.b.newBlock();
+  let mulB = cx.b.newBlock();
+  let nextB = cx.b.newBlock();
+  let exitB = cx.b.newBlock();
+
+  let accParam = cx.b.blockParam(header, vt);
+  let baseParam = cx.b.blockParam(header, vt);
+  let expParam = cx.b.blockParam(header, new ValTypeI32());
+
+  let initArgs = new GrowableArray<i32>();
+  initArgs.push(oneF);
+  initArgs.push(baseVal);
+  initArgs.push(absExpParam);
+  cx.b.br(header, initArgs);
+
+  cx.b.switchTo(header);
+  let cond = cx.b.binary(IrOp.i32_gt_s, new ValTypeI32(), expParam, zeroI);
+  let exitArgs = new GrowableArray<i32>();
+  exitArgs.push(accParam);
+  cx.b.brIf(cond, loopBody, noValues(), exitB, exitArgs);
+
+  cx.b.switchTo(loopBody);
+  let isOddBit = cx.b.binary(IrOp.i32_and, new ValTypeI32(), expParam, oneI);
+  let isOdd = cx.b.binary(IrOp.i32_ne, new ValTypeI32(), isOddBit, zeroI);
+  let nextAccParam = cx.b.blockParam(nextB, vt);
+  let notOddArgs = new GrowableArray<i32>();
+  notOddArgs.push(accParam);
+  cx.b.brIf(isOdd, mulB, noValues(), nextB, notOddArgs);
+
+  cx.b.switchTo(mulB);
+  let newAcc = cx.b.binary(mulOp, vt, accParam, baseParam);
+  let oddArgs = new GrowableArray<i32>();
+  oddArgs.push(newAcc);
+  cx.b.br(nextB, oddArgs);
+
+  cx.b.switchTo(nextB);
+  let nextBase = cx.b.binary(mulOp, vt, baseParam, baseParam);
+  let nextExp = cx.b.binary(IrOp.i32_shr_u, new ValTypeI32(), expParam, oneI);
+  let loopArgs = new GrowableArray<i32>();
+  loopArgs.push(nextAccParam);
+  loopArgs.push(nextBase);
+  loopArgs.push(nextExp);
+  cx.b.br(header, loopArgs);
+
+  let rawRes = cx.b.blockParam(exitB, vt);
+  cx.b.switchTo(exitB);
+
+  // If isNeg, return 1.0 / rawRes, else return rawRes
+  let invertB = cx.b.newBlock();
+  let doneB = cx.b.newBlock();
+  let powResParam = cx.b.blockParam(doneB, vt);
+
+  cx.b.brIf(isNeg, invertB, noValues(), doneB, oneValue(rawRes));
+
+  cx.b.switchTo(invertB);
+  let inverted = cx.b.binary(divOp, vt, oneF, rawRes);
+  cx.b.br(doneB, oneValue(inverted));
+
+  cx.b.switchTo(doneB);
+  cx.b.br(finalMergeB, oneValue(powResParam));
+
+  cx.b.switchTo(finalMergeB);
+  return finalResult;
 };
 
 export let lowerUnary = (cx: LoweringContext, un: UnaryExpression): i32 => {

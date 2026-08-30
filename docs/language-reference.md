@@ -1562,15 +1562,16 @@ Operators](#unary-operators-1) under operator overloading.
 
 ### Binary Operators
 
-Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`):
+Supported arithmetic operators for numeric types (`i32`, `u32`, `f32`, `f64`, `i64`, `u64`):
 
 - `+` (Addition / String Concatenation / Custom via `operator +`)
 - `-` (Subtraction)
 - `*` (Multiplication)
 - `/` (Division) - Always returns a floating-point value (`f32` or `f64`).
 - `%` (Modulo - integer types only) - Signed for `i32`, unsigned for `u32`.
+- `**` (Exponentiation) - Right-associative (`2 ** 3 ** 2` is `2 ** (3 ** 2) = 512`), with higher precedence than multiplication.
 
-Classes can define custom behavior for `+` via `operator +`. See [Operator
+Classes can define custom behavior for `+` and `**` via `operator +` and `operator **`. See [Operator
 Overloading](#operator-overloading). Extension classes over a primitive may do
 the same: the vector types in `zena:simd` define `+`, `-` and `*` as
 elementwise operations over a `v128`, where `a * b` multiplies lane i by lane
@@ -1664,6 +1665,7 @@ the result back.
 - `*=` (Multiply and assign)
 - `/=` (Divide and assign)
 - `%=` (Modulo and assign)
+- `**=` (Exponentiate and assign)
 - `??=` (Nullish assign — assign if `null`)
 
 ```zena
@@ -1673,6 +1675,7 @@ x -= 3;   // x is now 12
 x *= 2;   // x is now 24
 x /= 4;   // x is now 6
 x %= 4;   // x is now 2
+x **= 3;  // x is now 8
 ```
 
 The nullish assignment operator `??=` assigns the right-hand side only when the
