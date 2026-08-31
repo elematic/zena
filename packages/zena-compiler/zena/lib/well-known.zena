@@ -1,0 +1,138 @@
+// The standard library declarations the compiler has built-in knowledge of,
+// and where each one lives.
+//
+// The compiler cannot recognize these by name alone. A program may declare
+// its own `Array`, `Error` or `Iterator`, and treating one of those as the
+// standard library's applies stdlib lowering to a layout that does not
+// match it. Every check goes through `isWellKnown`, which compares two
+// things exactly: the declaration's name, and the library that owns the
+// module declaring it.
+//
+// Keying on the library rather than the file means a library may move its
+// declarations between its own files without touching this table. Moving a
+// declaration to a different library does change its entry, and because the
+// checked-in bootstrap carries the old one, such a move takes two steps:
+// add the new library here, reseed, then move the declaration.
+//
+// To give the compiler knowledge of another declaration, add a variant and
+// a row to `buildLocations`. Those are the only two places a well-known
+// declaration is written down.
+
+import { HashMap } from 'zena:map';
+import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
+import { stdlibLibraryOf } from './stdlib-manifest.zena';
+
+/** A standard library declaration the compiler treats specially. */
+export enum WellKnown {
+  /** `String`, which backs string literals and concatenation. */
+  StringClass,
+  /** `Box<T>`, which the compiler uses to heap-cell captured locals. */
+  BoxClass,
+  /** `TemplateStringsArray`, the first argument of a tagged template. */
+  TemplateStringsArrayClass,
+  /** `Error`, the type `throw` and `catch` trade in. */
+  ErrorClass,
+  /** `Iterator<T>` and `Iterable<T>`, the `for`-in protocol. */
+  IteratorInterface,
+  IterableInterface,
+  /** The array types, which back array literals and indexed `for`-in. */
+  ArrayInterface,
+  MutableArrayInterface,
+  FixedArrayClass,
+  ImmutableArrayClass,
+  GrowableArrayClass,
+  /** `Future<T>` and `CancelScope`, which `async`/`await` lower onto. */
+  FutureClass,
+  CancelScopeClass,
+  /** The three ownership handles, which are distinct type aliases. */
+  OwnAlias,
+  BorrowAlias,
+  UnmanagedAlias,
+}
+
+/** Where a well-known declaration lives: its library and its local name. */
+final class Location {
+  library: String;
+  name: String;
+  new(this.library, this.name);
+}
+
+var locations: HashMap<i32, Location> | null = null;
+
+let buildLocations = (): HashMap<i32, Location> => {
+  let t = new HashMap<i32, Location>();
+  let add = (w: WellKnown, library: String, name: String): void => {
+    t[w as i32] = new Location(library, name);
+  };
+  add(WellKnown.StringClass, 'string', 'String');
+  add(WellKnown.BoxClass, 'box', 'Box');
+  add(WellKnown.TemplateStringsArrayClass,
+      'template-strings-array', 'TemplateStringsArray');
+  add(WellKnown.ErrorClass, 'error', 'Error');
+  add(WellKnown.IteratorInterface, 'iterator', 'Iterator');
+  add(WellKnown.IterableInterface, 'iterator', 'Iterable');
+  add(WellKnown.ArrayInterface, 'array', 'Array');
+  add(WellKnown.MutableArrayInterface, 'array', 'MutableArray');
+  add(WellKnown.FixedArrayClass, 'fixed-array', 'FixedArray');
+  add(WellKnown.ImmutableArrayClass, 'immutable-array', 'ImmutableArray');
+  add(WellKnown.GrowableArrayClass, 'growable-array', 'GrowableArray');
+  // Declared in async/future.zena, a private file of zena:async. Keying on
+  // the library is what lets that be true without a prefix match.
+  add(WellKnown.FutureClass, 'async', 'Future');
+  add(WellKnown.CancelScopeClass, 'async', 'CancelScope');
+  add(WellKnown.OwnAlias, 'ownership', 'Own');
+  add(WellKnown.BorrowAlias, 'ownership', 'Borrow');
+  add(WellKnown.UnmanagedAlias, 'ownership', 'Unmanaged');
+  locations = t;
+  return t;
+};
+
+let locationOf = (w: WellKnown): Location => {
+  let t = if (locations != null) {
+    locations as HashMap<i32, Location>
+  } else {
+    buildLocations()
+  };
+  if (let (true, loc) = t.get(w as i32)) {
+    return loc;
+  }
+  // Unreachable unless a variant was added without a row.
+  throw new Error('No location registered for well-known declaration ' +
+      i32ToString(w as i32));
+};
+
+/** The library `w` is declared in. */
+export let wellKnownLibrary = (w: WellKnown): String => {
+  return locationOf(w).library;
+};
+
+/** The name `w` is declared under, inside its library. */
+export let wellKnownName = (w: WellKnown): String => {
+  return locationOf(w).name;
+};
+
+/**
+ * Whether a declaration named `name` in the module `modulePath` is the
+ * well-known declaration `w`.
+ *
+ * `modulePath` is the canonical id of the declaring module — `sourcePath`
+ * on a class, interface or mixin type, `declaringModule` on a type alias.
+ * Both halves are compared exactly, and a module outside the standard
+ * library belongs to no library and so matches nothing.
+ *
+ * The name is tested first because it rules out almost every call without
+ * touching the manifest.
+ */
+export let isWellKnown = (w: WellKnown, name: String,
+    modulePath: String): boolean => {
+  let loc = locationOf(w);
+  if (name != loc.name) {
+    return false;
+  }
+  let library = stdlibLibraryOf(modulePath);
+  if (library == null) {
+    return false;
+  }
+  return (library as String) == loc.library;
+};

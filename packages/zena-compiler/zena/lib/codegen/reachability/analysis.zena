@@ -32,6 +32,7 @@ import { walkEnter } from '../../visitor.zena';
 import { performance } from '../../time.zena';
 import { componentAbiModule } from '../component-emitter.zena';
 import { targetEmitsComponent } from '../../targets.zena';
+import { WellKnown, isWellKnown } from '../../well-known.zena';
 
 final class ParsedMethodRef {
   classSymId: SymbolId;
@@ -786,11 +787,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               (classDecl.sealedVariants as GrowableArray<SealedVariant>).length > 0) {
             this.extendedClassSymbols.add((classType.genericSource ?? classType).symbolId);
           }
-          if (classType.name == "String" && classType.sourcePath == "zena:string") {
+          if (isWellKnown(WellKnown.StringClass, classType.name,
+              classType.sourcePath)) {
             this.wasm.stringClass = classType;
-          } else if (classType.name == "TemplateStringsArray" && classType.sourcePath == "zena:template-strings-array") {
+          } else if (isWellKnown(WellKnown.TemplateStringsArrayClass,
+              classType.name, classType.sourcePath)) {
             this.wasm.templateStringsArrayClass = classType;
-          } else if (classType.name == "Box" && classType.sourcePath == "zena:box") {
+          } else if (isWellKnown(WellKnown.BoxClass, classType.name,
+              classType.sourcePath)) {
             this.wasm.boxClass = classType;
           }
           var ctWalk: ClassType | null = classType;
@@ -2202,7 +2206,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     return match (t) {
       case ClassType as ct: {
-        if (ct.name == "String" && ct.sourcePath == "zena:string") {
+        if (isWellKnown(WellKnown.StringClass, ct.name, ct.sourcePath)) {
           true
         } else {
           var found = false;
