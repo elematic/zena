@@ -182,17 +182,6 @@ When a bug is fixed, delete its entry — git history is the archive.
   Compare how arity is resolved for a call whose callee is already checked
   versus one resolved through the forward-declaration stub.
 
-### Inline tuples can be bound to a variable
-
-- **Found**: 2026-08-06 (same investigation).
-- **Severity**: low
-- **Details**: `let x = f();` where `f` returns `inline (i32, i32)` is
-  accepted. Inline tuples are return-position-only, so this should be an
-  error, but the diagnostic is only ever emitted from
-  `resolveTypeAnnotation`, and an inferred declaration has no annotation
-  to resolve. Pinned (as a comment, not a directive) in
-  `semantics/type-system/inline_tuple_restrictions.zena`.
-
 ### The stdlib cannot use a new language feature until the seed is re-cut
 
 - **Found**: 2026-08-06 (retiring the `ByteArray` primitive; the obvious
