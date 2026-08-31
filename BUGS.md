@@ -963,28 +963,6 @@ exceeds number of declared memories`. Reaching any linear-memory
   rejection has masked whatever the ZIR lowering does. See
   docs/design/result-option.md.
 
-### Bootstrap parser's generic-call lookahead scans across statement boundaries
-
-- **Found**: 2026-07-28 (writing the zena:url parser)
-- **Severity**: medium (rejects valid code; bootstrap-only, so it is also a
-  compiler divergence)
-- **Workaround**: avoid writing `>` immediately followed by `(` — hoist the
-  operand into a local (`x > MAX` instead of `x > (255 as i64)`).
-- **Details**: `#isGenericCall()` (parser.ts) scans forward from any `<` for a
-  depth-balanced `>` and commits to parsing type arguments when the token
-  after it is `(`. The scan explicitly ignores `;`, `{`, `}` and `)` ("just
-  rely on depth"), so it happily pairs a `<` in one statement with a `>` in a
-  later one. This rejects ordinary code:
-  ```zena
-  for (var i = 0; i < xs.length; i += 1) {
-    if (xs[i] > (2)) { return 1; }
-  }
-  ```
-  with "Expected '>' after type arguments. Got Dot". The self-hosted parser
-  accepts and correctly compiles the same code, so the two disagree. The scan
-  should stop at a statement boundary (`;`, `{`, `}`) before concluding a
-  generic call.
-
 ### Bootstrap parser rejects a method call on a new-expression
 
 - **Found**: 2026-07-28 (writing the zena:url tests)
