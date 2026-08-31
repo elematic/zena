@@ -16,7 +16,14 @@
  *    generator's next(), with three differences (§3):
  *      1. Suspensions park rather than yield: `frame.$state = pc`,
  *         register the frame on the awaited future as a `Task`,
- *         and plain-`return`.
+ *         and plain-`return`. **An await allocates nothing** — the
+ *         frame IS the waiter (it implements `Task` and subscribes
+ *         itself), a settle allocates nothing (waiters pull), and an
+ *         already-settled await is one queue hop, no allocation. The
+ *         only allocation in the picture is the CALL's own
+ *         frame-plus-future. Keep it that way: a wrapper minted here,
+ *         per await or per settle, would tax every suspension in
+ *         every program.
  *      2. Resume values are not passed in. The awaited future is an
  *         ordinary value live across the suspension, so it already has
  *         a frame field; the resumed segment reads the settled result

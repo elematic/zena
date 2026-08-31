@@ -190,11 +190,14 @@ export class Future<T> {
    *
    * This is what the `await` transform emits, and the primitive the
    * combinators build on. Symbol-keyed because it is the PROTOCOL,
-   * not the API: user code composes with `then`/`flatMap` and
-   * observes with `then`, while frames — which already are
-   * objects — subscribe themselves here so an await allocates
-   * nothing. It is deliberately untyped in T: the waiter reads the
-   * settled result back with `result()` when it runs.
+   * not the API: user code composes with `then`/`flatMap`, while
+   * frames — which already are objects — subscribe THEMSELVES here.
+   * That is the zero-allocation await invariant: an await allocates
+   * nothing (the frame is the waiter), a settle allocates nothing
+   * (waiters pull, and #notify hands the registered objects straight
+   * to the queue), and the only allocation is the async call's own
+   * frame-plus-future. It is deliberately untyped in T: the waiter
+   * reads the settled result back with `result()` when it runs.
    */
   :subscribe(t: Task): void {
     if (!(this.#state == FutureState.Pending)) {
