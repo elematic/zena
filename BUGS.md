@@ -191,36 +191,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   pieces) or reject them in the checkers; then port the match-pattern
   test matrix to if-let/while-let either way.
 
-### Method/field same-name semantics are unsettled
-
-- **Found**: 2026-07-31 (review discussion on #87's field-closure calls)
-- **Severity**: medium (silent acceptance with resolution divergence)
-- **Deferred**: per review (2026-07-31), until bootstrap retirement so
-  there would be one implementation to change instead of two.
-  **Unblocked 2026-08-06** — the bootstrap is deleted.
-- **Workaround**: none needed yet; ZIR refuses the ambiguous case
-  (the bail is a hard compile error, so the shadowing declaration
-  effectively cannot compile).
-- **Details**: Members share one string-keyed namespace, but the
-  interactions between function-typed FIELDS and METHODS are only
-  half-settled:
-  - A field of function type does NOT satisfy an interface method —
-    both checkers reject ("incorrectly implements"). Pinned by
-    tests/language/semantics/interfaces/
-    field-does-not-implement-method.zena.
-  - A field whose name shadows an inherited METHOD is accepted
-    silently by the checkers, but no ruling defines what it means
-    (the checker's member map for Derived says the FIELD; historical
-    implementations disagreed). ZIR bails loudly ('field shadows
-    inherited method') rather than pick a side, which is a hard
-    compile error.
-  - Needs a language ruling: reject the shadowing declaration
-    outright (probably right — one namespace should mean one owner
-    per name in a hierarchy), or define override semantics for
-    fields implementing/overriding methods. Then execution tests for
-    whichever ruling lands, and the ZIR bail becomes either a checker
-    diagnostic or a real lowering.
-
 ### [Short description]
 
 - **Found**: [Date]
