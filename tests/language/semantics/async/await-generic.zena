@@ -1,0 +1,20 @@
+// @mode: check
+
+// `await x` with `x: T` open types as Awaited<T>; a concrete
+// non-future operand stays an error.
+
+import { Future, Awaited } from 'zena:async';
+
+let pass = async <T>(v: T): Future<Awaited<T>> => {
+  return await v;
+};
+
+let solved = async (): Future<i32> => {
+  let a: i32 = await pass(1);
+  let b: i32 = await pass(Future.of(2));
+  return a + b;
+};
+
+let bad = async (): Future<i32> => {
+  return await 'nope'; // @error: Type mismatch: 'await' operand must be 'Future<T>', a union with a 'Future' arm, or an open type parameter, got 'String'.
+};

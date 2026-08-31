@@ -82,14 +82,17 @@ deliberate soundness rules rather than gaps:
 - proving the casts away would take the conditional-type reasoning
   ("in this branch, `Awaited<R> = R`") this design declines.
 
-The clean path is `await` on a generic operand: let `await x` accept
-`x: T` open, typed `Awaited<T>` — each specialization sees a concrete
-operand and lowers through the existing direct/union arms, plus a
-bare-value hop. With that, `then` stops needing waiter machinery at
-all and becomes a few lines of ordinary async code, with cancellation
-propagating through the frame the way it already does everywhere.
-That is a compiler change with its own review, so `then` stays
-unflattened (and `flatMap` stays) until it lands.
+The clean path is `await` on a generic operand, now implemented:
+`await x` accepts `x: T` open, typed `Awaited<T>`. Each specialization
+sees a concrete operand — a future lowers through the existing
+suspend, anything else through the union await's bare-value hop,
+unconditionally. Unlike a union's bare arm, a bare `T` substituted to
+a future is not a divergence: bare await means "await whatever
+arrives". A concrete non-future operand at a use site is still an
+error. With this, `then` can become a few lines of ordinary async
+code — after the next reseed, since the current bootstrap's checker
+rejects the form — and the waiter machinery largely dissolves into
+async functions.
 
 ## Planned operators
 

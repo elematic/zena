@@ -16799,8 +16799,23 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
   if (operandType is ErrorType) {
     return new ErrorType();
   }
+  if (operandType is TypeParameterType) {
+    // The generic await: `await x` with `x: T` open is typed
+    // Awaited<T> — every instantiation awaits what it finds, a future
+    // unwrapping one level and anything else passing through with the
+    // queue hop (async.md §1, docs/design/type-operators.md). The
+    // operator instance stays symbolic until substitution closes T.
+    let awaitedAlias = ctx.resolvePreludeType('Awaited');
+    if (awaitedAlias != null && awaitedAlias is TypeAliasType) {
+      let args = new GrowableArray<Type>();
+      args.push(operandType);
+      let inst = instantiateTypeAliasType(awaitedAlias, args);
+      inst.target = operandType;
+      return applyTypeIntrinsic(inst);
+    }
+  }
   ctx.error(
-    "Type mismatch: 'await' operand must be 'Future<T>' or a union with a 'Future' arm, got '" +
+    "Type mismatch: 'await' operand must be 'Future<T>', a union with a 'Future' arm, or an open type parameter, got '" +
     typeToString(operandType) + "'.",
     DiagnosticCode.TypeMismatch,
     aw.loc

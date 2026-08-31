@@ -3180,12 +3180,30 @@ export final class FunctionLowerer {
     if (resolved is UnionType) {
       return this.#lowerUnionAwait(aw, resolved);
     }
-    if (!(resolved is ClassType)) {
-      this.#bail('await operand is neither a Future nor a union: ' +
-          typeToString(resolved));
+    if (resolved is ClassType &&
+        this.#futureMethodOf(resolved, ':valueOrThrow') != null &&
+        this.#futureMethodOf(resolved, ':subscribe') != null) {
+      let future = this.#lowerExpression(aw.argument);
+      return this.#suspendOnFuture(resolved, future);
     }
-    let future = this.#lowerExpression(aw.argument);
-    return this.#suspendOnFuture(resolved, future);
+    // Anything else reached lowering through the GENERIC await —
+    // `await x` with `x: T` open, typed `Awaited<T>` — specialized at
+    // a non-future type (the checker rejects concrete non-future
+    // operands at the use site). One queue hop, never synchronous,
+    // delivering the value itself at the resume: the same parking the
+    // union await's bare arms use, unconditional. Unlike a union's
+    // bare arm, a bare T substituted to a future is NOT a divergence
+    // here — bare await means "await whatever arrives", so the future
+    // case above is exactly right for it.
+    let value = this.#lowerExpression(aw.argument);
+    let resume = this.b.newBlock();
+    let suspend = this.b.awaitTo(value, resume, new GrowableArray<i32>(0));
+    this.awaitHopTerms.add(suspend);
+    if (this.shieldDepth > 0) {
+      this.shieldedAwaits.add(suspend);
+    }
+    this.b.switchTo(resume);
+    return value;
   }
 
   /** The class's `:valueOrThrow`/`subscribe`, or null if it has

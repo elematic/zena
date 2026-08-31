@@ -175,7 +175,10 @@ This document tracks completed work and planned features. For project instructio
        combinator name to learn. Alongside, the library batch:
        `allSettled` (which needs an `Outcome<T>` sealed type — the
        principled outcomes-as-data counterpart to hiding `state`),
-       `any`, and the composable resilience combinators below.
+       `any`, and the composable resilience combinators below. The
+       generic await (`await x` at open `x: T`, typed `Awaited<T>`)
+       is implemented; after the next reseed it lets `then` flatten
+       and the combinators collapse into ordinary async code.
     5. **Composable resilience over real cancellation.** One shape,
        `type Op<T> = () => Future<T>`, and combinators from `Op<T>`
        to `Op<T>` — `timeout(ms, op)`, `deadline(t, op)`,

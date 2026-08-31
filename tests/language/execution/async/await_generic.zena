@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 0
+
+// The generic await: `await x` with `x: T` open is typed Awaited<T>.
+// A bare specialization passes the value through with one queue hop
+// (always-async holds — 'x' lands between the ramp segment and the
+// resume); a future specialization unwraps one level.
+
+import { Future, Awaited, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+let pass = async <T>(v: T): Future<Awaited<T>> => {
+  return await v;
+};
+
+var order = '';
+
+let markAfter = async <T>(v: T): Future<Awaited<T>> => {
+  order = order + 'a';
+  let r = await v;
+  order = order + 'b';
+  return r;
+};
+
+export let main = (): i32 => {
+  // Bare specialization: the value passes through with one hop.
+  let bare = pass(21);
+  // Future specialization: the future unwraps one level.
+  let gate = new Completer<i32>();
+  let wrapped = pass(gate.future);
+  gate.complete(21);
+  // Always-async even for the bare case: 'x' lands between the ramp
+  // segment and the resumed one.
+  let m = markAfter(5);
+  order = order + 'x';
+  drainMicrotasks();
+  if (order != 'axb') {
+    return -1;
+  }
+  return runFuture(bare) + runFuture(wrapped) - 42 + runFuture(m) - 5;
+};
