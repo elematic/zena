@@ -903,29 +903,6 @@ exceeds number of declared memories`. Reaching any linear-memory
   Fixed by restoring `"outDir": "./"`. Worth a guard: a check that
   `main` resolves after a clean build would have caught it immediately.
 
-### Unsigned widening casts sign-extend
-
-- **Found**: 2026-07-27 (lowering `as` casts from unsigned in ZIR)
-- **Severity**: medium (silent wrong values for u32 >= 2^31 / u64 >=
-  2^63 in widening and float casts)
-- **Workaround**: mask explicitly before widening.
-- **Details**: Widening an unsigned value emits the _signed_ conversion
-  — `(3000000000 as u32) as u64` sign-extends to a negative i64 —
-  because the `_u` IrOps and emitter methods do not exist in ZIR.
-  Verified still present 2026-08-06.
-- **The justification for this is now void.** `scalarConvert` in
-  `ir/operators.zena` still carries a comment explaining that the signed
-  ops are deliberate, to stay byte-compatible with the streaming
-  backend, "until that ruling". That backend and the bootstrap compiler
-  are both deleted, so nothing is being matched any more; what remains
-  is just a wrong answer. Fixing it means adding the four `_u`
-  conversion ops and picking them from the operand's _semantic_ type
-  (`scalarConvert` currently sees only wasm valtypes, so signedness has
-  to be threaded in from the caller).
-- **Not a narrow-integer problem**: `u8` and `u16` cannot reach 2^31, so
-  they widen correctly regardless. `execution/literals/unsigned_literal_context.zena`
-  deliberately stays within a single width to avoid resting on this path.
-
 ### Inline-tuple union miscompiles when both arms hole out a reference slot
 
 - **Found**: 2026-07-28 (evaluating a `Result<V, E>` shape for zena:url)
