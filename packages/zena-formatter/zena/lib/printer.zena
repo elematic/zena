@@ -12,7 +12,7 @@ import { parse } from 'zena-compiler:parser';
 import {
   Comment, Node, Module, // Expressions
   Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, CallExpression, MemberExpression, IndexExpression, ThisExpression, SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral, TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, // Statements
-  Statement, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, // Patterns
+  Statement, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, Decorator, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
   TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, SymbolPropertyName,
@@ -884,6 +884,7 @@ let printMixinDeclaration = (decl: MixinDeclaration): Doc => {
 
 let printTypeAliasDeclaration = (decl: TypeAliasDeclaration): Doc => {
   let parts = new GrowableArray<Doc>();
+  printDecorators(decl.decorators, parts);
   if (decl.exported) { parts.push(text('export ')); }
   // `opaque` implies `isDistinct`, so it has to win — printing both would
   // produce `distinct opaque type`, which does not parse.
@@ -892,13 +893,19 @@ let printTypeAliasDeclaration = (decl: TypeAliasDeclaration): Doc => {
   } else if (decl.isDistinct) {
     parts.push(text('distinct '));
   }
+  let body = decl.typeAnnotation;
+  if (body == null) {
+    parts.push(text('declare '));
+  }
   parts.push(text('type '));
   parts.push(text(decl.name.name));
   if (decl.typeParameters != null) {
     parts.push(printTypeParams(decl.typeParameters as GrowableArray<TypeParameter>));
   }
-  parts.push(text(' = '));
-  parts.push(printTypeAnnotation(decl.typeAnnotation));
+  if (body != null) {
+    parts.push(text(' = '));
+    parts.push(printTypeAnnotation(body));
+  }
   parts.push(text(';'));
   return concat(parts);
 };
@@ -957,15 +964,27 @@ let printExportFromDeclaration = (decl: ExportFromDeclaration): Doc => {
 // Declare Function
 // ============================================================================
 
+let printDecorators = (decorators: GrowableArray<Decorator>, parts: GrowableArray<Doc>): void => {
+  for (let dec in decorators) {
+    parts.push(text('@'));
+    parts.push(text(dec.name));
+    if (dec.args.length > 0) {
+      parts.push(text('('));
+      var first = true;
+      for (let arg in dec.args) {
+        if (!first) { parts.push(text(', ')); }
+        first = false;
+        parts.push(text("'" + arg.value + "'"));
+      }
+      parts.push(text(')'));
+    }
+    parts.push(hardline);
+  }
+};
+
 let printDeclareFunction = (decl: DeclareFunction): Doc => {
   let parts = new GrowableArray<Doc>();
-  var i = 0;
-  while (i < decl.decorators.length) {
-    parts.push(text('@'));
-    parts.push(text(decl.decorators[i].name));
-    parts.push(hardline);
-    i += 1;
-  }
+  printDecorators(decl.decorators, parts);
   if (decl.exported) { parts.push(text('export ')); }
   parts.push(text('declare '));
   parts.push(text(decl.name.name));

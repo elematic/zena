@@ -102,6 +102,7 @@ import {
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
   instantiateTypeAliasType, instantiateFunctionType, GenericNamedType,
+  applyTypeIntrinsic,
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, baseType,
   integerLiteralFits,
@@ -1645,12 +1646,35 @@ final class CheckerContext {
         let aliasType = new TypeAliasType(
           ta.name.name, typeParams, new HoleType(), ta.isDistinct, null,
           ta.isOpaque, info.modulePath);
+        // A decorated alias names a builtin type operator; validation
+        // of the decorator itself happens when the STATEMENT checks
+        // (checkStatement's TypeAliasDeclaration arm), where errors
+        // have a home. The body is a placeholder the operator ignores.
+        for (let dec in ta.decorators) {
+          if (dec.name == 'intrinsic' && dec.args.length == 1) {
+            aliasType.intrinsicName = dec.args[0].value;
+          }
+        }
         this.#materializedTypes[info.id] = aliasType;
         
         aliasType.resolving = true;
-        let targetType: Type = resolveTypeAnnotation(this, ta.typeAnnotation, true);
-        checkAliasTargetInlineTuples(this, targetType, ta.typeAnnotation.loc);
-        aliasType.target = targetType;
+        let bodyAnn = ta.typeAnnotation;
+        if (bodyAnn != null) {
+          let targetType: Type = resolveTypeAnnotation(this, bodyAnn, true);
+          checkAliasTargetInlineTuples(this, targetType, bodyAnn.loc);
+          aliasType.target = targetType;
+        } else {
+          // A `declare type` operator has no body. Its placeholder
+          // target is its own first parameter, which is what makes an
+          // OPEN instance erase and key exactly as its argument does
+          // (docs/design/type-operators.md); a closed instance never
+          // survives to read the target at all.
+          aliasType.target = if (typeParams != null && typeParams.length > 0) {
+            typeParams[0] as Type
+          } else {
+            new HoleType()
+          };
+        }
         aliasType.resolving = false;
         this.exitScope();
         
@@ -4210,6 +4234,14 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
         let {typeParameters} = tat;
         if (typeParameters != null) {
           applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
+          if (tat.intrinsicName != null) {
+            // A builtin type operator: closed arguments normalize to
+            // the rule's result here and now; open ones stay a
+            // symbolic instance that substitution later re-applies.
+            let opInst = instantiateTypeAliasType(tat, resolvedArgs);
+            opInst.target = substituteTypeParams(typeParameters, resolvedArgs, tat.target);
+            return applyTypeIntrinsic(opInst);
+          }
           let target = substituteTypeParams(typeParameters, resolvedArgs, tat.target);
           if (tat.isDistinct || tat.resolving) {
             let inst = instantiateTypeAliasType(tat, resolvedArgs);
@@ -4969,6 +5001,9 @@ let substituteTypeParams = (
             inst.target = substituteTypeParams(typeParams, typeArgs, ta.target);
           }
           inst.resolving = ta.resolving;
+          if (inst.intrinsicName != null) {
+            return applyTypeIntrinsic(inst);
+          }
           return inst;
         }
       }
@@ -7461,7 +7496,10 @@ let unwrapAliases = (t: Type): Type => {
   var curr = t;
   while (curr is TypeAliasType) {
     let ta = curr;
-    if (ta.isDistinct) { break; }
+    // Intrinsic aliases stop like distinct ones: their target is a
+    // placeholder, and an instance only survives here while its
+    // argument is still open — nothing to unwrap to yet.
+    if (ta.isDistinct || ta.intrinsicName != null) { break; }
     curr = ta.target;
   }
   return curr;
@@ -13218,6 +13256,36 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
 
 let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration): void => {
   ctx.materializeDeclaration(ta, ta.name.name);
+  if (ta.typeAnnotation != null) {
+    // Decorators on an ordinary alias never parse ("Expected 'declare'
+    // after decorator"), so a body means there is nothing to validate.
+    return;
+  }
+  // The bodyless form declares a builtin type operator, and is
+  // meaningless without one.
+  if (ta.decorators.length == 0) {
+    ctx.error("A 'declare type' requires an @intrinsic type-operator decorator.",
+        DiagnosticCode.TypeMismatch, ta.name.loc);
+    return;
+  }
+  for (let dec in ta.decorators) {
+    if (dec.name != 'intrinsic') {
+      ctx.error("Unknown decorator '@" + dec.name + "' on a type alias.",
+          DiagnosticCode.TypeMismatch, dec.loc);
+    } else if (dec.args.length != 1) {
+      ctx.error("Intrinsic decorator must have exactly one argument (the intrinsic name).",
+          DiagnosticCode.TypeMismatch, dec.loc);
+    } else if (dec.args[0].value != 'type.awaited') {
+      ctx.error("Unknown type intrinsic '" + dec.args[0].value + "'.",
+          DiagnosticCode.TypeMismatch, dec.loc);
+    } else {
+      let tps = ta.typeParameters;
+      if (tps == null || tps.length != 1) {
+        ctx.error("The 'type.awaited' operator takes exactly one type parameter.",
+            DiagnosticCode.TypeMismatch, ta.name.loc);
+      }
+    }
+  }
 };
 
 // ============================================================================

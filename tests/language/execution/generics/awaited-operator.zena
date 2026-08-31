@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 0
+
+// The type.awaited operator end to end: annotation normalization, a
+// generic call closing the operator through inference, a generic
+// class instantiation closing a field's type, and codegen agreeing
+// with all of it.
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+@intrinsic('type.awaited')
+declare type Awaited<T>;
+
+let pick = <T>(f: T, fallback: Awaited<T>): Awaited<T> => fallback;
+
+class Holder<T> {
+  v: Awaited<T>;
+  new(this.v);
+}
+
+let doubled = async (v: i32): Future<i32> => {
+  return v * 2;
+};
+
+export let main = (): i32 => {
+  let f = doubled(21);
+  let a: Awaited<Future<i32>> = 1;
+  let b = pick(f, 40);
+  let h = new Holder<Future<i32>>(1);
+  drainMicrotasks();
+  return a + b + h.v + runFuture(f) - 84;
+};

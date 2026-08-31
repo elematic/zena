@@ -512,6 +512,12 @@ export final class Parser {
         decExported = true;
       }
       if (this.#match(TokenType.Declare)) {
+        if (this.#check(TokenType.Type)) {
+          // A declared type operator: bodyless, because no body could
+          // be honest about a type the type system cannot express
+          // (@intrinsic('type.…') declare type Awaited<T>;).
+          return this.#parseTypeAliasDeclaration(decExported, false, false, startToken, decorators, true);
+        }
         return this.#parseDeclareFunction(decorators, decExported, startToken);
       }
       throw this.#error("Expected 'declare' after decorator");
@@ -550,6 +556,12 @@ export final class Parser {
     if (this.#check(TokenType.Declare) && this.#peek2().kind == TokenType.Function) {
       this.#advance(); // consume 'declare'
       return this.#parseDeclareFunction(new GrowableArray<Decorator>(0), exported, startToken);
+    }
+    // Declare type without decorators parses; the checker rejects it
+    // (a declared type operator requires its @intrinsic decorator).
+    if (this.#check(TokenType.Declare) && this.#peek2().kind == TokenType.Type) {
+      this.#advance(); // consume 'declare'
+      return this.#parseTypeAliasDeclaration(exported, false, false, startToken, null, true);
     }
     
     // Function declarations: `function f() {}`, `gen function f() {}`,
@@ -4000,7 +4012,7 @@ export final class Parser {
     return new SymbolDeclaration(name, exported, this.#makeLocation(startToken));
   }
   
-  #parseTypeAliasDeclaration(exported: boolean, isDistinct: boolean, isOpaque: boolean, startToken: Token): TypeAliasDeclaration {
+  #parseTypeAliasDeclaration(exported: boolean, isDistinct: boolean, isOpaque: boolean, startToken: Token, decorators: GrowableArray<Decorator> | null = null, isDeclare: boolean = false): TypeAliasDeclaration {
     this.#consume(TokenType.Type, "Expected 'type' keyword");
     let name = this.#parseIdentifier();
     
@@ -4010,11 +4022,14 @@ export final class Parser {
       typeParameters = this.#parseTypeParameterList();
     }
     
-    this.#consume(TokenType.Equals, "Expected '=' after type alias name");
-    let typeAnnotation = this.#parseTypeAnnotation();
+    var typeAnnotation: TypeAnnotation | null = null;
+    if (!isDeclare) {
+      this.#consume(TokenType.Equals, "Expected '=' after type alias name");
+      typeAnnotation = this.#parseTypeAnnotation();
+    }
     this.#consume(TokenType.Semi, "Expected ';' after type alias declaration");
     
-    return new TypeAliasDeclaration(name, typeParameters, typeAnnotation, exported, isDistinct, isOpaque, this.#makeLocation(startToken));
+    return new TypeAliasDeclaration(name, typeParameters, typeAnnotation, exported, isDistinct, isOpaque, decorators ?? new GrowableArray<Decorator>(0), this.#makeLocation(startToken));
   }
 }
 

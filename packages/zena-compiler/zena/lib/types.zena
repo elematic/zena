@@ -646,7 +646,15 @@ let substituteInType = (
           alias.isOpaque,
           alias.declaringModule
         );
-        inst
+        inst.intrinsicName = alias.intrinsicName;
+        // A substitution that closes an intrinsic alias's argument
+        // normalizes the alias away; applyTypeIntrinsic is a no-op
+        // for ordinary aliases and while the argument is still open.
+        if (inst.intrinsicName != null) {
+          applyTypeIntrinsic(inst)
+        } else {
+          inst
+        }
       } else {
         alias
       }
@@ -1125,7 +1133,18 @@ export final class TypeAliasType(
    * recursive aliases (e.g., `type T = T[]`) will trigger an infinite loop.
    */
   var resolving: boolean = false;
+  /**
+   * The builtin type-operator rule this alias applies, from an
+   * `@intrinsic('type.…')` decorator — 'type.awaited' is the first.
+   * An intrinsic alias's TARGET is a placeholder: applying the alias
+   * runs the named rule instead of unwrapping to the target, so
+   * unwrapping treats these like distinct aliases (it stops), and
+   * every substitution that closes the argument re-applies the rule
+   * (`applyTypeIntrinsic`).
+   */
+  var intrinsicName: String | null = null;
 }
+
 
 /**
  * Whether `t` is one of the three ownership handles from `zena:ownership`.
@@ -1291,11 +1310,86 @@ export let typeContainsTypeParameter = (t: Type): boolean => {
   };
 };
 
+/**
+ * Whether `t` is the stdlib `Future` class (any instantiation). By
+ * name and declaring module rather than by prelude identity, so the
+ * `type.awaited` rule can run anywhere types are substituted, with or
+ * without a checker context. The prefix match covers the module facade
+ * and its files (`zena:async/future.zena`).
+ */
+export let isFutureClassType = (t: Type): boolean => {
+  if (!(t is ClassType)) {
+    return false;
+  }
+  return t.name == 'Future' && t.sourcePath.startsWith('zena:async');
+};
+
+/**
+ * The `type.awaited` rule: the type `await x` has when `x: T`, as a
+ * total function (docs/design/async.md §1) — `Future<U>` becomes `U`,
+ * a union maps its arms (future arms unwrap, bare arms pass through,
+ * duplicates collapse), and anything else passes through unchanged.
+ * ONE level deliberately: Zena's runtime does not recursively flatten
+ * nested futures, and one level is what monadic bind means.
+ */
+export let awaitedTypeOf = (t: Type): Type => {
+  let unwrapArm = (arm: Type): Type => {
+    if (isFutureClassType(arm)) {
+      let args = (arm as ClassType).typeArguments;
+      if (args != null && args.length == 1) {
+        return args[0];
+      }
+    }
+    return arm;
+  };
+  if (t is UnionType) {
+    let mapped = new GrowableArray<Type>();
+    for (let arm in t.types) {
+      let next = unwrapArm(arm);
+      var seen = false;
+      for (let existing in mapped) {
+        if (instantiationKeyOf(existing) == instantiationKeyOf(next)) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen) {
+        mapped.push(next);
+      }
+    }
+    if (mapped.length == 1) {
+      return mapped[0];
+    }
+    return new UnionType(mapped);
+  }
+  return unwrapArm(t);
+};
+
+/**
+ * Applies an intrinsic alias's rule once its argument is closed, and
+ * returns the alias unchanged while the argument still mentions open
+ * type parameters — substitution re-applies at every step, so the
+ * first closing substitution normalizes the alias away.
+ */
+export let applyTypeIntrinsic = (alias: TypeAliasType): Type => {
+  if (alias.intrinsicName != 'type.awaited') {
+    return alias;
+  }
+  let args = alias.typeArguments;
+  if (args == null || args.length != 1) {
+    return alias;
+  }
+  if (typeContainsTypeParameter(args[0])) {
+    return alias;
+  }
+  return awaitedTypeOf(args[0]);
+};
+
 export let instantiateTypeAliasType = (
   source: TypeAliasType,
   typeArguments: Array<Type>
 ): TypeAliasType => {
-  return new TypeAliasType(
+  let inst = new TypeAliasType(
     source.name,
     source.typeParameters,
     source.target, // We substitute the target in the checker since it needs the map
@@ -1304,6 +1398,8 @@ export let instantiateTypeAliasType = (
     source.isOpaque,
     source.declaringModule
   );
+  inst.intrinsicName = source.intrinsicName;
+  return inst;
 };
 
 export type GenericNamedType = ClassType | InterfaceType | MixinType | TypeAliasType;

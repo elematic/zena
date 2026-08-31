@@ -1,6 +1,6 @@
 import { 
   Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, 
-  InterfaceType, TypeAliasType, U32Type, I64Type, U64Type, ArrayType, NullType,
+  InterfaceType, TypeAliasType, applyTypeIntrinsic, U32Type, I64Type, U64Type, ArrayType, NullType,
   U8Type, U16Type, I8Type, I16Type, V128Type,
   UnknownType, ErrorType, AnyRefType, EqRefType, NeverType, HoleType,
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
@@ -208,7 +208,15 @@ export let substituteTypeParamsInCodegen = (
         ta.isOpaque, ta.declaringModule
       );
       inst.resolving = ta.resolving;
-      inst
+      inst.intrinsicName = ta.intrinsicName;
+      // A substitution that closes an intrinsic alias's argument
+      // normalizes the alias away, mirroring the checker's
+      // substitution (the sibling-match rule).
+      if (inst.intrinsicName != null) {
+        applyTypeIntrinsic(inst)
+      } else {
+        inst
+      }
     }
     case ClassType as ct: {
       var hasArgs = false;

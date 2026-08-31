@@ -1,0 +1,25 @@
+// @mode: check
+
+// The type.awaited operator: the type `await x` has when `x: T`, one
+// level (docs/design/async.md §1). Closed arguments normalize at the
+// use site; open ones stay symbolic until substitution closes them.
+
+import { Future } from 'zena:async';
+import { Error } from 'zena:error';
+
+@intrinsic('type.awaited')
+declare type Awaited<T>;
+
+let a: Awaited<Future<i32>> = 1;
+let b: Awaited<i32> = 2;
+let c: Awaited<String | Future<String>> = 'collapses';
+let d: Awaited<String | Future<Error>> = 'either arm';
+let e: Awaited<String | Future<Error>> = new Error('boom');
+let bad: Awaited<Future<i32>> = 'x'; // @error: Type mismatch: 'String' is not assignable to 'i32'.
+
+// The operator flows through generic signatures: the call closes T
+// and the parameter type normalizes.
+let pick = <T>(f: T, fallback: Awaited<T>): Awaited<T> => fallback;
+let fut: Future<i32> = Future.of(4);
+let ok: i32 = pick(fut, 5);
+let alsoBad: String = pick(fut, 6); // @error: Type mismatch: 'i32' is not assignable to 'String'.
