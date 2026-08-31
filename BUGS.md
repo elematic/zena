@@ -1168,21 +1168,6 @@ found, returning false`, so the reachability pass is probably
   hiding compiler-internal `**`-prefixed names from user modules
   (bootstrap behavior) seems like the right one.
 
-### String-enum values are not usable as Strings
-
-- **Found**: 2026-07-24 (while writing a ZIR enum test)
-- **Severity**: low (string enums barely usable beyond same-enum
-  comparison)
-- **Workaround**: use plain String constants.
-- **Details**: A string-enum member cannot flow anywhere a String is
-  expected: `len(Word.Yo)` with `len(s: String)` is rejected by all
-  three compilers, and `Word.Yo as String` type-checks under the
-  bootstrap but MISCOMPILES (wasm validation error: local.set
-  expected (ref str), found struct.get of type i32 — the enum value
-  is compiled as its numeric discriminant). Either string-enum
-  values should be assignable/castable to String consistently, or
-  the cast should be rejected consistently.
-
 ### Index assignment typing is driven by the [] READ selection
 
 - **Found**: 2026-07-23 (while adding []= overload selection)
