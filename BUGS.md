@@ -467,43 +467,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   Compare how arity is resolved for a call whose callee is already checked
   versus one resolved through the forward-declaration stub.
 
-### A generic _function_'s callback parameter does not contextually type its closure
-
-- **Found**: 2026-08-07 (writing execution tests for generic distinct-type
-  aliases — a `map`-shaped helper over the alias hit it, and the alias turned
-  out to be irrelevant)
-- **Severity**: medium — it rules out the whole `map`/`fold`/`forEach` shape on
-  free functions, which is where most of them naturally live.
-- **Details**: when a generic free function takes a callback whose signature
-  mentions the type parameter, an unannotated closure argument is checked with
-  the parameter still unsubstituted:
-
-  ```zena
-  let apply = <T>(c: T, f: (v: T) => T): T => f(c);
-
-  apply<i32>(19, (v) => v + 1);   // Error: cannot apply operator '+' to T and i32
-  apply(19, (v) => v + 1);        // same, inferred or explicit alike
-  ```
-
-  Two neighbouring shapes are fine, which is what localizes it:
-
-  ```zena
-  apply<i32>(19, (v: i32) => v + 1);            // annotating the closure works
-  new Box<i32>(19).run((x) => x + 1);           // a generic *method* works
-  ```
-
-  So the substituted parameter list is reaching the assignability check (the
-  call is not rejected) but not the contextual type handed to the closure.
-
-- **Fix sketch**: the call path substitutes `effectiveFt.parameters` into
-  `subParams` before checking arguments, and the generic-method path already
-  contextually types from the substituted signature. Compare the two — the free
-  function path appears to contextually type each argument from the
-  _pre-substitution_ parameter type.
-- **Tests**: none yet. `tests/language/execution/generics/generic_opaque_cell.zena`
-  had a `map` written against this shape and it was cut back to first-order
-  helpers; that is the test to restore with the fix.
-
 ### Inline tuples can be bound to a variable
 
 - **Found**: 2026-08-06 (same investigation).
