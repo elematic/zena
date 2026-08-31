@@ -1344,38 +1344,6 @@ found, returning false`, so the reachability pass is probably
   index resolution). Spec is context-sensitive resolution with an
   ambiguity error when no context exists (member-lookup.md §7/§9.3).
 
-### Host mutations after a read-only capture are invisible to the closure
-
-- **Found**: 2026-07-21
-- **Severity**: medium
-- **Workaround**: mutate the variable somewhere inside a closure that
-  captures it (forcing cell capture), or restructure so the closure reads
-  state through an object field.
-- **Details**: A captured variable is only heap-celled when a CLOSURE
-  mutates it (`mutableCaptures` / `wasm.mutableCapturedSymbols` track
-  closure-side assignments only). If only the HOST mutates the variable
-  after creating a read-only closure over it, the closure keeps a by-value
-  copy from creation time:
-
-  ```zena
-  export let main = (): i32 => {
-    var x = 10;
-    let read = (): i32 => x;
-    x = 42;
-    return read();  // returns 10; expected 42
-  };
-  ```
-
-  Both compilers agree (bootstrap and self-hosted — they consume the
-  same capture analysis), so this is a
-  checker/semantic-model bug, not a codegen one: the celling predicate
-  should be "captured AND mutated anywhere", not "mutated by the
-  closure". Fixing it in the capture analysis fixes every backend at
-  once; it is a user-visible semantics change (currently diverges from
-  JS-style closure capture), so it deserves its own change with tests.
-  Pinned (at the current shared behavior, with a comment) in
-  tests/language/execution/closures/celled_captures.zena.
-
 ### Self-hosted checker does not surface inherited members on sealed variant types
 
 - **Found**: 2026-07-19
