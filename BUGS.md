@@ -1124,33 +1124,6 @@ exceeds number of declared memories`. Reaching any linear-memory
   Fixed by restoring `"outDir": "./"`. Worth a guard: a check that
   `main` resolves after a clean build would have caught it immediately.
 
-### Object-pattern destructuring rejects accessor properties
-
-- **Found**: 2026-07-31 (writing portable coverage for tuple/object destructuring)
-- **Severity**: low (explicit member reads work; the restriction is
-  just surprising)
-- **Workaround**: read the property explicitly (`let x = p.x;`).
-- **Details**: Both checkers reject `let { x } = p` when `x` is an
-  accessor rather than a physical field ("Type 'Point' has no
-  property 'x'"), even though `p.x` reads fine through the getter.
-  Destructuring should be property-based, not field-based — the
-  member-lookup rules make no field/accessor distinction anywhere
-  else. Repro:
-
-  ```zena
-  class Point {
-    raw: i32;
-    new(this.raw);
-    x: i32 { get { return this.raw * 2; } }
-  }
-  let { x } = new Point(3); // error in both compilers; p.x works
-  ```
-
-  Codegen note: the ZIR object-pattern binder already reads through
-  getters when given the chance (`#lowerObjectPropertyRead` falls
-  back to the get# walk), so lifting the checker restriction should
-  need no ZIR backend work.
-
 ### Unsigned widening casts sign-extend
 
 - **Found**: 2026-07-27 (lowering `as` casts from unsigned in ZIR)
