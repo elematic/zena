@@ -300,38 +300,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   loud error.
 - **Workaround**: declare a function in the entry that delegates
   (`component-memory.zena` does this, with a note).
-### A nullable member null-tested after `is`-narrowing fails ZIR lowering
-
-- **Found**: 2026-08-14, removing casts the `UnnecessaryCast` warning
-  flags. The checker accepts the shape; lowering bails, and a bail is
-  defined to be a compiler bug.
-- **Severity**: medium — loud (compile failure), but the shape is
-  ordinary and the workaround (a cast the checker itself calls
-  unnecessary) is exactly what better narrowing was supposed to remove.
-- **Details**: reading a nullable ref-typed member of an `is`-narrowed
-  binding as a null-test subject in the same compound condition fails
-  with `zir unsupported: member not found`:
-  ```zena
-  class Base { x: i32 = 1; }
-  class Sub extends Base { arr: Array<i32> | null = null; }
-  let f = (b: Base): i32 => {
-    if (b is Sub && b.arr != null) { return 1; }  // member not found @f
-    return 0;
-  };
-````
-
-An i32 member (`b is Sub && b.y != 0`) and a non-null ref member
-(`b is Sub && b.s.length > 0`) both lower fine, as does the same
-read with the "unnecessary" cast: `(b as Sub).arr != null`. So the
-flow graph narrows `b` for the member read, but the identifier read
-the member lowering sees does not carry the narrowed type when the
-member expression itself is a tracked narrowing subject.
-
-- **Workaround**: keep the `(x as Sub)` cast on the receiver. Three
-  such casts in `codegen/ir/templates.zena` (`lowerTaggedTemplate`,
-  the `(vp as ClassType).typeArguments` cluster) are kept for exactly
-  this reason.
-
 ### `static` on an accessor is dropped by the parser
 
 ### `IterableUtils.all` fails to lower in some module graphs
