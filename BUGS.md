@@ -699,22 +699,6 @@ member expression itself is a tracked narrowing subject.
   to resolve. Pinned (as a comment, not a directive) in
   `semantics/type-system/inline_tuple_restrictions.zena`.
 
-### A `void` value can be bound to a variable
-
-- **Found**: 2026-08-07 (making `void` usable as a type argument, which
-  is what `Future<void>` needed).
-- **Severity**: low (bad diagnostic, not a miscompile)
-- **Details**: `let x = f();` where `f` returns `void` is accepted by the
-  checker and only fails in ZIR with `zir unsupported: binding type`. It
-  should be a type error at the declaration. Predates — and is
-  independent of — `void` as a type argument: binding a plain
-  void-returning call behaves identically. It is easier to hit now, because
-  `c.get()` on a `Cell<void>` is an ordinary-looking call, so the late,
-  cryptic failure is worth replacing with a real diagnostic. Pinned (as
-  a comment, not a directive, since the runner would match the @error
-  loosely) in `semantics/generics/void-type-argument.zena`. Same shape
-  as "Inline tuples can be bound to a variable" above.
-
 ### The stdlib cannot use a new language feature until the seed is re-cut
 
 - **Found**: 2026-08-06 (retiring the `ByteArray` primitive; the obvious
