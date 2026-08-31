@@ -6,6 +6,7 @@ import { suite, test } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { ModuleExport } from '../lib/module-resolver.zena';
 import { loadPackageMap, buildStdlibConfig } from '../lib/package-manifest.zena';
+import { stdlibLibraryOf } from '../lib/stdlib-manifest.zena';
 import { MockHost } from './test-utils.zena';
 
 export let tests = suite("Package Manifest", () => {
@@ -117,6 +118,52 @@ export let tests = suite("Package Manifest", () => {
       isFalse(exports.has("console-interface"));
     });
   });
+
+  suite("stdlibLibraryOf", () => {
+
+    test("a library's own name maps to itself", () => {
+      equal(stdlibLibraryOf("zena:string"), "string");
+      equal(stdlibLibraryOf("zena:collections"), "collections");
+      equal(stdlibLibraryOf("zena:error-stack"), "error-stack");
+    });
+
+    test("an id without the zena: prefix is not a stdlib module", () => {
+      // Callers pass a sourcePath, and every stdlib one carries the prefix.
+      isTrue(stdlibLibraryOf("string") == null);
+      isTrue(stdlibLibraryOf("async/future.zena") == null);
+    });
+
+    test("an entry file maps to the library it is the entry for", () => {
+      equal(stdlibLibraryOf("zena:console/host.zena"), "console");
+      equal(stdlibLibraryOf("zena:url/index.zena"), "url");
+      equal(stdlibLibraryOf("zena:memory/component.zena"), "memory");
+    });
+
+    test("an entry file wins over the directory it sits in", () => {
+      // error/ holds error-stack's two entry files, not error's.
+      equal(stdlibLibraryOf("zena:error/stack-host.zena"), "error-stack");
+      equal(stdlibLibraryOf("zena:error/stack-none.zena"), "error-stack");
+      equal(stdlibLibraryOf("zena:error"), "error");
+    });
+
+    test("a private file belongs to the library its directory names", () => {
+      equal(stdlibLibraryOf("zena:async/future.zena"), "async");
+      equal(stdlibLibraryOf("zena:async/executor.zena"), "async");
+      equal(stdlibLibraryOf("zena:collections/hash-map.zena"), "collections");
+      equal(stdlibLibraryOf("zena:simd/instructions.zena"), "simd");
+    });
+
+    test("a non-stdlib module belongs to no library", () => {
+      isTrue(stdlibLibraryOf("zena:not-a-library") == null);
+      isTrue(stdlibLibraryOf("zena:core/string.zena") == null);
+      isTrue(stdlibLibraryOf("/project/src/main.zena") == null);
+    });
+
+    test("a name is not matched by prefix", () => {
+      // "string-builder" is its own library, not a file under "string".
+      equal(stdlibLibraryOf("zena:string-builder"), "string-builder");
+      isTrue(stdlibLibraryOf("zena:stringly") == null);
+      isTrue(stdlibLibraryOf("zena:asyncx/future.zena") == null);
+    });
+  });
 });
-
-

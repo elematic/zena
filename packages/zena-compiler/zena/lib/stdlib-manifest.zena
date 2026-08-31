@@ -1,0 +1,257 @@
+// The standard library's own package manifest, and the mapping from a
+// stdlib module id back to the library that owns it.
+//
+// This lives apart from `package-manifest.zena`, which parses user
+// `zena-packages.json` files and therefore depends on `CompilerHost` and the
+// loader. Nothing here needs either, so files as low in the import graph as
+// `types.zena` can reach the stdlib layout without a cycle.
+
+import { HashMap } from 'zena:map';
+import { PackageConfig, ModuleExport } from './module-resolver.zena';
+
+// Build the standard library PackageConfig.
+//
+// The `stdlibRoot` is the absolute path to the stdlib's zena source
+// directory (e.g., "/path/to/packages/stdlib/zena").
+//
+// This is kept separate from user packages because the stdlib is a
+// language-level concept, not a user dependency. The compiler always
+// includes it. Eventually, the stdlib source could be embedded in the
+// compiler binary, eliminating the need for a path.
+export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
+  let exports = new HashMap<String, ModuleExport>();
+
+  // Public modules (no virtual mapping).
+  // Keep in sync with packages/stdlib/stdlib-manifest.json.
+  let publicModules = [
+    "array", "array-iterator", "assert", "async", "benchmark", "box", "byte-array",
+    "byte-buffer", "cli", "component-abi", "error", "fixed-array", "fs",
+    "growable-array", "iterable-utils", "growable-array-iterator", "hashable",
+    "immutable-array", "iterator", "json", "map", "ordered-map",
+    "math", "option", "ownership", "range", "regex", "result",
+    "set", "stream", "string", "string-builder", "string-convert",
+    "string-reader", "template-strings-array", "test"
+  ];
+  var i = 0;
+  while (i < publicModules.length) {
+    exports[publicModules[i]] = new ModuleExport(null);
+    i += 1;
+  }
+
+  // Virtual module: console → per-target entry file. The implementation
+  // files live under console/ and are not importable by name.
+  //
+  // `freestanding` has no entry on purpose: a target that cannot print
+  // must fail to resolve `zena:console` rather than quietly link a
+  // no-op that compiles and then prints nothing.
+  // Virtual module: memory → the linear-memory allocator. One
+  // implementation everywhere but the component target, where the
+  // memory belongs to the runtime memory module and the allocator
+  // delegates to its `realloc` — two allocators handing out blocks from
+  // the same pages would corrupt each other, so the component entry
+  // keeps no allocation state at all.
+  let memoryVirtual = new HashMap<String, String>();
+  memoryVirtual["host"] = "memory.zena";
+  memoryVirtual["js"] = "memory.zena";
+  memoryVirtual["wasi"] = "memory.zena";
+  memoryVirtual["zena-cli"] = "memory.zena";
+  memoryVirtual["freestanding"] = "memory.zena";
+  memoryVirtual["component"] = "memory/component.zena";
+  exports["memory"] = new ModuleExport(memoryVirtual);
+
+  let consoleVirtual = new HashMap<String, String>();
+  consoleVirtual["host"] = "console/host.zena";
+  consoleVirtual["js"] = "console/host.zena";
+  consoleVirtual["wasi"] = "console/wasi.zena";
+  consoleVirtual["zena-cli"] = "console/wasi.zena";
+  // The component entry prints over p2 stdio. It is importable, not in
+  // the prelude: a prelude module loads with the entry and would shift
+  // symbol ids for every component build, breaking "the component
+  // embeds the same core module a hostless build emits" for programs
+  // that never print. The ordered-globalDeclarations fix is what would
+  // let it join the prelude.
+  consoleVirtual["component"] = "console/component.zena";
+  exports["console"] = new ModuleExport(consoleVirtual);
+
+  // Virtual module: component-async → the async-import driver. Only a
+  // component has the subtask protocol, so only that target resolves
+  // it; the entry/callback the compiler wires live in it.
+  let componentAsyncVirtual = new HashMap<String, String>();
+  componentAsyncVirtual["component"] = "component-async.zena";
+  exports["component-async"] = new ModuleExport(componentAsyncVirtual);
+
+  // Virtual module: component-stream → the guest side of the canonical
+  // stream protocol (pair creation, blocking writes; the Stream<T>
+  // binding as it lands). Component-only for the same reason.
+  let componentStreamVirtual = new HashMap<String, String>();
+  componentStreamVirtual["component"] = "component-stream.zena";
+  exports["component-stream"] = new ModuleExport(componentStreamVirtual);
+
+  // Virtual module: error-stack → the `Error` stack-trace hooks. The host
+  // hooks trade in `anyref`/`externref`, which have no Component Model
+  // representation, so a component (and a freestanding module, which has
+  // no host to call) gets the null implementation instead. Every module
+  // pulls this in through `zena:error`, so it is the one import that a
+  // target cannot opt out of by writing less code — see
+  // docs/design/component-emission.md, Part 2.
+  let errorStackVirtual = new HashMap<String, String>();
+  errorStackVirtual["host"] = "error/stack-host.zena";
+  errorStackVirtual["js"] = "error/stack-host.zena";
+  errorStackVirtual["wasi"] = "error/stack-host.zena";
+  errorStackVirtual["zena-cli"] = "error/stack-host.zena";
+  errorStackVirtual["freestanding"] = "error/stack-none.zena";
+  errorStackVirtual["component"] = "error/stack-none.zena";
+  exports["error-stack"] = new ModuleExport(errorStackVirtual);
+
+  // Virtual module: process → host process spawning. Only wasi-family
+  // targets can compile it, and only the zena-cli host links real
+  // implementations (for trusted invocations); see the library header.
+  let processVirtual = new HashMap<String, String>();
+  processVirtual["wasi"] = "process/wasi.zena";
+  processVirtual["zena-cli"] = "process/wasi.zena";
+  exports["process"] = new ModuleExport(processVirtual);
+
+  // Virtual module: js → JavaScript-host interop, currently the
+  // host-async completion registry. Only the JS-hosted targets have an
+  // embedder that pushes completions back in through the module's
+  // exports: WASI p1 blocks in a parker and the component target's
+  // futures ride the canonical ABI's waitables, so neither resolves it.
+  let jsVirtual = new HashMap<String, String>();
+  jsVirtual["host"] = "js/index.zena";
+  jsVirtual["js"] = "js/index.zena";
+  exports["js"] = new ModuleExport(jsVirtual);
+
+  // Virtual module: fetch → HTTP over the host's own fetch(). Only the
+  // JS-hosted targets have one, so only they resolve it; a WASI or
+  // component build fails at import resolution rather than linking an
+  // import no host provides. The component target's HTTP is wasi:http
+  // (async.md §4.1), which is its own track.
+  let fetchVirtual = new HashMap<String, String>();
+  fetchVirtual["host"] = "fetch/host.zena";
+  fetchVirtual["js"] = "fetch/host.zena";
+  exports["fetch"] = new ModuleExport(fetchVirtual);
+
+  // Virtual module: time → sleeping and the monotonic clock. Both
+  // entries park synchronously and share time/queue.zena; only the
+  // clock differs (poll_oneoff vs a host import). See async.md §4.
+  let timeVirtual = new HashMap<String, String>();
+  timeVirtual["host"] = "time/host.zena";
+  timeVirtual["js"] = "time/host.zena";
+  timeVirtual["wasi"] = "time/wasi.zena";
+  timeVirtual["zena-cli"] = "time/wasi.zena";
+  // The component target's clock is p3's, and p3's wait is asynchronous:
+  // see docs/design/component-emission.md, Part 5.
+  timeVirtual["component"] = "time/p3.zena";
+  exports["time"] = new ModuleExport(timeVirtual);
+
+
+  // Directory-based modules: entry file inside a library directory. The
+  // sibling implementation files are private — reachable only via relative
+  // imports from the library's own files.
+  exports["url"] = new ModuleExport(null, "url/index.zena");
+  exports["bench"] = new ModuleExport(null, "bench/index.zena");
+  exports["collections"] = new ModuleExport(null, "collections/index.zena");
+  exports["simd"] = new ModuleExport(null, "simd/index.zena");
+
+  return new PackageConfig(stdlibRoot, exports);
+};
+
+// ============================================================================
+// Module id → owning library
+// ============================================================================
+
+// Module id (without the "zena:" prefix) → the library that owns it.
+//
+// Built once. The stdlib layout is compiled into the compiler rather than
+// read from the program being compiled, so the index is the same for every
+// compilation and a long-lived compiler can keep it.
+var libraryIndex: HashMap<String, String> | null = null;
+
+// Every id the manifest names outright: each library's own name, and each
+// entry file a `path` or `virtual` mapping points at. A library's private
+// files are not in here — `stdlibLibraryOf` attributes those by directory.
+let buildLibraryIndex = (): HashMap<String, String> => {
+  let index = new HashMap<String, String>();
+  // The root is only used to resolve entry files on disk, which nothing
+  // reading this index does.
+  let config = buildStdlibConfig("");
+  let exports = config.exports as HashMap<String, ModuleExport>;
+  exports.forEach((name: String, entry: ModuleExport): void => {
+    index[name] = name;
+    let path = entry.path;
+    if (path != null) {
+      index[path as String] = name;
+    }
+    let virtual = entry.virtual;
+    if (virtual != null) {
+      (virtual as HashMap<String, String>).forEach(
+        (target: String, entryPath: String): void => {
+          index[entryPath] = name;
+        });
+    }
+  });
+  libraryIndex = index;
+  return index;
+};
+
+// The first path segment of `id`, or the whole id if it has no "/".
+let firstSegment = (id: String): String => {
+  var i = 0;
+  while (i < id.length) {
+    if (id.getByteAt(i) == 47) { // 47 = '/'
+      return id.sliceBytes(0, i);
+    }
+    i += 1;
+  }
+  return id;
+};
+
+/**
+ * The stdlib library that owns `moduleId`, or null if no library does.
+ *
+ * `moduleId` is a canonical module id as the resolver produces it, in
+ * either of its two forms: a name id for a library's default entry file
+ * ("zena:string"), or a path id for every other stdlib file
+ * ("zena:async/future.zena", "zena:console/host.zena"). Anything without
+ * the "zena:" prefix is a user module and owned by no library, which is
+ * the answer for most calls and is why it is the first thing tested.
+ *
+ * A path id the manifest names is owned by the library it is an entry for,
+ * which is why "error/stack-host.zena" belongs to `error-stack` and not to
+ * `error` despite sitting in `error/`. A path id the manifest does not name
+ * is one of a library's private implementation files, and belongs to the
+ * library its directory is named for.
+ *
+ * Every comparison is exact. The directory rule tests one path segment for
+ * membership in the set of published libraries; nothing here matches a
+ * prefix, suffix or substring, so a module cannot be attributed to a
+ * library whose name it merely begins with.
+ */
+export let stdlibLibraryOf = (moduleId: String): String | null => {
+  if (!moduleId.startsWith("zena:")) {
+    return null;
+  }
+  let index = if (libraryIndex != null) {
+    libraryIndex as HashMap<String, String>
+  } else {
+    buildLibraryIndex()
+  };
+  let id = moduleId.sliceBytes(5, moduleId.length);
+  if (let (true, library) = index.get(id)) {
+    return library;
+  }
+  let dir = firstSegment(id);
+  if (dir == id) {
+    // No directory to fall back on: an unrecognized top-level id.
+    return null;
+  }
+  if (let (true, library) = index.get(dir)) {
+    // A private file of `library`, but only if the directory is the
+    // library's own name — an entry path that happens to sit one level
+    // down was already matched above.
+    if (library == dir) {
+      return library;
+    }
+  }
+  return null;
+};
