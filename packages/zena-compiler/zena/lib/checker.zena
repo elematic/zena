@@ -4694,7 +4694,8 @@ let getElementType = (
     }
     case InterfaceType as it: {
       // If the interface IS Iterator, use its first type argument.
-      if (it.name == "Iterator" || it.name == "Iterable") {
+      if (isWellKnown(WellKnown.IteratorInterface, it.name, it.sourcePath) ||
+          isWellKnown(WellKnown.IterableInterface, it.name, it.sourcePath)) {
          let {typeArguments} = it;
          if (typeArguments != null) {
             let args = typeArguments;
@@ -5548,7 +5549,8 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
           // that coercion too, or a generic `Borrow<T>` parameter would bind
           // nothing when handed the owner. See isAssignableTo.
           let borrowsFromOwn =
-            pt.name == "Borrow" && at.name == "Own" &&
+            isWellKnown(WellKnown.BorrowAlias, pt.name, pt.declaringModule) &&
+            isWellKnown(WellKnown.OwnAlias, at.name, at.declaringModule) &&
             isOwnershipWrapper(pt) && isOwnershipWrapper(at);
           if (pt.name == at.name || borrowsFromOwn) {
             let {typeArguments} = pt;
@@ -8600,7 +8602,11 @@ let getArrayPatternElementType = (ctx: CheckerContext, t: Type): Type | null => 
       return null;
     }
     case InterfaceType as it: {
-      if (it.name == "Iterator" || it.name == "Iterable" || it.name == "Array" || it.name == "MutableArray") {
+      if (isWellKnown(WellKnown.IteratorInterface, it.name, it.sourcePath) ||
+          isWellKnown(WellKnown.IterableInterface, it.name, it.sourcePath) ||
+          isWellKnown(WellKnown.ArrayInterface, it.name, it.sourcePath) ||
+          isWellKnown(WellKnown.MutableArrayInterface, it.name,
+              it.sourcePath)) {
         let {typeArguments} = it;
         if (typeArguments != null && typeArguments.length > 0) {
           return typeArguments[0];
@@ -10051,6 +10057,14 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
     var faType = ctx.resolvePreludeType("FixedArray");
     let {currentClass} = ctx;
+    // Matched by name, deliberately, unlike every other well-known
+    // declaration lookup. This asks whether the class being checked is the
+    // one the array literal should be typed as, and the same file can be
+    // reached under two module ids — `zena:fixed-array` from the prelude
+    // and its filesystem path when checked as an entry point — which
+    // produces two nominal FixedArray types. Comparing the canonical
+    // location would fail for the second one and leave the literal typed as
+    // the other copy. See docs/design/stdlib-organization.md.
     if (currentClass != null && currentClass.name == "FixedArray") {
       faType = currentClass as Type;
     }
@@ -10314,7 +10328,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             var cur: ClassType | null = cType;
             while (cur != null) {
               let c = cur;
-              if (c.name == "Error") { isActuallyError = true; }
+              if (isWellKnown(WellKnown.ErrorClass, c.name, c.sourcePath)) {
+                isActuallyError = true;
+              }
               cur = c.superType;
             }
           }
@@ -14704,6 +14720,8 @@ let resolveMemberType = (
       // Delegate to FixedArray<T> prelude type with T = elementType.
       var faType = ctx.resolvePreludeType("FixedArray");
       let {currentClass} = ctx;
+      // Matched by name for the reason given at the other array-literal
+      // site: one file, two module ids, two nominal FixedArray types.
       if (currentClass != null && currentClass.name == "FixedArray") {
         faType = currentClass as Type;
       }

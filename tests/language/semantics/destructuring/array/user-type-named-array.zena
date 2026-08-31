@@ -1,0 +1,20 @@
+// @mode: check
+// A user interface named Array is not the standard library's Array, so an
+// array pattern must not match a value of it. The compiler recognizes the
+// standard library's Array by the library declaring it, not by the name
+// alone; matching by name accepted this and then failed in code generation
+// with "zir unsupported: array element read" rather than a diagnostic.
+interface Array<T> {
+  first(): T;
+}
+
+final class Two implements Array<i32> {
+  new();
+  first(): i32 { return 1; }
+}
+
+export let main = (): i32 => {
+  let v: Array<i32> = new Two();
+  let [a, b] = v; // @error: An array pattern cannot match a value of type 'Array<i32>'.
+  return a + b; // @error: Type mismatch: cannot apply operator '+' to <error> and <error>
+};
