@@ -1292,18 +1292,6 @@ found, returning false`, so the reachability pass is probably
   lookup probes field -> method -> getter, which acts as a silent
   precedence instead of an error.
 
-### Interface methods with the same name silently overwrite each other
-
-- **Found**: 2026-07-22
-- **Severity**: medium (silent wrong types; no diagnostic)
-- **Workaround**: don't declare same-named methods in an interface.
-- **Details**: Interface member registration assigns
-  `ifaceType.members[name]` without checking for an existing entry
-  (checker.zena `registerInterface` method loop), so the last
-  declaration wins and earlier signatures vanish without any error.
-  Interface overloads aren't supported (member-lookup.md §9.1); until
-  they are designed, a duplicate name should be a checker error.
-
 ### Bodyless method in a regular class becomes a silent empty body
 
 - **Found**: 2026-07-22
