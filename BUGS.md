@@ -232,33 +232,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
 
 ## Active Bugs
 
-### An escape sequence in a tagged template literal fails to compile
-
-- **Found**: 2026-08-16, writing the `dedent` tag: every tagged template
-  whose literal part contains an escape is affected, whatever the tag.
-- **Severity**: medium. Loud, and there is no workaround short of
-  keeping escapes out of the literal — which for a tag whose whole job
-  is formatting text (`dedent`) rules out exactly the strings that want
-  one.
-- **Details**: reproduce with any tag at all:
-  ```zena
-  let tag = (strings: TemplateStringsArray, values: FixedArray<String>): String =>
-      strings[0];
-  tag`a\nb`;
-  ```
-  ```
-  Exception caught in CLI compiler!
-  Error message: String literal missing from the shared registry: 'a\nb'
-  ```
-  A tagged template needs both strings: cooked for `strings[i]`, raw for
-  `strings.raw[i]`. The literal registry is populated with the cooked
-  values, so a raw string that differs from its cooked form — which is
-  what an escape means — has no id, and `lowerStringLiteral` throws
-  rather than falling back (correctly: the registry is complete by
-  construction, so a miss is a discovery bug). The fix belongs in
-  discovery: register the raw quasis of a tagged template alongside the
-  cooked ones.
-
 ### A cycle among the prelude's own modules breaks a large compile
 
 - **Found**: 2026-08-16, trying to put the `dedent` tag in `zena:string`
