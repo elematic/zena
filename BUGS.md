@@ -141,44 +141,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   rather than the marker interface it wants to be. That can be revisited
   now; it is a stdlib change rather than part of this fix.
 
-### A literal argument is range-checked against the first-declared overload
-
-- **Found**: 2026-08-17, adding the second applicability tier for literal
-  arguments (member-lookup.md §5.1). Not caused by it — the behaviour is
-  identical before and after, and pre-dates the change.
-- **Severity**: low. A rejected program, and only when a range-checked
-  parameter is declared first in an overload set.
-- **Workaround**: declare the range-checked signature after the wider
-  one, or cast the argument.
-- **Details**: applicability's first tier types each argument against the
-  _first-declared_ signature's parameter, and that typing reports range
-  errors as it goes. So
-
-  ```zena
-  class Sink {
-    take(v: u8): i32 { return 1; }
-    take(v: i32): i32 { return 2; }
-  }
-  s.take(300);   // Integer literal 300 is out of range for type 'u8'.
-  ```
-
-  fails, twice, even though `take(i32)` is applicable and would be
-  selected if the literal were merely typed on its own. The second tier
-  cannot help: the first tier still finds `take(u8)` applicable, because
-  `checkIntegerLiteral` returns the expected type after reporting, so the
-  set is non-empty and the second tier never runs. (Reporting the error
-  twice is a separate symptom of the same double-check — the argument is
-  typed once for selection and again against the winner.)
-
-- **Fix sketch**: the first tier should not report while it is deciding.
-  Either type literal arguments context-free there and let the tiers pick,
-  or thread a non-reporting mode through `checkIntegerLiteral` for the
-  selection pass only. The first is the more principled — it would also
-  remove the last way declaration order can influence which overload a
-  literal reaches — but it changes which signature `take(200)` selects
-  today (`u8` now, `i32` after), so it wants its own change and its own
-  fallout check.
-
 ### `match` over an interface-typed scrutinee calls the second arm unreachable
 
 - **Found**: 2026-08-13, writing the regression test for the downcast fix
