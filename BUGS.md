@@ -730,36 +730,6 @@ exceeds number of declared memories`. Reaching any linear-memory
      bootstrap. Covered by the language-service suite (54/54) against
      the self-hosted-built lsp.wasm.
 
-### Self-hosted compiler: constructor not registered for a specialized OrderedMap
-
-- **Found**: 2026-08-02 (first clean build after the compiler `outDir` fix)
-- **Confirmed**: 2026-08-03 — still fails on `0d5a0efc`, which is upstream's
-  own fix for the clean-checkout build, so this is independent of that work.
-- **Severity**: high (`npm test` fails; blocks
-  `packages/stdlib:build:wasi-tests:self-hosted`)
-- **Workaround**: none known.
-- **Details**: compiling `packages/stdlib/tests/string/string_test.zena` with
-  the self-hosted compiler throws from
-  `packages/zena-compiler/zena/lib/codegen/expr/classes.zena:117`:
-
-  ```
-  internal: constructor not registered for
-  OrderedMap_s1029_String_s211_union_JsonObject_s1138_JsonArray_s1140_
-  String_s211_Box_s677_f64_Box_s677_bool_null
-  ```
-
-  The type argument is the JSON value union, so this is the
-  `OrderedMap<String, JsonValue>` specialization. `generateNewExpression`
-  looks up a constructor for the monomorphized class and finds none, which
-  suggests the specialization is reached during codegen without having been
-  registered by the earlier pass that instantiates generic constructors.
-
-  Not a regression from any recent commit's source: nothing in
-  `dbad428e..0fa95166` touches either codegen tree, and
-  `classes.zena` was last changed in `9bb52de7`. It was invisible until now
-  because `@zena-lang/compiler` was resolving to stale build output — see
-  below.
-
 ### `outDir` regression left the whole repo building against stale compiler output
 
 - **Found**: 2026-08-02 — **already fixed**, recorded so the failure mode is known
