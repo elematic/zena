@@ -309,37 +309,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
 - **Workaround**: none needed today; imports are still written by
   convention.
 
-### `resetWasmTypeUids` is a module-global plus a reset
-
-- **Found**: 2026-08-07, turning on batch compilation.
-- **Severity**: low today — `ModuleGenerator.compile` calls the reset
-  first thing, and `multi-entrypoint-codegen_test.zena` guards that it
-  keeps doing so. Blocking for a concurrent compiler, where two module
-  passes in flight would share and restart one counter.
-- **Details**: `_nextWasmTypeUid` in `codegen/wasm.zena` is module
-  state, and `WasmType.uid` reads it from a field initializer. Since
-  `uid` is `hashCode`, it orders every hash container keyed by a
-  `WasmType`, and that order reaches the emitted bytes — which is why
-  the reset exists at all. State whose lifetime is the compile belongs
-  on the object with that lifetime (`WasmModule`, as #200 did for
-  codegen's class caches, or `SharedCheckerState` as the node→model
-  index now does). The obstacle is that a field initializer cannot see
-  the module, so every `WasmType` construction site would have to be
-  handed one.
-- **Do not do the same to its sibling.** `_nextTypeUid` in
-  `lib/types.zena` is the identical shape one level up — a module-global
-  feeding `Type.uid`, which is `Type.hashCode` — but it must _not_ be
-  reset per compile. A long-lived compiler interns semantic types across
-  compiles, so restarting that sequence would hand a fresh type the uid
-  of a cached one, which is the node-id collision of #209 again in a
-  different currency. The rule there is the other one: the order must
-  not reach the output. `SymbolDependencies.referencedTypes` was a
-  `HashSet<Type>` that RTA walked to intern wasm types and register
-  function-value wrappers, so a module's bytes depended on how many
-  modules preceded it in the process; it is an `OrderedTypeSet` now,
-  iterating in the checker's insertion order, and
-  `codegen-determinism_test.zena` guards it.
-
 ### Codegen emits a spurious value-wrapper
 
 - **Found**: 2026-08-07, while fixing the multi-entrypoint codegen bug
