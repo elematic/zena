@@ -1310,45 +1310,6 @@ found, returning false`, so the reachability pass is probably
   bare "UNKNOWN" otherwise; unmapped codes (48 = ENOMEM among them)
   should at least print their number.
 
-### Self-hosted checker mistypes forward-referenced classes with generic field initializers used from top-level functions
-
-- **Found**: 2026-08-01 (writing zena:bench's analyze(): hoisting a
-  method body into a top-level function made the whole module
-  miscompile)
-- **Severity**: medium (valid code crashes codegen with no diagnostic;
-  bootstrap accepts the same code)
-- **Workaround**: define classes before any top-level function that
-  constructs them (method bodies are not affected — only top-level
-  `let` function bodies).
-- **Details**: A top-level function that constructs a class defined
-  LATER in the same module, then calls a method through a field whose
-  initializer is generic (`items = new Array<Inner>()`, `Inner` also
-  defined later), makes the self-hosted compiler throw
-  "Unsupported method call on type: <error>" from
-  generateCallExpression — the checker assigned <error> silently, no
-  diagnostic reaches the user. Minimal repro:
-
-  ```zena
-  import { Array } from 'zena:growable-array';
-  let go = (): i32 => {
-    let h = new Holder('a');
-    h.items.push(new Inner('b'));  // <error> receiver here
-    return h.items.length;
-  };
-  class Inner { vs: String; new(this.vs); }
-  class Holder {
-    name: String;
-    items = new Array<Inner>();
-    new(this.name);
-  }
-  export let main = (): i32 => go() - 1;
-  ```
-
-  Moving both classes above `go` compiles and runs correctly. A
-  same-shape forward reference WITHOUT the generic field initializer
-  (plain scalar fields) works, so the initializer's type resolution
-  order is implicated. The bootstrap compiler accepts both orders.
-
 ### Generic templates: `this` and generic-typed fields check as the raw template type
 
 - **Found**: 2026-08-05 (writing zena:async's completeWith)
