@@ -1007,25 +1007,6 @@ exceeds number of declared memories`. Reaching any linear-memory
 - **Reproduce**: `npm run benchmark -w @zena-lang/zena-compiler -- --basic`,
   "Codegen Comparison: basic".
 
-### Narrowing of a closure-captured `var` is not invalidated
-
-- **Found**: 2026-08-13 (carved out of "narrowing survives an assignment",
-  whose same-function half is fixed by the checker flow graph)
-- **Severity**: medium (type-checks clean, can trap at runtime; needs a
-  closure to reassign a captured narrowed `var`)
-- **Details**: The flow graph walk crosses a closure boundary at the
-  closure's CREATION site (FlowStart.enclosing), so a captured binding's
-  type inside the closure reflects what held where the closure was
-  written — not what holds when it runs; an assignment after creation is
-  invisible. And an assignment inside a closure to a captured `var` is
-  invisible to the enclosing function's graph, so a narrowing there
-  survives a `xs.forEach(() => { x = null; })` between guard and use.
-  (Inside a loop body the pre-scan does catch closure assignments,
-  deliberately.)
-  TypeScript has the same holes. The capture pass
-  (`analysis/capture.zena`) already computes `mutableCaptures`, which is
-  the ingredient a conservative fix would use.
-
 ### `--dce` crashes codegen on `Regex.replaceAll`
 
 - **Found**: 2026-07-30 (measuring regex engine size for the website)
