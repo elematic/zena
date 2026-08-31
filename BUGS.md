@@ -117,38 +117,6 @@ When a bug is fixed, delete its entry — git history is the archive.
 - **Workaround**: don't initialize a field twice; the parameter default
   is the one that can express both spellings.
 
-### A stdlib module's exported type names resolve without an import
-
-- **Found**: 2026-08-10, typing a resource's `this` as `Borrow<R>`. I
-  added a check that `Borrow` is in scope wherever a resource class is
-  declared, and it never fired — including in files importing nothing at
-  all from `zena:ownership`.
-- **Severity**: medium. It is a silent fuzzy fallback of exactly the kind
-  the project avoids elsewhere: a name resolves by being _somewhere_ in
-  the stdlib rather than by being brought into scope, so a typo or a
-  forgotten import can bind to an unrelated type instead of failing.
-- **Details**: not specific to ownership, and not an artifact of the
-  batching test runner — it reproduces in a standalone `zena-cli run`:
-
-  ```zena
-  export function main(): i32 {
-    let m: HashMap<String, i32> | null = null;   // no import of HashMap
-    return if (m == null) 0 else 1;              // compiles, runs, prints 0
-  }
-  ```
-
-  `CheckerContext.resolveTypeName` is `#materializeFromScope` then
-  `#resolveBuiltinOrPreludeType`, and one of the two is answering for
-  names that are neither in scope nor in the prelude.
-
-- **Consequence worth noting**: `wrapResourceInOwn`'s
-  "Add: import { Own } from 'zena:ownership';" diagnostic appears to be
-  unreachable for the same reason, and nothing tests it. The design
-  intent it encodes — `zena:ownership` is out of the prelude, so a file
-  that names a handle must import it — is not actually enforced.
-- **Workaround**: none needed today; imports are still written by
-  convention.
-
 ### Codegen emits a spurious value-wrapper
 
 - **Found**: 2026-08-07, while fixing the multi-entrypoint codegen bug
