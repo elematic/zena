@@ -140,20 +140,6 @@ When a bug is fixed, delete its entry — git history is the archive.
   share a key. That half is fixed; see the `referencedTypes` note in the
   entry above.
 
-### A type check the semantics tests expect and the checker does not make
-
-- **Found**: 2026-08-08, tightening the semantics runner's `@error`
-  matching. The directive had been passing against an unrelated error
-  in the same file.
-- **Severity**: medium — a real hole in the type system, and it was
-  being reported as covered.
-- **Missing**: `Box<Box<i32>>` is not rejected for a function returning
-  a deduplicated generic union (`generics/union-dedup-generic.zena`).
-- **Tracking**: the site carries a `// @missing-error:` directive,
-  which asserts the error is still _absent_. Implementing it fails its
-  test with a message saying to promote the directive to `@error:`, so
-  the marker retires itself.
-
 ### Default parameters are not applied to forward-referenced callees
 
 - **Found**: 2026-08-07 (adding a second defaulted parameter to
