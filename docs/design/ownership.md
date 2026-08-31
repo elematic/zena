@@ -1103,7 +1103,7 @@ extent reasons, owns for duplication reasons.
 
 **Generic fields are the other half, and defer to `affine T`.**
 `class Box<affine T> { var value: T }` stays an ordinary class; the
-*instantiation* `Box<Own<File>>` is affine by "types containing one" and is
+_instantiation_ `Box<Own<File>>` is affine by "types containing one" and is
 held from a provably exclusive source under `Resource<T>` (§Containers),
 with glue derived per instantiation by monomorphization. A concrete field
 needs the class-level rule because its affineness is unconditional; a

@@ -151,29 +151,29 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Tooling hooks
     - Practical tips
 - **Coming From…**
-  - 📝 [TypeScript](src/guide/from/typescript.md) — `/guide/from/typescript/`
+  - 📝 [TypeScript](src/guide/comparisons/typescript.md) — `/guide/comparisons/typescript/`
     - What carries over
     - let means immutable
     - No implicit coercion, no any escape hatch
     - Nominal classes
     - Cheat sheet
-  - 📝 [Rust](src/guide/from/rust.md) — `/guide/from/rust/`
+  - 📝 [Rust](src/guide/comparisons/rust.md) — `/guide/comparisons/rust/`
     - GC instead of ownership
     - Matching and sealed classes
     - Traits versus interfaces and mixins
     - Cheat sheet
-  - 📝 [Go](src/guide/from/go.md) — `/guide/from/go/`
+  - 📝 [Go](src/guide/comparisons/go.md) — `/guide/comparisons/go/`
     - Nominal interfaces
     - Errors
     - Generics
     - Concurrency, and what Zena has instead
     - Cheat sheet
-  - 📝 [Swift and Dart](src/guide/from/swift-dart.md) — `/guide/from/swift-dart/`
+  - 📝 [Swift and Dart](src/guide/comparisons/swift-dart.md) — `/guide/comparisons/swift-dart/`
     - Constructors and initializer lists
     - Mixins
     - Optionals and non-nullable references
     - Cheat sheet
-  - 📝 [Java, Kotlin, and Scala](src/guide/from/jvm.md) — `/guide/from/jvm/`
+  - 📝 [Java, Kotlin, and Scala](src/guide/comparisons/jvm.md) — `/guide/comparisons/jvm/`
     - Classes and sealed hierarchies
     - Case classes and pattern matching
     - Expression orientation

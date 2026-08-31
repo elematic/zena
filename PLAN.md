@@ -211,8 +211,8 @@ This document tracks completed work and planned features. For project instructio
        the `AbortSignal` ↔ `CancelScope` bridge in both directions
        (a signal cancels a scope; a scope hands `fetch` a signal).
     10. **WASI p3 as the primary parker** for the wasi target,
-       retiring `poll_oneoff` — rides the components track's
-       `Stream<T>`-across-the-boundary work.
+        retiring `poll_oneoff` — rides the components track's
+        `Stream<T>`-across-the-boundary work.
   - Open type-system threads feeding this roadmap (from the #335
     review): `WithDefault<T>` (the honest type of a default-initialized
     generic field; de-boxes `Future.#value` and gives collections an

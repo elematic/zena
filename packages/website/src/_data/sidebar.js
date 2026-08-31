@@ -275,12 +275,23 @@ const guide = [
     ],
   },
   {
-    text: 'Coming From…',
+    text: 'Language Comparisons',
     collapsed: true,
     items: [
       {
         text: 'TypeScript',
-        link: '/guide/from/typescript/',
+        link: '/guide/comparisons/typescript/',
+        outline: [
+          'What carries over',
+          'let means immutable',
+          'No implicit coercion, no any escape hatch',
+          'Nominal classes',
+          'Cheat sheet',
+        ],
+      },
+      {
+        text: 'AssemblyScript',
+        link: '/guide/comparisons/assemblyscript/',
         outline: [
           'What carries over',
           'let means immutable',
@@ -291,7 +302,7 @@ const guide = [
       },
       {
         text: 'Rust',
-        link: '/guide/from/rust/',
+        link: '/guide/comparisons/rust/',
         outline: [
           'GC instead of ownership',
           'Matching and sealed classes',
@@ -301,7 +312,7 @@ const guide = [
       },
       {
         text: 'Go',
-        link: '/guide/from/go/',
+        link: '/guide/comparisons/go/',
         outline: [
           'Nominal interfaces',
           'Errors',
@@ -312,7 +323,7 @@ const guide = [
       },
       {
         text: 'Swift and Dart',
-        link: '/guide/from/swift-dart/',
+        link: '/guide/comparisons/swift-dart/',
         outline: [
           'Constructors and initializer lists',
           'Mixins',
@@ -322,7 +333,7 @@ const guide = [
       },
       {
         text: 'Java, Kotlin, and Scala',
-        link: '/guide/from/jvm/',
+        link: '/guide/comparisons/jvm/',
         outline: [
           'Classes and sealed hierarchies',
           'Case classes and pattern matching',

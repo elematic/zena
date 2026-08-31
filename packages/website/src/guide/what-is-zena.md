@@ -1,93 +1,51 @@
 ---
 title: 'What is Zena?'
-description: 'Zena is a statically typed language designed specifically to compile to WebAssembly GC, with a familiar syntax and a sound type system.'
+description: 'A statically typed, garbage-collected language designed for WebAssembly GC, combining a familiar syntax with modern language design.'
 ---
 
-Zena is a statically typed, garbage-collected programming language that compiles
-to **WebAssembly GC**. Its entire design — syntax, semantics, type system,
-standard library, and compiler implementation — was chosen to enable the best
-Wasm GC output possible.
+Zena is an ahead-of-time compiled, statically typed, garbage-collected,
+multi-paradigm programming language that targets **WebAssembly GC** exclusively.
 
-Zena starts from a TypeScript-like base and removes the dynamism and implicit
-coercions that make JavaScript hard to compile and to reason about. It makes the
-type system sound, and adds modern features from languages like Rust, Swift, and
-Dart. All of it is tailored to Wasm GC so that Zena compiles to modules small
-enough to ship on a web page, and is fast enough to write a compiler in — its
-own compiler is written in Zena.
+Zena starts from a familiar TypeScript-like base, with a similar syntax for
+functions, objects, classes, and types. But Zena is not tethered to the
+TypeScript or JavaScript's compatibility, so it removes the dynamism, implicit
+coercions, and loose corners that make JavaScript difficult to compile and
+reason about.
 
-## Built for Wasm GC
-
-Wasm GC gives a module the host's garbage collector and native struct, array,
-and reference types. Zena assumes all of it, so every design decision has an
-answer to "what does this compile to?":
-
-- Primitives are real Wasm value types — `i32` is an `i32`, not a boxed number.
-- Classes become Wasm GC structs; arrays become Wasm GC arrays.
-- Generics are monomorphized, so `Array<i32>` holds unboxed `i32`s.
-- The type system rules out constructions that would force boxing or runtime
-  type tags.
-
-Nothing is shipped in your module except your code and a handful of string
-helpers. There is no allocator, collector, or runtime to pay for.
-
-Languages that reached Wasm from somewhere else cannot do this without
-trade-offs. → [Why Zena?](/guide/why-zena/#the-wasm-gc-gap)
-
-## How it compares
-
-| Language           | Wasm target    | Runtime shipped | Memory     | Sound types    | Null safety    |
-| ------------------ | -------------- | --------------- | ---------- | -------------- | -------------- |
-| Zena               | Wasm GC (only) | none            | Wasm GC    | yes            | non-nullable   |
-| Dart               | Wasm GC        | runtime         | Wasm GC    | yes            | sound          |
-| Kotlin             | Wasm GC        | runtime         | Wasm GC    | mostly         | nullable types |
-| Scala              | Wasm GC        | runtime         | Wasm GC    | yes            | `Option`       |
-| Rust               | linear memory  | allocator       | ownership  | yes            | no nulls       |
-| Go                 | linear memory  | GC + scheduler  | bundled GC | yes            | zero values    |
-| Swift              | linear memory  | runtime         | ARC        | yes            | optionals      |
-| AssemblyScript     | linear memory  | GC + allocator  | bundled GC | escape hatches | non-nullable   |
-| TypeScript, hosted | linear memory  | a JS engine     | bundled GC | no, by design  | opt-in         |
-| TypeScript, AOT    | linear memory  | small runtime   | bundled    | no, by design  | opt-in         |
-| Python             | linear memory  | interpreter     | bundled GC | dynamic        | `None`         |
-
-**No JavaScript or TypeScript toolchain reaches Wasm GC today.** There are two
-approaches and neither uses it. The established one compiles an entire JS engine
-to linear-memory Wasm and runs your code inside it — that's Javy, `componentize-js`,
-and StarlingMonkey, and it means shipping the engine and its garbage collector
-with every module. The newer one compiles JS or TypeScript ahead of time —
-[Porffor](https://porffor.dev/) is the furthest along, and it routes through C
-to reach native. Those compilers could adopt Wasm GC eventually; none has, and
-none is proven yet. [AssemblyScript](https://www.assemblyscript.org/status.html)
-is explicit about it: it implements its own garbage collector in linear memory
-and is waiting on the GC and function-references proposals.
-
-Dart, Kotlin, and Scala do use Wasm GC, through `dart2wasm`, Kotlin/Wasm, and
-Scala.js respectively — but as an additional backend alongside their original
-target, and each still ships a runtime. Zena has no other target to serve, which
-is what the first two columns are really measuring.
-
-If you know TypeScript, most Zena code will read correctly on the first pass.
-The differences are deliberate corrections rather than novelty — see
-[Zena for TypeScript developers](/guide/from/typescript/).
+On top of that foundation, Zena pulls together ideas from across modern
+programming languages, like Dart, Rust, Swift, Scala, Kotlin, and Go, and
+designs them in concert to make a consistent, cohesive whole. It is crafted with
+care and intention: a language you _want_ to write because it feels ergonomic,
+safe, and pleasant to use, while compiling to tiny, fast Wasm modules.
 
 ## What it looks like
 
 ```zena
 import {sqrt} from 'zena:math';
 
-// `let` binds immutably; `var` opts into mutation.
+// `let` is immutable; `var` is variable. Both block-scoped.
 let greeting = 'Hello';
 var count = 0;
 
-// Functions are arrow functions. Types are inferred where they're obvious.
+// Top-level functions use the `function` keyword
+function writePoint(p: Point) {
+  console.log(`(${p.x}, ${p.y})`);
+}
+
+// Arrow functions are closures
 let add = (a: i32, b: i32) => a + b;
 
-// Classes get Dart-style constructors and immutable fields by default.
 class Point {
+  // Class fields are immutable by default
   x: f64;
   y: f64;
+
+  // Constructors must initialize all non-null fields
   new(this.x, this.y);
 
-  magnitude(): f64 => sqrt(this.x * this.x + this.y * this.y);
+  magnitude(): f64 {
+    return sqrt(this.x * this.x + this.y * this.y);
+  }
 }
 
 // Sealed hierarchies plus `match` give you exhaustively checked ADTs.
@@ -102,22 +60,120 @@ let area = (shape: Shape): f64 => match (shape) {
 };
 ```
 
+## Built for WebAssembly GC
+
+WebAssembly GC brings native garbage collection to Wasm, alongside first-class
+struct, array, and reference types. Zena is designed specifically around these
+primitives:
+
+- **Direct type mapping**: Primitives are real Wasm value types (`i32`, `f64`),
+  classes compile to Wasm GC structs, and fixed arrays become Wasm GC arrays.
+- **Zero runtime overhead**: There is no garbage collector, memory allocator,
+  or runtime engine bundled into your binary. A compiled module contains your
+  code and a handful of standard library helpers.
+- **Monomorphized generics**: Generics are specialized per type, so `Array<i32>`
+  stores unboxed `i32` values with no wrapper objects or runtime casts.
+
+Because Zena does not have to support legacy runtimes, its semantics align
+directly with what WebAssembly executes best. → [Why Zena?](/guide/why-zena/#the-wasm-gc-gap)
+
+## Modern features
+
+Zena departs from TypeScript whenever doing so yields a better, safer, or more
+enjoyable language.
+
+### Immutability by default
+
+Zena records, and tuples are immutable, and variables and class fields are
+immutable by default.
+
+### Sound, trustworthy types
+
+Zena's type system is sound: types never lie at runtime. References are
+non-nullable by default, downcasts are checked, and constructors use Dart-style
+initialization so a `this` reference cannot escape before all fields are
+initialized. Flow-based type narrowing works alongside these guarantees so the
+strictness feels natural rather than pedantic.
+
+### Pattern matching and destructuring
+
+Pattern matching is pervasive in Zena. The `match` expression provides
+exhaustive matching over values, sealed hierarchies, records, and tuples,
+complete with pattern guards. Pattern syntax also powers `if let`, `while let`,
+and destructuring in variable declarations.
+
+### Sealed classes and case classes
+
+Zena provides algebraic data types through sealed class hierarchies and concise
+`case class` declarations. Unlike simple tagged enums, sealed cases are full
+classes: they can define methods, implement interfaces, and apply mixins, while
+retaining exhaustiveness checking across all `match` expressions.
+
+### Expression-oriented control flow
+
+In Zena, control flow constructs are expressions. `if`, `match`, `try`/`catch`,
+`throw`, `return`, `continue`, and `break` all produce values, allowing you to
+write concise, declarative code without temporary mutable variables.
+
+### Unboxed multi-value returns and value types
+
+Inline tuples compile directly to WebAssembly multi-value returns with zero heap
+allocation. This makes multi-value return patterns efficient enough for core
+APIs: `Map.get()` returns `(found, value)` and `Iterator.next()` returns
+`(hasValue, value)` in a single call without allocating wrapper objects.
+First-class value records build on this to bring the same zero-allocation
+benefits to structured data.
+
+### Structured async and cancellation
+
+Async functions return `Future<T>` and suspend explicitly at `await` points.
+Zena integrates ambient cancellation scopes into the runtime: cancellation
+travels through a dedicated channel, triggering cleanup in `cancel` and `finally`
+blocks while `shielded` blocks protect critical unwind operations. All async
+functions are cancellable by default, guarding against orphaned background work.
+
+### Resource management and ownership
+
+Zena pairs its garbage-collected model with explicit and automatic resource
+management for non-GC resources like file descriptors, linear memory buffers,
+and WIT component handles. Deterministic cleanup is supported via `using`
+declarations, while affine `Own<T>` and `Borrow<T>` types provide compile-time
+ownership tracking without complex lifetime annotations.
+
+### Ergonomic classes and mixins
+
+Classes avoid constructor boilerplate with `this.` parameters and initializer
+lists. Linearizable mixins (`class Dog with Friendly`) allow sharing
+implementation across hierarchies cleanly without multiple-inheritance
+ambiguities. Symbol-keyed members provide flexible, modular visibility beyond
+rigid public/private keywords.
+
+### Pipelines and functional tools
+
+The pipeline operator (`|>`) with placeholder syntax (`$`) enables readable
+left-to-right data transformations. Combined with lightweight arrow functions,
+lexical closures, and collection operations (`map`, `filter`, `fold`),
+functional patterns fit naturally into everyday code.
+
+### Contracts and units of measure <span class="badge info">Planned</span>
+
+Planned extensions include static dimensional analysis (units of measure like
+`Meters` or `Seconds` checked at compile time with zero runtime overhead) and
+first-class contract annotations (`requires`, `ensures`) to catch domain bugs
+before code runs.
+
 ## Where the project stands
 
 Zena is under active development and is **not yet ready for production use**.
-The bootstrap compiler and the self-hosted compiler are both complete; work is
-currently focused on a new SSA-based optimizing backend.
+The compiler is self-hosted, written in Zena, and passes its portable test
+suites. Work is focused on the optimizing SSA IR backend (ZIR), component model
+integration, and language tooling.
 
-It also has no users, which for now is an advantage rather than a gap: nothing
-depends on the current design, so anything that turns out wrong can still be
-changed outright. Expect the language to move, and expect breaking changes while
-that remains true.
-
-Documentation pages describe what is implemented today. Where a feature is
-designed but not yet shipped, the page says so with a badge.
+→ Read the [Status and Roadmap](/development/roadmap/) for details on what is
+implemented today and what is coming next.
 
 ## Next
 
-- [Why Zena?](/guide/why-zena/) — the case for a new language
-- [Getting started](/guide/getting-started/) — install the toolchain
-- [Your first program](/guide/first-program/) — write and run some code
+- [Language Overview](/guide/overview/) — a whirlwind tour of syntax and features
+- [Why Zena?](/guide/why-zena/) — the motivation, target use cases, and design philosophy
+- [Getting Started](/guide/getting-started/) — install the toolchain and run your first program

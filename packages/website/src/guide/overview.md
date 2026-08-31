@@ -202,4 +202,4 @@ lets the compiler check libraries in parallel and cache the results. See
 
 - [Your first program](/guide/first-program/) — build something end to end
 - [Quick reference](/reference/quick-reference/) — every feature, with examples
-- [Coming from TypeScript](/guide/from/typescript/) — the differences in detail
+- [Zena compared to TypeScript](/guide/comparisons/typescript/) — the differences in detail
