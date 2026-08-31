@@ -256,23 +256,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   is built without a prelude parent, so an edge into it moves a module
   between the two scope-building phases in `#resolveScopes`.
 
-### A re-export-only entry point compiles to an empty module
-
-- **Found**: 2026-08-14, trying to write the component runtime memory
-  module as `export { realloc } from 'zena:component-abi';` and nothing
-  else.
-- **Severity**: low-medium. The failure is silent: the build succeeds
-  and the module is 8 bytes — a header with no exports — which the
-  consumer then discovers as a missing import at instantiation.
-- **Details**: an `export { name } from '...'` binding is module-system
-  surface only; codegen's export collection never follows it to the
-  declaration, so it contributes nothing to the wasm export section.
-  For a library module that is right. For an *entry point* it means the
-  export silently vanishes. Either re-exports should reach the export
-  section, or an entry whose exports all resolve elsewhere should be a
-  loud error.
-- **Workaround**: declare a function in the entry that delegates
-  (`component-memory.zena` does this, with a note).
 ### `IterableUtils.all` fails to lower in some module graphs
 
 - **Found**: 2026-08-14, adding `wit-parser` to the language service's
