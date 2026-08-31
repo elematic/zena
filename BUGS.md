@@ -1369,13 +1369,6 @@ found, returning false`, so the reachability pass is probably
 
   Currently we work around this by using `String.copyBytesTo()` which works but allocates a String object unnecessarily.
 
-### Local class declaration doesn't shadow built-in `Symbol` type
-
-- **Found**: 2026-02-14
-- **Severity**: medium
-- **Workaround**: Rename the class to avoid collision (e.g., `SymbolEntry` instead of `Symbol`)
-- **Details**: When you declare `class Symbol` in a module, it should shadow the built-in `Symbol` type within that module's scope. Instead, references to `Symbol` still resolve to the built-in type, causing errors like "Property 'name' does not exist on type 'Symbol'". This affects any class name that collides with built-in types.
-
 ### Wasm compiler fails to emit `ref.cast` when reading a local that was narrowed by an `is` check
 
 - **Found**: 2026-05-31
