@@ -1006,17 +1006,6 @@ found, returning false`, so the reachability pass is probably
   dropping a function that a `replaceAll` path still references, and
   the import index is left dangling.
 
-### DCE is off by default and the size difference is ~340x
-
-- **Found**: 2026-07-30 (same measurement)
-- **Severity**: low (defaults question, not a defect)
-- **Workaround**: pass `--dce`.
-- **Details**: `export let main = (): i32 => 1;` builds to 12,636 bytes
-  by default and 37 bytes with `--dce`. Any binary size quoted without
-  the flag is misleading, and the 37-byte figure in README.md assumes
-  it. Worth deciding whether `--dce` should be the default for
-  `zena build`, or at least for release builds.
-
 ### Generic interface methods are not virtually dispatchable (diagnostic in place)
 
 - **Found**: 2026-07-26 (probing primitive type-argument coverage)
