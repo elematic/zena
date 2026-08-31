@@ -65,6 +65,32 @@ The rule identifies `Future` by name and declaring module
 (`isFutureClassType`) rather than by prelude identity, so it can run
 in substitution contexts that have no checker in reach.
 
+## The flattening `then`, and what blocks it in the library
+
+`Awaited<R>` was built to type a JS-like flattening `then` —
+`then<R>(onValue: (v: T) => R): Future<Awaited<R>>`, with a runtime
+future-test choosing between completing directly and chaining. The
+test itself compiles (`v is Future<Awaited<R>>`, folded per
+specialization), but the two uses after it do not, and both walls are
+deliberate soundness rules rather than gaps:
+
+- the else-branch needs `v as Awaited<R>` and the then-branch needs
+  `v as Future<Awaited<R>>`, and the definition-site cast guard from
+  the opaque-types work rejects casts to generic targets whose
+  arguments are not supplied by the source — exactly the "trust me,
+  it is identity at specialization" laundering it exists to block;
+- proving the casts away would take the conditional-type reasoning
+  ("in this branch, `Awaited<R> = R`") this design declines.
+
+The clean path is `await` on a generic operand: let `await x` accept
+`x: T` open, typed `Awaited<T>` — each specialization sees a concrete
+operand and lowers through the existing direct/union arms, plus a
+bare-value hop. With that, `then` stops needing waiter machinery at
+all and becomes a few lines of ordinary async code, with cancellation
+propagating through the frame the way it already does everywhere.
+That is a compiler change with its own review, so `then` stays
+unflattened (and `flatMap` stays) until it lands.
+
 ## Planned operators
 
 - **`WithDefault<T>`** — `T` for a primitive, `T | null` for a
