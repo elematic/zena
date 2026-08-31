@@ -429,13 +429,6 @@ found, returning false`, so the reachability pass is probably
 
   Currently we work around this by using `String.copyBytesTo()` which works but allocates a String object unnecessarily.
 
-### Wasm compiler fails to emit `ref.cast` when reading a local that was narrowed by an `is` check
-
-- **Found**: 2026-05-31
-- **Severity**: high
-- **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
-- **Details**: When a variable is narrowed by `if (x is ClassType)`, the Zena type system treats it as narrowed logic-wise, but the underlying Wasm local remains its original generic uncasted type (e.g. `(ref null $Type)`). The bootstrap compiler does not inject dynamic `ref.cast` when later reading this variable to evaluate a property access. Wasm compilation fails with: `type mismatch: expected (ref null $ClassType), found (ref null $Type)`. Assigning it explicitly circumvents the flaw.
-
 ### fs.zena errno messages lack the numeric code
 
 - **Found**: 2026-07-26 (debugging a WASI errno 48 as "UNKNOWN")
