@@ -1270,16 +1270,6 @@ found, returning false`, so the reachability pass is probably
   currently only handles the null arm (plain access errors, ?. works)
   and rejects member access on multi-arm unions entirely.
 
-### Static and instance members share one namespace in the implementation
-
-- **Found**: 2026-07-22
-- **Severity**: low
-- **Workaround**: avoid same-named static and instance members.
-- **Details**: member-lookup.md §2.2 specifies statics as their own
-  namespace (a map on the class, vs instance members on instances),
-  so the same name may exist in both. The implementation stores both
-  in one members map with an isStatic flag, so they collide.
-
 ### Cross-kind member collisions are not uniformly diagnosed
 
 - **Found**: 2026-07-22
