@@ -1411,8 +1411,8 @@ diverged) merge to the declared type, because member lookup cannot see
 through a union of subclasses.
 
 Still hand-rolled: `definitelyExits` and unreachable-code reporting.
-Not covered: a `var` captured and assigned by a closure (BUGS.md
-"Narrowing of a closure-captured `var` is not invalidated").
+Not covered: a `var` captured and assigned by a closure
+([#111](https://github.com/elematic/zena/issues/111)).
 
 ### Narrowing mutable fields
 

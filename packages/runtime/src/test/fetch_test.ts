@@ -132,8 +132,8 @@ suite('Runtime - zena:fetch', () => {
 
     // A local carried across a try that holds an await and a return —
     // the shape that once miscompiled by silently skipping the catch
-    // (BUGS.md, "A local live across a try…", found by this very
-    // test). Kept in its direct form as the regression guard.
+    // (found by this very test, fixed 2026-08-14). Kept in its direct
+    // form as the regression guard.
     const {main} = await hosted(`
       import { Future } from 'zena:async';
       import { fetch } from 'zena:fetch';

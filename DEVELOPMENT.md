@@ -69,5 +69,5 @@ a standing proof that a clean checkout bootstraps.
 - `tests/language/` — portable language tests (syntax / semantics /
   execution) shared by all compiler implementations.
 - `docs/language-reference.md` — the language reference;
-  `docs/design/` — design docs; `PLAN.md` — roadmap; `BUGS.md` — known
-  bugs.
+  `docs/design/` — design docs; `PLAN.md` — roadmap. Known bugs are
+  [GitHub issues](https://github.com/elematic/zena/issues).

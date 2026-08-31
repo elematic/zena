@@ -160,7 +160,7 @@ Error>` becomes writable.
   alongside the checker's walk (`analysis/flow.zena`). Independently
   justified; commits us to nothing about ownership. **Landed**: the graph,
   and assignment-aware narrowing validity on it — the narrowing soundness
-  bug formerly in BUGS.md is fixed, and condition narrowing is now
+  bug is fixed, and condition narrowing is now
   computed on the graph as well — the lexical narrowing stack is gone,
   compound loop conditions and expression-position `&&` narrow, an
   assignment narrows to what it stored, and `never`-returning calls end

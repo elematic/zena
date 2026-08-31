@@ -22,8 +22,9 @@ already resolved to a function (possibly an overload set).
 
 The body text describes the **settled language semantics**. Where the
 compilers have not caught up yet, the divergence appears as an
-indented **Status** block; each such block is tracked in BUGS.md and
-gets deleted when the implementation lands. Notes marked
+indented **Status** block; each such block names its
+[issue](https://github.com/elematic/zena/issues) and gets deleted when the
+implementation lands. Notes marked
 _implementation note_ describe compiler strategy that is not
 observable in the language and could be done differently.
 
@@ -148,7 +149,8 @@ and each signature has its own implementation body.
 
   > **Status.** Interface overloads are not implemented: a second
   > same-named interface method silently overwrites the first
-  > (BUGS.md). Until implemented, this must become a checker error.
+  > ([#93](https://github.com/elematic/zena/issues/93)). Until
+  > implemented, this must become a checker error.
 
 > **Status.** The implementation represents an overload set as a
 > "primary" `FunctionType` (the first declaration) carrying the later
@@ -379,7 +381,8 @@ paths converge instead of accreting:
    Today the selection tail is shared (`selectMostSpecificIndex`)
    but applicability collection and expected-type flow are still
    per-site; unifying them also fixes the known bug that index
-   writes are typed by the `[]` READ selection (BUGS.md) — under the
+   writes are typed by the `[]` READ selection
+   ([#121](https://github.com/elematic/zena/issues/121)) — under the
    unified entry, `a[i] = v` is typed by `[]=` like any call.
 
 2. **One lowering path per backend.** Codegen lowers every
@@ -554,7 +557,8 @@ and runtime checks, and context-sensitive resolution covers static
 usage. See §10.2.
 
 > **Status.** Not implemented: an overloaded tear-off today silently
-> yields the first-declared signature, ignoring context (BUGS.md).
+> yields the first-declared signature, ignoring context
+> ([#98](https://github.com/elematic/zena/issues/98)).
 
 ## 8. What codegen may assume
 
@@ -570,20 +574,27 @@ Summarizing the contract this spec creates:
 
 ## 9. Implementation-gap index
 
-Every **Status** block above, in one place; all tracked in BUGS.md:
+Every **Status** block above, in one place, each with its issue:
 
 1. Interface overloads unimplemented; same-name interface methods
-   silently last-win, must become an error until implemented (§4).
+   silently last-win, must become an error until implemented (§4) —
+   [#93](https://github.com/elematic/zena/issues/93).
 2. Overloaded tear-offs silently pick the first-declared signature
-   instead of context-sensitive resolution (§7).
-3. Cross-arm member access on non-null unions unimplemented (§3).
+   instead of context-sensitive resolution (§7) —
+   [#98](https://github.com/elematic/zena/issues/98).
+3. Cross-arm member access on non-null unions unimplemented (§3) —
+   [#99](https://github.com/elematic/zena/issues/99).
 4. Static/instance members share one namespace in the
-   implementation (§2.2).
+   implementation (§2.2) —
+   [#96](https://github.com/elematic/zena/issues/96).
 5. Cross-kind member collisions not uniformly diagnosed; probe order
-   acts as precedence (§2.1).
+   acts as precedence (§2.1) —
+   [#97](https://github.com/elematic/zena/issues/97).
 6. Bodyless methods in regular classes silently parse as empty-body
-   overloads (BUGS.md; interacts with §4's one-member-per-name
-   model).
+   overloads (interacts with §4's one-member-per-name model) —
+   [#95](https://github.com/elematic/zena/issues/95).
+7. Index writes are typed by the `[]` read selection rather than by
+   `[]=` (§5.1) — [#121](https://github.com/elematic/zena/issues/121).
 
 ## 10. Deferred designs
 

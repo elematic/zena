@@ -17,9 +17,10 @@ auto-boxing: `any` accepts primitives by silently allocating a `Box<T>`,
 `anyref` accepts only references. Two findings sharpen the case:
 
 1. The self-hosted streaming backend **never implemented** primitive→`any`
-   boxing — it emits the raw scalar and produces invalid wasm (see BUGS.md).
-   Nothing noticed, because no stdlib surface, compiler code, or execution
-   test passes a raw primitive as `any`.
+   boxing — it emitted the raw scalar and produced invalid wasm. Nothing
+   noticed, because no stdlib surface, compiler code, or execution test
+   passed a raw primitive as `any`. (That backend has since been deleted,
+   and `any` removed from the language.)
 2. The ZIR backend's box machinery is read-side only (unwrap tiers in
    erased-operand equality and eq/hash); it has no box-creation path.
 

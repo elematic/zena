@@ -389,9 +389,11 @@ naming both rather than a coercion.
 
 One constraint fell out of building it and is worth recording, because
 it shapes any other erase-and-narrow design: this only works through a
-**base class**. Through an _interface_, `is` answers false and the cast
-traps, for plain and generic classes alike — see BUGS.md. `AnyCompleter`
-is a class for that reason and not by preference.
+**base class**. Through an _interface_, `is` answered false and the cast
+trapped, for plain and generic classes alike, so `AnyCompleter` is a class
+for that reason and not by preference. That bug was fixed on 2026-08-13 —
+`is`, `as` and narrowed reads now unwrap the interface fat pointer — so the
+base class is a workaround that could be revisited.
 
 Only _delivery_ is per-payload-type, and unavoidably so: each entry
 point is a wasm export whose signature has to name the payload. The set
@@ -610,10 +612,10 @@ website served by a Zena server":
   What the implementation settled:
   - **The registry needs no type tag** (§4). `HashMap<i32, AnyCompleter>`
     with one generic `pending<T>()`; the completer's own specialized type
-    is the tag. It has to erase through a base class rather than an
-    interface, because `is` and downcasts fail through an interface
-    reference (BUGS.md) — that constraint is worth knowing before
-    designing anything else that erases and narrows back.
+    is the tag. It erases through a base class rather than an interface
+    because `is` and downcasts failed through an interface reference when
+    this was written; that was fixed on 2026-08-13, so the choice is no
+    longer forced.
   - **The completion exports are gated on importing the module**, by
     rooting `zena:js`'s exports in RTA. A program that does no
     host I/O links and exports none of it, which matters because the JS

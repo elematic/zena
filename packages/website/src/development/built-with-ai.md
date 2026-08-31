@@ -32,8 +32,8 @@ The repository is set up so an agent can orient itself without being told:
   doubles as the most concise description of the project's standards.
 - [`PLAN.md`](https://github.com/elematic/zena/blob/main/PLAN.md) records
   what's done and what's next.
-- [`BUGS.md`](https://github.com/elematic/zena/blob/main/BUGS.md) records
-  known defects, including the ones the compiler has against itself.
+- [GitHub issues](https://github.com/elematic/zena/issues) record known
+  defects, including the ones the compiler has against itself.
 - `docs/design/` holds a document per non-obvious decision, written _before_ or
   _while_ building it. The [Design](/development/design/) pages here are written
   up from them.
@@ -77,10 +77,11 @@ Being honest about this is part of the point.
   compile and look reasonable while being subtly incorrect. Static checking
   catches a lot; tests catch more; neither catches everything, which is why the
   human review step is not optional.
-- **The compiler has bugs against itself.** `BUGS.md` documents cases where the
-  self-hosted compiler mishandles its own source — a module-graph dropout among
-  them. Self-hosting is a good forcing function precisely because it surfaces
-  these.
+- **The compiler has bugs against itself.** The
+  [issue tracker](https://github.com/elematic/zena/issues) documents cases
+  where the self-hosted compiler mishandles its own source — a module-graph
+  dropout among them. Self-hosting is a good forcing function precisely
+  because it surfaces these.
 - **Design drift.** Without a written decision, successive changes wander. Most
   of `docs/design/` exists because something drifted first.
 - **Confident wrong documentation.** Docs describing intent as though it were

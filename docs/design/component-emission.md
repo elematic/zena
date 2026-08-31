@@ -1112,8 +1112,10 @@ an _injected closure_ (`BinaryGenerator.importEncoder`, set by the
 drivers), not an import: codegen defines mirror classes for the pieces
 and never links the WIT parser, so hosts that never emit a component —
 the language service compiles the same codegen sources — do not carry
-it. (Concretely: linking wit-parser into the LSP graph tripped a latent
-ZIR lowering bail in `IterableUtils.all`; see BUGS.md.) For a
+it. (Concretely: linking wit-parser into the LSP graph once tripped a
+latent ZIR lowering bail in `IterableUtils.all`. That no longer
+reproduces, so the indirection is now a layering choice rather than a
+workaround.) For a
 flat-scalar interface the bytes come out identical to the hand-written
 ones (verified by direct comparison on every fixture), so the change is
 what becomes possible: when an interface's true WIT is richer than a

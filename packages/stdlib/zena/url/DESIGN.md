@@ -331,8 +331,12 @@ ignored in v1; if wanted later they can surface as an optional callback, not as
 state on `URL`.
 
 If a future component does need to explain _why_ it failed, that is the point
-to revisit a shared `Result`-style return — see BUGS.md for the two compiler
-issues that currently block a zero-allocation `Result<V, E>`.
+to revisit a shared `Result`-style return. Two compiler issues currently block
+a zero-allocation `Result<V, E>`: an inline-tuple union with mismatched slot
+representations is accepted and then bails
+([#114](https://github.com/elematic/zena/issues/114)), and match arms over an
+inline-tuple union do not narrow
+([#115](https://github.com/elematic/zena/issues/115)).
 
 ## Testing strategy
 

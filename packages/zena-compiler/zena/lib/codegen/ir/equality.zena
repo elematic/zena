@@ -55,9 +55,9 @@ let isStringStruct = (cx: LoweringContext, st: WasmStruct): boolean => {
   return false;
 };
 
-/** String's operator== function, or a bail. (Inline throw: the
- * checker does not treat a bail() call as terminating — BUGS.md
- * "never-returning calls don't narrow".) */
+/** String's operator== function, or a bail. (Inline throw rather than a
+ * bail() call: written when the checker did not treat a never-returning
+ * call as terminating. It does now, so this could be simplified.) */
 let stringEqFunc = (cx: LoweringContext): WasmFunction => {
   let strClass = cx.wasm.stringClass;
   if (strClass != null) {
@@ -240,7 +240,7 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
     return hashI64Fold(cx, v);
   }
   // Fresh binding: the narrowing state after the bail/return chain
-  // above over-narrows `ft` (see BUGS.md narrowing entries).
+  // above over-narrows `ft`.
   let ftRef: ValType = f.type;
   let fieldStruct = refTargetOf(ftRef);
   if (fieldStruct is WasmStruct) {

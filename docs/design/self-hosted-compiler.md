@@ -1169,8 +1169,8 @@ modules in dependency order, scopes built, imports validated ✅
 ### Milestone 3: Type Checker (Core) ✅ Complete
 
 **Status:** Complete. The self-hosted checker checks the whole compiler
-and the portable semantics suite; remaining bootstrap/self-hosted
-divergences are tracked in BUGS.md.
+and the portable semantics suite. The bootstrap compiler it was compared
+against has since been deleted, so no divergences remain to track.
 
 **Depends on:** Milestone 2 ✅
 
@@ -1969,7 +1969,7 @@ Test hosts (like the current `InMemoryHost`) work as-is. Provide a
    self-hosted compiler; feature coverage is the open end.
 3. Retire the bootstrap compiler: with self-hosting exact, the TS
    compiler's remaining duty is stage-0 builds. Several language
-   rulings in BUGS.md are deferred to this retirement so they are
-   implemented once, not twice.
+   rulings were deferred to this retirement so they are implemented
+   once, not twice.
 4. ZIR optimization loop (ir.md §9/§14 M3) — inline, devirtualize,
    SRoA, SCCP.

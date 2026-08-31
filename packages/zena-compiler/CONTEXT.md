@@ -104,7 +104,9 @@ unclaimed errors suite-wide.
 `@missing-error:` records an error the language _should_ report and does
 not. It asserts the absence, so implementing the check fails the test
 and tells you to promote the directive — the marker retires itself
-instead of rotting. See BUGS.md for the six it currently marks.
+instead of rotting. Two are marked today: the nested-generic-union check
+([#118](https://github.com/elematic/zena/issues/118)) and a borrow storage
+rule.
 
 They share `zena/test/portable-harness.zena` (directory discovery,
 `// @name: value` directive parsing, skip accounting). The execution

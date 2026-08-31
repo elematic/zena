@@ -82,8 +82,9 @@ which changes what's useful to contribute:
 - **Write the decision down.** A non-obvious change wants a note in
   `docs/design/` explaining _why_. Undocumented decisions get re-litigated or
   quietly reversed by the next change.
-- **Update `PLAN.md` and `BUGS.md`.** They're the project's working memory, and
-  agents read them for orientation.
+- **Update `PLAN.md`, and file bugs as
+  [issues](https://github.com/elematic/zena/issues).** They're the project's
+  working memory, and agents read them for orientation.
 - **Bug reports are especially valuable.** Plausible-but-wrong code is the main
   failure mode here, and a concrete reproduction is worth a lot more than a
   suspicion.

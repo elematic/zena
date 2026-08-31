@@ -121,7 +121,11 @@ and two at ~2.1 ms, and _which_ two swapped after an unrelated reachability
 change — earlier it was `DevirtFinal` and `DevirtEffectivelyFinal`, now it is
 `Virtual` and `DevirtFinalField`. Reproduced across two consecutive runs, so it
 is not measurement noise. That points at an inlining threshold rather than
-anything intrinsic to devirtualization. Tracked in BUGS.md.
+anything intrinsic to devirtualization. Later root-caused as a machine-code
+alignment artifact rather than a codegen regression: on Zen 3 a tight
+dependent loop whose body straddles a 64-byte fetch block costs two cycles
+per iteration instead of one, and any unrelated change re-rolls the
+alignment.
 
 ## Emitted code size: bootstrap vs self-hosted
 
@@ -154,9 +158,9 @@ struct-ish types 207 → 500. Dead closure wrappers were investigated and fixed,
 which removed 43 functions and ~455 code bytes but left the type section
 byte-identical.
 
-Caveat retained: neither leg passes `--dce`, which BUGS.md records as a ~340×
-difference on a trivial program, so absolute sizes are dominated by unreachable
-stdlib and only ratios are meaningful.
+Caveat retained: neither leg prunes unreachable code — these numbers predate
+reachability pruning becoming unconditional, which it now is — so absolute
+sizes are dominated by unreachable stdlib and only ratios are meaningful.
 
 ## Appendix: raw output
 

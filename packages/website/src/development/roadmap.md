@@ -85,5 +85,5 @@ Worth stating, because their absence is a design decision rather than a gap:
 
 Development happens in the open at
 [github.com/elematic/zena](https://github.com/elematic/zena).
-[`BUGS.md`](https://github.com/elematic/zena/blob/main/BUGS.md) tracks known
+[GitHub issues](https://github.com/elematic/zena/issues) track known
 defects, including ones the compiler currently has against itself.

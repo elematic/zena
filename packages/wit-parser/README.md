@@ -76,7 +76,7 @@ that throws all fail the suite.
 > package map now works too. That last one was a reachability bug, not
 > anything cross-module: a checkable-phase visit of a member satisfied
 > the later reachable visit, stranding closures the first visit had
-> created but not marked reached. See BUGS.md.
+> created but not marked reached.
 
 Nothing in the _compiler_ calls the parser yet — making WIT imports first-class
 is the next step; see

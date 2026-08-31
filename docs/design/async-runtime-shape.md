@@ -56,8 +56,9 @@ of API that looked like a design decision:
   taking the future as an argument, because `this` inside `Future<T>`'s
   own method checks as the raw template `Future`. That part is still
   true, but `this as Future<T>` now lowers, so the cast is the whole
-  cost (BUGS.md, "Generic templates: `this` and generic-typed fields
-  check as the raw template type" — still open, downgraded).
+  cost ([#110](https://github.com/elematic/zena/issues/110), "Inside a
+  generic class, `this` and generic-typed field reads check as the raw
+  template type" — still open, downgraded).
 - **The combinators are statics**: `Future.all`, `Future.race`,
   `Future.of`, `Future.failed`, the names [async.md](async.md) §2 asked
   for. They were free functions because a generic static's body could

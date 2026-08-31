@@ -83,19 +83,15 @@ if (let (true, v, _) = f(x)) {
   `tests/language/execution/control-flow/if_let_result.zena` runs the full
   `inline (true, i32, _) | inline (false, _, String)` shape — numeric ok
   lane, reference error lane, crossed holes — through `(true, v, _)` and
-  `(false, _, e)` patterns. Self-hosted only: the bootstrap compiler emits an
-  i32 for a hole in a reference lane (invalid wasm; BUGS.md), so the test is
-  `@skip: bootstrap`.
+  `(false, _, e)` patterns.
 - **match over an inline union does not narrow per arm** in the self-hosted
   checker: `case (false, _, e):` binds `e` at the merged lane type
   `_ | String`, so using it is a type error. Pinned by
   `tests/language/semantics/control-flow/match/inline-union-arm-narrowing-unimplemented.zena`.
-  Notably the **bootstrap checker does narrow** these arms (`e: String`) —
-  the behavior has a reference implementation to port. Codegen for a
-  multi-value match scrutinee is untested beyond the checker.
-- **The crossed-reference-holes miscompile in BUGS.md is fixed self-hosted**
-  (regression test `tests/language/execution/tuples/inline_union_crossed_ref_holes.zena`);
-  it remains in the bootstrap compiler.
+  Codegen for a multi-value match scrutinee is untested beyond the checker.
+  Tracked as [#115](https://github.com/elematic/zena/issues/115).
+- **The crossed-reference-holes miscompile is fixed** (regression test
+  `tests/language/execution/tuples/inline_union_crossed_ref_holes.zena`).
 - **The alias spelling is not yet legal.** `type Result<T, E> = inline …` is
   rejected today — "Inline tuple types can only appear in function return
   types" (pinned by `inline_tuple_restrictions.zena`) — so shipping the

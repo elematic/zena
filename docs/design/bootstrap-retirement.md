@@ -74,9 +74,8 @@ blocked on what turned out to be four distinct self-hosted compiler bugs
 (spliced default arguments vs the cycle re-check pass; map literals never
 registering their HashMap instantiation with RTA; tuple/array literals in
 method bodies missing struct discovery; the host target emitting memory
-ops with no memory section). All four are fixed with portable tests —
-see BUGS.md "Self-hosted compiler cannot build the language service"
-(resolved) — and `build:wasm` now runs `zena-cli build zena/lsp.zena
+ops with no memory section). All four are fixed with portable tests,
+and `build:wasm` now runs `zena-cli build zena/lsp.zena
 --target host`, with the language-service suite green against the
 self-hosted-built lsp.wasm.
 
@@ -289,8 +288,8 @@ plan can be redone.
    _Progress 2026-08-05: wave one is COMPLETE — `--target` passthrough,
    the `zena-formatter` swap, and the `language-service` swap are all
    done (the self-hosted CLI loads `zena-packages.json`; the compiler
-   bugs each swap exposed are fixed with portable tests — see §1 and
-   BUGS.md). `zena-compiler`'s own `build:cli` intentionally stays on
+   bugs each swap exposed are fixed with portable tests — see §1).
+   `zena-compiler`'s own `build:cli` intentionally stays on
    the bootstrap until the seed lands (§2)._
 
    _Wave two progress 2026-08-05: both restructures are DONE. The
@@ -313,7 +312,7 @@ plan can be redone.
    on it; it now builds and runs that example with `zena-cli`. The
    crash was a seventh compiler bug — a checkable-phase member visit
    satisfying the later reachable one, stranding closures it had
-   created but not marked reached (BUGS.md). `packages/wit-parser` no
+   created but not marked reached. `packages/wit-parser` no
    longer invokes the bootstrap anywhere._
 
 4. **Choose and populate the seed** (§2), with the pin in-tree.
@@ -337,7 +336,7 @@ plan can be redone.
    else on top — and runs the full test suite offline._
 
 6. **Delete `packages/compiler`**, and with it the `@skip: bootstrap` markers
-   (13 files) and the BUGS.md items deferred to retirement.
+   (13 files) and the bug-list items deferred to retirement.
 
    _DONE 2026-08-06: `packages/compiler` and `packages/cli` are gone
    (the marker count had grown to 47 by then — generators alone added
@@ -345,8 +344,12 @@ plan can be redone.
    variants first, so the deletion itself was reference cleanup: root
    build/test graph, vestigial deps, tsconfig project references, the
    flake's `zena` command (now `zena-cli`; its
-   can't-compile-outside-the-repo limitation is filed in BUGS.md), and
-   the two deferred BUGS.md items are marked unblocked. **Retirement
+   can't-compile-outside-the-repo limitation is
+   [#120](https://github.com/elematic/zena/issues/120)), and the two
+   deferred rulings are unblocked — refutable patterns in let-conditions
+   ([#106](https://github.com/elematic/zena/issues/106)) and field/method
+   same-name semantics
+   ([#107](https://github.com/elematic/zena/issues/107)). **Retirement
    complete** — the standing architecture is
    [bootstrapping.md](./bootstrapping.md)._
 

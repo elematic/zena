@@ -29,8 +29,9 @@ The one-sentence rule the design optimizes for:
   records-and-tuples.md §3.1 for the tests that pin this and the
   decision that retires it.
 - `HashMap`/`HashSet` keys require `Hashable`, enforced by
-  checker special-casing; the case-class `hashCode`/`==` divergence in
-  BUGS.md is an instance of the incoherence this document eliminates.
+  checker special-casing; the case-class `hashCode` divergence in
+  [#113](https://github.com/elematic/zena/issues/113) is an instance of the
+  incoherence this document eliminates.
 
 ## 2. Decisions
 
@@ -60,7 +61,8 @@ Why no fallback (each of these is a bug class the fallback causes):
    the operator only makes previously-erroring code compile.
 2. **Hashable coherence becomes checkable.** `hashCode` claiming
    structural while `==` silently means identity (or vice versa) is how
-   hash containers break probabilistically (BUGS.md). With
+   hash containers break probabilistically
+   ([#113](https://github.com/elematic/zena/issues/113)). With
    `Hashable extends Equatable` and no implicit `==`, the pair is
    declared together and the checker can hold them to it.
 3. **Call sites become legible.** `==` always means "this type's
