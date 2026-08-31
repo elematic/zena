@@ -797,21 +797,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   and `zir backend > try/catch keeps an assigned local off the heap`
   for the no-allocation invariant.
 
-### Index writes through an interface are unsupported in ZIR
-
-- **Found**: 2026-08-05 (writing a portable test for Array indexing
-  through the trampoline)
-- **Severity**: medium (loud bail, so no silent miscompile; blocks
-  `MutableArray`-typed writes)
-- **Workaround**: operate on the concrete type (`FixedArray`, `GrowableArray`)
-  instead of a `MutableArray`-typed value when writing.
-- **Details**: `parts[0] = v` where `parts: MutableArray<T>` bails with
-  `zir unsupported: interface index write`. Reads through `Array<T>`
-  work (the `[]` trampoline inlines `array.get` as of 2026-08-05); the
-  write-side call-site lowering was never implemented. The `[]=`
-  trampoline body is already synthesized, so this is call-site work in
-  `operators.zena`/`lowering.zena`.
-
 ### RESOLVED: Self-hosted compiler cannot build the language service
 
 - **Found**: 2026-08-05 (attempting the language-service build swap for
