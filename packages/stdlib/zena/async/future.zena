@@ -183,7 +183,7 @@ export class Future<T> {
    * This is what the `await` transform emits, and the primitive the
    * combinators build on. Symbol-keyed because it is the PROTOCOL,
    * not the API: user code composes with `then`/`flatMap` and
-   * observes with `onComplete`, while frames — which already are
+   * observes with `then`, while frames — which already are
    * objects — subscribe themselves here so an await allocates
    * nothing. It is deliberately untyped in T: the waiter reads the
    * settled result back with `result()` when it runs.
@@ -206,22 +206,6 @@ export class Future<T> {
     list.push(w);
     list.push(t);
     this.#waiters = list;
-  }
-
-  /**
-   * Low-level subscription: exactly one of the callbacks runs, from the
-   * microtask queue, once this future settles (scheduled immediately if
-   * it already has). This is the bridge for non-async code.
-   */
-  onComplete(
-    onValue: (value: T) => void,
-    onError: (error: Error) => void
-  ): void {
-    // `this as Future<T>`: inside a generic class's own method `this`
-    // types as the raw template `Future`, so the cast is what names the
-    // instantiation. Same idiom as `AllState.attach` below.
-    this.:subscribe(
-      new CallbackTask<T>(this as Future<T>, onValue, onError));
   }
 
   /**
@@ -273,7 +257,7 @@ export class Future<T> {
    *
    * Reads the fields directly rather than going through `result()`:
    * this is the hot path, once per await, and rethrowing the error arm
-   * would need the both-arms narrowing `CallbackTask` works around.
+   * would need the both-arms narrowing the waiters work around.
    */
   :valueOrThrow(): T {
     if (this.#state == FutureState.Rejected) {
@@ -502,13 +486,6 @@ export class Completer<T> extends AnyCompleter {
 }
 
 /**
- * A waiter built from a pair of callbacks (`onComplete`).
- *
- * Holding the future it reads is what a pulling waiter needs: the future
- * hands a waiter nothing, so the waiter keeps the reference it reads back
- * through.
- */
-/**
  * A `then` subscription: reads the source's outcome and settles the
  * derived future. Cancellation forwards structurally — no callback
  * sees it — which is what keeps a result channel unable to swallow an
@@ -530,8 +507,10 @@ class ThenWaiter<T, R> implements Task {
     if (e == null) {
       let ok = this.onValue;
       try {
-        let v = ok(f.:valueOrThrow());
-        this.derived.:complete(v);
+        // No local for the callback's result: at R = void a binding
+        // has no wasm type, and the nested call adapts the zero-width
+        // argument away.
+        this.derived.:complete(ok(f.:valueOrThrow()));
       } catch (thrown) {
         this.derived.:fail(thrown);
       }
@@ -544,8 +523,7 @@ class ThenWaiter<T, R> implements Task {
     }
     let recover = bad as (error: Error) => R;
     try {
-      let v = recover(e as Error);
-      this.derived.:complete(v);
+      this.derived.:complete(recover(e as Error));
     } catch (thrown) {
       this.derived.:fail(thrown);
     }
@@ -604,26 +582,6 @@ class ForwardWaiter<R> implements Task {
   }
 }
 
-class CallbackTask<T> implements Task {
-  future: Future<T>;
-  valueCb: (value: T) => void;
-  errorCb: (error: Error) => void;
-  new(this.future, this.valueCb, this.errorCb);
-  run(): void {
-    let f = this.future;
-    // `:failure()` + `:valueOrThrow()` rather than `:result()`: this
-    // class specializes at `T = void` too, and a zero-width lane does
-    // not lower in an inline tuple.
-    let e = f.:failure();
-    if (e == null) {
-      let ok = this.valueCb;
-      ok(f.:valueOrThrow());
-      return;
-    }
-    let bad = this.errorCb;
-    bad(e as Error);
-  }
-}
 
 /**
  * Runs the executor to a standstill and returns `f`'s value, throwing
@@ -748,7 +706,9 @@ class AllWaiter<T> implements Task {
   new(this.state, this.index);
   run(): void {
     let f = this.state.inputs[this.index];
-    // `:failure()` for the reason CallbackTask documents.
+    // `:failure()` + `:valueOrThrow()` rather than `:result()`: this
+    // class specializes at `T = void` too, and a zero-width lane does
+    // not lower in an inline tuple.
     let e = f.:failure();
     if (e == null) {
       this.state.report();
