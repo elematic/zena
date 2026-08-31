@@ -367,17 +367,25 @@ while `core` is unpublished and the file belongs to no library, so the
 registry stops recognizing `String` — which is the same failure the spike
 produced, arriving a step earlier.
 
-Every library that a registry entry names therefore lands in three parts:
-add its new location to the registry alongside the old, reseed, then move
-the files and drop the old location. Libraries the registry does not name
-need neither the extra entry nor the reseed.
+Every library the compiler names therefore lands in three parts: add its
+new location alongside the old, reseed, then move the files and drop the
+old location. That is not only the registry's libraries. `string-convert`
+and `string` have functions `queueStdlibFunction` roots by module id, and
+`ownership` declares `Own`, `Borrow` and `Unmanaged`, so all three move
+with the registry group rather than ahead of it. What is left over —
+`byte-array`, `byte-buffer`, `result`, `string-builder`, `string-reader`
+— is what the compiler names nowhere and can move in one step.
 
 Order from least to most coupled, so the plumbing is proven before it
 reaches `String`:
 
 8. `component/` — `component-abi`, `component-async`, `component-stream`,
-   `component-memory`. Update the `runtimeEntry` literal in
-   `component-runtime.zena`. No registry entries, so one step.
+   `component-memory`. Three compiler string literals name these and move
+   with them: `runtimeEntry` in `component-runtime.zena`, the synthesized
+   `from 'zena:component-async'` in `wit-module-synth.zena`, and
+   `zena:component-abi` in `getTargetRuntimeModules`. None is a bootstrap
+   hazard, because building the compiler targets no component, so this is
+   one step.
 9. `bench/` — absorb `benchmark`. No registry entries.
 10. `collections/` — move `map`, `ordered-map`, `set` implementations in,
     and re-export the array types from `core` once it exists. Already a
@@ -385,16 +393,22 @@ reaches `String`:
 11. `async/` — absorb `stream`. Already a directory and already published,
     so `Future` and `CancelScope` keep their `(async, …)` entries and this
     is one step.
-12. `core/`, non-registry members — `byte-array`, `byte-buffer`, `result`,
-    `string-builder`, `string-reader`, `string-convert`, `ownership`.
+12. `core/`, the members nothing in the compiler names — `byte-array`,
+    `byte-buffer`, `result`, `string-builder`, `string-reader`.
     Publishing `core` here is what makes the next step possible.
 13. Add the `core` locations for `String`, `TemplateStringsArray`, `Box`,
     `Error`, `Iterator`, `Iterable`, `Array`, `MutableArray`,
     `FixedArray`, `ImmutableArray`, `GrowableArray`, `Own`, `Borrow` and
-    `Unmanaged` to the registry, alongside their current ones.
+    `Unmanaged` to the registry, alongside their current ones, and the
+    `core` module ids for the functions `queueStdlibFunction` roots by
+    module — `__concat<N>` in `zena:string` and the conversion helpers in
+    `zena:string-convert`.
 14. Reseed.
-15. Move those files into `core/` and drop their old registry locations.
-    This is the step the spike exercised.
+15. Move the remaining files into `core/` — the array family, `string`,
+    `string-convert`, `error`, `error-stack`, `option`, `box`, `range`,
+    `hashable`, `iterator`, `iterable-utils`, `template-strings-array`
+    and `ownership` — and drop their old registry locations. This is the
+    step the spike exercised.
 
 Steps 8–12 and 15 are verifiable by `npm test` alone, since nothing
 outside the stdlib directory changes.
