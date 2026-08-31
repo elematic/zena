@@ -498,19 +498,6 @@ found, returning false`, so the reachability pass is probably
   lookup probes field -> method -> getter, which acts as a silent
   precedence instead of an error.
 
-### Bodyless method in a regular class becomes a silent empty body
-
-- **Found**: 2026-07-22
-- **Severity**: medium (silent wrong behavior for a natural mistake)
-- **Workaround**: always write method bodies in non-declare classes.
-- **Details**: The parser treats `foo(x: A);` in a non-abstract,
-  non-declare class as a method with an empty block body
-  (parser.zena, Semi branch of method parsing). Anyone writing
-  TypeScript-style "signature list + one implementation" overloads
-  gets real empty-body overloads that return zero values, selected by
-  normal overload resolution (member-lookup.md §9.2). Should be a
-  parse or check error.
-
 ### Tear-off of an overloaded method silently picks the first signature
 
 - **Found**: 2026-07-22
