@@ -232,14 +232,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
 
 ## Active Bugs
 
-### An optional method call bails in ZIR
-
-- **Found**: 2026-08-17, applying `this.currentSection?.writeULEB128(x)`
-  on review feedback.
-- **Severity**: low — loud (`zir unsupported: optional method call`).
-  `fn?()` on closure values works; `obj.member?.method(args)` does not.
-- **Workaround**: bind the member and guard with `if (x != null)`.
-
 ### An escape sequence in a tagged template literal fails to compile
 
 - **Found**: 2026-08-16, writing the `dedent` tag: every tagged template
