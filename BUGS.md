@@ -474,18 +474,6 @@ found, returning false`, so the reachability pass is probably
   include a compiler build fingerprint (e.g. hash of cli.wasm /
   zena-cli).
 
-### Cross-arm member access on non-null unions is unimplemented
-
-- **Found**: 2026-07-22 (ruled desired behavior)
-- **Severity**: low (ergonomics; forces narrowing)
-- **Workaround**: narrow to an arm before accessing.
-- **Details**: member-lookup.md §3 specifies that member access on a
-  union is valid when every arm supports the member (result = union
-  of per-arm member types; per-arm overload selection for calls),
-  with null just an arm that supports no members. The checker
-  currently only handles the null arm (plain access errors, ?. works)
-  and rejects member access on multi-arm unions entirely.
-
 ### Cross-kind member collisions are not uniformly diagnosed
 
 - **Found**: 2026-07-22
