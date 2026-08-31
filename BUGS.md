@@ -424,23 +424,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   or move the definition into the compiler". A note in
   `docs/design/bootstrapping.md` would be the cheap fix.
 
-### zena-cli cannot compile files outside the repository root
-
-- **Found**: 2026-08-06 (repointing the nix flake's `zena` command at
-  zena-cli during bootstrap retirement)
-- **Severity**: low for development (in-repo files are the workflow),
-  high for an _installable_ zena — `nix run .#zena` can only compile
-  files under ZENA_REPO_ROOT
-- **Details**: `compile_to_cache` requires the source under the repo
-  root (`strip_prefix(repo_root)` — "File must be inside the Zena
-  repository for now"), because the guest compiler's WASI view and the
-  stdlib both resolve through that root. Supporting arbitrary paths
-  means preopening the file's directory for the guest and mapping the
-  entry path independently of the stdlib root.
-- **Workaround**: set ZENA_REPO_ROOT to a checkout containing the
-  files (the flake wrapper keeps ZENA_COMPILER_WASM pointing at the
-  installed compiler).
-
 ### RESOLVED: a forward-referenced generic class dropped its type arguments
 
 - **Filed on** PR #236's branch as two entries — "A generic class field typed
