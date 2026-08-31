@@ -202,9 +202,60 @@ basename, and picks whichever comes first in `program.units`.
 `Future`'s check survived the `async/` split because it uses
 `startsWith('zena:async')`, while `CancelScope`'s neighbouring check
 compares for equality and would break the moment `CancelScope` left
-`async.zena`. A prefix match is the shape of the fix but still a guess.
-Prefer resolving "which library declares this module" through the
-manifest, and making the lookups fail loudly.
+`async.zena`. Neither is the right shape. A prefix match accepts anything
+under a path, so `zena:async-experiments` would satisfy it, and it encodes
+the file layout in the compiler rather than the library boundary.
+
+### Matching a declaration by name alone
+
+A larger version of the same problem sits alongside it. Sixteen sites
+match a stdlib declaration by name with no location check at all, so a
+user declaration that happens to share the name is treated as the stdlib
+one:
+
+| Names matched | Site |
+| ------------- | ---- |
+| `Iterator`, `Iterable` | `checker.zena:4696`, `codegen/ir/control-flow.zena:2098` |
+| `Iterator`, `Iterable`, `Array`, `MutableArray` | `checker.zena:8602` |
+| `Array`, `GrowableArray`, `FixedArray`, `ImmutableArray` | `codegen/ir/control-flow.zena:2246-2249` |
+| `FixedArray`, `ImmutableArray` | `codegen/ir/lowering.zena:6421` |
+| `FixedArray` | `checker.zena:10053`, `checker.zena:14706` |
+| `Error` | `checker.zena:10316` |
+| `String` | `codegen/ir/templates.zena:153` |
+| `ByteArray` | `codegen/type-mapping.zena:1311` |
+| `Own`, `Borrow`, `Unmanaged` | `types.zena:1158`, `checker.zena:5550` |
+
+Some of these decide code generation. `control-flow.zena:2246` selects
+indexed-loop lowering for a `for`-in over anything whose canonical class is
+named `Array`, `GrowableArray`, `FixedArray` or `ImmutableArray`, and
+`checker.zena:10316` walks a superclass chain accepting any class named
+`Error` as throwable. A user class with one of those names gets stdlib
+lowering applied to a layout that does not match it.
+
+### One strict pattern
+
+Replace all of the above — the located checks, the prefix match, and the
+name-only matches — with a single registry that maps a well-known
+declaration to its **canonical location: the published library plus the
+local declaration name**. Requirements:
+
+- Exact comparison on both halves. No prefix, suffix or substring matching
+  anywhere.
+- Keyed on the library, not the file. A declaration's `sourcePath` is a
+  module id such as `zena:string` or `zena:async/future.zena`; the registry
+  resolves that to its owning library through the manifest, so moving a
+  file inside its library changes nothing. `Future` at `(async, Future)`
+  needs no prefix match to survive living in `async/future.zena`.
+- A miss is an error. Every lookup either returns the declaration or
+  reports which well-known declaration was not found where the registry
+  said it would be.
+- One call shape for every consumer, so a new special-cased declaration has
+  exactly one place to be registered.
+
+Moving a declaration between libraries still changes its key, which is why
+the registry accepts a second exact location for the length of a migration
+and the pull request that finishes the move deletes it. That transitional
+entry is an exact pair like any other, not a relaxation of the match.
 
 ## Bootstrap sequencing
 
@@ -217,9 +268,9 @@ too. Two consequences set the shape of the migration:
   reseed.
 - A file move that changes a coupled `sourcePath` cannot land in one step
   at all. The bootstrap compiles the new stdlib with its old checks and
-  fails, as the spike above shows. The compiler must first learn to accept
-  both the old and new locations, then be reseeded, and only then can the
-  file move.
+  fails, as the spike above shows. The registry must first carry the new
+  location alongside the old, the compiler must be reseeded, and only then
+  can the file move.
 
 Every phase below is ordered around those two rules.
 
@@ -234,18 +285,24 @@ No new module names, no file moves, no import-site changes. Reviewable on
 its own merits.
 
 1. Delete the `sequence` entry from both manifests.
-2. Make `queueStdlibFunction` throw on an unresolved module or export
-   instead of returning silently.
-3. Replace the filename-suffix fallback in
+2. Add the well-known declaration registry: a canonical location
+   `(library, declaration name)` per entry, a `libraryOf` that maps a
+   module id to its published library through the manifest, and an
+   error on any miss. Convert the six sites that already check a location
+   — `String`, `TemplateStringsArray`, `Box`, `Future`, `CancelScope` —
+   and delete the `startsWith('zena:async')` prefix match.
+3. Convert the sixteen name-only sites to the registry. This changes
+   behaviour: a user declaration named `Array`, `Error`, `FixedArray`,
+   `Iterator`, `String` or `ByteArray` stops being treated as the stdlib
+   one.
+4. Make `queueStdlibFunction` throw on an unresolved module or export
+   instead of returning silently, and route its module names through the
+   registry.
+5. Replace the filename-suffix fallback in
    `reachability/import-resolver.zena` with manifest-driven resolution,
    and make a miss an error.
-4. Route the `(name, sourcePath)` checks for `String`,
-   `TemplateStringsArray`, `Box` and `Future`, and the
-   `queueStdlibFunction` call sites, through one table that maps a
-   well-known declaration to its module. Accept both the current and the
-   planned location for each entry.
-5. Reseed. This is the point at which the bootstrap gains the tolerant
-   lookups, and it must be its own pull request.
+6. Reseed. This is the point at which the bootstrap gains the registry,
+   and it must be its own pull request.
 
 ### Phase 1 — regroup files without renaming modules
 
@@ -259,32 +316,33 @@ no new module name is introduced, so none of these needs a reseed. Order
 from least to most coupled so the plumbing is proven before it reaches
 `String`:
 
-6. `component/` — `component-abi`, `component-async`, `component-stream`,
+7. `component/` — `component-abi`, `component-async`, `component-stream`,
    `component-memory`. Update the `runtimeEntry` literal in
    `component-runtime.zena`.
-7. `bench/` — absorb `benchmark`.
-8. `async/` — absorb `stream`. Already a directory; this is one file plus
+8. `bench/` — absorb `benchmark`.
+9. `async/` — absorb `stream`. Already a directory; this is one file plus
    the re-export.
-9. `collections/` — move `map`, `ordered-map`, `set` implementations in.
-   Already a directory.
-10. `core/`, non-prelude members — `byte-array`, `byte-buffer`, `result`,
+10. `collections/` — move `map`, `ordered-map`, `set` implementations in.
+    Already a directory.
+11. `core/`, non-prelude members — `byte-array`, `byte-buffer`, `result`,
     `string-builder`, `string-reader`, `string-convert`,
     `template-strings-array`, `ownership`.
-11. `core/`, prelude members — `string`, `error`, `error-stack`, `option`,
+12. `core/`, prelude members — `string`, `error`, `error-stack`, `option`,
     `box`, `range`, `hashable`, `iterator`, `iterable-utils`, and the
-    array family. Verify against the well-known-declaration table from
-    step 4; this is the step the spike exercised.
+    array family. These are the declarations the registry names, so each
+    needs its transitional second location added and then removed; this is
+    the step the spike exercised.
 
-Each of 6–11 is verifiable by `npm test` alone, since nothing outside the
+Each of 7–12 is verifiable by `npm test` alone, since nothing outside the
 stdlib directory changes.
 
 ### Phase 2 — publish the new entrypoints
 
-12. Add `core`, `component` and the widened `collections` to both
+13. Add `core`, `component` and the widened `collections` to both
     manifests, each pointing at its directory's `index.zena`, which
     re-exports the library's public surface. Old names keep resolving
     through their shims.
-13. Reseed, so compiler sources and stdlib may import the new names.
+14. Reseed, so compiler sources and stdlib may import the new names.
 
 ### Phase 3 — migrate import sites
 
@@ -301,25 +359,25 @@ The current site counts, by area:
 | `packages/zena-formatter/` | 6 |
 | `examples/` | 2 |
 
-14–18. One pull request per new entrypoint (`core`, `collections`,
+15–19. One pull request per new entrypoint (`core`, `collections`,
 `component`, `async`, `bench`), each rewriting every site across all
-areas. After step 13 there is no bootstrap restriction, so a rewrite can
+areas. After step 14 there is no bootstrap restriction, so a rewrite can
 cover compiler sources and tests together.
 
 ### Phase 4 — retire the old names
 
-19. Point the prelude at the new modules. Measure compile time on a
+20. Point the prelude at the new modules. Measure compile time on a
     representative build before and after, and record it.
-20. Delete the shim files and their manifest entries, and drop the
-    old locations from the well-known-declaration table.
-21. Reseed.
+21. Delete the shim files and their manifest entries, and drop every
+    transitional location from the registry.
+22. Reseed.
 
 ## Open decisions
 
 - **`fetch`.** Not in the target library list and not obviously part of
   any library in it. Recommended: leave it published until `http` exists.
 - **Compatibility shims.** The plan deletes the old entrypoints in step
-  20. If any consumer outside this repository should keep working, the
+  21. If any consumer outside this repository should keep working, the
   shims stay instead, and each becomes a one-line
   `export * from 'zena:core';` — which over-exports, and is only
   acceptable as a temporary measure.
@@ -327,7 +385,7 @@ cover compiler sources and tests together.
   provides sleeping and a monotonic clock, so `clock` fits what is there
   now, and a future `date` library takes the calendar half.
 - **`core` in the prelude.** Whether the prelude names `zena:core` at all,
-  or keeps naming narrower modules, should follow the step 19
+  or keeps naming narrower modules, should follow the step 20
   measurement rather than being decided up front.
 
 ## Follow-on libraries
