@@ -257,6 +257,10 @@ the registry accepts a second exact location for the length of a migration
 and the pull request that finishes the move deletes it. That transitional
 entry is an exact pair like any other, not a relaxation of the match.
 
+This is `lib/well-known.zena`, over the module-id-to-library mapping in
+`lib/stdlib-manifest.zena`. Four name comparisons remain, for reasons given
+under "Matches that remain, and why".
+
 ## Bootstrap sequencing
 
 The checked-in bootstrap resolves stdlib modules from the list baked into
@@ -284,67 +288,118 @@ phase are independent unless stated.
 No new module names, no file moves, no import-site changes. Reviewable on
 its own merits.
 
-1. Delete the `sequence` entry from both manifests.
-2. Add the well-known declaration registry: a canonical location
-   `(library, declaration name)` per entry, a `libraryOf` that maps a
-   module id to its published library through the manifest, and an
-   error on any miss. Convert the six sites that already check a location
-   — `String`, `TemplateStringsArray`, `Box`, `Future`, `CancelScope` —
-   and delete the `startsWith('zena:async')` prefix match.
-3. Convert the sixteen name-only sites to the registry. This changes
-   behaviour: a user declaration named `Array`, `Error`, `FixedArray`,
-   `Iterator`, `String` or `ByteArray` stops being treated as the stdlib
-   one.
-4. Make `queueStdlibFunction` throw on an unresolved module or export
+1. Delete the `sequence` entry from both manifests. **Done.**
+2. Add `stdlibLibraryOf`, mapping a canonical module id to the library
+   that owns it, and move `buildStdlibConfig` into `stdlib-manifest.zena`
+   so `types.zena` can reach it without an import cycle. **Done.**
+3. Add the well-known declaration registry: a canonical location
+   `(library, declaration name)` per entry, an error on any miss, and one
+   call shape for classes, interfaces and type aliases. Convert the six
+   sites that already check a location, and delete the
+   `startsWith('zena:async')` prefix match. **Done.**
+4. Convert the name-only sites to the registry. Fourteen of the sixteen
+   converted; the two exceptions are recorded below. **Done.**
+5. Make `queueStdlibFunction` throw on an unresolved module or export
    instead of returning silently, and route its module names through the
    registry.
-5. Replace the filename-suffix fallback in
+6. Replace the filename-suffix fallback in
    `reachability/import-resolver.zena` with manifest-driven resolution,
    and make a miss an error.
-6. Reseed. This is the point at which the bootstrap gains the registry,
+7. Reseed. This is the point at which the bootstrap gains the registry,
    and it must be its own pull request.
 
-### Phase 1 — regroup files without renaming modules
+### Matches that remain, and why
 
-For each target library, create the directory, move the implementation
-files in, rewrite their intra-library imports to relative form, and leave
-each existing top-level `X.zena` as a one-line
-`export * from './<dir>/X.zena';`.
+Four name comparisons survive Phase 0 on purpose.
 
-No manifest entry changes, no import site outside the stdlib changes, and
-no new module name is introduced, so none of these needs a reseed. Order
-from least to most coupled so the plumbing is proven before it reaches
-`String`:
+`array` and `ByteArray` in `codegen/type-mapping.zena` name compiler
+builtins rather than standard library declarations, so no library owns
+them and the registry does not apply. `ByteArray` is the odder of the
+two: the checker registers it as an `ArrayType` of `u8`, deliberately not
+as a stdlib declaration, so real compilation never produces a `ClassType`
+named `ByteArray`. The branch that handles one is reachable only from
+`dce_test`, whose mock standard library declares a stand-in
+`class ByteArray {}`. Correcting the fixture is what would let the branch
+go.
 
-7. `component/` — `component-abi`, `component-async`, `component-stream`,
+The two `currentClass.name == "FixedArray"` guards at the array-literal
+sites in `checker.zena` ask a different question than the registry
+answers — see the next section.
+
+### One file under two module ids
+
+A file reachable under two canonical ids is checked twice and produces two
+nominal types with the same name. `checker-real-files_test` checks
+`packages/stdlib/zena/fixed-array.zena` as an entry point by filesystem
+path while the prelude loads the same file as `zena:fixed-array`, and the
+result is two `FixedArray` classes. It surfaces as a type error whose two
+sides print identically:
+
+```
+Type mismatch: cannot return 'FixedArray<T>' from function expecting 'FixedArray<T>'
+```
+
+The array-literal guards named above absorb this by matching on the name,
+which is why they cannot become location comparisons: a location
+comparison correctly reports the two copies as different, and the literal
+is then typed as the other one.
+
+This bears on the migration rather than only on those two guards. Facades
+and shims are what let one file be reached two ways, so the phases below
+should expect this failure and read the signature above as its
+fingerprint rather than as a checker bug. A file must have exactly one
+canonical id at any moment: a shim re-exports an implementation file, and
+nothing should import both the shim and the file it re-exports.
+
+### Phase 1 — create each library and publish it
+
+For each target library, create the directory, move its implementation
+files in, rewrite their intra-library imports to relative form, and add
+the library to both manifests pointing at its `index.zena`. Each existing
+top-level `X.zena` stays as a one-line `export * from './<dir>/X.zena';`,
+so no import site outside the stdlib changes and both the old and new
+names resolve.
+
+Creating the directory and publishing the library are one step rather than
+two, because `stdlibLibraryOf` attributes a private file to a library only
+if that library is published. Move `string.zena` to `core/string.zena`
+while `core` is unpublished and the file belongs to no library, so the
+registry stops recognizing `String` — which is the same failure the spike
+produced, arriving a step earlier.
+
+Every library that a registry entry names therefore lands in three parts:
+add its new location to the registry alongside the old, reseed, then move
+the files and drop the old location. Libraries the registry does not name
+need neither the extra entry nor the reseed.
+
+Order from least to most coupled, so the plumbing is proven before it
+reaches `String`:
+
+8. `component/` — `component-abi`, `component-async`, `component-stream`,
    `component-memory`. Update the `runtimeEntry` literal in
-   `component-runtime.zena`.
-8. `bench/` — absorb `benchmark`.
-9. `async/` — absorb `stream`. Already a directory; this is one file plus
-   the re-export.
-10. `collections/` — move `map`, `ordered-map`, `set` implementations in.
-    Already a directory.
-11. `core/`, non-prelude members — `byte-array`, `byte-buffer`, `result`,
-    `string-builder`, `string-reader`, `string-convert`,
-    `template-strings-array`, `ownership`.
-12. `core/`, prelude members — `string`, `error`, `error-stack`, `option`,
-    `box`, `range`, `hashable`, `iterator`, `iterable-utils`, and the
-    array family. These are the declarations the registry names, so each
-    needs its transitional second location added and then removed; this is
-    the step the spike exercised.
+   `component-runtime.zena`. No registry entries, so one step.
+9. `bench/` — absorb `benchmark`. No registry entries.
+10. `collections/` — move `map`, `ordered-map`, `set` implementations in,
+    and re-export the array types from `core` once it exists. Already a
+    directory. No registry entries.
+11. `async/` — absorb `stream`. Already a directory and already published,
+    so `Future` and `CancelScope` keep their `(async, …)` entries and this
+    is one step.
+12. `core/`, non-registry members — `byte-array`, `byte-buffer`, `result`,
+    `string-builder`, `string-reader`, `string-convert`, `ownership`.
+    Publishing `core` here is what makes the next step possible.
+13. Add the `core` locations for `String`, `TemplateStringsArray`, `Box`,
+    `Error`, `Iterator`, `Iterable`, `Array`, `MutableArray`,
+    `FixedArray`, `ImmutableArray`, `GrowableArray`, `Own`, `Borrow` and
+    `Unmanaged` to the registry, alongside their current ones.
+14. Reseed.
+15. Move those files into `core/` and drop their old registry locations.
+    This is the step the spike exercised.
 
-Each of 7–12 is verifiable by `npm test` alone, since nothing outside the
-stdlib directory changes.
+Steps 8–12 and 15 are verifiable by `npm test` alone, since nothing
+outside the stdlib directory changes.
 
-### Phase 2 — publish the new entrypoints
-
-13. Add `core`, `component` and the widened `collections` to both
-    manifests, each pointing at its directory's `index.zena`, which
-    re-exports the library's public surface. Old names keep resolving
-    through their shims.
-14. Reseed, so compiler sources and stdlib may import the new names.
-
-### Phase 3 — migrate import sites
+### Phase 2 — migrate import sites
 
 Mechanical rewrites, one library at a time, each independently revertible.
 The current site counts, by area:
@@ -359,25 +414,24 @@ The current site counts, by area:
 | `packages/zena-formatter/` | 6 |
 | `examples/` | 2 |
 
-15–19. One pull request per new entrypoint (`core`, `collections`,
+16–20. One pull request per new entrypoint (`core`, `collections`,
 `component`, `async`, `bench`), each rewriting every site across all
-areas. After step 14 there is no bootstrap restriction, so a rewrite can
+areas. The libraries are published by the end of Phase 1, so a rewrite can
 cover compiler sources and tests together.
 
-### Phase 4 — retire the old names
+### Phase 3 — retire the old names
 
-20. Point the prelude at the new modules. Measure compile time on a
+21. Point the prelude at the new modules. Measure compile time on a
     representative build before and after, and record it.
-21. Delete the shim files and their manifest entries, and drop every
-    transitional location from the registry.
-22. Reseed.
+22. Delete the shim files and their manifest entries.
+23. Reseed.
 
 ## Open decisions
 
 - **`fetch`.** Not in the target library list and not obviously part of
   any library in it. Recommended: leave it published until `http` exists.
 - **Compatibility shims.** The plan deletes the old entrypoints in step
-  21. If any consumer outside this repository should keep working, the
+  22. If any consumer outside this repository should keep working, the
   shims stay instead, and each becomes a one-line
   `export * from 'zena:core';` — which over-exports, and is only
   acceptable as a temporary measure.
@@ -385,7 +439,7 @@ cover compiler sources and tests together.
   provides sleeping and a monotonic clock, so `clock` fits what is there
   now, and a future `date` library takes the calendar half.
 - **`core` in the prelude.** Whether the prelude names `zena:core` at all,
-  or keeps naming narrower modules, should follow the step 20
+  or keeps naming narrower modules, should follow the step 21
   measurement rather than being decided up front.
 
 ## Follow-on libraries
