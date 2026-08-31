@@ -912,31 +912,6 @@ exceeds number of declared memories`. Reaching any linear-memory
   ("type error in return[2] (expected (ref null …), got i32)"), so both
   tests carry `@skip: bootstrap`.
 
-### Inline-tuple union with mismatched slot representations is accepted, then miscompiles
-
-- **Found**: 2026-07-28 (same investigation)
-- **Severity**: medium (silent acceptance of unrepresentable types; the
-  failure surfaces only as invalid wasm at load time)
-- **Workaround**: ensure every arm agrees on each slot's representation — use
-  a hole plus a separate slot instead of two different payload types in one
-  slot.
-- **Details**: The checker does not verify that the arms of an inline-tuple
-  union agree on each slot's wasm representation. A union whose slot 2 is a
-  primitive in one arm and a reference in the other type-checks in both
-  compilers and then emits a module that fails validation.
-  ```zena
-  let f = (b: boolean): inline (true, i32) | inline (false, String) => {
-    if (b) { return (true, 42); }
-    return (false, 'bad');
-  };
-  ```
-  This should be a checker error at the declaration, in the same family as the
-  existing "cannot mix inline tuple types with other representations"
-  diagnostic — a slot that must hold both an i32 and a ref has no multi-value
-  lowering, so it can never be valid. Catching it in the checker also turns
-  the confusing wasm-validation failure into a message that points at the
-  signature.
-
 ### Match arms over inline tuple unions do not narrow (self-hosted); bootstrap narrows
 
 - **Found**: 2026-08-05 (adding a match test for the Result shape, PR #155)
