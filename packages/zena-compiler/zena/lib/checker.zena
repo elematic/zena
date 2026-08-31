@@ -102,7 +102,7 @@ import {
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
   instantiateTypeAliasType, instantiateFunctionType, GenericNamedType,
-  applyTypeIntrinsic,
+  applyTypeIntrinsic, isFutureClassType,
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, baseType,
   integerLiteralFits,
@@ -16696,17 +16696,16 @@ let makeIteratorType = (
  * (async.md §1); the annotation is the call expression's type.
  */
 let extractFutureValueType = (ctx: CheckerContext, t: Type): Type | null => {
-  if (!(t is ClassType)) {
+  // By name and declaring module (isFutureClassType) rather than by
+  // prelude identity: the prelude closure is denied the prelude, so
+  // an identity check cannot see Future from INSIDE zena:async — and
+  // that is exactly where the library's own async code (thenImpl)
+  // awaits. The module id is reserved, so the name cannot be spoofed.
+  if (!isFutureClassType(t)) {
     return null;
   }
-  let prelude = ctx.resolvePreludeType('Future');
-  if (prelude == null || !(prelude is ClassType)) {
-    return null;
-  }
-  if (t.id != prelude.id) {
-    return null;
-  }
-  let args = t.typeArguments;
+  let ct = t as ClassType;
+  let args = ct.typeArguments;
   if (args == null) {
     return null;
   }
