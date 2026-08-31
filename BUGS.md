@@ -363,38 +363,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   share a key. That half is fixed; see the `referencedTypes` note in the
   entry above.
 
-### The checker reports 17 diagnostics twice
-
-- **Found**: 2026-08-08, tightening the semantics runner's `@error`
-  matching. The loose matcher could not see them: one directive was
-  satisfied by either copy and the other copy went unclaimed, and
-  unclaimed errors were ignored.
-- **Severity**: low — the message is right, it is just emitted twice, at
-  the identical file, line and column.
-- **Where**: 17 sites across 10 semantics tests, listed by their doubled
-  `@error:` directives — `inline_tuple_restrictions.zena` (5),
-  `inline_tuple_alias_restrictions.zena` (3), `null-check-else.zena` (2),
-  and one each in `methods-and-inference.zena`,
-  `field-init-forward-ref.zena`, `immutable-field-init-required.zena`,
-  `cannot-override.zena`, `no-param-annotations.zena`,
-  `method-annotation-required.zena`, `invalid_inline_positions.zena`.
-  Two look like distinct causes: an inline-tuple position is reported
-  once per validation pass, and a class member is checked both on the
-  declaration and on the member.
-- **A third cause**, found 2026-08-10 adding the borrow storage rule: a
-  `type` alias's annotation is resolved twice, so _every_ diagnostic
-  raised while resolving one is emitted twice. It is not particular to
-  any check — `type Slot = {file: File};` on a resource class reports
-  "has no unwrapped form" twice on the same line and column. It is why
-  `semantics/ownership/borrow-is-not-stored.zena` spells its record case
-  at a `let` rather than at a `type`: one directive there records the
-  rule, where an alias would have needed two directives recording this
-  bug instead.
-- **Note**: those tests now carry a directive per copy, so they record
-  what the compiler does. De-duplicating will fail them with
-  `Expected error ... but found none there`, which is the signal to
-  delete the second directive — not a regression.
-
 ### A type check the semantics tests expect and the checker does not make
 
 - **Found**: 2026-08-08, tightening the semantics runner's `@error`
