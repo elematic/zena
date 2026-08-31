@@ -363,20 +363,6 @@ found, returning false`, so the reachability pass is probably
   assignment's expected/result type; compound assignments legitimately
   need both [] and []=.
 
-### Parsers diverge on super() position in constructor init lists
-
-- **Found**: 2026-07-22 (bootstrap side surfaced by CI run #32)
-- **Severity**: low (divergence; each compiler is self-consistent)
-- **Workaround**: write super() last — both compilers accept that.
-- **Details**: The grammar (and the bootstrap parser, parser.ts
-  ~3275) requires super(...) as the FINAL init-list entry, but the
-  self-hosted parser accepts it anywhere: `new() : super(), y = 2;`
-  parses, compiles, and runs correctly under the self-hosted
-  compiler while the bootstrap rejects it with "Expected '{' before
-  method body. Got Comma". Either the grammar should relax (and the
-  bootstrap follow) or the self-hosted parser should enforce
-  super-last. Decide, then pin with a semantics test.
-
 ### Compilation cache is not invalidated when the compiler changes
 
 - **Found**: 2026-07-21 (stale-cache runs masked real regressions)
