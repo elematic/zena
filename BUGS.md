@@ -1201,18 +1201,6 @@ found, returning false`, so the reachability pass is probably
   bootstrap follow) or the self-hosted parser should enforce
   super-last. Decide, then pin with a semantics test.
 
-### No narrowing from destructured tuple elements
-
-- **Found**: 2026-07-21 (repeatedly, writing compiler code)
-- **Severity**: low (ergonomics; forces if-let or casts)
-- **Workaround**: destructure inside the condition:
-  `if (let (true, v) = map.get(k)) { ... }`.
-- **Details**: `let (found, v) = map.get(k); if (found) { use(v) }`
-  does not narrow `v` — its type stays `T | _` even though the tuple
-  type correlates the arms. The if-let form narrows fine. Correlated
-  narrowing of tuple elements after destructuring would make the
-  common two-step pattern usable.
-
 ### Compilation cache is not invalidated when the compiler changes
 
 - **Found**: 2026-07-21 (stale-cache runs masked real regressions)
