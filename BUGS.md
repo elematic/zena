@@ -398,22 +398,6 @@ found, returning false`, so the reachability pass is probably
   exhaustive. Adding just IsExpression alone did not trigger it.
   Bootstrap behavior not compared. Reproduce by re-adding those arms.
 
-### Prelude array builtins are user-visible in self-hosted only
-
-- **Found**: 2026-07-25 (writing a ZIR execution test that called
-  `__array_new_empty` directly)
-- **Severity**: low (divergence; no stdlib impact)
-- **Workaround**: tests and user code should reach the builtins via
-  their stdlib wrappers (`newByteArray`, `copyBytes`, FixedArray
-  methods).
-- **Details**: The self-hosted checker registers `__array_len`,
-  `__array_new_empty`, `__byte_array_copy`, etc. as prelude values
-  visible to every module, so user code can call them. The bootstrap
-  checker rejects the same calls with "Variable '**array_new_empty'
-  not found" outside the stdlib. One of the two behaviors should win;
-  hiding compiler-internal `**`-prefixed names from user modules
-  (bootstrap behavior) seems like the right one.
-
 ### Index assignment typing is driven by the [] READ selection
 
 - **Found**: 2026-07-23 (while adding []= overload selection)
