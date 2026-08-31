@@ -305,28 +305,6 @@ found, returning false`, so the reachability pass is probably
   dropping a function that a `replaceAll` path still references, and
   the import index is left dangling.
 
-### Generic interface methods are not virtually dispatchable (diagnostic in place)
-
-- **Found**: 2026-07-26 (probing primitive type-argument coverage)
-- **Severity**: medium (was: high internal crash — both checkers now
-  reject the call site with a proper diagnostic; the language-design
-  question remains)
-- **Workaround**: call generic methods on concrete receivers only —
-  direct calls monomorphize per inferred type argument (map_spec_i32
-  etc., covered by tests/language/execution/arrays/
-  generic-method-primitive-mono.zena).
-- **Details**: `Array<T>` declares `map<U>(...)`, but generic
-  methods get no interface vtable slot (one slot cannot serve every
-  U). Codegen used to crash internally on
-  `(s: Array<i32>).map(f)`; both checkers now reject it ("Generic
-  method 'map' cannot be called through interface 'Array'...",
-  Z2008/NotCallable — pinned by tests/language/semantics/interfaces/
-  generic-method-virtual-dispatch.zena). Still needs a ruling on the
-  feature itself: implement erased virtual dispatch (box U through
-  anyref via the class-vtable copies that already exist), or drop
-  map from the Array interface so the declaration stops promising
-  something uncallable.
-
 ### Exhaustiveness false-positive (Z2022) on large sealed matches
 
 - **Found**: 2026-07-25 (adding dispatch arms in ir/lowering.zena)
