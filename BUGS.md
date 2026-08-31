@@ -141,30 +141,6 @@ and (4) and it compiles and runs. The first await is _not_ required —
   rather than the marker interface it wants to be. That can be revisited
   now; it is a stdlib change rather than part of this fix.
 
-### `match` over an interface-typed scrutinee calls the second arm unreachable
-
-- **Found**: 2026-08-13, writing the regression test for the downcast fix
-  above.
-- **Severity**: medium. A rejected program rather than a wrong answer, but
-  it rejects an ordinary shape and the diagnostic blames the wrong thing.
-- **Details**: with `interface Shape` and two implementors,
-
-  ```zena
-  let named = match (s) {   // s: Shape
-    case Square: 10
-    case Circle: 20         // Unreachable case.
-    case _: 30              // Unreachable case.
-  };
-  ```
-
-  Both later arms are reported unreachable. `Shape` is not sealed, so
-  nothing licenses treating `case Square` as exhaustive — the subtraction
-  appears to consume the whole scrutinee type on the first class arm.
-
-- **Not the same bug as the downcast one above**, and not fixed by it: this
-  is exhaustiveness in the checker, and it rejects before lowering runs.
-- **Workaround**: an if-chain of `is` tests, which is what the test does.
-
 ### RESOLVED: Self-hosted compiler cannot _call_ a generic method on a class
 
 - **Fixed**: 2026-08-10, "Stop emitting a generic method at its own
