@@ -1079,24 +1079,6 @@ found, returning false`, so the reachability pass is probably
 - **Workaround**: Explicitly assign to a new local instead of overriding: `let classType = unnarrowedType as ClassType;`
 - **Details**: When a variable is narrowed by `if (x is ClassType)`, the Zena type system treats it as narrowed logic-wise, but the underlying Wasm local remains its original generic uncasted type (e.g. `(ref null $Type)`). The bootstrap compiler does not inject dynamic `ref.cast` when later reading this variable to evaluate a property access. Wasm compilation fails with: `type mismatch: expected (ref null $ClassType), found (ref null $Type)`. Assigning it explicitly circumvents the flaw.
 
-### Incremental carry-forward can serve models keyed by dead Symbols
-
-- **Found**: 2026-08-04 (diagnosing the import-cycles CI failure)
-- **Severity**: medium (acyclic incremental flows only; cyclic modules
-  are exempt — re-check-closure members never carry forward)
-- **Workaround**: none needed for batch compiles (no `previous`).
-- **Details**: `LibraryLoader.invalidate(X)` clears `scopeResult` on
-  X's direct importers, so their scopes rebuild with fresh Symbols,
-  but `checkCompilation` carries their CheckResults forward when X's
-  export signature is unchanged. The carried model resolves bindings
-  by Symbol identity, so a later compilation that re-checks one of
-  their dependents resolves imports through the current Symbols,
-  misses in the stale model, and degrades the imports to error types.
-  Fix shape: record the ScopeResult each result was checked against
-  and treat a rebuilt scope as invalidating (must not regress the
-  body-only-edit tests in incremental-checking_test), or mint stable
-  SymbolIds per (path, declaration) so rebuilt scopes stay addressable.
-
 ### fs.zena errno messages lack the numeric code
 
 - **Found**: 2026-07-26 (debugging a WASI errno 48 as "UNKNOWN")
