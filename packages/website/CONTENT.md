@@ -57,12 +57,16 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Local and module variables
     - Type annotations and inference
     - Destructuring
-  - 📝 [Types](src/guide/types.md) — `/guide/types/`
-    - Everything has a type
-    - Primitives and references
+  - ✅ [Types](src/guide/types.md) — `/guide/types/`
+    - Type system overview
+    - Taxonomy of types
+    - Type annotations
+    - Primitives, references, and boxing
     - Nominal and structural types
-    - Unions and what may go in them
-    - Type aliases and distinct types
+    - Generics
+    - Unions and nullability
+    - Type aliases, distinct types, and opaque types
+    - Type operators
   - 📝 [Functions](src/guide/functions.md) — `/guide/functions/`
     - Arrow functions only
     - Parameters, defaults, and optionals
@@ -583,4 +587,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-23 of 114 pages written; 91 still placeholders.
+24 of 114 pages written; 90 still placeholders.
