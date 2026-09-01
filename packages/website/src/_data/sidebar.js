@@ -159,6 +159,17 @@ const guide = [
         ],
       },
       {
+        text: 'Async Programming',
+        link: '/guide/async/',
+        outline: [
+          'The async/await model',
+          'Execution model: Eager start and concurrency',
+          'Async main',
+          'Futures and combinators',
+          'Structured cancellation',
+        ],
+      },
+      {
         text: 'Libraries',
         link: '/guide/libraries/',
         outline: [

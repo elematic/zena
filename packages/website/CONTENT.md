@@ -95,6 +95,12 @@ To add a page: add it to the sidebar with an `outline`, then run
     - try as an expression
     - Errors versus result values
     - When to use which
+  - ✅ [Async Programming](src/guide/async.md) — `/guide/async/`
+    - The async/await model
+    - Execution model: Eager start and concurrency
+    - Async main
+    - Futures and combinators
+    - Structured cancellation
   - 📝 [Libraries](src/guide/libraries.md) — `/guide/libraries/`
     - A library is a directory
     - Imports and exports
@@ -588,4 +594,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-25 of 114 pages written; 89 still placeholders.
+26 of 115 pages written; 89 still placeholders.
