@@ -81,16 +81,16 @@ export let tests = suite('Future.then', (): void => {
     equal(msg, 'cb threw');
   });
 
-  test('flatMap settles from the inner future', (ctx: TestContext): void => {
+  test('then flattens a future-returning callback', (ctx: TestContext): void => {
     let gate = new Completer<i32>();
-    let f = Future.of(5).flatMap((v: i32) => doubled(gate.future));
+    let f = Future.of(5).then((v: i32) => doubled(gate.future));
     drainMicrotasks();
     gate.complete(6);
     equal(runFuture(f), 12);
   });
 
-  test('a flatMap inner failure propagates', (ctx: TestContext): void => {
-    let f = Future.of(1).flatMap(
+  test('an inner failure propagates through the flattening', (ctx: TestContext): void => {
+    let f = Future.of(1).then(
       (v: i32) => Future.failed<i32>(new Error('inner')));
     var msg = '';
     try {
@@ -100,6 +100,27 @@ export let tests = suite('Future.then', (): void => {
       msg = e.message;
     }
     equal(msg, 'inner');
+  });
+
+  test('a throwing callback is not caught by its own onError', (ctx: TestContext): void => {
+    var recovered = false;
+    let f = Future.of(1).then(
+      (v: i32): i32 => {
+        throw new Error('from onValue');
+      },
+      (e: Error): i32 => {
+        recovered = true;
+        return -1;
+      });
+    var msg = '';
+    try {
+      runFuture(f);
+      msg = 'no throw';
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'from onValue');
+    isFalse(recovered);
   });
 
   test('cancellation forwards without running callbacks', (ctx: TestContext): void => {

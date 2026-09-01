@@ -545,6 +545,18 @@ export let containsErasedType = (t: Type): boolean => {
       }
       false
     }
+    case TypeAliasType as ta: {
+      // A symbolic alias instance (a distinct alias, or an intrinsic
+      // operator like Awaited<T> that substitution has not closed):
+      // erased-ness lives in its arguments and placeholder target.
+      let targs = ta.typeArguments;
+      if (targs != null) {
+        for (let arg in targs as Array<Type>) {
+          if (containsErasedType(arg)) { return true; }
+        }
+      }
+      containsErasedType(ta.target)
+    }
     case TupleType {elementTypes}: {
       for (let sub in elementTypes) {
         if (containsErasedType(sub)) { return true; }

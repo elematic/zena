@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 0
+// @skip: issue #426 — code after an awaited try with a diverging catch runs inside the handler
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+let shape = async (src: Future<i32>): Future<i32> => {
+  try {
+    await src;
+  } catch (e) {
+    return -1;
+  }
+  throw new Error('after');
+};
+
+export let main = (): i32 => {
+  let c = new Completer<i32>();
+  let f = shape(c.future);
+  c.complete(1);
+  var msg = '';
+  try {
+    runFuture(f);
+    msg = 'no throw';
+  } catch (e) {
+    msg = e.message;
+  }
+  if (msg == 'after') {
+    return 0;
+  }
+  console.log('got: ' + msg);
+  return 1;
+};

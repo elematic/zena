@@ -135,11 +135,14 @@ This document tracks completed work and planned features. For project instructio
     `try`/`finally` and `using` suspension bails. `await` now works
     inside `try`/`finally` (finalizers can await too) and after
     `using`, the async-resource pattern.
-  - **`Future.then` and `Future.flatMap` are done** (closure
-    specialization unblocked them): derived futures settle from the
-    source's outcome — transformed value, recovered or propagated
-    failure — and cancellation forwards structurally, running no
-    callback. No separate `map`: it is `then` with one argument.
+  - **`Future.then` is done and FLATTENS** (JS's routing, the type
+    told by `Awaited<R>`): a future-returning callback chains, a
+    failure propagates or recovers through `onError` (which never
+    sees the callback's own throw), and cancellation forwards
+    structurally, running no callback. No separate `map` or
+    `flatMap`: both are `then`. The implementation is ordinary async
+    code inside zena:async — the combinator-collapse endgame has
+    begun.
   - **Cancellation and structured concurrency are done**, end to end
     ([cancellation.md](docs/design/cancellation.md)): the tag, scopes,
     checkpoints, completed-as-cancelled, the `cancel` clause,
@@ -177,8 +180,12 @@ This document tracks completed work and planned features. For project instructio
        principled outcomes-as-data counterpart to hiding `state`),
        `any`, and the composable resilience combinators below. The
        generic await (`await x` at open `x: T`, typed `Awaited<T>`)
-       is implemented; after the next reseed it lets `then` flatten
-       and the combinators collapse into ordinary async code.
+       is implemented and `then` flattens through it as an async
+       method; the remaining combinators can collapse into ordinary
+       async code the same way. One lowering follow-up: at
+       specializations where the operand is not a future, `return
+       await x` pays the bare-value queue hop for nothing — return
+       position can elide it.
     5. **Composable resilience over real cancellation.** One shape,
        `type Op<T> = () => Future<T>`, and combinators from `Op<T>`
        to `Op<T>` — `timeout(ms, op)`, `deadline(t, op)`,

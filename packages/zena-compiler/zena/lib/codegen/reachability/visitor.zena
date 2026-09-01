@@ -1060,6 +1060,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    */
   registerAsyncFuture(futureType: ClassType, model: SemanticModel,
       isFrameFuture: boolean): void {
+    // A generic async function's TEMPLATE walk names its frame future
+    // at the erasure. Nothing is emitted at an erasure: recording it
+    // would queue cancellation machinery (private methods, a ctor) on
+    // the erased class, which has no methods to register — each
+    // specialization records its own concrete Future.
+    if (containsErasedType(futureType as Type)) {
+      return;
+    }
     this.pass.specializer.instantiateClassType(futureType, model);
     this.pass.typeLowerer.discoverType(futureType as Type, model);
     if (isFrameFuture) {

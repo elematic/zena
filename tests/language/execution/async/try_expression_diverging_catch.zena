@@ -1,0 +1,34 @@
+// @mode: run
+// @result: 0
+// @skip: issue #426 — code after an awaited try expression with a diverging catch never runs
+
+import { Future, Completer, drainMicrotasks, runFuture } from 'zena:async';
+
+let shape = async (src: Future<i32>, alt: Future<i32>): Future<i32> => {
+  let v = try {
+    await src;
+  } catch (e) {
+    return await alt;
+  };
+  throw new Error('after');
+};
+
+export let main = (): i32 => {
+  let c = new Completer<i32>();
+  let alt = new Completer<i32>();
+  let f = shape(c.future, alt.future);
+  c.complete(1);
+  alt.complete(9);
+  var msg = '';
+  try {
+    runFuture(f);
+    msg = 'no throw';
+  } catch (e) {
+    msg = e.message;
+  }
+  if (msg == 'after') {
+    return 0;
+  }
+  console.log('got: ' + msg);
+  return 1;
+};

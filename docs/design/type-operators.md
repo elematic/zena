@@ -89,10 +89,13 @@ suspend, anything else through the union await's bare-value hop,
 unconditionally. Unlike a union's bare arm, a bare `T` substituted to
 a future is not a divergence: bare await means "await whatever
 arrives". A concrete non-future operand at a use site is still an
-error. With this, `then` can become a few lines of ordinary async
-code — after the next reseed, since the current bootstrap's checker
-rejects the form — and the waiter machinery largely dissolves into
-async functions.
+error. With this, `then` IS a few lines of ordinary async code — an
+async method, the first async code zena:async itself contains —
+flattening the way JS's does with the type told by
+`Awaited<R>`, and the then/flatMap waiter classes are gone
+(`flatMap` folded into `then`). Cancellation forwards through the
+frame the way it does everywhere, with no callback able to observe
+it.
 
 ## Planned operators
 

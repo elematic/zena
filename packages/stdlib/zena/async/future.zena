@@ -190,7 +190,7 @@ export class Future<T> {
    *
    * This is what the `await` transform emits, and the primitive the
    * combinators build on. Symbol-keyed because it is the PROTOCOL,
-   * not the API: user code composes with `then`/`flatMap`, while
+   * not the API: user code composes with `then`, while
    * frames — which already are objects — subscribe THEMSELVES here.
    * That is the zero-allocation await invariant: an await allocates
    * nothing (the frame is the waiter), a settle allocates nothing
@@ -221,12 +221,16 @@ export class Future<T> {
 
   /**
    * A future of this future's value, transformed: once this settles
-   * with a value, the derived future settles with `onValue(value)`. A
-   * failure propagates to the derived future untransformed unless
-   * `onError` is given, whose result then RECOVERS the chain — the
-   * derived future resolves with it. A callback that throws fails the
-   * derived future with what it threw. Either callback runs from the
-   * microtask queue, never synchronously here.
+   * with a value, the derived future settles with `onValue(value)` —
+   * and a callback result that is itself a future CHAINS, the derived
+   * future settling the way the inner one does (`Awaited<R>` is the
+   * type of that flattening, one level). A failure propagates
+   * untransformed unless `onError` is given, whose result then
+   * RECOVERS the chain; a callback that throws fails the derived
+   * future with what it threw, and is NOT caught by its own
+   * `onError`, which handles only this future's failure. Either
+   * callback runs from the microtask queue, never synchronously
+   * here.
    *
    * Cancellation is not an error and has no callback: if this future
    * completes cancelled, the derived future completes cancelled too,
@@ -235,27 +239,41 @@ export class Future<T> {
    * the work being unwound — never to a result channel, where a
    * handler could swallow the unwind (docs/design/cancellation.md).
    */
-  then<R>(
+  async then<R>(
     onValue: (value: T) => R,
     onError: ((error: Error) => R) | null = null
-  ): Future<R> {
-    let derived = new Future<R>();
-    this.[subscribe](new ThenWaiter<T, R>(
-      this as Future<T>, derived, onValue, onError));
-    return derived;
-  }
-
-  /**
-   * `then` for a callback that starts more async work: the derived
-   * future settles the way the callback's future does, rather than
-   * with the future itself. Failures and cancellation propagate from
-   * BOTH stages — this future and the one the callback returns.
-   */
-  flatMap<R>(onValue: (value: T) => Future<R>): Future<R> {
-    let derived = new Future<R>();
-    this.[subscribe](new FlatMapWaiter<T, R>(
-      this as Future<T>, derived, onValue));
-    return derived;
+  ): Future<Awaited<R>> {
+    // In a generic class body `this` types as the generic source, a
+    // bare `Future`, which the await operand check rejects — the cast
+    // restores the instantiated type.
+    let src = this as Future<T>;
+    if (onError == null) {
+      return await onValue(await src);
+    }
+    // Record the failure and fall through rather than the natural
+    // `try { ... } catch (e) { return await onError(e); }`, for two
+    // reasons. Routing: `onValue` must sit outside any catch's reach,
+    // because `onError` handles only this future's failure, never the
+    // callback's own throw. And issue #426: a diverging catch around
+    // an awaited try miscompiles — the split pass re-enters the
+    // region on resume and the continuation after the try runs inside
+    // the handler's reach. Falling through gives the merge a catch
+    // predecessor, which keeps it outside the region.
+    var failed: Error | null = null;
+    try {
+      await src;
+      failed = null;
+    } catch (e) {
+      failed = e;
+    }
+    if (failed != null) {
+      return await onError(failed);
+    }
+    // src is settled past the try; awaiting it again is one queue hop
+    // to the same value, and works at every T — saving the value from
+    // the first await would need a `T` local, which has no wasm type
+    // at `T = void`.
+    return await onValue(await src);
   }
 
   /**
@@ -499,104 +517,6 @@ export class Completer<T> extends AnyCompleter {
 }
 
 /**
- * A `then` subscription: reads the source's outcome and settles the
- * derived future. Cancellation forwards structurally — no callback
- * sees it — which is what keeps a result channel unable to swallow an
- * unwind.
- */
-class ThenWaiter<T, R> implements Task {
-  source: Future<T>;
-  derived: Future<R>;
-  onValue: (value: T) => R;
-  onError: ((error: Error) => R) | null;
-  new(this.source, this.derived, this.onValue, this.onError);
-  run(): void {
-    let f = this.source;
-    if (f.[settledState]() == FutureState.Cancelled) {
-      this.derived.[cancelComplete]();
-      return;
-    }
-    let e = f.[failure]();
-    if (e == null) {
-      let ok = this.onValue;
-      try {
-        // No local for the callback's result: at R = void a binding
-        // has no wasm type, and the nested call adapts the zero-width
-        // argument away.
-        this.derived.[complete](ok(f.[valueOrThrow]()));
-      } catch (thrown) {
-        this.derived.[fail](thrown);
-      }
-      return;
-    }
-    let bad = this.onError;
-    if (bad == null) {
-      this.derived.[fail](e as Error);
-      return;
-    }
-    let recover = bad as (error: Error) => R;
-    try {
-      this.derived.[complete](recover(e as Error));
-    } catch (thrown) {
-      this.derived.[fail](thrown);
-    }
-  }
-}
-
-/**
- * A `flatMap` subscription: runs the callback, then forwards the
- * INNER future's settlement to the derived one — value, failure, or
- * cancellation alike.
- */
-class FlatMapWaiter<T, R> implements Task {
-  source: Future<T>;
-  derived: Future<R>;
-  onValue: (value: T) => Future<R>;
-  new(this.source, this.derived, this.onValue);
-  run(): void {
-    let f = this.source;
-    if (f.[settledState]() == FutureState.Cancelled) {
-      this.derived.[cancelComplete]();
-      return;
-    }
-    let e = f.[failure]();
-    if (e != null) {
-      this.derived.[fail](e as Error);
-      return;
-    }
-    let start = this.onValue;
-    let inner = try {
-      start(f.[valueOrThrow]());
-    } catch (thrown) {
-      this.derived.[fail](thrown);
-      return;
-    };
-    inner.[subscribe](new ForwardWaiter<R>(inner, this.derived));
-  }
-}
-
-/** Forwards one future's settlement to another, whole. */
-class ForwardWaiter<R> implements Task {
-  source: Future<R>;
-  target: Future<R>;
-  new(this.source, this.target);
-  run(): void {
-    let f = this.source;
-    if (f.[settledState]() == FutureState.Cancelled) {
-      this.target.[cancelComplete]();
-      return;
-    }
-    let e = f.[failure]();
-    if (e == null) {
-      this.target.[complete](f.[valueOrThrow]());
-      return;
-    }
-    this.target.[fail](e as Error);
-  }
-}
-
-
-/**
  * Runs the executor to a standstill and returns `f`'s value, throwing
  * its failure.
  *
@@ -613,29 +533,6 @@ export let runFuture = <T>(f: Future<T>): T => {
   drainMicrotasks();
   return f.[valueOrThrow]();
 };
-
-// ---------------------------------------------------------------------------
-// Combinators
-// ---------------------------------------------------------------------------
-//
-// Ordinary library code over `subscribe`, as async.md §2 says they would
-// be: no primitive, no compiler support, nothing the executor has to
-// know about. They are written with waiter OBJECTS rather than closures
-// for the reason the module header gives — a closure created inside
-// generic code is not specialized per instantiation and fails to lower —
-// which is also why each carries its own small state class instead of
-// capturing one.
-//
-// Both are written against `subscribe` rather than as async functions
-// awaiting their inputs in turn, and the difference is semantic, not
-// stylistic: awaiting in sequence would wait on futures whose result
-// can no longer matter, so a rejected input would be reported only
-// after every input ahead of it settled — and never at all if one of
-// them never settles.
-//
-// Because waiters pull, neither combinator stores the values it is
-// waiting for: the inputs hold them, in input order, and `allOf` reads
-// them back once the last one lands.
 
 /** Shared state for one `allOf` call: the inputs, how many are still
  * outstanding, and the future they all settle. */
