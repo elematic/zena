@@ -109,11 +109,12 @@ const guide = [
         text: 'Functions',
         link: '/guide/functions/',
         outline: [
-          'Arrow functions only',
-          'Parameters, defaults, and optionals',
-          'Closures and their cost',
-          'Contextual typing',
-          'Generic functions',
+          'Top-level functions and arrow functions',
+          'Parameters and arguments',
+          'Return types and multi-value returns',
+          'Function types and compatibility',
+          'Function and method overloading',
+          'Generators and async functions',
         ],
       },
       {

@@ -67,12 +67,13 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Unions and nullability
     - Type aliases, distinct types, and opaque types
     - Type operators
-  - 📝 [Functions](src/guide/functions.md) — `/guide/functions/`
-    - Arrow functions only
-    - Parameters, defaults, and optionals
-    - Closures and their cost
-    - Contextual typing
-    - Generic functions
+  - ✅ [Functions](src/guide/functions.md) — `/guide/functions/`
+    - Top-level functions and arrow functions
+    - Parameters and arguments
+    - Return types and multi-value returns
+    - Function types and compatibility
+    - Function and method overloading
+    - Generators and async functions
   - 📝 [Control Flow and Matching](src/guide/control-flow.md) — `/guide/control-flow/`
     - Expression-oriented control flow
     - if, match, and exhaustiveness
@@ -587,4 +588,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-24 of 114 pages written; 90 still placeholders.
+25 of 114 pages written; 89 still placeholders.
