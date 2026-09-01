@@ -85,9 +85,9 @@ const guide = [
         link: '/guide/values-and-variables/',
         outline: [
           'let and var',
-          'Immutability by default',
+          'Local and module variables',
           'Type annotations and inference',
-          'Scoping and shadowing',
+          'Destructuring',
         ],
       },
       {

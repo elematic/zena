@@ -16,7 +16,7 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 - **Introduction**
   - ✅ [What is Zena?](src/guide/what-is-zena.md) — `/guide/what-is-zena/`
-    - A language shaped by its target
+    - Built for Wasm GC
     - How it compares
     - What it looks like
     - Where the project stands
@@ -24,7 +24,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - The Wasm GC gap
     - Nothing in your module but your code
     - Compilation fast enough to stay in the loop
-    - Correctness is where the field is going
+    - Correctness
     - Familiar to humans and to agents
     - Why WebAssembly at all
     - No users is a superpower
@@ -52,11 +52,11 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Reading input
     - Compiling to Wasm
 - **Language Basics**
-  - 📝 [Values and Variables](src/guide/values-and-variables.md) — `/guide/values-and-variables/`
+  - ✅ [Values and Variables](src/guide/values-and-variables.md) — `/guide/values-and-variables/`
     - let and var
-    - Immutability by default
+    - Local and module variables
     - Type annotations and inference
-    - Scoping and shadowing
+    - Destructuring
   - 📝 [Types](src/guide/types.md) — `/guide/types/`
     - Everything has a type
     - Primitives and references
@@ -150,8 +150,14 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Diagnostics agents can act on
     - Tooling hooks
     - Practical tips
-- **Coming From…**
-  - 📝 [TypeScript](src/guide/comparisons/typescript.md) — `/guide/comparisons/typescript/`
+- **Language Comparisons**
+  - ✅ [TypeScript](src/guide/comparisons/typescript.md) — `/guide/comparisons/typescript/`
+    - What carries over
+    - let means immutable
+    - No implicit coercion, no any escape hatch
+    - Nominal classes
+    - Cheat sheet
+  - 📝 [AssemblyScript](src/guide/comparisons/assemblyscript.md) — `/guide/comparisons/assemblyscript/`
     - What carries over
     - let means immutable
     - No implicit coercion, no any escape hatch
@@ -525,31 +531,56 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Decisions
     - The working documents
   - ✅ [Strings](src/development/design/strings.md) — `/development/design/strings/`
-    - The problem: hosts disagree
-    - The representation
-    - What falls out of it
-    - What it costs
+    - Problem
+    - Goals
+    - Design overview
+    - Host interop
+    - Current implementation
   - ✅ [Multi-value returns](src/development/design/multi-value-returns.md) — `/development/design/multi-value-returns/`
-    - The motivating case: iteration
-    - What Wasm allows
+    - Motivation
+    - The shape Zena uses
     - Option still exists
-    - Why not Result for errors too
-  - ✅ [Unions and primitives](src/development/design/unions.md) — `/development/design/unions/`
-    - Why: there is no such storage location
-    - Why: there would be nothing to check at runtime
-    - The visible consequence
-    - What to use instead
-  - ✅ [any and automatic boxing](src/development/design/any-and-boxing.md) — `/development/design/any-and-boxing/`
-    - What any does today
-    - The problem
-    - anyref is a different thing, and it stays
-    - Where this leaves generics
+    - Errors
+    - Planned changes
+  - ✅ [Union types](src/development/design/unions.md) — `/development/design/unions/`
+    - Two questions
+    - Illegal unions
+    - Allowed unions
+    - Casts and type checks
+  - ✅ [Classes and interfaces](src/development/design/classes-and-interfaces.md) — `/development/design/classes-and-interfaces/`
+    - Classes are Wasm structs
+    - Virtual calls go through a vtable
+    - Calls are devirtualized when the target is unambiguous
+    - Interfaces are fat pointers
+    - Mixins become classes
+  - ✅ [Generics](src/development/design/generics.md) — `/development/design/generics/`
+    - Generics are reified
+    - Generics are monomorphized
+    - Generic methods
+    - Variance
+    - Constraints
+    - Casts and type checks
+    - Soundness
+  - ✅ [Literal types](src/development/design/literal-types.md) — `/development/design/literal-types/`
+    - Literal types are not sound
+    - is tests the base type
+    - Values from outside the program are unchecked
+  - ✅ [Distinct types](src/development/design/distinct-types.md) — `/development/design/distinct-types/`
+    - Distinct types are opaque in both directions
+    - Distinct types are not sound
+    - is tests the base type
+    - Erasure restricts unions and matching
+  - ✅ [Automatic boxing](src/development/design/automatic-boxing.md) — `/development/design/automatic-boxing/`
+    - Why it is rejected
+    - No any
+    - anyref is a different type
   - ✅ [Regular expressions](src/development/design/regex.md) — `/development/design/regex/`
-    - No literal keeps the lexer context-free
-    - Pay to play
-    - Room to specialize later
-    - The ergonomics gap, and what closes it
+    - Engine size
+    - No JIT in Wasm
+    - Linear-time matching
+    - Compile-time specialization
+    - Patterns as strings
 
 ---
 
-17 of 109 pages written; 92 still placeholders.
+23 of 114 pages written; 91 still placeholders.
