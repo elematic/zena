@@ -118,6 +118,21 @@ const guide = [
         ],
       },
       {
+        text: 'Classes',
+        link: '/guide/classes/',
+        outline: [
+          'Declaring a class and fields',
+          'Constructors and initialization',
+          'Methods and accessors',
+          'Case classes and sealed hierarchies',
+          'Interfaces and mixins',
+          'Extension classes',
+          'Inheritance and overriding',
+          'Operator overloading',
+          'Performance and dispatch',
+        ],
+      },
+      {
         text: 'Control Flow and Matching',
         link: '/guide/control-flow/',
         outline: [
@@ -135,17 +150,6 @@ const guide = [
           'Maps and Sets',
           'Iterating',
           'Choosing a collection',
-        ],
-      },
-      {
-        text: 'Classes and Objects',
-        link: '/guide/classes/',
-        outline: [
-          'Declaring a class',
-          'Constructors and initialization',
-          'Interfaces and mixins',
-          'Sealed hierarchies and case classes',
-          'Records versus classes',
         ],
       },
       {

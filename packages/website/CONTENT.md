@@ -84,12 +84,16 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Maps and Sets
     - Iterating
     - Choosing a collection
-  - 📝 [Classes and Objects](src/guide/classes.md) — `/guide/classes/`
-    - Declaring a class
+  - ✅ [Classes](src/guide/classes.md) — `/guide/classes/`
+    - Declaring a class and fields
     - Constructors and initialization
+    - Methods and accessors
+    - Case classes and sealed hierarchies
     - Interfaces and mixins
-    - Sealed hierarchies and case classes
-    - Records versus classes
+    - Extension classes
+    - Inheritance and overriding
+    - Operator overloading
+    - Performance and dispatch
   - 📝 [Errors](src/guide/errors.md) — `/guide/errors/`
     - Throwing and catching
     - try as an expression
@@ -602,4 +606,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-27 of 116 pages written; 89 still placeholders.
+28 of 116 pages written; 88 still placeholders.
