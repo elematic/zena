@@ -43,6 +43,19 @@ and specific, but say so plainly and say why: "Writing `2^(e-1)` gives
 the width in units of the lower binade's ulp" beats "the natural
 misreading".
 
+Do not coin a phrase and then explain what it means ("consumption is
+the release", "the flip", "the honest version"). State the rule or fact
+in plain words the first time. Introduce a new term only when it will
+be used repeatedly afterward, and define it where it first appears. The
+same goes for figurative verbs standing in for plain ones: "what the
+annotation purchases" is "what the annotation allows".
+
+Argue only against positions someone could actually hold. "Requiring
+the await is sounder and cheaper than synthesizing release glue" sets
+up a comparison the reader never proposed; if no alternative is on the
+table, state what the design does and why it works. When a real
+alternative was considered and rejected, name it as such.
+
 ## Self-contained documents
 
 A document should make sense to someone who has only the repository — not

@@ -181,7 +181,7 @@ Which yields three universes over all Zena types:
 | Unrestricted | primitives, `String`, ordinary classes, `Unmanaged<R>` | yes        | — extent is the whole program         | never implicitly       |
 | Affine       | `Own<R>`, and types containing one                     | **no**     | — an owner carries its extent with it | at scope exit, unmoved |
 | Second-class | `Borrow<R>`                                            | yes        | **no**                                | never                  |
-| Scoped       | `Scoped<T>`, and types containing one                  | **no**     | **no**                                | at scope exit          |
+| Scoped       | `Scoped<T>`, and types containing one                  | **no**     | **no**                                | by required consumption |
 
 The two properties are independent, so these are four corners of one lattice
 rather than a list: **affineness** governs duplication, **second-class-ness**
@@ -532,7 +532,7 @@ it cannot be duplicated and must be dropped — _and_ cannot outlive its extent:
 | Unrestricted | yes        | —                   | never         | ordinary values        |
 | `Own<R>`     | **no**     | —                   | at scope exit | affine                 |
 | `Borrow<R>`  | yes        | **no**              | never         | second-class           |
-| `Scoped<T>`  | **no**     | **no**              | at scope exit | a borrow-derived frame |
+| `Scoped<T>`  | **no**     | **no**              | by required consumption | a borrow-derived frame |
 
 `Scoped<T>` is returnable for the same reason `Borrow<T>` is: returning is a
 move, and the derivation rule keeps the result inside the caller's borrow scope,
@@ -609,6 +609,66 @@ Costs, so this does not read as free:
   the frame: "derives from a borrow" has to propagate into frame typing.
 
 Ship the liveness rule first; this relaxation is the natural follow-on.
+
+##### Required consumption
+
+The universe table lists "released at scope exit" for scoped values. For
+futures that release cannot be implemented. An async frame is eager and
+is referenced by the executor's queues, so code running at scope exit
+cannot end it; the most it can do is request cancellation, which the
+frame observes one queue turn later — after the borrow's owner scope has
+ended, so a finalizer in the unwinding frame could read a released
+resource.
+
+The rule is therefore stricter than release-on-exit:
+
+> **A `Scoped<T>` must be consumed exactly once on every path.** A
+> scoped future is consumed by `await`, or by a move — a return under
+> the derivation rule, or an argument to a `scoped` parameter. A scoped
+> iterator is consumed by `for`/`in`.
+
+Consuming a scoped future with `await` suspends the enclosing scope
+until the frame settles, so the frame ends inside the borrow's extent. A
+`for`/`in` loop disposes a generator frame on every exit path, `break`
+included (generator disposal, cancellation.md), so driving a scoped
+iterator ends its frame inside the extent too. The checker enforces the
+rule with the same every-path analysis that decides field move-out.
+
+One gap remains: an exception raised between creating a scoped future
+and awaiting it unwinds the caller while the frame still holds the
+borrow. This is open question 4 restricted to one window, and the window
+is small — the creation and the `await` are usually adjacent. Closing it
+needs a scope exit that cancels the frame and then awaits its
+settlement, which requires suspension inside finalizers, something the
+split pass does not support.
+
+**Creation.** An async body whose signature declares `Scoped<Future<T>>`
+under the single-borrow-parameter rule creates one, as does a `gen` body
+declaring `Scoped<Iterator<T>>`. The coercion `Future<T>` →
+`Scoped<Future<T>>` stays as specified: weakening a first-class future
+to scoped is safe, and lets it flow into scoped-accepting code. A cast
+to or from `Scoped` is rejected outside `zena:ownership`, with the other
+handles.
+
+**What the annotation allows.** Inside a `Scoped`-returning async body,
+a borrow parameter may be live across `await`: the frame's only
+first-class escape is the returned future, and the scoped rules keep
+that inside the borrow's extent. A generator may take restricted borrow
+parameters when its return type is `Scoped<Iterator<T>>`, because the
+caller can only drive the iterator inside the extent. These two
+relaxations replace the flat bans in §"Borrows and suspension" for the
+annotated signatures.
+
+**Enforcement.** The storage bans — no field, element, record member, or
+closure capture — are the type-level checks `Borrow<R>` has, applied to
+the scoped population. Consumption tracking is move checking with a
+must-consume verdict. Lowering changes in one place: `Scoped` is a
+generic `distinct type` alias, so `await` and `for`/`in` unwrap it
+through `typeArguments`, as with the handles.
+
+Staging: the type and the consumption rule first (checker only); the
+suspension relaxations second; `scoped T` and the combinator audit
+(`Future.all`, the iterator adapters) third.
 
 #### Value types, containers, and slot references
 
