@@ -366,7 +366,7 @@ let lowerValueRegionRest = (cx: LoweringContext, value: i32,
  * unreachable.
  */
 export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
-  let nodeType = cx.func.model.getNodeType(expr);
+  let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped match');
   }
@@ -589,7 +589,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
  * if-expressions lower like statements and yield no value.
  */
 export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 => {
-  let nodeType = cx.func.model.getNodeType(expr);
+  let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped if expression');
   }
@@ -1070,10 +1070,13 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: GrowableArray<SymbolId>
  * them outside — the park-and-replay shape is placement-independent.
  */
 let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
-  let nodeType = cx.func.model.getNodeType(expr);
+  let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped try expression');
   }
+  // Void-ness is per specialization: a try whose generic type is a
+  // bare `T` is a value at `T = i32` and void at `T = void`, the same
+  // rule zero-width arguments follow.
   let isVoid = isVoidOrNeverType(nodeType);
   let resultVt = if (!isVoid) {
     let vt = typeToValTypeWithSub(cx.wasm, nodeType, cx.func);
@@ -1317,10 +1320,13 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
     // wasm local would silently lose its value across the suspension.
     bail(cx, 'uncelled assignment to enclosing local in suspension try body');
   }
-  let nodeType = cx.func.model.getNodeType(expr);
+  let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped try expression');
   }
+  // Void-ness is per specialization: a try whose generic type is a
+  // bare `T` is a value at `T = i32` and void at `T = void`, the same
+  // rule zero-width arguments follow.
   let isVoid = isVoidOrNeverType(nodeType);
   let resultVt = if (!isVoid) {
     let vt = typeToValTypeWithSub(cx.wasm, nodeType, cx.func);

@@ -1,0 +1,46 @@
+// @mode: run
+// @result: 7
+
+// A try/match/if whose generic type is a bare `T` is a value at
+// `T = i32` and void at `T = void`. Lowering must judge void-ness per
+// specialization — testing the generic type alone made every one of
+// these bail ("try result type") at the void instantiation.
+
+import { Error } from 'zena:error';
+
+let viaTry = <T>(f: () => T, fallback: () => T): T => {
+  return try {
+    f()
+  } catch (e) {
+    fallback()
+  };
+};
+
+let viaMatch = <T>(n: i32, f: () => T, g: () => T): T => {
+  return match (n) {
+    case 0: f()
+    case _: g()
+  };
+};
+
+let viaIf = <T>(b: boolean, f: () => T, g: () => T): T => {
+  return if (b) f() else g();
+};
+
+var effects = 0;
+let bump = (): void => { effects += 1; };
+let boom = (): void => { throw new Error('x'); };
+
+export let main = (): i32 => {
+  // Void instantiations: results are zero-width, effects observable.
+  viaTry<void>(bump, bump);
+  viaTry<void>(boom, bump);
+  viaMatch<void>(0, bump, bump);
+  viaIf<void>(true, bump, bump);
+  if (effects != 4) { return 1; }
+  // Value instantiations still carry their value.
+  let a = viaTry<i32>(() => 3, () => -1);
+  let b = viaMatch<i32>(1, () => -1, () => 2);
+  let c = viaIf<i32>(false, () => -1, () => 2);
+  return a + b + c;
+};
