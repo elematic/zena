@@ -1079,7 +1079,7 @@ fields (glue below).
 **Borrow fields stay rejected, and that is forced rather than
 provisional.** A field lives in the heap and outlives any extent, so a
 borrow in one has outlived its lender — the second-class storage rule fires
-on every field, resource class or not. The derived-borrow *object* — a view
+on every field, resource class or not. The derived-borrow _object_ — a view
 holding a borrow plus derived state, built by a function that maps one
 borrow to another — is real, and it is the scoped-class future rather than
 an exception here: scopedness derives structurally exactly as affineness
@@ -1117,7 +1117,7 @@ field it did not move out, in reverse declaration order — the same
 compensation shape implicit drop applies to locals. A dispose that needs
 a different order moves the fields out and releases them itself, and the
 glue then has nothing left to do. The one case that still requires
-writing something is a subclass with owner fields under an *inherited*
+writing something is a subclass with owner fields under an _inherited_
 dispose: an override does not chain to the superclass's automatically,
 so how the two compose is the subclass's decision, and the override
 (possibly empty) is where it is written down.

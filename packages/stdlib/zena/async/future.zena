@@ -118,7 +118,7 @@ export class Future<T> {
    * worth withholding (async-runtime-shape.md, "Why hiding completion
    * state is worth it").
    */
-  :settledState(): FutureState {
+  [settledState](): FutureState {
     return this.#state;
   }
 
@@ -144,7 +144,7 @@ export class Future<T> {
    * parked and nothing left that could complete it: a deadlock
    * (async.md §4).
    */
-  :result(): inline (true, T, _) | inline (false, _, Error) {
+  [result](): inline (true, T, _) | inline (false, _, Error) {
     if (this.#state == FutureState.Rejected) {
       return (false, _, this.#error as Error);
     }
@@ -170,7 +170,7 @@ export class Future<T> {
    * library's own waiters have to work at every `T`. Retire it when
    * void lanes lower.
    */
-  :failure(): Error | null {
+  [failure](): Error | null {
     if (this.#state == FutureState.Cancelled) {
       raiseCancellation();
     }
@@ -199,7 +199,7 @@ export class Future<T> {
    * frame-plus-future. It is deliberately untyped in T: the waiter
    * reads the settled result back with `result()` when it runs.
    */
-  :subscribe(t: Task): void {
+  [subscribe](t: Task): void {
     if (!(this.#state == FutureState.Pending)) {
       scheduleTask(t);
       return;
@@ -240,7 +240,7 @@ export class Future<T> {
     onError: ((error: Error) => R) | null = null
   ): Future<R> {
     let derived = new Future<R>();
-    this.:subscribe(new ThenWaiter<T, R>(
+    this.[subscribe](new ThenWaiter<T, R>(
       this as Future<T>, derived, onValue, onError));
     return derived;
   }
@@ -253,7 +253,7 @@ export class Future<T> {
    */
   flatMap<R>(onValue: (value: T) => Future<R>): Future<R> {
     let derived = new Future<R>();
-    this.:subscribe(new FlatMapWaiter<T, R>(
+    this.[subscribe](new FlatMapWaiter<T, R>(
       this as Future<T>, derived, onValue));
     return derived;
   }
@@ -270,7 +270,7 @@ export class Future<T> {
    * this is the hot path, once per await, and rethrowing the error arm
    * would need the both-arms narrowing the waiters work around.
    */
-  :valueOrThrow(): T {
+  [valueOrThrow](): T {
     if (this.#state == FutureState.Rejected) {
       throw this.#error as Error;
     }
@@ -291,8 +291,8 @@ export class Future<T> {
   }
 
   /** Settles this future with a value. Throws if already settled. */
-  :complete(value: T): void {
-    if (!this.:tryComplete(value)) {
+  [complete](value: T): void {
+    if (!this.[tryComplete](value)) {
       throw new Error('Future already completed');
     }
   }
@@ -300,7 +300,7 @@ export class Future<T> {
   /** Settles this future with a value, reporting whether it won.
    * False means someone else settled it first, which is not an error
    * for a caller racing on purpose. */
-  :tryComplete(value: T): boolean {
+  [tryComplete](value: T): boolean {
     if (!(this.#state == FutureState.Pending)) {
       return false;
     }
@@ -311,14 +311,14 @@ export class Future<T> {
   }
 
   /** Settles this future with a failure. Throws if already settled. */
-  :fail(error: Error): void {
-    if (!this.:tryFail(error)) {
+  [fail](error: Error): void {
+    if (!this.[tryFail](error)) {
       throw new Error('Future already completed');
     }
   }
 
   /** Settles this future with a failure, reporting whether it won. */
-  :tryFail(error: Error): boolean {
+  [tryFail](error: Error): boolean {
     if (!(this.#state == FutureState.Pending)) {
       return false;
     }
@@ -338,7 +338,7 @@ export class Future<T> {
    * settled — a frame that is still running cannot have settled its
    * own future.
    */
-  :cancelComplete(): void {
+  [cancelComplete](): void {
     if (!(this.#state == FutureState.Pending)) {
       throw new Error('Future already completed');
     }
@@ -380,14 +380,14 @@ export class Future<T> {
   /** An already-resolved future. */
   static of<A>(value: A): Future<A> {
     let f = new Future<A>();
-    f.:complete(value);
+    f.[complete](value);
     return f;
   }
 
   /** An already-failed future. */
   static failed<A>(error: Error): Future<A> {
     let f = new Future<A>();
-    f.:fail(error);
+    f.[fail](error);
     return f;
   }
 
@@ -478,23 +478,23 @@ export class Completer<T> extends AnyCompleter {
   new() : super();
 
   complete(value: T): void {
-    this.future.:complete(value);
+    this.future.[complete](value);
   }
 
   fail(error: Error): void {
-    this.future.:fail(error);
+    this.future.[fail](error);
   }
 
   /** Settles with a value, reporting whether it won. False means
    * someone else settled first — not an error for a caller racing on
    * purpose. */
   tryComplete(value: T): boolean {
-    return this.future.:tryComplete(value);
+    return this.future.[tryComplete](value);
   }
 
   /** Settles with a failure, reporting whether it won. */
   tryFail(error: Error): boolean {
-    return this.future.:tryFail(error);
+    return this.future.[tryFail](error);
   }
 }
 
@@ -512,33 +512,33 @@ class ThenWaiter<T, R> implements Task {
   new(this.source, this.derived, this.onValue, this.onError);
   run(): void {
     let f = this.source;
-    if (f.:settledState() == FutureState.Cancelled) {
-      this.derived.:cancelComplete();
+    if (f.[settledState]() == FutureState.Cancelled) {
+      this.derived.[cancelComplete]();
       return;
     }
-    let e = f.:failure();
+    let e = f.[failure]();
     if (e == null) {
       let ok = this.onValue;
       try {
         // No local for the callback's result: at R = void a binding
         // has no wasm type, and the nested call adapts the zero-width
         // argument away.
-        this.derived.:complete(ok(f.:valueOrThrow()));
+        this.derived.[complete](ok(f.[valueOrThrow]()));
       } catch (thrown) {
-        this.derived.:fail(thrown);
+        this.derived.[fail](thrown);
       }
       return;
     }
     let bad = this.onError;
     if (bad == null) {
-      this.derived.:fail(e as Error);
+      this.derived.[fail](e as Error);
       return;
     }
     let recover = bad as (error: Error) => R;
     try {
-      this.derived.:complete(recover(e as Error));
+      this.derived.[complete](recover(e as Error));
     } catch (thrown) {
-      this.derived.:fail(thrown);
+      this.derived.[fail](thrown);
     }
   }
 }
@@ -555,23 +555,23 @@ class FlatMapWaiter<T, R> implements Task {
   new(this.source, this.derived, this.onValue);
   run(): void {
     let f = this.source;
-    if (f.:settledState() == FutureState.Cancelled) {
-      this.derived.:cancelComplete();
+    if (f.[settledState]() == FutureState.Cancelled) {
+      this.derived.[cancelComplete]();
       return;
     }
-    let e = f.:failure();
+    let e = f.[failure]();
     if (e != null) {
-      this.derived.:fail(e as Error);
+      this.derived.[fail](e as Error);
       return;
     }
     let start = this.onValue;
     let inner = try {
-      start(f.:valueOrThrow());
+      start(f.[valueOrThrow]());
     } catch (thrown) {
-      this.derived.:fail(thrown);
+      this.derived.[fail](thrown);
       return;
     };
-    inner.:subscribe(new ForwardWaiter<R>(inner, this.derived));
+    inner.[subscribe](new ForwardWaiter<R>(inner, this.derived));
   }
 }
 
@@ -582,16 +582,16 @@ class ForwardWaiter<R> implements Task {
   new(this.source, this.target);
   run(): void {
     let f = this.source;
-    if (f.:settledState() == FutureState.Cancelled) {
-      this.target.:cancelComplete();
+    if (f.[settledState]() == FutureState.Cancelled) {
+      this.target.[cancelComplete]();
       return;
     }
-    let e = f.:failure();
+    let e = f.[failure]();
     if (e == null) {
-      this.target.:complete(f.:valueOrThrow());
+      this.target.[complete](f.[valueOrThrow]());
       return;
     }
-    this.target.:fail(e as Error);
+    this.target.[fail](e as Error);
   }
 }
 
@@ -611,7 +611,7 @@ class ForwardWaiter<R> implements Task {
  */
 export let runFuture = <T>(f: Future<T>): T => {
   drainMicrotasks();
-  return f.:valueOrThrow();
+  return f.[valueOrThrow]();
 };
 
 // ---------------------------------------------------------------------------
@@ -662,7 +662,7 @@ class AllState<T> {
   attach(futures: Array<Future<T>>): Future<Array<T>> {
     this.remaining = futures.length;
     if (futures.length == 0) {
-      this.result.:complete(new GrowableArray<T>());
+      this.result.[complete](new GrowableArray<T>());
       return this.result;
     }
     var i = 0;
@@ -678,7 +678,7 @@ class AllState<T> {
     // `AllState<T>`.
     i = 0;
     while (i < futures.length) {
-      futures[i].:subscribe(new AllWaiter<T>(this as AllState<T>, i));
+      futures[i].[subscribe](new AllWaiter<T>(this as AllState<T>, i));
       i += 1;
     }
     return this.result;
@@ -696,16 +696,16 @@ class AllState<T> {
       let values = new GrowableArray<T>();
       var i = 0;
       while (i < this.inputs.length) {
-        values.push(this.inputs[i].:valueOrThrow());
+        values.push(this.inputs[i].[valueOrThrow]());
         i += 1;
       }
-      this.result.:complete(values);
+      this.result.[complete](values);
     }
   }
 
   /** The first failure settles the whole thing; later ones are spent. */
   reject(error: Error): void {
-    this.result.:tryFail(error);
+    this.result.[tryFail](error);
   }
 }
 
@@ -720,10 +720,10 @@ class AllWaiter<T> implements Task {
   new(this.state, this.index);
   run(): void {
     let f = this.state.inputs[this.index];
-    // `:failure()` + `:valueOrThrow()` rather than `:result()`: this
+    // `[failure]()` + `[valueOrThrow]()` rather than `[result]()`: this
     // class specializes at `T = void` too, and a zero-width lane does
     // not lower in an inline tuple.
-    let e = f.:failure();
+    let e = f.[failure]();
     if (e == null) {
       this.state.report();
       return;
@@ -749,7 +749,7 @@ class RaceState<T> {
     // is cast for the same reason as in AllState.attach.
     var i = 0;
     while (i < futures.length) {
-      futures[i].:subscribe(
+      futures[i].[subscribe](
         new RaceWaiter<T>(this as RaceState<T>, futures[i]));
       i += 1;
     }
@@ -757,11 +757,11 @@ class RaceState<T> {
   }
 
   win(value: T): void {
-    this.result.:tryComplete(value);
+    this.result.[tryComplete](value);
   }
 
   lose(error: Error): void {
-    this.result.:tryFail(error);
+    this.result.[tryFail](error);
   }
 }
 
@@ -773,9 +773,9 @@ class RaceWaiter<T> implements Task {
   new(this.state, this.future);
   run(): void {
     let f = this.future;
-    let e = f.:failure();
+    let e = f.[failure]();
     if (e == null) {
-      this.state.win(f.:valueOrThrow());
+      this.state.win(f.[valueOrThrow]());
       return;
     }
     this.state.lose(e as Error);

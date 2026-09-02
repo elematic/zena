@@ -12,7 +12,7 @@ resource class File {
   var #fd: i32;
   new(fd: i32) : #fd = fd;
 
-  :Disposable.dispose(this: Own<this>): void {}
+  [Disposable.dispose](this: Own<this>): void {}
 
   /** Every other method borrows: it does not end the object's life. */
   fd(): i32 { return this.#fd; }
@@ -24,30 +24,30 @@ resource class File {
   intoFd(this: Own<this>): i32 { return this.#fd; }
 
   // A method that only borrows may not release what it was lent.
-  close(): void { this.:Disposable.dispose(); }  // @error: consumes its receiver
+  close(): void { this.[Disposable.dispose](); }  // @error: consumes its receiver
 }
 
 // An owner may release.
 let closes = (f: Own<File>): void => {
-  f.:Disposable.dispose();
+  f.[Disposable.dispose]();
 };
 
 // A borrow may not: it never had the object's life to end.
 let borrows = (f: Borrow<File>): void => {
-  f.:Disposable.dispose();  // @error: consumes its receiver
+  f.[Disposable.dispose]();  // @error: consumes its receiver
 };
 
 // Nor may an unmanaged handle — it is not an owner, which is why a disowned
 // resource is either scoped with `using` or adopted back.
 let unmanaged = (f: Unmanaged<File>): void => {
-  f.:Disposable.dispose();  // @error: consumes its receiver
+  f.[Disposable.dispose]();  // @error: consumes its receiver
 };
 
 // Inside a consuming method the receiver is the owner, so it may be handed on
 // to something that takes ownership — which `this` as a borrow may not.
 resource class Handoff {
   new();
-  :Disposable.dispose(this: Own<this>): void { consumeHandoff(this); }
+  [Disposable.dispose](this: Own<this>): void { consumeHandoff(this); }
   leaks(): void { consumeHandoff(this); }  // @error: not assignable
 }
 
@@ -57,14 +57,14 @@ function consumeHandoff(h: Own<Handoff>): void {}
 // the wrong thing under inheritance, so it is not the way to spell it.
 resource class WrittenOut {
   new();
-  :Disposable.dispose(this: Own<this>): void {}
+  [Disposable.dispose](this: Own<this>): void {}
   eject(this: Own<WrittenOut>): i32 { return 0; }  // @error: 'Own<this>'
 }
 
 // `Unmanaged` is not a receiver: nothing is handed to a method through one.
 resource class Unmanaging {
   new();
-  :Disposable.dispose(this: Own<this>): void {}
+  [Disposable.dispose](this: Own<this>): void {}
   poke(this: Unmanaged<this>): void {}  // @error: 'Own<this>' or 'Borrow<this>'
 }
 
@@ -85,7 +85,7 @@ mixin Loggable {
 // A static method has no receiver to declare.
 resource class Statics {
   new();
-  :Disposable.dispose(this: Own<this>): void {}
+  [Disposable.dispose](this: Own<this>): void {}
   static make(this: Borrow<this>): void {}  // @error: static method
 }
 

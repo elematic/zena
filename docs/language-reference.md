@@ -3344,32 +3344,33 @@ interface Iterable<T> {
 
 #### Usage
 
-To define a member using a symbol, prefix the symbol name with `:`. To access a
-symbol-keyed member, use `.:` followed by the symbol name.
+To define a member using a symbol, wrap the symbol name in brackets `[symbol]`.
+To access a symbol-keyed member, use `.[symbol]`.
 
 ```zena
 class MyList<T> implements Iterable<T> {
   // Define a method with a symbol key
-  :Iterable.iterator(): Iterator<T> {
+  [Iterable.iterator](): Iterator<T> {
     // ...
   }
 }
 
 let list = new MyList();
 // Access a symbol-keyed method
-let it = list.:Iterable.iterator();
+let it = list.[Iterable.iterator]();
 ```
 
 #### Semantics
 
 - **Compile-Time Resolution**: Symbols are resolved at compile time. The symbol
-  name after `:` must refer to a constant symbol.
+  name inside `[...]` must refer to a constant symbol.
 - **No Collisions**: Two interfaces can define methods with the same _name_ but
   different _symbols_, allowing a class to implement both without conflict.
 - **Access Control**: Visibility is controlled via standard `export` rules. If a
   symbol is not exported, it cannot be used outside the module.
-- **Distinct from Indexing**: The `:symbol` / `.:symbol` syntax is distinct from
-  the `[expr]` indexing syntax (operator `[]`), avoiding ambiguity.
+- **Distinct from Indexing**: The `[symbol]` declaration and `.[symbol]` access
+  syntax is distinct from operator `[]` definitions (`operator []`) and indexing
+  access (`obj[expr]`), avoiding ambiguity.
 
 ### Distinguishable Types & Erasure
 
@@ -4242,7 +4243,7 @@ class Lock implements Disposable {
 let update = (): void => {
   using guard = acquire(lock);
   // … use guard …
-};   // guard.:Disposable.dispose() runs here
+};   // guard.[Disposable.dispose]() runs here
 ```
 
 Release runs on **every** path leaving the block — an early `return`, a
@@ -4273,7 +4274,7 @@ must **not throw**, since it runs on unwind paths where a second exception
 would displace the one being propagated.
 
 `using` takes any `Disposable`, resource or not. A resource — a value holding
-something the garbage collector cannot reclaim — carries `:dispose()` like
+something the garbage collector cannot reclaim — carries `[Disposable.dispose]()` like
 anything else, so `using` releases it normally rather than rejecting it or
 skipping it.
 
@@ -4310,7 +4311,7 @@ An owned resource is released when its binding's block exits, without a
 ```zena
 let f = open(path);   // f: Own<File>
 read(f);              // a borrow: f stays live
-                      // f.:Disposable.dispose() runs here
+                      // f.[Disposable.dispose]() runs here
 ```
 
 The release runs on every path out of the block — falling off the end,
@@ -4365,7 +4366,7 @@ owner field (`Own<File> | null`) reads as a nullable borrow and is
 skipped by the release when null. Owner fields release in reverse
 declaration order after the dispose body, so disposal is transitive
 through whole ownership trees without forwarding code. One case still
-asks for ceremony: a subclass with owner fields under an *inherited*
+asks for ceremony: a subclass with owner fields under an _inherited_
 `:dispose` must declare an override (its body may be empty), because
 how its releases compose with the superclass's cleanup is its decision
 to write down.

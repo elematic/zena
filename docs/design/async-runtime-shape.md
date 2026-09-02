@@ -323,7 +323,7 @@ export class Future<T> {
   /** The settled result. Traps if this future is still pending —
    *  unreachable by construction, since the only way to reach this is to
    *  be a task the future itself scheduled. */
-  :result(): inline (true, T, _) | inline (false, _, Error);
+  [result](): inline (true, T, _) | inline (false, _, Error);
 
   /** `t.run()` from the microtask queue once this future settles. */
   subscribe(t: Task): void;
@@ -344,7 +344,7 @@ export class Future<T> {
 }
 ```
 
-`:result()` is keyed by a symbol `zena:async` does not export, so no
+`[result]()` is keyed by a symbol `zena:async` does not export, so no
 other module can name it. That is the same device `zena:map` uses for
 `MapEntry`'s link field and `zena:ownership` uses for its lifecycle
 accessors, and it costs nothing: a top-level symbol keying a method on a
@@ -352,7 +352,7 @@ concrete class is an ordinary direct call, not an interface dispatch
 (the vtable-index language in [classes.md](classes.md) §9.4 is about
 interface protocol methods). The compiler is inside the boundary
 trivially — the transform already resolves members by string, so
-`'valueOrThrow'` becomes `':result'`.
+`'valueOrThrow'` becomes `'[result]'`.
 
 **This is what makes the surface JS-shaped without paying for it.** With
 the read hidden, user code cannot observe a settled value synchronously
@@ -368,7 +368,7 @@ direction: exporting the symbol later is one word, retracting it is not.
 **This rests on symbol identity, which now holds.** When the design was
 written it did not: symbol-keyed members resolved by the symbol's source
 _name_, with no comparison of the declaring symbol's identity, so any
-module could reach `:result()` by declaring a symbol of the same name.
+module could reach `[result]()` by declaring a symbol of the same name.
 That was filed from this work and fixed in `86e63185`; access now
 compares identity, and
 `tests/language/semantics/async/private-settled-read.zena` pins it for
@@ -685,7 +685,7 @@ allocation reduction.
 One prerequisite sits outside this list and is not on its critical path:
 hole-initialized fields, which step 1 needs and every other step lands
 without — the `Box` simply survives until they do. Symbol identity was
-the other, and it landed in `86e63185`, so `:result()`'s privacy is real
+the other, and it landed in `86e63185`, so `[result]()`'s privacy is real
 rather than conventional.
 
 ## Risks

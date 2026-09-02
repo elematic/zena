@@ -245,7 +245,7 @@ class-interface pair on its own.
 
 That exposed an ordering bug that had always been latent: "Pass 2"
 built these vtables **once**, and reaching an interface method's body
-can instantiate further classes — `FixedArray<T>.:iterator` returns an
+can instantiate further classes — `FixedArray<T>.[terator]` returns an
 `ArrayIterator<T>` packed as `Iterator<T>` — which then need vtables
 of their own. Classes instantiated by the final queue drain never got
 one. Pass 2 and the drain now alternate to fixpoint; the pair set is
@@ -1150,13 +1150,13 @@ devirtualizes in cases that used to dispatch through the vtable.
 
 `lowerForIn` compiles a for-in whose iterable is a bare array,
 `FixedArray`, `ImmutableArray` or `Array` to an index loop —
-`array.len`/`array.get`, no `:iterator` call, no `ArrayIterator`, no
+`array.len`/`array.get`, no `.[iterator]` call, no `ArrayIterator`, no
 `Iterable` dispatch. Reachability rooted the whole protocol anyway,
 from two places: the checker registered an `Iterable` adaptation on
 every class-typed for-in iterable (picked up by both the adaptation
 walk and the dependency records), and RTA's own `ForInStatement` arm
-queued `:iterator` implementations, recorded
-`Iterable.:iterator`/`Iterator.next` as used interface members, and —
+queued `[iterator]` implementations, recorded
+`[Iterable.iterator]`/`Iterator.next` as used interface members, and —
 for a bare array iterable — instantiated `FixedArray<elem>` outright.
 
 For array-sum that rooting was 94% of the module. The chain, verified

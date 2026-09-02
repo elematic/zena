@@ -80,7 +80,7 @@ The setter name can also be a symbol for capability-based access control:
 
 ```zena
 class Widget {
-  var(:Framework.setState) state: State;  // Setter requires the symbol
+  var([Framework.setState]) state: State;  // Setter requires the symbol
 }
 ```
 

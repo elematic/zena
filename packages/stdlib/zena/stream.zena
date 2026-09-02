@@ -145,7 +145,7 @@ export class Stream<T> {
    * consumed by a read, and with `false` if the reader stopped before
    * consuming it — delivery did not happen.
    */
-  :write(value: T): Future<boolean> {
+  [write](value: T): Future<boolean> {
     if (this.#stopped) {
       return Future.of(false as boolean);
     }
@@ -174,7 +174,7 @@ export class Stream<T> {
    * delivered; `false` means "the rest will never be", not "nothing
    * was".
    */
-  :writeAll(buf: FixedArray<T>, count: i32 = buf.length): Future<boolean> {
+  [writeAll](buf: FixedArray<T>, count: i32 = buf.length): Future<boolean> {
     if (count <= 0 || count > buf.length) {
       throw new Error('zena:stream: writeAll count out of range');
     }
@@ -233,7 +233,7 @@ export class Stream<T> {
 
   /** The writer's close: end-of-stream. A pending write's remainder
    * still delivers; once it drains, reads complete 0. */
-  :close(): void {
+  [close](): void {
     this.#closed = true;
     let pending = this.#pendingRead;
     if (pending != null) {
@@ -259,7 +259,7 @@ export class StreamWriter<T> {
   /** Delivers `value` to the reader: `true` once it is consumed,
    * `false` if the reader stopped before consuming it. */
   write(value: T): Future<boolean> {
-    return this.stream.:write(value);
+    return this.stream.[write](value);
   }
 
   /**
@@ -270,12 +270,12 @@ export class StreamWriter<T> {
    * delivered.
    */
   writeAll(buf: FixedArray<T>, count: i32 = buf.length): Future<boolean> {
-    return this.stream.:writeAll(buf, count);
+    return this.stream.[writeAll](buf, count);
   }
 
   /** Ends the stream: after the pending write drains, reads
    * complete 0. */
   close(): void {
-    this.stream.:close();
+    this.stream.[close]();
   }
 }

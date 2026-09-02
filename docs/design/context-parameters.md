@@ -460,7 +460,7 @@ of plain identifiers:
 export symbol tracer;
 
 // Function uses the symbol as context name
-let process = (data: Data, context :tracer: Tracer?) => {
+let process = (data: Data, context [tracer]: Tracer?) => {
   tracer?.mark("start");
   // ...
 };
@@ -468,7 +468,7 @@ let process = (data: Data, context :tracer: Tracer?) => {
 // Provide context using the symbol
 import {tracer} from "zena:performance";
 
-with :tracer: Tracer.console() {
+with [tracer]: Tracer.console() {
   process(myData);
 }
 ```
@@ -489,7 +489,7 @@ with logger: myLogger {
 }
 
 // Symbol - for public APIs and cross-module contexts
-with :zena:performance.tracer: myTracer {
+with [zena:performance.tracer]: myTracer {
   doStuff();
 }
 ```
@@ -543,10 +543,10 @@ This would make missing context a compile error rather than passing null.
 
 ```zena
 // Option A: Same as member access
-with :tracer: Tracer.console() { ... }
+with [tracer]: Tracer.console() { ... }
 
 // Option B: Explicit symbol reference
-with tracer = :Performance.tracer: Tracer.console() { ... }
+with tracer = [Performance.tracer]: Tracer.console() { ... }
 
 // Option C: Import binds the name
 import {tracer} from "zena:performance";  // Now 'tracer' refers to the symbol

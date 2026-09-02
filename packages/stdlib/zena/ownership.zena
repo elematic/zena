@@ -45,7 +45,7 @@ export interface Disposable {
    * Implementations must not throw: `dispose()` runs on exception-unwind
    * paths, where a second exception would displace the one being propagated.
    */
-  :dispose(): void;
+  [dispose](): void;
 }
 
 /**
@@ -66,8 +66,8 @@ interface OwnState {
   static symbol state;
   static symbol setState;
 
-  :state(): i32;
-  :setState(v: i32): void;
+  [state](): i32;
+  [setState](v: i32): void;
 }
 
 /**
@@ -117,8 +117,8 @@ export resource abstract class Resource implements OwnState {
    */
   var #state: i32 = 0;
 
-  :OwnState.state(): i32 { return this.#state; }
-  :OwnState.setState(v: i32): void { this.#state = v; }
+  [OwnState.state](): i32 { return this.#state; }
+  [OwnState.setState](v: i32): void { this.#state = v; }
 }
 
 /**
@@ -208,7 +208,7 @@ let stateName = (state: i32): String => {
  * adopter from silently minting a second owner.
  */
 function requireState(value: Borrow<Resource>, expected: ResourceState, operation: String): void {
-  let actual = value.:OwnState.state();
+  let actual = value.[OwnState.state]();
   if (actual != expected as i32) {
     throw new ResourceStateError(operation, stateName(actual),
         stateName(expected as i32));
@@ -219,7 +219,7 @@ function requireState(value: Borrow<Resource>, expected: ResourceState, operatio
  * Writes the flag. Non-generic for the same reason as `requireState`.
  */
 function setResourceState(value: Borrow<Resource>, state: i32): void {
-  value.:OwnState.setState(state);
+  value.[OwnState.setState](state);
 }
 
 /**

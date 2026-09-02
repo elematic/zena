@@ -959,7 +959,7 @@ export let main = () => {
   }
 
   // Iterator.next() returns inline (found, value) — `while let` unwraps it.
-  let iterator = items.:Iterable.iterator();
+  let iterator = items.[Iterable.iterator]();
   while (let (true, item) = iterator.next()) {
     console.log(`next: ${item}`);
   }

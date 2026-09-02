@@ -86,7 +86,7 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
       if (equals(entry.key, key)) {
         return entry;
       }
-      entry = entry.:next;
+      entry = entry.[next];
     }
     return null;
   }
@@ -106,7 +106,7 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
     }
 
     let index = h & (buckets.length - 1);
-    buckets[index] = this.:newEntry(key, value, buckets[index]);
+    buckets[index] = this.[newEntry](key, value, buckets[index]);
     this.#size += 1;
   }
 
@@ -164,14 +164,14 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
     var prev: MapEntry<K, V> | null = null;
 
     while (entry != null) {
-      let following = entry.:next;
+      let following = entry.[next];
       if (equals(entry.key, key)) {
         if (prev == null) {
           buckets[index] = following;
         } else {
-          prev.:next = following;
+          prev.[next] = following;
         }
-        this.:entryRemoved(entry);
+        this.[entryRemoved](entry);
         this.#size -= 1;
         return true;
       }
@@ -193,19 +193,19 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
     let oldBuckets = this.#buckets;
     let newBuckets = __array_new_empty<MapEntry<K, V> | null>(oldBuckets.length * 2) as FixedArray<MapEntry<K, V> | null>;
     this.#buckets = newBuckets;
-    this.:rehash(oldBuckets, newBuckets);
+    this.[rehash](oldBuckets, newBuckets);
   }
 
   /**
    * Builds the entry to store for a newly inserted key, and records it in
    * whatever secondary structure the table keeps.
    */
-  :newEntry(key: K, value: V, nextEntry: MapEntry<K, V> | null): MapEntry<K, V> {
+  [newEntry](key: K, value: V, nextEntry: MapEntry<K, V> | null): MapEntry<K, V> {
     return new MapEntry<K, V>(key, value, nextEntry);
   }
 
   /** Called with each entry as it leaves the table, already unlinked. */
-  :entryRemoved(_entry: MapEntry<K, V>): void {}
+  [entryRemoved](_entry: MapEntry<K, V>): void {}
 
   /**
    * Moves the entries of `oldBuckets` into `newBuckets`.
@@ -214,7 +214,7 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
    * snapshot and an iterator walking it keeps yielding a consistent view of
    * the map as it was when iteration began.
    */
-  :rehash(
+  [rehash](
     oldBuckets: FixedArray<MapEntry<K, V> | null>,
     newBuckets: FixedArray<MapEntry<K, V> | null>
   ): void {
@@ -225,8 +225,8 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
       while (entry != null) {
         let current = entry;
         let index = hash(current.key) & mask;
-        newBuckets[index] = this.:newEntry(current.key, current.value, newBuckets[index]);
-        entry = current.:next;
+        newBuckets[index] = this.[newEntry](current.key, current.value, newBuckets[index]);
+        entry = current.[next];
       }
       i += 1;
     }
@@ -238,7 +238,7 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
   }
 
   /** Returns an iterator over the entries. */
-  :Iterable.iterator(): Iterator<MapEntry<K, V>> {
+  [Iterable.iterator](): Iterator<MapEntry<K, V>> {
     return new BucketEntryIterator<K, V>(this.#buckets);
   }
 
@@ -250,7 +250,7 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
       var entry = buckets[i];
       while (entry != null) {
         callback(entry.key, entry.value);
-        entry = entry.:next;
+        entry = entry.[next];
       }
       i += 1;
     }
@@ -291,7 +291,7 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
   new(capacity: i32 = 16) : super(capacity);
 
   /** Stores a list node, and appends it. New keys always go last. */
-  :newEntry(key: K, value: V, nextEntry: MapEntry<K, V> | null): MapEntry<K, V> {
+  [newEntry](key: K, value: V, nextEntry: MapEntry<K, V> | null): MapEntry<K, V> {
     let node = new OrderedEntry<K, V>(key, value, nextEntry);
     let last = this.#tail;
     this.#tail = node;
@@ -307,7 +307,7 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
   // Unlinks the node but leaves `next` pointing at the successor it had: an
   // iterator parked here follows it to reach the rest of the map, and skips
   // this node because `removed` is set.
-  :entryRemoved(entry: MapEntry<K, V>): void {
+  [entryRemoved](entry: MapEntry<K, V>): void {
     let node = entry as OrderedEntry<K, V>;
     let before = node.previous;
     let after = node.next;
@@ -332,7 +332,7 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
   // the order list. The order list reaches every entry, so the old buckets are
   // not needed; iteration follows that list rather than the buckets, and so is
   // undisturbed by the move. Hashes are recomputed, so only the bucket changes.
-  :rehash(
+  [rehash](
     _oldBuckets: FixedArray<MapEntry<K, V> | null>,
     newBuckets: FixedArray<MapEntry<K, V> | null>
   ): void {
@@ -341,7 +341,7 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
     while (node != null) {
       let current = node;
       let index = hash(current.key) & mask;
-      current.:next = newBuckets[index];
+      current.[next] = newBuckets[index];
       newBuckets[index] = current;
       node = current.next;
     }
@@ -352,7 +352,7 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
    * `last` is null. Removed entries keep their forward link, so this walks
    * past any deleted since `last` was visited.
    */
-  :nextLive(last: OrderedEntry<K, V> | null): OrderedEntry<K, V> | null {
+  [nextLive](last: OrderedEntry<K, V> | null): OrderedEntry<K, V> | null {
     var node: OrderedEntry<K, V> | null = null;
     if (last == null) {
       node = this.#head;
@@ -383,7 +383,7 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
   }
 
   /** Returns an iterator over the entries, in insertion order. */
-  :Iterable.iterator(): Iterator<MapEntry<K, V>> {
+  [Iterable.iterator](): Iterator<MapEntry<K, V>> {
     let self = this as OrderedMap<K, V>;
     return new OrderedEntryIterator<K, V>(self);
   }
@@ -395,7 +395,7 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
   forEach(callback: (key: K, value: V) => void): void {
     var last: OrderedEntry<K, V> | null = null;
     while (true) {
-      let node = this.:nextLive(last);
+      let node = this.[nextLive](last);
       if (node == null) {
         return;
       }
@@ -422,8 +422,8 @@ final class BucketEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
 
   #advanceToNext(): void {
     let entry = this.#current;
-    if (entry != null && entry.:next != null) {
-      this.#current = entry.:next;
+    if (entry != null && entry.[next] != null) {
+      this.#current = entry.[next];
       return;
     }
     this.#current = null;
@@ -480,7 +480,7 @@ final class OrderedEntryIterator<K extends Hashable, V> implements Iterator<MapE
     if (this.#exhausted) {
       return (false, _);
     }
-    let node = this.#map.:nextLive(this.#last);
+    let node = this.#map.[nextLive](this.#last);
     if (node == null) {
       this.#exhausted = true;
       return (false, _);

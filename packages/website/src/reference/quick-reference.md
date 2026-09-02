@@ -1980,7 +1980,7 @@ path out, including `return`, `break`/`continue`, and exception unwind.
 import { Disposable } from 'zena:ownership';
 
 class Lock implements Disposable {
-  :Disposable.dispose(): void { release(this.handle); }
+  [Disposable.dispose](): void { release(this.handle); }
 }
 
 let update = (): void => {

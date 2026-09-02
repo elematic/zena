@@ -26,7 +26,7 @@ Summary of findings from the current codebase
   - [x] Enums (integer-backed and string-backed, with match support)
   - [x] Pipeline operator (`|>` with `$` placeholder)
   - [x] Exception handling (`throw`, `try`/`catch`/`finally`)
-  - [x] Symbols (for protocol methods like `:iterator`)
+  - [x] Symbols (for protocol methods like `[iterator]`)
   - [x] Type narrowing (null checks, `is` checks, pattern-based, immutable paths)
 
 - Stdlib presence: `stdlib` contains 32 public modules including `array.zena`, `string.zena`, `console-interface.zena`, `json.zena`, `regex.zena`, `math.zena`, `option.zena`, `byte-buffer.zena`, `cli.zena`, `fs.zena`, `memory.zena`, `test.zena`, and more.
@@ -171,7 +171,7 @@ Syntax changes since initial document
 - **Initializer lists**: `new(x: i32) : field = x, super(...) { }` syntax.
 - **Pipeline operator**: `data |> transform($) |> validate($)`.
 - **Range operator**: `1..10`, `..5`, `5..`, `..` for ranges.
-- **Symbols**: `static symbol iterator;` and `obj.:symbol()` for protocol methods.
+- **Symbols**: `static symbol iterator;` and `obj.[symbol]()` for protocol methods.
 - **Contextual typing**: Numeric literals infer type from context; closure parameters inferred from expected function type.
 
 ---

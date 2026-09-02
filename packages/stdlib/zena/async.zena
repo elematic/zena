@@ -186,7 +186,7 @@ export class CancelScope {
    * not tracked; an already-cancelled scope needs no wake either,
    * because the frame raises at its first checkpoint.
    */
-  :registerTask(t: Task): void {
+  [registerTask](t: Task): void {
     if ((rootScope != null && this == rootScope) || this.#cancelled) {
       return;
     }
@@ -204,7 +204,7 @@ export class CancelScope {
    * scopes on the callers' stacks are the stack; no separate
    * structure is needed.
    */
-  :install(): CancelScope {
+  [install](): CancelScope {
     let p = current;
     current = this;
     return if (p != null) p else getRootScope();
@@ -216,7 +216,7 @@ export class CancelScope {
    * each suspension point — on entering an await and on resuming from
    * one. Those calls are the only places cancellation is delivered.
    */
-  :checkpoint(): void {
+  [checkpoint](): void {
     if (this.#cancelled) {
       raiseCancellation();
     }
@@ -228,7 +228,7 @@ export class CancelScope {
    * run to completion. Level-triggering resumes at the region's
    * closing brace.
    */
-  :shieldScope(): CancelScope {
+  [shieldScope](): CancelScope {
     return getRootScope();
   }
 
@@ -275,10 +275,10 @@ class GroupWaiter<T> implements Task {
   run(): void {
     let f = this.future;
     var err: Error | null = null;
-    if (f.:settledState() == FutureState.Rejected) {
-      err = f.:failure();
+    if (f.[settledState]() == FutureState.Rejected) {
+      err = f.[failure]();
     }
-    this.group.:childSettled(err);
+    this.group.[childSettled](err);
   }
 }
 
@@ -333,11 +333,11 @@ export class TaskGroup {
       current = prev;
     }
     let f = fut as Future<T>;
-    f.:subscribe(new GroupWaiter<T>(this, f));
+    f.[subscribe](new GroupWaiter<T>(this, f));
     return f;
   }
 
-  :childSettled(err: Error | null): void {
+  [childSettled](err: Error | null): void {
     if (err != null && this.#firstError == null) {
       // One member's failure cancels the rest; the error itself
       // surfaces at join, once.
@@ -402,7 +402,7 @@ export class TaskGroup {
     let state = new RaceGroupState<A>(group, bodies.length);
     for (let body in bodies) {
       let f = group.spawn(body);
-      f.:subscribe(new RaceGroupWaiter<A>(state, f));
+      f.[subscribe](new RaceGroupWaiter<A>(state, f));
     }
     return state.result;
   }
@@ -423,21 +423,21 @@ class RaceGroupState<T> {
 
   /** Called once per candidate, when it settles. */
   settled(f: Future<T>): void {
-    if (f.:settledState() == FutureState.Cancelled) {
+    if (f.[settledState]() == FutureState.Cancelled) {
       this.#undecided -= 1;
-      if (this.#undecided == 0 && this.result.:settledState() == FutureState.Pending) {
-        this.result.:cancelComplete();
+      if (this.#undecided == 0 && this.result.[settledState]() == FutureState.Pending) {
+        this.result.[cancelComplete]();
       }
       return;
     }
     // A value or a failure. The first one settles the race; the rest
     // lose. tryComplete/tryFail make the settle first-wins, and
     // cancelling an already-cancelled group does nothing.
-    let e = f.:failure();
+    let e = f.[failure]();
     if (e == null) {
-      this.result.:tryComplete(f.:valueOrThrow());
+      this.result.[tryComplete](f.[valueOrThrow]());
     } else {
-      this.result.:tryFail(e as Error);
+      this.result.[tryFail](e as Error);
     }
     this.group.cancel();
   }
@@ -571,7 +571,7 @@ export class FutureClaim<T> implements Disposable {
     this.#interest.release();
   }
 
-  :Disposable.dispose(): void {
+  [Disposable.dispose](): void {
     this.release();
   }
 }

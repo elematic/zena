@@ -5,7 +5,7 @@ set of libraries, each a facade over private implementation files, and for
 carrying out the moves in steps that each leave the tree building.
 
 This document covers structure and sequencing. `standard-library.md` is the
-older MVP roadmap for *what* the library contains and is not superseded by
+older MVP roadmap for _what_ the library contains and is not superseded by
 this one.
 
 ## Current shape
@@ -46,19 +46,19 @@ strongly connected components, so any grouping that respects the layering
 below is cycle-free. Peeling modules whose dependencies are all already
 placed gives eleven layers:
 
-| Layer | Modules |
-| ----- | ------- |
-| 0 | `box`, `byte-array`, `hashable`, `iterator`, `math`, `option`, `ownership`, `process`, `range`, `result`, `simd` |
-| 1 | `array`, `array-iterator`, `iterable-utils` |
-| 2 | `fixed-array`, `immutable-array` |
-| 3 | `growable-array-iterator`, `string` |
-| 4 | `error-stack`, `string-convert`, `string-reader`, `template-strings-array` |
-| 5 | `error`, `string-builder` |
-| 6 | `growable-array`, `map`, `memory`, `ordered-map`, `regex`, `set`, `test`, `url` |
-| 7 | `async`, `benchmark`, `byte-buffer`, `cli`, `collections`, `component-abi`, `fs`, `json` |
-| 8 | `assert`, `bench`, `component-async`, `js`, `stream` |
-| 9 | `component-stream`, `fetch`, `time` |
-| 10 | `console` |
+| Layer | Modules                                                                                                          |
+| ----- | ---------------------------------------------------------------------------------------------------------------- |
+| 0     | `box`, `byte-array`, `hashable`, `iterator`, `math`, `option`, `ownership`, `process`, `range`, `result`, `simd` |
+| 1     | `array`, `array-iterator`, `iterable-utils`                                                                      |
+| 2     | `fixed-array`, `immutable-array`                                                                                 |
+| 3     | `growable-array-iterator`, `string`                                                                              |
+| 4     | `error-stack`, `string-convert`, `string-reader`, `template-strings-array`                                       |
+| 5     | `error`, `string-builder`                                                                                        |
+| 6     | `growable-array`, `map`, `memory`, `ordered-map`, `regex`, `set`, `test`, `url`                                  |
+| 7     | `async`, `benchmark`, `byte-buffer`, `cli`, `collections`, `component-abi`, `fs`, `json`                         |
+| 8     | `assert`, `bench`, `component-async`, `js`, `stream`                                                             |
+| 9     | `component-stream`, `fetch`, `time`                                                                              |
+| 10    | `console`                                                                                                        |
 
 `scripts/stdlib-deps.py` regenerates this table. It walks each module's
 entry file plus the private siblings it reaches, strips comments, and
@@ -71,14 +71,14 @@ Each entrypoint below is a facade: a single published module whose
 implementation lives in private files under a directory of the same name.
 A type may be exported by more than one entrypoint.
 
-| Entrypoint | Absorbs | Notes |
-| ---------- | ------- | ----- |
-| `core` | `array`, `array-iterator`, `box`, `byte-array`, `byte-buffer`, `error`, `error-stack`, `fixed-array`, `growable-array`, `growable-array-iterator`, `hashable`, `immutable-array`, `iterable-utils`, `iterator`, `option`, `ownership`, `range`, `result`, `string`, `string-builder`, `string-convert`, `string-reader`, `template-strings-array` | see below |
-| `collections` | `map`, `ordered-map`, `set` | also re-exports the array types and `Hashable` from `core` |
-| `component` | `component-abi`, `component-async`, `component-stream`, `component-memory` | component target only |
-| `async` | `stream` | keeps its own name; see "Libraries the target list omits" |
-| `bench` | `benchmark` | `benchmark` is the older WASI-clock harness |
-| `assert`, `cli`, `console`, `fs`, `js`, `json`, `math`, `memory`, `process`, `regex`, `simd`, `test`, `time`, `url` | — | unchanged apart from moving implementation files into directories |
+| Entrypoint                                                                                                          | Absorbs                                                                                                                                                                                                                                                                                                                                           | Notes                                                             |
+| ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `core`                                                                                                              | `array`, `array-iterator`, `box`, `byte-array`, `byte-buffer`, `error`, `error-stack`, `fixed-array`, `growable-array`, `growable-array-iterator`, `hashable`, `immutable-array`, `iterable-utils`, `iterator`, `option`, `ownership`, `range`, `result`, `string`, `string-builder`, `string-convert`, `string-reader`, `template-strings-array` | see below                                                         |
+| `collections`                                                                                                       | `map`, `ordered-map`, `set`                                                                                                                                                                                                                                                                                                                       | also re-exports the array types and `Hashable` from `core`        |
+| `component`                                                                                                         | `component-abi`, `component-async`, `component-stream`, `component-memory`                                                                                                                                                                                                                                                                        | component target only                                             |
+| `async`                                                                                                             | `stream`                                                                                                                                                                                                                                                                                                                                          | keeps its own name; see "Libraries the target list omits"         |
+| `bench`                                                                                                             | `benchmark`                                                                                                                                                                                                                                                                                                                                       | `benchmark` is the older WASI-clock harness                       |
+| `assert`, `cli`, `console`, `fs`, `js`, `json`, `math`, `memory`, `process`, `regex`, `simd`, `test`, `time`, `url` | —                                                                                                                                                                                                                                                                                                                                                 | unchanged apart from moving implementation files into directories |
 
 `fetch` is unresolved; see "Open decisions".
 
@@ -176,19 +176,19 @@ Error message: string_hash_helper discovery: String class struct not found!
 
 The full inventory:
 
-| Coupling | Site |
-| -------- | ---- |
-| `String` at `zena:string` | `reachability/visitor.zena:272`, `reachability/analysis.zena:789`, `analysis.zena:2205` |
-| `TemplateStringsArray` at `zena:template-strings-array` | `visitor.zena:274`, `analysis.zena:791` |
-| `Box` at `zena:box` | `analysis.zena:793` |
-| `Future` at a `zena:async` prefix | `types.zena:1324` |
-| `CancelScope` at exactly `zena:async` | `checker.zena:17154` |
-| `__concat<N>` in `zena:string` | `visitor.zena:1373`, `ir/templates.zena:91` |
-| `zena:string-convert` conversion functions | `visitor.zena:1369` |
-| `currentScope` in `zena:async`; `scheduleTask`, `drainMicrotasks` in `zena:async/executor.zena` | `visitor.zena:1084,1138,1205,1232` |
-| `component-memory.zena` as the injected component runtime entry | `codegen/component-runtime.zena:35` |
-| `awaitPacked` from `zena:component-async` in synthesized source | `wit-module-synth.zena:179` |
-| 16 prelude module names, plus `zena:component-abi` as a target runtime module | `prelude.zena` |
+| Coupling                                                                                        | Site                                                                                    |
+| ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `String` at `zena:string`                                                                       | `reachability/visitor.zena:272`, `reachability/analysis.zena:789`, `analysis.zena:2205` |
+| `TemplateStringsArray` at `zena:template-strings-array`                                         | `visitor.zena:274`, `analysis.zena:791`                                                 |
+| `Box` at `zena:box`                                                                             | `analysis.zena:793`                                                                     |
+| `Future` at a `zena:async` prefix                                                               | `types.zena:1324`                                                                       |
+| `CancelScope` at exactly `zena:async`                                                           | `checker.zena:17154`                                                                    |
+| `__concat<N>` in `zena:string`                                                                  | `visitor.zena:1373`, `ir/templates.zena:91`                                             |
+| `zena:string-convert` conversion functions                                                      | `visitor.zena:1369`                                                                     |
+| `currentScope` in `zena:async`; `scheduleTask`, `drainMicrotasks` in `zena:async/executor.zena` | `visitor.zena:1084,1138,1205,1232`                                                      |
+| `component-memory.zena` as the injected component runtime entry                                 | `codegen/component-runtime.zena:35`                                                     |
+| `awaitPacked` from `zena:component-async` in synthesized source                                 | `wit-module-synth.zena:179`                                                             |
+| 16 prelude module names, plus `zena:component-abi` as a target runtime module                   | `prelude.zena`                                                                          |
 
 Two of these fail quietly rather than loudly. `queueStdlibFunction` looks
 its module up with `program.unitsByPath.has(modulePath)` and returns
@@ -213,17 +213,17 @@ match a stdlib declaration by name with no location check at all, so a
 user declaration that happens to share the name is treated as the stdlib
 one:
 
-| Names matched | Site |
-| ------------- | ---- |
-| `Iterator`, `Iterable` | `checker.zena:4696`, `codegen/ir/control-flow.zena:2098` |
-| `Iterator`, `Iterable`, `Array`, `MutableArray` | `checker.zena:8602` |
-| `Array`, `GrowableArray`, `FixedArray`, `ImmutableArray` | `codegen/ir/control-flow.zena:2246-2249` |
-| `FixedArray`, `ImmutableArray` | `codegen/ir/lowering.zena:6421` |
-| `FixedArray` | `checker.zena:10053`, `checker.zena:14706` |
-| `Error` | `checker.zena:10316` |
-| `String` | `codegen/ir/templates.zena:153` |
-| `ByteArray` | `codegen/type-mapping.zena:1311` |
-| `Own`, `Borrow`, `Unmanaged` | `types.zena:1158`, `checker.zena:5550` |
+| Names matched                                            | Site                                                     |
+| -------------------------------------------------------- | -------------------------------------------------------- |
+| `Iterator`, `Iterable`                                   | `checker.zena:4696`, `codegen/ir/control-flow.zena:2098` |
+| `Iterator`, `Iterable`, `Array`, `MutableArray`          | `checker.zena:8602`                                      |
+| `Array`, `GrowableArray`, `FixedArray`, `ImmutableArray` | `codegen/ir/control-flow.zena:2246-2249`                 |
+| `FixedArray`, `ImmutableArray`                           | `codegen/ir/lowering.zena:6421`                          |
+| `FixedArray`                                             | `checker.zena:10053`, `checker.zena:14706`               |
+| `Error`                                                  | `checker.zena:10316`                                     |
+| `String`                                                 | `codegen/ir/templates.zena:153`                          |
+| `ByteArray`                                              | `codegen/type-mapping.zena:1311`                         |
+| `Own`, `Borrow`, `Unmanaged`                             | `types.zena:1158`, `checker.zena:5550`                   |
 
 Some of these decide code generation. `control-flow.zena:2246` selects
 indexed-loop lowering for a `for`-in over anything whose canonical class is
@@ -349,15 +349,15 @@ stdlib directory changes.
 Mechanical rewrites, one library at a time, each independently revertible.
 The current site counts, by area:
 
-| Area | Files importing `zena:` |
-| ---- | ----------------------- |
-| `tests/` | 193 |
-| `packages/zena-compiler/` | 125 |
-| `packages/stdlib/` | 111 |
-| `packages/wit-parser/` | 13 |
-| `benchmarks/` | 6 |
-| `packages/zena-formatter/` | 6 |
-| `examples/` | 2 |
+| Area                       | Files importing `zena:` |
+| -------------------------- | ----------------------- |
+| `tests/`                   | 193                     |
+| `packages/zena-compiler/`  | 125                     |
+| `packages/stdlib/`         | 111                     |
+| `packages/wit-parser/`     | 13                      |
+| `benchmarks/`              | 6                       |
+| `packages/zena-formatter/` | 6                       |
+| `examples/`                | 2                       |
 
 15–19. One pull request per new entrypoint (`core`, `collections`,
 `component`, `async`, `bench`), each rewriting every site across all
@@ -376,8 +376,7 @@ cover compiler sources and tests together.
 
 - **`fetch`.** Not in the target library list and not obviously part of
   any library in it. Recommended: leave it published until `http` exists.
-- **Compatibility shims.** The plan deletes the old entrypoints in step
-  21. If any consumer outside this repository should keep working, the
+- **Compatibility shims.** The plan deletes the old entrypoints in step 21. If any consumer outside this repository should keep working, the
   shims stay instead, and each becomes a one-line
   `export * from 'zena:core';` — which over-exports, and is only
   acceptable as a temporary measure.

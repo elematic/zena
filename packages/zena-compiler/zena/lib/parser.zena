@@ -1944,13 +1944,13 @@ export final class Parser {
         this.#consume(TokenType.LParen, "Expected '(' after type arguments");
         expr = this.#finishCall(expr, typeArguments, false, callStart);
       } else if (this.#match(TokenType.Dot)) {
-        if (this.#match(TokenType.Colon)) {
-          this.#peek();
+        if (this.#match(TokenType.LBracket)) {
           var symbolPath: Expression = this.#parseIdentifier();
           while (this.#match(TokenType.Dot)) {
             let prop = this.#parseIdentifier();
             symbolPath = new MemberExpression(symbolPath, prop, false, false, null, this.#makeLocation(callStart));
           }
+          this.#consume(TokenType.RBracket, "Expected ']' after symbol member name");
           let property: Identifier = if (symbolPath is Identifier) {
             symbolPath
           } else {
@@ -1978,7 +1978,20 @@ export final class Parser {
         expr = new IndexExpression(expr, index, false, this.#makeLocation(callStart));
       } else if (this.#match(TokenType.QuestionDot)) {
         // Optional chaining
-        if (this.#match(TokenType.Hash)) {
+        if (this.#match(TokenType.LBracket)) {
+          var symbolPath: Expression = this.#parseIdentifier();
+          while (this.#match(TokenType.Dot)) {
+            let prop = this.#parseIdentifier();
+            symbolPath = new MemberExpression(symbolPath, prop, false, false, null, this.#makeLocation(callStart));
+          }
+          this.#consume(TokenType.RBracket, "Expected ']' after symbol member name");
+          let property: Identifier = if (symbolPath is Identifier) {
+            symbolPath
+          } else {
+            (symbolPath as MemberExpression).property
+          };
+          expr = new MemberExpression(expr, property, true, true, symbolPath, this.#makeLocation(callStart));
+        } else if (this.#match(TokenType.Hash)) {
           // Private field access with optional chaining: obj?.#field
           let hashToken = this.#previous();
           let fieldId = this.#parseIdentifier();
@@ -2947,14 +2960,11 @@ export final class Parser {
   // Helper Methods
   // ==========================================================================
   
-  // Check if `:` after let/var starts a symbol property name.
-  // `var :sym: Type` → Var(+0), Colon(+1), Ident(+2), Colon(+3) → symbol field
-  // `var: Type`      → Var(+0), Colon(+1), Ident(+2), Semi(+3)  → field named 'var'
+  // Check if `[` after let/var starts a symbol property name.
+  // `var [sym]: Type` → Var(+0), LBracket(+1) → symbol field
+  // `var: Type`       → Var(+0), Colon(+1)    → field named 'var'
   #isSymbolFieldAfterKeyword(): boolean {
-    let t1 = this.#tokens[this.#current + 1].kind;
-    let t2 = this.#tokens[this.#current + 2].kind;
-    let t3 = this.#tokens[this.#current + 3].kind;
-    return t1 == TokenType.Colon && t2 == TokenType.Identifier && (t3 == TokenType.Colon || t3 == TokenType.Dot);
+    return this.#tokens[this.#current + 1].kind == TokenType.LBracket;
   }
   
   #isIdentifier(): boolean {
@@ -3298,13 +3308,14 @@ export final class Parser {
           let hashToken = this.#previous();
           let id = this.#parseIdentifier();
           setterName = new Identifier("#" + id.name, this.#makeLocation(hashToken));
-        } else if (this.#match(TokenType.Colon)) {
+        } else if (this.#match(TokenType.LBracket)) {
           let colStart = this.#previous();
           var symbolExpr: Expression = this.#parseIdentifier();
           while (this.#match(TokenType.Dot)) {
             let prop = this.#parseIdentifier();
             symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(colStart));
           }
+          this.#consume(TokenType.RBracket, "Expected ']' after setter symbol name");
           setterName = new SymbolPropertyName(symbolExpr, this.#makeLocation(colStart));
         } else {
           setterName = this.#parseIdentifier();
@@ -3321,35 +3332,36 @@ export final class Parser {
     
     // Operator method: operator ==(other), operator [](index), operator +(other)
     if (this.#check(TokenType.Operator)) {
-      this.#advance();
-      var opName = "";
+      this.#advance(); // consume 'operator'
+      let opStart = this.#previous();
+      
+      // Index operator: operator [](param) or operator []=(param, value)
       if (this.#match(TokenType.LBracket)) {
-        // operator [] or operator []=
-        this.#consume(TokenType.RBracket, "Expected ']' after operator '['");
+        this.#consume(TokenType.RBracket, "Expected ']' after '[' in operator declaration");
+        var opName = "[]";
         if (this.#match(TokenType.Equals)) {
           opName = "[]=";
-        } else {
-          opName = "[]";
         }
-      } else {
-        // operator ==, operator +, etc.
-        let opToken = this.#advance();
-        opName = opToken.value;
-        // Check for == (two consecutive = tokens)
-        if (opName == "=" && this.#check(TokenType.Equals)) {
-          this.#advance();
-          opName = "==";
-        }
+        let identifier = new Identifier(opName, this.#makeLocation(opStart));
+        return this.#parseMethodBody(identifier, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
       }
-      let operatorName = new Identifier(opName, this.#makeLocation(startToken));
-      return this.#parseMethodBody(operatorName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
+      
+      // Other operators (==, +, -, etc.)
+      let opToken = this.#advance();
+      var opName = opToken.value;
+      if (opName == "=" && this.#check(TokenType.Equals)) {
+        this.#advance();
+        opName = "==";
+      }
+      let identifier = new Identifier(opName, this.#makeLocation(opStart));
+      return this.#parseMethodBody(identifier, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
     }
     
     // Private field/method: #name
-    if (this.#check(TokenType.Hash)) {
-      this.#advance();
-      let privateName = this.#parseIdentifier();
-      let hashName = new Identifier("#" + privateName.name, this.#makeLocation(startToken));
+    if (this.#match(TokenType.Hash)) {
+      let hashToken = this.#previous();
+      let id = this.#parseIdentifier();
+      let hashName = new Identifier("#" + id.name, this.#makeLocation(hashToken));
       
       // Private method: #name(params) { ... }
       if (this.#check(TokenType.LParen)) {
@@ -3395,18 +3407,18 @@ export final class Parser {
       return new FieldDefinition(symName, new NamedTypeAnnotation('symbol', null, symName.loc), null, true, false, true, false, null, decorators, null, this.#makeLocation(startToken));
     }
     
-    // Symbol-keyed member: :symbolName
-    if (this.#check(TokenType.Colon) && this.#peek2().kind == TokenType.Identifier) {
-      this.#advance(); // consume ':'
+    // Symbol-keyed member: [symbolName]
+    if (this.#match(TokenType.LBracket)) {
       let symStart = this.#previous();
       var symbolExpr: Expression = this.#parseIdentifier();
       while (this.#match(TokenType.Dot)) {
         let prop = this.#parseIdentifier();
         symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(symStart));
       }
+      this.#consume(TokenType.RBracket, "Expected ']' after symbol name");
       let symPropName = new SymbolPropertyName(symbolExpr, this.#makeLocation(symStart));
       
-      // Symbol-keyed method: :name(params) { ... }
+      // Symbol-keyed method: [name](params) { ... }
       if (this.#check(TokenType.LParen)) {
         return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken);
       }
@@ -3414,7 +3426,7 @@ export final class Parser {
         throw this.#error("Expected '(' after generator/async method name");
       }
 
-      // Symbol-keyed field: :name: Type;
+      // Symbol-keyed field: [name]: Type; or :name: Type;
       this.#consume(TokenType.Colon, "Expected ':' after symbol field name");
       let symTypeAnnotation = this.#parseTypeAnnotation();
       
@@ -3876,15 +3888,15 @@ export final class Parser {
       return new MethodSignature(operatorName, null, params, returnType, this.#makeLocation(startToken));
     }
     
-    // Symbol-keyed method: :symbolName(params): ReturnType;
-    if (this.#check(TokenType.Colon) && this.#peek2().kind == TokenType.Identifier) {
-      this.#advance(); // consume ':'
+    // Symbol-keyed method: [symbolName](params): ReturnType;
+    if (this.#match(TokenType.LBracket)) {
       let symStart = this.#previous();
       var symbolExpr: Expression = this.#parseIdentifier();
       while (this.#match(TokenType.Dot)) {
         let prop = this.#parseIdentifier();
         symbolExpr = new MemberExpression(symbolExpr, prop, false, false, null, this.#makeLocation(symStart));
       }
+      this.#consume(TokenType.RBracket, "Expected ']' after symbol name");
       let symPropName = new SymbolPropertyName(symbolExpr, this.#makeLocation(symStart));
       this.#consume(TokenType.LParen, "Expected '(' after symbol method name");
       let symParams = this.#parseParameters();
