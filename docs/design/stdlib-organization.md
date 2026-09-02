@@ -77,7 +77,7 @@ A type may be exported by more than one entrypoint.
 | `collections` | `map`, `ordered-map`, `set` | also re-exports the array types and `Hashable` from `core` |
 | `component` | `component-abi`, `component-async`, `component-stream`, `component-memory` | component target only |
 | `async` | `stream` | keeps its own name; see "Libraries the target list omits" |
-| `bench` | `benchmark` | `benchmark` is the older WASI-clock harness |
+| `bench` | `benchmark` | done; `benchmark`'s clock and formatter duplicated `bench`'s, so only `runTest` moved |
 | `assert`, `cli`, `console`, `fs`, `js`, `json`, `math`, `memory`, `process`, `regex`, `simd`, `test`, `time`, `url` | — | unchanged apart from moving implementation files into directories |
 
 `fetch` is unresolved; see "Open decisions".
@@ -409,7 +409,14 @@ reaches `String`:
    Publishing `zena:component` itself is a later step. The rule that a
    library must be published before its files move applies to private
    siblings, and every file here is named by a manifest entry.
-9. `bench/` — absorb `benchmark`. No registry entries.
+9. `bench/` — absorb `benchmark`. **Done**, and it was a merge rather than
+   a move. Two of `benchmark`'s three exports already existed in `bench`:
+   `getMonotonicTimeMs` is `readClockMs(1)`, the same WASI call
+   unparameterized, and `formatFloat` is `formatFixed(value, 2)` except
+   that it truncates instead of rounding and mishandles negatives. Only
+   `runTest` was missing, so it moved into `bench/index.zena` over
+   `nowMs` and `formatFixed`, and `benchmark.zena` was deleted rather
+   than relocated. Timings now round rather than truncate.
 10. `collections/` — move `map`, `ordered-map`, `set` implementations in,
     and re-export the array types from `core` once it exists. Already a
     directory. No registry entries.

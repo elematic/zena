@@ -665,3 +665,25 @@ export let reportToJson = (report: BenchReport): String => {
   b.endObject();
   return b.toString();
 };
+
+/**
+ * Times `testFunc` once and prints the elapsed milliseconds, after one
+ * untimed warm-up call. `filter` selects by substring; an empty filter
+ * runs everything.
+ *
+ * The one-shot counterpart to `BenchRunner`, which samples repeatedly and
+ * reports a distribution. Use this when a single number read off stdout is
+ * the whole point, as the benchmark programs under test-files/ do.
+ */
+export let runTest = (name: String, testFunc: () => void, filter: String): void => {
+  if (filter.length > 0 && !name.contains(filter)) {
+    return;
+  }
+  // Warm up before timing: the first call pays for lazy initialization.
+  testFunc();
+
+  let start = nowMs();
+  testFunc();
+  let end = nowMs();
+  console.log(name + ": " + formatFixed(end - start, 2) + " ms");
+};
