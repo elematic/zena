@@ -336,9 +336,11 @@ export final class IrBuilder {
   }
 
   /** try_br: a = tag ref, b = [bodyTarget, argc, arg*, catchTarget,
-   * argc, arg*]. Terminator; both edges carry block arguments. */
+   * argc, arg*]. Terminator; both edges carry block arguments.
+   * Returns the instruction id so lowering can record the region's
+   * join in `body.tryJoin` once it exists. */
   tryBr(tagRef: i32, bodyTarget: i32, bodyArgs: GrowableArray<i32>,
-      catchTarget: i32, catchArgs: GrowableArray<i32>): void {
+      catchTarget: i32, catchArgs: GrowableArray<i32>): i32 {
     let idx = this.body.extra.length;
     this.body.extra.push(bodyTarget);
     this.body.extra.push(bodyArgs.length);
@@ -350,7 +352,7 @@ export final class IrBuilder {
     for (let v in catchArgs) {
       this.body.extra.push(v);
     }
-    this.#emitInCurrent(IrOp.try_br, -1, tagRef, idx);
+    return this.#emitInCurrent(IrOp.try_br, -1, tagRef, idx);
   }
 
   ret(value: i32): void {

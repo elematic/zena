@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 0
+
+// Code after a try whose catch diverges must run outside the region:
+// the catch handles only the body's throw, and the continuation's own
+// throw propagates to the caller (issue #426, sync form).
+
+import { Error } from 'zena:error';
+
+let statementShape = (b: boolean): i32 => {
+  try {
+    if (b) { throw new Error('x'); }
+  } catch (e) {
+    return -1;
+  }
+  throw new Error('after');
+};
+
+let valueShape = (b: boolean): i32 => {
+  let v = try {
+    if (b) { throw new Error('x'); }
+    1
+  } catch (e) {
+    return -1;
+  };
+  throw new Error('after');
+};
+
+let probe = (f: (b: boolean) => i32, b: boolean): String => {
+  var msg = '';
+  try {
+    let r = f(b);
+    msg = 'returned ' + (if (r == -1) '-1' else 'other');
+  } catch (e) {
+    msg = e.message;
+  }
+  return msg;
+};
+
+export let main = (): i32 => {
+  // Normal body completion: the continuation throws to the caller.
+  if (probe(statementShape, false) != 'after') { return 1; }
+  if (probe(valueShape, false) != 'after') { return 2; }
+  // A body throw is still caught: the catch returns -1, no throw.
+  if (probe(statementShape, true) != 'returned -1') { return 3; }
+  if (probe(valueShape, true) != 'returned -1') { return 4; }
+  return 0;
+};

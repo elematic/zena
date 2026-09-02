@@ -1206,6 +1206,12 @@ let buildStepBody = (
       body.extra.push(0);
       let inst = rawInst(body, IrOp.try_br, -1, r.tagRef, idx);
       placeInst(body, t, inst);
+      // The fresh region ends where the original did: without this, a
+      // join dominated by the dispatch target would be placed inside
+      // the re-entered try_table (issue #426).
+      if (r.joinTarget >= 0) {
+        body.tryJoin[inst] = r.joinTarget;
+      }
       target = t;
       ri -= 1;
     }

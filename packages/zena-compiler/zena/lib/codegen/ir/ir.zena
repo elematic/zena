@@ -87,6 +87,7 @@
  */
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
+import { HashMap } from 'zena:map';
 import { ValType, WasmType, WideArithOpcode } from '../wasm.zena';
 import { WasmStruct, WasmFunction, WasmGlobal, WasmTag } from '../wasm-module.zena';
 
@@ -592,6 +593,23 @@ export final class IrBody {
    * only carry values live at its entry.
    */
   varTypes = new GrowableArray<ValType>();
+
+  /**
+   * The join block of each user `try`, keyed by its try_br instruction:
+   * where control lands after the try, when any arm completes.
+   *
+   * The CFG cannot express this. When the catch diverges, the join's
+   * only predecessor is the body's exit, so by dominance the join
+   * looks like part of the protected region — and everything that
+   * takes dominance as region membership (emission's try_table
+   * placement, the split passes' re-entry) would put the continuation
+   * INSIDE the handler's reach. This table records where the region
+   * actually ends. Instruction ids are stable through the split
+   * passes (blocks are appended, instructions move but keep their
+   * ids), and the passes copy entries onto the fresh re-entry try_brs
+   * they synthesize.
+   */
+  tryJoin = new HashMap<i32, i32>();
 
   instCount(): i32 {
     return this.opcode.length;

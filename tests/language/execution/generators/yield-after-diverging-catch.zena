@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 0
+
+// The generator split pass shares the region re-entry machinery with
+// async: the continuation after a try whose catch diverges must resume
+// outside the region and run as itself — before the issue #426 fix,
+// resuming after `yield 1` fell into the CATCH's code and yielded -1.
+// (The continuation yields rather than throws: a generator that throws
+// out of a resume still trips the deferred poison-state gap in the
+// disposal path, which is a separate, pre-existing hole.)
+
+import { Error } from 'zena:error';
+import { Iterator } from 'zena:iterator';
+
+let shape = gen (b: boolean): Iterator<i32> => {
+  try {
+    if (b) { throw new Error('x'); }
+  } catch (e) {
+    yield -1;
+    return;
+  }
+  yield 1;
+  yield 2;
+};
+
+let collect = (b: boolean): String => {
+  var out = '';
+  for (let v in shape(b)) {
+    out = out + (if (v == -1) 'c' else if (v == 1) 'a' else 'b');
+  }
+  return out;
+};
+
+export let main = (): i32 => {
+  // Normal path: the continuation's own yields, in order.
+  if (collect(false) != 'ab') { return 1; }
+  // A body throw is still the catch's: its yield, then its return.
+  if (collect(true) != 'c') { return 2; }
+  return 0;
+};

@@ -1353,7 +1353,7 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
   let tagRef = cx.b.addRef(new IrRefTag(cx.wasm.exceptionTag as WasmTag));
   let bodyB = cx.b.newBlock();
   let catchB = cx.b.newBlock();
-  cx.b.tryBr(tagRef, bodyB, noValues(), catchB, noValues());
+  let tryInst = cx.b.tryBr(tagRef, bodyB, noValues(), catchB, noValues());
 
   let m = new MergeState(mergeSyms, isVoid, resultVt);
 
@@ -1383,6 +1383,13 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
   // try's stay live — its handler is still reachable.
   for (let symId in ownedVars) {
     cx.tryVars.delete(symId);
+  }
+  // Record where the region ends. When the catch diverges the join has
+  // one predecessor and dominance alone would count it as protected —
+  // this is what tells emission and the split passes otherwise
+  // (ir.zena, `tryJoin`).
+  if (m.block >= 0) {
+    cx.b.body.tryJoin[tryInst] = m.block;
   }
   return cx.finishMerge(m, saved);
 };

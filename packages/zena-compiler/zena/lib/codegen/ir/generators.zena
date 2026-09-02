@@ -150,14 +150,20 @@ export let truncate = (a: GrowableArray<i32>): void => {
 
 /**
  * One user-level `try` region of a presplit body: the try_br's body and
- * catch successors, plus its exception-tag ref.
+ * catch successors, its exception-tag ref, and the join block recorded
+ * on the try_br (-1 when no arm completes).
  *
- * A region's extent is the dominator subtree of its body target — that
- * is exactly what the emitter places inside the `try_table` (emit.zena's
- * try_br case emits the body successor's subtree inline), so dominance
- * is the authoritative membership test.
+ * A region's extent is the dominator subtree of its body target MINUS
+ * the join's subtree. Dominance alone over-claims: when the catch
+ * diverges, the join's only predecessor is the body's exit, so the
+ * continuation after the try is dominated by the body target while
+ * sitting outside the region (issue #426). The join annotation
+ * (ir.zena, `tryJoin`) is what marks where the region actually ends,
+ * and emit.zena's try_br case applies the same carve-out when placing
+ * the `try_table`.
  */
-export final class TryRegion(bodyTarget: i32, catchTarget: i32, tagRef: i32)
+export final class TryRegion(
+    bodyTarget: i32, catchTarget: i32, tagRef: i32, joinTarget: i32)
 
 /**
  * Every user `try` region in the presplit body, in block order.
@@ -176,8 +182,9 @@ export let collectTryRegions = (body: IrBody): GrowableArray<TryRegion> => {
       let term = insts[insts.length - 1];
       if (body.op(term) == IrOp.try_br) {
         let succs = body.successors(term);
+        let join = if (let (true, j) = body.tryJoin.get(term)) j else -1;
         regions.push(new TryRegion(succs[0].target, succs[1].target,
-            body.a[term]));
+            body.a[term], join));
       }
     }
     bi += 1;
@@ -199,9 +206,16 @@ export let enclosingRegionsOf = (
 ): GrowableArray<TryRegion> => {
   let hits = new GrowableArray<TryRegion>();
   for (let r in regions) {
-    if (cfg.dominates(r.bodyTarget, block)) {
-      hits.push(r);
+    if (!cfg.dominates(r.bodyTarget, block)) {
+      continue;
     }
+    // The join's subtree is dominated by the body target when the
+    // catch diverges, but it is AFTER the region — a dispatch target
+    // there must not re-enter this region's handler (issue #426).
+    if (r.joinTarget >= 0 && cfg.dominates(r.joinTarget, block)) {
+      continue;
+    }
+    hits.push(r);
   }
   // Insertion sort, outermost (most-dominating) first.
   var i = 1;
@@ -1155,6 +1169,12 @@ let buildNextBody = (
       body.extra.push(0);
       let inst = rawInst(body, IrOp.try_br, -1, r.tagRef, idx);
       placeInst(body, t, inst);
+      // The fresh region ends where the original did: without this, a
+      // join dominated by the dispatch target would be placed inside
+      // the re-entered try_table (issue #426).
+      if (r.joinTarget >= 0) {
+        body.tryJoin[inst] = r.joinTarget;
+      }
       target = t;
       ri -= 1;
     }

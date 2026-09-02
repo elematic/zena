@@ -1476,6 +1476,27 @@ export final class ZirFunctionEmitter {
           this.cfg.isMergeNode(succs[0].target)) {
         throw new Error('zir emit: try body is not inlineable');
       }
+      // A recorded join that the body target dominates would be
+      // inlined INSIDE the try_table by the dominance placement below —
+      // the diverging-catch shape, where the join's only predecessor is
+      // the body's exit (issue #426). Open its label out here instead,
+      // so the body's normal completion brs out past the handler's
+      // reach, and emit its subtree after the region. A join the catch
+      // also reaches is a merge node handled by the ordinary wrappers
+      // (its frame is already open), and the dominance test is false
+      // for it anyway.
+      let join =
+          if (let (true, j) = this.body.tryJoin.get(inst)) j else -1;
+      let hoistJoin = join >= 0 &&
+          this.cfg.dominates(succs[0].target, join) &&
+          this.#findDepth(join) < 0;
+      if (hoistJoin) {
+        this.#flushPendingReturn();
+        this.#prologue = false;
+        this.frames.push(new EmitFrame(join, false));
+        this.#scopeOpened();
+        this.emitter.emitBlock(new ValTypeVoid());
+      }
       // block $catch { try_table (catch tag -> $catch) { body } }
       // catch-path...   Exits from the body br straight to their
       // targets (out through the try_table); nothing falls out of it,
@@ -1497,6 +1518,13 @@ export final class ZirFunctionEmitter {
       this.emitter.emitEnd();
       this.frames.pop();
       this.#doBranch(from, succs[1]);
+      if (hoistJoin) {
+        this.#flushPendingReturn();
+        this.#scopeClosed();
+        this.emitter.emitEnd();
+        this.frames.pop();
+        this.#doTree(join);
+      }
       return;
     }
     if (op == IrOp.br_if) {

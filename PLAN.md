@@ -153,16 +153,20 @@ This document tracks completed work and planned features. For project instructio
     (loser-cancelling), `FutureClaim` (counted consumer interest), and
     generator disposal.
   - **The async roadmap**, roughly in order:
-    1. **Reseed.** The bootstrap predates per-instantiation closure
-       specialization, so the stdlib itself cannot yet create closures
-       in generic code. Everything stylistic below waits on this.
-    2. **Library cleanup.** Drop `onComplete` (`then` covers it),
-       rewrite the internal waiter classes as closures where the cost
-       is equal — they run once per settle — and document the
-       zero-allocation await invariant where the code enforces it: a
-       frame subscribes ITSELF (it implements `Task`), a settle
-       allocates nothing (waiters pull), and the only allocation is
-       the async call's own frame-plus-future.
+    1. ~~**Reseed.**~~ Done — the bootstrap now carries closure
+       specialization and the prelude-closure checker fixes.
+    2. **Library cleanup.** `onComplete` is dropped, the flattening
+       `then` deleted the then/flatMap waiter classes outright, and
+       the zero-allocation await invariant is documented where the
+       code enforces it. What remains is collapsing the other
+       combinators (`allOf`, `race`) into ordinary async code the way
+       `then` went.
+       Three compiler issues feed this and everything below, as
+       simplifiers: the diverging-catch region fix (#426 — its
+       workaround shapes `then`'s body), `this` typing as the bare
+       generic source in a generic class body (#434), and zero-width
+       locals (#435 — `let v = await f` at `Future<void>`, which also
+       retires `[failure]()`).
     3. **Async iteration**: `async gen` functions (the two split
        passes already share their machinery), an `AsyncIterator<T>`
        protocol (`next(): Future<...>` — streams.md's convenience

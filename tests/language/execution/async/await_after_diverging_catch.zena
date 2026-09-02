@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 0
+
+// A suspension INSIDE the continuation of a diverging-catch try: the
+// resume there is a dispatch target inside the join's subtree, and it
+// must not re-enter the try's region — a throw after that await
+// propagates to the caller rather than landing in the catch
+// (issue #426, the split-pass face).
+
+import { Future, Completer, runFuture } from 'zena:async';
+import { Error } from 'zena:error';
+
+let shape = async (src: Future<i32>, alt: Future<i32>): Future<i32> => {
+  try {
+    await src;
+  } catch (e) {
+    return -1;
+  }
+  let v = await alt;
+  throw new Error('after ' + (if (v == 9) '9' else 'other'));
+};
+
+let probe = (fail: boolean): String => {
+  let c = new Completer<i32>();
+  let a = new Completer<i32>();
+  let f = shape(c.future, a.future);
+  if (fail) {
+    c.fail(new Error('boom'));
+  } else {
+    c.complete(1);
+  }
+  a.complete(9);
+  var msg = '';
+  try {
+    let r = runFuture(f);
+    msg = 'returned ' + (if (r == -1) '-1' else 'other');
+  } catch (e) {
+    msg = e.message;
+  }
+  return msg;
+};
+
+export let main = (): i32 => {
+  // Normal path: both awaits resume, the continuation's throw escapes.
+  if (probe(false) != 'after 9') { return 1; }
+  // The body's failure is still the catch's to handle.
+  if (probe(true) != 'returned -1') { return 2; }
+  return 0;
+};
