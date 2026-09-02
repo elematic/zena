@@ -80,6 +80,7 @@ import {
   lowerScopeDropRegion, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
 } from './control-flow.zena';
+import { WellKnown, isWellKnown } from '../../well-known.zena';
 
 // ZirUnsupported now lives in lowering-context.zena (imported above):
 // split modules throw it too, and importing it from lowering would
@@ -6460,7 +6461,10 @@ export final class FunctionLowerer {
     let {classType} = this.func;
     if (classType != null) {
       let ownCt = classType;
-      if (ownCt.name == "FixedArray" || ownCt.name == "ImmutableArray") {
+      if (isWellKnown(WellKnown.FixedArrayClass, ownCt.name,
+              ownCt.sourcePath) ||
+          isWellKnown(WellKnown.ImmutableArrayClass, ownCt.name,
+              ownCt.sourcePath)) {
         let key = getClassMethodKey(getClassKey(ownCt), lookupName);
         if (let (true, m) = this.wasm.classMethodMap.get(key)) {
           target = m;

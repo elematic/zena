@@ -49,6 +49,7 @@ import {
   patternBinds, patternRefutable, propTypeAdmitsNull,
   recordDispatchOfValue,
 } from './patterns.zena';
+import { WellKnown, isWellKnown } from '../../well-known.zena';
 
 /** Bail with the lowering-side message shape (reason @function). */
 let bail = (cx: LoweringContext, reason: String): never => {
@@ -2215,7 +2216,8 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
     }
   } else if (resolved is InterfaceType) {
     let recv = lowerExpr(cx, stmt.iterable, null);
-    if (resolved.name == 'Iterator') {
+    if (isWellKnown(WellKnown.IteratorInterface, resolved.name,
+        resolved.sourcePath)) {
       iter = recv;
     } else {
       iter = cx.slotCallSingle(recv, ':iterator');
@@ -2363,10 +2365,15 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
       while (canonical.genericSource != null) {
         canonical = canonical.genericSource as ClassType;
       }
-      if (canonical.name == 'FixedArray' ||
-          canonical.name == 'ImmutableArray') {
+      if (isWellKnown(WellKnown.FixedArrayClass, canonical.name,
+              canonical.sourcePath) ||
+          isWellKnown(WellKnown.ImmutableArrayClass, canonical.name,
+              canonical.sourcePath)) {
         isFixed = true;
-      } else if (canonical.name == 'Array' || canonical.name == 'GrowableArray') {
+      } else if (isWellKnown(WellKnown.ArrayInterface, canonical.name,
+                     canonical.sourcePath) ||
+                 isWellKnown(WellKnown.GrowableArrayClass, canonical.name,
+                     canonical.sourcePath)) {
         isArray = true;
         arrayCt = resolved;
       }

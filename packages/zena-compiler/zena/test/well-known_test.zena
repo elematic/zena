@@ -1,0 +1,100 @@
+/**
+ * Tests for the well-known standard library declaration registry.
+ *
+ * The property under test is that a declaration is recognized only when
+ * both halves of its canonical location match: the local name, and the
+ * library owning the module it is declared in. A program's own class named
+ * `String` or `Future` must not be mistaken for the standard library's.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import {
+  WellKnown, isWellKnown, wellKnownLibrary, wellKnownName,
+} from '../lib/well-known.zena';
+
+export let tests = suite("Well-known declarations", () => {
+
+  suite("isWellKnown", () => {
+
+    test("matches a declaration at its canonical location", () => {
+      isTrue(isWellKnown(WellKnown.StringClass, "String", "zena:string"));
+      isTrue(isWellKnown(WellKnown.BoxClass, "Box", "zena:box"));
+      isTrue(isWellKnown(WellKnown.ErrorClass, "Error", "zena:error"));
+      isTrue(isWellKnown(WellKnown.IterableInterface, "Iterable",
+          "zena:iterator"));
+      isTrue(isWellKnown(WellKnown.OwnAlias, "Own", "zena:ownership"));
+    });
+
+    test("matches a declaration in a library's private file", () => {
+      // Future lives in async/future.zena, which is private to zena:async.
+      // Keying on the library rather than the file is what makes this hold
+      // without matching "zena:async" as a prefix.
+      isTrue(isWellKnown(WellKnown.FutureClass, "Future",
+          "zena:async/future.zena"));
+      isTrue(isWellKnown(WellKnown.CancelScopeClass, "CancelScope",
+          "zena:async"));
+    });
+
+    test("rejects the right name in a user module", () => {
+      isFalse(isWellKnown(WellKnown.StringClass, "String",
+          "/project/src/main.zena"));
+      isFalse(isWellKnown(WellKnown.ArrayInterface, "Array",
+          "/project/src/collections.zena"));
+      isFalse(isWellKnown(WellKnown.ErrorClass, "Error",
+          "/project/src/errors.zena"));
+      isFalse(isWellKnown(WellKnown.FutureClass, "Future",
+          "/project/src/future.zena"));
+    });
+
+    test("rejects the right name in the wrong stdlib library", () => {
+      isFalse(isWellKnown(WellKnown.StringClass, "String",
+          "zena:string-builder"));
+      isFalse(isWellKnown(WellKnown.ArrayInterface, "Array",
+          "zena:fixed-array"));
+      isFalse(isWellKnown(WellKnown.FutureClass, "Future", "zena:stream"));
+    });
+
+    test("rejects the wrong name at the right location", () => {
+      isFalse(isWellKnown(WellKnown.StringClass, "StringBuilder",
+          "zena:string"));
+      isFalse(isWellKnown(WellKnown.FutureClass, "Completer",
+          "zena:async/future.zena"));
+    });
+
+    test("does not match a library by prefix", () => {
+      // A user package whose module id merely begins with a library's name
+      // is not that library.
+      isFalse(isWellKnown(WellKnown.StringClass, "String", "zena:stringly"));
+      isFalse(isWellKnown(WellKnown.FutureClass, "Future",
+          "zena:asyncx/future.zena"));
+    });
+  });
+
+  suite("registry", () => {
+
+    test("every variant has a location", () => {
+      // Reading both halves of each variant throws if a row is missing.
+      equal(wellKnownLibrary(WellKnown.StringClass), "string");
+      equal(wellKnownName(WellKnown.StringClass), "String");
+      equal(wellKnownLibrary(WellKnown.BoxClass), "box");
+      equal(wellKnownLibrary(WellKnown.TemplateStringsArrayClass),
+          "template-strings-array");
+      equal(wellKnownLibrary(WellKnown.ErrorClass), "error");
+      equal(wellKnownLibrary(WellKnown.IteratorInterface), "iterator");
+      equal(wellKnownLibrary(WellKnown.IterableInterface), "iterator");
+      equal(wellKnownLibrary(WellKnown.ArrayInterface), "array");
+      equal(wellKnownLibrary(WellKnown.MutableArrayInterface), "array");
+      equal(wellKnownLibrary(WellKnown.FixedArrayClass), "fixed-array");
+      equal(wellKnownLibrary(WellKnown.ImmutableArrayClass),
+          "immutable-array");
+      equal(wellKnownLibrary(WellKnown.GrowableArrayClass),
+          "growable-array");
+      equal(wellKnownLibrary(WellKnown.FutureClass), "async");
+      equal(wellKnownLibrary(WellKnown.CancelScopeClass), "async");
+      equal(wellKnownLibrary(WellKnown.OwnAlias), "ownership");
+      equal(wellKnownLibrary(WellKnown.BorrowAlias), "ownership");
+      equal(wellKnownLibrary(WellKnown.UnmanagedAlias), "ownership");
+    });
+  });
+});

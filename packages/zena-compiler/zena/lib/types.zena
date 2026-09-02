@@ -22,6 +22,7 @@ import { i32ToString } from 'zena:string-convert';
 import { Expression, Statement, IdGenerator } from './ast.zena';
 import { SymbolId, noSymbolId } from './scope/symbol.zena';
 import { Hashable } from 'zena:hashable';
+import { WellKnown, isWellKnown } from './well-known.zena';
 
 @intrinsic('hash')
 declare function hash<T>(value: T): i32;
@@ -1165,7 +1166,9 @@ export final class TypeAliasType(
 export let isOwnershipWrapper = (t: Type): boolean => {
   if (!(t is TypeAliasType)) { return false; }
   if (!t.isDistinct) { return false; }
-  return t.name == "Own" || t.name == "Borrow" || t.name == "Unmanaged";
+  return isWellKnown(WellKnown.OwnAlias, t.name, t.declaringModule) ||
+      isWellKnown(WellKnown.BorrowAlias, t.name, t.declaringModule) ||
+      isWellKnown(WellKnown.UnmanagedAlias, t.name, t.declaringModule);
 };
 
 /**
@@ -1322,16 +1325,18 @@ export let typeContainsTypeParameter = (t: Type): boolean => {
 
 /**
  * Whether `t` is the stdlib `Future` class (any instantiation). By
- * name and declaring module rather than by prelude identity, so the
+ * name and declaring library rather than by prelude identity, so the
  * `type.awaited` rule can run anywhere types are substituted, with or
- * without a checker context. The prefix match covers the module facade
- * and its files (`zena:async/future.zena`).
+ * without a checker context. `Future` is declared in
+ * `zena:async/future.zena`, a private file of `zena:async`, and the
+ * library is what the registry matches on, so the file it sits in can
+ * change without changing this.
  */
 export let isFutureClassType = (t: Type): boolean => {
   if (!(t is ClassType)) {
     return false;
   }
-  return t.name == 'Future' && t.sourcePath.startsWith('zena:async');
+  return isWellKnown(WellKnown.FutureClass, t.name, t.sourcePath);
 };
 
 /**
