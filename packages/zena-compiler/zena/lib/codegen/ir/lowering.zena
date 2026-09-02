@@ -1774,8 +1774,21 @@ export final class FunctionLowerer {
       let ctorType = constructorType;
       let {parameterNames} = ctorType;
       if (parameterNames != null) {
+        // `params` is the lowered parameter list, which drops
+        // zero-width parameters; walk it with its own cursor so a
+        // case field at `T = void` (no wasm param, no struct field)
+        // does not shift every later pairing.
+        var wi = 0;
         for (var pi = 0; pi < ctorType.parameters.length; pi += 1) {
-          if (pi >= params.length || pi >= parameterNames.length) {
+          if (pi >= parameterNames.length) {
+            this.#bail('case constructor arity');
+          }
+          let pSem = substituteTypeParamsInClassContext(this.wasm, ct,
+              ctorType.parameters[pi]);
+          if (isVoidOrNeverType(pSem)) {
+            continue;
+          }
+          if (wi >= params.length) {
             this.#bail('case constructor arity');
           }
           let pName = parameterNames[pi];
@@ -1786,11 +1799,12 @@ export final class FunctionLowerer {
           let fieldIdx = structType.fieldIndexByName(lookupName);
           if (fieldIdx >= 0) {
             let fieldVt = structType.fields[fieldIdx].type;
-            if (!isValSubtype(this.#valueType(params[pi]), fieldVt)) {
+            if (!isValSubtype(this.#valueType(params[wi]), fieldVt)) {
               this.#bail('case constructor param type');
             }
-            values[lookupName] = params[pi];
+            values[lookupName] = params[wi];
           }
+          wi += 1;
         }
       }
     }

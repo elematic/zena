@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 7
+
+// A generic case class instantiated at void: the case field is
+// zero-width, so the synthesized constructor has one fewer wasm
+// parameter than semantic parameters. The pairing walks them with
+// separate cursors — before that fix this bailed
+// ("case constructor arity").
+
+sealed class Holder<T> {
+  case Filled, Empty
+}
+final class Filled<T>(value: T) extends Holder<T>
+final class Empty<T> extends Holder<T> {}
+
+let nothing = (): void => {};
+
+export let main = (): i32 => {
+  let v = new Filled<void>(nothing());
+  let n = new Empty<void>();
+  let mixed = new Filled<i32>(7);
+  var total = 0;
+  if (v is Filled<void>) { total += 1; }
+  if (n is Empty<void>) { total += 2; }
+  if (mixed is Filled<i32>) { total += (mixed as Filled<i32>).value - 3; }
+  return total;
+};
