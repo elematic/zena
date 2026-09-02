@@ -387,12 +387,28 @@ Order from least to most coupled, so the plumbing is proven before it
 reaches `String`:
 
 8. `component/` — `component-abi`, `component-async`, `component-stream`,
-   `component-memory`. Three compiler string literals name these and move
-   with them: `runtimeEntry` in `component-runtime.zena`, the synthesized
+   `component-memory`. Six compiler literals name these modules, and which
+   ones move depends on what they name. Three name a **file**, and move:
+   `runtimeEntry` in `component-runtime.zena`, and the two
+   `'zena:component-async.zena'` path ids in `component-adapters.zena` and
+   `reachability/analysis.zena`. Three name a **module**, and do not:
+   `componentAbiModule` in `component-emitter.zena`, the synthesized
    `from 'zena:component-async'` in `wit-module-synth.zena`, and
    `zena:component-abi` in `getTargetRuntimeModules`. None is a bootstrap
-   hazard, because building the compiler targets no component, so this is
-   one step.
+   hazard, because building the compiler targets no component.
+
+   The library's modules keep their published names here and their
+   manifest entries point straight at the new files. No shim is left at
+   the old path: `analysis.zena` roots `zena:component-abi` by walking the
+   unit's `globalDeclarations`, and a re-export shim is an empty module to
+   that walk — which, since `queueStdlibFunction` became strict, fails
+   loudly rather than quietly. That the name-id literals keep working at
+   all is `Program` indexing a stdlib unit under its manifest module name
+   as well as its canonical path.
+
+   Publishing `zena:component` itself is a later step. The rule that a
+   library must be published before its files move applies to private
+   siblings, and every file here is named by a manifest entry.
 9. `bench/` — absorb `benchmark`. No registry entries.
 10. `collections/` — move `map`, `ordered-map`, `set` implementations in,
     and re-export the array types from `core` once it exists. Already a

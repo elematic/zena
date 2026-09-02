@@ -25,7 +25,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // Keep in sync with packages/stdlib/stdlib-manifest.json.
   let publicModules = [
     "array", "array-iterator", "assert", "async", "benchmark", "box", "byte-array",
-    "byte-buffer", "cli", "component-abi", "error", "fixed-array", "fs",
+    "byte-buffer", "cli", "error", "fixed-array", "fs",
     "growable-array", "iterable-utils", "growable-array-iterator", "hashable",
     "immutable-array", "iterator", "json", "map", "ordered-map",
     "math", "option", "ownership", "range", "regex", "result",
@@ -77,14 +77,14 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // component has the subtask protocol, so only that target resolves
   // it; the entry/callback the compiler wires live in it.
   let componentAsyncVirtual = new HashMap<String, String>();
-  componentAsyncVirtual["component"] = "component-async.zena";
+  componentAsyncVirtual["component"] = "component/async.zena";
   exports["component-async"] = new ModuleExport(componentAsyncVirtual);
 
   // Virtual module: component-stream → the guest side of the canonical
   // stream protocol (pair creation, blocking writes; the Stream<T>
   // binding as it lands). Component-only for the same reason.
   let componentStreamVirtual = new HashMap<String, String>();
-  componentStreamVirtual["component"] = "component-stream.zena";
+  componentStreamVirtual["component"] = "component/stream.zena";
   exports["component-stream"] = new ModuleExport(componentStreamVirtual);
 
   // Virtual module: error-stack → the `Error` stack-trace hooks. The host
@@ -148,6 +148,10 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // Directory-based modules: entry file inside a library directory. The
   // sibling implementation files are private — reachable only via relative
   // imports from the library's own files.
+  // component-abi is all-target: a component build links its string
+  // marshaling, and nothing else resolves it. Its implementation sits with
+  // the rest of the component runtime under component/.
+  exports["component-abi"] = new ModuleExport(null, "component/abi.zena");
   exports["url"] = new ModuleExport(null, "url/index.zena");
   exports["bench"] = new ModuleExport(null, "bench/index.zena");
   exports["collections"] = new ModuleExport(null, "collections/index.zena");
