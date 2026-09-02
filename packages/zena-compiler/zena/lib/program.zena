@@ -5,6 +5,7 @@ import { Array } from 'zena:array';
 import { HashMap } from 'zena:map';
 import { SemanticModel, ModelIndex } from './semantic-model.zena';
 import { Symbol } from './scope/symbol.zena';
+import { stdlibModuleNameForEntryPath } from './stdlib-manifest.zena';
 
 export type CompilationUnit = {
   ast: Module,
@@ -55,16 +56,21 @@ export final class Program {
       } else {
         this.unitsByPath["/" + u.ast.path] = u;
       }
-      var lastSlash = -1;
-      var idx = 0;
-      while (idx < u.ast.path.length) {
-        if (u.ast.path.getByteAt(idx) == 47) { lastSlash = idx; }
-        idx += 1;
-      }
-      let fileName = if (lastSlash >= 0) u.ast.path.sliceBytes(lastSlash + 1, u.ast.path.length) else u.ast.path;
-      if (fileName.endsWith(".zena")) {
-        let stdName = fileName.sliceBytes(0, fileName.length - 5);
-        this.unitsByPath["zena:" + stdName] = u;
+      // A stdlib unit is keyed by its canonical id, which for a module
+      // with a `path` or `virtual` manifest entry is a path id
+      // ("zena:component-stream.zena", "zena:console/host.zena").
+      // Imports name the module ("zena:component-stream"), so index that
+      // spelling too — from the manifest, so only real entry files get a
+      // module name and private files get none. Deriving it from the file
+      // name instead produced "zena:zena:component-stream" for a top-level
+      // path id, which is why the reachability import resolver needed a
+      // filename-suffix search to find these at all.
+      if (u.ast.path.startsWith("zena:")) {
+        let entryPath = u.ast.path.sliceBytes(5, u.ast.path.length);
+        let moduleName = stdlibModuleNameForEntryPath(entryPath);
+        if (moduleName != null) {
+          this.unitsByPath["zena:" + (moduleName as String)] = u;
+        }
       }
       // Precompute mixin declarations and export maps
       for (let stmt in u.ast.body) {

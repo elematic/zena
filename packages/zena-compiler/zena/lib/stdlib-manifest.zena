@@ -227,6 +227,28 @@ let firstSegment = (id: String): String => {
  * prefix, suffix or substring, so a module cannot be attributed to a
  * library whose name it merely begins with.
  */
+/**
+ * The published module name whose entry file is `entryPath`, or null if
+ * the manifest names no module for it.
+ *
+ * `entryPath` is relative to the stdlib source root — "component-stream.zena",
+ * "console/host.zena" — which is the form a canonical path id carries after
+ * its "zena:" prefix. Only entry files match: a library's private
+ * implementation files have no module name, and this reports that rather
+ * than inventing one from the file name.
+ */
+export let stdlibModuleNameForEntryPath = (entryPath: String): String | null => {
+  let index = if (libraryIndex != null) {
+    libraryIndex as HashMap<String, String>
+  } else {
+    buildLibraryIndex()
+  };
+  if (let (true, name) = index.get(entryPath)) {
+    return name;
+  }
+  return null;
+};
+
 export let stdlibLibraryOf = (moduleId: String): String | null => {
   if (!moduleId.startsWith("zena:")) {
     return null;

@@ -50,17 +50,16 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
     }
   }
   
+  // Exact only. `Program` indexes every unit under its canonical path and,
+  // for a stdlib unit, under the module name the manifest gives it, so an
+  // import that resolves at all resolves here. Searching for a unit whose
+  // file name ends the same way used to stand in for that index being
+  // wrong, and matched any path with the right last segment.
   var targetUnitOpt: CompilationUnit | null = if (program.unitsByPath.has(canonicalPath)) program.unitsByPath[canonicalPath] else null;
   if (targetUnitOpt == null) {
-    let searchSuffix = if (canonicalPath.startsWith("zena:")) (canonicalPath.sliceBytes(5, canonicalPath.length) + ".zena") else canonicalPath;
-    for (let u in program.units) {
-      if (u.ast.path == canonicalPath || u.ast.path.endsWith("/" + searchSuffix) || u.ast.path.endsWith(searchSuffix)) {
-        targetUnitOpt = u;
-        break;
-      }
-    }
-  }
-  if (targetUnitOpt == null) {
+    // Not an error: a module outside this program's units is one whose
+    // symbols nothing here can reach, and the caller treats an unresolved
+    // import as nothing to root.
     return noSymbolId;
   }
   let targetUnit = targetUnitOpt as CompilationUnit;

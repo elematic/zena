@@ -307,8 +307,11 @@ its own merits.
    now go through a separate call that reports whether it rooted, so the
    two take the same branch.
 6. Replace the filename-suffix fallback in
-   `reachability/import-resolver.zena` with manifest-driven resolution,
-   and make a miss an error.
+   `reachability/import-resolver.zena` with manifest-driven resolution.
+   **Done.** The fallback was covering for `Program`'s index, which
+   derived a module's `zena:` alias from its file name and so produced
+   `zena:zena:component-stream` for a canonical path id. The alias now
+   comes from the manifest, and the search is gone.
 7. Reseed. This is the point at which the bootstrap gains the registry,
    and it must be its own pull request.
 
