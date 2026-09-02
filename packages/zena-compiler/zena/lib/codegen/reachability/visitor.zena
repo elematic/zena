@@ -1247,24 +1247,63 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * name, for code the compiler synthesizes rather than reads out of
    * an AST — nothing in the program need reference it.
    */
+  /**
+   * Roots a standard library function that no source names — the
+   * executor entries an await needs, a template's converter.
+   *
+   * Both halves must exist: the module has to be in the program, and it
+   * has to declare the export. A miss means the standard library moved
+   * under the compiler, and returning quietly would leave an emitted
+   * call pointing at a function nothing reached, so it throws. Every
+   * caller here has already decided the construct is present, so the
+   * module is never legitimately absent.
+   *
+   * Where lowering has a documented fallback for a helper that may not
+   * exist, the caller uses `queueOptionalStdlibFunction` and takes the
+   * same branch lowering will.
+   */
   queueStdlibFunction(modulePath: String, exportName: String): void {
+    if (!this.#tryQueueStdlibFunction(modulePath, exportName)) {
+      throw new Error("Standard library module '" + modulePath +
+          "' does not declare '" + exportName + "'");
+    }
+  }
+
+  /**
+   * Roots `exportName` if the module declares it, and reports whether it
+   * did. For helpers whose absence lowering handles by emitting
+   * something else; the caller must then root that something else.
+   */
+  queueOptionalStdlibFunction(modulePath: String, exportName: String): boolean {
+    return this.#tryQueueStdlibFunction(modulePath, exportName);
+  }
+
+  #tryQueueStdlibFunction(modulePath: String, exportName: String): boolean {
     let prog = this.pass.program;
     if (!prog.unitsByPath.has(modulePath)) {
-      return;
+      throw new Error("Standard library module '" + modulePath +
+          "' is not in the program, but '" + exportName +
+          "' is needed from it");
     }
     let unit = prog.unitsByPath[modulePath];
+    var rooted = false;
     for (let stmt in unit.ast.body) {
       if (stmt is VariableDeclaration) {
         if (stmt.pattern is IdentifierPattern &&
             (stmt.pattern as IdentifierPattern).name == exportName) {
           let sym = unit.model.resolveDeclaration(stmt.pattern as IdentifierPattern);
-          if (sym != null) {
-            this.pass.queueReferrer(new Referrer(true, sym.id,
-                -1, unit.model, null, true));
+          if (sym == null) {
+            throw new Error("Standard library module '" + modulePath +
+                "' declares '" + exportName +
+                "' but it did not resolve to a symbol");
           }
+          this.pass.queueReferrer(new Referrer(true, sym.id,
+              -1, unit.model, null, true));
+          rooted = true;
         }
       }
     }
+    return rooted;
   }
 
   /**
@@ -1379,12 +1418,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.queueStdlibFunction('zena:string-convert', name);
     }
     let partCount = tpl.expressions.length * 2 + 1;
-    if (partCount >= 2 && partCount <= 5) {
-      this.queueStdlibFunction('zena:string',
-          '__concat' + i32ToString(partCount));
+    // `__concatN` is an optimization the standard library does not
+    // currently provide, and lowering falls through to String.fromParts
+    // when it is absent. Root whichever one lowering will emit, by
+    // asking the same question it asks.
+    if (partCount >= 2 && partCount <= 5 &&
+        this.queueOptionalStdlibFunction('zena:string',
+            '__concat' + i32ToString(partCount))) {
       return;
     }
-    // Six or more parts join through String.fromParts over a
+    // Otherwise the join goes through String.fromParts over a
     // FixedArray<String>, so both have to exist.
     let {stringClass} = this.pass.wasm;
     if (stringClass != null) {

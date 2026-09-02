@@ -300,8 +300,12 @@ its own merits.
 4. Convert the name-only sites to the registry. Fourteen of the sixteen
    converted; the two exceptions are recorded below. **Done.**
 5. Make `queueStdlibFunction` throw on an unresolved module or export
-   instead of returning silently, and route its module names through the
-   registry.
+   instead of returning silently. **Done.** It found one: the template
+   join rooted a `__concatN` helper the standard library has never
+   declared, and returned before rooting the `String.fromParts` that
+   lowering emits in its place. Helpers whose absence lowering handles
+   now go through a separate call that reports whether it rooted, so the
+   two take the same branch.
 6. Replace the filename-suffix fallback in
    `reachability/import-resolver.zena` with manifest-driven resolution,
    and make a miss an error.
