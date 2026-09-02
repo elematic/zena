@@ -4365,7 +4365,18 @@ The rules: the class must be a `resource class`; the field is immutable
 owner field (`Own<File> | null`) reads as a nullable borrow and is
 skipped by the release when null. Owner fields release in reverse
 declaration order after the dispose body, so disposal is transitive
-through whole ownership trees without forwarding code. One case still
+through whole ownership trees without forwarding code.
+
+Inside a consuming method (one declaring `this: Own<this>` —
+`[Disposable.dispose]`
+above all) `this.entry` keeps its owner type, so the field can be
+**moved out**: handed to a function taking `Own<File>`, moved into a
+local, or returned to the caller. A moved-out field is skipped by the
+release glue and dead for the rest of the method — using it again is a
+use-after-move error, and a move that happens on only some paths is an
+error too. Moving fields into locals is also how a dispose takes
+control of release order: the locals' scope-exit releases replace the
+glue's. One case still
 asks for ceremony: a subclass with owner fields under an _inherited_
 dispose must declare an override (its body may be empty), because
 how its releases compose with the superclass's cleanup is its decision

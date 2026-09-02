@@ -1101,12 +1101,18 @@ nothing to run.
 **Reads borrow; consuming methods move out.** A read of an affine field
 (`r.file`, `this.file`) yields `Borrow<R>` — a read must not mint a second
 owner. This is §"Derived borrows" field projection applied to the receiver.
-Inside a consuming method (`this: Own<this>`, `[Disposable.dispose]` above
-all) a field
-may instead be moved out, at most once per field per path, checked by the
-same flow machinery that move-checks locals — the `this.file` path keys
-exist. A `var` affine field may be overwritten, and the store releases the
-previous value first; a `let` affine field is set once, in construction.
+Inside a consuming method (`this: Own<this>`, `[Disposable.dispose]`
+above all) `this.file` keeps its owner type instead, so it can be moved
+out — handed to an owning parameter, moved into a binding, or returned.
+Moves are tracked per field per path on the flow graph exactly as
+binding moves are: a second move or a read after one is the
+use-after-move error, and a field moved on some paths but held on others
+is an error outright, because the release glue is decided once for the
+whole method. The glue then skips every moved-out field — which is also
+how a dispose takes control of release order: move the fields into
+locals in the order wanted, and their scope-exit releases replace the
+glue's. A `var` affine field remains rejected; overwriting one would
+need to release the previous value first, which is still open.
 
 **Release is glue after `[Disposable.dispose]`, and the dispose itself may
 be implicit.** A class whose only release action is its fields writes no

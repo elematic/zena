@@ -1,0 +1,75 @@
+// @mode: check
+// Field move-out (ownership.md §Affine fields): inside a consuming
+// method, `this.field` keeps its owner type and may be moved out — at
+// most once per field per path, on every path or none. Everywhere
+// else the read is a borrow.
+import {Own, Borrow, Disposable} from 'zena:ownership';
+
+resource class Res {
+  id: i32;
+  new(this.id);
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let sink = (r: Own<Res>): void => {};
+
+// The blessed shape: dispose forwards a field; the glue skips it.
+resource class Wrap {
+  a: Own<Res>;
+  b: Own<Res>;
+  new(this.a, this.b);
+  [Disposable.dispose](this: Own<this>): void {
+    sink(this.a);
+  }
+}
+
+// A second move on the same path is a use after move.
+resource class Twice {
+  a: Own<Res>;
+  new(this.a);
+  [Disposable.dispose](this: Own<this>): void {
+    sink(this.a);
+    sink(this.a); // @error: moved out
+  }
+}
+
+// So is reading after the move.
+resource class ReadAfter {
+  a: Own<Res>;
+  new(this.a);
+  [Disposable.dispose](this: Own<this>): void {
+    sink(this.a);
+    let n = this.a.id; // @error: moved out
+  }
+}
+
+// A conditional move has no single glue answer.
+resource class Sometimes {
+  a: Own<Res>;
+  new(this.a);
+  [Disposable.dispose](this: Own<this>): void {
+    if (this.a.id > 0) {
+      sink(this.a); // @error: on every path
+    }
+  }
+}
+
+// A consuming extractor hands the field's ownership to the caller.
+resource class Extract {
+  a: Own<Res>;
+  new(this.a);
+  take(this: Own<this>): Own<Res> {
+    return this.a;
+  }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+// Outside a consuming method the read is still a borrow.
+resource class Plainly {
+  a: Own<Res>;
+  new(this.a);
+  peek(): void {
+    sink(this.a); // @error: not assignable
+  }
+  [Disposable.dispose](this: Own<this>): void {}
+}

@@ -1,0 +1,97 @@
+// @mode: run
+// @result: 888
+// Field move-out end to end: a field the dispose body forwards is the
+// sink's to release (the glue skips it); moving fields into locals
+// gives dispose a custom release order; a consuming extractor hands a
+// field's ownership to its caller.
+import {Own, Disposable} from 'zena:ownership';
+
+/** Records events as decimal digits, so ordering is observable. */
+class Log {
+  var seq: i32 = 0;
+  add(d: i32): void {
+    this.seq = this.seq * 10 + d;
+  }
+}
+
+resource class Res {
+  #log: Log;
+  id: i32;
+  new(log: Log, this.id) : #log = log;
+  [Disposable.dispose](this: Own<this>): void {
+    this.#log.add(this.id);
+  }
+}
+
+/** Releases what it is handed, via its own parameter release. */
+let sink = (r: Own<Res>): void => {};
+
+/** Forwards a; the glue releases only b. */
+resource class Wrap {
+  #log: Log;
+  a: Own<Res>;
+  b: Own<Res>;
+  new(log: Log, this.a, this.b) : #log = log;
+  [Disposable.dispose](this: Own<this>): void {
+    this.#log.add(9);
+    sink(this.a);
+  }
+}
+
+/** Moves both fields into locals: their scope-exit release order —
+ * reverse declaration of the LOCALS — replaces the glue's. */
+resource class Ord {
+  a: Own<Res>;
+  b: Own<Res>;
+  new(this.a, this.b);
+  [Disposable.dispose](this: Own<this>): void {
+    let second = this.b;
+    let first = this.a;
+  }
+}
+
+/** Hands its field to the caller; nothing releases here. */
+resource class Ext {
+  a: Own<Res>;
+  new(this.a);
+  take(this: Own<this>): Own<Res> {
+    return this.a;
+  }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+export let main = (): i32 => {
+  let log = new Log();
+
+  if (true) {
+    let w = new Wrap(log, new Res(log, 1), new Res(log, 2));
+  }
+  // dispose logs 9; sink releases a (1); the glue releases only b (2).
+  if (log.seq != 912) {
+    return 0 - 1;
+  }
+
+  log.seq = 0;
+  if (true) {
+    let o = new Ord(new Res(log, 3), new Res(log, 4));
+  }
+  // The locals release in reverse declaration order: first (a: 3),
+  // then second (b: 4) — the glue's own order would have been 4, 3.
+  if (log.seq != 34) {
+    return 0 - 2;
+  }
+
+  log.seq = 0;
+  if (true) {
+    let e = new Ext(new Res(log, 5));
+    let r = e.take();
+    log.add(7);
+  }
+  // take moved the field out to r, which releases at the block's exit
+  // after the 7 — exactly once.
+  if (log.seq != 75) {
+    return 0 - 3;
+  }
+
+  return 888;
+};

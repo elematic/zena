@@ -498,6 +498,15 @@ final class CheckerContext {
   #borrowSuspendErrorNodes = new HashSet<i32>();
 
   /**
+   * The current body's member-path moves and its `return` positions,
+   * for the moved-on-every-exit verdict of consuming-method field
+   * move-out; error dedup by expression node id across re-checks.
+   */
+  var #bodyPathMoves = new GrowableArray<FlowMove>();
+  var #bodyExits = new GrowableArray<FlowNode>();
+  #pathMoveErrorNodes = new HashSet<i32>();
+
+  /**
    * Where each second-class local was declared, as a flow node id: the
    * liveness walk stops there, so a borrow derived after the last
    * suspension is clean. A parameter has no entry — its extent begins
@@ -2062,6 +2071,153 @@ final class CheckerContext {
   }
 
   /**
+   * Record a move of a member path — `this.field` handed to an owning
+   * sink inside a consuming method. Carries noSymbolId so the binding
+   * walks pass through; the path walks match on the key. Feeds the
+   * catch entry like a binding move, and registers with the body for
+   * the moved-on-every-exit verdict (ownership.md §Affine fields).
+   */
+  recordFlowPathMove(pathKey: String, name: String, loc: SourceLocation | null): void {
+    let node = new FlowMove(this.#currentFlow, noSymbolId, name, loc);
+    node.pathKey = pathKey;
+    node.id = this.newFlowId();
+    if (this.#flowExceptionTargets.length > 0) {
+      this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
+        .add(node);
+    }
+    this.#bodyPathMoves.push(node);
+    this.#currentFlow = node;
+  }
+
+  /**
+   * The live move of `pathKey` on some backward path from `from`, or
+   * null. Fields are immutable, so nothing revives a moved path.
+   */
+  findLivePathMove(pathKey: String, from: FlowNode): FlowMove | null {
+    let visited = new HashSet<i32>();
+    let pending = new GrowableArray<FlowNode>();
+    pending.push(from);
+    while (pending.length > 0) {
+      let node = pending.pop();
+      if (visited.has(node.id)) { continue; }
+      visited.add(node.id);
+      match (node) {
+        case FlowStart: {}
+        case FlowUnreachable: {}
+        case FlowNarrowings as nw: { pending.push(nw.antecedent); }
+        case FlowSuspend as sp: { pending.push(sp.antecedent); }
+        case FlowMove as mv: {
+          if (mv.pathKey == pathKey) { return mv; }
+          pending.push(mv.antecedent);
+        }
+        case FlowAssign as assign: { pending.push(assign.antecedent); }
+        case FlowJoin as join: {
+          for (let a in join.antecedents) {
+            pending.push(a);
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Whether EVERY backward path from `from` crosses a move of
+   * `pathKey` — the must-analysis behind the static glue skip: a field
+   * moved on some paths but live on others has no one release story.
+   * Cycles answer false, conservatively.
+   */
+  pathDefinitelyMoved(pathKey: String, from: FlowNode): boolean {
+    let memo = new HashMap<i32, boolean>();
+    return this.#mustMoveWalk(pathKey, from, memo);
+  }
+
+  #mustMoveWalk(pathKey: String, node: FlowNode, memo: HashMap<i32, boolean>): boolean {
+    if (let (true, m) = memo.get(node.id)) { return m; }
+    memo[node.id] = false;
+    let result = match (node) {
+      case FlowMove as mv: {
+        if (mv.pathKey == pathKey) { true }
+        else { this.#mustMoveWalk(pathKey, mv.antecedent, memo) }
+      }
+      case FlowStart: false
+      case FlowUnreachable: true
+      case FlowAssign as assign: this.#mustMoveWalk(pathKey, assign.antecedent, memo)
+      case FlowNarrowings as nw: this.#mustMoveWalk(pathKey, nw.antecedent, memo)
+      case FlowSuspend as sp: this.#mustMoveWalk(pathKey, sp.antecedent, memo)
+      case FlowJoin as join: {
+        var all = true;
+        for (let a in join.antecedents) {
+          if (!this.#mustMoveWalk(pathKey, a, memo)) { all = false; }
+        }
+        all
+      }
+    };
+    memo[node.id] = result;
+    return result;
+  }
+
+  /**
+   * Report a read of a moved-out field path, deduplicated by node id
+   * exactly as binding use-after-move is.
+   */
+  checkPathMoveUse(expr: Node, pathKey: String, display: String): void {
+    if (this.#pathMoveErrorNodes.has(expr.id as i32)) { return; }
+    let mv = this.findLivePathMove(pathKey, this.#currentFlow);
+    if (mv == null) { return; }
+    this.#pathMoveErrorNodes.add(expr.id as i32);
+    this.error(
+      "'" + display + "' may have been moved out: a moved field is dead " +
+      "for the rest of the method.",
+      DiagnosticCode.UseAfterMove,
+      expr.loc
+    );
+  }
+
+  /** A `return`'s flow position, for the moved-on-every-exit verdict. */
+  recordBodyExit(): void {
+    this.#bodyExits.push(this.#currentFlow);
+  }
+
+  /**
+   * Decide the body's field move-outs: each moved path must be moved
+   * on EVERY exit — return sites and the natural end — or the move is
+   * an error; the survivors are what dispose glue skips. Returns the
+   * verified field names (paths stripped of their "this." root).
+   */
+  finishBodyPathMoves(bodyEndReachable: boolean): GrowableArray<String> {
+    let moved = new GrowableArray<String>();
+    if (this.#bodyPathMoves.length == 0) { return moved; }
+    let exits = new GrowableArray<FlowNode>();
+    for (let e in this.#bodyExits) { exits.push(e); }
+    if (bodyEndReachable) { exits.push(this.#currentFlow); }
+    let seen = new HashSet<String>();
+    for (let mv in this.#bodyPathMoves) {
+      let pk = mv.pathKey;
+      if (seen.has(pk)) { continue; }
+      seen.add(pk);
+      var everywhere = true;
+      for (let exit in exits) {
+        if (!this.pathDefinitelyMoved(pk, exit)) { everywhere = false; }
+      }
+      if (!everywhere) {
+        this.error(
+          "'" + mv.name + "' is moved out on some paths but still held " +
+          "on others: move it on every path, or on none — the release " +
+          "glue is decided once for the whole method.",
+          DiagnosticCode.UseAfterMove,
+          mv.loc
+        );
+        continue;
+      }
+      if (pk.startsWith("this.")) {
+        moved.push(pk.sliceBytes(5, pk.length));
+      }
+    }
+    return moved;
+  }
+
+  /**
    * Record a suspension point (`await`, `yield`) at the current
    * position. Transparent to every walk except the borrow-liveness
    * check flushed at body exit.
@@ -2405,6 +2561,10 @@ final class CheckerContext {
     this.#bodyBorrowUses = new GrowableArray<BorrowUseRec>();
     saved.pendingEdgeMatches = this.#pendingEdgeMatches;
     this.#pendingEdgeMatches = new GrowableArray<PendingEdgeMatch>();
+    saved.bodyExits = this.#bodyExits;
+    this.#bodyExits = new GrowableArray<FlowNode>();
+    saved.bodyPathMoves = this.#bodyPathMoves;
+    this.#bodyPathMoves = new GrowableArray<FlowMove>();
     return saved;
   }
 
@@ -2414,6 +2574,8 @@ final class CheckerContext {
     this.#flushBorrowUses();
     this.#bodyBorrowUses = saved.borrowUses;
     this.#pendingEdgeMatches = saved.pendingEdgeMatches;
+    this.#bodyExits = saved.bodyExits;
+    this.#bodyPathMoves = saved.bodyPathMoves;
     this.#currentFlow = saved.current;
     this.#currentFlowStart = saved.start;
     this.#flowLoopHeads = saved.loopHeads;
@@ -4043,6 +4205,27 @@ let rejectConsumingThroughNonOwner = (
  * produced by an expression has no binding left behind to misuse.
  */
 let recordArgumentMove = (ctx: CheckerContext, arg: Expression, paramType: Type): void => {
+  // `this.field` handed to an owning sink inside a consuming method is
+  // the field's move-out (ownership.md §Affine fields); the read kept
+  // its owner type only there, so an affine test on the checked type
+  // is what scopes this to that context.
+  if (arg is MemberExpression) {
+    let me = arg;
+    if (me.object is ThisExpression && ctx.owningReceiver) {
+      let sink = ownershipHandleName(soleNonNullMember(paramType) ?? paramType);
+      if (sink == "Own") {
+        let at = ctx.model.getNodeType(arg);
+        if (at != null && typeCarriesOwner(at)) {
+          let pathKey = getMemberPathKey(ctx, arg);
+          if (pathKey != null) {
+            let display = "this." + getMemberPropertyName(me.isSymbolAccess, me.property.name);
+            ctx.recordFlowPathMove(pathKey, display, arg.loc);
+          }
+        }
+      }
+    }
+    return;
+  }
   if (!(arg is Identifier)) { return; }
   let info = ctx.model.resolve(arg);
   if (info == null) { return; }
@@ -7763,6 +7946,24 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
           }
         }
       }
+      // `return this.field` in a consuming method hands the field's
+      // ownership to the caller — a move-out, or the dispose glue
+      // would release what was just returned.
+      if (argument != null && ctx.owningReceiver && argument is MemberExpression) {
+        let me = argument;
+        if (me.object is ThisExpression) {
+          let at = ctx.model.getNodeType(argument as Node);
+          if (at != null && typeCarriesOwner(at)) {
+            let pathKey = getMemberPathKey(ctx, argument);
+            if (pathKey != null) {
+              let display = "this." +
+                  getMemberPropertyName(me.isSymbolAccess, me.property.name);
+              ctx.recordFlowPathMove(pathKey, display, loc);
+            }
+          }
+        }
+      }
+      ctx.recordBodyExit();
       ctx.markFlowUnreachable();
     }
     case YieldStatement {argument, loc}: {
@@ -13241,6 +13442,13 @@ let checkMethodBody = (
     case _: {}
   }
 
+  // Decide field move-outs while the body's flow state is still live;
+  // dispose glue skips the verified ones.
+  let movedOut = ctx.finishBodyPathMoves(!(ctx.currentFlow is FlowUnreachable));
+  if (movedOut.length > 0) {
+    ctx.model.setMovedOutFields(md as Node, movedOut);
+  }
+
   ctx.setReturnType(prevReturnType);
   ctx.setYieldType(prevYieldType);
   ctx.setAsyncValueType(prevAsyncValue);
@@ -14692,7 +14900,16 @@ let checkMemberExpression = (
     }
   }
 
-  let resultType = resolveMemberType(ctx, receiverType, propName, loc);
+  let ownerRead = ctx.owningReceiver && object is ThisExpression;
+  let resultType = resolveMemberType(ctx, receiverType, propName, loc, ownerRead);
+  if (ownerRead && typeCarriesOwner(resultType)) {
+    // The read kept its owner type for move-out; a read after the
+    // field was moved is the path use-after-move.
+    let pathKey = getMemberPathKeyFromAccess(ctx, object, property, isSymbolAccess);
+    if (pathKey != null) {
+      ctx.checkPathMoveUse(expr as Node, pathKey, "this." + propName);
+    }
+  }
 
   if (isNullable && !optional) {
     ctx.error(
@@ -14738,7 +14955,8 @@ let resolveMemberType = (
   ctx: CheckerContext,
   objectType: Type,
   propName: String,
-  loc: SourceLocation | null
+  loc: SourceLocation | null,
+  ownerRead: boolean
 ): Type => {
   // Member access forwards through the ownership handles. `Own<R>`,
   // `Borrow<R>` and `Unmanaged<R>` carry no members of their own — they
@@ -14749,7 +14967,7 @@ let resolveMemberType = (
   let handleInner = ownershipHandleInner(objectType);
   if (handleInner != null) {
     rejectConsumingThroughNonOwner(ctx, objectType, handleInner, propName, loc);
-    return resolveMemberType(ctx, handleInner, propName, loc);
+    return resolveMemberType(ctx, handleInner, propName, loc, ownerRead);
   }
 
   match (objectType) {
@@ -14804,7 +15022,15 @@ let resolveMemberType = (
         let fieldType = ct.members[propName].type;
         // Substitute type parameters if this is an instantiated generic class.
         let subField = substituteTypeParams(ct.typeParameters, ct.typeArguments, fieldType);
-        return borrowWrapFieldRead(ctx, substituteThisType(ct as Type, subField));
+        let resolved = substituteThisType(ct as Type, subField);
+        // Inside a consuming method, `this.field` keeps its owner type
+        // so it can be moved out — at most once per field per path,
+        // like a local (ownership.md §Affine fields). Everywhere else
+        // an affine field reads as a borrow.
+        if (ownerRead && typeCarriesOwner(resolved)) {
+          return resolved;
+        }
+        return borrowWrapFieldRead(ctx, resolved);
       }
       // Check methods.
       if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
@@ -14963,7 +15189,7 @@ let resolveMemberType = (
     }
     case TypeParameterType {name as tname, constraint}: {
       if (constraint != null) {
-        return resolveMemberType(ctx, constraint, propName, loc);
+        return resolveMemberType(ctx, constraint, propName, loc, ownerRead);
       }
       ctx.error(
         "Property '" + propName + "' does not exist on type '" + tname + "'.",
@@ -14973,7 +15199,7 @@ let resolveMemberType = (
       return new ErrorType();
     }
     case TypeAliasType as tat: {
-      return resolveMemberType(ctx, tat.target, propName, loc);
+      return resolveMemberType(ctx, tat.target, propName, loc, ownerRead);
     }
     case ErrorType: { return new ErrorType(); }
     case _: {

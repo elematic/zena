@@ -156,6 +156,9 @@ export final class ModelIndex {
     let edKeys = model.edgeDrops.map.keys();
     while (let (true, k) = edKeys.next()) { this.nodeToModel[k] = model; }
 
+    let mfKeys = model.movedOutFields.map.keys();
+    while (let (true, k) = mfKeys.next()) { this.nodeToModel[k] = model; }
+
     let pKeys = model.parents.map.keys();
     while (let (true, k) = pKeys.next()) { this.nodeToModel[k] = model; }
 
@@ -548,6 +551,36 @@ export final class SemanticModel {
   }
 
   /**
+   * The affine fields a consuming method's body moved out, keyed by
+   * its MethodDefinition: dispose glue skips them
+   * (ownership.md §Affine fields).
+   */
+  #movedOutFields = new NodeMap<Array<String>>();
+
+  setMovedOutFields(node: Node, names: Array<String>): void {
+    this.#movedOutFields[node] = names;
+  }
+
+  movedOutFieldsOfDirect(node: Node): Array<String> | null {
+    if (let (true, d) = this.#movedOutFields.get(node)) {
+      return d;
+    }
+    return null;
+  }
+
+  movedOutFieldsOf(node: Node): Array<String> | null {
+    let direct = this.movedOutFieldsOfDirect(node);
+    if (direct != null) { return direct; }
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.movedOutFieldsOfDirect(node);
+      }
+    }
+    return null;
+  }
+
+  /**
    * Map from Symbol.id → Type for named bindings.
    * Parallel to #nodeTypes but keyed by binding identity, which is
    * stable across reference sites. The checker populates this when
@@ -868,6 +901,7 @@ export final class SemanticModel {
   staticAccesses: NodeMap<boolean> { get { return this.#staticAccesses; } }
   scopeExitDrops: NodeMap<boolean> { get { return this.#scopeExitDrops; } }
   edgeDrops: NodeMap<Array<EdgeDrop>> { get { return this.#edgeDrops; } }
+  movedOutFields: NodeMap<Array<String>> { get { return this.#movedOutFields; } }
   parents: NodeMap<Node> { get { return this.#parents; } }
   bindingTypes: HashMap<SymbolId, Type> { get { return this.#bindingTypes; } }
 }

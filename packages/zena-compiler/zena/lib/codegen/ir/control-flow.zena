@@ -1637,6 +1637,14 @@ export let collectAffineDropFields = (cx: LoweringContext,
   let ct = ctOpt;
   let declOpt = cx.func.classDecl;
   if (declOpt == null || !(declOpt is ClassDeclaration)) { return; }
+  // A field the dispose body moved out is the caller's (or a sink's)
+  // to release; the glue skips it. The checker verified the move
+  // happens on every path, which is what keeps this skip static.
+  var movedOut: Array<String> | null = null;
+  let nodeOpt = cx.func.node;
+  if (nodeOpt != null) {
+    movedOut = cx.func.model.movedOutFieldsOf(nodeOpt);
+  }
   for (let member in declOpt.body) {
     if (!(member is FieldDefinition)) { continue; }
     if (member.isStatic || member.isAbstract || member.isDeclare) { continue; }
@@ -1647,6 +1655,13 @@ export let collectAffineDropFields = (cx: LoweringContext,
     let fType = ct.members[fName].type;
     let core = soleNonNullMember(fType) ?? fType;
     if (ownershipHandleName(core) != "Own") { continue; }
+    if (movedOut != null) {
+      var skipped = false;
+      for (let m in movedOut) {
+        if (m == fName) { skipped = true; }
+      }
+      if (skipped) { continue; }
+    }
     names.push(fName);
     types.push(fType);
   }

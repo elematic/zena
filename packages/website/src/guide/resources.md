@@ -191,6 +191,39 @@ Declaring a `resource class` establishes three core invariants:
 3. **Inheritance hierarchy**: All superclasses of a resource class must also be
    resource classes, rooted at `Resource` from `zena:ownership`.
 
+### Owner fields <span class="badge success">Implemented</span>
+
+A resource class may hold owned resources in its fields — the container
+inherits the release obligation, which is why only resource classes may
+declare them:
+
+```zena
+resource class Connection {
+  socket: Own<Socket>;
+  log: Own<FileDescriptor> | null;
+  new(this.socket, this.log);
+}
+```
+
+- **Reads borrow**: `conn.socket` yields `Borrow<Socket>`, never a second
+  owner. A nullable owner field reads as a nullable borrow.
+- **Release is automatic**: After the dispose body runs, the compiler
+  releases every owner field in reverse declaration order, so disposal is
+  transitive through whole ownership trees without forwarding code. A class
+  whose only release action is its fields (like `Connection` above) writes
+  no dispose at all — the compiler synthesizes one.
+- **Consuming methods move out**: Inside a method declaring
+  `this: Own<this>` — `[Disposable.dispose]` above all — `this.socket`
+  keeps its owner type, so a field can be handed to a consuming parameter,
+  moved into a local, or returned to the caller. A moved-out field is
+  skipped by the automatic release and consumed for the rest of the method;
+  moving on only some paths is an error. Moving fields into locals is also
+  how a dispose controls release order: the locals' scope-exit releases
+  replace the automatic ones.
+- Owner fields are immutable (`var` owner fields are rejected), and records
+  and tuples cannot hold owners: structural values copy when they adapt,
+  and a copy would duplicate the obligation.
+
 ### Affine type semantics
 
 An **affine type** is a type whose values can be used _at most once_. Values of
@@ -201,9 +234,9 @@ type `Own<R>` follow strict move semantics:
   variable binding is consumed and cannot be read again.
 - **No multiple owners**: An owned resource cannot be aliased by multiple owning
   variables.
-- **Automatic drop**: <span class="badge info">Planned</span> If an `Own<R>`
-  value reaches the end of its enclosing scope without being moved, the compiler
-  automatically generates a call to its `[dispose]()` release action.
+- **Automatic drop**: <span class="badge success">Implemented</span> If an
+  `Own<R>` value reaches the end of its enclosing scope without being moved, the
+  compiler automatically generates a call to its `[dispose]()` release action.
 
 ```zena
 function process(file: Own<FileDescriptor>): void {
@@ -219,7 +252,7 @@ Every reference to a resource exists behind one of three handle kinds defined in
 
 | Handle             | Ownership & Aliasing                          | Permitted Storage Slots                    | Release Behavior                            |
 | :----------------- | :-------------------------------------------- | :----------------------------------------- | :------------------------------------------ |
-| **`Own<R>`**       | **Single owner** (Moves on assignment)        | Local variables, returns, `Own` containers | Implicitly dropped at scope exit if unmoved |
+| **`Own<R>`**       | **Single owner** (Moves on assignment)        | Local variables, returns, resource-class fields | Implicitly dropped at scope exit if unmoved |
 | **`Borrow<R>`**    | **Borrow** (Multiple local aliases permitted) | **Stack slots only** (parameters & locals) | Never releases (borrower)                   |
 | **`Unmanaged<R>`** | **Unmanaged** (Freely aliasable)              | Any slot (heap fields, records, arrays)    | Never implicitly dropped                    |
 
