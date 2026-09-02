@@ -1681,6 +1681,45 @@ export let collectAffineDropFields = (cx: LoweringContext,
 };
 
 /**
+ * Stores `ResourceState.Dropped` into the receiver's lifecycle flag —
+ * the `#state` field `Resource` declares, found under the root class's
+ * private-field key. Emitted at the top of every resource
+ * `[Disposable.dispose]`, written or synthesized, so ending the
+ * object's life is a property of
+ * the consuming dispose itself rather than of any one release site's
+ * glue: implicit drop, `using`, field glue and an explicit consuming
+ * call all mark it, and a later `adopt` reports "dropped" instead of
+ * blaming a phantom owner. `Dropped == 3` is pinned by zena:ownership's
+ * `ResourceState` (as `Owned == 0` is pinned by `struct.new_default`).
+ */
+export let emitMarkDropped = (cx: LoweringContext): void => {
+  let ctOpt = cx.func.classType;
+  if (ctOpt == null) {
+    bail(cx, 'dispose prologue without class');
+  }
+  var root = ctOpt as ClassType;
+  while (root.superType != null) {
+    root = root.superType as ClassType;
+  }
+  let info = if (let (true, ci) = cx.wasm.classInfos.get(getClassKey(ctOpt))) ci else null;
+  if (info == null) {
+    bail(cx, 'dispose prologue class not discovered');
+  }
+  let st = info.structType;
+  let key = getClassPrivateFieldKey(getClassKey(root), '#state');
+  if (st.fieldIndexByName(key) < 0) {
+    bail(cx, 'resource lifecycle field missing');
+  }
+  let dropped = cx.b.constI32(3, new ValTypeI32() as ValType);
+  let pair = new GrowableArray<i32>();
+  pair.push(cx.thisValue);
+  pair.push(dropped);
+  let fieldRef = cx.b.addRef(new IrRefField(st, key));
+  let pairIdx = cx.b.pushExtra(pair);
+  cx.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+};
+
+/**
  * The synthesized `:dispose` of a resource class whose only release
  * action is its owner fields: no written body, just the field release
  * regions around nothing (ownership.md §Affine fields). The signature
@@ -1695,6 +1734,7 @@ export let lowerSyntheticDispose = (cx: LoweringContext): IrBody => {
   let thisParam = cx.b.blockParam(entry, sig.params[0]);
   cx.b.switchTo(entry);
   cx.thisValue = thisParam;
+  emitMarkDropped(cx);
 
   let names = new GrowableArray<String>();
   let types = new GrowableArray<Type>();

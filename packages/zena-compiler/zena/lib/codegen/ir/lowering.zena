@@ -75,7 +75,8 @@ import {
   declScopeDrop, lowerFor, lowerForIn, lowerIf, lowerIfExpression,
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
   returnMultiThroughFinally,
-  collectAffineDropFields, lowerFieldDropRegions, lowerSyntheticDispose,
+  collectAffineDropFields, emitMarkDropped, lowerFieldDropRegions,
+  lowerSyntheticDispose,
   lowerLetCondition, lowerMatch, lowerParamDropRegions,
   lowerScopeDropRegion, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
@@ -1154,6 +1155,17 @@ export final class FunctionLowerer {
     }
     if (this.func.isClosure) {
       this.#lowerClosurePrologue(ctxParam);
+    }
+    if (paramOffset == 1 && ctorDef == null && !this.func.isClosure &&
+        this.func.methodName == ':dispose' &&
+        this.func.classType != null &&
+        (this.func.classType as ClassType).isResource) {
+      // A resource's consuming dispose ends the object's life: mark the
+      // lifecycle flag before the body, so every release route agrees.
+      // The member key is still spelled ':dispose' — the checker keys
+      // symbol members as ':' + name; only the surface syntax moved to
+      // `[Disposable.dispose]`.
+      emitMarkDropped(this.#cx());
     }
 
     if (extCtorDef != null) {

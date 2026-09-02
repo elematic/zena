@@ -1,5 +1,6 @@
 // @mode: run
 // @result: 604
+// 66 * 9 + 10
 // The `owned | disowned | moved | dropped` flag every resource object
 // carries (ownership.md §"Disowning and adopting"). It is what stops a
 // second `adopt` from silently minting a second owner, and a second
@@ -84,6 +85,57 @@ let sharesFlagWithAlias = (): i32 => {
   return back.value();
 };
 
+/**
+ * Release marks the object dropped, so an adopt after an implicit drop
+ * says what actually happened instead of blaming a phantom owner. The
+ * message is asserted exactly because the throw alone does not pin the
+ * fix: before release set the flag, this adopt threw too — claiming
+ * the resource was still owned.
+ */
+let adoptAfterImplicitDropThrows = (): i32 => {
+  let raw = disown(new Counter(16));
+  if (true) {
+    let owned = adopt(raw);
+    // `owned` implicitly drops here, releasing the resource.
+  }
+  try {
+    let again = adopt(raw);
+    return -7;
+  } catch (e) {
+    if (!(e is ResourceStateError)) {
+      return -8;
+    }
+    let err = e as ResourceStateError;
+    if (err.message != 'adopt() expects a resource that is disowned, but it is dropped') {
+      return -9;
+    }
+  }
+  return 16;
+};
+
+/**
+ * An explicit consuming dispose is the same end of life: the flag is
+ * set by the dispose itself, not by any one call site's glue.
+ */
+let adoptAfterExplicitDisposeThrows = (): i32 => {
+  let raw = disown(new Counter(32));
+  let owned = adopt(raw);
+  owned.[Disposable.dispose]();
+  try {
+    let again = adopt(raw);
+    return -10;
+  } catch (e) {
+    if (!(e is ResourceStateError)) {
+      return -11;
+    }
+    let err = e as ResourceStateError;
+    if (err.message != 'adopt() expects a resource that is disowned, but it is dropped') {
+      return -12;
+    }
+  }
+  return 32;
+};
+
 /** A resource can cycle between the two regimes any number of times. */
 let roundTripsRepeatedly = (): i32 => {
   var owned = new Counter(8);
@@ -109,7 +161,11 @@ export function main(): i32 {
   if (c < 0) { return c; }
   let d = roundTripsRepeatedly();    // 8 + 3 = 11
   if (d < 0) { return d; }
+  let e = adoptAfterImplicitDropThrows();    // 16
+  if (e < 0) { return e; }
+  let f = adoptAfterExplicitDisposeThrows(); // 32
+  if (f < 0) { return f; }
   // The distinct powers of two make a skipped case impossible to hide:
-  // any subset sums to something else. 1 + 2 + 4 + 11 = 18.
-  return (a + b + c + d) * 33 + 10;
+  // any subset sums to something else. 1 + 2 + 4 + 11 + 16 + 32 = 66.
+  return (a + b + c + d + e + f) * 9 + 10;
 }

@@ -167,10 +167,10 @@ export opaque type Unmanaged<T> = T;
  * an instance is allocated with every field defaulted and nothing
  * initializes this one — a fresh resource is owned for free.
  *
- * `Moved` and `Dropped` are declared but unreachable today. `Moved` is
- * reserved for move checking, and `Dropped` waits on implicit drop; until
- * then a released resource is indistinguishable from a live one, so
- * `adopt` after disposal is not yet the clean error it is specified to be.
+ * `Moved` is declared but unreachable today, reserved for move checking.
+ * `Dropped` is stored by the compiler at the top of every consuming
+ * dispose — written or synthesized — so a released resource is observably
+ * dead, and `adopt` after disposal is the clean error below.
  */
 enum ResourceState {
   Owned = 0,
@@ -276,9 +276,8 @@ export function disown<T extends Resource>(value: Own<T>): Unmanaged<T> {
  * succeed — the loser gets a clear error rather than a second owner and,
  * once implicit drop lands, a double free.
  *
- * `dropped` is specified to throw too, and the state exists, but nothing
- * sets it until implicit drop lands, so adopting an already-released
- * resource is not caught yet.
+ * `dropped` throws too: every consuming dispose sets it, so adopting an
+ * already-released resource is reported as exactly that.
  *
  * `adopt` cannot retract aliases. Aliasability is the point of the disowned
  * state, so the flag is the only defence here, by design.

@@ -396,6 +396,9 @@ Transitions are guarded at runtime:
 - `adopt()` requires the resource to be `Disowned` and restores it to `Owned`.
   Attempting to adopt a resource currently owned by another context throws a
   `ResourceStateError`.
+- Every consuming `[dispose]()` — explicit or compiler-generated — marks the
+  resource `Dropped`, so adopting an already-released resource throws a
+  `ResourceStateError` naming that state rather than a double free occurring.
 
 ### Non-forgeable handles
 
