@@ -27,6 +27,28 @@
  *
  * Inline tuples are return-position-only, so `Result<T, E>` may name a
  * function's return type but cannot be stored in a variable, field, or
- * collection. To keep a result around, match it and store the payload.
+ * collection. To keep a result around, store it as an `Outcome` below,
+ * or match it and store the payload.
  */
 export type Result<T, E> = inline (true, T, _) | inline (false, _, E);
+
+/**
+ * Result's storable counterpart: the same two arms as a sealed
+ * reference type, for when a result must outlive return position —
+ * an array of per-item outcomes, a field holding a deferred answer.
+ * `Ok` carries what the inline form's `true` arm does, `Err` the
+ * `false` arm's payload.
+ *
+ * Reach for the inline `Result<T, E>` first: it allocates nothing.
+ * This type is for the positions inline tuples cannot occupy, and
+ * costs one allocation per outcome.
+ */
+export sealed class Outcome<T, E> {
+  case Ok, Err
+}
+
+/** A value outcome. */
+export final class Ok<T, E>(value: T) extends Outcome<T, E>
+
+/** An error outcome. */
+export final class Err<T, E>(error: E) extends Outcome<T, E>

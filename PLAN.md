@@ -179,14 +179,17 @@ This document tracks completed work and planned features. For project instructio
        `let (a, b) = await (getA(), getB());` and
        `let {x, y} = await {x: fx(), y: fy()};` — the typed form of
        JS's `all`/`allKeyed`/`await*`, heterogeneous and with no
-       combinator name to learn. Alongside, the library batch:
-       `allSettled` (which needs an `Outcome<T>` sealed type — the
-       principled outcomes-as-data counterpart to hiding `state`),
-       `any`, and the composable resilience combinators below. The
-       generic await (`await x` at open `x: T`, typed `Awaited<T>`)
-       is implemented and `then` flattens through it as an async
-       method; the remaining combinators can collapse into ordinary
-       async code the same way. One lowering follow-up: at
+       combinator name to learn. **`allSettled` and `any` are done**:
+       `allSettled` collects `Outcome<T>` (`Settled`/`Failed`) in
+       input order and is ordinary async code — no early exit to
+       take — while `any` (first value wins; total failure fails with
+       an `AggregateError` in input order) joins `all` and `race` in
+       the subscription shape, because answering before every input
+       settles takes concurrent observation that sequential awaiting
+       cannot express. That boundary is the collapse's real extent:
+       `then` collapsed because it observes ONE future. Still open
+       here: the composable resilience combinators below. One
+       lowering follow-up: at
        specializations where the operand is not a future, `return
        await x` pays the bare-value queue hop for nothing — return
        position can elide it.

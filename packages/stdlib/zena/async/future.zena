@@ -20,9 +20,11 @@
  */
 
 import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
 import { GrowableArray } from 'zena:growable-array';
 import { Box } from 'zena:box';
 import { Task, scheduleTask, drainMicrotasks } from './executor.zena';
+import { Outcome, Ok, Err } from 'zena:result';
 
 /**
  * Raises on the cancellation channel (docs/design/cancellation.md).
@@ -440,6 +442,69 @@ export class Future<T> {
     }
     return new RaceState<A>().attach(futures);
   }
+
+  /**
+   * A future of every input's outcome, value or failure alike, in
+   * input order. It settles only once every input has — there is no
+   * early exit to take, which is what lets this be ordinary async
+   * code: awaiting the inputs one at a time still finishes when the
+   * slowest input does, because the inputs are already running and a
+   * later input settles whether or not anything is awaiting it yet.
+   * (`all` and `race` answer BEFORE some inputs settle, so they need
+   * concurrent observation and stay subscription-shaped.)
+   *
+   * Cancellation is not an outcome (no `Err` is minted for it, and
+   * `Outcome` has no third arm): `catch` cannot observe the
+   * cancellation channel, so awaiting a cancelled input unwinds this
+   * frame and the combined future completes cancelled — being
+   * downstream of cancelled work is inside the blast radius
+   * (docs/design/cancellation.md).
+   */
+  static async allSettled<A>(
+      futures: Array<Future<A>>): Future<Array<Outcome<A, Error>>> {
+    let out = new GrowableArray<Outcome<A, Error>>();
+    for (let f in futures) {
+      try {
+        out.push(new Ok<A, Error>(await f));
+      } catch (e) {
+        out.push(new Err<A, Error>(e));
+      }
+    }
+    return out;
+  }
+
+  /**
+   * A future of the **first input to settle with a value**. Failures
+   * do not win: a failed input just leaves the race, and only when
+   * every input has failed does the result fail — with an
+   * `AggregateError` carrying each input's failure in input order.
+   *
+   * The mirror image of `all`: `all` needs every value so one failure
+   * decides it, `any` needs one value so only total failure does.
+   * Throws on an empty array for `race`'s reason — a future that can
+   * never settle surfaces much later, as a deadlock report far from
+   * the mistake.
+   */
+  static any<A>(futures: Array<Future<A>>): Future<A> {
+    if (futures.length == 0) {
+      throw new Error(
+        'Future.any: needs at least one future; with no inputs there ' +
+        'is no value to settle with');
+    }
+    return new AnyState<A>().attach(futures);
+  }
+}
+
+/**
+ * The failure of every input at once: how `Future.any` reports that no
+ * input produced a value, with each input's failure kept in input
+ * order.
+ */
+export class AggregateError extends Error {
+  failures: Array<Error>;
+  new(this.failures)
+    : super('Future.any: all ' + i32ToString(failures.length) +
+        ' inputs failed');
 }
 
 /**
@@ -664,6 +729,74 @@ class RaceWaiter<T> implements Task {
       return;
     }
     this.state.lose(e as Error);
+  }
+}
+
+/**
+ * Shared state for one `Future.any` call. Keeps the input list the way
+ * `AllState` does, but for the failures: only when the last input has
+ * failed are they read back, in input order, into the AggregateError.
+ */
+class AnyState<T> {
+  result = new Future<T>();
+  inputs = new GrowableArray<Future<T>>();
+  var remaining = 0;
+
+  new();
+
+  /** Subscribes every input. On the state class for the same reason
+   * `AllState.attach` is. */
+  attach(futures: Array<Future<T>>): Future<T> {
+    this.remaining = futures.length;
+    var i = 0;
+    while (i < futures.length) {
+      this.inputs.push(futures[i]);
+      i += 1;
+    }
+    i = 0;
+    while (i < futures.length) {
+      futures[i].[subscribe](new AnyWaiter<T>(this as AnyState<T>, i));
+      i += 1;
+    }
+    return this.result;
+  }
+
+  win(value: T): void {
+    this.result.[tryComplete](value);
+  }
+
+  /** Counts one failure in; on the last, every input has failed and
+   * their errors are read back in input order. */
+  reportFailure(): void {
+    if (this.result.isCompleted) {
+      return;
+    }
+    this.remaining -= 1;
+    if (this.remaining == 0) {
+      let failures = new GrowableArray<Error>();
+      var i = 0;
+      while (i < this.inputs.length) {
+        failures.push(this.inputs[i].[failure]() as Error);
+        i += 1;
+      }
+      this.result.[fail](new AggregateError(failures));
+    }
+  }
+}
+
+/** One input's subscription into an `AnyState`. */
+class AnyWaiter<T> implements Task {
+  state: AnyState<T>;
+  index: i32;
+  new(this.state, this.index);
+  run(): void {
+    let f = this.state.inputs[this.index];
+    let e = f.[failure]();
+    if (e == null) {
+      this.state.win(f.[valueOrThrow]());
+      return;
+    }
+    this.state.reportFailure();
   }
 }
 

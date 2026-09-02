@@ -1,0 +1,131 @@
+// Future.allSettled and Future.any: outcomes as data in input order,
+// first value wins, total failure aggregates. allSettled is ordinary
+// async code (no early exit to take); any is subscription-shaped like
+// race (its early exit needs concurrent observation).
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  Future, Completer, AggregateError, drainMicrotasks, runFuture,
+} from 'zena:async';
+import { Outcome, Ok, Err } from 'zena:result';
+import { Error } from 'zena:error';
+import { GrowableArray } from 'zena:growable-array';
+import { i32ToString } from 'zena:string-convert';
+
+let describe = (outcomes: Array<Outcome<i32, Error>>): String => {
+  var s = '';
+  for (let o in outcomes) {
+    // is/as rather than case patterns: a generic variant's type
+    // arguments have no place in a pattern today, and the bare
+    // pattern binds the field at the unsubstituted T.
+    s = s + (if (o is Ok<i32, Error>) {
+      'v' + i32ToString((o as Ok<i32, Error>).value)
+    } else {
+      'e' + (o as Err<i32, Error>).error.message
+    });
+  }
+  return s;
+};
+
+export let tests = suite('Future combinators', (): void => {
+  test('allSettled keeps input order across settle order', (ctx: TestContext): void => {
+    let a = new Completer<i32>();
+    let b = new Completer<i32>();
+    let c = new Completer<i32>();
+    let inputs = new GrowableArray<Future<i32>>();
+    inputs.push(a.future);
+    inputs.push(b.future);
+    inputs.push(c.future);
+    let all = Future.allSettled<i32>(inputs);
+    // Settle out of order, failure in the middle.
+    c.complete(3);
+    b.fail(new Error('mid'));
+    a.complete(1);
+    equal(describe(runFuture(all)), 'v1emidv3');
+  });
+
+  test('allSettled of nothing is an empty array', (ctx: TestContext): void => {
+    let all = Future.allSettled<i32>(new GrowableArray<Future<i32>>());
+    equal(runFuture(all).length, 0);
+  });
+
+  test('allSettled waits for every input past a failure', (ctx: TestContext): void => {
+    let a = new Completer<i32>();
+    let b = new Completer<i32>();
+    let inputs = new GrowableArray<Future<i32>>();
+    inputs.push(a.future);
+    inputs.push(b.future);
+    let all = Future.allSettled<i32>(inputs);
+    a.fail(new Error('x'));
+    drainMicrotasks();
+    isFalse(all.isCompleted);
+    b.complete(2);
+    equal(describe(runFuture(all)), 'exv2');
+  });
+
+  test('allSettled works at void', (ctx: TestContext): void => {
+    let a = new Completer<void>();
+    let b = new Completer<void>();
+    let inputs = new GrowableArray<Future<void>>();
+    inputs.push(a.future);
+    inputs.push(b.future);
+    let all = Future.allSettled<void>(inputs);
+    a.complete();
+    b.fail(new Error('v'));
+    let outcomes = runFuture(all);
+    equal(outcomes.length, 2);
+    isTrue(outcomes[0] is Ok<void, Error>);
+    isTrue(outcomes[1] is Err<void, Error>);
+  });
+
+  test('any settles with the first value, not the first settle', (ctx: TestContext): void => {
+    let a = new Completer<i32>();
+    let b = new Completer<i32>();
+    let inputs = new GrowableArray<Future<i32>>();
+    inputs.push(a.future);
+    inputs.push(b.future);
+    let first = Future.any<i32>(inputs);
+    a.fail(new Error('early'));
+    drainMicrotasks();
+    isFalse(first.isCompleted);
+    b.complete(9);
+    equal(runFuture(first), 9);
+  });
+
+  test('any aggregates when every input fails, in input order', (ctx: TestContext): void => {
+    let a = new Completer<i32>();
+    let b = new Completer<i32>();
+    let inputs = new GrowableArray<Future<i32>>();
+    inputs.push(a.future);
+    inputs.push(b.future);
+    let first = Future.any<i32>(inputs);
+    b.fail(new Error('two'));
+    a.fail(new Error('one'));
+    var msg = '';
+    try {
+      runFuture(first);
+    } catch (e) {
+      if (e is AggregateError) {
+        let agg = e as AggregateError;
+        msg = e.message;
+        equal(agg.failures.length, 2);
+        equal(agg.failures[0].message, 'one');
+        equal(agg.failures[1].message, 'two');
+      }
+    }
+    equal(msg, 'Future.any: all 2 inputs failed');
+  });
+
+  test('any of nothing is refused at the call', (ctx: TestContext): void => {
+    var threw = false;
+    try {
+      // Bound so both try arms are void — a discarded reference value
+      // in the body arm joins badly with the void catch arm.
+      let unused = Future.any<i32>(new GrowableArray<Future<i32>>());
+      threw = false;
+    } catch (e) {
+      threw = true;
+    }
+    isTrue(threw);
+  });
+});
