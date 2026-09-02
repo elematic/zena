@@ -314,7 +314,7 @@ cancelling the inner future, and Rx's `refCount`):
 
 - Spawning shared work (`FutureClaim.spawn`) yields an
   `FutureClaim<T>`: awaitable through its `future`, and a handle whose
-  release — `using`, `:dispose`, or an explicit `release()` —
+  release — `using`, `[Disposable.dispose]`, or an explicit `release()` —
   decrements the interest count. Sharing is an explicit `split()` that
   increments before the second handle exists. The discipline is
   enforced dynamically today — release is per-handle and idempotent,

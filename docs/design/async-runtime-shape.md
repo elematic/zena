@@ -64,7 +64,7 @@ of API that looked like a design decision:
   for. They were free functions because a generic static's body could
   reach no generic construct — the first real use of statics-on-a-generic
   -class hit it.
-- **`:failure()` exists beside `:result()`.** A zero-width `T` does not
+- **`[failure]()` exists beside `[result]()`.** A zero-width `T` does not
   lower in an inline-tuple lane, so `Future<void>.result()` bails
   ("method result type"), and `Future<void>` is what `sleep` returns.
   The library's waiters therefore read the tag and the value separately.
@@ -385,7 +385,7 @@ holes are only observable in reference slots, so separate `value: T` and
 silent `0`. Three lanes, not two, for the same reason that document
 gives — lane merging assigns one wasm valtype per lane, and `T` and
 `Error` share one only if they share a representation. This is precisely
-the `Result<T, Error>` shape, and `:result()` should be spelled as that
+the `Result<T, Error>` shape, and `[result]()` should be spelled as that
 alias once `type Result<T, E> = inline …` is legal (it is not yet:
 "inline tuple types can only appear in function return types").
 
@@ -396,7 +396,7 @@ affordance that produces schedule-dependent behavior. The combinators'
 retires `AllState.settled`, `RaceState.settled`, and the double-settle
 throw.
 
-**No throw in `:result()`, and no completion query for the drain.**
+**No throw in `[result]()`, and no completion query for the drain.**
 Deadlock is a property of the executor — queue empty, nothing
 outstanding, root future still pending — not of any individual future.
 Detecting it in the drain loop rather than in `valueOrThrow`
@@ -672,7 +672,7 @@ next one works against.
    binding. Deletes four types and every per-settle allocation.
 3. **Inline the first waiter.** Stdlib only. Deletes the two eager
    arrays and their backing.
-4. **`:result()` adoption and deadlock detection in the drain.**
+4. **`[result]()` adoption and deadlock detection in the drain.**
    Stdlib plus the transform's resume-point emission. (This step
    originally included deleting `Completer`; that reversed — see
    "`Completer<T>` is the write capability".)

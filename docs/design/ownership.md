@@ -48,14 +48,14 @@ Resource-ness is a property of a _class_, declared with the `resource` modifier:
 resource class Descriptor {
   #handle: i32;
   new(handle: i32) : #handle = handle;
-  :Disposable.dispose(this: Own<this>): void { __wasi_descriptor_drop(this.#handle); }
+  [Disposable.dispose](this: Own<this>): void { __wasi_descriptor_drop(this.#handle); }
 }
 ```
 
 `resource class` carries three obligations:
 
 1. **It must provide a release action**, with a consuming receiver:
-   `:Disposable.dispose(this: Own<this>): void`. No `implements Disposable`
+   `[Disposable.dispose](this: Own<this>): void`. No `implements Disposable`
    clause is written — the `resource` modifier carries the requirement — and the
    consuming receiver is part of the resource-class contract rather than of the
    `Disposable` interface, which cannot express it for both populations. See
@@ -83,14 +83,14 @@ a foreign pointer all release through the same mechanism:
 ```zena
 export interface Disposable {
   static symbol dispose;
-  :dispose(): void;
+  [dispose](): void;
 }
 ```
 
 `dispose` is **symbol-keyed**. It is a common enough method name that a class
 may already have one meaning something unrelated, and this is a protocol the
 language invokes implicitly, so a silent collision would release something at
-the wrong time. Call it as `value.:Disposable.dispose()`.
+the wrong time. Call it as `value.[Disposable.dispose]()`.
 
 Two obligations on implementors:
 
@@ -804,7 +804,7 @@ exit, so `using` is redundant there. The construct earns its keep on ordinary
 #### Nullable operands
 
 `using` accepts a `T | null` operand — the shape every fallible acquire
-returns — by requiring `:dispose` of the non-null member and skipping
+returns — by requiring `[Disposable.dispose]` of the non-null member and skipping
 the release when the value is null at scope exit, the rule TC39's
 `using` established. The skip is a runtime `ref.is_null` guard around
 the one dispose in the shared finally region, and it also guards every
@@ -823,7 +823,7 @@ single-path. The union spelling is legal directly (`Own<A | B>`: the
 members are named inside a handle, so the bare-mention rule admits
 them), a narrower owner widens into the union owner, and `using` and
 implicit drop both release one by testing each member class in turn
-and dispatching to the dynamic member's `:dispose` — overridden
+and dispatching to the dynamic member's `[Disposable.dispose]` — overridden
 disposes still dispatch virtually inside each arm. A union of plain
 `Disposable` classes releases the same way.
 
@@ -1101,15 +1101,16 @@ nothing to run.
 **Reads borrow; consuming methods move out.** A read of an affine field
 (`r.file`, `this.file`) yields `Borrow<R>` — a read must not mint a second
 owner. This is §"Derived borrows" field projection applied to the receiver.
-Inside a consuming method (`this: Own<this>`, `:dispose` above all) a field
+Inside a consuming method (`this: Own<this>`, `[Disposable.dispose]` above
+all) a field
 may instead be moved out, at most once per field per path, checked by the
 same flow machinery that move-checks locals — the `this.file` path keys
 exist. A `var` affine field may be overwritten, and the store releases the
 previous value first; a `let` affine field is set once, in construction.
 
-**Release is glue after `:dispose`, and the dispose itself may be
-implicit.** A class whose only release action is its fields writes no
-`:dispose` at all: the compiler synthesizes one whose whole body is the
+**Release is glue after `[Disposable.dispose]`, and the dispose itself may
+be implicit.** A class whose only release action is its fields writes no
+dispose at all: the compiler synthesizes one whose whole body is the
 field glue, which is what satisfies the resource contract — the fields
 ARE the release action, so holding owners costs no ceremony. A written
 dispose runs first, and the compiler appends releases for every affine
@@ -1476,15 +1477,17 @@ of surface syntax.
 Implementation currently trails this document in three known places:
 `Scoped<T>` is design-only, the
 `dropped` state is declared but never set — the implicit-drop and `using`
-release glue calls `:dispose()` without touching the flag, so adopting an
+release glue calls `[Disposable.dispose]()` without touching the flag, so
+adopting an
 already-released resource is not the clean error it is specified to be —
 and the liveness rule in §"Borrows and suspension" is unenforced, so a
 borrow may still be held across an `await` and a generator may still take a
 borrow parameter.
 
 **`using` is implemented, and it is where the scope-exit lowering lives.**
-Both forms parse, the checker requires the value to carry `:dispose()` — by
-member key rather than by nominal conformance, so a `using` needs no import —
+Both forms parse, the checker requires the value to carry
+`[Disposable.dispose]()` — by member key rather than by nominal conformance,
+so a `using` needs no import —
 and lowering releases on every path out of the enclosing block: falling off the
 end, `return`, `break`/`continue`, and exception unwind. Several bindings in one
 block nest, which gives reverse declaration order without a list to reverse, and
@@ -1501,7 +1504,7 @@ what was written.
 That is deliberate rather than incidental. A synthesized `try`/`finally` would
 have to name `Disposable` to spell the release, and `zena:ownership` is out of
 the prelude, so it would make every `using` import-dependent — the same reason
-the checker matches `:dispose()` by member key.
+the checker matches `[Disposable.dispose]()` by member key.
 
 The region both reach: the release is emitted **once**, in a dispatch block
 outside the region, and normal completion, the handler edge, and each
@@ -1579,7 +1582,7 @@ thing to the object whichever override it reaches.
 
 A resource class's release action must therefore be the consuming form, which
 is the contract §Resource states. The caller's side is move checking's: after
-`d.:Disposable.dispose()` the binding `d` is moved-from, and a later use is
+`d.[Disposable.dispose]()` the binding `d` is moved-from, and a later use is
 an error — the same rule that makes `disown` consume its argument. See
 §"Landed: moves on the flow graph".
 
@@ -1738,7 +1741,7 @@ consuming receiver:
 
 ```zena
 resource class Descriptor {
-  :Disposable.dispose(this: Own<this>): void { __wasi_descriptor_drop(this.#handle); }
+  [Disposable.dispose](this: Own<this>): void { __wasi_descriptor_drop(this.#handle); }
 }
 ```
 
@@ -1887,7 +1890,7 @@ case into the general rule and re-declare the handles as
 10. Naming: `disown`/`adopt`, `Unmanaged<T>`, `affine T`. Cheap to change until
     `zena:ownership` has clients.
 11. ~~Should a resource's release consume its receiver?~~ — **decided**: yes,
-    `:Disposable.dispose(this: Own<this>): void`. It does split `Disposable`
+    `[Disposable.dispose](this: Own<this>): void`. It does split `Disposable`
     into two contracts sharing one symbol; see
     [Release consumes its receiver](#release-consumes-its-receiver).
 12. ~~How is a borrow-derived future or iterator spelled?~~ — **decided**:

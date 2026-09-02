@@ -151,7 +151,8 @@ A.
 Error>` becomes writable.
 - **O0.5 — `using`** and the scope-exit cleanup lowering (release on all exit
   paths). Same codegen O3 reuses, reached from the easier side. **Landed**:
-  both forms parse, the checker requires `:dispose()` by member key, and
+  both forms parse, the checker requires `[Disposable.dispose]()` by member
+  key, and
   lowering releases on normal exit, `return`, `break`/`continue` and exception
   unwind, in reverse declaration order. The release shares `try`/`finally`'s
   region — emitted once, in a dispatch outside the region — so the two nest

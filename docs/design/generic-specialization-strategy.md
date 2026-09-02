@@ -412,7 +412,7 @@ double adaptation:
 2. call the direct `_spec_` implementation with `g`;
 3. `iface_pack` the concrete result (`FixedArray<U>`) into the
    declared `Array<U>` fat pointer — the same covariant-result
-   packing `:iterator` trampolines do today.
+   packing `[iterator]` trampolines do today.
 
 Only parameters whose function type mentions `this` (or otherwise
 narrows in the implementation) need the closure wrap; plain `T`

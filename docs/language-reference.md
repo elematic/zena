@@ -2230,7 +2230,7 @@ class Counter with IterableUtils<i32> implements Iterable<i32> {
 
   new(max: i32) { this.#max = max; }
 
-  :Iterable.iterator(): Iterator<i32> {
+  [Iterable.iterator](): Iterator<i32> {
     return new CounterIterator(this.#max);
   }
 }
@@ -4230,14 +4230,14 @@ class Error {
 ### `using`
 
 `using` releases a value when it leaves the enclosing block. It takes any
-`Disposable` — a class carrying the symbol-keyed `:dispose()` member declared
+`Disposable` — a class carrying the symbol-keyed `[Disposable.dispose]()` member declared
 by `Disposable` in `zena:ownership`:
 
 ```zena
 import { Disposable } from 'zena:ownership';
 
 class Lock implements Disposable {
-  :Disposable.dispose(): void { release(this.handle); }
+  [Disposable.dispose](): void { release(this.handle); }
 }
 
 let update = (): void => {
@@ -4347,7 +4347,7 @@ resource class Dir {
 ```
 
 A class whose only release action is its fields needs no written
-`:dispose` at all: the compiler synthesizes one that releases them.
+dispose at all: the compiler synthesizes one that releases them.
 Write your own when you have cleanup of your own — it runs first, and
 the fields still release after it:
 
@@ -4355,7 +4355,7 @@ the fields still release after it:
 resource class LoggedDir {
   entry: Own<File>;
   new(this.entry);
-  :Disposable.dispose(this: Own<this>): void { log('closing'); }
+  [Disposable.dispose](this: Own<this>): void { log('closing'); }
 }   // dispose runs, then entry releases
 ```
 
@@ -4367,7 +4367,7 @@ skipped by the release when null. Owner fields release in reverse
 declaration order after the dispose body, so disposal is transitive
 through whole ownership trees without forwarding code. One case still
 asks for ceremony: a subclass with owner fields under an _inherited_
-`:dispose` must declare an override (its body may be empty), because
+dispose must declare an override (its body may be empty), because
 how its releases compose with the superclass's cleanup is its decision
 to write down.
 
