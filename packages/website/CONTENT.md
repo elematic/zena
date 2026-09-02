@@ -30,7 +30,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - No users is a superpower
     - Where Zena fits
   - ✅ [Language Overview](src/guide/overview.md) — `/guide/overview/`
-    - Values and variables
+    - Variables
     - Functions
     - Types
     - Classes
@@ -52,7 +52,7 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Reading input
     - Compiling to Wasm
 - **Language Basics**
-  - ✅ [Values and Variables](src/guide/values-and-variables.md) — `/guide/values-and-variables/`
+  - ✅ [Variables](src/guide/variables.md) — `/guide/variables/`
     - let and var
     - Local and module variables
     - Type annotations and inference
@@ -137,19 +137,24 @@ To add a page: add it to the sidebar with an `outline`, then run
     - What Zena does instead
     - Memory safety without a borrow checker
     - The cost of soundness
-  - 📝 [WebAssembly](src/guide/web-assembly.md) — `/guide/web-assembly/`
-    - Wasm GC in one page
-    - How Zena values map to Wasm types
-    - What is heap-allocated
-    - Linear memory and when you need it
-  - 📝 [Performance](src/guide/performance.md) — `/guide/performance/`
+  - ✅ [WebAssembly](src/guide/web-assembly.md) — `/guide/web-assembly/`
+    - Targeting Wasm GC
+    - Type mapping and representation
+    - Arrays
+    - Strings
+    - Linear memory and zena:memory
+    - Classes, polymorphism, and dispatch
+    - Struct construction and immutability
+    - Functions and calling conventions
+    - Async, exceptions, and runtime execution
+  - ✅ [Performance](src/guide/performance.md) — `/guide/performance/`
     - What each construct costs
     - Monomorphized generics
-    - Devirtualization
+    - Devirtualization and inlining
     - Boxing and how to avoid it
     - What ends up in the binary
     - Dead code elimination
-    - Measuring
+    - Measuring and benchmarking
   - 📝 [Strings and Unicode](src/guide/strings.md) — `/guide/strings/`
     - One String type, several representations
     - WTF-8 and WTF-16
@@ -612,4 +617,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-30 of 117 pages written; 87 still placeholders.
+32 of 117 pages written; 85 still placeholders.

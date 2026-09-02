@@ -48,7 +48,7 @@ inference does the work. Closures get their parameter types from context:
 
 ```zena
 let names = ['Alice', 'Bob'];
-let upper = names.map(n => n.toUpperCase());   // `n` is inferred
+let upper = names.map((n) => n.toUpperCase());   // `n` is inferred
 ```
 
 ## Types

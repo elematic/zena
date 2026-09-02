@@ -239,10 +239,15 @@ const guide = [
         text: 'WebAssembly',
         link: '/guide/web-assembly/',
         outline: [
-          'Wasm GC in one page',
-          'How Zena values map to Wasm types',
-          'What is heap-allocated',
-          'Linear memory and when you need it',
+          'Targeting Wasm GC',
+          'Type mapping and representation',
+          'Arrays',
+          'Strings',
+          'Linear memory and zena:memory',
+          'Classes, polymorphism, and dispatch',
+          'Struct construction and immutability',
+          'Functions and calling conventions',
+          'Async, exceptions, and runtime execution',
         ],
       },
       {
@@ -253,11 +258,11 @@ const guide = [
         outline: [
           'What each construct costs',
           'Monomorphized generics',
-          'Devirtualization',
+          'Devirtualization and inlining',
           'Boxing and how to avoid it',
           'What ends up in the binary',
           'Dead code elimination',
-          'Measuring',
+          'Measuring and benchmarking',
         ],
       },
       {
