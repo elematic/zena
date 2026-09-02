@@ -42,7 +42,7 @@ const guide = [
         text: 'Language Overview',
         link: '/guide/overview/',
         outline: [
-          'Values and variables',
+          'Variables',
           'Functions',
           'Types',
           'Classes',
@@ -81,8 +81,8 @@ const guide = [
     text: 'Language Basics',
     items: [
       {
-        text: 'Values and Variables',
-        link: '/guide/values-and-variables/',
+        text: 'Variables',
+        link: '/guide/variables/',
         outline: [
           'let and var',
           'Local and module variables',

@@ -1,5 +1,5 @@
 ---
-title: 'Values and Variables'
+title: 'Variables'
 description: 'Variable declarations, mutability, scope, type inference, and destructuring in Zena.'
 ---
 
