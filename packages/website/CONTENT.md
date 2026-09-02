@@ -74,16 +74,6 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Function types and compatibility
     - Function and method overloading
     - Generators and async functions
-  - 📝 [Control Flow and Matching](src/guide/control-flow.md) — `/guide/control-flow/`
-    - Expression-oriented control flow
-    - if, match, and exhaustiveness
-    - Loops and iteration
-    - if let and while let
-  - 📝 [Collections](src/guide/collections.md) — `/guide/collections/`
-    - FixedArray and Array
-    - Maps and Sets
-    - Iterating
-    - Choosing a collection
   - ✅ [Classes](src/guide/classes.md) — `/guide/classes/`
     - Declaring a class and fields
     - Constructors and initialization
@@ -94,6 +84,22 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Inheritance and overriding
     - Operator overloading
     - Performance and dispatch
+  - ✅ [Control Flow](src/guide/control-flow.md) — `/guide/control-flow/`
+    - Expression orientation
+    - Conditionals with if and else
+    - Loops and iteration
+    - Multi-branch selection with match
+    - Jump statements and unwinding
+  - ✅ [Pattern Matching](src/guide/pattern-matching.md) — `/guide/pattern-matching/`
+    - Irrefutable patterns and destructuring
+    - Refutable patterns and match expressions
+    - Pattern taxonomy
+    - Pattern guards
+  - 📝 [Collections](src/guide/collections.md) — `/guide/collections/`
+    - FixedArray and Array
+    - Maps and Sets
+    - Iterating
+    - Choosing a collection
   - 📝 [Errors](src/guide/errors.md) — `/guide/errors/`
     - Throwing and catching
     - try as an expression
@@ -606,4 +612,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-28 of 116 pages written; 88 still placeholders.
+30 of 117 pages written; 87 still placeholders.

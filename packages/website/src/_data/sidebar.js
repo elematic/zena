@@ -133,13 +133,24 @@ const guide = [
         ],
       },
       {
-        text: 'Control Flow and Matching',
+        text: 'Control Flow',
         link: '/guide/control-flow/',
         outline: [
-          'Expression-oriented control flow',
-          'if, match, and exhaustiveness',
+          'Expression orientation',
+          'Conditionals with if and else',
           'Loops and iteration',
-          'if let and while let',
+          'Multi-branch selection with match',
+          'Jump statements and unwinding',
+        ],
+      },
+      {
+        text: 'Pattern Matching',
+        link: '/guide/pattern-matching/',
+        outline: [
+          'Irrefutable patterns and destructuring',
+          'Refutable patterns and match expressions',
+          'Pattern taxonomy',
+          'Pattern guards',
         ],
       },
       {
