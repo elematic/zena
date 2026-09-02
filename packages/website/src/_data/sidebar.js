@@ -170,6 +170,19 @@ const guide = [
         ],
       },
       {
+        text: 'Resources and Ownership',
+        link: '/guide/resources/',
+        outline: [
+          'Managed resources vs ordinary objects',
+          'The Disposable protocol',
+          'Deterministic cleanup with using',
+          'Resource classes and affine types',
+          'Handles: Own, Borrow, and Unmanaged',
+          'Second-class borrows without lifetimes',
+          'Regime transitions: disown and adopt',
+        ],
+      },
+      {
         text: 'Libraries',
         link: '/guide/libraries/',
         outline: [

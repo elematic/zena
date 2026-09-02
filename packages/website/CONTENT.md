@@ -101,6 +101,14 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Async main
     - Futures and combinators
     - Structured cancellation
+  - ✅ [Resources and Ownership](src/guide/resources.md) — `/guide/resources/`
+    - Managed resources vs ordinary objects
+    - The Disposable protocol
+    - Deterministic cleanup with using
+    - Resource classes and affine types
+    - Handles: Own, Borrow, and Unmanaged
+    - Second-class borrows without lifetimes
+    - Regime transitions: disown and adopt
   - 📝 [Libraries](src/guide/libraries.md) — `/guide/libraries/`
     - A library is a directory
     - Imports and exports
@@ -594,4 +602,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-26 of 115 pages written; 89 still placeholders.
+27 of 116 pages written; 89 still placeholders.
