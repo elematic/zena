@@ -128,9 +128,10 @@ smaller change than it appears: the prelude already pulls `zena:async`
 (for `Future`), `zena:string-convert`, `zena:ownership` and the array
 family, so the added files are `string-builder`, `string-reader`,
 `template-strings-array`, `byte-buffer`, `byte-array` and `result` —
-roughly 1,500 lines. Measure compile time before and after the prelude
-switch anyway, and if it regresses, keep the implementation grouping and
-have the prelude name a narrower module.
+roughly 1,500 lines. Measure both compile time and emitted size before and
+after the prelude switch — see "What a facade costs", where a much smaller
+facade change cost every binary 9.5% — and if either regresses, keep the
+implementation grouping and have the prelude name a narrower module.
 
 There is a second cost, noted already on `console`'s manifest entry: a
 prelude module loads with the entry point and shifts symbol ids for every
@@ -138,6 +139,41 @@ component build, which breaks "the component embeds the same core module a
 hostless build emits" for programs that never use the module. Widening the
 prelude makes that worse, and is another reason to switch the prelude last
 and separately.
+
+### What a facade costs
+
+Re-exporting a module from a facade emits that module's **generic
+instantiations** into every program the facade reaches, even when none of
+its own code is reachable.
+
+Measured by folding `stream` into `zena:async`, which is prelude-bound, and
+compiling the `timer` component test: 14,701 bytes to 16,101, a 9.5%
+increase on a program that never mentions `Stream`. None of `Stream`'s or
+`StreamWriter`'s functions were emitted. The 22 added functions were
+`Completer<i32>`, `Completer<bool>`, `Future<i32>`, `Future<bool>`,
+`Box<i32>` and `Box<bool>` — the instantiations `stream.zena` itself uses.
+Reachability prunes unreached *code*; it does not prune the instantiations
+a loaded module's types create.
+
+The same measurement with `stream.zena` moved under `async/` but left as
+its own module is byte-identical to the baseline, so the cost is the
+re-export, not the file's location.
+
+Two consequences:
+
+- The `core` facade is the worst case in this plan: it re-exports around
+  twenty modules, several of them generic. Whatever it costs is paid by
+  every Zena program. Measure the emitted size of a hello-world before and
+  after wiring the prelude to it, and be prepared to have the prelude keep
+  naming narrower modules even after `core` exists as an import.
+- A library only worth having as a namespace is not worth folding into a
+  prelude-bound facade. Grouping files in a directory costs nothing;
+  re-exporting them does.
+
+This also raises a question worth its own investigation: whether emitting a
+loaded module's instantiations regardless of reachability is intended. The
+`timer` component-test asserts a CPU budget, and the folded build failed it
+— so the cost is not only bytes.
 
 ### Libraries the target list omits
 
@@ -148,8 +184,10 @@ The proposed 17-library list has no place for `async`, `stream`, `bench`,
   It is about 1,500 lines with two design documents behind it, its
   surface is still growing, and it sits cleanly above `core` in the
   graph. `zena:async` is a better import to read than `zena:core`.
-- Fold `stream` into `async`. It is 1 import site and depends only on
-  `async`, `error` and `fixed-array`.
+- Do **not** fold `stream` into `async`, though this document originally
+  recommended it. `zena:async` is prelude-bound, and re-exporting `stream`
+  from it costs every binary 1,400 bytes — see "What a facade costs".
+  `stream` keeps its own name and its file moves under `async/`.
 - Fold `benchmark` into `bench`. `bench` is the newer harness; `benchmark`
   is a WASI monotonic clock and an i64 formatter, 3 import sites.
 - Leave `fetch` alone until `http` lands, then merge it in.
@@ -420,9 +458,11 @@ reaches `String`:
 10. `collections/` — move `map`, `ordered-map`, `set` implementations in,
     and re-export the array types from `core` once it exists. Already a
     directory. No registry entries.
-11. `async/` — absorb `stream`. Already a directory and already published,
-    so `Future` and `CancelScope` keep their `(async, …)` entries and this
-    is one step.
+11. `async/` — move `stream` into the directory, but **do not** fold it
+    into `zena:async`. Absorbing it was the plan and it is measurably
+    wrong: see "What a facade costs" below. `stream` stays its own
+    module with its entry at `async/stream.zena`, which groups the file
+    without putting it in every binary.
 12. `core/`, the members nothing in the compiler names — `byte-array`,
     `byte-buffer`, `result`, `string-builder`, `string-reader`.
     Publishing `core` here is what makes the next step possible.
