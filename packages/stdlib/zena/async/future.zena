@@ -247,27 +247,15 @@ export class Future<T> {
     // bare `Future`, which the await operand check rejects — the cast
     // restores the instantiated type.
     let src = this as Future<T>;
-    if (onError == null) {
-      return await onValue(await src);
-    }
-    // Record the failure and fall through rather than the natural
-    // `try { ... } catch (e) { return await onError(e); }`, for two
-    // reasons. Routing: `onValue` must sit outside any catch's reach,
-    // because `onError` handles only this future's failure, never the
-    // callback's own throw. And issue #426: a diverging catch around
-    // an awaited try miscompiles — the split pass re-enters the
-    // region on resume and the continuation after the try runs inside
-    // the handler's reach. Falling through gives the merge a catch
-    // predecessor, which keeps it outside the region.
-    var failed: Error | null = null;
+    // `onValue` sits OUTSIDE the try on purpose: `onError` handles
+    // only this future's failure, never the callback's own throw.
     try {
       await src;
-      failed = null;
     } catch (e) {
-      failed = e;
-    }
-    if (failed != null) {
-      return await onError(failed);
+      if (onError != null) {
+        return await onError(e);
+      }
+      throw e;
     }
     // src is settled past the try; awaiting it again is one queue hop
     // to the same value, and works at every T — saving the value from
