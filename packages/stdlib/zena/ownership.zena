@@ -160,6 +160,23 @@ export opaque type Borrow<T> = T;
 export opaque type Unmanaged<T> = T;
 
 /**
+ * A value that may not be duplicated and may not outlive the extent it
+ * derives from — the corner of the universe table where both
+ * restrictions bind (ownership.md §"Scoped<T>: the fourth corner").
+ * The population is borrow-derived futures and iterators: an async
+ * function that holds a `Borrow` across `await` returns
+ * `Scoped<Future<T>>`, so the frame holding the borrow cannot escape
+ * the borrow's extent.
+ *
+ * A scoped value must be consumed exactly once on every path: a scoped
+ * future by `await` or a move, a scoped iterator by `for`/`in`. It may
+ * not be stored in a field, container, record, or tuple, and may not
+ * be captured by a closure. A first-class `Future<T>` coerces to
+ * `Scoped<Future<T>>`; there is no way back.
+ */
+export opaque type Scoped<T> = T;
+
+/**
  * A resource's position in its lifecycle, held in `Resource`'s private
  * `#state`. See ownership.md §"Disowning and adopting".
  *

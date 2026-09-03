@@ -4428,6 +4428,35 @@ let sizes = async (f: Borrow<File>): Future<i32> => {
 `Borrow<T>` of an unrestricted type (`Borrow<i32>`, `Borrow<String>`)
 has no owner to outlive, so neither rule applies.
 
+### Scoped values
+
+`Scoped<T>` from `zena:ownership` marks a value that may not be
+duplicated and may not outlive the extent it derives from. A
+first-class `Future<T>` is accepted where a `Scoped<Future<T>>` is
+expected; there is no conversion back, and casts to or from `Scoped`
+are rejected like the handle casts.
+
+A scoped value follows the second-class storage rules — no fields,
+container elements, record or tuple members, no closure capture — and
+returning one requires a borrow parameter to derive from, exactly as
+for a returned `Borrow`. On top of that it must be **consumed exactly
+once on every path** out of its scope: a scoped future by `await` or by
+a move (a return, or an argument to a `Scoped` parameter). Leaving one
+unconsumed on any path is an error, and so is consuming it twice:
+
+```zena
+let fut: Scoped<Future<i32>> = fetch();
+if (fast) {
+  return await fut;
+}
+return 0;            // error: 'fut' must be consumed on every path
+```
+
+The planned use — an async function that holds a borrow across `await`
+by declaring a `Scoped<Future<T>>` return, and a generator taking
+borrow parameters behind a `Scoped<Iterator<T>>` — is not implemented
+yet; the borrow rules above still apply inside every body.
+
 ## 13. Compilation
 
 ### Dead Code Elimination

@@ -1194,6 +1194,32 @@ export let soleNonNullMember = (t: Type): Type | null => {
   return nonNull;
 };
 
+/**
+ * Whether `t` is `Scoped<T>` (ownership.md §"Scoped<T>: the fourth
+ * corner"). Not one of the handles: it applies to any value, so it is
+ * recognized separately and gets none of the handle behaviors — no
+ * member forwarding, no receiver rules, no bare-mention checks.
+ */
+export let isScopedType = (t: Type): boolean => {
+  if (!(t is TypeAliasType)) { return false; }
+  if (!t.isDistinct) { return false; }
+  return isWellKnown(WellKnown.ScopedAlias, t.name, t.declaringModule);
+};
+
+/**
+ * The type behind `Scoped<T>`, or null if `t` is not one. Reads
+ * `typeArguments` rather than `target` for the same reason
+ * ownershipHandleInner does: `Scoped<T> = T` has the bare type
+ * parameter as its target.
+ */
+export let scopedInner = (t: Type): Type | null => {
+  if (!isScopedType(t)) { return null; }
+  let args = (t as TypeAliasType).typeArguments;
+  if (args == null) { return null; }
+  if (args.length != 1) { return null; }
+  return args[0];
+};
+
 /** The name of the handle `t` is, or "" if it is not one. */
 export let ownershipHandleName = (t: Type): String => {
   if (!isOwnershipWrapper(t)) { return ""; }

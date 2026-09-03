@@ -107,7 +107,8 @@ import {
   numericTypeName, isBooleanLike, baseType,
   integerLiteralFits,
   promoteNumeric, typeToString, requiredParameterCount, makeTypeIdGenerator, typeContainsTypeParameter,
-  isOwnershipWrapper, ownershipHandleName, ownershipHandleInner, soleNonNullMember
+  isOwnershipWrapper, ownershipHandleName, ownershipHandleInner, soleNonNullMember,
+  isScopedType, scopedInner
 , ErasedType} from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop } from './semantic-model.zena';
 import {
@@ -369,6 +370,16 @@ final class CheckerContext {
    * declaration for lowering.
    */
   #ownScopeStack = new GrowableArray<GrowableArray<OwnDropCandidate>>();
+
+  /**
+   * Scoped bindings per open block, awaiting the must-consume verdict
+   * — the frames parallel #ownScopeStack's. A return checks every open
+   * frame; a block exit checks the one it closes.
+   */
+  #scopedScopeStack = new GrowableArray<GrowableArray<ScopedConsumeCandidate>>();
+
+  /** Bindings already reported unconsumed, so each errors once. */
+  #scopedErrorSymbols = new HashSet<i32>();
 
   /**
    * If/else joins recorded while checking, awaiting the branch-join
@@ -1968,6 +1979,7 @@ final class CheckerContext {
    * join collects breaks. Both are pushed for break/continue to find.
    */
   enterFlowLoop(): FlowJoin {
+    this.enterScopedLoop();
     let head = this.newFlowJoin();
     head.add(this.#currentFlow);
     let exit = this.newFlowJoin();
@@ -1988,6 +2000,7 @@ final class CheckerContext {
    * continue from the exit.
    */
   exitFlowLoop(afterTest: FlowNode): void {
+    this.exitScopedLoop();
     let head = this.#flowLoopHeads.pop();
     let exit = this.#flowLoopExits.pop();
     let moves = this.#flowLoopMoves.pop();
@@ -2284,6 +2297,10 @@ final class CheckerContext {
   #flushBorrowUses(): void {
     for (let rec in this.#bodyBorrowUses) {
       if (this.#borrowSuspendErrorNodes.has(rec.exprNodeId)) { continue; }
+      // A read that already got a use-after-move error is dead for a
+      // reason the move diagnosis names; the suspension one on top of
+      // it is noise.
+      if (this.#moveErrorNodes.has(rec.exprNodeId)) { continue; }
       let birthId = if (let (true, b) =
           this.#borrowBirthNodes.get(rec.symbolId as i32)) b else -1;
       if (!this.#findFlowSuspend(rec.symbolId, rec.node, birthId)) { continue; }
@@ -2322,6 +2339,111 @@ final class CheckerContext {
 
   enterOwnScope(): void {
     this.#ownScopeStack.push(new GrowableArray<OwnDropCandidate>());
+    this.#scopedScopeStack.push(new GrowableArray<ScopedConsumeCandidate>());
+  }
+
+  /** A simple-`let` `Scoped` declaration in the current block. */
+  registerScopedCandidate(sym: Symbol, patternNode: Node): void {
+    if (this.#scopedScopeStack.length == 0) { return; }
+    this.#scopedScopeStack[this.#scopedScopeStack.length - 1]
+      .push(new ScopedConsumeCandidate(sym, patternNode));
+  }
+
+  /**
+   * Whether `id` was consumed (a FlowMove of it) on every backward path
+   * from `from` to its declaration. A path that reaches the declaration
+   * node without a move is the failure; a path that reaches the body
+   * start bypassed the declaration and holds nothing. Optimistic on
+   * loop back edges: a cycle re-entering a node under evaluation
+   * assumes consumed, so the acyclic paths decide.
+   */
+  #definitelyConsumed(id: SymbolId, from: FlowNode, birthId: i32,
+      memo: HashMap<i32, boolean>): boolean {
+    if (from.id == birthId) { return false; }
+    if (let (true, v) = memo.get(from.id)) { return v; }
+    memo[from.id] = true;
+    let result: boolean = match (from) {
+      case FlowStart: true
+      case FlowUnreachable: true
+      case FlowSuspend as sp:
+        this.#definitelyConsumed(id, sp.antecedent, birthId, memo)
+      case FlowNarrowings as nw:
+        this.#definitelyConsumed(id, nw.antecedent, birthId, memo)
+      case FlowMove as mv: {
+        if ((mv.symbolId as i32) == (id as i32)) { true }
+        else { this.#definitelyConsumed(id, mv.antecedent, birthId, memo) }
+      }
+      case FlowAssign as assign: {
+        if ((assign.symbolId as i32) == (id as i32)) { false }
+        else { this.#definitelyConsumed(id, assign.antecedent, birthId, memo) }
+      }
+      case FlowJoin as join: {
+        var all = true;
+        for (let a in join.antecedents) {
+          if (!this.#definitelyConsumed(id, a, birthId, memo)) { all = false; }
+        }
+        all
+      }
+    };
+    memo[from.id] = result;
+    return result;
+  }
+
+  /** The frame depth at each open loop's entry, for break/continue. */
+  #scopedLoopFloors = new GrowableArray<i32>();
+
+  /** The frame depth at the current body's entry: a nested body's
+   * returns leave only frames at or above it. */
+  var #scopedBodyFloor: i32 = 0;
+
+  enterScopedLoop(): void {
+    this.#scopedLoopFloors.push(this.#scopedScopeStack.length);
+  }
+
+  exitScopedLoop(): void {
+    if (this.#scopedLoopFloors.length > 0) { this.#scopedLoopFloors.pop(); }
+  }
+
+  /** The scoped frames a break/continue leaves: the innermost loop's. */
+  scopedLoopFloor(): i32 {
+    if (this.#scopedLoopFloors.length == 0) {
+      return this.#scopedScopeStack.length;
+    }
+    return this.#scopedLoopFloors[this.#scopedLoopFloors.length - 1];
+  }
+
+  /**
+   * Require every scoped binding in frames `start` and above to be
+   * consumed at the current flow position. A `return` leaves every
+   * frame (start 0), a block end leaves its own (start length−1), a
+   * break or continue leaves the frames inside the innermost loop
+   * (start scopedLoopFloor()). Each binding errors once.
+   */
+  requireScopedConsumed(loc: SourceLocation | null, start: i32): void {
+    if (this.#currentFlow is FlowUnreachable) { return; }
+    if (this.#scopedScopeStack.length == 0) { return; }
+    var from = start;
+    if (from < this.#scopedBodyFloor) { from = this.#scopedBodyFloor; }
+    for (var i = from; i < this.#scopedScopeStack.length; i += 1) {
+      for (let c in this.#scopedScopeStack[i]) {
+        let cid = c.sym.id as i32;
+        if (this.#scopedErrorSymbols.has(cid)) { continue; }
+        let birthId = if (let (true, b) =
+            this.#borrowBirthNodes.get(cid)) b else -1;
+        let memo = new HashMap<i32, boolean>();
+        if (this.#definitelyConsumed(c.sym.id, this.#currentFlow, birthId, memo)) {
+          continue;
+        }
+        this.#scopedErrorSymbols.add(cid);
+        this.error(
+          "'" + c.sym.name + "' is scoped and must be consumed on every " +
+          "path before its scope exits: await it, or move it. A scoped " +
+          "value has no release glue to fall back on.",
+          DiagnosticCode.UseAfterMove,
+          if (loc != null) loc else c.node.loc
+        );
+      }
+    }
   }
 
   /** A simple-`let` `Own<resource>` declaration in the current block. */
@@ -2339,6 +2461,10 @@ final class CheckerContext {
    * the binding alone. The verdict overwrites on a re-check.
    */
   exitOwnScope(scopeNode: Node): void {
+    if (this.#scopedScopeStack.length > 0) {
+      this.requireScopedConsumed(null, this.#scopedScopeStack.length - 1);
+      this.#scopedScopeStack.pop();
+    }
     if (this.#ownScopeStack.length == 0) { return; }
     let frame = this.#ownScopeStack[this.#ownScopeStack.length - 1];
     this.#ownScopeStack.pop();
@@ -2565,6 +2691,11 @@ final class CheckerContext {
     this.#bodyExits = new GrowableArray<FlowNode>();
     saved.bodyPathMoves = this.#bodyPathMoves;
     this.#bodyPathMoves = new GrowableArray<FlowMove>();
+    // A nested body's returns leave only its own scoped frames: frames
+    // below the floor belong to the enclosing function.
+    saved.scopedBodyFloor = this.#scopedBodyFloor;
+    this.#scopedBodyFloor = this.#scopedScopeStack.length;
+    saved.scopedLoopFloorCount = this.#scopedLoopFloors.length;
     return saved;
   }
 
@@ -2572,6 +2703,10 @@ final class CheckerContext {
     // The body's flow graph is complete here — loop back edges wired —
     // so the borrow-liveness reads collected for it are decidable.
     this.#flushBorrowUses();
+    this.#scopedBodyFloor = saved.scopedBodyFloor;
+    while (this.#scopedLoopFloors.length > saved.scopedLoopFloorCount) {
+      this.#scopedLoopFloors.pop();
+    }
     this.#bodyBorrowUses = saved.borrowUses;
     this.#pendingEdgeMatches = saved.pendingEdgeMatches;
     this.#bodyExits = saved.bodyExits;
@@ -3879,6 +4014,10 @@ let borrowWrapFieldRead = (ctx: CheckerContext, t: Type): Type => {
  * unrestricted `Borrow<i32>` and nothing applies.
  */
 let isSecondClass = (t: Type): boolean => {
+  // A scoped value is second-class whatever it wraps: it owns a frame
+  // that holds a borrow, so the extent restriction is unconditional
+  // (ownership.md §"Scoped<T>: the fourth corner").
+  if (isScopedType(t)) { return true; }
   if (ownershipHandleName(t) != "Borrow") { return false; }
   let inner = ownershipHandleInner(t);
   if (inner == null) { return false; }
@@ -3980,6 +4119,15 @@ let rejectSecondClassStorage = (
   loc: SourceLocation | null
 ): void => {
   if (!isSecondClass(t)) { return; }
+  if (isScopedType(t)) {
+    ctx.error(
+      "A '" + typeToString(t) + "' may not be stored in " + where + ". A scoped value " +
+      "may not outlive the extent it derives from, and " + where + " outlives every extent.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return;
+  }
   ctx.error(
     "A '" + typeToString(t) + "' may not be stored in " + where + ". A borrow may not " +
     "outlive the scope it was borrowed from, and " + where + " outlives every scope one " +
@@ -4231,9 +4379,20 @@ let recordArgumentMove = (ctx: CheckerContext, arg: Expression, paramType: Type)
   if (info == null) { return; }
   // An `Own<R> | null` sink takes ownership the same way `Own<R>` does;
   // null just means there may be nothing to own.
-  let handle = ownershipHandleName(soleNonNullMember(paramType) ?? paramType);
+  let sinkType = soleNonNullMember(paramType) ?? paramType;
+  let handle = ownershipHandleName(sinkType);
   if (handle == "Own") {
     ctx.recordFlowMove(info.id, info.name, arg.loc);
+    return;
+  }
+  // A scoped sink consumes the argument too: handing a scoped value to
+  // a scoped parameter (or rebinding it, which comes through here with
+  // the declaration's type as the sink) is its one permitted move.
+  if (isScopedType(sinkType)) {
+    let at = ctx.model.getNodeType(arg);
+    if (at != null && isScopedType(at)) {
+      ctx.recordFlowMove(info.id, info.name, arg.loc);
+    }
     return;
   }
   if (handle == "") {
@@ -4260,6 +4419,18 @@ final class OwnDropCandidate {
   node: Node;
   resources: Array<ClassType>;
   new(this.sym, this.node, this.resources);
+}
+
+/**
+ * A `Scoped` binding declared by a simple `let`, pending the
+ * must-consume verdict at its block's exit (ownership.md §"Required
+ * consumption"): consumed exactly once on every path, or an error —
+ * there is no release glue to fall back on.
+ */
+final class ScopedConsumeCandidate {
+  sym: Symbol;
+  node: Node;
+  new(this.sym, this.node);
 }
 
 /**
@@ -6564,6 +6735,16 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     }
   }
 
+  // A first-class future is accepted where a scoped one is expected:
+  // weakening to scoped drops capability, which is safe. There is no
+  // coercion back (ownership.md §"Required consumption").
+  if (isScopedType(target) && !isScopedType(source) && isFutureClassType(source)) {
+    let inner = scopedInner(target);
+    if (inner != null && isAssignableTo(ctx, source, inner)) {
+      return true;
+    }
+  }
+
   // `never` is assignable to anything.
   if (source is NeverType) { return true; }
   if (source is ErrorType || target is ErrorType) { return true; }
@@ -7963,6 +8144,19 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
           }
         }
       }
+      // Returning a scoped binding is its consumption: the move
+      // happens before the exit check below, so `return fut;` is a
+      // clean path for `fut` and any OTHER live scoped binding errors.
+      if (argument != null && argument is Identifier) {
+        let rt = ctx.model.getNodeType(argument as Node);
+        if (rt != null && isScopedType(rt)) {
+          let rsym = ctx.model.resolve(argument);
+          if (rsym != null) {
+            ctx.recordFlowMove(rsym.id, rsym.name, loc);
+          }
+        }
+      }
+      ctx.requireScopedConsumed(loc, 0);
       ctx.recordBodyExit();
       ctx.markFlowUnreachable();
     }
@@ -8166,6 +8360,7 @@ case _: {
           "Cannot 'break' out of a 'cancel' block; the cancellation unwind continues.",
           DiagnosticCode.BreakOutsideLoop, loc);
       }
+      ctx.requireScopedConsumed(loc, ctx.scopedLoopFloor());
       ctx.recordFlowBreak();
     }
     case ContinueStatement {loc}: {
@@ -8177,6 +8372,7 @@ case _: {
           "Cannot 'continue' out of a 'cancel' block; the cancellation unwind continues.",
           DiagnosticCode.ContinueOutsideLoop, loc);
       }
+      ctx.requireScopedConsumed(loc, ctx.scopedLoopFloor());
       ctx.recordFlowContinue();
     }
     // Declarations that are handled during pre-pass or skipped for now.
@@ -8601,6 +8797,16 @@ let checkVariableDeclaration = (
   // A nullable handle qualifies too — the release is null-guarded — but
   // not one initialized to literal null: an immutable binding of null
   // never holds a resource, so there is nothing to release.
+  // A simple `let` of scoped type must be consumed on every path out
+  // of its block — registered here, decided at exitOwnScope and at
+  // each return (ownership.md §"Required consumption").
+  if (kind == "let" && pattern is IdentifierPattern && isScopedType(declType)) {
+    let scopedSym = ctx.model.resolveDeclaration(pattern);
+    if (scopedSym != null) {
+      ctx.registerScopedCandidate(scopedSym, pattern as Node);
+    }
+  }
+
   let dropHandleType = soleNonNullMember(declType) ?? declType;
   if (kind == "let" && pattern is IdentifierPattern &&
       !(initType is NullType) &&
@@ -9690,8 +9896,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // Resolve through the scope pass's ReferenceMap → Symbol → binding type.
     let resolved = ctx.resolveIdentifier(expr);
     if (resolved != null) {
-      // An owned binding is dead after a move on any path to here.
-      if (ownershipHandleName(resolved) == "Own") {
+      // An owned binding is dead after a move on any path to here, and
+      // a scoped binding after the consumption that moved it.
+      if (ownershipHandleName(resolved) == "Own" || isScopedType(resolved)) {
         let moveSym = ctx.model.resolve(expr);
         if (moveSym != null) {
           ctx.checkMoveUse(expr, moveSym);
@@ -16969,7 +17176,22 @@ let makeFutureType = (
  * (result T) or a distinguishable union T | Future<T> (result T).
  */
 let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
-  let operandType = checkExpression(ctx, aw.argument, null);
+  var operandType = checkExpression(ctx, aw.argument, null);
+  // Awaiting is a scoped future's consumption (ownership.md §"Required
+  // consumption"): the binding is moved into the await, and the rest of
+  // the check sees the future behind the wrapper.
+  if (isScopedType(operandType)) {
+    let inner = scopedInner(operandType);
+    if (inner != null) {
+      if (aw.argument is Identifier) {
+        let scopedSym = ctx.model.resolve(aw.argument);
+        if (scopedSym != null) {
+          ctx.recordFlowMove(scopedSym.id, scopedSym.name, aw.argument.loc);
+        }
+      }
+      operandType = inner;
+    }
+  }
   if (ctx.asyncValueType == null) {
     // Includes non-async closures nested in async bodies: they are
     // their own functions and cannot suspend their lexical parent.

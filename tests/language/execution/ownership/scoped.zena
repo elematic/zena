@@ -1,0 +1,21 @@
+// @mode: run
+// @result: 47
+// Scoped<T> end to end: a future coerces to scoped, awaiting consumes
+// it, and a scoped parameter takes one by move — the wrapper is erased,
+// so both awaits run the ordinary future path.
+import {Scoped} from 'zena:ownership';
+
+let mk = async (): Future<i32> => {
+  return 20;
+};
+
+let sink = async (f: Scoped<Future<i32>>): Future<i32> => {
+  return await f;
+};
+
+export let main = async (): Future<i32> => {
+  let fut: Scoped<Future<i32>> = mk();
+  let a = await fut;
+  let b = await sink(mk());
+  return a + b + 7;
+};

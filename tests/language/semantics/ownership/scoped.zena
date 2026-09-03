@@ -1,0 +1,84 @@
+// @mode: check
+// Scoped<T> (ownership.md §"Scoped<T>: the fourth corner", §"Required
+// consumption"): may not be duplicated, may not escape to the heap,
+// and must be consumed on every path. A first-class future coerces to
+// scoped; nothing coerces back out.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+// A future coerces to scoped, and awaiting consumes it: every path
+// out of the block moves the binding, so the verdict is clean.
+let consumed = async (): Future<i32> => {
+  let fut: Scoped<Future<i32>> = tick();
+  let v = await fut;
+  return v;
+};
+
+// A scoped binding nothing consumes is an error at the exit.
+let abandoned = async (): Future<i32> => {
+  let fut: Scoped<Future<i32>> = tick();
+  return 1; // @error: must be consumed
+};
+
+// Awaiting is a move, so a second await is a use after move.
+let awaitedTwice = async (): Future<i32> => {
+  let fut: Scoped<Future<i32>> = tick();
+  let a = await fut;
+  let b = await fut; // @error: may have been moved
+  return a + b;
+};
+
+// Consuming on one arm only leaves the other arm holding it.
+let oneArm = async (c: boolean): Future<i32> => {
+  let fut: Scoped<Future<i32>> = tick();
+  if (c) {
+    let v = await fut;
+  }
+  return 2; // @error: must be consumed
+};
+
+// The scoped value may not outlive its extent: no fields.
+class Holder {
+  fut: Scoped<Future<i32>>; // @error: may not be stored
+  new(this.fut);
+}
+
+// No containers either — a heap object outlives every extent.
+let boxed = (): void => {
+  let xs = new GrowableArray<Scoped<Future<i32>>>(); // @error: may not be stored
+};
+
+// A scoped value does not coerce back to a first-class future.
+let unwrap = (f: Scoped<Future<i32>>): Future<i32> => {
+  return f; // @error: cannot return
+};
+
+// Returning scoped with no borrow parameter has no extent to derive
+// from (§"Derived borrows").
+let underived = (): Scoped<Future<i32>> => { // @error: no borrow parameter
+  return tick();
+};
+
+// With exactly one restricted borrow parameter the return derives
+// from it, and handing the result to a scoped parameter is a move.
+let derived = (r: Borrow<Res>): Scoped<Future<i32>> => {
+  return tick();
+};
+
+let sink = async (f: Scoped<Future<i32>>): Future<i32> => {
+  return await f;
+};
+
+let movedToSink = async (r: Borrow<Res>): Future<i32> => {
+  let fut = derived(r);
+  let v = await sink(fut);
+  return v;
+};
