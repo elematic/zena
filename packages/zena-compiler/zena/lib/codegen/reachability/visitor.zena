@@ -1969,7 +1969,19 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                       if (nodeTypeRaw is FunctionType) {
                         let {typeArguments} = nodeTypeRaw;
                         if (typeArguments != null) {
-                          methodTypeArgs = typeArguments;
+                          // Through the walk's resolver: on a
+                          // specialization's walk the solved arguments
+                          // may still spell the enclosing function's
+                          // own parameters (`race<T>` from inside a
+                          // generic body), and instantiating at a bare
+                          // parameter mints the erasure — see
+                          // registerGenericMethodUse, which this
+                          // mirrors.
+                          let resolvedArgs = new GrowableArray<Type>();
+                          for (let a in typeArguments) {
+                            resolvedArgs.push(resolveType(a));
+                          }
+                          methodTypeArgs = resolvedArgs;
                         }
                       }
                     }
@@ -1985,6 +1997,13 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let mds = cha.findImplementingMethods(resolvedObj, resolvedName);
             for (let md in mds) {
               if (isGenericMethod && methodTypeArgs != null) {
+                // Arguments still open after resolution mean this walk
+                // is a template's: the mention is the template of a
+                // call, and every value it stands for belongs to a
+                // specialization some real walk registers.
+                if (!noOpenTypeParameters(methodTypeArgs)) {
+                  continue;
+                }
                 let unspecCdId = (resolvedObj.genericSource ?? resolvedObj).symbolId;
                 let cd = if (let (true, decl) = this.pass.classDecls.get(unspecCdId)) decl else null;
                 // Reach it, not merely register it — layout() rebuilds
