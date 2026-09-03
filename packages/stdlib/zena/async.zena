@@ -34,7 +34,7 @@
 import { Error } from 'zena:error';
 import { GrowableArray } from 'zena:growable-array';
 import { Disposable } from 'zena:ownership';
-import { Task, scheduleTask } from './async/executor.zena';
+import { Waiter, scheduleTask } from './async/executor.zena';
 import {
   subscribe, failure, valueOrThrow, tryComplete, tryFail,
   cancelComplete,
@@ -42,7 +42,7 @@ import {
 } from './async/future.zena';
 
 export {
-  Task, Parker, setParker, scheduleTask, scheduleMicrotask,
+  Waiter, Parker, setParker, scheduleTask, scheduleMicrotask,
   drainMicrotasks,
 } from './async/executor.zena';
 export {
@@ -115,7 +115,7 @@ export class CancelScope {
    * and a parked frame's resume checkpoint tests the scope before
    * touching its still-pending future. The root registers nothing:
    * it cannot be cancelled, so uncancellable work pays no tracking. */
-  #tasks = new GrowableArray<Task>();
+  #tasks = new GrowableArray<Waiter>();
 
   /** A child of the current scope, sharing its cancelled level. */
   new() : #parent = current {
@@ -186,7 +186,7 @@ export class CancelScope {
    * not tracked; an already-cancelled scope needs no wake either,
    * because the frame raises at its first checkpoint.
    */
-  [registerTask](t: Task): void {
+  [registerTask](t: Waiter): void {
     if ((rootScope != null && this == rootScope) || this.#cancelled) {
       return;
     }
@@ -268,7 +268,7 @@ export let currentScope = (): CancelScope => {
  * reading a cancelled future's result raises on the cancellation
  * channel — and the group needs to record that outcome, not unwind.
  */
-class GroupWaiter<T> implements Task {
+class GroupWaiter<T> implements Waiter {
   group: TaskGroup;
   future: Future<T>;
   new(this.group, this.future);
@@ -445,7 +445,7 @@ class RaceGroupState<T> {
 
 /** One candidate's subscription into a `RaceGroupState`, holding the
  * future it reads — the same shape as `RaceWaiter`. */
-class RaceGroupWaiter<T> implements Task {
+class RaceGroupWaiter<T> implements Waiter {
   state: RaceGroupState<T>;
   future: Future<T>;
   new(this.state, this.future);
@@ -468,7 +468,7 @@ class RaceGroupWaiter<T> implements Task {
  * releasing the last claim schedules the Interest itself, so a
  * release allocates nothing.
  */
-class Interest implements Task {
+class Interest implements Waiter {
   scope: CancelScope;
   var count: i32 = 1;
   new(this.scope);

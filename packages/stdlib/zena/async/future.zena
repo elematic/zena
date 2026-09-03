@@ -8,7 +8,7 @@
  * re-exported by the module, which is what keeps them unnameable
  * outside it.
  *
- * **Waiters pull.** There is one notification protocol, `Task`, and it
+ * **Waiters pull.** There is one notification protocol, `Waiter`, and it
  * carries no type parameter: a settling future schedules its waiters and
  * each reads the settled result back with `:result()`. The alternative —
  * pushing the value to a typed listener — needs an object per waiter per
@@ -23,7 +23,7 @@ import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
 import { GrowableArray } from 'zena:growable-array';
 import { Box } from 'zena:box';
-import { Task, scheduleTask, drainMicrotasks } from './executor.zena';
+import { Waiter, scheduleTask, drainMicrotasks } from './executor.zena';
 import { Outcome, Ok, Err } from 'zena:result';
 
 /**
@@ -104,12 +104,12 @@ export class Future<T> {
   var #state = FutureState.Pending;
   var #value: Box<T> | null = null;
   var #error: Error | null = null;
-  /** The registered waiters: null, a single Task — the overwhelmingly
+  /** The registered waiters: null, a single Waiter — the overwhelmingly
    * common case, an awaited future has exactly one frame parked on
    * it — or a list once a second arrives. One field, discriminated on
-   * read; sound because GrowableArray does not implement Task, so the
+   * read; sound because GrowableArray does not implement Waiter, so the
    * class test cannot claim a lone waiter. */
-  var #waiters: Task | GrowableArray<Task> | null = null;
+  var #waiters: Waiter | GrowableArray<Waiter> | null = null;
 
   new();
 
@@ -201,7 +201,7 @@ export class Future<T> {
    * frame-plus-future. It is deliberately untyped in T: the waiter
    * reads the settled result back with `result()` when it runs.
    */
-  [subscribe](t: Task): void {
+  [subscribe](t: Waiter): void {
     if (!(this.#state == FutureState.Pending)) {
       scheduleTask(t);
       return;
@@ -211,11 +211,11 @@ export class Future<T> {
       this.#waiters = t;
       return;
     }
-    if (w is GrowableArray<Task>) {
+    if (w is GrowableArray<Waiter>) {
       w.push(t);
       return;
     }
-    let list = new GrowableArray<Task>();
+    let list = new GrowableArray<Waiter>();
     list.push(w);
     list.push(t);
     this.#waiters = list;
@@ -367,7 +367,7 @@ export class Future<T> {
       return;
     }
     this.#waiters = null;
-    if (w is GrowableArray<Task>) {
+    if (w is GrowableArray<Waiter>) {
       var i = 0;
       while (i < w.length) {
         scheduleTask(w[i]);
@@ -664,7 +664,7 @@ class AllState<T> {
  * Carries the input's index rather than the future itself. Either works
  * and both are one field; the index is what `report` would need anyway,
  * since `all` has to keep every input to read the values back in order. */
-class AllWaiter<T> implements Task {
+class AllWaiter<T> implements Waiter {
   state: AllState<T>;
   index: i32;
   new(this.state, this.index);
@@ -717,7 +717,7 @@ class RaceState<T> {
 
 /** One input's subscription into a `RaceState`, holding the input it
  * reads. */
-class RaceWaiter<T> implements Task {
+class RaceWaiter<T> implements Waiter {
   state: RaceState<T>;
   future: Future<T>;
   new(this.state, this.future);
@@ -785,7 +785,7 @@ class AnyState<T> {
 }
 
 /** One input's subscription into an `AnyState`. */
-class AnyWaiter<T> implements Task {
+class AnyWaiter<T> implements Waiter {
   state: AnyState<T>;
   index: i32;
   new(this.state, this.index);

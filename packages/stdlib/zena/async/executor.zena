@@ -22,12 +22,12 @@ import { GrowableArray } from 'zena:growable-array';
  * handed it, this needs no type parameter, so one implementation per
  * frame serves every await site in a function whatever it awaits.
  */
-export interface Task {
+export interface Waiter {
   run(): void;
 }
 
 /** Wraps a plain callback for non-generic callers. */
-class ClosureTask implements Task {
+class ClosureWaiter implements Waiter {
   cb: () => void;
   new(this.cb);
   run(): void {
@@ -37,10 +37,10 @@ class ClosureTask implements Task {
 }
 
 class TaskQueue {
-  #items = new GrowableArray<Task>();
+  #items = new GrowableArray<Waiter>();
   var #head = 0;
 
-  schedule(task: Task): void {
+  schedule(task: Waiter): void {
     this.#items.push(task);
   }
 
@@ -114,13 +114,13 @@ export let setParker = (p: Parker): void => {
 };
 
 /** Enqueue a task on the microtask queue. */
-export let scheduleTask = (task: Task): void => {
+export let scheduleTask = (task: Waiter): void => {
   getQueue().schedule(task);
 };
 
 /** Enqueue a callback on the microtask queue. */
 export let scheduleMicrotask = (cb: () => void): void => {
-  getQueue().schedule(new ClosureTask(cb));
+  getQueue().schedule(new ClosureWaiter(cb));
 };
 
 /**
