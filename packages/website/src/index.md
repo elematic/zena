@@ -270,6 +270,16 @@ console.log(
 <div class="home-section">
   <div class="container prose">
 
+## Examples
+
+Explore Zena's features through interactive examples. Zena's compiler and
+language service are written in Zena and run in the browser via WebAssembly.
+See more examples in the [Playground](./playground/).
+
+<zena-example-playground>
+{% include "playground-examples.njk" %}
+</zena-example-playground>
+
 ## Language features
 
 <details id="syntax">
@@ -578,14 +588,6 @@ structures, UI component trees, document markup, and even database queries in an
 intuitive, readable, and safe format.
 
 </details>
-
-## Examples
-
-Explore Zena's features through interactive examples. All examples are editable and runnable in WebAssembly.
-
-<zena-example-playground>
-{% include "playground-examples.njk" %}
-</zena-example-playground>
 
 ## Project Status
 
