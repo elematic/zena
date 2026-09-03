@@ -1,7 +1,5 @@
 import {BehaviorElement} from './light-element.js';
 
-const PAGE_OFFSET = 71;
-
 /**
  * Highlights the current section in the right-hand "On this page" rail and
  * slides the brand-coloured marker to it.
@@ -16,6 +14,7 @@ export class ZenaOutline extends BehaviorElement {
   #links!: HTMLAnchorElement[];
   #headings: HTMLElement[] = [];
   #prevActive: HTMLAnchorElement | null = null;
+  #pageOffset = 96;
 
   connectedCallback(): void {
     const signal = this.disconnectedSignal;
@@ -30,10 +29,24 @@ export class ZenaOutline extends BehaviorElement {
 
     if (this.#headings.length === 0) return;
 
+    this.#updatePageOffset();
     const onScroll = () => this.#update();
+    const onResize = () => {
+      this.#updatePageOffset();
+      this.#update();
+    };
     window.addEventListener('scroll', onScroll, {passive: true, signal});
-    window.addEventListener('resize', onScroll, {passive: true, signal});
+    window.addEventListener('resize', onResize, {passive: true, signal});
     requestAnimationFrame(onScroll);
+  }
+
+  #updatePageOffset(): void {
+    if (this.#headings.length > 0) {
+      const scrollMargin = parseFloat(
+        getComputedStyle(this.#headings[0]).scrollMarginTop,
+      );
+      this.#pageOffset = (scrollMargin || 88) + 8;
+    }
   }
 
   #update(): void {
@@ -49,7 +62,7 @@ export class ZenaOutline extends BehaviorElement {
       active = this.#headings[this.#headings.length - 1];
     } else {
       for (const heading of this.#headings) {
-        if (heading.getBoundingClientRect().top > PAGE_OFFSET) break;
+        if (heading.getBoundingClientRect().top > this.#pageOffset) break;
         active = heading;
       }
       active ??= this.#headings[0];
