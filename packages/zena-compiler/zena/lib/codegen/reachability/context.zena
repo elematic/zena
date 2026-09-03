@@ -132,6 +132,21 @@ export interface ReachabilityContext {
    */
   var suppressNameEvidence: boolean;
   /**
+   * True while a class with no emission evidence is being laid out.
+   *
+   * Every declared class in every loaded module gets a struct layout,
+   * whether or not the module emits it — the layout is what registers
+   * its members, and a class can pick up evidence after its turn. But
+   * laying one out walks its members' signatures, and a signature
+   * mention of `Completer<i32>` is not a `new Completer<i32>()`. Under
+   * this flag such a mention still registers the specialization, so
+   * fields and signatures can name its struct, and stops there: it
+   * does not instantiate it, and `currentReachable` is false alongside
+   * so it does not fan the generic's reached members out over it
+   * either. Reached code records its own evidence when it is walked.
+   */
+  var layingOutUnemittedClass: boolean;
+  /**
    * The generic TEMPLATE whose member the queue walk is inside, if any.
    * A template's members are walked to register them and to fan out a
    * concrete referrer per specialization — the body itself is never
@@ -201,6 +216,7 @@ export interface ReachabilityContext {
   referencedReachableInterfaceMembers: HashSet<String>;
 
   queueReferrer(ref: Referrer): void;
+  noteSpecialization(ct: ClassType, model: SemanticModel): void;
   markFunctionReached(func: WasmFunction): void;
   noteExceptionInfra(model: SemanticModel): void;
   notePendingMemberReach(key: ClassMethodKey): void;

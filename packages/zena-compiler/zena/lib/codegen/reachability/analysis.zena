@@ -181,6 +181,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    */
   var inQueueWalk = false;
   var suppressNameEvidence = false;
+  /** See ReachabilityContext.layingOutUnemittedClass. */
+  var layingOutUnemittedClass = false;
 
   /** See ReachabilityContext.walkingTemplateOf. */
   var walkingTemplateOf: ClassType | null = null;
@@ -361,6 +363,46 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           for (let specCt in specList) {
             this.queueReferrer(new Referrer(false, noSymbolId, nodeId, model, specCt, false));
           }
+        }
+      }
+    }
+  }
+
+  /**
+   * Record a concrete specialization of a generic class, and fan the
+   * members already reached on the generic out over it.
+   *
+   * This is the register of specializations the program asks for. It
+   * is what carries a member reached on the template to every
+   * specialization, and what `instantiateClassType` walks to
+   * instantiate a generic's siblings, so a specialization listed here
+   * is one the module will emit. Discovery lists a mention; a mention
+   * from a class nothing reaches is not listed, and instantiation
+   * lists whatever it instantiates — so a specialization that becomes
+   * real after being passed over still arrives.
+   */
+  noteSpecialization(ct: ClassType, model: SemanticModel): void {
+    let lookupId = (ct.genericSource ?? ct).symbolId;
+    if (!this.specializedClassTypes.has(lookupId)) {
+      this.specializedClassTypes[lookupId] = new GrowableArray<ClassType>();
+    }
+    let list = this.specializedClassTypes[lookupId];
+    let ctKey = getClassKey(ct);
+    for (let existing in list) {
+      if (getClassKey(existing) == ctKey) { return; }
+    }
+    list.push(ct);
+    if (let (true, reachedSet) = this.reachedClassMembers.get(lookupId)) {
+      let rcKeys = reachedSet.keys();
+      while (let (true, nid) = rcKeys.next()) {
+        this.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, this.currentReachable));
+      }
+    }
+    if (this.currentReachable) {
+      if (let (true, reachedSet) = this.reachedReachableClassMembers.get(lookupId)) {
+        let rrKeys = reachedSet.keys();
+        while (let (true, nid) = rrKeys.next()) {
+          this.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, true));
         }
       }
     }
@@ -696,6 +738,33 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
+  /**
+   * Whether anything so far says a value of this class, or a mention of
+   * its struct, can appear in the emitted module — the same question
+   * the type section is rooted from in `run`, asked earlier.
+   *
+   * A `Box<prim>` specialization counts once registered, for the reason
+   * the type-section root gives: the erased-`==` diamond ref_tests
+   * every registered one, with no AST naming it.
+   */
+  #classHasEmissionEvidence(ct: ClassType): boolean {
+    let cKeyStr = getClassKey(ct) as String;
+    if (this.instantiatedSpecializedClasses.has(cKeyStr) ||
+        this.reachablyNamedClasses.has(cKeyStr)) {
+      return true;
+    }
+    let {boxClass} = this.wasm;
+    if (boxClass != null && isConcrete(ct) &&
+        (ct.genericSource ?? ct).symbolId == boxClass.symbolId) {
+      let {typeArguments} = ct;
+      if (typeArguments != null && typeArguments.length == 1 &&
+          isBoxablePrimitive(typeArguments[0])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   #populateClassStruct(ct: ClassType, populated: HashMap<ClassKey, boolean>): void {
     let key = getClassKey(ct);
     if (populated.has(key)) { return; }
@@ -707,7 +776,25 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let lookupId = (ct.genericSource ?? ct).symbolId;
     let cd: Node | null = if (this.classDecls.has(lookupId)) this.classDecls[lookupId] else null;
     let model = this.getClassModel(ct);
+    // Every declared class is laid out, including the ones nothing
+    // reaches: the layout is what registers a class's members, and a
+    // class can pick up evidence after its turn here. But laying one
+    // out is not evidence about the types its members' signatures
+    // name. A field typed `Completer<i32>` on a class nothing reaches
+    // used to specialize and emit `Completer<i32>` whole — all six of
+    // its methods, plus the `Future<i32>` and `Box<i32>` they need —
+    // whenever some other code had reached `Completer` at any type at
+    // all. See docs/design/binary-size.md §18.
+    let hasEvidence = this.#classHasEmissionEvidence(ct);
+    let savedReachable = this.currentReachable;
+    let savedLayingOut = this.layingOutUnemittedClass;
+    if (!hasEvidence) {
+      this.currentReachable = false;
+      this.layingOutUnemittedClass = true;
+    }
     this.specializer.populateClassStructAndMethods(ct, cd, model);
+    this.currentReachable = savedReachable;
+    this.layingOutUnemittedClass = savedLayingOut;
   }
 
 

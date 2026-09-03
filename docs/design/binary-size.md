@@ -1213,6 +1213,77 @@ String machinery in its module. What remains in the 217 bytes past
 prelude walk names (`FixedArray<i32>`, `ImmutableArray<i32>`, the
 ranges) — empty, dead, and the next visible cut.
 
+## 18. Laying a class out is not reaching it
+
+Reachability prunes the functions nothing reaches. It did not prune the
+specializations that an unreached class's _types_ ask for.
+
+Every declared class in every loaded module gets a struct layout,
+emitted or not. That is deliberate — the layout is what registers a
+class's members, and a class can pick up evidence after its turn — but
+the layout walks its members' signatures, and those walks ran as if the
+code around them were live. So a field typed `Cell<Marker>` on a class
+nothing reaches read as evidence that `Cell<Marker>` values exist.
+
+Two things followed from that, and the second is the one that costs
+bytes. The mention instantiated the specialization, on the standing
+rule that reaching a generic at one type argument is evidence for
+another (the instantiating `new` may live in generic code the mention
+stands in for). And it listed `Cell<Marker>` among `Cell`'s
+specializations — which is what makes a specialization travel:
+instantiating any sibling instantiates every listed one, and every
+member reached on the generic afterwards fans out over all of them. A
+program that reached `Cell` at any type at all emitted `Cell<Marker>`
+whole.
+
+At stdlib scale this is what a facade costs, and it is what blocked the
+fold of `zena:stream` into `zena:async` that
+[stdlib-organization.md](stdlib-organization.md) proposes — the plan
+collapses about fifty entrypoints into facades that re-export
+implementation modules, several of them generic, and under this
+behaviour every program paid for all of their instantiations.
+Re-exporting `zena:stream` put 22 functions — every method of
+`Completer`, `Future` and `Box` at the type arguments `stream.zena`
+names — into a timer component that never mentions a stream, and slowed
+it enough to fail the component suite's CPU-time assertion. The same
+component with one unreachable class holding two `Completer` fields,
+measured here:
+
+|                                     |  bytes | added functions |
+| ----------------------------------- | -----: | --------------: |
+| timer component, no unreached class | 14,710 |               — |
+| with it, before                     | 16,204 |              26 |
+| with it, after                      | 14,911 |               0 |
+
+The 26 are the six `Completer` methods, the six `Future` methods and
+the `Box` constructor, at each of the two type arguments the field
+types name. The compiler's own module — a large program over a large
+stdlib, so the same leak at scale — loses 36,595 bytes, 4,322,265 to
+4,285,670 with `-g`.
+
+`layingOutUnemittedClass` is the gate. It is set while a class with no
+emission evidence is being laid out, where evidence is the same
+question the type section is rooted from (section 8): the class was
+instantiated, or reached code names it. Under it a mention still
+registers the specialization's struct — a field or a signature has to
+be able to name one — and stops there. It does not instantiate it, and
+it does not put it on the generic's list.
+
+Passing over a mention cannot lose a real specialization, because the
+list is no longer built only by discovery: `instantiateClassType` adds
+whatever it instantiates, so a specialization that turns out to be real
+rejoins the register at the `new` that makes it real. That move is what
+took the last fourteen functions in the table above. Gating the mention
+alone left them: it had stopped instantiating `Completer<bool>`
+directly, and the list instantiated its `Future<bool>` and `Box<bool>`
+anyway, the moment a sibling `Future` was.
+
+The 201 bytes still there are four struct types: the `Box<bool>` and
+`Box<i32>` struct/vtable pairs, which the type-section root keeps
+whenever they are registered because the erased-`==` diamond ref_tests
+every registered one with no AST naming it (section 8). Bounded at the
+five boxable primitives, so it does not grow with the facade.
+
 ## The keystone: `hasInst` and the class vtable
 
 Everything still in the module traces back to a single coupling.

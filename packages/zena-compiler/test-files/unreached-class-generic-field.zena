@@ -1,0 +1,34 @@
+// A generic class reached at one type argument, and a class nothing
+// reaches whose field names it at another.
+//
+// `main` constructs `Cell<i32>` and nothing else. `Shelf` is declared,
+// never mentioned by any reachable code, and its field type is the
+// only thing in the program that names `Cell<Marker>`. Laying `Shelf`
+// out — which every declared class gets, because the layout is what
+// registers a class's members — used to list `Cell<Marker>` as a
+// specialization of `Cell`, and listing it was enough: instantiating
+// any sibling instantiates every listed one, so `Cell<Marker>` got a
+// vtable and a body of every method, in a module that can never make
+// one. `binary-size_test.zena` asserts `Marker` is nowhere in the
+// emitted module.
+class Marker {
+  new();
+}
+
+class Cell<T> {
+  var #value: T;
+  new(v: T) : #value = v;
+  get(): T { return this.#value; }
+  put(v: T): void { this.#value = v; }
+}
+
+class Shelf {
+  var held: Cell<Marker> | null = null;
+  new();
+}
+
+export let main = (): i32 => {
+  let c = new Cell<i32>(41);
+  c.put(c.get() + 1);
+  return c.get();
+};

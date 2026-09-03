@@ -306,33 +306,25 @@ export final class TypeLowerer implements TypeLowererInterface {
         let isErasedMention = containsErasedType(t as Type);
         let specializer = this.pass.specializer;
         if (!isErasedMention) {
-          if (!this.pass.specializedClassTypes.has(lookupId)) {
-            this.pass.specializedClassTypes[lookupId] = new GrowableArray<ClassType>();
-          }
-          let list = this.pass.specializedClassTypes[lookupId];
-          var found = false;
-          for (let existing in list) {
-            if (getClassKey(existing) == getClassKey(t)) { found = true; break; }
-          }
-          if (!found) {
-            list.push(t);
-            if (let (true, reachedSet) = this.pass.reachedClassMembers.get(lookupId)) {
-              let rcKeys = reachedSet.keys();
-              while (let (true, nid) = rcKeys.next()) {
-                this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, t, this.pass.currentReachable));
-              }
-            }
-            if (this.pass.currentReachable) {
-              if (let (true, reachedSet) = this.pass.reachedReachableClassMembers.get(lookupId)) {
-                let rrKeys = reachedSet.keys();
-                while (let (true, nid) = rrKeys.next()) {
-                  this.pass.queueReferrer(new Referrer(false, noSymbolId, nid, model, t, true));
-                }
-              }
-            }
+          // A mention made while laying out a class the module will
+          // never emit does not put the specialization on the
+          // generic's list. Being on it is what makes a specialization
+          // travel: instantiating any sibling instantiates every
+          // listed one, and every member reached on the template later
+          // fans out over them. If this one turns out to be real,
+          // instantiateClassType lists it then.
+          if (!this.pass.layingOutUnemittedClass) {
+            this.pass.noteSpecialization(t, model);
           }
 
-          if (this.pass.isRtaActive && this.pass.instantiatedClasses.has(lookupId)) {
+          // Reaching a generic at one type argument is the evidence
+          // that a specialization at another can hold values — the
+          // instantiating `new` may live in generic code this mention
+          // stands in for. It is not evidence when the mention itself
+          // comes from a class the module will never emit: nothing
+          // runs there, so nothing constructs anything.
+          if (this.pass.isRtaActive && !this.pass.layingOutUnemittedClass &&
+              this.pass.instantiatedClasses.has(lookupId)) {
             specializer.instantiateClassType(t, model);
           }
         }

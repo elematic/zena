@@ -330,6 +330,35 @@ export let tests = suite('Binary size', (): void => {
       `site; the unspecialized registration is not a function.`);
   });
 
+  test('a class nothing reaches specializes nothing', (ctx: TestContext): void => {
+    // `Shelf` is declared and unreachable, and its field type is the
+    // only mention of `Cell<Marker>` in the program. Every declared
+    // class is still laid out — that is what registers its members,
+    // and evidence can arrive after its turn — but the layout walks
+    // its members' signatures, and a signature's mention of a
+    // specialization is not a `new` of one. Listing `Cell<Marker>`
+    // alongside the `Cell<i32>` main really builds was enough to emit
+    // it whole: instantiating any sibling instantiates every listed
+    // one.
+    //
+    // At stdlib scale this is what a facade costs. Re-exporting
+    // `zena:stream` from `zena:async` put 22 functions — every method
+    // of `Completer`, `Future` and `Box` at the type arguments
+    // `stream.zena` names — into a timer component that never mentions
+    // a stream, 9.5% of its bytes, and slowed it enough to fail the
+    // component suite's CPU-time assertion.
+    let unreachedTarget =
+        'packages/zena-compiler/test-files/unreached-class-generic-field.zena';
+    let wat = new WatGenerator('zena-cli', false).generate(programOf(unreachedTarget));
+    isTrue(!wat.contains('Marker'),
+      `${unreachedTarget} emits the Cell<Marker> specialization. Only an ` +
+      `unreachable class's field type names it, and laying that class out ` +
+      `is not evidence that a value of Cell<Marker> can exist.`);
+    isTrue(wat.contains('_i32.get'),
+      `${unreachedTarget} does not emit Cell<i32>.get — the check above is ` +
+      `passing because nothing is being emitted at all.`);
+  });
+
   test('the hello-string WAT names everything it ships', (ctx: TestContext): void => {
     // Small enough to read whole, like minimal's: a regression names
     // the exact function/type it added. Regenerate with

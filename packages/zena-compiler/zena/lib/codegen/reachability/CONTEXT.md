@@ -128,6 +128,32 @@ flat. It is also what `zir unsupported: method not found` found where a
 specialization should have been. See §15 of
 `docs/design/binary-size.md`.
 
+## A Class Nothing Reaches Specializes Nothing
+
+`#layoutClassStructs` lays out every declared class in every loaded
+module, emitted or not — the layout is what registers a class's
+members, and a class can pick up evidence after its turn. But laying
+one out walks its members' signatures, and a signature's mention of
+`Completer<i32>` is not a `new Completer<i32>()`.
+
+`layingOutUnemittedClass` is set for the classes with no emission
+evidence — the same question the type section is rooted from:
+instantiated, or named by reached code. Under it a mention still
+registers the specialization's struct, because fields and signatures
+name it, and stops there: `discoverType` neither instantiates it nor
+puts it on the generic's `specializedClassTypes` list.
+
+Being on that list is what makes a specialization travel.
+`instantiateClassType` instantiates every listed sibling, and
+`recordReachedClassMember` fans each newly reached member of the
+generic out over all of them — so one unreachable class's field type
+was enough to emit `Completer`, `Future` and `Box` whole at type
+arguments no reachable code names. To keep passing over a mention from
+losing a real specialization, the list is no longer built by discovery
+alone: `noteSpecialization` is also called from `instantiateClassType`,
+so a specialization rejoins the register at the `new` that makes it
+real. See §18 of `docs/design/binary-size.md`.
+
 ## Code Generation Pipeline Integration
 
 The reachability pass is run in [module-generator.zena](../module-generator.zena):
