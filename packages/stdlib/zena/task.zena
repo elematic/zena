@@ -1,0 +1,155 @@
+/**
+ * zena:task — operations as values (docs/design/cancellation.md;
+ * PLAN.md, async roadmap).
+ *
+ * An operation that can be started is a value, `Op<T> = () =>
+ * Future<T>`, and this module is the algebra over such values:
+ * combinators from `Op<T>` to `Op<T>`, so composition order is
+ * syntax:
+ * `retry(3, timeout(100, op))` gives every attempt its own 100ms
+ * budget, `timeout(500, retry(3, op))` one budget over all of them.
+ *
+ * Two rules make the algebra sound. Policies act on FAILURES and
+ * never on cancellation: an ambient cancel passes through every
+ * combinator untouched — `catch` cannot observe the cancellation
+ * channel, so retrying cancelled work is not even expressible here —
+ * because a retry after cancel would outlive the scope tree that
+ * cancelled it. And racing combinators start their candidates inside
+ * a `TaskGroup`, so a loser or an expired attempt is actually
+ * cancelled rather than left running (the thing a resilience layer
+ * over bare promises cannot do).
+ *
+ * An `Op` is called once per attempt: the operation must be a
+ * future-RETURNING function, not a future. A future is work already
+ * started — it cannot be attempted again.
+ *
+ * The planned Task class — an operation's observable lifecycle
+ * (initial, pending, complete, error), in the style of @lit/task —
+ * belongs here too: a Task runs an `Op`, and these combinators are
+ * the policies a Task runs it under. Before it lands, the executor's
+ * waiter protocol (`Task` in zena:async) wants its truer name.
+ */
+
+import { Error } from 'zena:error';
+import { Future, TaskGroup } from 'zena:async';
+import { sleep, monotonicMs } from 'zena:time';
+import { i32ToString } from 'zena:string-convert';
+
+/** An operation that can be attempted. Each call starts one fresh
+ * attempt and hands back its future. */
+export type Op<T> = () => Future<T>;
+
+/** How `timeout` and `deadline` report an attempt that ran out of
+ * budget. Carries the budget so a retry layer's log can say which. */
+export class TimeoutError extends Error {
+  budgetMs: i32;
+  new(this.budgetMs)
+    : super('timed out after ' + i32ToString(budgetMs) + 'ms');
+}
+
+/**
+ * Bounds each attempt to `ms` of wall time: the attempt races its
+ * budget, and whichever loses is cancelled. An attempt that exceeds
+ * the budget fails with `TimeoutError` — a failure like any other, so
+ * an outer `retry` treats a timeout as retryable.
+ */
+export let timeout = <T>(ms: i32, op: Op<T>): Op<T> => {
+  // The budget arm's annotation is load-bearing: its body only
+  // throws, which infers `Future<void>` rather than the race's `T`.
+  return () => TaskGroup.race<T>([op, async (): Future<T> => {
+    await sleep(ms);
+    throw new TimeoutError(ms);
+  }]);
+};
+
+/**
+ * Bounds each attempt to finish before an absolute point on the
+ * monotonic clock (`monotonicMs()`), however many layers retry it:
+ * where `timeout` gives every attempt a fresh budget, a deadline
+ * spends one budget across all of them. An attempt starting past the
+ * deadline fails immediately, without running the operation.
+ */
+export let deadline = <T>(atMs: f64, op: Op<T>): Op<T> => {
+  return (): Future<T> => {
+    let remaining = atMs - monotonicMs();
+    if (remaining <= 0.0) {
+      return Future.failed<T>(new TimeoutError(0));
+    }
+    // `timeout(...)()` in one expression is issue #448 — a call whose
+    // callee is itself a call does not lower yet.
+    let bounded = timeout<T>(remaining as i32, op);
+    return bounded();
+  };
+};
+
+/** `retry`'s body. A top-level function rather than an async closure
+ * because an `await` inside a `try` inside a loop crashes emission in
+ * closure position (issue #453); fold it into `retry` when that is
+ * fixed. */
+let retryImpl = async <T>(
+    attempts: i32, firstDelayMs: i32, op: Op<T>): Future<T> => {
+  var delay = firstDelayMs;
+  var failed = 0;
+  while (failed < attempts - 1) {
+    try {
+      return await op();
+    } catch (e) {
+      failed += 1;
+      if (delay > 0) {
+        await sleep(delay);
+        // Exponential: each wait doubles the last.
+        delay = delay * 2;
+      }
+    }
+  }
+  // The last attempt runs outside the loop so its failure propagates
+  // as the result.
+  return await op();
+};
+
+/**
+ * Runs up to `attempts` attempts, handing back the first value; the
+ * last attempt's failure propagates. With `firstDelayMs`, waits that
+ * long before the second attempt and doubles the wait each time after.
+ *
+ * Retrying is the reason `Op` is a function: each attempt is a fresh
+ * call. Cancellation is not retried — see the module comment.
+ */
+export let retry = <T>(
+    attempts: i32, op: Op<T>, firstDelayMs: i32 = 0): Op<T> => {
+  if (attempts < 1) {
+    throw new Error('retry: needs at least one attempt');
+  }
+  return () => retryImpl<T>(attempts, firstDelayMs, op);
+};
+
+/**
+ * Tries `op`; on failure, answers with `alt` instead. The failure
+ * that triggered the fallback is discarded — when it matters, catch
+ * it yourself. Cancellation is not a failure: if `op`'s attempt
+ * completes cancelled, the unwind passes through and `alt` never
+ * runs.
+ */
+export let fallback = <T>(op: Op<T>, alt: Op<T>): Op<T> => {
+  return async () => {
+    try {
+      return await op();
+    } catch (e) {
+      return await alt();
+    }
+  };
+};
+
+/**
+ * Starts a second attempt if the first has not settled within
+ * `delayMs`, and hands back whichever settles first, value or
+ * failure — the tool for an operation that is usually fast and
+ * occasionally very slow. The loser is cancelled. A hedge trims
+ * slowness and does not mask errors; layer `retry` on top for that.
+ */
+export let hedge = <T>(delayMs: i32, op: Op<T>): Op<T> => {
+  return () => TaskGroup.race<T>([op, async () => {
+    await sleep(delayMs);
+    return await op();
+  }]);
+};

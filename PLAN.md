@@ -193,20 +193,20 @@ This document tracks completed work and planned features. For project instructio
        specializations where the operand is not a future, `return
 await x` pays the bare-value queue hop for nothing — return
        position can elide it.
-    5. **Composable resilience over real cancellation.** One shape,
-       `type Op<T> = () => Future<T>`, and combinators from `Op<T>`
-       to `Op<T>` — `timeout(ms, op)`, `deadline(t, op)`,
-       `retry(n, op)` (with backoff), `fallback(op, alt)`,
-       `hedge(delay, op)` — so composition order is syntax:
-       `retry(3, timeout(100, op))` is a per-attempt budget,
-       `timeout(500, retry(3, op))` an overall one. `TaskGroup.race`
-       already has the `Array<Op<T>>` shape. Two rules make the
-       algebra sound: policies act on FAILURES and never on
-       cancellation (an ambient cancel passes through everything,
-       untouched — retrying cancelled work would violate the scope
-       tree), and every attempt runs in a child scope, so losers and
-       expired attempts are actually cancelled rather than abandoned —
-       the thing JS resilience libraries cannot do.
+    5. **Composable resilience over real cancellation — done**
+       (`zena:task`, operations as values): `Op<T> = () => Future<T>` and combinators
+       from `Op<T>` to `Op<T>` — `timeout`, `deadline` (one budget
+       across every retry, on the monotonic clock), `retry` (with
+       exponential backoff), `fallback`, `hedge` — so composition
+       order is syntax: `retry(3, timeout(100, op))` is a per-attempt
+       budget, `timeout(500, retry(3, op))` an overall one. The two
+       soundness rules held: policies act on FAILURES and never on
+       cancellation (`catch` cannot observe the channel, so retrying
+       cancelled work is not expressible), and the racing combinators
+       start candidates in a `TaskGroup`, so losers and expired
+       attempts are actually cancelled. One ergonomic wart: applying
+       a combinator and calling the result in one expression
+       (`retry(3, op)()`) trips the callee-kind lowering gap (#448).
     6. **`checkCancellation()`** — the opt-in sync checkpoint for
        CPU-bound work with no natural suspension point (a parser's
        token loop): raises on the cancellation channel, so cleanup and

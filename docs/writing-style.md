@@ -56,6 +56,13 @@ up a comparison the reader never proposed; if no alternative is on the
 table, state what the design does and why it works. When a real
 alternative was considered and rejected, name it as such.
 
+Do not make values act. A result or a value does not "decide", "want",
+or "demand" anything — some actor decides something based on it. Write
+"when the failure matters, catch it yourself", not "when the failure
+should decide anything". The same goes for external forces: code is
+not "forced" or "punished" by a design; the design has a consequence,
+so state the consequence.
+
 ## Self-contained documents
 
 A document should make sense to someone who has only the repository — not

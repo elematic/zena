@@ -1,0 +1,177 @@
+// zena:task — Op<T> combinators: timeout and hedge cancel their
+// losers through TaskGroup.race, retry and fallback act on failures
+// and hand cancellation through untouched.
+import {suite, test} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {Future, Completer, CancelScope, drainMicrotasks, runFuture} from 'zena:async';
+import {
+  Op, TimeoutError, timeout, deadline, retry, fallback, hedge,
+} from 'zena:task';
+import { Error } from 'zena:error';
+import { monotonicMs } from 'zena:time';
+
+var log = '';
+var altRan = false;
+var inner: Future<i32> = Future.of(0);
+
+/** An op that never settles on its own, recording if it is cancelled. */
+let pass = async (gate: Future<i32>): Future<i32> => {
+  return await gate;
+};
+
+/** Awaits `f`, recording how the await ends — value, failure, or
+ * cancellation. */
+let probe = async (f: Future<i32>): Future<void> => {
+  try {
+    let v = await f;
+    log = log + 'v';
+  } cancel {
+    log = log + 'C';
+  } catch (e) {
+    log = log + 'e';
+  }
+};
+
+let stuck = async (): Future<i32> => {
+  let never = new Completer<i32>();
+  try {
+    return await never.future;
+  } cancel {
+    log = log + 'C';
+  }
+};
+
+export let tests = suite('task ops', () => {
+  test('timeout hands back an attempt that beats its budget', () => {
+    let op = timeout(1000, () => Future.of(5));
+    equal(runFuture(op()), 5);
+  });
+
+  test('timeout expires and cancels the attempt', () => {
+    log = '';
+    let op = timeout(1, stuck);
+    var msg = '';
+    try {
+      let unused = runFuture(op());
+      msg = 'no throw';
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'timed out after 1ms');
+    equal(log, 'C');
+  });
+
+  test('retry returns the first value and stops', () => {
+    var calls = 0;
+    let flaky = () => {
+      calls += 1;
+      if (calls < 3) {
+        return Future.failed<i32>(new Error('flake'));
+      }
+      return Future.of(calls);
+    };
+    let op = retry(5, flaky);
+    equal(runFuture(op()), 3);
+    equal(calls, 3);
+  });
+
+  test('retry exhausts and rethrows the last failure', () => {
+    var calls = 0;
+    let doomed = () => {
+      calls += 1;
+      return Future.failed<i32>(new Error('f' + (if (calls == 1) '1' else '2')));
+    };
+    var msg = '';
+    try {
+      let op = retry(2, doomed);
+      let unused = runFuture(op());
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'f2');
+    equal(calls, 2);
+  });
+
+  test('fallback answers with alt on failure only', () => {
+    var altCalls = 0;
+    let alt = () => {
+      altCalls += 1;
+      return Future.of(-1);
+    };
+    let bad = () => Future.failed<i32>(new Error('x'));
+    let rescued = fallback(bad, alt);
+    equal(runFuture(rescued()), -1);
+    equal(altCalls, 1);
+    let fine = fallback(() => Future.of(2), alt);
+    equal(runFuture(fine()), 2);
+    equal(altCalls, 1);
+  });
+
+  test('hedge lets the second attempt win and cancels the first', () => {
+    log = '';
+    var calls = 0;
+    let slowThenFast = () => {
+      calls += 1;
+      if (calls == 1) {
+        return stuck();
+      }
+      return Future.of(7);
+    };
+    let op = hedge(1, slowThenFast);
+    equal(runFuture(op()), 7);
+    equal(calls, 2);
+    equal(log, 'C');
+  });
+
+  test('fallback passes cancellation through without running alt', () => {
+    log = '';
+    altRan = false;
+    let gate = new Completer<i32>();
+    let scope = new CancelScope();
+    scope.run(() => {
+      inner = pass(gate.future);
+    });
+    let op = fallback(() => inner, () => {
+      altRan = true;
+      return Future.of(-1);
+    });
+    probe(op());
+    scope.cancel();
+    drainMicrotasks();
+    equal(log, 'C');
+    isFalse(altRan);
+  });
+
+  test('a lapsed deadline fails without running the op', () => {
+    var calls = 0;
+    let counted = () => {
+      calls += 1;
+      return Future.of(1);
+    };
+    let op = deadline(monotonicMs() - 1.0, counted);
+    var timedOut = false;
+    try {
+      let unused = runFuture(op());
+    } catch (e) {
+      timedOut = e is TimeoutError;
+    }
+    isTrue(timedOut);
+    equal(calls, 0);
+  });
+
+  test('retry over timeout gives each attempt a fresh budget', () => {
+    log = '';
+    var calls = 0;
+    let stuckOnceThenValue = () => {
+      calls += 1;
+      if (calls == 1) {
+        return stuck();
+      }
+      return Future.of(9);
+    };
+    let op = retry(2, timeout(1, stuckOnceThenValue));
+    equal(runFuture(op()), 9);
+    equal(calls, 2);
+    equal(log, 'C');
+  });
+});
