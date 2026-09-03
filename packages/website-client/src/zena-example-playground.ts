@@ -6,6 +6,7 @@ let examplePlaygroundCount = 0;
 interface ExampleItem {
   id: string;
   title: string;
+  category?: string;
   files: Record<string, string>;
   currentFiles: Record<string, string>;
   allowUnused?: boolean;
@@ -50,14 +51,15 @@ function slugify(text: string): string {
 
 /**
  * An interactive example playground with desktop vertical sidebar navigation
- * and mobile dropdown selection.
+ * and mobile dropdown selection (embedded mode), or a full-screen application
+ * layout with a collapsible categorized drawer (fullpage mode).
  *
  * Authored in Markdown with child `<figure>` blocks, each containing a `<figcaption>`
  * and one or more code blocks or `<script type="sample/zena">` tags:
  *
  * ```html
- * <zena-example-playground>
- *   <figure id="example-functions">
+ * <zena-example-playground fullpage>
+ *   <figure id="example-functions" category="Basics">
  *     <figcaption>Functions</figcaption>
  *     ```zena
  *     export function main() { console.log('Hello'); }
@@ -80,12 +82,14 @@ export class ZenaExamplePlayground extends BehaviorElement {
 
     const signal = this.disconnectedSignal;
     const id = `example-pg-${examplePlaygroundCount++}`;
+    const isFullpage = this.hasAttribute('fullpage');
 
     // Extract all example definitions
     this.examples = figures.map((figure, i) => {
       const caption = figure.querySelector('figcaption');
       const title = caption?.textContent?.trim() || `Example ${i + 1}`;
       const slug = figure.id || `example-${slugify(title)}`;
+      const category = figure.getAttribute('category') || undefined;
       const allowUnused =
         figure.hasAttribute('allow-unused') ||
         figure.hasAttribute('allow-unused-variables') ||
@@ -120,6 +124,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
       return {
         id: slug,
         title,
+        category,
         files: {...files},
         currentFiles: {...files},
         allowUnused,
@@ -127,72 +132,280 @@ export class ZenaExamplePlayground extends BehaviorElement {
     });
 
     const wrapper = document.createElement('div');
-    wrapper.className = 'example-playground-wrapper';
+    let tabs: HTMLButtonElement[] = [];
+    let select: HTMLSelectElement | undefined;
+    let playground: ZenaPlayground;
 
-    // Mobile / narrow dropdown selector
-    const dropdownWrapper = document.createElement('div');
-    dropdownWrapper.className = 'example-selector-dropdown';
+    if (isFullpage) {
+      wrapper.className = 'example-playground-wrapper is-fullpage';
 
-    const selectLabel = document.createElement('label');
-    selectLabel.className = 'example-select-label';
-    selectLabel.htmlFor = `${id}-select`;
-    selectLabel.textContent = 'Example:';
+      // Backdrop for mobile slide-over drawer
+      const backdrop = document.createElement('div');
+      backdrop.className = 'example-sidebar-backdrop';
 
-    const selectContainer = document.createElement('div');
-    selectContainer.className = 'example-select-container';
+      // Left drawer sidebar
+      const sidebar = document.createElement('aside');
+      sidebar.className = 'example-sidebar';
+      sidebar.setAttribute('aria-label', 'Code examples');
 
-    const select = document.createElement('select');
-    select.id = `${id}-select`;
-    select.className = 'example-select';
-    select.setAttribute('aria-label', 'Choose code example');
+      // Sidebar header
+      const sidebarHeader = document.createElement('div');
+      sidebarHeader.className = 'example-sidebar-header';
 
-    this.examples.forEach((ex, i) => {
-      const opt = document.createElement('option');
-      opt.value = String(i);
-      opt.textContent = ex.title;
-      select.append(opt);
-    });
+      const sidebarTitle = document.createElement('span');
+      sidebarTitle.className = 'example-sidebar-title';
+      sidebarTitle.textContent = 'Examples';
 
-    const selectIcon = document.createElement('span');
-    selectIcon.className = 'example-select-icon';
-    selectIcon.setAttribute('aria-hidden', 'true');
-    selectIcon.innerHTML = '&#x25BE;';
+      const closeBtn = document.createElement('button');
+      closeBtn.type = 'button';
+      closeBtn.className = 'example-sidebar-close';
+      closeBtn.setAttribute('aria-label', 'Close examples');
+      closeBtn.innerHTML = '&#x2715;';
 
-    selectContainer.append(select, selectIcon);
-    dropdownWrapper.append(selectLabel, selectContainer);
+      sidebarHeader.append(sidebarTitle, closeBtn);
 
-    // Desktop tabs sidebar list
-    const tabsList = document.createElement('div');
-    tabsList.className = 'example-selector-tabs';
-    tabsList.setAttribute('role', 'tablist');
-    tabsList.setAttribute('aria-orientation', 'vertical');
-    tabsList.setAttribute('aria-label', 'Code examples');
+      // Group examples by category
+      const sidebarList = document.createElement('div');
+      sidebarList.className = 'example-sidebar-list';
+      sidebarList.setAttribute('role', 'tablist');
+      sidebarList.setAttribute('aria-orientation', 'vertical');
+      sidebarList.setAttribute('aria-label', 'Code examples');
 
-    const tabs = this.examples.map((ex) => {
-      const tab = document.createElement('button');
-      tab.type = 'button';
-      tab.id = ex.id;
-      tab.className = 'example-tab-button';
-      tab.setAttribute('role', 'tab');
-      tab.textContent = ex.title;
-      tab.setAttribute('aria-controls', `${id}-playground`);
-      tabsList.append(tab);
-      return tab;
-    });
+      const categories: Array<{
+        name: string;
+        items: Array<{index: number; example: ExampleItem}>;
+      }> = [];
 
-    // Playground container
-    const playgroundPane = document.createElement('div');
-    playgroundPane.className = 'example-playground-pane';
+      this.examples.forEach((ex, i) => {
+        const catName = ex.category || 'Examples';
+        let cat = categories.find((c) => c.name === catName);
+        if (!cat) {
+          cat = {name: catName, items: []};
+          categories.push(cat);
+        }
+        cat.items.push({index: i, example: ex});
+      });
 
-    const playground = document.createElement(
-      'zena-playground',
-    ) as ZenaPlayground;
-    playground.id = `${id}-playground`;
-    playground.setAttribute('vertical', '');
-    playground.setAttribute('tabs', 'auto');
-    playgroundPane.append(playground);
+      tabs = new Array(this.examples.length);
 
-    wrapper.append(dropdownWrapper, tabsList, playgroundPane);
+      categories.forEach((cat) => {
+        const catHeading = document.createElement('div');
+        catHeading.className = 'example-category-header';
+        catHeading.textContent = cat.name;
+        sidebarList.append(catHeading);
+
+        cat.items.forEach(({index: i, example: ex}) => {
+          const itemBtn = document.createElement('button');
+          itemBtn.type = 'button';
+          itemBtn.id = ex.id;
+          itemBtn.className = 'example-sidebar-item';
+          itemBtn.setAttribute('role', 'tab');
+          itemBtn.setAttribute('aria-controls', `${id}-playground`);
+
+          const bullet = document.createElement('span');
+          bullet.className = 'example-item-bullet';
+          bullet.setAttribute('aria-hidden', 'true');
+          bullet.textContent = '◆';
+
+          const label = document.createElement('span');
+          label.className = 'example-item-label';
+          label.textContent = ex.title;
+
+          itemBtn.append(bullet, label);
+          sidebarList.append(itemBtn);
+          tabs[i] = itemBtn;
+        });
+      });
+
+      sidebar.append(sidebarHeader, sidebarList);
+
+      // Main playground container
+      const playgroundPane = document.createElement('div');
+      playgroundPane.className = 'example-playground-pane';
+
+      // Reopen toggle button when sidebar is collapsed
+      const toggleBtn = document.createElement('button');
+      toggleBtn.type = 'button';
+      toggleBtn.className = 'example-sidebar-toggle';
+      toggleBtn.setAttribute('aria-label', 'Open examples');
+      toggleBtn.innerHTML =
+        '<span class="toggle-icon">&#x25B8;</span><span class="toggle-text">Examples</span>';
+
+      playground = document.createElement('zena-playground') as ZenaPlayground;
+      playground.id = `${id}-playground`;
+      playground.setAttribute('tabs', 'always');
+      playground.layout = 'horizontal';
+
+      playgroundPane.append(toggleBtn, playground);
+      wrapper.append(backdrop, sidebar, playgroundPane);
+
+      const toggleSidebar = (open: boolean) => {
+        if (open) {
+          wrapper.classList.remove('sidebar-collapsed');
+          wrapper.classList.add('sidebar-open');
+        } else {
+          wrapper.classList.add('sidebar-collapsed');
+          wrapper.classList.remove('sidebar-open');
+        }
+      };
+
+      closeBtn.addEventListener('click', () => toggleSidebar(false), {signal});
+      toggleBtn.addEventListener('click', () => toggleSidebar(true), {signal});
+      backdrop.addEventListener('click', () => toggleSidebar(false), {signal});
+
+      // Item click handling
+      sidebarList.addEventListener(
+        'click',
+        (e) => {
+          const tab = (e.target as HTMLElement).closest('button');
+          const index = tab ? tabs.indexOf(tab as HTMLButtonElement) : -1;
+          if (index >= 0) {
+            selectExample(index, true);
+            if (window.innerWidth < 768) {
+              toggleSidebar(false);
+            }
+          }
+        },
+        {signal},
+      );
+
+      // Keyboard navigation
+      sidebarList.addEventListener(
+        'keydown',
+        (e: KeyboardEvent) => {
+          const current = this.activeIndex;
+          let nextIndex = -1;
+
+          if (e.key === 'ArrowDown') {
+            nextIndex = (current + 1) % tabs.length;
+          } else if (e.key === 'ArrowUp') {
+            nextIndex = (current - 1 + tabs.length) % tabs.length;
+          } else if (e.key === 'Home') {
+            nextIndex = 0;
+          } else if (e.key === 'End') {
+            nextIndex = tabs.length - 1;
+          }
+
+          if (nextIndex >= 0) {
+            e.preventDefault();
+            selectExample(nextIndex, true);
+            tabs[nextIndex]?.focus();
+          }
+        },
+        {signal},
+      );
+    } else {
+      // Embedded mode (used on home page)
+      wrapper.className = 'example-playground-wrapper';
+
+      // Mobile / narrow dropdown selector
+      const dropdownWrapper = document.createElement('div');
+      dropdownWrapper.className = 'example-selector-dropdown';
+
+      const selectLabel = document.createElement('label');
+      selectLabel.className = 'example-select-label';
+      selectLabel.htmlFor = `${id}-select`;
+      selectLabel.textContent = 'Example:';
+
+      const selectContainer = document.createElement('div');
+      selectContainer.className = 'example-select-container';
+
+      select = document.createElement('select');
+      select.id = `${id}-select`;
+      select.className = 'example-select';
+      select.setAttribute('aria-label', 'Choose code example');
+
+      this.examples.forEach((ex, i) => {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = ex.title;
+        select?.append(opt);
+      });
+
+      const selectIcon = document.createElement('span');
+      selectIcon.className = 'example-select-icon';
+      selectIcon.setAttribute('aria-hidden', 'true');
+      selectIcon.innerHTML = '&#x25BE;';
+
+      selectContainer.append(select, selectIcon);
+      dropdownWrapper.append(selectLabel, selectContainer);
+
+      // Desktop tabs sidebar list
+      const tabsList = document.createElement('div');
+      tabsList.className = 'example-selector-tabs';
+      tabsList.setAttribute('role', 'tablist');
+      tabsList.setAttribute('aria-orientation', 'vertical');
+      tabsList.setAttribute('aria-label', 'Code examples');
+
+      tabs = this.examples.map((ex) => {
+        const tab = document.createElement('button');
+        tab.type = 'button';
+        tab.id = ex.id;
+        tab.className = 'example-tab-button';
+        tab.setAttribute('role', 'tab');
+        tab.textContent = ex.title;
+        tab.setAttribute('aria-controls', `${id}-playground`);
+        tabsList.append(tab);
+        return tab;
+      });
+
+      // Playground container
+      const playgroundPane = document.createElement('div');
+      playgroundPane.className = 'example-playground-pane';
+
+      playground = document.createElement('zena-playground') as ZenaPlayground;
+      playground.id = `${id}-playground`;
+      playground.setAttribute('vertical', '');
+      playground.setAttribute('tabs', 'auto');
+      playgroundPane.append(playground);
+
+      wrapper.append(dropdownWrapper, tabsList, playgroundPane);
+
+      // Tab list events
+      tabsList.addEventListener(
+        'click',
+        (e) => {
+          const tab = (e.target as HTMLElement).closest('button');
+          const index = tab ? tabs.indexOf(tab as HTMLButtonElement) : -1;
+          if (index >= 0) selectExample(index, true);
+        },
+        {signal},
+      );
+
+      tabsList.addEventListener(
+        'keydown',
+        (e: KeyboardEvent) => {
+          const current = this.activeIndex;
+          let nextIndex = -1;
+
+          if (e.key === 'ArrowDown') {
+            nextIndex = (current + 1) % tabs.length;
+          } else if (e.key === 'ArrowUp') {
+            nextIndex = (current - 1 + tabs.length) % tabs.length;
+          } else if (e.key === 'Home') {
+            nextIndex = 0;
+          } else if (e.key === 'End') {
+            nextIndex = tabs.length - 1;
+          }
+
+          if (nextIndex >= 0) {
+            e.preventDefault();
+            selectExample(nextIndex, true);
+            tabs[nextIndex]?.focus();
+          }
+        },
+        {signal},
+      );
+
+      select.addEventListener(
+        'change',
+        () => {
+          selectExample(Number(select?.value), true);
+        },
+        {signal},
+      );
+    }
+
     this.append(wrapper);
 
     const selectExample = (index: number, updateUrl = false) => {
@@ -200,12 +413,15 @@ export class ZenaExamplePlayground extends BehaviorElement {
       this.activeIndex = index;
 
       tabs.forEach((tab, i) => {
+        if (!tab) return;
         const isSelected = i === index;
         tab.setAttribute('aria-selected', String(isSelected));
         tab.tabIndex = isSelected ? 0 : -1;
       });
 
-      select.value = String(index);
+      if (select) {
+        select.value = String(index);
+      }
 
       const activeExample = this.examples[index];
       if (activeExample) {
@@ -228,12 +444,14 @@ export class ZenaExamplePlayground extends BehaviorElement {
       const matchingIndex = this.examples.findIndex((ex) => ex.id === targetId);
       if (matchingIndex >= 0) {
         selectExample(matchingIndex, false);
-        requestAnimationFrame(() => {
-          this.scrollIntoView({
-            block: 'start',
-            behavior: smooth ? 'smooth' : 'auto',
+        if (!isFullpage) {
+          requestAnimationFrame(() => {
+            this.scrollIntoView({
+              block: 'start',
+              behavior: smooth ? 'smooth' : 'auto',
+            });
           });
-        });
+        }
       }
     };
 
@@ -252,51 +470,6 @@ export class ZenaExamplePlayground extends BehaviorElement {
           }
           currentExample.currentFiles = fileMap;
         }
-      },
-      {signal},
-    );
-
-    // Tab list events
-    tabsList.addEventListener(
-      'click',
-      (e) => {
-        const tab = (e.target as HTMLElement).closest('button');
-        const index = tab ? tabs.indexOf(tab as HTMLButtonElement) : -1;
-        if (index >= 0) selectExample(index, true);
-      },
-      {signal},
-    );
-
-    tabsList.addEventListener(
-      'keydown',
-      (e: KeyboardEvent) => {
-        const current = this.activeIndex;
-        let nextIndex = -1;
-
-        if (e.key === 'ArrowDown') {
-          nextIndex = (current + 1) % tabs.length;
-        } else if (e.key === 'ArrowUp') {
-          nextIndex = (current - 1 + tabs.length) % tabs.length;
-        } else if (e.key === 'Home') {
-          nextIndex = 0;
-        } else if (e.key === 'End') {
-          nextIndex = tabs.length - 1;
-        }
-
-        if (nextIndex >= 0) {
-          e.preventDefault();
-          selectExample(nextIndex, true);
-          tabs[nextIndex]?.focus();
-        }
-      },
-      {signal},
-    );
-
-    // Dropdown change event
-    select.addEventListener(
-      'change',
-      () => {
-        selectExample(Number(select.value), true);
       },
       {signal},
     );
