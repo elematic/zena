@@ -170,10 +170,20 @@ Two consequences:
   prelude-bound facade. Grouping files in a directory costs nothing;
   re-exporting them does.
 
-This also raises a question worth its own investigation: whether emitting a
-loaded module's instantiations regardless of reachability is intended. The
-`timer` component-test asserts a CPU budget, and the folded build failed it
-— so the cost is not only bytes.
+The mechanism is narrower than "re-exporting emits the re-exported
+module", and is filed as a compiler bug (Forgejo #447): once a generic is
+reached at some type, an unreachable module's instantiation of it *at
+another type* is specialized and emitted too. A user-level facade over a
+module using `Completer<i32>` grows 51 bytes to 64 with no added
+functions, because nothing there reaches `Completer`; the same re-export
+added to `zena:fs` costs 29 bytes for the same reason. `timer.zena`
+reaches both generics at other types, which is why it pays 1,400.
+
+If #447 is fixed, this whole section stops applying: grouping and
+re-exporting both become free, `stream` can fold into `zena:async` as
+originally planned, and `core` can be the facade this document assumes.
+Until then, treat every re-export from a prelude-bound module as a
+per-binary cost to be measured.
 
 ### Libraries the target list omits
 
