@@ -191,7 +191,7 @@ This document tracks completed work and planned features. For project instructio
        here: the composable resilience combinators below. One
        lowering follow-up: at
        specializations where the operand is not a future, `return
-       await x` pays the bare-value queue hop for nothing — return
+await x` pays the bare-value queue hop for nothing — return
        position can elide it.
     5. **Composable resilience over real cancellation.** One shape,
        `type Op<T> = () => Future<T>`, and combinators from `Op<T>`

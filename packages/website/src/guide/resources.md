@@ -250,11 +250,11 @@ function process(file: Own<FileDescriptor>): void {
 Every reference to a resource exists behind one of three handle kinds defined in
 `zena:ownership`:
 
-| Handle             | Ownership & Aliasing                          | Permitted Storage Slots                    | Release Behavior                            |
-| :----------------- | :-------------------------------------------- | :----------------------------------------- | :------------------------------------------ |
+| Handle             | Ownership & Aliasing                          | Permitted Storage Slots                         | Release Behavior                            |
+| :----------------- | :-------------------------------------------- | :---------------------------------------------- | :------------------------------------------ |
 | **`Own<R>`**       | **Single owner** (Moves on assignment)        | Local variables, returns, resource-class fields | Implicitly dropped at scope exit if unmoved |
-| **`Borrow<R>`**    | **Borrow** (Multiple local aliases permitted) | **Stack slots only** (parameters & locals) | Never releases (borrower)                   |
-| **`Unmanaged<R>`** | **Unmanaged** (Freely aliasable)              | Any slot (heap fields, records, arrays)    | Never implicitly dropped                    |
+| **`Borrow<R>`**    | **Borrow** (Multiple local aliases permitted) | **Stack slots only** (parameters & locals)      | Never releases (borrower)                   |
+| **`Unmanaged<R>`** | **Unmanaged** (Freely aliasable)              | Any slot (heap fields, records, arrays)         | Never implicitly dropped                    |
 
 ### Zero runtime cost
 

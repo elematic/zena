@@ -5,7 +5,7 @@ set of libraries, each a facade over private implementation files, and for
 carrying out the moves in steps that each leave the tree building.
 
 This document covers structure and sequencing. `standard-library.md` is the
-older MVP roadmap for *what* the library contains and is not superseded by
+older MVP roadmap for _what_ the library contains and is not superseded by
 this one.
 
 ## Current shape
@@ -46,19 +46,19 @@ strongly connected components, so any grouping that respects the layering
 below is cycle-free. Peeling modules whose dependencies are all already
 placed gives eleven layers:
 
-| Layer | Modules |
-| ----- | ------- |
-| 0 | `box`, `byte-array`, `hashable`, `iterator`, `math`, `option`, `ownership`, `process`, `range`, `result`, `simd` |
-| 1 | `array`, `array-iterator`, `iterable-utils` |
-| 2 | `fixed-array`, `immutable-array` |
-| 3 | `growable-array-iterator`, `string` |
-| 4 | `error-stack`, `string-convert`, `string-reader`, `template-strings-array` |
-| 5 | `error`, `string-builder` |
-| 6 | `growable-array`, `map`, `memory`, `ordered-map`, `regex`, `set`, `test`, `url` |
-| 7 | `async`, `benchmark`, `byte-buffer`, `cli`, `collections`, `component-abi`, `fs`, `json` |
-| 8 | `assert`, `bench`, `component-async`, `js`, `stream` |
-| 9 | `component-stream`, `fetch`, `time` |
-| 10 | `console` |
+| Layer | Modules                                                                                                          |
+| ----- | ---------------------------------------------------------------------------------------------------------------- |
+| 0     | `box`, `byte-array`, `hashable`, `iterator`, `math`, `option`, `ownership`, `process`, `range`, `result`, `simd` |
+| 1     | `array`, `array-iterator`, `iterable-utils`                                                                      |
+| 2     | `fixed-array`, `immutable-array`                                                                                 |
+| 3     | `growable-array-iterator`, `string`                                                                              |
+| 4     | `error-stack`, `string-convert`, `string-reader`, `template-strings-array`                                       |
+| 5     | `error`, `string-builder`                                                                                        |
+| 6     | `growable-array`, `map`, `memory`, `ordered-map`, `regex`, `set`, `test`, `url`                                  |
+| 7     | `async`, `benchmark`, `byte-buffer`, `cli`, `collections`, `component-abi`, `fs`, `json`                         |
+| 8     | `assert`, `bench`, `component-async`, `js`, `stream`                                                             |
+| 9     | `component-stream`, `fetch`, `time`                                                                              |
+| 10    | `console`                                                                                                        |
 
 `scripts/stdlib-deps.py` regenerates this table. It walks each module's
 entry file plus the private siblings it reaches, strips comments, and
@@ -71,15 +71,15 @@ Each entrypoint below is a facade: a single published module whose
 implementation lives in private files under a directory of the same name.
 A type may be exported by more than one entrypoint.
 
-| Entrypoint | Absorbs | Notes |
-| ---------- | ------- | ----- |
-| `core` | `array`, `array-iterator`, `box`, `byte-array`, `byte-buffer`, `error`, `error-stack`, `fixed-array`, `growable-array`, `growable-array-iterator`, `hashable`, `immutable-array`, `iterable-utils`, `iterator`, `option`, `ownership`, `range`, `result`, `string`, `string-builder`, `string-convert`, `string-reader`, `template-strings-array` | see below |
-| `collections` | `map`, `ordered-map`, `set` | also re-exports the array types and `Hashable` from `core`; the prelude names it, so weigh `ordered-map` and `set` against the prelude rule |
-| `component` | `component-abi`, `component-async`, `component-stream`, `component-memory` | component target only |
-| `async` | — | absorbs nothing; the prelude names it, so it holds only what `Future` needs |
-| `stream` | — | its own entrypoint, for the same reason; see "Libraries the target list omits" |
-| `bench` | `benchmark` | done; `benchmark`'s clock and formatter duplicated `bench`'s, so only `runTest` moved |
-| `assert`, `cli`, `console`, `fs`, `js`, `json`, `math`, `memory`, `process`, `regex`, `simd`, `test`, `time`, `url` | — | unchanged apart from moving implementation files into directories |
+| Entrypoint                                                                                                          | Absorbs                                                                                                                                                                                                                                                                                                                                           | Notes                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core`                                                                                                              | `array`, `array-iterator`, `box`, `byte-array`, `byte-buffer`, `error`, `error-stack`, `fixed-array`, `growable-array`, `growable-array-iterator`, `hashable`, `immutable-array`, `iterable-utils`, `iterator`, `option`, `ownership`, `range`, `result`, `string`, `string-builder`, `string-convert`, `string-reader`, `template-strings-array` | see below                                                                                                                                   |
+| `collections`                                                                                                       | `map`, `ordered-map`, `set`                                                                                                                                                                                                                                                                                                                       | also re-exports the array types and `Hashable` from `core`; the prelude names it, so weigh `ordered-map` and `set` against the prelude rule |
+| `component`                                                                                                         | `component-abi`, `component-async`, `component-stream`, `component-memory`                                                                                                                                                                                                                                                                        | component target only                                                                                                                       |
+| `async`                                                                                                             | —                                                                                                                                                                                                                                                                                                                                                 | absorbs nothing; the prelude names it, so it holds only what `Future` needs                                                                 |
+| `stream`                                                                                                            | —                                                                                                                                                                                                                                                                                                                                                 | its own entrypoint, for the same reason; see "Libraries the target list omits"                                                              |
+| `bench`                                                                                                             | `benchmark`                                                                                                                                                                                                                                                                                                                                       | done; `benchmark`'s clock and formatter duplicated `bench`'s, so only `runTest` moved                                                       |
+| `assert`, `cli`, `console`, `fs`, `js`, `json`, `math`, `memory`, `process`, `regex`, `simd`, `test`, `time`, `url` | —                                                                                                                                                                                                                                                                                                                                                 | unchanged apart from moving implementation files into directories                                                                           |
 
 `fetch` is unresolved; see "Open decisions".
 
@@ -149,7 +149,7 @@ decides most of the awkward cases:
 > checked for every compilation, whether or not a line of it is used.
 
 This is independent of the dependency rule above, and cuts the other way.
-The dependency rule says what a library *must* contain; this one says what
+The dependency rule says what a library _must_ contain; this one says what
 it should decline to contain. The prelude names `zena:async` for `Future`
 and `zena:map` for `Map`, so folding `stream` into `async`, or piling
 `ordered-map` and `set` into `collections`, makes every hello-world carry
@@ -167,7 +167,7 @@ increase on a program that never mentions `Stream`. None of `Stream`'s or
 `StreamWriter`'s functions were emitted. The 22 added functions were
 `Completer<i32>`, `Completer<bool>`, `Future<i32>`, `Future<bool>`,
 `Box<i32>` and `Box<bool>` — the instantiations `stream.zena` itself uses.
-Reachability prunes unreached *code*; it does not prune the instantiations
+Reachability prunes unreached _code_; it does not prune the instantiations
 a loaded module's types create.
 
 The same measurement with `stream.zena` moved under `async/` but left as
@@ -187,14 +187,14 @@ Two consequences:
 
 The mechanism is narrower than "re-exporting emits the re-exported
 module", and is filed as a compiler bug (Forgejo #447): once a generic is
-reached at some type, an unreachable module's instantiation of it *at
-another type* is specialized and emitted too. A user-level facade over a
+reached at some type, an unreachable module's instantiation of it _at
+another type_ is specialized and emitted too. A user-level facade over a
 module using `Completer<i32>` grows 51 bytes to 64 with no added
 functions, because nothing there reaches `Completer`; the same re-export
 added to `zena:fs` costs 29 bytes for the same reason. `timer.zena`
 reaches both generics at other types, which is why it pays 1,400.
 
-If #447 is fixed, the *emitted-size* half of this stops applying:
+If #447 is fixed, the _emitted-size_ half of this stops applying:
 re-exporting becomes as free as grouping, and `core` can be the facade
 this document assumes. The parse-and-check half does not go away, so the
 prelude rule above still governs what a prelude-named library should
@@ -219,6 +219,7 @@ The proposed 17-library list has no place for `async`, `stream`, `bench`,
   prelude is an import list and can name `zena:async`, as it does today;
   and the well-known registry keys on `(library, name)`, so
   `(async, Future)` is exactly as stable a location as `(core, Future)`.
+
 - Keep `stream` as its own entrypoint. This document originally
   recommended folding it into `async`, and that was wrong for two separate
   reasons. The immediate one is a compiler bug: `zena:async` is
@@ -255,19 +256,19 @@ Error message: string_hash_helper discovery: String class struct not found!
 
 The full inventory:
 
-| Coupling | Site |
-| -------- | ---- |
-| `String` at `zena:string` | `reachability/visitor.zena:272`, `reachability/analysis.zena:789`, `analysis.zena:2205` |
-| `TemplateStringsArray` at `zena:template-strings-array` | `visitor.zena:274`, `analysis.zena:791` |
-| `Box` at `zena:box` | `analysis.zena:793` |
-| `Future` at a `zena:async` prefix | `types.zena:1324` |
-| `CancelScope` at exactly `zena:async` | `checker.zena:17154` |
-| `__concat<N>` in `zena:string` | `visitor.zena:1373`, `ir/templates.zena:91` |
-| `zena:string-convert` conversion functions | `visitor.zena:1369` |
-| `currentScope` in `zena:async`; `scheduleTask`, `drainMicrotasks` in `zena:async/executor.zena` | `visitor.zena:1084,1138,1205,1232` |
-| `component-memory.zena` as the injected component runtime entry | `codegen/component-runtime.zena:35` |
-| `awaitPacked` from `zena:component-async` in synthesized source | `wit-module-synth.zena:179` |
-| 16 prelude module names, plus `zena:component-abi` as a target runtime module | `prelude.zena` |
+| Coupling                                                                                        | Site                                                                                    |
+| ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `String` at `zena:string`                                                                       | `reachability/visitor.zena:272`, `reachability/analysis.zena:789`, `analysis.zena:2205` |
+| `TemplateStringsArray` at `zena:template-strings-array`                                         | `visitor.zena:274`, `analysis.zena:791`                                                 |
+| `Box` at `zena:box`                                                                             | `analysis.zena:793`                                                                     |
+| `Future` at a `zena:async` prefix                                                               | `types.zena:1324`                                                                       |
+| `CancelScope` at exactly `zena:async`                                                           | `checker.zena:17154`                                                                    |
+| `__concat<N>` in `zena:string`                                                                  | `visitor.zena:1373`, `ir/templates.zena:91`                                             |
+| `zena:string-convert` conversion functions                                                      | `visitor.zena:1369`                                                                     |
+| `currentScope` in `zena:async`; `scheduleTask`, `drainMicrotasks` in `zena:async/executor.zena` | `visitor.zena:1084,1138,1205,1232`                                                      |
+| `component-memory.zena` as the injected component runtime entry                                 | `codegen/component-runtime.zena:35`                                                     |
+| `awaitPacked` from `zena:component-async` in synthesized source                                 | `wit-module-synth.zena:179`                                                             |
+| 16 prelude module names, plus `zena:component-abi` as a target runtime module                   | `prelude.zena`                                                                          |
 
 Two of these fail quietly rather than loudly. `queueStdlibFunction` looks
 its module up with `program.unitsByPath.has(modulePath)` and returns
@@ -292,17 +293,17 @@ match a stdlib declaration by name with no location check at all, so a
 user declaration that happens to share the name is treated as the stdlib
 one:
 
-| Names matched | Site |
-| ------------- | ---- |
-| `Iterator`, `Iterable` | `checker.zena:4696`, `codegen/ir/control-flow.zena:2098` |
-| `Iterator`, `Iterable`, `Array`, `MutableArray` | `checker.zena:8602` |
-| `Array`, `GrowableArray`, `FixedArray`, `ImmutableArray` | `codegen/ir/control-flow.zena:2246-2249` |
-| `FixedArray`, `ImmutableArray` | `codegen/ir/lowering.zena:6421` |
-| `FixedArray` | `checker.zena:10053`, `checker.zena:14706` |
-| `Error` | `checker.zena:10316` |
-| `String` | `codegen/ir/templates.zena:153` |
-| `ByteArray` | `codegen/type-mapping.zena:1311` |
-| `Own`, `Borrow`, `Unmanaged` | `types.zena:1158`, `checker.zena:5550` |
+| Names matched                                            | Site                                                     |
+| -------------------------------------------------------- | -------------------------------------------------------- |
+| `Iterator`, `Iterable`                                   | `checker.zena:4696`, `codegen/ir/control-flow.zena:2098` |
+| `Iterator`, `Iterable`, `Array`, `MutableArray`          | `checker.zena:8602`                                      |
+| `Array`, `GrowableArray`, `FixedArray`, `ImmutableArray` | `codegen/ir/control-flow.zena:2246-2249`                 |
+| `FixedArray`, `ImmutableArray`                           | `codegen/ir/lowering.zena:6421`                          |
+| `FixedArray`                                             | `checker.zena:10053`, `checker.zena:14706`               |
+| `Error`                                                  | `checker.zena:10316`                                     |
+| `String`                                                 | `codegen/ir/templates.zena:153`                          |
+| `ByteArray`                                              | `codegen/type-mapping.zena:1311`                         |
+| `Own`, `Borrow`, `Unmanaged`                             | `types.zena:1158`, `checker.zena:5550`                   |
 
 Some of these decide code generation. `control-flow.zena:2246` selects
 indexed-loop lowering for a `for`-in over anything whose canonical class is
@@ -488,6 +489,7 @@ reaches `String`:
    Publishing `zena:component` itself is a later step. The rule that a
    library must be published before its files move applies to private
    siblings, and every file here is named by a manifest entry.
+
 9. `bench/` — absorb `benchmark`. **Done**, and it was a merge rather than
    a move. Two of `benchmark`'s three exports already existed in `bench`:
    `getMonotonicTimeMs` is `readClockMs(1)`, the same WASI call
@@ -529,15 +531,15 @@ outside the stdlib directory changes.
 Mechanical rewrites, one library at a time, each independently revertible.
 The current site counts, by area:
 
-| Area | Files importing `zena:` |
-| ---- | ----------------------- |
-| `tests/` | 193 |
-| `packages/zena-compiler/` | 125 |
-| `packages/stdlib/` | 111 |
-| `packages/wit-parser/` | 13 |
-| `benchmarks/` | 6 |
-| `packages/zena-formatter/` | 6 |
-| `examples/` | 2 |
+| Area                       | Files importing `zena:` |
+| -------------------------- | ----------------------- |
+| `tests/`                   | 193                     |
+| `packages/zena-compiler/`  | 125                     |
+| `packages/stdlib/`         | 111                     |
+| `packages/wit-parser/`     | 13                      |
+| `benchmarks/`              | 6                       |
+| `packages/zena-formatter/` | 6                       |
+| `examples/`                | 2                       |
 
 16–20. One pull request per new entrypoint (`core`, `collections`,
 `component`, `async`, `bench`), each rewriting every site across all
@@ -555,8 +557,7 @@ cover compiler sources and tests together.
 
 - **`fetch`.** Not in the target library list and not obviously part of
   any library in it. Recommended: leave it published until `http` exists.
-- **Compatibility shims.** The plan deletes the old entrypoints in step
-  22. If any consumer outside this repository should keep working, the
+- **Compatibility shims.** The plan deletes the old entrypoints in step 22. If any consumer outside this repository should keep working, the
   shims stay instead, and each becomes a one-line
   `export * from 'zena:core';` — which over-exports, and is only
   acceptable as a temporary measure.

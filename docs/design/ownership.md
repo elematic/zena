@@ -176,11 +176,11 @@ makes the system tractable:
 
 Which yields three universes over all Zena types:
 
-| Universe     | Members                                                | Duplicate? | Outlive its extent?                   | Released?              |
-| ------------ | ------------------------------------------------------ | ---------- | ------------------------------------- | ---------------------- |
-| Unrestricted | primitives, `String`, ordinary classes, `Unmanaged<R>` | yes        | — extent is the whole program         | never implicitly       |
-| Affine       | `Own<R>`, and types containing one                     | **no**     | — an owner carries its extent with it | at scope exit, unmoved |
-| Second-class | `Borrow<R>`                                            | yes        | **no**                                | never                  |
+| Universe     | Members                                                | Duplicate? | Outlive its extent?                   | Released?               |
+| ------------ | ------------------------------------------------------ | ---------- | ------------------------------------- | ----------------------- |
+| Unrestricted | primitives, `String`, ordinary classes, `Unmanaged<R>` | yes        | — extent is the whole program         | never implicitly        |
+| Affine       | `Own<R>`, and types containing one                     | **no**     | — an owner carries its extent with it | at scope exit, unmoved  |
+| Second-class | `Borrow<R>`                                            | yes        | **no**                                | never                   |
 | Scoped       | `Scoped<T>`, and types containing one                  | **no**     | **no**                                | by required consumption |
 
 The two properties are independent, so these are four corners of one lattice
@@ -527,11 +527,11 @@ The reason no good spelling existed is that the universe table has four corners
 and only three were named. A borrow-derived future or iterator owns a frame — so
 it cannot be duplicated and must be dropped — _and_ cannot outlive its extent:
 
-|              | Duplicate? | Outlive its extent? | Released?     |                        |
-| ------------ | ---------- | ------------------- | ------------- | ---------------------- |
-| Unrestricted | yes        | —                   | never         | ordinary values        |
-| `Own<R>`     | **no**     | —                   | at scope exit | affine                 |
-| `Borrow<R>`  | yes        | **no**              | never         | second-class           |
+|              | Duplicate? | Outlive its extent? | Released?               |                        |
+| ------------ | ---------- | ------------------- | ----------------------- | ---------------------- |
+| Unrestricted | yes        | —                   | never                   | ordinary values        |
+| `Own<R>`     | **no**     | —                   | at scope exit           | affine                 |
+| `Borrow<R>`  | yes        | **no**              | never                   | second-class           |
 | `Scoped<T>`  | **no**     | **no**              | by required consumption | a borrow-derived frame |
 
 `Scoped<T>` is returnable for the same reason `Borrow<T>` is: returning is a

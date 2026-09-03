@@ -7,27 +7,28 @@ Zena is designed to deliver predictable, near-native execution speed on
 WebAssembly GC.
 
 This performance profile comes from two complementary factors:
-   and hidden runtime checks simply by omitting those features from the language.
+and hidden runtime checks simply by omitting those features from the language.
+
 ## What each construct costs
 
 Understanding how language features translate to WebAssembly instructions helps
 you make informed architectural choices.
 
-| Cost Category | Language Construct | WebAssembly Lowering | Runtime Impact |
-| :--- | :--- | :--- | :--- |
-| **Zero-Cost** | Primitive operations (`+`, `*`, `==`) | `i32.add`, `f64.mul`, `i32.eq` | Raw hardware ALU speed; no boxing or tagging. |
-| **Zero-Cost** | Inline tuples (`inline (a, b)`) | `(result T_A T_B)` | Kept on the execution stack/registers; zero GC allocations. |
-| **Zero-Cost** | Extension class methods | Direct `(func $name ...)` | Erased at compile time; receiver passed as first argument. |
-| **Zero-Cost** | `final` methods and direct calls | Direct `call $func` | Direct call target; eligible for host engine inlining. |
-| **Zero-Cost** | Top-level `function` declarations | Plain `(func ...)` | Zero closure environment allocation. |
-| **Low-Cost** | Class field access (`obj.field`) | `struct.get $Class $offset` | Single-instruction direct offset load. |
-| **Low-Cost** | Class construction (`new Point(...)`) | `struct.new $Point` | Single-instruction allocation with pre-evaluated fields. |
-| **Low-Cost** | Virtual method calls | `struct.get` + `call_ref` | Single load from static vtable followed by indirect call. |
-| **Moderate** | Interface method calls | Fat Pointer ITable lookup | Two-word indirection (load ITable from fat pointer, then `call_ref`). |
-| **Moderate** | Arrow functions / Closures | `struct.new $Closure` | Allocates a GC closure struct to capture local variables. |
-| **Moderate** | Function arity adaptation | Adapter trampoline | Lightweight wrapper when passing a callback with fewer arguments. |
-| **Allocation** | Explicit boxing (`new Box(42)`) | `struct.new $Box` | Heap allocation to wrap primitive in a reference type. |
-| **Allocation** | `GrowableArray<T>` resizing | `array.copy` + `array.new` | Reallocates backing buffer when exceeding capacity. |
+| Cost Category  | Language Construct                    | WebAssembly Lowering           | Runtime Impact                                                        |
+| :------------- | :------------------------------------ | :----------------------------- | :-------------------------------------------------------------------- |
+| **Zero-Cost**  | Primitive operations (`+`, `*`, `==`) | `i32.add`, `f64.mul`, `i32.eq` | Raw hardware ALU speed; no boxing or tagging.                         |
+| **Zero-Cost**  | Inline tuples (`inline (a, b)`)       | `(result T_A T_B)`             | Kept on the execution stack/registers; zero GC allocations.           |
+| **Zero-Cost**  | Extension class methods               | Direct `(func $name ...)`      | Erased at compile time; receiver passed as first argument.            |
+| **Zero-Cost**  | `final` methods and direct calls      | Direct `call $func`            | Direct call target; eligible for host engine inlining.                |
+| **Zero-Cost**  | Top-level `function` declarations     | Plain `(func ...)`             | Zero closure environment allocation.                                  |
+| **Low-Cost**   | Class field access (`obj.field`)      | `struct.get $Class $offset`    | Single-instruction direct offset load.                                |
+| **Low-Cost**   | Class construction (`new Point(...)`) | `struct.new $Point`            | Single-instruction allocation with pre-evaluated fields.              |
+| **Low-Cost**   | Virtual method calls                  | `struct.get` + `call_ref`      | Single load from static vtable followed by indirect call.             |
+| **Moderate**   | Interface method calls                | Fat Pointer ITable lookup      | Two-word indirection (load ITable from fat pointer, then `call_ref`). |
+| **Moderate**   | Arrow functions / Closures            | `struct.new $Closure`          | Allocates a GC closure struct to capture local variables.             |
+| **Moderate**   | Function arity adaptation             | Adapter trampoline             | Lightweight wrapper when passing a callback with fewer arguments.     |
+| **Allocation** | Explicit boxing (`new Box(42)`)       | `struct.new $Box`              | Heap allocation to wrap primitive in a reference type.                |
+| **Allocation** | `GrowableArray<T>` resizing           | `array.copy` + `array.new`     | Reallocates backing buffer when exceeding capacity.                   |
 
 ## Monomorphized generics
 
