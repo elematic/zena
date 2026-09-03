@@ -53,11 +53,24 @@ export enum WellKnown {
   ScopedAlias,
 }
 
-/** Where a well-known declaration lives: its library and its local name. */
+/**
+ * Where a well-known declaration lives: its local name, the library that
+ * owns it, and — only while it is being moved between libraries — the
+ * library it is moving to.
+ *
+ * Both libraries are exact names compared with `==`; `movingTo` is not a
+ * relaxation of the match, it is a second exact answer that is true for
+ * the length of a migration. It exists because the checked-in bootstrap
+ * carries this table: a declaration cannot move to a library the
+ * bootstrap has never heard of, so the new location has to be accepted
+ * for one reseed before the file moves, and dropped after the next one.
+ * See docs/design/stdlib-organization.md, Phase 1.
+ */
 final class Location {
   library: String;
   name: String;
-  new(this.library, this.name);
+  movingTo: String | null;
+  new(this.library, this.name, this.movingTo = null);
 }
 
 var locations: HashMap<i32, Location> | null = null;
@@ -67,26 +80,31 @@ let buildLocations = (): HashMap<i32, Location> => {
   let add = (w: WellKnown, library: String, name: String): void => {
     t[w as i32] = new Location(library, name);
   };
-  add(WellKnown.StringClass, 'string', 'String');
-  add(WellKnown.BoxClass, 'box', 'Box');
-  add(WellKnown.TemplateStringsArrayClass,
-      'template-strings-array', 'TemplateStringsArray');
-  add(WellKnown.ErrorClass, 'error', 'Error');
-  add(WellKnown.IteratorInterface, 'iterator', 'Iterator');
-  add(WellKnown.IterableInterface, 'iterator', 'Iterable');
-  add(WellKnown.ArrayInterface, 'array', 'Array');
-  add(WellKnown.MutableArrayInterface, 'array', 'MutableArray');
-  add(WellKnown.FixedArrayClass, 'fixed-array', 'FixedArray');
-  add(WellKnown.ImmutableArrayClass, 'immutable-array', 'ImmutableArray');
-  add(WellKnown.GrowableArrayClass, 'growable-array', 'GrowableArray');
+  /** Registers a declaration that is mid-move to another library. */
+  let moving = (w: WellKnown, library: String, name: String,
+      movingTo: String): void => {
+    t[w as i32] = new Location(library, name, movingTo);
+  };
+  moving(WellKnown.StringClass, 'string', 'String', 'core');
+  moving(WellKnown.BoxClass, 'box', 'Box', 'core');
+  moving(WellKnown.TemplateStringsArrayClass,
+      'template-strings-array', 'TemplateStringsArray', 'core');
+  moving(WellKnown.ErrorClass, 'error', 'Error', 'core');
+  moving(WellKnown.IteratorInterface, 'iterator', 'Iterator', 'core');
+  moving(WellKnown.IterableInterface, 'iterator', 'Iterable', 'core');
+  moving(WellKnown.ArrayInterface, 'array', 'Array', 'core');
+  moving(WellKnown.MutableArrayInterface, 'array', 'MutableArray', 'core');
+  moving(WellKnown.FixedArrayClass, 'fixed-array', 'FixedArray', 'core');
+  moving(WellKnown.ImmutableArrayClass, 'immutable-array', 'ImmutableArray', 'core');
+  moving(WellKnown.GrowableArrayClass, 'growable-array', 'GrowableArray', 'core');
   // Declared in async/future.zena, a private file of zena:async. Keying on
   // the library is what lets that be true without a prefix match.
   add(WellKnown.FutureClass, 'async', 'Future');
   add(WellKnown.CancelScopeClass, 'async', 'CancelScope');
-  add(WellKnown.OwnAlias, 'ownership', 'Own');
-  add(WellKnown.BorrowAlias, 'ownership', 'Borrow');
-  add(WellKnown.UnmanagedAlias, 'ownership', 'Unmanaged');
-  add(WellKnown.ScopedAlias, 'ownership', 'Scoped');
+  moving(WellKnown.OwnAlias, 'ownership', 'Own', 'core');
+  moving(WellKnown.BorrowAlias, 'ownership', 'Borrow', 'core');
+  moving(WellKnown.UnmanagedAlias, 'ownership', 'Unmanaged', 'core');
+  moving(WellKnown.ScopedAlias, 'ownership', 'Scoped', 'core');
   locations = t;
   return t;
 };
@@ -137,5 +155,10 @@ export let isWellKnown = (w: WellKnown, name: String,
   if (library == null) {
     return false;
   }
-  return (library as String) == loc.library;
+  let owner = library as String;
+  if (owner == loc.library) {
+    return true;
+  }
+  let movingTo = loc.movingTo;
+  return movingTo != null && owner == (movingTo as String);
 };

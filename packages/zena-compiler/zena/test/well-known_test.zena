@@ -62,6 +62,32 @@ export let tests = suite("Well-known declarations", () => {
           "zena:async/future.zena"));
     });
 
+    test("accepts the library a declaration is moving to", () => {
+      // core/ is published and empty; the array types and String have not
+      // moved yet, so both locations answer true for the length of the
+      // migration. See docs/design/stdlib-organization.md, Phase 1.
+      isTrue(isWellKnown(WellKnown.StringClass, "String", "zena:string"));
+      isTrue(isWellKnown(WellKnown.StringClass, "String",
+          "zena:core/string.zena"));
+      isTrue(isWellKnown(WellKnown.OwnAlias, "Own", "zena:ownership"));
+      isTrue(isWellKnown(WellKnown.OwnAlias, "Own", "zena:core/ownership.zena"));
+    });
+
+    test("a declaration that is not moving is not accepted in core", () => {
+      // Future stays in zena:async, so core is not a second answer for it.
+      isFalse(isWellKnown(WellKnown.FutureClass, "Future",
+          "zena:core/future.zena"));
+      isFalse(isWellKnown(WellKnown.CancelScopeClass, "CancelScope",
+          "zena:core/async.zena"));
+    });
+
+    test("the moving-to library is exact too", () => {
+      // Not "any library whose name starts with core".
+      isFalse(isWellKnown(WellKnown.StringClass, "String", "zena:corex"));
+      isFalse(isWellKnown(WellKnown.StringClass, "String",
+          "zena:collections"));
+    });
+
     test("does not match a library by prefix", () => {
       // A user package whose module id merely begins with a library's name
       // is not that library.

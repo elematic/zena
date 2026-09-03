@@ -60,7 +60,7 @@ placed gives eleven layers:
 | 9     | `component-stream`, `fetch`, `time`                                                                              |
 | 10    | `console`                                                                                                        |
 
-`scripts/stdlib-deps.py` regenerates this table. It walks each module's
+`scripts/stdlib-deps.js` regenerates this table. It walks each module's
 entry file plus the private siblings it reaches, strips comments, and
 follows `import`/`export ... from`. The `sequence` entry is left out of the
 table above because it has no file.
@@ -185,22 +185,45 @@ Two consequences:
   prelude-bound facade. Grouping files in a directory costs nothing;
   re-exporting them does.
 
-The mechanism is narrower than "re-exporting emits the re-exported
-module", and is filed as a compiler bug (Forgejo #447): once a generic is
-reached at some type, an unreachable module's instantiation of it _at
-another type_ is specialized and emitted too. A user-level facade over a
+**Fixed.** Forgejo #447 landed as "Laying a class out is not reaching
+it": every declared class in every loaded module gets a struct layout, and
+those layouts walked their members' signatures as if the code around them
+were live, so a field typed `Completer<i32>` on a class nothing reaches
+read as evidence that `Completer<i32>` values exist. Re-measuring the same
+`stream`-into-`async` fold afterwards costs **107 bytes rather than
+1,400** — 92% of it gone. This section is kept because the measurement is
+what the plan was reshaped around, and because the residue is not zero.
+
+The mechanism was narrower than "re-exporting emits the re-exported
+module": once a generic was reached at some type, an unreachable module's
+instantiation of it _at another type_ was specialized and emitted too. A user-level facade over a
 module using `Completer<i32>` grows 51 bytes to 64 with no added
 functions, because nothing there reaches `Completer`; the same re-export
 added to `zena:fs` costs 29 bytes for the same reason. `timer.zena`
 reaches both generics at other types, which is why it pays 1,400.
 
-If #447 is fixed, the _emitted-size_ half of this stops applying:
-re-exporting becomes as free as grouping, and `core` can be the facade
-this document assumes. The parse-and-check half does not go away, so the
-prelude rule above still governs what a prelude-named library should
-hold — which is why `stream` stays separate either way. Until #447 lands,
-treat every re-export from a prelude-bound module as a per-binary cost to
-be measured.
+With #447 fixed, the emitted-size objection to the facade model is
+largely gone, and `core` can re-export its members and be the entrypoint
+this document assumes. Two things survive it.
+
+The parse-and-check half does not go away, so the prelude rule above still
+governs what a prelude-named library should hold — which is why `stream`
+stays separate either way, and why `collections` still wants weighing.
+
+The residue is not zero, and it is worth knowing what it is. The 107
+bytes are **four type-section entries and no code at all**: the two
+builds emit an identical set of 179 named functions, and differ only in
+348 types against 352. Re-exporting `stream` makes `Stream` and
+`StreamWriter` visible to the compilation, and every declared class in
+every loaded module gets a struct layout whether or not it is emitted —
+which #447's fix deliberately kept, because the layout is what registers
+a class's members and a class can pick up evidence after its turn. So a
+facade still costs one struct layout per class it exposes.
+
+That scales with classes exposed rather than with code, which is small
+but not nothing for a `core` re-exporting twenty modules. Measure a
+hello-world before wiring the prelude to `core` rather than assuming the
+fix made facades free.
 
 ### Libraries the target list omits
 
@@ -506,25 +529,45 @@ reaches `String`:
     permanently, under the prelude rule, so its files belong in their own
     directory rather than inside `async/`. `async` absorbs nothing and
     needs no step.
-12. `core/`, the members nothing in the compiler names — `byte-array`,
-    `byte-buffer`, `result`, `string-builder`, `string-reader`.
-    Publishing `core` here is what makes the next step possible.
-13. Add the `core` locations for `String`, `TemplateStringsArray`, `Box`,
-    `Error`, `Iterator`, `Iterable`, `Array`, `MutableArray`,
-    `FixedArray`, `ImmutableArray`, `GrowableArray`, `Own`, `Borrow` and
-    `Unmanaged` to the registry, alongside their current ones, and the
-    `core` module ids for the functions `queueStdlibFunction` roots by
-    module — `__concat<N>` in `zena:string` and the conversion helpers in
-    `zena:string-convert`.
-14. Reseed.
-15. Move the remaining files into `core/` — the array family, `string`,
-    `string-convert`, `error`, `error-stack`, `option`, `box`, `range`,
-    `hashable`, `iterator`, `iterable-utils`, `template-strings-array`
-    and `ownership` — and drop their old registry locations. This is the
-    step the spike exercised.
+12. Publish `zena:core`, and add every well-known declaration's future
+    `core` location to the registry alongside its current one. **No files
+    move yet.** Publishing is not cosmetic: `stdlibLibraryOf` attributes
+    `core/string.zena` to a library by its directory, and only if `core`
+    is a published module — so until the bootstrap knows `core` exists, a
+    moved `String` belongs to no library and the registry stops
+    recognizing it. That is the spike's failure.
+13. Reseed. The bootstrap now knows `core` is a library and accepts each
+    declaration at either location.
+14. Move the files into `core/` and repoint each module's manifest entry,
+    leaving a one-line re-export shim at every old path. The shims are
+    for the bootstrap from step 13, whose baked manifest still names the
+    old paths; the working tree's manifest names the new ones, so the
+    compiler being built resolves straight to the real files and never
+    loads a shim.
+15. Reseed.
+16. Delete the shims and the old registry locations.
 
-Steps 8–12 and 15 are verifiable by `npm test` alone, since nothing
-outside the stdlib directory changes.
+**Two reseeds is the floor, and the second one is not avoidable.** The
+bootstrap resolves a module to a file through the manifest compiled into
+it, so the new paths cannot be authoritative until a bootstrap carries
+them; and it attributes a declaration to a library the same way, so `core`
+cannot own anything until a bootstrap knows `core`. Those are two
+different dependencies on the same manifest and they cannot be satisfied
+in one step.
+
+Only `template-strings-array` of `core`'s twenty-three members escapes
+this: it is the one the bootstrap never resolves. Everything else is
+reached either by the compiler's own imports or by the prelude, which the
+bootstrap applies to the compiler's sources like any other file.
+`scripts/stdlib-bootstrap-closure.js` prints the split — currently 34
+bootstrap-critical modules against 16 free — and is worth re-running
+before planning any move, because the prelude half is easy to miss:
+`immutable-array` and `ownership` are named by nothing in the compiler and
+are still loaded by every compilation.
+
+Steps 8–11 are verifiable by `npm test` alone, since nothing outside the
+stdlib directory changes. Steps 12 onward each need a full build from the
+checkin bootstrap as well, because that is what the sequence is protecting.
 
 ### Phase 2 — migrate import sites
 
