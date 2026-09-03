@@ -16,7 +16,7 @@ title: Home
     <div class="hero-warning-banner">
       <span class="badge danger">Warning</span>
       <span>Zena is under active development, changing rapidly, full of bugs, and not ready for use.</span>
-      <a href="#project-status">See Project Status &rarr;</a>
+      <a href="#project-status">See Project Status &darr;</a>
     </div>
     <div class="hero-grid">
       <div class="main">
@@ -274,7 +274,7 @@ console.log(
 
 Explore Zena's features through interactive examples. Zena's compiler and
 language service are written in Zena and run in the browser via WebAssembly.
-See more examples in the [Playground](./playground/).
+See more examples in the [Playground &rarr;](./playground/).
 
 <zena-example-playground>
 {% include "playground-examples.njk" %}
