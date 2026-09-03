@@ -74,9 +74,10 @@ A type may be exported by more than one entrypoint.
 | Entrypoint | Absorbs | Notes |
 | ---------- | ------- | ----- |
 | `core` | `array`, `array-iterator`, `box`, `byte-array`, `byte-buffer`, `error`, `error-stack`, `fixed-array`, `growable-array`, `growable-array-iterator`, `hashable`, `immutable-array`, `iterable-utils`, `iterator`, `option`, `ownership`, `range`, `result`, `string`, `string-builder`, `string-convert`, `string-reader`, `template-strings-array` | see below |
-| `collections` | `map`, `ordered-map`, `set` | also re-exports the array types and `Hashable` from `core` |
+| `collections` | `map`, `ordered-map`, `set` | also re-exports the array types and `Hashable` from `core`; the prelude names it, so weigh `ordered-map` and `set` against the prelude rule |
 | `component` | `component-abi`, `component-async`, `component-stream`, `component-memory` | component target only |
-| `async` | `stream` | keeps its own name; see "Libraries the target list omits" |
+| `async` | — | absorbs nothing; the prelude names it, so it holds only what `Future` needs |
+| `stream` | — | its own entrypoint, for the same reason; see "Libraries the target list omits" |
 | `bench` | `benchmark` | done; `benchmark`'s clock and formatter duplicated `bench`'s, so only `runTest` moved |
 | `assert`, `cli`, `console`, `fs`, `js`, `json`, `math`, `memory`, `process`, `regex`, `simd`, `test`, `time`, `url` | — | unchanged apart from moving implementation files into directories |
 
@@ -140,6 +141,20 @@ hostless build emits" for programs that never use the module. Widening the
 prelude makes that worse, and is another reason to switch the prelude last
 and separately.
 
+Both costs give a membership rule of their own, and it is the one that
+decides most of the awkward cases:
+
+> **A library the prelude names should hold only what programs that never
+> mention it still need.** Everything in such a library is parsed and
+> checked for every compilation, whether or not a line of it is used.
+
+This is independent of the dependency rule above, and cuts the other way.
+The dependency rule says what a library *must* contain; this one says what
+it should decline to contain. The prelude names `zena:async` for `Future`
+and `zena:map` for `Map`, so folding `stream` into `async`, or piling
+`ordered-map` and `set` into `collections`, makes every hello-world carry
+them. Neither is wrong on dependency grounds; both are wrong on this one.
+
 ### What a facade costs
 
 Re-exporting a module from a facade emits that module's **generic
@@ -179,25 +194,41 @@ functions, because nothing there reaches `Completer`; the same re-export
 added to `zena:fs` costs 29 bytes for the same reason. `timer.zena`
 reaches both generics at other types, which is why it pays 1,400.
 
-If #447 is fixed, this whole section stops applying: grouping and
-re-exporting both become free, `stream` can fold into `zena:async` as
-originally planned, and `core` can be the facade this document assumes.
-Until then, treat every re-export from a prelude-bound module as a
-per-binary cost to be measured.
+If #447 is fixed, the *emitted-size* half of this stops applying:
+re-exporting becomes as free as grouping, and `core` can be the facade
+this document assumes. The parse-and-check half does not go away, so the
+prelude rule above still governs what a prelude-named library should
+hold — which is why `stream` stays separate either way. Until #447 lands,
+treat every re-export from a prelude-bound module as a per-binary cost to
+be measured.
 
 ### Libraries the target list omits
 
 The proposed 17-library list has no place for `async`, `stream`, `bench`,
 `benchmark` or `fetch`. Recommendations:
 
-- Keep `async` as its own entrypoint rather than folding it into `core`.
-  It is about 1,500 lines with two design documents behind it, its
-  surface is still growing, and it sits cleanly above `core` in the
-  graph. `zena:async` is a better import to read than `zena:core`.
-- Do **not** fold `stream` into `async`, though this document originally
-  recommended it. `zena:async` is prelude-bound, and re-exporting `stream`
-  from it costs every binary 1,400 bytes — see "What a facade costs".
-  `stream` keeps its own name and its file moves under `async/`.
+- Keep `async` as its own entrypoint, and keep `Future` in it rather than
+  moving it to `core`. That `async`/`await` is syntax argues for `core`
+  only under the syntax principle this document has already discarded:
+  `Array` backs a literal and still is not in `core` on those grounds — it
+  is there because `String` uses `FixedArray` and nothing else would
+  break the cycle. No such cycle reaches `Future`. Nothing below `async`
+  depends on it, so by the rule above it belongs in `async`.
+
+  Being prelude-bound and compiler-rooted does not change that. The
+  prelude is an import list and can name `zena:async`, as it does today;
+  and the well-known registry keys on `(library, name)`, so
+  `(async, Future)` is exactly as stable a location as `(core, Future)`.
+- Keep `stream` as its own entrypoint. This document originally
+  recommended folding it into `async`, and that was wrong for two separate
+  reasons. The immediate one is a compiler bug: `zena:async` is
+  prelude-bound, and re-exporting `stream` from it costs every binary
+  1,400 bytes (see "What a facade costs"). The durable one outlives the
+  fix — the prelude names `zena:async`, so anything folded in is parsed
+  and checked by every compilation forever, and `Stream` is 281 lines
+  today with WASI 0.3 interop and an `AsyncIterator` layer still to come.
+  Node draws the same line, keeping `stream` a library while `Promise` is
+  global.
 - Fold `benchmark` into `bench`. `bench` is the newer harness; `benchmark`
   is a WASI monotonic clock and an i64 formatter, 3 import sites.
 - Leave `fetch` alone until `http` lands, then merge it in.
@@ -468,11 +499,11 @@ reaches `String`:
 10. `collections/` — move `map`, `ordered-map`, `set` implementations in,
     and re-export the array types from `core` once it exists. Already a
     directory. No registry entries.
-11. `async/` — move `stream` into the directory, but **do not** fold it
-    into `zena:async`. Absorbing it was the plan and it is measurably
-    wrong: see "What a facade costs" below. `stream` stays its own
-    module with its entry at `async/stream.zena`, which groups the file
-    without putting it in every binary.
+11. `stream/` — `stream` becomes a directory library of its own rather
+    than being absorbed into `async`. It stays a separate entrypoint
+    permanently, under the prelude rule, so its files belong in their own
+    directory rather than inside `async/`. `async` absorbs nothing and
+    needs no step.
 12. `core/`, the members nothing in the compiler names — `byte-array`,
     `byte-buffer`, `result`, `string-builder`, `string-reader`.
     Publishing `core` here is what makes the next step possible.
