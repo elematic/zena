@@ -266,6 +266,7 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
                 ?show-theme-selector=${this.showThemeSelector}
                 @theme-change=${this.onThemeChange}
               >
+                <slot name="start" slot="start"></slot>
                 <slot name="actions" slot="actions"></slot>
               </zena-tab-bar>
             `

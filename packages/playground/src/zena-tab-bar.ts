@@ -6,6 +6,7 @@ import '@radica/ui/components/tab-panel/tab-panel.js';
 import '@radica/ui/components/button/button.js';
 import '@radica/ui/components/icon-button/icon-button.js';
 import '@radica/bootstrap-icons/icons/plus-lg.svg.js';
+import '@radica/bootstrap-icons/icons/layout-sidebar.svg.js';
 import '@radica/ui/components/dialog/dialog.js';
 import './zena-theme-selector.js';
 import {PlaygroundConnectedElement} from './connected-element.js';
@@ -40,6 +41,16 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
       max-height: 40px;
       box-sizing: border-box;
       padding-right: 8px;
+    }
+
+    .tabs-header ::slotted([slot='start']) {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      align-self: center;
+      margin-left: 6px;
+      margin-right: 2px;
+      flex-shrink: 0;
     }
 
     rad-tab-group {
@@ -316,6 +327,7 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
 
     return html`
       <div class="tabs-header">
+        <slot name="start"></slot>
         <rad-tab-group @click=${this.onTabGroupClick}>
           ${files.map((file) => {
             const filename = file.name;

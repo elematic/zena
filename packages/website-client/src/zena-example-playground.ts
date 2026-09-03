@@ -1,4 +1,6 @@
 import type {ZenaPlayground} from '@zena-lang/playground';
+import '@radica/ui/components/icon-button/icon-button.js';
+import '@radica/bootstrap-icons/icons/layout-sidebar.svg.js';
 import {BehaviorElement} from './light-element.js';
 
 let examplePlaygroundCount = 0;
@@ -223,20 +225,23 @@ export class ZenaExamplePlayground extends BehaviorElement {
       const playgroundPane = document.createElement('div');
       playgroundPane.className = 'example-playground-pane';
 
-      // Reopen toggle button when sidebar is collapsed
-      const toggleBtn = document.createElement('button');
-      toggleBtn.type = 'button';
+      // Reopen toggle button slotted into playground tab bar when sidebar is collapsed
+      const toggleBtn = document.createElement('rad-icon-button');
+      toggleBtn.setAttribute('slot', 'start');
       toggleBtn.className = 'example-sidebar-toggle';
+      toggleBtn.setAttribute('icon-name', 'layout-sidebar');
+      toggleBtn.setAttribute('size', 'small');
+      toggleBtn.setAttribute('variant', 'text');
+      toggleBtn.setAttribute('title', 'Open examples');
       toggleBtn.setAttribute('aria-label', 'Open examples');
-      toggleBtn.innerHTML =
-        '<span class="toggle-icon">&#x25B8;</span><span class="toggle-text">Examples</span>';
 
       playground = document.createElement('zena-playground') as ZenaPlayground;
       playground.id = `${id}-playground`;
       playground.setAttribute('tabs', 'always');
       playground.layout = 'horizontal';
+      playground.append(toggleBtn);
 
-      playgroundPane.append(toggleBtn, playground);
+      playgroundPane.append(playground);
       wrapper.append(backdrop, sidebar, playgroundPane);
 
       const toggleSidebar = (open: boolean) => {
