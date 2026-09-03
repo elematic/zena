@@ -61,7 +61,55 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
 
     .cm-gutters {
       border: none !important;
+      border-right: 1px solid
+        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.12)) !important;
       background: transparent;
+    }
+
+    .cm-lineNumbers .cm-gutterElement {
+      min-width: 20px;
+      padding: 0 4px 0 10px;
+      text-align: right;
+    }
+
+    .cm-foldGutter {
+      width: 16px;
+    }
+
+    .cm-foldGutter .cm-gutterElement {
+      text-align: center;
+      padding: 0 2px;
+      color: var(--rad-neutral-text-muted, #94a3b8);
+      cursor: pointer;
+    }
+
+    .cm-foldGutter .cm-gutterElement:hover {
+      color: var(--rad-neutral-text-emphasis, #f8fafc);
+    }
+
+    .cm-gutter-lint {
+      order: -1;
+      width: 14px;
+    }
+
+    .cm-gutter-lint:not(:has(.cm-lint-marker)) {
+      display: none !important;
+    }
+
+    .cm-gutter-lint .cm-gutterElement {
+      padding: 0 0 0 2px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .cm-lint-marker {
+      width: 10px;
+      height: 10px;
+    }
+
+    .cm-line {
+      padding: 0 2px 0 8px;
     }
 
     .cm-scroller {
@@ -271,9 +319,55 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
       };
     };
 
+    const gutterTheme = EditorView.theme({
+      '.cm-gutters': {
+        borderRight:
+          '1px solid var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.12)) !important',
+        backgroundColor: 'transparent !important',
+      },
+      '.cm-lineNumbers .cm-gutterElement': {
+        minWidth: '20px',
+        padding: '0 4px 0 10px',
+        textAlign: 'right',
+      },
+      '.cm-foldGutter': {
+        width: '16px',
+      },
+      '.cm-foldGutter .cm-gutterElement': {
+        textAlign: 'center',
+        padding: '0 2px',
+        color: 'var(--rad-neutral-text-muted, #94a3b8)',
+        cursor: 'pointer',
+      },
+      '.cm-foldGutter .cm-gutterElement:hover': {
+        color: 'var(--rad-neutral-text-emphasis, #f8fafc)',
+      },
+      '.cm-gutter-lint': {
+        order: -1,
+        width: '14px',
+      },
+      '.cm-gutter-lint:not(:has(.cm-lint-marker))': {
+        display: 'none !important',
+      },
+      '.cm-gutter-lint .cm-gutterElement': {
+        padding: '0 0 0 2px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      },
+      '.cm-lint-marker': {
+        width: '10px',
+        height: '10px',
+      },
+      '.cm-line': {
+        padding: '0 2px 0 8px',
+      },
+    });
+
     try {
       if (typeof this.codeMirrorEl.addExtensions === 'function') {
         this.codeMirrorEl.addExtensions([
+          Prec.highest(gutterTheme),
           lintGutter(),
           runKeymap,
           tabCompletionKeymap,
