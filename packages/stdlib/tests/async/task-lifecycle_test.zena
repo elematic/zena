@@ -1,0 +1,161 @@
+// Task<T>: latest-wins lifecycle over CancelScope-backed supersession
+// (docs/design/task.md). The supersession test is the load-bearing
+// one: a second run() cancels the first attempt and the state takes
+// the second's value.
+import {suite, test} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  Future, Completer, drainMicrotasks, runFuture,
+} from 'zena:async';
+import {
+  Task, TaskState, Initial, Pending, Complete, Errored,
+} from 'zena:task';
+import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
+
+var log = '';
+var gate: Completer<i32> = new Completer<i32>();
+
+/** An op whose attempt awaits the current gate, recording how each
+ * attempt ends. */
+let gated = async (): Future<i32> => {
+  let mine = gate;
+  try {
+    return await mine.future;
+  } cancel {
+    log = log + 'C';
+  }
+};
+
+let describe = <T>(s: TaskState<T>): String => {
+  if (s is Initial<T>) { return 'initial'; }
+  if (s is Pending<T>) { return 'pending'; }
+  if (s is Complete<T>) { return 'complete'; }
+  return 'errored';
+};
+
+export let tests = suite('Task lifecycle', () => {
+  test('a run moves initial -> pending -> complete', () => {
+    gate = new Completer<i32>();
+    let t = new Task(() => gated());
+    equal(describe(t.state), 'initial');
+    let f = t.run();
+    equal(describe(t.state), 'pending');
+    gate.complete(5);
+    equal(runFuture(f), 5);
+    equal(describe(t.state), 'complete');
+    equal((t.state as Complete<i32>).value, 5);
+  });
+
+  test('a failed run is errored and completed fails', () => {
+    gate = new Completer<i32>();
+    let t = new Task(() => gated());
+    let unused = t.run();
+    let done = t.completed;
+    gate.fail(new Error('boom'));
+    var msg = '';
+    try {
+      let v = runFuture(done);
+    } catch (e) {
+      msg = e.message;
+    }
+    equal(msg, 'boom');
+    equal(describe(t.state), 'errored');
+  });
+
+  test('run() while pending cancels and supersedes', () => {
+    log = '';
+    gate = new Completer<i32>();
+    let t = new Task(() => gated());
+    let first = t.run();
+    let firstGate = gate;
+    gate = new Completer<i32>();
+    let second = t.run();
+    drainMicrotasks();
+    // The first attempt observed its cancellation.
+    equal(log, 'C');
+    // Its gate settling late changes nothing.
+    firstGate.complete(-1);
+    gate.complete(2);
+    equal(runFuture(second), 2);
+    equal((t.state as Complete<i32>).value, 2);
+    // completed carried forward: it answers with the SECOND run.
+    equal(runFuture(t.completed), 2);
+  });
+
+  test('cancel() restores the previous settled state', () => {
+    log = '';
+    gate = new Completer<i32>();
+    let t = new Task(() => gated());
+    let f1 = t.run();
+    gate.complete(7);
+    drainMicrotasks();
+    equal(describe(t.state), 'complete');
+    gate = new Completer<i32>();
+    let f2 = t.run();
+    equal(describe(t.state), 'pending');
+    t.cancel();
+    drainMicrotasks();
+    equal(log, 'C');
+    equal(describe(t.state), 'complete');
+    equal((t.state as Complete<i32>).value, 7);
+  });
+
+  test('cancel() settles a pending completed from the restored state', () => {
+    log = '';
+    gate = new Completer<i32>();
+    let t = new Task(() => gated());
+    let f1 = t.run();
+    gate.complete(7);
+    drainMicrotasks();
+    gate = new Completer<i32>();
+    let f2 = t.run();
+    // Minted for the second run, pending.
+    let answer = t.completed;
+    t.cancel();
+    drainMicrotasks();
+    // The task holds Complete(7) again, and completed agrees.
+    equal((t.state as Complete<i32>).value, 7);
+    equal(runFuture(answer), 7);
+  });
+
+  test('changed() conflates and wakes per transition', () => {
+    gate = new Completer<i32>();
+    let t = new Task(() => gated());
+    var wakes = 0;
+    let watch = async (): Future<void> => {
+      await t.changed();
+      wakes += 1;
+      await t.changed();
+      wakes += 1;
+    };
+    let w = watch();
+    let unused = t.run();
+    gate.complete(1);
+    drainMicrotasks();
+    equal(wakes, 2);
+  });
+
+  test('onChange fires from the queue, after run() returns', () => {
+    gate = new Completer<i32>();
+    var notes = 0;
+    let t = new Task(() => gated(), () => {
+      notes += 1;
+    });
+    let unused = t.run();
+    equal(notes, 0);
+    drainMicrotasks();
+    isTrue(notes >= 1);
+    let before = notes;
+    gate.complete(3);
+    drainMicrotasks();
+    isTrue(notes > before);
+  });
+
+  test('works at void', () => {
+    let t = new Task<void>(() => Future.of<void>());
+    let f = t.run();
+    drainMicrotasks();
+    isTrue(t.state is Complete<void>);
+  });
+});

@@ -30,7 +30,9 @@
  */
 
 import { Error } from 'zena:error';
-import { Future, TaskGroup } from 'zena:async';
+import {
+  Future, Completer, TaskGroup, CancelScope, scheduleMicrotask,
+} from 'zena:async';
 import { sleep, monotonicMs } from 'zena:time';
 import { i32ToString } from 'zena:string-convert';
 
@@ -151,4 +153,237 @@ export let hedge = <T>(delayMs: i32, op: Op<T>): Op<T> => {
     await sleep(delayMs);
     return await op();
   }]);
+};
+
+// ---------------------------------------------------------------------------
+// Task<T>: an operation's observable lifecycle (docs/design/task.md)
+// ---------------------------------------------------------------------------
+
+/** Where a task's latest run stands. Cancellation is not a state: a
+ * cancelled run restores the state the task held before it
+ * (docs/design/task.md, "The state, as data"). */
+export sealed class TaskState<T> {
+  case Initial, Pending, Complete, Errored
+}
+
+/** No run has settled yet. */
+export final class Initial<T> extends TaskState<T> {}
+
+/** A run is in flight. Deliberately carries no future: only the
+ * latest run's outcome ever becomes the state, and a held future
+ * could outlive its run's relevance. */
+export final class Pending<T> extends TaskState<T> {}
+
+/** The latest settled run produced this value. */
+export final class Complete<T>(value: T) extends TaskState<T>
+
+/** The latest settled run failed with this error. */
+export final class Errored<T>(error: Error) extends TaskState<T>
+
+/** The monitor's reporting entry points, keyed by unexported symbols
+ * so only this module can settle a task's state
+ * (docs/design/classes.md §9.4). */
+symbol reportPending;
+symbol reportSettled;
+symbol reportCancelled;
+symbol takeCompleter;
+
+/**
+ * Runs an operation and exposes where the run stands — `Initial`,
+ * `Pending`, `Complete`, or `Errored` — across however many runs,
+ * latest-wins (docs/design/task.md).
+ *
+ * The op is fixed at construction with its policies already composed:
+ * `new Task(retry(3, timeout(100, fetchUser)))`. Each run starts the
+ * op inside a child `CancelScope`, so a superseding `run()` cancels
+ * the previous attempt's whole subtree rather than racing it for the
+ * state.
+ */
+export class Task<T> {
+  #op: Op<T>;
+  /** Called after every transition, from the microtask queue. */
+  #onChange: (() => void)?;
+  /** Backs `state`; `var(#state) state` is the shape this wants,
+   * blocked on issue #463 (field initializer + var(#) crashes). */
+  var #state: TaskState<T> = new Initial<T>();
+  /** What a cancelled run restores. */
+  var #prev: TaskState<T> = new Initial<T>();
+  var #scope: CancelScope? = null;
+  var #runId = 0;
+  /** Settles `completed`: minted lazily, carried across supersession,
+   * replaced by the next run after a settle. */
+  var #completed: Completer<T>? = null;
+  /** The changed() round: one completer shared by every waiter until
+   * the next transition settles it. */
+  var #round: Completer<void>? = null;
+
+  new(op: Op<T>, onChange: (() => void)? = null)
+    : #op = op, #onChange = onChange;
+
+  /** Where the latest run stands. */
+  state: TaskState<T> {
+    get {
+      return this.#state;
+    }
+  }
+
+  /**
+   * The latest run's eventual answer: the value or failure of
+   * whichever run is current when one settles. Supersession carries
+   * it forward to the new run; a run started after a settle mints a
+   * fresh one.
+   */
+  completed: Future<T> {
+    get {
+      return (this.#completed ??= new Completer<T>()).future;
+    }
+  }
+
+  /** Settles at the next state transition after the call. */
+  changed(): Future<void> {
+    return (this.#round ??= new Completer<void>()).future;
+  }
+
+  /**
+   * Starts a run, cancelling a pending previous one — superseded
+   * before it arrived, its outcome discarded. Returns this run's
+   * future, which settles the way the run does even if superseded.
+   */
+  run(): Future<T> {
+    let prevScope = this.#scope;
+    if (prevScope != null) {
+      prevScope.cancel();
+    }
+    this.#runId += 1;
+    let id = this.#runId;
+    if (this.#completed == null || this.#isSettled()) {
+      this.#completed = new Completer<T>();
+    }
+    let scope = new CancelScope();
+    this.#scope = scope;
+    let op = this.#op;
+    let t = this;
+    // In a generic class body `this` types as the bare generic
+    // source (issue #434); the cast restores the instantiated type.
+    return scope.run(() => monitorRun<T>(t as Task<T>, id, op));
+  }
+
+  /** Cancels a pending run; the previous settled state is restored
+   * when the cancellation lands. A task with no run pending is
+   * unchanged. */
+  cancel(): void {
+    let s = this.#scope;
+    if (s != null) {
+      s.cancel();
+    }
+  }
+
+  [reportPending](id: i32): void {
+    if (id != this.#runId) {
+      return;
+    }
+    // The async ramp is eager, so this runs synchronously inside
+    // run(): the state is Pending the moment run() returns, but the
+    // notification goes through the queue — no user callback runs
+    // inside another's frame. Waking the changed() round already
+    // does (settling a completer schedules its waiters).
+    this.#state = new Pending<T>();
+    this.#wakeRound();
+    let cb = this.#onChange;
+    if (cb != null) {
+      scheduleMicrotask(cb);
+    }
+  }
+
+  [reportSettled](id: i32, s: TaskState<T>): void {
+    if (id != this.#runId) {
+      return;
+    }
+    this.#scope = null;
+    this.#prev = s;
+    this.#transition(s);
+  }
+
+  [reportCancelled](id: i32): void {
+    if (id != this.#runId) {
+      return;
+    }
+    this.#scope = null;
+    // The restore keeps `completed` consistent with the state it
+    // restores: a task holding Complete or Errored has a settled
+    // `completed`, so a completer minted for the cancelled run
+    // settles from the restored state.
+    let c = this.#completed;
+    let p = this.#prev;
+    if (c != null && !c.future.isCompleted) {
+      if (p is Complete<T>) {
+        c.complete(p.value);
+      } else if (p is Errored<T>) {
+        c.fail(p.error);
+      }
+    }
+    this.#transition(p);
+  }
+
+  /** The completer this run should settle, or null if superseded —
+   * a superseded run must not settle `completed`, which has been
+   * carried forward to the run that superseded it. */
+  [takeCompleter](id: i32): Completer<T>? {
+    return if (id != this.#runId) null else this.#completed;
+  }
+
+  #isSettled(): boolean {
+    return this.#state is Complete<T> || this.#state is Errored<T>;
+  }
+
+  #wakeRound(): void {
+    let r = this.#round;
+    if (r != null) {
+      this.#round = null;
+      r.complete();
+    }
+  }
+
+  #transition(s: TaskState<T>): void {
+    this.#state = s;
+    this.#wakeRound();
+    let cb = this.#onChange;
+    if (cb != null) {
+      cb();
+    }
+  }
+}
+
+/**
+ * One run: starts the op under the run's scope (the ramp binds the
+ * frame to it), reports each transition back, and settles the way
+ * the op does. Reporting happens from this frame — inside a
+ * microtask — so `onChange` never runs inside `run()` itself.
+ *
+ * The settled value is never bound to a local: at `T = void` a
+ * binding has no wasm type (issue #435), so the value rides argument
+ * position (`new Complete<T>(await f)`) and the settled future is
+ * re-awaited where needed — one queue hop to the same value.
+ */
+let monitorRun = async <T>(t: Task<T>, id: i32, op: Op<T>): Future<T> => {
+  t.[reportPending](id);
+  let f = op();
+  try {
+    await f;
+  } cancel {
+    t.[reportCancelled](id);
+  } catch (e) {
+    let c = t.[takeCompleter](id);
+    if (c != null) {
+      c.fail(e);
+    }
+    t.[reportSettled](id, new Errored<T>(e));
+    throw e;
+  }
+  let c = t.[takeCompleter](id);
+  if (c != null) {
+    c.complete(await f);
+  }
+  t.[reportSettled](id, new Complete<T>(await f));
+  return await f;
 };
