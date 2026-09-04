@@ -270,6 +270,69 @@ console.log(
 <div class="home-section">
   <div class="container prose">
 
+## Beyond TypeScript
+
+While Zena's syntax is inspired by TypeScript, it goes beyond with features
+that elevate everyday safety, performance, and developer ergonomics:
+
+<div class="differentiators-list">
+  <div class="differentiator-item">
+    <div class="differentiator-icon" aria-hidden="true">🔀</div>
+    <div class="differentiator-content">
+      <div class="differentiator-header">
+        <h3 class="differentiator-title">Algebraic Data Types &amp; Pattern Matching</h3>
+        <span class="badge success">Complete</span>
+      </div>
+      <p class="differentiator-contrast">Replace boilerplate discriminant tags and switch-case with first-class sealed classes and compiler-enforced pattern matching.</p>
+      <p class="differentiator-desc">Deep destructuring and exhaustive <code>match</code> expressions guarantee at compile time that every case is handled—with zero runtime overhead and no <code>assertNever</code> workarounds. <a href="#pattern-matching">Learn more &darr;</a></p>
+    </div>
+  </div>
+  <div class="differentiator-item">
+    <div class="differentiator-icon" aria-hidden="true">🛑</div>
+    <div class="differentiator-content">
+      <div class="differentiator-header">
+        <h3 class="differentiator-title">First-Class Async Cancellation</h3>
+        <span class="badge warning">In progress</span>
+      </div>
+      <p class="differentiator-contrast">No more passing <code>AbortSignal</code> through every layer of your application.</p>
+      <p class="differentiator-desc">Cancellation flows through a dedicated language-level channel. Dedicated <code>cancel</code> blocks handle interruption cleanly, while <code>shielded</code> blocks guarantee critical asynchronous cleanup always finishes without race conditions. <a href="#generators-async">Learn more &darr;</a></p>
+    </div>
+  </div>
+  <div class="differentiator-item">
+    <div class="differentiator-icon" aria-hidden="true">📦</div>
+    <div class="differentiator-content">
+      <div class="differentiator-header">
+        <h3 class="differentiator-title">Affine Ownership &amp; Resource Management</h3>
+        <span class="badge warning">In progress</span>
+      </div>
+      <p class="differentiator-contrast">Safe, deterministic lifecycle tracking for native handles, WASI files, and linear memory.</p>
+      <p class="differentiator-desc">Unlike JavaScript’s purely runtime <code>using</code>, Zena's static <code>Own&lt;T&gt;</code> and <code>Borrow&lt;T&gt;</code> types enforce move semantics at compile time to prevent use-after-free and double-free bugs—without Rust's complex lifetime annotations. <a href="#ownership">Learn more &darr;</a></p>
+    </div>
+  </div>
+  <div class="differentiator-item">
+    <div class="differentiator-icon" aria-hidden="true">🧩</div>
+    <div class="differentiator-content">
+      <div class="differentiator-header">
+        <h3 class="differentiator-title">Native WIT &amp; WebAssembly Components</h3>
+        <span class="badge warning">In progress</span>
+      </div>
+      <p class="differentiator-contrast">Direct compiler integration with the WebAssembly Component Model.</p>
+      <p class="differentiator-desc">Import and export <code>.wit</code> world interfaces directly as native Zena types and functions. Eliminates external code-generation steps and serialization glue for seamless composability across the Wasm ecosystem. <a href="#wit-integration">Learn more &darr;</a></p>
+    </div>
+  </div>
+  <div class="differentiator-item">
+    <div class="differentiator-icon" aria-hidden="true">⚡</div>
+    <div class="differentiator-content">
+      <div class="differentiator-header">
+        <h3 class="differentiator-title">Unboxed Value Types &amp; Multi-Value Returns</h3>
+        <span class="badge warning">In progress</span>
+      </div>
+      <p class="differentiator-contrast">Eliminate heap allocation overhead for composite data.</p>
+      <p class="differentiator-desc">Multi-value returns like <code>Map.get()</code> return unboxed inline tuples on the stack with zero GC pressure. Expanding to first-class unboxed composite types and Struct-of-Arrays (SoA) layouts for cache-friendly, data-oriented performance. <a href="#value-types">Learn more &darr;</a></p>
+    </div>
+  </div>
+</div>
+
 ## Examples
 
 Explore Zena's features through interactive examples. Zena's compiler and
