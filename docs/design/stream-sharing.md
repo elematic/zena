@@ -19,8 +19,11 @@ is right for all three of the consumers above.
 
 ## The shape
 
+Implemented as `Multicast<T>` — "share" names the act, and streams.md
+keeps using it as the verb, but the type wants a stream-family noun.
+
 ```zena
-export class Share<T> {
+export class Multicast<T> {
   /** Takes the read end. The source has one reader — this is it. */
   new(source: Stream<T>);
 
@@ -88,9 +91,13 @@ defaults to precisely because its cost arrives latest.
 ## Delivery
 
 The pump loop is the batch discipline streams.md already fixed: read
-up to a batch from the source, then offer the batch to each
-subscription in subscribe order — conflating slots overwrite, buffers
-fill, and the pump awaits the `Waits`/full-buffer subscribers before
+up to a batch from the source into ONE ring of undelivered elements
+shared by every subscriber, each holding a cursor into it. Memory
+grows with the single slowest reader rather than with the sum of
+every reader's lag; a conflating subscriber costs nothing at all,
+because dropping intermediates is moving its cursor to the newest
+element; and the ring drops an element once every live cursor has
+passed it. The pump awaits the `Waits`/full-buffer subscribers before
 the next source read. Per-subscriber order is the source's order;
 what `Conflate` drops it drops wholesale (a subscriber never sees
 reordering, only gaps). Source end-of-stream closes every

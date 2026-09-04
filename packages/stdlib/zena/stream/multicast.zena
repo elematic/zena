@@ -1,0 +1,369 @@
+/**
+ * Multicast — one stream's elements delivered to every subscriber
+ * (docs/design/stream-sharing.md).
+ *
+ * Reads one source `Stream<T>` and writes each element into every
+ * subscription's own stream, under that subscription's policy: a
+ * conflating cursor that skips to the newest element, a bounded
+ * buffer, or holding the producer for the slowest reader. Unbounded
+ * buffering is deliberately not expressible.
+ *
+ * Undelivered elements live in ONE ring shared by every subscriber,
+ * with a cursor per subscription: memory grows with the single
+ * slowest reader, not with the sum of every reader's lag, and a
+ * conflating subscriber costs nothing at all — skipping is moving
+ * its cursor. The ring drops an element once every live cursor has
+ * passed it.
+ *
+ * A file of `zena:stream` (../stream/index.zena re-exports the
+ * public surface); not importable as a module of its own.
+ */
+
+import { Error } from 'zena:error';
+import { FixedArray } from 'zena:fixed-array';
+import { GrowableArray } from 'zena:growable-array';
+import { Future, Completer } from 'zena:async';
+import { Disposable } from 'zena:ownership';
+import { Stream, StreamWriter } from './index.zena';
+
+/**
+ * What absorbs a subscriber's divergence from the producer.
+ * `Conflate` absorbs unlimited divergence by dropping intermediates;
+ * `Buffered` absorbs its capacity by memory; `Waits` absorbs none
+ * and couples the producer to this subscriber.
+ */
+export sealed class Policy {
+  case Conflate, Waits, Buffered
+}
+export final class Conflate extends Policy {}
+export final class Waits extends Policy {}
+export final class Buffered(capacity: i32) extends Policy
+
+/** The newest undelivered element wins; the pump never waits. */
+export let conflate: Policy = new Conflate();
+/** The pump does not advance past an element this subscriber has not
+ * read, which holds the producer to the slowest such subscriber. */
+export let waits: Policy = new Waits();
+/** Lossless up to `n` queued elements, then the pump waits. */
+export let buffered = (n: i32): Policy => {
+  if (n < 1) {
+    throw new Error('multicast: buffered needs capacity of at least 1');
+  }
+  return new Buffered(n);
+};
+
+/**
+ * One subscriber's delivery state, shared between the pump and that
+ * subscriber's drainer. A separate class from `Subscription` on
+ * purpose: `Subscription` is the public capability — the stream and
+ * the detach — while this is the mutable bookkeeping two loops
+ * coordinate through, and merging them would either publish these
+ * fields or key a dozen internal accessors by symbol.
+ *
+ * `cursor` is an absolute element index (see `Multicast.#base`).
+ * The booleans stay separate fields rather than packing into a bit
+ * field: a multicast holds a handful of subscribers, each already
+ * carrying two completer slots, so the bytes saved would be noise
+ * and every flag read would grow a mask.
+ */
+class SubState<T> {
+  writer = new StreamWriter<T>();
+  /** Next element to deliver, as an absolute index. */
+  var cursor: i32;
+  /** -1 = conflate, 0 = waits, n = buffered. */
+  capacity: i32;
+  var detached = false;
+  /** The source ended: deliver what remains, then close. */
+  var closed = false;
+  /** The drainer loop has been started. */
+  var draining = false;
+  /** Set while the drainer sleeps waiting for elements. */
+  var wake: Completer<void>? = null;
+  /** Set while the pump waits for this subscriber to catch up. */
+  var space: Completer<void>? = null;
+
+  new(this.capacity, this.cursor);
+
+  /** Elements this subscriber has not finished with. The element a
+   * drainer's write has in flight is `ring[cursor]` — the cursor
+   * advances only when the write completes — so it is counted here
+   * exactly once. */
+  pending(tail: i32): i32 {
+    return tail - this.cursor;
+  }
+}
+
+/**
+ * A subscriber's handle: the stream to read, and the detach. Dropping
+ * a subscription must detach it — under `Waits` an abandoned
+ * subscriber would park the pump forever — so this implements
+ * `Disposable` and belongs in a `using`. (The design wants a
+ * `resource class` here; until implicit drop lands, resource-ness
+ * would add `Own` handles to the API without adding safety, so the
+ * explicit `using` form ships first.)
+ */
+export class Subscription<T> implements Disposable {
+  #sub: SubState<T>;
+
+  new(sub: SubState<T>) : #sub = sub;
+
+  /** The subscriber's element stream. */
+  stream: Stream<T> {
+    get {
+      return this.#sub.writer.stream;
+    }
+  }
+
+  /** Detaches: delivery here stops, undelivered elements are
+   * dropped, and the stream ends. Idempotent. */
+  [Disposable.dispose](): void {
+    let sub = this.#sub;
+    if (sub.detached) {
+      return;
+    }
+    sub.detached = true;
+    // The subscriber is the READER of its stream: abandoning is the
+    // reader disclaiming, which completes the drainer's parked write
+    // `false` — `close()` on the write end would strand it instead.
+    sub.writer.stream.stop();
+    // Free whichever side is parked on this subscriber.
+    let w = sub.wake;
+    if (w != null) {
+      sub.wake = null;
+      w.complete();
+    }
+    let sp = sub.space;
+    if (sp != null) {
+      sub.space = null;
+      sp.complete();
+    }
+  }
+}
+
+/** The multicast internals the drainer reads, keyed by unexported
+ * symbols so nothing outside this module can. */
+symbol ringAt;
+symbol tailIndex;
+
+/**
+ * Reads one source stream and delivers every element to each
+ * subscription, under that subscription's policy. Subscribe before
+ * or during `run()`; a subscription sees elements from the next
+ * batch on — a multicast broadcasts "from now on", never a replay.
+ */
+export class Multicast<T> {
+  #source: Stream<T>;
+  /** The pump's read buffer. Caller-supplied because a generic body
+   * cannot mint a `FixedArray<T>` (the constructor needs a fill
+   * value only concrete code has) — the same caller-owned-buffer
+   * discipline every stream read follows. */
+  #scratch: FixedArray<T>;
+  /** Undelivered elements. `#ring[i]` holds absolute element index
+   * `#base + i`; the prefix every live cursor has passed is dropped
+   * by `#trim`. */
+  #ring = new GrowableArray<T>();
+  /** Absolute index of `#ring[0]`. */
+  var #base = 0;
+  #subs = new GrowableArray<SubState<T>>();
+  var #done = false;
+
+  new(source: Stream<T>, scratch: FixedArray<T>)
+    : #source = source, #scratch = scratch;
+
+  /** The absolute index one past the newest element. */
+  #tail(): i32 {
+    return this.#base + this.#ring.length;
+  }
+
+  /** A fresh subscription delivering under `policy`, starting at the
+   * next element the source produces. */
+  subscribe(policy: Policy): Subscription<T> {
+    var capacity = -1;
+    if (policy is Waits) {
+      capacity = 0;
+    } else if (policy is Buffered) {
+      capacity = policy.capacity;
+    }
+    let sub = new SubState<T>(capacity, this.#tail());
+    if (this.#done) {
+      sub.closed = true;
+      sub.writer.close();
+    } else {
+      this.#subs.push(sub);
+    }
+    return new Subscription<T>(sub);
+  }
+
+  /**
+   * Drives delivery until the source ends, then closes every
+   * subscription and returns once their remaining elements drain.
+   * Spawn it in the scope that owns the multicast; cancelling that
+   * scope tears the whole thing down.
+   */
+  async run(): Future<void> {
+    let drains = new GrowableArray<Future<void>>();
+    while (true) {
+      let n = await this.#source.read(this.#scratch);
+      if (n == 0) {
+        break;
+      }
+      var i = 0;
+      while (i < n) {
+        this.#ring.push(this.#scratch[i]);
+        i += 1;
+      }
+      let tail = this.#tail();
+      var s = 0;
+      while (s < this.#subs.length) {
+        let sub = this.#subs[s];
+        s += 1;
+        if (sub.detached) {
+          continue;
+        }
+        if (!sub.draining) {
+          sub.draining = true;
+          // `this` types as the bare generic source in a generic
+          // class body (issue #434); the cast restores it.
+          drains.push(drainSub<T>(this as Multicast<T>, sub));
+        }
+        let w = sub.wake;
+        if (w != null) {
+          sub.wake = null;
+          w.complete();
+        }
+      }
+      // Hold the pump — and through the rendezvous source, the
+      // producer — for any Waits or over-capacity Buffered
+      // subscriber, until its drainer catches up or it detaches.
+      s = 0;
+      while (s < this.#subs.length) {
+        let sub = this.#subs[s];
+        s += 1;
+        while (!sub.detached && sub.capacity >= 0 &&
+            sub.pending(this.#tail()) > sub.capacity) {
+          await spaceOf<T>(sub);
+        }
+      }
+      this.#trim();
+    }
+    this.#done = true;
+    var s = 0;
+    while (s < this.#subs.length) {
+      let sub = this.#subs[s];
+      sub.closed = true;
+      let w = sub.wake;
+      if (w != null) {
+        sub.wake = null;
+        w.complete();
+      }
+      s += 1;
+    }
+    for (let d in drains) {
+      await d;
+    }
+  }
+
+  /** The element at absolute index `i`. */
+  [ringAt](i: i32): T {
+    return this.#ring[i - this.#base];
+  }
+
+  /** Drops detached subscribers and the ring prefix every live
+   * cursor has passed. */
+  #trim(): void {
+    var s = 0;
+    var w = 0;
+    while (s < this.#subs.length) {
+      let sub = this.#subs[s];
+      if (!sub.detached) {
+        this.#subs[w] = sub;
+        w += 1;
+      }
+      s += 1;
+    }
+    while (this.#subs.length > w) {
+      this.#subs.pop();
+    }
+    var min = this.#tail();
+    s = 0;
+    while (s < this.#subs.length) {
+      let c = this.#subs[s].cursor;
+      if (c < min) {
+        min = c;
+      }
+      s += 1;
+    }
+    let drop = min - this.#base;
+    if (drop <= 0) {
+      return;
+    }
+    var i = 0;
+    let len = this.#ring.length;
+    while (i + drop < len) {
+      this.#ring[i] = this.#ring[i + drop];
+      i += 1;
+    }
+    while (this.#ring.length > len - drop) {
+      this.#ring.pop();
+    }
+    this.#base = min;
+  }
+
+  /** The absolute index one past the newest element, for the
+   * drainers. */
+  [tailIndex](): i32 {
+    return this.#tail();
+  }
+}
+
+let spaceOf = <T>(sub: SubState<T>): Future<void> => {
+  return (sub.space ??= new Completer<void>()).future;
+};
+
+/**
+ * One subscriber's delivery loop: writes ring elements from its
+ * cursor into the subscription's stream — real backpressure, one
+ * pending write — and sleeps on `wake` when it catches up. A
+ * conflating cursor first jumps to the newest element, which is what
+ * "dropping intermediates" is. `false` from a write means the
+ * subscriber's reader stopped: the subscription detaches.
+ *
+ * Elements are never bound to locals: at `T = void` a binding has no
+ * wasm type (issue #435), so reads ride argument position.
+ */
+let drainSub = async <T>(m: Multicast<T>, sub: SubState<T>): Future<void> => {
+  while (true) {
+    let tail = m.[tailIndex]();
+    if (sub.cursor >= tail) {
+      if (sub.closed || sub.detached) {
+        sub.writer.close();
+        return;
+      }
+      await (sub.wake ??= new Completer<void>()).future;
+      continue;
+    }
+    if (sub.capacity == -1 && tail - sub.cursor > 1) {
+      // Conflate: everything but the newest is dropped by walking
+      // past it.
+      sub.cursor = tail - 1;
+    }
+    let ok = await sub.writer.write(m.[ringAt](sub.cursor));
+    sub.cursor += 1;
+    if (!ok) {
+      sub.detached = true;
+      let sp = sub.space;
+      if (sp != null) {
+        sub.space = null;
+        sp.complete();
+      }
+      return;
+    }
+    if (sub.capacity >= 0 && sub.pending(m.[tailIndex]()) <= sub.capacity) {
+      let sp = sub.space;
+      if (sp != null) {
+        sub.space = null;
+        sp.complete();
+      }
+    }
+  }
+};

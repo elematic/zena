@@ -1,0 +1,172 @@
+// share: one stream fanned out under per-subscriber policies
+// (docs/design/stream-sharing.md). The load-bearing assertions are
+// pump-side: who waited, what dropped, and that a detach frees a
+// parked pump.
+import {suite, test} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {
+  Future, Completer, drainMicrotasks, runFuture,
+} from 'zena:async';
+import {
+  Stream, StreamWriter, Multicast, Subscription, conflate, waits, buffered,
+} from 'zena:stream';
+import { Disposable } from 'zena:ownership';
+import { Error } from 'zena:error';
+import { FixedArray } from 'zena:fixed-array';
+import { GrowableArray } from 'zena:growable-array';
+import { i32ToString } from 'zena:string-convert';
+
+/** Reads `st` to end-of-stream, recording elements as digits. */
+let collect = async (st: Stream<i32>, tag: String): Future<String> => {
+  var out = tag;
+  let buf = new FixedArray<i32>(4, 0);
+  var n = await st.read(buf);
+  while (n > 0) {
+    var i = 0;
+    while (i < n) {
+      out = out + i32ToString(buf[i]);
+      i += 1;
+    }
+    n = await st.read(buf);
+  }
+  return out;
+};
+
+let newMulticast = (w: StreamWriter<i32>): Multicast<i32> => {
+  return new Multicast(w.stream, new FixedArray<i32>(4, 0));
+};
+
+export let tests = suite('stream multicast', () => {
+  test('waits delivers everything, in order, to every subscriber', () => {
+    let w = new StreamWriter<i32>();
+    let m = newMulticast(w);
+    let a = m.subscribe(waits);
+    let b = m.subscribe(waits);
+    let pump = m.run();
+    let ca = collect(a.stream, 'a');
+    let cb = collect(b.stream, 'b');
+    let w1 = w.write(1);
+    drainMicrotasks();
+    let w2 = w.write(2);
+    drainMicrotasks();
+    w.close();
+    runFuture(pump);
+    equal(runFuture(ca), 'a12');
+    equal(runFuture(cb), 'b12');
+  });
+
+  test('waits holds the producer until the subscriber reads', () => {
+    let w = new StreamWriter<i32>();
+    let m = newMulticast(w);
+    let a = m.subscribe(waits);
+    let pump = m.run();
+    let w1 = w.write(1);
+    let w2 = w.write(2);
+    drainMicrotasks();
+    // Nobody read: the second write is still parked behind the first
+    // element sitting undelivered at the subscriber.
+    isFalse(w2.isCompleted);
+    let ca = collect(a.stream, 'a');
+    drainMicrotasks();
+    isTrue(w2.isCompleted);
+    w.close();
+    runFuture(pump);
+    equal(runFuture(ca), 'a12');
+  });
+
+  test('conflate keeps only the latest for a slow subscriber', () => {
+    let w = new StreamWriter<i32>();
+    let m = newMulticast(w);
+    let a = m.subscribe(conflate);
+    let pump = m.run();
+    // Three writes, no reader: the pump absorbs them all without
+    // waiting, and only the newest survives in the slot.
+    let w1 = w.write(1);
+    drainMicrotasks();
+    let w2 = w.write(2);
+    drainMicrotasks();
+    let w3 = w.write(3);
+    drainMicrotasks();
+    isTrue(w3.isCompleted);
+    let ca = collect(a.stream, 'a');
+    drainMicrotasks();
+    w.close();
+    runFuture(pump);
+    // 1 was delivered while the drainer was idle; 2 was conflated
+    // away by 3 while the drainer's write of 1 was in flight.
+    equal(runFuture(ca), 'a13');
+  });
+
+  test('a disposed subscription frees a parked pump', () => {
+    let w = new StreamWriter<i32>();
+    let m = newMulticast(w);
+    let slow = m.subscribe(waits);
+    let live = m.subscribe(waits);
+    let pump = m.run();
+    let cl = collect(live.stream, 'l');
+    let w1 = w.write(1);
+    let w2 = w.write(2);
+    drainMicrotasks();
+    // `slow` never reads: the pump is parked on it.
+    isFalse(w2.isCompleted);
+    slow.[Disposable.dispose]();
+    drainMicrotasks();
+    isTrue(w2.isCompleted);
+    w.close();
+    runFuture(pump);
+    equal(runFuture(cl), 'l12');
+  });
+
+  test('a stopped reader detaches its subscription', () => {
+    let w = new StreamWriter<i32>();
+    let m = newMulticast(w);
+    let quitter = m.subscribe(waits);
+    let live = m.subscribe(waits);
+    let pump = m.run();
+    let cl = collect(live.stream, 'l');
+    quitter.stream.stop();
+    let w1 = w.write(1);
+    drainMicrotasks();
+    let w2 = w.write(2);
+    drainMicrotasks();
+    isTrue(w2.isCompleted);
+    w.close();
+    runFuture(pump);
+    equal(runFuture(cl), 'l12');
+  });
+
+  test('buffered absorbs its capacity, then waits', () => {
+    let w = new StreamWriter<i32>();
+    let m = newMulticast(w);
+    let a = m.subscribe(buffered(2));
+    let pump = m.run();
+    let w1 = w.write(1);
+    drainMicrotasks();
+    let w2 = w.write(2);
+    drainMicrotasks();
+    let w3 = w.write(3);
+    drainMicrotasks();
+    let w4 = w.write(4);
+    drainMicrotasks();
+    // 1 in flight at the subscriber, 2 and 3 buffered, 4 over
+    // capacity: the pump holds.
+    isFalse(w4.isCompleted);
+    let ca = collect(a.stream, 'a');
+    drainMicrotasks();
+    isTrue(w4.isCompleted);
+    w.close();
+    runFuture(pump);
+    equal(runFuture(ca), 'a1234');
+  });
+
+  test('subscribing after the source ended gets an ended stream', () => {
+    let w = new StreamWriter<i32>();
+    let m = newMulticast(w);
+    let a = m.subscribe(waits);
+    let pump = m.run();
+    w.close();
+    runFuture(pump);
+    let late = m.subscribe(conflate);
+    equal(runFuture(collect(late.stream, 'x')), 'x');
+  });
+});
