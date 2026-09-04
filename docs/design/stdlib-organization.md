@@ -220,10 +220,17 @@ which #447's fix deliberately kept, because the layout is what registers
 a class's members and a class can pick up evidence after its turn. So a
 facade still costs one struct layout per class it exposes.
 
-That scales with classes exposed rather than with code, which is small
-but not nothing for a `core` re-exporting twenty modules. Measure a
-hello-world before wiring the prelude to `core` rather than assuming the
-fix made facades free.
+That is filed as Forgejo #458: the gate for emitting a class's struct
+already exists — `#classHasEmissionEvidence` wants the class instantiated
+or reachably named — so something is supplying evidence for a class
+nothing reaches, most likely the layout walk registering itself as name
+evidence. Exposing one class costs four type entries and 63 bytes;
+exposing a second alongside it costs nothing further, so the unit is
+smaller than "per class" but has not been characterized.
+
+Until #458 lands, measure a hello-world before wiring the prelude to
+`core` rather than assuming the fix made facades free. After it lands,
+this section is history.
 
 ### Libraries the target list omits
 
