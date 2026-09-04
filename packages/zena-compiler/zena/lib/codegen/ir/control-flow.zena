@@ -23,7 +23,7 @@ import {
   RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
   isOwnershipWrapper, ownershipHandleInner, ownershipHandleName,
-  soleNonNullMember, UnionType,
+  soleNonNullMember, UnionType, isScopedType, scopedInner,
 } from '../../types.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
@@ -2413,9 +2413,15 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
  * default-iterator sequences (which don't).
  */
 export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
-  let iterableType = cx.substitutedNodeType(stmt.iterable);
+  var iterableType = cx.substitutedNodeType(stmt.iterable);
   if (iterableType == null) {
     bail(cx, 'untyped for-in iterable');
+  }
+  // A scoped iterator drives the same loop as the iterator it wraps;
+  // the wrapper is erased (peel via typeArguments, as everywhere).
+  if (isScopedType(iterableType)) {
+    let scopedIt = scopedInner(iterableType);
+    if (scopedIt != null) { iterableType = scopedIt; }
   }
 
   // FIXED = a bare wasm array value; ARRAY = the Array class struct.

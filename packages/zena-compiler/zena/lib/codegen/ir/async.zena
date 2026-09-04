@@ -90,6 +90,7 @@ import {
 } from '../codegen-utils.zena';
 import {
   Type, InterfaceType, FunctionType, ClassType, MethodInfo,
+  isScopedType, scopedInner,
 } from '../../types.zena';
 import { FunctionExpression, MethodDefinition, Node } from '../../ast.zena';
 
@@ -167,6 +168,12 @@ let futureInstantiationOf = (wasm: WasmModule, func: WasmFunction): ClassType =>
         funcDisplayName(func));
   }
   var ret: Type = t.returnType;
+  // A borrow-holding async function returns Scoped<Future<T>>; the
+  // frame it lowers to settles the Future behind the wrapper.
+  if (isScopedType(ret)) {
+    let inner = scopedInner(ret);
+    if (inner != null) { ret = inner; }
+  }
   let {classType} = func;
   if (classType != null) {
     let ct = classType;

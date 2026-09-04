@@ -1,0 +1,67 @@
+// @mode: check
+// Adversarial escapes for Scoped<T>: each case tries to move a scoped
+// value (and the borrow-holding frame behind it) past its extent, and
+// each is rejected. Written from a red-team pass over the rules; the
+// legal counterparts live in scoped.zena and scoped-suspension.zena.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+
+resource class Res {
+  new();
+  size(): i32 { return 4; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let x = await tick();
+  return r.size() + x;
+};
+
+// Waiting on a scoped chain rooted in a parameter, behind a
+// first-class future: the caller could store that future past the
+// borrow's extent, and the parked chain would resume after the owner
+// released. The frame's own future must be Scoped.
+let sinkLaunder = async (f: Scoped<Future<i32>>): Future<i32> => {
+  return await f; // @error: requires this function to return
+};
+
+// The same escape one hop removed: the scoped value comes from a
+// derived call on a borrow parameter rather than being the parameter.
+let relay = async (r: Borrow<Res>): Future<i32> => {
+  let fut = read(r);
+  return await fut; // @error: requires this function to return
+};
+
+// The top reference type is not an exit: a scoped value does not
+// widen to anyref, and the failed store is not a consumption.
+var stash: anyref | null = null;
+let escapeAnyref = (r: Borrow<Res>): void => {
+  let fut = read(r); // @error: must be consumed
+  stash = fut; // @error: not assignable
+};
+
+// A nullable union around the scoped type is still scoped: the
+// storage bans see through unions and distinct aliases.
+class Hold {
+  var f: Scoped<Future<i32>> | null = null; // @error: may not be stored
+  new();
+}
+
+// A callee that drops its scoped parameter abandons a live frame; a
+// parameter is a consume candidate for the whole body.
+let dropIt = (f: Scoped<Future<i32>>): i32 => {
+  return 0; // @error: must be consumed
+};
+
+// Inferring a container's element type from a scoped argument still
+// escapes: closing it is the `scoped T` opt-in, which will make an
+// unannotated T reject second-class arguments.
+let box = <T>(x: T): FixedArray<T> => [x];
+let stashInBox = (r: Borrow<Res>): i32 => {
+  let fut = read(r);
+  let cell = box(fut); // @missing-error: scoped type argument
+  return cell.length;
+};

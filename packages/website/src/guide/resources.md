@@ -346,21 +346,28 @@ Because generator and async frames outlive individual function calls:
   synchronous execution, but borrows cannot remain live across an `await`
   suspension point.
 
-### Scoped&lt;T&gt; for async and generators <span class="badge info">Planned</span>
+### Scoped&lt;T&gt; for async and generators <span class="badge success">Implemented</span>
 
 To allow asynchronous operations to safely hold borrowed resources, Zena defines
 the `Scoped<T>` wrapper:
 
 ```zena
 async function readAsync(f: Borrow<FileDescriptor>): Scoped<Future<String>> {
-  let data = await hostRead(f);
+  let data = await hostRead(f);   // f stays live across the await
   return data;
 }
 ```
 
-`Scoped<Future<T>>` guarantees that the resulting future cannot escape the
-caller's borrow scope, ensuring that the operation completes or cancels before
-the borrowed resource can be released.
+Declaring the `Scoped<Future<T>>` return (with one borrow parameter to derive
+from) is what lifts the borrow-across-`await` rule inside the body. In
+exchange, the scoped future may not be stored in any heap slot or captured by
+a closure, and it must be **consumed exactly once on every path** — awaited,
+or moved — so it cannot outlive the caller's borrow scope. A generator gets
+the same trade: it may take borrow parameters when it returns
+`Scoped<Iterator<T>>`, and the caller must drive that iterator with a
+`for`/`in` loop inside the borrow's extent. The `scoped T` type-parameter
+opt-in that will let combinators like `Future.all` accept scoped futures is
+still planned.
 
 ## Regime transitions: disown and adopt <span class="badge success">Implemented</span>
 

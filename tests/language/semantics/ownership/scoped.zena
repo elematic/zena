@@ -73,11 +73,14 @@ let derived = (r: Borrow<Res>): Scoped<Future<i32>> => {
   return tick();
 };
 
-let sink = async (f: Scoped<Future<i32>>): Future<i32> => {
+// A scoped parameter roots the derivation test, so awaiting it needs
+// a Scoped return — the parameter is the one source, satisfying the
+// derivation rule.
+let sink = async (f: Scoped<Future<i32>>): Scoped<Future<i32>> => {
   return await f;
 };
 
-let movedToSink = async (r: Borrow<Res>): Future<i32> => {
+let movedToSink = async (r: Borrow<Res>): Scoped<Future<i32>> => {
   let fut = derived(r);
   let v = await sink(fut);
   return v;

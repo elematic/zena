@@ -58,7 +58,7 @@ import {
   ClassKey, getInterfaceKey, getInterfaceMemberKey, getClassInterfaceKey,
   getClassInterfaceVTableName, getInterfaceTrampolineName,
 } from '../codegen-utils.zena';
-import { Type, InterfaceType, FunctionType } from '../../types.zena';
+import { Type, InterfaceType, FunctionType, isScopedType, scopedInner } from '../../types.zena';
 import { FunctionExpression, MethodDefinition, Node } from '../../ast.zena';
 
 let STATE_RUNNING = 1;
@@ -111,6 +111,12 @@ let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): InterfaceT
         funcDisplayName(func));
   }
   var ret: Type = t.returnType;
+  // A borrow-taking generator returns Scoped<Iterator<T>>; the frame
+  // it lowers to is the Iterator behind the wrapper.
+  if (isScopedType(ret)) {
+    let inner = scopedInner(ret);
+    if (inner != null) { ret = inner; }
+  }
   let {classType} = func;
   if (classType != null) {
     let ct = classType;

@@ -661,10 +661,27 @@ annotated signatures.
 
 **Enforcement.** The storage bans — no field, element, record member, or
 closure capture — are the type-level checks `Borrow<R>` has, applied to
-the scoped population. Consumption tracking is move checking with a
-must-consume verdict. Lowering changes in one place: `Scoped` is a
-generic `distinct type` alias, so `await` and `for`/`in` unwrap it
-through `typeArguments`, as with the handles.
+the scoped population, and they see through unions and distinct
+aliases, so `Scoped<F> | null` and `type Sneak = Scoped<F>` are not
+loopholes. Consumption tracking is move checking with a must-consume
+verdict; a scoped parameter is a consume candidate for its whole body,
+since a callee that drops one abandons a live frame. Lowering changes
+in one place: `Scoped` is a generic `distinct type` alias, so `await`
+and `for`/`in` unwrap it through `typeArguments`, as with the handles.
+
+**Scopedness propagates through `await`.** Awaiting a scoped future
+parks the awaiting frame on it until it settles, so the two frames
+chain: storing the awaiting frame's own future stores the chain, borrow
+and all. An async body that awaits a scoped value rooted in one of its
+parameters — the parameter itself, or a scoped local whose initializer
+mentions one — must therefore declare a `Scoped` return; with a
+first-class return, the caller could store the future past the
+parameter's extent and the parked chain would resume after the owner
+released. A chain rooted in the body's own local owner needs no
+annotation: the owner's scope contains the await. The derivation test
+is conservative — mentioning a parameter-rooted second-class binding in
+the operand or a scoped initializer counts — and a false positive only
+demands a `Scoped` return that is then legal.
 
 Staging: the type and the consumption rule first (checker only); the
 suspension relaxations second; `scoped T` and the combinator audit
@@ -1541,10 +1558,11 @@ of surface syntax.
 | **O4**   | `isolated<T>`/`frozen<T>`/regions                                                                         | O2                                | V, A           |
 
 Implementation currently trails this document in one known place:
-`Scoped<T>`'s type, storage rules, and required-consumption verdict are
-implemented, but the suspension relaxations (§"What the annotation
-allows") and the `scoped T` opt-in are not — a borrow still may not be
-live across `await` in any body. The `dropped` state is set at the top of
+`Scoped<T>` is implemented — the type, its storage rules, the
+required-consumption verdict, and the suspension relaxations (§"What
+the annotation allows") — but the `scoped T` type-parameter opt-in and
+the combinator audit are not, so a scoped future cannot pass through
+`Future.all` yet. The `dropped` state is set at the top of
 every consuming dispose — written or synthesized — so every release
 route marks it and a bad `adopt` reports "dropped" rather than blaming
 a phantom owner; and the §"Borrows and suspension" liveness rule is

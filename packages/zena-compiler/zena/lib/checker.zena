@@ -382,6 +382,24 @@ final class CheckerContext {
   #scopedErrorSymbols = new HashSet<i32>();
 
   /**
+   * Second-class bindings rooted in a body's parameters: the
+   * parameters themselves, and scoped locals whose initializer
+   * mentions one. Awaiting such a value parks the frame on work
+   * bounded by the caller's extent, so the frame's own future must be
+   * Scoped too — checked in checkAwaitExpression. Symbol ids are
+   * process-unique, so one set serves every body.
+   */
+  #paramDerivedSecondClass = new HashSet<i32>();
+
+  markParamDerivedSecondClass(id: SymbolId): void {
+    this.#paramDerivedSecondClass.add(id as i32);
+  }
+
+  isParamDerivedSecondClass(id: SymbolId): boolean {
+    return this.#paramDerivedSecondClass.has(id as i32);
+  }
+
+  /**
    * If/else joins recorded while checking, awaiting the branch-join
    * decision when a scope with candidates closes (the decision needs
    * the complete capture and escape facts). Per body, swapped with the
@@ -1845,6 +1863,24 @@ final class CheckerContext {
     this.#asyncValueType = t;
   }
 
+  /**
+   * Whether the body being checked declared a `Scoped` return, which
+   * lifts the borrow-across-suspension rule for it: the frame's only
+   * first-class escape is the returned scoped value, and the scoped
+   * rules keep that inside the borrow's extent (ownership.md §"What
+   * the annotation allows"). Per-function, like the suspension
+   * context itself.
+   */
+  var #suspensionRelaxed: boolean = false;
+
+  suspensionRelaxed: boolean {
+    get { return this.#suspensionRelaxed; }
+  }
+
+  setSuspensionRelaxed(v: boolean): void {
+    this.#suspensionRelaxed = v;
+  }
+
   asyncFutureType: Type | null {
     get { return this.#asyncFutureType; }
   }
@@ -2249,6 +2285,7 @@ final class CheckerContext {
    */
   recordBorrowUse(expr: Node, si: Symbol): void {
     if (this.yieldType == null && this.asyncValueType == null) { return; }
+    if (this.#suspensionRelaxed) { return; }
     this.#bodyBorrowUses.push(new BorrowUseRec(
       si.id, si.name, this.#currentFlow, expr.id as i32, expr.loc));
   }
@@ -4051,6 +4088,66 @@ let typeCarriesOwner = (t: Type): boolean => {
 };
 
 /**
+ * Whether a value of `t` can carry a second-class value — the
+ * containment test behind the storage bans. Walks unions and pierces
+ * distinct aliases the way typeCarriesOwner does, so a nullable or
+ * aliased spelling (`Scoped<F> | null`, `type Sneak = Borrow<R>`) is
+ * not a storage loophole.
+ */
+let typeContainsSecondClass = (t: Type): boolean => {
+  if (isSecondClass(t)) { return true; }
+  if (t is UnionT) {
+    for (let m in t.types) {
+      if (typeContainsSecondClass(m)) { return true; }
+    }
+    return false;
+  }
+  if (t is TypeAliasType) {
+    if (isOwnershipWrapper(t) || isScopedType(t)) { return false; }
+    if (t.resolving) { return false; }
+    return typeContainsSecondClass(t.target);
+  }
+  return false;
+};
+
+/** The scoped half of typeContainsSecondClass, for diagnostic wording. */
+let typeContainsScoped = (t: Type): boolean => {
+  if (isScopedType(t)) { return true; }
+  if (t is UnionT) {
+    for (let m in t.types) {
+      if (typeContainsScoped(m)) { return true; }
+    }
+    return false;
+  }
+  if (t is TypeAliasType) {
+    if (isOwnershipWrapper(t)) { return false; }
+    if (t.resolving) { return false; }
+    return typeContainsScoped(t.target);
+  }
+  return false;
+};
+
+/**
+ * Whether `e` mentions a binding rooted in the current body's
+ * second-class parameters — the conservative derivation test for a
+ * scoped initializer or an await operand. Mentioning is enough: the
+ * common shapes are the parameter itself and a call passing it, and
+ * a false positive only demands a Scoped return that is then legal.
+ */
+let mentionsParamDerived = (ctx: CheckerContext, e: Node): boolean => {
+  var found = false;
+  walkEnter(e, (n: Node): void => {
+    if (found) { return; }
+    if (!(n is Identifier)) { return; }
+    let info = ctx.model.resolve(n);
+    if (info != null && ctx.isParamDerivedSecondClass(info.id)) {
+      found = true;
+    }
+  });
+  return found;
+};
+
+/**
  * Whether borrowing `inner` is restricted. A union inner — a merged
  * `Borrow<A> | Borrow<B>` — restricts when ANY member does: a value of
  * the union may dynamically be the restricted member, and dropping the
@@ -4083,7 +4180,7 @@ let rejectGeneratorBorrowParams = (
 ): void => {
   var i = 0;
   while (i < paramTypes.length && i < params.length) {
-    if (isSecondClass(paramTypes[i])) {
+    if (typeContainsSecondClass(paramTypes[i])) {
       ctx.error(
         "A generator may not take a '" + typeToString(paramTypes[i]) +
         "' parameter: the body only runs once the caller holds the " +
@@ -4118,8 +4215,8 @@ let rejectSecondClassStorage = (
   where: String,
   loc: SourceLocation | null
 ): void => {
-  if (!isSecondClass(t)) { return; }
-  if (isScopedType(t)) {
+  if (!typeContainsSecondClass(t)) { return; }
+  if (typeContainsScoped(t)) {
     ctx.error(
       "A '" + typeToString(t) + "' may not be stored in " + where + ". A scoped value " +
       "may not outlive the extent it derives from, and " + where + " outlives every extent.",
@@ -4206,10 +4303,10 @@ let checkBorrowDerivation = (
   borrowedReceiver: boolean,
   loc: SourceLocation | null
 ): void => {
-  if (!isSecondClass(returnType)) { return; }
+  if (!typeContainsSecondClass(returnType)) { return; }
   var sources = if (borrowedReceiver) 1 else 0;
   for (let p in paramTypes) {
-    if (isSecondClass(p)) { sources += 1; }
+    if (typeContainsSecondClass(p)) { sources += 1; }
   }
   if (sources == 1) { return; }
   let shown = typeToString(returnType);
@@ -4482,6 +4579,20 @@ let registerOwnParamCandidates = (
     let t = paramTypes[i];
     i += 1;
     if (param.isThisParam || param.name.name == "this") { continue; }
+    // Second-class parameters root the derivation test for awaits, and
+    // a scoped parameter is a consume candidate for the whole body:
+    // its caller handed over the one permitted copy, so a body that
+    // drops it on some path abandons a live frame.
+    if (typeContainsSecondClass(t)) {
+      let si2 = ctx.model.resolveDeclaration(param);
+      if (si2 != null) {
+        ctx.markParamDerivedSecondClass(si2.id);
+        if (isScopedType(t)) {
+          ctx.registerScopedCandidate(si2, param as Node);
+          ctx.recordBorrowBirth(si2.id);
+        }
+      }
+    }
     let handleType = soleNonNullMember(t) ?? t;
     if (ownershipHandleName(handleType) != "Own") { continue; }
     let innerOpt = ownershipHandleInner(handleType);
@@ -8663,7 +8774,23 @@ case _: {
       checkSymbolDeclaration(ctx, sd);
     }
     case ForInStatement {pattern, iterable, body, loc}: {
-      let iterableType = checkExpression(ctx, iterable, null);
+      var iterableType = checkExpression(ctx, iterable, null);
+      // Driving a scoped iterator is its consumption (ownership.md
+      // §"Required consumption"): the loop moves the binding — its exit
+      // disposal is total, `break` included — and the element machinery
+      // sees the iterator behind the wrapper.
+      if (isScopedType(iterableType)) {
+        let scopedIt = scopedInner(iterableType);
+        if (scopedIt != null) {
+          if (iterable is Identifier) {
+            let itSym = ctx.model.resolve(iterable);
+            if (itSym != null) {
+              ctx.recordFlowMove(itSym.id, itSym.name, iterable.loc);
+            }
+          }
+          iterableType = scopedIt;
+        }
+      }
       let baseT = unwrapAliases(iterableType);
       // Half of the generator-disposal gate: a loop that iterates
       // through the Iterator protocol may be handed a generator, and
@@ -8799,11 +8926,16 @@ let checkVariableDeclaration = (
   // never holds a resource, so there is nothing to release.
   // A simple `let` of scoped type must be consumed on every path out
   // of its block — registered here, decided at exitOwnScope and at
-  // each return (ownership.md §"Required consumption").
+  // each return (ownership.md §"Required consumption"). One whose
+  // initializer mentions a parameter-rooted second-class binding
+  // derives from it, and carries that root to the await check.
   if (kind == "let" && pattern is IdentifierPattern && isScopedType(declType)) {
     let scopedSym = ctx.model.resolveDeclaration(pattern);
     if (scopedSym != null) {
       ctx.registerScopedCandidate(scopedSym, pattern as Node);
+      if (mentionsParamDerived(ctx, init as Node)) {
+        ctx.markParamDerivedSecondClass(scopedSym.id);
+      }
     }
   }
 
@@ -13432,6 +13564,22 @@ let checkMethodBody = (
   let prevYieldType = ctx.yieldType;
   let prevAsyncValue = ctx.asyncValueType;
   let prevAsyncFuture = ctx.asyncFutureType;
+  let prevSuspensionRelaxed = ctx.suspensionRelaxed;
+
+  // A `Scoped` return on an async or gen method lifts the
+  // borrow-across-suspension rule and the generator parameter ban, as
+  // on function expressions: the Future/Iterator machinery sees the
+  // peeled type, the signature keeps the wrapper.
+  var mdEffectiveReturn = effectiveReturnType;
+  var mdScopedRelaxed = false;
+  if ((md.isGenerator || md.isAsync) && isScopedType(mdEffectiveReturn)) {
+    let mdInner = scopedInner(mdEffectiveReturn);
+    if (mdInner != null) {
+      mdEffectiveReturn = mdInner;
+      mdScopedRelaxed = true;
+    }
+  }
+  ctx.setSuspensionRelaxed(mdScopedRelaxed);
 
   // A declared `this: Own<this>` makes `this` the owner for the whole body,
   // closures included — where capturing it is rejected anyway, since a
@@ -13448,7 +13596,7 @@ let checkMethodBody = (
       genDeps.createsGenerator = true;
     }
     var yieldT: Type = new ErrorType();
-    match (effectiveReturnType) {
+    match (mdEffectiveReturn) {
       case InterfaceType {typeArguments}: {
         if (typeArguments != null) {
           if (typeArguments.length > 0) { yieldT = typeArguments[0]; }
@@ -13456,21 +13604,23 @@ let checkMethodBody = (
       }
       case _: {}
     }
-    rejectGeneratorBorrowParams(ctx, md.params, methodType.parameters);
+    if (!mdScopedRelaxed) {
+      rejectGeneratorBorrowParams(ctx, md.params, methodType.parameters);
+    }
     ctx.setReturnType(new VoidType());
     ctx.setYieldType(yieldT);
     ctx.setAsyncValueType(null);
     ctx.setAsyncFutureType(null);
   } else if (md.isAsync) {
     var valueT: Type = new ErrorType();
-    let fv = extractFutureValueType(ctx, effectiveReturnType);
+    let fv = extractFutureValueType(ctx, mdEffectiveReturn);
     if (fv != null) {
       valueT = fv;
     }
     ctx.setReturnType(valueT);
     ctx.setYieldType(null);
     ctx.setAsyncValueType(valueT);
-    ctx.setAsyncFutureType(effectiveReturnType);
+    ctx.setAsyncFutureType(mdEffectiveReturn);
   } else {
     ctx.setReturnType(effectiveReturnType);
     ctx.setYieldType(null);
@@ -13660,6 +13810,7 @@ let checkMethodBody = (
   ctx.setYieldType(prevYieldType);
   ctx.setAsyncValueType(prevAsyncValue);
   ctx.setAsyncFutureType(prevAsyncFuture);
+  ctx.setSuspensionRelaxed(prevSuspensionRelaxed);
   ctx.setOwningReceiver(prevOwningReceiver);
   ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
@@ -17189,6 +17340,21 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
           ctx.recordFlowMove(scopedSym.id, scopedSym.name, aw.argument.loc);
         }
       }
+      // Awaiting parks this frame on the scoped chain until it
+      // settles. When the chain is rooted in a parameter, its extent
+      // is the caller's, so this frame's own future must be Scoped
+      // too — a first-class future here could be stored past that
+      // extent and resume the chain after the owner released.
+      if (!ctx.suspensionRelaxed && mentionsParamDerived(ctx, aw.argument as Node)) {
+        ctx.error(
+          "Awaiting a scoped value derived from a parameter requires " +
+          "this function to return 'Scoped<Future<...>>': the frame " +
+          "waits on work bounded by the caller's extent, and a " +
+          "first-class future could outlive it.",
+          DiagnosticCode.TypeMismatch,
+          aw.loc
+        );
+      }
       operandType = inner;
     }
   }
@@ -17462,6 +17628,14 @@ let checkFunctionExpression = (
   let {isGenerator} = fe;
   var declaredYieldType: Type = new VoidType();
   var declaredIteratorType: Type | null = null;
+  // A `Scoped` return annotation on an async or gen body lifts the
+  // borrow-across-suspension rule for it, and the generator borrow
+  // parameter ban: the scoped rules keep the frame inside the borrow's
+  // extent, and the single-source requirement is checkBorrowDerivation's
+  // (the return type is second-class). The annotation is peeled here so
+  // the Future/Iterator machinery sees the type it wraps; the external
+  // return type keeps the wrapper.
+  var scopedReturnRelaxed = false;
   if (isGenerator) {
     // The other half of the generator-disposal gate (see the
     // ForInStatement arm): the program creates a generator.
@@ -17470,7 +17644,15 @@ let checkFunctionExpression = (
       genDeps.createsGenerator = true;
     }
     if (returnTypeAnn != null) {
-      let extracted = extractIteratorYieldType(ctx, retType);
+      var genRet = retType;
+      if (isScopedType(genRet)) {
+        let genInner = scopedInner(genRet);
+        if (genInner != null) {
+          genRet = genInner;
+          scopedReturnRelaxed = true;
+        }
+      }
+      let extracted = extractIteratorYieldType(ctx, genRet);
       if (extracted == null) {
         ctx.error(
           "A generator's return type must be 'Iterator<T>', got '" +
@@ -17480,6 +17662,7 @@ let checkFunctionExpression = (
         );
         declaredYieldType = new ErrorType();
         declaredIteratorType = new ErrorType();
+        scopedReturnRelaxed = false;
       } else {
         declaredYieldType = extracted;
         declaredIteratorType = retType;
@@ -17487,7 +17670,9 @@ let checkFunctionExpression = (
     }
     retType = new VoidType();
     needsInference = false;
-    rejectGeneratorBorrowParams(ctx, fe.params, paramTypes);
+    if (!scopedReturnRelaxed) {
+      rejectGeneratorBorrowParams(ctx, fe.params, paramTypes);
+    }
   }
 
   // Async functions: the annotation is the full Future<T> return type
@@ -17496,6 +17681,7 @@ let checkFunctionExpression = (
   // annotation, T is inferred from the returns and wrapped.
   let {isAsync} = fe;
   var declaredFutureType: Type | null = null;
+  var declaredScopedReturn: Type | null = null;
   if (isAsync) {
     // step()'s failure-capture region is a try_br: an async body needs
     // the exception tag and payload global even when it never throws
@@ -17505,7 +17691,15 @@ let checkFunctionExpression = (
       asyncDeps.needsExceptionInfra = true;
     }
     if (returnTypeAnn != null) {
-      let extracted = extractFutureValueType(ctx, retType);
+      var asyncRet = retType;
+      if (isScopedType(asyncRet)) {
+        let aInner = scopedInner(asyncRet);
+        if (aInner != null) {
+          asyncRet = aInner;
+          scopedReturnRelaxed = true;
+        }
+      }
+      let extracted = extractFutureValueType(ctx, asyncRet);
       if (extracted == null) {
         ctx.error(
           "An async function's return type must be 'Future<T>', got '" +
@@ -17515,8 +17709,15 @@ let checkFunctionExpression = (
         );
         retType = new ErrorType();
         declaredFutureType = new ErrorType();
+        scopedReturnRelaxed = false;
       } else {
-        declaredFutureType = retType;
+        if (scopedReturnRelaxed) {
+          declaredScopedReturn = retType;
+        }
+        // The adoption target is the future itself, wrapper or not:
+        // `return e` may hand back a Future<T>, which coerces into a
+        // scoped return the same as anywhere else.
+        declaredFutureType = asyncRet;
         retType = extracted;
       }
     }
@@ -17537,6 +17738,8 @@ let checkFunctionExpression = (
   let prevInferredYields = ctx.inferredYieldTypes;
   let prevAsyncValue = ctx.asyncValueType;
   let prevAsyncFuture = ctx.asyncFutureType;
+  let prevSuspensionRelaxed = ctx.suspensionRelaxed;
+  ctx.setSuspensionRelaxed(scopedReturnRelaxed);
   let prevTryDepth = ctx.tryDepth;
   let prevCancelBlockFloor = ctx.cancelBlockFloor;
   ctx.setCancelBlockFloor(-1);
@@ -17691,7 +17894,9 @@ let checkFunctionExpression = (
   // Async: the declared Future<T> is the return type; with no
   // annotation, wrap the inferred value type.
   if (isAsync) {
-    if (declaredFutureType != null) {
+    if (declaredScopedReturn != null) {
+      finalRetType = declaredScopedReturn;
+    } else if (declaredFutureType != null) {
       finalRetType = declaredFutureType;
     } else {
       finalRetType = makeFutureType(ctx, retType, loc);
@@ -17704,6 +17909,7 @@ let checkFunctionExpression = (
   ctx.setInferredYieldTypes(prevInferredYields);
   ctx.setAsyncValueType(prevAsyncValue);
   ctx.setAsyncFutureType(prevAsyncFuture);
+  ctx.setSuspensionRelaxed(prevSuspensionRelaxed);
   ctx.setTryDepth(prevTryDepth);
   ctx.setCancelBlockFloor(prevCancelBlockFloor);
   ctx.setInFinalizer(prevInFinalizer);
@@ -17790,7 +17996,7 @@ let checkFunctionExpression = (
       let decl = c.declaration;
       if (decl != null) {
         let declType = ctx.model.getNodeType(decl);
-        if (declType != null && isSecondClass(declType)) {
+        if (declType != null && typeContainsSecondClass(declType)) {
           ctx.error(
             "A '" + typeToString(declType) + "' may not be captured by a closure. " +
             "The closure can outlive the scope the borrow came from, and would then be " +

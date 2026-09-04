@@ -1,0 +1,47 @@
+// @mode: run
+// @result: 99
+// The Scoped suspension relaxations end to end (ownership.md §"What
+// the annotation allows"): an async function holds a borrow across
+// await behind a Scoped<Future<T>> return, and a generator takes a
+// borrow parameter behind a Scoped<Iterator<T>> return. Both frames
+// are consumed inside the owner's scope, so the borrows never outlive
+// their extents.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  size(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+// The borrow is read after the await: the frame holds it across the
+// suspension, and the scoped return is what makes that legal.
+let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let x = await tick();
+  return r.size() + x;
+};
+
+// A generator's body runs only once the caller drives the iterator;
+// the scoped return bounds that driving to the borrow's extent.
+let pair = gen (r: Borrow<Res>): Scoped<Iterator<i32>> => {
+  yield r.size();
+  yield r.size() + 1;
+};
+
+export let main = async (): Future<i32> => {
+  let owner = new Res(30);
+  let fut = read(owner);
+  let a = await fut;
+
+  let it = pair(owner);
+  var sum = 0;
+  for (let v in it) {
+    sum += v;
+  }
+  return a + sum + 7;
+};

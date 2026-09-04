@@ -5,6 +5,7 @@ import {
 import { SemanticModel } from '../../semantic-model.zena';
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
+  isScopedType, scopedInner,
 } from '../../types.zena';
 import {
   Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
@@ -1187,7 +1188,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   registerAsyncNode(n: Node, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
     if (n is AwaitExpression) {
-      let awaited = model.getNodeType(n.argument);
+      var awaited = model.getNodeType(n.argument);
+      // A scoped future suspends on the future behind the wrapper.
+      if (awaited != null && isScopedType(awaited)) {
+        awaited = scopedInner(awaited) ?? awaited;
+      }
       if (awaited != null) {
         let resolved = resolveType(awaited);
         if (resolved is ClassType) {
@@ -1222,7 +1227,13 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (ft == null || !(ft is FunctionType)) {
       return;
     }
-    let ret = resolveType(ft.returnType);
+    var retT = ft.returnType;
+    // A Scoped-returning async function's frame future is the Future
+    // behind the wrapper.
+    if (isScopedType(retT)) {
+      retT = scopedInner(retT) ?? retT;
+    }
+    let ret = resolveType(retT);
     if (ret is ClassType) {
       this.registerAsyncFuture(ret, model, true);
     }

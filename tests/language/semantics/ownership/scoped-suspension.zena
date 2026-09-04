@@ -1,0 +1,69 @@
+// @mode: check
+// The Scoped suspension relaxations (ownership.md §"What the
+// annotation allows"): a Scoped<Future<T>> return lets an async body
+// hold a borrow across await; a Scoped<Iterator<T>> return lets a
+// generator take a borrow parameter. Without the annotation both bans
+// stand, and the scoped result is still governed by the consumption
+// and derivation rules.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+
+resource class Res {
+  new();
+  size(): i32 { return 4; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+// The relaxed async body: the borrow is read after the await.
+let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let x = await tick();
+  return r.size() + x;
+};
+
+// The same body without the Scoped return keeps the ban.
+let unrelaxed = async (r: Borrow<Res>): Future<i32> => {
+  let x = await tick();
+  return r.size() + x; // @error: suspension
+};
+
+// The relaxed return still needs a borrow to derive from.
+let underived = async (): Scoped<Future<i32>> => { // @error: no borrow parameter
+  let x = await tick();
+  return x;
+};
+
+// The relaxed generator: a borrow parameter behind a scoped iterator.
+let pair = gen (r: Borrow<Res>): Scoped<Iterator<i32>> => {
+  yield r.size();
+};
+
+// Without the scoped return the generator parameter ban stands.
+let banned = gen (r: Borrow<Res>): Iterator<i32> => { // @error: may not take
+  yield r.size();
+};
+
+// Driving a scoped iterator consumes it; not driving it is an error,
+// and driving it twice is a use after move.
+let consume = (r: Borrow<Res>): i32 => {
+  let it = pair(r);
+  var sum = 0;
+  for (let v in it) {
+    sum += v;
+  }
+  return sum;
+};
+
+let abandonedIterator = (r: Borrow<Res>): i32 => {
+  let it = pair(r);
+  return 0; // @error: must be consumed
+};
+
+let drivenTwice = (r: Borrow<Res>): i32 => {
+  let it = pair(r);
+  for (let v in it) {}
+  for (let v in it) {} // @error: may have been moved
+  return 0;
+};

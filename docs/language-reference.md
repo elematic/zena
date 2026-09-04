@@ -4415,7 +4415,8 @@ released the resource. An `async` function may use a borrow parameter
 up to its first `await` — the body runs eagerly, inside the caller's
 extent, until then — and a borrow derived after the last suspension is
 fine. A generator may not take a restricted borrow parameter at all:
-its body only runs once the caller holds the iterator.
+its body only runs once the caller holds the iterator. Declaring a
+`Scoped` return lifts both rules — see "Scoped values" below.
 
 ```zena
 let sizes = async (f: Borrow<File>): Future<i32> => {
@@ -4452,10 +4453,24 @@ if (fast) {
 return 0;            // error: 'fut' must be consumed on every path
 ```
 
-The planned use — an async function that holds a borrow across `await`
-by declaring a `Scoped<Future<T>>` return, and a generator taking
-borrow parameters behind a `Scoped<Iterator<T>>` — is not implemented
-yet; the borrow rules above still apply inside every body.
+The annotation is what lifts the suspension rules. An async function
+that declares a `Scoped<Future<T>>` return (with one borrow parameter
+to derive from) may hold its borrow across `await`: the frame's only
+first-class escape is the returned scoped future, which cannot outlive
+the borrow's extent. A generator may take restricted borrow parameters
+when its return type is `Scoped<Iterator<T>>`; the caller consumes the
+iterator with `for`/`in`, whose exit disposal runs on every path out of
+the loop:
+
+```zena
+let read = async (f: Borrow<File>): Scoped<Future<i32>> => {
+  let limit = await fetchLimit();  // f stays live across the await
+  return min(f.size(), limit);
+};
+
+let fut = read(file);   // fut: Scoped<Future<i32>>
+let n = await fut;      // consumed inside file's extent
+```
 
 ## 13. Compilation
 
