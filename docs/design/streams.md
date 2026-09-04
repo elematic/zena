@@ -148,7 +148,8 @@ w.close();                   // end-of-stream: reads complete with 0
 - Fan-in from several producers is an explicit multiplexing adapter
   over one writer, exactly as fan-out is an explicit `share` over one
   reader: neither implicit `tee` nor implicit merge, for the same
-  unbounded-interleaving reasons.
+  unbounded-interleaving reasons. `share` is designed in
+  [stream-sharing.md](stream-sharing.md).
 
 ## Errors: elements on the stream, outcomes on a future
 
