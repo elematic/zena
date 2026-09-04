@@ -48,15 +48,15 @@
             }.${system} or (throw "Unsupported system: ${system}");
 
             hash = {
-              "x86_64-linux" = "1gypkwyz6mms85psgh33nfq2h68bpnicxjyhp2vdi6nx3qs8dk1a";
-              "aarch64-linux" = "1xpisz5qf2bqscyr2bf1hj43vswlymkwv33jinfmywsygpxx2bwv";
-              "x86_64-darwin" = "0qpp5dxpg0dvqya31br6vg4clam0fncygfn1y65488s7v48q87bq";
-              "aarch64-darwin" = "09fdppfwqr0pzh338r6disvw94848ghcdkciv9f298s2xavdljxb";
+              "x86_64-linux" = "13vn1zdq6fdvmy461dh1s06wzrc361fksdx01dkk68rpp90qcvj4";
+              "aarch64-linux" = "130a2swwgnf2klfbds9hcdrznq798dn9f78qqrdyw74swiw142yy";
+              "x86_64-darwin" = "0ri5f3h8sdnh921bm2fd16zncw1mxanjcfm3b917icr1d9hl2i5q";
+              "aarch64-darwin" = "0x7lvn3vgn83mgpl6mciw412irqlcaigpdxfl6rpi19b63ck06j2";
             }.${system} or "";
           in
           pkgs.stdenv.mkDerivation rec {
             pname = "wasmtime";
-            version = "46.0.0";
+            version = "47.0.4";
 
             src = pkgs.fetchurl {
               url = "https://github.com/bytecodealliance/wasmtime/releases/download/v${version}/wasmtime-v${version}-${suffix}.tar.xz";
