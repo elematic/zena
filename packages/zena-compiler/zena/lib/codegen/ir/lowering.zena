@@ -347,8 +347,10 @@ let castToConcreteRef = (b: IrBuilder, value: i32, targetVt: ValType): i32 => {
 
 /**
  * Interface trampoline: cast the erased receiver to the target's
- * concrete type, cast any erased params likewise, and tail into the
- * target (docs: FunctionGenerator's interfaceTrampolineTarget arm).
+ * concrete type, cast any erased params likewise, and call the target
+ * (docs: FunctionGenerator's interfaceTrampolineTarget arm). The call
+ * is a tail call unless the result needs converting on the way back —
+ * see resultsForwardable.
  */
 let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
   let target = func.interfaceTrampolineTarget as WasmFunction;
@@ -417,6 +419,10 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
     args.push(v);
   }
   let funcRef = b.addRef(new IrRefFunc(target));
+  if (resultsForwardable(func, target)) {
+    b.retCall(funcRef, args);
+    return b.finish();
+  }
   if (target.signature.returns.length > 1) {
     // Multi-result target (e.g. Iterator.next): project and re-return.
     if (func.signature.returns.length != target.signature.returns.length) {
@@ -556,6 +562,35 @@ let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
   return b.finish();
 };
 
+/**
+ * Whether an adapter can hand its target's results straight back —
+ * same count, each a subtype of the adapter's own. That is exactly
+ * `return_call`'s rule, so when it holds the adapter tail-calls and
+ * the frame it would have kept disappears (tail-calls.md §4).
+ *
+ * Worth doing because the frame is synthetic — no source line, nothing
+ * a backtrace loses — and because keeping it broke the guarantee
+ * `tail return` makes: a tail call whose callee is a function value or
+ * an interface method lands in one of these, and a chain of them grew
+ * the stack one frame per hop.
+ *
+ * False when the adapter has to convert the result, which is code that
+ * runs after the target returns. Those keep their frame.
+ */
+let resultsForwardable = (func: WasmFunction, target: WasmFunction): boolean => {
+  let mine = func.signature.returns;
+  let theirs = target.signature.returns;
+  if (mine.length != theirs.length) {
+    return false;
+  }
+  for (var i = 0; i < mine.length; i += 1) {
+    if (!isValSubtype(theirs[i], mine[i])) {
+      return false;
+    }
+  }
+  return true;
+};
+
 /** Closure wrapper: forward params[1..] (dropping the ctx) to the target. */
 /**
  * A closure trampoline: the value-position form of a plain function —
@@ -579,6 +614,10 @@ let synthesizeClosureTrampoline = (func: WasmFunction): IrBody => {
   let funcRef = b.addRef(new IrRefFunc(target));
   if (target.signature.returns.length > 1) {
     throw new ZirUnsupported('closure trampoline result shape');
+  }
+  if (resultsForwardable(func, target)) {
+    b.retCall(funcRef, args);
+    return b.finish();
   }
   let resultType = if (target.signature.returns.length == 1) target.signature.returns[0] else null;
   let result = b.callFunc(funcRef, args, resultType);
@@ -608,6 +647,10 @@ let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
     args.push(params[i]);
   }
   let funcRef = b.addRef(new IrRefFunc(target));
+  if (resultsForwardable(func, target)) {
+    b.retCall(funcRef, args);
+    return b.finish();
+  }
   if (target.signature.returns.length > 1) {
     if (func.signature.returns.length != target.signature.returns.length) {
       throw new ZirUnsupported('closure wrapper result shape');

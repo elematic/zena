@@ -30,6 +30,10 @@ see `src/_data/sidebar.js` for the full content plan.
 
 <!-- TODO: return types -->
 
+## Tail calls
+
+<!-- TODO: tail calls — `tail return f(x);`, the rules, `return_call` -->
+
 ## Closures
 
 <!-- TODO: closures -->

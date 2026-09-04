@@ -354,6 +354,30 @@ let add5 = makeAdder(5);
 add5(10); // 15
 ```
 
+### Tail Calls
+
+`tail return f(x);` compiles the call to WebAssembly's `return_call`: the
+frame is discarded before the callee runs, so a chain of tail calls executes
+in constant stack space.
+
+```zena
+function sum(n: i32, acc: i32 = 0): i32 {
+  if (n == 0) { return acc; }
+  tail return sum(n - 1, acc + n);
+}
+
+sum(1000000);  // no stack overflow
+```
+
+The annotation is required. A call in tail position without it compiles to
+an ordinary call, keeping its frame and its line in every backtrace. `tail`
+is a contextual keyword and stays available as an identifier.
+
+The call must be the whole operand and must return exactly the enclosing
+function's declared return type. `tail return` is rejected in an `async`
+function, a generator or a constructor, and inside a `try` or while a
+`using` binding is live — in each case the frame still has work to do.
+
 ### Multi-Value Returns
 
 Functions can return multiple values using unboxed tuples. Unlike regular tuples

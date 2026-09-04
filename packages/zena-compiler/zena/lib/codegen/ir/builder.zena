@@ -359,6 +359,18 @@ export final class IrBuilder {
     this.#emitInCurrent(IrOp.ret, -1, value, -1);
   }
 
+  /**
+   * `ret_call`: a tail call to a known function, encoded exactly as
+   * `call` but terminating the block and producing no value — the
+   * callee's results are this function's results
+   * (docs/design/tail-calls.md). The caller owes the wasm rule that
+   * the callee's results are subtypes of this function's.
+   */
+  retCall(funcRef: i32, args: GrowableArray<i32>): void {
+    let argsIdx = this.pushArgList(args);
+    this.#emitInCurrent(IrOp.ret_call, -1, argsIdx, funcRef);
+  }
+
   /** yield_: a = yielded value, b = [resumeTarget, argc, arg*].
    * Suspension terminator for presplit generator bodies; the split
    * pass rewrites every yield before emission. */

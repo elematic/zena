@@ -27,6 +27,45 @@ export function main() {
 
 </figure>
 
+<figure id="example-tail-calls" category="Basics">
+<figcaption>Tail Calls</figcaption>
+
+```zena
+// `tail return` compiles the call to WebAssembly's `return_call`: the
+// frame is discarded before the callee runs, so a chain of tail calls
+// runs in constant stack space. The same code with a plain `return`
+// exhausts the stack long before a million frames.
+function depth(n: i32, acc: i32): i32 {
+  if (n == 0) {
+    return acc;
+  }
+  tail return depth(n - 1, acc + 1);
+}
+
+// Mutual recursion counts too, and so do method, closure and
+// interface calls.
+function isEven(n: i32): boolean {
+  if (n == 0) { return true; }
+  tail return isOdd(n - 1);
+}
+
+function isOdd(n: i32): boolean {
+  if (n == 0) { return false; }
+  tail return isEven(n - 1);
+}
+
+export let main = () => {
+  console.log(`depth reached: ${depth(1000000, 0)}`);
+  console.log(`1000000 is even: ${isEven(1000000)}`);
+
+  // `tail` is contextual, so it is still an ordinary name.
+  let tail = [1, 2, 3];
+  console.log(`tail: ${tail.length}`);
+};
+```
+
+</figure>
+
 <figure id="example-expression-oriented" category="Basics">
 <figcaption>Expression Oriented</figcaption>
 

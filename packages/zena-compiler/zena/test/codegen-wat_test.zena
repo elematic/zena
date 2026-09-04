@@ -563,6 +563,35 @@ export let tests = suite('WatGenerator', (): void => {
         'the tail call IS the call — there is no plain one left');
   });
 
+  test('a tail call through a funcref emits return_call_ref', (ctx: TestContext): void => {
+    let result = compileAndGenerateWat(`
+      interface Hop {
+        hop(n: i32): i32;
+      }
+      class Decrement implements Hop {
+        hop(n: i32): i32 { return n - 1; }
+      }
+      function viaClosure(f: (x: i32) => i32, n: i32): i32 {
+        tail return f(n);
+      }
+      function viaInterface(h: Hop, n: i32): i32 {
+        tail return h.hop(n);
+      }
+      export let main = (): i32 => {
+        let d = new Decrement();
+        return viaClosure((x: i32) => x + 1, 1) + viaInterface(d, 1);
+      };
+    `);
+    // A closure value and a virtual method are the two callee shapes
+    // that dispatch through a funcref, and neither is a direct call.
+    let present = new GrowableArray<String>();
+    present.push('return_call_ref');
+    assertFunctionUses(result, '$viaClosure', present,
+        'calling a closure parameter goes through the funcref in its pair struct');
+    assertFunctionUses(result, '$viaInterface', present,
+        'an interface call reads its target out of the vtable');
+  });
+
   test('an unannotated call in tail position stays an ordinary call', (ctx: TestContext): void => {
     let result = compileAndGenerateWat(`
       function down(n: i32, acc: i32): i32 {

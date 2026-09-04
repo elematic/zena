@@ -10,7 +10,7 @@ function down(n: i32, acc: i32): i32 {
   tail return down(n - 1, acc + 1);
 }
 
-// Mutual recursion is a tail call too, and so is a method call.
+// Mutual recursion is a tail call too, and so is a call on `this`.
 function even(n: i32): i32 {
   if (n == 0) {
     return 1;
@@ -37,11 +37,48 @@ class Counter {
   }
 }
 
+// Everything above compiles to `return_call`, the direct form. A call
+// through a funcref compiles to `return_call_ref`, and there are two
+// ways to reach one. The first is a closure value: `bounce` tail-calls
+// its parameter, and the chain below alternates between that and a
+// direct call, so half of a million frames go through the ref form.
+function bounce(f: (x: i32) => i32, n: i32): i32 {
+  if (n == 0) {
+    return 0;
+  }
+  tail return f(n - 1);
+}
+
+function step(n: i32): i32 {
+  tail return bounce(step, n);
+}
+
+// The second is a virtual call: `drive` dispatches through the
+// interface, and the method it lands in tail-calls back.
+interface Hop {
+  hop(n: i32): i32;
+}
+
+class Decrement implements Hop {
+  hop(n: i32): i32 {
+    tail return drive(this, n - 1);
+  }
+}
+
+function drive(h: Hop, n: i32): i32 {
+  if (n == 0) {
+    return 0;
+  }
+  tail return h.hop(n);
+}
+
 // `tail` is a contextual keyword, so it is still a name.
 let tail = 7;
 
 export let main = (): i32 => {
   let c = new Counter(1);
+  let dec = new Decrement();
   return down(1000000, 0) + even(999999) + odd(1000000) +
-      c.countDown(500000) + tail - 7;
+      c.countDown(500000) + step(500000) + drive(dec, 500000) +
+      tail - 7;
 };

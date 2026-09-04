@@ -252,6 +252,61 @@ Inline tuples exist only in return positions and must be destructured
 immediately. They cannot be stored in variables or passed into functions as
 arguments.
 
+### Tail calls (`tail return`)
+
+A recursive function normally grows the stack once per call, and a deep enough
+recursion overflows it. `tail return f(x);` compiles the call to WebAssembly's
+`return_call`, which discards the current frame before the callee runs — so a
+chain of tail calls executes in constant stack space however long it gets:
+
+```zena
+function sum(n: i32, acc: i32 = 0): i32 {
+  if (n == 0) {
+    return acc;
+  }
+  tail return sum(n - 1, acc + n);
+}
+
+sum(1000000); // fine; the same function with a plain `return` overflows
+```
+
+The annotation is required rather than inferred, for two reasons. A program
+written against tail-call elimination breaks when it does not fire, and whether
+it fires depends on code around the call site rather than the call itself. And
+a tail call erases the caller's line from every backtrace taken inside the
+callee, which is a poor default for calls that do not need the frame gone.
+
+`tail` is a contextual keyword — it is only special directly before `return` —
+so it remains available as a name.
+
+Mutual recursion, method calls, calls to a closure parameter and virtual calls
+through an interface are all eligible, and all run in constant stack:
+
+```zena
+function isEven(n: i32): i32 {
+  if (n == 0) { return 1; }
+  tail return isOdd(n - 1);
+}
+
+function isOdd(n: i32): i32 {
+  if (n == 0) { return 0; }
+  tail return isEven(n - 1);
+}
+```
+
+`tail return` is rejected where the frame is not actually finished with, and
+the compiler says which rule applies:
+
+- The operand must be one call: not `f(x) + 1`, not `new C(x)`, not `f?.(x)`.
+- The enclosing function must declare its return type, and the call must return
+  that same type. A conversion would have to run after the callee returned, in
+  the frame the tail call discarded.
+- Not in an `async` function or a generator, where `return` completes a future
+  or ends an iteration rather than returning from a frame.
+- Not in a constructor, which returns the new instance.
+- Not inside a `try`, and not while a `using` binding is live: a handler, a
+  `finally` and a release all run on the way out.
+
 ## Function types and compatibility
 
 Function types describe callable signatures and are written with named

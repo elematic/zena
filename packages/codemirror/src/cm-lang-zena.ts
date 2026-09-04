@@ -205,6 +205,12 @@ export const zenaLanguage = StreamLanguage.define<ZenaState>({
     // 7. Keywords / Types / Identifiers
     if (stream.match(/^[a-zA-Z_$][a-zA-Z0-9_$]*/)) {
       const word = stream.current();
+      // `tail` is contextual: a keyword only directly before `return`,
+      // an ordinary name everywhere else. The `false` peeks without
+      // consuming, so `return` still tokenizes on its own.
+      if (word === 'tail' && stream.match(/^\s+return\b/, false)) {
+        return 'controlKeyword';
+      }
       if (controlKeywords.has(word)) return 'controlKeyword';
       if (definitionKeywords.has(word)) return 'definitionKeyword';
       if (moduleKeywords.has(word)) return 'moduleKeyword';
