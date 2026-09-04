@@ -278,5 +278,12 @@ Features that distinguish Zena from TypeScript:
   signed and float shaped types (`I32x4`, `F32x4` and siblings) with
   elementwise operators are implemented — see [simd.md](docs/design/simd.md).
   What remains: unsigned shapes, lane comparisons, and reductions.
+- **Tail Calls**: `tail return f(x);` compiles to `return_call`, so a
+  chain of tail calls runs in constant stack space. Opt-in, so a program
+  that needs the guarantee says so and everything else keeps its frames
+  and its backtraces. Implemented — see
+  [tail-calls.md](docs/design/tail-calls.md). What remains: multi-value
+  tail returns, and callee return types that are wasm subtypes rather
+  than the same type.
 - **Decorators and Macros**: Metaprogramming capabilities for compile-time code generation and extension.
 - **Contracts**: `requires` and `ensures` pre/post-conditions, enabling runtime assertion checks and future static verification using SMT solvers.

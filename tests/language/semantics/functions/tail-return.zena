@@ -1,0 +1,91 @@
+// @mode: check
+// `tail return` compiles its call to `return_call`, so the frame has to
+// be dead at the call and no code may run after it
+// (docs/design/tail-calls.md §3).
+
+import { Future } from 'zena:async';
+import { Own, Disposable } from 'zena:ownership';
+
+class Animal {}
+class Dog extends Animal {}
+
+function makeDog(): Dog { return new Dog(); }
+function count(): i32 { return 1; }
+function nothing(): void {}
+
+// The blessed shape.
+function loop(n: i32): i32 {
+  if (n == 0) { return 0; }
+  tail return loop(n - 1);
+}
+
+// A wider return type would need a conversion after the callee
+// returned, in the frame the tail call discarded.
+function widen(): Animal {
+  tail return makeDog(); // @error: 'tail return' requires the call to return 'Animal'
+}
+
+// With an inferred return type there is nothing to match the call
+// against.
+let inferred = () => {
+  tail return count(); // @error: 'tail return' requires the enclosing function to declare its return type.
+};
+
+// The operand is one call, not an expression built around one.
+function arithmetic(): i32 {
+  tail return count() + 1; // @error: 'tail return' returns a call
+}
+
+// A `try` owes the handler and the finalizer to a frame this would
+// discard.
+function inTry(): i32 {
+  try {
+    tail return count(); // @error: 'tail return' is not allowed inside a 'try'
+  } catch (e) {
+    return 0;
+  }
+}
+
+// A multi-value return goes through several wasm results; the rewrite
+// does not handle that shape yet (tail-calls.md §6).
+let pair = (): inline (i32, i32) => {
+  return (1, 2);
+};
+
+let forward = (): inline (i32, i32) => {
+  tail return pair(); // @error: 'tail return' does not support a multi-value return type
+};
+
+resource class Handle {
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+function acquire(): Own<Handle> { return new Handle(); }
+
+// A live `using` owes the release the same way.
+function underUsing(): i32 {
+  using h = acquire();
+  tail return count(); // @error: 'tail return' is not allowed while a 'using' binding is live
+}
+
+// `return` in an async body completes a future, and in a generator ends
+// the iteration; neither returns from the frame it was written in.
+let later = async (): Future<i32> => {
+  tail return count(); // @error: 'tail return' is not allowed in an async function
+};
+
+let items = gen (): Iterator<i32> => {
+  yield 1;
+  // @error: 'tail return' is not allowed in a generator
+  // @error: Generators cannot return a value
+  tail return nothing();
+};
+
+class Holder {
+  x: i32;
+  new() : x = 0 {
+    tail return makeHolder(); // @error: 'tail return' is not allowed in a constructor
+  }
+}
+
+function makeHolder(): Holder { return new Holder(); }

@@ -1265,7 +1265,7 @@ export final class FunctionLowerer {
         for (var si = 0; si < bodyCount; si += 1) {
           withReturn.push(stmts[si]);
         }
-        withReturn.push(new ReturnStatement(tailExpr,
+        withReturn.push(new ReturnStatement(tailExpr, false,
             tailExpr.loc) as Statement);
         if (dropFieldNames.length > 0) {
           lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
@@ -1335,7 +1335,7 @@ export final class FunctionLowerer {
         let synthesized = new GrowableArray<Statement>();
         if (sig.returns.length == 1) {
           synthesized.push(
-              new ReturnStatement(bodyExpr, bodyExpr.loc) as Statement);
+              new ReturnStatement(bodyExpr, false, bodyExpr.loc) as Statement);
         } else {
           synthesized.push(
               new ExpressionStatement(bodyExpr, bodyExpr.loc) as Statement);
@@ -2335,6 +2335,73 @@ export final class FunctionLowerer {
     return if (sig.returns.length == 1) sig.returns[0] else null;
   }
 
+  /**
+   * `tail return f(x);` (tail-calls.md §4). The call lowers exactly as
+   * an ordinary call — which is what makes every callee shape the
+   * backend handles a tail call — and the instruction it produced is
+   * then rewritten in place into `ret_call`/`ret_call_ref`: same
+   * operands, no result, and no `ret` after it.
+   *
+   * The rewrite needs that call to be the last instruction lowered
+   * into the current block and to be the value being returned, which
+   * is exactly "nothing runs between the call and the return". The
+   * checker's rules (§3) are what keep a program from reaching a bail
+   * here.
+   */
+  #lowerTailReturn(argument: Expression | null): void {
+    if (argument == null || !(argument is CallExpression)) {
+      this.#bail('tail return operand is not a call');
+    }
+    if (this.presplitGenerator || this.presplitAsync) {
+      this.#bail('tail return in a suspending body');
+    }
+    if (this.#cx().finallyScopes.length > 0) {
+      this.#bail('tail return owes a finalizer');
+    }
+    let sig = this.func.signature;
+    if (sig.returns.length > 1) {
+      this.#bail('tail return multi-value');
+    }
+    let value = this.#lowerCall(argument as CallExpression);
+    if (!this.#cx().reachable) {
+      this.#bail('tail return call left the function');
+    }
+    let body = this.b.body;
+    let blk = body.blocks[this.b.currentBlock()];
+    if (blk.insts.length == 0) {
+      this.#bail('tail return produced no call');
+    }
+    let last = blk.insts[blk.insts.length - 1];
+    let op = body.op(last);
+    if (op != IrOp.call && op != IrOp.call_ref) {
+      this.#bail('tail return: the operand did not lower to one wasm ' +
+          'call (an @intrinsic, or a call through a union of function ' +
+          'types, cannot be a tail call)');
+    }
+    if (sig.returns.length == 0) {
+      if (body.producesValue(last)) {
+        this.#bail('tail return of a value in a void function');
+      }
+    } else {
+      if (last != value || !body.producesValue(last)) {
+        this.#bail('tail return: the operand did not lower to one wasm ' +
+            'call whose result is the returned value');
+      }
+      // The wasm rule is that the callee's results are assignable to
+      // this function's. The checker made the source types identical,
+      // so a mismatch here is a lowering bug, not a program error.
+      if (!isValSubtype(body.resultType(last) as ValType, sig.returns[0])) {
+        this.#bail('tail return result type');
+      }
+    }
+    body.opcode[last] = (if (op == IrOp.call) {
+      IrOp.ret_call
+    } else {
+      IrOp.ret_call_ref
+    }) as i32;
+    body.typeId[last] = -1;
+  }
+
   #emitCheckedRet(value: i32): void {
     if (!this.#cx().reachable) {
       // The tail expression never produced a value — every path
@@ -2443,13 +2510,15 @@ export final class FunctionLowerer {
       case VariableDeclaration as vd: {
         this.#lowerVariableDeclaration(vd);
       }
-      case ReturnStatement {argument}: {
+      case ReturnStatement {argument, isTail}: {
         // A `return` inside a `finally`-protected region leaves that
         // region, so it owes every finalizer between here and the
         // function's exit: returnThroughFinally parks it at the
         // innermost dispatch, which replays it once the finalizer has
         // run (and re-enters this on the way out of the next one).
-        if (argument == null) {
+        if (isTail) {
+          this.#lowerTailReturn(argument);
+        } else if (argument == null) {
           if (this.ctorFactoryThis >= 0) {
             // A bare `return;` in a constructor body inlined into the
             // factory returns the allocated instance.

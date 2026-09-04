@@ -300,7 +300,10 @@ Core properties:
 - **One definition per value.** A value is defined by exactly one instruction
   or block parameter. Uses must be dominated by their definition.
 - **Blocks end in exactly one terminator**: `br`, `br_if`, `br_table`,
-  `br_on_cast` / `br_on_cast_fail`, `ret`, `throw`, `unreachable`.
+  `br_on_cast` / `br_on_cast_fail`, `ret`, `ret_multi`, `ret_call`,
+  `ret_call_ref`, `try_br`, `throw`, `unreachable`. The two `ret_call`
+  forms are `call`/`call_ref` with no result — a `tail return` lowers
+  the call and rewrites it in place ([tail-calls.md](tail-calls.md) §4).
 - **Instructions are typed** with the existing `ValType` from
   `codegen/wasm.zena` — i.e. ZIR types are _lowered wasm-GC types_
   (`i32`/`i64`/`f32`/`f64`, `ref $Struct`, `ref null $Sig`, `anyref`, …), not

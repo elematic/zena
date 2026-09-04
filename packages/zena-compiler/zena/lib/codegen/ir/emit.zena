@@ -1053,8 +1053,10 @@ export final class ZirFunctionEmitter {
       // via #pushValue (a br_if condition, a returned/thrown value).
       // br's operands are branch args — copy semantics — and try_br
       // opens control structure before any operand.
+      // ret_call_ref is off for the same reason call_ref is: wasm
+      // pushes the callee funcref after the arguments, not before.
       return op == IrOp.br_if || op == IrOp.ret || op == IrOp.ret_multi ||
-          op == IrOp.throw;
+          op == IrOp.throw || op == IrOp.ret_call;
     }
     if (isUnaryNumericOp(op) || isBinaryNumericOp(op)) {
       return true;
@@ -1439,6 +1441,32 @@ export final class ZirFunctionEmitter {
       } else {
         this.emitter.emitReturn();
       }
+      return;
+    }
+    // A tail call is the whole exit: `return_call` transfers control,
+    // so nothing follows it and no `return` is written (tail-calls.md).
+    if (op == IrOp.ret_call) {
+      let argsIdx = body.a[inst];
+      let argc = body.extra[argsIdx];
+      for (var k = 0; k < argc; k += 1) {
+        this.#pushValue(body.extra[argsIdx + 1 + k]);
+      }
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefFunc)) {
+        throw new Error('zir emit: ret_call ref is not a function');
+      }
+      this.emitter.emitReturnCall(ref.target);
+      return;
+    }
+    if (op == IrOp.ret_call_ref) {
+      let idx = body.a[inst];
+      let callee = body.extra[idx];
+      let argc = body.extra[idx + 1];
+      for (var k = 0; k < argc; k += 1) {
+        this.#pushValue(body.extra[idx + 2 + k]);
+      }
+      this.#pushValue(callee);
+      this.emitter.emitReturnCallRef(this.#signatureOf(callee).index);
       return;
     }
     if (op == IrOp.unreachable) {

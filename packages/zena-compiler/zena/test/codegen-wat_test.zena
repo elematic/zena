@@ -8,7 +8,7 @@ import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
 import { checkCompilation, createCompiler, CompilerOptions } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { getEnv } from 'zena:cli';
-import { assertFunctionUses, assertFunctionOmits, assertNoAllocation } from './wat-invariants.zena';
+import { assertFunctionUses, assertFunctionUsesTimes, assertFunctionOmits, assertNoAllocation } from './wat-invariants.zena';
 
 let assertSnapshot = (name: String, content: String): void => {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
@@ -538,5 +538,46 @@ export let tests = suite('WatGenerator', (): void => {
         'the native instructions replace the halves-and-carries sequence, ' +
         'they do not sit alongside it');
   });
-});
+  // -- tail calls (docs/design/tail-calls.md) ---------------------------
+  //
+  // `tail return` is a guarantee, not a hint: the whole point is that a
+  // program written against constant stack usage does not silently get
+  // a growing one. A snapshot would not tell a fallback to `call` from
+  // any other emission change, so assert the instruction.
 
+  test('tail return emits return_call and no ordinary call', (ctx: TestContext): void => {
+    let result = compileAndGenerateWat(`
+      function down(n: i32, acc: i32): i32 {
+        if (n == 0) { return acc; }
+        tail return down(n - 1, acc + 1);
+      }
+      export let main = (): i32 => down(3, 0);
+    `);
+    let present = new GrowableArray<String>();
+    present.push('return_call $down');
+    assertFunctionUses(result, '$down', present,
+        'the recursive call is annotated tail, so it discards the frame');
+    // Once, not alongside an ordinary call: the rewrite replaces the
+    // call rather than emitting a second one.
+    assertFunctionUsesTimes(result, '$down', 'call $down', 1,
+        'the tail call IS the call — there is no plain one left');
+  });
+
+  test('an unannotated call in tail position stays an ordinary call', (ctx: TestContext): void => {
+    let result = compileAndGenerateWat(`
+      function down(n: i32, acc: i32): i32 {
+        if (n == 0) { return acc; }
+        return down(n - 1, acc + 1);
+      }
+      export let main = (): i32 => down(3, 0);
+    `);
+    let present = new GrowableArray<String>();
+    present.push('call $down');
+    assertFunctionUses(result, '$down', present,
+        'tail-call elimination is opt-in; nothing infers it');
+    let absent = new GrowableArray<String>();
+    absent.push('return_call');
+    assertFunctionOmits(result, '$down', absent,
+        'tail-call elimination is opt-in; nothing infers it');
+  });
+});

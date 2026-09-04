@@ -76,6 +76,8 @@
  *   simd_load_lane, simd_store_lane:
  *                a -> [addr, vector],        b -> [opcode, align, lane]
  *   ret:         a = value, or -1 for void
+ *   ret_call:     a -> [argc, arg*],          b = ref (function)
+ *   ret_call_ref: a -> [callee, argc, arg*]
  *   yield_:      a = yielded value, b -> [target, argc, arg*]
  *   await_:      a = awaited future, b -> [target, argc, arg*]
  *                (both: presplit suspension bodies only — generator
@@ -331,6 +333,16 @@ export enum IrOp {
   ret,
   /** Multi-value return: all result values at once. */
   ret_multi,
+  /**
+   * Tail call to a known function: `return_call`. Encoded exactly as
+   * `call` — slot a indexes the counted argument list, slot b the
+   * refTable entry — and produces no value: the callee's results are
+   * this function's results. See docs/design/tail-calls.md.
+   */
+  ret_call,
+  /** Tail call through a funcref: `return_call_ref`. Encoded exactly
+   * as `call_ref`. */
+  ret_call_ref,
   throw,
   unreachable,
   /** Generator suspension (presplit form only, generators.md §4.1):
@@ -718,8 +730,8 @@ export final class IrBody {
       return;
     }
     // Counted argument list: [argc, arg*].
-    if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.throw ||
-        op == IrOp.array_new_fixed) {
+    if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.ret_call ||
+        op == IrOp.throw || op == IrOp.array_new_fixed) {
       let argc = this.extra[av];
       var i = 0;
       while (i < argc) {
@@ -729,7 +741,7 @@ export final class IrBody {
       return;
     }
     // call_ref: the callee value precedes the counted list: [callee, argc, arg*].
-    if (op == IrOp.call_ref) {
+    if (op == IrOp.call_ref || op == IrOp.ret_call_ref) {
       out.push(this.extra[av]);
       let argc = this.extra[av + 1];
       var i = 0;
@@ -855,8 +867,8 @@ export final class IrBody {
       }
       return;
     }
-    if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.throw ||
-        op == IrOp.array_new_fixed) {
+    if (op == IrOp.struct_new || op == IrOp.call || op == IrOp.ret_call ||
+        op == IrOp.throw || op == IrOp.array_new_fixed) {
       let argc = this.extra[av];
       var i = 0;
       while (i < argc) {
@@ -865,7 +877,7 @@ export final class IrBody {
       }
       return;
     }
-    if (op == IrOp.call_ref) {
+    if (op == IrOp.call_ref || op == IrOp.ret_call_ref) {
       this.extra[av] = map(this.extra[av]);
       let argc = this.extra[av + 1];
       var i = 0;
@@ -940,6 +952,7 @@ export final class IrBody {
     let result = new GrowableArray<IrSuccessor>();
     let op = this.op(inst);
     if (op == IrOp.ret || op == IrOp.ret_multi || op == IrOp.throw ||
+        op == IrOp.ret_call || op == IrOp.ret_call_ref ||
         op == IrOp.unreachable) {
       return result;
     }
@@ -1197,6 +1210,8 @@ let buildIrOpNames = (): Array<String> => {
   n[IrOp.try_br as i32] = 'try_br';
   n[IrOp.ret as i32] = 'ret';
   n[IrOp.ret_multi as i32] = 'ret.multi';
+  n[IrOp.ret_call as i32] = 'ret.call';
+  n[IrOp.ret_call_ref as i32] = 'ret.call_ref';
   n[IrOp.throw as i32] = 'throw';
   n[IrOp.unreachable as i32] = 'unreachable';
   n[IrOp.yield_ as i32] = 'yield';

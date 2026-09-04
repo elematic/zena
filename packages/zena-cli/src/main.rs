@@ -189,6 +189,9 @@ fn base_config(debug: bool) -> Config {
     config.wasm_gc(true);
     config.wasm_function_references(true);
     config.wasm_exceptions(true);
+    // `return_call`/`return_call_ref`, emitted for `tail return`
+    // (docs/design/tail-calls.md).
+    config.wasm_tail_call(true);
     // The wide-arithmetic proposal (i64.mul_wide_u and friends). The
     // compiler only emits these under ZENA_WIDE_ARITHMETIC=1 and
     // otherwise emits the sequences they replace, but accepting them

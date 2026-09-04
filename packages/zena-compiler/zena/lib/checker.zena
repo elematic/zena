@@ -586,6 +586,21 @@ final class CheckerContext {
   var #tryDepth: i32 = 0;
 
   /**
+   * How many `using` bindings of the current function body are live at
+   * this point: each owes a release on every path out of its block, so
+   * a `tail return` under one would discard the frame that still has
+   * to run it (tail-calls.md §3).
+   */
+  var #usingDepth: i32 = 0;
+
+  /**
+   * Whether the body being checked is a constructor's. A constructor
+   * body is inlined into a factory that returns the new instance, so
+   * `return` there does not return the operand (tail-calls.md §3).
+   */
+  var #inConstructor: boolean = false;
+
+  /**
    * The value type T of the enclosing async function's Future<T>, or
    * null when the nearest enclosing function is not async. VoidType is
    * the inference sentinel, mirroring #returnType's convention.
@@ -1852,6 +1867,26 @@ final class CheckerContext {
 
   enterTry(): void { this.#tryDepth = this.#tryDepth + 1; }
   exitTry(): void { this.#tryDepth = this.#tryDepth - 1; }
+
+  // --- Live `using` bindings and constructor bodies (tail returns) ---
+
+  usingDepth: i32 {
+    get { return this.#usingDepth; }
+  }
+
+  setUsingDepth(d: i32): void {
+    this.#usingDepth = d;
+  }
+
+  noteUsingBinding(): void { this.#usingDepth = this.#usingDepth + 1; }
+
+  inConstructor: boolean {
+    get { return this.#inConstructor; }
+  }
+
+  setInConstructor(v: boolean): void {
+    this.#inConstructor = v;
+  }
 
   // --- Async context ---
 
@@ -8150,6 +8185,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
     case BlockStatement {body}: {
       ctx.enterScope();
       ctx.enterOwnScope();
+      let prevUsingDepth = ctx.usingDepth;
       prescanPendingFunctions(ctx, body);
       var i = 0;
       while (i < body.length) {
@@ -8165,14 +8201,18 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
         }
         i += 1;
       }
+      ctx.setUsingDepth(prevUsingDepth);
       ctx.exitOwnScope(stmt);
       ctx.exitScope();
     }
-    case ReturnStatement {argument, loc}: {
+    case ReturnStatement {argument, isTail, loc}: {
       if (ctx.cancelBlockFloor >= 0) {
         ctx.error(
           "Cannot 'return' out of a 'cancel' block; the cancellation unwind continues.",
           DiagnosticCode.TypeMismatch, loc);
+      }
+      if (isTail) {
+        checkTailReturnContext(ctx, argument, loc);
       }
       let expectedReturn = ctx.returnType;
       if (ctx.yieldType != null && argument != null) {
@@ -8191,6 +8231,9 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
         let isInferring = expectedReturn is VoidType;
         let passedExpected = if (isInferring) { null } else { expectedReturn };
         let argType = checkExpression(ctx, argument, passedExpected);
+        if (isTail) {
+          checkTailReturnType(ctx, argType, expectedReturn, loc);
+        }
         if (expectedReturn != null) {
           if (expectedReturn is VoidType) {
             // No explicit return type - infer from return statements
@@ -8975,6 +9018,93 @@ let checkVariableDeclaration = (
  * A `Borrow<R>` is rejected: a borrow never releases what it points at, so
  * disposing through one would release a resource someone else still owns.
  */
+/**
+ * The context rules for `tail return` (tail-calls.md §3): the frame has
+ * to be genuinely dead at the call, and the operand has to be one call.
+ * Everything here is decided from the surrounding code, so it runs
+ * before the operand is checked.
+ */
+let checkTailReturnContext = (
+  ctx: CheckerContext,
+  argument: Expression | null,
+  loc: SourceLocation | null
+): void => {
+  if (ctx.yieldType != null) {
+    ctx.error(
+      "'tail return' is not allowed in a generator: 'return' there ends the iteration rather than returning from a frame.",
+      DiagnosticCode.TypeMismatch, loc);
+  } else if (ctx.asyncFutureType != null) {
+    ctx.error(
+      "'tail return' is not allowed in an async function: 'return' there completes the future rather than returning from a frame.",
+      DiagnosticCode.TypeMismatch, loc);
+  } else if (ctx.inConstructor) {
+    ctx.error(
+      "'tail return' is not allowed in a constructor: a constructor returns the new instance, not the operand.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+  if (ctx.tryDepth > 0) {
+    ctx.error(
+      "'tail return' is not allowed inside a 'try': the frame it would discard still owes the handler and the finalizer.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+  if (ctx.usingDepth > 0) {
+    ctx.error(
+      "'tail return' is not allowed while a 'using' binding is live: the frame it would discard still owes the release.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+  if (argument == null) { return; }
+  let isPlainCall = match (argument) {
+    case CallExpression {optional}: !optional
+    case _: false
+  };
+  if (!isPlainCall) {
+    ctx.error(
+      "'tail return' returns a call: write 'tail return f(x);'.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+};
+
+/**
+ * The type rule for `tail return` (tail-calls.md §3): the call's type
+ * is the enclosing function's return type, exactly. Anything wider
+ * would need a conversion after the callee returned, in the frame the
+ * tail call discarded.
+ */
+let checkTailReturnType = (
+  ctx: CheckerContext,
+  argType: Type,
+  expectedReturn: Type | null,
+  loc: SourceLocation | null
+): void => {
+  if (argType is ErrorType) { return; }
+  if (expectedReturn == null || expectedReturn is ErrorType) { return; }
+  let expected = expectedReturn;
+  // VoidType doubles as the "inferring the return type" sentinel, so a
+  // non-void operand here means the enclosing function never declared
+  // one to match against.
+  if (expected is VoidType && !(argType is VoidType)) {
+    ctx.error(
+      "'tail return' requires the enclosing function to declare its return type.",
+      DiagnosticCode.MissingReturnType, loc);
+    return;
+  }
+  if (!typesEqual(argType, expected)) {
+    ctx.error(
+      "'tail return' requires the call to return '" + typeToString(expected) +
+      "', got '" + typeToString(argType) +
+      "'; converting the result would run after the frame is gone. Use 'return' instead.",
+      DiagnosticCode.TypeMismatch, loc);
+    return;
+  }
+  // An inline tuple returns through several wasm results, which the
+  // rewrite does not handle yet (tail-calls.md §6).
+  if (expected is InlineTupleT) {
+    ctx.error(
+      "'tail return' does not support a multi-value return type yet; use 'return' instead.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+};
+
 let checkUsingStatement = (
   ctx: CheckerContext,
   pattern: Pattern | null,
@@ -9036,6 +9166,10 @@ let checkUsingStatement = (
     }
     bindPattern(ctx, pattern, declType);
   }
+
+  // The rest of the enclosing block runs inside this binding's release
+  // region; the enclosing block restores the depth on the way out.
+  ctx.noteUsingBinding();
 };
 
 /**
@@ -13632,6 +13766,10 @@ let checkMethodBody = (
     case Identifier {name}: name
     case _: ""
   };
+  let prevUsingDepth = ctx.usingDepth;
+  ctx.setUsingDepth(0);
+  let prevInConstructor = ctx.inConstructor;
+  ctx.setInConstructor(methodName == "<constructor>");
   if (methodName == "<constructor>") {
     // The constructor prologue evaluates before the body: field
     // defaults, then the initializer list, then the super call. It is
@@ -13812,6 +13950,8 @@ let checkMethodBody = (
   ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.setSuspensionRelaxed(prevSuspensionRelaxed);
   ctx.setOwningReceiver(prevOwningReceiver);
+  ctx.setUsingDepth(prevUsingDepth);
+  ctx.setInConstructor(prevInConstructor);
   ctx.exitBodyFlow(prevFlowState);
   ctx.exitScope();
 };
@@ -17741,6 +17881,12 @@ let checkFunctionExpression = (
   let prevSuspensionRelaxed = ctx.suspensionRelaxed;
   ctx.setSuspensionRelaxed(scopedReturnRelaxed);
   let prevTryDepth = ctx.tryDepth;
+  // A nested body owes nothing to the enclosing one's `using` bindings
+  // or constructor, so a `tail return` in it is judged on its own.
+  let prevUsingDepth = ctx.usingDepth;
+  ctx.setUsingDepth(0);
+  let prevInConstructor = ctx.inConstructor;
+  ctx.setInConstructor(false);
   let prevCancelBlockFloor = ctx.cancelBlockFloor;
   ctx.setCancelBlockFloor(-1);
   let prevInFinalizer = ctx.inFinalizer;
@@ -17911,6 +18057,8 @@ let checkFunctionExpression = (
   ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.setSuspensionRelaxed(prevSuspensionRelaxed);
   ctx.setTryDepth(prevTryDepth);
+  ctx.setUsingDepth(prevUsingDepth);
+  ctx.setInConstructor(prevInConstructor);
   ctx.setCancelBlockFloor(prevCancelBlockFloor);
   ctx.setInFinalizer(prevInFinalizer);
   ctx.exitBodyFlow(prevFlowState);

@@ -657,7 +657,12 @@ export final class Parser {
     
     // Control flow
     if (this.#match(TokenType.Return)) {
-      return this.#parseReturnStatement(startToken);
+      return this.#parseReturnStatement(startToken, false);
+    }
+    if (this.#isTailReturnAhead()) {
+      this.#advance();   // consume `tail`
+      this.#advance();   // consume `return`
+      return this.#parseReturnStatement(startToken, true);
     }
     if (this.#match(TokenType.Yield)) {
       let argument = this.#parseExpression();
@@ -820,16 +825,20 @@ export final class Parser {
     return new FunctionDeclaration(name, func, exported, this.#makeLocation(startToken));
   }
 
-  #parseReturnStatement(startToken: Token): ReturnStatement {
+  #parseReturnStatement(startToken: Token, isTail: boolean): ReturnStatement {
     var argument: Expression | null = null;
-    
+
     if (!this.#check(TokenType.Semi)) {
       argument = this.#parseExpression();
     }
-    
+
     this.#consume(TokenType.Semi, "Expected ';' after return statement");
-    
-    return new ReturnStatement(argument, this.#makeLocation(startToken));
+
+    if (isTail && argument == null) {
+      throw this.#error("'tail return' needs a call to return: write 'tail return f(x);'.");
+    }
+
+    return new ReturnStatement(argument, isTail, this.#makeLocation(startToken));
   }
   
   #parseIfStatement(startToken: Token): IfStatement {
@@ -949,6 +958,16 @@ export final class Parser {
     return new ForStatement(init, test, update, body, this.#makeLocation(startToken));
   }
   
+  /**
+   * `tail return f(x);` — see docs/design/tail-calls.md. `tail` is
+   * contextual: a name followed by `return` is not otherwise a
+   * statement, so nothing named `tail` is disturbed.
+   */
+  #isTailReturnAhead(): boolean {
+    return this.#check(TokenType.Identifier) && this.#peek().value == 'tail' &&
+        this.#peek2().kind == TokenType.Return;
+  }
+
   #parseBlockStatement(startToken: Token): BlockStatement {
     let body = new GrowableArray<Statement>(8);
     
@@ -966,7 +985,7 @@ export final class Parser {
     
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       // Check for keywords that definitely start statements
-      if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.Yield) || this.#check(TokenType.While) || this.#check(TokenType.For) || this.#check(TokenType.Break) || this.#check(TokenType.Continue) || this.#check(TokenType.Class) || this.#check(TokenType.Using)) {
+      if (this.#check(TokenType.Let) || this.#check(TokenType.Var) || this.#check(TokenType.Return) || this.#check(TokenType.Yield) || this.#check(TokenType.While) || this.#check(TokenType.For) || this.#check(TokenType.Break) || this.#check(TokenType.Continue) || this.#check(TokenType.Class) || this.#check(TokenType.Using) || this.#isTailReturnAhead()) {
         body.push(this.#parseStatement());
         continue;
       }

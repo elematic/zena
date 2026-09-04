@@ -913,6 +913,43 @@ let add = (a: i32, b: i32) => {
 };
 ```
 
+### Tail Calls
+
+`tail return f(x);` compiles the call to WebAssembly's `return_call`: the
+frame is discarded before the callee runs, so a chain of tail calls
+executes in constant stack space.
+
+```zena
+function fib(n: i32, a: i32 = 0, b: i32 = 1): i32 {
+  if (n == 0) {
+    return a;
+  } else if (n == 1) {
+    return b;
+  } else {
+    tail return fib(n - 1, b, a + b);
+  }
+}
+```
+
+The annotation is required — a call in tail position without it compiles
+to an ordinary call, keeping its frame and its line in every backtrace.
+`tail` is a contextual keyword and stays available as an identifier.
+
+Rules:
+
+- The operand is one call: `f(x)`, `o.m(x)`, `this.#m(x)`. Not an
+  expression built around a call, not `new C(x)`, not `f?.(x)`.
+- The enclosing function declares its return type, and the call returns
+  that same type. A conversion would have to run after the callee
+  returned, in the frame the tail call discarded.
+- Not in an `async` function or a generator: `return` there completes a
+  future or ends the iteration rather than returning from a frame.
+- Not in a constructor, which returns the new instance.
+- Not inside a `try` and not while a `using` binding is live; both owe
+  work — a handler, a finalizer, a release — on the way out.
+
+See `docs/design/tail-calls.md`.
+
 ### Function Declarations
 
 A `function` declaration binds a name to a function at the top level of a
