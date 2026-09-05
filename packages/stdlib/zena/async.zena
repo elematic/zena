@@ -257,6 +257,25 @@ export let currentScope = (): CancelScope => {
   return if (s != null) s as CancelScope else getRootScope();
 };
 
+/**
+ * The opt-in checkpoint for CPU-bound work with no natural suspension
+ * point — a parser's token loop, a long numeric pass. Raises on the
+ * cancellation channel if the current scope has been cancelled,
+ * exactly as a real suspension point would, so cleanup (`finally`,
+ * `using`, `cancel` clauses) and propagation work unchanged.
+ * `currentScope().isCancelled` remains the poll-only form, for code
+ * that stops early without unwinding.
+ *
+ * An observe site, not a cause: calling this never opens the
+ * whole-program cancellation gate, and under a closed gate the check
+ * is a branch never taken.
+ */
+export let checkCancellation = (): void => {
+  if (currentScope().isCancelled) {
+    raiseCancellation();
+  }
+};
+
 // ---------------------------------------------------------------------------
 // TaskGroup: the structured half (docs/design/cancellation.md)
 // ---------------------------------------------------------------------------

@@ -207,14 +207,15 @@ await x` pays the bare-value queue hop for nothing — return
        attempts are actually cancelled. One ergonomic wart: applying
        a combinator and calling the result in one expression
        (`retry(3, op)()`) trips the callee-kind lowering gap (#448).
-    6. **`checkCancellation()`** — the opt-in sync checkpoint for
-       CPU-bound work with no natural suspension point (a parser's
-       token loop): raises on the cancellation channel, so cleanup and
-       propagation work exactly as at a real suspension point, where
-       `currentScope().isCancelled` remains the poll-only form.
-       `shielded` composes automatically (the ambient is rebound), and
-       it is an observe site, so it never opens the whole-program
-       gate. Kotlin's `ensureActive`, .NET's
+    6. **`checkCancellation()` is done** — the opt-in sync checkpoint
+       for CPU-bound work with no natural suspension point (a
+       parser's token loop): raises on the cancellation channel, so
+       cleanup and propagation work exactly as at a real suspension
+       point, where `currentScope().isCancelled` remains the
+       poll-only form. `shielded` composes automatically (the ambient
+       is rebound), and it is an observe site — it never opens the
+       whole-program gate, and under a closed gate the check is a
+       branch never taken. Kotlin's `ensureActive`, .NET's
        `ThrowIfCancellationRequested`.
     7. **Unhandled rejections.** A rejected future nobody observes
        currently vanishes, which is a fuzzy fallback. Design: a

@@ -1,0 +1,58 @@
+// @mode: run
+// @result: 0
+
+// checkCancellation(): the opt-in checkpoint for CPU-bound sync work.
+// In a cancelled scope it raises on the cancellation channel — the
+// cancel clause runs, catch sees nothing — and with nothing cancelled
+// it is a branch never taken.
+
+import {
+  Future, CancelScope, checkCancellation, drainMicrotasks,
+} from 'zena:async';
+import { Error } from 'zena:error';
+
+var log = '';
+var stoppedAt = 0;
+
+/** A sync loop that would run 1000 rounds, checking as it goes. */
+let crunch = (): i32 => {
+  var i = 0;
+  while (i < 1000) {
+    checkCancellation();
+    i += 1;
+    stoppedAt = i;
+  }
+  return i;
+};
+
+let worker = async (): Future<i32> => {
+  try {
+    return crunch();
+  } cancel {
+    log = log + 'C';
+  } catch (e) {
+    log = log + 'e';
+  }
+  return -1;
+};
+
+export let main = (): i32 => {
+  // Nothing cancelled: the checkpoint is free.
+  if (crunch() != 1000) { return 1; }
+
+  log = '';
+  stoppedAt = 0;
+  let scope = new CancelScope();
+  var f: Future<i32>? = null;
+  scope.run(() => {
+    // Cancelled before the worker starts: its ramp still runs — code
+    // between suspension points is never interrupted — so the loop
+    // stops at the FIRST checkpoint, not before it.
+    scope.cancel();
+    f = worker();
+  });
+  drainMicrotasks();
+  if (log != 'C') { return 2; }
+  if (stoppedAt != 0) { return 3; }
+  return 0;
+};
