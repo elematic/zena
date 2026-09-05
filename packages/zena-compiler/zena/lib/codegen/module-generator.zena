@@ -27,6 +27,8 @@ import { lowerFunction } from './ir/lowering.zena';
 import { verifyIr } from './ir/verifier.zena';
 import { runGvn } from './ir/gvn.zena';
 import { runSimplify } from './ir/simplify.zena';
+import { runBlockCleanup } from './ir/blockmerge.zena';
+import { runDce } from './ir/dce.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
 import {
@@ -790,14 +792,20 @@ export final class ModuleGenerator {
     var zirGraduated = 0;
     var zirDemoted = 0;
     var zirSimplified = 0;
+    var zirBlocksRemoved = 0;
+    var zirDceRemoved = 0;
      for (let wasmFunc in wasm.functions) {
         // Lowering failures throw: a bail is a compiler bug, not a
         // coverage gap.
         let body = lowerFunction(wasm, wasmFunc);
-        // Simplify before GVN: folding turns computations into the
-        // constants GVN then deduplicates.
+        // Cleanup order: simplify folds (and may strand blocks via
+        // branch folding), block cleanup removes what it stranded,
+        // GVN deduplicates the folded constants, DCE sweeps whatever
+        // ended up unused.
         zirSimplified += runSimplify(body);
+        zirBlocksRemoved += runBlockCleanup(body);
         runGvn(body, new IrCfg(body));
+        zirDceRemoved += runDce(body);
         // Loud on verifier failure: a broken lowering must never limp
         // into emission.
         let verifyErrors = verifyIr(body);
@@ -818,6 +826,9 @@ export final class ModuleGenerator {
       console.log("zir backend: " + i32ToString(zirLowered) + " lowered");
       console.log("zir simplify: " + i32ToString(zirSimplified) +
           " instructions rewritten");
+      console.log("zir cleanup: " + i32ToString(zirBlocksRemoved) +
+          " blocks removed, " + i32ToString(zirDceRemoved) +
+          " dead instructions removed");
       console.log("zir locals: " + i32ToString(zirGraduated) +
           " ref locals non-null, " + i32ToString(zirDemoted) +
           " kept nullable (init rollback)");

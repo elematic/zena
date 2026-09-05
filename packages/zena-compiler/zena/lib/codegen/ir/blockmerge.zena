@@ -1,0 +1,171 @@
+/**
+ * CFG cleanup (docs/design/optimization-pipeline.md, cleanup set):
+ * removes blocks unreachable from the entry after branch folding. The
+ * verifier requires every block reachable, so folding a `br_if` on a
+ * constant is only legal paired with this pass.
+ *
+ * Removal is physical — the block list is compacted and every
+ * surviving terminator's targets are renumbered — because block ids
+ * are indices. The target of every successor sits exactly two `extra`
+ * slots before its first branch arg (the [target, argc, args…] layout
+ * every terminator shares, see successors() in ir.zena), so
+ * renumbering writes through IrSuccessor.argStart - 2 rather than
+ * re-decoding each terminator shape.
+ *
+ * Straight-line block fusion and block-parameter pruning belong here
+ * too, later; the pass counters decide when they are worth adding.
+ */
+import { HashMap } from 'zena:map';
+import { IrBlock, IrBody, IrOp } from './ir.zena';
+
+/** Runs the pass; returns the number of blocks removed. */
+export let runBlockCleanup = (body: IrBody): i32 => {
+  let nb = body.blocks.length;
+  if (nb == 0) {
+    return 0;
+  }
+  let reachable = new GrowableArray<boolean>();
+  for (var i = 0; i < nb; i += 1) {
+    reachable.push(false);
+  }
+  let stack = new GrowableArray<i32>();
+  reachable[0] = true;
+  stack.push(0);
+  while (stack.length > 0) {
+    let b = stack.pop();
+    let insts = body.blocks[b].insts;
+    let term = insts[insts.length - 1];
+    for (let s in body.successors(term)) {
+      if (!reachable[s.target]) {
+        reachable[s.target] = true;
+        stack.push(s.target);
+      }
+    }
+  }
+
+  var removedCount = 0;
+  for (var i = 0; i < nb; i += 1) {
+    if (!reachable[i]) {
+      removedCount += 1;
+    }
+  }
+  if (removedCount == 0) {
+    return 0;
+  }
+
+  // A try's join block (IrBody.tryJoin) is where emission ends the
+  // protected region; it can lose reachability when folding kills the
+  // body's normal exit while the try_br itself survives. Rewriting
+  // the region shape without its end marker is emission's dominance
+  // heuristic again — the bug tryJoin exists to fix — so leave such a
+  // function uncleaned rather than guess.
+  var blocked = false;
+  let instCount = body.instCount();
+  for (var i = 0; i < instCount; i += 1) {
+    if (body.op(i) == IrOp.try_br) {
+      let ib = body.instBlock[i];
+      if (ib < 0 || ib >= nb || !reachable[ib]) {
+        continue; // a dead try goes down with its join
+      }
+      if (let (true, join) = body.tryJoin.get(i)) {
+        if (!reachable[join]) {
+          blocked = true;
+        }
+      }
+    }
+  }
+  if (blocked) {
+    return 0;
+  }
+
+  let map = new GrowableArray<i32>();
+  var next = 0;
+  for (var i = 0; i < nb; i += 1) {
+    if (reachable[i]) {
+      map.push(next);
+      next += 1;
+    } else {
+      map.push(-1);
+    }
+  }
+
+  // Nop every instruction (params included) of the dead blocks so use
+  // counts, stats, and emission never see them again.
+  for (var i = 0; i < nb; i += 1) {
+    if (reachable[i]) {
+      continue;
+    }
+    let blk = body.blocks[i];
+    for (let p in blk.params) {
+      nopOut(body, p);
+    }
+    for (let inst in blk.insts) {
+      nopOut(body, inst);
+    }
+  }
+
+  // Renumber: instBlock for survivors, successor targets, tryJoin.
+  for (var i = 0; i < instCount; i += 1) {
+    let ob = body.instBlock[i];
+    if (ob >= 0 && ob < nb) {
+      body.instBlock[i] = map[ob];
+    }
+  }
+  for (var i = 0; i < nb; i += 1) {
+    if (!reachable[i]) {
+      continue;
+    }
+    let insts = body.blocks[i].insts;
+    let term = insts[insts.length - 1];
+    for (let s in body.successors(term)) {
+      body.extra[s.argStart - 2] = map[s.target];
+    }
+  }
+  let newJoin = new HashMap<i32, i32>();
+  for (var i = 0; i < instCount; i += 1) {
+    if (body.op(i) == IrOp.try_br) {
+      if (let (true, join) = body.tryJoin.get(i)) {
+        newJoin[i] = map[join];
+      }
+    }
+  }
+  // tryJoin's field is immutable; rebuild its contents in place, in
+  // instruction-id order for determinism.
+  let oldKeys = new GrowableArray<i32>();
+  for (let k in body.tryJoin.keys()) {
+    oldKeys.push(k);
+  }
+  for (let k in oldKeys) {
+    body.tryJoin.delete(k);
+  }
+  for (var i = 0; i < instCount; i += 1) {
+    if (body.op(i) == IrOp.try_br) {
+      if (let (true, join) = newJoin.get(i)) {
+        body.tryJoin[i] = join;
+      }
+    }
+  }
+
+  // Compact the block list in place (the field itself is immutable).
+  let survivors = new GrowableArray<IrBlock>();
+  for (var i = 0; i < nb; i += 1) {
+    if (reachable[i]) {
+      survivors.push(body.blocks[i]);
+    }
+  }
+  while (body.blocks.length > 0) {
+    body.blocks.pop();
+  }
+  for (let blk in survivors) {
+    body.blocks.push(blk);
+  }
+  return removedCount;
+};
+
+let nopOut = (body: IrBody, inst: i32): void => {
+  body.opcode[inst] = IrOp.nop as i32;
+  body.typeId[inst] = -1;
+  body.a[inst] = -1;
+  body.b[inst] = -1;
+  body.instBlock[inst] = -1;
+};

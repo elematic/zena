@@ -1,0 +1,125 @@
+/**
+ * Dead code elimination (docs/design/optimization-pipeline.md, cleanup
+ * set): deletes value-producing instructions with no uses, when
+ * deleting them cannot change behavior.
+ *
+ * One reverse-id pass: operand ids always precede their uses (the
+ * builder appends), so when a dead instruction is nop-ed and its
+ * operands' use counts drop, those operands are visited later in the
+ * same sweep — whole dead chains collapse without a worklist.
+ *
+ * What is never removed, even unused:
+ *   - anything with effects (calls, stores, var/global writes, throws,
+ *     memory_grow) or no result (terminators);
+ *   - anything that can trap: division and remainder, ref_cast and
+ *     ref_as_non_null, array element access, linear-memory access,
+ *     array allocation (a huge or negative length traps at the
+ *     allocation site, so even an unused one must run);
+ *   - loads through a NULLABLE receiver (struct_get and friends trap
+ *     on null; through a non-null ref they are pure and removable);
+ *   - `param` (structural: block params must stay aligned with every
+ *     predecessor's branch args);
+ *   - `mv_get` (the emitter pairs projections with their producing
+ *     call; removing one would desync the pairing — and keeping every
+ *     projection keeps its producer's use count above zero).
+ *
+ * Struct allocation is removable: allocation alone is unobservable,
+ * and field-initializer effects live in the operands' own
+ * instructions, which stay unless they too are removable.
+ */
+import { IrBody, IrOp, isBinaryNumericOp, isUnaryNumericOp } from './ir.zena';
+import { ValTypeRef } from '../wasm.zena';
+
+/** Runs the pass; returns the number of instructions removed. */
+export let runDce = (body: IrBody): i32 => {
+  let count = body.instCount();
+  let useCount = new GrowableArray<i32>();
+  for (var i = 0; i < count; i += 1) {
+    useCount.push(0);
+  }
+  let operands = new GrowableArray<i32>();
+  for (var i = 0; i < count; i += 1) {
+    while (operands.length > 0) {
+      operands.pop();
+    }
+    body.appendValueOperands(i, operands);
+    for (let opnd in operands) {
+      if (opnd >= 0 && opnd < count) {
+        useCount[opnd] += 1;
+      }
+    }
+  }
+
+  var removed = 0;
+  var inst = count - 1;
+  while (inst >= 0) {
+    if (body.typeId[inst] >= 0 && useCount[inst] == 0 &&
+        isRemovable(body, inst)) {
+      while (operands.length > 0) {
+        operands.pop();
+      }
+      body.appendValueOperands(inst, operands);
+      body.opcode[inst] = IrOp.nop as i32;
+      body.typeId[inst] = -1;
+      body.a[inst] = -1;
+      body.b[inst] = -1;
+      for (let opnd in operands) {
+        if (opnd >= 0 && opnd < count) {
+          useCount[opnd] -= 1;
+        }
+      }
+      removed += 1;
+    }
+    inst -= 1;
+  }
+  return removed;
+};
+
+let isRemovable = (body: IrBody, inst: i32): boolean => {
+  let op = body.op(inst);
+  if (op == IrOp.const_i32 || op == IrOp.const_i64 ||
+      op == IrOp.const_f32 || op == IrOp.const_f64) {
+    return true;
+  }
+  if (isBinaryNumericOp(op)) {
+    // The numeric band contains the trapping divisions; everything
+    // else in it is pure.
+    return op != IrOp.i32_div_s && op != IrOp.i32_div_u &&
+        op != IrOp.i32_rem_s && op != IrOp.i32_rem_u &&
+        op != IrOp.i64_div_s && op != IrOp.i64_div_u &&
+        op != IrOp.i64_rem_s && op != IrOp.i64_rem_u;
+  }
+  if (isUnaryNumericOp(op)) {
+    // Conversions are the saturating forms; none of the band traps.
+    return true;
+  }
+  if (op == IrOp.ref_null || op == IrOp.ref_is_null ||
+      op == IrOp.ref_test || op == IrOp.ref_eq || op == IrOp.ref_func ||
+      op == IrOp.extern_convert_any || op == IrOp.any_convert_extern ||
+      op == IrOp.global_get || op == IrOp.var_get) {
+    return true;
+  }
+  if (op == IrOp.struct_new || op == IrOp.struct_new_default ||
+      op == IrOp.iface_pack) {
+    return true;
+  }
+  if (op == IrOp.struct_get || op == IrOp.array_len ||
+      op == IrOp.iface_vtable || op == IrOp.iface_instance) {
+    return receiverNonNull(body, body.a[inst]);
+  }
+  if (op == IrOp.simd_unary || op == IrOp.simd_binary ||
+      op == IrOp.simd_ternary || op == IrOp.simd_extract_lane ||
+      op == IrOp.simd_replace_lane || op == IrOp.simd_const ||
+      op == IrOp.simd_shuffle) {
+    return true;
+  }
+  return false;
+};
+
+let receiverNonNull = (body: IrBody, receiver: i32): boolean => {
+  if (receiver < 0) {
+    return false;
+  }
+  let t = body.resultType(receiver);
+  return t is ValTypeRef;
+};

@@ -1,7 +1,9 @@
 /**
  * Peephole simplification (docs/design/optimization-pipeline.md,
- * cleanup set): constant folding, algebraic identities, and
- * strength reduction, in one forward pass over instruction ids.
+ * cleanup set): constant folding, algebraic identities, strength
+ * reduction, and constant-condition branch folding, in one forward
+ * pass over instruction ids. Branch folding can strand blocks, so the
+ * block cleanup pass (blockmerge.zena) must run after this one.
  * Operand ids always precede their uses (the builder appends), so a
  * fold's result is visible to every later instruction in the same
  * pass and chains of constants collapse without iteration.
@@ -26,7 +28,7 @@
  *
  * Determinism: a single id-order walk, no hash containers.
  */
-import { IrBody, IrOp } from './ir.zena';
+import { IrBody, IrOp, IrSuccessor } from './ir.zena';
 
 /** Runs the pass; returns the number of instructions rewritten. */
 export let runSimplify = (body: IrBody): i32 => {
@@ -109,6 +111,29 @@ export let runSimplify = (body: IrBody): i32 => {
     let op = body.op(inst);
     let av = body.a[inst];
     let bv = body.b[inst];
+
+    // --- branch folding ---
+    // Rewrites leave the untaken successor with one edge fewer,
+    // possibly none: the caller must run the block cleanup pass after
+    // (the verifier rejects unreachable blocks).
+    if (op == IrOp.br_if && body.op(av) == IrOp.const_i32) {
+      let succs = body.successors(inst);
+      let taken = if (body.a[av] != 0) succs[0] else succs[1];
+      rewriteToBr(body, inst, taken);
+      rewrites += 1;
+      continue;
+    }
+    if (op == IrOp.br_table && body.op(av) == IrOp.const_i32) {
+      // wasm reads the selector as unsigned: negative picks the
+      // default, which is the last successor.
+      let succs = body.successors(inst);
+      let v = body.a[av];
+      let n = succs.length;
+      let taken = if (v >= 0 && v < n - 1) succs[v] else succs[n - 1];
+      rewriteToBr(body, inst, taken);
+      rewrites += 1;
+      continue;
+    }
 
     // --- i32 ---
     if (isI32Binary(op)) {
@@ -350,6 +375,25 @@ export let runSimplify = (body: IrBody): i32 => {
   }
 
   return rewrites;
+};
+
+/**
+ * Rewrites a two-or-more-way terminator into an unconditional br to
+ * `s`. The [target, argc, args…] record is appended fresh to `extra`
+ * (append-only, so reading the old record while pushing is safe).
+ */
+let rewriteToBr = (body: IrBody, inst: i32, s: IrSuccessor): void => {
+  let idx = body.extra.length;
+  body.extra.push(s.target);
+  body.extra.push(s.argCount);
+  var i = 0;
+  while (i < s.argCount) {
+    body.extra.push(body.extra[s.argStart + i]);
+    i += 1;
+  }
+  body.opcode[inst] = IrOp.br as i32;
+  body.a[inst] = idx;
+  body.b[inst] = -1;
 };
 
 /** Signed comparison of sign-flipped values = unsigned comparison. */

@@ -591,6 +591,51 @@ export let tests = suite('zir backend', (): void => {
         'x ^ x is 0 regardless of x');
   });
 
+  test('branch folding removes the untaken side entirely', (ctx: TestContext): void => {
+    // The condition folds to a constant, the br_if folds to a br, and
+    // block cleanup deletes the stranded alternative — its constant
+    // must not survive anywhere in the function.
+    let result = compileWithZir(
+        'export let main = (): i32 => { if (1 < 2) { return 10; } return 20; };');
+    let present = new GrowableArray<String>();
+    present.push('i32.const 10');
+    assertFunctionUses(result, '$main', present,
+        'the taken side is still there');
+    let absent = new GrowableArray<String>();
+    absent.push('i32.const 20');
+    absent.push('br_if');
+    assertFunctionOmits(result, '$main', absent,
+        'a constant-true condition leaves neither a branch nor the untaken side');
+  });
+
+  test('dce removes an unused pure computation', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'let f = (x: i32): i32 => { var a = x * 3; a = x; return a; };\n' +
+        'export let main = (): i32 => f(21);');
+    let absent = new GrowableArray<String>();
+    absent.push('i32.mul');
+    assertFunctionOmits(result, '$f', absent,
+        'the overwritten x * 3 is dead and pure, so it goes');
+  });
+
+  test('dce removes an unused tuple allocation', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'let f = (x: i32): i32 => { let t = (x, x + 1); return x; };\n' +
+        'export let main = (): i32 => f(21);');
+    assertNoAllocation(result, '$f',
+        'an unused, non-escaping tuple never allocates');
+  });
+
+  test('dce keeps an unused division that could trap', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'let f = (x: i32, y: i32): i32 => { var a = x % y; a = x; return a; };\n' +
+        'export let main = (): i32 => f(21, 2);');
+    let present = new GrowableArray<String>();
+    present.push('i32.rem_s');
+    assertFunctionUses(result, '$f', present,
+        'x % y traps when y is zero; dead or not, it must run');
+  });
+
   test('simplify leaves division by a constant zero to trap', (ctx: TestContext): void => {
     // % lowers to i32.rem_s, which traps on a zero divisor. The
     // simplifier must not fold or delete it — the trap is the

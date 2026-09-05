@@ -18,10 +18,16 @@ Driven by `module-generator.zena` for each `wasm.functions` entry:
 ```
 lowerFunction(wasm, func)   → IrBody        (lowering.zena)
 runSimplify(body)                           (simplify.zena)
+runBlockCleanup(body)                       (blockmerge.zena)
 runGvn(body, new IrCfg(body))               (gvn.zena, cfg.zena)
+runDce(body)                                (dce.zena)
 verifyIr(body)              → throws on any error (verifier.zena)
 emitZirFunction(...)        → wasm bytes    (emit.zena)
 ```
+
+Simplify may strand blocks (branch folding), which block cleanup then
+removes — the verifier rejects unreachable blocks, so those two are a
+pair. DCE runs last to sweep what folding and GVN left unused.
 
 ## File map
 
@@ -41,7 +47,9 @@ emitZirFunction(...)        → wasm bytes    (emit.zena)
 | `scaffold.zena`         | Helpers synthesized without an AST (string creation/hashing, wasi write).                                                                                                                                                                                                                                                 |
 | `generators.zena`       | The generator split pass (generators.md §5): presplit-lowers `gen` bodies, synthesizes frame structs + `next()` + `Iterator<T>` vtable globals between RTA and layout, rewrites bodies into dispatcher-loop state machines.                                                                                               |
 | `async.zena`            | The async split pass (async.md §3): the same treatment for `async` bodies — frame structs + `step()` + `Resumable` vtable globals, an eager ramp, a `try_br` failure-capture region, and the async-`main` export wrapper. Shares generators.zena's raw-IrBody helpers, liveness, edge rerouting, and try-region analysis. |
-| `simplify.zena`         | Peephole pass, before GVN: constant folding (trap-preserving, NaN-guarded), algebraic identities, power-of-two strength reduction. One id-order forward pass; folds cascade because operand ids precede uses.                                                                                                              |
+| `simplify.zena`         | Peephole pass, before GVN: constant folding (trap-preserving, NaN-guarded), algebraic identities, power-of-two strength reduction, constant-condition branch folding. One id-order forward pass; folds cascade because operand ids precede uses.                                                                            |
+| `blockmerge.zena`       | CFG cleanup: physically removes blocks unreachable after branch folding (compacts the block list, renumbers successor targets and tryJoin). Skips a function whose try-join block would die.                                                                                                                              |
+| `dce.zena`              | Use-count DCE, one reverse-id pass (dead chains collapse because operand ids precede uses). Effects/trap table decides removability; loads need a non-null receiver.                                                                                                                                                       |
 | `gvn.zena`              | Dominator-scoped value numbering; string keys + id-order walk keep it deterministic.                                                                                                                                                                                                                                      |
 | `verifier.zena`         | Structural/type checks on `IrBody`; failures are loud compile errors.                                                                                                                                                                                                                                                     |
 | `emit.zena`             | SSA destruction: stack scheduling (`#pushValue` discipline), block-param copy coalescing, domtree stackifier, terminator streaming, init-discipline non-null local typing (live validator replay + removable asserts, ir.md §12.1).                                                                                       |
