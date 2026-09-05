@@ -636,6 +636,28 @@ export let tests = suite('zir backend', (): void => {
         'x % y traps when y is zero; dead or not, it must run');
   });
 
+  test('gvn commons repeated immutable field loads', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'class P {\n' +
+        '  #x: i32 = 7;\n' +
+        '  new();\n' +
+        '  sum(): i32 { return this.#x + this.#x; }\n' +
+        '}\n' +
+        'let f = (p: P): i32 => p.sum();\n' +
+        'export let main = (): i32 => f(new P());');
+    // Method function names carry a symbol uid ($P_s1234.sum), so find
+    // the emitted name rather than hardcoding it.
+    var sumName = '';
+    for (let chunk in result.split('(func $')) {
+      if (chunk.startsWith('P_') && chunk.contains('.sum')) {
+        sumName = '$' + chunk.split(' ')[0];
+      }
+    }
+    isTrue(sumName.length > 0, 'no P.sum function in the emitted module');
+    assertFunctionUsesTimes(result, sumName, 'struct.get', 1,
+        'two reads of an immutable field are one load');
+  });
+
   test('simplify leaves division by a constant zero to trap', (ctx: TestContext): void => {
     // % lowers to i32.rem_s, which traps on a zero divisor. The
     // simplifier must not fold or delete it — the trap is the

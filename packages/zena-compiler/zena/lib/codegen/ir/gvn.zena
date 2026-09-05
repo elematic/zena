@@ -23,7 +23,8 @@ import { HashMap } from 'zena:map';
 import { String } from 'zena:string';
 import { i32ToString } from 'zena:string-convert';
 import {
-  IrBody, IrOp, IrRefGlobal, isBinaryNumericOp, isUnaryNumericOp,
+  IrBody, IrOp, IrRefField, IrRefGlobal, isBinaryNumericOp,
+  isUnaryNumericOp,
 } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 
@@ -136,6 +137,29 @@ let gvnKey = (body: IrBody, inst: i32): String | null => {
       return 'g|' + i32ToString(bv) + '|' + i32ToString(ty);
     }
     return null;
+  }
+  if (op == IrOp.struct_get) {
+    // A load of a wasm-immutable field (a `let` field, under
+    // single-shot construction) is a pure function of the receiver.
+    // The key uses the owner struct's uid + field name, not the
+    // refTable index — addRef appends per use, so indices differ
+    // between two loads of the same field. Trap equivalence holds
+    // without a non-null receiver check: a dominated repeat on the
+    // same receiver value traps exactly when the dominating load did.
+    let r = body.refTable[bv];
+    if (r is IrRefField) {
+      let idx = r.owner.fieldIndexByName(r.fieldName);
+      if (idx >= 0 && !r.owner.fields[idx].isMutable) {
+        return 'sg|' + i32ToString(av) + '|' + i32ToString(r.owner.uid) +
+            '|' + r.fieldName + '|' + i32ToString(ty);
+      }
+    }
+    return null;
+  }
+  if (op == IrOp.array_len) {
+    // An array's length is fixed at allocation; same trap-equivalence
+    // argument as immutable fields.
+    return 'al|' + i32ToString(av) + '|' + i32ToString(ty);
   }
   return null;
 };
