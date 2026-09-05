@@ -1,0 +1,300 @@
+/**
+ * Finding a package's modules.
+ *
+ * A package is a directory. If it holds a manifest, the manifest's
+ * export map is the module list; otherwise every `.zena` file under the
+ * root is a module. A single `.zena` file is a package of one module.
+ *
+ * Two manifest filenames are read, because the standard library's is
+ * spelled differently: `zena-package.json` with an `exports` map, and
+ * `stdlib-manifest.json` with a `modules` map. Both mean the same
+ * thing. See docs/design/zenadoc.md and docs/design/package-manifest.md.
+ */
+
+import { parseJson, JsonValue, JsonObject } from 'zena:json';
+import { exists, isDirectory, listDir, readFile, FileType } from 'zena:fs';
+
+let PACKAGE_MANIFEST = 'zena-package.json';
+let STDLIB_MANIFEST = 'stdlib-manifest.json';
+
+/** One module a package exposes. */
+export final class PackageModule(
+  /** The module's name within the package, e.g. `array` or `bench`. */
+  name: String,
+
+  /** The entry file, relative to the package root. */
+  file: String
+)
+
+/** A package as zenadoc sees it: a name, a root, and a module list. */
+export final class Package {
+  name: String;
+  root: String;
+  var version: String | null = null;
+  var modules = new GrowableArray<PackageModule>(0);
+
+  new(this.name, this.root);
+}
+
+/**
+ * The package at `path`.
+ *
+ * `path` is a directory or a single `.zena` file. `name` overrides the
+ * name the manifest or the directory would give.
+ */
+export let loadPackage = (
+  path: String,
+  name: String | null = null,
+  target: String = 'zena-cli'
+): Package => {
+  if (!exists(path)) {
+    throw new Error('no such path: ' + path);
+  }
+  if (!isDirectory(path)) {
+    return singleFilePackage(path, name);
+  }
+  let manifestPath = manifestIn(path);
+  if (manifestPath == null) {
+    return openPackage(path, name);
+  }
+  return manifestPackage(path, manifestPath, name, target);
+};
+
+/** The manifest in a directory, whichever of the two names it uses. */
+let manifestIn = (root: String): String | null => {
+  let preferred = join(root, PACKAGE_MANIFEST);
+  if (exists(preferred)) {
+    return preferred;
+  }
+  let stdlib = join(root, STDLIB_MANIFEST);
+  if (exists(stdlib)) {
+    return stdlib;
+  }
+  return null;
+};
+
+let manifestPackage = (
+  root: String,
+  manifestPath: String,
+  override: String | null,
+  target: String
+): Package => {
+  let json = parseJson(readFile(manifestPath));
+  let manifest = json as JsonObject;
+  var exports = manifest['exports'];
+  if (exports == null) {
+    exports = manifest['modules'];
+  }
+  let name = if (override != null) {
+    override
+  } else {
+    manifestName(manifest, root)
+  };
+  // The manifest may sit above the sources it describes: the stdlib's
+  // is `packages/stdlib/stdlib-manifest.json` for sources under
+  // `packages/stdlib/zena`. Every entry file is relative to the source
+  // root, not to the manifest.
+  let declaredRoot = manifest['root'];
+  let sourceRoot = if (declaredRoot is String) {
+    join(root, declaredRoot)
+  } else {
+    root
+  };
+  let out = new Package(name, sourceRoot);
+  let version = manifest['version'];
+  if (version is String) {
+    out.version = version;
+  }
+  if (exports == null) {
+    // A manifest with no export map says nothing about which modules
+    // are public, so every file is.
+    out.modules = openModules(sourceRoot);
+    return out;
+  }
+  let modules = new GrowableArray<PackageModule>(16);
+  (exports as JsonObject).forEach((moduleName: String, value: JsonValue): void => {
+    let file = entryFileOf(moduleName, value, target);
+    if (file != null) {
+      modules.push(new PackageModule(moduleName, file));
+    }
+  });
+  out.modules = sortModules(modules);
+  return out;
+};
+
+/**
+ * A module's entry file on a target.
+ *
+ * `{}` means `<name>.zena` and `path` names the file. A `virtual`
+ * module has one entry file per target and exists only on the targets
+ * it names — `zena:component-async` is not a module a `zena-cli`
+ * program can import, and documenting it as one would describe an API
+ * that is not there.
+ */
+let entryFileOf = (
+  name: String,
+  value: JsonValue,
+  target: String
+): String | null => {
+  if (!(value is JsonObject)) {
+    return name + '.zena';
+  }
+  let entry = value as JsonObject;
+  let path = entry['path'];
+  if (path is String) {
+    return path;
+  }
+  let virtual = entry['virtual'];
+  if (virtual is JsonObject) {
+    let file = (virtual as JsonObject)[target];
+    if (file is String) {
+      return file;
+    }
+    return null;
+  }
+  return name + '.zena';
+};
+
+let manifestName = (manifest: JsonObject, root: String): String => {
+  let name = manifest['name'];
+  if (name is String) {
+    return name;
+  }
+  return baseName(root);
+};
+
+/** Every `.zena` file under a root, as a module named by its path. */
+let openPackage = (root: String, override: String | null): Package => {
+  let name = if (override != null) { override } else { baseName(root) };
+  let out = new Package(name, root);
+  out.modules = openModules(root);
+  return out;
+};
+
+let openModules = (root: String): GrowableArray<PackageModule> => {
+  let modules = new GrowableArray<PackageModule>(16);
+  collectZenaFiles(root, '', modules);
+  return sortModules(modules);
+};
+
+let collectZenaFiles = (
+  root: String,
+  prefix: String,
+  out: GrowableArray<PackageModule>
+): void => {
+  let dir = if (prefix.length == 0) { root } else { join(root, prefix) };
+  for (let entry in listDir(dir)) {
+    if (entry.name == '.' || entry.name == '..') {
+      continue;
+    }
+    let relative = if (prefix.length == 0) {
+      entry.name
+    } else {
+      prefix + '/' + entry.name
+    };
+    if (entry.fileType == FileType.Directory) {
+      collectZenaFiles(root, relative, out);
+    } else if (entry.fileType == FileType.RegularFile &&
+        entry.name.endsWith('.zena')) {
+      out.push(new PackageModule(
+          relative.sliceBytes(0, relative.length - 5), relative));
+    }
+  }
+};
+
+let singleFilePackage = (path: String, override: String | null): Package => {
+  let file = baseName(path);
+  let name = if (override != null) {
+    override
+  } else {
+    stripExtension(file)
+  };
+  let out = new Package(name, dirName(path));
+  let modules = new GrowableArray<PackageModule>(1);
+  modules.push(new PackageModule(stripExtension(file), file));
+  out.modules = modules;
+  return out;
+};
+
+/**
+ * Modules in name order.
+ *
+ * A manifest's JSON object preserves the order it was written in, and a
+ * directory listing is in whatever order the host returns. Sorting
+ * makes the output depend on the package's contents and nothing else.
+ */
+let sortModules = (
+  modules: GrowableArray<PackageModule>
+): GrowableArray<PackageModule> => {
+  // Insertion sort: a package has tens of modules, not thousands.
+  var i = 1;
+  while (i < modules.length) {
+    let current = modules[i];
+    var j = i - 1;
+    while (j >= 0 && precedes(current.name, modules[j].name)) {
+      modules[j + 1] = modules[j];
+      j -= 1;
+    }
+    modules[j + 1] = current;
+    i += 1;
+  }
+  return modules;
+};
+
+/** Whether `a` sorts before `b`, byte by byte. */
+let precedes = (a: String, b: String): boolean => {
+  let shorter = if (a.length < b.length) { a.length } else { b.length };
+  var i = 0;
+  while (i < shorter) {
+    let x = a.getByteAt(i);
+    let y = b.getByteAt(i);
+    if (x != y) {
+      return x < y;
+    }
+    i += 1;
+  }
+  return a.length < b.length;
+};
+
+// ============================================================================
+// Paths
+// ============================================================================
+
+export let join = (a: String, b: String): String => {
+  if (a.length == 0 || a == '.') {
+    return b;
+  }
+  if (a.endsWith('/')) {
+    return a + b;
+  }
+  return a + '/' + b;
+};
+
+export let baseName = (path: String): String => {
+  var i = path.length;
+  while (i > 0) {
+    if (path.getByteAt(i - 1) == 47) {
+      return path.sliceBytes(i, path.length);
+    }
+    i -= 1;
+  }
+  return path;
+};
+
+export let dirName = (path: String): String => {
+  var i = path.length;
+  while (i > 0) {
+    if (path.getByteAt(i - 1) == 47) {
+      return path.sliceBytes(0, i - 1);
+    }
+    i -= 1;
+  }
+  return '.';
+};
+
+let stripExtension = (file: String): String => {
+  if (file.endsWith('.zena')) {
+    return file.sliceBytes(0, file.length - 5);
+  }
+  return file;
+};

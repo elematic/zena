@@ -15,7 +15,8 @@ import { Box } from 'zena:box';
 import { DocComment, DocTag } from './doc-comment.zena';
 import {
   DocDeclaration, DocLoc, DocMember, DocModule, DocPackage, DocParam,
-  DocReexport, DocTypeParam, TypeRef, declarationKindName, memberKindName,
+  DocReexport, DocTypeParam, TypeRef, DeclarationKind, declarationKindName,
+  memberKindName,
 } from './model.zena';
 
 /** The format version, so a consumer can refuse what it cannot read. */
@@ -93,7 +94,15 @@ let declarationObject = (declaration: DocDeclaration): JsonObject => {
   putParams(out, declaration.parameters);
   putType(out, 'type', declaration.type);
   putType(out, 'extends', declaration.superClass);
-  putTypes(out, 'implements', declaration.interfaces);
+  // An interface's supertypes are written `extends`, a class's
+  // `implements`; the model holds one list, and the key says which
+  // keyword the source used.
+  let supertypeKey = if (declaration.kind == DeclarationKind.Interface) {
+    'extends'
+  } else {
+    'implements'
+  };
+  putTypes(out, supertypeKey, declaration.interfaces);
   putTypes(out, 'mixins', declaration.mixins);
   putDoc(out, declaration.doc);
   putLoc(out, declaration.loc);

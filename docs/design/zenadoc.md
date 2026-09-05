@@ -56,6 +56,18 @@ The package name comes from `--package-name`, else the manifest's
 `name` field, else the directory's basename. Module ids are
 `<package>:<module>` — the string a user would write in an `import`.
 
+A manifest may name a source root, which is what lets the standard
+library keep its manifest at `packages/stdlib/stdlib-manifest.json`
+while its sources sit under `packages/stdlib/zena`. Entry files are
+relative to that root.
+
+A virtual module has one entry file per compilation target, and exists
+only on the targets it names. Documentation is per target: `zena doc
+--target zena-cli` documents `zena:console` as the WASI entry file and
+leaves out `zena:component-async` entirely, because a `zena-cli`
+program cannot import it and documenting it would describe an API that
+is not there.
+
 ### The standard library
 
 The stdlib is a package whose manifest is spelled differently: it lives

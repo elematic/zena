@@ -1,0 +1,178 @@
+/**
+ * Documenting a whole package.
+ *
+ * Every module the package exports is compiled and checked, then walked
+ * into the API model. Modules are compiled in batches through one
+ * `Compiler` each: a compiler accumulates per-entry state that is never
+ * collected, so one compiler for a whole package gets slower than
+ * several — the measurements are in packages/zena-compiler/CONTEXT.md,
+ * and 16 is where the win has already been taken.
+ *
+ * Type errors do not stop extraction. They are returned alongside the
+ * model, for the caller to report and to exit non-zero on: a package
+ * that does not check is exactly when someone wants to read its docs.
+ */
+
+import { readFile } from 'zena:fs';
+import { HashMap } from 'zena:map';
+import {
+  createCompiler, CompilerOptions, checkCompilation, CompilerHost,
+  PackageConfig, ModuleExport, ProgramCheckResult, Diagnostic,
+  DiagnosticSeverity,
+} from 'zena-compiler:compiler';
+import { stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
+import { isWitModulePath, synthesizeWitModule } from 'zena-compiler:wit-module-synth';
+import { Package, join } from './package.zena';
+import { extractModule, ExtractOptions } from './extract.zena';
+import { DocPackage } from './model.zena';
+
+/** The standard library's package name; the compiler loads it itself. */
+let STDLIB_PACKAGE = 'zena';
+
+/** How many entry points share one compiler. */
+let ENTRIES_PER_COMPILER = 16;
+
+/** What to document, and where the standard library lives. */
+export final class DocumentOptions {
+  /** Document non-exported declarations and `#private` members. */
+  var includePrivate: boolean = false;
+
+  /** The stdlib source root, for resolving `zena:` imports. */
+  var stdlibRoot: String = 'packages/stdlib/zena';
+
+  /** The compilation target, which decides virtual modules' entry files. */
+  var target: String = 'zena-cli';
+
+  new();
+}
+
+/** A package's documentation, and what went wrong producing it. */
+export final class DocumentResult {
+  docs: DocPackage;
+
+  /** Every diagnostic the checker reported, across all modules. */
+  var diagnostics = new GrowableArray<Diagnostic>(0);
+
+  /**
+   * Modules that could not be compiled at all, as `<module>: <reason>`.
+   * A module that resolves to a file that is not there, or that names a
+   * package the compiler does not know, fails here rather than
+   * producing diagnostics.
+   */
+  var failures = new GrowableArray<String>(0);
+
+  new(this.docs);
+
+  /** Whether any module failed or reported an error. */
+  hasErrors(): boolean {
+    if (this.failures.length > 0) {
+      return true;
+    }
+    for (let diagnostic in this.diagnostics) {
+      if (diagnostic.severity == DiagnosticSeverity.Error) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+/** Reads a package's files, and the stdlib's, off disk. */
+final class FsHost implements CompilerHost {
+  #stdlibRoot: String;
+
+  new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
+
+  readFile(path: String): String {
+    // A WIT-backed package's module has no file: the source is
+    // synthesized from the package's WIT.
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
+    }
+    if (path.startsWith('zena:')) {
+      return readFile(join(this.#stdlibRoot, stdlibIdToRelativeFile(path)));
+    }
+    return readFile(path);
+  }
+}
+
+/** Documents every module a package exports. */
+export let documentPackage = (
+  pkg: Package,
+  options: DocumentOptions
+): DocumentResult => {
+  let docs = new DocPackage(pkg.name, pkg.root);
+  docs.version = pkg.version;
+  let out = new DocumentResult(docs);
+
+  let extractOptions = new ExtractOptions();
+  extractOptions.includePrivate = options.includePrivate;
+
+  var i = 0;
+  while (i < pkg.modules.length) {
+    let end = if (i + ENTRIES_PER_COMPILER < pkg.modules.length) {
+      i + ENTRIES_PER_COMPILER
+    } else {
+      pkg.modules.length
+    };
+    documentBatch(pkg, options, extractOptions, i, end, out);
+    i = end;
+  }
+  return out;
+};
+
+/** One batch of modules, through one compiler. */
+let documentBatch = (
+  pkg: Package,
+  options: DocumentOptions,
+  extractOptions: ExtractOptions,
+  from: i32,
+  to: i32,
+  out: DocumentResult
+): void => {
+  let host = new FsHost(options.stdlibRoot);
+  let packages = new HashMap<String, PackageConfig>();
+  if (pkg.name != STDLIB_PACKAGE) {
+    // The compiler must resolve `pkg:module` to the same entry file
+    // zenadoc chose, so it gets the module list zenadoc computed rather
+    // than re-deriving one — otherwise a module whose manifest entry is
+    // `nested/widgets.zena` resolves to `widgets.zena` and is missing.
+    let exports = new HashMap<String, ModuleExport>();
+    for (let module in pkg.modules) {
+      exports[module.name] = new ModuleExport(null, module.file);
+    }
+    packages[pkg.name] = new PackageConfig(pkg.root, exports);
+  }
+  let compilerOptions = new CompilerOptions(options.target, options.stdlibRoot,
+      packages);
+  let compiler = createCompiler(host, compilerOptions);
+
+  // Threaded across the batch's entry points so that a file whose source
+  // has not changed — the whole standard library, on every entry after
+  // the first — carries its CheckResult forward instead of being checked
+  // again. Parsing is already shared: the loader caches a SourceFile per
+  // path, and extraction walks that same AST.
+  var previous: ProgramCheckResult | null = null;
+  var i = from;
+  while (i < to) {
+    let module = pkg.modules[i];
+    try {
+      let entry = compiler.resolve(pkg.name + ':' + module.name, '');
+      let result = compiler.compile(entry.path);
+      let checkResults = checkCompilation(result, previous);
+      previous = checkResults;
+      for (let diagnostic in checkResults.entry.diagnostics) {
+        out.diagnostics.push(diagnostic);
+      }
+      let checked = checkResults.results[result.entry.path];
+      let model = if (checked == null) { null } else { checked.model };
+      out.docs.modules.push(extractModule(pkg.name + ':' + module.name,
+          module.name, module.file, result.entry.ast, model, extractOptions));
+    } catch (e) {
+      let reason = if (e is Error) { e.message } else { 'unknown failure' };
+      out.failures.push(module.name + ': ' + reason);
+    }
+    i += 1;
+  }
+};
+
