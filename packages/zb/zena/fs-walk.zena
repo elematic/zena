@@ -1,0 +1,112 @@
+import {FileType, exists, isFile, listDir, readFileBytes} from 'zena:fs';
+import {HashSet} from 'zena:set';
+import {compareStrings, sortBy} from 'workflow:canonical';
+import {Fingerprint} from 'workflow:fingerprint';
+import {withRoot} from './fs-util.zena';
+import {GlobSet, splitBase} from './glob.zena';
+import {joinPath} from './path.zena';
+import {sha256Hex} from './sha256.zena';
+import {ConfigError} from './wireit-config.zena';
+
+/** Directories never worth walking for build inputs or outputs. */
+let skipDir = (name: String): boolean => {
+  return name == 'node_modules' || name == '.git' || name == '.wireit' ||
+    name == '.zb' || name == 'target';
+};
+
+let collectFiles = (
+  root: String,
+  dir: String,
+  set: GlobSet,
+  out: GrowableArray<String>,
+  seen: HashSet<String>,
+): void => {
+  let full = withRoot(root, dir);
+  if (!exists(full)) {
+    return;
+  }
+  if (isFile(full)) {
+    if (set.matches(dir) && seen.add(dir)) {
+      out.push(dir);
+    }
+    return;
+  }
+  for (let entry in listDir(full)) {
+    if (entry.name == '.' || entry.name == '..') {
+      continue;
+    }
+    if (entry.fileType == FileType.Directory) {
+      if (!skipDir(entry.name)) {
+        collectFiles(root, joinPath(dir, entry.name), set, out, seen);
+      }
+    } else {
+      let path = joinPath(dir, entry.name);
+      if (set.matches(path) && seen.add(path)) {
+        out.push(path);
+      }
+    }
+  }
+};
+
+/**
+ * Expands a package's glob list to sorted workspace-relative file
+ * paths. Patterns are interpreted relative to `packageDir` and may
+ * reach sibling packages with '../'; escaping the workspace is an
+ * error. Negations apply across the whole list in order.
+ */
+export let expandGlobs = (
+  root: String,
+  packageDir: String,
+  globs: Array<String>,
+): Array<String> => {
+  let rewritten = new GrowableArray<String>();
+  let bases = new GrowableArray<String>();
+  let seenBases = new HashSet<String>();
+  for (let raw in globs) {
+    var pattern = raw;
+    var negated = false;
+    if (pattern.startsWith('!')) {
+      negated = true;
+      pattern = pattern.sliceBytes(1, pattern.length);
+    }
+    let workspaceRelative = joinPath(packageDir, pattern);
+    if (workspaceRelative.startsWith('..')) {
+      throw new ConfigError(
+        `glob "${raw}" in ${packageDir} escapes the workspace`,
+      );
+    }
+    rewritten.push(if (negated) '!' + workspaceRelative else workspaceRelative);
+    if (!negated) {
+      let base = splitBase(workspaceRelative).base;
+      if (seenBases.add(base)) {
+        bases.push(base);
+      }
+    }
+  }
+  let set = new GlobSet(rewritten);
+  let out = new GrowableArray<String>();
+  let seen = new HashSet<String>();
+  for (let base in bases) {
+    collectFiles(root, base, set, out, seen);
+  }
+  sortBy(out, (a: String, b: String) => compareStrings(a, b));
+  return out;
+};
+
+/** The content fingerprint zb uses everywhere: 'sha256:<hex>'. */
+export let hashFile = (root: String, path: String): Fingerprint => {
+  return new Fingerprint('sha256:' + sha256Hex(readFileBytes(withRoot(root, path))));
+};
+
+/** Hashes files into the snapshot map, skipping already-hashed paths. */
+export let hashFilesInto = (
+  root: String,
+  files: Array<String>,
+  into: HashMap<String, Fingerprint>,
+): void => {
+  for (let path in files) {
+    if (!into.has(path)) {
+      into[path] = hashFile(root, path);
+    }
+  }
+};

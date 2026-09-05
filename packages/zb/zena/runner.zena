@@ -1,0 +1,60 @@
+import {runFuture} from 'zena:async';
+import {isFile, readFile, writeFile} from 'zena:fs';
+import {monotonicNs} from 'zena:time';
+import {Engine, RunResult} from 'workflow:engine';
+import {Fingerprint} from 'workflow:fingerprint';
+import {EngineState} from 'workflow:state';
+import {DiskCache} from './disk-cache.zena';
+import {planScripts} from './builder.zena';
+import {ensureParentDir, readFileOrNull, withRoot} from './fs-util.zena';
+import {sha256HexOfString} from './sha256.zena';
+import {stateFromJson, stateToJson} from './state-json.zena';
+import {ScriptRef, WireitWorkspace, refKey} from './wireit-config.zena';
+
+let statePath = (root: String): String => withRoot(root, '.zb/state.json');
+
+let loadState = (root: String): EngineState => {
+  let path = statePath(root);
+  if (!isFile(path)) {
+    return EngineState.empty();
+  }
+  return stateFromJson(readFile(path));
+};
+
+let saveState = (root: String, result: RunResult): void => {
+  let path = statePath(root);
+  ensureParentDir(path);
+  writeFile(path, stateToJson(result.state));
+};
+
+/** A finished build: the engine result plus the step keys it ran. */
+export class BuildOutcome {
+  result: RunResult;
+  stepKeys: Array<String>;
+
+  new(this.result, this.stepKeys);
+}
+
+/**
+ * One full build of a script and its transitive dependencies: load
+ * config and prior state, snapshot inputs, run the engine with the
+ * local disk cache, persist the new state.
+ */
+export let buildTarget = (root: String, entry: ScriptRef): BuildOutcome => {
+  let workspace = new WireitWorkspace(
+    (path: String): String? => readFileOrNull(withRoot(root, path)),
+  );
+  let configs = workspace.collect([entry]);
+  let plan = planScripts(root, configs, i64ToString(monotonicNs()));
+  let engine = new Engine(
+    (data: String) => new Fingerprint('sha256:' + sha256HexOfString(data)),
+    new DiskCache(root),
+  );
+  let result = runFuture(engine.run(plan.graph, plan.leaves, loadState(root)));
+  saveState(root, result);
+  let stepKeys = new GrowableArray<String>();
+  for (let config in configs) {
+    stepKeys.push(refKey(config.ref));
+  }
+  return new BuildOutcome(result, stepKeys);
+};

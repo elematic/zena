@@ -1,0 +1,63 @@
+import {getArguments} from 'zena:cli';
+import {
+  Failed,
+  RunResult,
+  Skipped,
+  StepSource,
+  Succeeded,
+} from 'workflow:engine';
+import {StepKey} from 'workflow:step';
+import {buildTarget} from './runner.zena';
+import {ScriptRef} from './wireit-config.zena';
+
+/**
+ * zb: a wireit-compatible incremental build runner. Usage, from the
+ * workspace root:
+ *
+ *     zb <script>                  a root-package script
+ *     zb <package-dir> <script>    a script in a package
+ */
+
+let describe = (result: RunResult, key: String): String => {
+  let outcome = result.outcomeOf(new StepKey(key));
+  if (outcome is Succeeded) {
+    if (outcome.source == StepSource.Fresh) {
+      return 'fresh';
+    }
+    if (outcome.source == StepSource.Cache) {
+      return 'restored';
+    }
+    return 'ran';
+  }
+  if (outcome is Failed) {
+    return 'FAILED: ' + outcome.error.message;
+  }
+  if (outcome is Skipped) {
+    return 'skipped (' + outcome.reason + ')';
+  }
+  return 'unknown';
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  if (args.length < 2 || args.length > 3) {
+    console.log('usage: zb <script> | zb <package-dir> <script>');
+    return 2;
+  }
+  let entry = if (args.length == 2)
+    new ScriptRef('', args[1])
+  else
+    new ScriptRef(args[1], args[2]);
+
+  let outcome = buildTarget('', entry);
+  let result = outcome.result;
+  for (let key in outcome.stepKeys) {
+    console.log(key + ': ' + describe(result, key));
+  }
+  if (!result.allSucceeded) {
+    console.log('build failed');
+    return 1;
+  }
+  console.log('build succeeded');
+  return 0;
+};

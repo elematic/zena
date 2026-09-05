@@ -1,0 +1,67 @@
+import {exists, isFile, readFile, readFileBytes, writeFile, writeFileBytes} from 'zena:fs';
+import {StepCache} from 'workflow:cache';
+import {CacheKey, Fingerprint} from 'workflow:fingerprint';
+import {OutputManifest} from 'workflow:manifest';
+import {ensureDir, ensureParentDir, withRoot} from './fs-util.zena';
+import {manifestFromJson, manifestToJson} from './state-json.zena';
+
+let blobName = (fp: Fingerprint): String => {
+  // 'sha256:<hex>' -> 'sha256-<hex>', a safe file name.
+  let colonSplit = fp.value.split(':');
+  if (colonSplit.length != 2) {
+    throw new Error('unexpected fingerprint format: ' + fp.value);
+  }
+  return colonSplit[0] + '-' + colonSplit[1];
+};
+
+/**
+ * The local cache under .zb/: an action cache mapping cache keys to
+ * manifests (one JSON file per key) and a content-addressed blob store
+ * for output bytes. A hit materializes the outputs into the workspace
+ * before returning, so dependents can read them; missing blobs make
+ * the entry a miss.
+ */
+export class DiskCache implements StepCache {
+  #root: String;
+
+  new(root: String) : #root = root;
+
+  #manifestPath(key: CacheKey): String {
+    return withRoot(this.#root, '.zb/cache/' + key.value + '.json');
+  }
+
+  #blobPath(fp: Fingerprint): String {
+    return withRoot(this.#root, '.zb/blobs/' + blobName(fp));
+  }
+
+  async get(key: CacheKey): Future<OutputManifest?> {
+    let manifestPath = this.#manifestPath(key);
+    if (!isFile(manifestPath)) {
+      return null;
+    }
+    let manifest = manifestFromJson(readFile(manifestPath));
+    for (let entry in manifest.outputs) {
+      if (!isFile(this.#blobPath(entry.fingerprint))) {
+        return null;
+      }
+    }
+    for (let entry in manifest.outputs) {
+      let target = withRoot(this.#root, entry.name);
+      ensureParentDir(target);
+      writeFileBytes(target, readFileBytes(this.#blobPath(entry.fingerprint)));
+    }
+    return manifest;
+  }
+
+  async put(key: CacheKey, manifest: OutputManifest): Future<void> {
+    ensureDir(withRoot(this.#root, '.zb/blobs'));
+    ensureDir(withRoot(this.#root, '.zb/cache'));
+    for (let entry in manifest.outputs) {
+      let blob = this.#blobPath(entry.fingerprint);
+      if (!exists(blob)) {
+        writeFileBytes(blob, readFileBytes(withRoot(this.#root, entry.name)));
+      }
+    }
+    writeFile(this.#manifestPath(key), manifestToJson(manifest));
+  }
+}

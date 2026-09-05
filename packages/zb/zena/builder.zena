@@ -1,0 +1,142 @@
+import {runIn} from 'zena:process';
+import {StringBuilder} from 'zena:string-builder';
+import {Fingerprint} from 'workflow:fingerprint';
+import {Graph} from 'workflow:graph';
+import {OutputEntry, OutputManifest} from 'workflow:manifest';
+import {
+  InputRef,
+  LeafInput,
+  RunContext,
+  Step,
+  StepKey,
+  StepOutputs,
+  TaskStep,
+} from 'workflow:step';
+import {deleteIfExists, withRoot} from './fs-util.zena';
+import {expandGlobs, hashFile, hashFilesInto} from './fs-walk.zena';
+import {sha256HexOfString} from './sha256.zena';
+import {ConfigError, ScriptConfig, refKey} from './wireit-config.zena';
+
+/** A planned build: the step graph and the hashed leaf snapshot. */
+export class Plan {
+  graph: Graph;
+  leaves: HashMap<String, Fingerprint>;
+
+  new(this.graph, this.leaves);
+}
+
+let appendSegment = (sb: StringBuilder, s: String): void => {
+  sb.appendI32(s.length);
+  sb.append(':');
+  sb.append(s);
+};
+
+let configFingerprint = (config: ScriptConfig, salt: String): Fingerprint => {
+  let sb = new StringBuilder();
+  appendSegment(sb, 'zb-config-v1');
+  let command = config.command;
+  appendSegment(sb, if (command == null) '' else command);
+  appendSegment(sb, config.clean);
+  appendSegment(sb, if (config.isWireit) 'wireit' else 'bare');
+  for (let glob in config.files) {
+    appendSegment(sb, 'file:' + glob);
+  }
+  for (let glob in config.output) {
+    appendSegment(sb, 'out:' + glob);
+  }
+  if (!config.isWireit) {
+    // Bare npm scripts always run: salt the config so no run is fresh.
+    appendSegment(sb, 'salt:' + salt);
+  }
+  return new Fingerprint('sha256:' + sha256HexOfString(sb.toString()));
+};
+
+let cleanOutputs = (root: String, config: ScriptConfig, ctx: RunContext): void => {
+  if (config.clean == 'false') {
+    return;
+  }
+  if (config.clean == 'if-file-deleted') {
+    let delta = ctx.delta;
+    if (delta == null || delta.removed.length == 0) {
+      return;
+    }
+  }
+  let previous = ctx.previous;
+  if (previous != null) {
+    for (let entry in previous.outputs) {
+      deleteIfExists(withRoot(root, entry.name));
+    }
+  } else {
+    for (let path in expandGlobs(root, config.ref.packageDir, config.output)) {
+      deleteIfExists(withRoot(root, path));
+    }
+  }
+};
+
+/**
+ * Runs one script's command and collects its outputs. The child runs
+ * through `sh -c` in the package directory, like wireit through npm.
+ * Waiting is synchronous, so scripts execute one at a time for now.
+ */
+export let runScript = async (
+  root: String,
+  config: ScriptConfig,
+  ctx: RunContext,
+): Future<OutputManifest> => {
+  cleanOutputs(root, config, ctx);
+  let command = config.command;
+  if (command != null) {
+    let cwd = withRoot(root, config.ref.packageDir);
+    let result = runIn(['sh', '-c', command], cwd);
+    if (!result.succeeded()) {
+      throw new Error(
+        `script "${refKey(config.ref)}" failed (exit ${i32ToString(result.exitCode)}): ${command}\n` +
+        result.stdout + result.stderr,
+      );
+    }
+  }
+  let outFiles = expandGlobs(root, config.ref.packageDir, config.output);
+  let outputs = new GrowableArray<OutputEntry>();
+  for (let path in outFiles) {
+    outputs.push(new OutputEntry(path, hashFile(root, path)));
+  }
+  return new OutputManifest(outputs);
+};
+
+/**
+ * Turns collected script configs into a step graph and hashes every
+ * matched input file into the leaf snapshot. `salt` is any per-run
+ * unique string; it only reaches bare (non-wireit) scripts, which
+ * must never be treated as fresh.
+ */
+export let planScripts = (
+  root: String,
+  configs: Array<ScriptConfig>,
+  salt: String,
+): Plan => {
+  let leaves = new HashMap<String, Fingerprint>();
+  let steps = new GrowableArray<Step>();
+  for (let config in configs) {
+    if (config.service) {
+      throw new ConfigError(
+        `script "${refKey(config.ref)}" is a service; services are not supported yet`,
+      );
+    }
+    let inputs = new GrowableArray<InputRef>();
+    let files = expandGlobs(root, config.ref.packageDir, config.files);
+    hashFilesInto(root, files, leaves);
+    for (let path in files) {
+      inputs.push(new LeafInput(path));
+    }
+    for (let dep in config.dependencies) {
+      inputs.push(new StepOutputs(new StepKey(refKey(dep))));
+    }
+    steps.push(new TaskStep(
+      new StepKey(refKey(config.ref)),
+      configFingerprint(config, salt),
+      inputs,
+      (ctx) => runScript(root, config, ctx),
+    ));
+  }
+  return new Plan(new Graph(steps), leaves);
+};

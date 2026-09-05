@@ -1,0 +1,111 @@
+import {suite, test} from 'zena:test';
+import {equal, fail, isTrue} from 'zena:assert';
+import {readFile, unlink} from 'zena:fs';
+import {monotonicNs} from 'zena:time';
+import {
+  RunResult,
+  StepSource,
+  Succeeded,
+} from 'workflow:engine';
+import {StepKey} from 'workflow:step';
+import {ensureDir, ensureParentDir, withRoot} from '../fs-util.zena';
+import {buildTarget} from '../runner.zena';
+import {ScriptRef} from '../wireit-config.zena';
+import {writeFile} from 'zena:fs';
+
+/**
+ * End-to-end build of a two-package fixture workspace created under
+ * /tmp (preopened by the test runner). Commands run through `sh`.
+ */
+
+let write = (root: String, path: String, content: String): void => {
+  let full = withRoot(root, path);
+  ensureParentDir(full);
+  writeFile(full, content);
+};
+
+let mkFixture = (root: String): void => {
+  ensureDir(root);
+  write(root, 'package.json', `{
+    "scripts": {"build": "wireit"},
+    "wireit": {
+      "build": {"dependencies": ["./packages/app:build"]}
+    }
+  }`);
+  write(root, 'packages/lib/package.json', `{
+    "scripts": {"build": "wireit"},
+    "wireit": {
+      "build": {
+        "command": "mkdir -p out && cat src/in.txt > out/lib.txt",
+        "files": ["src/**"],
+        "output": ["out/**"]
+      }
+    }
+  }`);
+  write(root, 'packages/lib/src/in.txt', 'lib-v1\n');
+  write(root, 'packages/app/package.json', `{
+    "scripts": {"build": "wireit"},
+    "wireit": {
+      "build": {
+        "command": "mkdir -p out && cat ../lib/out/lib.txt greeting.txt > out/app.txt",
+        "files": ["greeting.txt"],
+        "output": ["out/**"],
+        "dependencies": ["../lib:build"]
+      }
+    }
+  }`);
+  write(root, 'packages/app/greeting.txt', 'hello-v1\n');
+};
+
+let sourceOf = (result: RunResult, key: String): StepSource => {
+  let outcome = result.outcomeOf(new StepKey(key));
+  if (outcome is Succeeded) {
+    return outcome.source;
+  }
+  fail('step did not succeed: ' + key);
+};
+
+export let tests = suite('zb end to end', (): void => {
+  test('build, rebuild fresh, incremental change, cache restore', () => {
+    let root = '/tmp/zb-e2e-' + i64ToString(monotonicNs());
+    mkFixture(root);
+    let entry = new ScriptRef('', 'build');
+
+    // First build runs everything.
+    let first = buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(first.result, 'packages/app:build') == StepSource.Ran);
+    equal(readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v1\n');
+
+    // An identical second build is fully fresh.
+    let second = buildTarget(root, entry);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, 'packages/app:build') == StepSource.Fresh);
+
+    // Changing app's input reruns app but not lib.
+    write(root, 'packages/app/greeting.txt', 'hello-v2\n');
+    let third = buildTarget(root, entry);
+    isTrue(third.result.allSucceeded);
+    isTrue(sourceOf(third.result, 'packages/lib:build') == StepSource.Fresh);
+    isTrue(sourceOf(third.result, 'packages/app:build') == StepSource.Ran);
+    equal(readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v2\n');
+
+    // Losing the state file falls back to the cache, not to running.
+    unlink(withRoot(root, '.zb/state.json'));
+    let fourth = buildTarget(root, entry);
+    isTrue(fourth.result.allSucceeded);
+    isTrue(sourceOf(fourth.result, 'packages/lib:build') == StepSource.Cache);
+    isTrue(sourceOf(fourth.result, 'packages/app:build') == StepSource.Cache);
+    equal(readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v1\nhello-v2\n');
+
+    // A dependency change propagates: lib reruns, then app.
+    write(root, 'packages/lib/src/in.txt', 'lib-v2\n');
+    let fifth = buildTarget(root, entry);
+    isTrue(fifth.result.allSucceeded);
+    isTrue(sourceOf(fifth.result, 'packages/lib:build') == StepSource.Ran);
+    isTrue(sourceOf(fifth.result, 'packages/app:build') == StepSource.Ran);
+    equal(readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v2\nhello-v2\n');
+  });
+});

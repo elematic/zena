@@ -1,0 +1,46 @@
+import {exists, isFile, mkdir, readFile, unlink} from 'zena:fs';
+import {dirName} from './path.zena';
+
+/**
+ * Small filesystem helpers over zena:fs. Workspace paths are
+ * slash-separated and relative to a root prefix; `withRoot` joins them
+ * without normalizing, so the root may be absolute ('/tmp/x') or ''
+ * for the current directory.
+ */
+
+export let withRoot = (root: String, path: String): String => {
+  if (root == '') {
+    return if (path == '') '.' else path;
+  }
+  if (path == '') {
+    return root;
+  }
+  return root + '/' + path;
+};
+
+export let readFileOrNull = (path: String): String? => {
+  if (!isFile(path)) {
+    return null;
+  }
+  return readFile(path);
+};
+
+/** Creates a directory and its ancestors; existing ones are fine. */
+export let ensureDir = (path: String): void => {
+  if (path == '' || path == '.' || exists(path)) {
+    return;
+  }
+  ensureDir(dirName(path));
+  mkdir(path);
+};
+
+/** Creates the directory a file will be written into. */
+export let ensureParentDir = (path: String): void => {
+  ensureDir(dirName(path));
+};
+
+export let deleteIfExists = (path: String): void => {
+  if (isFile(path)) {
+    unlink(path);
+  }
+};

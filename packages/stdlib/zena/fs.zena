@@ -887,6 +887,11 @@ let __resolvePreopen = (path: String): (Descriptor, String) => {
     }
   }
 
+  // A path naming a preopen exactly strips to ''; WASI path operations
+  // reject an empty path, so name the preopen's own directory instead.
+  if (relativePath == '') {
+    relativePath = '.';
+  }
   if (bestMatch != null) {
     return (bestMatch, relativePath);
   }
@@ -961,12 +966,14 @@ export let writeFileBytes = (path: String, content: ByteArray): void => {
  * @throws FsError if the path doesn't exist or is not a directory.
  */
 export let listDir = (path: String): Array<DirEntry> => {
-  let root = getRootDir();
+  // Resolve against the preopens like the other helpers, so paths into
+  // a non-first preopen (e.g. '/tmp/...') work.
+  let (dirDescriptor, relPath) = __resolvePreopen(path);
   // For directory listing, we need to open with directory rights
-  let (pathPtr, pathLen) = __stringToLinear(path);
-  
+  let (pathPtr, pathLen) = __stringToLinear(relPath);
+
   let errno = __wasi_path_open(
-    root.fd,
+    dirDescriptor.fd,
     1,          // lookupflags: follow symlinks
     pathPtr,
     pathLen,
