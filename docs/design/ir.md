@@ -710,6 +710,9 @@ you can only produce whole-program-specialized.
 
 ## 9. Optimization pipeline
 
+The implementation plan for this section and §10 — per-pass designs,
+the driver, and build order — is `optimization-pipeline.md`.
+
 Per `optimization-strategy.md`'s phasing, correctness and explicit wins
 first, then the implicit/global loop. Passes, in rough build order:
 
