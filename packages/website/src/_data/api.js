@@ -9,20 +9,34 @@ const generated = join(__dirname, '..', '..', '_generated', 'stdlib-api.json');
  * The standard library's extracted API.
  *
  * `scripts/generate-api.js` produces the file this reads, and Wireit runs
- * that before Eleventy. A missing file means someone ran Eleventy directly;
- * the pages then build empty rather than failing, which is easier to
- * diagnose than a stack trace from a template.
+ * that before Eleventy.
+ *
+ * A missing file fails the build. It used to warn and return an empty
+ * model, and that silently shipped a site whose whole standard library
+ * reference was gone — 46 pages down to none, with the only evidence a
+ * line in the build log. There is no correct site to build without this
+ * file, so not building one is the honest outcome.
  */
 const load = () => {
+  let source;
   try {
-    return JSON.parse(readFileSync(generated, 'utf8'));
-  } catch {
-    console.warn(
-      `No ${generated}; the stdlib reference will be empty. ` +
-        'Run `npm run build -w @zena-lang/website`.',
+    source = readFileSync(generated, 'utf8');
+  } catch (e) {
+    throw new Error(
+      `Cannot read ${generated}: ${e.message}\n` +
+        'The standard library reference is generated from it. Run ' +
+        '`npm run api -w @zena-lang/website` to produce it, or ' +
+        '`npm run build -w @zena-lang/website`, which does that first.',
     );
-    return {zenadoc: 1, package: {name: 'zena'}, modules: []};
   }
+  const docs = JSON.parse(source);
+  if (!Array.isArray(docs.modules) || docs.modules.length === 0) {
+    throw new Error(
+      `${generated} describes no modules. Extraction produced an empty ` +
+        'package, which means the stdlib was not read.',
+    );
+  }
+  return docs;
 };
 
 const docs = load();

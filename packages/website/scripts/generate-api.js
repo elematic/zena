@@ -9,7 +9,7 @@
  */
 
 import {execFileSync} from 'node:child_process';
-import {mkdirSync} from 'node:fs';
+import {existsSync, mkdirSync, rmSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -24,6 +24,13 @@ mkdirSync(dirname(outFile), {recursive: true});
 // A stdlib module that does not check clean is a bug in the stdlib, not a
 // reason to fail the site build: `zena doc` writes the JSON either way and
 // exits non-zero, so the warnings are reported and the pages still build.
+//
+// That tolerance is only for a non-zero exit that still produced the file.
+// Swallowing every failure let this script exit 0 having written nothing,
+// which Wireit then recorded as a success — and the site built with its
+// whole standard library reference missing.
+rmSync(outFile, {force: true});
+let reported = null;
 try {
   execFileSync(
     zenaCli,
@@ -31,8 +38,20 @@ try {
     {stdio: 'inherit', cwd: repoRoot},
   );
 } catch (e) {
+  reported = e;
+}
+
+if (!existsSync(outFile)) {
   console.error(
-    `zena doc reported problems in the standard library (exit ${e.status ?? '?'})`,
+    `zena doc wrote no ${outFile}` +
+      (reported ? ` (exit ${reported.status ?? '?'})` : ''),
+  );
+  process.exit(1);
+}
+if (reported) {
+  console.error(
+    `zena doc reported problems in the standard library (exit ${reported.status ?? '?'}); ` +
+      'the JSON was still written',
   );
 }
 

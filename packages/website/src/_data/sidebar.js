@@ -7,9 +7,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
  * The standard library's modules, as sidebar entries.
  *
- * Reads the same generated file `_data/api.js` does. A missing file means
- * Eleventy ran without the extraction step; the section is then just the
- * overview, which is easier to diagnose than a build that fails here.
+ * Reads the same generated file `_data/api.js` does, which fails the
+ * build when it is missing — so during a site build this fallback is
+ * unreachable. It exists for `scripts/print-outline.js` and
+ * `scripts/scaffold-docs.js`, which read the sidebar as a content plan
+ * and have no reason to need an extraction first.
  */
 const stdlibModules = () => {
   try {
