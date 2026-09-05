@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 3
+// `Future.all` over `Future<void>` inputs: `all<A>` at `A = void`
+// builds its values array as `GrowableArray<void>` — an array whose
+// ELEMENT is zero-width. Element storage lowers as a packed i8 array
+// (a zero-width read yields nothing and a write stores a constant),
+// so the collection machinery — capacity, growth, copies — runs
+// unchanged. This used to fail to compile: "zir unsupported: array
+// element type".
+import { Future, runFuture } from 'zena:async';
+
+class Worker {
+  var count: i32 = 0;
+  new();
+  async tick(): Future<void> {
+    this.count += 1;
+  }
+  async runAll(): Future<i32> {
+    let running = new GrowableArray<Future<void>>();
+    running.push(this.tick());
+    running.push(this.tick());
+    running.push(this.tick());
+    await Future.all(running);
+    return this.count;
+  }
+}
+
+export let main = (): i32 => {
+  return runFuture(new Worker().runAll());
+};

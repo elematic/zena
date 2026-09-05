@@ -20,6 +20,7 @@ import {
   I32Type, I64Type, InterfaceType, NullType, Type, TypeParameterType,
   U32Type, U64Type, UnionType, baseType, instantiateClassType,
   typeToString, isNarrowIntType, isUnsignedIntType, narrowIntBits,
+  isVoidOrNeverType,
 } from '../../types.zena';
 import {
   ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, isRefValType, valTypeEquals,
@@ -268,6 +269,22 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
       return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), isNull, -1);
     }
     return isNull;
+  }
+  // Zero-width equality: `void` is a unit type — every value of it is
+  // the same (absent) value — so comparing two is a constant. Arises
+  // in generic code at a zero-width instantiation
+  // (`GrowableArray<void>.contains` comparing `this[i] == value`).
+  if (bin.operator == "==" || bin.operator == "!=" ||
+      bin.operator == "===" || bin.operator == "!==") {
+    let zlb = substitutedBaseType(cx, bin.left);
+    let zrb = substitutedBaseType(cx, bin.right);
+    if (zlb != null && zrb != null &&
+        isVoidOrNeverType(zlb) && isVoidOrNeverType(zrb)) {
+      lowerExpr(cx, bin.left, null);
+      lowerExpr(cx, bin.right, null);
+      let same = bin.operator == "==" || bin.operator == "===";
+      return cx.b.constI32(if (same) 1 else 0, new ValTypeI32());
+    }
   }
   // Reference identity: === / !== between eq-typed references.
   if (bin.operator == "===" || bin.operator == "!==") {

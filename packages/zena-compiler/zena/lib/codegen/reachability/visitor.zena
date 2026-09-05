@@ -27,7 +27,7 @@ import {
   getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, recordWasmFields, sortedOptionalNames,
+  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, recordWasmFields, sortedOptionalNames,
 } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -252,7 +252,10 @@ export final class TypeLowerer implements TypeLowererInterface {
       if (t.name == "array" && targs != null && targs.length > 0) {
         let elemType = targs[0];
         this.discoverType(elemType, model);
-        let elemValType = typeToValType(this.pass.wasm, elemType);
+        // Storage type, matching typeToValType's array arm: narrow and
+        // zero-width elements pack, so the array interned here is the
+        // one lowering will name.
+        let elemValType = typeToStorageValType(this.pass.wasm, elemType);
         let arr = this.pass.wasm.getArray(elemValType, true);
         this.pass.markTypeReached(arr);
         return;
@@ -394,7 +397,8 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
     } else if (t is ArrayType) {
       this.discoverType(t.elementType, model);
-      let elemValType = typeToValType(this.pass.wasm, t.elementType);
+      // Storage type, for the same reason as the `array` class arm.
+      let elemValType = typeToStorageValType(this.pass.wasm, t.elementType);
       // Reached, not just created: an array VALUE can exist with no
       // reached signature mentioning the type — a literal iterated by
       // an index loop is array.new_fixed and array.get, both of which

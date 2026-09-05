@@ -2327,7 +2327,12 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
       bail(cx, 'untyped binding');
     }
     let vt = typeToValTypeWithSub(cx.wasm, bindingType, cx.func);
-    cx.requireSupported(vt, 'for-in element type');
+    if (!(vt is ValTypeVoid)) {
+      // A zero-width element (`Iterable<void>`) binds nothing; the
+      // protocol still drives the loop. Anything else unsupported
+      // stays a loud bail.
+      cx.requireSupported(vt, 'for-in element type');
+    }
     bindVtOpt = vt;
   }
 
@@ -2364,11 +2369,17 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
   cx.b.switchTo(header);
   cx.applyParams(carried, headerParams);
   let results = cx.slotCallMulti(iter, 'next');
-  if (results.length != 2 || !(cx.valueTypeOf(results[0]) is ValTypeI32)) {
+  // A zero-width element drops its `next()` lane, so the protocol
+  // result is the done flag alone.
+  let zeroWidthElem = bindVtOpt != null &&
+      (bindVtOpt as ValType) is ValTypeVoid;
+  let expectedLanes = if (zeroWidthElem) 1 else 2;
+  if (results.length != expectedLanes ||
+      !(cx.valueTypeOf(results[0]) is ValTypeI32)) {
     bail(cx, 'iterator next shape');
   }
   let ok = results[0];
-  var elem = results[1];
+  var elem = if (zeroWidthElem) -1 else results[1];
 
   let bodyB = cx.b.newBlock();
   let exitB = cx.b.newBlock();
@@ -2376,7 +2387,10 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
   cx.b.brIf(ok, bodyB, noValues(), exitB, cx.envValues(carried));
 
   cx.b.switchTo(bodyB);
-  if (symOpt != null) {
+  if (zeroWidthElem) {
+    // bindPatternSym stores the zero-width binding (NO_VALUE) itself.
+    cx.bindPatternSym(symOpt as Symbol, -1);
+  } else if (symOpt != null) {
     let bindVt = bindVtOpt as ValType;
     if (!isValSubtype(cx.valueTypeOf(elem), bindVt)) {
       // The slot's element type is erased/nullable relative to the

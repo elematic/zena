@@ -2610,7 +2610,15 @@ export final class FunctionLowerer {
             this.b.retVoid();
           }
         } else if (!this.presplitAsync &&
-            this.func.signature.returns.length > 1) {
+            (this.func.signature.returns.length > 1 ||
+             (argument is TupleLiteral &&
+              this.#functionReturnLanes() != null))) {
+          // The second disjunct: an inline-tuple return whose
+          // zero-width lanes leave one (or zero) wasm results —
+          // `find` at `T = void` returns `inline (boolean, T)` as a
+          // single i32. The lane-aware path runs dropped lanes for
+          // their effects; the value-position tuple lowering has no
+          // lanes to consult and bails.
           let values = this.#lowerMultiReturnValues(argument);
           if (this.#cx().reachable &&
               !returnMultiThroughFinally(this.#cx(), values)) {
@@ -2776,21 +2784,22 @@ export final class FunctionLowerer {
       if (objT != null && init.args.length == 0 &&
           this.#resolveSelfType(objT) is InterfaceType) {
         let recv = this.#lowerExpression(member.object);
-        return this.#cx().slotCallOnValue(recv, getMemberPropertyName(
+        let raw = this.#cx().slotCallOnValue(recv, getMemberPropertyName(
             member.isSymbolAccess, member.property.name));
+        return this.#weaveMultiSource(init, raw);
       }
       let rep = this.#lowerMethodCall(init, member, out);
       if (out.length == 0) {
         out.push(rep);
       }
-      return out;
+      return this.#weaveMultiSource(init, out);
     }
     if (init.callee is Identifier) {
       let rep = this.#lowerCall(init, out);
       if (out.length == 0) {
         out.push(rep);
       }
-      return out;
+      return this.#weaveMultiSource(init, out);
     }
     // Any other expression: a single value (a boxed tuple splits at
     // the destructuring site).
@@ -3062,6 +3071,25 @@ export final class FunctionLowerer {
     }
     let result = this.b.callFunc(fr, args, resultType);
     return this.#reassertCallResult(call, result, resultType);
+  }
+
+  /**
+   * Re-weaves a multi-value source's results to SEMANTIC arity when a
+   * zero-width instantiation collapsed the wasm result count below
+   * the lane count: `Iterator<void>.next()` returns the done flag
+   * alone, and the destructuring site still pairs one slot per lane.
+   * A list already at semantic arity (the >1-result call paths weave
+   * through #pushMultiResults themselves) passes through untouched.
+   */
+  #weaveMultiSource(call: CallExpression,
+      raw: GrowableArray<i32>): GrowableArray<i32> {
+    let lanes = this.#callResultLanes(call);
+    if (lanes == null || raw.length == lanes.length) {
+      return raw;
+    }
+    let woven = new GrowableArray<i32>();
+    this.#pushMultiResults(call, raw, woven);
+    return woven;
   }
 
   /** The call's semantic result lanes when its (substituted) type is

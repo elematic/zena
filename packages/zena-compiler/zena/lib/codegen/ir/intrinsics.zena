@@ -20,7 +20,7 @@ import {
 } from '../../simd.zena';
 import { parseI32WithHex } from '../codegen-utils.zena';
 import { i32ToString } from 'zena:string-convert';
-import { arrayElementType, isSignedNarrowIntType } from '../../types.zena';
+import { arrayElementType, isSignedNarrowIntType, isVoidOrNeverType } from '../../types.zena';
 import {
   WasmFunction, WasmArray, WasmTag, isValSubtype, asWasmArray,
 } from '../wasm-module.zena';
@@ -144,6 +144,18 @@ let packedArrayElementSigned = (cx: LoweringContext, e: Expression): boolean => 
   return isSignedNarrowIntType(elem);
 };
 
+/**
+ * Whether the argument's checked type is zero-width (void/never). A
+ * zero-width array element stores as packed i8
+ * (typeToStorageValType), so the write builtins have an i32 slot to
+ * fill and no value to fill it with: the argument runs for its
+ * effects and the slot stores a constant.
+ */
+let zeroWidthArg = (cx: LoweringContext, e: Expression): boolean => {
+  let t = cx.substitutedNodeType(e);
+  return t != null && isVoidOrNeverType(t);
+};
+
 /** __array_get: array.get, choosing the packed read for narrow elements. */
 let lowerArrayGet = (cx: LoweringContext, call: CallExpression): i32 => {
   let (arr, arrType) = arrayOperand(cx, call.args[0]);
@@ -180,9 +192,15 @@ let lowerArraySet = (cx: LoweringContext, call: CallExpression): i32 => {
   if (isPackedElement(arrType.elementType)) {
     // array.set on a packed element takes an i32 and truncates to the
     // stored width, which is exactly the narrow value's canonical form.
-    let packedValue = lowerExpr(cx, call.args[2], new ValTypeI32());
-    if (!(cx.valueTypeOf(packedValue) is ValTypeI32)) {
-      cx.fail('array builtin write type');
+    var packedValue = -1;
+    if (zeroWidthArg(cx, call.args[2])) {
+      lowerExpr(cx, call.args[2], null);
+      packedValue = cx.b.constI32(0, new ValTypeI32());
+    } else {
+      packedValue = lowerExpr(cx, call.args[2], new ValTypeI32());
+      if (!(cx.valueTypeOf(packedValue) is ValTypeI32)) {
+        cx.fail('array builtin write type');
+      }
     }
     let packedIdx = cx.b.pushExtra(threeValues(arr, index, packedValue));
     return cx.b.emitVoid(IrOp.array_set, packedIdx, -1);
@@ -232,9 +250,15 @@ let lowerArrayNew = (cx: LoweringContext, call: CallExpression): i32 => {
   if (isPackedElement(arrType.elementType)) {
     // As with array.set, the initializer crosses as an i32 and the
     // instruction truncates to the packed width.
-    let packedInit = lowerExpr(cx, call.args[1], new ValTypeI32());
-    if (!(cx.valueTypeOf(packedInit) is ValTypeI32)) {
-      cx.fail('array builtin init type');
+    var packedInit = -1;
+    if (zeroWidthArg(cx, call.args[1])) {
+      lowerExpr(cx, call.args[1], null);
+      packedInit = cx.b.constI32(0, new ValTypeI32());
+    } else {
+      packedInit = lowerExpr(cx, call.args[1], new ValTypeI32());
+      if (!(cx.valueTypeOf(packedInit) is ValTypeI32)) {
+        cx.fail('array builtin init type');
+      }
     }
     let packedPair = cx.b.pushExtra(twoValues(length, packedInit));
     return cx.b.emit(IrOp.array_new, resultVt, packedPair,
