@@ -27,8 +27,8 @@ import { Type } from 'zena-compiler:types';
 import { DocComment, parseLeadingDoc } from './doc-comment.zena';
 import {
   AnchorSet, DocDeclaration, DocLoc, DocMember, DocModule, DocParam,
-  DocReexport, DocTypeParam, DeclarationKind, MemberKind, TypeRef,
-  readableName,
+  DocReexport, DocReexportName, DocTypeParam, DeclarationKind, MemberKind,
+  TypeRef, readableName,
 } from './model.zena';
 import { annotationText, refFor, refForOrType } from './type-text.zena';
 import { StringBuilder } from 'zena:string-builder';
@@ -49,10 +49,10 @@ final class Walk {
   comments: CommentMap;
   model: SemanticModel | null;
   options: ExtractOptions;
-  anchors = new AnchorSet();
+  anchors: AnchorSet;
 
   new(this.moduleId, this.file, this.source, this.comments, this.model,
-      this.options);
+      this.options, this.anchors);
 
   /** Whether a name is public — that is, not `#private`. */
   visible(name: String): boolean {
@@ -105,7 +105,7 @@ export let extractModule = (
 ): DocModule => {
   let out = new DocModule(moduleId, name, file);
   let walk = new Walk(moduleId, file, ast.source, attachComments(ast), model,
-      options);
+      options, out.anchors);
   out.doc = walk.docFor(ast);
 
   let declarations = new GrowableArray<DocDeclaration>(8);
@@ -114,12 +114,13 @@ export let extractModule = (
     match (statement) {
       case ExportAllDeclaration as exportAll: {
         reexports.push(new DocReexport(exportAll.moduleSpecifier.value,
-            new GrowableArray<String>(0), true));
+            new GrowableArray<DocReexportName>(0), true));
       }
       case ExportFromDeclaration as exportFrom: {
-        let names = new GrowableArray<String>(exportFrom.specifiers.length);
+        let names = new GrowableArray<DocReexportName>(
+            exportFrom.specifiers.length);
         for (let spec in exportFrom.specifiers) {
-          names.push(spec.local.name);
+          names.push(new DocReexportName(spec.local.name, spec.imported.name));
         }
         reexports.push(new DocReexport(exportFrom.moduleSpecifier.value, names,
             false));

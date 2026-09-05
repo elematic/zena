@@ -32,6 +32,20 @@ function bodies, and inherited-member flattening (the model records the
 supertype; a consumer that wants a flattened member list can compute
 one from the ids).
 
+### Re-exports
+
+A module that re-exports is documented as carrying what it re-exports.
+`zena:map` declares nothing and re-exports `Map`, `MapEntry` and
+`HashMap` from files that are private to the standard library, so
+recording the specifier and stopping there would document `zena:map` as
+an empty page — and the declarations appear nowhere else, because their
+files are private. Each re-export is followed to the file it names,
+that file is walked, and the declarations it carries are copied in
+under the names the re-exporting module exports them as. Each copy
+records the canonical id of the module that declares it, so a consumer
+can say where it comes from and link there when that module is
+documented too.
+
 ## Input: what a package is
 
 Zenadoc takes one path and produces one JSON document.

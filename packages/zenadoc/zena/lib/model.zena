@@ -149,26 +149,63 @@ export final class DocDeclaration {
   var doc: DocComment | null = null;
   var loc: DocLoc | null = null;
 
+  /**
+   * The canonical id of the module that declares this, when the module
+   * documenting it only re-exports it. Null for a declaration written
+   * in the module it is documented in.
+   */
+  var reexportedFrom: String | null = null;
+
   new(this.kind, this.name, this.id, this.anchor, this.signature);
+
+  /** A copy carrying a new name, id, and anchor. */
+  renamed(name: String, id: String, anchor: String): DocDeclaration {
+    let out = new DocDeclaration(this.kind, name, id, anchor, this.signature);
+    out.exported = this.exported;
+    out.modifiers = this.modifiers;
+    out.typeParameters = this.typeParameters;
+    out.parameters = this.parameters;
+    out.type = this.type;
+    out.superClass = this.superClass;
+    out.interfaces = this.interfaces;
+    out.mixins = this.mixins;
+    out.members = this.members;
+    out.doc = this.doc;
+    out.loc = this.loc;
+    out.reexportedFrom = this.reexportedFrom;
+    return out;
+  }
 }
+
+/** One name a re-export carries, and what it is called at the source. */
+export final class DocReexportName(
+  /** The name this module exports it as. */
+  exported: String,
+
+  /** The name the source module exports it as. */
+  source: String
+)
 
 /**
  * A re-export a module performs.
  *
- * Recorded rather than resolved: which declaration a name refers to is
- * a question about the whole package, and the module walk sees one
- * module at a time.
+ * The module walk sees one module at a time, so it records the
+ * specifier as written. Resolving it to the declarations it carries
+ * needs the whole package, and happens after every module is walked.
  */
 export final class DocReexport(
-  /** The module specifier re-exported from. */
+  /** The module specifier re-exported from, as written. */
   from: String,
 
   /** The names re-exported, empty for `export * from`. */
-  names: Array<String>,
+  names: Array<DocReexportName>,
 
   /** Whether this is `export * from`. */
   isAll: boolean
-)
+) {
+  /** The canonical id `from` resolves to, once that is known. */
+  var resolved: String | null = null;
+}
 
 /** One module of a package. */
 export final class DocModule {
@@ -185,7 +222,24 @@ export final class DocModule {
   var declarations = new GrowableArray<DocDeclaration>(0);
   var reexports = new GrowableArray<DocReexport>(0);
 
+  /**
+   * Anchors handed out in this module. Kept on the module because
+   * resolving re-exports adds declarations after the walk, and their
+   * anchors have to stay unique against the ones already given out.
+   */
+  anchors = new AnchorSet();
+
   new(this.id, this.name, this.file);
+
+  /** Whether a declaration of this name is already documented here. */
+  declares(name: String): boolean {
+    for (let declaration in this.declarations) {
+      if (declaration.name == name) {
+        return true;
+      }
+    }
+    return false;
+  }
 }
 
 /** Everything one run extracts. */

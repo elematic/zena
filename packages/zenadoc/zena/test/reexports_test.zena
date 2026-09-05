@@ -1,0 +1,101 @@
+// Re-export resolution: a facade module documents what it carries.
+//
+// Paths are relative to the repository root, which is where the test
+// runner works from.
+
+import { suite, test, TestContext, runAndReport } from 'zena:test';
+import { equal } from 'zena:assert';
+import { loadPackage, join } from '../lib/package.zena';
+import { documentPackage, DocumentOptions, DocumentResult } from '../lib/document.zena';
+import { DocDeclaration, DocModule } from '../lib/model.zena';
+
+let FIXTURES = 'packages/zenadoc/zena/test/fixtures';
+
+let documented = (): DocumentResult =>
+    documentPackage(loadPackage(join(FIXTURES, 'lib')), new DocumentOptions());
+
+let moduleNamed = (result: DocumentResult, name: String): DocModule => {
+  for (let module in result.docs.modules) {
+    if (module.name == name) {
+      return module;
+    }
+  }
+  throw new Error('no module named ' + name);
+};
+
+let declaration = (module: DocModule, name: String): DocDeclaration => {
+  for (let decl in module.declarations) {
+    if (decl.name == name) {
+      return decl;
+    }
+  }
+  throw new Error('no declaration named ' + name);
+};
+
+let names = (module: DocModule): String => {
+  var out = '';
+  for (let decl in module.declarations) {
+    if (out.length > 0) {
+      out = out + ',';
+    }
+    out = out + decl.name;
+  }
+  return out;
+};
+
+let tests = suite('reexports', () => {
+  test('documents what a facade carries', (t: TestContext) => {
+    let facade = moduleNamed(documented(), 'facade');
+    equal(names(facade), 'Gadget,adjust,Knob');
+  });
+
+  test('copies the declaration, doc comment and all', (t: TestContext) => {
+    let gadget = declaration(moduleNamed(documented(), 'facade'), 'Gadget');
+    equal(gadget.signature, 'class Gadget(label: String)');
+    equal(gadget.members.length, 1);
+    let doc = gadget.doc;
+    equal(doc == null, false);
+    if (doc != null) {
+      equal(doc.summary, 'A gadget.');
+    }
+  });
+
+  test('records where a re-exported declaration is declared',
+      (t: TestContext) => {
+    let gadget = declaration(moduleNamed(documented(), 'facade'), 'Gadget');
+    equal(gadget.reexportedFrom, 'fixture:nested/impl.zena');
+    equal(gadget.id, 'fixture:facade#Gadget');
+    equal(gadget.anchor, 'gadget');
+  });
+
+  test('documents a renamed re-export under its new name',
+      (t: TestContext) => {
+    let adjust = declaration(moduleNamed(documented(), 'facade'), 'adjust');
+    equal(adjust.name, 'adjust');
+    equal(adjust.id, 'fixture:facade#adjust');
+    equal(adjust.signature, 'function tune(steps: i32): i32');
+    let doc = adjust.doc;
+    if (doc != null) {
+      equal(doc.summary, 'Tunes a gadget.');
+    }
+  });
+
+  test('records the specifier a re-export resolved to', (t: TestContext) => {
+    let facade = moduleNamed(documented(), 'facade');
+    equal(facade.reexports.length, 3);
+    equal(facade.reexports[0].from, './nested/impl.zena');
+    equal(facade.reexports[0].resolved, 'fixture:nested/impl.zena');
+    equal(facade.reexports[2].isAll, true);
+  });
+
+  test('leaves a module that re-exports nothing alone', (t: TestContext) => {
+    let shapes = moduleNamed(documented(), 'shapes');
+    equal(shapes.reexports.length, 0);
+    equal(names(shapes), 'Square');
+    equal(declaration(shapes, 'Square').reexportedFrom == null, true);
+  });
+});
+
+export let main = (): i32 => runAndReport(tests, (s: String): void => {
+  console.log(s);
+});

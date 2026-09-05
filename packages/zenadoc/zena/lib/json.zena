@@ -69,10 +69,18 @@ let moduleObject = (module: DocModule): JsonObject => {
 let reexportObject = (reexport: DocReexport): JsonObject => {
   let out = new JsonObject();
   out['from'] = reexport.from;
+  let resolved = reexport.resolved;
+  if (resolved != null) {
+    out['resolved'] = resolved;
+  }
   if (reexport.isAll) {
     out['all'] = new Box<boolean>(true);
   } else {
-    out['names'] = stringArray(reexport.names);
+    let names = new JsonArray();
+    for (let name in reexport.names) {
+      names.push(name.exported);
+    }
+    out['names'] = names;
   }
   return out;
 };
@@ -86,6 +94,10 @@ let declarationObject = (declaration: DocDeclaration): JsonObject => {
   out['signature'] = declaration.signature;
   if (!declaration.exported) {
     out['exported'] = new Box<boolean>(false);
+  }
+  let reexportedFrom = declaration.reexportedFrom;
+  if (reexportedFrom != null) {
+    out['reexportedFrom'] = reexportedFrom;
   }
   if (declaration.modifiers.length > 0) {
     out['modifiers'] = stringArray(declaration.modifiers);

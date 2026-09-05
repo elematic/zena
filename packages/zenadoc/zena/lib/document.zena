@@ -24,6 +24,7 @@ import { stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
 import { isWitModulePath, synthesizeWitModule } from 'zena-compiler:wit-module-synth';
 import { Package, join } from './package.zena';
 import { extractModule, ExtractOptions } from './extract.zena';
+import { resolveReexports, WalkCache } from './reexports.zena';
 import { DocPackage } from './model.zena';
 
 /** The standard library's package name; the compiler loads it itself. */
@@ -107,6 +108,9 @@ export let documentPackage = (
 
   let extractOptions = new ExtractOptions();
   extractOptions.includePrivate = options.includePrivate;
+  // Shared across batches: a file is walked into the model once per run,
+  // whichever module first needs it.
+  let cache = new WalkCache();
 
   var i = 0;
   while (i < pkg.modules.length) {
@@ -115,7 +119,7 @@ export let documentPackage = (
     } else {
       pkg.modules.length
     };
-    documentBatch(pkg, options, extractOptions, i, end, out);
+    documentBatch(pkg, options, extractOptions, i, end, out, cache);
     i = end;
   }
   return out;
@@ -128,7 +132,8 @@ let documentBatch = (
   extractOptions: ExtractOptions,
   from: i32,
   to: i32,
-  out: DocumentResult
+  out: DocumentResult,
+  cache: WalkCache
 ): void => {
   let host = new FsHost(options.stdlibRoot);
   let packages = new HashMap<String, PackageConfig>();
@@ -166,8 +171,14 @@ let documentBatch = (
       }
       let checked = checkResults.results[result.entry.path];
       let model = if (checked == null) { null } else { checked.model };
-      out.docs.modules.push(extractModule(pkg.name + ':' + module.name,
-          module.name, module.file, result.entry.ast, model, extractOptions));
+      let documented = extractModule(pkg.name + ':' + module.name, module.name,
+          module.file, result.entry.ast, model, extractOptions);
+      // A module's own walk is what a facade re-exporting it should copy
+      // from, so it goes in the cache before any re-export is followed.
+      cache.put(result.entry.path, documented);
+      resolveReexports(documented, pkg.name, pkg.root, compiler, result,
+          checkResults, extractOptions, cache);
+      out.docs.modules.push(documented);
     } catch (e) {
       let reason = if (e is Error) { e.message } else { 'unknown failure' };
       out.failures.push(module.name + ': ' + reason);

@@ -1,0 +1,260 @@
+/**
+ * Resolving re-exports.
+ *
+ * A facade module — `zena:map`, `zena:collections` — declares nothing
+ * of its own and re-exports from files that are private to its
+ * package. Recording the specifier is not enough for a reader: the
+ * declarations are not documented anywhere else, so `zena:map` would
+ * document as an empty page.
+ *
+ * So each re-export is followed to the file it names, that file is
+ * walked, and the declarations it carries are copied into the facade
+ * under the names the facade exports them as. Each copy records where
+ * it is declared, so a consumer can say "re-exported from …" and link
+ * there when that module is documented too.
+ */
+
+import { CompilationResult, Compiler, ProgramCheckResult } from 'zena-compiler:compiler';
+import { HashMap } from 'zena:map';
+import { extractModule, ExtractOptions } from './extract.zena';
+import {
+  DocDeclaration, DocModule, DocReexport, DocReexportName,
+} from './model.zena';
+
+/**
+ * Naming a file inside a package.
+ *
+ * Stdlib files already carry a `zena:` id. Every other package resolves
+ * to filesystem paths, and a path is not something a reader or a link
+ * can use, so a path under the package root is rewritten to the same
+ * `<package>:<path>` shape the stdlib's private files have.
+ */
+final class Naming {
+  #name: String;
+  #root: String;
+
+  new(name: String, root: String) : #name = name, #root = root;
+
+  idOf(canonical: String): String {
+    if (canonical.startsWith(this.#name + ':')) {
+      return canonical;
+    }
+    let prefix = this.#root + '/';
+    if (canonical.startsWith(prefix)) {
+      return this.#name + ':' +
+          canonical.sliceBytes(prefix.length, canonical.length);
+    }
+    return canonical;
+  }
+}
+
+/**
+ * How many re-export hops to follow.
+ *
+ * A facade re-exporting a facade is normal; a chain longer than this is
+ * a cycle, and following it forever would hang rather than report.
+ */
+let MAX_DEPTH = 8;
+
+/**
+ * Every file walked into the model so far in this run, by canonical
+ * path.
+ *
+ * A module's own walk goes in as soon as it is documented, so a facade
+ * re-exporting `zena:array` copies from the page that already exists
+ * rather than walking `array.zena` again; and a private file several
+ * facades re-export — three re-export `collections/hash-map.zena` — is
+ * walked for the first of them and read from here by the rest.
+ *
+ * Walking is pure: the model is derived from source text, so a cached
+ * walk stays correct across the compiler replacements batching does.
+ */
+export final class WalkCache {
+  #modules = new HashMap<String, DocModule>();
+
+  has(canonical: String): boolean {
+    return this.#modules.has(canonical);
+  }
+
+  get(canonical: String): DocModule {
+    return this.#modules[canonical];
+  }
+
+  put(canonical: String, module: DocModule): void {
+    this.#modules[canonical] = module;
+  }
+}
+
+/**
+ * Copies re-exported declarations into `module`.
+ *
+ * `result` and `checked` come from compiling that module, so every file
+ * it re-exports from is already loaded and checked.
+ */
+export let resolveReexports = (
+  module: DocModule,
+  packageName: String,
+  packageRoot: String,
+  compiler: Compiler,
+  result: CompilationResult,
+  checked: ProgramCheckResult,
+  options: ExtractOptions,
+  cache: WalkCache
+): void => {
+  if (module.reexports.length == 0) {
+    return;
+  }
+  // Relative specifiers resolve against the file, not the module's
+  // public id: `./encoding.zena` inside `zena:url/index.zena` is a
+  // sibling of that file, and resolving it from `zena:url` would look
+  // beside `url.zena` at the stdlib root instead.
+  let names = new Naming(packageName, packageRoot);
+  for (let reexport in module.reexports) {
+    copyFrom(module, reexport, result.entry.path, names, compiler, result,
+        checked, options, cache, 0);
+  }
+};
+
+/** Follows one re-export and copies what it carries. */
+let copyFrom = (
+  into: DocModule,
+  reexport: DocReexport,
+  referrer: String,
+  names: Naming,
+  compiler: Compiler,
+  result: CompilationResult,
+  checked: ProgramCheckResult,
+  options: ExtractOptions,
+  cache: WalkCache,
+  depth: i32
+): void => {
+  if (depth > MAX_DEPTH) {
+    return;
+  }
+  let source = sourceModule(reexport.from, referrer, names, compiler, result,
+      checked, options, cache);
+  if (source == null) {
+    return;
+  }
+  reexport.resolved = source.id;
+
+  if (reexport.isAll) {
+    for (let declaration in source.declarations) {
+      adopt(into, declaration, declaration.name, source.id);
+    }
+  } else {
+    for (let entry in reexport.names) {
+      let declaration = find(source, entry.source);
+      if (declaration != null) {
+        adopt(into, declaration, entry.exported, source.id);
+      }
+    }
+  }
+
+  // The source may itself be a facade. Follow its re-exports for the
+  // names this one asked for, and for everything under `export *`.
+  for (let nested in source.reexports) {
+    let wanted = if (reexport.isAll) {
+      nested
+    } else {
+      narrow(nested, reexport, source)
+    };
+    if (wanted != null) {
+      copyFrom(into, wanted, source.file, names, compiler, result, checked,
+          options, cache, depth + 1);
+    }
+  }
+};
+
+/**
+ * The names of `nested` that `outer` still needs, or null if none.
+ *
+ * `export {HashMap} from 'zena:collections'` where `zena:collections`
+ * itself re-exports `HashMap` and much else: only `HashMap` crosses.
+ */
+let narrow = (
+  nested: DocReexport,
+  outer: DocReexport,
+  source: DocModule
+): DocReexport | null => {
+  let wanted = new GrowableArray<DocReexportName>(2);
+  for (let name in outer.names) {
+    if (source.declares(name.source)) {
+      continue;
+    }
+    if (nested.isAll) {
+      wanted.push(new DocReexportName(name.exported, name.source));
+    } else {
+      for (let carried in nested.names) {
+        if (carried.exported == name.source) {
+          wanted.push(new DocReexportName(name.exported, carried.source));
+        }
+      }
+    }
+  }
+  if (wanted.length == 0) {
+    return null;
+  }
+  return new DocReexport(nested.from, wanted, false);
+};
+
+/** The module a specifier names, walked and cached. */
+let sourceModule = (
+  specifier: String,
+  referrer: String,
+  names: Naming,
+  compiler: Compiler,
+  result: CompilationResult,
+  checked: ProgramCheckResult,
+  options: ExtractOptions,
+  cache: WalkCache
+): DocModule | null => {
+  let resolved = compiler.resolve(specifier, referrer);
+  let canonical = resolved.path;
+  if (cache.has(canonical)) {
+    return cache.get(canonical);
+  }
+  for (let file in result.files) {
+    if (file.path == canonical) {
+      let entry = checked.results[canonical];
+      let model = if (entry == null) { null } else { entry.model };
+      let id = names.idOf(canonical);
+      // `file` holds the canonical path, so a nested re-export resolves
+      // its relative specifiers against the right directory.
+      let walked = extractModule(id, id, canonical, file.ast, model, options);
+      cache.put(canonical, walked);
+      return walked;
+    }
+  }
+  return null;
+};
+
+let find = (module: DocModule, name: String): DocDeclaration | null => {
+  for (let declaration in module.declarations) {
+    if (declaration.name == name) {
+      return declaration;
+    }
+  }
+  return null;
+};
+
+/**
+ * Copies a declaration into a module under the name it exports it as.
+ *
+ * A name the module already documents wins, so a module that both
+ * declares `Map` and re-exports another one documents its own.
+ */
+let adopt = (
+  into: DocModule,
+  declaration: DocDeclaration,
+  name: String,
+  from: String
+): void => {
+  if (into.declares(name)) {
+    return;
+  }
+  let copy = declaration.renamed(name, into.id + '#' + name,
+      into.anchors.take(name));
+  copy.reexportedFrom = from;
+  into.declarations.push(copy);
+};
