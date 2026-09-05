@@ -10,7 +10,7 @@ the sections a page is meant to cover.
 To add a page: add it to the sidebar with an `outline`, then run
 `node scripts/scaffold-docs.js` to create the stub.
 
-**Status:** ✅ written · 📝 placeholder
+**Status:** ✅ written · 📝 placeholder · ⚙️ generated
 
 ## Guide
 
@@ -487,26 +487,56 @@ To add a page: add it to the sidebar with an `outline`, then run
     - Other attributes
     - Status
 - **Standard Library**
-  - 📝 [Overview](src/reference/stdlib/index.md) — `/reference/stdlib/`
+  - ✅ [Overview](src/reference/stdlib/index.md) — `/reference/stdlib/`
     - What ships with Zena
     - Importing
     - Stability
-  - 📝 [zena:array](src/reference/stdlib/array.md) — `/reference/stdlib/array/`
-  - 📝 [zena:string](src/reference/stdlib/string.md) — `/reference/stdlib/string/`
-  - 📝 [zena:string-builder](src/reference/stdlib/string-builder.md) — `/reference/stdlib/string-builder/`
-  - 📝 [zena:map](src/reference/stdlib/map.md) — `/reference/stdlib/map/`
-  - 📝 [zena:set](src/reference/stdlib/set.md) — `/reference/stdlib/set/`
-  - 📝 [zena:iterator](src/reference/stdlib/iterator.md) — `/reference/stdlib/iterator/`
-  - 📝 [zena:math](src/reference/stdlib/math.md) — `/reference/stdlib/math/`
-  - 📝 [zena:json](src/reference/stdlib/json.md) — `/reference/stdlib/json/`
-  - 📝 [zena:regex](src/reference/stdlib/regex.md) — `/reference/stdlib/regex/`
-  - 📝 [zena:url](src/reference/stdlib/url.md) — `/reference/stdlib/url/`
-  - 📝 [zena:fs](src/reference/stdlib/fs.md) — `/reference/stdlib/fs/`
-  - 📝 [zena:console](src/reference/stdlib/console.md) — `/reference/stdlib/console/`
-  - 📝 [zena:cli](src/reference/stdlib/cli.md) — `/reference/stdlib/cli/`
-  - 📝 [zena:test](src/reference/stdlib/test.md) — `/reference/stdlib/test/`
-  - 📝 [zena:error](src/reference/stdlib/error.md) — `/reference/stdlib/error/`
-  - 📝 [zena:memory](src/reference/stdlib/memory.md) — `/reference/stdlib/memory/`
+  - ⚙️ zena:array — `/reference/stdlib/array/`
+  - ⚙️ zena:array-iterator — `/reference/stdlib/array-iterator/`
+  - ⚙️ zena:assert — `/reference/stdlib/assert/`
+  - ⚙️ zena:async — `/reference/stdlib/async/`
+  - ⚙️ zena:bench — `/reference/stdlib/bench/`
+  - ⚙️ zena:box — `/reference/stdlib/box/`
+  - ⚙️ zena:byte-array — `/reference/stdlib/byte-array/`
+  - ⚙️ zena:byte-buffer — `/reference/stdlib/byte-buffer/`
+  - ⚙️ zena:cli — `/reference/stdlib/cli/`
+  - ⚙️ zena:collections — `/reference/stdlib/collections/`
+  - ⚙️ zena:component-abi — `/reference/stdlib/component-abi/`
+  - ⚙️ zena:console — `/reference/stdlib/console/`
+  - ⚙️ zena:core — `/reference/stdlib/core/`
+  - ⚙️ zena:error — `/reference/stdlib/error/`
+  - ⚙️ zena:error-stack — `/reference/stdlib/error-stack/`
+  - ⚙️ zena:fixed-array — `/reference/stdlib/fixed-array/`
+  - ⚙️ zena:fs — `/reference/stdlib/fs/`
+  - ⚙️ zena:growable-array — `/reference/stdlib/growable-array/`
+  - ⚙️ zena:growable-array-iterator — `/reference/stdlib/growable-array-iterator/`
+  - ⚙️ zena:hashable — `/reference/stdlib/hashable/`
+  - ⚙️ zena:immutable-array — `/reference/stdlib/immutable-array/`
+  - ⚙️ zena:iterable-utils — `/reference/stdlib/iterable-utils/`
+  - ⚙️ zena:iterator — `/reference/stdlib/iterator/`
+  - ⚙️ zena:json — `/reference/stdlib/json/`
+  - ⚙️ zena:map — `/reference/stdlib/map/`
+  - ⚙️ zena:math — `/reference/stdlib/math/`
+  - ⚙️ zena:memory — `/reference/stdlib/memory/`
+  - ⚙️ zena:option — `/reference/stdlib/option/`
+  - ⚙️ zena:ordered-map — `/reference/stdlib/ordered-map/`
+  - ⚙️ zena:ownership — `/reference/stdlib/ownership/`
+  - ⚙️ zena:process — `/reference/stdlib/process/`
+  - ⚙️ zena:range — `/reference/stdlib/range/`
+  - ⚙️ zena:regex — `/reference/stdlib/regex/`
+  - ⚙️ zena:result — `/reference/stdlib/result/`
+  - ⚙️ zena:set — `/reference/stdlib/set/`
+  - ⚙️ zena:simd — `/reference/stdlib/simd/`
+  - ⚙️ zena:stream — `/reference/stdlib/stream/`
+  - ⚙️ zena:string — `/reference/stdlib/string/`
+  - ⚙️ zena:string-builder — `/reference/stdlib/string-builder/`
+  - ⚙️ zena:string-convert — `/reference/stdlib/string-convert/`
+  - ⚙️ zena:string-reader — `/reference/stdlib/string-reader/`
+  - ⚙️ zena:task — `/reference/stdlib/task/`
+  - ⚙️ zena:template-strings-array — `/reference/stdlib/template-strings-array/`
+  - ⚙️ zena:test — `/reference/stdlib/test/`
+  - ⚙️ zena:time — `/reference/stdlib/time/`
+  - ⚙️ zena:url — `/reference/stdlib/url/`
 - **Toolchain**
   - 📝 [CLI](src/reference/cli.md) — `/reference/cli/`
     - zena build
@@ -617,4 +647,4 @@ To add a page: add it to the sidebar with an `outline`, then run
 
 ---
 
-32 of 117 pages written; 85 still placeholders.
+33 of 101 pages written; 68 still placeholders.

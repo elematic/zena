@@ -282,17 +282,21 @@ was run.
 
 ## Website consumption
 
-The Eleventy site gains a data file that reads the generated JSON and a
-pagination template that emits one page per module, replacing the
-placeholder pages under `/reference/stdlib/`. The site build depends on
-the extractor through Wireit, so the pages cannot go stale relative to
-the stdlib source.
+The Eleventy site reads the generated JSON in a data file and emits one
+page per module from a pagination template, replacing the placeholder
+pages under `/reference/stdlib/`. The sidebar's standard-library
+section comes from the same file, so a module added to the stdlib
+manifest appears in the navigation without anyone editing a list. The
+site build depends on the extraction step through Wireit, so the pages
+cannot go stale relative to the source they describe.
 
-Generated pages and hand-written prose have to coexist: the API listing
-for `zena:array` is generated, but the page's introduction and examples
-are worth writing by hand. The design is that a hand-written markdown
-file for a module, when one exists, provides the page's prose and the
-generated model provides the API listing below it.
+A module's prose is its own module doc comment, rendered above the
+listing. That keeps one source of truth: the text a reader sees on
+`/reference/stdlib/task/` is the text someone reading `task.zena` sees,
+and there is no second copy to drift. Hand-written prose per module —
+an introduction and worked examples that do not belong in the source —
+is worth adding later as a markdown file the template includes when it
+exists; nothing here forecloses it.
 
 ## Implementation stages
 

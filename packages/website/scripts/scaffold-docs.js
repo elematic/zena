@@ -70,9 +70,16 @@ for (const [prefix, tree] of Object.entries(sidebar)) {
 
   for (const item of items) {
     if (!item.link.startsWith(prefix)) continue;
+    // A generated page already exists at this URL, produced from data
+    // rather than from a source file. Writing a placeholder for it would
+    // claim the same permalink.
+    if (item.generated) continue;
     const path = sourcePathFor(item.link, links);
 
-    if (existsSync(path)) {
+    // A page may be a template rather than markdown — the stdlib overview
+    // renders the extracted module list — and that still counts as
+    // existing.
+    if (existsSync(path) || existsSync(path.replace(/\.md$/, '.njk'))) {
       skipped.push(path);
       continue;
     }

@@ -1,0 +1,116 @@
+---
+pagination:
+  data: api.stdlib
+  size: 1
+  alias: module
+permalink: '/reference/stdlib/{{ module.name }}/'
+aside: true
+eleventyComputed:
+  title: 'zena:{{ module.name }}'
+  description: 'zena:{{ module.name }} — the Zena standard library API reference.'
+---
+
+{% macro doc(entry) %}
+  {% if entry.doc.description %}
+    <div class="api-doc">{{ entry.doc.description | markdown | safe }}</div>
+  {% endif %}
+  {% set params = [] %}
+  {% set returns = null %}
+  {% set throws = [] %}
+  {% set examples = [] %}
+  {% set deprecated = null %}
+  {% for tag in entry.doc.tags %}
+    {% if tag.tag == 'param' %}{% set params = (params.push(tag), params) %}
+    {% elif tag.tag == 'returns' or tag.tag == 'return' %}{% set returns = tag %}
+    {% elif tag.tag == 'throws' %}{% set throws = (throws.push(tag), throws) %}
+    {% elif tag.tag == 'example' %}{% set examples = (examples.push(tag), examples) %}
+    {% elif tag.tag == 'deprecated' %}{% set deprecated = tag %}
+    {% endif %}
+  {% endfor %}
+
+  {% if deprecated %}
+    <p class="api-deprecated">
+      <strong>Deprecated.</strong> {{ deprecated.text | markdown | safe }}
+    </p>
+  {% endif %}
+
+  {% if params.length %}
+    <dl class="api-params">
+      {% for tag in params %}
+        <dt><code>{{ tag.name }}</code></dt>
+        <dd>{{ tag.text | markdown | safe }}</dd>
+      {% endfor %}
+    </dl>
+  {% endif %}
+
+  {% if returns %}
+    <p class="api-returns">
+      <span class="api-label">Returns</span> {{ returns.text | markdown | safe }}
+    </p>
+  {% endif %}
+
+  {% for tag in throws %}
+    <p class="api-throws">
+      <span class="api-label">Throws</span> <code>{{ tag.name }}</code>
+      {{ tag.text | markdown | safe }}
+    </p>
+  {% endfor %}
+
+  {% for tag in examples %}
+    <div class="api-example">{{ tag.text | markdown | safe }}</div>
+  {% endfor %}
+{% endmacro %}
+
+{% macro members(entries) %}
+  {% if entries.length %}
+    <div class="api-members">
+      {% for member in entries %}
+        <div class="api-member" id="{{ member.anchor }}">
+          <div class="api-member-signature">
+            {{ member.signature | highlight('zena') | safe }}
+          </div>
+          {{ doc(member) }}
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endmacro %}
+
+<p class="api-import">
+  {{ ("import {…} from '" + module.id + "';") | highlight('zena') | safe }}
+</p>
+
+{% if module.doc.description %}
+  <div class="api-module-doc">{{ module.doc.description | markdown | safe }}</div>
+{% endif %}
+
+{% if module.count == 0 %}
+  <p class="api-empty">
+    This module exports nothing yet.
+    {%- if module.reexports.length %}
+      It re-exports from
+      {% for reexport in module.reexports %}
+        <code>{{ reexport.from }}</code>{% if not loop.last %}, {% endif %}
+      {%- endfor %}.
+    {%- endif %}
+  </p>
+{% endif %}
+
+{% for group in module.groups %}
+  <h2 id="{{ group.kind }}">{{ group.title }}</h2>
+  {% for declaration in group.declarations %}
+    <h3 id="{{ declaration.anchor }}">{{ declaration.name }}</h3>
+    <div class="api-declaration">
+      <div class="api-signature">
+        {{ declaration.signature | highlight('zena') | safe }}
+      </div>
+      {% if declaration.reexportedFrom %}
+        <p class="api-source">
+          Re-exported from <code>{{ declaration.reexportedFrom }}</code>.
+        </p>
+      {% endif %}
+      {{ doc(declaration) }}
+      {{ members(declaration.members) }}
+    </div>
+  {% endfor %}
+{% endfor %}

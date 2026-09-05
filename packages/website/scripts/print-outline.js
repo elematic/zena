@@ -38,7 +38,10 @@ const collectLinks = (items) =>
 /** A page counts as written once it no longer carries the Draft badge. */
 const isDraft = async (path) => {
   const full = join(SRC, path);
-  if (!existsSync(full)) return true;
+  if (!existsSync(full)) {
+    // A template page (the stdlib overview) is written, not a placeholder.
+    return !existsSync(full.replace(/\.md$/, '.njk'));
+  }
   const {readFile} = await import('node:fs/promises');
   return (await readFile(full, 'utf8')).includes('status: Draft');
 };
@@ -56,7 +59,7 @@ const lines = [
   'To add a page: add it to the sidebar with an `outline`, then run',
   '`node scripts/scaffold-docs.js` to create the stub.',
   '',
-  '**Status:** ✅ written · 📝 placeholder',
+  '**Status:** ✅ written · 📝 placeholder · ⚙️ generated',
   '',
 ];
 
@@ -73,6 +76,10 @@ for (const [prefix, tree] of Object.entries(sidebar)) {
 
       if (!item.link) {
         lines.push(`${indent}- **${item.text}**`);
+      } else if (item.generated) {
+        // Extracted from source rather than written, so it is neither a
+        // page to write nor a placeholder to count.
+        lines.push(`${indent}- ⚙️ ${item.text} — \`${item.link}\``);
       } else {
         total++;
         const path = sourcePathFor(item.link, links);

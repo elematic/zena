@@ -1,3 +1,36 @@
+import {readFileSync} from 'node:fs';
+import {dirname, join} from 'node:path';
+import {fileURLToPath} from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The standard library's modules, as sidebar entries.
+ *
+ * Reads the same generated file `_data/api.js` does. A missing file means
+ * Eleventy ran without the extraction step; the section is then just the
+ * overview, which is easier to diagnose than a build that fails here.
+ */
+const stdlibModules = () => {
+  try {
+    const docs = JSON.parse(
+      readFileSync(
+        join(__dirname, '..', '..', '_generated', 'stdlib-api.json'),
+        'utf8',
+      ),
+    );
+    return docs.modules.map((module) => ({
+      text: module.id,
+      link: `/reference/stdlib/${module.name}/`,
+      // Rendered by src/reference/stdlib/module.njk. Marked so the
+      // scaffolder does not write a placeholder over the generated page.
+      generated: true,
+    }));
+  } catch {
+    return [];
+  }
+};
+
 /**
  * Sidebar configuration, keyed by URL prefix.
  *
@@ -899,22 +932,11 @@ const reference = [
         link: '/reference/stdlib/',
         outline: ['What ships with Zena', 'Importing', 'Stability'],
       },
-      {text: 'zena:array', link: '/reference/stdlib/array/'},
-      {text: 'zena:string', link: '/reference/stdlib/string/'},
-      {text: 'zena:string-builder', link: '/reference/stdlib/string-builder/'},
-      {text: 'zena:map', link: '/reference/stdlib/map/'},
-      {text: 'zena:set', link: '/reference/stdlib/set/'},
-      {text: 'zena:iterator', link: '/reference/stdlib/iterator/'},
-      {text: 'zena:math', link: '/reference/stdlib/math/'},
-      {text: 'zena:json', link: '/reference/stdlib/json/'},
-      {text: 'zena:regex', link: '/reference/stdlib/regex/'},
-      {text: 'zena:url', link: '/reference/stdlib/url/'},
-      {text: 'zena:fs', link: '/reference/stdlib/fs/'},
-      {text: 'zena:console', link: '/reference/stdlib/console/'},
-      {text: 'zena:cli', link: '/reference/stdlib/cli/'},
-      {text: 'zena:test', link: '/reference/stdlib/test/'},
-      {text: 'zena:error', link: '/reference/stdlib/error/'},
-      {text: 'zena:memory', link: '/reference/stdlib/memory/'},
+      // One entry per module the standard library exports, from the
+      // extracted API rather than a list kept by hand: a module added to
+      // the stdlib manifest appears here, and one removed stops
+      // appearing, without anyone editing this file.
+      ...stdlibModules(),
     ],
   },
   {
