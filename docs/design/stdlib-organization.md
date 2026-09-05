@@ -321,7 +321,11 @@ the file layout in the compiler rather than the library boundary.
 A larger version of the same problem sits alongside it. Sixteen sites
 match a stdlib declaration by name with no location check at all, so a
 user declaration that happens to share the name is treated as the stdlib
-one:
+one. That count is a floor, not a total: it came from grepping `==`, and
+a later pass found the same comparisons written negated —
+`name != "FixedArray"`, `sourcePath != "zena:hashable"` — in
+`checker.zena`, `reachability/visitor.zena`, `ir/lowering.zena` and
+`parser.zena`. Audit both polarities.
 
 | Names matched                                            | Site                                                     |
 | -------------------------------------------------------- | -------------------------------------------------------- |
@@ -551,6 +555,20 @@ reaches `String`:
     old paths; the working tree's manifest names the new ones, so the
     compiler being built resolves straight to the real files and never
     loads a shim.
+
+    A module can only move once **the bootstrap's own checker** finds its
+    declarations through the registry. Converting a literal comparison in
+    the working tree is not enough — the bootstrap is what does the
+    checking while it builds, and it carries the version it was cut from.
+    `hashable` demonstrated this: with `hashable.zena` moved, the
+    bootstrap's `constraint.sourcePath != "zena:hashable"` rejected
+    `Hashable` at its new path and every `HashMap` in the compiler failed
+    its bound at once. It moves after the reseed that carries the
+    converted check.
+
+    So the order within this step is: convert any remaining literal check
+    over a member's declarations, reseed, then move that member. Members
+    the compiler never checks — the bulk of them — move immediately.
 15. Reseed.
 16. Delete the shims and the old registry locations.
 
