@@ -1,0 +1,45 @@
+// @mode: run
+// @result: 7
+
+// Zero-width lanes of an inline-tuple union (issue #435, lanes half):
+// a lane whose type is void in this instantiation occupies no wasm
+// result slot. Encoding (constructing either arm), decoding
+// (if-let), and both instantiations of the same generic method.
+
+import { Error } from "zena:error";
+
+class Holder<T> {
+  has: boolean;
+  new(this.has);
+
+  get(v: T): inline (true, T, _) | inline (false, _, String) {
+    if (this.has) {
+      return (true, v, _);
+    }
+    return (false, _, "empty");
+  }
+}
+
+var effects = 0;
+let bump = (): void => { effects += 1; };
+
+export let main = (): i32 => {
+  // Void instantiation: the payload lane vanishes.
+  let hv = new Holder<void>(true);
+  if (let (true, v, _) = hv.get(bump())) {
+    effects += 10;
+  }
+  let hvEmpty = new Holder<void>(false);
+  if (let (false, _, msg) = hvEmpty.get(bump())) {
+    if (msg == "empty") {
+      effects += 100;
+    }
+  }
+  if (effects != 112) { return 1; }
+  // Value instantiation unchanged.
+  let hi = new Holder<i32>(true);
+  if (let (true, n, _) = hi.get(7)) {
+    return n;
+  }
+  return 2;
+};

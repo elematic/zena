@@ -22,7 +22,7 @@ import {
 import {
   ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64,
   ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull,
-  ValTypeStructRef, isRefValType,
+  ValTypeStructRef, ValTypeVoid, isRefValType,
 } from '../wasm.zena';
 import {
   substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
@@ -996,6 +996,18 @@ export final class LoweringContext {
       this.fail('untyped match binding');
     }
     let bindingVt = typeToValTypeWithSub(this.wasm, bindingType, this.func);
+    if (bindingVt is ValTypeVoid) {
+      // A zero-width binding (a void lane's) holds nothing; a celled
+      // one stays a loud miss, like every celled zero-width binding.
+      if (this.isCelled(sym.id)) {
+        this.fail('celled zero-width binding');
+      }
+      // -1 is lowering.zena's NO_VALUE; the value cannot cross this
+      // module cycle's back edge (module-level bindings may not).
+      this.env[sym.id] = -1;
+      this.symbols[sym.id] = sym;
+      return;
+    }
     this.requireSupported(bindingVt, 'match binding type');
     var bound = value;
     let have = this.valueTypeOf(value);

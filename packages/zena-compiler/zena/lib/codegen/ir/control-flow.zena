@@ -28,7 +28,7 @@ import {
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import {
   ValType, ValTypeI32, ValTypeI8, ValTypeI16, ValTypeRef, ValTypeRefNull,
-  ValTypeOptRef, WasmType, isRefValType, refTargetOf,
+  ValTypeOptRef, ValTypeVoid, WasmType, isRefValType, refTargetOf,
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, RecordDispatchInfo, WasmFunction, WasmGlobal, WasmStruct,
@@ -135,6 +135,14 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
     }
     let bindVt = typeToValTypeWithSub(
         cx.wasm, bindingType, cx.func);
+    if (bindVt is ValTypeVoid) {
+      // A zero-width lane: the decode wove NO_VALUE here, and the
+      // binding holds nothing, like any void local.
+      syms.push(sym);
+      bindValues.push(values[i]);
+      vts.push(bindVt);
+      continue;
+    }
     cx.requireSupported(bindVt, 'let-condition element type');
     if (!isValSubtype(cx.valueTypeOf(values[i]), bindVt) &&
         !isRefValType(bindVt)) {
@@ -166,6 +174,11 @@ export let applyLetBinds = (cx: LoweringContext, binds: LetCondBinds, failB: i32
   for (var i = 0; i < binds.syms.length; i += 1) {
     var bound = binds.values[i];
     let bindVt = binds.vts[i];
+    if (bindVt is ValTypeVoid) {
+      // Zero-width binding: nothing to conform or copy.
+      cx.bindPatternSym(binds.syms[i], bound);
+      continue;
+    }
     if (!isValSubtype(cx.valueTypeOf(bound), bindVt)) {
       // Erased/nullable slot element vs the concrete binding:
       // runtime downcast — in the taken block, so an exhausted

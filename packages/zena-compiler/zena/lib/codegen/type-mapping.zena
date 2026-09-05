@@ -1426,15 +1426,36 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   };
 };
 
-let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionType, returns: GrowableArray<ValType>): boolean => {
+/**
+ * The per-SEMANTIC-lane value types of an inline-tuple type or a
+ * union of inline tuples, or null when `type` is neither. A
+ * zero-width lane — one whose representative type is `void` in this
+ * instantiation — comes back as `ValTypeVoid`: it occupies no wasm
+ * slot, and every encoder and decoder of the multi-value shape walks
+ * these lanes with a separate wasm cursor, exactly as zero-width
+ * arguments already pair against parameter lists.
+ */
+export let inlineLaneValTypes = (wasm: WasmModule, type: Type): Array<ValType> | null => {
+  if (type is InlineTupleType) {
+    let lanes = new GrowableArray<ValType>();
+    for (let el in type.elementTypes) {
+      lanes.push(typeToValType(wasm, el));
+    }
+    return lanes;
+  }
+  if (!(type is UnionType)) {
+    return null;
+  }
   let memberTuples = new GrowableArray<InlineTupleType>();
-  for (let t in unionType.types) {
+  for (let t in type.types) {
     if (t is InlineTupleType) {
       memberTuples.push(t);
     }
   }
-  if (memberTuples.length == 0) return false;
-
+  if (memberTuples.length == 0) {
+    return null;
+  }
+  let lanes = new GrowableArray<ValType>();
   let arity = memberTuples[0].elementTypes.length;
   var i = 0;
   while (i < arity) {
@@ -1456,7 +1477,7 @@ let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionTyp
       }
     }
     let finalType = if (nonHoleType != null) nonHoleType else elementTypes[0];
-    
+
     let vType = typeToValType(wasm, finalType);
     let finalVType = if (hasHole) {
       match (vType) {
@@ -1466,9 +1487,22 @@ let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionTyp
     } else {
       vType
     };
-    returns.push(finalVType);
-    
+    lanes.push(finalVType);
+
     i += 1;
+  }
+  return lanes;
+};
+
+let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionType, returns: GrowableArray<ValType>): boolean => {
+  let lanes = inlineLaneValTypes(wasm, unionType as Type);
+  if (lanes == null) {
+    return false;
+  }
+  for (let vt in lanes) {
+    if (!(vt is ValTypeVoid)) {
+      returns.push(vt);
+    }
   }
   return true;
 };
@@ -1505,7 +1539,10 @@ export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: 
   }
   if (type is InlineTupleType) {
     for (let el in type.elementTypes) {
-      returns.push(typeToValType(wasm, el));
+      let vt = typeToValType(wasm, el);
+      if (!(vt is ValTypeVoid)) {
+        returns.push(vt);
+      }
     }
     return;
   }

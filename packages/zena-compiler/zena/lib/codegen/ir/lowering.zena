@@ -39,7 +39,7 @@ import {
   WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical,
 } from '../wasm-module.zena';
 import {
-  typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames,
+  typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, inlineLaneValTypes, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -2254,33 +2254,84 @@ export final class FunctionLowerer {
   #lowerMultiReturnValues(arg: Expression): GrowableArray<i32> {
     if (arg is CallExpression) {
       // Forwarding form: `return f(...)` where the callee returns the
-      // same multi-value shape — projections flow straight through.
+      // same multi-value shape. The decode wove NO_VALUE at
+      // zero-width lanes for destructuring sites; a forwarded return
+      // re-drops them, back to the wasm shape.
       let sig = this.func.signature;
       let outs = new GrowableArray<i32>();
       this.#lowerCall(arg, outs);
-      if (outs.length != sig.returns.length) {
+      let flat = new GrowableArray<i32>();
+      for (let o in outs) {
+        if (o != NO_VALUE) {
+          flat.push(o);
+        }
+      }
+      if (flat.length != sig.returns.length) {
         this.#bail('multi-value return arity');
       }
-      for (var i = 0; i < outs.length; i += 1) {
-        if (!isValSubtype(this.#valueType(outs[i]), sig.returns[i])) {
-          this.#failConformance(outs[i], sig.returns[i],
+      for (var i = 0; i < flat.length; i += 1) {
+        if (!isValSubtype(this.#valueType(flat[i]), sig.returns[i])) {
+          this.#failConformance(flat[i], sig.returns[i],
               'multi-value return type');
         }
       }
-      return outs;
+      return flat;
     }
     if (!(arg is TupleLiteral)) {
       this.#bail('multi-value return');
     }
     let sig = this.func.signature;
-    if (arg.elements.length != sig.returns.length) {
-      this.#bail('multi-value return arity');
-    }
     let nt = this.func.model.getNodeType(arg);
     if (nt == null || !(baseType(nt) is InlineTupleType)) {
       this.#bail('boxed tuple return');
     }
+    // Lane classification comes from the FUNCTION's declared return
+    // type, not this arm's elements: a `(false, _, Error)` arm has a
+    // hole where a `T = void` instantiation dropped the lane, and
+    // only the union of arms says which is which.
+    let lanes = this.#functionReturnLanes();
     let values = new GrowableArray<i32>();
+    if (lanes != null) {
+      let semLanes = lanes as Array<ValType>;
+      if (arg.elements.length != semLanes.length) {
+        this.#bail('multi-value return arity');
+      }
+      var w = 0;
+      for (var i = 0; i < arg.elements.length; i += 1) {
+        let el = arg.elements[i];
+        if (semLanes[i] is ValTypeVoid) {
+          // The lane does not exist at this instantiation: a hole
+          // contributes nothing, and a real element runs for its
+          // effects only.
+          if (!(el is Identifier && el.name == '_')) {
+            this.#lowerExpression(el);
+          }
+          continue;
+        }
+        if (w >= sig.returns.length) {
+          this.#bail('multi-value return arity');
+        }
+        let expected = sig.returns[w];
+        w += 1;
+        var v = -1;
+        if (el is Identifier && el.name == '_') {
+          v = this.#defaultValueOf(expected);
+        } else {
+          v = this.#lowerExpressionCtx(el, expected);
+        }
+        if (!isValSubtype(this.#valueType(v), expected)) {
+          this.#failConformance(v, expected, 'multi-value return type');
+        }
+        values.push(v);
+      }
+      if (w != sig.returns.length) {
+        this.#bail('multi-value return arity');
+      }
+      return values;
+    }
+    if (arg.elements.length != sig.returns.length) {
+      this.#bail('multi-value return arity');
+    }
     for (var i = 0; i < arg.elements.length; i += 1) {
       let el = arg.elements[i];
       let expected = sig.returns[i];
@@ -2296,6 +2347,22 @@ export final class FunctionLowerer {
       values.push(v);
     }
     return values;
+  }
+
+  /** The current function's semantic return lanes, when its declared
+   * (substituted) return type is an inline-tuple shape. */
+  #functionReturnLanes(): Array<ValType> | null {
+    let node = this.func.node;
+    if (node == null) {
+      return null;
+    }
+    let ft = this.func.model.getNodeType(node);
+    if (ft == null || !(ft is FunctionType)) {
+      return null;
+    }
+    let rt = substituteTypeParamsInFunctionContext(
+        this.wasm, this.func, ft.returnType);
+    return inlineLaneValTypes(this.wasm, rt);
   }
 
   /** The zero value of a result slot (for `_` tuple placeholders). */
@@ -2985,9 +3052,7 @@ export final class FunctionLowerer {
       }
       let projs = this.b.callFuncMulti(fr, args, sig.returns);
       let outs = multiOut as GrowableArray<i32>;
-      for (let p in projs) {
-        outs.push(p);
-      }
+      this.#pushMultiResults(call, projs, outs);
       return projs[0];
     }
     var resultType: ValType | null = null;
@@ -2997,6 +3062,46 @@ export final class FunctionLowerer {
     }
     let result = this.b.callFunc(fr, args, resultType);
     return this.#reassertCallResult(call, result, resultType);
+  }
+
+  /** The call's semantic result lanes when its (substituted) type is
+   * an inline-tuple shape, else null. */
+  #callResultLanes(call: CallExpression): Array<ValType> | null {
+    let t = this.#substitutedNodeType(call as Expression);
+    if (t == null) {
+      return null;
+    }
+    return inlineLaneValTypes(this.wasm, t);
+  }
+
+  /** Pushes a multi-value call's projections into `outs` at SEMANTIC
+   * arity: a zero-width lane contributes NO_VALUE, the convention
+   * zero-width bindings and parameters already share, so
+   * destructuring sites keep their one-slot-per-lane pairing. */
+  #pushMultiResults(call: CallExpression, projs: Array<i32>,
+      outs: GrowableArray<i32>): void {
+    let lanes = this.#callResultLanes(call);
+    if (lanes == null) {
+      for (let p in projs) {
+        outs.push(p);
+      }
+      return;
+    }
+    var w = 0;
+    for (let vt in lanes) {
+      if (vt is ValTypeVoid) {
+        outs.push(NO_VALUE);
+      } else {
+        if (w >= projs.length) {
+          this.#bail('multi-value lane pairing');
+        }
+        outs.push(projs[w]);
+        w += 1;
+      }
+    }
+    if (w != projs.length) {
+      this.#bail('multi-value lane pairing');
+    }
   }
 
   /**
@@ -3060,9 +3165,7 @@ export final class FunctionLowerer {
       }
       let projs = this.b.callFuncMulti(fr, args, sig.returns);
       let outs = multiOut as GrowableArray<i32>;
-      for (let p in projs) {
-        outs.push(p);
-      }
+      this.#pushMultiResults(call, projs, outs);
       return projs[0];
     }
     var resultType: ValType | null = null;
@@ -5563,9 +5666,7 @@ export final class FunctionLowerer {
         this.b.callFuncMulti(this.b.addRef(new IrRefFunc(method)), args, sig.returns)
       };
       let outs = multiOut as GrowableArray<i32>;
-      for (let p in projs) {
-        outs.push(p);
-      }
+      this.#pushMultiResults(call, projs, outs);
       return projs[0];
     }
     let resultType = if (sig.returns.length == 1) sig.returns[0] else null;
@@ -6969,9 +7070,7 @@ export final class FunctionLowerer {
       }
       let projs = this.b.callFuncMulti(funcRef, args, sig.returns);
       let outs = multiOut as GrowableArray<i32>;
-      for (let p in projs) {
-        outs.push(p);
-      }
+      this.#pushMultiResults(call, projs, outs);
       return projs[0];
     }
     var resultType: ValType | null = null;
