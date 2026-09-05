@@ -7,6 +7,7 @@ import {
   InputRef,
   LeafInput,
   RunContext,
+  Step,
   StepKey,
   StepOutputs,
   TaskStep,
@@ -15,7 +16,7 @@ import {
 let noRun = (ctx: RunContext): Future<OutputManifest> =>
   Future.of(OutputManifest.empty());
 
-let step = (key: String, deps: Array<String>): TaskStep => {
+let step = (key: String, deps: Array<String>): Step => {
   let inputs = new GrowableArray<InputRef>();
   for (let dep in deps) {
     inputs.push(new StepOutputs(new StepKey(dep)));
@@ -54,7 +55,7 @@ export let tests = suite('graph', (): void => {
     let inputs = new GrowableArray<InputRef>();
     inputs.push(new LeafInput('src/main.zena'));
     inputs.push(new LeafInput('src/lib.zena'));
-    let s = new TaskStep(new StepKey('build'), new Fingerprint('cfg'), inputs, noRun);
+    let s: Step = new TaskStep(new StepKey('build'), new Fingerprint('cfg'), inputs, noRun);
     let g = new Graph([s]);
     equal(g.size, 1);
   });
@@ -108,7 +109,7 @@ export let tests = suite('graph', (): void => {
     let inputs = new GrowableArray<InputRef>();
     inputs.push(new LeafInput('x'));
     inputs.push(new LeafInput('x'));
-    let s = new TaskStep(new StepKey('build'), new Fingerprint('cfg'), inputs, noRun);
+    let s: Step = new TaskStep(new StepKey('build'), new Fingerprint('cfg'), inputs, noRun);
     throws((): void => {
       new Graph([s]);
     });

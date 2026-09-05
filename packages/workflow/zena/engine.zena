@@ -10,6 +10,10 @@ import {EngineState, StepRecord} from './state.zena';
 import {
   LeafInput,
   RunContext,
+  ServiceContext,
+  ServiceHandle,
+  ServiceStep,
+  Step,
   StepKey,
   StepOutputs,
   TaskStep,
@@ -30,6 +34,11 @@ export sealed class StepOutcome {
   case Succeeded, Failed, Skipped
 }
 
+/**
+ * For a task, the manifest it produced. For a service, an empty
+ * manifest with source `Ran` if it started (and stopped cleanly) or
+ * `Fresh` if no dependent ever demanded it.
+ */
 export final class Succeeded(manifest: OutputManifest, source: StepSource)
     extends StepOutcome
 
@@ -76,6 +85,38 @@ export class RunResult {
   }
 }
 
+/**
+ * Engine-side bookkeeping for one service across a run.
+ *
+ * Holds the step base-typed and the start callback copied out, so that
+ * after classification no code touches ServiceStep members: in a graph
+ * with no services ServiceStep is never instantiated, and calls to its
+ * accessors are miscompiled rather than pruned today
+ * ("function index < 0 ... isReached=false").
+ */
+class ServiceRuntime {
+  step: Step;
+  start: (ctx: ServiceContext) => Future<ServiceHandle>;
+
+  /** Direct dependents that have not yet released the service. */
+  var pending: i32 = 0;
+  var started = false;
+  var stopping = false;
+  var identityFp: Fingerprint? = null;
+  var failure: Error? = null;
+  var handle: ServiceHandle? = null;
+
+  /** Settles when the identity fingerprint (or a failure) is known. */
+  identityDone = new Completer<void>();
+
+  /** Settles when the service is ready, or failed to start. */
+  ready = new Completer<void>();
+
+  stopped = new Completer<void>();
+
+  new(this.step, this.start);
+}
+
 /** Mutable bookkeeping shared across one run's step tasks. */
 class RunState {
   leaves: Map<String, Fingerprint>;
@@ -84,7 +125,10 @@ class RunState {
   outcomes: HashMap<String, StepOutcome>;
   done: HashMap<String, Completer<void>>;
   semaphore: Semaphore;
-  var remaining: i32;
+  taskList = new GrowableArray<TaskStep>();
+  serviceList = new GrowableArray<ServiceRuntime>();
+  services = new HashMap<String, ServiceRuntime>();
+  var remaining: i32 = 0;
   allDone = new Completer<void>();
 
   new(
@@ -94,17 +138,21 @@ class RunState {
     this.outcomes,
     this.done,
     this.semaphore,
-    this.remaining,
   );
 }
 
 /**
- * Drives a graph of task steps. For each step, in dependency order: if
- * the previous run recorded the same cache key the step is fresh and
- * nothing happens; otherwise the cache is consulted; otherwise the
- * step's run callback executes and the result is recorded. A failed
- * step fails alone; its dependents are skipped and everything else
- * continues.
+ * Drives a graph of steps. For each task, in dependency order: if the
+ * previous run recorded the same cache key the task is fresh and
+ * nothing happens; otherwise the cache is consulted; otherwise the run
+ * callback executes and the result is recorded. A failed step fails
+ * alone; its dependents are skipped and everything else continues.
+ *
+ * A service contributes an identity fingerprint (a digest of its
+ * config and resolved inputs) to its dependents' cache keys. It starts
+ * only when a dependent actually executes, dependents wait for its
+ * ready signal, and it stops when its last dependent settles — so a
+ * fully fresh build never starts a service.
  */
 export class Engine {
   #digest: Digest;
@@ -123,60 +171,81 @@ export class Engine {
     options: RunOptions? = null,
   ): Future<RunResult> {
     let opts = options ?? new RunOptions();
-    let done = new HashMap<String, Completer<void>>();
-    for (let step in graph.steps) {
-      done[step.key.value] = new Completer<void>();
-    }
     let rs = new RunState(
       leaves,
       previous,
       new EngineState(),
       new HashMap<String, StepOutcome>(),
-      done,
+      new HashMap<String, Completer<void>>(),
       new Semaphore(opts.parallelism),
-      graph.size,
     );
+    this.#classify(graph, rs);
+    rs.remaining = rs.taskList.length;
+
     // A countdown completer joins the step tasks. TaskGroup.spawn and
     // Future.all over collected Future<void>s both miscompile today
     // (a spawn closure calling methods on `this` loses members on a
     // specialized Engine; GrowableArray<Future<void>> breaks ZIR array
     // lowering), and calling the async method starts it just the same.
-    if (graph.size == 0) {
-      return new RunResult(rs.outcomes, rs.next);
+    for (let svc in rs.serviceList) {
+      this.#serviceMain(svc, rs);
     }
-    for (let step in graph.steps) {
-      this.#runStep(step, rs);
+    for (let task in rs.taskList) {
+      this.#runStep(task, rs);
+    }
+    if (rs.taskList.length == 0) {
+      rs.allDone.complete();
     }
     await rs.allDone.future;
+
+    // Services whose dependents were all services that never started
+    // (or that had no dependents at all) are stopped here; everything
+    // else was stopped by its last release.
+    for (let svc in rs.serviceList) {
+      this.#maybeStop(svc, rs);
+    }
+    for (let svc in rs.serviceList) {
+      await svc.stopped.future;
+    }
     return new RunResult(rs.outcomes, rs.next);
   }
 
-  async #runStep(step: TaskStep, rs: RunState): Future<void> {
-    rs.outcomes[step.key.value] = await this.#outcomeOf(step, rs);
-    if (let (true, completer) = rs.done.get(step.key.value)) {
-      completer.complete();
-    }
-    rs.remaining -= 1;
-    if (rs.remaining == 0) {
-      rs.allDone.complete();
-    }
-  }
-
-  async #outcomeOf(step: TaskStep, rs: RunState): Future<StepOutcome> {
-    try {
-      return await this.#execute(step, rs);
-    } catch (e) {
-      return new Failed(e);
-    }
-  }
-
-  // Narrowing InputRef (`is` or `match`) inside an async method
+  // Narrowing a sealed class (`is` or `match`) inside an async method
   // miscompiles today ("member not found" on a specialized Engine), so
-  // input discrimination lives in the synchronous helpers below and the
-  // async methods stay narrowing-free.
+  // step and input discrimination lives in the synchronous helpers below
+  // and the async methods stay narrowing-free.
 
-  /** The done-signals of the step's dependencies. */
-  #depCompleters(step: TaskStep, rs: RunState): GrowableArray<Completer<void>> {
+  /** Splits the graph into tasks and services and counts service holds. */
+  #classify(graph: Graph, rs: RunState): void {
+    for (let step in graph.steps) {
+      match (step) {
+        case TaskStep as task: {
+          rs.taskList.push(task);
+          rs.done[task.key.value] = new Completer<void>();
+        }
+        case ServiceStep as svc: {
+          let runtime = new ServiceRuntime(svc, svc.start);
+          rs.serviceList.push(runtime);
+          rs.services[svc.key.value] = runtime;
+        }
+      }
+    }
+    for (let step in graph.steps) {
+      for (let input in step.inputs) {
+        match (input) {
+          case StepOutputs as dep: {
+            if (let (true, svc) = rs.services.get(dep.step.value)) {
+              svc.pending += 1;
+            }
+          }
+          case _: {}
+        }
+      }
+    }
+  }
+
+  /** The done-signals of the step's task dependencies. */
+  #depCompleters(step: Step, rs: RunState): GrowableArray<Completer<void>> {
     let completers = new GrowableArray<Completer<void>>();
     for (let input in step.inputs) {
       match (input) {
@@ -191,14 +260,30 @@ export class Engine {
     return completers;
   }
 
+  /** The step's service dependencies. */
+  #serviceDeps(step: Step, rs: RunState): GrowableArray<ServiceRuntime> {
+    let deps = new GrowableArray<ServiceRuntime>();
+    for (let input in step.inputs) {
+      match (input) {
+        case StepOutputs as dep: {
+          if (let (true, svc) = rs.services.get(dep.step.value)) {
+            deps.push(svc);
+          }
+        }
+        case _: {}
+      }
+    }
+    return deps;
+  }
+
   /**
    * Resolves the step's inputs to fingerprints, filling `resolved`.
    * Returns an outcome to short-circuit with (unknown leaf, unsucceeded
-   * dependency), or null to proceed. Leaf and step namespaces are
-   * disjoint in the encoding, so names cannot collide across kinds.
+   * dependency), or null to proceed. Leaf, task, and service namespaces
+   * are disjoint in the encoding, so names cannot collide across kinds.
    */
   #resolveInputs(
-    step: TaskStep,
+    step: Step,
     rs: RunState,
     resolved: GrowableArray<ResolvedInput>,
   ): StepOutcome? {
@@ -215,29 +300,77 @@ export class Engine {
         }
         case StepOutputs as dep: {
           let depKey = dep.step.value;
-          var manifest: OutputManifest? = null;
-          if (let (true, depOutcome) = rs.outcomes.get(depKey)) {
-            if (depOutcome is Succeeded) {
-              manifest = depOutcome.manifest;
+          if (let (true, svc) = rs.services.get(depKey)) {
+            let identity = svc.identityFp;
+            if (identity == null) {
+              return new Skipped(`service "${depKey}" could not be resolved`);
             }
+            resolved.push(new ResolvedInput('service:' + depKey, identity));
+          } else {
+            var manifest: OutputManifest? = null;
+            if (let (true, depOutcome) = rs.outcomes.get(depKey)) {
+              if (depOutcome is Succeeded) {
+                manifest = depOutcome.manifest;
+              }
+            }
+            if (manifest == null) {
+              return new Skipped(`dependency "${depKey}" did not succeed`);
+            }
+            resolved.push(new ResolvedInput(
+              'step:' + depKey,
+              manifestFingerprint(manifest, this.#digest),
+            ));
           }
-          if (manifest == null) {
-            return new Skipped(`dependency "${depKey}" did not succeed`);
-          }
-          resolved.push(new ResolvedInput(
-            'step:' + depKey,
-            manifestFingerprint(manifest, this.#digest),
-          ));
         }
       }
     }
     return null;
   }
 
+  /** Releases the step's service holds, stopping services that hit zero. */
+  #releaseServices(step: Step, rs: RunState): void {
+    for (let svc in this.#serviceDeps(step, rs)) {
+      svc.pending -= 1;
+      this.#maybeStop(svc, rs);
+    }
+  }
+
+  #maybeStop(svc: ServiceRuntime, rs: RunState): void {
+    if (svc.stopping || svc.pending > 0) {
+      return;
+    }
+    svc.stopping = true;
+    this.#stopService(svc, rs);
+  }
+
+  async #runStep(step: TaskStep, rs: RunState): Future<void> {
+    rs.outcomes[step.key.value] = await this.#outcomeOf(step, rs);
+    if (let (true, completer) = rs.done.get(step.key.value)) {
+      completer.complete();
+    }
+    this.#releaseServices(step, rs);
+    rs.remaining -= 1;
+    if (rs.remaining == 0) {
+      rs.allDone.complete();
+    }
+  }
+
+  async #outcomeOf(step: TaskStep, rs: RunState): Future<StepOutcome> {
+    try {
+      return await this.#execute(step, rs);
+    } catch (e) {
+      return new Failed(e);
+    }
+  }
+
   async #execute(step: TaskStep, rs: RunState): Future<StepOutcome> {
-    // Wait for every dependency to settle.
+    // Wait for every dependency to settle: tasks complete, services
+    // resolve their identity (they are not started for this).
     for (let completer in this.#depCompleters(step, rs)) {
       await completer.future;
+    }
+    for (let svc in this.#serviceDeps(step, rs)) {
+      await svc.identityDone.future;
     }
 
     let resolved = new GrowableArray<ResolvedInput>();
@@ -263,6 +396,13 @@ export class Engine {
         return new Succeeded(cached, StepSource.Cache);
       }
 
+      // Only now is the step certain to execute, so only now are its
+      // services demanded.
+      let serviceFailure = await this.#acquireServices(step, rs);
+      if (serviceFailure != null) {
+        return serviceFailure;
+      }
+
       let manifest = await step.run(new RunContext());
       // Fingerprinting validates duplicate output names loudly here, at
       // the producer, instead of at the first dependent.
@@ -273,5 +413,94 @@ export class Engine {
     } finally {
       rs.semaphore.release();
     }
+  }
+
+  /**
+   * Computes a service's identity fingerprint once its dependencies
+   * have settled. The service is not started.
+   */
+  async #serviceMain(svc: ServiceRuntime, rs: RunState): Future<void> {
+    for (let completer in this.#depCompleters(svc.step, rs)) {
+      await completer.future;
+    }
+    for (let dep in this.#serviceDeps(svc.step, rs)) {
+      await dep.identityDone.future;
+    }
+    let resolved = new GrowableArray<ResolvedInput>();
+    let shortCircuit = this.#resolveInputs(svc.step, rs, resolved);
+    if (shortCircuit == null) {
+      svc.identityFp = new Fingerprint(
+        cacheKeyFor(svc.step.config, resolved, this.#digest).value,
+      );
+    } else {
+      svc.failure = new WorkflowError(
+        `service "${svc.step.key.value}" has unresolved inputs`,
+      );
+    }
+    svc.identityDone.complete();
+  }
+
+  /**
+   * Ensures every service the step depends on is started and ready.
+   * Returns a failure outcome if one could not start, else null.
+   */
+  async #acquireServices(step: Step, rs: RunState): Future<StepOutcome?> {
+    for (let svc in this.#serviceDeps(step, rs)) {
+      if (!svc.started) {
+        svc.started = true;
+        this.#startService(svc, rs);
+      }
+      await svc.ready.future;
+      let failure = svc.failure;
+      if (failure != null) {
+        return new Failed(new WorkflowError(
+          `service "${svc.step.key.value}" failed to start: ` + failure.message,
+        ));
+      }
+    }
+    return null;
+  }
+
+  async #startService(svc: ServiceRuntime, rs: RunState): Future<void> {
+    // A service's own service dependencies must be ready first.
+    let depFailure = await this.#acquireServices(svc.step, rs);
+    if (depFailure != null) {
+      svc.failure = new WorkflowError(
+        `service "${svc.step.key.value}" could not start its dependencies`,
+      );
+      svc.ready.complete();
+      return;
+    }
+    try {
+      svc.handle = await svc.start(new ServiceContext());
+    } catch (e) {
+      svc.failure = e;
+    }
+    svc.ready.complete();
+  }
+
+  async #stopService(svc: ServiceRuntime, rs: RunState): Future<void> {
+    let handle = svc.handle;
+    if (handle != null) {
+      try {
+        await handle.stop();
+      } catch (e) {
+        if (svc.failure == null) {
+          svc.failure = e;
+        }
+      }
+    }
+    let failure = svc.failure;
+    if (failure != null) {
+      rs.outcomes[svc.step.key.value] = new Failed(failure);
+    } else {
+      rs.outcomes[svc.step.key.value] = new Succeeded(
+        OutputManifest.empty(),
+        if (svc.started) StepSource.Ran else StepSource.Fresh,
+      );
+    }
+    // A stopped service no longer holds its own service dependencies.
+    this.#releaseServices(svc.step, rs);
+    svc.stopped.complete();
   }
 }

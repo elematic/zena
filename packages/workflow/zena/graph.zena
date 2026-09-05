@@ -1,7 +1,7 @@
 import {HashSet} from 'zena:set';
 import {StringBuilder} from 'zena:string-builder';
 import {WorkflowError} from './errors.zena';
-import {LeafInput, StepKey, StepOutputs, TaskStep} from './step.zena';
+import {LeafInput, StepKey, StepOutputs, Step} from './step.zena';
 
 /**
  * A validated set of steps. Construction checks that step keys are
@@ -11,15 +11,15 @@ import {LeafInput, StepKey, StepOutputs, TaskStep} from './step.zena';
  * topological order.
  */
 export class Graph {
-  #byKey: HashMap<String, TaskStep>;
-  #order: GrowableArray<TaskStep>;
+  #byKey: HashMap<String, Step>;
+  #order: GrowableArray<Step>;
 
   /**
    * Steps in a topological order: dependencies before dependents.
    * Deterministic — derived from the construction order, not from hash
    * iteration.
    */
-  steps: Array<TaskStep> {
+  steps: Array<Step> {
     get {
       return this.#order;
     }
@@ -31,9 +31,9 @@ export class Graph {
     }
   }
 
-  new(steps: Array<TaskStep>)
-      : #byKey = new HashMap<String, TaskStep>(),
-        #order = new GrowableArray<TaskStep>() {
+  new(steps: Array<Step>)
+      : #byKey = new HashMap<String, Step>(),
+        #order = new GrowableArray<Step>() {
     for (let step in steps) {
       if (this.#byKey.has(step.key.value)) {
         throw new WorkflowError('duplicate step key: ' + step.key.value);
@@ -87,7 +87,7 @@ export class Graph {
 
     // Kahn's algorithm. Ready steps are processed in construction
     // order, so the result is deterministic.
-    let ready = new GrowableArray<TaskStep>();
+    let ready = new GrowableArray<Step>();
     for (let step in steps) {
       if (indegree.getOr(step.key.value, 0) == 0) {
         ready.push(step);
@@ -117,7 +117,7 @@ export class Graph {
     }
   }
 
-  get(key: StepKey): TaskStep? {
+  get(key: StepKey): Step? {
     if (let (true, step) = this.#byKey.get(key.value)) {
       return step;
     }
@@ -132,7 +132,7 @@ export class Graph {
  * from the first visit is a cycle.
  */
 let cyclePath = (
-  steps: Array<TaskStep>,
+  steps: Array<Step>,
   indegree: HashMap<String, i32>,
   depKeys: HashMap<String, GrowableArray<String>>,
 ): String => {

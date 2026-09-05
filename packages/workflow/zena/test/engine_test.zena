@@ -19,6 +19,7 @@ import {
   InputRef,
   LeafInput,
   RunContext,
+  Step,
   StepKey,
   StepOutputs,
   TaskStep,
@@ -90,7 +91,7 @@ let mkStep = (
   deps: Array<String>,
   leafNames: Array<String>,
   outFp: String,
-): TaskStep => {
+): Step => {
   return new TaskStep(
     new StepKey(key),
     new Fingerprint('cfg:' + key),
@@ -103,6 +104,8 @@ let mkStep = (
     },
   );
 };
+
+let asStep = (step: Step): Step => step;
 
 let sourceOf = (result: RunResult, key: String): StepSource => {
   let outcome = result.outcomeOf(new StepKey(key));
@@ -219,7 +222,7 @@ export let tests = suite('engine', (): void => {
 
   test('a failure skips dependents and spares the rest', () => {
     let runs = new Runs();
-    let bad = new TaskStep(
+    let bad: Step = new TaskStep(
       new StepKey('bad'),
       new Fingerprint('cfg:bad'),
       mkInputs(noStrings, noStrings),
@@ -269,7 +272,7 @@ export let tests = suite('engine', (): void => {
     leaves['src'] = new Fingerprint('v1');
     let engine = new Engine(digest, new NullCache());
     let mkWithConfig = (config: String): Graph => new Graph([
-      new TaskStep(
+      asStep(new TaskStep(
         new StepKey('a'),
         new Fingerprint(config),
         mkInputs(noStrings, ['src']),
@@ -277,7 +280,7 @@ export let tests = suite('engine', (): void => {
           runs.record('a');
           return Future.of(OutputManifest.empty());
         },
-      ),
+      )),
     ]);
     let first = runFuture(engine.run(mkWithConfig('c1'), leaves, EngineState.empty()));
     let second = runFuture(engine.run(mkWithConfig('c2'), leaves, first.state));
@@ -286,7 +289,7 @@ export let tests = suite('engine', (): void => {
   });
 
   test('duplicate output names fail the producing step', () => {
-    let bad = new TaskStep(
+    let bad: Step = new TaskStep(
       new StepKey('bad'),
       new Fingerprint('cfg'),
       mkInputs(noStrings, noStrings),
@@ -311,7 +314,7 @@ export let tests = suite('engine', (): void => {
     var current = 0;
     var maxSeen = 0;
     let gate = new Completer<void>();
-    let slow = (key: String): TaskStep => new TaskStep(
+    let slow = (key: String): Step => new TaskStep(
       new StepKey(key),
       new Fingerprint('cfg:' + key),
       mkInputs(noStrings, noStrings),

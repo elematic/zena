@@ -4,7 +4,7 @@ import {OutputManifest} from './manifest.zena';
 /** The stable identity of a step across runs. */
 export class StepKey(value: String)
 
-/** A step input: a named leaf value or another step's outputs. */
+/** A step input: a named leaf value or a dependency on another step. */
 export sealed class InputRef {
   case LeafInput, StepOutputs
 }
@@ -17,8 +17,11 @@ export sealed class InputRef {
 export final class LeafInput(name: String) extends InputRef
 
 /**
- * A dependency on another step: its complete output manifest, and an
- * ordering edge in the graph.
+ * A dependency on another step: an ordering edge in the graph. For a
+ * task dependency this contributes the producing step's output
+ * manifest to the cache key; for a service dependency it contributes
+ * the service's identity fingerprint and requires the service to be
+ * ready while the dependent runs.
  */
 export final class StepOutputs(step: StepKey) extends InputRef
 
@@ -31,12 +34,27 @@ export class RunContext {
   new();
 }
 
+/** What a service step's start callback receives. */
+export class ServiceContext {
+  new();
+}
+
 /**
- * A unit of work: runs to completion and produces an output manifest.
- * The run callback is supplied by the host and performs all I/O; the
- * library only decides whether and when to invoke it.
+ * A running service, as seen by the engine. The host's start callback
+ * returns one; the engine calls `stop` when the service's last
+ * dependent has settled.
  */
-export class TaskStep {
+export interface ServiceHandle {
+  stop(): Future<void>;
+}
+
+/**
+ * A node in the graph: a task that runs to completion, or a service
+ * that stays up while dependents need it.
+ */
+export sealed class Step {
+  case TaskStep, ServiceStep
+
   key: StepKey;
 
   /**
@@ -47,7 +65,31 @@ export class TaskStep {
 
   inputs: Array<InputRef>;
 
+  new(this.key, this.config, this.inputs);
+}
+
+/**
+ * A unit of work: runs to completion and produces an output manifest.
+ * The run callback is supplied by the host and performs all I/O; the
+ * library only decides whether and when to invoke it.
+ */
+export final class TaskStep extends Step {
   run: (ctx: RunContext) => Future<OutputManifest>;
 
-  new(this.key, this.config, this.inputs, this.run);
+  new(key: StepKey, config: Fingerprint, inputs: Array<InputRef>, this.run)
+      : super(key, config, inputs);
+}
+
+/**
+ * A step that stays running instead of completing. `start` resolves
+ * when the service is ready to serve dependents. The engine starts a
+ * service only when a dependent actually executes (fresh and
+ * cache-restored dependents never demand it) and stops it when its
+ * last dependent settles.
+ */
+export final class ServiceStep extends Step {
+  start: (ctx: ServiceContext) => Future<ServiceHandle>;
+
+  new(key: StepKey, config: Fingerprint, inputs: Array<InputRef>, this.start)
+      : super(key, config, inputs);
 }
