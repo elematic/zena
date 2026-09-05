@@ -1,0 +1,52 @@
+// @mode: run
+// @result: 12
+// `is`-narrowing (and match narrowing) of a class value inside an
+// async body, where the narrowed member exists only on the subclass.
+//
+// The split passes lower async bodies before layout() assigns type
+// indices, and ref-type equality compared type-section indices — all
+// still -1 at that point — so every ref type compared equal to every
+// other and the narrowing cast was silently skipped. The member read
+// then resolved against the DECLARED class, which has no `name`, and
+// lowering failed with "member not found".
+import { Future, runFuture } from 'zena:async';
+
+sealed class InputRef {
+  case LeafInput, StepOutputs
+}
+final class LeafInput(name: String) extends InputRef
+final class StepOutputs(step: String) extends InputRef
+
+class Engine {
+  new();
+  async run(inputs: Array<InputRef>): Future<i32> {
+    return await this.#execute(inputs);
+  }
+  // A private async method: the specialized copy is lowered under the
+  // class key, which is where the bail surfaced.
+  async #execute(inputs: Array<InputRef>): Future<i32> {
+    var n = 0;
+    for (let input in inputs) {
+      if (input is LeafInput) {
+        n += input.name.length;
+      }
+    }
+    // The same narrowing spelled as a match; it failed identically.
+    for (let input in inputs) {
+      n += match (input) {
+        case LeafInput as leaf: leaf.name.length
+        case StepOutputs: 0
+      };
+    }
+    return n;
+  }
+}
+
+export let main = (): i32 => {
+  let inputs = new GrowableArray<InputRef>();
+  inputs.push(new LeafInput('ab'));
+  inputs.push(new StepOutputs('ignored'));
+  inputs.push(new LeafInput('zena'));
+  // (2 + 4) narrowed by `is`, plus (2 + 4) narrowed by match.
+  return runFuture(new Engine().run(inputs));
+};

@@ -95,16 +95,34 @@ export let valTypeToOpcode = (type: ValType): i32 => match (type) {
   case ValTypeI16: 0x77
 };
 
+/**
+ * Whether two ref valtypes name the same heap type.
+ *
+ * Identity first: the type pools dedupe at construction, so one heap
+ * type is one object, and layout() gives every object its own index —
+ * identity and index equality agree once indices exist. Before
+ * layout() every index is still -1, and an index-only comparison made
+ * every ref type equal every other. The split passes (ir/async.zena,
+ * ir/generators.zena) lower whole bodies before layout(), where that
+ * false equality silently skipped narrowing casts: `x is Sub` in an
+ * async body read members off the DECLARED class and failed with
+ * "member not found". The index half stays for laid-out types, where
+ * it is the emitted meaning of "same type".
+ */
+export let sameHeapType = (a: WasmType, b: WasmType): boolean => {
+  return a == b || (a.index != -1 && a.index == b.index);
+};
+
 export let valTypeEquals = (a: ValType, b: ValType): boolean => {
   return match (a) {
     case ValTypeRef as ta: match (b) {
-      case ValTypeRef as tb: ta.target.index == tb.target.index
-      case ValTypeRefNull as tb: ta.target.index == tb.target.index
+      case ValTypeRef as tb: sameHeapType(ta.target, tb.target)
+      case ValTypeRefNull as tb: sameHeapType(ta.target, tb.target)
       case _: false
     }
     case ValTypeRefNull as ta: match (b) {
-      case ValTypeRef as tb: ta.target.index == tb.target.index
-      case ValTypeRefNull as tb: ta.target.index == tb.target.index
+      case ValTypeRef as tb: sameHeapType(ta.target, tb.target)
+      case ValTypeRefNull as tb: sameHeapType(ta.target, tb.target)
       case _: false
     }
     case _: valTypeToOpcode(a) == valTypeToOpcode(b)
@@ -113,15 +131,15 @@ export let valTypeEquals = (a: ValType, b: ValType): boolean => {
 
 export let isWasmSubtype = (sub: ValType, superType: ValType): boolean => match (sub) {
   case ValTypeRef as ta: match (superType) {
-    case ValTypeRef as tb: ta.target.index == tb.target.index
-    case ValTypeRefNull as tb: ta.target.index == tb.target.index
+    case ValTypeRef as tb: sameHeapType(ta.target, tb.target)
+    case ValTypeRefNull as tb: sameHeapType(ta.target, tb.target)
     case ValTypeEqRef: true
     case ValTypeStructRef: true
     case ValTypeAnyRef: true
     case _: false
   }
   case ValTypeRefNull as ta: match (superType) {
-    case ValTypeRefNull as tb: ta.target.index == tb.target.index
+    case ValTypeRefNull as tb: sameHeapType(ta.target, tb.target)
     case ValTypeEqRef: true
     case ValTypeStructRef: true
     case ValTypeAnyRef: true

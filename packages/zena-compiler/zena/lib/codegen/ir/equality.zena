@@ -14,7 +14,7 @@ import {
   instantiateClassType,
 } from '../../types.zena';
 import {
-  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeStructRef, refTargetOf,
+  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeStructRef, refTargetOf, sameHeapType,
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, WasmField, WasmFunction, WasmSignature, WasmStruct,
@@ -42,15 +42,16 @@ let isNullableRef = (vt: ValType): boolean => {
 };
 
 /** True when the struct IS the String struct (covers generic
- * specializations with String arguments, matched by struct index
- * like the streaming backend). */
+ * specializations with String arguments). Identity-first via
+ * sameHeapType: an index-only comparison matched EVERY struct
+ * before layout() assigned indices. */
 let isStringStruct = (cx: LoweringContext, st: WasmStruct): boolean => {
   let strClass = cx.wasm.stringClass;
   if (strClass == null) {
     return false;
   }
   if (let (true, info) = cx.wasm.classInfos.get(getClassKey(strClass))) {
-    return info.structType.index == st.index;
+    return sameHeapType(info.structType, st);
   }
   return false;
 };
