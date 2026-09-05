@@ -30,7 +30,7 @@
 | Component emission                      | ✅ Done — C0–C3 of [component-emission.md](./component-emission.md): components print, `--wit`/`--world` declare a world the program is checked against                                     |
 | Stage 0a–0d prerequisites               | ✅ Done — `Result`, narrow ints with `Array<u8>`/`FixedArray<u8>`, `ByteArrayType` retired, `Disposable` + `resource class` (Track O)                                                       |
 | Canonical flattening metadata           | ✅ Done for counts and memory-need (`funcFlatMeta`); full type flattening is stage 2's                                                                                                      |
-| WIT-typed modules (stage 1)             | 🚧 First slices landed — flat-scalar functions, sync and `async`-without-result (imported as functions returning `Future<void>`, over `zena:component-async`); strings/lists/resources next |
+| WIT-typed modules (stage 1)             | 🚧 Growing — flat scalars; `async`-without-result (functions returning `Future<void>`); `string`/`list<u8>` params and results and `list<string>` results, staged and lifted by synthesized wrappers over `zena:component-abi`, with the package's real WIT spliced into the encoder so instance types are the interface's own; records/variants/resources next |
 | Canonical ABI lift/lower for rich types | ❌ Hand-written per function so far (`zena:console`'s component entry); stage 2 makes the compiler synthesize it                                                                            |
 
 So: everything _around_ interop has landed, several pieces earlier than

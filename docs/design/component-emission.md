@@ -1232,9 +1232,34 @@ one-subtask driver became `zena:component-async` (a registry —
 resolved by the shared callback), and a synthesized WIT module renders
 an async function as the raw async-lowered declaration plus a wrapper
 over `awaitPacked`, so what the program imports is an ordinary
-function returning `Future<void>`. The
-next slices are strings and lists on imports, then async _results_
-(the subtask-read machinery, C6-adjacent).
+function returning `Future<void>`.
+
+The strings-and-lists slice is built too: a synchronous function with
+`string` or `list<u8>` parameters, or a `string`/`list<u8>`/
+`list<string>` result, renders as the raw declaration with the
+canonically flattened core signature — two `i32`s per staged value, a
+trailing return-area address when the result spills past one core
+value — plus a wrapper that stages arguments through
+`zena:component-abi` before the call, releases them after it, and
+lifts the spilled result out of linear memory. Two supporting pieces
+came with it: the import encoder now splices WIT-backed packages' real
+source into the derived document (so their instance types are the
+interface's own, and the flattening metadata sees the true types —
+deriving from the synthesized declarations would have declared the
+flattening as the interface), and the first real WASI WIT is vendored
+at `packages/stdlib/wit/` (`wasi:random@0.3.0`, versions pinned to
+what wasmtime registers), where the baked stdio blocks will eventually
+join it. End-to-end: `get-random-bytes` lifts its spilled `list<u8>`
+under stock `wasmtime -S p3=y`.
+
+The next slices are records, variants and options on imports;
+resources as handle-wrapping classes; then async _results_ (the
+subtask-read machinery, C6-adjacent). The path they serve is
+`wasi:http@0.3.0`: `handle/send: async func(request) ->
+result<response, error-code>` over four resources whose bodies are
+`stream<u8>` — value marshaling, resources, the stream binding and
+async results, in that order, with async *exports* (the service
+world's handler) after the client side works.
 
 ### C6 — p3 streams and futures. Ahead of C4, after the interop async slice.
 

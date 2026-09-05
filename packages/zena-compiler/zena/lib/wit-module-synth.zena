@@ -6,8 +6,8 @@
  * its modules to `wit:<root>#<namespace>:<interface-path>` canonical
  * paths, and the compiler host answers `readFile` for those by calling
  * `synthesizeWitModule` here: parse the package's WIT, find the
- * interface, and render its functions as Zena `@external` declarations
- * typed *from the WIT* — the checker then sees the interface's real
+ * interface, and render its functions as Zena declarations typed
+ * *from the WIT* — the checker then sees the interface's real
  * signatures rather than whatever an author transcribed.
  *
  * This module is imported by the drivers (the CLI's host, the test
@@ -16,18 +16,21 @@
  * out of the module graphs of hosts that do not serve WIT-backed
  * packages, like the language service.
  *
- * The rendered slice covers functions of flat scalars, synchronous or
- * `async`. A synchronous function is one `@external` declaration. An
- * async one is two pieces: the raw declaration, lowered with the
- * canonical `async` option so its core result is the packed
- * `(subtask << 4) | state`, and an exported wrapper that hands that to
- * `zena:component-async`'s `awaitPacked` — so what the program imports
- * is an ordinary function returning `Future<void>`, the same future
- * every other async source returns.
+ * The rendered slice covers flat scalars, `string`, `list<u8>` and
+ * (results only) `list<string>`, on synchronous functions, plus
+ * `async` functions of flat scalars without results. A flat-scalar
+ * function is one `@external` declaration. Anything richer is two
+ * pieces: the raw declaration with the canonically flattened core
+ * signature — two `i32`s per string or list, and a trailing return
+ * area address when the result spills past one core value — and an
+ * exported wrapper that stages arguments into linear memory before
+ * the call and lifts the spilled result after it, through
+ * `zena:component-abi`'s helpers. An `async` function without a
+ * result wraps its packed subtask into a `Future<void>` over
+ * `zena:component-async` the same way.
  *
- * A function whose signature needs more — strings and lists (compiler-
- * synthesized marshaling), resources (handle types), async *results*
- * (the subtask-read machinery) — is listed in the synthesized module's
+ * A function whose signature needs more — records, variants,
+ * resources, async results — is listed in the synthesized module's
  * header comment with its reason, and importing it reports a missing
  * export. Those arrive with the interop stages in
  * docs/design/component-model.md.
@@ -37,6 +40,7 @@ import { String } from 'zena:string';
 import { Array } from 'zena:array';
 import { StringBuilder } from 'zena:string-builder';
 import { Error } from 'zena:error';
+import { i32ToString } from 'zena:string-convert';
 import { parse } from 'wit-parser:wit';
 import {
   readWitSource, findInterface, FoundInterface
@@ -52,16 +56,41 @@ export function isWitModulePath(path: String): boolean {
   return path.startsWith("wit:");
 }
 
+/** How a WIT type crosses the boundary in the rendered slice. */
+enum WireKind {
+  /** One core value, passed through: the Zena spelling is `scalar`. */
+  Scalar,
+  /** `string`: staged bytes, `(ptr, len)` on the wire. */
+  Str,
+  /** `list<u8>`: the same wire shape as a string. */
+  BytesList,
+  /** `list<string>`: liftable as a result, not stageable yet. */
+  StringList,
+  /** Waits on the interop stages; `reason` says which. */
+  Unsupported
+}
+
+final class WireType {
+  kind: WireKind;
+  /** The Zena spelling of a Scalar; "" otherwise. */
+  scalar: String;
+  reason: String;
+  new(this.kind, this.scalar = "", this.reason = "");
+}
+
+let unsupported = (reason: String): WireType =>
+    new WireType(WireKind.Unsupported, "", reason);
+
 /**
- * The Zena spelling of a WIT flat scalar, or "" when it is not one.
- * The mapping is docs/design/component-model.md Part 5's table. A named
- * type resolves through the interface's own `type` aliases — `instant =
- * u64` is how the real clocks interface spells its result — and
- * anything else named (records, resources, `use`d types) is not a
- * scalar and waits on the interop stages.
+ * Classify a WIT type for rendering. The scalar mapping is
+ * docs/design/component-model.md Part 5's table; a named type resolves
+ * through the interface's own `type` aliases — `instant = u64` is how
+ * the real clocks interface spells its result — and anything else
+ * named (records, resources, `use`d types) waits on the interop
+ * stages.
  */
-function scalarZenaType(t: Type, ifaceItems: Array<InterfaceItem>): String {
-  return match (t.tag) {
+function classifyType(t: Type, ifaceItems: Array<InterfaceItem>): WireType {
+  let scalar = match (t.tag) {
     case TypeTag.Bool: "boolean"
     case TypeTag.U8: "u8"
     case TypeTag.U16: "u16"
@@ -73,19 +102,40 @@ function scalarZenaType(t: Type, ifaceItems: Array<InterfaceItem>): String {
     case TypeTag.S64: "i64"
     case TypeTag.F32: "f32"
     case TypeTag.F64: "f64"
-    case TypeTag.Name: {
-      let name = (t.name as Id).name;
-      for (let item in ifaceItems) {
-        if (item.tag != InterfaceItemTag.TypeDef) { continue; }
-        let td = item.typeDef as TypeDef;
-        if (td.name.name == name && td.tag == TypeDefTag.Alias) {
-          return scalarZenaType(td.aliasType as Type, ifaceItems);
-        }
-      }
-      ""
-    }
     case _: ""
   };
+  if (scalar != "") {
+    return new WireType(WireKind.Scalar, scalar);
+  }
+  if (t.tag == TypeTag.String) {
+    return new WireType(WireKind.Str);
+  }
+  if (t.tag == TypeTag.List) {
+    if (t.fixedLength >= 0) {
+      return unsupported("fixed-length lists wait on the interop stages");
+    }
+    let element = classifyType(t.inner as Type, ifaceItems);
+    if (element.kind == WireKind.Scalar && element.scalar == "u8") {
+      return new WireType(WireKind.BytesList);
+    }
+    if (element.kind == WireKind.Str) {
+      return new WireType(WireKind.StringList);
+    }
+    return unsupported("this list's element type waits on the interop stages");
+  }
+  if (t.tag == TypeTag.Name) {
+    let name = (t.name as Id).name;
+    for (let item in ifaceItems) {
+      if (item.tag != InterfaceItemTag.TypeDef) { continue; }
+      let td = item.typeDef as TypeDef;
+      if (td.name.name == name && td.tag == TypeDefTag.Alias) {
+        return classifyType(td.aliasType as Type, ifaceItems);
+      }
+    }
+    return unsupported("the named type '" + name +
+        "' waits on the interop stages");
+  }
+  return unsupported("this type waits on the interop stages");
 }
 
 /**
@@ -115,6 +165,22 @@ function camelName(kebab: String): String {
   return out;
 }
 
+/** What one module's rendering pulled in, for its import lines. */
+final class SynthUses {
+  var hasAsync = false;
+  var fixedArray = false;
+  var array = false;
+  /** The `zena:component-abi` names used, in first-use order. */
+  abi = new GrowableArray<String>();
+  new();
+
+  useAbi(name: String): void {
+    for (let existing in this.abi) {
+      if (existing == name) { return; }
+    }
+    this.abi.push(name);
+  }
+}
 
 /**
  * The synthesized Zena source for a `wit:<root>#<ns>:<iface-path>`
@@ -156,26 +222,42 @@ export function synthesizeWitModule(canonicalPath: String): String {
       .append(". Do not edit.\n");
   let body = new StringBuilder();
   let skipped = new StringBuilder();
-  var hasAsync = false;
+  let uses = new SynthUses();
   for (let item in iface.def.items) {
     if (item.tag != InterfaceItemTag.Func) {
       if (item.tag == InterfaceItemTag.TypeDef) {
-        skipped.append("//   ")
-            .append((item.typeDef as TypeDef).name.name)
-            .append(": types wait on the interop stages\n");
+        let td = item.typeDef as TypeDef;
+        if (td.tag != TypeDefTag.Alias) {
+          skipped.append("//   ").append(td.name.name)
+              .append(": types wait on the interop stages\n");
+        }
       }
       continue;
     }
     let nf = item.func as NamedFunc;
-    let rendered = renderFunc(body, nf, interfaceName, iface.def.items);
+    let rendered = renderFunc(body, nf, interfaceName, iface.def.items,
+        uses);
     if (rendered != "") {
       skipped.append("//   ").append(nf.name.name).append(": ")
           .append(rendered).append("\n");
-    } else if (nf.func.isAsync) {
-      hasAsync = true;
     }
   }
-  if (hasAsync) {
+  if (uses.fixedArray) {
+    sb.append("import { FixedArray } from 'zena:fixed-array';\n");
+  }
+  if (uses.array) {
+    sb.append("import { Array } from 'zena:array';\n");
+  }
+  if (uses.abi.length > 0) {
+    sb.append("import { ");
+    for (var i = 0; i < uses.abi.length; i += 1) {
+      if (i > 0) { sb.append(", "); }
+      sb.append(uses.abi[i]);
+    }
+    sb.append(" } from 'zena:component-abi';\n");
+  }
+  if (uses.hasAsync) {
+    sb.append("import { Future } from 'zena:async';\n");
     sb.append("import { awaitPacked } from 'zena:component-async';\n");
   }
   sb.append(body.toString());
@@ -189,65 +271,219 @@ export function synthesizeWitModule(canonicalPath: String): String {
 }
 
 /**
- * Render one function — an `@external` declaration, plus a delegating
- * wrapper when it is `async` — or return the reason it cannot be
+ * Render one function — a plain `@external` declaration when
+ * everything is a flat scalar, a raw declaration plus a marshaling or
+ * future wrapper otherwise — or return the reason it cannot be
  * rendered yet.
  */
 function renderFunc(
   sb: StringBuilder,
   nf: NamedFunc,
   interfaceName: String,
-  ifaceItems: Array<InterfaceItem>
+  ifaceItems: Array<InterfaceItem>,
+  uses: SynthUses
 ): String {
   let func = nf.func;
-  let params = new StringBuilder();
-  let args = new StringBuilder();
+  let params = new GrowableArray<WireType>();
+  let paramNames = new GrowableArray<String>();
+  var anyRich = false;
   for (var i = 0; i < func.params.length; i += 1) {
-    let zenaType = scalarZenaType(func.params[i].type, ifaceItems);
-    if (zenaType == "") {
-      return "a parameter's type is not a flat scalar";
+    let wire = classifyType(func.params[i].type, ifaceItems);
+    if (wire.kind == WireKind.Unsupported) {
+      return "parameter '" + func.params[i].name.name + "': " + wire.reason;
     }
-    if (i > 0) {
-      params.append(", ");
-      args.append(", ");
+    if (wire.kind == WireKind.StringList) {
+      return "a list<string> parameter waits on the interop stages";
     }
-    let paramName = camelName(func.params[i].name.name);
-    params.append(paramName).append(": ").append(zenaType);
-    args.append(paramName);
+    if (wire.kind != WireKind.Scalar) {
+      anyRich = true;
+    }
+    params.push(wire);
+    paramNames.push(camelName(func.params[i].name.name));
   }
+  var resultWire = new WireType(WireKind.Scalar, "void");
+  var hasResult = false;
   let result = func.result;
+  if (result != null) {
+    hasResult = true;
+    resultWire = classifyType(result as Type, ifaceItems);
+    if (resultWire.kind == WireKind.Unsupported) {
+      return "the result: " + resultWire.reason;
+    }
+    if (resultWire.kind != WireKind.Scalar) {
+      anyRich = true;
+    }
+  }
+  let zenaName = camelName(nf.name.name);
+
   if (func.isAsync) {
-    if (result != null) {
+    if (hasResult) {
       return "an async result waits on the subtask-read machinery";
+    }
+    if (anyRich) {
+      return "an async function with strings or lists waits on the " +
+          "interop stages";
     }
     // The raw import's core result is the packed `(subtask << 4) |
     // state` the canonical `async` lowering returns; `awaitPacked`
     // turns it into the future. The `_raw` suffix cannot collide with
     // another rendered function: WIT names are kebab-case, so no
     // camelName output contains an underscore.
-    let zenaName = camelName(nf.name.name);
+    uses.hasAsync = true;
+    let sig = new StringBuilder();
+    let args = new StringBuilder();
+    for (var i = 0; i < params.length; i += 1) {
+      if (i > 0) {
+        sig.append(", ");
+        args.append(", ");
+      }
+      sig.append(paramNames[i]).append(": ").append(params[i].scalar);
+      args.append(paramNames[i]);
+    }
     sb.append("@external(\"").append(interfaceName).append("\", \"")
         .append(nf.name.name).append("\", \"async\")\n");
     sb.append("declare function ").append(zenaName)
-        .append("_raw(").append(params.toString()).append("): i32;\n");
+        .append("_raw(").append(sig.toString()).append("): i32;\n");
     sb.append("export function ").append(zenaName)
-        .append("(").append(params.toString())
+        .append("(").append(sig.toString())
         .append("): Future<void> {\n  return awaitPacked(")
         .append(zenaName).append("_raw(").append(args.toString())
         .append("));\n}\n");
     return "";
   }
-  var resultType = "void";
-  if (result != null) {
-    resultType = scalarZenaType(result as Type, ifaceItems);
-    if (resultType == "") {
-      return "the result type is not a flat scalar";
+
+  // The result spills — the raw call takes a return area address and
+  // returns nothing — exactly when it flattens to more than one core
+  // value. Every rich result here is two flats; a scalar is one.
+  let resultSpills = resultWire.kind != WireKind.Scalar;
+
+  if (!anyRich) {
+    // Every type is a flat scalar: one declaration, no wrapper.
+    let sig = new StringBuilder();
+    for (var i = 0; i < params.length; i += 1) {
+      if (i > 0) { sig.append(", "); }
+      sig.append(paramNames[i]).append(": ").append(params[i].scalar);
+    }
+    sb.append("@external(\"").append(interfaceName).append("\", \"")
+        .append(nf.name.name).append("\")\n");
+    sb.append("export declare function ").append(zenaName)
+        .append("(").append(sig.toString()).append("): ")
+        .append(resultWire.scalar).append(";\n");
+    return "";
+  }
+
+  // The raw declaration: staged strings and lists are (ptr, len)
+  // pairs, and a spilled result appends the return area address.
+  let rawSig = new StringBuilder();
+  var rawIndex = 0;
+  for (var i = 0; i < params.length; i += 1) {
+    if (rawIndex > 0) { rawSig.append(", "); }
+    if (params[i].kind == WireKind.Scalar) {
+      rawSig.append("a").append(i32ToString(i)).append(": ")
+          .append(params[i].scalar);
+      rawIndex += 1;
+    } else {
+      rawSig.append("p").append(i32ToString(i)).append(": i32, l")
+          .append(i32ToString(i)).append(": i32");
+      rawIndex += 2;
     }
   }
+  if (resultSpills) {
+    if (rawIndex > 0) { rawSig.append(", "); }
+    rawSig.append("ret: i32");
+  }
+  let rawResult = if (resultSpills) "void" else resultWire.scalar;
   sb.append("@external(\"").append(interfaceName).append("\", \"")
       .append(nf.name.name).append("\")\n");
-  sb.append("export declare function ").append(camelName(nf.name.name))
-      .append("(").append(params.toString()).append("): ")
-      .append(resultType).append(";\n");
+  sb.append("declare function ").append(zenaName).append("_raw(")
+      .append(rawSig.toString()).append("): ").append(rawResult)
+      .append(";\n");
+
+  // The wrapper: the WIT signature in Zena spellings, staging in,
+  // lifting out.
+  let wrapSig = new StringBuilder();
+  for (var i = 0; i < params.length; i += 1) {
+    if (i > 0) { wrapSig.append(", "); }
+    wrapSig.append(paramNames[i]).append(": ");
+    if (params[i].kind == WireKind.Scalar) {
+      wrapSig.append(params[i].scalar);
+    } else if (params[i].kind == WireKind.Str) {
+      wrapSig.append("String");
+    } else {
+      uses.fixedArray = true;
+      wrapSig.append("FixedArray<u8>");
+    }
+  }
+  var wrapResult = "void";
+  if (resultWire.kind == WireKind.Scalar) {
+    wrapResult = resultWire.scalar;
+  } else if (resultWire.kind == WireKind.Str) {
+    wrapResult = "String";
+  } else if (resultWire.kind == WireKind.BytesList) {
+    uses.fixedArray = true;
+    wrapResult = "FixedArray<u8>";
+  } else {
+    uses.array = true;
+    wrapResult = "Array<String>";
+  }
+  sb.append("export function ").append(zenaName).append("(")
+      .append(wrapSig.toString()).append("): ").append(wrapResult)
+      .append(" {\n");
+  let callArgs = new StringBuilder();
+  var argIndex = 0;
+  for (var i = 0; i < params.length; i += 1) {
+    if (argIndex > 0) { callArgs.append(", "); }
+    if (params[i].kind == WireKind.Scalar) {
+      callArgs.append(paramNames[i]);
+      argIndex += 1;
+      continue;
+    }
+    let stage = if (params[i].kind == WireKind.Str) {
+      "stringToMemory"
+    } else {
+      "bytesToMemory"
+    };
+    uses.useAbi(stage);
+    sb.append("  let (p").append(i32ToString(i)).append(", l")
+        .append(i32ToString(i)).append(") = ").append(stage)
+        .append("(").append(paramNames[i]).append(");\n");
+    callArgs.append("p").append(i32ToString(i)).append(", l")
+        .append(i32ToString(i));
+    argIndex += 2;
+  }
+  if (resultSpills) {
+    uses.useAbi("resultArea");
+    sb.append("  let ret = resultArea(8);\n");
+    if (argIndex > 0) { callArgs.append(", "); }
+    callArgs.append("ret");
+  }
+  let call = zenaName + "_raw(" + callArgs.toString() + ")";
+  if (resultSpills || rawResult == "void") {
+    sb.append("  ").append(call).append(";\n");
+  } else {
+    sb.append("  let got = ").append(call).append(";\n");
+  }
+  // The staged buffers were consumed during the call — a synchronous
+  // lowering copies before returning — so they are dead now.
+  for (var i = 0; i < params.length; i += 1) {
+    if (params[i].kind == WireKind.Scalar) { continue; }
+    uses.useAbi("releaseStringArgument");
+    sb.append("  releaseStringArgument(p").append(i32ToString(i))
+        .append(", l").append(i32ToString(i)).append(");\n");
+  }
+  if (resultSpills) {
+    let lift = if (resultWire.kind == WireKind.Str) {
+      "liftStringResult"
+    } else if (resultWire.kind == WireKind.BytesList) {
+      "liftBytesResult"
+    } else {
+      "liftStringListResult"
+    };
+    uses.useAbi(lift);
+    sb.append("  return ").append(lift).append("(ret);\n");
+  } else if (rawResult != "void") {
+    sb.append("  return got;\n");
+  }
+  sb.append("}\n");
   return "";
 }

@@ -1,0 +1,20 @@
+// A WIT-typed import with marshaling, end to end: `get-random-bytes`
+// is real p3 WASI (the vendored `wasi:random@0.3.0`), its result is a
+// spilled `list<u8>` the synthesized wrapper lifts out of linear
+// memory, and its argument is a scalar passing through beside the
+// return-area address. Printing the length proves the lift: eight
+// requested, eight lifted, whatever the bytes were.
+import { console } from 'zena:console';
+import { getRandomBytes, getRandomU64 } from 'wasi:random/random';
+import { i32ToString } from 'zena:string-convert';
+
+export function main(): u32 {
+  let bytes = getRandomBytes(8);
+  console.log(i32ToString(bytes.length));
+  // A scalar-only function from the same interface still works plain.
+  let word = getRandomU64();
+  if (word == 0 && bytes.length == 0) {
+    return 1;
+  }
+  return 0;
+}

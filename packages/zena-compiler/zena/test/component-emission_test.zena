@@ -38,6 +38,7 @@ import {
 import {
   isWitModulePath, synthesizeWitModule
 } from '../lib/wit-module-synth.zena';
+import { readWitSource } from 'wit-parser:document';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { assertFunctionUsesTimes } from './wat-invariants.zena';
 
@@ -98,7 +99,11 @@ let compileFor = (path: String, target: String): ByteArray => {
     let host = new PlainHost();
     generator.runtimeMemoryModule = compileComponentRuntimeModule(
         host, stdlibRoot, loadPackageMap(host, 'zena-packages.json'));
-    generator.importEncoder = makeImportEncoder();
+    // The test `wasi` package's WIT, as the CLI passes its WIT-backed
+    // packages' sources: the encoder emits those interfaces' true
+    // types rather than deriving them from synthesized declarations.
+    generator.importEncoder = makeImportEncoder(null, '',
+        readWitSource(`${fixtures}/wit-pkg`));
   }
   return generator.generate(programFor(path, target)).toByteArray();
 };
@@ -562,35 +567,87 @@ world only {
     }, "--world named a world the document does not declare");
   });
 
-  test('a WIT-typed module compiles like its @external spelling',
+  test('a WIT-typed module imports the interface as its WIT declares it',
       (ctx: TestContext): void => {
-    // `import {now} from 'wasi:clocks/monotonic-clock'` — the signature
-    // comes from the package's WIT (through its `instant = u64` alias),
-    // and the emitted component's imported-interface front matter is
-    // identical to clock.zena's hand-transcribed @external.
+    // `import {now} from 'wasi:clocks/monotonic-clock'` — the
+    // signature comes from the package's WIT, and so does the emitted
+    // instance type: the package's source is spliced whole, so the
+    // component imports the real interface — named types exported,
+    // every function declared — not a derivation from the synthesized
+    // core-shaped declarations, and not just the slice the program
+    // touched.
     let viaWit = compileFor(`${fixtures}/clock-wit.zena`, 'component');
-    let viaExternal = compileFor(`${fixtures}/clock.zena`, 'component');
-    let witImports = sectionPayload(viaWit, 10);
-    let externalImports = sectionPayload(viaExternal, 10);
-    isTrue(witImports.length > 0, 'no import section at all');
-    equal(witImports.length, externalImports.length,
-      'the two import sections differ in size');
-    for (var i = 0; i < witImports.length; i += 1) {
-      if (witImports[i] != externalImports[i]) {
-        throw new Error('the two import sections differ at byte ' +
-            i32ToString(i));
+    isTrue(containsName(sectionPayload(viaWit, 10),
+        'wasi:clocks/monotonic-clock@0.3.0'),
+      'the interface import is missing');
+    let instanceTypes = sectionPayload(viaWit, 7);
+    isTrue(containsName(instanceTypes, 'instant'),
+      "the interface's named alias is not exported from its instance type");
+    isTrue(containsName(instanceTypes, 'wait-for'),
+      'the whole interface should be imported, not just the used slice');
+  });
+
+  test('a WIT-typed module stages strings and lifts spilled results',
+      (ctx: TestContext): void => {
+    // The synthesized source for an interface with strings and lists:
+    // the raw declaration carries the canonically flattened core
+    // signature — two i32s per staged value, a trailing return-area
+    // address when the result spills past one core value — and the
+    // wrapper stages before the call, releases after it, and lifts the
+    // result through zena:component-abi.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:text/transform`);
+    isTrue(source.contains(
+        'declare function upper_raw(p0: i32, l0: i32, ret: i32): void;'),
+      'the raw string->string declaration is misflattened:\n' + source);
+    isTrue(source.contains('let (p0, l0) = stringToMemory(input);'),
+      'the string argument is not staged:\n' + source);
+    isTrue(source.contains('releaseStringArgument(p0, l0);'),
+      'the staged argument is not released:\n' + source);
+    isTrue(source.contains('return liftStringResult(ret);'),
+      'the spilled string result is not lifted:\n' + source);
+    // A scalar result with a staged parameter returns directly.
+    isTrue(source.contains(
+        'declare function measure_raw(p0: i32, l0: i32): u32;'),
+      'a scalar result should not spill:\n' + source);
+    // A byte list stages and lifts through its own helpers.
+    isTrue(source.contains('bytesToMemory(data)'),
+      'the byte-list argument is not staged:\n' + source);
+    isTrue(source.contains('return liftBytesResult(ret);'),
+      'the byte-list result is not lifted:\n' + source);
+    isTrue(source.contains('): FixedArray<u8> {'),
+      'the byte-list result type is wrong:\n' + source);
+    // list<string> lifts as a result.
+    isTrue(source.contains('return liftStringListResult(ret);'),
+      'the string-list result is not lifted:\n' + source);
+    // A scalar parameter beside a staged one passes through unstaged.
+    isTrue(source.contains(
+        'declare function describe_raw(a0: u32, ret: i32): void;'),
+      'a scalar parameter should pass through:\n' + source);
+  });
+
+  test('a marshaling import lowers with the canonical memory options',
+      (ctx: TestContext): void => {
+    // text-wit.zena imports the whole transform interface. Every one of
+    // its lowers moves bytes, so each carries (memory 0) (realloc 0) —
+    // the runtime memory module's, aliased ahead of the lowers — and
+    // the component imports the interface by its qualified name.
+    let bytes = compileFor(`${fixtures}/text-wit.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 10),
+        'wasi:text/transform@1.0.0'),
+      'the interface import is missing');
+    let lowers = sectionPayload(bytes, 8);
+    isTrue(lowers.length > 0, 'no canon lower section');
+    var sawMemoryOptions = false;
+    for (var i = 0; i + 4 < lowers.length; i += 1) {
+      if (lowers[i] == 0x02 && lowers[i + 1] == 0x03 &&
+          lowers[i + 2] == 0x00 && lowers[i + 3] == 0x04 &&
+          lowers[i + 4] == 0x00) {
+        sawMemoryOptions = true;
       }
     }
-    let witTypes = sectionPayload(viaWit, 7);
-    let externalTypes = sectionPayload(viaExternal, 7);
-    equal(witTypes.length, externalTypes.length,
-      'the two instance-type sections differ in size');
-    for (var i = 0; i < witTypes.length; i += 1) {
-      if (witTypes[i] != externalTypes[i]) {
-        throw new Error('the two instance-type sections differ at byte ' +
-            i32ToString(i));
-      }
-    }
+    isTrue(sawMemoryOptions,
+      'no lower carries (memory 0) (realloc 0)');
   });
 
   test('a printing component declares the stream type for its builtins',
@@ -640,42 +697,23 @@ world only {
     isTrue(sawNew, 'no stream.new canon entry');
   });
 
-  test('a WIT-typed async import compiles like its @external spelling',
+  test('a WIT-typed async import produces the async entry',
       (ctx: TestContext): void => {
     // `wait-for` is `async` in the package's WIT, so the synthesized
     // module is the raw async-lowered declaration plus a `Future<void>`
-    // wrapper over `awaitPacked`. The import front matter must match
-    // wait-ext.zena's hand transcription of exactly that, and both
-    // programs must be entered through the callback-lifted `run` —
-    // awaiting the import is what roots the driver.
+    // wrapper over `awaitPacked`, and awaiting it roots the driver:
+    // the program is entered through the callback-lifted `run`. The
+    // hand-transcribed spelling (wait-ext.zena) must land in the same
+    // place.
     let viaWit = compileFor(`${fixtures}/wait-wit.zena`, 'component');
-    let viaExternal = compileFor(`${fixtures}/wait-ext.zena`, 'component');
-    let witImports = sectionPayload(viaWit, 10);
-    let externalImports = sectionPayload(viaExternal, 10);
-    isTrue(witImports.length > 0, 'no import section at all');
-    equal(witImports.length, externalImports.length,
-      'the two import sections differ in size');
-    for (var i = 0; i < witImports.length; i += 1) {
-      if (witImports[i] != externalImports[i]) {
-        throw new Error('the two import sections differ at byte ' +
-            i32ToString(i));
-      }
-    }
-    let witTypes = sectionPayload(viaWit, 7);
-    let externalTypes = sectionPayload(viaExternal, 7);
-    equal(witTypes.length, externalTypes.length,
-      'the two instance-type sections differ in size');
-    for (var i = 0; i < witTypes.length; i += 1) {
-      if (witTypes[i] != externalTypes[i]) {
-        throw new Error('the two instance-type sections differ at byte ' +
-            i32ToString(i));
-      }
-    }
     let witExports = sectionPayload(viaWit, 11);
     isTrue(containsName(witExports, 'run'),
       'the WIT-typed async import did not produce the async entry');
     isTrue(!containsName(witExports, 'main'),
       'the async entry should replace main');
+    let viaExternal = compileFor(`${fixtures}/wait-ext.zena`, 'component');
+    isTrue(containsName(sectionPayload(viaExternal, 11), 'run'),
+      'the hand-spelled async import did not produce the async entry');
   });
 
   test('a sync-only use of an async-declaring interface keeps the ' +

@@ -172,6 +172,21 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'rand',
+    wasi: ['p3=y'],
+    // A marshaling WIT-typed import against real p3 WASI: the
+    // `list<u8>` result of `get-random-bytes` is spilled through a
+    // return area and lifted by the synthesized wrapper; the printed
+    // length proves the lift ran, whatever the bytes were.
+    invocations: [
+      {
+        invoke: 'main()',
+        expect: '0',
+        expectOutput: ['8'],
+      },
+    ],
+  },
+  {
     name: 'clock',
     wasi: ['p3=y'],
     // A real monotonic reading, so the value is not predictable; that it

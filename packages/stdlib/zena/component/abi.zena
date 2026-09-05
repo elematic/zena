@@ -25,6 +25,8 @@ import { Memory, defaultAllocator } from 'zena:memory';
 import { String, Encoding } from 'zena:string';
 import { newByteArray } from 'zena:byte-array';
 import { Error } from 'zena:error';
+import { FixedArray } from 'zena:fixed-array';
+import { Array } from 'zena:array';
 
 let mem = Memory.default;
 
@@ -130,11 +132,13 @@ export function releaseStringArgument(ptr: i32, len: i32): void {
  * reads the pair out of it. `postReturn` frees both halves once it
  * has.
  *
- * The bytes are copied verbatim, which assumes the String is WTF-8 —
- * true for every string a component can build, since WTF-16 strings
- * come from JS interop and the `js` target is not this one.
+ * The bytes are copied verbatim, which `assertWtf8` guards — true for
+ * every string a component can build today, since WTF-16 strings come
+ * from JS interop and the `js` target is not this one, but an
+ * assertion rather than an assumption.
  */
 export function stringResultArea(s: String): i32 {
+  assertWtf8(s);
   let len = s.length;
   let area = realloc(0, 0, 4, 8);
   let ptr = if (len == 0) 0 else realloc(0, 0, 1, len);
@@ -159,4 +163,133 @@ export function postReturn(area: i32): void {
     defaultAllocator.free(ptr);
   }
   defaultAllocator.free(area);
+}
+
+// ============================================================================
+// The import side: staging arguments, lifting spilled results
+// ============================================================================
+//
+// The functions above serve exports — the host initiates, and the
+// canonical options name what it calls. These serve *imports*: the
+// synthesized wrapper around a WIT-typed import calls them to place
+// argument bytes before the lowered call and to read results back out
+// after it. A result that flattens to more than one core value is
+// spilled: the caller passes the address of a return area as a
+// trailing parameter, the canonical ABI writes the flattened result
+// there — allocating any buffers through `realloc` above, so they are
+// the guest's to free — and the lift helpers below read it, copy into
+// GC values, and release everything.
+
+/**
+ * The verbatim-copy assumption, asserted: a `string` crosses the
+ * boundary as its bytes, unchanged, which is only right for WTF-8. A
+ * string in any other encoding can only arrive through JS interop;
+ * re-encoding at the boundary is future work, and until it exists a
+ * loud error beats mojibake.
+ */
+let assertWtf8 = (s: String): void => {
+  if (s.encoding != Encoding.WTF8) {
+    throw new Error(
+        'a non-WTF-8 string reached the component boundary; ' +
+        're-encoding is not implemented yet');
+  }
+};
+
+/**
+ * Allocate and fill a staging buffer: `readAt(i)` supplies byte `i` of
+ * `len`. Returns `(ptr, len)`, released by `releaseStringArgument`
+ * once the lowered call has consumed it; an empty source is `(0, 0)` —
+ * nothing is allocated, and the pointer half is never dereferenced.
+ */
+let stageBytes = (len: i32, readAt: (i: i32) => i32): (i32, i32) => {
+  if (len == 0) {
+    return (0, 0);
+  }
+  if (let (true, ptr) = defaultAllocator.alloc(len)) {
+    for (var i = 0; i < len; i += 1) {
+      mem[ptr + i] = readAt(i);
+    }
+    return (ptr, len);
+  }
+  throw new Error('out of linear memory');
+};
+
+/** Stage a String's bytes for a lowered call. */
+export function stringToMemory(s: String): (i32, i32) {
+  assertWtf8(s);
+  return stageBytes(s.length, (i: i32) => s.getByteAt(i));
+}
+
+/**
+ * Stage a byte buffer for a lowered call: `list<u8>` and `string` have
+ * the same wire shape. The cast widens: `Memory`'s indexer trades in
+ * `i32` — the language has no implicit numeric conversions, widening
+ * included — so the `u8` element is spelled up to it.
+ */
+export function bytesToMemory(bytes: FixedArray<u8>): (i32, i32) {
+  return stageBytes(bytes.length, (i: i32) => bytes[i] as i32);
+}
+
+/** Allocate the return area a spilled result is written into. */
+export function resultArea(size: i32): i32 {
+  return realloc(0, 0, 4, size);
+}
+
+/** The `(ptr, len)` pair a spilled result wrote at `area`. */
+let takeBuffer = (area: i32): (i32, i32) => {
+  let ptr = mem.getI32(area);
+  let len = mem.getI32(area + 4);
+  return (ptr, len);
+};
+
+/**
+ * A spilled `string` result: copy the bytes out of the buffer the
+ * canonical ABI allocated through `realloc`, then free the buffer and
+ * the return area — after the copy, both are dead.
+ */
+export function liftStringResult(area: i32): String {
+  let (ptr, len) = takeBuffer(area);
+  let s = stringFromMemory(ptr, len);
+  if (len > 0) {
+    defaultAllocator.free(ptr);
+  }
+  defaultAllocator.free(area);
+  return s;
+}
+
+/** A spilled `list<u8>` result, with the same ownership story. */
+export function liftBytesResult(area: i32): FixedArray<u8> {
+  let (ptr, len) = takeBuffer(area);
+  let bytes = new FixedArray<u8>(len, 0);
+  for (var i = 0; i < len; i += 1) {
+    bytes[i] = mem[ptr + i] as u8;
+  }
+  if (len > 0) {
+    defaultAllocator.free(ptr);
+  }
+  defaultAllocator.free(area);
+  return bytes;
+}
+
+/**
+ * A spilled `list<string>` result: `count` `(ptr, len)` pairs at
+ * `base`, each string's bytes their own `realloc` allocation. Copy
+ * them all out, then free every buffer, the pair array, and the area.
+ */
+export function liftStringListResult(area: i32): Array<String> {
+  let (base, count) = takeBuffer(area);
+  let out = new GrowableArray<String>();
+  for (var i = 0; i < count; i += 1) {
+    let ptr = mem.getI32(base + i * 8);
+    let len = mem.getI32(base + i * 8 + 4);
+    out.push(stringFromMemory(ptr, len));
+    if (len > 0) {
+      defaultAllocator.free(ptr);
+    }
+  }
+  if (count > 0) {
+    defaultAllocator.free(base);
+  }
+  defaultAllocator.free(area);
+  return out;
 }

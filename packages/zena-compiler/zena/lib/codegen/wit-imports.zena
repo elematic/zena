@@ -31,7 +31,8 @@ import {
 } from 'wit-parser:component-encoder';
 import {
   Ast, AstItemTag, WorldDef, WorldItemTag, Import, Export, ExternKind,
-  ExternKindTag, UsePath, UsePathTag, Id, Func, Type, TypeTag, PackageName
+  ExternKindTag, UsePath, UsePathTag, Id, Func, Type, TypeTag, PackageName,
+  AstItem, InterfaceDef
 } from 'wit-parser:parser';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc,
@@ -129,10 +130,74 @@ let renderFunc = (sb: StringBuilder, f: ComponentImportFunc): void => {
 let derivedWorldName = "imports";
 
 /**
+ * Whether a parsed document declares the interface `qualified` names —
+ * package, interface and version all matching. This is what makes a
+ * WIT-backed package's interfaces "provided": their real source
+ * substitutes for the derived spelling, exactly as the compiler's own
+ * baked WASI blocks do.
+ */
+let docDeclaresInterface = (ast: Ast, qualified: String): boolean => {
+  let path = splitInterfaceName(qualified);
+  let matches = (pkg: PackageName | null, items: Array<AstItem>): boolean => {
+    if (pkg == null) {
+      return false;
+    }
+    let p = pkg as PackageName;
+    if (p.namespace.name + ":" + p.name.name != path.packageName) {
+      return false;
+    }
+    var version = "";
+    if (p.version != null) {
+      version = p.version as String;
+    }
+    if (version != path.version) {
+      return false;
+    }
+    for (let item in items) {
+      if (item.tag != AstItemTag.Interface) {
+        continue;
+      }
+      if ((item.interfaceDef as InterfaceDef).name.name ==
+          path.interfaceName) {
+        return true;
+      }
+    }
+    return false;
+  };
+  if (matches(ast.packageName, ast.items)) {
+    return true;
+  }
+  for (let nested in ast.nestedPackages) {
+    if (matches(nested.name, nested.items)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
  * The shape's imports as a WIT document: one interface per `@external`
  * namespace, grouped into their packages, and a world importing each.
+ *
+ * `packagesWit` is the concatenated source of the program's WIT-backed
+ * packages. An interface it declares is spliced whole rather than
+ * derived, like the compiler's own baked WASI blocks — the synthesized
+ * declarations for such interfaces are canonically flattened core
+ * shapes, and deriving from those would declare the flattening as the
+ * interface's type.
  */
-export let deriveImportsWit = (shape: ComponentShape): String => {
+export let deriveImportsWit = (
+  shape: ComponentShape,
+  packagesWit: String = ""
+): String => {
+  let packagesAst = if (packagesWit == "") null else parse(packagesWit);
+  let provided = (name: String): boolean => {
+    if (isKnownWasiInterface(name)) {
+      return true;
+    }
+    return packagesAst != null &&
+        docDeclaresInterface(packagesAst as Ast, name);
+  };
   // Group by interface, preserving first-appearance order (the same
   // grouping the emitter's aliases use), then group interfaces by
   // package for the nested-package declarations.
@@ -148,20 +213,30 @@ export let deriveImportsWit = (shape: ComponentShape): String => {
   let sb = new StringBuilder();
   sb.append("package zena:derived;\n\n");
 
-  // Interfaces whose real WIT the compiler carries are not derived —
-  // their package blocks are appended whole, and the world imports
-  // them by name like any other.
+  // Interfaces whose real WIT the compiler carries — its own baked
+  // blocks, or a WIT-backed package's — are not derived: their package
+  // blocks are appended whole, and the world imports them by name like
+  // any other.
   var anyKnown = false;
+  var anyPackaged = false;
   for (let name in interfaceNames) {
-    if (isKnownWasiInterface(name)) { anyKnown = true; }
+    if (isKnownWasiInterface(name)) {
+      anyKnown = true;
+    } else if (provided(name)) {
+      anyPackaged = true;
+    }
   }
   if (anyKnown) {
     sb.append(knownWasiPackagesWit()).append("\n");
   }
+  // `packagesWit` is appended at the END of the document (after the
+  // world): its files declare their packages unbraced, and an unbraced
+  // `package` declaration switches the rest of the document into that
+  // package — spliced here, it would swallow the world.
 
   let renderedPackages = new GrowableArray<String>();
   for (let name in interfaceNames) {
-    if (isKnownWasiInterface(name)) { continue; }
+    if (provided(name)) { continue; }
     let path = splitInterfaceName(name);
     let packageKey = path.packageName + "@" + path.version;
     if (anyKnown && isKnownWasiPackage(packageKey)) {
@@ -184,7 +259,7 @@ export let deriveImportsWit = (shape: ComponentShape): String => {
     sb.append(" {\n");
     // Every interface of this package, in first-appearance order.
     for (let other in interfaceNames) {
-      if (isKnownWasiInterface(other)) { continue; }
+      if (provided(other)) { continue; }
       let otherPath = splitInterfaceName(other);
       if (otherPath.packageName + "@" + otherPath.version != packageKey) {
         continue;
@@ -206,6 +281,9 @@ export let deriveImportsWit = (shape: ComponentShape): String => {
     sb.append("  import ").append(name).append(";\n");
   }
   sb.append("}\n");
+  if (anyPackaged) {
+    sb.append("\n").append(packagesWit);
+  }
   return sb.toString();
 };
 
@@ -218,11 +296,14 @@ export let deriveImportsWit = (shape: ComponentShape): String => {
  * An empty import list encodes to an empty world — no pieces, every
  * count zero — so the caller need not special-case it.
  */
-export let encodeImportTypes = (shape: ComponentShape): EncodedImports => {
+export let encodeImportTypes = (
+  shape: ComponentShape,
+  packagesWit: String = ""
+): EncodedImports => {
   if (shape.imports.length == 0) {
     return new EncodedImports();
   }
-  let text = deriveImportsWit(shape);
+  let text = deriveImportsWit(shape, packagesWit);
   let ast = parse(text);
   for (let imp in shape.imports) {
     if (!imp.witProvided) {
@@ -276,12 +357,26 @@ let mirrorEncodedWorld = (world: EncodedWorld): EncodedImports => {
  * compiler carries real source for.
  */
 final class DerivedImportEncoder implements ImportTypeEncoder {
-  new();
+  /** The concatenated WIT of the program's WIT-backed packages. */
+  #packagesWit: String;
+  var #packagesAst: Ast | null = null;
+  new(packagesWit: String = "") : #packagesWit = packagesWit;
+
   witProvided(interfaceName: String): boolean {
-    return isKnownWasiInterface(interfaceName);
+    if (isKnownWasiInterface(interfaceName)) {
+      return true;
+    }
+    if (this.#packagesWit == "") {
+      return false;
+    }
+    if (this.#packagesAst == null) {
+      this.#packagesAst = parse(this.#packagesWit);
+    }
+    return docDeclaresInterface(this.#packagesAst as Ast, interfaceName);
   }
+
   encode(shape: ComponentShape): EncodedImports {
-    return encodeImportTypes(shape);
+    return encodeImportTypes(shape, this.#packagesWit);
   }
 }
 
@@ -615,10 +710,11 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
  */
 export let makeImportEncoder = (
   witSource: String | null = null,
-  worldName: String = ""
+  worldName: String = "",
+  packagesWit: String = ""
 ): ImportTypeEncoder => {
   if (witSource == null) {
-    return new DerivedImportEncoder();
+    return new DerivedImportEncoder(packagesWit);
   }
   return new DeclaredWorldEncoder(witSource as String, worldName);
 };

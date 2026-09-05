@@ -228,10 +228,45 @@ export let main = (): i32 => {
       // is only known after its own compile, and this one is small.
       generator.runtimeMemoryModule =
           compileComponentRuntimeModule(host, "/stdlib", packages);
+      // The WIT-backed packages' real source, so the encoder emits
+      // their interfaces' true types rather than deriving them from
+      // the synthesized declarations (which are flattened core shapes).
+      // Name-sorted: a HashMap iterates in uid order, which depends on
+      // what the process did earlier, and emitted bytes must not.
+      let witPackages = new GrowableArray<String>();
+      let packageNames = packages.keys();
+      while (let (true, packageName) = packageNames.next()) {
+        if (packages[packageName].witRoot != null) {
+          witPackages.push(packageName);
+        }
+      }
+      let byteLess = (x: String, y: String): boolean => {
+        var minLen = x.length;
+        if (y.length < minLen) { minLen = y.length; }
+        for (var i = 0; i < minLen; i += 1) {
+          let d = x.getByteAt(i) - y.getByteAt(i);
+          if (d != 0) { return d < 0; }
+        }
+        return x.length < y.length;
+      };
+      for (var a = 0; a < witPackages.length; a += 1) {
+        for (var b = a + 1; b < witPackages.length; b += 1) {
+          if (byteLess(witPackages[b], witPackages[a])) {
+            let t = witPackages[a];
+            witPackages[a] = witPackages[b];
+            witPackages[b] = t;
+          }
+        }
+      }
+      var packagesWit = "";
+      for (let packageName in witPackages) {
+        packagesWit = packagesWit +
+            readWitSource(packages[packageName].witRoot as String) + "\n";
+      }
       generator.importEncoder = if (witPath != "") {
         makeImportEncoder(witSource, worldName)
       } else {
-        makeImportEncoder()
+        makeImportEncoder(null, "", packagesWit)
       };
     }
     let wasmBytes = generator.generate(program).toByteArray();
