@@ -267,6 +267,10 @@ await x` pays the bare-value queue hop for nothing — return
        is what freezes the generated-wrapper signatures.
     5. Only then: first-class WIT imports.
 - **Tooling & DX**: A package manager, online playground, and enhanced VS Code integration.
+  - **API documentation** (zenadoc): a `zena doc` subcommand that reads a
+    package's source and emits a JSON description of its public API, which
+    the website renders as the stdlib reference. Design in
+    [zenadoc.md](docs/design/zenadoc.md).
 
 ### Phase 3: Post-Bootstrap Headline Features
 
