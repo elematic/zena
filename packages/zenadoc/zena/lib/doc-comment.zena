@@ -1,0 +1,433 @@
+/**
+ * Doc comment parsing.
+ *
+ * A doc comment is a block comment whose body starts with a star — the
+ * slash-star-star form — attached as a leading comment to a
+ * declaration. Line comments are never doc comments, which is the rule
+ * the language server already applies to hover.
+ *
+ * The body is markdown once each line's leading star (and one following
+ * space) is removed. Lines that start with `@` outside a fenced code
+ * block open a block tag; everything before the first tag is the
+ * description, and its first paragraph is the summary.
+ *
+ * See docs/design/zenadoc.md.
+ */
+
+import { Comment } from 'zena-compiler:ast';
+import { StringBuilder } from 'zena:string-builder';
+
+// The ASCII bytes this file looks for. `i32` rather than an enum
+// because they are compared against `String.getByteAt`, which returns
+// one: an enum is nominal, so every comparison would read
+// `b == Byte.Star as i32`. An enum would also claim these ten are the
+// domain, and the domain is all 256.
+let SPACE = 32;
+let TAB = 9;
+let CR = 13;
+let LF = 10;
+let HASH = 35;
+let STAR = 42;
+let DASH = 45;
+let AT = 64;
+let GT = 62;
+let BACKTICK = 96;
+
+/** A block tag such as `@param index the offset to read`. */
+export final class DocTag(
+  /** Tag name without the `@`, e.g. `param`. */
+  name: String,
+
+  /**
+   * The subject the tag names, for tags that take one (`@param`,
+   * `@throws`, `@typeParam`): the first whitespace-delimited word after
+   * the tag. Empty for every other tag.
+   */
+  subject: String,
+
+  /** Everything after the tag and its subject, with blank lines kept. */
+  text: String
+)
+
+/** A parsed doc comment. */
+export final class DocComment(
+  /**
+   * The description's first paragraph, on one line. Empty when the
+   * description opens with something other than a paragraph, such as a
+   * fenced code block.
+   */
+  summary: String,
+
+  /** Everything before the first block tag, as markdown. */
+  description: String,
+
+  /** Block tags in source order. */
+  tags: Array<DocTag>,
+
+  /** The comment body with delimiters and star prefixes removed. */
+  raw: String
+) {
+  /** The first tag with this name, or null. */
+  firstTag(name: String): DocTag | null {
+    for (let tag in this.tags) {
+      if (tag.name == name) {
+        return tag;
+      }
+    }
+    return null;
+  }
+
+  /** Every tag with this name, in source order. */
+  tagsNamed(name: String): Array<DocTag> {
+    let found = new GrowableArray<DocTag>(2);
+    for (let tag in this.tags) {
+      if (tag.name == name) {
+        found.push(tag);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * The `@deprecated` reason, empty when the tag carries no text, and
+   * null when the declaration is not deprecated.
+   */
+  deprecation(): String | null {
+    let tag = this.firstTag('deprecated');
+    if (tag == null) {
+      return null;
+    }
+    return tag.text;
+  }
+}
+
+/** Whether a comment is a doc comment. */
+export let isDocComment = (comment: Comment): boolean =>
+  comment.isBlock && comment.value.length > 0 &&
+      comment.value.getByteAt(0) == STAR;
+
+let isSpace = (b: i32): boolean => b == SPACE || b == TAB;
+
+/** Leading and trailing spaces and tabs removed. */
+export let trim = (s: String): String => {
+  var start = 0;
+  var end = s.length;
+  while (start < end && isSpace(s.getByteAt(start))) {
+    start += 1;
+  }
+  while (end > start && isSpace(s.getByteAt(end - 1))) {
+    end -= 1;
+  }
+  return s.sliceBytes(start, end);
+};
+
+/** Trailing whitespace, including newlines, removed. */
+let trimTrailingBlank = (s: String): String => {
+  var end = s.length;
+  while (end > 0) {
+    let b = s.getByteAt(end - 1);
+    if (b == LF || b == CR || isSpace(b)) {
+      end -= 1;
+    } else {
+      return s.sliceBytes(0, end);
+    }
+  }
+  return s.sliceBytes(0, end);
+};
+
+/**
+ * One line of a comment body with its star prefix removed.
+ *
+ * Indentation after the prefix is kept: it carries meaning in markdown
+ * (nested lists, indented code), so only the decoration comes off.
+ */
+let stripPrefix = (line: String): String => {
+  var end = line.length;
+  if (end > 0 && line.getByteAt(end - 1) == CR) {
+    end -= 1;
+  }
+  var start = 0;
+  while (start < end && isSpace(line.getByteAt(start))) {
+    start += 1;
+  }
+  if (start < end && line.getByteAt(start) == STAR) {
+    start += 1;
+    if (start < end && line.getByteAt(start) == SPACE) {
+      start += 1;
+    }
+  } else {
+    // No star on this line: it is either the first line, which follows
+    // the opening delimiter, or a continuation written without
+    // decoration. Keep it as written.
+    start = 0;
+  }
+  while (end > start && isSpace(line.getByteAt(end - 1))) {
+    end -= 1;
+  }
+  return line.sliceBytes(start, end);
+};
+
+/** Splits on newlines, keeping empty lines. */
+let splitLines = (s: String): Array<String> => {
+  let lines = new GrowableArray<String>(8);
+  var start = 0;
+  var i = 0;
+  while (i < s.length) {
+    if (s.getByteAt(i) == LF) {
+      lines.push(s.sliceBytes(start, i));
+      start = i + 1;
+    }
+    i += 1;
+  }
+  lines.push(s.sliceBytes(start, s.length));
+  return lines;
+};
+
+/** Strips the star prefix from every line, then drops blank edges. */
+let bodyLines = (body: String): Array<String> => {
+  let stripped = new GrowableArray<String>(8);
+  for (let line in splitLines(body)) {
+    stripped.push(stripPrefix(line));
+  }
+  var start = 0;
+  var end = stripped.length;
+  while (start < end && stripped[start].length == 0) {
+    start += 1;
+  }
+  while (end > start && stripped[end - 1].length == 0) {
+    end -= 1;
+  }
+  let out = new GrowableArray<String>(8);
+  var i = start;
+  while (i < end) {
+    out.push(stripped[i]);
+    i += 1;
+  }
+  return out;
+};
+
+/** Joins `lines[from..to)` with newlines, dropping trailing blanks. */
+let joinLines = (lines: Array<String>, from: i32, to: i32): String => {
+  let sb = new StringBuilder(64);
+  var i = from;
+  while (i < to) {
+    if (i > from) {
+      sb.append('\n');
+    }
+    sb.append(lines[i]);
+    i += 1;
+  }
+  return trimTrailingBlank(sb.toString());
+};
+
+/** Whether a line opens or closes a fenced code block. */
+let isFence = (line: String): boolean => {
+  let t = trim(line);
+  return t.length >= 3 && t.getByteAt(0) == BACKTICK &&
+      t.getByteAt(1) == BACKTICK && t.getByteAt(2) == BACKTICK;
+};
+
+/**
+ * The tag name a line opens, or null if it opens none.
+ *
+ * A tag line starts with `@` followed by at least one ASCII letter, so
+ * an address in prose (`user@example.com`) never opens a tag: the line
+ * would have to begin with it.
+ */
+let tagNameAt = (line: String): String | null => {
+  let t = trim(line);
+  if (t.length < 2 || t.getByteAt(0) != AT) {
+    return null;
+  }
+  var i = 1;
+  while (i < t.length) {
+    let b = t.getByteAt(i);
+    let isLetter = (b >= 65 && b <= 90) || (b >= 97 && b <= 122);
+    let isDigitOrDash = (b >= 48 && b <= 57) || b == DASH;
+    if (isLetter || (i > 1 && isDigitOrDash)) {
+      i += 1;
+    } else {
+      break;
+    }
+  }
+  if (i == 1) {
+    return null;
+  }
+  return t.sliceBytes(1, i);
+};
+
+/** Tags whose first word after the tag names a subject. */
+let takesSubject = (name: String): boolean =>
+    name == 'param' || name == 'throws' || name == 'typeParam';
+
+/** Index of the first space or tab, or the string's length. */
+let firstSpace = (s: String): i32 => {
+  var i = 0;
+  while (i < s.length) {
+    if (isSpace(s.getByteAt(i))) {
+      return i;
+    }
+    i += 1;
+  }
+  return i;
+};
+
+/**
+ * The first paragraph of a description, on one line.
+ *
+ * A description opening with a fence, a list, a heading or a quote has
+ * no summary: joining those onto one line produces nonsense, and a
+ * consumer showing summaries is better off showing nothing.
+ */
+let summaryOf = (description: String): String => {
+  if (description.length == 0) {
+    return '';
+  }
+  let lines = splitLines(description);
+  let first = trim(lines[0]);
+  if (first.length == 0) {
+    return '';
+  }
+  let b = first.getByteAt(0);
+  if (b == BACKTICK || b == DASH || b == STAR || b == HASH || b == GT) {
+    return '';
+  }
+  let sb = new StringBuilder(64);
+  var i = 0;
+  while (i < lines.length) {
+    let line = trim(lines[i]);
+    if (line.length == 0) {
+      break;
+    }
+    if (i > 0) {
+      sb.append(' ');
+    }
+    sb.append(line);
+    i += 1;
+  }
+  return sb.toString();
+};
+
+/** Index of the first line that opens a block tag, else `lines.length`. */
+let firstTagLine = (lines: Array<String>): i32 => {
+  var inFence = false;
+  var i = 0;
+  while (i < lines.length) {
+    if (isFence(lines[i])) {
+      inFence = !inFence;
+    } else if (!inFence && tagNameAt(lines[i]) != null) {
+      return i;
+    }
+    i += 1;
+  }
+  return lines.length;
+};
+
+/**
+ * Collects block tags from `start` to the end of the comment.
+ *
+ * A tag runs until the next tag line, so its text can span lines and
+ * contain fenced code — which `@example` needs.
+ */
+let parseTags = (lines: Array<String>, start: i32): Array<DocTag> => {
+  // Every line that opens a tag. A tag's text is the lines from its
+  // opener up to the next one, so fenced code inside a tag is carried
+  // along rather than ending it.
+  let openers = new GrowableArray<i32>(2);
+  var inFence = false;
+  var i = start;
+  while (i < lines.length) {
+    if (isFence(lines[i])) {
+      inFence = !inFence;
+    } else if (!inFence && tagNameAt(lines[i]) != null) {
+      openers.push(i);
+    }
+    i += 1;
+  }
+
+  let tags = new GrowableArray<DocTag>(openers.length);
+  var t = 0;
+  while (t < openers.length) {
+    let from = openers[t];
+    let to = if (t + 1 < openers.length) { openers[t + 1] } else { lines.length };
+    let opener = tagNameAt(lines[from]);
+    if (opener == null) {
+      throw new Error('a line recorded as opening a tag does not');
+    }
+    let head = trim(lines[from]);
+    let afterTag = trim(head.sliceBytes(opener.length + 1, head.length));
+    var subject = '';
+    var firstLine = afterTag;
+    if (takesSubject(opener)) {
+      let cut = firstSpace(afterTag);
+      subject = afterTag.sliceBytes(0, cut);
+      firstLine = trim(afterTag.sliceBytes(cut, afterTag.length));
+    }
+    // `@example` and friends carry their text on the following lines,
+    // so the tag's own line is often empty and must not open the text
+    // with a blank line.
+    let sb = new StringBuilder(64);
+    var wrote = firstLine.length > 0;
+    if (wrote) {
+      sb.append(firstLine);
+    }
+    var j = from + 1;
+    while (j < to) {
+      let text = lines[j];
+      if (wrote) {
+        sb.append('\n');
+        sb.append(text);
+      } else if (trim(text).length > 0) {
+        sb.append(text);
+        wrote = true;
+      }
+      j += 1;
+    }
+    tags.push(new DocTag(opener, subject, trimTrailingBlank(sb.toString())));
+    t += 1;
+  }
+  return tags;
+};
+
+/**
+ * Parses a comment body — the text between the delimiters, which is
+ * what `Comment.value` holds.
+ */
+export let parseDocCommentBody = (body: String): DocComment => {
+  let lines = bodyLines(body);
+  let tagStart = firstTagLine(lines);
+  let description = joinLines(lines, 0, tagStart);
+  let tags = parseTags(lines, tagStart);
+  let raw = joinLines(lines, 0, lines.length);
+  return new DocComment(summaryOf(description), description, tags, raw);
+};
+
+/**
+ * The doc comment for a node, given its leading comments, or null when
+ * none of them is a doc comment.
+ *
+ * Several doc comments in a row are joined: the sequence reads as one
+ * block of prose, so the closest one to the declaration is not
+ * privileged.
+ */
+export let parseLeadingDoc = (comments: Array<Comment> | null): DocComment | null => {
+  if (comments == null) {
+    return null;
+  }
+  let all = comments;
+  let sb = new StringBuilder(64);
+  var found = false;
+  for (let comment in all) {
+    if (isDocComment(comment)) {
+      if (found) {
+        sb.append('\n');
+      }
+      sb.append(comment.value);
+      found = true;
+    }
+  }
+  if (!found) {
+    return null;
+  }
+  return parseDocCommentBody(sb.toString());
+};

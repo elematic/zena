@@ -1,0 +1,143 @@
+// Doc comment parsing: prefix stripping, summary/description split,
+// and block tags.
+
+import { suite, test, TestContext, runAndReport } from 'zena:test';
+import { equal } from 'zena:assert';
+import { Comment } from 'zena-compiler:ast';
+import {
+  DocComment, DocTag, isDocComment, parseDocCommentBody, parseLeadingDoc,
+} from '../lib/doc-comment.zena';
+
+/** A block comment's body, as the tokenizer would hand it over. */
+let block = (body: String): Comment => new Comment(body, true, 0, 0, 1, 1);
+
+let line = (body: String): Comment => new Comment(body, false, 0, 0, 1, 1);
+
+let tests = suite('doc-comment', () => {
+  test('recognizes doc comments', (t: TestContext) => {
+    equal(isDocComment(block('* Docs. ')), true);
+    equal(isDocComment(block(' not a doc comment ')), false);
+    equal(isDocComment(line(' also not ')), false);
+    equal(isDocComment(block('')), false);
+  });
+
+  test('strips star prefixes and keeps paragraphs', (t: TestContext) => {
+    let doc = parseDocCommentBody(
+        '*\n * First paragraph.\n *\n * Second paragraph.\n ');
+    equal(doc.description, 'First paragraph.\n\nSecond paragraph.');
+    equal(doc.summary, 'First paragraph.');
+  });
+
+  test('joins a wrapped first paragraph into the summary', (t: TestContext) => {
+    let doc = parseDocCommentBody(
+        '* A summary that runs\n * onto a second line.\n *\n * More.\n ');
+    equal(doc.summary, 'A summary that runs onto a second line.');
+    equal(doc.description, 'A summary that runs\nonto a second line.\n\nMore.');
+  });
+
+  test('keeps indentation inside the description', (t: TestContext) => {
+    let doc = parseDocCommentBody('* Text.\n *\n * ```zena\n * let x = 1;\n * ```\n ');
+    equal(doc.description, 'Text.\n\n```zena\nlet x = 1;\n```');
+  });
+
+  test('has no summary when the description opens with a fence',
+      (t: TestContext) => {
+    let doc = parseDocCommentBody('* ```zena\n * let x = 1;\n * ```\n ');
+    equal(doc.summary, '');
+  });
+
+  test('reads a tag with a subject', (t: TestContext) => {
+    let doc = parseDocCommentBody(
+        '* Reads a byte.\n * @param index the offset to read\n ');
+    equal(doc.description, 'Reads a byte.');
+    equal(doc.tags.length, 1);
+    equal(doc.tags[0].name, 'param');
+    equal(doc.tags[0].subject, 'index');
+    equal(doc.tags[0].text, 'the offset to read');
+  });
+
+  test('reads a tag without a subject', (t: TestContext) => {
+    let doc = parseDocCommentBody('* Sums.\n * @returns the total\n ');
+    equal(doc.tags[0].name, 'returns');
+    equal(doc.tags[0].subject, '');
+    equal(doc.tags[0].text, 'the total');
+  });
+
+  test('continues a tag across lines until the next tag', (t: TestContext) => {
+    let doc = parseDocCommentBody(
+        '* Docs.\n * @param a the first,\n *   which wraps\n * @param b the second\n ');
+    equal(doc.tags.length, 2);
+    equal(doc.tags[0].subject, 'a');
+    equal(doc.tags[0].text, 'the first,\n  which wraps');
+    equal(doc.tags[1].subject, 'b');
+    equal(doc.tags[1].text, 'the second');
+  });
+
+  test('carries fenced code inside a tag', (t: TestContext) => {
+    let doc = parseDocCommentBody(
+        '* Docs.\n * @example\n * ```zena\n * @param not a tag\n * ```\n * @returns nothing\n ');
+    equal(doc.tags.length, 2);
+    equal(doc.tags[0].name, 'example');
+    equal(doc.tags[0].text, '```zena\n@param not a tag\n```');
+    equal(doc.tags[1].name, 'returns');
+  });
+
+  test('does not open a tag inside a fenced description', (t: TestContext) => {
+    let doc = parseDocCommentBody(
+        '* Docs.\n *\n * ```zena\n * @param x\n * ```\n ');
+    equal(doc.tags.length, 0);
+    equal(doc.description, 'Docs.\n\n```zena\n@param x\n```');
+  });
+
+  test('does not treat an address as a tag', (t: TestContext) => {
+    let doc = parseDocCommentBody('* Ask user@example.com about it.\n ');
+    equal(doc.tags.length, 0);
+    equal(doc.summary, 'Ask user@example.com about it.');
+  });
+
+  test('looks tags up by name', (t: TestContext) => {
+    let doc = parseDocCommentBody(
+        '* Docs.\n * @param a one\n * @param b two\n * @deprecated use `next`\n ');
+    equal(doc.tagsNamed('param').length, 2);
+    equal(doc.firstTag('returns') == null, true);
+    equal(doc.deprecation(), 'use `next`');
+  });
+
+  test('reports no deprecation when the tag is absent', (t: TestContext) => {
+    equal(parseDocCommentBody('* Docs.\n ').deprecation() == null, true);
+  });
+
+  test('reports an empty deprecation when the tag has no text',
+      (t: TestContext) => {
+    equal(parseDocCommentBody('* Docs.\n * @deprecated\n ').deprecation(), '');
+  });
+
+  test('joins consecutive doc comments and ignores the rest',
+      (t: TestContext) => {
+    let comments = new GrowableArray<Comment>(3);
+    comments.push(line(' ordinary'));
+    comments.push(block('* First.'));
+    comments.push(block('* Second.'));
+    let doc = parseLeadingDoc(comments);
+    equal(doc == null, false);
+    if (doc != null) {
+      equal(doc.description, 'First.\nSecond.');
+    }
+  });
+
+  test('reports no doc when no leading comment is one', (t: TestContext) => {
+    let comments = new GrowableArray<Comment>(1);
+    comments.push(line(' ordinary'));
+    equal(parseLeadingDoc(comments) == null, true);
+    equal(parseLeadingDoc(null) == null, true);
+  });
+
+  test('keeps the raw body', (t: TestContext) => {
+    let doc = parseDocCommentBody('* Docs.\n * @returns nothing\n ');
+    equal(doc.raw, 'Docs.\n@returns nothing');
+  });
+});
+
+export let main = (): i32 => runAndReport(tests, (s: String): void => {
+  console.log(s);
+});
