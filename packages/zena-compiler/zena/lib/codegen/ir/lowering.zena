@@ -2640,6 +2640,23 @@ export final class FunctionLowerer {
     if (bindingType == null) {
       this.#bail('untyped binding');
     }
+    let subBinding = substituteTypeParamsInFunctionContext(
+        this.wasm, this.func, bindingType);
+    if (isVoidOrNeverType(subBinding)) {
+      // A zero-width binding holds no value — per specialization, the
+      // way arguments and returns already work: `let v = await f()` at
+      // `Future<void>` runs the initializer for its effects and binds
+      // nothing, and reads yield NO_VALUE the way a void parameter's
+      // do. A celled zero-width binding stays a loud bail: the closure
+      // capture path would try to allocate a cell for it.
+      if (this.#isCelled(sym.id)) {
+        this.#bail('celled zero-width binding');
+      }
+      this.#lowerExpression(vd.init);
+      this.#cx().env[sym.id] = NO_VALUE;
+      this.#cx().symbols[sym.id] = sym;
+      return;
+    }
     let bindingVt = typeToValTypeWithSub(this.wasm, bindingType, this.func);
     this.#requireSupported(bindingVt, 'binding type');
     let value = this.#conformToBinding(

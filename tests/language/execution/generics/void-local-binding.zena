@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 7
+
+// Zero-width local bindings (issue #435, bindings half): a binding
+// whose type is void in THIS specialization holds no value — the
+// initializer runs for its effects, reads yield nothing, exactly as
+// void parameters already behave. Concrete and generic faces both.
+
+import { Future, runFuture } from "zena:async";
+
+var effects = 0;
+
+async function work(): Future<void> {
+  effects += 1;
+  return;
+}
+
+async function driver(): Future<i32> {
+  let v = await work();
+  return 7;
+}
+
+let pass = <T>(x: T): T => {
+  let v = x;
+  return v;
+};
+
+let bump = (): void => { effects += 1; };
+
+export let main = (): i32 => {
+  pass<void>(bump());
+  let direct: void = bump();
+  if (effects != 2) { return 1; }
+  let r = runFuture(driver());
+  if (effects != 3) { return 2; }
+  return r;
+};
