@@ -1,0 +1,39 @@
+import {Completer} from 'zena:async';
+import {WorkflowError} from '../errors.zena';
+
+/**
+ * Bounded concurrency for step execution. Waiters are woken in FIFO
+ * order; a released permit passes directly to the next waiter.
+ */
+export class Semaphore {
+  var #available: i32;
+  #waiters: GrowableArray<Completer<void>>;
+  var #next: i32 = 0;
+
+  new(permits: i32) : #available = permits,
+      #waiters = new GrowableArray<Completer<void>>() {
+    if (permits < 1) {
+      throw new WorkflowError('parallelism must be at least 1');
+    }
+  }
+
+  async acquire(): Future<void> {
+    if (this.#available > 0) {
+      this.#available -= 1;
+      return;
+    }
+    let waiter = new Completer<void>();
+    this.#waiters.push(waiter);
+    await waiter.future;
+  }
+
+  release(): void {
+    if (this.#next < this.#waiters.length) {
+      let waiter = this.#waiters[this.#next];
+      this.#next += 1;
+      waiter.complete();
+    } else {
+      this.#available += 1;
+    }
+  }
+}

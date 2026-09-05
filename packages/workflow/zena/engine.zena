@@ -1,0 +1,277 @@
+import {Completer} from 'zena:async';
+import {StepCache} from './cache.zena';
+import {ResolvedInput, cacheKeyFor, manifestFingerprint} from './canonical.zena';
+import {WorkflowError} from './errors.zena';
+import {Digest, Fingerprint} from './fingerprint.zena';
+import {Graph} from './graph.zena';
+import {Semaphore} from './internal/semaphore.zena';
+import {OutputManifest} from './manifest.zena';
+import {EngineState, StepRecord} from './state.zena';
+import {
+  LeafInput,
+  RunContext,
+  StepKey,
+  StepOutputs,
+  TaskStep,
+} from './step.zena';
+
+/** How a succeeded step's manifest was obtained. */
+export enum StepSource {
+  /** The previous run recorded the same cache key; nothing was done. */
+  Fresh,
+  /** Restored from the cache. */
+  Cache,
+  /** The run callback executed. */
+  Ran,
+}
+
+/** The result of one step in a run. */
+export sealed class StepOutcome {
+  case Succeeded, Failed, Skipped
+}
+
+export final class Succeeded(manifest: OutputManifest, source: StepSource)
+    extends StepOutcome
+
+export final class Failed(error: Error) extends StepOutcome
+
+/** Not run because a dependency failed or was skipped. */
+export final class Skipped(reason: String) extends StepOutcome
+
+/** Options for one engine run. */
+export class RunOptions {
+  /** Maximum number of steps in their cache-or-run section at once. */
+  parallelism: i32;
+
+  new(parallelism: i32 = 8) : parallelism = parallelism;
+}
+
+/** The result of an engine run. */
+export class RunResult {
+  #outcomes: HashMap<String, StepOutcome>;
+
+  /** State for the host to persist and pass to the next run. */
+  state: EngineState;
+
+  new(outcomes: HashMap<String, StepOutcome>, this.state)
+      : #outcomes = outcomes;
+
+  outcomeOf(key: StepKey): StepOutcome? {
+    if (let (true, outcome) = this.#outcomes.get(key.value)) {
+      return outcome;
+    }
+    return null;
+  }
+
+  allSucceeded: boolean {
+    get {
+      var ok = true;
+      this.#outcomes.forEach((key, outcome) => {
+        if (!(outcome is Succeeded)) {
+          ok = false;
+        }
+      });
+      return ok;
+    }
+  }
+}
+
+/** Mutable bookkeeping shared across one run's step tasks. */
+class RunState {
+  leaves: Map<String, Fingerprint>;
+  previous: EngineState;
+  next: EngineState;
+  outcomes: HashMap<String, StepOutcome>;
+  done: HashMap<String, Completer<void>>;
+  semaphore: Semaphore;
+  var remaining: i32;
+  allDone = new Completer<void>();
+
+  new(
+    this.leaves,
+    this.previous,
+    this.next,
+    this.outcomes,
+    this.done,
+    this.semaphore,
+    this.remaining,
+  );
+}
+
+/**
+ * Drives a graph of task steps. For each step, in dependency order: if
+ * the previous run recorded the same cache key the step is fresh and
+ * nothing happens; otherwise the cache is consulted; otherwise the
+ * step's run callback executes and the result is recorded. A failed
+ * step fails alone; its dependents are skipped and everything else
+ * continues.
+ */
+export class Engine {
+  #digest: Digest;
+  #cache: StepCache;
+
+  new(digest: Digest, cache: StepCache) : #digest = digest, #cache = cache;
+
+  /**
+   * Runs the graph against a snapshot of leaf fingerprints. `previous`
+   * is the state returned by the last run, or `EngineState.empty()`.
+   */
+  async run(
+    graph: Graph,
+    leaves: Map<String, Fingerprint>,
+    previous: EngineState,
+    options: RunOptions? = null,
+  ): Future<RunResult> {
+    let opts = options ?? new RunOptions();
+    let done = new HashMap<String, Completer<void>>();
+    for (let step in graph.steps) {
+      done[step.key.value] = new Completer<void>();
+    }
+    let rs = new RunState(
+      leaves,
+      previous,
+      new EngineState(),
+      new HashMap<String, StepOutcome>(),
+      done,
+      new Semaphore(opts.parallelism),
+      graph.size,
+    );
+    // A countdown completer joins the step tasks. TaskGroup.spawn and
+    // Future.all over collected Future<void>s both miscompile today
+    // (a spawn closure calling methods on `this` loses members on a
+    // specialized Engine; GrowableArray<Future<void>> breaks ZIR array
+    // lowering), and calling the async method starts it just the same.
+    if (graph.size == 0) {
+      return new RunResult(rs.outcomes, rs.next);
+    }
+    for (let step in graph.steps) {
+      this.#runStep(step, rs);
+    }
+    await rs.allDone.future;
+    return new RunResult(rs.outcomes, rs.next);
+  }
+
+  async #runStep(step: TaskStep, rs: RunState): Future<void> {
+    rs.outcomes[step.key.value] = await this.#outcomeOf(step, rs);
+    if (let (true, completer) = rs.done.get(step.key.value)) {
+      completer.complete();
+    }
+    rs.remaining -= 1;
+    if (rs.remaining == 0) {
+      rs.allDone.complete();
+    }
+  }
+
+  async #outcomeOf(step: TaskStep, rs: RunState): Future<StepOutcome> {
+    try {
+      return await this.#execute(step, rs);
+    } catch (e) {
+      return new Failed(e);
+    }
+  }
+
+  // Narrowing InputRef (`is` or `match`) inside an async method
+  // miscompiles today ("member not found" on a specialized Engine), so
+  // input discrimination lives in the synchronous helpers below and the
+  // async methods stay narrowing-free.
+
+  /** The done-signals of the step's dependencies. */
+  #depCompleters(step: TaskStep, rs: RunState): GrowableArray<Completer<void>> {
+    let completers = new GrowableArray<Completer<void>>();
+    for (let input in step.inputs) {
+      match (input) {
+        case StepOutputs as dep: {
+          if (let (true, completer) = rs.done.get(dep.step.value)) {
+            completers.push(completer);
+          }
+        }
+        case _: {}
+      }
+    }
+    return completers;
+  }
+
+  /**
+   * Resolves the step's inputs to fingerprints, filling `resolved`.
+   * Returns an outcome to short-circuit with (unknown leaf, unsucceeded
+   * dependency), or null to proceed. Leaf and step namespaces are
+   * disjoint in the encoding, so names cannot collide across kinds.
+   */
+  #resolveInputs(
+    step: TaskStep,
+    rs: RunState,
+    resolved: GrowableArray<ResolvedInput>,
+  ): StepOutcome? {
+    for (let input in step.inputs) {
+      match (input) {
+        case LeafInput as leaf: {
+          if (let (true, fingerprint) = rs.leaves.get(leaf.name)) {
+            resolved.push(new ResolvedInput('leaf:' + leaf.name, fingerprint));
+          } else {
+            return new Failed(new WorkflowError(
+              `step "${step.key.value}" reads unknown leaf input "${leaf.name}"`,
+            ));
+          }
+        }
+        case StepOutputs as dep: {
+          let depKey = dep.step.value;
+          var manifest: OutputManifest? = null;
+          if (let (true, depOutcome) = rs.outcomes.get(depKey)) {
+            if (depOutcome is Succeeded) {
+              manifest = depOutcome.manifest;
+            }
+          }
+          if (manifest == null) {
+            return new Skipped(`dependency "${depKey}" did not succeed`);
+          }
+          resolved.push(new ResolvedInput(
+            'step:' + depKey,
+            manifestFingerprint(manifest, this.#digest),
+          ));
+        }
+      }
+    }
+    return null;
+  }
+
+  async #execute(step: TaskStep, rs: RunState): Future<StepOutcome> {
+    // Wait for every dependency to settle.
+    for (let completer in this.#depCompleters(step, rs)) {
+      await completer.future;
+    }
+
+    let resolved = new GrowableArray<ResolvedInput>();
+    let shortCircuit = this.#resolveInputs(step, rs, resolved);
+    if (shortCircuit != null) {
+      return shortCircuit;
+    }
+
+    let cacheKey = cacheKeyFor(step.config, resolved, this.#digest);
+
+    // Fresh: the previous run recorded the same key.
+    let prior = rs.previous.recordOf(step.key);
+    if (prior != null && prior.cacheKey.value == cacheKey.value) {
+      rs.next.setRecord(step.key, prior);
+      return new Succeeded(prior.manifest, StepSource.Fresh);
+    }
+
+    await rs.semaphore.acquire();
+    try {
+      let cached = await this.#cache.get(cacheKey);
+      if (cached != null) {
+        rs.next.setRecord(step.key, new StepRecord(cacheKey, cached));
+        return new Succeeded(cached, StepSource.Cache);
+      }
+
+      let manifest = await step.run(new RunContext());
+      // Fingerprinting validates duplicate output names loudly here, at
+      // the producer, instead of at the first dependent.
+      manifestFingerprint(manifest, this.#digest);
+      await this.#cache.put(cacheKey, manifest);
+      rs.next.setRecord(step.key, new StepRecord(cacheKey, manifest));
+      return new Succeeded(manifest, StepSource.Ran);
+    } finally {
+      rs.semaphore.release();
+    }
+  }
+}

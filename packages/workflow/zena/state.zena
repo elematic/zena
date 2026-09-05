@@ -1,0 +1,44 @@
+import {OrderedHashMap} from 'zena:collections';
+import {CacheKey} from './fingerprint.zena';
+import {OutputManifest} from './manifest.zena';
+import {StepKey} from './step.zena';
+
+/** What the engine remembers about one step between runs. */
+export class StepRecord(cacheKey: CacheKey, manifest: OutputManifest)
+
+/**
+ * Prior-run state: each step's cache key and output manifest. Plain
+ * data — hosts persist it between runs and hand it back; an empty
+ * state is a valid first run. Iteration order is insertion order, so
+ * serialization is deterministic.
+ */
+export class EngineState {
+  #records: OrderedHashMap<String, StepRecord>;
+
+  new() : #records = new OrderedHashMap<String, StepRecord>();
+
+  static empty(): EngineState {
+    return new EngineState();
+  }
+
+  size: i32 {
+    get {
+      return this.#records.size;
+    }
+  }
+
+  recordOf(key: StepKey): StepRecord? {
+    if (let (true, record) = this.#records.get(key.value)) {
+      return record;
+    }
+    return null;
+  }
+
+  setRecord(key: StepKey, record: StepRecord): void {
+    this.#records[key.value] = record;
+  }
+
+  forEach(callback: (key: String, record: StepRecord) => void): void {
+    this.#records.forEach(callback);
+  }
+}
