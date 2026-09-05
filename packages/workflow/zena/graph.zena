@@ -1,0 +1,174 @@
+import {HashSet} from 'zena:set';
+import {StringBuilder} from 'zena:string-builder';
+import {WorkflowError} from './errors.zena';
+import {LeafInput, StepKey, StepOutputs, TaskStep} from './step.zena';
+
+/**
+ * A validated set of steps. Construction checks that step keys are
+ * unique, that every step reference names a step in the set, that no
+ * step lists the same input twice, and that the dependency graph is
+ * acyclic; it fails loudly otherwise. Steps come back out in a
+ * topological order.
+ */
+export class Graph {
+  #byKey: HashMap<String, TaskStep>;
+  #order: GrowableArray<TaskStep>;
+
+  /**
+   * Steps in a topological order: dependencies before dependents.
+   * Deterministic — derived from the construction order, not from hash
+   * iteration.
+   */
+  steps: Array<TaskStep> {
+    get {
+      return this.#order;
+    }
+  }
+
+  size: i32 {
+    get {
+      return this.#order.length;
+    }
+  }
+
+  new(steps: Array<TaskStep>)
+      : #byKey = new HashMap<String, TaskStep>(),
+        #order = new GrowableArray<TaskStep>() {
+    for (let step in steps) {
+      if (this.#byKey.has(step.key.value)) {
+        throw new WorkflowError('duplicate step key: ' + step.key.value);
+      }
+      this.#byKey[step.key.value] = step;
+    }
+
+    let depKeys = new HashMap<String, GrowableArray<String>>();
+    let dependents = new HashMap<String, GrowableArray<String>>();
+    let indegree = new HashMap<String, i32>();
+    for (let step in steps) {
+      let seen = new HashSet<String>();
+      let deps = new GrowableArray<String>();
+      for (let input in step.inputs) {
+        match (input) {
+          case LeafInput as leaf: {
+            if (!seen.add('leaf:' + leaf.name)) {
+              throw new WorkflowError(
+                `step "${step.key.value}" lists leaf input "${leaf.name}" twice`,
+              );
+            }
+          }
+          case StepOutputs as dep: {
+            let depKey = dep.step.value;
+            if (!this.#byKey.has(depKey)) {
+              throw new WorkflowError(
+                `step "${step.key.value}" depends on unknown step "${depKey}"`,
+              );
+            }
+            if (!seen.add('step:' + depKey)) {
+              throw new WorkflowError(
+                `step "${step.key.value}" depends on step "${depKey}" twice`,
+              );
+            }
+            deps.push(depKey);
+          }
+        }
+      }
+      depKeys[step.key.value] = deps;
+      indegree[step.key.value] = deps.length;
+      for (let depKey in deps) {
+        if (let (true, list) = dependents.get(depKey)) {
+          list.push(step.key.value);
+        } else {
+          let list = new GrowableArray<String>();
+          list.push(step.key.value);
+          dependents[depKey] = list;
+        }
+      }
+    }
+
+    // Kahn's algorithm. Ready steps are processed in construction
+    // order, so the result is deterministic.
+    let ready = new GrowableArray<TaskStep>();
+    for (let step in steps) {
+      if (indegree.getOr(step.key.value, 0) == 0) {
+        ready.push(step);
+      }
+    }
+    var next = 0;
+    while (next < ready.length) {
+      let step = ready[next];
+      next += 1;
+      this.#order.push(step);
+      if (let (true, list) = dependents.get(step.key.value)) {
+        for (let dependentKey in list) {
+          let remaining = indegree.getOr(dependentKey, 0) - 1;
+          indegree[dependentKey] = remaining;
+          if (remaining == 0) {
+            if (let (true, dependent) = this.#byKey.get(dependentKey)) {
+              ready.push(dependent);
+            }
+          }
+        }
+      }
+    }
+    if (this.#order.length < steps.length) {
+      throw new WorkflowError(
+        'dependency cycle: ' + cyclePath(steps, indegree, depKeys),
+      );
+    }
+  }
+
+  get(key: StepKey): TaskStep? {
+    if (let (true, step) = this.#byKey.get(key.value)) {
+      return step;
+    }
+    return null;
+  }
+}
+
+/**
+ * Renders one cycle from the steps Kahn's algorithm could not order
+ * (those with remaining positive indegree). Walking first-remaining
+ * dependencies from any such step must revisit a step, and the path
+ * from the first visit is a cycle.
+ */
+let cyclePath = (
+  steps: Array<TaskStep>,
+  indegree: HashMap<String, i32>,
+  depKeys: HashMap<String, GrowableArray<String>>,
+): String => {
+  var start: String? = null;
+  for (let step in steps) {
+    if (indegree.getOr(step.key.value, 0) > 0) {
+      start = step.key.value;
+      break;
+    }
+  }
+
+  let chain = new GrowableArray<String>();
+  let position = new HashMap<String, i32>();
+  var current = start;
+  while (current != null) {
+    if (let (true, pos) = position.get(current)) {
+      let sb = new StringBuilder();
+      for (var i = pos; i < chain.length; i += 1) {
+        sb.append(chain[i]);
+        sb.append(' -> ');
+      }
+      sb.append(current);
+      return sb.toString();
+    }
+    position[current] = chain.length;
+    chain.push(current);
+    var nextKey: String? = null;
+    if (let (true, deps) = depKeys.get(current)) {
+      for (let depKey in deps) {
+        if (indegree.getOr(depKey, 0) > 0) {
+          nextKey = depKey;
+          break;
+        }
+      }
+    }
+    current = nextKey;
+  }
+  throw new WorkflowError('cycle reporting failed');
+};

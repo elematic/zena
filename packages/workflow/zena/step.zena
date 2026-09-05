@@ -1,0 +1,53 @@
+import {Fingerprint} from './fingerprint.zena';
+import {OutputManifest} from './manifest.zena';
+
+/** The stable identity of a step across runs. */
+export class StepKey(value: String)
+
+/** A step input: a named leaf value or another step's outputs. */
+export sealed class InputRef {
+  case LeafInput, StepOutputs
+}
+
+/**
+ * A named leaf input. The host resolves the name to a fingerprint at
+ * run time; for a build system a leaf is a file, for other hosts it can
+ * be anything fingerprintable.
+ */
+export final class LeafInput(name: String) extends InputRef
+
+/**
+ * A dependency on another step: its complete output manifest, and an
+ * ordering edge in the graph.
+ */
+export final class StepOutputs(step: StepKey) extends InputRef
+
+/**
+ * What a task step's run callback receives. Fields for incremental
+ * reruns (the input delta and the previous manifest) arrive with
+ * fine-grained tracking.
+ */
+export class RunContext {
+  new();
+}
+
+/**
+ * A unit of work: runs to completion and produces an output manifest.
+ * The run callback is supplied by the host and performs all I/O; the
+ * library only decides whether and when to invoke it.
+ */
+export class TaskStep {
+  key: StepKey;
+
+  /**
+   * Covers everything that affects the step's behavior other than its
+   * inputs: the command line, rule parameters, rule version.
+   */
+  config: Fingerprint;
+
+  inputs: Array<InputRef>;
+
+  run: (ctx: RunContext) => Future<OutputManifest>;
+
+  new(this.key, this.config, this.inputs, this.run);
+}

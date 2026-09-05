@@ -1,0 +1,122 @@
+import {suite, test} from 'zena:test';
+import {equal, isNotNull, isNull, isTrue, less, throws} from 'zena:assert';
+import {Fingerprint} from '../fingerprint.zena';
+import {Graph} from '../graph.zena';
+import {OutputManifest} from '../manifest.zena';
+import {
+  InputRef,
+  LeafInput,
+  RunContext,
+  StepKey,
+  StepOutputs,
+  TaskStep,
+} from '../step.zena';
+
+let noRun = (ctx: RunContext): Future<OutputManifest> =>
+  Future.of(OutputManifest.empty());
+
+let step = (key: String, deps: Array<String>): TaskStep => {
+  let inputs = new GrowableArray<InputRef>();
+  for (let dep in deps) {
+    inputs.push(new StepOutputs(new StepKey(dep)));
+  }
+  return new TaskStep(new StepKey(key), new Fingerprint('cfg'), inputs, noRun);
+};
+
+let none: Array<String> = new GrowableArray<String>();
+
+let positionOf = (g: Graph, key: String): i32 => {
+  let steps = g.steps;
+  for (var i = 0; i < steps.length; i += 1) {
+    if (steps[i].key.value == key) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+export let tests = suite('graph', (): void => {
+  test('orders dependencies before dependents', () => {
+    let g = new Graph([
+      step('d', ['b', 'c']),
+      step('b', ['a']),
+      step('c', ['a']),
+      step('a', none),
+    ]);
+    equal(g.size, 4);
+    less(positionOf(g, 'a'), positionOf(g, 'b'));
+    less(positionOf(g, 'a'), positionOf(g, 'c'));
+    less(positionOf(g, 'b'), positionOf(g, 'd'));
+    less(positionOf(g, 'c'), positionOf(g, 'd'));
+  });
+
+  test('leaf inputs are not edges', () => {
+    let inputs = new GrowableArray<InputRef>();
+    inputs.push(new LeafInput('src/main.zena'));
+    inputs.push(new LeafInput('src/lib.zena'));
+    let s = new TaskStep(new StepKey('build'), new Fingerprint('cfg'), inputs, noRun);
+    let g = new Graph([s]);
+    equal(g.size, 1);
+  });
+
+  test('duplicate step keys are rejected', () => {
+    throws((): void => {
+      new Graph([step('a', none), step('a', none)]);
+    });
+  });
+
+  test('unknown dependencies are rejected', () => {
+    var message = '';
+    try {
+      new Graph([step('a', ['ghost'])]);
+    } catch (e) {
+      message = e.message;
+    }
+    isTrue(message.contains('unknown step "ghost"'));
+  });
+
+  test('cycles are rejected with a path', () => {
+    var message = '';
+    try {
+      new Graph([step('a', ['b']), step('b', ['a'])]);
+    } catch (e) {
+      message = e.message;
+    }
+    isTrue(message.contains('dependency cycle'));
+    isTrue(
+      message.contains('a -> b -> a') || message.contains('b -> a -> b'),
+    );
+  });
+
+  test('self-dependencies are cycles', () => {
+    var message = '';
+    try {
+      new Graph([step('a', ['a'])]);
+    } catch (e) {
+      message = e.message;
+    }
+    isTrue(message.contains('a -> a'));
+  });
+
+  test('a repeated dependency is rejected', () => {
+    throws((): void => {
+      new Graph([step('a', none), step('b', ['a', 'a'])]);
+    });
+  });
+
+  test('a repeated leaf input is rejected', () => {
+    let inputs = new GrowableArray<InputRef>();
+    inputs.push(new LeafInput('x'));
+    inputs.push(new LeafInput('x'));
+    let s = new TaskStep(new StepKey('build'), new Fingerprint('cfg'), inputs, noRun);
+    throws((): void => {
+      new Graph([s]);
+    });
+  });
+
+  test('get finds steps by key', () => {
+    let g = new Graph([step('a', none)]);
+    isNotNull(g.get(new StepKey('a')));
+    isNull(g.get(new StepKey('missing')));
+  });
+});

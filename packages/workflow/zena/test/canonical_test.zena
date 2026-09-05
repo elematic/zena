@@ -1,0 +1,99 @@
+import {suite, test} from 'zena:test';
+import {equal, greater, less, notEqual, throws} from 'zena:assert';
+import {Fingerprint} from '../fingerprint.zena';
+import {
+  ResolvedInput,
+  cacheKeyFor,
+  compareStrings,
+  manifestFingerprint,
+} from '../canonical.zena';
+import {OutputEntry, OutputManifest} from '../manifest.zena';
+
+let digest = (data: String): Fingerprint => new Fingerprint('d(' + data + ')');
+let fp = (value: String): Fingerprint => new Fingerprint(value);
+
+let inputs2 = (
+  n1: String,
+  f1: String,
+  n2: String,
+  f2: String,
+): Array<ResolvedInput> => {
+  return [new ResolvedInput(n1, fp(f1)), new ResolvedInput(n2, fp(f2))];
+};
+
+let manifest2 = (
+  n1: String,
+  f1: String,
+  n2: String,
+  f2: String,
+): OutputManifest => {
+  return new OutputManifest([
+    new OutputEntry(n1, fp(f1)),
+    new OutputEntry(n2, fp(f2)),
+  ]);
+};
+
+export let tests = suite('canonical', (): void => {
+  test('compareStrings orders bytewise', () => {
+    equal(compareStrings('a', 'a'), 0);
+    less(compareStrings('a', 'b'), 0);
+    greater(compareStrings('b', 'a'), 0);
+    less(compareStrings('a', 'ab'), 0);
+    greater(compareStrings('ab', 'a'), 0);
+    equal(compareStrings('', ''), 0);
+  });
+
+  test('cache keys ignore input order', () => {
+    let k1 = cacheKeyFor(fp('cfg'), inputs2('a', '1', 'b', '2'), digest);
+    let k2 = cacheKeyFor(fp('cfg'), inputs2('b', '2', 'a', '1'), digest);
+    equal(k1.value, k2.value);
+  });
+
+  test('cache keys change with config, names, and fingerprints', () => {
+    let base = cacheKeyFor(fp('cfg'), inputs2('a', '1', 'b', '2'), digest);
+    let otherConfig = cacheKeyFor(fp('other'), inputs2('a', '1', 'b', '2'), digest);
+    let otherFp = cacheKeyFor(fp('cfg'), inputs2('a', 'X', 'b', '2'), digest);
+    let otherName = cacheKeyFor(fp('cfg'), inputs2('c', '1', 'b', '2'), digest);
+    notEqual(otherConfig.value, base.value);
+    notEqual(otherFp.value, base.value);
+    notEqual(otherName.value, base.value);
+  });
+
+  test('segment boundaries cannot alias', () => {
+    let k1 = cacheKeyFor(fp('cfg'), [new ResolvedInput('a', fp('bc'))], digest);
+    let k2 = cacheKeyFor(fp('cfg'), [new ResolvedInput('ab', fp('c'))], digest);
+    notEqual(k1.value, k2.value);
+  });
+
+  test('duplicate input names are rejected', () => {
+    throws((): void => {
+      cacheKeyFor(fp('cfg'), inputs2('a', '1', 'a', '2'), digest);
+    });
+  });
+
+  test('manifest fingerprints ignore output order', () => {
+    let f1 = manifestFingerprint(manifest2('x', '1', 'y', '2'), digest);
+    let f2 = manifestFingerprint(manifest2('y', '2', 'x', '1'), digest);
+    equal(f1.value, f2.value);
+  });
+
+  test('manifest fingerprints change with content', () => {
+    let base = manifestFingerprint(manifest2('x', '1', 'y', '2'), digest);
+    let otherFp = manifestFingerprint(manifest2('x', 'X', 'y', '2'), digest);
+    let otherName = manifestFingerprint(manifest2('z', '1', 'y', '2'), digest);
+    notEqual(otherFp.value, base.value);
+    notEqual(otherName.value, base.value);
+  });
+
+  test('empty manifests fingerprint consistently', () => {
+    let f1 = manifestFingerprint(OutputManifest.empty(), digest);
+    let f2 = manifestFingerprint(OutputManifest.empty(), digest);
+    equal(f1.value, f2.value);
+  });
+
+  test('duplicate output names are rejected', () => {
+    throws((): void => {
+      manifestFingerprint(manifest2('x', '1', 'x', '2'), digest);
+    });
+  });
+});

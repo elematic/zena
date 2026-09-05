@@ -1,0 +1,120 @@
+/**
+ * Canonical encodings for cache keys and manifest fingerprints.
+ *
+ * Every segment of an encoding is length-prefixed, so distinct inputs
+ * never encode alike, and (name, fingerprint) lists are sorted by name,
+ * so keys are independent of declaration order. The encoded string is
+ * handed to the host's digest function; it is never stored.
+ */
+import {StringBuilder} from 'zena:string-builder';
+import {CacheKey, Digest, Fingerprint} from './fingerprint.zena';
+import {OutputManifest} from './manifest.zena';
+import {WorkflowError} from './errors.zena';
+
+/** Byte-wise string comparison: negative, zero, or positive. */
+export let compareStrings = (s1: String, s2: String): i32 => {
+  let len1 = s1.length;
+  let len2 = s2.length;
+  let minLen = if (len1 < len2) len1 else len2;
+
+  for (var i = 0; i < minLen; i += 1) {
+    let b1 = s1.getByteAt(i);
+    let b2 = s2.getByteAt(i);
+    if (b1 < b2) {
+      return -1;
+    }
+    if (b1 > b2) {
+      return 1;
+    }
+  }
+
+  if (len1 < len2) {
+    return -1;
+  }
+  if (len1 > len2) {
+    return 1;
+  }
+  return 0;
+};
+
+/** In-place insertion sort; the stdlib has no sort. */
+export let sortBy = <T>(items: GrowableArray<T>, compare: (a: T, b: T) => i32): void => {
+  let len = items.length;
+  for (var i = 1; i < len; i += 1) {
+    let item = items[i];
+    var j = i - 1;
+    while (j >= 0 && compare(items[j], item) > 0) {
+      items[j + 1] = items[j];
+      j -= 1;
+    }
+    items[j + 1] = item;
+  }
+};
+
+/** A step input resolved to its fingerprint for one run. */
+export class ResolvedInput(name: String, fingerprint: Fingerprint)
+
+let appendSegment = (sb: StringBuilder, s: String): void => {
+  sb.appendI32(s.length);
+  sb.append(':');
+  sb.append(s);
+};
+
+/**
+ * Appends sorted (name, fingerprint) pairs, rejecting duplicate names.
+ * `what` names the collection in the error message.
+ */
+let appendPairs = (
+  sb: StringBuilder,
+  pairs: GrowableArray<ResolvedInput>,
+  what: String,
+): void => {
+  // Annotated params: closure arguments to generic functions don't get
+  // contextual types from the inferred type arguments yet.
+  sortBy(pairs, (a: ResolvedInput, b: ResolvedInput) => compareStrings(a.name, b.name));
+  var prev: String? = null;
+  for (let pair in pairs) {
+    if (prev != null && compareStrings(prev, pair.name) == 0) {
+      throw new WorkflowError(`duplicate ${what} name: ${pair.name}`);
+    }
+    prev = pair.name;
+    appendSegment(sb, pair.name);
+    appendSegment(sb, pair.fingerprint.value);
+  }
+};
+
+/**
+ * Derives a step's cache key from its config fingerprint and resolved
+ * inputs. Input order does not matter; duplicate input names are an
+ * error.
+ */
+export let cacheKeyFor = (
+  config: Fingerprint,
+  inputs: Array<ResolvedInput>,
+  digest: Digest,
+): CacheKey => {
+  let sb = new StringBuilder();
+  appendSegment(sb, 'workflow-key-v1');
+  appendSegment(sb, config.value);
+  appendPairs(sb, GrowableArray.from(inputs), 'input');
+  return new CacheKey(digest(sb.toString()).value);
+};
+
+/**
+ * Fingerprints an output manifest: the digest of its sorted
+ * (name, fingerprint) pairs. This is what dependent steps see as the
+ * producing step's contribution to their cache keys.
+ */
+export let manifestFingerprint = (
+  manifest: OutputManifest,
+  digest: Digest,
+): Fingerprint => {
+  let sb = new StringBuilder();
+  appendSegment(sb, 'workflow-manifest-v1');
+  let pairs = new GrowableArray<ResolvedInput>();
+  for (let entry in manifest.outputs) {
+    pairs.push(new ResolvedInput(entry.name, entry.fingerprint));
+  }
+  appendPairs(sb, pairs, 'output');
+  return digest(sb.toString());
+};
