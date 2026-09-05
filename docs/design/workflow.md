@@ -234,7 +234,7 @@ constructs a step graph, and drives the engine with filesystem adapters:
   deletes stale outputs precisely instead of Wireit's
   `clean: "if-file-deleted"` heuristic.
 - **Watch mode**: a watcher feeds leaf invalidations to repeated engine
-  runs; services stay pinned between runs.
+  runs; services stay pinned between runs (see file watching below).
 - **Delta to commands**: for scripts that can use it, the input delta is
   exposed as files of newline-separated paths named by environment
   variables (`ZB_CHANGED_FILES`, `ZB_REMOVED_FILES`), per the stdin/env
@@ -259,6 +259,44 @@ scripts: {
   'build:scripts': typescript({tsconfig: 'tsconfig.json'}),
 }
 ```
+
+### Configuration compilation
+
+Parsing configuration and expanding rules on every invocation spends
+startup time exactly where latency is most visible: the warm no-op
+build. Because `build.zconf` is statically parseable Zena data and rules
+are Zena functions, a workspace's configuration can be compiled instead
+of interpreted: `zb` generates the graph-construction code with rules
+already expanded, compiles it against the `workflow` library, and caches
+the precompiled binary keyed by the fingerprints of the config files and
+recorded rule reads. A warm invocation then starts a program whose graph
+is a constant, and goes straight to fingerprint checks. The recorded
+config reads make invalidation exact: editing any tsconfig a rule looked
+at recompiles the configuration.
+
+A cheaper variant with most of the benefit is a binary snapshot: the
+constructed graph serialized once and loaded without parsing or rule
+expansion. Snapshots need no compiler at invalidation time, so they are
+the likely first implementation, with true compilation as an upgrade
+that also inlines rule executors.
+
+A Google-sized monorepo cannot bundle its graph into one program either
+way. The same machinery applies piecewise: configuration compiles or
+snapshots per package or per directory subtree, and `zb` loads only the
+units reachable from the requested targets. Nothing in the engine
+requires the whole graph up front — steps are keyed, so the host can
+materialize just the reachable subgraph before a run.
+
+### File watching
+
+WASI provides no change-notification API — `wasi:filesystem` can read
+and stat but not watch — so watching is a host capability: `zena-cli`
+exposes the platform watchers (inotify, FSEvents, kqueue, via a crate
+such as `notify`) to Zena as an import, the same pattern as
+`zena:process`. Where native watching is unavailable, the fallback is
+polling: re-stat the input set on an interval and re-hash only entries
+whose (mtime, size) memo misses. Both producers emit the same leaf
+invalidation events, and the engine is unaware of the difference.
 
 ### Pluggable caches
 
@@ -357,14 +395,18 @@ invalidation, cancellation) accrue to it for free.
    cache, precise cleaning. Run side by side with Wireit on this
    monorepo and diff the decisions.
 3. **Services and watch mode.** Parity with the Wireit features the
-   monorepo uses; `build.zconf` and the converter.
+   monorepo uses; the `zena-cli` watcher capability with the polling
+   fallback; `build.zconf` and the converter.
 4. **Fine-grained tracking.** Engine delta plumbing, `ZB_CHANGED_FILES`,
    per-output records; prove it on the website build.
 5. **Built-in rules.** `typescript`, `zena` filesets, config-read
    recording.
-6. **Remote caches.** GitHub Actions and HTTP backends; move CI to `zb`.
-7. **Compile server.** Protocol in `zena-cli`, service rule in `zb`.
-8. **Component rules and the durable runner.** After dynamic component
+6. **Configuration snapshots.** Serialized graphs keyed by config
+   fingerprints; measure warm no-op startup. Compiled configuration
+   follows when the measurement justifies it.
+7. **Remote caches.** GitHub Actions and HTTP backends; move CI to `zb`.
+8. **Compile server.** Protocol in `zena-cli`, service rule in `zb`.
+9. **Component rules and the durable runner.** After dynamic component
    loading lands.
 
 Milestones 1–2 are the commitment point; each later milestone is useful
