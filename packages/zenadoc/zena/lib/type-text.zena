@@ -1,0 +1,154 @@
+/**
+ * Rendering types as text.
+ *
+ * A declaration's own annotation is rendered back to source form: it is
+ * what the author wrote, and for documentation that beats the checker's
+ * normalized spelling of the same type. When there is no annotation —
+ * an inferred `let`, a method with no written return type — the
+ * checker's type is printed with `typeToString` instead.
+ */
+
+import {
+  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
+  NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation,
+  RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation,
+  ThisTypeAnnotation, Expression, StringLiteral, NumberLiteral,
+  BooleanLiteral, NullLiteral, Node,
+} from 'zena-compiler:ast';
+import { Type, typeToString } from 'zena-compiler:types';
+import { TypeRef } from './model.zena';
+import { StringBuilder } from 'zena:string-builder';
+
+/** A type annotation as source text. */
+export let annotationText = (annotation: TypeAnnotation): String =>
+    match (annotation) {
+  case NamedTypeAnnotation as named: namedText(named)
+  case UnionTypeAnnotation {types}: joinAnnotations(types, ' | ')
+  case NullableTypeAnnotation {typeAnnotation}: nullableText(typeAnnotation)
+  case FunctionTypeAnnotation as fn: functionText(fn)
+  case LiteralTypeAnnotation {value}: literalText(value)
+  case RecordTypeAnnotation as record: recordText(record)
+  case TupleTypeAnnotation {elementTypes}:
+      '(' + joinAnnotations(elementTypes, ', ') + ')'
+  case InlineTupleTypeAnnotation {elementTypes}:
+      'inline (' + joinAnnotations(elementTypes, ', ') + ')'
+  case ThisTypeAnnotation {}: 'this'
+};
+
+let namedText = (named: NamedTypeAnnotation): String => {
+  let args = named.typeArguments;
+  if (args == null || args.length == 0) {
+    return named.name;
+  }
+  return named.name + '<' + joinAnnotations(args, ', ') + '>';
+};
+
+/**
+ * `T?`, parenthesized when the inner type would otherwise bind wrong:
+ * `A | B` under a `?` has to read as `(A | B)?`.
+ */
+let nullableText = (inner: TypeAnnotation): String => {
+  let text = annotationText(inner);
+  let needsParens = match (inner) {
+    case UnionTypeAnnotation {}: true
+    case FunctionTypeAnnotation {}: true
+    case _: false
+  };
+  if (needsParens) {
+    return '(' + text + ')?';
+  }
+  return text + '?';
+};
+
+let functionText = (fn: FunctionTypeAnnotation): String => {
+  let sb = new StringBuilder(32);
+  sb.append('(');
+  var i = 0;
+  while (i < fn.params.length) {
+    if (i > 0) {
+      sb.append(', ');
+    }
+    if (i < fn.paramNames.length && fn.paramNames[i].length > 0) {
+      sb.append(fn.paramNames[i]);
+      sb.append(': ');
+    }
+    sb.append(annotationText(fn.params[i]));
+    i += 1;
+  }
+  sb.append(') => ');
+  sb.append(annotationText(fn.returnType));
+  return sb.toString();
+};
+
+let recordText = (record: RecordTypeAnnotation): String => {
+  let sb = new StringBuilder(32);
+  sb.append('{');
+  var i = 0;
+  while (i < record.properties.length) {
+    if (i > 0) {
+      sb.append(', ');
+    }
+    let prop = record.properties[i];
+    sb.append(prop.name.name);
+    if (prop.optional) {
+      sb.append('?');
+    }
+    sb.append(': ');
+    sb.append(annotationText(prop.typeAnnotation));
+    i += 1;
+  }
+  sb.append('}');
+  return sb.toString();
+};
+
+let literalText = (value: Node): String => match (value) {
+  case StringLiteral as s: "'" + s.value + "'"
+  case NumberLiteral as n: n.raw
+  case BooleanLiteral as b: if (b.value) { 'true' } else { 'false' }
+  case NullLiteral {}: 'null'
+  case _: '?'
+};
+
+let joinAnnotations = (
+  annotations: Array<TypeAnnotation>,
+  separator: String
+): String => {
+  let sb = new StringBuilder(32);
+  var i = 0;
+  while (i < annotations.length) {
+    if (i > 0) {
+      sb.append(separator);
+    }
+    sb.append(annotationText(annotations[i]));
+    i += 1;
+  }
+  return sb.toString();
+};
+
+/** A `TypeRef` for an annotation, or null when there is none. */
+export let refFor = (annotation: TypeAnnotation | null): TypeRef | null => {
+  if (annotation == null) {
+    return null;
+  }
+  return new TypeRef(annotationText(annotation));
+};
+
+/**
+ * A `TypeRef` for an annotation, falling back to a checked type.
+ *
+ * The annotation wins when there is one: `let x: Iterable<i32> = …`
+ * documents as `Iterable<i32>` even where the checker's type for the
+ * initializer is narrower.
+ */
+export let refForOrType = (
+  annotation: TypeAnnotation | null,
+  type: Type | null
+): TypeRef | null => {
+  if (annotation != null) {
+    return new TypeRef(annotationText(annotation));
+  }
+  if (type != null) {
+    return new TypeRef(typeToString(type));
+  }
+  return null;
+};

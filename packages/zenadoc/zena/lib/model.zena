@@ -1,0 +1,302 @@
+/**
+ * The API model: what zenadoc extracts and what its JSON serializes.
+ *
+ * One `DocPackage` per run, holding one `DocModule` per module the
+ * package exports, each holding the declarations that module exports.
+ * The shape is described in docs/design/zenadoc.md.
+ */
+
+import { DocComment } from './doc-comment.zena';
+import { StringBuilder } from 'zena:string-builder';
+
+/** Where a declaration was written, relative to the package root. */
+export final class DocLoc(file: String, line: i32, column: i32)
+
+/**
+ * A type, rendered as text.
+ *
+ * Links from spans of that text to the declarations they name are a
+ * later stage; the field is here so the JSON shape does not change
+ * when they arrive.
+ */
+export final class TypeRef(text: String)
+
+/** A declaration's type parameter. */
+export final class DocTypeParam(
+  name: String,
+  bound: TypeRef | null,
+  defaultType: TypeRef | null
+)
+
+/** A parameter of a function, method, or constructor. */
+export final class DocParam(
+  name: String,
+  type: TypeRef | null,
+  optional: boolean,
+
+  /** The default's source text, or null when there is none. */
+  defaultValue: String | null
+)
+
+/** What a member is. */
+export enum MemberKind {
+  Field,
+  Method,
+  Constructor,
+  Getter,
+  Setter,
+  Operator,
+  EnumMember,
+  Variant,
+}
+
+export let memberKindName = (kind: MemberKind): String => match (kind) {
+  case MemberKind.Field: 'field'
+  case MemberKind.Method: 'method'
+  case MemberKind.Constructor: 'constructor'
+  case MemberKind.Getter: 'getter'
+  case MemberKind.Setter: 'setter'
+  case MemberKind.Operator: 'operator'
+  case MemberKind.EnumMember: 'enumMember'
+  case MemberKind.Variant: 'variant'
+};
+
+/** A member of a class, interface, mixin, or enum. */
+export final class DocMember {
+  kind: MemberKind;
+  name: String;
+
+  /** `<module id>#<Owner>.<name>`. */
+  id: String;
+
+  /** A URL fragment for this member, unique within its module. */
+  anchor: String;
+
+  /** The member as it would be written, without a body. */
+  signature: String;
+
+  var isStatic: boolean = false;
+  var isAbstract: boolean = false;
+
+  /** `let`, `var`, or null for members that are not fields. */
+  var mutability: String | null = null;
+
+  var typeParameters = new GrowableArray<DocTypeParam>(0);
+  var parameters = new GrowableArray<DocParam>(0);
+  var type: TypeRef | null = null;
+  var doc: DocComment | null = null;
+  var loc: DocLoc | null = null;
+
+  new(this.kind, this.name, this.id, this.anchor, this.signature);
+}
+
+/** What a declaration is. */
+export enum DeclarationKind {
+  Function,
+  Variable,
+  Class,
+  Interface,
+  Mixin,
+  Enum,
+  TypeAlias,
+  Symbol,
+}
+
+export let declarationKindName = (kind: DeclarationKind): String => match (kind) {
+  case DeclarationKind.Function: 'function'
+  case DeclarationKind.Variable: 'variable'
+  case DeclarationKind.Class: 'class'
+  case DeclarationKind.Interface: 'interface'
+  case DeclarationKind.Mixin: 'mixin'
+  case DeclarationKind.Enum: 'enum'
+  case DeclarationKind.TypeAlias: 'typeAlias'
+  case DeclarationKind.Symbol: 'symbol'
+};
+
+/** A top-level declaration of a module. */
+export final class DocDeclaration {
+  kind: DeclarationKind;
+  name: String;
+
+  /** `<module id>#<name>`. */
+  id: String;
+
+  /** A URL fragment for this declaration, unique within its module. */
+  anchor: String;
+
+  /** The declaration as it would be written, without a body. */
+  signature: String;
+
+  /** Whether the module exports it. */
+  var exported: boolean = true;
+
+  /** Declaration keywords: `final`, `sealed`, `abstract`, `resource`, … */
+  var modifiers = new GrowableArray<String>(0);
+
+  var typeParameters = new GrowableArray<DocTypeParam>(0);
+
+  /** Parameters, for functions and variables holding a function. */
+  var parameters = new GrowableArray<DocParam>(0);
+
+  /** A function's return type, a variable's type, an alias's target. */
+  var type: TypeRef | null = null;
+
+  var superClass: TypeRef | null = null;
+  var interfaces = new GrowableArray<TypeRef>(0);
+  var mixins = new GrowableArray<TypeRef>(0);
+
+  var members = new GrowableArray<DocMember>(0);
+  var doc: DocComment | null = null;
+  var loc: DocLoc | null = null;
+
+  new(this.kind, this.name, this.id, this.anchor, this.signature);
+}
+
+/**
+ * A re-export a module performs.
+ *
+ * Recorded rather than resolved: which declaration a name refers to is
+ * a question about the whole package, and the module walk sees one
+ * module at a time.
+ */
+export final class DocReexport(
+  /** The module specifier re-exported from. */
+  from: String,
+
+  /** The names re-exported, empty for `export * from`. */
+  names: Array<String>,
+
+  /** Whether this is `export * from`. */
+  isAll: boolean
+)
+
+/** One module of a package. */
+export final class DocModule {
+  /** The import specifier, e.g. `zena:array`. */
+  id: String;
+
+  /** The module's name within its package, e.g. `array`. */
+  name: String;
+
+  /** The entry file, relative to the package root. */
+  file: String;
+
+  var doc: DocComment | null = null;
+  var declarations = new GrowableArray<DocDeclaration>(0);
+  var reexports = new GrowableArray<DocReexport>(0);
+
+  new(this.id, this.name, this.file);
+}
+
+/** Everything one run extracts. */
+export final class DocPackage {
+  name: String;
+
+  /** The package root, relative to where zenadoc ran. */
+  root: String;
+
+  var version: String | null = null;
+  var modules = new GrowableArray<DocModule>(0);
+
+  new(this.name, this.root);
+}
+
+/**
+ * A member name with its punctuation spelled out.
+ *
+ * Operator names are punctuation, and a slug built from them alone is
+ * empty: `operator +` and `operator -` would both anchor at
+ * `operator`, and the second would silently become `operator-2`.
+ */
+export let readableName = (name: String): String => {
+  if (name == '<constructor>') {
+    return 'constructor';
+  }
+  let word = operatorWord(name);
+  if (word != null) {
+    return 'operator ' + word;
+  }
+  return name;
+};
+
+let operatorWord = (name: String): String | null => {
+  if (name == '+') { return 'plus'; }
+  if (name == '-') { return 'minus'; }
+  if (name == '*') { return 'times'; }
+  if (name == '/') { return 'divide'; }
+  if (name == '%') { return 'modulo'; }
+  if (name == '==') { return 'equals'; }
+  if (name == '<') { return 'less-than'; }
+  if (name == '>') { return 'greater-than'; }
+  if (name == '<=') { return 'less-or-equal'; }
+  if (name == '>=') { return 'greater-or-equal'; }
+  if (name == '[]') { return 'index'; }
+  if (name == '[]=') { return 'index-set'; }
+  if (name == '&') { return 'and'; }
+  if (name == '|') { return 'or'; }
+  if (name == '^') { return 'xor'; }
+  if (name == '~') { return 'not'; }
+  if (name == '<<') { return 'shift-left'; }
+  if (name == '>>') { return 'shift-right'; }
+  return null;
+};
+
+/**
+ * A URL fragment for a declaration or member name.
+ *
+ * Lowercased, with every byte that is not an ASCII letter or digit
+ * replaced by `-` and runs collapsed. Uniqueness within a module is the
+ * caller's job — see `AnchorSet`.
+ */
+export let anchorFor = (name: String): String => {
+  let sb = new StringBuilder(name.length);
+  var lastWasDash = false;
+  var wrote = false;
+  var i = 0;
+  while (i < name.length) {
+    let b = name.getByteAt(i);
+    let isDigit = b >= 48 && b <= 57;
+    let isLower = b >= 97 && b <= 122;
+    let isUpper = b >= 65 && b <= 90;
+    if (isDigit || isLower) {
+      sb.appendByte(b);
+      lastWasDash = false;
+      wrote = true;
+    } else if (isUpper) {
+      sb.appendByte(b + 32);
+      lastWasDash = false;
+      wrote = true;
+    } else if (wrote && !lastWasDash) {
+      sb.appendByte(45);
+      lastWasDash = true;
+    }
+    i += 1;
+  }
+  let s = sb.toString();
+  // A trailing dash reads as a typo in a URL, and `operator []` would
+  // end in one.
+  if (s.length > 0 && s.getByteAt(s.length - 1) == 45) {
+    return s.sliceBytes(0, s.length - 1);
+  }
+  if (s.length == 0) {
+    return 'x';
+  }
+  return s;
+};
+
+/** Hands out anchors that are unique within one module. */
+export final class AnchorSet {
+  #used = new HashMap<String, i32>();
+
+  /** The anchor for a name, suffixed if the base is already taken. */
+  take(name: String): String {
+    let base = anchorFor(readableName(name));
+    if (!this.#used.has(base)) {
+      this.#used[base] = 1;
+      return base;
+    }
+    let n = this.#used[base] + 1;
+    this.#used[base] = n;
+    return base + '-' + i32ToString(n);
+  }
+}

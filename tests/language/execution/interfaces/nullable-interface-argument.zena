@@ -1,0 +1,29 @@
+// @mode: run
+// @invoke: main
+// @result: 3
+// @skip: lowering bails with "zir unsupported: call argument type" — a
+//   value whose static type is `Class | null` passed where
+//   `Interface | null` is expected is never adapted to the interface's
+//   fat pointer. Passing a value whose static type is the bare class
+//   works, so it is the union-to-union adaptation that is missing.
+//   https://code.rictic.com/justin/zena/issues/476
+
+interface Counter {
+  size(): i32;
+}
+
+class Counted implements Counter {
+  count: i32;
+  new(this.count);
+  size(): i32 { return this.count; }
+}
+
+class Holder {
+  items: Counted | null;
+  new(this.items);
+}
+
+let sizeOf = (counter: Counter | null): i32 =>
+  if (counter == null) { -1 } else { counter.size() };
+
+export let main = (): i32 => sizeOf(new Holder(new Counted(3)).items);

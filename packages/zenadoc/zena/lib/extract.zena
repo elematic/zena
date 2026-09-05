@@ -1,0 +1,979 @@
+/**
+ * Walking one module's AST into the API model.
+ *
+ * The walk is syntactic: a declaration documents the modifiers,
+ * parameters and annotations its author wrote. The checker's types are
+ * consulted only where the source has no annotation to render, which is
+ * why extraction works on a module that does not type-check.
+ *
+ * Only exported declarations and public members are documented unless
+ * `ExtractOptions.includePrivate` says otherwise. See
+ * docs/design/zenadoc.md.
+ */
+
+import {
+  Module, Node, Statement, TypeAnnotation, Parameter, TypeParameter,
+  Identifier, IdentifierPattern, SymbolPropertyName,
+  ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration,
+  TypeAliasDeclaration, VariableDeclaration, FunctionDeclaration,
+  DeclareFunction, SymbolDeclaration, ExportAllDeclaration,
+  ExportFromDeclaration, FieldDefinition, MethodDefinition,
+  AccessorDeclaration, MethodSignature, AccessorSignature, EnumMember,
+  CaseClassParam, SealedVariant, FunctionExpression, SourceLocation,
+} from 'zena-compiler:ast';
+import { CommentMap, attachComments } from 'zena-compiler:comment-attachment';
+import { SemanticModel } from 'zena-compiler:semantic-model';
+import { Type } from 'zena-compiler:types';
+import { DocComment, parseLeadingDoc } from './doc-comment.zena';
+import {
+  AnchorSet, DocDeclaration, DocLoc, DocMember, DocModule, DocParam,
+  DocReexport, DocTypeParam, DeclarationKind, MemberKind, TypeRef,
+  readableName,
+} from './model.zena';
+import { annotationText, refFor, refForOrType } from './type-text.zena';
+import { StringBuilder } from 'zena:string-builder';
+
+/** What to document. */
+export final class ExtractOptions {
+  /** Document non-exported declarations and `#private` members. */
+  var includePrivate: boolean = false;
+
+  new();
+}
+
+/** State threaded through one module's walk. */
+final class Walk {
+  moduleId: String;
+  file: String;
+  source: String;
+  comments: CommentMap;
+  model: SemanticModel | null;
+  options: ExtractOptions;
+  anchors = new AnchorSet();
+
+  new(this.moduleId, this.file, this.source, this.comments, this.model,
+      this.options);
+
+  /** Whether a name is public — that is, not `#private`. */
+  visible(name: String): boolean {
+    if (this.options.includePrivate) {
+      return true;
+    }
+    return name.length == 0 || name.getByteAt(0) != 35;
+  }
+
+  docFor(node: Node): DocComment | null {
+    let leading = this.comments.getLeading(node);
+    if (leading == null) {
+      return null;
+    }
+    return parseLeadingDoc(leading);
+  }
+
+  locFor(loc: SourceLocation | null): DocLoc | null {
+    if (loc == null) {
+      return null;
+    }
+    return new DocLoc(this.file, loc.line, loc.column);
+  }
+
+  /** The source text a node covers, for rendering default values. */
+  textOf(loc: SourceLocation | null): String | null {
+    if (loc == null) {
+      return null;
+    }
+    if (loc.start < 0 || loc.end > this.source.length || loc.end < loc.start) {
+      return null;
+    }
+    return this.source.sliceBytes(loc.start, loc.end);
+  }
+}
+
+/**
+ * Extracts one module.
+ *
+ * `model` may be null: without it, declarations that rely on inference
+ * document with no type rather than with a wrong one.
+ */
+export let extractModule = (
+  moduleId: String,
+  name: String,
+  file: String,
+  ast: Module,
+  model: SemanticModel | null,
+  options: ExtractOptions
+): DocModule => {
+  let out = new DocModule(moduleId, name, file);
+  let walk = new Walk(moduleId, file, ast.source, attachComments(ast), model,
+      options);
+  out.doc = walk.docFor(ast);
+
+  let declarations = new GrowableArray<DocDeclaration>(8);
+  let reexports = new GrowableArray<DocReexport>(0);
+  for (let statement in ast.body) {
+    match (statement) {
+      case ExportAllDeclaration as exportAll: {
+        reexports.push(new DocReexport(exportAll.moduleSpecifier.value,
+            new GrowableArray<String>(0), true));
+      }
+      case ExportFromDeclaration as exportFrom: {
+        let names = new GrowableArray<String>(exportFrom.specifiers.length);
+        for (let spec in exportFrom.specifiers) {
+          names.push(spec.local.name);
+        }
+        reexports.push(new DocReexport(exportFrom.moduleSpecifier.value, names,
+            false));
+      }
+      case _: {
+        let declaration = declarationOf(walk, statement);
+        if (declaration != null) {
+          declarations.push(declaration);
+        }
+      }
+    }
+  }
+  out.declarations = declarations;
+  out.reexports = reexports;
+  return out;
+};
+
+/** The declaration a statement makes, or null if it makes none. */
+let declarationOf = (walk: Walk, statement: Statement): DocDeclaration | null =>
+    match (statement) {
+  case ClassDeclaration as decl: classDeclaration(walk, decl)
+  case InterfaceDeclaration as decl: interfaceDeclaration(walk, decl)
+  case MixinDeclaration as decl: mixinDeclaration(walk, decl)
+  case EnumDeclaration as decl: enumDeclaration(walk, decl)
+  case TypeAliasDeclaration as decl: typeAliasDeclaration(walk, decl)
+  case VariableDeclaration as decl: variableDeclaration(walk, decl)
+  case FunctionDeclaration as decl: functionDeclaration(walk, decl)
+  case DeclareFunction as decl: declareFunction(walk, decl)
+  case SymbolDeclaration as decl: symbolDeclaration(walk, decl)
+  case _: null
+};
+
+/** Whether a declaration is documented at all. */
+let included = (walk: Walk, exported: boolean, name: String): boolean =>
+    (exported || walk.options.includePrivate) && walk.visible(name);
+
+let start = (
+  walk: Walk,
+  kind: DeclarationKind,
+  name: String,
+  signature: String
+): DocDeclaration => {
+  let id = walk.moduleId + '#' + name;
+  return new DocDeclaration(kind, name, id, walk.anchors.take(name), signature);
+};
+
+// ============================================================================
+// Declarations
+// ============================================================================
+
+let classDeclaration = (
+  walk: Walk,
+  decl: ClassDeclaration
+): DocDeclaration | null => {
+  if (!included(walk, decl.exported, decl.name.name)) {
+    return null;
+  }
+  let modifiers = new GrowableArray<String>(2);
+  if (decl.isFinal) { modifiers.push('final'); }
+  if (decl.isAbstract) { modifiers.push('abstract'); }
+  if (decl.isSealed) { modifiers.push('sealed'); }
+  if (decl.isResource) { modifiers.push('resource'); }
+  if (decl.isExtension) { modifiers.push('extension'); }
+
+  let typeParams = typeParameters(decl.typeParameters);
+  let sb = new StringBuilder(64);
+  for (let modifier in modifiers) {
+    sb.append(modifier);
+    sb.append(' ');
+  }
+  sb.append('class ');
+  sb.append(decl.name.name);
+  sb.append(typeParameterText(typeParams));
+  let caseParams = decl.caseParams;
+  if (caseParams != null) {
+    sb.append('(');
+    sb.append(caseParamText(caseParams));
+    sb.append(')');
+  }
+  let superClass = decl.superClass;
+  if (superClass != null) {
+    sb.append(' extends ');
+    sb.append(annotationText(superClass));
+  }
+  let mixins = decl.mixins;
+  if (mixins != null && mixins.length > 0) {
+    sb.append(' with ');
+    sb.append(annotationList(mixins));
+  }
+  let interfaces = decl.implementsList;
+  if (interfaces != null && interfaces.length > 0) {
+    sb.append(' implements ');
+    sb.append(annotationList(interfaces));
+  }
+
+  let out = start(walk, DeclarationKind.Class, decl.name.name, sb.toString());
+  out.exported = decl.exported;
+  out.modifiers = modifiers;
+  out.typeParameters = typeParams;
+  out.doc = walk.docFor(decl);
+  out.loc = walk.locFor(decl.loc);
+  out.superClass = refFor(decl.superClass);
+  out.interfaces = refList(decl.implementsList);
+  out.mixins = refList(decl.mixins);
+
+  let members = new GrowableArray<DocMember>(8);
+  if (caseParams != null) {
+    // A case class's parameters are its fields, and nothing else in the
+    // body declares them.
+    for (let param in caseParams) {
+      let member = caseParamMember(walk, out, param);
+      if (member != null) {
+        members.push(member);
+      }
+    }
+  }
+  let variants = decl.sealedVariants;
+  if (variants != null) {
+    for (let variant in variants) {
+      members.push(variantMember(walk, out, variant));
+    }
+  }
+  collectMembers(walk, out, decl.body, members);
+  out.members = members;
+  return out;
+};
+
+let interfaceDeclaration = (
+  walk: Walk,
+  decl: InterfaceDeclaration
+): DocDeclaration | null => {
+  if (!included(walk, decl.exported, decl.name.name)) {
+    return null;
+  }
+  let typeParams = typeParameters(decl.typeParameters);
+  let sb = new StringBuilder(64);
+  sb.append('interface ');
+  sb.append(decl.name.name);
+  sb.append(typeParameterText(typeParams));
+  let extendsList = decl.extendsList;
+  if (extendsList != null && extendsList.length > 0) {
+    sb.append(' extends ');
+    sb.append(annotationList(extendsList));
+  }
+
+  let out = start(walk, DeclarationKind.Interface, decl.name.name,
+      sb.toString());
+  out.exported = decl.exported;
+  out.typeParameters = typeParams;
+  out.doc = walk.docFor(decl);
+  out.loc = walk.locFor(decl.loc);
+  out.interfaces = refList(decl.extendsList);
+  let members = new GrowableArray<DocMember>(8);
+  collectMembers(walk, out, decl.body, members);
+  out.members = members;
+  return out;
+};
+
+let mixinDeclaration = (
+  walk: Walk,
+  decl: MixinDeclaration
+): DocDeclaration | null => {
+  if (!included(walk, decl.exported, decl.name.name)) {
+    return null;
+  }
+  let typeParams = typeParameters(decl.typeParameters);
+  let sb = new StringBuilder(64);
+  sb.append('mixin ');
+  sb.append(decl.name.name);
+  sb.append(typeParameterText(typeParams));
+  let on = decl.on;
+  if (on != null) {
+    sb.append(' on ');
+    sb.append(annotationText(on));
+  }
+  let mixins = decl.mixins;
+  if (mixins != null && mixins.length > 0) {
+    sb.append(' with ');
+    sb.append(annotationList(mixins));
+  }
+
+  let out = start(walk, DeclarationKind.Mixin, decl.name.name, sb.toString());
+  out.exported = decl.exported;
+  out.typeParameters = typeParams;
+  out.doc = walk.docFor(decl);
+  out.loc = walk.locFor(decl.loc);
+  out.superClass = refFor(decl.on);
+  out.mixins = refList(decl.mixins);
+  let members = new GrowableArray<DocMember>(8);
+  collectMembers(walk, out, decl.body, members);
+  out.members = members;
+  return out;
+};
+
+let enumDeclaration = (
+  walk: Walk,
+  decl: EnumDeclaration
+): DocDeclaration | null => {
+  if (!included(walk, decl.exported, decl.name.name)) {
+    return null;
+  }
+  let out = start(walk, DeclarationKind.Enum, decl.name.name,
+      'enum ' + decl.name.name);
+  out.exported = decl.exported;
+  out.doc = walk.docFor(decl);
+  out.loc = walk.locFor(decl.loc);
+  let members = new GrowableArray<DocMember>(decl.members.length);
+  for (let member in decl.members) {
+    let name = member.name.name;
+    let entry = new DocMember(MemberKind.EnumMember, name,
+        out.id + '.' + name,
+        walk.anchors.take(decl.name.name + ' ' + readableName(name)), name);
+    entry.doc = walk.docFor(member);
+    entry.loc = walk.locFor(member.loc);
+    members.push(entry);
+  }
+  out.members = members;
+  return out;
+};
+
+let typeAliasDeclaration = (
+  walk: Walk,
+  decl: TypeAliasDeclaration
+): DocDeclaration | null => {
+  if (!included(walk, decl.exported, decl.name.name)) {
+    return null;
+  }
+  let typeParams = typeParameters(decl.typeParameters);
+  let modifiers = new GrowableArray<String>(2);
+  if (decl.isOpaque) {
+    modifiers.push('opaque');
+  } else if (decl.isDistinct) {
+    modifiers.push('distinct');
+  }
+  let sb = new StringBuilder(64);
+  sb.append('type ');
+  sb.append(decl.name.name);
+  sb.append(typeParameterText(typeParams));
+  let target = decl.typeAnnotation;
+  if (target != null) {
+    sb.append(' = ');
+    sb.append(annotationText(target));
+  }
+
+  let out = start(walk, DeclarationKind.TypeAlias, decl.name.name,
+      sb.toString());
+  out.exported = decl.exported;
+  out.modifiers = modifiers;
+  out.typeParameters = typeParams;
+  out.type = refFor(decl.typeAnnotation);
+  out.doc = walk.docFor(decl);
+  out.loc = walk.locFor(decl.loc);
+  return out;
+};
+
+/**
+ * A module-level `let` or `var`.
+ *
+ * An arrow function bound to a name is the way Zena writes most
+ * functions, so a variable whose initializer is one documents as a
+ * function.
+ */
+let variableDeclaration = (
+  walk: Walk,
+  decl: VariableDeclaration
+): DocDeclaration | null => {
+  let name = patternName(decl.pattern);
+  if (name == null) {
+    return null;
+  }
+  if (!included(walk, decl.exported, name)) {
+    return null;
+  }
+  let fn = arrowOf(decl);
+  if (fn != null) {
+    return functionLike(walk, decl, name, fn, decl.exported, decl.loc);
+  }
+  let type = refForOrType(decl.typeAnnotation, nodeType(walk, decl.pattern));
+  let sb = new StringBuilder(48);
+  sb.append(decl.kind);
+  sb.append(' ');
+  sb.append(name);
+  if (type != null) {
+    sb.append(': ');
+    sb.append(type.text);
+  }
+
+  let out = start(walk, DeclarationKind.Variable, name, sb.toString());
+  out.exported = decl.exported;
+  let modifiers = new GrowableArray<String>(1);
+  modifiers.push(decl.kind);
+  out.modifiers = modifiers;
+  out.type = type;
+  out.doc = walk.docFor(decl);
+  out.loc = walk.locFor(decl.loc);
+  return out;
+};
+
+let functionDeclaration = (
+  walk: Walk,
+  decl: FunctionDeclaration
+): DocDeclaration | null => {
+  let name = patternName(decl.name);
+  if (name == null || !included(walk, decl.exported, name)) {
+    return null;
+  }
+  return functionLike(walk, decl, name, decl.func, decl.exported, decl.loc);
+};
+
+let declareFunction = (
+  walk: Walk,
+  decl: DeclareFunction
+): DocDeclaration | null => {
+  if (!included(walk, decl.exported, decl.name.name)) {
+    return null;
+  }
+  let typeParams = typeParameters(decl.typeParameters);
+  let params = parameters(walk, decl.params);
+  let returns = refFor(decl.returnType);
+  let out = start(walk, DeclarationKind.Function, decl.name.name,
+      'declare function ' + decl.name.name + typeParameterText(typeParams) +
+          parameterText(params) + returnText(returns));
+  out.exported = decl.exported;
+  let modifiers = new GrowableArray<String>(1);
+  modifiers.push('declare');
+  out.modifiers = modifiers;
+  out.typeParameters = typeParams;
+  out.parameters = params;
+  out.type = returns;
+  out.doc = walk.docFor(decl);
+  out.loc = walk.locFor(decl.loc);
+  return out;
+};
+
+let symbolDeclaration = (
+  walk: Walk,
+  decl: SymbolDeclaration
+): DocDeclaration | null => {
+  if (!included(walk, decl.exported, decl.name.name)) {
+    return null;
+  }
+  let out = start(walk, DeclarationKind.Symbol, decl.name.name,
+      'symbol ' + decl.name.name);
+  out.exported = decl.exported;
+  out.doc = walk.docFor(decl);
+  out.loc = walk.locFor(decl.loc);
+  return out;
+};
+
+/** A named function, however it was written. */
+let functionLike = (
+  walk: Walk,
+  docNode: Node,
+  name: String,
+  fn: FunctionExpression,
+  exported: boolean,
+  loc: SourceLocation | null
+): DocDeclaration => {
+  let typeParams = typeParameters(fn.typeParameters);
+  let params = parameters(walk, fn.params);
+  let returns = refFor(fn.returnType);
+  let modifiers = new GrowableArray<String>(2);
+  if (fn.isAsync) { modifiers.push('async'); }
+  if (fn.isGenerator) { modifiers.push('generator'); }
+
+  let sb = new StringBuilder(64);
+  if (fn.isAsync) {
+    sb.append('async ');
+  }
+  sb.append('function ');
+  sb.append(name);
+  sb.append(typeParameterText(typeParams));
+  sb.append(parameterText(params));
+  sb.append(returnText(returns));
+
+  let out = start(walk, DeclarationKind.Function, name, sb.toString());
+  out.exported = exported;
+  out.modifiers = modifiers;
+  out.typeParameters = typeParams;
+  out.parameters = params;
+  out.type = returns;
+  out.doc = walk.docFor(docNode);
+  out.loc = walk.locFor(loc);
+  return out;
+};
+
+// ============================================================================
+// Members
+// ============================================================================
+
+let collectMembers = (
+  walk: Walk,
+  owner: DocDeclaration,
+  body: Array<Node>,
+  out: GrowableArray<DocMember>
+): void => {
+  for (let node in body) {
+    let member = memberOf(walk, owner, node);
+    if (member != null) {
+      out.push(member);
+    }
+  }
+};
+
+let memberOf = (
+  walk: Walk,
+  owner: DocDeclaration,
+  node: Node
+): DocMember | null => match (node) {
+  case FieldDefinition as field: fieldMember(walk, owner, field)
+  case MethodDefinition as method: methodMember(walk, owner, method)
+  case AccessorDeclaration as accessor: accessorMember(walk, owner, accessor)
+  case MethodSignature as signature: methodSignatureMember(walk, owner, signature)
+  case AccessorSignature as signature: accessorSignatureMember(walk, owner, signature)
+  case _: null
+};
+
+let startMember = (
+  walk: Walk,
+  owner: DocDeclaration,
+  kind: MemberKind,
+  name: String,
+  signature: String
+): DocMember => new DocMember(kind, name, owner.id + '.' + name,
+    walk.anchors.take(owner.name + ' ' + readableName(name)), signature);
+
+let fieldMember = (
+  walk: Walk,
+  owner: DocDeclaration,
+  field: FieldDefinition
+): DocMember | null => {
+  let name = memberName(field.name);
+  if (name == null || !walk.visible(name)) {
+    return null;
+  }
+  let type = refFor(field.typeAnnotation);
+  let sb = new StringBuilder(48);
+  if (field.isStatic) { sb.append('static '); }
+  if (field.isAbstract) { sb.append('abstract '); }
+  let mutability = field.mutability;
+  if (mutability != null) {
+    sb.append(mutability);
+    sb.append(' ');
+  }
+  sb.append(name);
+  if (type != null) {
+    sb.append(': ');
+    sb.append(type.text);
+  }
+
+  let out = startMember(walk, owner, MemberKind.Field, name, sb.toString());
+  out.isStatic = field.isStatic;
+  out.isAbstract = field.isAbstract;
+  out.mutability = field.mutability;
+  out.type = type;
+  out.doc = walk.docFor(field);
+  out.loc = walk.locFor(field.loc);
+  return out;
+};
+
+let methodMember = (
+  walk: Walk,
+  owner: DocDeclaration,
+  method: MethodDefinition
+): DocMember | null => {
+  let name = memberName(method.name);
+  if (name == null || !walk.visible(name)) {
+    return null;
+  }
+  let isConstructor = name == '<constructor>';
+  let kind = if (isConstructor) {
+    MemberKind.Constructor
+  } else if (isOperatorName(name)) {
+    MemberKind.Operator
+  } else {
+    MemberKind.Method
+  };
+  let typeParams = typeParameters(method.typeParameters);
+  let params = parameters(walk, method.params);
+  let returns = refFor(method.returnType);
+
+  let sb = new StringBuilder(64);
+  if (method.isStatic) { sb.append('static '); }
+  if (method.isAbstract) { sb.append('abstract '); }
+  if (method.isAsync) { sb.append('async '); }
+  if (kind == MemberKind.Operator) {
+    sb.append('operator ');
+  }
+  sb.append(if (isConstructor) { 'new' } else { name });
+  sb.append(typeParameterText(typeParams));
+  sb.append(parameterText(params));
+  sb.append(returnText(returns));
+
+  let out = startMember(walk, owner, kind,
+      if (isConstructor) { 'new' } else { name }, sb.toString());
+  out.isStatic = method.isStatic;
+  out.isAbstract = method.isAbstract;
+  out.typeParameters = typeParams;
+  out.parameters = params;
+  out.type = returns;
+  out.doc = walk.docFor(method);
+  out.loc = walk.locFor(method.loc);
+  return out;
+};
+
+let accessorMember = (
+  walk: Walk,
+  owner: DocDeclaration,
+  accessor: AccessorDeclaration
+): DocMember | null => {
+  let name = memberName(accessor.name);
+  if (name == null || !walk.visible(name)) {
+    return null;
+  }
+  let type = new TypeRef(annotationText(accessor.typeAnnotation));
+  let kind = if (accessor.getter != null) {
+    MemberKind.Getter
+  } else {
+    MemberKind.Setter
+  };
+  let sb = new StringBuilder(48);
+  if (accessor.isStatic) { sb.append('static '); }
+  sb.append(name);
+  sb.append(': ');
+  sb.append(type.text);
+  if (accessor.setter != null) {
+    sb.append(if (accessor.getter != null) { ' { get; set; }' } else { ' { set; }' });
+  } else {
+    sb.append(' { get; }');
+  }
+
+  let out = startMember(walk, owner, kind, name, sb.toString());
+  out.isStatic = accessor.isStatic;
+  out.type = type;
+  out.doc = walk.docFor(accessor);
+  out.loc = walk.locFor(accessor.loc);
+  return out;
+};
+
+let methodSignatureMember = (
+  walk: Walk,
+  owner: DocDeclaration,
+  signature: MethodSignature
+): DocMember | null => {
+  let name = memberName(signature.name);
+  if (name == null || !walk.visible(name)) {
+    return null;
+  }
+  let typeParams = typeParameters(signature.typeParameters);
+  let params = parameters(walk, signature.params);
+  let returns = refFor(signature.returnType);
+  let kind = if (isOperatorName(name)) {
+    MemberKind.Operator
+  } else {
+    MemberKind.Method
+  };
+  let sb = new StringBuilder(64);
+  if (kind == MemberKind.Operator) {
+    sb.append('operator ');
+  }
+  sb.append(name);
+  sb.append(typeParameterText(typeParams));
+  sb.append(parameterText(params));
+  sb.append(returnText(returns));
+
+  let out = startMember(walk, owner, kind, name, sb.toString());
+  out.isAbstract = true;
+  out.typeParameters = typeParams;
+  out.parameters = params;
+  out.type = returns;
+  out.doc = walk.docFor(signature);
+  out.loc = walk.locFor(signature.loc);
+  return out;
+};
+
+let accessorSignatureMember = (
+  walk: Walk,
+  owner: DocDeclaration,
+  signature: AccessorSignature
+): DocMember | null => {
+  let name = signature.name.name;
+  if (!walk.visible(name)) {
+    return null;
+  }
+  let type = new TypeRef(annotationText(signature.typeAnnotation));
+  let kind = if (signature.hasGetter) {
+    MemberKind.Getter
+  } else {
+    MemberKind.Setter
+  };
+  let sb = new StringBuilder(48);
+  sb.append(name);
+  sb.append(': ');
+  sb.append(type.text);
+  if (signature.hasGetter && signature.hasSetter) {
+    sb.append(' { get; set; }');
+  } else if (signature.hasSetter) {
+    sb.append(' { set; }');
+  } else {
+    sb.append(' { get; }');
+  }
+
+  let out = startMember(walk, owner, kind, name, sb.toString());
+  out.isAbstract = true;
+  out.type = type;
+  out.doc = walk.docFor(signature);
+  out.loc = walk.locFor(signature.loc);
+  return out;
+};
+
+/** A case class's parameter, which is also a field. */
+let caseParamMember = (
+  walk: Walk,
+  owner: DocDeclaration,
+  param: CaseClassParam
+): DocMember | null => {
+  let name = param.name.name;
+  if (!walk.visible(name)) {
+    return null;
+  }
+  let type = new TypeRef(annotationText(param.typeAnnotation));
+  let sb = new StringBuilder(48);
+  let mutability = param.mutability;
+  if (mutability != null) {
+    sb.append(mutability);
+    sb.append(' ');
+  }
+  sb.append(name);
+  if (param.optional) {
+    sb.append('?');
+  }
+  sb.append(': ');
+  sb.append(type.text);
+
+  let out = startMember(walk, owner, MemberKind.Field, name, sb.toString());
+  out.mutability = param.mutability;
+  out.type = type;
+  out.doc = walk.docFor(param);
+  out.loc = walk.locFor(param.loc);
+  return out;
+};
+
+/** One `case` of a sealed class. */
+let variantMember = (
+  walk: Walk,
+  owner: DocDeclaration,
+  variant: SealedVariant
+): DocMember => {
+  let name = variant.name.name;
+  let sb = new StringBuilder(48);
+  sb.append('case ');
+  sb.append(name);
+  let params = variant.params;
+  if (params != null) {
+    sb.append('(');
+    sb.append(caseParamText(params));
+    sb.append(')');
+  }
+  let out = startMember(walk, owner, MemberKind.Variant, name, sb.toString());
+  out.doc = walk.docFor(variant);
+  out.loc = walk.locFor(variant.loc);
+  return out;
+};
+
+// ============================================================================
+// Shared pieces
+// ============================================================================
+
+let typeParameters = (
+  params: GrowableArray<TypeParameter> | null
+): GrowableArray<DocTypeParam> => {
+  let out = new GrowableArray<DocTypeParam>(0);
+  if (params == null) {
+    return out;
+  }
+  for (let param in params) {
+    out.push(new DocTypeParam(param.name, refFor(param.constraint),
+        refFor(param.defaultType)));
+  }
+  return out;
+};
+
+let typeParameterText = (params: GrowableArray<DocTypeParam>): String => {
+  if (params.length == 0) {
+    return '';
+  }
+  let sb = new StringBuilder(32);
+  sb.append('<');
+  var i = 0;
+  while (i < params.length) {
+    if (i > 0) {
+      sb.append(', ');
+    }
+    let param = params[i];
+    sb.append(param.name);
+    let bound = param.bound;
+    if (bound != null) {
+      sb.append(' extends ');
+      sb.append(bound.text);
+    }
+    let fallback = param.defaultType;
+    if (fallback != null) {
+      sb.append(' = ');
+      sb.append(fallback.text);
+    }
+    i += 1;
+  }
+  sb.append('>');
+  return sb.toString();
+};
+
+let parameters = (
+  walk: Walk,
+  params: Array<Parameter>
+): GrowableArray<DocParam> => {
+  let out = new GrowableArray<DocParam>(params.length);
+  for (let param in params) {
+    if (param.isThisParam) {
+      continue;
+    }
+    let defaultValue = param.defaultValue;
+    let fallback = if (defaultValue != null) {
+      walk.textOf(defaultValue.loc)
+    } else {
+      null
+    };
+    out.push(new DocParam(param.name.name, refFor(param.typeAnnotation),
+        param.optional, fallback));
+  }
+  return out;
+};
+
+let parameterText = (params: GrowableArray<DocParam>): String => {
+  let sb = new StringBuilder(48);
+  sb.append('(');
+  var i = 0;
+  while (i < params.length) {
+    if (i > 0) {
+      sb.append(', ');
+    }
+    let param = params[i];
+    let fallback = param.defaultValue;
+    sb.append(param.name);
+    // A default already says the parameter is optional; `b?: i32 = 1`
+    // is not how the source spells it.
+    if (param.optional && fallback == null) {
+      sb.append('?');
+    }
+    let type = param.type;
+    if (type != null) {
+      sb.append(': ');
+      sb.append(type.text);
+    }
+    if (fallback != null) {
+      sb.append(' = ');
+      sb.append(fallback);
+    }
+    i += 1;
+  }
+  sb.append(')');
+  return sb.toString();
+};
+
+let returnText = (returns: TypeRef | null): String => {
+  if (returns == null) {
+    return '';
+  }
+  return ': ' + returns.text;
+};
+
+let caseParamText = (params: Array<CaseClassParam>): String => {
+  let sb = new StringBuilder(48);
+  var i = 0;
+  while (i < params.length) {
+    if (i > 0) {
+      sb.append(', ');
+    }
+    let param = params[i];
+    let mutability = param.mutability;
+    if (mutability != null) {
+      sb.append(mutability);
+      sb.append(' ');
+    }
+    sb.append(param.name.name);
+    if (param.optional) {
+      sb.append('?');
+    }
+    sb.append(': ');
+    sb.append(annotationText(param.typeAnnotation));
+    i += 1;
+  }
+  return sb.toString();
+};
+
+let annotationList = (annotations: Array<TypeAnnotation>): String => {
+  let sb = new StringBuilder(32);
+  var i = 0;
+  while (i < annotations.length) {
+    if (i > 0) {
+      sb.append(', ');
+    }
+    sb.append(annotationText(annotations[i]));
+    i += 1;
+  }
+  return sb.toString();
+};
+
+let refList = (
+  annotations: GrowableArray<TypeAnnotation> | null
+): GrowableArray<TypeRef> => {
+  let out = new GrowableArray<TypeRef>(0);
+  if (annotations == null) {
+    return out;
+  }
+  for (let annotation in annotations) {
+    out.push(new TypeRef(annotationText(annotation)));
+  }
+  return out;
+};
+
+/** The name a member's name node spells, or null for a symbol name. */
+let memberName = (node: Node): String | null => match (node) {
+  case Identifier as id: id.name
+  case IdentifierPattern as pattern: pattern.name
+  case SymbolPropertyName {}: null
+  case _: null
+};
+
+let patternName = (node: Node): String | null => match (node) {
+  case IdentifierPattern as pattern: pattern.name
+  case Identifier as id: id.name
+  case _: null
+};
+
+/** The arrow function a `let` binds, if it binds one directly. */
+let arrowOf = (decl: VariableDeclaration): FunctionExpression | null =>
+    match (decl.init) {
+  case FunctionExpression as fn: fn
+  case _: null
+};
+
+let nodeType = (walk: Walk, node: Node): Type | null => {
+  let model = walk.model;
+  if (model == null) {
+    return null;
+  }
+  return model.getNodeType(node);
+};
+
+let isOperatorName = (name: String): boolean => {
+  if (name.length == 0) {
+    return false;
+  }
+  let b = name.getByteAt(0);
+  let isLetter = (b >= 65 && b <= 90) || (b >= 97 && b <= 122);
+  return !isLetter && b != 35;
+};

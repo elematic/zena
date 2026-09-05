@@ -1,0 +1,239 @@
+/**
+ * Serializing the API model.
+ *
+ * Field order is the order written here and `JsonObject` preserves it,
+ * so the same source produces the same bytes: the output can be checked
+ * in, diffed in review, and used as a snapshot test.
+ *
+ * Empty collections and null fields are omitted. A consumer reads a
+ * missing `members` the same way it reads an empty one, and leaving
+ * them out keeps a package's JSON readable by a person.
+ */
+
+import { JsonObject, JsonArray, JsonValue, stringify } from 'zena:json';
+import { Box } from 'zena:box';
+import { DocComment, DocTag } from './doc-comment.zena';
+import {
+  DocDeclaration, DocLoc, DocMember, DocModule, DocPackage, DocParam,
+  DocReexport, DocTypeParam, TypeRef, declarationKindName, memberKindName,
+} from './model.zena';
+
+/** The format version, so a consumer can refuse what it cannot read. */
+export let ZENADOC_FORMAT_VERSION = 1;
+
+/** The whole package as pretty-printed JSON. */
+export let packageToJson = (pkg: DocPackage): String =>
+    stringify(packageObject(pkg), '  ');
+
+export let packageObject = (pkg: DocPackage): JsonObject => {
+  let out = new JsonObject();
+  out['zenadoc'] = new Box<f64>(ZENADOC_FORMAT_VERSION as f64);
+  let meta = new JsonObject();
+  meta['name'] = pkg.name;
+  meta['root'] = pkg.root;
+  let version = pkg.version;
+  if (version != null) {
+    meta['version'] = version;
+  }
+  out['package'] = meta;
+  let modules = new JsonArray();
+  for (let module in pkg.modules) {
+    modules.push(moduleObject(module));
+  }
+  out['modules'] = modules;
+  return out;
+};
+
+let moduleObject = (module: DocModule): JsonObject => {
+  let out = new JsonObject();
+  out['id'] = module.id;
+  out['name'] = module.name;
+  out['file'] = module.file;
+  putDoc(out, module.doc);
+  if (module.reexports.length > 0) {
+    let reexports = new JsonArray();
+    for (let reexport in module.reexports) {
+      reexports.push(reexportObject(reexport));
+    }
+    out['reexports'] = reexports;
+  }
+  let declarations = new JsonArray();
+  for (let declaration in module.declarations) {
+    declarations.push(declarationObject(declaration));
+  }
+  out['declarations'] = declarations;
+  return out;
+};
+
+let reexportObject = (reexport: DocReexport): JsonObject => {
+  let out = new JsonObject();
+  out['from'] = reexport.from;
+  if (reexport.isAll) {
+    out['all'] = new Box<boolean>(true);
+  } else {
+    out['names'] = stringArray(reexport.names);
+  }
+  return out;
+};
+
+let declarationObject = (declaration: DocDeclaration): JsonObject => {
+  let out = new JsonObject();
+  out['kind'] = declarationKindName(declaration.kind);
+  out['name'] = declaration.name;
+  out['id'] = declaration.id;
+  out['anchor'] = declaration.anchor;
+  out['signature'] = declaration.signature;
+  if (!declaration.exported) {
+    out['exported'] = new Box<boolean>(false);
+  }
+  if (declaration.modifiers.length > 0) {
+    out['modifiers'] = stringArray(declaration.modifiers);
+  }
+  putTypeParams(out, declaration.typeParameters);
+  putParams(out, declaration.parameters);
+  putType(out, 'type', declaration.type);
+  putType(out, 'extends', declaration.superClass);
+  putTypes(out, 'implements', declaration.interfaces);
+  putTypes(out, 'mixins', declaration.mixins);
+  putDoc(out, declaration.doc);
+  putLoc(out, declaration.loc);
+  if (declaration.members.length > 0) {
+    let members = new JsonArray();
+    for (let member in declaration.members) {
+      members.push(memberObject(member));
+    }
+    out['members'] = members;
+  }
+  return out;
+};
+
+let memberObject = (member: DocMember): JsonObject => {
+  let out = new JsonObject();
+  out['kind'] = memberKindName(member.kind);
+  out['name'] = member.name;
+  out['id'] = member.id;
+  out['anchor'] = member.anchor;
+  out['signature'] = member.signature;
+  if (member.isStatic) {
+    out['static'] = new Box<boolean>(true);
+  }
+  if (member.isAbstract) {
+    out['abstract'] = new Box<boolean>(true);
+  }
+  let mutability = member.mutability;
+  if (mutability != null) {
+    out['mutability'] = mutability;
+  }
+  putTypeParams(out, member.typeParameters);
+  putParams(out, member.parameters);
+  putType(out, 'type', member.type);
+  putDoc(out, member.doc);
+  putLoc(out, member.loc);
+  return out;
+};
+
+let putTypeParams = (out: JsonObject, params: Array<DocTypeParam>): void => {
+  if (params.length == 0) {
+    return;
+  }
+  let array = new JsonArray();
+  for (let param in params) {
+    let entry = new JsonObject();
+    entry['name'] = param.name;
+    putType(entry, 'bound', param.bound);
+    putType(entry, 'default', param.defaultType);
+    array.push(entry);
+  }
+  out['typeParameters'] = array;
+};
+
+let putParams = (out: JsonObject, params: Array<DocParam>): void => {
+  if (params.length == 0) {
+    return;
+  }
+  let array = new JsonArray();
+  for (let param in params) {
+    let entry = new JsonObject();
+    entry['name'] = param.name;
+    putType(entry, 'type', param.type);
+    if (param.optional) {
+      entry['optional'] = new Box<boolean>(true);
+    }
+    let fallback = param.defaultValue;
+    if (fallback != null) {
+      entry['default'] = fallback;
+    }
+    array.push(entry);
+  }
+  out['parameters'] = array;
+};
+
+let putType = (out: JsonObject, key: String, type: TypeRef | null): void => {
+  if (type == null) {
+    return;
+  }
+  let entry = new JsonObject();
+  entry['text'] = type.text;
+  out[key] = entry;
+};
+
+let putTypes = (out: JsonObject, key: String, types: Array<TypeRef>): void => {
+  if (types.length == 0) {
+    return;
+  }
+  let array = new JsonArray();
+  for (let type in types) {
+    let entry = new JsonObject();
+    entry['text'] = type.text;
+    array.push(entry);
+  }
+  out[key] = array;
+};
+
+let putDoc = (out: JsonObject, doc: DocComment | null): void => {
+  if (doc == null) {
+    return;
+  }
+  let entry = new JsonObject();
+  if (doc.summary.length > 0) {
+    entry['summary'] = doc.summary;
+  }
+  if (doc.description.length > 0) {
+    entry['description'] = doc.description;
+  }
+  if (doc.tags.length > 0) {
+    let tags = new JsonArray();
+    for (let tag in doc.tags) {
+      let tagObject = new JsonObject();
+      tagObject['tag'] = tag.name;
+      if (tag.subject.length > 0) {
+        tagObject['name'] = tag.subject;
+      }
+      if (tag.text.length > 0) {
+        tagObject['text'] = tag.text;
+      }
+      tags.push(tagObject);
+    }
+    entry['tags'] = tags;
+  }
+  out['doc'] = entry;
+};
+
+let putLoc = (out: JsonObject, loc: DocLoc | null): void => {
+  if (loc == null) {
+    return;
+  }
+  let entry = new JsonObject();
+  entry['file'] = loc.file;
+  entry['line'] = new Box<f64>(loc.line as f64);
+  entry['column'] = new Box<f64>(loc.column as f64);
+  out['loc'] = entry;
+};
+
+let stringArray = (values: Array<String>): JsonArray => {
+  let array = new JsonArray();
+  for (let value in values) {
+    array.push(value);
+  }
+  return array;
+};

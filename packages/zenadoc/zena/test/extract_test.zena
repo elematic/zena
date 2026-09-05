@@ -1,0 +1,227 @@
+// Extraction: one module's AST into the API model, and the model into
+// JSON.
+
+import { suite, test, TestContext, runAndReport } from 'zena:test';
+import { equal } from 'zena:assert';
+import { parse } from 'zena-compiler:parser';
+import { extractModule, ExtractOptions } from '../lib/extract.zena';
+import {
+  DocDeclaration, DocMember, DocModule, DocPackage, DeclarationKind,
+  MemberKind,
+} from '../lib/model.zena';
+import { packageToJson } from '../lib/json.zena';
+
+/** Extracts a source string as the module `demo:demo`. */
+let extract = (source: String, includePrivate: boolean = false): DocModule => {
+  let options = new ExtractOptions();
+  options.includePrivate = includePrivate;
+  return extractModule('demo:demo', 'demo', 'demo.zena',
+      parse(source, 'demo.zena'), null, options);
+};
+
+/** The declaration with this name, or a failure if there is none. */
+let declaration = (module: DocModule, name: String): DocDeclaration => {
+  for (let decl in module.declarations) {
+    if (decl.name == name) {
+      return decl;
+    }
+  }
+  throw new Error('no declaration named ' + name);
+};
+
+let member = (decl: DocDeclaration, name: String): DocMember => {
+  for (let entry in decl.members) {
+    if (entry.name == name) {
+      return entry;
+    }
+  }
+  throw new Error('no member named ' + name);
+};
+
+let names = (module: DocModule): String => {
+  var out = '';
+  for (let decl in module.declarations) {
+    if (out.length > 0) {
+      out = out + ',';
+    }
+    out = out + decl.name;
+  }
+  return out;
+};
+
+let tests = suite('extract', () => {
+  test('documents only exported declarations', (t: TestContext) => {
+    let module = extract(
+        'export let a = 1;\nlet b = 2;\nexport class C {}\nclass D {}\n');
+    equal(names(module), 'a,C');
+  });
+
+  test('documents everything when asked', (t: TestContext) => {
+    let module = extract('export let a = 1;\nlet b = 2;\n', true);
+    equal(names(module), 'a,b');
+  });
+
+  test('renders a class signature', (t: TestContext) => {
+    let module = extract(
+        'export final class Point<T> extends Base implements Show, Eq {}\n');
+    let point = declaration(module, 'Point');
+    equal(point.kind == DeclarationKind.Class, true);
+    equal(point.signature,
+        'final class Point<T> extends Base implements Show, Eq');
+    equal(point.anchor, 'point');
+    equal(point.modifiers.length, 1);
+    equal(point.modifiers[0], 'final');
+    equal(point.interfaces.length, 2);
+  });
+
+  test('renders a case class and its fields', (t: TestContext) => {
+    let module = extract('export class Pair(first: i32, var second: String)\n');
+    let pair = declaration(module, 'Pair');
+    equal(pair.signature, 'class Pair(first: i32, var second: String)');
+    equal(pair.members.length, 2);
+    equal(member(pair, 'second').signature, 'var second: String');
+    equal(member(pair, 'second').mutability, 'var');
+  });
+
+  test('renders a sealed hierarchy', (t: TestContext) => {
+    let module = extract(
+        'export sealed class Expr {\n  case Lit(value: i32)\n  case Add(left: Expr, right: Expr)\n}\n');
+    let expr = declaration(module, 'Expr');
+    equal(expr.signature, 'sealed class Expr');
+    equal(expr.members.length, 2);
+    equal(member(expr, 'Lit').kind == MemberKind.Variant, true);
+    equal(member(expr, 'Add').signature, 'case Add(left: Expr, right: Expr)');
+  });
+
+  test('renders methods, constructors and operators', (t: TestContext) => {
+    let module = extract(
+        'export class C {\n  new(x: i32);\n  static of(x: i32): C { return new C(x); }\n  operator [](i: i32): i32 { return i; }\n  #hidden(): void {}\n}\n');
+    let c = declaration(module, 'C');
+    equal(member(c, 'new').kind == MemberKind.Constructor, true);
+    equal(member(c, 'new').signature, 'new(x: i32)');
+    equal(member(c, 'of').isStatic, true);
+    equal(member(c, 'of').signature, 'static of(x: i32): C');
+    let index = member(c, '[]');
+    equal(index.kind == MemberKind.Operator, true);
+    equal(index.signature, 'operator [](i: i32): i32');
+    equal(index.anchor, 'c-operator-index');
+    equal(c.members.length, 3);
+  });
+
+  test('documents private members when asked', (t: TestContext) => {
+    let module = extract('export class C {\n  #hidden(): void {}\n}\n', true);
+    equal(declaration(module, 'C').members.length, 1);
+  });
+
+  test('renders an interface', (t: TestContext) => {
+    let module = extract(
+        'export interface Show extends Base {\n  show(): String;\n  size: i32 { get; }\n}\n');
+    let show = declaration(module, 'Show');
+    equal(show.signature, 'interface Show extends Base');
+    equal(member(show, 'show').signature, 'show(): String');
+    equal(member(show, 'show').isAbstract, true);
+    equal(member(show, 'size').kind == MemberKind.Getter, true);
+    equal(member(show, 'size').signature, 'size: i32 { get; }');
+  });
+
+  test('renders an enum', (t: TestContext) => {
+    let module = extract('export enum Color { Red, Green }\n');
+    let color = declaration(module, 'Color');
+    equal(color.signature, 'enum Color');
+    equal(color.members.length, 2);
+    equal(member(color, 'Red').kind == MemberKind.EnumMember, true);
+    equal(member(color, 'Red').anchor, 'color-red');
+  });
+
+  test('renders a type alias', (t: TestContext) => {
+    let module = extract('export type Point = {x: f64, y: f64};\n');
+    let point = declaration(module, 'Point');
+    equal(point.kind == DeclarationKind.TypeAlias, true);
+    equal(point.signature, 'type Point = {x: f64, y: f64}');
+  });
+
+  test('documents an arrow binding as a function', (t: TestContext) => {
+    let module = extract('export let add = (a: i32, b: i32 = 1): i32 => a + b;\n');
+    let add = declaration(module, 'add');
+    equal(add.kind == DeclarationKind.Function, true);
+    equal(add.signature, 'function add(a: i32, b: i32 = 1): i32');
+    equal(add.parameters.length, 2);
+    equal(add.parameters[1].defaultValue, '1');
+  });
+
+  test('documents a function declaration', (t: TestContext) => {
+    let module = extract('export function id<T>(value: T): T { return value; }\n');
+    equal(declaration(module, 'id').signature, 'function id<T>(value: T): T');
+  });
+
+  test('documents a variable that is not a function', (t: TestContext) => {
+    let module = extract('export let limit: i32 = 10;\n');
+    let limit = declaration(module, 'limit');
+    equal(limit.kind == DeclarationKind.Variable, true);
+    equal(limit.signature, 'let limit: i32');
+  });
+
+  test('renders nullable and function types', (t: TestContext) => {
+    let module = extract(
+        'export let f = (cb: (a: i32) => String, x: Array<i32> | null): String? => cb(1);\n');
+    equal(declaration(module, 'f').signature,
+        'function f(cb: (a: i32) => String, x: Array<i32> | null): String?');
+  });
+
+  test('attaches doc comments and tags', (t: TestContext) => {
+    let module = extract(
+        '/** The module. */\n\n/**\n * Adds two numbers.\n *\n * @param a the first\n * @returns the sum\n */\nexport let add = (a: i32, b: i32): i32 => a + b;\n');
+    let moduleDoc = module.doc;
+    equal(moduleDoc == null, false);
+    if (moduleDoc != null) {
+      equal(moduleDoc.summary, 'The module.');
+    }
+    let doc = declaration(module, 'add').doc;
+    equal(doc == null, false);
+    if (doc != null) {
+      equal(doc.summary, 'Adds two numbers.');
+      equal(doc.tags.length, 2);
+      equal(doc.tags[0].subject, 'a');
+    }
+  });
+
+  test('records re-exports without resolving them', (t: TestContext) => {
+    let module = extract(
+        "export {HashMap} from 'zena:map';\nexport * from 'zena:set';\n");
+    equal(module.reexports.length, 2);
+    equal(module.reexports[0].from, 'zena:map');
+    equal(module.reexports[0].names[0], 'HashMap');
+    equal(module.reexports[1].isAll, true);
+  });
+
+  test('keeps anchors unique within a module', (t: TestContext) => {
+    let module = extract(
+        'export class A {\n  size(): i32 { return 0; }\n}\nexport class B {\n  size(): i32 { return 0; }\n}\n');
+    equal(member(declaration(module, 'A'), 'size').anchor, 'a-size');
+    equal(member(declaration(module, 'B'), 'size').anchor, 'b-size');
+  });
+
+  test('serializes to JSON', (t: TestContext) => {
+    let module = extract('/** Adds. */\nexport let add = (a: i32): i32 => a;\n');
+    let pkg = new DocPackage('demo', '.');
+    pkg.modules.push(module);
+    let json = packageToJson(pkg);
+    equal(json.contains('"zenadoc": 1'), true);
+    equal(json.contains('"id": "demo:demo#add"'), true);
+    equal(json.contains('"signature": "function add(a: i32): i32"'), true);
+    equal(json.contains('"summary": "Adds."'), true);
+  });
+
+  test('serializes the same bytes every time', (t: TestContext) => {
+    let source = 'export class C {\n  a: i32;\n  b: String;\n  new(this.a, this.b);\n}\n';
+    let first = new DocPackage('demo', '.');
+    first.modules.push(extract(source));
+    let second = new DocPackage('demo', '.');
+    second.modules.push(extract(source));
+    equal(packageToJson(first), packageToJson(second));
+  });
+});
+
+export let main = (): i32 => runAndReport(tests, (s: String): void => {
+  console.log(s);
+});
