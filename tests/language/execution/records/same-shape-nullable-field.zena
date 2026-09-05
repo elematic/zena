@@ -1,0 +1,25 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+// @skip: lowering bails with "zir unsupported: null into non-nullable
+//   context" — two record types whose fields have the same names but
+//   differ in nullability share one layout, and the nullable one is
+//   lowered against the non-nullable slot. Either type alone compiles.
+//   https://code.rictic.com/justin/zena/issues/484
+
+type Strict = {name: String, value: String};
+type Loose = {name: String, value: String | null};
+
+let strict = (): Strict => {
+  return {name: 'a', value: 'b'};
+};
+
+let loose = (): Loose => {
+  return {name: 'a', value: null};
+};
+
+export let main = (): i32 => {
+  let s = strict();
+  let l = loose();
+  return if (l.value == null && s.value == 'b') { 0 } else { 1 };
+};

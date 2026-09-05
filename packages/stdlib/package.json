@@ -16,8 +16,6 @@
     "build": "wireit",
     "lib": "wireit",
     "test": "wireit",
-    "build:wasi-tests": "wireit",
-    "test:wasmtime": "wireit",
     "test:cli": "wireit"
   },
   "wireit": {
@@ -42,44 +40,18 @@
       ],
       "output": []
     },
-    "build:wasi-tests": {
-      "command": "node scripts/build-wasi-tests.js",
-      "files": [
-        "scripts/build-wasi-tests.js",
-        "zena/**/*.zena",
-        "tests/**/*.zena",
-        "!tests/cli/**/*.zena",
-        "!tests/**/*.__runner__.zena"
-      ],
-      "output": [
-        "tests/out/**/*.wasm"
-      ],
-      "dependencies": [
-        "../zena-cli:build",
-        "../zena-compiler:precompile:cli"
-      ]
-    },
     "test": {
       "dependencies": [
-        "test:wasmtime"
-      ]
-    },
-    "test:wasmtime": {
-      "command": "node scripts/run-wasmtime.js",
-      "files": [
-        "scripts/run-wasmtime.js"
-      ],
-      "output": [],
-      "dependencies": [
-        "build:wasi-tests",
-        "../zena-cli:build"
+        "test:cli"
       ]
     },
     "test:cli": {
-      "command": "../../target/release/zena-cli test \"tests/**/*_test.zena\"",
+      "command": "../../target/release/zena-cli test tests --exclude \"**/cli_test.zena\"",
+      "//": "cli_test.zena reaches both of zena:cli's record shapes at once, which does not compile: https://code.rictic.com/justin/zena/issues/484. It was excluded before this too, silently, by the Node build script's glob.",
       "files": [
-        "tests/**/*_test.zena",
-        "zena/**/*.zena"
+        "tests/**/*.zena",
+        "zena/**/*.zena",
+        "stdlib-manifest.json"
       ],
       "output": [],
       "dependencies": [

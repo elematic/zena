@@ -102,6 +102,13 @@ enum Commands {
         #[arg(short, long)]
         filter: Option<String>,
 
+        /// Skip test files matching a glob, repeatable. For holding back
+        /// a test that a known bug stops from compiling, where the
+        /// alternative is excluding it somewhere the exclusion cannot be
+        /// seen from the test.
+        #[arg(long = "exclude")]
+        exclude: Vec<String>,
+
         /// Run exactly one test file in-process and exit with its status
         /// (worker mode used by the Zena test orchestrator)
         #[arg(long, hide = true)]
@@ -186,11 +193,11 @@ fn main() -> Result<()> {
                 compile_and_run(&file, &invoke, cli.verbose, time, no_cache, &dirs, &args, cli.debug, allow_spawn)
             }
         }
-        Commands::Test { paths, filter, single } => {
+        Commands::Test { paths, filter, exclude, single } => {
             if single {
                 run_single_test_worker(&paths, cli.verbose, cli.debug)
             } else {
-                run_all_tests(&paths, filter.as_deref(), cli.verbose, cli.debug)
+                run_all_tests(&paths, filter.as_deref(), &exclude, cli.verbose, cli.debug)
             }
         }
         Commands::Doc { path, output, name, target, include_private } => {
@@ -964,7 +971,13 @@ enum TestStatus {
     Fail,
 }
 
-fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: bool) -> Result<()> {
+fn run_all_tests(
+    paths: &[String],
+    filter: Option<&str>,
+    exclude: &[String],
+    verbose: bool,
+    debug: bool,
+) -> Result<()> {
     let mut test_files = Vec::new();
 
     for path_str in paths {
@@ -1004,6 +1017,22 @@ fn run_all_tests(paths: &[String], filter: Option<&str>, verbose: bool, debug: b
             } else {
                 anyhow::bail!("Path not found: {}", path_str);
             }
+        }
+    }
+
+    if !exclude.is_empty() {
+        let patterns = exclude
+            .iter()
+            .map(|p| {
+                glob::Pattern::new(p)
+                    .with_context(|| format!("Invalid --exclude pattern '{p}'"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let before = test_files.len();
+        test_files.retain(|p| !patterns.iter().any(|pat| pat.matches_path(p)));
+        let skipped = before - test_files.len();
+        if skipped > 0 {
+            println!("Excluding {skipped} test file(s) by --exclude");
         }
     }
 
