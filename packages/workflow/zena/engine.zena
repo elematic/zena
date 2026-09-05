@@ -1,6 +1,8 @@
 import {Completer} from 'zena:async';
+import {HashSet} from 'zena:set';
 import {StepCache} from './cache.zena';
 import {ResolvedInput, cacheKeyFor, manifestFingerprint} from './canonical.zena';
+import {InputDelta, computeDelta, staleOutputNames} from './delta.zena';
 import {WorkflowError} from './errors.zena';
 import {Digest, Fingerprint} from './fingerprint.zena';
 import {Graph} from './graph.zena';
@@ -392,7 +394,10 @@ export class Engine {
     try {
       let cached = await this.#cache.get(cacheKey);
       if (cached != null) {
-        rs.next.setRecord(step.key, new StepRecord(cacheKey, cached));
+        rs.next.setRecord(
+          step.key,
+          new StepRecord(step.config, cacheKey, cached, resolved),
+        );
         return new Succeeded(cached, StepSource.Cache);
       }
 
@@ -403,15 +408,85 @@ export class Engine {
         return serviceFailure;
       }
 
-      let manifest = await step.run(new RunContext());
+      let ctx = this.#runContext(step, prior, resolved);
+      let manifest = await step.run(ctx);
       // Fingerprinting validates duplicate output names loudly here, at
-      // the producer, instead of at the first dependent.
+      // the producer, instead of at the first dependent; the carry-over
+      // check catches a step whose output changed although its records
+      // claim no input it depends on did. Both run before the result
+      // can reach the cache.
       manifestFingerprint(manifest, this.#digest);
+      this.#verifyCarryOver(step, ctx, manifest);
       await this.#cache.put(cacheKey, manifest);
-      rs.next.setRecord(step.key, new StepRecord(cacheKey, manifest));
+      rs.next.setRecord(
+        step.key,
+        new StepRecord(step.config, cacheKey, manifest, resolved),
+      );
       return new Succeeded(manifest, StepSource.Ran);
     } finally {
       rs.semaphore.release();
+    }
+  }
+
+  /**
+   * Builds the run callback's context. The delta is only offered when
+   * the previous record exists and was made with the same config
+   * fingerprint; otherwise the step runs from scratch.
+   */
+  #runContext(
+    step: TaskStep,
+    prior: StepRecord?,
+    resolved: GrowableArray<ResolvedInput>,
+  ): RunContext {
+    if (prior == null || prior.config.value != step.config.value) {
+      return new RunContext();
+    }
+    let delta = computeDelta(prior.inputs, resolved);
+    return new RunContext(
+      delta,
+      prior.manifest,
+      staleOutputNames(prior.manifest, delta),
+    );
+  }
+
+  /**
+   * Verifies that every previous output the delta left valid came back
+   * unchanged. A violation means the step's dependency records are
+   * wrong, and caching the result would corrupt later runs.
+   */
+  #verifyCarryOver(
+    step: TaskStep,
+    ctx: RunContext,
+    manifest: OutputManifest,
+  ): void {
+    let staleList = ctx.staleOutputs;
+    let previous = ctx.previous;
+    if (staleList == null || previous == null) {
+      return;
+    }
+    let stale = new HashSet<String>();
+    for (let name in staleList) {
+      stale.add(name);
+    }
+    let produced = new HashMap<String, Fingerprint>();
+    for (let entry in manifest.outputs) {
+      produced[entry.name] = entry.fingerprint;
+    }
+    for (let entry in previous.outputs) {
+      if (stale.has(entry.name)) {
+        continue;
+      }
+      if (let (true, fp) = produced.get(entry.name)) {
+        if (fp.value != entry.fingerprint.value) {
+          throw new WorkflowError(
+            `step "${step.key.value}" changed output "${entry.name}" although its dependency records report it unaffected`,
+          );
+        }
+      } else {
+        throw new WorkflowError(
+          `step "${step.key.value}" dropped output "${entry.name}" although its dependency records report it unaffected`,
+        );
+      }
     }
   }
 

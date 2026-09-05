@@ -1,3 +1,4 @@
+import {InputDelta} from './delta.zena';
 import {Fingerprint} from './fingerprint.zena';
 import {OutputManifest} from './manifest.zena';
 
@@ -26,12 +27,34 @@ export final class LeafInput(name: String) extends InputRef
 export final class StepOutputs(step: StepKey) extends InputRef
 
 /**
- * What a task step's run callback receives. Fields for incremental
- * reruns (the input delta and the previous manifest) arrive with
- * fine-grained tracking.
+ * What a task step's run callback receives. When the last recorded run
+ * had the same config fingerprint, the engine supplies the input delta
+ * against it; the callback may then regenerate only the stale outputs
+ * and carry the rest of the previous manifest over unchanged (the
+ * engine verifies the carry-over against the dependency records).
  */
 export class RunContext {
-  new();
+  /**
+   * Changed/added/removed inputs since the last recorded run, or null
+   * when no usable history exists (first run, or the step's config
+   * changed) — then the step must run from scratch.
+   */
+  delta: InputDelta?;
+
+  /** The last recorded run's manifest, when `delta` is non-null. */
+  previous: OutputManifest?;
+
+  /**
+   * Previous outputs invalidated by the delta, per their dependency
+   * records. Null exactly when `delta` is null.
+   */
+  staleOutputs: Array<String>?;
+
+  new(
+    delta: InputDelta? = null,
+    previous: OutputManifest? = null,
+    staleOutputs: Array<String>? = null,
+  ) : delta = delta, previous = previous, staleOutputs = staleOutputs;
 }
 
 /** What a service step's start callback receives. */

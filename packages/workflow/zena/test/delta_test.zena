@@ -1,0 +1,293 @@
+import {suite, test} from 'zena:test';
+import {equal, fail, isNull, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {NullCache} from '../cache.zena';
+import {ResolvedInput} from '../canonical.zena';
+import {InputDelta, computeDelta, staleOutputNames} from '../delta.zena';
+import {Engine, Failed, RunResult, Succeeded} from '../engine.zena';
+import {Fingerprint} from '../fingerprint.zena';
+import {Graph} from '../graph.zena';
+import {OutputEntry, OutputManifest} from '../manifest.zena';
+import {EngineState} from '../state.zena';
+import {
+  InputRef,
+  LeafInput,
+  RunContext,
+  Step,
+  StepKey,
+  StepOutputs,
+  TaskStep,
+} from '../step.zena';
+
+let digest = (data: String): Fingerprint =>
+  new Fingerprint('d#' + i32ToString(data.hashCode()));
+
+let fp = (value: String): Fingerprint => new Fingerprint(value);
+
+let resolvedOf = (names: Array<String>, fps: Array<String>): Array<ResolvedInput> => {
+  let result = new GrowableArray<ResolvedInput>();
+  for (var i = 0; i < names.length; i += 1) {
+    result.push(new ResolvedInput(names[i], fp(fps[i])));
+  }
+  return result;
+};
+
+let contains = (items: Array<String>, value: String): boolean => {
+  for (let item in items) {
+    if (item == value) {
+      return true;
+    }
+  }
+  return false;
+};
+
+let asStep = (step: Step): Step => step;
+
+let mkInputs = (deps: Array<String>, leafNames: Array<String>): Array<InputRef> => {
+  let inputs = new GrowableArray<InputRef>();
+  for (let leaf in leafNames) {
+    inputs.push(new LeafInput(leaf));
+  }
+  for (let dep in deps) {
+    inputs.push(new StepOutputs(new StepKey(dep)));
+  }
+  return inputs;
+};
+
+let noStrings: Array<String> = new GrowableArray<String>();
+
+export let tests = suite('delta', (): void => {
+  test('computeDelta reports changed, added, and removed inputs', () => {
+    let previous = resolvedOf(['a', 'b', 'c'], ['1', '1', '1']);
+    let current = resolvedOf(['a', 'b', 'd'], ['1', '2', '1']);
+    let delta = computeDelta(previous, current);
+    equal(delta.changed.length, 1);
+    equal(delta.changed[0], 'b');
+    equal(delta.added.length, 1);
+    equal(delta.added[0], 'd');
+    equal(delta.removed.length, 1);
+    equal(delta.removed[0], 'c');
+    isTrue(!delta.isEmpty);
+  });
+
+  test('staleOutputNames follows dependency records', () => {
+    let previous = new OutputManifest([
+      new OutputEntry('page-a', fp('1'), ['leaf:a']),
+      new OutputEntry('page-b', fp('1'), ['leaf:b']),
+      new OutputEntry('index', fp('1')),
+    ]);
+    let delta = computeDelta(
+      resolvedOf(['leaf:a', 'leaf:b'], ['1', '1']),
+      resolvedOf(['leaf:a', 'leaf:b'], ['2', '1']),
+    );
+    let stale = staleOutputNames(previous, delta);
+    isTrue(contains(stale, 'page-a'));
+    isTrue(!contains(stale, 'page-b'));
+    // No dependency record means "depends on everything".
+    isTrue(contains(stale, 'index'));
+  });
+
+  test('added inputs invalidate only record-free outputs', () => {
+    let previous = new OutputManifest([
+      new OutputEntry('page-a', fp('1'), ['leaf:a']),
+      new OutputEntry('index', fp('1')),
+    ]);
+    let delta = computeDelta(
+      resolvedOf(['leaf:a'], ['1']),
+      resolvedOf(['leaf:a', 'leaf:new'], ['1', '1']),
+    );
+    let stale = staleOutputNames(previous, delta);
+    isTrue(!contains(stale, 'page-a'));
+    isTrue(contains(stale, 'index'));
+  });
+
+  test('the first run sees no delta; the second sees the change', () => {
+    var seenDelta: InputDelta? = null;
+    var deltaRuns = 0;
+    let mkGraph = (): Graph => new Graph([
+      asStep(new TaskStep(
+        new StepKey('gen'),
+        new Fingerprint('cfg'),
+        mkInputs(noStrings, ['a', 'b']),
+        (ctx) => {
+          deltaRuns += 1;
+          seenDelta = ctx.delta;
+          return Future.of(new OutputManifest([
+            new OutputEntry('out', fp('same')),
+          ]));
+        },
+      )),
+    ]);
+    let leaves = new HashMap<String, Fingerprint>();
+    leaves['a'] = fp('v1');
+    leaves['b'] = fp('v1');
+    let engine = new Engine(digest, new NullCache());
+    let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
+    isNull(seenDelta);
+
+    leaves['a'] = fp('v2');
+    let second = runFuture(engine.run(mkGraph(), leaves, first.state));
+    isTrue(second.allSucceeded);
+    equal(deltaRuns, 2);
+    let delta = seenDelta;
+    if (delta != null) {
+      equal(delta.changed.length, 1);
+      equal(delta.changed[0], 'leaf:a');
+      equal(delta.added.length, 0);
+      equal(delta.removed.length, 0);
+    } else {
+      fail('expected a delta on the second run');
+    }
+  });
+
+  test('a config change withholds the delta', () => {
+    var deltas = new GrowableArray<String>();
+    let mkGraph = (config: String): Graph => new Graph([
+      asStep(new TaskStep(
+        new StepKey('gen'),
+        new Fingerprint(config),
+        mkInputs(noStrings, ['a']),
+        (ctx) => {
+          deltas.push(if (ctx.delta == null) 'none' else 'delta');
+          return Future.of(new OutputManifest([
+            new OutputEntry('out', fp('same')),
+          ]));
+        },
+      )),
+    ]);
+    let leaves = new HashMap<String, Fingerprint>();
+    leaves['a'] = fp('v1');
+    let engine = new Engine(digest, new NullCache());
+    let first = runFuture(engine.run(mkGraph('c1'), leaves, EngineState.empty()));
+    let second = runFuture(engine.run(mkGraph('c2'), leaves, first.state));
+    equal(deltas.length, 2);
+    equal(deltas[0], 'none');
+    equal(deltas[1], 'none');
+  });
+
+  test('an honest incremental step regenerates only stale outputs', () => {
+    var lastStale: Array<String>? = null;
+    let mkGraph = (): Graph => new Graph([
+      asStep(new TaskStep(
+        new StepKey('site'),
+        new Fingerprint('cfg'),
+        mkInputs(noStrings, ['a', 'b']),
+        (ctx) => {
+          lastStale = ctx.staleOutputs;
+          let outputs = new GrowableArray<OutputEntry>();
+          let staleList = ctx.staleOutputs;
+          let previous = ctx.previous;
+          if (staleList == null || previous == null) {
+            outputs.push(new OutputEntry('page-a', fp('a1'), ['leaf:a']));
+            outputs.push(new OutputEntry('page-b', fp('b1'), ['leaf:b']));
+          } else {
+            for (let entry in previous.outputs) {
+              if (contains(staleList, entry.name)) {
+                outputs.push(new OutputEntry(entry.name, fp('a2'), entry.dependsOn));
+              } else {
+                outputs.push(entry);
+              }
+            }
+          }
+          return Future.of(new OutputManifest(outputs));
+        },
+      )),
+    ]);
+    let leaves = new HashMap<String, Fingerprint>();
+    leaves['a'] = fp('v1');
+    leaves['b'] = fp('v1');
+    let engine = new Engine(digest, new NullCache());
+    let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
+    isTrue(first.allSucceeded);
+
+    leaves['a'] = fp('v2');
+    let second = runFuture(engine.run(mkGraph(), leaves, first.state));
+    isTrue(second.allSucceeded);
+    let stale = lastStale;
+    if (stale != null) {
+      equal(stale.length, 1);
+      equal(stale[0], 'page-a');
+    } else {
+      fail('expected stale outputs on the second run');
+    }
+    let outcome = second.outcomeOf(new StepKey('site'));
+    if (outcome is Succeeded) {
+      equal(outcome.manifest.outputs.length, 2);
+    } else {
+      fail('expected success');
+    }
+  });
+
+  test('a step contradicting its records fails before caching', () => {
+    let mkGraph = (secondFp: String): Graph => new Graph([
+      asStep(new TaskStep(
+        new StepKey('site'),
+        new Fingerprint('cfg'),
+        mkInputs(noStrings, ['a', 'b']),
+        (ctx) => {
+          return Future.of(new OutputManifest([
+            new OutputEntry('page-a', fp('a1'), ['leaf:a']),
+            // Changes with every run although it claims to depend only
+            // on leaf b, which never changes.
+            new OutputEntry('page-b', fp(secondFp), ['leaf:b']),
+          ]));
+        },
+      )),
+    ]);
+    let leaves = new HashMap<String, Fingerprint>();
+    leaves['a'] = fp('v1');
+    leaves['b'] = fp('v1');
+    let engine = new Engine(digest, new NullCache());
+    let first = runFuture(engine.run(mkGraph('b1'), leaves, EngineState.empty()));
+    isTrue(first.allSucceeded);
+
+    leaves['a'] = fp('v2');
+    let second = runFuture(engine.run(mkGraph('b2'), leaves, first.state));
+    let outcome = second.outcomeOf(new StepKey('site'));
+    if (outcome is Failed) {
+      isTrue(outcome.error.message.contains('dependency records'));
+    } else {
+      fail('expected the lying step to fail');
+    }
+  });
+
+  test('dependency manifests appear in the delta as step inputs', () => {
+    var seenDelta: InputDelta? = null;
+    let mkGraph = (upstreamFp: String): Graph => new Graph([
+      asStep(new TaskStep(
+        new StepKey('up'),
+        new Fingerprint('cfg:up'),
+        mkInputs(noStrings, ['src']),
+        (ctx) => Future.of(new OutputManifest([
+          new OutputEntry('lib', fp(upstreamFp)),
+        ])),
+      )),
+      new TaskStep(
+        new StepKey('down'),
+        new Fingerprint('cfg:down'),
+        mkInputs(['up'], noStrings),
+        (ctx) => {
+          seenDelta = ctx.delta;
+          return Future.of(new OutputManifest([
+            new OutputEntry('app', fp('app-' + upstreamFp)),
+          ]));
+        },
+      ),
+    ]);
+    let leaves = new HashMap<String, Fingerprint>();
+    leaves['src'] = fp('v1');
+    let engine = new Engine(digest, new NullCache());
+    let first = runFuture(engine.run(mkGraph('lib1'), leaves, EngineState.empty()));
+
+    leaves['src'] = fp('v2');
+    let second = runFuture(engine.run(mkGraph('lib2'), leaves, first.state));
+    isTrue(second.allSucceeded);
+    let delta = seenDelta;
+    if (delta != null) {
+      equal(delta.changed.length, 1);
+      equal(delta.changed[0], 'step:up');
+    } else {
+      fail('expected a delta for the downstream step');
+    }
+  });
+});

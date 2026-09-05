@@ -1,0 +1,93 @@
+import {HashSet} from 'zena:set';
+import {ResolvedInput} from './canonical.zena';
+import {Fingerprint} from './fingerprint.zena';
+import {OutputManifest} from './manifest.zena';
+
+/**
+ * Which inputs differ between the last recorded run and this one.
+ * Names are the engine's namespaced input names ('leaf:src/a.ts',
+ * 'step:build', 'service:db'); hosts strip the prefix of the kind they
+ * care about.
+ */
+export class InputDelta {
+  changed: Array<String>;
+  added: Array<String>;
+  removed: Array<String>;
+
+  new(this.changed, this.added, this.removed);
+
+  isEmpty: boolean {
+    get {
+      return this.changed.length == 0 &&
+        this.added.length == 0 &&
+        this.removed.length == 0;
+    }
+  }
+}
+
+/** Compares two resolved-input lists by name. */
+export let computeDelta = (
+  previous: Array<ResolvedInput>,
+  current: Array<ResolvedInput>,
+): InputDelta => {
+  let prevByName = new HashMap<String, Fingerprint>();
+  for (let input in previous) {
+    prevByName[input.name] = input.fingerprint;
+  }
+  let changed = new GrowableArray<String>();
+  let added = new GrowableArray<String>();
+  let currentNames = new HashSet<String>();
+  for (let input in current) {
+    currentNames.add(input.name);
+    if (let (true, prevFp) = prevByName.get(input.name)) {
+      if (prevFp.value != input.fingerprint.value) {
+        changed.push(input.name);
+      }
+    } else {
+      added.push(input.name);
+    }
+  }
+  let removed = new GrowableArray<String>();
+  for (let input in previous) {
+    if (!currentNames.has(input.name)) {
+      removed.push(input.name);
+    }
+  }
+  return new InputDelta(changed, added, removed);
+};
+
+/**
+ * Names of previous outputs the delta invalidates: those whose
+ * dependency records name a changed or removed input, and those
+ * depending on all inputs (`dependsOn` null), which added inputs also
+ * invalidate. An explicit `dependsOn` asserts "exactly these inputs" —
+ * an output whose validity depends on the input *set* (an index page,
+ * a manifest) must record null instead.
+ */
+export let staleOutputNames = (
+  previous: OutputManifest,
+  delta: InputDelta,
+): Array<String> => {
+  let touched = new HashSet<String>();
+  for (let name in delta.changed) {
+    touched.add(name);
+  }
+  for (let name in delta.removed) {
+    touched.add(name);
+  }
+  let stale = new GrowableArray<String>();
+  for (let entry in previous.outputs) {
+    let deps = entry.dependsOn;
+    if (deps == null) {
+      stale.push(entry.name);
+    } else {
+      for (let dep in deps) {
+        if (touched.has(dep)) {
+          stale.push(entry.name);
+          break;
+        }
+      }
+    }
+  }
+  return stale;
+};
