@@ -493,16 +493,20 @@ export let tests = suite('WatGenerator', (): void => {
   // is that it is the ONLY thing that decides, so a lowering that
   // ignored it — or one that emitted the instructions by default,
   // which V8 would reject — has to fail something.
+  // The inputs arrive as parameters: constant operands would let the
+  // simplifier fold the whole software sequence away, and these tests
+  // assert the sequence's shape.
   let wideSource = `
     @intrinsic('i64.mul_wide_u')
     declare function mulWide(x: u64, y: u64): inline (u64, u64);
     @intrinsic('i64.add128')
     declare function add128(al: u64, ah: u64, bl: u64, bh: u64): inline (u64, u64);
-    export let main = (): i64 => {
-      let (lo, hi) = mulWide(7 as u64, 9 as u64);
+    let wide = (x: u64, y: u64): i64 => {
+      let (lo, hi) = mulWide(x, y);
       let (sl, sh) = add128(lo, hi, 1 as u64, 0 as u64);
       return (sl + sh) as i64;
     };
+    export let main = (): i64 => wide(7 as u64, 9 as u64);
   `;
 
   test('wide arithmetic lowers to a software sequence by default', (ctx: TestContext): void => {
@@ -510,7 +514,7 @@ export let tests = suite('WatGenerator', (): void => {
     let absent = new GrowableArray<String>();
     absent.push('i64.mul_wide_u');
     absent.push('i64.add128');
-    assertFunctionOmits(result, '$main', absent,
+    assertFunctionOmits(result, '$wide', absent,
         'the proposal is off by default — V8 does not implement it yet, ' +
         'and the stdlib has to run under node');
     // What it emits instead: the 32x32 partial products and the
@@ -519,7 +523,7 @@ export let tests = suite('WatGenerator', (): void => {
     present.push('i64.mul');
     present.push('i64.shr_u');
     present.push('i64.lt_u');
-    assertFunctionUses(result, '$main', present,
+    assertFunctionUses(result, '$wide', present,
         'the software lowering multiplies 32-bit halves and derives ' +
         'the carry from an unsigned compare');
   });
@@ -529,12 +533,12 @@ export let tests = suite('WatGenerator', (): void => {
     let present = new GrowableArray<String>();
     present.push('i64.mul_wide_u');
     present.push('i64.add128');
-    assertFunctionUses(result, '$main', present,
+    assertFunctionUses(result, '$wide', present,
         'with the flag on, each intrinsic is one instruction');
     // And the partial-product sequence is gone entirely.
     let absent = new GrowableArray<String>();
     absent.push('i64.shr_u');
-    assertFunctionOmits(result, '$main', absent,
+    assertFunctionOmits(result, '$wide', absent,
         'the native instructions replace the halves-and-carries sequence, ' +
         'they do not sit alongside it');
   });

@@ -7,8 +7,8 @@ import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import { String } from 'zena:string';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import {
-  assertFunctionUses, assertFunctionUsesTimes, assertNoAllocation,
-  watFunction,
+  assertFunctionOmits, assertFunctionUses, assertFunctionUsesTimes,
+  assertNoAllocation, watFunction,
 } from './wat-invariants.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 import { getEnv } from 'zena:cli';
@@ -520,5 +520,86 @@ export let tests = suite('zir backend', (): void => {
     // function is emitted (every value a local, so at least one local).
     let result = compileWithZir('export let main = (): i32 => 1 + 2;');
     isTrue(result.contains('(func $main'));
+  });
+
+  test('simplify folds constant arithmetic', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'export let main = (): i32 => { let a = 6; let b = 7; return a * b + 3; };');
+    let present = new GrowableArray<String>();
+    present.push('i32.const 45');
+    assertFunctionUses(result, '$main', present,
+        'constant multiply-add folds to one constant');
+    let absent = new GrowableArray<String>();
+    absent.push('i32.mul');
+    absent.push('i32.add');
+    assertFunctionOmits(result, '$main', absent,
+        'folded arithmetic leaves no arithmetic behind');
+  });
+
+  test('simplify folds a constant chain across widths', (ctx: TestContext): void => {
+    // i64 multiply of constants folds, and the wrap of the folded
+    // constant folds after it — one forward pass cascades because
+    // operand ids precede use ids.
+    let result = compileWithZir(
+        'export let main = (): i32 => {\n' +
+        '  let a = 6 as i64;\n' +
+        '  let b = 7 as i64;\n' +
+        '  return (a * b) as i32;\n' +
+        '};');
+    let present = new GrowableArray<String>();
+    present.push('i32.const 42');
+    assertFunctionUses(result, '$main', present,
+        'the i64 product wraps to a folded i32 constant');
+    let absent = new GrowableArray<String>();
+    absent.push('i64.mul');
+    absent.push('i32.wrap_i64');
+    assertFunctionOmits(result, '$main', absent,
+        'both the multiply and the wrap fold away');
+  });
+
+  test('simplify removes additive identity', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'let f = (x: i32): i32 => x + 0;\n' +
+        'export let main = (): i32 => f(21);');
+    let absent = new GrowableArray<String>();
+    absent.push('i32.add');
+    assertFunctionOmits(result, '$f', absent,
+        'x + 0 is x; no add survives');
+  });
+
+  test('simplify strength-reduces multiply by a power of two', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'let f = (x: i32): i32 => x * 8;\n' +
+        'export let main = (): i32 => f(5);');
+    let present = new GrowableArray<String>();
+    present.push('i32.shl');
+    assertFunctionUses(result, '$f', present,
+        'x * 8 becomes x << 3');
+    let absent = new GrowableArray<String>();
+    absent.push('i32.mul');
+    assertFunctionOmits(result, '$f', absent,
+        'the multiply is replaced, not kept alongside');
+  });
+
+  test('simplify folds self-cancelling xor', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'let f = (x: i32): i32 => x ^ x;\n' +
+        'export let main = (): i32 => f(21);');
+    let absent = new GrowableArray<String>();
+    absent.push('i32.xor');
+    assertFunctionOmits(result, '$f', absent,
+        'x ^ x is 0 regardless of x');
+  });
+
+  test('simplify leaves division by a constant zero to trap', (ctx: TestContext): void => {
+    // % lowers to i32.rem_s, which traps on a zero divisor. The
+    // simplifier must not fold or delete it — the trap is the
+    // program's runtime behavior, in its original position.
+    let result = compileWithZir(
+        'export let main = (): i32 => { let a = 7; let b = 0; return a % b; };');
+    let present = new GrowableArray<String>();
+    present.push('i32.rem_s');
+    assertFunctionUses(result, '$main', present,
+        'a trapping division survives simplification untouched');
   });
 });

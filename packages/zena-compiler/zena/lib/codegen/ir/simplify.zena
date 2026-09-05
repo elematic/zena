@@ -1,0 +1,424 @@
+/**
+ * Peephole simplification (docs/design/optimization-pipeline.md,
+ * cleanup set): constant folding, algebraic identities, and
+ * strength reduction, in one forward pass over instruction ids.
+ * Operand ids always precede their uses (the builder appends), so a
+ * fold's result is visible to every later instruction in the same
+ * pass and chains of constants collapse without iteration.
+ *
+ * Runs before GVN in the per-function pipeline. Rewrites are all
+ * in place: an instruction folds by BECOMING a constant (uses keep
+ * their operand id), and an identity replaces the instruction with
+ * one of its operands through the same repl/canon scheme GVN uses,
+ * nop-ing the survivorless instruction.
+ *
+ * Trap discipline: an op that can trap at runtime is never folded or
+ * dropped unless the outcome is proven — integer division and
+ * remainder are left alone entirely (a constant zero divisor must
+ * still trap at runtime, in its original position). Floating-point
+ * arithmetic folds only when the result is not NaN: wasm leaves NaN
+ * payload bits nondeterministic, so baking one engine's payload into
+ * the binary would make output depend on the compiling engine.
+ * Float identities (x+0.0, x*1.0) are skipped wholesale — -0.0 and
+ * NaN break them. Compile-time evaluation uses Zena's own i32/i64
+ * operators, which carry wasm's wrapping and shift-masking semantics
+ * by definition.
+ *
+ * Determinism: a single id-order walk, no hash containers.
+ */
+import { IrBody, IrOp } from './ir.zena';
+
+/** Runs the pass; returns the number of instructions rewritten. */
+export let runSimplify = (body: IrBody): i32 => {
+  let count = body.instCount();
+  var rewrites = 0;
+
+  // Value-operand use counts, for rewrites that want to mutate an
+  // operand in place (strength reduction turns `x * 8`'s constant 8
+  // into the shift count 3, which is only sound if nothing else reads
+  // that constant). Later in-place rewrites only ever REMOVE uses, so
+  // a count of one stays trustworthy for the rest of the pass.
+  let useCount = new GrowableArray<i32>();
+  for (var i = 0; i < count; i += 1) {
+    useCount.push(0);
+  }
+  let operands = new GrowableArray<i32>();
+  for (var i = 0; i < count; i += 1) {
+    while (operands.length > 0) {
+      operands.pop();
+    }
+    body.appendValueOperands(i, operands);
+    for (let opnd in operands) {
+      if (opnd >= 0 && opnd < count) {
+        useCount[opnd] += 1;
+      }
+    }
+  }
+
+  let repl = new GrowableArray<i32>();
+  for (var i = 0; i < count; i += 1) {
+    repl.push(i);
+  }
+  let canon = (v: i32): i32 => {
+    if (v < 0 || v >= count) {
+      return v;
+    }
+    var c = v;
+    while (repl[c] != c) {
+      c = repl[c];
+    }
+    return c;
+  };
+
+  let replaceWithValue = (inst: i32, value: i32): void => {
+    repl[inst] = value;
+    body.opcode[inst] = IrOp.nop as i32;
+    body.typeId[inst] = -1;
+    body.a[inst] = -1;
+    body.b[inst] = -1;
+    rewrites += 1;
+  };
+  // In-place folds keep the instruction's id and result type, so
+  // every use — including branch arguments — stays valid unchanged.
+  let foldToI32 = (inst: i32, value: i32): void => {
+    body.opcode[inst] = IrOp.const_i32 as i32;
+    body.a[inst] = value;
+    body.b[inst] = -1;
+    rewrites += 1;
+  };
+  let foldToI64 = (inst: i32, value: i64): void => {
+    body.constI64.push(value);
+    body.opcode[inst] = IrOp.const_i64 as i32;
+    body.a[inst] = body.constI64.length - 1;
+    body.b[inst] = -1;
+    rewrites += 1;
+  };
+  let foldToF64 = (inst: i32, value: f64): void => {
+    body.constF64.push(value);
+    body.opcode[inst] = IrOp.const_f64 as i32;
+    body.a[inst] = body.constF64.length - 1;
+    body.b[inst] = -1;
+    rewrites += 1;
+  };
+  let foldToBool = (inst: i32, value: boolean): void => {
+    foldToI32(inst, if (value) 1 else 0);
+  };
+
+  for (var inst = 0; inst < count; inst += 1) {
+    body.rewriteValueOperands(inst, canon);
+    let op = body.op(inst);
+    let av = body.a[inst];
+    let bv = body.b[inst];
+
+    // --- i32 ---
+    if (isI32Binary(op)) {
+      let aConst = body.op(av) == IrOp.const_i32;
+      let bConst = body.op(bv) == IrOp.const_i32;
+      let ac = if (aConst) body.a[av] else 0;
+      let bc = if (bConst) body.a[bv] else 0;
+      if (aConst && bConst) {
+        if (op == IrOp.i32_add) { foldToI32(inst, ac + bc); continue; }
+        if (op == IrOp.i32_sub) { foldToI32(inst, ac - bc); continue; }
+        if (op == IrOp.i32_mul) { foldToI32(inst, ac * bc); continue; }
+        if (op == IrOp.i32_and) { foldToI32(inst, ac & bc); continue; }
+        if (op == IrOp.i32_or) { foldToI32(inst, ac | bc); continue; }
+        if (op == IrOp.i32_xor) { foldToI32(inst, ac ^ bc); continue; }
+        if (op == IrOp.i32_shl) { foldToI32(inst, ac << bc); continue; }
+        if (op == IrOp.i32_shr_s) { foldToI32(inst, ac >> bc); continue; }
+        if (op == IrOp.i32_shr_u) { foldToI32(inst, ac >>> bc); continue; }
+        if (op == IrOp.i32_eq) { foldToBool(inst, ac == bc); continue; }
+        if (op == IrOp.i32_ne) { foldToBool(inst, ac != bc); continue; }
+        if (op == IrOp.i32_lt_s) { foldToBool(inst, ac < bc); continue; }
+        if (op == IrOp.i32_le_s) { foldToBool(inst, ac <= bc); continue; }
+        if (op == IrOp.i32_gt_s) { foldToBool(inst, ac > bc); continue; }
+        if (op == IrOp.i32_ge_s) { foldToBool(inst, ac >= bc); continue; }
+        if (op == IrOp.i32_lt_u) { foldToBool(inst, flipSign(ac) < flipSign(bc)); continue; }
+        if (op == IrOp.i32_le_u) { foldToBool(inst, flipSign(ac) <= flipSign(bc)); continue; }
+        if (op == IrOp.i32_gt_u) { foldToBool(inst, flipSign(ac) > flipSign(bc)); continue; }
+        if (op == IrOp.i32_ge_u) { foldToBool(inst, flipSign(ac) >= flipSign(bc)); continue; }
+        // div/rem fall through: a zero divisor must trap at runtime.
+      }
+      if (op == IrOp.i32_add) {
+        if (aConst && ac == 0) { replaceWithValue(inst, bv); continue; }
+        if (bConst && bc == 0) { replaceWithValue(inst, av); continue; }
+      }
+      if (op == IrOp.i32_sub && bConst && bc == 0) {
+        replaceWithValue(inst, av);
+        continue;
+      }
+      if (op == IrOp.i32_mul) {
+        if (aConst && ac == 1) { replaceWithValue(inst, bv); continue; }
+        if (bConst && bc == 1) { replaceWithValue(inst, av); continue; }
+        if ((aConst && ac == 0) || (bConst && bc == 0)) {
+          foldToI32(inst, 0);
+          continue;
+        }
+        // x * 2^k => x << k, when the constant is this instruction's
+        // alone to rewrite.
+        if (bConst && !aConst && isPowerOfTwoI32(bc) && useCount[bv] == 1) {
+          body.a[bv] = log2I32(bc);
+          body.opcode[inst] = IrOp.i32_shl as i32;
+          rewrites += 1;
+          continue;
+        }
+        if (aConst && !bConst && isPowerOfTwoI32(ac) && useCount[av] == 1) {
+          body.a[av] = log2I32(ac);
+          body.opcode[inst] = IrOp.i32_shl as i32;
+          body.a[inst] = bv;
+          body.b[inst] = av;
+          rewrites += 1;
+          continue;
+        }
+      }
+      if (op == IrOp.i32_div_u && bConst && !aConst && isPowerOfTwoI32(bc) &&
+          useCount[bv] == 1) {
+        body.a[bv] = log2I32(bc);
+        body.opcode[inst] = IrOp.i32_shr_u as i32;
+        rewrites += 1;
+        continue;
+      }
+      if (op == IrOp.i32_rem_u && bConst && !aConst && isPowerOfTwoI32(bc) &&
+          useCount[bv] == 1) {
+        body.a[bv] = bc - 1;
+        body.opcode[inst] = IrOp.i32_and as i32;
+        rewrites += 1;
+        continue;
+      }
+      if (op == IrOp.i32_and) {
+        if (aConst && ac == -1) { replaceWithValue(inst, bv); continue; }
+        if (bConst && bc == -1) { replaceWithValue(inst, av); continue; }
+        if ((aConst && ac == 0) || (bConst && bc == 0)) {
+          foldToI32(inst, 0);
+          continue;
+        }
+        if (av == bv) { replaceWithValue(inst, av); continue; }
+      }
+      if (op == IrOp.i32_or) {
+        if (aConst && ac == 0) { replaceWithValue(inst, bv); continue; }
+        if (bConst && bc == 0) { replaceWithValue(inst, av); continue; }
+        if ((aConst && ac == -1) || (bConst && bc == -1)) {
+          foldToI32(inst, -1);
+          continue;
+        }
+        if (av == bv) { replaceWithValue(inst, av); continue; }
+      }
+      if (op == IrOp.i32_xor) {
+        if (aConst && ac == 0) { replaceWithValue(inst, bv); continue; }
+        if (bConst && bc == 0) { replaceWithValue(inst, av); continue; }
+        if (av == bv) { foldToI32(inst, 0); continue; }
+      }
+      if ((op == IrOp.i32_shl || op == IrOp.i32_shr_s ||
+           op == IrOp.i32_shr_u) && bConst && (bc & 31) == 0) {
+        replaceWithValue(inst, av);
+        continue;
+      }
+      if (op == IrOp.i32_eq && av == bv) { foldToBool(inst, true); continue; }
+      if (op == IrOp.i32_ne && av == bv) { foldToBool(inst, false); continue; }
+      continue;
+    }
+
+    // --- i64 ---
+    if (isI64Binary(op)) {
+      let aConst = body.op(av) == IrOp.const_i64;
+      let bConst = body.op(bv) == IrOp.const_i64;
+      let ac: i64 = if (aConst) body.constI64[body.a[av]] else 0 as i64;
+      let bc: i64 = if (bConst) body.constI64[body.a[bv]] else 0 as i64;
+      let zero = 0 as i64;
+      let one = 1 as i64;
+      if (aConst && bConst) {
+        if (op == IrOp.i64_add) { foldToI64(inst, ac + bc); continue; }
+        if (op == IrOp.i64_sub) { foldToI64(inst, ac - bc); continue; }
+        if (op == IrOp.i64_mul) { foldToI64(inst, ac * bc); continue; }
+        if (op == IrOp.i64_and) { foldToI64(inst, ac & bc); continue; }
+        if (op == IrOp.i64_or) { foldToI64(inst, ac | bc); continue; }
+        if (op == IrOp.i64_xor) { foldToI64(inst, ac ^ bc); continue; }
+        if (op == IrOp.i64_shl) { foldToI64(inst, ac << bc); continue; }
+        if (op == IrOp.i64_shr_s) { foldToI64(inst, ac >> bc); continue; }
+        if (op == IrOp.i64_shr_u) { foldToI64(inst, ac >>> bc); continue; }
+        if (op == IrOp.i64_eq) { foldToBool(inst, ac == bc); continue; }
+        if (op == IrOp.i64_ne) { foldToBool(inst, ac != bc); continue; }
+        if (op == IrOp.i64_lt_s) { foldToBool(inst, ac < bc); continue; }
+        if (op == IrOp.i64_le_s) { foldToBool(inst, ac <= bc); continue; }
+        if (op == IrOp.i64_gt_s) { foldToBool(inst, ac > bc); continue; }
+        if (op == IrOp.i64_ge_s) { foldToBool(inst, ac >= bc); continue; }
+        if (op == IrOp.i64_lt_u) { foldToBool(inst, flipSign64(ac) < flipSign64(bc)); continue; }
+        if (op == IrOp.i64_le_u) { foldToBool(inst, flipSign64(ac) <= flipSign64(bc)); continue; }
+        if (op == IrOp.i64_gt_u) { foldToBool(inst, flipSign64(ac) > flipSign64(bc)); continue; }
+        if (op == IrOp.i64_ge_u) { foldToBool(inst, flipSign64(ac) >= flipSign64(bc)); continue; }
+      }
+      if (op == IrOp.i64_add) {
+        if (aConst && ac == zero) { replaceWithValue(inst, bv); continue; }
+        if (bConst && bc == zero) { replaceWithValue(inst, av); continue; }
+      }
+      if (op == IrOp.i64_sub && bConst && bc == zero) {
+        replaceWithValue(inst, av);
+        continue;
+      }
+      if (op == IrOp.i64_mul) {
+        if (aConst && ac == one) { replaceWithValue(inst, bv); continue; }
+        if (bConst && bc == one) { replaceWithValue(inst, av); continue; }
+        if ((aConst && ac == zero) || (bConst && bc == zero)) {
+          foldToI64(inst, zero);
+          continue;
+        }
+      }
+      if (op == IrOp.i64_and) {
+        if (av == bv) { replaceWithValue(inst, av); continue; }
+        if ((aConst && ac == zero) || (bConst && bc == zero)) {
+          foldToI64(inst, zero);
+          continue;
+        }
+      }
+      if (op == IrOp.i64_or && av == bv) { replaceWithValue(inst, av); continue; }
+      if (op == IrOp.i64_xor) {
+        if (aConst && ac == zero) { replaceWithValue(inst, bv); continue; }
+        if (bConst && bc == zero) { replaceWithValue(inst, av); continue; }
+        if (av == bv) { foldToI64(inst, zero); continue; }
+      }
+      if (op == IrOp.i64_eq && av == bv) { foldToBool(inst, true); continue; }
+      if (op == IrOp.i64_ne && av == bv) { foldToBool(inst, false); continue; }
+      continue;
+    }
+
+    // --- f64 ---
+    if (isF64Binary(op)) {
+      if (body.op(av) != IrOp.const_f64 || body.op(bv) != IrOp.const_f64) {
+        continue;
+      }
+      let ac = body.constF64[body.a[av]];
+      let bc = body.constF64[body.a[bv]];
+      if (op == IrOp.f64_eq) { foldToBool(inst, ac == bc); continue; }
+      if (op == IrOp.f64_ne) { foldToBool(inst, ac != bc); continue; }
+      if (op == IrOp.f64_lt) { foldToBool(inst, ac < bc); continue; }
+      if (op == IrOp.f64_le) { foldToBool(inst, ac <= bc); continue; }
+      if (op == IrOp.f64_gt) { foldToBool(inst, ac > bc); continue; }
+      if (op == IrOp.f64_ge) { foldToBool(inst, ac >= bc); continue; }
+      var r = 0.0;
+      if (op == IrOp.f64_add) { r = ac + bc; }
+      else if (op == IrOp.f64_sub) { r = ac - bc; }
+      else if (op == IrOp.f64_mul) { r = ac * bc; }
+      else if (op == IrOp.f64_div) { r = ac / bc; }
+      else { continue; }
+      if (r != r) {
+        // NaN result: wasm NaN payload bits are engine-dependent, so
+        // folding would bake the compiling engine into the output.
+        continue;
+      }
+      foldToF64(inst, r);
+      continue;
+    }
+
+    // --- unary ---
+    if (op == IrOp.i32_eqz) {
+      if (body.op(av) == IrOp.const_i32) {
+        foldToBool(inst, body.a[av] == 0);
+        continue;
+      }
+      // eqz(eqz(x)) normalizes an already-boolean x back to itself.
+      if (body.op(av) == IrOp.i32_eqz &&
+          producesBool(body.op(body.a[av]))) {
+        replaceWithValue(inst, body.a[av]);
+        continue;
+      }
+      continue;
+    }
+    if (op == IrOp.i64_eqz && body.op(av) == IrOp.const_i64) {
+      let z = 0 as i64;
+      foldToBool(inst, body.constI64[body.a[av]] == z);
+      continue;
+    }
+    if (op == IrOp.f64_neg && body.op(av) == IrOp.const_f64) {
+      foldToF64(inst, -body.constF64[body.a[av]]);
+      continue;
+    }
+    if (op == IrOp.i32_wrap_i64 && body.op(av) == IrOp.const_i64) {
+      foldToI32(inst, body.constI64[body.a[av]] as i32);
+      continue;
+    }
+    if (op == IrOp.i64_extend_i32_s && body.op(av) == IrOp.const_i32) {
+      foldToI64(inst, body.a[av] as i64);
+      continue;
+    }
+    if (op == IrOp.f64_convert_i32_s && body.op(av) == IrOp.const_i32) {
+      foldToF64(inst, body.a[av] as f64);
+      continue;
+    }
+    if (op == IrOp.f64_convert_i64_s && body.op(av) == IrOp.const_i64) {
+      foldToF64(inst, body.constI64[body.a[av]] as f64);
+      continue;
+    }
+  }
+
+  return rewrites;
+};
+
+/** Signed comparison of sign-flipped values = unsigned comparison. */
+let flipSign = (v: i32): i32 => {
+  return v ^ (1 << 31);
+};
+
+let flipSign64 = (v: i64): i64 => {
+  return v ^ ((1 as i64) << (63 as i64));
+};
+
+let isPowerOfTwoI32 = (v: i32): boolean => {
+  return v > 0 && (v & (v - 1)) == 0;
+};
+
+let log2I32 = (v: i32): i32 => {
+  var k = 0;
+  var c = v;
+  while (c > 1) {
+    c = c >>> 1;
+    k += 1;
+  }
+  return k;
+};
+
+/**
+ * Ops whose result is always 0 or 1. Consulted before collapsing
+ * eqz(eqz(x)) to x, which is only sound when x is already boolean.
+ */
+let producesBool = (op: IrOp): boolean => {
+  return op == IrOp.i32_eqz || op == IrOp.i64_eqz ||
+      op == IrOp.ref_test || op == IrOp.ref_is_null || op == IrOp.ref_eq ||
+      (op as i32 >= IrOp.i32_eq as i32 && op as i32 <= IrOp.i32_ge_u as i32 &&
+       op != IrOp.i32_div_u && op != IrOp.i32_rem_u) ||
+      op == IrOp.i64_eq || op == IrOp.i64_ne ||
+      op == IrOp.i64_lt_s || op == IrOp.i64_le_s ||
+      op == IrOp.i64_gt_s || op == IrOp.i64_ge_s ||
+      op == IrOp.i64_lt_u || op == IrOp.i64_le_u ||
+      op == IrOp.i64_gt_u || op == IrOp.i64_ge_u ||
+      op == IrOp.f32_eq || op == IrOp.f32_ne ||
+      op == IrOp.f32_lt || op == IrOp.f32_le ||
+      op == IrOp.f32_gt || op == IrOp.f32_ge ||
+      op == IrOp.f64_eq || op == IrOp.f64_ne ||
+      op == IrOp.f64_lt || op == IrOp.f64_le ||
+      op == IrOp.f64_gt || op == IrOp.f64_ge;
+};
+
+/**
+ * The i32 band minus the unary eqz and minus signed div/rem (which
+ * can trap and get no rewrites here). Unsigned div/rem stay in: they
+ * are strength-reduction targets, and the constant-fold chain simply
+ * has no arm for them.
+ */
+let isI32Binary = (op: IrOp): boolean => {
+  let v = op as i32;
+  return v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_u as i32 &&
+      op != IrOp.i32_eqz && op != IrOp.i32_div_s && op != IrOp.i32_rem_s;
+};
+
+let isI64Binary = (op: IrOp): boolean => {
+  let v = op as i32;
+  return v >= IrOp.i64_add as i32 && v <= IrOp.i64_ge_u as i32 &&
+      op != IrOp.i64_div_s && op != IrOp.i64_rem_s &&
+      op != IrOp.i64_div_u && op != IrOp.i64_rem_u;
+};
+
+let isF64Binary = (op: IrOp): boolean => {
+  return op == IrOp.f64_add || op == IrOp.f64_sub || op == IrOp.f64_mul ||
+      op == IrOp.f64_div || op == IrOp.f64_eq || op == IrOp.f64_ne ||
+      op == IrOp.f64_lt || op == IrOp.f64_le || op == IrOp.f64_gt ||
+      op == IrOp.f64_ge;
+};
