@@ -1,0 +1,79 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {GlobSet, expandBraces, matchGlob, splitBase} from '../glob.zena';
+
+export let tests = suite('glob', (): void => {
+  test('stars stay within a segment', () => {
+    isTrue(matchGlob('src/*.ts', 'src/a.ts'));
+    isFalse(matchGlob('src/*.ts', 'src/sub/a.ts'));
+    isFalse(matchGlob('src/*.ts', 'lib/a.ts'));
+    isTrue(matchGlob('*.ts', 'a.ts'));
+    isFalse(matchGlob('*.ts', 'a.tsx'));
+  });
+
+  test('double stars cross segments', () => {
+    isTrue(matchGlob('src/**/*.ts', 'src/a.ts'));
+    isTrue(matchGlob('src/**/*.ts', 'src/a/b/c.ts'));
+    isFalse(matchGlob('src/**/*.ts', 'lib/a.ts'));
+    isTrue(matchGlob('zena/**', 'zena/out/cli.wasm'));
+    isTrue(matchGlob('**/*_test.zena', 'a/b/c_test.zena'));
+    isTrue(matchGlob('**/*_test.zena', 'c_test.zena'));
+  });
+
+  test('question marks match one byte', () => {
+    isTrue(matchGlob('a?c', 'abc'));
+    isFalse(matchGlob('a?c', 'ac'));
+    isFalse(matchGlob('a?c', 'abbc'));
+  });
+
+  test('literal patterns match exactly', () => {
+    isTrue(matchGlob('tsconfig.json', 'tsconfig.json'));
+    isFalse(matchGlob('tsconfig.json', 'src/tsconfig.json'));
+  });
+
+  test('braces expand', () => {
+    let expanded = expandBraces('index.{js,d.ts}');
+    equal(expanded.length, 2);
+    equal(expanded[0], 'index.js');
+    equal(expanded[1], 'index.d.ts');
+    isTrue(matchGlob('index.{js,d.ts}', 'index.js') == false);
+    let set = new GlobSet(['index.{js,d.ts,js.map}']);
+    isTrue(set.matches('index.js'));
+    isTrue(set.matches('index.d.ts'));
+    isTrue(set.matches('index.js.map'));
+    isFalse(set.matches('index.ts'));
+  });
+
+  test('negations override in order', () => {
+    let set = new GlobSet(['zena/**/*.zena', '!zena/**/*_test.zena']);
+    isTrue(set.matches('zena/lib/engine.zena'));
+    isFalse(set.matches('zena/test/engine_test.zena'));
+
+    let reInclude = new GlobSet(['src/**', '!src/tmp/**', 'src/tmp/keep.ts']);
+    isTrue(reInclude.matches('src/a.ts'));
+    isFalse(reInclude.matches('src/tmp/x.ts'));
+    isTrue(reInclude.matches('src/tmp/keep.ts'));
+  });
+
+  test('splitBase separates the literal prefix', () => {
+    let g1 = splitBase('src/**/*.ts');
+    equal(g1.base, 'src');
+    equal(g1.rest, '**/*.ts');
+
+    let g2 = splitBase('../stdlib/zena/**/*.zena');
+    equal(g2.base, '../stdlib/zena');
+    equal(g2.rest, '**/*.zena');
+
+    let g3 = splitBase('tsconfig.json');
+    equal(g3.base, '');
+    equal(g3.rest, 'tsconfig.json');
+
+    let g4 = splitBase('bootstrap/cli.wasm');
+    equal(g4.base, 'bootstrap');
+    equal(g4.rest, 'cli.wasm');
+
+    let g5 = splitBase('index.{js,d.ts}');
+    equal(g5.base, '');
+    equal(g5.rest, 'index.{js,d.ts}');
+  });
+});

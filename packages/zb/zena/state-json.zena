@@ -1,0 +1,164 @@
+import {Box} from 'zena:box';
+import {
+  JsonArray,
+  JsonBuilder,
+  JsonObject,
+  JsonValue,
+  parseJson,
+} from 'zena:json';
+import {ResolvedInput} from 'workflow:canonical';
+import {CacheKey, Fingerprint} from 'workflow:fingerprint';
+import {OutputEntry, OutputManifest} from 'workflow:manifest';
+import {EngineState, StepRecord} from 'workflow:state';
+import {StepKey} from 'workflow:step';
+
+/**
+ * JSON serialization for the engine's between-run state and for cached
+ * output manifests. The workflow library treats both as plain data;
+ * this codec is zb's on-disk format for them (state under .zb/, one
+ * manifest per cache entry).
+ */
+
+let appendManifest = (b: JsonBuilder, manifest: OutputManifest): void => {
+  b.beginArray();
+  for (let entry in manifest.outputs) {
+    b.beginObject();
+    b.key('name');
+    b.string(entry.name);
+    b.key('fp');
+    b.string(entry.fingerprint.value);
+    let deps = entry.dependsOn;
+    if (deps != null) {
+      b.key('dependsOn');
+      b.beginArray();
+      for (let dep in deps) {
+        b.string(dep);
+      }
+      b.endArray();
+    }
+    b.endObject();
+  }
+  b.endArray();
+};
+
+export let manifestToJson = (manifest: OutputManifest): String => {
+  let b = new JsonBuilder();
+  appendManifest(b, manifest);
+  return b.toString();
+};
+
+export let stateToJson = (state: EngineState): String => {
+  let b = new JsonBuilder();
+  b.beginObject();
+  b.key('version');
+  b.i32(1);
+  b.key('steps');
+  b.beginObject();
+  state.forEach((key, record) => {
+    b.key(key);
+    b.beginObject();
+    b.key('config');
+    b.string(record.config.value);
+    b.key('cacheKey');
+    b.string(record.cacheKey.value);
+    b.key('inputs');
+    b.beginArray();
+    for (let input in record.inputs) {
+      b.beginArray();
+      b.string(input.name);
+      b.string(input.fingerprint.value);
+      b.endArray();
+    }
+    b.endArray();
+    b.key('outputs');
+    appendManifest(b, record.manifest);
+    b.endObject();
+  });
+  b.endObject();
+  b.endObject();
+  return b.toString();
+};
+
+let asString = (value: JsonValue, what: String): String => {
+  if (value is String) {
+    return value;
+  }
+  throw new Error('state json: expected a string for ' + what);
+};
+
+let asArray = (value: JsonValue, what: String): JsonArray => {
+  if (value is JsonArray) {
+    return value;
+  }
+  throw new Error('state json: expected an array for ' + what);
+};
+
+let asObject = (value: JsonValue, what: String): JsonObject => {
+  if (value is JsonObject) {
+    return value;
+  }
+  throw new Error('state json: expected an object for ' + what);
+};
+
+export let manifestFromJsonValue = (value: JsonValue): OutputManifest => {
+  let entries = asArray(value, 'outputs');
+  let outputs = new GrowableArray<OutputEntry>();
+  for (var i = 0; i < entries.length; i += 1) {
+    let obj = asObject(entries[i], 'output entry');
+    var dependsOn: Array<String>? = null;
+    let rawDeps = obj['dependsOn'];
+    if (rawDeps != null) {
+      let depsArr = asArray(rawDeps, 'dependsOn');
+      let deps = new GrowableArray<String>();
+      for (var j = 0; j < depsArr.length; j += 1) {
+        deps.push(asString(depsArr[j], 'dependsOn entry'));
+      }
+      dependsOn = deps;
+    }
+    outputs.push(new OutputEntry(
+      asString(obj['name'], 'output name'),
+      new Fingerprint(asString(obj['fp'], 'output fp')),
+      dependsOn,
+    ));
+  }
+  return new OutputManifest(outputs);
+};
+
+export let manifestFromJson = (text: String): OutputManifest => {
+  return manifestFromJsonValue(parseJson(text));
+};
+
+export let stateFromJson = (text: String): EngineState => {
+  let root = asObject(parseJson(text), 'state root');
+  let version = root['version'];
+  if (!(version is Box<f64>)) {
+    throw new Error('state json: missing version');
+  }
+  if (version.value != 1.0) {
+    throw new Error('state json: unsupported version ' + f64ToString(version.value));
+  }
+  let state = new EngineState();
+  let steps = asObject(root['steps'], 'steps');
+  steps.forEach((key, value) => {
+    let obj = asObject(value, 'step ' + key);
+    let inputsArr = asArray(obj['inputs'], 'inputs');
+    let inputs = new GrowableArray<ResolvedInput>();
+    for (var i = 0; i < inputsArr.length; i += 1) {
+      let pair = asArray(inputsArr[i], 'input pair');
+      inputs.push(new ResolvedInput(
+        asString(pair[0], 'input name'),
+        new Fingerprint(asString(pair[1], 'input fp')),
+      ));
+    }
+    state.setRecord(
+      new StepKey(key),
+      new StepRecord(
+        new Fingerprint(asString(obj['config'], 'config')),
+        new CacheKey(asString(obj['cacheKey'], 'cacheKey')),
+        manifestFromJsonValue(obj['outputs']),
+        inputs,
+      ),
+    );
+  });
+  return state;
+};

@@ -1,0 +1,205 @@
+import {StringBuilder} from 'zena:string-builder';
+
+/**
+ * Glob matching for build configuration, wireit-compatible in the
+ * forms the monorepo uses: `*` within a segment, `?`, `**` across
+ * segments, `{a,b}` alternatives, and `!` negation (handled by
+ * GlobSet). Paths are slash-separated and relative; no bracket
+ * character classes.
+ */
+
+let expandInto = (pattern: String, out: GrowableArray<String>): void => {
+  var open = -1;
+  for (var i = 0; i < pattern.length; i += 1) {
+    if (pattern.getByteAt(i) == 123) {
+      open = i;
+      break;
+    }
+  }
+  if (open < 0) {
+    out.push(pattern);
+    return;
+  }
+  var depth = 0;
+  var close = -1;
+  var start = open + 1;
+  let alternatives = new GrowableArray<String>();
+  for (var i = open; i < pattern.length; i += 1) {
+    let b = pattern.getByteAt(i);
+    if (b == 123) {
+      depth += 1;
+    } else if (b == 125) {
+      depth -= 1;
+      if (depth == 0) {
+        alternatives.push(pattern.sliceBytes(start, i));
+        close = i;
+        break;
+      }
+    } else if (b == 44 && depth == 1) {
+      alternatives.push(pattern.sliceBytes(start, i));
+      start = i + 1;
+    }
+  }
+  if (close < 0) {
+    throw new Error('unclosed brace in glob: ' + pattern);
+  }
+  let prefix = pattern.sliceBytes(0, open);
+  let suffix = pattern.sliceBytes(close + 1, pattern.length);
+  for (let alternative in alternatives) {
+    expandInto(prefix + alternative + suffix, out);
+  }
+};
+
+/** Expands `{a,b}` alternatives into separate patterns. */
+export let expandBraces = (pattern: String): Array<String> => {
+  let out = new GrowableArray<String>();
+  expandInto(pattern, out);
+  return out;
+};
+
+let matchSegment = (pattern: String, pi: i32, name: String, ni: i32): boolean => {
+  if (pi == pattern.length) {
+    return ni == name.length;
+  }
+  let c = pattern.getByteAt(pi);
+  if (c == 42) {
+    if (matchSegment(pattern, pi + 1, name, ni)) {
+      return true;
+    }
+    if (ni < name.length) {
+      return matchSegment(pattern, pi, name, ni + 1);
+    }
+    return false;
+  }
+  if (ni == name.length) {
+    return false;
+  }
+  if (c == 63) {
+    return matchSegment(pattern, pi + 1, name, ni + 1);
+  }
+  if (c != name.getByteAt(ni)) {
+    return false;
+  }
+  return matchSegment(pattern, pi + 1, name, ni + 1);
+};
+
+let matchSegments = (
+  pat: FixedArray<String>,
+  pi: i32,
+  path: FixedArray<String>,
+  ni: i32,
+): boolean => {
+  if (pi == pat.length) {
+    return ni == path.length;
+  }
+  if (pat[pi] == '**') {
+    if (matchSegments(pat, pi + 1, path, ni)) {
+      return true;
+    }
+    if (ni < path.length) {
+      return matchSegments(pat, pi, path, ni + 1);
+    }
+    return false;
+  }
+  if (ni == path.length) {
+    return false;
+  }
+  if (!matchSegment(pat[pi], 0, path[ni], 0)) {
+    return false;
+  }
+  return matchSegments(pat, pi + 1, path, ni + 1);
+};
+
+/**
+ * Matches one pattern (no braces, no negation) against a
+ * slash-separated relative path.
+ */
+export let matchGlob = (pattern: String, path: String): boolean => {
+  return matchSegments(pattern.split('/'), 0, path.split('/'), 0);
+};
+
+/**
+ * An ordered pattern list with `!` negation: a path is included when
+ * the last pattern that matches it is positive.
+ */
+export class GlobSet {
+  #patterns: GrowableArray<String>;
+  #negated: GrowableArray<boolean>;
+
+  new(patterns: Array<String>)
+      : #patterns = new GrowableArray<String>(),
+        #negated = new GrowableArray<boolean>() {
+    for (let raw in patterns) {
+      var pattern = raw;
+      var negated = false;
+      if (pattern.startsWith('!')) {
+        negated = true;
+        pattern = pattern.sliceBytes(1, pattern.length);
+      }
+      for (let expanded in expandBraces(pattern)) {
+        this.#patterns.push(expanded);
+        this.#negated.push(negated);
+      }
+    }
+  }
+
+  size: i32 {
+    get {
+      return this.#patterns.length;
+    }
+  }
+
+  matches(path: String): boolean {
+    var included = false;
+    for (var i = 0; i < this.#patterns.length; i += 1) {
+      if (matchGlob(this.#patterns[i], path)) {
+        included = !this.#negated[i];
+      }
+    }
+    return included;
+  }
+}
+
+/**
+ * A pattern split at its first glob metacharacter: the literal
+ * directory prefix to walk from, and the pattern for paths relative to
+ * it. A fully literal pattern splits into its directory and file name.
+ */
+export class GlobBase(base: String, rest: String)
+
+let hasMeta = (segment: String): boolean => {
+  for (var i = 0; i < segment.length; i += 1) {
+    let b = segment.getByteAt(i);
+    if (b == 42 || b == 63 || b == 123 || b == 91) {
+      return true;
+    }
+  }
+  return false;
+};
+
+export let splitBase = (pattern: String): GlobBase => {
+  let segments = pattern.split('/');
+  var literal = 0;
+  while (literal < segments.length && !hasMeta(segments[literal])) {
+    literal += 1;
+  }
+  if (literal == segments.length) {
+    // Fully literal: the last segment is the file name.
+    literal = segments.length - 1;
+  }
+  let base = new StringBuilder();
+  for (var i = 0; i < literal; i += 1) {
+    if (i > 0) {
+      base.append('/');
+    }
+    base.append(segments[i]);
+  }
+  let rest = new StringBuilder();
+  for (var i = literal; i < segments.length; i += 1) {
+    if (i > literal) {
+      rest.append('/');
+    }
+    rest.append(segments[i]);
+  }
+  return new GlobBase(base.toString(), rest.toString());
+};

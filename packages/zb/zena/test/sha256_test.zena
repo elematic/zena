@@ -1,0 +1,49 @@
+import {suite, test} from 'zena:test';
+import {equal} from 'zena:assert';
+import {newByteArray} from 'zena:byte-array';
+import {sha256Hex, sha256HexOfString, toHex} from '../sha256.zena';
+
+export let tests = suite('sha256', (): void => {
+  test('FIPS 180-4 vectors', () => {
+    equal(
+      sha256HexOfString(''),
+      'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    );
+    equal(
+      sha256HexOfString('abc'),
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
+    equal(
+      sha256HexOfString('abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq'),
+      '248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1',
+    );
+  });
+
+  test('a million a bytes', () => {
+    let data = newByteArray(1000000);
+    for (var i = 0; i < data.length; i += 1) {
+      data[i] = 97;
+    }
+    equal(
+      sha256Hex(data),
+      'cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0',
+    );
+  });
+
+  test('block boundary lengths differ', () => {
+    // 55/56/64 bytes exercise the padding edge cases; the digests just
+    // need to be distinct and stable.
+    let d55 = sha256HexOfString('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    let d56 = sha256HexOfString('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    equal(d55.length, 64);
+    equal(d55 == d56, false);
+  });
+
+  test('toHex renders bytes', () => {
+    let bytes = newByteArray(3);
+    bytes[0] = 0;
+    bytes[1] = 15;
+    bytes[2] = 255;
+    equal(toHex(bytes), '000fff');
+  });
+});

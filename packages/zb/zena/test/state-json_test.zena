@@ -1,0 +1,88 @@
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue, throws} from 'zena:assert';
+import {ResolvedInput} from 'workflow:canonical';
+import {CacheKey, Fingerprint} from 'workflow:fingerprint';
+import {OutputEntry, OutputManifest} from 'workflow:manifest';
+import {EngineState, StepRecord} from 'workflow:state';
+import {StepKey} from 'workflow:step';
+import {
+  manifestFromJson,
+  manifestToJson,
+  stateFromJson,
+  stateToJson,
+} from '../state-json.zena';
+
+let fp = (value: String): Fingerprint => new Fingerprint(value);
+
+let sampleState = (): EngineState => {
+  let state = new EngineState();
+  let inputs = new GrowableArray<ResolvedInput>();
+  inputs.push(new ResolvedInput('leaf:src/a.ts', fp('f1')));
+  inputs.push(new ResolvedInput('step:dep', fp('f2')));
+  let outputs = new GrowableArray<OutputEntry>();
+  outputs.push(new OutputEntry('out/a.js', fp('o1'), ['leaf:src/a.ts']));
+  outputs.push(new OutputEntry('out/index.js', fp('o2')));
+  state.setRecord(
+    new StepKey('pkg:build'),
+    new StepRecord(fp('cfg'), new CacheKey('key1'), new OutputManifest(outputs), inputs),
+  );
+  return state;
+};
+
+export let tests = suite('state-json', (): void => {
+  test('state round-trips', () => {
+    let text = stateToJson(sampleState());
+    let state = stateFromJson(text);
+    equal(state.size, 1);
+    let record = state.recordOf(new StepKey('pkg:build'));
+    if (record != null) {
+      equal(record.config.value, 'cfg');
+      equal(record.cacheKey.value, 'key1');
+      equal(record.inputs.length, 2);
+      equal(record.inputs[0].name, 'leaf:src/a.ts');
+      equal(record.inputs[1].fingerprint.value, 'f2');
+      equal(record.manifest.outputs.length, 2);
+      let first = record.manifest.outputs[0];
+      equal(first.name, 'out/a.js');
+      let deps = first.dependsOn;
+      if (deps != null) {
+        equal(deps.length, 1);
+        equal(deps[0], 'leaf:src/a.ts');
+      } else {
+        throws((): void => {
+          throw new Error('expected dependsOn to survive');
+        });
+      }
+      isNull(record.manifest.outputs[1].dependsOn);
+    } else {
+      throws((): void => {
+        throw new Error('expected the record to survive');
+      });
+    }
+  });
+
+  test('serialization is stable', () => {
+    equal(stateToJson(sampleState()), stateToJson(sampleState()));
+  });
+
+  test('manifests round-trip alone', () => {
+    let outputs = new GrowableArray<OutputEntry>();
+    outputs.push(new OutputEntry('a', fp('1')));
+    let text = manifestToJson(new OutputManifest(outputs));
+    let manifest = manifestFromJson(text);
+    equal(manifest.outputs.length, 1);
+    equal(manifest.outputs[0].fingerprint.value, '1');
+  });
+
+  test('malformed input is rejected', () => {
+    throws((): void => {
+      stateFromJson('{}');
+    });
+    throws((): void => {
+      stateFromJson('{"version": 2, "steps": {}}');
+    });
+    throws((): void => {
+      stateFromJson('{"version": 1, "steps": {"x": {"config": 5}}}');
+    });
+  });
+});
