@@ -1,0 +1,287 @@
+import {Box} from 'zena:box';
+import {HashSet} from 'zena:set';
+import {
+  JsonArray,
+  JsonObject,
+  JsonValue,
+  parseJson,
+} from 'zena:json';
+import {joinPath} from './path.zena';
+
+/** Raised for malformed or unsupported build configuration. */
+export class ConfigError extends Error {
+  new(message: String) : super(message);
+}
+
+/** A script in a package, both repo-relative ('' is the root package). */
+export class ScriptRef(packageDir: String, script: String)
+
+/** The key steps derived from this script use, 'dir:script'. */
+export let refKey = (ref: ScriptRef): String => {
+  return ref.packageDir + ':' + ref.script;
+};
+
+/**
+ * One script's configuration. For a wireit script the fields come from
+ * the wireit block; a bare npm script has only a command and always
+ * runs.
+ */
+export class ScriptConfig {
+  ref: ScriptRef;
+  isWireit: boolean;
+  command: String?;
+  /** Globs relative to the package directory. */
+  files: Array<String>;
+  output: Array<String>;
+  dependencies: Array<ScriptRef>;
+  /** 'true', 'false', or 'if-file-deleted'. */
+  clean: String;
+  service: boolean;
+
+  new(
+    this.ref,
+    this.isWireit,
+    this.command,
+    this.files,
+    this.output,
+    this.dependencies,
+    this.clean,
+    this.service,
+  );
+}
+
+let isRecognizedKey = (key: String): boolean => {
+  return key == 'command' || key == 'files' || key == 'output' ||
+    key == 'dependencies' || key == 'clean' || key == 'service' ||
+    key == 'packageLocks' || key == '//';
+};
+
+let stringList = (value: JsonValue, what: String): Array<String> => {
+  if (value == null) {
+    return new GrowableArray<String>();
+  }
+  if (value is JsonArray) {
+    let out = new GrowableArray<String>();
+    for (var i = 0; i < value.length; i += 1) {
+      let item = value[i];
+      if (item is String) {
+        out.push(item);
+      } else {
+        throw new ConfigError(what + ' must contain only strings');
+      }
+    }
+    return out;
+  }
+  throw new ConfigError(what + ' must be an array');
+};
+
+/**
+ * Resolves a wireit dependency string. A dependency starting with '.'
+ * is '<path>:<script>' with the path relative to the referring
+ * package; anything else is a script in the same package (script
+ * names themselves may contain ':').
+ */
+export let resolveDependency = (from: String, dep: String): ScriptRef => {
+  if (dep.startsWith('.')) {
+    var colon = -1;
+    for (var i = 0; i < dep.length; i += 1) {
+      if (dep.getByteAt(i) == 58) {
+        colon = i;
+        break;
+      }
+    }
+    if (colon < 0) {
+      throw new ConfigError(
+        `dependency "${dep}" of ${from} has a path but no script name`,
+      );
+    }
+    let target = joinPath(from, dep.sliceBytes(0, colon));
+    if (target.startsWith('..')) {
+      throw new ConfigError(
+        `dependency "${dep}" of ${from} escapes the workspace`,
+      );
+    }
+    return new ScriptRef(target, dep.sliceBytes(colon + 1, dep.length));
+  }
+  return new ScriptRef(from, dep);
+};
+
+/**
+ * Reads wireit build configuration from package.json files, resolving
+ * cross-package references. File access goes through the callback
+ * (repo-relative path to content, or null when absent), so tests run
+ * on in-memory fixtures.
+ */
+export class WireitWorkspace {
+  #readFile: (path: String) => String?;
+  #packages = new HashMap<String, JsonObject>();
+
+  new(readFile: (path: String) => String?) : #readFile = readFile;
+
+  #packageJson(packageDir: String): JsonObject {
+    if (let (true, cached) = this.#packages.get(packageDir)) {
+      return cached;
+    }
+    let path = joinPath(packageDir, 'package.json');
+    let readFile = this.#readFile;
+    let content = readFile(path);
+    if (content == null) {
+      throw new ConfigError('no package.json at ' + path);
+    }
+    let parsed = parseJson(content);
+    if (!(parsed is JsonObject)) {
+      throw new ConfigError(path + ' is not a JSON object');
+    }
+    this.#packages[packageDir] = parsed;
+    return parsed;
+  }
+
+  scriptConfig(ref: ScriptRef): ScriptConfig {
+    let pkg = this.#packageJson(ref.packageDir);
+    let where = refKey(ref);
+
+    var wireitEntry: JsonValue = null;
+    let wireit = pkg['wireit'];
+    if (wireit is JsonObject) {
+      wireitEntry = wireit[ref.script];
+    }
+    var scriptsEntry: JsonValue = null;
+    let scripts = pkg['scripts'];
+    if (scripts is JsonObject) {
+      scriptsEntry = scripts[ref.script];
+    }
+
+    if (wireitEntry is JsonObject) {
+      if (!(scriptsEntry is String) || scriptsEntry != 'wireit') {
+        throw new ConfigError(
+          `script "${where}" has a wireit config but its scripts entry is not "wireit"`,
+        );
+      }
+      wireitEntry.forEach((key, value) => {
+        if (!isRecognizedKey(key)) {
+          throw new ConfigError(
+            `script "${where}" has unsupported wireit key "${key}"`,
+          );
+        }
+      });
+
+      var command: String? = null;
+      let rawCommand = wireitEntry['command'];
+      if (rawCommand != null) {
+        if (rawCommand is String) {
+          command = rawCommand;
+        } else {
+          throw new ConfigError(`script "${where}": command must be a string`);
+        }
+      }
+
+      let deps = new GrowableArray<ScriptRef>();
+      let rawDeps = wireitEntry['dependencies'];
+      if (rawDeps != null) {
+        if (!(rawDeps is JsonArray)) {
+          throw new ConfigError(`script "${where}": dependencies must be an array`);
+        }
+        for (var i = 0; i < rawDeps.length; i += 1) {
+          let dep = rawDeps[i];
+          if (dep is String) {
+            deps.push(resolveDependency(ref.packageDir, dep));
+          } else {
+            throw new ConfigError(
+              `script "${where}": only string dependencies are supported`,
+            );
+          }
+        }
+      }
+
+      var clean = 'true';
+      let rawClean = wireitEntry['clean'];
+      if (rawClean != null) {
+        if (rawClean is Box<boolean>) {
+          clean = if (rawClean.value) 'true' else 'false';
+        } else if (rawClean is String) {
+          if (rawClean != 'if-file-deleted') {
+            throw new ConfigError(
+              `script "${where}": unsupported clean value "${rawClean}"`,
+            );
+          }
+          clean = rawClean;
+        } else {
+          throw new ConfigError(`script "${where}": invalid clean value`);
+        }
+      }
+
+      var service = false;
+      let rawService = wireitEntry['service'];
+      if (rawService != null) {
+        if (rawService is Box<boolean>) {
+          service = rawService.value;
+        } else {
+          throw new ConfigError(
+            `script "${where}": only boolean service is supported`,
+          );
+        }
+      }
+
+      if (command == null && service) {
+        throw new ConfigError(`script "${where}": a service needs a command`);
+      }
+
+      return new ScriptConfig(
+        ref,
+        true,
+        command,
+        stringList(wireitEntry['files'], `script "${where}": files`),
+        stringList(wireitEntry['output'], `script "${where}": output`),
+        deps,
+        clean,
+        service,
+      );
+    }
+
+    if (scriptsEntry is String) {
+      if (scriptsEntry == 'wireit') {
+        throw new ConfigError(
+          `script "${where}" says "wireit" but has no wireit config`,
+        );
+      }
+      // A bare npm script: always runs, produces nothing cacheable.
+      return new ScriptConfig(
+        ref,
+        false,
+        scriptsEntry,
+        new GrowableArray<String>(),
+        new GrowableArray<String>(),
+        new GrowableArray<ScriptRef>(),
+        'false',
+        false,
+      );
+    }
+
+    throw new ConfigError(`no script "${ref.script}" in ` +
+      (if (ref.packageDir == '') 'the root package' else ref.packageDir));
+  }
+
+  /** The transitive dependency closure, in discovery (BFS) order. */
+  collect(entries: Array<ScriptRef>): Array<ScriptConfig> {
+    let seen = new HashSet<String>();
+    let queue = new GrowableArray<ScriptRef>();
+    let out = new GrowableArray<ScriptConfig>();
+    for (let entry in entries) {
+      queue.push(entry);
+    }
+    var next = 0;
+    while (next < queue.length) {
+      let ref = queue[next];
+      next += 1;
+      if (!seen.add(refKey(ref))) {
+        continue;
+      }
+      let config = this.scriptConfig(ref);
+      out.push(config);
+      for (let dep in config.dependencies) {
+        queue.push(dep);
+      }
+    }
+    return out;
+  }
+}

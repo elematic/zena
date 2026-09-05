@@ -1,0 +1,53 @@
+import {StringBuilder} from 'zena:string-builder';
+
+/** Slash-separated path helpers; no filesystem access. */
+
+/** Collapses '.', '..', empty segments. Keeps leading '..' segments. */
+export let normalizePath = (path: String): String => {
+  let segments = path.split('/');
+  let out = new GrowableArray<String>();
+  for (let segment in segments) {
+    if (segment == '' || segment == '.') {
+      continue;
+    }
+    if (segment == '..') {
+      if (out.length > 0 && out[out.length - 1] != '..') {
+        out.pop();
+      } else {
+        out.push('..');
+      }
+    } else {
+      out.push(segment);
+    }
+  }
+  let sb = new StringBuilder();
+  for (var i = 0; i < out.length; i += 1) {
+    if (i > 0) {
+      sb.append('/');
+    }
+    sb.append(out[i]);
+  }
+  return sb.toString();
+};
+
+/** Joins and normalizes. An empty first part is the workspace root. */
+export let joinPath = (base: String, rel: String): String => {
+  if (base == '') {
+    return normalizePath(rel);
+  }
+  return normalizePath(base + '/' + rel);
+};
+
+/** The directory part, '' for a bare file name. */
+export let dirName = (path: String): String => {
+  var last = -1;
+  for (var i = 0; i < path.length; i += 1) {
+    if (path.getByteAt(i) == 47) {
+      last = i;
+    }
+  }
+  if (last < 0) {
+    return '';
+  }
+  return path.sliceBytes(0, last);
+};

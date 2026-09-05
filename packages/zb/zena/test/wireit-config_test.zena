@@ -1,0 +1,166 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isNull, isTrue, throws} from 'zena:assert';
+import {dirName, joinPath, normalizePath} from '../path.zena';
+import {
+  ScriptRef,
+  WireitWorkspace,
+  refKey,
+  resolveDependency,
+} from '../wireit-config.zena';
+
+let fixture = (): WireitWorkspace => {
+  let files = {
+    'package.json' => `{
+    "scripts": {"build": "wireit"},
+    "wireit": {
+      "build": {
+        "dependencies": ["./packages/app:build", "./packages/lib:build"]
+      }
+    }
+  }`,
+    'packages/app/package.json' => `{
+    "scripts": {"build": "wireit", "build:codegen": "wireit", "lint": "eslint ."},
+    "wireit": {
+      "build": {
+        "command": "tsc",
+        "files": ["src/**/*.ts", "tsconfig.json"],
+        "output": ["lib/**"],
+        "clean": "if-file-deleted",
+        "dependencies": ["../lib:build", "build:codegen"]
+      },
+      "build:codegen": {
+        "command": "node gen.js",
+        "files": ["gen.js"],
+        "output": ["src/gen/**"]
+      }
+    }
+  }`,
+    'packages/lib/package.json' => `{
+    "scripts": {"build": "wireit", "serve": "wireit"},
+    "wireit": {
+      "build": {
+        "command": "tsc",
+        "files": ["src/**/*.ts"],
+        "output": ["lib/**"],
+        "clean": false
+      },
+      "serve": {
+        "command": "node server.js",
+        "service": true,
+        "dependencies": ["build"]
+      }
+    }
+  }`,
+  };
+  return new WireitWorkspace((path: String): String? => {
+    if (let (true, content) = files.get(path)) {
+      return content;
+    }
+    return null;
+  });
+};
+
+export let tests = suite('wireit-config', (): void => {
+  test('paths normalize', () => {
+    equal(normalizePath('packages/app/../lib'), 'packages/lib');
+    equal(normalizePath('./a/b/'), 'a/b');
+    equal(joinPath('', 'package.json'), 'package.json');
+    equal(joinPath('packages/app', '../lib'), 'packages/lib');
+    equal(dirName('a/b/c.txt'), 'a/b');
+    equal(dirName('c.txt'), '');
+  });
+
+  test('dependency references resolve', () => {
+    let local = resolveDependency('packages/app', 'build:codegen');
+    equal(local.packageDir, 'packages/app');
+    equal(local.script, 'build:codegen');
+
+    let sibling = resolveDependency('packages/app', '../lib:build');
+    equal(sibling.packageDir, 'packages/lib');
+    equal(sibling.script, 'build');
+
+    let fromRoot = resolveDependency('', './packages/app:build');
+    equal(fromRoot.packageDir, 'packages/app');
+
+    // Script names may contain colons after the path's first colon.
+    let colons = resolveDependency('', './packages/app:precompile:cli');
+    equal(colons.packageDir, 'packages/app');
+    equal(colons.script, 'precompile:cli');
+
+    throws((): void => {
+      resolveDependency('', '../outside:build');
+    });
+  });
+
+  test('wireit scripts parse fully', () => {
+    let ws = fixture();
+    let config = ws.scriptConfig(new ScriptRef('packages/app', 'build'));
+    isTrue(config.isWireit);
+    equal(config.command, 'tsc');
+    equal(config.files.length, 2);
+    equal(config.files[0], 'src/**/*.ts');
+    equal(config.output.length, 1);
+    equal(config.clean, 'if-file-deleted');
+    isFalse(config.service);
+    equal(config.dependencies.length, 2);
+    equal(refKey(config.dependencies[0]), 'packages/lib:build');
+    equal(refKey(config.dependencies[1]), 'packages/app:build:codegen');
+  });
+
+  test('clean and service forms parse', () => {
+    let ws = fixture();
+    let lib = ws.scriptConfig(new ScriptRef('packages/lib', 'build'));
+    equal(lib.clean, 'false');
+    let serve = ws.scriptConfig(new ScriptRef('packages/lib', 'serve'));
+    isTrue(serve.service);
+    equal(serve.dependencies.length, 1);
+  });
+
+  test('bare npm scripts always run', () => {
+    let ws = fixture();
+    let lint = ws.scriptConfig(new ScriptRef('packages/app', 'lint'));
+    isFalse(lint.isWireit);
+    equal(lint.command, 'eslint .');
+    equal(lint.files.length, 0);
+  });
+
+  test('a dependency-only root script collects the closure', () => {
+    let ws = fixture();
+    let entry = new ScriptRef('', 'build');
+    let configs = ws.collect([entry]);
+    equal(configs.length, 4);
+    equal(refKey(configs[0].ref), ':build');
+    equal(refKey(configs[1].ref), 'packages/app:build');
+    equal(refKey(configs[2].ref), 'packages/lib:build');
+    equal(refKey(configs[3].ref), 'packages/app:build:codegen');
+    isNull(configs[0].command);
+  });
+
+  test('missing packages and scripts fail loudly', () => {
+    let ws = fixture();
+    throws((): void => {
+      ws.scriptConfig(new ScriptRef('packages/ghost', 'build'));
+    });
+    throws((): void => {
+      ws.scriptConfig(new ScriptRef('packages/app', 'nope'));
+    });
+  });
+
+  test('unsupported keys fail loudly', () => {
+    let files = {
+      'package.json' => `{
+        "scripts": {"x": "wireit"},
+        "wireit": {"x": {"command": "true", "cascade": false}}
+      }`,
+    };
+    let ws = new WireitWorkspace((path: String): String? => {
+      if (let (true, content) = files.get(path)) {
+        return content;
+      }
+      return null;
+    });
+    throws((): void => {
+      ws.scriptConfig(new ScriptRef('', 'x'));
+    });
+  });
+});
