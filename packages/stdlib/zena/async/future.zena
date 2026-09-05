@@ -62,7 +62,6 @@ export declare type Awaited<T>;
 export symbol result;
 export symbol subscribe;
 export symbol settledState;
-export symbol failure;
 export symbol valueOrThrow;
 /**
  * The settle side, keyed by the same unexported symbols: a reference
@@ -160,28 +159,6 @@ export class Future<T> {
     }
     let stored = this.#value as Box<T>;
     return (true, stored.value, _);
-  }
-
-  /**
-   * The stored failure, or null if this future resolved.
-   *
-   * `result()` says the same thing and says it better — the tag cannot
-   * be separated from the payload there. This exists because a
-   * zero-width `T` does not lower in an inline-tuple lane, so
-   * `Future<void>.result()` bails ("method result type"), and the
-   * library's own waiters have to work at every `T`. Retire it when
-   * void lanes lower.
-   */
-  [failure](): Error | null {
-    if (this.#state == FutureState.Cancelled) {
-      raiseCancellation();
-    }
-    if (this.#state == FutureState.Pending) {
-      throw new Error(
-        'Deadlock: the microtask queue is empty but this future is ' +
-        'still pending, and no external completion source exists');
-    }
-    return this.#error;
   }
 
   /**
@@ -670,15 +647,11 @@ class AllWaiter<T> implements Waiter {
   new(this.state, this.index);
   run(): void {
     let f = this.state.inputs[this.index];
-    // `[failure]()` + `[valueOrThrow]()` rather than `[result]()`: this
-    // class specializes at `T = void` too, and a zero-width lane does
-    // not lower in an inline tuple.
-    let e = f.[failure]();
-    if (e == null) {
-      this.state.report();
+    if (let (false, _, e) = f.[result]()) {
+      this.state.reject(e);
       return;
     }
-    this.state.reject(e as Error);
+    this.state.report();
   }
 }
 
@@ -723,12 +696,13 @@ class RaceWaiter<T> implements Waiter {
   new(this.state, this.future);
   run(): void {
     let f = this.future;
-    let e = f.[failure]();
-    if (e == null) {
-      this.state.win(f.[valueOrThrow]());
+    if (let (true, v, _) = f.[result]()) {
+      this.state.win(v);
       return;
     }
-    this.state.lose(e as Error);
+    if (let (false, _, e) = f.[result]()) {
+      this.state.lose(e);
+    }
   }
 }
 
@@ -776,7 +750,9 @@ class AnyState<T> {
       let failures = new GrowableArray<Error>();
       var i = 0;
       while (i < this.inputs.length) {
-        failures.push(this.inputs[i].[failure]() as Error);
+        if (let (false, _, e) = this.inputs[i].[result]()) {
+          failures.push(e);
+        }
         i += 1;
       }
       this.result.[fail](new AggregateError(failures));
@@ -791,9 +767,8 @@ class AnyWaiter<T> implements Waiter {
   new(this.state, this.index);
   run(): void {
     let f = this.state.inputs[this.index];
-    let e = f.[failure]();
-    if (e == null) {
-      this.state.win(f.[valueOrThrow]());
+    if (let (true, v, _) = f.[result]()) {
+      this.state.win(v);
       return;
     }
     this.state.reportFailure();

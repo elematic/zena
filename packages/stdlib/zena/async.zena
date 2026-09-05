@@ -36,7 +36,7 @@ import { GrowableArray } from 'zena:growable-array';
 import { Disposable } from 'zena:ownership';
 import { Waiter, scheduleTask } from './async/executor.zena';
 import {
-  subscribe, failure, valueOrThrow, tryComplete, tryFail,
+  subscribe, result, tryComplete, tryFail,
   cancelComplete,
   settledState, FutureState, Future, Completer,
 } from './async/future.zena';
@@ -295,7 +295,9 @@ class GroupWaiter<T> implements Waiter {
     let f = this.future;
     var err: Error | null = null;
     if (f.[settledState]() == FutureState.Rejected) {
-      err = f.[failure]();
+      if (let (false, _, e) = f.[result]()) {
+        err = e;
+      }
     }
     this.group.[childSettled](err);
   }
@@ -452,11 +454,10 @@ class RaceGroupState<T> {
     // A value or a failure. The first one settles the race; the rest
     // lose. tryComplete/tryFail make the settle first-wins, and
     // cancelling an already-cancelled group does nothing.
-    let e = f.[failure]();
-    if (e == null) {
-      this.result.[tryComplete](f.[valueOrThrow]());
-    } else {
-      this.result.[tryFail](e as Error);
+    if (let (true, v, _) = f.[result]()) {
+      this.result.[tryComplete](v);
+    } else if (let (false, _, e) = f.[result]()) {
+      this.result.[tryFail](e);
     }
     this.group.cancel();
   }
