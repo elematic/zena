@@ -3,11 +3,13 @@ import {
   Failed,
   RunResult,
   Skipped,
+  StepOutcome,
   StepSource,
   Succeeded,
 } from 'workflow:engine';
+import {EngineState} from 'workflow:state';
 import {StepKey} from 'workflow:step';
-import {buildTarget} from './runner.zena';
+import {BuildOutcome, buildTarget} from './runner.zena';
 import {ScriptRef} from './wireit-config.zena';
 
 /**
@@ -49,7 +51,16 @@ export let main = (): i32 => {
   else
     new ScriptRef(args[1], args[2]);
 
-  let outcome = buildTarget('', entry);
+  var outcome = new BuildOutcome(
+    new RunResult(new HashMap<String, StepOutcome>(), EngineState.empty()),
+    new GrowableArray<String>(),
+  );
+  try {
+    outcome = buildTarget('', entry);
+  } catch (e) {
+    console.log('zb: ' + e.message);
+    return 1;
+  }
   let result = outcome.result;
   for (let key in outcome.stepKeys) {
     console.log(key + ': ' + describe(result, key));
