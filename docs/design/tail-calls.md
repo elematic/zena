@@ -118,29 +118,40 @@ an indirect call is a `call_ref` through a funcref, which
 ### Adapters
 
 A `return_call_ref` does not always land in the function the source
-names. Three synthesized adapters sit between a funcref and its target:
+names. Four synthesized adapters sit between a funcref and its target:
 the closure wrapper and closure trampoline (a top-level `function` used
 as a value has no context, so a wrapper supplies the calling convention
-a closure value has), and the interface trampoline (which casts the
-erased receiver and arguments to the implementation's concrete types).
+a closure value has), the interface trampoline (which casts the erased
+receiver and arguments to the implementation's concrete types), and the
+function-adaptation wrapper (which drops the arguments a narrower
+function value does not take).
 
-Each is `call target; return`, so each kept a frame — and a chain of
+Each was `call target; return`, so each kept a frame — and a chain of
 tail calls through one grew the stack a frame per hop, which is the
 guarantee failing quietly for two of the four callee shapes. A
 `tail return` to a function value overflowed at a million frames while
 the same recursion through a direct call did not.
 
-So the adapters tail-call their targets, whenever they can hand the
-results straight back: same count, each a subtype of the adapter's own,
-which is `return_call`'s own rule. The frame this removes is synthetic —
-no source line, nothing a backtrace loses — and it is removed for every
-call through a function value or an interface, not only tail ones.
+So the adapters tail-call their targets. The frame this removes is
+synthetic — no source line, nothing a backtrace loses — and it is
+removed for every call through a function value or an interface, not
+only tail ones.
 
-An interface trampoline whose slot type is narrower than the
-implementation's return has to cast the result, which is code that runs
-after the target returns. Those keep their frame, and a tail-call chain
-through one still grows. Pushing that cast to the call site would close
-the gap; it is not done here.
+Tail-calling requires the adapter to hand its target's results straight
+back: same count, each a subtype of the adapter's own. An adapter that
+cannot is a hard error, not a call-and-cast fallback, because a
+fallback is how `tail return` would go back to lying.
+
+For three of the four that costs nothing: they already returned the
+target's result with no conversion, so a result needing one produced a
+module wasm rejects. The interface trampoline did cast, when
+the vtable slot's result type was narrower than the implementation's
+return. Dropping that cast was checked rather than assumed — throwing
+there and building the compiler, the stdlib, every portable test and
+the WIT parser reaches it zero times, and a generic interface over
+several reference instantiations does not produce it either. If a
+program ever does, the fix is to widen the slot's result and cast at
+the call site, and the error message asks for that.
 
 ## 5. Runtime support
 
@@ -160,7 +171,5 @@ alongside GC, function references and exceptions.
 - **Multi-value tail returns.** A function returning an inline tuple
   lowers its return through `ret_multi` and per-result projections;
   `return_call` supports the shape, the ZIR rewrite does not yet.
-- **A tail call through an interface trampoline that casts its
-  result.** §4, "Adapters".
 - **`tail` on an arrow function's concise body.** `() => tail f(x)` is
   not syntax. Write a block body.

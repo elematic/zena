@@ -371,6 +371,18 @@ export final class IrBuilder {
     this.#emitInCurrent(IrOp.ret_call, -1, argsIdx, funcRef);
   }
 
+  /** `ret_call_ref`: the same, through a funcref. Encoded exactly as
+   * `call_ref` — [callee, argc, arg*] — and terminating. */
+  retCallRef(callee: i32, args: GrowableArray<i32>): void {
+    let start = this.body.extra.length;
+    this.body.extra.push(callee);
+    this.body.extra.push(args.length);
+    for (let v in args) {
+      this.body.extra.push(v);
+    }
+    this.#emitInCurrent(IrOp.ret_call_ref, -1, start, -1);
+  }
+
   /** yield_: a = yielded value, b = [resumeTarget, argc, arg*].
    * Suspension terminator for presplit generator bodies; the split
    * pass rewrites every yield before emission. */
