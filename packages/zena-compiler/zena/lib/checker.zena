@@ -18270,6 +18270,20 @@ let checkCallExpression = (
   return resultType;
 };
 
+/**
+ * A function literal whose type depends on its context: at least one
+ * parameter has no annotation, so checking it needs a contextual
+ * function type to give that parameter a type.
+ */
+let isContextSensitiveClosure = (e: Expression): boolean => {
+  if (e is FunctionExpression) {
+    for (let p in e.params) {
+      if (p.typeAnnotation == null) { return true; }
+    }
+  }
+  return false;
+};
+
 let checkCallExpressionInner = (
   ctx: CheckerContext,
   call: CallExpression,
@@ -18377,10 +18391,37 @@ let checkCallExpressionInner = (
       // selected signature, so this pass must leave the flow where it
       // found it — otherwise the re-check would run downstream of this
       // pass's flow nodes and see a different (post-argument) state.
+      //
+      // A context-sensitive closure facing a parameter type that mentions
+      // the callee's type parameters cannot be checked yet: its body would
+      // be judged against the bare type parameter (`a.name` on `T`).
+      // Defer it — infer type arguments from the other arguments first,
+      // then check the closure once against the substituted parameter
+      // type. The deferred slot in `argTypes` holds the raw parameter
+      // type so overload applicability sees a matching shape.
+      let ftTypeParams = ft.typeParameters;
+      let deferredArgs = new GrowableArray<boolean>();
+      for (var i = 0; i < args.length; i += 1) {
+        var defer = false;
+        if (ftTypeParams != null && ftTypeParams.length > 0 &&
+            i < ft.parameters.length && i < callerArgCount &&
+            isContextSensitiveClosure(args[i])) {
+          defer = mentionsTypeParams(ft.parameters[i], ftTypeParams);
+        }
+        deferredArgs.push(defer);
+      }
+      // The types a deferred argument was eventually checked at, by
+      // argument index; null means the main argument loop below still
+      // has to check it.
+      let deferredCheckedTypes = new GrowableArray<Type | null>();
+      for (var i = 0; i < args.length; i += 1) {
+        deferredCheckedTypes.push(null);
+      }
+
       let preArgsFlow = ctx.currentFlow;
       let argTypes = new GrowableArray<Type>();
       for (var i = 0; i < args.length; i += 1) {
-        if (i >= callerArgCount && i < ft.parameters.length) {
+        if (deferredArgs[i] || (i >= callerArgCount && i < ft.parameters.length)) {
           argTypes.push(ft.parameters[i]);
         } else {
           let expectedParamType = if (i < ft.parameters.length) {
@@ -18471,11 +18512,48 @@ let checkCallExpressionInner = (
             newFt.functionSymbolName = effectiveFt.functionSymbolName;
             effectiveFt = newFt;
           } else {
-            // Infer type arguments from argument types.
+            // Infer type arguments from argument types. Deferred closure
+            // arguments hold a placeholder in argTypes, so they are left
+            // out of this first round.
             let inferred = new HashMap<String, Type>();
+            var anyDeferred = false;
             for (var i = 0; i < args.length && i < effectiveFt.parameters.length; i += 1) {
+              if (i < deferredArgs.length && deferredArgs[i]) {
+                anyDeferred = true;
+                continue;
+              }
               let argType = argTypes[i];
               inferTypeArg(effectiveFt.parameters[i], argType, inferred);
+            }
+            // Second round: check each deferred closure against its
+            // parameter type with the bindings so far substituted in
+            // (a type parameter still unbound stays itself), and let
+            // the closure's own type — typically its inferred return
+            // type — bind what remains. This is the only check the
+            // closure gets; the main argument loop below reuses the
+            // recorded type instead of re-checking. Like the first
+            // pass over the arguments, this runs off to the side of
+            // the flow the main loop builds.
+            if (anyDeferred) {
+              let preDeferFlow = ctx.currentFlow;
+              for (var i = 0; i < args.length && i < effectiveFt.parameters.length; i += 1) {
+                if (!(i < deferredArgs.length && deferredArgs[i])) { continue; }
+                let partialArgs = new GrowableArray<Type>(typeParams.length);
+                for (let typeParam in typeParams) {
+                  partialArgs.push(if (inferred.has(typeParam.name)) {
+                    inferred[typeParam.name];
+                  } else {
+                    typeParam as Type;
+                  });
+                }
+                let partialParam = substituteTypeParams(
+                    typeParams, partialArgs, effectiveFt.parameters[i]);
+                let argType = checkExpression(ctx, args[i], partialParam);
+                argTypes[i] = argType;
+                deferredCheckedTypes[i] = argType;
+                inferTypeArg(effectiveFt.parameters[i], argType, inferred);
+              }
+              ctx.setFlow(preDeferFlow);
             }
             // Build type args array from inferred map.
             let typeArgs = new GrowableArray<Type>(typeParams.length);
@@ -18606,7 +18684,19 @@ let checkCallExpressionInner = (
       var j = 0;
       while (j < originalActualCount && j < expectedCount) {
         let expectedParamType = effectiveFt.parameters[j];
-        let argType = checkExpression(ctx, args[j], expectedParamType);
+        // A deferred closure the inference round already checked keeps
+        // that result; re-checking its body here would report its
+        // errors a second time.
+        let roundTwoType = if (j < deferredCheckedTypes.length) {
+          deferredCheckedTypes[j]
+        } else {
+          null
+        };
+        let argType = if (roundTwoType != null) {
+          roundTwoType
+        } else {
+          checkExpression(ctx, args[j], expectedParamType)
+        };
         if (!isAssignableTo(ctx, argType, expectedParamType)) {
           ctx.error(
             "Type mismatch: argument '" + typeToString(argType) +

@@ -878,6 +878,23 @@ This works because the compiler knows the expected function type before checking
 the closure. The expected parameter types flow "down" into the closure,
 eliminating the need for explicit annotations.
 
+Contextual typing also applies when the callee is generic and the closure's
+parameter type mentions a type parameter. Type arguments are inferred from the
+other arguments first, and the closure is checked against its parameter type
+with those bindings substituted in; the closure's own type — typically its
+inferred return type — then binds any type parameters that remain:
+
+```zena
+let sortBy = <T>(items: Array<T>, compare: (a: T, b: T) => i32): void => { ... };
+
+// T is Item from `items`, so a and b are typed Item.
+sortBy(items, (a, b) => a.name.length - b.name.length);
+```
+
+A type parameter that appears only in the closure's own parameter types has
+nothing to infer it, so the closure's parameters keep the bare type parameter
+as their type and member access on them is an error.
+
 **When contextual typing is not available**, parameter types must be explicit:
 
 ```zena
