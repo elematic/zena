@@ -25,6 +25,11 @@ the `zena-cli` Rust package.
    - The `bench` and `test` subcommands are thin: they compile and run
      those Zena orchestrators via `run_internal_tool`, which also spawns
      this binary back in hidden worker modes (`sample`, `test --single`).
+   - `doc` is thin the same way, running `packages/zenadoc/zena/cli/main.zena`
+     (see `docs/design/zenadoc.md`). It needs no spawn capability; what it
+     needs is that the guest works from the repository root, which is why
+     it passes an input path inside the checkout repo-relative and an
+     output path absolute.
 
 3. **WASI Virtual Filesystem Boundaries**
    - Zena's `stdlib/fs` interfaces natively with WASI Preview 1.

@@ -107,6 +107,29 @@ enum Commands {
         #[arg(long, hide = true)]
         single: bool,
     },
+    /// Extract a package's API documentation as JSON. The path is a
+    /// package directory, any directory, or a single .zena file. See
+    /// docs/design/zenadoc.md.
+    Doc {
+        /// Package directory, directory, or .zena file to document
+        path: String,
+
+        /// Where to write the JSON (default: stdout)
+        #[arg(short, long)]
+        output: Option<String>,
+
+        /// Package name, overriding the manifest's or the directory's
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Compilation target, which decides virtual modules' entry files
+        #[arg(short = 't', long, default_value = "zena-cli")]
+        target: String,
+
+        /// Document non-exported declarations and #private members
+        #[arg(long = "include-private")]
+        include_private: bool,
+    },
     /// Ahead-of-time compile a .wasm file to a .cwasm beside it, so later
     /// invocations skip the in-process Cranelift compile. Build scripts run
     /// this right after producing a compiler wasm.
@@ -169,6 +192,10 @@ fn main() -> Result<()> {
             } else {
                 run_all_tests(&paths, filter.as_deref(), cli.verbose, cli.debug)
             }
+        }
+        Commands::Doc { path, output, name, target, include_private } => {
+            run_doc(&path, output.as_deref(), name.as_deref(), &target,
+                include_private, cli.verbose, cli.debug)
         }
         Commands::Precompile { file } => precompile_file(&file, cli.debug),
         Commands::Bench { config, out } => {
@@ -1046,6 +1073,60 @@ fn run_single_test_worker(paths: &[String], verbose: bool, debug: bool) -> Resul
             std::process::exit(1);
         }
     }
+}
+
+/// `zena doc`: runs the zenadoc extractor over a package and writes its
+/// API as JSON.
+///
+/// The extractor runs with the repository root as its working directory,
+/// like the other Zena-side tools, so the input path is passed
+/// repo-relative when it is inside the checkout — that is also what makes
+/// the `root` and `file` paths in the JSON repo-relative, so the output
+/// can be checked in. An output path is made absolute instead, because it
+/// is relative to wherever the user ran the command.
+fn run_doc(
+    path: &str,
+    output: Option<&str>,
+    name: Option<&str>,
+    target: &str,
+    include_private: bool,
+    verbose: bool,
+    debug: bool,
+) -> Result<()> {
+    let absolute = std::fs::canonicalize(path)
+        .with_context(|| format!("No such path: {path}"))?;
+    let repo_root = repo_root()?;
+    let input = match absolute.strip_prefix(&repo_root) {
+        Ok(relative) => relative.to_string_lossy().into_owned(),
+        Err(_) => absolute.to_string_lossy().into_owned(),
+    };
+
+    let mut guest_args = vec![input, "--target".to_string(), target.to_string()];
+    if let Some(output) = output {
+        let output = std::path::absolute(output)?;
+        guest_args.push("-o".to_string());
+        guest_args.push(output.to_string_lossy().into_owned());
+    }
+    if let Some(name) = name {
+        guest_args.push("--name".to_string());
+        guest_args.push(name.to_string());
+    }
+    if include_private {
+        guest_args.push("--include-private".to_string());
+    }
+
+    let code = run_internal_tool(
+        "packages/zenadoc/zena/cli/main.zena",
+        &guest_args,
+        verbose,
+        debug,
+    )?;
+    if code != 0 {
+        // The JSON is written either way; a non-zero exit says the package
+        // did not check clean.
+        std::process::exit(code);
+    }
+    Ok(())
 }
 
 /// Compiles and runs one of zena-cli's own orchestrator programs

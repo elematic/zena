@@ -66,7 +66,7 @@ scratch directory gets for free.
 **A single file** is a package of one module. Useful for testing the
 extractor and for documenting an example.
 
-The package name comes from `--package-name`, else the manifest's
+The package name comes from `--name`, else the manifest's
 `name` field, else the directory's basename. Module ids are
 `<package>:<module>` — the string a user would write in an `import`.
 
@@ -260,7 +260,8 @@ package-root-relative for the same reason.
 ## `zena doc`
 
 ```
-zena doc <path> [-o out.json] [--package-name <name>] [--include-private]
+zena doc <path> [-o out.json] [--name <package>] [-t <target>]
+              [--include-private]
 ```
 
 `<path>` is a package directory, any directory, or a `.zena` file.
@@ -272,9 +273,12 @@ reading a codebase you are working on, not for publishing.
 
 The subcommand follows `zena bench` and `zena test`: the Rust CLI is
 thin, and the work happens in a Zena program that the CLI compiles and
-runs. Until that subcommand lands, the extractor's entry point is
-runnable directly with `zena-cli run`, which is enough to develop
-against and enough for the website build to call.
+runs. That program works from the repository root, like the other
+Zena-side tools, so an input path inside the checkout is passed
+repo-relative — which is what makes the `root` and `file` paths in the
+JSON repo-relative, so the output can be checked in. An output path is
+made absolute instead, because it is relative to wherever the command
+was run.
 
 ## Website consumption
 
