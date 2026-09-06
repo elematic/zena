@@ -1,0 +1,27 @@
+// @mode: run
+// An `as`-to-interface cast packs the value into the interface fat
+// pointer wherever the expression appears. Inside an array literal the
+// cast used to be emitted against the raw class value before the pack
+// ran, and trapped at runtime.
+interface Named {
+  name(): i32;
+}
+
+class A implements Named {
+  name(): i32 { return 1; }
+}
+
+class B implements Named {
+  name(): i32 { return 2; }
+}
+
+export function main(): i32 {
+  let one = new A() as Named;
+  let items = [new A() as Named, new B() as Named];
+  var total = one.name(); // 1
+  for (let p in items) {
+    total += p.name();
+  }
+  return total; // 1 + 1 + 2 = 4
+}
+// @result: 4
