@@ -29,6 +29,13 @@ Simplify may strand blocks (branch folding), which block cleanup then
 removes — the verifier rejects unreachable blocks, so those two are a
 pair. DCE runs last to sweep what folding and GVN left unused.
 
+The module pass is two-phase: every body is lowered, optimized, and
+verified (and retained) before any is emitted, so module-level passes
+(inlining, harvest) have a place to run between the phases. `-O0`
+skips the cleanup passes; GVN runs at every level (emission quality
+and the narrowing cast-dedup contract depend on it). The level arrives
+as `ZENA_OPT_LEVEL` / `-O<n>` (docs/design/optimization-pipeline.md).
+
 ## File map
 
 | File                    | Role                                                                                                                                                                                                                                                                                                                      |

@@ -32,6 +32,10 @@ let assertSnapshot = (name: String, content: String): void => {
 };
 
 let compileWithZir = (source: String): String => {
+  return compileWithZirAt(source, 1);
+};
+
+let compileWithZirAt = (source: String, optLevel: i32): String => {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
@@ -57,7 +61,7 @@ let compileWithZir = (source: String): String => {
   }
 
   let program = new Program(units, entryUnit);
-  let generator = new WatGenerator("zena-cli", false);
+  let generator = new WatGenerator("zena-cli", false, optLevel);
   return generator.generate(program);
 };
 
@@ -520,6 +524,18 @@ export let tests = suite('zir backend', (): void => {
     // function is emitted (every value a local, so at least one local).
     let result = compileWithZir('export let main = (): i32 => 1 + 2;');
     isTrue(result.contains('(func $main'));
+  });
+
+  test('-O0 turns the cleanup passes off', (ctx: TestContext): void => {
+    // Same program as the folding test below, compiled at level 0:
+    // the arithmetic must survive. GVN still runs at every level.
+    let result = compileWithZirAt(
+        'export let main = (): i32 => { let a = 6; let b = 7; return a * b + 3; };',
+        0);
+    let present = new GrowableArray<String>();
+    present.push('i32.mul');
+    assertFunctionUses(result, '$main', present,
+        'level 0 does not fold');
   });
 
   test('simplify folds constant arithmetic', (ctx: TestContext): void => {

@@ -25,6 +25,12 @@ struct Cli {
     #[arg(short = 'g', long = "debug")]
     debug: bool,
 
+    /// Optimization level: 0, 1, 2, or s (docs/design/optimization-pipeline.md).
+    /// Reaches the compiler as ZENA_OPT_LEVEL; setting that env var directly
+    /// works too. Default: 1.
+    #[arg(short = 'O', long = "opt-level")]
+    opt_level: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -179,8 +185,23 @@ struct MyState {
     wasi: WasiP1Ctx,
 }
 
+/// The -O flag's value, readable from the cache-key and guest-env sites
+/// without threading another parameter through every compile signature.
+/// Set once in main; the ZENA_OPT_LEVEL env var is the fallback.
+static OPT_LEVEL_FLAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn effective_opt_level() -> Option<String> {
+    OPT_LEVEL_FLAG
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("ZENA_OPT_LEVEL").ok())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(level) = &cli.opt_level {
+        let _ = OPT_LEVEL_FLAG.set(level.clone());
+    }
     match cli.command {
         Commands::Build { file, output, time, no_cache, target, wit, world } => {
             build_file(&file, &output, cli.verbose, time, no_cache, cli.debug, target.as_deref(), wit.as_deref(), world.as_deref())
@@ -459,6 +480,8 @@ fn compile_to_cache(
     // Env vars that change compiler output must key the cache, or toggling
     // them serves stale artifacts.
     std::env::var("ZENA_BACKEND").unwrap_or_default().hash(&mut hasher);
+    // The optimization level changes emitted bytes (flag or env form).
+    effective_opt_level().unwrap_or_default().hash(&mut hasher);
 
     // The package manifest steers module resolution, so its content keys the
     // cache too (mtime+len, same identity scheme as the compiler wasm).
@@ -620,6 +643,11 @@ fn compile_to_cache(
     // simply ignores. `debug` already keys the compile cache above.
     if debug {
         wasi_builder.env("ZENA_DEBUG_NAMES", "1");
+    }
+    // -O travels the same way as -g and for the same reason; the env-var
+    // form reaches the guest through inherit_env below.
+    if let Some(level) = OPT_LEVEL_FLAG.get() {
+        wasi_builder.env("ZENA_OPT_LEVEL", level);
     }
 
         let wasi = wasi_builder

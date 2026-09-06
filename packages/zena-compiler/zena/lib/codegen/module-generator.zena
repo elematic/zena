@@ -24,6 +24,7 @@ import { WasmEmitter } from './wasm-emitter.zena';
 import { performance } from '../time.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { lowerFunction } from './ir/lowering.zena';
+import { IrBody } from './ir/ir.zena';
 import { verifyIr } from './ir/verifier.zena';
 import { runGvn } from './ir/gvn.zena';
 import { runSimplify } from './ir/simplify.zena';
@@ -67,7 +68,15 @@ export final class ModuleGenerator {
    */
   var wideArithmetic: boolean = false;
 
-  new(this.program, this.emitter, this.target = "zena-cli", this.zirStats = false);
+  /**
+   * Optimization level (docs/design/optimization-pipeline.md). 0 =
+   * lower + GVN + emit; 1 (the default) adds the per-function cleanup
+   * passes; 2 is reserved for the module loop and currently equals 1.
+   */
+  optLevel: i32;
+
+  new(this.program, this.emitter, this.target = "zena-cli", this.zirStats = false,
+      this.optLevel = 1);
 
   emitDefaultValue(type: ValType): void {
     if (type is ValTypeI32) {
@@ -786,42 +795,63 @@ export final class ModuleGenerator {
     }
     
     performance.end(tEmitOther);
-    let tEmitCode = performance.start("codegen-emit-code");
-    this.emitter.emitCodeSectionStart(wasm.functions.length);
+
+    // Two phases, not one loop: every body is lowered, optimized, and
+    // verified before any is emitted, so passes that need the whole
+    // set of bodies at once (inlining, the callgraph, the harvest
+    // sweep) have a place to run between the phases. Emission order
+    // and bytes are unchanged.
+    let tLower = performance.start("codegen-lower-optimize");
     var zirLowered = 0;
     var zirGraduated = 0;
     var zirDemoted = 0;
     var zirSimplified = 0;
     var zirBlocksRemoved = 0;
     var zirDceRemoved = 0;
-     for (let wasmFunc in wasm.functions) {
-        // Lowering failures throw: a bail is a compiler bug, not a
-        // coverage gap.
-        let body = lowerFunction(wasm, wasmFunc);
-        // Cleanup order: simplify folds (and may strand blocks via
-        // branch folding), block cleanup removes what it stranded,
-        // GVN deduplicates the folded constants, DCE sweeps whatever
-        // ended up unused.
+    let bodies = new GrowableArray<IrBody>();
+    for (let wasmFunc in wasm.functions) {
+      // Lowering failures throw: a bail is a compiler bug, not a
+      // coverage gap.
+      let body = lowerFunction(wasm, wasmFunc);
+      // Cleanup order: simplify folds (and may strand blocks via
+      // branch folding), block cleanup removes what it stranded,
+      // GVN deduplicates the folded constants, DCE sweeps whatever
+      // ended up unused. GVN runs at every level — emission quality
+      // and the narrowing cast-dedup contract depend on it.
+      if (this.optLevel >= 1) {
         zirSimplified += runSimplify(body);
         zirBlocksRemoved += runBlockCleanup(body);
-        runGvn(body, new IrCfg(body));
+      }
+      runGvn(body, new IrCfg(body));
+      if (this.optLevel >= 1) {
         zirDceRemoved += runDce(body);
-        // Loud on verifier failure: a broken lowering must never limp
-        // into emission.
-        let verifyErrors = verifyIr(body);
-        if (verifyErrors.length > 0) {
-          var message = "zir verify failed for " +
-              (if (wasmFunc.name != null) wasmFunc.name as String else "<unnamed>") + ":";
-          for (let e in verifyErrors) {
-            message = message + "\n  " + e;
-          }
-          throw new Error(message);
+      }
+      // Loud on verifier failure: a broken lowering must never limp
+      // into emission.
+      let verifyErrors = verifyIr(body);
+      if (verifyErrors.length > 0) {
+        var message = "zir verify failed for " +
+            (if (wasmFunc.name != null) wasmFunc.name as String else "<unnamed>") + ":";
+        for (let e in verifyErrors) {
+          message = message + "\n  " + e;
         }
-        let (graduated, demoted) = emitZirFunction(wasm, this.emitter, wasmFunc, body);
-        zirGraduated += graduated;
-        zirDemoted += demoted;
-        zirLowered += 1;
-     }
+        throw new Error(message);
+      }
+      bodies.push(body);
+      zirLowered += 1;
+    }
+    performance.end(tLower);
+
+    let tEmitCode = performance.start("codegen-emit-code");
+    this.emitter.emitCodeSectionStart(wasm.functions.length);
+    var bodyIndex = 0;
+    for (let wasmFunc in wasm.functions) {
+      let (graduated, demoted) =
+          emitZirFunction(wasm, this.emitter, wasmFunc, bodies[bodyIndex]);
+      bodyIndex += 1;
+      zirGraduated += graduated;
+      zirDemoted += demoted;
+    }
     if (this.zirStats) {
       console.log("zir backend: " + i32ToString(zirLowered) + " lowered");
       console.log("zir simplify: " + i32ToString(zirSimplified) +

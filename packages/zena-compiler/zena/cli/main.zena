@@ -63,6 +63,18 @@ let loadPackages = (host: CompilerHost): HashMap<String, PackageConfig> => {
   return loadPackageMap(host, "zena-packages.json");
 };
 
+/**
+ * "-O" levels: 0, 1, 2, and s (size — the loop with budgets down,
+ * currently equal to 2). Returns -1 on anything else.
+ */
+let parseOptLevel = (text: String): i32 => {
+  if (text == "0") { return 0; }
+  if (text == "1") { return 1; }
+  if (text == "2") { return 2; }
+  if (text == "s") { return 2; }
+  return -1;
+};
+
 export let main = (): i32 => {
   let args = getArguments();
   if (args.length < 2) {
@@ -88,6 +100,19 @@ export let main = (): i32 => {
   // Unnecessary-cast warnings: opt-in via env var, like -g, so the
   // checked-in bootstrap never needs to know the flag exists.
   let warnUnnecessaryCasts = getEnv("ZENA_WARN_UNNECESSARY_CASTS") != null;
+  // Optimization level (docs/design/optimization-pipeline.md): env
+  // var for the same bootstrap reason, `-O<n>` for direct invocation.
+  var optLevel = 1;
+  let optEnv = getEnv("ZENA_OPT_LEVEL");
+  if (optEnv != null) {
+    let parsed = parseOptLevel(optEnv);
+    if (parsed < 0) {
+      console.error("Error: invalid ZENA_OPT_LEVEL '" + (optEnv as String) +
+          "' (expected 0, 1, 2, or s)");
+      exit(1);
+    }
+    optLevel = parsed;
+  }
   for (var i = 1; i < args.length; i += 1) {
     if (args[i] == "-o" && i + 1 < args.length) {
       outPath = args[i + 1];
@@ -107,6 +132,14 @@ export let main = (): i32 => {
       i += 1;
     } else if (args[i] == "-g" || args[i] == "--debug") {
       debugNames = true;
+    } else if (args[i].startsWith("-O")) {
+      let parsed = parseOptLevel(args[i].sliceBytes(2, args[i].length));
+      if (parsed < 0) {
+        console.error("Error: invalid optimization level '" + args[i] +
+            "' (expected -O0, -O1, -O2, or -Os)");
+        exit(1);
+      }
+      optLevel = parsed;
     } else {
       filename = args[i];
     }
@@ -212,7 +245,7 @@ export let main = (): i32 => {
     // exactly what the binary build would contain, for inspecting a
     // program's emitted shape (`zena build hello.zena -o hello.wat`).
     if (outPath.endsWith(".wat")) {
-      let watOnly = new WatGenerator(target, zirStats);
+      let watOnly = new WatGenerator(target, zirStats, optLevel);
       watOnly.wideArithmetic = wideArithmetic;
       writeFile(outPath, watOnly.generate(program));
       performance.end(tCodegen);
@@ -220,7 +253,7 @@ export let main = (): i32 => {
       return 0;
     }
 
-    let generator = new BinaryGenerator(target, zirStats, debugNames);
+    let generator = new BinaryGenerator(target, zirStats, debugNames, optLevel);
     generator.wideArithmetic = wideArithmetic;
     if (targetEmitsComponent(target)) {
       // The component's second core module, owning linear memory and
@@ -276,7 +309,7 @@ export let main = (): i32 => {
     // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
     // so it is opt-in for debugging.
     if (getEnv("ZENA_EMIT_WAT") != null) {
-      let watGenerator = new WatGenerator(target, false);
+      let watGenerator = new WatGenerator(target, false, optLevel);
       let watString = watGenerator.generate(program);
       writeFile(outPath + ".wat", watString);
     }
