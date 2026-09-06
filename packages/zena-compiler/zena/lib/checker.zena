@@ -7614,6 +7614,20 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
   }
 };
 
+/** A generic class applied to its own type parameters; the class
+ * itself when it is not generic or already instantiated. */
+let selfTypeOfClass = (cc: ClassType): Type => {
+  let tps = cc.typeParameters;
+  if (tps == null || tps.length == 0 || cc.typeArguments != null) {
+    return cc as Type;
+  }
+  let args = new GrowableArray<Type>();
+  for (let p in tps) {
+    args.push(p as Type);
+  }
+  return instantiateClassType(cc, args) as Type;
+};
+
 let getMemberPathKeyFromAccess = (
   ctx: CheckerContext,
   object: Expression,
@@ -10684,7 +10698,12 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           wrapResourceInBorrow(ctx, cc)
         }
       } else {
-        cc as Type
+        // The self type: a generic class's `this` is the class AT ITS
+        // OWN PARAMETERS (`Future<T>`), not the bare source — the
+        // source has no type arguments, and everything that inspects
+        // an instantiated type (an await's operand check, a call
+        // binding T from the receiver) rejects it (issue #434).
+        selfTypeOfClass(cc)
       }
     }
   }
@@ -13674,14 +13693,17 @@ let checkMethodBody = (
     }
   }
 
-  // Substitute ThisType with the concrete class type for params and return type.
-  let effectiveReturnType = substituteThisType(classType as Type, methodType.returnType);
+  // Substitute ThisType with the SELF type — a generic class at its
+  // own parameters — so a declared `this` return agrees with what
+  // `this` now checks as in the body (issue #434).
+  let selfType = selfTypeOfClass(classType);
+  let effectiveReturnType = substituteThisType(selfType, methodType.returnType);
 
   // Declare parameters.
   var i = 0;
   while (i < md.params.length) {
     let param = md.params[i];
-    let paramType = substituteThisType(classType as Type, methodType.parameters[i]);
+    let paramType = substituteThisType(selfType, methodType.parameters[i]);
     let paramInfo = ctx.model.resolveDeclaration(param);
     if (paramInfo != null) {
       ctx.declareBinding(paramInfo, paramType);

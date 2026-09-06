@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 7
+
+// In a generic class body `this` is the class at its own type
+// parameters — `Cell<T>`, not the bare source — so it binds `T` at
+// call sites and satisfies instantiated-type checks without a cast
+// (issue #434).
+
+let pick = <T>(c: Cell<T>): Cell<T> => {
+  return c;
+};
+
+class Cell<T> {
+  v: T;
+  new(this.v);
+
+  roundTrip(): T {
+    return pick(this).v;
+  }
+
+  self(): Cell<T> {
+    return this;
+  }
+}
+
+export let main = (): i32 => {
+  let c = new Cell(7);
+  if (c.self().v != 7) { return 1; }
+  return c.roundTrip();
+};
