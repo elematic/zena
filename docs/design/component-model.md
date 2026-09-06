@@ -402,8 +402,8 @@ the measurement.)
 | `result<T, E>`             | `Result<T, E>`                       | **101 + 10 bare** | ✅ exists                  |
 | `record`                   | case class                           | 10                | ✅ exists                  |
 | `variant`                  | sealed case-class hierarchy          | 8                 | ✅ exists                  |
-| `enum`                     | enum                                 | 6                 | ✅ exists                  |
-| `flags`                    | `u32` newtype                        | 3                 | ❌ no analogue             |
+| `enum`                     | enum                                 | 6                 | ✅ synthesized             |
+| `flags`                    | `distinct type … = u32` + constants  | 3                 | ✅ synthesized             |
 | `resource`                 | `final class` + `Disposable`         | **25**            | ❌ see Part 6              |
 | `own<T>` / `borrow<T>`     | same class, differing lifetime rules | 0 / 13 explicit   | see Part 6                 |
 | `stream<T>` / `future<T>`  | needs async                          | **0**             | not needed for p2          |

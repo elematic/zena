@@ -47,7 +47,7 @@ import {
 } from 'wit-parser:document';
 import {
   InterfaceItem, InterfaceItemTag, NamedFunc, Type, TypeTag, TypeDef,
-  TypeDefTag, Id
+  TypeDefTag, Id, EnumCaseDef, FlagDef
 } from 'wit-parser:parser';
 
 
@@ -66,6 +66,10 @@ enum WireKind {
   BytesList,
   /** `list<string>`: liftable as a result, not stageable yet. */
   StringList,
+  /** A WIT `enum`: one discriminant on the wire, a Zena enum here. */
+  Enumeration,
+  /** A WIT `flags`: one bitset word on the wire, a distinct u32 here. */
+  Flags,
   /** Waits on the interop stages; `reason` says which. */
   Unsupported
 }
@@ -75,7 +79,12 @@ final class WireType {
   /** The Zena spelling of a Scalar; "" otherwise. */
   scalar: String;
   reason: String;
-  new(this.kind, this.scalar = "", this.reason = "");
+  /** The synthesized Zena type name of an Enumeration or Flags. */
+  typeName: String;
+  /** An Enumeration's case count, for the range-checked lift. */
+  caseCount: i32;
+  new(this.kind, this.scalar = "", this.reason = "", this.typeName = "",
+      this.caseCount = 0);
 }
 
 let unsupported = (reason: String): WireType =>
@@ -128,15 +137,34 @@ function classifyType(t: Type, ifaceItems: Array<InterfaceItem>): WireType {
     for (let item in ifaceItems) {
       if (item.tag != InterfaceItemTag.TypeDef) { continue; }
       let td = item.typeDef as TypeDef;
-      if (td.name.name == name && td.tag == TypeDefTag.Alias) {
+      if (td.name.name != name) { continue; }
+      if (td.tag == TypeDefTag.Alias) {
         return classifyType(td.aliasType as Type, ifaceItems);
       }
+      if (td.tag == TypeDefTag.Enum) {
+        let cases = td.enumCases as GrowableArray<EnumCaseDef>;
+        return new WireType(WireKind.Enumeration, "", "",
+            pascalName(name), cases.length);
+      }
+      if (td.tag == TypeDefTag.Flags) {
+        return new WireType(WireKind.Flags, "", "", pascalName(name));
+      }
+      break;
     }
     return unsupported("the named type '" + name +
         "' waits on the interop stages");
   }
   return unsupported("this type waits on the interop stages");
 }
+
+/** How many core values `wire` flattens to. */
+let flatOf = (wire: WireType): i32 => {
+  if (wire.kind == WireKind.Str || wire.kind == WireKind.BytesList ||
+      wire.kind == WireKind.StringList) {
+    return 2;
+  }
+  return 1;
+};
 
 /**
  * `wait-for` → `waitFor`: a WIT name as a Zena identifier
@@ -165,13 +193,26 @@ function camelName(kebab: String): String {
   return out;
 }
 
+/** `error-code` → `ErrorCode`: a WIT type name as a Zena type name. */
+function pascalName(kebab: String): String {
+  let camel = camelName(kebab);
+  if (camel.length == 0) {
+    return camel;
+  }
+  return camel.sliceBytes(0, 1).asciiUpperCase() +
+      camel.sliceBytes(1, camel.length);
+}
+
 /** What one module's rendering pulled in, for its import lines. */
 final class SynthUses {
   var hasAsync = false;
   var fixedArray = false;
   var array = false;
+  var error = false;
   /** The `zena:component-abi` names used, in first-use order. */
   abi = new GrowableArray<String>();
+  /** Enums lifted from results, each owed a range-checked lift. */
+  enumLifts = new GrowableArray<WireType>();
   new();
 
   useAbi(name: String): void {
@@ -179,6 +220,14 @@ final class SynthUses {
       if (existing == name) { return; }
     }
     this.abi.push(name);
+  }
+
+  needEnumLift(wire: WireType): void {
+    for (let existing in this.enumLifts) {
+      if (existing.typeName == wire.typeName) { return; }
+    }
+    this.error = true;
+    this.enumLifts.push(wire);
   }
 }
 
@@ -227,7 +276,11 @@ export function synthesizeWitModule(canonicalPath: String): String {
     if (item.tag != InterfaceItemTag.Func) {
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
-        if (td.tag != TypeDefTag.Alias) {
+        if (td.tag == TypeDefTag.Enum) {
+          renderEnum(body, td);
+        } else if (td.tag == TypeDefTag.Flags) {
+          renderFlags(body, td);
+        } else if (td.tag != TypeDefTag.Alias) {
           skipped.append("//   ").append(td.name.name)
               .append(": types wait on the interop stages\n");
         }
@@ -241,6 +294,20 @@ export function synthesizeWitModule(canonicalPath: String): String {
       skipped.append("//   ").append(nf.name.name).append(": ")
           .append(rendered).append("\n");
     }
+  }
+  for (let lifted in uses.enumLifts) {
+    // The host is obligated to produce a valid discriminant, but a
+    // range check is one compare, and an out-of-range value cast
+    // silently into an enum would defeat exhaustive matching somewhere
+    // far from here.
+    body.append("function lift").append(lifted.typeName)
+        .append("(disc: i32): ").append(lifted.typeName)
+        .append(" {\n  if (disc < 0 || disc >= ")
+        .append(i32ToString(lifted.caseCount))
+        .append(") {\n    throw new Error('invalid ")
+        .append(lifted.typeName).append(" discriminant');\n  }\n")
+        .append("  return disc as ").append(lifted.typeName)
+        .append(";\n}\n");
   }
   if (uses.fixedArray) {
     sb.append("import { FixedArray } from 'zena:fixed-array';\n");
@@ -256,6 +323,9 @@ export function synthesizeWitModule(canonicalPath: String): String {
     }
     sb.append(" } from 'zena:component-abi';\n");
   }
+  if (uses.error) {
+    sb.append("import { Error } from 'zena:error';\n");
+  }
   if (uses.hasAsync) {
     sb.append("import { Future } from 'zena:async';\n");
     sb.append("import { awaitPacked } from 'zena:component-async';\n");
@@ -268,6 +338,43 @@ export function synthesizeWitModule(canonicalPath: String): String {
         .append(skippedText);
   }
   return sb.toString();
+}
+
+/**
+ * A WIT `enum`, as a Zena enum: PascalCase members with explicit
+ * ordinals, because the ordinal IS the wire discriminant and must not
+ * drift from declaration order by accident.
+ */
+function renderEnum(sb: StringBuilder, td: TypeDef): void {
+  let cases = td.enumCases as GrowableArray<EnumCaseDef>;
+  sb.append("/** WIT `enum ").append(td.name.name).append("`. */\n");
+  sb.append("export enum ").append(pascalName(td.name.name))
+      .append(" {\n");
+  for (var i = 0; i < cases.length; i += 1) {
+    sb.append("  ").append(pascalName(cases[i].name.name)).append(" = ")
+        .append(i32ToString(i)).append(",\n");
+  }
+  sb.append("}\n");
+}
+
+/**
+ * A WIT `flags`, as a distinct u32 bitset with one constant per label
+ * (`modes` with `read` → `modesRead`). Distinct rather than opaque:
+ * combining flags is the caller's arithmetic, through `u32` casts.
+ */
+function renderFlags(sb: StringBuilder, td: TypeDef): void {
+  let flags = td.flags as GrowableArray<FlagDef>;
+  let typeName = pascalName(td.name.name);
+  sb.append("/** WIT `flags ").append(td.name.name)
+      .append("`, as a bitset. */\n");
+  sb.append("export distinct type ").append(typeName)
+      .append(" = u32;\n");
+  for (var i = 0; i < flags.length; i += 1) {
+    sb.append("export let ").append(camelName(td.name.name))
+        .append(pascalName(flags[i].name.name)).append(" = (")
+        .append(i32ToString(1 << i)).append(" as u32) as ")
+        .append(typeName).append(";\n");
+  }
 }
 
 /**
@@ -321,8 +428,8 @@ function renderFunc(
       return "an async result waits on the subtask-read machinery";
     }
     if (anyRich) {
-      return "an async function with strings or lists waits on the " +
-          "interop stages";
+      return "an async function with non-scalar parameters waits on " +
+          "the interop stages";
     }
     // The raw import's core result is the packed `(subtask << 4) |
     // state` the canonical `async` lowering returns; `awaitPacked`
@@ -354,8 +461,9 @@ function renderFunc(
 
   // The result spills — the raw call takes a return area address and
   // returns nothing — exactly when it flattens to more than one core
-  // value. Every rich result here is two flats; a scalar is one.
-  let resultSpills = resultWire.kind != WireKind.Scalar;
+  // value. Strings and lists are two flats; a scalar, an enum or a
+  // flags word is one and returns directly.
+  let resultSpills = flatOf(resultWire) > 1;
 
   if (!anyRich) {
     // Every type is a flat scalar: one declaration, no wrapper.
@@ -382,6 +490,12 @@ function renderFunc(
       rawSig.append("a").append(i32ToString(i)).append(": ")
           .append(params[i].scalar);
       rawIndex += 1;
+    } else if (params[i].kind == WireKind.Enumeration) {
+      rawSig.append("a").append(i32ToString(i)).append(": i32");
+      rawIndex += 1;
+    } else if (params[i].kind == WireKind.Flags) {
+      rawSig.append("a").append(i32ToString(i)).append(": u32");
+      rawIndex += 1;
     } else {
       rawSig.append("p").append(i32ToString(i)).append(": i32, l")
           .append(i32ToString(i)).append(": i32");
@@ -392,7 +506,15 @@ function renderFunc(
     if (rawIndex > 0) { rawSig.append(", "); }
     rawSig.append("ret: i32");
   }
-  let rawResult = if (resultSpills) "void" else resultWire.scalar;
+  let rawResult = if (resultSpills) {
+    "void"
+  } else if (resultWire.kind == WireKind.Enumeration) {
+    "i32"
+  } else if (resultWire.kind == WireKind.Flags) {
+    "u32"
+  } else {
+    resultWire.scalar
+  };
   sb.append("@external(\"").append(interfaceName).append("\", \"")
       .append(nf.name.name).append("\")\n");
   sb.append("declare function ").append(zenaName).append("_raw(")
@@ -407,6 +529,9 @@ function renderFunc(
     wrapSig.append(paramNames[i]).append(": ");
     if (params[i].kind == WireKind.Scalar) {
       wrapSig.append(params[i].scalar);
+    } else if (params[i].kind == WireKind.Enumeration ||
+        params[i].kind == WireKind.Flags) {
+      wrapSig.append(params[i].typeName);
     } else if (params[i].kind == WireKind.Str) {
       wrapSig.append("String");
     } else {
@@ -417,6 +542,9 @@ function renderFunc(
   var wrapResult = "void";
   if (resultWire.kind == WireKind.Scalar) {
     wrapResult = resultWire.scalar;
+  } else if (resultWire.kind == WireKind.Enumeration ||
+      resultWire.kind == WireKind.Flags) {
+    wrapResult = resultWire.typeName;
   } else if (resultWire.kind == WireKind.Str) {
     wrapResult = "String";
   } else if (resultWire.kind == WireKind.BytesList) {
@@ -435,6 +563,16 @@ function renderFunc(
     if (argIndex > 0) { callArgs.append(", "); }
     if (params[i].kind == WireKind.Scalar) {
       callArgs.append(paramNames[i]);
+      argIndex += 1;
+      continue;
+    }
+    if (params[i].kind == WireKind.Enumeration) {
+      callArgs.append(paramNames[i]).append(" as i32");
+      argIndex += 1;
+      continue;
+    }
+    if (params[i].kind == WireKind.Flags) {
+      callArgs.append(paramNames[i]).append(" as u32");
       argIndex += 1;
       continue;
     }
@@ -464,9 +602,14 @@ function renderFunc(
     sb.append("  let got = ").append(call).append(";\n");
   }
   // The staged buffers were consumed during the call — a synchronous
-  // lowering copies before returning — so they are dead now.
+  // lowering copies before returning — so they are dead now. Scalars,
+  // enums and flags were passed by value and staged nothing.
   for (var i = 0; i < params.length; i += 1) {
-    if (params[i].kind == WireKind.Scalar) { continue; }
+    if (params[i].kind == WireKind.Scalar ||
+        params[i].kind == WireKind.Enumeration ||
+        params[i].kind == WireKind.Flags) {
+      continue;
+    }
     uses.useAbi("releaseStringArgument");
     sb.append("  releaseStringArgument(p").append(i32ToString(i))
         .append(", l").append(i32ToString(i)).append(");\n");
@@ -481,6 +624,13 @@ function renderFunc(
     };
     uses.useAbi(lift);
     sb.append("  return ").append(lift).append("(ret);\n");
+  } else if (resultWire.kind == WireKind.Enumeration) {
+    uses.needEnumLift(resultWire);
+    sb.append("  return lift").append(resultWire.typeName)
+        .append("(got);\n");
+  } else if (resultWire.kind == WireKind.Flags) {
+    sb.append("  return got as ").append(resultWire.typeName)
+        .append(";\n");
   } else if (rawResult != "void") {
     sb.append("  return got;\n");
   }

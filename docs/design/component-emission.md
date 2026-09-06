@@ -1252,6 +1252,15 @@ what wasmtime registers), where the baked stdio blocks will eventually
 join it. End-to-end: `get-random-bytes` lifts its spilled `list<u8>`
 under stock `wasmtime -S p3=y`.
 
+Enums and flags are synthesized too — the first named types a
+WIT-typed module declares. A WIT `enum` becomes a Zena enum whose
+explicit ordinals are the wire discriminants, lifted through a
+range check (an out-of-range discriminant is a loud error, not a
+value that defeats exhaustive matching later); a `flags` becomes a
+`distinct type … = u32` with one power-of-two constant per label.
+Both are single core values on the wire, so no layout machinery was
+needed — that arrives with records and variants.
+
 The next slices are records, variants and options on imports;
 resources as handle-wrapping classes; then async _results_ (the
 subtask-read machinery, C6-adjacent). The path they serve is

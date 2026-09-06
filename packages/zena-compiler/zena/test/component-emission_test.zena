@@ -626,6 +626,41 @@ world only {
       'a scalar parameter should pass through:\n' + source);
   });
 
+  test('a WIT-typed module synthesizes enums and flags',
+      (ctx: TestContext): void => {
+    // A WIT `enum` becomes a Zena enum with explicit ordinals (the
+    // ordinal is the wire discriminant), a `flags` becomes a distinct
+    // u32 with one constant per label, and the wrappers cast at the
+    // boundary — with a range-checked lift on an enum result, so an
+    // out-of-range discriminant is a loud error rather than a value
+    // that defeats exhaustive matching later.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:codes/status`);
+    isTrue(source.contains('export enum Level {'),
+      'no synthesized enum:\n' + source);
+    isTrue(source.contains('FatalError = 2,'),
+      'enum ordinals should be explicit and PascalCase:\n' + source);
+    isTrue(source.contains('export distinct type Modes = u32;'),
+      'no synthesized flags type:\n' + source);
+    isTrue(source.contains('export let modesAppend = (4 as u32) as Modes;'),
+      'flag constants should be powers of two:\n' + source);
+    isTrue(source.contains(
+        'declare function describe_raw(a0: i32, ret: i32): void;'),
+      'an enum parameter is one raw i32:\n' + source);
+    isTrue(source.contains('return liftLevel(got);'),
+      'an enum result is not lifted:\n' + source);
+    isTrue(source.contains('invalid Level discriminant'),
+      'the enum lift should range-check:\n' + source);
+    isTrue(source.contains('combine_raw(m as u32, extra as u32)'),
+      'flags parameters should cast through u32:\n' + source);
+    // And the fixture importing all of it emits a component naming the
+    // interface.
+    let bytes = compileFor(`${fixtures}/codes-wit.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 10),
+        'wasi:codes/status@1.0.0'),
+      'the codes interface import is missing');
+  });
+
   test('a marshaling import lowers with the canonical memory options',
       (ctx: TestContext): void => {
     // text-wit.zena imports the whole transform interface. Every one of
