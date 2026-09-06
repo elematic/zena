@@ -30,6 +30,7 @@ import { runGvn } from './ir/gvn.zena';
 import { runSimplify } from './ir/simplify.zena';
 import { runBlockCleanup } from './ir/blockmerge.zena';
 import { runDce } from './ir/dce.zena';
+import { runInline } from './ir/inline.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
 import {
@@ -842,6 +843,52 @@ export final class ModuleGenerator {
     }
     performance.end(tLower);
 
+    // The module loop (-O2): inline sweeps to a fixpoint with a round
+    // cap, re-running the cleanup passes on every caller a sweep
+    // changed. Chains (an adapter calling an accessor) resolve across
+    // rounds rather than by a topological order.
+    var zirInlined = 0;
+    if (this.optLevel >= 2) {
+      let tLoop = performance.start("codegen-optimize-loop");
+      let changed = new GrowableArray<boolean>();
+      for (var i = 0; i < bodies.length; i += 1) {
+        changed.push(false);
+      }
+      var round = 0;
+      while (round < 3) {
+        for (var i = 0; i < bodies.length; i += 1) {
+          changed[i] = false;
+        }
+        let n = runInline(wasm, bodies, changed);
+        if (n == 0) {
+          break;
+        }
+        zirInlined += n;
+        for (var i = 0; i < bodies.length; i += 1) {
+          if (!changed[i]) {
+            continue;
+          }
+          let body = bodies[i];
+          zirSimplified += runSimplify(body);
+          zirBlocksRemoved += runBlockCleanup(body);
+          runGvn(body, new IrCfg(body));
+          zirDceRemoved += runDce(body);
+          let errors = verifyIr(body);
+          if (errors.length > 0) {
+            let f = wasm.functions[i];
+            var message = "zir verify failed after inlining into " +
+                (if (f.name != null) f.name as String else "<unnamed>") + ":";
+            for (let e in errors) {
+              message = message + "\n  " + e;
+            }
+            throw new Error(message);
+          }
+        }
+        round += 1;
+      }
+      performance.end(tLoop);
+    }
+
     let tEmitCode = performance.start("codegen-emit-code");
     this.emitter.emitCodeSectionStart(wasm.functions.length);
     var bodyIndex = 0;
@@ -859,6 +906,8 @@ export final class ModuleGenerator {
       console.log("zir cleanup: " + i32ToString(zirBlocksRemoved) +
           " blocks removed, " + i32ToString(zirDceRemoved) +
           " dead instructions removed");
+      console.log("zir inline: " + i32ToString(zirInlined) +
+          " call sites inlined");
       console.log("zir locals: " + i32ToString(zirGraduated) +
           " ref locals non-null, " + i32ToString(zirDemoted) +
           " kept nullable (init rollback)");

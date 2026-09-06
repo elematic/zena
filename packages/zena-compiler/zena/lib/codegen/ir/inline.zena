@@ -1,0 +1,243 @@
+/**
+ * Inlining, always-inline tier (docs/design/optimization-pipeline.md
+ * §Inlining): a direct call to a straight-line callee splices the
+ * callee's instructions into the caller and replaces the call's value
+ * with the callee's return value. Accessors, thunks, and
+ * argument-adaptation wrappers are the targets — the bodies whose call
+ * overhead exceeds their work.
+ *
+ * Eligibility is deliberately narrow: the callee is a single block
+ * ending in `ret`, with at most `inlineBudget` real instructions and a
+ * single (or no) return value. One block means no control-flow
+ * splicing, no continuation block, and no interaction with protected
+ * regions — the copied instructions simply live at the call site,
+ * inside whatever region it was in. Chains (an adapter calling an
+ * accessor) resolve over the driver's rounds rather than a
+ * topological order.
+ *
+ * What never inlines here: multi-block callees, multi-value returns,
+ * recursion into the same body, and callees containing `tail return`
+ * (its constant-stack guarantee would silently become a growing one).
+ * These are the v2 tier.
+ *
+ * Determinism: callers in module function order, sites in block and
+ * instruction order, callee lookup by identity map — no iteration
+ * over hash containers.
+ */
+import { HashMap } from 'zena:map';
+import { String } from 'zena:string';
+import { IrBody, IrOp, IrRefFunc } from './ir.zena';
+import { WasmModule, WasmFunction } from '../wasm-module.zena';
+
+let inlineBudget = 12;
+
+/**
+ * The callee's real (non-nop) instruction count when it is eligible
+ * for this tier, or -1.
+ */
+let inlinableSize = (body: IrBody): i32 => {
+  if (body.blocks.length != 1) {
+    return -1;
+  }
+  let blk = body.blocks[0];
+  if (blk.insts.length == 0) {
+    return -1;
+  }
+  let term = blk.insts[blk.insts.length - 1];
+  if (body.op(term) != IrOp.ret) {
+    return -1;
+  }
+  var count = 0;
+  for (let inst in blk.insts) {
+    if (inst == term) {
+      continue;
+    }
+    let op = body.op(inst);
+    if (op == IrOp.nop) {
+      continue;
+    }
+    count += 1;
+  }
+  if (count > inlineBudget) {
+    return -1;
+  }
+  return count;
+};
+
+/**
+ * Runs one inline sweep over every body. `changed[i]` is set for each
+ * caller that had a site inlined (the driver re-runs cleanup on
+ * those). Returns the number of sites inlined.
+ */
+export let runInline = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
+    changed: GrowableArray<boolean>): i32 => {
+  let bodyIndex = new HashMap<WasmFunction, i32>();
+  for (var i = 0; i < wasm.functions.length; i += 1) {
+    bodyIndex[wasm.functions[i]] = i;
+  }
+  var total = 0;
+  for (var i = 0; i < bodies.length; i += 1) {
+    let n = inlineIntoBody(bodies[i], bodyIndex, wasm, bodies, i);
+    if (n > 0) {
+      changed[i] = true;
+      total += n;
+    }
+  }
+  return total;
+};
+
+let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
+    wasm: WasmModule, bodies: GrowableArray<IrBody>, callerIdx: i32): i32 => {
+  var count = 0;
+  // repl maps an inlined call to the callee's (already remapped)
+  // return value; ids created by the splices are never themselves
+  // replaced, so anything past the original length is canonical.
+  let originalCount = caller.instCount();
+  let repl = new GrowableArray<i32>();
+  for (var i = 0; i < originalCount; i += 1) {
+    repl.push(i);
+  }
+  let canon = (v: i32): i32 => {
+    // A replacement can point at a spliced-in id (>= originalCount),
+    // which is already canonical — the guard keeps the chase in
+    // bounds.
+    var c = v;
+    while (c >= 0 && c < originalCount && repl[c] != c) {
+      c = repl[c];
+    }
+    return c;
+  };
+
+  for (var b = 0; b < caller.blocks.length; b += 1) {
+    let blk = caller.blocks[b];
+    var spliced = false;
+    let newInsts = new GrowableArray<i32>();
+    for (let inst in blk.insts) {
+      if (caller.op(inst) != IrOp.call) {
+        newInsts.push(inst);
+        continue;
+      }
+      let calleeIdx = calleeBodyFor(caller, inst, bodyIndex, wasm);
+      if (calleeIdx < 0 || calleeIdx == callerIdx) {
+        newInsts.push(inst);
+        continue;
+      }
+      let callee = bodies[calleeIdx];
+      if (inlinableSize(callee) < 0) {
+        newInsts.push(inst);
+        continue;
+      }
+      let params = callee.blocks[0].params;
+      let extraIdx = caller.a[inst];
+      let argc = caller.extra[extraIdx];
+      if (argc != params.length) {
+        // An argument-count mismatch would be a compiler bug, but a
+        // silently skipped site beats a corrupted splice.
+        newInsts.push(inst);
+        continue;
+      }
+
+      // Merge the callee's tables wholesale; indices remap by offset.
+      let typeOffset = caller.typeTable.length;
+      for (let t in callee.typeTable) {
+        caller.typeTable.push(t);
+      }
+      let refOffset = caller.refTable.length;
+      for (let r in callee.refTable) {
+        caller.refTable.push(r);
+      }
+      let varOffset = caller.varTypes.length;
+      for (let vt in callee.varTypes) {
+        caller.varTypes.push(vt);
+      }
+
+      // Value map: callee param i -> the call's argument i (through
+      // canon, in case it was itself an inlined call's result);
+      // anything else -> its copy, which exists because defs precede
+      // uses in id order.
+      let calleeMap = new GrowableArray<i32>();
+      let calleeCount = callee.instCount();
+      for (var i = 0; i < calleeCount; i += 1) {
+        calleeMap.push(-1);
+      }
+      for (var p = 0; p < params.length; p += 1) {
+        calleeMap[params[p]] = canon(caller.extra[extraIdx + 1 + p]);
+      }
+      let mapValue = (v: i32): i32 => {
+        if (v < 0) {
+          return v;
+        }
+        let mapped = calleeMap[v];
+        if (mapped < 0) {
+          throw new Error('inline: callee operand copied before its def');
+        }
+        return mapped;
+      };
+
+      let calleeBlk = callee.blocks[0];
+      let term = calleeBlk.insts[calleeBlk.insts.length - 1];
+      for (let ci in calleeBlk.insts) {
+        if (ci == term || callee.op(ci) == IrOp.nop) {
+          continue;
+        }
+        let newId = caller.copyFrom(callee, ci, mapValue, typeOffset,
+            refOffset, varOffset);
+        caller.instBlock[newId] = b;
+        calleeMap[ci] = newId;
+        newInsts.push(newId);
+      }
+
+      // The call becomes a nop; its value, when it had one, becomes
+      // the callee's returned value.
+      let retVal = callee.a[term];
+      if (retVal >= 0) {
+        repl[inst] = mapValue(retVal);
+      }
+      caller.opcode[inst] = IrOp.nop as i32;
+      caller.typeId[inst] = -1;
+      caller.a[inst] = -1;
+      caller.b[inst] = -1;
+      newInsts.push(inst);
+      spliced = true;
+      count += 1;
+    }
+    if (spliced) {
+      while (blk.insts.length > 0) {
+        blk.insts.pop();
+      }
+      for (let ni in newInsts) {
+        blk.insts.push(ni);
+      }
+    }
+  }
+
+  if (count > 0) {
+    let total = caller.instCount();
+    for (var i = 0; i < total; i += 1) {
+      if (caller.op(i) != IrOp.nop) {
+        caller.rewriteValueOperands(i, canon);
+      }
+    }
+  }
+  return count;
+};
+
+/**
+ * The body index of a call's target when it is a known local function
+ * with a single (or no) return value; -1 otherwise (imports, wrappers
+ * this module never lowered, multi-value returns).
+ */
+let calleeBodyFor = (caller: IrBody, inst: i32,
+    bodyIndex: HashMap<WasmFunction, i32>, wasm: WasmModule): i32 => {
+  let r = caller.refTable[caller.b[inst]];
+  if (!(r is IrRefFunc)) {
+    return -1;
+  }
+  if (r.target.signature.returns.length > 1) {
+    return -1;
+  }
+  if (let (true, idx) = bodyIndex.get(r.target)) {
+    return idx;
+  }
+  return -1;
+};

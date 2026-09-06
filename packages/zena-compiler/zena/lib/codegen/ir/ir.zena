@@ -925,6 +925,187 @@ export final class IrBody {
     throw new Error(`rewriteValueOperands: unhandled opcode ${irOpName(op)}`);
   }
 
+  /**
+   * Copies a NON-TERMINATOR instruction from `src` into this body,
+   * remapping value operands through `map` and table references by
+   * the given offsets (the caller appends src's typeTable, refTable,
+   * and varTypes wholesale before copying and passes the pre-append
+   * lengths; constant-pool values are copied here directly). Returns
+   * the new instruction id; the caller owns instBlock and block
+   * membership. Third mirror of
+   * appendValueOperands / rewriteValueOperands — keep all three in
+   * sync, branch for branch. Terminators (and param/nop) throw:
+   * inlining callees with control flow is a later tier, and a copy
+   * routine that silently mishandled a branch would corrupt the CFG.
+   */
+  copyFrom(src: IrBody, inst: i32, map: (v: i32) => i32, typeOffset: i32,
+      refOffset: i32, varOffset: i32): i32 {
+    let op = src.op(inst);
+    let av = src.a[inst];
+    let bv = src.b[inst];
+    let ty = src.typeId[inst];
+    let newTy = if (ty >= 0) ty + typeOffset else -1;
+    let newId = this.opcode.length;
+    let emit = (na: i32, nb: i32): i32 => {
+      this.opcode.push(op as i32);
+      this.typeId.push(newTy);
+      this.a.push(na);
+      this.b.push(nb);
+      this.instBlock.push(-1);
+      return newId;
+    };
+    let copyExtraRecord = (start: i32, len: i32): i32 => {
+      let idx = this.extra.length;
+      var i = 0;
+      while (i < len) {
+        this.extra.push(src.extra[start + i]);
+        i += 1;
+      }
+      return idx;
+    };
+    let copyMappedRecord = (start: i32, len: i32): i32 => {
+      let idx = this.extra.length;
+      var i = 0;
+      while (i < len) {
+        this.extra.push(map(src.extra[start + i]));
+        i += 1;
+      }
+      return idx;
+    };
+
+    if (op == IrOp.param || op == IrOp.nop || isIrTerminator(op)) {
+      throw new Error(`copyFrom: cannot copy ${irOpName(op)}`);
+    }
+    // Shape: no value operands. Payloads by op: const pools, refTable
+    // entities, var indices, the simd_const byte record.
+    if (op == IrOp.const_i32 || op == IrOp.memory_size) {
+      return emit(av, bv);
+    }
+    if (op == IrOp.const_i64) {
+      this.constI64.push(src.constI64[av]);
+      return emit(this.constI64.length - 1, bv);
+    }
+    if (op == IrOp.const_f32 || op == IrOp.const_f64) {
+      this.constF64.push(src.constF64[av]);
+      return emit(this.constF64.length - 1, bv);
+    }
+    if (op == IrOp.ref_null) {
+      return emit(av, bv);
+    }
+    if (op == IrOp.ref_func || op == IrOp.str_lit || op == IrOp.global_get ||
+        op == IrOp.struct_new_default) {
+      return emit(av, if (bv >= 0) bv + refOffset else bv);
+    }
+    if (op == IrOp.var_get) {
+      return emit(av, bv + varOffset);
+    }
+    if (op == IrOp.simd_const) {
+      return emit(av, copyExtraRecord(bv, 16));
+    }
+    // Shape: one value in slot a; slot b's meaning varies by op.
+    if (isSingleValueOp(op)) {
+      let na = map(av);
+      if (op == IrOp.ref_test || op == IrOp.ref_cast) {
+        return emit(na, bv + typeOffset);
+      }
+      if (op == IrOp.global_set || op == IrOp.struct_get ||
+          op == IrOp.iface_pack) {
+        return emit(na, bv + refOffset);
+      }
+      if (op == IrOp.var_set) {
+        return emit(na, bv + varOffset);
+      }
+      if (op == IrOp.simd_extract_lane || op == IrOp.simd_load) {
+        return emit(na, copyExtraRecord(bv, 2));
+      }
+      // mv_get's result index, simd_unary's opcode, and the -1 of the
+      // pure unary ops all ride slot b verbatim.
+      return emit(na, bv);
+    }
+    // Shape: two values inline.
+    if (op == IrOp.array_get || op == IrOp.array_get_u ||
+        op == IrOp.array_get_s || op == IrOp.ref_eq ||
+        isWideMulOp(op) || isBinaryNumericOp(op)) {
+      return emit(map(av), map(bv));
+    }
+    if (op == IrOp.i64_add128 || op == IrOp.i64_sub128) {
+      return emit(copyMappedRecord(av, 4), bv);
+    }
+    if (op == IrOp.struct_set) {
+      return emit(copyMappedRecord(av, 2), bv + refOffset);
+    }
+    if (op == IrOp.i32_store || op == IrOp.i32_store8 ||
+        op == IrOp.i64_store || op == IrOp.f32_store ||
+        op == IrOp.f64_store) {
+      return emit(copyMappedRecord(av, 2), bv);
+    }
+    if (op == IrOp.array_set) {
+      return emit(copyMappedRecord(av, 3), bv);
+    }
+    if (op == IrOp.array_copy) {
+      return emit(copyMappedRecord(av, 5), bv);
+    }
+    if (op == IrOp.array_new_data) {
+      // [offset, length, dataIndex] — the data segment is module-level,
+      // so its index copies verbatim.
+      let idx = this.extra.length;
+      this.extra.push(map(src.extra[av]));
+      this.extra.push(map(src.extra[av + 1]));
+      this.extra.push(src.extra[av + 2]);
+      return emit(idx, if (bv >= 0) bv + refOffset else bv);
+    }
+    if (op == IrOp.array_new) {
+      let idx = this.extra.length;
+      this.extra.push(map(src.extra[av]));
+      let init = src.extra[av + 1];
+      this.extra.push(if (init >= 0) map(init) else init);
+      return emit(idx, if (bv >= 0) bv + refOffset else bv);
+    }
+    if (op == IrOp.struct_new || op == IrOp.call ||
+        op == IrOp.array_new_fixed) {
+      let argc = src.extra[av];
+      let idx = this.extra.length;
+      this.extra.push(argc);
+      var i = 0;
+      while (i < argc) {
+        this.extra.push(map(src.extra[av + 1 + i]));
+        i += 1;
+      }
+      return emit(idx, if (bv >= 0) bv + refOffset else bv);
+    }
+    if (op == IrOp.call_ref) {
+      let idx = this.extra.length;
+      this.extra.push(map(src.extra[av]));
+      let argc = src.extra[av + 1];
+      this.extra.push(argc);
+      var i = 0;
+      while (i < argc) {
+        this.extra.push(map(src.extra[av + 2 + i]));
+        i += 1;
+      }
+      return emit(idx, bv);
+    }
+    // SIMD shapes with a value list in extra; slot b is either the
+    // plain opcode (binary/ternary) or an immediate record.
+    let simdCount = simdExtraOperandCount(op);
+    if (simdCount > 0) {
+      let na = copyMappedRecord(av, simdCount);
+      if (op == IrOp.simd_binary || op == IrOp.simd_ternary) {
+        return emit(na, bv);
+      }
+      if (op == IrOp.simd_shuffle) {
+        return emit(na, copyExtraRecord(bv, 16));
+      }
+      if (op == IrOp.simd_store || op == IrOp.simd_replace_lane) {
+        return emit(na, copyExtraRecord(bv, 2));
+      }
+      if (op == IrOp.simd_load_lane || op == IrOp.simd_store_lane) {
+        return emit(na, copyExtraRecord(bv, 3));
+      }
+    }
+    throw new Error(`copyFrom: unhandled opcode ${irOpName(op)}`);
+  }
+
   #rewriteSuccessorArgs(inst: i32, map: (v: i32) => i32): void {
     for (let s in this.successors(inst)) {
       var i = 0;

@@ -526,6 +526,57 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('(func $main'));
   });
 
+  test('-O2 inlines a trivial call chain to a constant', (ctx: TestContext): void => {
+    // main calls f calls inc; the rounds inline the chain and the
+    // cleanup passes fold what remains, so main is one constant.
+    let result = compileWithZirAt(
+        'let inc = (x: i32): i32 => x + 1;\n' +
+        'let f = (y: i32): i32 => inc(y);\n' +
+        'export let main = (): i32 => f(20);', 2);
+    let present = new GrowableArray<String>();
+    present.push('i32.const 21');
+    assertFunctionUses(result, '$main', present,
+        'the inlined chain folds to its value');
+    let absent = new GrowableArray<String>();
+    absent.push('call ');
+    assertFunctionOmits(result, '$main', absent,
+        'no call survives inlining the chain');
+  });
+
+  test('-O2 inlines a private method into its caller', (ctx: TestContext): void => {
+    let result = compileWithZirAt(
+        'class P {\n' +
+        '  #x: i32 = 7;\n' +
+        '  new();\n' +
+        '  #twice(): i32 { return this.#x + this.#x; }\n' +
+        '  sum(): i32 { return this.#twice() + 1; }\n' +
+        '}\n' +
+        'let f = (p: P): i32 => p.sum();\n' +
+        'export let main = (): i32 => f(new P());', 2);
+    var sumName = '';
+    for (let chunk in result.split('(func $')) {
+      if (chunk.startsWith('P_') && chunk.contains('.sum')) {
+        sumName = '$' + chunk.split(' ')[0];
+      }
+    }
+    isTrue(sumName.length > 0, 'no P.sum function in the emitted module');
+    let absent = new GrowableArray<String>();
+    absent.push('call ');
+    assertFunctionOmits(result, sumName, absent,
+        'the private accessor call is inlined');
+  });
+
+  test('-O1 does not inline', (ctx: TestContext): void => {
+    let result = compileWithZir(
+        'let inc = (x: i32): i32 => x + 1;\n' +
+        'let f = (y: i32): i32 => inc(y);\n' +
+        'export let main = (): i32 => f(20);');
+    let present = new GrowableArray<String>();
+    present.push('call $inc');
+    assertFunctionUses(result, '$f', present,
+        'inlining is the module loop, which is -O2');
+  });
+
   test('-O0 turns the cleanup passes off', (ctx: TestContext): void => {
     // Same program as the folding test below, compiled at level 0:
     // the arithmetic must survive. GVN still runs at every level.

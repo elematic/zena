@@ -30,11 +30,14 @@ removes — the verifier rejects unreachable blocks, so those two are a
 pair. DCE runs last to sweep what folding and GVN left unused.
 
 The module pass is two-phase: every body is lowered, optimized, and
-verified (and retained) before any is emitted, so module-level passes
-(inlining, harvest) have a place to run between the phases. `-O0`
+verified (and retained) before any is emitted. Between the phases, at
+`-O2`, the module loop runs: inline sweeps (inline.zena) to a
+fixpoint with a round cap, re-cleaning every changed caller. `-O0`
 skips the cleanup passes; GVN runs at every level (emission quality
 and the narrowing cast-dedup contract depend on it). The level arrives
-as `ZENA_OPT_LEVEL` / `-O<n>` (docs/design/optimization-pipeline.md).
+as `ZENA_OPT_LEVEL` / `-O<n>` (docs/design/optimization-pipeline.md);
+`build:self-hosted` and the fixpoint gate run `-O2`, so byte parity
+polices the loop.
 
 ## File map
 
@@ -57,6 +60,7 @@ as `ZENA_OPT_LEVEL` / `-O<n>` (docs/design/optimization-pipeline.md).
 | `simplify.zena`         | Peephole pass, before GVN: constant folding (trap-preserving, NaN-guarded), algebraic identities, power-of-two strength reduction, constant-condition branch folding. One id-order forward pass; folds cascade because operand ids precede uses.                                                                            |
 | `blockmerge.zena`       | CFG cleanup: physically removes blocks unreachable after branch folding (compacts the block list, renumbers successor targets and tryJoin). Skips a function whose try-join block would die.                                                                                                                              |
 | `dce.zena`              | Use-count DCE, one reverse-id pass (dead chains collapse because operand ids precede uses). Effects/trap table decides removability; loads need a non-null receiver.                                                                                                                                                       |
+| `inline.zena`           | Always-inline tier (-O2): splices single-block callees (accessors, thunks, adapters) into direct call sites via IrBody.copyFrom; chains resolve over the driver's rounds. Multi-block callees, multi-value returns, and `tail return` bodies are the v2 tier.                                                             |
 | `gvn.zena`              | Dominator-scoped value numbering; string keys + id-order walk keep it deterministic.                                                                                                                                                                                                                                      |
 | `verifier.zena`         | Structural/type checks on `IrBody`; failures are loud compile errors.                                                                                                                                                                                                                                                     |
 | `emit.zena`             | SSA destruction: stack scheduling (`#pushValue` discipline), block-param copy coalescing, domtree stackifier, terminator streaming, init-discipline non-null local typing (live validator replay + removable asserts, ir.md §12.1).                                                                                       |
