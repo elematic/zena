@@ -4891,11 +4891,10 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
           ctx.error("Type 'array' is generic and requires exactly 1 type argument.", DiagnosticCode.TypeMismatch, ann.loc);
           return new ErrorType();
         }
-        // Transitional: bare `array<T>` still has mutable elements, so
-        // `array<var T>` and `array<T>` resolve identically for now. The
-        // bare spelling flips to immutable elements once the stdlib can
-        // write `array<var T>` — see docs/design/array-mutability.md.
-        return new ArrayType(resolvedArgs[0], true);
+        // `array<var T>` has mutable elements — `(array (mut T))`; bare
+        // `array<T>` is the immutable-element `(array T)`. See
+        // docs/design/array-mutability.md.
+        return new ArrayType(resolvedArgs[0], elementsMutable);
       }
       case _: {
         if (hasTypeArgs) {
@@ -7264,10 +7263,14 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case ArrayType {elementType, elementsMutable}: {
       match (target) {
         case ClassType as tgtClass: {
-          // The array-backed classes are all backed by a mutable-element
-          // array until the stdlib can write `array<var T>`, so an
-          // immutable-element array satisfies none of them.
-          let isArrayLike = elementsMutable && (isPreludeClassType(ctx, tgtClass, "GrowableArray") || isPreludeClassType(ctx, tgtClass, "Array") || isPreludeClassType(ctx, tgtClass, "FixedArray") || isPreludeClassType(ctx, tgtClass, "ImmutableArray"));
+          // A bare array satisfies the extension class over its own
+          // representation: mutable elements match the mutable-backed
+          // classes, immutable elements match ImmutableArray.
+          let isArrayLike = if (elementsMutable) {
+            isPreludeClassType(ctx, tgtClass, "GrowableArray") || isPreludeClassType(ctx, tgtClass, "Array") || isPreludeClassType(ctx, tgtClass, "FixedArray")
+          } else {
+            isPreludeClassType(ctx, tgtClass, "ImmutableArray")
+          };
           if (isArrayLike && tgtClass.typeArguments != null) {
             let tgtArgs = tgtClass.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {
@@ -7280,9 +7283,9 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
           }
         }
         case InterfaceType as tgtIface: {
-          // Interface satisfaction rides on the mutable-backed classes'
-          // implementations for now, same as above.
-          let isIfaceLike = elementsMutable && (isPreludeInterfaceType(ctx, tgtIface, "Array") || isPreludeInterfaceType(ctx, tgtIface, "MutableArray") || isPreludeInterfaceType(ctx, tgtIface, "Iterable"));
+          // Both backing classes implement Array and Iterable; only the
+          // mutable one implements MutableArray.
+          let isIfaceLike = isPreludeInterfaceType(ctx, tgtIface, "Array") || isPreludeInterfaceType(ctx, tgtIface, "Iterable") || (elementsMutable && isPreludeInterfaceType(ctx, tgtIface, "MutableArray"));
           if (isIfaceLike && tgtIface.typeArguments != null) {
             let tgtArgs = tgtIface.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {
@@ -9554,7 +9557,9 @@ let getArrayPatternElementType = (ctx: CheckerContext, t: Type): Type | null => 
 let getArrayPatternRestType = (ctx: CheckerContext, t: Type, elemType: Type): Type => {
   let unwrapped = unwrapAliases(t);
   if (unwrapped is ArrayType) {
-    return new ArrayType(elemType, (unwrapped as ArrayType).elementsMutable);
+    // The rest slice is a freshly built array regardless of the
+    // source's element mutability, and codegen builds it mutable.
+    return new ArrayType(elemType, true);
   }
   let faType = ctx.resolvePreludeType("FixedArray");
   if (faType is ClassType) {
@@ -10476,6 +10481,21 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
               }
             }
           }
+          case ArrayType {elementsMutable}: {
+            // `(array T)` has no array.set; only the mutable-element
+            // array can be written through.
+            if (!elementsMutable) {
+              ctx.error(
+                "Cannot assign to an element of 'array<" +
+                    typeToString((objectType as ArrayType).elementType) +
+                    ">'; its elements are immutable. Use 'array<var T>' " +
+                    "or a FixedArray for mutable elements.",
+                DiagnosticCode.InvalidAssignment,
+                loc
+              );
+              return new ErrorType();
+            }
+          }
           case _: {}
         }
       }
@@ -10985,32 +11005,41 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // down, so the annotation-level check above is not enough on its own.
     rejectSecondClassStorage(ctx, inferredElementType, "an array", loc);
 
-    var faType = ctx.resolvePreludeType("FixedArray");
-    let {currentClass} = ctx;
-    // Matched by name, deliberately, unlike every other well-known
-    // declaration lookup. This asks whether the class being checked is the
-    // one the array literal should be typed as, and the same file can be
-    // reached under two module ids — `zena:fixed-array` from the prelude
-    // and its filesystem path when checked as an entry point — which
-    // produces two nominal FixedArray types. Comparing the canonical
-    // location would fail for the second one and leave the literal typed as
-    // the other copy. See docs/design/stdlib-organization.md.
-    if (currentClass != null && currentClass.name == "FixedArray") {
-      faType = currentClass as Type;
+    // A literal is an ImmutableArray unless the context demands mutable
+    // elements: an expected FixedArray or GrowableArray, the
+    // MutableArray interface, or a mutable-element `array<var T>`.
+    // (resolveArrayBackingClass carries the same by-name currentClass
+    // match this site used to hold; see
+    // docs/design/stdlib-organization.md for why it is by name.)
+    var wantsMutable = false;
+    if (expectedType != null) {
+      // `FixedArray<T>?` wants mutable elements as much as
+      // `FixedArray<T>` does.
+      match (baseType(subtractNullFromType(expectedType))) {
+        case ClassType as ect: {
+          if (isPreludeClassType(ctx, ect, "FixedArray") ||
+              isPreludeClassType(ctx, ect, "GrowableArray")) {
+            wantsMutable = true;
+          }
+        }
+        case InterfaceType as eit: {
+          if (isPreludeInterfaceType(ctx, eit, "MutableArray")) {
+            wantsMutable = true;
+          }
+        }
+        case ArrayType {elementsMutable as em}: {
+          if (em) { wantsMutable = true; }
+        }
+        case _: {}
+      }
     }
+    let faType = resolveArrayBackingClass(ctx, wantsMutable);
     if (faType == null) {
-      throw new Error("prelude FixedArray class not found");
+      throw new Error("prelude array backing class not found");
     }
-    match (faType) {
-      case ClassType as faCt: {
-        let typeArgs = new GrowableArray<Type>();
-        typeArgs.push(inferredElementType);
-        instantiateClassType(faCt, typeArgs) as Type
-      }
-      case _: {
-        throw new Error("prelude FixedArray is not a ClassType");
-      }
-    }
+    let typeArgs = new GrowableArray<Type>();
+    typeArgs.push(inferredElementType);
+    instantiateClassType(faType as ClassType, typeArgs) as Type
   }
   case RecordLiteral {properties, loc}: {
     // Contextual typing: expected property types flow into the property
@@ -15823,18 +15852,12 @@ let resolveMemberType = (
       );
       return new ErrorType();
     }
-    case ArrayType {elementType}: {
-      // ArrayType is produced by array literals [1, 2, 3].
-      // Delegate to FixedArray<T> prelude type with T = elementType.
-      var faType = ctx.resolvePreludeType("FixedArray");
-      let {currentClass} = ctx;
-      // Matched by name for the reason given at the other array-literal
-      // site: one file, two module ids, two nominal FixedArray types.
-      if (currentClass != null && currentClass.name == "FixedArray") {
-        faType = currentClass as Type;
-      }
+    case ArrayType {elementType, elementsMutable}: {
+      // Delegate to the backing extension class — FixedArray<T> for
+      // mutable elements, ImmutableArray<T> for immutable ones.
+      let faType = resolveArrayBackingClass(ctx, elementsMutable);
       if (faType != null) {
-        match (faType) {
+        match (faType as Type) {
           case ClassType as faCt: {
             let classSymId = (faCt.genericSource ?? faCt).symbolId;
             let deps = ctx.currentDependencies();
@@ -15980,6 +16003,30 @@ let describeIndexParameters = (
 };
 
 /**
+ * The extension class whose members serve a bare array receiver:
+ * FixedArray for mutable elements, ImmutableArray for immutable ones.
+ *
+ * Matched against `currentClass` by name for the reason given at the
+ * array-literal site: the declaring file can be reached under two
+ * module ids, producing two nominal copies of the class.
+ */
+let resolveArrayBackingClass = (
+  ctx: CheckerContext,
+  elementsMutable: boolean
+): ClassType | null => {
+  let name = if (elementsMutable) "FixedArray" else "ImmutableArray";
+  let {currentClass} = ctx;
+  if (currentClass != null && currentClass.name == name) {
+    return currentClass;
+  }
+  let resolved = ctx.resolvePreludeType(name);
+  if (resolved is ClassType) {
+    return resolved as ClassType;
+  }
+  return null;
+};
+
+/**
  * Resolve the result type of an index operation.
  */
 let resolveIndexType = (
@@ -16000,9 +16047,10 @@ let resolveIndexType = (
   operands.push(index);
 
   match (objectType) {
-    case ArrayType {elementType}: {
-      // Check for extension class operator[] on Array types (e.g., FixedArray<T>.operator[](Range))
-      let fixedArrayPrelude = ctx.resolvePreludeType("FixedArray");
+    case ArrayType {elementType, elementsMutable}: {
+      // Check for extension class operator[] on the backing array class
+      // (e.g., FixedArray<T>.operator[](Range)).
+      let fixedArrayPrelude = resolveArrayBackingClass(ctx, elementsMutable);
       if (fixedArrayPrelude is ClassType) {
         let typeArgs = new GrowableArray<Type>();
         typeArgs.push(elementType);

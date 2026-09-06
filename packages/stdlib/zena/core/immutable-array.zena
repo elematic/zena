@@ -1,6 +1,6 @@
 import { Array } from 'zena:array';
+import { FixedArray } from 'zena:fixed-array';
 import { Iterable, Iterator } from 'zena:iterator';
-import { ArrayIterator } from 'zena:array-iterator';
 import { IterableUtils } from 'zena:iterable-utils';
 
 export final extension class ImmutableArray<T> on array<T> with IterableUtils<T> implements Array<T> {
@@ -10,30 +10,44 @@ export final extension class ImmutableArray<T> on array<T> with IterableUtils<T>
   @intrinsic('array.get')
   declare operator [](index: i32): T;
 
-  static from<A>(seq: Array<A>): ImmutableArray<A> {
-    let len = seq.length;
-    let result = __array_new_empty<A>(len);
-    var i = 0;
-    while (i < len) {
-      result[i] = seq[i];
-      i += 1;
-    }
-    return result as ImmutableArray<A>;
-  }
+  // There is no `from(seq)`: Wasm has no way to fill an immutable array
+  // after allocation, so an immutable array is only produced fully
+  // formed — by an array literal or `array.new_data`.
 
-  map<U>(f: (item: T, index: i32, seq: ImmutableArray<T>) => U): ImmutableArray<U> {
+  map<U>(f: (item: T, index: i32, seq: ImmutableArray<T>) => U): FixedArray<U> {
     let self = this as ImmutableArray<T>;
     let len = self.length;
-    let result = __array_new_empty<U>(len);
+    let result = __array_new_empty<U>(len) as FixedArray<U>;
     var i = 0;
     while (i < len) {
       result[i] = f(self[i], i, self);
       i += 1;
     }
-    return result as ImmutableArray<U>;
+    return result;
   }
 
   [Iterable.iterator](): Iterator<T> {
-    return new ArrayIterator<T>(this as array<var T>);
+    return new ImmutableArrayIterator<T>(this as ImmutableArray<T>);
+  }
+}
+
+/**
+ * Iterator over an ImmutableArray<T>. For-in over a typed immutable
+ * array fuses into an index loop; this exists for the iterator
+ * protocol's sake.
+ */
+final class ImmutableArrayIterator<T> implements Iterator<T> {
+  #array: ImmutableArray<T>;
+  var #index: i32;
+
+  new(arr: ImmutableArray<T>) : #array = arr, #index = 0;
+
+  next(): inline (true, T) | inline (false, _) {
+    if (this.#index < this.#array.length) {
+      let value = this.#array[this.#index];
+      this.#index += 1;
+      return (true, value);
+    }
+    return (false, _);
   }
 }

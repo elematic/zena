@@ -1,0 +1,38 @@
+// @mode: run
+// @stdlib: true
+// @result: 65442
+
+import { Array } from 'zena:array';
+import { FixedArray } from 'zena:fixed-array';
+import { ImmutableArray } from 'zena:immutable-array';
+
+// An array literal is an ImmutableArray unless the context wants
+// mutable elements: reads, iteration, interface use, and map all work
+// on the default; a FixedArray context makes the literal mutable.
+let sumThrough = (arr: Array<i32>): i32 => {
+  var total = 0;
+  for (let v in arr) {
+    total += v;
+  }
+  return total;
+};
+
+export let main = (): i32 => {
+  var acc = 0;
+  let a = [1, 2, 3];
+  if (a.length == 3) { acc += 2; }             // ImmutableArray.length
+  if (a[2] == 3) { acc += 40; }                // ImmutableArray.[]
+  var sum = 0;
+  for (let v in a) { sum += v; }               // fused index loop
+  if (sum == 6) { acc += 400; }
+  if (sumThrough(a) == 6) { acc += 5000; }     // through Array<T>
+
+  let m = a.map((x: i32, i: i32, seq: ImmutableArray<i32>): i32 => x * 2);
+  m[0] = 8;                                    // map returns a FixedArray
+  if (m[0] + m[1] + m[2] == 18) { acc += 20000; }
+
+  let f: FixedArray<i32> = [5, 6, 7];          // context makes it mutable
+  f[0] = 32;
+  if (f[0] + sumThrough(f) == 77) { acc += 40000; }
+  return acc;
+};

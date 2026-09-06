@@ -4130,19 +4130,21 @@ Collections like `FixedArray<T>`, `GrowableArray<T>`, `HashMap<K, V>`, `HashSet<
 
 #### FixedArray\<T\>
 
-`FixedArray<T>` is a fixed-size array backed directly by a WASM-GC array. The
-`[...]` literal syntax creates a `FixedArray`:
+`FixedArray<T>` is a fixed-size array of mutable elements backed directly by a
+WASM-GC array. The `[...]` literal syntax creates an `ImmutableArray<T>` by
+default; a `FixedArray` contextual type makes the literal mutable:
 
 ```zena
-let nums = [1, 2, 3];              // FixedArray<i32>
-let names = ["Alice", "Bob"];       // FixedArray<String>
-let empty: FixedArray<i32> = [];    // empty (type annotation required)
+let nums = [1, 2, 3];                 // ImmutableArray<i32>
+let names: FixedArray<String> = ["Alice", "Bob"];  // mutable elements
+let empty: FixedArray<i32> = [];      // empty (type annotation required)
 ```
 
-Elements are accessed and mutated by index. `.length` returns the array size:
+Elements are accessed by index and `.length` returns the array size; only a
+`FixedArray`'s elements can be assigned:
 
 ```zena
-let arr = [10, 20, 30];
+let arr: FixedArray<i32> = [10, 20, 30];
 let first = arr[0];       // 10
 arr[1] = 99;              // mutate in place
 let len = arr.length;     // 3
@@ -4161,10 +4163,10 @@ extension class Buffer on array<var u8> { ... }
 
 `var` here is part of the grammar of the `array` type constructor — it
 marks the element slot mutable, the same way `var` marks a mutable field
-or binding — and is rejected on any other generic type. Today
-`array<var T>` and `array<T>` name the same type; the bare spelling is
-planned to become the immutable-element array `(array T)`, with
-`array<var T>` keeping today's `(array (mut T))` representation. See
+or binding — and is rejected on any other generic type. Bare `array<T>`
+is the immutable-element array `(array T)`; `array<var T>` is the
+mutable `(array (mut T))`. Wasm gives no subtyping between the two in
+either direction, so they do not interchange. See
 `docs/design/array-mutability.md`.
 
 #### Array\<T\>

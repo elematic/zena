@@ -7,13 +7,20 @@ a free abstraction and replaces it with one that currently costs about
 [Required optimizations](#required-optimizations) has to land first, and
 the [Acceptance gate](#acceptance-gate) defines what "first" means.
 
-The machinery is now in place ahead of the flip: `ArrayType` carries
-`elementsMutable`, the parser accepts `array<var T>`, and codegen emits
-`(array T)` for an immutable-element `ArrayType`. Bare `array<T>` still
-resolves to mutable elements — the stdlib is compiled by the pinned
-bootstrap, which cannot parse `array<var T>`, so flipping the default is
-a two-step landing: reseed first, then migrate the stdlib's six `array<`
-sites and flip the resolution default and array literals together.
+The representation change itself has landed: `ArrayType` carries
+`elementsMutable`, bare `array<T>` resolves to the immutable-element
+`(array T)` with `array<var T>` the mutable `(array (mut T))`, array
+literals default to `ImmutableArray` unless the context wants mutable
+elements, and `ImmutableArray` sits on the immutable representation
+(its `from` is gone; `map` returns a `FixedArray`). The landing took
+three steps because the stdlib is compiled by the pinned bootstrap,
+which could not parse `array<var T>`: the machinery and syntax first,
+then a reseed, then the stdlib migration and the default flip.
+
+What remains gated on the optimizer work is the performance story for
+representation-polymorphic code — the [Required
+optimizations](#required-optimizations) and [Acceptance
+gate](#acceptance-gate) below.
 
 ## Overview
 

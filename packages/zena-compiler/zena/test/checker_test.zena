@@ -50,6 +50,16 @@ let createTestSharedState = (): SharedCheckerState => {
   fixedArrayClass.members["push"] = new MethodInfo(new FunctionType(faPushParams, null, new VoidType() as Type), false, false, false, false);
   sharedState.preludeTypes["FixedArray"] = fixedArrayClass as Type;
 
+  // Array literals type as ImmutableArray unless the context wants
+  // mutable elements, so member lookup on a literal resolves here.
+  let immutableArrayClass = new ClassType(9002 as TypeId, noSymbolId, "ImmutableArray");
+  let iaT = new TypeParameterType("T", null, null);
+  let iaTArr = new GrowableArray<TypeParameterType>();
+  iaTArr.push(iaT);
+  immutableArrayClass.typeParameters = iaTArr;
+  immutableArrayClass.members["length"] = new FieldInfo(new I32Type() as Type, false, false, false, false, false);
+  sharedState.preludeTypes["ImmutableArray"] = immutableArrayClass as Type;
+
   let growableArrayClass = new ClassType(9003 as TypeId, noSymbolId, "GrowableArray");
   let arrT = new TypeParameterType("T", null, null);
   let arrTArr = new GrowableArray<TypeParameterType>();

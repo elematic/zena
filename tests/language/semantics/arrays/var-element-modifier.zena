@@ -1,16 +1,21 @@
 // @mode: check
-// `array<var T>` spells the element slot's mutability explicitly. Until
-// the bare default flips, `array<var T>` and `array<T>` are the same
-// type, so the two spellings interchange freely.
+// `array<var T>` has mutable elements — Wasm's `(array (mut T))`; bare
+// `array<T>` is the immutable-element `(array T)`. Wasm gives no
+// subtyping between them in either direction.
 import { FixedArray } from 'zena:fixed-array';
+import { ImmutableArray } from 'zena:immutable-array';
 
 let a: array<var i32> = __array_new(3, 0);
-let b: array<i32> = a;
-let c: array<var i32> = b;
+let bad: array<i32> = a; // @error: Type mismatch
+let b: array<var i32> = a;
 
-// The elements are mutable, so FixedArray's operators apply.
+// Mutable elements take FixedArray's operators; the immutable array
+// takes ImmutableArray's.
 let fixed = a as FixedArray<i32>;
+let imm: ImmutableArray<i32> = [1, 2, 3];
+let elem: i32 = imm[0];
+let len: i32 = imm.length;
 
 // `var` is part of the grammar of the builtin array type constructor,
 // not a general type-argument modifier.
-let bad: FixedArray<var i32> = __array_new(3, 0); // @error: The 'var' element modifier only applies to the builtin 'array' type constructor.
+let wrong: FixedArray<var i32> = __array_new(3, 0); // @error: The 'var' element modifier only applies to the builtin 'array' type constructor.

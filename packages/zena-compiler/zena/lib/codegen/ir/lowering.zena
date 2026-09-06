@@ -5708,8 +5708,12 @@ export final class FunctionLowerer {
     // backends share one module, so cross-backend calls are plain
     // direct calls.
     var arrayElem: Type | null = null;
+    var arrayElemsMutable = true;
     match (selfResolved) {
-      case ArrayType as at: { arrayElem = at.elementType; }
+      case ArrayType as at: {
+        arrayElem = at.elementType;
+        arrayElemsMutable = at.elementsMutable;
+      }
       case ClassType as arrCt: {
         if (arrCt.name == "array" && arrCt.typeArguments != null &&
             (arrCt.typeArguments as GrowableArray<Type>).length > 0) {
@@ -5719,7 +5723,7 @@ export final class FunctionLowerer {
       case _: {}
     }
     if (arrayElem != null) {
-      return this.#lowerArrayExtensionCall(call, member, arrayElem);
+      return this.#lowerArrayExtensionCall(call, member, arrayElem, arrayElemsMutable);
     }
     if (!(selfResolved is ClassType)) {
       this.#bail('method receiver kind');
@@ -6918,7 +6922,7 @@ export final class FunctionLowerer {
    * template when the element is a type parameter), mirroring the
    * streaming backend's matching. Receiver is argument 0.
    */
-  #lowerArrayExtensionCall(call: CallExpression, member: MemberExpression, elemType: Type): i32 {
+  #lowerArrayExtensionCall(call: CallExpression, member: MemberExpression, elemType: Type, elemsMutable: boolean): i32 {
     let propName = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
     // Overloaded extension methods (slice(start) / slice(start, end))
@@ -6948,6 +6952,9 @@ export final class FunctionLowerer {
         }
       }
     }
+    // The receiver's element mutability picks its backing class:
+    // methods of the other one take the other Wasm array type.
+    let backingName = if (elemsMutable) "FixedArray" else "ImmutableArray";
     if (target == null) {
     for (let f in this.wasm.arrayMethods) {
       if (f.classType == null || f.methodName == null ||
@@ -6955,7 +6962,7 @@ export final class FunctionLowerer {
         continue;
       }
       let fClass = f.classType as ClassType;
-      if (fClass.name != "FixedArray" && fClass.name != "ImmutableArray") {
+      if (fClass.name != backingName) {
         continue;
       }
       let fArgs = fClass.typeArguments;

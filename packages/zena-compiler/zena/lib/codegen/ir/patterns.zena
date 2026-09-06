@@ -270,21 +270,48 @@ export let arraySliceRead = (cx: LoweringContext, value: i32, startIndex: i32): 
           if (slot >= 0) {
             let sig = asWasmSignature(vst.fields[slot].type);
             if (sig != null && sig.returns.length > 0) {
+              // An interface-typed receiver hides which array backs it:
+              // `Array<T>` is satisfied by both `(array (mut T))` and
+              // `(array T)`. The copy branches on the instance's actual
+              // representation — array.copy reads from either, only the
+              // destination must be mutable.
               let elemVt = sig.returns[0];
-              let arrType = cx.wasm.getArray(elemVt, true);
-              let arrRefVt = new ValTypeRef(arrType) as ValType;
+              let mutArr = cx.wasm.getArray(elemVt, true);
+              let mutRefVt = new ValTypeRef(mutArr) as ValType;
+              let immArr = cx.wasm.getArray(elemVt, false);
+              let immRefVt = new ValTypeRef(immArr) as ValType;
               let inst = cx.b.emit(IrOp.iface_instance, st.fields[0].type, value, -1);
               let destPair = cx.b.pushExtra(twoValues(sliceLen, -1));
-              let dest = cx.b.emit(IrOp.array_new, arrRefVt, destPair, cx.b.addRef(new IrRefType(arrType)));
-              let castInst = cx.b.emit(IrOp.ref_cast, arrRefVt, inst, cx.b.internType(arrRefVt));
-              let copyTuple = new GrowableArray<i32>();
-              copyTuple.push(dest);
-              copyTuple.push(zero);
-              copyTuple.push(castInst);
-              copyTuple.push(startVal);
-              copyTuple.push(sliceLen);
-              let copyTupleIdx = cx.b.pushExtra(copyTuple);
-              cx.b.emitVoid(IrOp.array_copy, copyTupleIdx, -1);
+              let dest = cx.b.emit(IrOp.array_new, mutRefVt, destPair, cx.b.addRef(new IrRefType(mutArr)));
+              let isMut = cx.b.emit(IrOp.ref_test, new ValTypeI32(), inst, cx.b.internType(mutRefVt));
+              let mutB = cx.b.newBlock();
+              let immB = cx.b.newBlock();
+              let doneB = cx.b.newBlock();
+              cx.b.brIf(isMut, mutB, noValues(), immB, noValues());
+
+              cx.b.switchTo(mutB);
+              let castMut = cx.b.emit(IrOp.ref_cast, mutRefVt, inst, cx.b.internType(mutRefVt));
+              let mutTuple = new GrowableArray<i32>();
+              mutTuple.push(dest);
+              mutTuple.push(zero);
+              mutTuple.push(castMut);
+              mutTuple.push(startVal);
+              mutTuple.push(sliceLen);
+              cx.b.emitVoid(IrOp.array_copy, cx.b.pushExtra(mutTuple), -1);
+              cx.b.br(doneB, noValues());
+
+              cx.b.switchTo(immB);
+              let castImm = cx.b.emit(IrOp.ref_cast, immRefVt, inst, cx.b.internType(immRefVt));
+              let immTuple = new GrowableArray<i32>();
+              immTuple.push(dest);
+              immTuple.push(zero);
+              immTuple.push(castImm);
+              immTuple.push(startVal);
+              immTuple.push(sliceLen);
+              cx.b.emitVoid(IrOp.array_copy, cx.b.pushExtra(immTuple), -1);
+              cx.b.br(doneB, noValues());
+
+              cx.b.switchTo(doneB);
               return dest;
             }
           }
@@ -294,7 +321,10 @@ export let arraySliceRead = (cx: LoweringContext, value: i32, startIndex: i32): 
   }
 
   if (arrOpt != null) {
-    let arrType = arrOpt;
+    // The slice is a fresh array and array.copy needs a mutable
+    // destination, so build it mutable whatever the source's element
+    // mutability (the checker types the rest slice mutable too).
+    let arrType = cx.wasm.getArray((arrOpt as WasmArray).elementType, true);
     let destPair = cx.b.pushExtra(twoValues(sliceLen, -1));
     let dest = cx.b.emit(IrOp.array_new, new ValTypeRef(arrType) as ValType, destPair, cx.b.addRef(new IrRefType(arrType)));
     let copyTuple = new GrowableArray<i32>();

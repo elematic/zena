@@ -2,14 +2,14 @@
 
 ## Overview
 
-Arrays in Zena (`Array<T>`) are implemented as raw WebAssembly GC Arrays (`(array (mut T))`). They are **not** boxed in a struct wrapper. This ensures zero-overhead access and interoperability with other WASM languages/modules that use standard GC arrays.
+Zena's concrete arrays (`FixedArray<T>`, `ImmutableArray<T>`) are raw WebAssembly GC arrays. They are **not** boxed in a struct wrapper. This ensures zero-overhead access and interoperability with other WASM languages/modules that use standard GC arrays.
 
 ## Type System
 
-The `FixedArray<T>` class represents the raw WASM GC array.
+The `FixedArray<T>` class represents the raw mutable WASM GC array.
 
 ```zena
-export extension class FixedArray<T> on array<T> {
+export extension class FixedArray<T> on array<var T> {
   length: i32;
 }
 ```
@@ -19,10 +19,10 @@ The compiler treats `array<T>` (and its extension `FixedArray<T>`) specially:
 1.  **Type Checking**: The checker resolves `array<T>` to an internal `ArrayType`.
 2.  **Code Generation**: The generator maps `array<T>` directly to a WASM array type index.
 
-`ImmutableArray<T>` is an extension on the same `array<T>`, so it maps to the
-same `(array (mut T))` and a cast converts between the two. Giving it the
-distinct Wasm type `(array T)` is proposed in
-[array-mutability.md](array-mutability.md), gated on optimizer work.
+`ImmutableArray<T>` is an extension on bare `array<T>`, the immutable-element
+`(array T)` — a distinct Wasm type from `FixedArray<T>`'s `array<var T>`
+(`(array (mut T))`), with no subtyping between them in either direction. See
+[array-mutability.md](array-mutability.md).
 
 `Array<T>` is a standard library class that wraps `FixedArray<T>` to provide a growable array.
 
@@ -30,9 +30,11 @@ distinct Wasm type `(array T)` is proposed in
 
 ### Literals
 
-Array literals `[a, b, c]` create a `FixedArray<T>` — the native WASM GC array
-type. This is the most efficient array representation (no wrapper object, direct
-`array.new_fixed`).
+Array literals `[a, b, c]` create an `ImmutableArray<T>` — the native WASM GC
+array type with immutable elements — unless the contextual type wants mutable
+elements (`FixedArray`, `GrowableArray`, `MutableArray`, or `array<var T>`),
+in which case they create a `FixedArray<T>`. Either way there is no wrapper
+object: the literal is a direct `array.new_fixed`.
 
 Growable `Array<T>` is constructed explicitly:
 
