@@ -57,7 +57,7 @@ export class TimeoutError extends Error {
 export let timeout = <T>(ms: i32, op: Op<T>): Op<T> => {
   // The budget arm's annotation is load-bearing: its body only
   // throws, which infers `Future<void>` rather than the race's `T`.
-  return () => TaskGroup.race<T>([op, async (): Future<T> => {
+  return () => TaskGroup.race([op, async (): Future<T> => {
     await sleep(ms);
     throw new TimeoutError(ms);
   }]);
@@ -72,14 +72,15 @@ export let timeout = <T>(ms: i32, op: Op<T>): Op<T> => {
  */
 export let deadline = <T>(atMs: f64, op: Op<T>): Op<T> => {
   return (): Future<T> => {
+    // Instants are f64 milliseconds (the clock's type); durations are
+    // i32 milliseconds (sleep's type, and every combinator's). This
+    // subtraction is the one place the two meet, so the conversion
+    // lives here.
     let remaining = atMs - monotonicMs();
     if (remaining <= 0.0) {
       return Future.failed<T>(new TimeoutError(0));
     }
-    // `timeout(...)()` in one expression is issue #448 — a call whose
-    // callee is itself a call does not lower yet.
-    let bounded = timeout<T>(remaining as i32, op);
-    return bounded();
+    return timeout(remaining as i32, op)();
   };
 };
 
@@ -121,7 +122,7 @@ export let retry = <T>(
   if (attempts < 1) {
     throw new Error('retry: needs at least one attempt');
   }
-  return () => retryImpl<T>(attempts, firstDelayMs, op);
+  return () => retryImpl(attempts, firstDelayMs, op);
 };
 
 /**
@@ -149,7 +150,7 @@ export let fallback = <T>(op: Op<T>, alt: Op<T>): Op<T> => {
  * slowness and does not mask errors; layer `retry` on top for that.
  */
 export let hedge = <T>(delayMs: i32, op: Op<T>): Op<T> => {
-  return () => TaskGroup.race<T>([op, async () => {
+  return () => TaskGroup.race([op, async () => {
     await sleep(delayMs);
     return await op();
   }]);
@@ -263,9 +264,7 @@ export class Task<T> {
     this.#scope = scope;
     let op = this.#op;
     let t = this;
-    // In a generic class body `this` types as the bare generic
-    // source (issue #434); the cast restores the instantiated type.
-    return scope.run(() => monitorRun<T>(t as Task<T>, id, op));
+    return scope.run(() => monitorRun(t, id, op));
   }
 
   /** Cancels a pending run; the previous settled state is restored

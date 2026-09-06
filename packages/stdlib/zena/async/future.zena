@@ -222,25 +222,17 @@ export class Future<T> {
     onValue: (value: T) => R,
     onError: ((error: Error) => R) | null = null
   ): Future<Awaited<R>> {
-    // In a generic class body `this` types as the generic source, a
-    // bare `Future`, which the await operand check rejects — the cast
-    // restores the instantiated type.
-    let src = this as Future<T>;
     // `onValue` sits OUTSIDE the try on purpose: `onError` handles
     // only this future's failure, never the callback's own throw.
-    try {
-      await src;
+    let v = try {
+      await this
     } catch (e) {
       if (onError != null) {
         return await onError(e);
       }
       throw e;
-    }
-    // src is settled past the try; awaiting it again is one queue hop
-    // to the same value, and works at every T — saving the value from
-    // the first await would need a `T` local, which has no wasm type
-    // at `T = void`.
-    return await onValue(await src);
+    };
+    return await onValue(v);
   }
 
   /**
@@ -605,7 +597,7 @@ class AllState<T> {
     // `AllState<T>`.
     i = 0;
     while (i < futures.length) {
-      futures[i].[subscribe](new AllWaiter<T>(this as AllState<T>, i));
+      futures[i].[subscribe](new AllWaiter<T>(this, i));
       i += 1;
     }
     return this.result;
@@ -673,7 +665,7 @@ class RaceState<T> {
     var i = 0;
     while (i < futures.length) {
       futures[i].[subscribe](
-        new RaceWaiter<T>(this as RaceState<T>, futures[i]));
+        new RaceWaiter<T>(this, futures[i]));
       i += 1;
     }
     return this.result;
@@ -729,7 +721,7 @@ class AnyState<T> {
     }
     i = 0;
     while (i < futures.length) {
-      futures[i].[subscribe](new AnyWaiter<T>(this as AnyState<T>, i));
+      futures[i].[subscribe](new AnyWaiter<T>(this, i));
       i += 1;
     }
     return this.result;
