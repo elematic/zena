@@ -155,7 +155,48 @@ inline the closure body → the environment allocation becomes
 non-escaping → SROA deletes it. `Array.map` over a literal arrow
 compiling to a plain loop is the acceptance test (milestone P1 below).
 
-### Devirtualization
+#### Payoff prediction and reversal
+
+The budgeted tier's real problem is knowing whether a splice pays
+before paying for it. Production compilers answer it three ways, in
+increasing order of cost:
+
+- **Context-sensitive cost simulation** (LLVM's `InlineCost`): walk
+  the callee once with the call site's facts — each constant argument,
+  exact-typed receiver, or visibly-packed fat pointer marks the
+  instructions and branches it would fold, and their estimated cost
+  subtracts from the callee's size before the budget comparison. No
+  mutation, no rollback; mispredictions are bounded by the budget.
+- **Trial inlining** (Graal's incremental inline substitution,
+  Prokopec et al., CGO 2019): splice into a scratch copy, run the
+  cleanup passes, and commit only if the measured shrinkage or
+  triggered folds clear a bar — inlining undone by discarding the
+  copy, never by reverse surgery on a committed graph. ZIR's flat
+  arrays make body copies cheap, so this is affordable here if the
+  cost model proves too blunt; the pass counters (sites inlined vs
+  instructions removed in the following cleanup) are the evidence to
+  watch.
+- **Outlining as the after-the-fact undo** (LLVM's machine outliner
+  and hot/cold splitting, Binaryen's Outlining pass): a separate size
+  pass that re-extracts repeated or cold sequences. This recovers size
+  from any source, not just inlining, and belongs — if ever — with the
+  binary-size work, not the loop.
+
+No production compiler tracks a committed inline's provenance to
+reverse it in place; prediction plus (optionally) trial-and-discard is
+the precedent.
+
+Aggressiveness is a per-build judgment, not a constant: size-sensitive
+builds want less, and a runtime that inlines well at JIT time (V8)
+gets less AOT benefit than one that does not (wasmtime today). The
+knobs are the budget numbers — per-callee threshold, per-caller growth
+cap, module growth cap — with `-O2`/`-Os` selecting presets and `-Os`
+additionally restricted to splices the cost model predicts are
+size-neutral or shrinking (always profitable regardless of runtime:
+the call-plus-argument-setup overhead exceeds the body). A per-target
+default (leaning smaller when `--target host` output will run under an
+inlining JIT) is a possible later refinement; explicit flags come
+first so the choice is observable.
 
 Two independent triggers, run as one pass:
 
