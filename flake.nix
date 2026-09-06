@@ -176,14 +176,9 @@
             npm test
           '';
 
-          # We only care that the tests passed; nothing downstream consumes the
-          # output, so keep it minimal instead of packaging the CLI.
-          installPhase = ''
-            runHook preInstall
-            mkdir -p $out
-            echo "zena test suite passed" > $out/result
-            runHook postInstall
-          '';
+          # The install phase is inherited rather than stubbed out, so this
+          # one derivation covers packaging too and `checks` needs only this
+          # one. See the comment on `checks`.
         });
       in
       {
@@ -192,8 +187,12 @@
           zena = zena;
         };
 
+        # Only the test derivation. `zena-tests` is `zena` with the suite
+        # appended, so listing both made `nix flake check` run the entire
+        # toolchain build twice, concurrently, for one build's worth of
+        # signal. On the deprioritised homelab CI guest that doubled peak
+        # memory and was enough to get the job killed mid-build.
         checks = {
-          inherit zena;
           test = zena-tests;
         };
 
