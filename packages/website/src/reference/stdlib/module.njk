@@ -104,6 +104,38 @@ eleventyComputed:
       <div class="api-signature">
         {{ declaration.signature | highlight('zena') | safe }}
       </div>
+      {% if declaration.extends or declaration.implements.length or declaration.mixins.length %}
+        <dl class="api-relations">
+          {% if declaration.extends %}
+            <dt>Extends</dt>
+            <dd>
+              {%- if declaration.extends.length -%}
+                {%- for one in declaration.extends -%}
+                  <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
+                {%- endfor -%}
+              {%- else -%}
+                <code>{{ declaration.extends.html | safe }}</code>
+              {%- endif -%}
+            </dd>
+          {% endif %}
+          {% if declaration.implements.length %}
+            <dt>Implements</dt>
+            <dd>
+              {%- for one in declaration.implements -%}
+                <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
+              {%- endfor -%}
+            </dd>
+          {% endif %}
+          {% if declaration.mixins.length %}
+            <dt>Mixes in</dt>
+            <dd>
+              {%- for one in declaration.mixins -%}
+                <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
+              {%- endfor -%}
+            </dd>
+          {% endif %}
+        </dl>
+      {% endif %}
       {% if declaration.reexportedFrom %}
         <p class="api-source">
           Re-exported from <code>{{ declaration.reexportedFrom }}</code>.
@@ -111,6 +143,32 @@ eleventyComputed:
       {% endif %}
       {{ doc(declaration) }}
       {{ members(declaration.members) }}
+      {% if declaration.inherited.length %}
+        <details class="api-inherited">
+          <summary>
+            {{ declaration.inherited.length }} inherited
+            member{% if declaration.inherited.length != 1 %}s{% endif %}
+          </summary>
+          <div class="api-members">
+            {% for member in declaration.inherited %}
+              <div class="api-member" id="{{ member.anchor }}">
+                <div class="api-member-signature">
+                  {{ member.signature | highlight('zena') | safe }}
+                </div>
+                <p class="api-source">
+                  From
+                  {%- if member.fromUrl %}
+                    <a href="{{ member.fromUrl }}"><code>{{ member.fromName }}</code></a>
+                  {%- else %}
+                    <code>{{ member.fromName }}</code>
+                  {%- endif %}.
+                </p>
+                {{ doc(member) }}
+              </div>
+            {% endfor %}
+          </div>
+        </details>
+      {% endif %}
     </div>
   {% endfor %}
 {% endfor %}

@@ -245,9 +245,25 @@ the website regex-matching type names, which is wrong for a type
 parameter named `T` in a package that also exports a class `T`. Text
 plus spans keeps rendering in one place and keeps the links exact.
 
-Spans come from `typeToString`, extended to record where it wrote each
-nominal type's name, and from the nominal types' `symbolId`, which
-identifies the declaring module and name.
+Spans come from zenadoc's own renderer, which records the offset of
+each name as it writes it. Resolution goes through scope analysis:
+every type-reference node already has a symbol recorded — it is what
+the checker resolves a `NamedTypeAnnotation` through — and following
+that symbol's import chain gives the module that declares the name.
+That is what makes a link exact where matching text would not be: a
+type parameter `T` and a class `T` render identically and resolve
+differently, and an imported name resolves to the module that declares
+it rather than the one that imports it.
+
+A type reference resolves to the module that *declares* a type, which
+is often a package-private file with no page —
+`zena:simd/shapes.zena#F32x4` is published as `zena:simd#F32x4`.
+Serialization rewrites a link to the page that hosts the declaration,
+from two sources: a re-exported copy records the id it had in the module
+that declares it, and a manifest module whose entry file is not
+`<name>.zena` records the path-shaped id the compiler loads it by. What
+remains unrewritten is a type with no public page at all, which a
+consumer renders as text.
 
 ### Ordering and stability
 

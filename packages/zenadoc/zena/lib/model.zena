@@ -13,13 +13,25 @@ import { StringBuilder } from 'zena:string-builder';
 export final class DocLoc(file: String, line: i32, column: i32)
 
 /**
- * A type, rendered as text.
+ * A span of a rendered type that names a declaration.
  *
- * Links from spans of that text to the declarations they name are a
- * later stage; the field is here so the JSON shape does not change
- * when they arrive.
+ * `start` and `end` are byte offsets into the `TypeRef`'s text. Type
+ * text is ASCII apart from a string-literal type, so a consumer can
+ * slice with them directly.
  */
-export final class TypeRef(text: String)
+export final class TypeLink(start: i32, end: i32, var id: String)
+
+/**
+ * A type, rendered as text, plus the spans within it that name a
+ * declaration.
+ *
+ * Text with offsets rather than a type tree: rendering Zena's type
+ * syntax happens once, here, instead of in every consumer, and the
+ * offsets keep the links exact where matching names would not be — a
+ * type parameter `T` and a class `T` render the same and link
+ * differently.
+ */
+export final class TypeRef(text: String, links: Array<TypeLink>)
 
 /** A declaration's type parameter. */
 export final class DocTypeParam(
@@ -86,6 +98,12 @@ export final class DocMember {
   var type: TypeRef | null = null;
   var doc: DocComment | null = null;
   var loc: DocLoc | null = null;
+
+  /**
+   * The declaration this member is inherited from, when it is not
+   * declared on the one documenting it. Null for a member written here.
+   */
+  var inheritedFrom: String | null = null;
 
   new(this.kind, this.name, this.id, this.anchor, this.signature);
 }
@@ -156,6 +174,14 @@ export final class DocDeclaration {
    */
   var reexportedFrom: String | null = null;
 
+  /**
+   * The id this declaration had in the module that declares it, when
+   * this is a re-exported copy. A type reference resolves to that id,
+   * and the page a reader can open is this copy's, so serialization
+   * rewrites one to the other.
+   */
+  var originalId: String | null = null;
+
   new(this.kind, this.name, this.id, this.anchor, this.signature);
 
   /** A copy carrying a new name, id, and anchor. */
@@ -173,6 +199,7 @@ export final class DocDeclaration {
     out.doc = this.doc;
     out.loc = this.loc;
     out.reexportedFrom = this.reexportedFrom;
+    out.originalId = this.id;
     return out;
   }
 }
@@ -217,6 +244,15 @@ export final class DocModule {
 
   /** The entry file, relative to the package root. */
   file: String;
+
+  /**
+   * The id the compiler loads this module by, when it differs from
+   * `id`. A manifest module whose entry file is not `<name>.zena`
+   * canonicalizes to a path id — `zena:byte-buffer` loads
+   * `zena:core/byte-buffer.zena` — and a type reference into it
+   * resolves to that path, not to the name a reader sees.
+   */
+  var canonicalId: String | null = null;
 
   var doc: DocComment | null = null;
   var declarations = new GrowableArray<DocDeclaration>(0);

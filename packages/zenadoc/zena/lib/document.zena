@@ -25,6 +25,10 @@ import { isWitModulePath, synthesizeWitModule } from 'zena-compiler:wit-module-s
 import { Package, join } from './package.zena';
 import { extractModule, ExtractOptions } from './extract.zena';
 import { resolveReexports, WalkCache } from './reexports.zena';
+import { inheritMembers } from './inherit.zena';
+import { resolveLinks } from './publish.zena';
+import { Naming } from './ids.zena';
+import { ModelLinker } from './links.zena';
 import { DocPackage } from './model.zena';
 
 /** The standard library's package name; the compiler loads it itself. */
@@ -122,6 +126,11 @@ export let documentPackage = (
     documentBatch(pkg, options, extractOptions, i, end, out, cache);
     i = end;
   }
+  // Both wait until every module has been walked: a link resolves to
+  // the module that declares a type, and the page hosting it may be
+  // another module entirely.
+  resolveLinks(docs);
+  inheritMembers(docs);
   return out;
 };
 
@@ -171,8 +180,13 @@ let documentBatch = (
       }
       let checked = checkResults.results[result.entry.path];
       let model = if (checked == null) { null } else { checked.model };
+      let naming = new Naming(pkg.name, pkg.root);
       let documented = extractModule(pkg.name + ':' + module.name, module.name,
-          module.file, result.entry.ast, model, extractOptions);
+          module.file, result.entry.ast, model, extractOptions,
+          new ModelLinker(model, naming));
+      // Through the same naming as a link, or the two spell the same
+      // module differently and the alias never matches.
+      documented.canonicalId = naming.idOf(result.entry.path);
       // A module's own walk is what a facade re-exporting it should copy
       // from, so it goes in the cache before any re-export is followed.
       cache.put(result.entry.path, documented);

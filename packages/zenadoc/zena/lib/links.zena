@@ -1,0 +1,57 @@
+/**
+ * Resolving a type reference to the declaration it names.
+ *
+ * Scope analysis already records a symbol for every type-reference
+ * node — it is what the checker resolves a `NamedTypeAnnotation`
+ * through — so a link is a lookup rather than a second name
+ * resolution. Going through the symbol is what makes the link exact:
+ * a type parameter `T` and a class named `T` render identically and
+ * resolve differently, and an imported name resolves to the module
+ * that declares it rather than the one that imports it.
+ */
+
+import { Node, TypeParameter } from 'zena-compiler:ast';
+import { SemanticModel } from 'zena-compiler:semantic-model';
+import { Naming } from './ids.zena';
+import { TypeLinker } from './type-text.zena';
+
+/** Links type references using one module's semantic model. */
+export final class ModelLinker implements TypeLinker {
+  // Nullable rather than the caller holding a `ModelLinker | null`,
+  // which cannot be passed where `TypeLinker | null` is expected:
+  // https://code.rictic.com/justin/zena/issues/476.
+  #model: SemanticModel | null;
+  #naming: Naming;
+
+  new(model: SemanticModel | null, naming: Naming)
+    : #model = model, #naming = naming;
+
+  idFor(annotation: Node): String | null {
+    let model = this.#model;
+    if (model == null) {
+      return null;
+    }
+    // `symbol` is a keyword, hence `found`.
+    let found = model.resolve(annotation);
+    if (found == null) {
+      return null;
+    }
+    // Follow imports to whatever finally declares the name.
+    let target = found.resolveTarget();
+    let declaration = target.declaration;
+    if (declaration == null) {
+      // A builtin: `i32`, `String` before the prelude declares it. There
+      // is no page to point at.
+      return null;
+    }
+    // A type parameter is scoped to the declaration that introduces it,
+    // so it names nothing a reader can navigate to.
+    if (declaration is TypeParameter) {
+      return null;
+    }
+    if (target.name.length == 0) {
+      return null;
+    }
+    return this.#naming.idOf(target.modulePath) + '#' + target.name;
+  }
+}

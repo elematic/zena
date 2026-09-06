@@ -22,6 +22,7 @@ import {
 /** The format version, so a consumer can refuse what it cannot read. */
 export let ZENADOC_FORMAT_VERSION = 1;
 
+
 /** The whole package as pretty-printed JSON. */
 export let packageToJson = (pkg: DocPackage): String =>
     stringify(packageObject(pkg), '  ');
@@ -141,6 +142,10 @@ let memberObject = (member: DocMember): JsonObject => {
   if (member.isAbstract) {
     out['abstract'] = new Box<boolean>(true);
   }
+  let inheritedFrom = member.inheritedFrom;
+  if (inheritedFrom != null) {
+    out['inheritedFrom'] = inheritedFrom;
+  }
   let mutability = member.mutability;
   if (mutability != null) {
     out['mutability'] = mutability;
@@ -189,13 +194,28 @@ let putParams = (out: JsonObject, params: Array<DocParam>): void => {
   out['parameters'] = array;
 };
 
+let typeObject = (type: TypeRef): JsonObject => {
+  let entry = new JsonObject();
+  entry['text'] = type.text;
+  if (type.links.length > 0) {
+    let links = new JsonArray();
+    for (let link in type.links) {
+      let one = new JsonObject();
+      one['start'] = new Box<f64>(link.start as f64);
+      one['end'] = new Box<f64>(link.end as f64);
+      one['id'] = link.id;
+      links.push(one);
+    }
+    entry['links'] = links;
+  }
+  return entry;
+};
+
 let putType = (out: JsonObject, key: String, type: TypeRef | null): void => {
   if (type == null) {
     return;
   }
-  let entry = new JsonObject();
-  entry['text'] = type.text;
-  out[key] = entry;
+  out[key] = typeObject(type);
 };
 
 let putTypes = (out: JsonObject, key: String, types: Array<TypeRef>): void => {
@@ -204,9 +224,7 @@ let putTypes = (out: JsonObject, key: String, types: Array<TypeRef>): void => {
   }
   let array = new JsonArray();
   for (let type in types) {
-    let entry = new JsonObject();
-    entry['text'] = type.text;
-    array.push(entry);
+    array.push(typeObject(type));
   }
   out[key] = array;
 };

@@ -1,0 +1,118 @@
+/**
+ * Where each declaration is published.
+ *
+ * A type reference resolves through the symbol, so it names the module
+ * that *declares* a type — often a package-private file with no page of
+ * its own. `zena:simd/shapes.zena#F32x4` is documented as
+ * `zena:simd#F32x4`, and anything following a link has to arrive at the
+ * page that exists.
+ *
+ * Two things create that gap: a re-exported copy, which records the id
+ * it had where it is declared, and a manifest module whose entry file is
+ * not `<name>.zena`, which the compiler loads by a path-shaped id.
+ */
+
+import { HashMap } from 'zena:map';
+import {
+  DocDeclaration, DocMember, DocPackage, DocTypeParam, TypeRef,
+} from './model.zena';
+
+/** Resolves the id a link carries to the declaration a reader can open. */
+export final class PublishedIndex {
+  #byId = new HashMap<String, DocDeclaration>();
+  #aliases = new HashMap<String, String>();
+
+  new(pkg: DocPackage) {
+    for (let module in pkg.modules) {
+      let canonical = module.canonicalId;
+      for (let declaration in module.declarations) {
+        this.#byId[declaration.id] = declaration;
+
+        let original = declaration.originalId;
+        if (original != null && !this.#aliases.has(original)) {
+          this.#aliases[original] = declaration.id;
+        }
+        if (canonical != null && canonical != module.id) {
+          let byPath = canonical + '#' + declaration.name;
+          if (!this.#aliases.has(byPath)) {
+            this.#aliases[byPath] = declaration.id;
+          }
+        }
+      }
+    }
+  }
+
+  /** The published id for a link, or the link's own if it has no page. */
+  idFor(id: String): String {
+    if (this.#aliases.has(id)) {
+      return this.#aliases[id];
+    }
+    return id;
+  }
+
+  /** The declaration a link names, or null when nothing publishes it. */
+  find(id: String): DocDeclaration | null {
+    let published = this.idFor(id);
+    if (this.#byId.has(published)) {
+      return this.#byId[published];
+    }
+    return null;
+  }
+}
+
+/**
+ * Rewrites every link to the id of the page that hosts it.
+ *
+ * Done to the model rather than on the way out, so that anything
+ * reading it — the inheritance pass, the serializer, a future consumer
+ * — sees one set of ids.
+ */
+export let resolveLinks = (pkg: DocPackage): void => {
+  let index = new PublishedIndex(pkg);
+  for (let module in pkg.modules) {
+    for (let declaration in module.declarations) {
+      resolveOne(index, declaration.type);
+      resolveOne(index, declaration.superClass);
+      for (let one in declaration.interfaces) {
+        resolveOne(index, one);
+      }
+      for (let one in declaration.mixins) {
+        resolveOne(index, one);
+      }
+      resolveParams(index, declaration.typeParameters);
+      for (let param in declaration.parameters) {
+        resolveOne(index, param.type);
+      }
+      for (let member in declaration.members) {
+        resolveMember(index, member);
+      }
+    }
+  }
+};
+
+let resolveMember = (index: PublishedIndex, member: DocMember): void => {
+  resolveOne(index, member.type);
+  resolveParams(index, member.typeParameters);
+  for (let param in member.parameters) {
+    resolveOne(index, param.type);
+  }
+};
+
+let resolveParams = (
+  index: PublishedIndex,
+  params: GrowableArray<DocTypeParam>
+): void => {
+  for (let param in params) {
+    resolveOne(index, param.bound);
+    resolveOne(index, param.defaultType);
+  }
+};
+
+let resolveOne = (index: PublishedIndex, type: TypeRef | null): void => {
+  if (type == null) {
+    return;
+  }
+  for (let link in type.links) {
+    link.id = index.idFor(link.id);
+  }
+};

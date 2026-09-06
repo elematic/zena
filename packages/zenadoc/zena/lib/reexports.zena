@@ -17,36 +17,11 @@
 import { CompilationResult, Compiler, ProgramCheckResult } from 'zena-compiler:compiler';
 import { HashMap } from 'zena:map';
 import { extractModule, ExtractOptions } from './extract.zena';
+import { Naming } from './ids.zena';
+import { ModelLinker } from './links.zena';
 import {
   DocDeclaration, DocModule, DocReexport, DocReexportName,
 } from './model.zena';
-
-/**
- * Naming a file inside a package.
- *
- * Stdlib files already carry a `zena:` id. Every other package resolves
- * to filesystem paths, and a path is not something a reader or a link
- * can use, so a path under the package root is rewritten to the same
- * `<package>:<path>` shape the stdlib's private files have.
- */
-final class Naming {
-  #name: String;
-  #root: String;
-
-  new(name: String, root: String) : #name = name, #root = root;
-
-  idOf(canonical: String): String {
-    if (canonical.startsWith(this.#name + ':')) {
-      return canonical;
-    }
-    let prefix = this.#root + '/';
-    if (canonical.startsWith(prefix)) {
-      return this.#name + ':' +
-          canonical.sliceBytes(prefix.length, canonical.length);
-    }
-    return canonical;
-  }
-}
 
 /**
  * How many re-export hops to follow.
@@ -221,7 +196,8 @@ let sourceModule = (
       let id = names.idOf(canonical);
       // `file` holds the canonical path, so a nested re-export resolves
       // its relative specifiers against the right directory.
-      let walked = extractModule(id, id, canonical, file.ast, model, options);
+      let walked = extractModule(id, id, canonical, file.ast, model, options,
+          new ModelLinker(model, names));
       cache.put(canonical, walked);
       return walked;
     }

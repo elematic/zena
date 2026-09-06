@@ -70,17 +70,21 @@ walks beyond the 46 module pages, for about 30 private files.
 
 ## Layout
 
-| Path                        | What                                                                       |
-| --------------------------- | -------------------------------------------------------------------------- |
-| `zena/lib/doc-comment.zena` | Parses a `/**` comment into a summary, markdown description and block tags |
-| `zena/lib/model.zena`       | The API model, and the anchors that make it addressable                    |
-| `zena/lib/type-text.zena`   | Renders a type annotation back to source text                              |
-| `zena/lib/extract.zena`     | Walks one module's AST into the model                                      |
-| `zena/lib/package.zena`     | Finds a package's modules, from a manifest or from the filesystem          |
-| `zena/lib/reexports.zena`   | Follows a re-export to what it carries                                     |
-| `zena/lib/document.zena`    | Compiles and documents a whole package                                     |
-| `zena/lib/json.zena`        | Serializes the model                                                       |
-| `zena/cli/main.zena`        | The command line `zena doc` runs                                           |
+| Path                        | What                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `zena/lib/doc-comment.zena` | Parses a `/**` comment into a summary, markdown description and block tags     |
+| `zena/lib/model.zena`       | The API model, and the anchors that make it addressable                        |
+| `zena/lib/ids.zena`         | Naming a file inside a package                                                 |
+| `zena/lib/type-text.zena`   | Renders a type annotation to text, recording the spans that name a declaration |
+| `zena/lib/links.zena`       | Resolves a type reference to the declaration it names, through scope analysis  |
+| `zena/lib/publish.zena`     | Which page hosts a declaration, and rewriting links to it                      |
+| `zena/lib/inherit.zena`     | Copies members a declaration inherits from its supertypes                      |
+| `zena/lib/extract.zena`     | Walks one module's AST into the model                                          |
+| `zena/lib/package.zena`     | Finds a package's modules, from a manifest or from the filesystem              |
+| `zena/lib/reexports.zena`   | Follows a re-export to what it carries                                         |
+| `zena/lib/document.zena`    | Compiles and documents a whole package                                         |
+| `zena/lib/json.zena`        | Serializes the model                                                           |
+| `zena/cli/main.zena`        | The command line `zena doc` runs                                               |
 
 Tests run through the CLI's own test runner, which discovers the suites
 and runs each file in its own process:

@@ -30,7 +30,9 @@ import {
   DocReexport, DocReexportName, DocTypeParam, DeclarationKind, MemberKind,
   TypeRef, readableName,
 } from './model.zena';
-import { annotationText, refFor, refForOrType } from './type-text.zena';
+import {
+  annotationRef, annotationText, refFor, refForOrType, TypeLinker,
+} from './type-text.zena';
 import { StringBuilder } from 'zena:string-builder';
 
 /** What to document. */
@@ -50,9 +52,34 @@ final class Walk {
   model: SemanticModel | null;
   options: ExtractOptions;
   anchors: AnchorSet;
+  linker: TypeLinker | null;
 
   new(this.moduleId, this.file, this.source, this.comments, this.model,
-      this.options, this.anchors);
+      this.options, this.anchors, this.linker);
+
+  /** A type reference for an optional annotation. */
+  ref(annotation: TypeAnnotation | null): TypeRef | null {
+    return refFor(annotation, this.linker);
+  }
+
+  /** A type reference for an annotation that is always present. */
+  refOf(annotation: TypeAnnotation): TypeRef {
+    return annotationRef(annotation, this.linker);
+  }
+
+  /** Type references for a list of annotations. */
+  refsOf(
+    annotations: GrowableArray<TypeAnnotation> | null
+  ): GrowableArray<TypeRef> {
+    let out = new GrowableArray<TypeRef>(0);
+    if (annotations == null) {
+      return out;
+    }
+    for (let annotation in annotations) {
+      out.push(this.refOf(annotation));
+    }
+    return out;
+  }
 
   /** Whether a name is public — that is, not `#private`. */
   visible(name: String): boolean {
@@ -101,11 +128,12 @@ export let extractModule = (
   file: String,
   ast: Module,
   model: SemanticModel | null,
-  options: ExtractOptions
+  options: ExtractOptions,
+  linker: TypeLinker | null = null
 ): DocModule => {
   let out = new DocModule(moduleId, name, file);
   let walk = new Walk(moduleId, file, ast.source, attachComments(ast), model,
-      options, out.anchors);
+      options, out.anchors, linker);
   out.doc = walk.docFor(ast);
 
   let declarations = new GrowableArray<DocDeclaration>(8);
@@ -185,7 +213,7 @@ let classDeclaration = (
   if (decl.isResource) { modifiers.push('resource'); }
   if (decl.isExtension) { modifiers.push('extension'); }
 
-  let typeParams = typeParameters(decl.typeParameters);
+  let typeParams = typeParameters(walk, decl.typeParameters);
   let sb = new StringBuilder(64);
   for (let modifier in modifiers) {
     sb.append(modifier);
@@ -222,9 +250,9 @@ let classDeclaration = (
   out.typeParameters = typeParams;
   out.doc = walk.docFor(decl);
   out.loc = walk.locFor(decl.loc);
-  out.superClass = refFor(decl.superClass);
-  out.interfaces = refList(decl.implementsList);
-  out.mixins = refList(decl.mixins);
+  out.superClass = walk.ref(decl.superClass);
+  out.interfaces = walk.refsOf(decl.implementsList);
+  out.mixins = walk.refsOf(decl.mixins);
 
   let members = new GrowableArray<DocMember>(8);
   if (caseParams != null) {
@@ -255,7 +283,7 @@ let interfaceDeclaration = (
   if (!included(walk, decl.exported, decl.name.name)) {
     return null;
   }
-  let typeParams = typeParameters(decl.typeParameters);
+  let typeParams = typeParameters(walk, decl.typeParameters);
   let sb = new StringBuilder(64);
   sb.append('interface ');
   sb.append(decl.name.name);
@@ -272,7 +300,7 @@ let interfaceDeclaration = (
   out.typeParameters = typeParams;
   out.doc = walk.docFor(decl);
   out.loc = walk.locFor(decl.loc);
-  out.interfaces = refList(decl.extendsList);
+  out.interfaces = walk.refsOf(decl.extendsList);
   let members = new GrowableArray<DocMember>(8);
   collectMembers(walk, out, decl.body, members);
   out.members = members;
@@ -286,7 +314,7 @@ let mixinDeclaration = (
   if (!included(walk, decl.exported, decl.name.name)) {
     return null;
   }
-  let typeParams = typeParameters(decl.typeParameters);
+  let typeParams = typeParameters(walk, decl.typeParameters);
   let sb = new StringBuilder(64);
   sb.append('mixin ');
   sb.append(decl.name.name);
@@ -307,8 +335,8 @@ let mixinDeclaration = (
   out.typeParameters = typeParams;
   out.doc = walk.docFor(decl);
   out.loc = walk.locFor(decl.loc);
-  out.superClass = refFor(decl.on);
-  out.mixins = refList(decl.mixins);
+  out.superClass = walk.ref(decl.on);
+  out.mixins = walk.refsOf(decl.mixins);
   let members = new GrowableArray<DocMember>(8);
   collectMembers(walk, out, decl.body, members);
   out.members = members;
@@ -348,7 +376,7 @@ let typeAliasDeclaration = (
   if (!included(walk, decl.exported, decl.name.name)) {
     return null;
   }
-  let typeParams = typeParameters(decl.typeParameters);
+  let typeParams = typeParameters(walk, decl.typeParameters);
   let modifiers = new GrowableArray<String>(2);
   if (decl.isOpaque) {
     modifiers.push('opaque');
@@ -370,7 +398,7 @@ let typeAliasDeclaration = (
   out.exported = decl.exported;
   out.modifiers = modifiers;
   out.typeParameters = typeParams;
-  out.type = refFor(decl.typeAnnotation);
+  out.type = walk.ref(decl.typeAnnotation);
   out.doc = walk.docFor(decl);
   out.loc = walk.locFor(decl.loc);
   return out;
@@ -398,7 +426,7 @@ let variableDeclaration = (
   if (fn != null) {
     return functionLike(walk, decl, name, fn, decl.exported, decl.loc);
   }
-  let type = refForOrType(decl.typeAnnotation, nodeType(walk, decl.pattern));
+  let type = refForOrType(decl.typeAnnotation, nodeType(walk, decl.pattern), walk.linker);
   let sb = new StringBuilder(48);
   sb.append(decl.kind);
   sb.append(' ');
@@ -437,9 +465,9 @@ let declareFunction = (
   if (!included(walk, decl.exported, decl.name.name)) {
     return null;
   }
-  let typeParams = typeParameters(decl.typeParameters);
+  let typeParams = typeParameters(walk, decl.typeParameters);
   let params = parameters(walk, decl.params);
-  let returns = refFor(decl.returnType);
+  let returns = walk.ref(decl.returnType);
   let out = start(walk, DeclarationKind.Function, decl.name.name,
       'declare function ' + decl.name.name + typeParameterText(typeParams) +
           parameterText(params) + returnText(returns));
@@ -479,9 +507,9 @@ let functionLike = (
   exported: boolean,
   loc: SourceLocation | null
 ): DocDeclaration => {
-  let typeParams = typeParameters(fn.typeParameters);
+  let typeParams = typeParameters(walk, fn.typeParameters);
   let params = parameters(walk, fn.params);
-  let returns = refFor(fn.returnType);
+  let returns = walk.ref(fn.returnType);
   let modifiers = new GrowableArray<String>(2);
   if (fn.isAsync) { modifiers.push('async'); }
   if (fn.isGenerator) { modifiers.push('generator'); }
@@ -556,7 +584,7 @@ let fieldMember = (
   if (name == null || !walk.visible(name)) {
     return null;
   }
-  let type = refFor(field.typeAnnotation);
+  let type = walk.ref(field.typeAnnotation);
   let sb = new StringBuilder(48);
   if (field.isStatic) { sb.append('static '); }
   if (field.isAbstract) { sb.append('abstract '); }
@@ -598,9 +626,9 @@ let methodMember = (
   } else {
     MemberKind.Method
   };
-  let typeParams = typeParameters(method.typeParameters);
+  let typeParams = typeParameters(walk, method.typeParameters);
   let params = parameters(walk, method.params);
-  let returns = refFor(method.returnType);
+  let returns = walk.ref(method.returnType);
 
   let sb = new StringBuilder(64);
   if (method.isStatic) { sb.append('static '); }
@@ -635,7 +663,7 @@ let accessorMember = (
   if (name == null || !walk.visible(name)) {
     return null;
   }
-  let type = new TypeRef(annotationText(accessor.typeAnnotation));
+  let type = walk.refOf(accessor.typeAnnotation);
   let kind = if (accessor.getter != null) {
     MemberKind.Getter
   } else {
@@ -669,9 +697,9 @@ let methodSignatureMember = (
   if (name == null || !walk.visible(name)) {
     return null;
   }
-  let typeParams = typeParameters(signature.typeParameters);
+  let typeParams = typeParameters(walk, signature.typeParameters);
   let params = parameters(walk, signature.params);
-  let returns = refFor(signature.returnType);
+  let returns = walk.ref(signature.returnType);
   let kind = if (isOperatorName(name)) {
     MemberKind.Operator
   } else {
@@ -705,7 +733,7 @@ let accessorSignatureMember = (
   if (!walk.visible(name)) {
     return null;
   }
-  let type = new TypeRef(annotationText(signature.typeAnnotation));
+  let type = walk.refOf(signature.typeAnnotation);
   let kind = if (signature.hasGetter) {
     MemberKind.Getter
   } else {
@@ -741,7 +769,7 @@ let caseParamMember = (
   if (!walk.visible(name)) {
     return null;
   }
-  let type = new TypeRef(annotationText(param.typeAnnotation));
+  let type = walk.refOf(param.typeAnnotation);
   let sb = new StringBuilder(48);
   let mutability = param.mutability;
   if (mutability != null) {
@@ -790,6 +818,7 @@ let variantMember = (
 // ============================================================================
 
 let typeParameters = (
+  walk: Walk,
   params: GrowableArray<TypeParameter> | null
 ): GrowableArray<DocTypeParam> => {
   let out = new GrowableArray<DocTypeParam>(0);
@@ -797,8 +826,8 @@ let typeParameters = (
     return out;
   }
   for (let param in params) {
-    out.push(new DocTypeParam(param.name, refFor(param.constraint),
-        refFor(param.defaultType)));
+    out.push(new DocTypeParam(param.name, walk.ref(param.constraint),
+        walk.ref(param.defaultType)));
   }
   return out;
 };
@@ -847,7 +876,7 @@ let parameters = (
     } else {
       null
     };
-    out.push(new DocParam(param.name.name, refFor(param.typeAnnotation),
+    out.push(new DocParam(param.name.name, walk.ref(param.typeAnnotation),
         param.optional, fallback));
   }
   return out;
@@ -926,19 +955,6 @@ let annotationList = (annotations: Array<TypeAnnotation>): String => {
     i += 1;
   }
   return sb.toString();
-};
-
-let refList = (
-  annotations: GrowableArray<TypeAnnotation> | null
-): GrowableArray<TypeRef> => {
-  let out = new GrowableArray<TypeRef>(0);
-  if (annotations == null) {
-    return out;
-  }
-  for (let annotation in annotations) {
-    out.push(new TypeRef(annotationText(annotation)));
-  }
-  return out;
 };
 
 /** The name a member's name node spells, or null for a symbol name. */

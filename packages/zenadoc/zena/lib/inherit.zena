@@ -1,0 +1,135 @@
+/**
+ * Members a declaration inherits.
+ *
+ * A page that lists only what a class writes itself is misleading:
+ * `GrowableArray` reads as though it has no `map`, when `map` is the
+ * whole reason it implements `Iterable`. So each declaration's
+ * supertypes are followed and their members copied in, marked with the
+ * declaration they come from, and a consumer decides whether to show
+ * them.
+ *
+ * This runs after every module is documented and its re-exports
+ * resolved, because a supertype is usually declared in another module
+ * and may not have been walked when its subtype was.
+ */
+
+import { HashSet } from 'zena:set';
+import {
+  DocDeclaration, DocMember, DocPackage, TypeRef,
+} from './model.zena';
+import { PublishedIndex } from './publish.zena';
+
+/**
+ * How far up a hierarchy to follow.
+ *
+ * Depth is small in practice; the cap is what stops a cycle in the
+ * recorded supertypes from looping rather than reporting.
+ */
+let MAX_DEPTH = 16;
+
+/** Copies inherited members onto every declaration that has supertypes. */
+export let inheritMembers = (pkg: DocPackage): void => {
+  let index = new PublishedIndex(pkg);
+  for (let module in pkg.modules) {
+    for (let declaration in module.declarations) {
+      let inherited = new GrowableArray<DocMember>(0);
+      let seenTypes = new HashSet<String>();
+      let seenNames = new HashSet<String>();
+      for (let member in declaration.members) {
+        seenNames.add(member.name);
+      }
+      collect(declaration, index, inherited, seenTypes, seenNames, 0);
+      for (let member in inherited) {
+        declaration.members.push(member);
+      }
+    }
+  }
+};
+
+/** Walks one declaration's supertypes, nearest first. */
+let collect = (
+  declaration: DocDeclaration,
+  index: PublishedIndex,
+  out: GrowableArray<DocMember>,
+  seenTypes: HashSet<String>,
+  seenNames: HashSet<String>,
+  depth: i32
+): void => {
+  if (depth > MAX_DEPTH) {
+    return;
+  }
+  for (let supertype in supertypesOf(declaration)) {
+    let target = index.find(supertype);
+    if (target == null) {
+      continue;
+    }
+    if (seenTypes.has(target.id)) {
+      continue;
+    }
+    seenTypes.add(target.id);
+
+    for (let member in target.members) {
+      // Only what the supertype declares itself. Its own inherited
+      // copies are skipped and reached by recursing instead, so a
+      // member is always attributed to the type that declares it and
+      // the result does not depend on which declaration this pass
+      // happened to reach first.
+      if (member.inheritedFrom != null) {
+        continue;
+      }
+      // A member the subtype declares itself wins, and so does the
+      // nearest supertype that declares it — this walks nearest first.
+      if (seenNames.has(member.name)) {
+        continue;
+      }
+      seenNames.add(member.name);
+      out.push(inheritedCopy(member, target));
+    }
+    collect(target, index, out, seenTypes, seenNames, depth + 1);
+  }
+};
+
+/** Every id this declaration's supertypes resolve to. */
+let supertypesOf = (declaration: DocDeclaration): GrowableArray<String> => {
+  let out = new GrowableArray<String>(2);
+  let superClass = declaration.superClass;
+  if (superClass != null) {
+    addLinks(out, superClass);
+  }
+  for (let one in declaration.interfaces) {
+    addLinks(out, one);
+  }
+  for (let one in declaration.mixins) {
+    addLinks(out, one);
+  }
+  return out;
+};
+
+/**
+ * The declarations a supertype reference names.
+ *
+ * The first link is the supertype itself; later ones are its type
+ * arguments, which are not supertypes — `implements Iterable<T>`
+ * inherits from `Iterable`, not from `T`.
+ */
+let addLinks = (out: GrowableArray<String>, type: TypeRef): void => {
+  if (type.links.length > 0) {
+    out.push(type.links[0].id);
+  }
+};
+
+/** A member copied onto a subtype, recording where it comes from. */
+let inheritedCopy = (member: DocMember, from: DocDeclaration): DocMember => {
+  let copy = new DocMember(member.kind, member.name, member.id, member.anchor,
+      member.signature);
+  copy.isStatic = member.isStatic;
+  copy.isAbstract = member.isAbstract;
+  copy.mutability = member.mutability;
+  copy.typeParameters = member.typeParameters;
+  copy.parameters = member.parameters;
+  copy.type = member.type;
+  copy.doc = member.doc;
+  copy.loc = member.loc;
+  copy.inheritedFrom = from.id;
+  return copy;
+};
