@@ -2801,7 +2801,7 @@ export final class Parser {
     // Null type
     if (this.#check(TokenType.Null)) {
       this.#advance();
-      return new NamedTypeAnnotation('null', null, this.#makeLocation(startToken));
+      return new NamedTypeAnnotation('null', null, false, this.#makeLocation(startToken));
     }
     
     // Number literal type
@@ -2842,10 +2842,18 @@ export final class Parser {
     // Named type or primitive
     if (this.#isIdentifier()) {
       let name = this.#advance().value;
-      
+
       // Check for type arguments: Type<T>
       var typeArgs: GrowableArray<TypeAnnotation> | null = null;
+      var elementsMutable = false;
       if (this.#match(TokenType.Less)) {
+        // `array<var T>` — the element slot's mutability, part of the
+        // grammar of the builtin array type constructor. The checker
+        // rejects the modifier on any name that does not resolve to it.
+        if (this.#check(TokenType.Var)) {
+          this.#advance();
+          elementsMutable = true;
+        }
         let args = new GrowableArray<TypeAnnotation>(4);
         args.push(this.#parseTypeAnnotation());
         while (this.#match(TokenType.Comma) && !this.#checkGreater()) {
@@ -2854,8 +2862,8 @@ export final class Parser {
         this.#consumeGreater("Expected '>' after type arguments");
         typeArgs = args;
       }
-      
-      return new NamedTypeAnnotation(name, typeArgs, this.#makeLocation(startToken));
+
+      return new NamedTypeAnnotation(name, typeArgs, elementsMutable, this.#makeLocation(startToken));
     }
     
     throw this.#error("Expected type annotation");
@@ -3129,7 +3137,7 @@ export final class Parser {
       }
       if (this.#check(TokenType.With) || this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
         let st = this.#peek();
-        superClass = new NamedTypeAnnotation("", null, this.#makeLocation(st));
+        superClass = new NamedTypeAnnotation("", null, false, this.#makeLocation(st));
       } else {
         superClass = this.#parseTypeAnnotation();
       }
@@ -3141,13 +3149,13 @@ export final class Parser {
       let ms = new GrowableArray<TypeAnnotation>(4);
       if (this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
         let st = this.#peek();
-        ms.push(new NamedTypeAnnotation("", null, this.#makeLocation(st)));
+        ms.push(new NamedTypeAnnotation("", null, false, this.#makeLocation(st)));
       } else {
         ms.push(this.#parseTypeAnnotation());
         while (this.#match(TokenType.Comma)) {
           if (this.#check(TokenType.Implements) || this.#check(TokenType.LBrace) || this.#isAtEnd()) {
             let st = this.#peek();
-            ms.push(new NamedTypeAnnotation("", null, this.#makeLocation(st)));
+            ms.push(new NamedTypeAnnotation("", null, false, this.#makeLocation(st)));
           } else {
             ms.push(this.#parseTypeAnnotation());
           }
@@ -3162,13 +3170,13 @@ export final class Parser {
       let impls = new GrowableArray<TypeAnnotation>(4);
       if (this.#check(TokenType.LBrace) || this.#isAtEnd()) {
         let st = this.#peek();
-        impls.push(new NamedTypeAnnotation("", null, this.#makeLocation(st)));
+        impls.push(new NamedTypeAnnotation("", null, false, this.#makeLocation(st)));
       } else {
         impls.push(this.#parseTypeAnnotation());
         while (this.#match(TokenType.Comma)) {
           if (this.#check(TokenType.LBrace) || this.#isAtEnd()) {
             let st = this.#peek();
-            impls.push(new NamedTypeAnnotation("", null, this.#makeLocation(st)));
+            impls.push(new NamedTypeAnnotation("", null, false, this.#makeLocation(st)));
           } else {
             impls.push(this.#parseTypeAnnotation());
           }
@@ -3202,7 +3210,7 @@ export final class Parser {
     var effectiveSuper = superClass;
     if (isResource && effectiveSuper == null && name.name != "Resource") {
       effectiveSuper = new NamedTypeAnnotation(
-        "Resource", null, this.#makeLocation(startToken));
+        "Resource", null, false, this.#makeLocation(startToken));
     }
 
     return new ClassDeclaration(
@@ -3437,7 +3445,7 @@ export final class Parser {
       this.#advance(); // consume 'symbol'
       let symName = this.#parseIdentifier();
       this.#consume(TokenType.Semi, "Expected ';' after symbol declaration");
-      return new FieldDefinition(symName, new NamedTypeAnnotation('symbol', null, symName.loc), null, true, false, true, false, null, decorators, null, this.#makeLocation(startToken));
+      return new FieldDefinition(symName, new NamedTypeAnnotation('symbol', null, false, symName.loc), null, true, false, true, false, null, decorators, null, this.#makeLocation(startToken));
     }
     
     // Symbol-keyed member: [symbolName]

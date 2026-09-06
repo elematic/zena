@@ -1,0 +1,60 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { ByteBuffer } from 'zena:byte-buffer';
+import { ArrayType, I32Type, Type } from '../lib/types.zena';
+import { WasmModule, WasmArray, asWasmArray } from '../lib/codegen/wasm-module.zena';
+import { ValTypeI32 } from '../lib/codegen/wasm.zena';
+import { typeToValType } from '../lib/codegen/type-mapping.zena';
+import { getTypeKeyForSpecialization } from '../lib/codegen/codegen-utils.zena';
+import { BinaryEmitter } from '../lib/codegen/binary-emitter.zena';
+
+/**
+ * The immutable half of ArrayType is dormant until the surface default
+ * flips (docs/design/array-mutability.md), so these tests drive it
+ * directly: an ArrayType with immutable elements must intern a distinct
+ * Wasm array type and emit `(array T)` rather than `(array (mut T))`.
+ */
+export let tests = suite('array element mutability', (): void => {
+  test('typeToValType keeps mutable and immutable arrays distinct', (ctx: TestContext): void => {
+    let wasm = new WasmModule();
+    let mutVt = typeToValType(wasm, new ArrayType(new I32Type(), true));
+    let immVt = typeToValType(wasm, new ArrayType(new I32Type(), false));
+
+    let mutArr = asWasmArray(mutVt) as WasmArray;
+    let immArr = asWasmArray(immVt) as WasmArray;
+    isTrue(mutArr != immArr);
+    isTrue(mutArr.isMutable);
+    isFalse(immArr.isMutable);
+
+    // Interning is per (element, mutability): asking again returns the
+    // same type, not a new one.
+    let again = asWasmArray(typeToValType(wasm, new ArrayType(new I32Type(), false))) as WasmArray;
+    isTrue(again == immArr);
+  });
+
+  test('specialization keys distinguish element mutability', (ctx: TestContext): void => {
+    let mutKey = getTypeKeyForSpecialization(new ArrayType(new I32Type(), true));
+    let immKey = getTypeKeyForSpecialization(new ArrayType(new I32Type(), false));
+    equal(mutKey, 'arr_i32');
+    equal(immKey, 'arrimm_i32');
+  });
+
+  test('binary emitter writes the element mutability bit', (ctx: TestContext): void => {
+    // emitArrayType writes: 0x4F (sub final), 0 supertypes, 0x5E (array
+    // form), the element valtype, then the mutability byte.
+    let checkMutByte = (isMutable: boolean, expected: i32): void => {
+      let emitter = new BinaryEmitter(new ByteBuffer());
+      emitter.emitTypeSectionStart(1);
+      emitter.emitArrayType(0, new ValTypeI32(), isMutable);
+      let section = emitter.currentSection as ByteBuffer;
+      // Byte 0 is the type count; the array type starts at byte 1.
+      equal(section.getByte(1), 0x4F);
+      equal(section.getByte(2), 0);
+      equal(section.getByte(3), 0x5E);
+      equal(section.getByte(4), 0x7F); // i32
+      equal(section.getByte(5), expected);
+    };
+    checkMutByte(true, 1);
+    checkMutByte(false, 0);
+  });
+});

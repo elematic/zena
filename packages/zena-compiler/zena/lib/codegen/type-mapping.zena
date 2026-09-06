@@ -54,12 +54,12 @@ export let substituteTypeParamsInCodegen = (
       }
       t
     }
-    case ArrayType {elementType}: {
+    case ArrayType {elementType, elementsMutable}: {
       let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, elementType);
       if (sub == elementType) {
         return t;
       }
-      new ArrayType(sub)
+      new ArrayType(sub, elementsMutable)
     }
     case TupleType {elementTypes}: {
       let newElems = new GrowableArray<Type>(elementTypes.length);
@@ -932,10 +932,10 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       }
       eraseTypeParameters(wasm, ta.target)
     }
-    case ArrayType {elementType}: {
+    case ArrayType {elementType, elementsMutable}: {
       let sub = eraseTypeParameters(wasm, elementType);
       if (sub == elementType) { return t; }
-      new ArrayType(sub)
+      new ArrayType(sub, elementsMutable)
     }
     case ClassType as ct: {
       let {typeArguments} = ct;
@@ -1415,6 +1415,8 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
     let targs = ct.typeArguments;
     if (ct.name == "array" && targs != null && targs.length > 0) {
       let elemValType = typeToStorageValType(wasm, targs[0]);
+      // A class-shaped mention of `array` carries no element-mutability
+      // bit; every such mention is the mutable builtin today.
       return new ValTypeRef(wasm.getArray(elemValType, true));
     }
     if (ct.name == "ByteArray") {
@@ -1440,7 +1442,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   }
   case ArrayType as at: {
     let elemValType = typeToStorageValType(wasm, at.elementType);
-    new ValTypeRef(wasm.getArray(elemValType, true))
+    new ValTypeRef(wasm.getArray(elemValType, at.elementsMutable))
   }
   case VoidType: new ValTypeVoid()
   case NullType: new ValTypeStructRef()
@@ -1901,8 +1903,8 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
       }
       new UnionType(newTypes) as Type
     }
-    case ArrayType {elementType}: {
-      new ArrayType(mapMixinThisInType(ct, elementType)) as Type
+    case ArrayType {elementType, elementsMutable}: {
+      new ArrayType(mapMixinThisInType(ct, elementType), elementsMutable) as Type
     }
     case TupleType {elementTypes}: {
       let newElems = new GrowableArray<Type>();

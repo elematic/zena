@@ -7,6 +7,14 @@ a free abstraction and replaces it with one that currently costs about
 [Required optimizations](#required-optimizations) has to land first, and
 the [Acceptance gate](#acceptance-gate) defines what "first" means.
 
+The machinery is now in place ahead of the flip: `ArrayType` carries
+`elementsMutable`, the parser accepts `array<var T>`, and codegen emits
+`(array T)` for an immutable-element `ArrayType`. Bare `array<T>` still
+resolves to mutable elements — the stdlib is compiled by the pinned
+bootstrap, which cannot parse `array<var T>`, so flipping the default is
+a two-step landing: reseed first, then migrate the stdlib's six `array<`
+sites and flip the resolution default and array literals together.
+
 ## Overview
 
 `ImmutableArray<T>` and `FixedArray<T>` are both declared
@@ -52,7 +60,10 @@ unused:
 - Both emitters honor it (`codegen/binary-emitter.zena:942`,
   `codegen/wat-emitter.zena:672`)
 
-Every `getArray(...)` call site passes `true`.
+`typeToValType` and reachability's `discoverType` now pass the
+`ArrayType`'s own `elementsMutable` through; the remaining `getArray(...)`
+call sites are codegen-built buffers (string parts, template tables) and
+stay mutable.
 
 ## Wasm array mutability
 

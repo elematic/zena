@@ -400,7 +400,8 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
         base
       }
     }
-    case ArrayType {elementType}: `arr_${getTypeKeyForSpecialization(elementType)}`
+    case ArrayType {elementType, elementsMutable}:
+      (if (elementsMutable) "arr_" else "arrimm_") + getTypeKeyForSpecialization(elementType)
     case RecordType as rec: {
       let len = rec.properties.size;
       let parts = new FixedArray<String>(1 + 4 * len, "");
@@ -673,7 +674,8 @@ export let getTypeKey = (type: Type): String => {
     case VoidType: "void"
     case ClassType as ct: ct.name
     case InterfaceType as it: it.name
-    case ArrayType {elementType}: `arr_${getTypeKey(elementType)}`
+    case ArrayType {elementType, elementsMutable}:
+      (if (elementsMutable) "arr_" else "arrimm_") + getTypeKey(elementType)
     case RecordType: "rec"
     case TupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
     case InlineTupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
@@ -1014,9 +1016,9 @@ export let substituteTypeParams = (
       }
       new UnionType(substituted)
     }
-    case ArrayType {elementType}: {
+    case ArrayType {elementType, elementsMutable}: {
       let subElem = substituteTypeParams(typeParams, typeArgs, elementType);
-      new ArrayType(subElem)
+      new ArrayType(subElem, elementsMutable)
     }
     case TupleType {elementTypes}: {
       let subElems = new GrowableArray<Type>();
@@ -1150,7 +1152,8 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
       base
     }
   }
-  case ArrayType {elementType}: `Array<${getTypeUniqueKey(elementType)}>`
+  case ArrayType {elementType, elementsMutable}:
+    (if (elementsMutable) "Array<" else "Array<imm ") + getTypeUniqueKey(elementType) + ">"
   case TupleType {elementTypes}: {
     let len = elementTypes.length;
     if (len > 0) {

@@ -4148,6 +4148,25 @@ arr[1] = 99;              // mutate in place
 let len = arr.length;     // 3
 ```
 
+#### The builtin `array` type
+
+`array<T>` is the builtin WASM-GC array type that `FixedArray<T>` and
+`ImmutableArray<T>` extend. It reaches source only through `on` clauses
+and intrinsic declarations. The element slot's mutability may be spelled
+explicitly with `var`:
+
+```zena
+extension class Buffer on array<var u8> { ... }
+```
+
+`var` here is part of the grammar of the `array` type constructor — it
+marks the element slot mutable, the same way `var` marks a mutable field
+or binding — and is rejected on any other generic type. Today
+`array<var T>` and `array<T>` name the same type; the bare spelling is
+planned to become the immutable-element array `(array T)`, with
+`array<var T>` keeping today's `(array (mut T))` representation. See
+`docs/design/array-mutability.md`.
+
 #### Array\<T\>
 
 `Array<T>` is a growable array that automatically resizes its backing storage.

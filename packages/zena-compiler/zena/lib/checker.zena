@@ -3312,7 +3312,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   // the definition inside the checker means the stdlib text is
   // unchanged and only the compiler's own `U8Type` class is involved,
   // which any seed can compile.
-  let byteArrayType = new ArrayType(new U8Type());
+  let byteArrayType = new ArrayType(new U8Type(), true);
   ctx.registerPreludeType("ByteArray", byteArrayType);
 
   // __byte_array_new(size: i32): ByteArray
@@ -3356,7 +3356,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   let primArrayTParam = new TypeParameterType("T", null, null);
   let primArrayTParams = new GrowableArray<TypeParameterType>();
   primArrayTParams.push(primArrayTParam);
-  let primArrayType = new ArrayType(primArrayTParam);
+  let primArrayType = new ArrayType(primArrayTParam, true);
   ctx.registerPreludeType("array", primArrayType);
 
   // __array_len<T>(arr: array<T>): i32
@@ -4760,7 +4760,7 @@ let resolveExplicitTypeArgument = (ctx: CheckerContext, ann: TypeAnnotation): Ty
 };
 
 let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean): Type => match (ann) {
-  case NamedTypeAnnotation {name, typeArguments}: {
+  case NamedTypeAnnotation {name, typeArguments, elementsMutable}: {
     // Resolve through scope analysis so lexical shadowing is honored.
     let resolved = ctx.resolveTypeReference(ann, name);
     if (resolved == null) {
@@ -4770,6 +4770,19 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
         ann.loc
       );
       return new ErrorType();
+    }
+
+    // `var` marks the element slot of the builtin array type constructor
+    // (`array<var T>`) and modifies nothing anywhere else: a type argument
+    // to a user generic does not name a slot. See
+    // docs/design/array-mutability.md.
+    if (elementsMutable &&
+        !(resolved is ArrayType && (resolved as ArrayType).elementType is TypeParameterType)) {
+      ctx.error(
+        "The 'var' element modifier only applies to the builtin 'array' type constructor.",
+        DiagnosticCode.TypeMismatch,
+        ann.loc
+      );
     }
     
     // A `resource class` has no unwrapped form, so naming it bare is an
@@ -4878,7 +4891,11 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
           ctx.error("Type 'array' is generic and requires exactly 1 type argument.", DiagnosticCode.TypeMismatch, ann.loc);
           return new ErrorType();
         }
-        return new ArrayType(resolvedArgs[0]);
+        // Transitional: bare `array<T>` still has mutable elements, so
+        // `array<var T>` and `array<T>` resolve identically for now. The
+        // bare spelling flips to immutable elements once the stdlib can
+        // write `array<var T>` — see docs/design/array-mutability.md.
+        return new ArrayType(resolvedArgs[0], true);
       }
       case _: {
         if (hasTypeArgs) {
@@ -5457,9 +5474,9 @@ let substituteTypeParams = (
       }
       return createUnionType(substituted);
     }
-    case ArrayType {elementType}: {
+    case ArrayType {elementType, elementsMutable}: {
       let subElem = substituteTypeParams(typeParams, typeArgs, elementType);
-      return new ArrayType(subElem);
+      return new ArrayType(subElem, elementsMutable);
     }
     case TupleT {elementTypes}: {
       let subElems = new GrowableArray<Type>();
@@ -5670,8 +5687,8 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       }
       return createUnionType(substituted);
     }
-    case ArrayType {elementType}: {
-      return new ArrayType(substituteThisType(receiverType, elementType));
+    case ArrayType {elementType, elementsMutable}: {
+      return new ArrayType(substituteThisType(receiverType, elementType), elementsMutable);
     }
     case _: { return t; }
   }
@@ -7244,10 +7261,13 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
 
   // ArrayType(elementType) is assignable to Array<T>/FixedArray<T> when elementType assignable to T.
   match (source) {
-    case ArrayType {elementType}: {
+    case ArrayType {elementType, elementsMutable}: {
       match (target) {
         case ClassType as tgtClass: {
-          let isArrayLike = isPreludeClassType(ctx, tgtClass, "GrowableArray") || isPreludeClassType(ctx, tgtClass, "Array") || isPreludeClassType(ctx, tgtClass, "FixedArray") || isPreludeClassType(ctx, tgtClass, "ImmutableArray");
+          // The array-backed classes are all backed by a mutable-element
+          // array until the stdlib can write `array<var T>`, so an
+          // immutable-element array satisfies none of them.
+          let isArrayLike = elementsMutable && (isPreludeClassType(ctx, tgtClass, "GrowableArray") || isPreludeClassType(ctx, tgtClass, "Array") || isPreludeClassType(ctx, tgtClass, "FixedArray") || isPreludeClassType(ctx, tgtClass, "ImmutableArray"));
           if (isArrayLike && tgtClass.typeArguments != null) {
             let tgtArgs = tgtClass.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {
@@ -7260,7 +7280,9 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
           }
         }
         case InterfaceType as tgtIface: {
-          let isIfaceLike = isPreludeInterfaceType(ctx, tgtIface, "Array") || isPreludeInterfaceType(ctx, tgtIface, "MutableArray") || isPreludeInterfaceType(ctx, tgtIface, "Iterable");
+          // Interface satisfaction rides on the mutable-backed classes'
+          // implementations for now, same as above.
+          let isIfaceLike = elementsMutable && (isPreludeInterfaceType(ctx, tgtIface, "Array") || isPreludeInterfaceType(ctx, tgtIface, "MutableArray") || isPreludeInterfaceType(ctx, tgtIface, "Iterable"));
           if (isIfaceLike && tgtIface.typeArguments != null) {
             let tgtArgs = tgtIface.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {
@@ -7271,7 +7293,12 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
             return true;
           }
         }
-        case ArrayType {elementType as tgtElem}: {
+        case ArrayType {elementType as tgtElem, elementsMutable as tgtMut}: {
+          // Wasm gives no subtyping between `(array (mut T))` and
+          // `(array T)` in either direction, so mutability must match
+          // exactly. (Read-only covariance for immutable arrays is a
+          // separate change — see docs/design/array-mutability.md.)
+          if (elementsMutable != tgtMut) { return false; }
           return isAssignableTo(ctx, elementType, tgtElem);
         }
         case _: {}
@@ -7419,9 +7446,10 @@ let typesEqual = (a: Type, b: Type): boolean => {
         case _: false
       }
     }
-    case ArrayType {elementType as ea}: {
+    case ArrayType {elementType as ea, elementsMutable as ma}: {
       match (b) {
-        case ArrayType {elementType as eb}: typesEqual(ea, eb)
+        case ArrayType {elementType as eb, elementsMutable as mb}:
+          ma == mb && typesEqual(ea, eb)
         case _: false
       }
     }
@@ -9526,7 +9554,7 @@ let getArrayPatternElementType = (ctx: CheckerContext, t: Type): Type | null => 
 let getArrayPatternRestType = (ctx: CheckerContext, t: Type, elemType: Type): Type => {
   let unwrapped = unwrapAliases(t);
   if (unwrapped is ArrayType) {
-    return new ArrayType(elemType);
+    return new ArrayType(elemType, (unwrapped as ArrayType).elementsMutable);
   }
   let faType = ctx.resolvePreludeType("FixedArray");
   if (faType is ClassType) {
@@ -9534,7 +9562,7 @@ let getArrayPatternRestType = (ctx: CheckerContext, t: Type, elemType: Type): Ty
     args.push(elemType);
     return instantiateClassType(faType as ClassType, args);
   }
-  return new ArrayType(elemType);
+  return new ArrayType(elemType, true);
 };
 
 /**

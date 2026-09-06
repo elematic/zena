@@ -407,9 +407,9 @@ export final class TypeLowerer implements TypeLowererInterface {
       // (suppressNameEvidence) the mention is a signature's, not a
       // value's, and a reached signature's types are kept structurally.
       if (this.pass.suppressNameEvidence) {
-        this.pass.wasm.getArray(elemValType, true);
+        this.pass.wasm.getArray(elemValType, t.elementsMutable);
       } else {
-        this.pass.markTypeReached(this.pass.wasm.getArray(elemValType, true));
+        this.pass.markTypeReached(this.pass.wasm.getArray(elemValType, t.elementsMutable));
       }
 
       if (isConcrete(t)) {
@@ -1491,7 +1491,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             this.pass.getNodeModel(md as Node, scModel), sc,
             this.pass.currentReachable));
       }
-      this.pass.typeLowerer.discoverType(new ArrayType(sc), model);
+      this.pass.typeLowerer.discoverType(new ArrayType(sc, true), model);
     }
   }
 
@@ -2922,7 +2922,7 @@ let eraseType = (t: Type): Type => {
       }
     }
     case ArrayType as at: {
-      new ArrayType(eraseType(at.elementType))
+      new ArrayType(eraseType(at.elementType), at.elementsMutable)
     }
     case TupleType as tt: {
       let types = new GrowableArray<Type>();
@@ -2942,8 +2942,9 @@ let matchTypesForImport = (t1: Type, t2: Type): boolean => {
     return true;
   }
   match (t1) {
-    case ArrayType {elementType}: {
+    case ArrayType {elementType, elementsMutable}: {
       if (t2 is ArrayType) {
+        if (elementsMutable != t2.elementsMutable) { return false; }
         return matchTypesForImport(elementType, t2.elementType);
       }
       return false;
