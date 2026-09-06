@@ -873,3 +873,80 @@ input for async v1.)
    is unconditionally _elide the allocation, keep the hop_. That makes
    the remaining work a multi-value ramp return rather than an escape
    analysis.
+
+## 8. `tail return`: explicit adoption (designed)
+
+`return await f` costs a resume whose only work is moving `f`'s value
+into the frame's own future: when `f` settles, one microtask resumes
+the frame, it reads the value, completes its future, and that settle
+schedules the caller — an extra hop and a frame step per level, paid
+even when `f` already settled (§1.1). Section 2's stance rejects
+making adoption implicit at `return`; this section designs the
+explicit form instead, and it is spelled the way the frame-reuse
+assertion is already spelled:
+
+```zena
+tail return foo();
+```
+
+In an async body, `tail return e` requires `e` to be statically
+`Future<V>` where `V` is the declared value type, and means: settle
+this frame's future from `e`'s, and exit the frame now. The sync and
+async forms are one contract at two levels — "my frame contributes
+nothing after this point" — reusing the stack frame below a sync
+call, and retiring the suspension frame behind a future above one.
+
+What each objection to implicit adoption becomes under the keyword:
+
+- **Type direction is declared, not guessed.** The operand must be a
+  future of the value type, statically. The generic flavors
+  (`Awaited<R>` results, an `R` that may or may not be a future)
+  cannot use it and keep their explicit `await` — the
+  per-instantiation ambiguity of section 2 never arises because the
+  template cannot utter the form unless adoption is what it means.
+- **Tail position is the finalizer guarantee.** Adoption runs the
+  frame's remaining lifecycle at the `tail return`; tail position
+  already means no enclosing `try`/`finally`/`using` owes work after
+  it, the same restriction the sync form enforces.
+- **Cancellation is not starved, once one point is added.** The
+  hazard is real and specific: ramps are eager, so a
+  tail-recursive descent is one synchronous cascade with no awaits —
+  and entry segments carry no checkpoint — so a scope cancelled
+  before the call would grind through the whole descent before the
+  leaf's first await raises. The fix is a standard checkpoint AT
+  each `tail return`, before the call: the same class of point as an
+  await's on-enter checkpoint (a scope transfer out of this frame),
+  taken while the frame is still alive so a raise unwinds normally,
+  restoring delivery density to parity with `return await`. Parked
+  and unwinding phases need nothing: a cancel wakes the LEAF frame,
+  whose completed-as-cancelled future propagates through the
+  adoption chain, and settlement propagation is synchronous, so no
+  cancel interleaves it.
+
+Implementation notes, each load-bearing:
+
+- **Adoption propagates synchronously inside the settle.** The
+  always-async rule governs user callbacks; internal chaining runs no
+  user code, so a settle may walk the whole adoption chain in one
+  turn (`completeWith` in section 2 is this primitive). This is what
+  actually deletes the per-level microtask.
+- **Chains must collapse.** Tail recursion via adoption otherwise
+  trades O(n) frames for an O(n) future chain — the leak naive
+  promise-adoption implementations had. Adopting a future that is
+  itself adopting points at the root (path shortening), making deep
+  tail recursion flat in frames AND futures.
+- **Adopted frames deregister from their scope.** Ramps register
+  frames so `cancel` can wake them; a frame that exited by adoption
+  would otherwise be one dead wake per level on cancellation —
+  harmless at the DONE guard, but a cancel of a deep recursion
+  should not schedule N corpses.
+- **The checkpoint precedes the next ramp.** The pre-cancelled case
+  is only answered because each level checks BEFORE calling into the
+  next eager ramp; a checkpoint after the call checks too late.
+
+This subsumes the `return await f`-to-forwarding peephole mentioned
+in section 2: rather than proving tail-ness behind an `await`, the
+programmer asserts it, the checker enforces it, and the two spellings
+keep distinct meanings — `return await f` resumes (and its resume
+checkpoint delivers cancellation here), `tail return f` adopts (and
+this frame is done).
