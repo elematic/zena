@@ -1,12 +1,14 @@
 // @mode: check
-// Generic methods have no interface dispatch slot, so calling one
-// through an interface receiver is rejected (it used to crash both
-// compilers' codegen). Non-generic interface methods still dispatch,
-// and the same generic method is fine on a concrete receiver.
+// Generic methods dispatch through interface receivers: each solved
+// type-argument list gets its own vtable slot (elematic/zena#116), so
+// the call checks like any other interface method call.
 import { Array } from 'zena:array';
 
 let s: Array<i32> = [1, 2, 3];
-let bad = s.map((x: i32): i32 => x + 1); // @error: Generic method 'map' cannot be called through interface 'Array'
+let ok = s.map((x: i32): i32 => x + 1);
+let okStrings = s.map((x: i32): String => 'n');
 
 let okLength = s.length;
 let okDirect = [1, 2, 3].map((x: i32): i32 => x + 1);
+
+let bad = s.map((x: String): i32 => 0); // @error: Type mismatch: argument '(x: String) => i32' is not assignable to parameter '(i32, i32, Array<i32>) => i32'.

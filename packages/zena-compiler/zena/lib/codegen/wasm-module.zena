@@ -614,10 +614,63 @@ export final class WasmFunction implements Hashable {
   var isClosureTrampoline: boolean = false;
   var closureTrampolineTarget: WasmFunction | null = null;
 
+  /**
+   * Interface-trampoline adaptations for a generic vtable slot, where
+   * an implementing class's own signature narrows the interface view:
+   * closure parameters to rebuild through a forwarder, and the
+   * class-interface pack for a covariant class-typed result. Null on
+   * trampolines whose target signature matches the slot.
+   */
+  var trampolineParamWraps: GrowableArray<TrampolineParamWrap> | null = null;
+  var trampolineResultPackPair: ClassInterfaceKey | null = null;
+  var trampolineResultPackIface: InterfaceKey | null = null;
+  /** Set on a synthesized closure forwarder (see ClosureForwarderSpec). */
+  var closureForwarder: ClosureForwarderSpec | null = null;
+
   new(this.signature, this.node, this.model);
   hashCode(): i32 {
     return this.uid;
   }
+}
+
+/**
+ * One closure parameter of a generic interface-trampoline whose
+ * implementing class narrows the callback's own parameter types (a
+ * `this`-typed parameter in the interface declaration). The trampoline
+ * rebuilds the argument as a class-view closure pair: `forwarder` as
+ * the func, the caller's interface-view pair as the ctx.
+ */
+export final class TrampolineParamWrap {
+  /** Trampoline signature parameter index (0 is the receiver). */
+  paramIndex: i32;
+  /** The implementing class's view of the callback's closure pair. */
+  implClosureStruct: WasmStruct;
+  forwarder: WasmFunction;
+  new(this.paramIndex, this.implClosureStruct, this.forwarder);
+}
+
+/**
+ * Body spec for a synthesized closure forwarder: called with the
+ * implementing class's argument types, it packs the marked arguments
+ * into interface fat pointers and delegates to the caller's
+ * interface-view closure pair carried in its ctx slot.
+ */
+export final class ClosureForwarderSpec {
+  /** The caller's interface-view closure pair struct (the ctx cast target). */
+  sourceStruct: WasmStruct;
+  packs: GrowableArray<ForwarderParamPack>;
+  new(this.sourceStruct, this.packs);
+}
+
+/** One forwarder argument to pack into an interface fat pointer. */
+export final class ForwarderParamPack {
+  /** Parameter index in the closure impl signature (0 is the ctx). */
+  argIndex: i32;
+  /** The class-interface vtable pair that packs the value. */
+  pair: ClassInterfaceKey;
+  /** The target interface (its fat-pointer struct). */
+  ifaceKey: InterfaceKey;
+  new(this.argIndex, this.pair, this.ifaceKey);
 }
 
 export final class VTableInit {

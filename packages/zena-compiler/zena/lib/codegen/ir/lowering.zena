@@ -36,7 +36,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
 import {
-  WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical,
+  WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec,
 } from '../wasm-module.zena';
 import {
   typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, inlineLaneValTypes, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames,
@@ -256,6 +256,7 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
 let usesSynthesizedMachinery = (func: WasmFunction): boolean => {
   return func.importWrapperTarget != null ||
       func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
+      func.closureForwarder != null ||
       func.isClosureWrapper || func.isClosureTrampoline ||
       func.getterStruct != null || func.setterStruct != null ||
       func.isCaseClassEq || func.isCaseClassHash ||
@@ -350,7 +351,7 @@ let castToConcreteRef = (b: IrBuilder, value: i32, targetVt: ValType): i32 => {
  * The tail call is what keeps the adapter out of the stack; see
  * requireForwardableResults.
  */
-let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
+let synthesizeInterfaceTrampoline = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let target = func.interfaceTrampolineTarget as WasmFunction;
   let b = new IrBuilder();
   let params = synthEntryParams(b, func);
@@ -407,18 +408,152 @@ let synthesizeInterfaceTrampoline = (func: WasmFunction): IrBody => {
   if (func.signature.params.length != target.signature.params.length) {
     throw new ZirUnsupported('trampoline shape');
   }
+  let wraps = func.trampolineParamWraps;
   let args = new GrowableArray<i32>();
   args.push(castToConcreteRef(b, params[0], target.signature.params[0]));
   for (var i = 1; i < params.length; i += 1) {
     var v = params[i];
-    if (!isWasmSubtype(func.signature.params[i], target.signature.params[i])) {
+    var wrapped = false;
+    if (wraps != null) {
+      for (let w in wraps) {
+        if (w.paramIndex == i) {
+          // The class's copy narrows this callback (a `this`-typed
+          // parameter in the interface declaration): rebuild the
+          // argument as a class-view pair whose func is the
+          // synthesized forwarder and whose ctx is the caller's
+          // interface-view pair (generic-interface-dispatch.md).
+          let implStruct = w.implClosureStruct;
+          let funcVal = b.emit(IrOp.ref_func, implStruct.fields[0].type,
+              -1, b.addRef(new IrRefFunc(w.forwarder)));
+          let pairArgs = new GrowableArray<i32>();
+          pairArgs.push(funcVal);
+          pairArgs.push(v);
+          v = b.emit(IrOp.struct_new,
+              new ValTypeRef(implStruct) as ValType,
+              b.pushArgList(pairArgs),
+              b.addRef(new IrRefType(implStruct)));
+          wrapped = true;
+        }
+      }
+    }
+    if (!wrapped &&
+        !isWasmSubtype(func.signature.params[i], target.signature.params[i])) {
       v = castToConcreteRef(b, v, target.signature.params[i]);
     }
     args.push(v);
   }
   let funcRef = b.addRef(new IrRefFunc(target));
-  requireForwardableResults(func, target, 'interface trampoline');
-  b.retCall(funcRef, args);
+  let packPair = func.trampolineResultPackPair;
+  let packIface = func.trampolineResultPackIface;
+  if (packPair == null || packIface == null) {
+    requireForwardableResults(func, target, 'interface trampoline');
+    b.retCall(funcRef, args);
+    return b.finish();
+  }
+  // A covariant class-typed result: call, pack into the interface fat
+  // pointer through the class-interface pair vtable, return. No tail
+  // call — the pack happens after the target returns.
+  if (target.signature.returns.length != 1 || func.signature.returns.length != 1) {
+    throw new ZirUnsupported('generic trampoline result shape');
+  }
+  let raw = b.callFunc(funcRef, args, target.signature.returns[0]);
+  if (!wasm.classInterfaceVTables.has(packPair)) {
+    throw new ZirUnsupported('generic trampoline pack vtable missing');
+  }
+  let packGlobal = wasm.classInterfaceVTables[packPair];
+  if (!wasm.interfaceStructs.has(packIface)) {
+    throw new ZirUnsupported('generic trampoline pack interface missing');
+  }
+  let fatPtr = wasm.interfaceStructs[packIface];
+  let packed = b.emit(IrOp.iface_pack,
+      new ValTypeRef(fatPtr) as ValType, raw,
+      b.addRef(new IrRefGlobal(packGlobal)));
+  b.ret(packed);
+  return b.finish();
+};
+
+/**
+ * A closure forwarder's body (generic interface dispatch): the ctx
+ * (param 0) is the caller's interface-view closure pair. Unpack it,
+ * forward the arguments — packing each one the implementing class
+ * narrowed into its interface fat pointer — and call_ref through the
+ * pair's func field. The structural twin of lowerFunctionAdaptation,
+ * plus the packs.
+ */
+let lowerClosureForwarder = (wasm: WasmModule, func: WasmFunction): IrBody => {
+  let spec = func.closureForwarder as ClosureForwarderSpec;
+  let src = spec.sourceStruct;
+  var inTypes = false;
+  for (let t in wasm.types) {
+    if (t == (src as WasmType)) {
+      inTypes = true;
+    }
+  }
+  if (!inTypes) {
+    throw new ZirUnsupported('forwarder source struct not laid out');
+  }
+  let srcSigOpt = asWasmSignature(src.fields[0].type);
+  if (srcSigOpt == null) {
+    throw new ZirUnsupported('forwarder source shape');
+  }
+  let srcSig = srcSigOpt;
+  if (srcSig.params.length != func.signature.params.length) {
+    throw new ZirUnsupported('forwarder arity shape');
+  }
+  let b = new IrBuilder();
+  let entry = b.newBlock();
+  let params = new GrowableArray<i32>();
+  for (let vt in func.signature.params) {
+    params.push(b.blockParam(entry, vt));
+  }
+  b.switchTo(entry);
+  let pairVt = new ValTypeRef(src) as ValType;
+  let pair = b.emit(IrOp.ref_cast, pairVt, params[0], b.internType(pairVt));
+  let ctxVal = b.emit(IrOp.struct_get, src.fields[1].type, pair,
+      b.addRef(new IrRefField(src, 'ctx')));
+  let args = new GrowableArray<i32>();
+  args.push(ctxVal);
+  for (var i = 1; i < srcSig.params.length; i += 1) {
+    var v = params[i];
+    var packedArg = false;
+    for (let p in spec.packs) {
+      if (p.argIndex == i) {
+        if (!wasm.interfaceStructs.has(p.ifaceKey)) {
+          throw new ZirUnsupported('forwarder pack interface missing');
+        }
+        let fatPtr = wasm.interfaceStructs[p.ifaceKey];
+        if (!wasm.classInterfaceVTables.has(p.pair)) {
+          throw new ZirUnsupported('forwarder pack vtable missing');
+        }
+        let g = wasm.classInterfaceVTables[p.pair];
+        v = b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr) as ValType, v,
+            b.addRef(new IrRefGlobal(g)));
+        packedArg = true;
+      }
+    }
+    if (!packedArg) {
+      let want = srcSig.params[i];
+      if (!isValSubtype(b.body.resultType(v) as ValType, want)) {
+        if (!(want is ValTypeRef || want is ValTypeRefNull)) {
+          throw new ZirUnsupported('forwarder param shape');
+        }
+        v = b.emit(IrOp.ref_cast, want, v, b.internType(want));
+      }
+    }
+    args.push(v);
+  }
+  let funcVal = b.emit(IrOp.struct_get, src.fields[0].type, pair,
+      b.addRef(new IrRefField(src, 'func')));
+  if (srcSig.returns.length == 0) {
+    b.callRef(funcVal, args, null);
+    b.retVoid();
+    return b.finish();
+  }
+  if (srcSig.returns.length != 1 || func.signature.returns.length != 1) {
+    throw new ZirUnsupported('forwarder result shape');
+  }
+  let result = b.callRef(funcVal, args, srcSig.returns[0]);
+  b.ret(result);
   return b.finish();
 };
 
@@ -717,7 +852,10 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
       return lowerComponentAdapter(wasm, func);
     }
     if (func.interfaceTrampolineTarget != null) {
-      return synthesizeInterfaceTrampoline(func);
+      return synthesizeInterfaceTrampoline(wasm, func);
+    }
+    if (func.closureForwarder != null) {
+      return lowerClosureForwarder(wasm, func);
     }
     if (func.getterStruct != null) {
       return synthesizeAccessor(func, true);
@@ -816,6 +954,7 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   // no AST node (field-backed synthesized accessors above).
   if (func.isImport || func.importWrapperTarget != null ||
       func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
+      func.closureForwarder != null ||
       func.isClosureWrapper || func.isClosureTrampoline) {
     // Wrapper flags on a node-carrying function: not a shape lowering
     // models (the hoisted routes above handle the synthesized ones).
@@ -5457,8 +5596,25 @@ export final class FunctionLowerer {
     if (selfResolved is InterfaceType) {
       let propName = getMemberPropertyName(
           member.isSymbolAccess, member.property.name);
+      // A generic method dispatches through the slot RTA minted for
+      // the solved type-argument list — the same specialized-name
+      // mangle the class-side monomorphized copies register under.
+      var slotName = propName;
+      if (let (true, declInfo) = selfResolved.members.get(propName)) {
+        if (declInfo.type is FunctionType) {
+          let declFt = declInfo.type as FunctionType;
+          let {typeParameters} = declFt;
+          if (typeParameters != null && typeParameters.length > 0) {
+            let targs = this.#solvedCallTypeArguments(call);
+            if (targs == null) {
+              this.#bail('generic interface method call');
+            }
+            slotName = getSpecializedName(propName, targs);
+          }
+        }
+      }
       let result = this.#lowerInterfaceDispatch(
-          selfResolved, propName, member.object,
+          selfResolved, slotName, member.object,
           call.args, multiOut);
       if (multiOut != null && multiOut.length > 1) {
         // Multi-value results have no single checked type to

@@ -809,6 +809,105 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
   }
 };
 
+/**
+ * `this` as seen through an interface receiver: the interface type
+ * itself. The caller of a virtual generic method types its arguments
+ * against this view (the checker substitutes the same way), so the
+ * vtable slot's signature must too — a `this`-typed callback parameter
+ * left unsubstituted would lower to anyref and mint a closure struct
+ * the call site's closure does not have.
+ */
+export let substituteThisTypeInCodegen = (receiverType: Type, t: Type): Type => {
+  match (t) {
+    case ThisType: { return receiverType; }
+    case FunctionType as ft: {
+      let subParams = new GrowableArray<Type>();
+      var changed = false;
+      for (let param in ft.parameters) {
+        let sub = substituteThisTypeInCodegen(receiverType, param);
+        if (sub !== param) { changed = true; }
+        subParams.push(sub);
+      }
+      let subRet = substituteThisTypeInCodegen(receiverType, ft.returnType);
+      if (!changed && subRet === ft.returnType) { return t; }
+      let newFt = new FunctionType(subParams, ft.parameterNames, subRet);
+      newFt.typeParameters = ft.typeParameters;
+      newFt.optionalParameters = ft.optionalParameters;
+      newFt.parameterInitializers = ft.parameterInitializers;
+      newFt.parameterSymbols = ft.parameterSymbols;
+      newFt.isFinal = ft.isFinal;
+      newFt.isAbstract = ft.isAbstract;
+      newFt.functionSymbolId = ft.functionSymbolId;
+      newFt.functionSymbolName = ft.functionSymbolName;
+      return newFt;
+    }
+    case UnionType {types}: {
+      let substituted = new GrowableArray<Type>();
+      var changed = false;
+      for (let type in types) {
+        let sub = substituteThisTypeInCodegen(receiverType, type);
+        if (sub !== type) { changed = true; }
+        substituted.push(sub);
+      }
+      if (!changed) { return t; }
+      return new UnionType(substituted);
+    }
+    case ArrayType {elementType}: {
+      let sub = substituteThisTypeInCodegen(receiverType, elementType);
+      if (sub === elementType) { return t; }
+      return new ArrayType(sub);
+    }
+    case _: { return t; }
+  }
+};
+
+/**
+ * The interface-view function type of a generic interface method at
+ * one solved type-argument list: interface type parameters bound to
+ * the specialization's arguments, `this` bound to the interface, and
+ * the method's own type parameters bound to `typeArgs`. This is the
+ * type the checker gives the call site, so it is what the vtable
+ * slot's signature — and any trampoline adaptation against an
+ * implementing class's own view — derives from.
+ */
+export let getGenericInterfaceMethodType = (wasm: WasmModule, it: InterfaceType, methName: String, typeArgs: Array<Type>): FunctionType => {
+  let itParams = getInterfaceTypeParameters(it);
+  var resolvedFt: FunctionType | null = null;
+  if (it.members.has(methName)) {
+    let mi = it.members[methName];
+    if (mi.type is FunctionType) {
+      let ft = mi.type as FunctionType;
+      resolvedFt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ft) as FunctionType;
+    }
+  }
+  if (resolvedFt == null) {
+    throw new Error("Interface method " + methName + " not found on interface " + it.name);
+  }
+  var rFt = substituteThisTypeInCodegen(it as Type, resolvedFt) as FunctionType;
+  let mtps = rFt.typeParameters;
+  if (mtps != null && mtps.length > 0) {
+    rFt = substituteTypeParamsInCodegen(wasm, mtps, typeArgs, rFt) as FunctionType;
+  }
+  return rFt;
+};
+
+/**
+ * The vtable slot signature for one monomorphized instantiation of a
+ * generic interface method: anyref receiver plus the interface-view
+ * parameter and result types at `typeArgs`.
+ */
+export let getGenericInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, methName: String, typeArgs: Array<Type>): WasmSignature => {
+  let rFt = getGenericInterfaceMethodType(wasm, it, methName, typeArgs);
+  let params = new GrowableArray<ValType>();
+  params.push(new ValTypeAnyRef());
+  for (let p in rFt.parameters) {
+    mapParamTypeToWasmParams(wasm, p, params);
+  }
+  let returns = new GrowableArray<ValType>();
+  mapReturnTypeToWasmResults(wasm, rFt.returnType, returns);
+  return wasm.getSignature(params, returns);
+};
+
 export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
   return match (t) {
     case TypeParameterType: new ErasedType()

@@ -1326,6 +1326,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let objType = model.getNodeType(mem.object);
     if (objType == null) { return; }
     let resolvedObj = resolveType(objType);
+    if (resolvedObj is InterfaceType) {
+      this.registerGenericInterfaceMethodUse(mem, model, resolveType, resolvedObj);
+      return;
+    }
     if (!(resolvedObj is ClassType)) { return; }
     let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
     if (!resolvedObj.members.has(propName)) { return; }
@@ -1390,6 +1394,44 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // instantiation reached every method a class had.)
       this.pass.markFunctionReached(fn);
     }
+  }
+
+  /**
+   * A generic method named through an INTERFACE-typed receiver: the
+   * call dispatches virtually, so the solved type-argument list
+   * becomes a vtable-slot demand on the interface specialization
+   * (`demandGenericInterfaceMethod`). The class-interface vtable pass
+   * instantiates each implementing class's monomorphized copy when it
+   * fills the slot — classes can join the interface in later rounds,
+   * so the fan-out cannot happen here. The template/erasure guards
+   * mirror the class-receiver path above.
+   */
+  registerGenericInterfaceMethodUse(mem: MemberExpression, model: SemanticModel,
+      resolveType: (t: Type) => Type, resolvedObj: InterfaceType): void {
+    if (!isConcrete(resolvedObj) || containsErasedType(resolvedObj as Type)) { return; }
+    let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
+    if (!resolvedObj.members.has(propName)) { return; }
+    let mi = resolvedObj.members[propName];
+    if (!(mi is MethodInfo)) { return; }
+    let miType = mi.type;
+    if (!(miType is FunctionType)) { return; }
+    let {typeParameters} = miType;
+    if (typeParameters == null || typeParameters.length == 0) {
+      return;
+    }
+    let useType = model.getNodeType(mem);
+    if (useType == null || !(useType is FunctionType)) { return; }
+    let rawArgs = useType.typeArguments;
+    if (rawArgs == null || rawArgs.length == 0) { return; }
+    let typeArgs = new GrowableArray<Type>();
+    for (let a in rawArgs) {
+      typeArgs.push(resolveType(a));
+    }
+    if (!noOpenTypeParameters(typeArgs)) { return; }
+    for (let a in typeArgs) {
+      if (containsErasedType(a)) { return; }
+    }
+    this.pass.demandGenericInterfaceMethod(resolvedObj, propName, typeArgs, model);
   }
 
 
@@ -1953,6 +1995,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, resolvedName)] = true;
             let resolvedIfaceStr = i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32) + "." + resolvedName;
             this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
+            this.registerGenericInterfaceMethodUse(n, model, resolveType, resolvedObj);
           } else if (resolvedObj is ClassType) {
             let targetModel = this.pass.getClassModel(resolvedObj);
 

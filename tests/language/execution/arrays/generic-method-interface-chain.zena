@@ -1,0 +1,29 @@
+// @mode: run
+// Chained virtual maps: the first call's result is an interface value
+// whose class-interface vtable pair is created by the trampoline's
+// result pack, so the second call dispatches through a pair the
+// fixpoint built in a later round. The helper's demand is recorded
+// from a specialization's walk (the template mentions Array<T>).
+import { Array } from 'zena:array';
+
+function addAll<T>(items: Array<T>, bonus: i32): i32 {
+  let mapped = items.map((x, i, seq) => bonus + i);
+  var total = 0;
+  for (let v in mapped) {
+    total += v;
+  }
+  return total;
+}
+
+export function main(): i32 {
+  let a: Array<i32> = [10, 20, 30];
+  let doubled = a.map((x, i, seq) => x * 2).map((x, i, seq) => x + 1);
+  var total = 0;
+  for (let v in doubled) {
+    total += v;
+  }
+  let viaGeneric = addAll(a, 5); // 5 + 6 + 7 = 18
+  let explicit = a.map<String>((x, i, seq) => 'ab');
+  return total + viaGeneric + explicit[2].length; // (21+41+61) + 18 + 2 = 143
+}
+// @result: 143

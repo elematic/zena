@@ -31,6 +31,25 @@ export final class Referrer {
 }
 
 /**
+ * One virtual use of a generic interface method: an interface
+ * specialization, the method, and one solved type-argument list. Each
+ * demand becomes one interface vtable slot, named with the same
+ * specialized-name mangle the class-side monomorphized copies register
+ * under, so the call site, the slot, and every implementing class's
+ * trampoline agree on the name.
+ */
+export final class GenericInterfaceMethodDemand {
+  interfaceType: InterfaceType;
+  methName: String;
+  slotName: String;
+  typeArgs: Array<Type>;
+  model: SemanticModel;
+  /** Whether the slot field has been appended to the interface's vtable struct. */
+  var slotAdded: boolean = false;
+  new(this.interfaceType, this.methName, this.slotName, this.typeArgs, this.model);
+}
+
+/**
  * ClassInterfacePair holds a combination of a class and an interface it implements.
  */
 export final class ClassInterfacePair {
@@ -204,6 +223,15 @@ export interface ReachabilityContext {
   reachedMembers: HashSet<String>;
   reachedFunctionsSet: HashSet<WasmFunction>;
   specializedInterfaces: GrowableArray<InterfaceType>;
+  /**
+   * Demands for virtual generic-method slots, in discovery order.
+   * `demandGenericInterfaceMethod` records one per (interface
+   * specialization, solved type-argument list); the class-interface
+   * vtable pass appends the slots and builds the trampolines.
+   */
+  genericInterfaceMethodDemands: GrowableArray<GenericInterfaceMethodDemand>;
+  demandGenericInterfaceMethod(it: InterfaceType, methName: String, typeArgs: Array<Type>, model: SemanticModel): void;
+  findGenericInterfaceDemand(iKey: String, slotName: String): GenericInterfaceMethodDemand | null;
   mixinToClasses: HashMap<MixinKey, GrowableArray<ClassType>>;
   cha: ClassHierarchyAnalysis;
   specializer: SpecializerInterface;

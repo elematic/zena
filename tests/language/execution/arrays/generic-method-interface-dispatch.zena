@@ -1,0 +1,17 @@
+// @mode: run
+// The elematic/zena#116 repro: Array<T>'s generic `map` called through
+// the interface. The receiver's class narrows the callback's `seq`
+// param and the return type, so the dispatch trampoline adapts both.
+import { Array } from 'zena:array';
+
+export function main(): i32 {
+  let a: Array<i32> = [1, 2, 3];
+  let b = a.map((x, i, seq) => x + 1);
+  let strs = a.map((x, i, seq) => if (seq.length > 2) 'long' else 'no');
+  var total = 0;
+  for (let v in b) {
+    total += v;
+  }
+  return total + strs[0].length; // (2+3+4) + 4 = 13
+}
+// @result: 13

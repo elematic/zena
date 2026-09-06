@@ -1,0 +1,40 @@
+// @mode: run
+// A generic method called through an interface-typed receiver
+// dispatches to the runtime class's monomorphized copy: each solved
+// type-argument list gets its own interface vtable slot.
+interface Producer {
+  produce<U>(seed: U, twice: boolean): U;
+}
+
+class Single implements Producer {
+  produce<U>(seed: U, twice: boolean): U {
+    return seed;
+  }
+}
+
+class Loud implements Producer {
+  var calls: i32 = 0;
+  produce<U>(seed: U, twice: boolean): U {
+    this.calls += if (twice) 2 else 1;
+    return seed;
+  }
+}
+
+export function main(): i32 {
+  let first: Producer = new Single();
+  let second: Producer = new Loud();
+  let items = [first, second];
+  var total = 0;
+  for (let p in items) {
+    total += p.produce(20, false);
+    let s = p.produce('abc', true);
+    total += s.length;
+  }
+  let loud = items[1];
+  var loudCalls = 0;
+  if (loud is Loud) {
+    loudCalls = loud.calls;
+  }
+  return total + loudCalls; // 20 + 3 + 20 + 3 + 3 = 49
+}
+// @result: 49

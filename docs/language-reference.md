@@ -3132,6 +3132,17 @@ let s = c.map<String>((v) => 'Value: ' + v); // Explicit
 let n = c.map((v) => v * 2); // Inferred
 ```
 
+Interfaces can declare generic methods, and calls through
+interface-typed receivers dispatch to the runtime class's
+implementation like any other interface method:
+
+```zena
+import { Array } from 'zena:array';
+
+let a: Array<i32> = [1, 2, 3];   // interface-typed
+let doubled = a.map((x) => x * 2);
+```
+
 ### Method Overloading
 
 Zena supports method overloading, allowing multiple methods with the same name

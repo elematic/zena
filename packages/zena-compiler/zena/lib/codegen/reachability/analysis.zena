@@ -1,6 +1,6 @@
 import { Program, CompilationUnit } from '../../program.zena';
 import {
-  WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo,
+  WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack,
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
 import {
@@ -15,16 +15,16 @@ import { GrowableArray } from 'zena:growable-array';
 import { OrderedMap } from 'zena:ordered-map';
 import { StringBuilder } from 'zena:string-builder';
 import {
-  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, isBoxablePrimitive,
+  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, isBoxablePrimitive, InterfaceKey,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, getClosureStruct, getInterfaceMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext,
+  typeToValType, getClosureStruct, getInterfaceMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen,
 } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeFuncRef,
+  ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeFuncRef, valTypeToOpcode,
 } from '../wasm.zena';
-import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair } from './context.zena';
+import { Referrer, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair, GenericInterfaceMethodDemand } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer, applyMixinPrivateScope } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
@@ -192,6 +192,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   discoveredTypes = new HashSet<String>();
   reachedSemanticTypes = new HashSet<String>();
   specializedInterfaces = new GrowableArray<InterfaceType>();
+  genericInterfaceMethodDemands = new GrowableArray<GenericInterfaceMethodDemand>();
+  /** Demands keyed "<interfaceKey>.<slotName>" for dedup and slot lookup. */
+  #genericInterfaceDemandsByKey = new HashMap<String, GenericInterfaceMethodDemand>();
   specializedClassTypes = new HashMap<SymbolId, GrowableArray<ClassType>>();
   reachedClassMembers = new HashMap<SymbolId, OrderedMap<i32, boolean>>();
   reachedReachableClassMembers = new HashMap<SymbolId, OrderedMap<i32, boolean>>();
@@ -2068,6 +2071,342 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
+   * Records a virtual use of a generic interface method: one demand
+   * per (interface specialization, solved type-argument list). The
+   * demand's slot is appended to the interface's vtable struct by
+   * `#syncGenericInterfaceSlots`, inside the class-interface vtable
+   * fixpoint, so a demand discovered in any round still gets its slot
+   * and every already-built pair vtable is patched to cover it.
+   */
+  demandGenericInterfaceMethod(it: InterfaceType, methName: String, typeArgs: Array<Type>, model: SemanticModel): void {
+    let iKey = getInterfaceKey(it);
+    let slotName = getSpecializedName(methName, typeArgs);
+    let dedupKey = (iKey as String) + "." + slotName;
+    if (this.#genericInterfaceDemandsByKey.has(dedupKey)) {
+      return;
+    }
+    this.typeLowerer.discoverType(it as Type, model);
+    for (let a in typeArgs) {
+      this.typeLowerer.discoverType(a, model);
+    }
+    let d = new GenericInterfaceMethodDemand(it, methName, slotName, typeArgs, model);
+    this.#genericInterfaceDemandsByKey[dedupKey] = d;
+    this.genericInterfaceMethodDemands.push(d);
+    // The unspecialized member is in use, exactly as a non-generic
+    // virtual reference records it.
+    let unspecIName = getInterfaceKey(it.genericSource ?? it);
+    this.wasm.usedInterfaceMembers[getInterfaceMemberKey(unspecIName, methName)] = true;
+  }
+
+  findGenericInterfaceDemand(iKey: String, slotName: String): GenericInterfaceMethodDemand | null {
+    let dedupKey = iKey + "." + slotName;
+    if (let (true, d) = this.#genericInterfaceDemandsByKey.get(dedupKey)) {
+      return d;
+    }
+    return null;
+  }
+
+  /**
+   * Appends a vtable slot field for each pending demand whose
+   * interface has been discovered. Slots land after every declared
+   * (non-generic) member Pass 0.8 populated, in demand order — both
+   * deterministic, so the field order is too.
+   */
+  #syncGenericInterfaceSlots(): boolean {
+    var changed = false;
+    for (let d in this.genericInterfaceMethodDemands) {
+      if (d.slotAdded) {
+        continue;
+      }
+      let iKey = getInterfaceKey(d.interfaceType);
+      if (!this.wasm.interfaceVTableStructs.has(iKey)) {
+        this.typeLowerer.discoverType(d.interfaceType as Type, d.model);
+      }
+      if (!this.wasm.interfaceVTableStructs.has(iKey)) {
+        continue;
+      }
+      let vst = this.wasm.interfaceVTableStructs[iKey];
+      if (vst.fieldIndexByName(d.slotName) >= 0) {
+        d.slotAdded = true;
+        continue;
+      }
+      let sig = getGenericInterfaceMemberSignature(this.wasm, d.interfaceType, d.methName, d.typeArgs);
+      vst.fields.push(new WasmField(d.slotName, new ValTypeRef(sig), false));
+      d.slotAdded = true;
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * The implementing class's own view of a generic interface method at
+   * one type-argument list: the class's declared member type with the
+   * class's type arguments, `this`, and the method's type parameters
+   * substituted. What the class's monomorphized copy was compiled
+   * against, so the trampoline adaptation compares the interface view
+   * to this.
+   */
+  #implGenericMethodType(cType: ClassType, methName: String, typeArgs: Array<Type>): FunctionType | null {
+    var declared: FunctionType | null = null;
+    var declaring: ClassType | null = cType;
+    while (declaring != null && declared == null) {
+      let dc = declaring;
+      if (dc.members.has(methName)) {
+        let mi = dc.members[methName];
+        if (mi.type is FunctionType) {
+          declared = mi.type as FunctionType;
+        }
+      }
+      declaring = dc.superType;
+    }
+    if (declared == null) {
+      return null;
+    }
+    var sub = substituteTypeParamsInClassContext(this.wasm, cType, declared as Type);
+    sub = substituteThisTypeInCodegen(cType as Type, sub);
+    if (!(sub is FunctionType)) {
+      return null;
+    }
+    var subFt = sub as FunctionType;
+    let mtps = subFt.typeParameters;
+    if (mtps != null && mtps.length > 0) {
+      let resub = substituteTypeParamsInCodegen(this.wasm, mtps, typeArgs, subFt as Type);
+      if (!(resub is FunctionType)) {
+        return null;
+      }
+      subFt = resub as FunctionType;
+    }
+    return subFt;
+  }
+
+  /**
+   * Whether two types lower to the same wasm value type. Ref targets
+   * compare by identity — type-section indexes are not assigned until
+   * layout, so the index-based `valTypeEquals` would call every pair
+   * of refs equal here.
+   */
+  #sameLoweredType(a: Type, b: Type): boolean {
+    if (a === b) {
+      return true;
+    }
+    let va = typeToValType(this.wasm, a);
+    let vb = typeToValType(this.wasm, b);
+    return match (va) {
+      case ValTypeRef as ta: match (vb) {
+        case ValTypeRef as tb: ta.target == tb.target
+        case _: false
+      }
+      case ValTypeRefNull as ta: match (vb) {
+        case ValTypeRefNull as tb: ta.target == tb.target
+        case _: false
+      }
+      case _: match (vb) {
+        case ValTypeRef: false
+        case ValTypeRefNull: false
+        case _: valTypeToOpcode(va) == valTypeToOpcode(vb)
+      }
+    };
+  }
+
+  /**
+   * Marks a class-interface pack pair used, so the vtable fixpoint
+   * builds its trampoline vtable global (the gate reads the
+   * UNSPECIALIZED pair, mirroring checker-recorded pack sites).
+   */
+  #demandPackPair(c: ClassType, i: InterfaceType): void {
+    let unspecCKey = getClassKey(c.genericSource ?? c);
+    let unspecIKey = getInterfaceKey(i.genericSource ?? i);
+    this.wasm.usedInterfaceAdaptations[getClassInterfaceKey(unspecCKey, unspecIKey)] = true;
+  }
+
+  /**
+   * Computes the adaptations a generic-slot trampoline needs between
+   * the interface-view slot signature and the class's monomorphized
+   * copy: a class-typed covariant result packs into the interface fat
+   * pointer, and a callback parameter the class's declaration narrows
+   * (the interface wrote `this`) is rebuilt through a forwarder that
+   * packs the narrowed arguments. Any other mismatch throws — a shape
+   * this dispatch cannot adapt must fail the compile loudly rather
+   * than emit an invalid call.
+   */
+  #computeGenericTrampolineAdaptations(trampFunc: WasmFunction, cType: ClassType, iface: InterfaceType, d: GenericInterfaceMethodDemand): void {
+    let ifaceFt = getGenericInterfaceMethodType(this.wasm, iface, d.methName, d.typeArgs);
+    let implFtOpt = this.#implGenericMethodType(cType, d.methName, d.typeArgs);
+    if (implFtOpt == null) {
+      throw new Error("Internal error: no declared type for generic interface method " + cType.name + "." + d.methName);
+    }
+    let implFt = implFtOpt;
+    if (ifaceFt.parameters.length != implFt.parameters.length) {
+      throw new Error("Internal error: generic interface method arity mismatch for " + cType.name + "." + d.methName);
+    }
+    for (var j = 0; j < ifaceFt.parameters.length; j += 1) {
+      let ip = ifaceFt.parameters[j];
+      let cp = implFt.parameters[j];
+      if (this.#sameLoweredType(ip, cp)) {
+        continue;
+      }
+      if (ip is FunctionType && cp is FunctionType) {
+        let ipf = ip as FunctionType;
+        let cpf = cp as FunctionType;
+        let sIface = getClosureStruct(this.wasm, ipf);
+        let sImpl = getClosureStruct(this.wasm, cpf);
+        if (sIface == sImpl) {
+          continue;
+        }
+        if (ipf.parameters.length != cpf.parameters.length) {
+          throw new Error("generic interface dispatch: callback arity differs for " + cType.name + "." + d.methName);
+        }
+        if (!this.#sameLoweredType(ipf.returnType, cpf.returnType)) {
+          throw new Error("generic interface dispatch: callback result adaptation is not supported (" + cType.name + "." + d.methName + ")");
+        }
+        let packs = new GrowableArray<ForwarderParamPack>();
+        for (var k = 0; k < ipf.parameters.length; k += 1) {
+          let ipk = ipf.parameters[k];
+          let cpk = cpf.parameters[k];
+          if (this.#sameLoweredType(ipk, cpk)) {
+            continue;
+          }
+          if (ipk is InterfaceType && cpk is ClassType) {
+            let packIface = ipk as InterfaceType;
+            let packClass = cpk as ClassType;
+            this.#demandPackPair(packClass, packIface);
+            // +1: the closure impl signature's param 0 is the ctx.
+            packs.push(new ForwarderParamPack(k + 1,
+                getClassInterfaceKey(getClassKey(packClass), getInterfaceKey(packIface)),
+                getInterfaceKey(packIface)));
+            continue;
+          }
+          throw new Error("generic interface dispatch: callback parameter adaptation is not supported (" + cType.name + "." + d.methName + ")");
+        }
+        let fwdSigOpt = asWasmSignature(sImpl.fields[0].type);
+        if (fwdSigOpt == null) {
+          throw new Error("Internal error: closure struct without impl signature");
+        }
+        let fwd = new WasmFunction(fwdSigOpt, null, this.program.units[0].model);
+        fwd.name = (trampFunc.name ?? "tramp") + "$arg" + i32ToString(j);
+        fwd.closureForwarder = new ClosureForwarderSpec(sIface, packs);
+        // The trampoline takes this function's ref.func, which needs a
+        // declared function reference.
+        fwd.isReferenceTaken = true;
+        this.wasm.addFunction(fwd);
+        this.markFunctionReached(fwd);
+        this.markTypeReached(sIface);
+        this.markTypeReached(sImpl);
+        this.noteClosureStruct(sIface);
+        this.noteClosureStruct(sImpl);
+        var wraps = trampFunc.trampolineParamWraps;
+        if (wraps == null) {
+          let fresh = new GrowableArray<TrampolineParamWrap>();
+          trampFunc.trampolineParamWraps = fresh;
+          wraps = fresh;
+        }
+        // +1: the trampoline signature's param 0 is the receiver.
+        wraps.push(new TrampolineParamWrap(j + 1, sImpl, fwd));
+        continue;
+      }
+      throw new Error("generic interface dispatch: parameter adaptation is not supported (" + cType.name + "." + d.methName + ")");
+    }
+    if (!this.#sameLoweredType(ifaceFt.returnType, implFt.returnType)) {
+      let ir = ifaceFt.returnType;
+      let cr = implFt.returnType;
+      if (ir is InterfaceType && cr is ClassType) {
+        let retIface = ir as InterfaceType;
+        let retClass = cr as ClassType;
+        this.#demandPackPair(retClass, retIface);
+        trampFunc.trampolineResultPackPair = getClassInterfaceKey(getClassKey(retClass), getInterfaceKey(retIface));
+        trampFunc.trampolineResultPackIface = getInterfaceKey(retIface);
+      } else {
+        throw new Error("generic interface dispatch: result adaptation is not supported (" + cType.name + "." + d.methName + ")");
+      }
+    }
+  }
+
+  /**
+   * Builds the trampoline for one interface vtable slot of one class.
+   * A generic slot (a recorded demand names it) first instantiates the
+   * class's monomorphized copy — a class can join a demand's interface
+   * in any round, so resolution has to happen here, not at demand
+   * time — and computes the trampoline's adaptations.
+   */
+  #buildTrampolineForSlot(cType: ClassType, cName: ClassKey, iface: InterfaceType, iName: InterfaceKey, vst: WasmStruct, fieldIdx: i32): WasmFunction {
+    let fldName = vst.fields[fieldIdx].name;
+    if (fldName == null) {
+      throw new Error("Internal error: unnamed interface vtable slot");
+    }
+    let fName = fldName;
+    let demand = this.findGenericInterfaceDemand(iName as String, fName);
+    if (demand != null) {
+      let d = demand;
+      let unspecCdId = (cType.genericSource ?? cType).symbolId;
+      let cd = if (let (true, decl) = this.classDecls.get(unspecCdId)) decl else null;
+      let targetModel = this.getClassModel(cType);
+      for (let md in this.cha.findImplementingMethods(cType, d.methName)) {
+        let fn = this.specializer.instantiateGenericMethod(cType, cd, d.methName, md as Node, d.typeArgs, this.getNodeModel(md as Node, targetModel));
+        this.markFunctionReached(fn);
+      }
+    }
+    var foundFunc: WasmFunction | null = null;
+    var currClass: ClassType | null = cType;
+
+    while (currClass != null && foundFunc == null) {
+      let mKey = getClassMethodKey(getClassKey(currClass), fName);
+      if (this.wasm.classMethodMap.has(mKey)) {
+        foundFunc = this.wasm.classMethodMap[mKey];
+        break;
+      }
+
+      if (iface.members.has(fName)) {
+        let mi = iface.members[fName];
+        if (mi is MethodInfo && mi.type is FunctionType) {
+          let ft = mi.type as FunctionType;
+          let itParams = getInterfaceTypeParameters(iface);
+          let subFt = substituteTypeParamsInCodegen(this.wasm, itParams, iface.typeArguments, ft);
+          if (subFt is FunctionType) {
+            let resolvedFt = subFt as FunctionType;
+            let sigKey = getSignatureKey(resolvedFt);
+            let mKeyWithSig = getClassMethodKey(getClassKey(currClass), fName + sigKey);
+            if (this.wasm.classMethodMap.has(mKeyWithSig)) {
+              foundFunc = this.wasm.classMethodMap[mKeyWithSig];
+              break;
+            }
+          }
+        }
+      }
+
+      currClass = currClass.superType;
+    }
+
+    if (foundFunc == null) {
+      var chain = "";
+      var cw: ClassType | null = cType;
+      while (cw != null) {
+        let ccw = cw;
+        let targsLen = if (ccw.typeArguments != null) i32ToString((ccw.typeArguments as Array<Type>).length) else "null";
+        let tparamsLen = if (ccw.typeParameters != null) i32ToString((ccw.typeParameters as Array<TypeParameterType>).length) else "null";
+        let conc = if (isConcrete(ccw)) "true" else "false";
+        chain = chain + ccw.name + "[args:" + targsLen + ",params:" + tparamsLen + ",conc:" + conc + ",key:" + (getClassKey(ccw) as String) + "] -> ";
+        cw = ccw.superType;
+      }
+      throw new Error("Internal error: class " + (cName as String) + " does not implement interface method: " + fName + "; chain: " + chain);
+    }
+    let trampSig = if (demand != null) {
+      getGenericInterfaceMemberSignature(this.wasm, iface, demand.methName, demand.typeArgs)
+    } else {
+      getInterfaceMemberSignature(this.wasm, iface, fName)
+    };
+    let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
+    trampFunc.name = getInterfaceTrampolineName(cName, iName, fName);
+    trampFunc.interfaceTrampolineTarget = foundFunc;
+    if (demand != null) {
+      this.#computeGenericTrampolineAdaptations(trampFunc, cType, iface, demand);
+    }
+    this.wasm.addFunction(trampFunc);
+    this.markFunctionReached(trampFunc);
+    this.markFunctionReached(foundFunc);
+    return trampFunc;
+  }
+
+  /**
    * Builds the class-interface trampoline vtable globals, returning
    * whether it created any. Reaching an interface method's body can
    * instantiate further classes (`FixedArray<T>.:iterator` returns an
@@ -2079,6 +2418,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    */
   #buildClassInterfaceVTables(): boolean {
     var created = false;
+    if (this.#syncGenericInterfaceSlots()) {
+      created = true;
+    }
     // Pass 2: Generate class-interface trampoline vtables
     let classes = new GrowableArray<ClassType>();
     let seenClassKeys = new HashMap<ClassKey, boolean>();
@@ -2136,76 +2478,42 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let key = getClassInterfaceKey(cName, iName);
         if (this.wasm.usedInterfaceAdaptations.has(unspecKey)) {
           if (this.wasm.classInterfaceVTables.has(key)) {
+            // Generic slots appended after this pair's vtable was
+            // built (a demand discovered in a later round) leave the
+            // stored funcs list short — extend it with trampolines
+            // for the tail slots. Fields are append-only, so the
+            // existing entries still align.
+            let existing = this.wasm.classInterfaceVTables[key];
+            let init = existing.initVTable;
+            if (init != null) {
+              let vstNow = init.structType;
+              let funcs = init.funcs;
+              if (funcs.length < vstNow.fields.length) {
+                if (!(funcs is GrowableArray<WasmFunction>)) {
+                  throw new Error("Internal error: class-interface vtable funcs list is not growable");
+                }
+                let growable = funcs as GrowableArray<WasmFunction>;
+                for (var i = growable.length; i < vstNow.fields.length; i += 1) {
+                  let tramp = this.#buildTrampolineForSlot(cType, cName, iface, iName, vstNow, i);
+                  tramp.isReferenceTaken = true;
+                  growable.push(tramp);
+                  created = true;
+                }
+              }
+            }
             continue;
           }
           if (!this.wasm.interfaceVTableStructs.has(iName)) {
             this.typeLowerer.discoverType(iface, this.getClassModel(cType));
           }
           let vst = this.wasm.interfaceVTableStructs[iName];
-          
+
           let methods = new GrowableArray<WasmFunction>();
           for (var i = 0; i < vst.fields.length; i += 1) {
-            let field = vst.fields[i];
-            let fldName = field.name;
-            if (fldName == null) {
-              continue;
-            }
-            let fName = fldName;
-            var foundFunc: WasmFunction | null = null;
-            var currClass: ClassType | null = cType;
-            
-            while (currClass != null && foundFunc == null) {
-              let mKey = getClassMethodKey(getClassKey(currClass), fName);
-              if (this.wasm.classMethodMap.has(mKey)) {
-                foundFunc = this.wasm.classMethodMap[mKey];
-                break;
-              }
-              
-              if (iface.members.has(fName)) {
-                let mi = iface.members[fName];
-                if (mi is MethodInfo && mi.type is FunctionType) {
-                  let ft = mi.type as FunctionType;
-                  let itParams = getInterfaceTypeParameters(iface);
-                  let subFt = substituteTypeParamsInCodegen(this.wasm, itParams, iface.typeArguments, ft);
-                  if (subFt is FunctionType) {
-                    let resolvedFt = subFt as FunctionType;
-                    let sigKey = getSignatureKey(resolvedFt);
-                    let mKeyWithSig = getClassMethodKey(getClassKey(currClass), fName + sigKey);
-                    if (this.wasm.classMethodMap.has(mKeyWithSig)) {
-                      foundFunc = this.wasm.classMethodMap[mKeyWithSig];
-                      break;
-                    }
-                  }
-                }
-              }
-              
-              currClass = currClass.superType;
-            }
-            
-            if (foundFunc != null) {
-              let trampSig = getInterfaceMemberSignature(this.wasm, iface, fName);
-              let trampFunc = new WasmFunction(trampSig, null, this.program.units[0].model);
-              trampFunc.name = getInterfaceTrampolineName(cName, iName, fName);
-              trampFunc.interfaceTrampolineTarget = foundFunc;
-              this.wasm.addFunction(trampFunc);
-              this.markFunctionReached(trampFunc);
-              this.markFunctionReached(foundFunc);
-              methods.push(trampFunc);
-            } else {
-              var chain = "";
-              var cw: ClassType | null = cType;
-              while (cw != null) {
-                let ccw = cw;
-                let targsLen = if (ccw.typeArguments != null) i32ToString((ccw.typeArguments as Array<Type>).length) else "null";
-                let tparamsLen = if (ccw.typeParameters != null) i32ToString((ccw.typeParameters as Array<TypeParameterType>).length) else "null";
-                let conc = if (isConcrete(ccw)) "true" else "false";
-                chain = chain + ccw.name + "[args:" + targsLen + ",params:" + tparamsLen + ",conc:" + conc + ",key:" + (getClassKey(ccw) as String) + "] -> ";
-                cw = ccw.superType;
-              }
-              throw new Error("Internal error: class " + (cName as String) + " does not implement interface method: " + fName + "; chain: " + chain);
-            }
+            let tramp = this.#buildTrampolineForSlot(cType, cName, iface, iName, vst, i);
+            methods.push(tramp);
           }
-          
+
           let vtableInit = new VTableInit(vst, methods);
           let viName = getClassInterfaceVTableName(cName, iName);
           let vtableGlobal = new WasmGlobal(

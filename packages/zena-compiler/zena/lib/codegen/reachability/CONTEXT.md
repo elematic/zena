@@ -128,6 +128,19 @@ flat. It is also what `zir unsupported: method not found` found where a
 specialization should have been. See §15 of
 `docs/design/binary-size.md`.
 
+Virtual calls follow the same per-specialization rule: a generic method
+called through an interface-typed receiver records a
+`GenericInterfaceMethodDemand` (visitor →
+`demandGenericInterfaceMethod`), and each demand becomes one interface
+vtable slot named by the same `getSpecializedName` mangle. Slots are
+appended and per-class trampolines built inside the
+`#buildClassInterfaceVTables` fixpoint — a class can join a demand's
+interface in any round, so the fan-out to implementing classes happens
+at trampoline build, not at demand time. Trampolines adapt covariant
+class-typed results (pack through the pair vtable) and `this`-narrowed
+callback parameters (a synthesized closure forwarder). See
+`docs/design/generic-interface-dispatch.md`.
+
 ## A Class Nothing Reaches Specializes Nothing
 
 `#layoutClassStructs` lays out every declared class in every loaded
