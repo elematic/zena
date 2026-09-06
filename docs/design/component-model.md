@@ -30,7 +30,7 @@
 | Component emission                      | ✅ Done — C0–C3 of [component-emission.md](./component-emission.md): components print, `--wit`/`--world` declare a world the program is checked against                                     |
 | Stage 0a–0d prerequisites               | ✅ Done — `Result`, narrow ints with `Array<u8>`/`FixedArray<u8>`, `ByteArrayType` retired, `Disposable` + `resource class` (Track O)                                                       |
 | Canonical flattening metadata           | ✅ Done for counts and memory-need (`funcFlatMeta`); full type flattening is stage 2's                                                                                                      |
-| WIT-typed modules (stage 1)             | 🚧 Growing — flat scalars; `async`-without-result (functions returning `Future<void>`); `string`/`list<u8>` params and results and `list<string>` results, staged and lifted by synthesized wrappers over `zena:component-abi`, with the package's real WIT spliced into the encoder so instance types are the interface's own; records/variants/resources next |
+| WIT-typed modules (stage 1)             | 🚧 Growing — flat scalars; `async`-without-result (functions returning `Future<void>`); `string`/`list<u8>` params, aggregate results (records, variants, options, tuples, lists of all of these, top-level `result` as the inline `Result`) lifted at canonical offsets by generated code over `zena:component-abi`, real WIT spliced into the encoder; aggregate params (flat lowering) and resources next |
 | Canonical ABI lift/lower for rich types | ❌ Hand-written per function so far (`zena:console`'s component entry); stage 2 makes the compiler synthesize it                                                                            |
 
 So: everything _around_ interop has landed, several pieces earlier than
@@ -400,8 +400,8 @@ the measurement.)
 | `tuple<A, B>`              | inline tuple                         | 11                | ✅ exists                  |
 | `option<T>`                | `Option<T>`                          | 50                | ✅ exists                  |
 | `result<T, E>`             | `Result<T, E>`                       | **101 + 10 bare** | ✅ exists                  |
-| `record`                   | case class                           | 10                | ✅ exists                  |
-| `variant`                  | sealed case-class hierarchy          | 8                 | ✅ exists                  |
+| `record`                   | case class                           | 10                | ✅ synthesized             |
+| `variant`                  | sealed case-class hierarchy          | 8                 | ✅ synthesized             |
 | `enum`                     | enum                                 | 6                 | ✅ synthesized             |
 | `flags`                    | `distinct type … = u32` + constants  | 3                 | ✅ synthesized             |
 | `resource`                 | `final class` + `Disposable`         | **25**            | ❌ see Part 6              |

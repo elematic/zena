@@ -1,0 +1,30 @@
+// Aggregates through a WIT-typed module: records lift as case
+// classes, variants as sealed hierarchies, options and lists and
+// tuples compose around them, and a top-level result arrives as the
+// inline Result. Compile-level coverage — no host serves `wasi:geo` —
+// the unit tests assert the synthesized source.
+import {
+  Point, Reading, Quality, Finding, FindingAt,
+  origin, locate, surveyAll, check, bounds
+} from 'wasi:geo/survey';
+import { Some } from 'zena:option';
+
+export function main(): u32 {
+  let p = origin();
+  var acc = p.label.length as u32;
+  if (let (true, good, _) = check(7)) {
+    acc += good.x as u32;
+  }
+  let maybe = locate('base');
+  if (maybe is Some<Point>) {
+    acc += (maybe as Some<Point>).value.y as u32;
+  }
+  for (let r in surveyAll()) {
+    if (r.quality == Quality.Good) {
+      acc += 1;
+    }
+  }
+  let (a, b) = bounds();
+  acc += (a.x + b.x) as u32;
+  return acc;
+}

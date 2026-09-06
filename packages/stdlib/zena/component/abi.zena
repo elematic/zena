@@ -243,53 +243,75 @@ let takeBuffer = (area: i32): (i32, i32) => {
 };
 
 /**
- * A spilled `string` result: copy the bytes out of the buffer the
- * canonical ABI allocated through `realloc`, then free the buffer and
- * the return area — after the copy, both are dead.
+ * A `string` lifted in place: the `(ptr, len)` pair at `ptr`, its
+ * bytes copied out and the buffer they arrived in freed — the
+ * canonical ABI allocated it through `realloc` above, so it is ours.
+ * The eight bytes of the pair itself belong to whatever contains them
+ * (a return area, a record field, a list element) and stay put.
  */
-export function liftStringResult(area: i32): String {
-  let (ptr, len) = takeBuffer(area);
-  let s = stringFromMemory(ptr, len);
+export function liftStringAt(ptr: i32): String {
+  let (bytes, len) = takeBuffer(ptr);
+  let s = stringFromMemory(bytes, len);
   if (len > 0) {
-    defaultAllocator.free(ptr);
+    defaultAllocator.free(bytes);
   }
-  defaultAllocator.free(area);
   return s;
 }
 
-/** A spilled `list<u8>` result, with the same ownership story. */
-export function liftBytesResult(area: i32): FixedArray<u8> {
-  let (ptr, len) = takeBuffer(area);
+/** A `list<u8>` lifted in place, with the same ownership story. */
+export function liftBytesAt(ptr: i32): FixedArray<u8> {
+  let (buffer, len) = takeBuffer(ptr);
   let bytes = new FixedArray<u8>(len, 0);
   for (var i = 0; i < len; i += 1) {
-    bytes[i] = mem[ptr + i] as u8;
+    bytes[i] = mem[buffer + i] as u8;
   }
   if (len > 0) {
-    defaultAllocator.free(ptr);
+    defaultAllocator.free(buffer);
   }
-  defaultAllocator.free(area);
   return bytes;
 }
 
-/**
- * A spilled `list<string>` result: `count` `(ptr, len)` pairs at
- * `base`, each string's bytes their own `realloc` allocation. Copy
- * them all out, then free every buffer, the pair array, and the area.
- */
-export function liftStringListResult(area: i32): Array<String> {
-  let (base, count) = takeBuffer(area);
-  let out = new GrowableArray<String>();
-  for (var i = 0; i < count; i += 1) {
-    let ptr = mem.getI32(base + i * 8);
-    let len = mem.getI32(base + i * 8 + 4);
-    out.push(stringFromMemory(ptr, len));
-    if (len > 0) {
-      defaultAllocator.free(ptr);
-    }
-  }
-  if (count > 0) {
-    defaultAllocator.free(base);
-  }
-  defaultAllocator.free(area);
-  return out;
+/** Free a host-written allocation once its contents are lifted: a
+ * return area, or a list's element buffer. */
+export function freeLifted(ptr: i32): void {
+  defaultAllocator.free(ptr);
+}
+
+// Typed loads for generated lift code, so the synthesized modules
+// speak calls only and never touch `Memory` themselves. The narrow
+// loads compose from bytes because `Memory` stops at `getU8`/`getI32`;
+// signs are extended by hand.
+
+export function loadU8(ptr: i32): i32 {
+  return mem.getU8(ptr);
+}
+
+export function loadS8(ptr: i32): i32 {
+  let v = mem.getU8(ptr);
+  return if (v >= 128) v - 256 else v;
+}
+
+export function loadU16(ptr: i32): i32 {
+  return mem.getU8(ptr) | (mem.getU8(ptr + 1) << 8);
+}
+
+export function loadS16(ptr: i32): i32 {
+  let v = loadU16(ptr);
+  return if (v >= 32768) v - 65536 else v;
+}
+
+export function loadI32(ptr: i32): i32 {
+  return mem.getI32(ptr);
+}
+
+export function loadI64(ptr: i32): i64 {
+  return mem.getI64(ptr);
+}
+
+export function loadF32(ptr: i32): f32 {
+  return mem.getF32(ptr);
+}
+
+export function loadF64(ptr: i32): f64 {
+  return mem.getF64(ptr);
 }

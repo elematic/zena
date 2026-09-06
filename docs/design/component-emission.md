@@ -1258,12 +1258,22 @@ explicit ordinals are the wire discriminants, lifted through a
 range check (an out-of-range discriminant is a loud error, not a
 value that defeats exhaustive matching later); a `flags` becomes a
 `distinct type … = u32` with one power-of-two constant per label.
-Both are single core values on the wire, so no layout machinery was
-needed — that arrives with records and variants.
 
-The next slices are records, variants and options on imports;
-resources as handle-wrapping classes; then async _results_ (the
-subtask-read machinery, C6-adjacent). The path they serve is
+The aggregate *lift* half is built on top of them: records (case
+classes), variants (sealed hierarchies, case classes prefixed with
+the variant's name because two variants may declare same-named
+cases), options, tuples, and lists of all of these, recursively. A
+result that flattens past one core value spills through the return
+area, and the synthesized module carries generated lift helpers that
+read the canonical layout back out — sizes, alignments and offsets
+computed per the canonical ABI's rules, every host-written buffer
+freed as it is lifted. A top-level `result<T, E>` arrives as the
+inline `Result<T, E>` (zero allocation); a nested result waits on
+`Outcome` construction at void arms.
+
+The next slices are aggregate *parameters* (the flat-lowering half,
+with its payload joins); resources as handle-wrapping classes; then
+async _results_ (the subtask-read machinery, C6-adjacent). The path they serve is
 `wasi:http@0.3.0`: `handle/send: async func(request) ->
 result<response, error-code>` over four resources whose bodies are
 `stream<u8>` — value marshaling, resources, the stream binding and

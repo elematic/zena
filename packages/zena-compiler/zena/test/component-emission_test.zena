@@ -604,8 +604,10 @@ world only {
       'the string argument is not staged:\n' + source);
     isTrue(source.contains('releaseStringArgument(p0, l0);'),
       'the staged argument is not released:\n' + source);
-    isTrue(source.contains('return liftStringResult(ret);'),
+    isTrue(source.contains('let out = liftStringAt(ret);'),
       'the spilled string result is not lifted:\n' + source);
+    isTrue(source.contains('freeLifted(ret);'),
+      'the return area is not freed:\n' + source);
     // A scalar result with a staged parameter returns directly.
     isTrue(source.contains(
         'declare function measure_raw(p0: i32, l0: i32): u32;'),
@@ -613,12 +615,13 @@ world only {
     // A byte list stages and lifts through its own helpers.
     isTrue(source.contains('bytesToMemory(data)'),
       'the byte-list argument is not staged:\n' + source);
-    isTrue(source.contains('return liftBytesResult(ret);'),
+    isTrue(source.contains('liftBytesAt(ret)'),
       'the byte-list result is not lifted:\n' + source);
     isTrue(source.contains('): FixedArray<u8> {'),
       'the byte-list result type is wrong:\n' + source);
-    // list<string> lifts as a result.
-    isTrue(source.contains('return liftStringListResult(ret);'),
+    // list<string> lifts through a generated list helper whose
+    // elements are (ptr, len) pairs at an 8-byte stride.
+    isTrue(source.contains('liftStringAt(base + i * 8)'),
       'the string-list result is not lifted:\n' + source);
     // A scalar parameter beside a staged one passes through unstaged.
     isTrue(source.contains(
@@ -659,6 +662,52 @@ world only {
     isTrue(containsName(sectionPayload(bytes, 10),
         'wasi:codes/status@1.0.0'),
       'the codes interface import is missing');
+  });
+
+  test('a WIT-typed module synthesizes records, variants and lifts',
+      (ctx: TestContext): void => {
+    // The aggregate surface: records as case classes, variants as
+    // sealed hierarchies (cases prefixed with the variant's name),
+    // and generated lift helpers reading the canonical layout out of
+    // a spilled return area — offsets computed per the canonical
+    // ABI's size-and-alignment rules.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:geo/survey`);
+    isTrue(source.contains(
+        'export class Point(x: f64, y: f64, label: String)'),
+      'the record is not a case class:\n' + source);
+    isTrue(source.contains('export sealed class Finding {'),
+      'the variant is not a sealed class:\n' + source);
+    isTrue(source.contains('case FindingNothing'),
+      'a unit case should be prefixed and bare:\n' + source);
+    isTrue(source.contains('case FindingAt(value: Point)'),
+      'a payload case should carry its lifted type:\n' + source);
+    // Point: x@0, y@8, label@16 — the string field's pair sits after
+    // two f64s, and the record helper lifts it in place.
+    isTrue(source.contains('liftStringAt(ptr + 16)'),
+      "the record's string field offset is wrong:\n" + source);
+    // Reading: quality (1-byte enum disc) @0, option<u16> @2 — the
+    // option aligns to its u16 payload.
+    isTrue(source.contains('liftQuality(loadU8(ptr))'),
+      "the record's enum field is not lifted:\n" + source);
+    // list<reading>: stride 6 (disc byte, pad, u16 option payload,
+    // padded to align 2).
+    isTrue(source.contains('base + i * 6'),
+      "the reading list's stride is wrong:\n" + source);
+    // check() lifts into the inline Result.
+    isTrue(source.contains('): Result<Point, Finding> {'),
+      'a top-level result should be the inline Result:\n' + source);
+    isTrue(source.contains('return (true, ok, _);'),
+      "the result's ok arm is not built:\n" + source);
+    // bounds() is a tuple of records.
+    isTrue(source.contains('): (Point, Point) {'),
+      'a tuple result should be an inline tuple:\n' + source);
+    // And the consumer fixture compiles to a component naming the
+    // interface.
+    let bytes = compileFor(`${fixtures}/geo-wit.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 10),
+        'wasi:geo/survey@1.0.0'),
+      'the geo interface import is missing');
   });
 
   test('a marshaling import lowers with the canonical memory options',
