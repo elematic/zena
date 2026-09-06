@@ -166,7 +166,48 @@ Two API stances, decided here:
   `return e` accepts `T | Future<T>` under the same
   distinguishability rule as `await`'s union — `return fetchUser(id);`
   without an `await` forwards the future's result (and skips a
-  suspension state doing it).
+  suspension state doing it). Designed, not yet implemented: today
+  that return bails in lowering ("return requires conversion"), so
+  every future-forwarding return currently spells the `await`. Plain
+  values never need one — `return 7` is the async wrapping itself.
+
+  That distinguishable case is the whole extent of return-position
+  adoption; an async `return` deliberately does NOT do a general
+  "one implicit await" the way JS's `resolve()` does. Three reasons,
+  each about something JS does not have:
+
+  - `Future<Future<T>>` is representable, so general adoption must be
+    type-directed — `return f` would adopt when the declared value
+    type is `X` and pass through when it is `Future<X>` — and in a
+    generic body the direction VARIES PER INSTANTIATION: `return x`
+    at `x: R` against a declared `Awaited<R>` adopts at
+    `R = Future<U>` and not at `R = i32`, so the template cannot say
+    which it means. The explicit `await` is that per-specialization
+    answer, written down (`then`'s body is the worked example: its
+    `await onValue(v)` IS the flattening `Awaited<R>` promises).
+  - Suspension points are where cancellation is delivered, and they
+    are kept visible everywhere else (`for await` is explicit for
+    exactly this). An implicit await at return is a hidden
+    checkpoint — and implementing it as future FORWARDING instead
+    (settle the frame's future from `f`'s, without resuming the
+    frame) changes structured-concurrency semantics: the frame's
+    finalizers have already run at `return`, so there is no frame
+    left to deliver a later cancellation to, and the chained future's
+    place in the scope tree becomes a real question rather than a
+    syntax preference.
+  - The division of labor is signature/body: `Awaited<R>` in a
+    signature declares THAT one level flattens; the body's `await`
+    says WHERE. Removing the keyword saves one word and erases the
+    location of the suspension.
+
+  Dropping the `await` is not silently wrong today, but it fails
+  later than it should: the checker accepts `R` where `Awaited<R>` is
+  expected and the flattening specialization bails in lowering
+  ("return requires conversion") — tightening that to a
+  definition-site error is open. So is the optimization that captures
+  adoption's performance without its implicitness: lowering
+  `return await f` to forwarding where the semantics above are
+  provably undisturbed.
 - **Combinators need no primitives.** `then`/`map`/`flatMap`/`all`/
   `race` are ordinary library code over `subscribe` — which is why
   v1's core surface is only `await`, `onComplete`, `resolve`/`fail`,
