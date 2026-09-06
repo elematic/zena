@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 7
+
+// A computed callee — a call's result, a cast, a parenthesized
+// value — is an ordinary function value and calls through its
+// closure pair (issue #448). Before the fix each of these bailed
+// ("call callee kind") and needed binding to a local first.
+
+type Op = () => i32;
+
+let make = (v: i32): Op => {
+  return () => v;
+};
+
+let wrap = (f: Op): Op => {
+  return () => f() + 1;
+};
+
+export let main = (): i32 => {
+  // Callee is a call expression.
+  let a = make(3)();
+  // Callee is a nested call chain.
+  let b = wrap(make(1))();
+  // Callee is a cast expression.
+  var cb: Op | null = make(2);
+  let c = (cb as Op)();
+  return a + b + c;   // 3 + 2 + 2
+};

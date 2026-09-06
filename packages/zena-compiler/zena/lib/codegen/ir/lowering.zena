@@ -7139,7 +7139,17 @@ export final class FunctionLowerer {
       return this.#lowerMethodCall(call, call.callee as MemberExpression, multiOut);
     }
     if (!(call.callee is Identifier)) {
-      this.#bail('call callee kind');
+      if (call.optional) {
+        this.#bail('call callee kind');
+      }
+      // A computed callee — a call's result, a cast, a parenthesized
+      // value — is an ordinary function value: call through its
+      // closure pair (issue #448). A union-typed one dispatches by
+      // ref.test, like any union call.
+      if (this.func.model.getUnionCallCalleeType(call.callee) != null) {
+        return this.#lowerUnionCall(call);
+      }
+      return this.#lowerClosureCall(call);
     }
     if (call.optional) {
       // `fn?()`: a null closure value short-circuits to a null result.
