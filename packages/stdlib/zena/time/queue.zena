@@ -7,11 +7,12 @@
  * per target: a `Clock`.
  */
 import { Completer, Parker, setParker } from 'zena:async';
+import { Instant, Duration } from './types.zena';
 
 /**
  * Reading the monotonic clock, and waiting on it.
  *
- * `waitNs` reports which of two things it did, because not every host
+ * `wait` reports which of two things it did, because not every host
  * can wait. A WASI host blocks on `poll_oneoff` and returns true. A JS
  * host cannot block — no browser will let the main thread stop — so it
  * schedules a wake, returns false, and the drain unwinds; the host then
@@ -23,51 +24,44 @@ import { Completer, Parker, setParker } from 'zena:async';
  * until nothing more can happen *now* — are identical on both.
  */
 export interface Clock {
-  /** Nanoseconds on a monotonic clock. Only differences are meaningful. */
-  nowNs(): i64;
+  /** The monotonic clock's reading. Only differences are meaningful. */
+  now(): Instant;
   /**
-   * Wait `ns` nanoseconds.
+   * Wait out `d`.
    *
    * True: the wait happened, so the caller may proceed. False: the host
    * cannot wait, and has instead arranged to re-enter the drain later —
    * the caller must unwind without completing anything.
    */
-  waitNs(ns: i64): boolean;
+  wait(d: Duration): boolean;
 }
 
 var clock: Clock | null = null;
 
 /** Install the target's clock. Idempotent; the entry modules call it. */
-export let installClock = (c: Clock): void => {
+export function installClock(c: Clock): void {
   clock = c;
-};
+}
 
-let currentClock = (): Clock => {
+function currentClock(): Clock {
   let c = clock;
   if (c == null) {
     throw new Error('zena:time: no clock installed');
   }
   return c as Clock;
-};
+}
 
-/** Nanoseconds on the monotonic clock. */
-export let monotonicNs = (): i64 => {
-  return currentClock().nowNs();
-};
-
-/** Milliseconds on the monotonic clock. */
-export let monotonicMs = (): f64 => {
-  return (monotonicNs() as f64) / 1000000.0;
-};
-
-let NS_PER_MS = 1000000 as i64;
+/** The monotonic clock's reading. */
+export function monotonic(): Instant {
+  return currentClock().now();
+}
 
 /** One pending sleep. `seq` breaks deadline ties in insertion order. */
 final class Timer {
-  deadlineNs: i64;
+  deadline: Instant;
   seq: i32;
   completer: Completer<void>;
-  new(this.deadlineNs, this.seq, this.completer);
+  new(this.deadline, this.seq, this.completer);
 }
 
 /**
@@ -81,8 +75,8 @@ class TimerQueue implements Parker {
   #timers = new GrowableArray<Timer>();
   var #nextSeq = 0;
 
-  arm(deadlineNs: i64, completer: Completer<void>): void {
-    this.#timers.push(new Timer(deadlineNs, this.#nextSeq, completer));
+  arm(deadline: Instant, completer: Completer<void>): void {
+    this.#timers.push(new Timer(deadline, this.#nextSeq, completer));
     this.#nextSeq += 1;
   }
 
@@ -104,16 +98,16 @@ class TimerQueue implements Parker {
     while (i < this.#timers.length) {
       let t = this.#timers[i];
       let b = this.#timers[best];
-      if (t.deadlineNs < b.deadlineNs ||
-          (t.deadlineNs == b.deadlineNs && t.seq < b.seq)) {
+      if (t.deadline.isBefore(b.deadline) ||
+          (t.deadline == b.deadline && t.seq < b.seq)) {
         best = i;
       }
       i += 1;
     }
     let timer = this.#timers[best];
-    let now = monotonicNs();
-    if (timer.deadlineNs > now) {
-      if (!currentClock().waitNs(timer.deadlineNs - now)) {
+    let now = monotonic();
+    if (now.isBefore(timer.deadline)) {
+      if (!currentClock().wait(timer.deadline - now)) {
         // The host scheduled a wake instead of waiting. Leave the timer
         // queued and stop the drain; we resume via __zena_drain.
         return false;
@@ -142,12 +136,12 @@ let timers = new TimerQueue();
 var registered = false;
 
 /**
- * A future that completes after at least `ms` milliseconds.
+ * A future that completes after at least `d`.
  *
  * "At least": the deadline is when the timer becomes *eligible*, and it
  * completes through the microtask queue like every other future, so a
- * busy queue can delay it further. `sleep(0)` still yields — it never
- * completes synchronously, per the always-async rule.
+ * busy queue can delay it further. A zero-length sleep still yields — it
+ * never completes synchronously, per the always-async rule.
  *
  * The wait happens inside `drainMicrotasks()`. On a host that can wait,
  * that call does not return until every timer has fired. On one that
@@ -156,15 +150,15 @@ var registered = false;
  * concurrency: a sleeping task lets other *futures* proceed, not other
  * Zena code.
  */
-export let sleep = (ms: i32): Future<void> => {
+export function sleep(d: Duration): Future<void> {
   if (!registered) {
     setParker(timers);
     registered = true;
   }
-  if (ms < 0) {
+  if (d.isNegative()) {
     throw new Error('zena:time: sleep() needs a non-negative duration');
   }
   let c = new Completer<void>();
-  timers.arm(monotonicNs() + (ms as i64) * NS_PER_MS, c);
+  timers.arm(monotonic() + d, c);
   return c.future;
-};
+}

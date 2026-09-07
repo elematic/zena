@@ -379,7 +379,7 @@ suite('Runtime - zena:js host-async', () => {
       `
       import { Future } from 'zena:async';
       import { pending } from 'zena:js';
-      import { sleep } from 'zena:time';
+      import { sleep, milliseconds } from 'zena:time';
       import { StringBuilder } from 'zena:string-builder';
       ${ECHO_BINDING}
 
@@ -390,7 +390,7 @@ suite('Runtime - zena:js host-async', () => {
       };
 
       let timerWork = async (): Future<void> => {
-        await sleep(25);
+        await sleep(milliseconds(25));
         log.append('timer');
       };
 
@@ -474,10 +474,10 @@ suite('Runtime - runSync / run', () => {
     const hostedModule = await hosted(
       `
       import { Future } from 'zena:async';
-      import { sleep } from 'zena:time';
+      import { sleep, milliseconds } from 'zena:time';
 
       export async function main(): Future<i32> {
-        await sleep(1);
+        await sleep(milliseconds(1));
         return 5;
       }
     `,

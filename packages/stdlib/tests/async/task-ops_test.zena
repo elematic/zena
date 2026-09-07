@@ -8,7 +8,7 @@ import {
   Op, TimeoutError, timeout, deadline, retry, fallback, hedge,
 } from 'zena:task';
 import { Error } from 'zena:error';
-import { monotonicMs } from 'zena:time';
+import { monotonic, milliseconds } from 'zena:time';
 
 var log = '';
 var altRan = false;
@@ -43,13 +43,13 @@ let stuck = async (): Future<i32> => {
 
 export let tests = suite('task ops', () => {
   test('timeout hands back an attempt that beats its budget', () => {
-    let op = timeout(1000, () => Future.of(5));
+    let op = timeout(milliseconds(1000), () => Future.of(5));
     equal(runFuture(op()), 5);
   });
 
   test('timeout expires and cancels the attempt', () => {
     log = '';
-    let op = timeout(1, stuck);
+    let op = timeout(milliseconds(1), stuck);
     var msg = '';
     try {
       let unused = runFuture(op());
@@ -117,7 +117,7 @@ export let tests = suite('task ops', () => {
       }
       return Future.of(7);
     };
-    let op = hedge(1, slowThenFast);
+    let op = hedge(milliseconds(1), slowThenFast);
     equal(runFuture(op()), 7);
     equal(calls, 2);
     equal(log, 'C');
@@ -148,7 +148,8 @@ export let tests = suite('task ops', () => {
       calls += 1;
       return Future.of(1);
     };
-    let op = deadline(monotonicMs() - 1.0, counted);
+    let past = monotonic() + milliseconds(0 - 1);
+    let op = deadline(past, counted);
     var timedOut = false;
     try {
       let unused = runFuture(op());
@@ -169,7 +170,7 @@ export let tests = suite('task ops', () => {
       }
       return Future.of(9);
     };
-    let op = retry(2, timeout(1, stuckOnceThenValue));
+    let op = retry(2, timeout(milliseconds(1), stuckOnceThenValue));
     equal(runFuture(op()), 9);
     equal(calls, 2);
     equal(log, 'C');

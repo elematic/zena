@@ -8,7 +8,7 @@
  * host wakes the guest through the entry's callback when it fires.
  *
  * So this is the third `Clock`, and it sits on the *same* side of
- * `waitNs` as the JS driver: it returns false, the drain unwinds, and
+ * `wait` as the JS driver: it returns false, the drain unwinds, and
  * something re-enters it later. `queue.zena`'s park/drain loop is
  * unchanged — the difference between a browser's `setTimeout` and a p3
  * timer is entirely in who does the waking.
@@ -24,8 +24,10 @@
  */
 
 import { awaitPacked } from 'zena:component-async';
-import { Clock, installClock, sleep as sleepImpl, monotonicNs as nowImpl,
-         monotonicMs as nowMsImpl } from './queue.zena';
+import { Clock, installClock, sleep as sleepImpl } from './queue.zena';
+import { Instant, Duration } from './types.zena';
+
+export { Instant, Duration, milliseconds, nanoseconds } from './types.zena';
 
 // ============================================================================
 // The imported interface
@@ -62,8 +64,8 @@ var inFlight: Future<void> | null = null;
 final class P3Clock implements Clock {
   new();
 
-  nowNs(): i64 {
-    return monotonicNow() as i64;
+  now(): Instant {
+    return monotonic();
   }
 
   /**
@@ -75,7 +77,7 @@ final class P3Clock implements Clock {
    * true is a `wait-for` that completed synchronously, which means the
    * deadline had already passed.
    */
-  waitNs(ns: i64): boolean {
+  wait(d: Duration): boolean {
     let f = inFlight;
     if (f != null && !(f as Future<void>).isCompleted) {
       // A wake is already scheduled. Arming a second `wait-for` would
@@ -85,6 +87,7 @@ final class P3Clock implements Clock {
       // fires the queue re-runs and arms whatever is earliest then.
       return false;
     }
+    let ns = d as i64;
     let armed = awaitPacked(waitFor(ns as u64));
     if (armed.isCompleted) {
       // The call finished inside the lowering: the deadline had
@@ -103,33 +106,33 @@ var installed = false;
 // binding whose value is never read is a dead-code-elimination target,
 // and losing the registration would show up only as a drain that ended
 // early. Same reasoning as time/wasi.zena.
-let ensureClock = (): void => {
+function ensureClock(): void {
   if (!installed) {
     installClock(p3Clock);
     installed = true;
   }
-};
+}
 
 // ============================================================================
 // The public surface, identical to every other target's
 // ============================================================================
 
-/** A future that completes after at least `ms` milliseconds. */
-export let sleep = (ms: i32): Future<void> => {
+/** A future that completes after at least `d`. */
+export function sleep(d: Duration): Future<void> {
   ensureClock();
-  return sleepImpl(ms);
-};
+  return sleepImpl(d);
+}
 
-/** Nanoseconds on the monotonic clock. */
-export let monotonicNs = (): i64 => {
-  ensureClock();
-  return nowImpl();
-};
-
-/** Milliseconds on the monotonic clock. */
-export let monotonicMs = (): f64 => {
-  ensureClock();
-  return nowMsImpl();
-};
+/**
+ * The monotonic clock's reading.
+ *
+ * Reads the import directly rather than through the installed `Clock`:
+ * only the parker path — sleep, park, wait — needs the installation,
+ * and a clock read should not pay a registration check.
+ */
+export function monotonic(): Instant {
+  let ns = monotonicNow() as i64;
+  return ns as Instant;
+}
 
 export { Clock } from './queue.zena';

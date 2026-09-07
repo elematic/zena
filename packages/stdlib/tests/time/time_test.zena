@@ -1,0 +1,42 @@
+// zena:time — the Instant/Duration affine core: instant minus instant
+// is a duration, instant plus duration is an instant, durations add,
+// subtract and scale. Ordering is named (`isBefore`, `isPositive`)
+// because relational operators do not dispatch to operator methods.
+import {suite, test} from 'zena:test';
+import {equal, isTrue, isFalse} from 'zena:assert';
+import {monotonic, milliseconds, Instant} from 'zena:time';
+
+export let tests = suite('time types', () => {
+  test('milliseconds builds a nanosecond count', () => {
+    equal(milliseconds(5) as i64, 5000000 as i64);
+    equal(milliseconds(0) as i64, 0 as i64);
+  });
+
+  test('instant minus instant is the signed span between them', () => {
+    let a = 1000 as i64 as Instant;
+    let b = 4000 as i64 as Instant;
+    equal((b - a) as i64, 3000 as i64);
+    isTrue((a - b).isNegative());
+  });
+
+  test('instant plus duration round-trips', () => {
+    let a = monotonic();
+    let d = milliseconds(25);
+    let b = a + d;
+    isTrue(a.isBefore(b));
+    isFalse(b.isBefore(a));
+    equal((b - a) as i64, d as i64);
+    isTrue(a == b + milliseconds(0 - 25));
+  });
+
+  test('durations add, subtract and scale', () => {
+    let d = milliseconds(3) + milliseconds(4);
+    equal(d as i64, milliseconds(7) as i64);
+    equal((d - milliseconds(2)) as i64, milliseconds(5) as i64);
+    equal((d * (3 as i64)) as i64, milliseconds(21) as i64);
+    isTrue(d.isPositive());
+    isFalse(d.isNegative());
+    isFalse(milliseconds(0).isPositive());
+    isFalse(milliseconds(0).isNegative());
+  });
+});

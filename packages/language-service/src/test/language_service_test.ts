@@ -115,9 +115,9 @@ suite('language service API', () => {
   test('a program awaiting zena:time reports nothing, in any file', () => {
     const diagnostics = service.check(
       PATH,
-      `import {sleep} from 'zena:time';\n` +
+      `import {sleep, milliseconds} from 'zena:time';\n` +
         `export async function main() {\n` +
-        `  await sleep(1);\n` +
+        `  await sleep(milliseconds(1));\n` +
         `}\n`,
     );
     assert.deepStrictEqual(diagnostics, []);

@@ -12,7 +12,7 @@
 // elapsed wall-clock would make this flaky on a loaded machine; the
 // ordering is what the timer queue actually promises.
 import { Future, drainMicrotasks } from 'zena:async';
-import { sleep, monotonicNs } from 'zena:time';
+import { sleep, monotonic, milliseconds } from 'zena:time';
 
 var log = 0;
 
@@ -21,8 +21,8 @@ let mark = (n: i32): void => {
 };
 
 /** Completes after its own delay, recording when it did. */
-let after = async (ms: i32, n: i32): Future<void> => {
-  await sleep(ms);
+let after = async (ms: i64, n: i32): Future<void> => {
+  await sleep(milliseconds(ms));
   mark(n);
 };
 
@@ -46,14 +46,15 @@ export async function main(): Future<i32> {
   }
 
   // A timer really does advance the monotonic clock.
-  let start = monotonicNs();
-  await sleep(30);
-  if (monotonicNs() - start <= (0 as i64)) {
+  let start = monotonic();
+  await sleep(milliseconds(30));
+  let elapsed = monotonic() - start;
+  if (!elapsed.isPositive()) {
     return 0 - 3;
   }
 
-  // sleep(0) is still asynchronous — it completes through the queue,
-  // so this mark happens after the synchronous tail below.
+  // A zero sleep is still asynchronous — it completes through the
+  // queue, so this mark happens after the synchronous tail below.
   log = 0;
   let zero = after(0, 9);
   mark(8);

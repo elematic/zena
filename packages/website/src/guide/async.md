@@ -192,10 +192,12 @@ let result = await completer.future;
 
 ### Timers and sleep
 
-To pause execution asynchronously for a duration, use `sleep` from `zena:time`:
+To pause execution asynchronously for a duration, use `sleep` from
+`zena:time`. It takes a `Duration` — a distinct type over `i64`
+nanoseconds — built with helpers like `milliseconds`:
 
 ```zena
-import { sleep } from 'zena:time';
+import { sleep, milliseconds } from 'zena:time';
 
 async function retryOperation(): Future<void> {
   for (var attempt = 1; attempt <= 3; attempt += 1) {
@@ -204,7 +206,7 @@ async function retryOperation(): Future<void> {
       return;
     } catch (e) {
       console.log(`Attempt ${attempt} failed, retrying in 100ms...`);
-      await sleep(100);
+      await sleep(milliseconds(100));
     }
   }
 }

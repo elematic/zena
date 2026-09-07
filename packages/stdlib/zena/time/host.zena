@@ -23,6 +23,9 @@
  * >=4ms floor browsers impose once timeouts nest more than five deep.
  */
 import { pending } from 'zena:js';
+import { Instant, Duration } from './types.zena';
+
+export { Instant, Duration, milliseconds, nanoseconds } from './types.zena';
 
 /** Milliseconds on a monotonic clock. `f64` rather than `i64` so nothing
  * here depends on BigInt marshalling. */
@@ -34,28 +37,25 @@ declare function __time_now_ms(): f64;
 declare function __time_sleep_ms(handle: i32, ms: f64): void;
 
 /**
- * A future that completes after at least `ms` milliseconds.
+ * A future that completes after at least `d`.
  *
  * "At least": the deadline is when the timer becomes *eligible*, and it
  * completes through the microtask queue like every other future, so a
- * busy queue can delay it further. `sleep(0)` still yields — it never
- * completes synchronously, per the always-async rule.
+ * busy queue can delay it further. A zero-length sleep still yields — it
+ * never completes synchronously, per the always-async rule.
  */
-export let sleep = (ms: i32): Future<void> => {
-  if (ms < 0) {
+export function sleep(d: Duration): Future<void> {
+  if (d.isNegative()) {
     throw new Error('zena:time: sleep() needs a non-negative duration');
   }
   let p = pending<void>();
-  __time_sleep_ms(p.handle, ms as f64);
+  let nsF = (d as i64) as f64;
+  __time_sleep_ms(p.handle, nsF / 1000000.0);
   return p.future;
-};
+}
 
-/** Nanoseconds on the monotonic clock. */
-export let monotonicNs = (): i64 => {
-  return (__time_now_ms() * 1000000.0) as i64;
-};
-
-/** Milliseconds on the monotonic clock. */
-export let monotonicMs = (): f64 => {
-  return __time_now_ms();
-};
+/** The monotonic clock's reading. */
+export function monotonic(): Instant {
+  let ns = (__time_now_ms() * 1000000.0) as i64;
+  return ns as Instant;
+}

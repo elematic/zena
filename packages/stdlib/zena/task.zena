@@ -5,9 +5,9 @@
  * An operation that can be started is a value, `Op<T> = () =>
  * Future<T>`, and this module is the algebra over such values:
  * combinators from `Op<T>` to `Op<T>`, so composition order is
- * syntax:
- * `retry(3, timeout(100, op))` gives every attempt its own 100ms
- * budget, `timeout(500, retry(3, op))` one budget over all of them.
+ * syntax: `retry(3, timeout(milliseconds(100), op))` gives every
+ * attempt its own 100ms budget, `timeout(milliseconds(500),
+ * retry(3, op))` one budget over all of them.
  *
  * Two rules make the algebra sound. Policies act on FAILURES and
  * never on cancellation: an ambient cancel passes through every
@@ -33,54 +33,60 @@ import { Error } from 'zena:error';
 import {
   Future, Completer, TaskGroup, CancelScope, scheduleMicrotask,
 } from 'zena:async';
-import { sleep, monotonicMs } from 'zena:time';
-import { i32ToString } from 'zena:string-convert';
+import {
+  sleep, monotonic, milliseconds, Instant, Duration,
+} from 'zena:time';
+import { i64ToString } from 'zena:string-convert';
+import { div } from 'zena:math';
 
 /** An operation that can be attempted. Each call starts one fresh
  * attempt and hands back its future. */
 export type Op<T> = () => Future<T>;
 
+/** `d` as whole milliseconds, for error messages. */
+let wholeMs = (d: Duration): i64 => {
+  let ns = d as i64;
+  let perMs: i64 = 1000000;
+  return div(ns, perMs);
+};
+
 /** How `timeout` and `deadline` report an attempt that ran out of
  * budget. Carries the budget so a retry layer's log can say which. */
 export class TimeoutError extends Error {
-  budgetMs: i32;
-  new(this.budgetMs)
-    : super('timed out after ' + i32ToString(budgetMs) + 'ms');
+  budget: Duration;
+  new(this.budget)
+    : super('timed out after ' + i64ToString(wholeMs(budget)) + 'ms');
 }
 
 /**
- * Bounds each attempt to `ms` of wall time: the attempt races its
+ * Bounds each attempt to `budget` of wall time: the attempt races its
  * budget, and whichever loses is cancelled. An attempt that exceeds
  * the budget fails with `TimeoutError` — a failure like any other, so
  * an outer `retry` treats a timeout as retryable.
  */
-export let timeout = <T>(ms: i32, op: Op<T>): Op<T> => {
+export let timeout = <T>(budget: Duration, op: Op<T>): Op<T> => {
   // The budget arm's annotation is load-bearing: its body only
   // throws, which infers `Future<void>` rather than the race's `T`.
   return () => TaskGroup.race([op, async (): Future<T> => {
-    await sleep(ms);
-    throw new TimeoutError(ms);
+    await sleep(budget);
+    throw new TimeoutError(budget);
   }]);
 };
 
 /**
  * Bounds each attempt to finish before an absolute point on the
- * monotonic clock (`monotonicMs()`), however many layers retry it:
+ * monotonic clock (`monotonic()`), however many layers retry it:
  * where `timeout` gives every attempt a fresh budget, a deadline
  * spends one budget across all of them. An attempt starting past the
  * deadline fails immediately, without running the operation.
  */
-export let deadline = <T>(atMs: f64, op: Op<T>): Op<T> => {
+export let deadline = <T>(at: Instant, op: Op<T>): Op<T> => {
   return (): Future<T> => {
-    // Instants are f64 milliseconds (the clock's type); durations are
-    // i32 milliseconds (sleep's type, and every combinator's). This
-    // subtraction is the one place the two meet, so the conversion
-    // lives here.
-    let remaining = atMs - monotonicMs();
-    if (remaining <= 0.0) {
-      return Future.failed<T>(new TimeoutError(0));
+    let remaining = at - monotonic();
+    if (!remaining.isPositive()) {
+      return Future.failed<T>(new TimeoutError(milliseconds(0)));
     }
-    return timeout(remaining as i32, op)();
+    return timeout(remaining, op)();
   };
 };
 
@@ -89,18 +95,18 @@ export let deadline = <T>(atMs: f64, op: Op<T>): Op<T> => {
  * closure position (issue #453); fold it into `retry` when that is
  * fixed. */
 let retryImpl = async <T>(
-    attempts: i32, firstDelayMs: i32, op: Op<T>): Future<T> => {
-  var delay = firstDelayMs;
+    attempts: i32, firstDelay: Duration, op: Op<T>): Future<T> => {
+  var delay = firstDelay;
   var failed = 0;
   while (failed < attempts - 1) {
     try {
       return await op();
     } catch (e) {
       failed += 1;
-      if (delay > 0) {
+      if (delay.isPositive()) {
         await sleep(delay);
         // Exponential: each wait doubles the last.
-        delay = delay * 2;
+        delay = delay * (2 as i64);
       }
     }
   }
@@ -111,18 +117,19 @@ let retryImpl = async <T>(
 
 /**
  * Runs up to `attempts` attempts, handing back the first value; the
- * last attempt's failure propagates. With `firstDelayMs`, waits that
+ * last attempt's failure propagates. With `firstDelay`, waits that
  * long before the second attempt and doubles the wait each time after.
  *
  * Retrying is the reason `Op` is a function: each attempt is a fresh
  * call. Cancellation is not retried — see the module comment.
  */
 export let retry = <T>(
-    attempts: i32, op: Op<T>, firstDelayMs: i32 = 0): Op<T> => {
+    attempts: i32, op: Op<T>,
+    firstDelay: Duration = milliseconds(0)): Op<T> => {
   if (attempts < 1) {
     throw new Error('retry: needs at least one attempt');
   }
-  return () => retryImpl(attempts, firstDelayMs, op);
+  return () => retryImpl(attempts, firstDelay, op);
 };
 
 /**
@@ -144,14 +151,14 @@ export let fallback = <T>(op: Op<T>, alt: Op<T>): Op<T> => {
 
 /**
  * Starts a second attempt if the first has not settled within
- * `delayMs`, and hands back whichever settles first, value or
+ * `delay`, and hands back whichever settles first, value or
  * failure — the tool for an operation that is usually fast and
  * occasionally very slow. The loser is cancelled. A hedge trims
  * slowness and does not mask errors; layer `retry` on top for that.
  */
-export let hedge = <T>(delayMs: i32, op: Op<T>): Op<T> => {
+export let hedge = <T>(delay: Duration, op: Op<T>): Op<T> => {
   return () => TaskGroup.race([op, async () => {
-    await sleep(delayMs);
+    await sleep(delay);
     return await op();
   }]);
 };
@@ -195,10 +202,10 @@ symbol takeCompleter;
  * latest-wins (docs/design/task.md).
  *
  * The op is fixed at construction with its policies already composed:
- * `new Task(retry(3, timeout(100, fetchUser)))`. Each run starts the
- * op inside a child `CancelScope`, so a superseding `run()` cancels
- * the previous attempt's whole subtree rather than racing it for the
- * state.
+ * `new Task(retry(3, timeout(milliseconds(100), fetchUser)))`. Each
+ * run starts the op inside a child `CancelScope`, so a superseding
+ * `run()` cancels the previous attempt's whole subtree rather than
+ * racing it for the state.
  */
 export class Task<T> {
   #op: Op<T>;

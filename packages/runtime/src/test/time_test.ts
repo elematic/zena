@@ -37,15 +37,15 @@ suite('Runtime - zena:time host integration', () => {
   test('timers complete in deadline order, not call order', async () => {
     const main = await run_(`
       import { Future, drainMicrotasks } from 'zena:async';
-      import { sleep } from 'zena:time';
+      import { sleep, milliseconds } from 'zena:time';
 
       var log = 0;
       let mark = (n: i32): void => {
         log = log * 10 + n;
       };
 
-      let after = async (ms: i32, n: i32): Future<void> => {
-        await sleep(ms);
+      let after = async (ms: i64, n: i32): Future<void> => {
+        await sleep(milliseconds(ms));
         mark(n);
       };
 
@@ -72,11 +72,11 @@ suite('Runtime - zena:time host integration', () => {
   // forgets it fails to instantiate the moment a program calls sleep().
   test('an embedder sees output from both sides of an await', async () => {
     const wasm = compile(`
-      import { sleep } from 'zena:time';
+      import { sleep, milliseconds } from 'zena:time';
 
       export async function main() {
         console.log('A');
-        await sleep(20);
+        await sleep(milliseconds(20));
         console.log('B');
       }
     `);
@@ -105,7 +105,7 @@ suite('Runtime - zena:time host integration', () => {
   test('sleep(0) is still asynchronous', async () => {
     const main = await run_(`
       import { Future } from 'zena:async';
-      import { sleep } from 'zena:time';
+      import { sleep, milliseconds } from 'zena:time';
 
       var log = 0;
       let mark = (n: i32): void => {
@@ -113,7 +113,7 @@ suite('Runtime - zena:time host integration', () => {
       };
 
       let zero = async (): Future<void> => {
-        await sleep(0);
+        await sleep(milliseconds(0));
         mark(9);
       };
 
@@ -131,13 +131,16 @@ suite('Runtime - zena:time host integration', () => {
   test('sleep actually waits', async () => {
     const main = await run_(`
       import { Future } from 'zena:async';
-      import { sleep, monotonicMs } from 'zena:time';
+      import { sleep, monotonic, milliseconds } from 'zena:time';
+      import { div } from 'zena:math';
 
       export async function main(): Future<i32> {
-        let start = monotonicMs();
-        await sleep(50);
+        let start = monotonic() as i64;
+        await sleep(milliseconds(50));
+        let now = monotonic() as i64;
         // Report elapsed milliseconds, floored.
-        return (monotonicMs() - start) as i32;
+        let perMs: i64 = 1000000;
+        return div(now - start, perMs) as i32;
       }
     `);
     const wallStart = Date.now();
@@ -160,10 +163,10 @@ suite('Runtime - zena:time host integration', () => {
   test('the event loop keeps running while wasm sleeps', async () => {
     const main = await run_(`
       import { Future } from 'zena:async';
-      import { sleep } from 'zena:time';
+      import { sleep, milliseconds } from 'zena:time';
 
       export async function main(): Future<i32> {
-        await sleep(80);
+        await sleep(milliseconds(80));
         return 7;
       }
     `);

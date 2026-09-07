@@ -8,8 +8,10 @@
  */
 import { Memory, defaultAllocator } from 'zena:memory';
 import { Error } from 'zena:error';
-import { Clock, installClock, sleep as sleepImpl, monotonicNs as nowImpl,
-         monotonicMs as nowMsImpl } from './queue.zena';
+import { Clock, installClock, sleep as sleepImpl } from './queue.zena';
+import { Instant, Duration } from './types.zena';
+
+export { Instant, Duration, milliseconds, nanoseconds } from './types.zena';
 
 @external("wasi_snapshot_preview1", "clock_time_get")
 declare function __wasi_clock_time_get(
@@ -32,7 +34,7 @@ let CLOCK_MONOTONIC = 1;
 final class WasiClock implements Clock {
   new();
 
-  nowNs(): i64 {
+  now(): Instant {
     if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
       let res = __wasi_clock_time_get(CLOCK_MONOTONIC, 1 as i64, addr);
       if (res != 0) {
@@ -41,7 +43,7 @@ final class WasiClock implements Clock {
       }
       let ns = Memory.default.getI64(addr);
       defaultAllocator.free(addr);
-      return ns;
+      return ns as Instant;
     }
     throw new Error('zena:time: out of memory reading the clock');
   }
@@ -59,7 +61,8 @@ final class WasiClock implements Clock {
    * `flags` 0 means the timeout is *relative*, which is what a sleep
    * wants — an absolute deadline would need SUBSCRIPTION_CLOCK_ABSTIME.
    */
-  waitNs(ns: i64): boolean {
+  wait(d: Duration): boolean {
+    let ns = d as i64;
     if (let (true, buf) = defaultAllocator.allocAligned(96, 8)) {
       let mem = Memory.default;
       let sub = buf;
@@ -96,27 +99,26 @@ final class WasiClock implements Clock {
 let wasiClock = new WasiClock();
 var installed = false;
 
-let ensureClock = (): void => {
+function ensureClock(): void {
   if (!installed) {
     installClock(wasiClock);
     installed = true;
   }
-};
+}
 
-/** A future that completes after at least `ms` milliseconds. */
-export let sleep = (ms: i32): Future<void> => {
+/** A future that completes after at least `d`. */
+export function sleep(d: Duration): Future<void> {
   ensureClock();
-  return sleepImpl(ms);
-};
+  return sleepImpl(d);
+}
 
-/** Nanoseconds on the monotonic clock. */
-export let monotonicNs = (): i64 => {
-  ensureClock();
-  return nowImpl();
-};
-
-/** Milliseconds on the monotonic clock. */
-export let monotonicMs = (): f64 => {
-  ensureClock();
-  return nowMsImpl();
-};
+/**
+ * The monotonic clock's reading.
+ *
+ * Reads the clock directly rather than through the installed `Clock`:
+ * only the parker path — sleep, park, wait — needs the installation,
+ * and a clock read should not pay a registration check.
+ */
+export function monotonic(): Instant {
+  return wasiClock.now();
+}

@@ -1,0 +1,96 @@
+/**
+ * The types `zena:time` deals in: `Instant`, a point on the monotonic
+ * clock, and `Duration`, a signed span of time.
+ *
+ * Both are nanosecond counts over `i64` — about 292 years either side
+ * of zero, so a monotonic reading cannot overflow, and signed so that
+ * an overdue deadline is an ordinary negative span rather than a
+ * wrapped-around enormous one. They are erased extension classes:
+ * nominal to the checker — an instant, a duration and a bare number
+ * cannot be passed for one another — and free at runtime.
+ *
+ * The operators carry the affine core of the algebra: instant minus
+ * instant is a duration, instant plus duration is an instant, and
+ * durations add, subtract and scale among themselves. Adding two
+ * instants is a compile error, which is the point. Two gaps are the
+ * language's, not choices: relational operators do not dispatch to
+ * operator methods (#526), so ordering is spelled
+ * `isBefore`/`isPositive`; and a class gets one method per operator
+ * symbol, so instant minus duration is the named `minus`.
+ */
+
+/** Nanoseconds per millisecond. */
+let NS_PER_MS = 1000000 as i64;
+
+/**
+ * A point on the monotonic clock: nanoseconds from an arbitrary
+ * origin, so only the distance between two instants is meaningful.
+ */
+export final extension class Instant on i64 {
+  /** The span from `other` to this instant — negative when this
+   * instant is the earlier one. */
+  operator -(other: Instant): Duration {
+    return ((this as i64) - (other as i64)) as Duration;
+  }
+
+  /** The instant `d` after this one — before it, for a negative `d`. */
+  operator +(d: Duration): Instant {
+    return ((this as i64) + (d as i64)) as Instant;
+  }
+
+  /** The instant `d` before this one. Named because `-` already means
+   * instant minus instant, and one operator gets one method. */
+  minus(d: Duration): Instant {
+    return ((this as i64) - (d as i64)) as Instant;
+  }
+
+  /** True when this instant precedes `other`. */
+  isBefore(other: Instant): boolean {
+    return (this as i64) < (other as i64);
+  }
+
+  operator ==(other: Instant): boolean {
+    return (this as i64) == (other as i64);
+  }
+}
+
+/** A signed span of time, in nanoseconds. */
+export final extension class Duration on i64 {
+  operator +(other: Duration): Duration {
+    return ((this as i64) + (other as i64)) as Duration;
+  }
+
+  operator -(other: Duration): Duration {
+    return ((this as i64) - (other as i64)) as Duration;
+  }
+
+  /** This span scaled `k` times. */
+  operator *(k: i64): Duration {
+    return ((this as i64) * k) as Duration;
+  }
+
+  /** True for a span longer than zero. */
+  isPositive(): boolean {
+    return (this as i64) > (0 as i64);
+  }
+
+  /** True for a span shorter than zero. */
+  isNegative(): boolean {
+    return (this as i64) < (0 as i64);
+  }
+
+  operator ==(other: Duration): boolean {
+    return (this as i64) == (other as i64);
+  }
+}
+
+/** `ms` milliseconds as a `Duration`. */
+export function milliseconds(ms: i64): Duration {
+  let ns = ms * NS_PER_MS;
+  return ns as Duration;
+}
+
+/** `ns` nanoseconds as a `Duration`. */
+export function nanoseconds(ns: i64): Duration {
+  return ns as Duration;
+}
