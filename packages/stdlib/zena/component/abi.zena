@@ -315,3 +315,99 @@ export function loadF32(ptr: i32): f32 {
 export function loadF64(ptr: i32): f64 {
   return mem.getF64(ptr);
 }
+
+// Typed stores, mirroring the loads, for generated lowering code —
+// list elements and spilled arguments are written into linear memory
+// at canonical offsets. The byte and half-word stores truncate, which
+// is the wasm store's own behavior, so signed and unsigned narrow
+// types share them.
+
+export function storeU8(ptr: i32, value: i32): void {
+  mem.setU8(ptr, value);
+}
+
+export function storeU16(ptr: i32, value: i32): void {
+  mem.setU8(ptr, value & 255);
+  mem.setU8(ptr + 1, (value >> 8) & 255);
+}
+
+export function storeI32(ptr: i32, value: i32): void {
+  mem.setI32(ptr, value);
+}
+
+export function storeI64(ptr: i32, value: i64): void {
+  mem.setI64(ptr, value);
+}
+
+export function storeF32(ptr: i32, value: f32): void {
+  mem.setF32(ptr, value);
+}
+
+export function storeF64(ptr: i32, value: f64): void {
+  mem.setF64(ptr, value);
+}
+
+// ============================================================================
+// The staging arena
+// ============================================================================
+//
+// Lowering an aggregate argument stages buffers conditionally — a
+// variant arm that carries a string stages it, the arm that does not
+// stages nothing — and a list's elements stage buffers of their own
+// inside the element buffer. Tracking each allocation at its staging
+// site would push that bookkeeping into every generated wrapper, so
+// the arena does it once: everything staged registers here, the
+// lowered call consumes the bytes, and one `releaseStaged()` after
+// the call frees the lot. Wrappers never interleave (a synchronous
+// lowering completes before the wrapper returns, and nothing here
+// suspends), so one arena is enough.
+
+let stagedPtrs = new GrowableArray<i32>();
+
+/** Allocate `size` bytes of staging space, freed by `releaseStaged`.
+ * Zero bytes is zero: `realloc(…, 0)` returns an unowned aligned
+ * sentinel that must never reach `free`. */
+export function stageBuffer(size: i32): i32 {
+  if (size == 0) {
+    return 0;
+  }
+  let ptr = realloc(0, 0, 8, size);
+  stagedPtrs.push(ptr);
+  return ptr;
+}
+
+/** Stage a String's bytes, arena-tracked: `(ptr, len)`, with `(0, 0)`
+ * for an empty string — nothing is allocated, nothing to free. */
+export function stageString(s: String): (i32, i32) {
+  assertWtf8(s);
+  let len = s.length;
+  if (len == 0) {
+    return (0, 0);
+  }
+  let ptr = stageBuffer(len);
+  for (var i = 0; i < len; i += 1) {
+    mem[ptr + i] = s.getByteAt(i);
+  }
+  return (ptr, len);
+}
+
+/** Stage a byte buffer, arena-tracked: `list<u8>` and `string` have
+ * the same wire shape. */
+export function stageByteList(bytes: FixedArray<u8>): (i32, i32) {
+  let len = bytes.length;
+  if (len == 0) {
+    return (0, 0);
+  }
+  let ptr = stageBuffer(len);
+  for (var i = 0; i < len; i += 1) {
+    mem[ptr + i] = bytes[i] as i32;
+  }
+  return (ptr, len);
+}
+
+/** Free everything staged since the last release. */
+export function releaseStaged(): void {
+  while (stagedPtrs.length > 0) {
+    defaultAllocator.free(stagedPtrs.pop());
+  }
+}

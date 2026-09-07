@@ -1271,9 +1271,23 @@ freed as it is lifted. A top-level `result<T, E>` arrives as the
 inline `Result<T, E>` (zero allocation); a nested result waits on
 `Outcome` construction at void arms.
 
-The next slices are aggregate *parameters* (the flat-lowering half,
-with its payload joins); resources as handle-wrapping classes; then
-async _results_ (the subtask-read machinery, C6-adjacent). The path they serve is
+The lowering half followed: an aggregate parameter flattens into
+zero-initialized slot variables the wrapper fills — a record field by
+field, a variant through an if chain writing the discriminant and its
+own arm's prefix of the shared payload slots, an option leaving its
+slots at zero when none — and a list parameter stages an element
+buffer, writing each element at its canonical stride. Buffers staged
+anywhere in a lowering (a variant arm's string, a list element's
+nested list) register with `zena:component-abi`'s staging arena, and
+the wrapper frees the lot with one `releaseStaged()` after the call —
+per-site release bookkeeping cannot express "the arm that staged may
+not be the arm that ran". Two flat-form limits refuse loudly: variant
+payloads that join across core types (the joined slot needs bit-casts
+generated source cannot spell), and parameters spilling past sixteen
+core values.
+
+The next slices are resources as handle-wrapping classes, then async
+_results_ (the subtask-read machinery, C6-adjacent). The path they serve is
 `wasi:http@0.3.0`: `handle/send: async func(request) ->
 result<response, error-code>` over four resources whose bodies are
 `stream<u8>` — value marshaling, resources, the stream binding and

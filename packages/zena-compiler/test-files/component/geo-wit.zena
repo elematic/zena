@@ -4,14 +4,25 @@
 // inline Result. Compile-level coverage — no host serves `wasi:geo` —
 // the unit tests assert the synthesized source.
 import {
-  Point, Reading, Quality, Finding, FindingAt,
-  origin, locate, surveyAll, check, bounds
+  Point, Reading, Quality, Finding, FindingAt, Note, NoteText, NoteEmpty,
+  origin, locate, surveyAll, check, bounds,
+  labelOf, annotate, maybeName, sendLabels, window
 } from 'wasi:geo/survey';
-import { Some } from 'zena:option';
+import { Some, some, none } from 'zena:option';
 
 export function main(): u32 {
   let p = origin();
   var acc = p.label.length as u32;
+  acc += labelOf(new Point(1.0, 2.0, 'origin'));
+  acc += annotate(new NoteText('hello'));
+  acc += annotate(new NoteEmpty());
+  acc += maybeName(some('base'));
+  acc += maybeName(none);
+  let labels = new GrowableArray<String>();
+  labels.push('a');
+  labels.push('b');
+  acc += sendLabels(labels);
+  acc += window((3 as u32, 4 as u32));
   if (let (true, good, _) = check(7)) {
     acc += good.x as u32;
   }

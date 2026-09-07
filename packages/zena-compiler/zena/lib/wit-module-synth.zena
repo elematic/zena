@@ -426,7 +426,18 @@ final class SynthUses {
    * tracks how many have been rendered so far. */
   lifts = new GrowableArray<LiftEntry>();
   var emittedLifts = 0;
+  /** Whether anything was staged through the arena — the wrapper then
+   * ends its call with `releaseStaged()`. */
+  var stagedAny = false;
+  /** Fresh-name counter for generated locals. */
+  var tmpCount = 0;
   new();
+
+  nextTmp(): i32 {
+    let n = this.tmpCount;
+    this.tmpCount += 1;
+    return n;
+  }
 
   useAbi(name: String): void {
     for (let existing in this.abi) {
@@ -616,6 +627,392 @@ function liftExprOf(ty: Ty, ptrExpr: String, uses: SynthUses): String {
 /** `ptr` displaced by a field offset, elided when zero. */
 let atOffset = (offset: i32): String =>
     if (offset == 0) "ptr" else "ptr + " + i32ToString(offset);
+
+// ============================================================================
+// The lowering half: parameters into flat slots and staged memory
+// ============================================================================
+
+/** The core value type one scalar spelling flattens to. */
+let coreOf = (scalar: String): String => {
+  if (scalar == "u64" || scalar == "i64") { return "i64"; }
+  if (scalar == "f32") { return "f32"; }
+  if (scalar == "f64") { return "f64"; }
+  return "i32";
+};
+
+/** `value` cast to its core flat type, as source text. */
+let castToCore = (scalar: String, value: String): String => {
+  if (scalar == "boolean") {
+    return "(if (" + value + ") 1 else 0)";
+  }
+  if (scalar == "i32" || scalar == "i64" || scalar == "f32" ||
+      scalar == "f64") {
+    return value;
+  }
+  if (scalar == "u64") {
+    return "(" + value + " as i64)";
+  }
+  return "(" + value + " as i32)";
+};
+
+/**
+ * The core value types `ty` flattens to, or null when a variant's
+ * payloads would join across core types — a joined slot then needs
+ * bit-casts the generated source cannot spell yet. Only the flat form
+ * cares: the same variant inside a list lowers through memory, where
+ * every case writes its own layout.
+ */
+function flatCoreSlots(ty: Ty): GrowableArray<String> | null {
+  let out = new GrowableArray<String>();
+  if (ty.kind == TyKind.Scalar) {
+    out.push(coreOf(ty.scalar));
+    return out;
+  }
+  if (ty.kind == TyKind.Enumeration || ty.kind == TyKind.Flags) {
+    out.push("i32");
+    return out;
+  }
+  if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList ||
+      ty.kind == TyKind.ListT) {
+    out.push("i32");
+    out.push("i32");
+    return out;
+  }
+  if (ty.kind == TyKind.RecordT || ty.kind == TyKind.TupleT) {
+    for (let child in ty.children) {
+      let inner = flatCoreSlots(child);
+      if (inner == null) {
+        return null;
+      }
+      for (let slot in inner as GrowableArray<String>) {
+        out.push(slot);
+      }
+    }
+    return out;
+  }
+  // OptionT, ResultT, VariantT: a discriminant, then the slotwise
+  // join of the arms.
+  out.push("i32");
+  let joined = new GrowableArray<String>();
+  for (let child in ty.children) {
+    if (isVoid(child)) { continue; }
+    let inner = flatCoreSlots(child);
+    if (inner == null) {
+      return null;
+    }
+    let arm = inner as GrowableArray<String>;
+    for (var i = 0; i < arm.length; i += 1) {
+      if (i < joined.length) {
+        if (joined[i] != arm[i]) {
+          return null;
+        }
+      } else {
+        joined.push(arm[i]);
+      }
+    }
+  }
+  for (let slot in joined) {
+    out.push(slot);
+  }
+  return out;
+}
+
+/** Whether `ty` (or anything inside it) cannot be lowered yet. */
+function lowerBlocker(ty: Ty): String {
+  if (ty.kind == TyKind.Unsupported) {
+    return ty.reason;
+  }
+  if (ty.kind == TyKind.ResultT) {
+    return "a result parameter waits on the interop stages (the " +
+        "inline Result is return-position-only)";
+  }
+  for (let child in ty.children) {
+    if (isVoid(child)) { continue; }
+    let blocked = lowerBlocker(child);
+    if (blocked != "") {
+      return blocked;
+    }
+  }
+  return "";
+}
+
+/** The abi store call for a value of `size` bytes at `ptrExpr`. */
+let storeCall = (size: i32, isFloat: boolean, ptrExpr: String,
+    value: String, uses: SynthUses): String => {
+  var name = "storeI32";
+  if (isFloat) {
+    name = if (size == 4) "storeF32" else "storeF64";
+  } else if (size == 1) {
+    name = "storeU8";
+  } else if (size == 2) {
+    name = "storeU16";
+  } else if (size == 8) {
+    name = "storeI64";
+  }
+  uses.useAbi(name);
+  return name + "(" + ptrExpr + ", " + value + ")";
+};
+
+/** `ptrExpr` displaced by `offset`, elided when zero. */
+let displaced = (ptrExpr: String, offset: i32): String =>
+    if (offset == 0) ptrExpr
+    else "(" + ptrExpr + ") + " + i32ToString(offset);
+
+/**
+ * Emit statements writing `value` (of type `ty`) into memory at
+ * `ptrExpr`, per the canonical layout — the element form a staged
+ * list buffer is filled with. Buffers staged along the way register
+ * with the arena; `releaseStaged()` after the call frees them all.
+ */
+function lowerMemStmts(sb: StringBuilder, ty: Ty, value: String,
+    ptrExpr: String, indent: String, uses: SynthUses): void {
+  if (ty.kind == TyKind.Scalar) {
+    let isFloat = ty.scalar == "f32" || ty.scalar == "f64";
+    sb.append(indent).append(storeCall(ty.size, isFloat, ptrExpr,
+        castToCore(ty.scalar, value), uses)).append(";\n");
+    return;
+  }
+  if (ty.kind == TyKind.Enumeration) {
+    sb.append(indent).append(storeCall(ty.size, false, ptrExpr,
+        "(" + value + " as i32)", uses)).append(";\n");
+    return;
+  }
+  if (ty.kind == TyKind.Flags) {
+    sb.append(indent).append(storeCall(ty.size, false, ptrExpr,
+        "((" + value + " as u32) as i32)", uses)).append(";\n");
+    return;
+  }
+  if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
+    let stage = if (ty.kind == TyKind.Str) "stageString"
+        else "stageByteList";
+    uses.useAbi(stage);
+    uses.stagedAny = true;
+    let p = "p" + i32ToString(uses.nextTmp());
+    let l = "l" + i32ToString(uses.nextTmp());
+    sb.append(indent).append("let (").append(p).append(", ").append(l)
+        .append(") = ").append(stage).append("(").append(value)
+        .append(");\n");
+    sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
+        .append(p).append(");\n");
+    sb.append(indent).append("storeI32(").append(displaced(ptrExpr, 4))
+        .append(", ").append(l).append(");\n");
+    uses.useAbi("storeI32");
+    return;
+  }
+  if (ty.kind == TyKind.ListT) {
+    emitListStaging(sb, ty, value, indent, uses,
+        (buf: String, count: String): void => {
+      sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
+          .append(buf).append(");\n");
+      sb.append(indent).append("storeI32(").append(displaced(ptrExpr, 4))
+          .append(", ").append(count).append(");\n");
+      uses.useAbi("storeI32");
+    });
+    return;
+  }
+  if (ty.kind == TyKind.RecordT || ty.kind == TyKind.TupleT) {
+    let offsets = fieldOffsets(ty);
+    var names = new GrowableArray<String>();
+    if (ty.kind == TyKind.RecordT) {
+      for (let field in ty.childNames) {
+        names.push(value + "." + field);
+      }
+    } else {
+      let t = "t" + i32ToString(uses.nextTmp());
+      sb.append(indent).append("let (");
+      for (var i = 0; i < ty.children.length; i += 1) {
+        if (i > 0) { sb.append(", "); }
+        sb.append(t).append("v").append(i32ToString(i));
+        names.push(t + "v" + i32ToString(i));
+      }
+      sb.append(") = ").append(value).append(";\n");
+    }
+    for (var i = 0; i < ty.children.length; i += 1) {
+      lowerMemStmts(sb, ty.children[i], names[i],
+          displaced(ptrExpr, offsets[i]), indent, uses);
+    }
+    return;
+  }
+  if (ty.kind == TyKind.OptionT) {
+    uses.option = true;
+    uses.useAbi("storeU8");
+    let inner = ty.children[0];
+    let payoff = payloadOffset(ty);
+    sb.append(indent).append("if (").append(value).append(" is Some<")
+        .append(zenaTypeOf(inner, uses)).append(">) {\n");
+    sb.append(indent).append("  storeU8(").append(ptrExpr)
+        .append(", 1);\n");
+    lowerMemStmts(sb, inner,
+        "(" + value + " as Some<" + zenaTypeOf(inner, uses) + ">).value",
+        displaced(ptrExpr, payoff), indent + "  ", uses);
+    sb.append(indent).append("} else {\n");
+    sb.append(indent).append("  storeU8(").append(ptrExpr)
+        .append(", 0);\n");
+    sb.append(indent).append("}\n");
+    return;
+  }
+  // VariantT: an if chain over the sealed cases, each storing the
+  // discriminant and its own payload layout.
+  let payoff = payloadOffset(ty);
+  for (var i = 0; i < ty.children.length; i += 1) {
+    sb.append(indent);
+    if (i > 0) { sb.append("} else "); }
+    sb.append("if (").append(value).append(" is ")
+        .append(ty.childNames[i]).append(") {\n");
+    sb.append(indent).append("  ").append(storeCall(
+        discSize(ty.caseCount), false, ptrExpr, i32ToString(i), uses))
+        .append(";\n");
+    if (!isVoid(ty.children[i])) {
+      lowerMemStmts(sb, ty.children[i],
+          "(" + value + " as " + ty.childNames[i] + ").value",
+          displaced(ptrExpr, payoff), indent + "  ", uses);
+    }
+  }
+  sb.append(indent).append("}\n");
+}
+
+/**
+ * Stage a list value's element buffer: allocates `length * stride`
+ * arena bytes, fills each element through `lowerMemStmts`, and hands
+ * the buffer and count to `finish`. An empty list stages nothing and
+ * passes `(0, 0)` — the canonical empty form, and `stageBuffer(0)`
+ * would return an unowned sentinel.
+ */
+function emitListStaging(sb: StringBuilder, ty: Ty, value: String,
+    indent: String, uses: SynthUses,
+    finish: (buf: String, count: String) => void): void {
+  let element = ty.children[0];
+  uses.useAbi("stageBuffer");
+  uses.stagedAny = true;
+  let b = "b" + i32ToString(uses.nextTmp());
+  let n = "n" + i32ToString(uses.nextTmp());
+  let idx = "i" + i32ToString(uses.nextTmp());
+  sb.append(indent).append("var ").append(b).append(" = 0;\n");
+  sb.append(indent).append("let ").append(n).append(" = ")
+      .append(value).append(".length;\n");
+  sb.append(indent).append("if (").append(n).append(" > 0) {\n");
+  sb.append(indent).append("  ").append(b).append(" = stageBuffer(")
+      .append(n).append(" * ").append(i32ToString(element.size))
+      .append(");\n");
+  sb.append(indent).append("  for (var ").append(idx)
+      .append(" = 0; ").append(idx).append(" < ").append(n)
+      .append("; ").append(idx).append(" += 1) {\n");
+  lowerMemStmts(sb, element, value + "[" + idx + "]",
+      b + " + " + idx + " * " + i32ToString(element.size),
+      indent + "    ", uses);
+  sb.append(indent).append("  }\n");
+  sb.append(indent).append("}\n");
+  finish(b, n);
+}
+
+/**
+ * Emit statements assigning `value`'s flattened form into the slot
+ * variables `slots[base..]`; returns the number of slots consumed.
+ * Unwritten slots keep their zero initializers, which is what an
+ * absent option payload or a shorter variant arm leaves behind.
+ */
+function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
+    slots: GrowableArray<String>, base: i32, indent: String,
+    uses: SynthUses): i32 {
+  if (ty.kind == TyKind.Scalar) {
+    sb.append(indent).append(slots[base]).append(" = ")
+        .append(castToCore(ty.scalar, value)).append(";\n");
+    return 1;
+  }
+  if (ty.kind == TyKind.Enumeration) {
+    sb.append(indent).append(slots[base]).append(" = (").append(value)
+        .append(" as i32);\n");
+    return 1;
+  }
+  if (ty.kind == TyKind.Flags) {
+    sb.append(indent).append(slots[base]).append(" = ((").append(value)
+        .append(" as u32) as i32);\n");
+    return 1;
+  }
+  if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
+    let stage = if (ty.kind == TyKind.Str) "stageString"
+        else "stageByteList";
+    uses.useAbi(stage);
+    uses.stagedAny = true;
+    let p = "p" + i32ToString(uses.nextTmp());
+    let l = "l" + i32ToString(uses.nextTmp());
+    sb.append(indent).append("let (").append(p).append(", ").append(l)
+        .append(") = ").append(stage).append("(").append(value)
+        .append(");\n");
+    sb.append(indent).append(slots[base]).append(" = ").append(p)
+        .append(";\n");
+    sb.append(indent).append(slots[base + 1]).append(" = ").append(l)
+        .append(";\n");
+    return 2;
+  }
+  if (ty.kind == TyKind.ListT) {
+    emitListStaging(sb, ty, value, indent, uses,
+        (buf: String, count: String): void => {
+      sb.append(indent).append(slots[base]).append(" = ").append(buf)
+          .append(";\n");
+      sb.append(indent).append(slots[base + 1]).append(" = ")
+          .append(count).append(";\n");
+    });
+    return 2;
+  }
+  if (ty.kind == TyKind.RecordT) {
+    var consumed = 0;
+    for (var i = 0; i < ty.children.length; i += 1) {
+      consumed += lowerFlatStmts(sb, ty.children[i],
+          value + "." + ty.childNames[i], slots, base + consumed,
+          indent, uses);
+    }
+    return consumed;
+  }
+  if (ty.kind == TyKind.TupleT) {
+    let t = "t" + i32ToString(uses.nextTmp());
+    sb.append(indent).append("let (");
+    for (var i = 0; i < ty.children.length; i += 1) {
+      if (i > 0) { sb.append(", "); }
+      sb.append(t).append("v").append(i32ToString(i));
+    }
+    sb.append(") = ").append(value).append(";\n");
+    var consumed = 0;
+    for (var i = 0; i < ty.children.length; i += 1) {
+      consumed += lowerFlatStmts(sb, ty.children[i],
+          t + "v" + i32ToString(i), slots, base + consumed, indent,
+          uses);
+    }
+    return consumed;
+  }
+  if (ty.kind == TyKind.OptionT) {
+    uses.option = true;
+    let inner = ty.children[0];
+    sb.append(indent).append("if (").append(value).append(" is Some<")
+        .append(zenaTypeOf(inner, uses)).append(">) {\n");
+    sb.append(indent).append("  ").append(slots[base])
+        .append(" = 1;\n");
+    lowerFlatStmts(sb, inner,
+        "(" + value + " as Some<" + zenaTypeOf(inner, uses) + ">).value",
+        slots, base + 1, indent + "  ", uses);
+    sb.append(indent).append("}\n");
+    let total = flatCoreSlots(ty);
+    return (total as GrowableArray<String>).length;
+  }
+  // VariantT: an if chain; every arm writes the discriminant and its
+  // own prefix of the shared payload slots.
+  for (var i = 0; i < ty.children.length; i += 1) {
+    sb.append(indent);
+    if (i > 0) { sb.append("} else "); }
+    sb.append("if (").append(value).append(" is ")
+        .append(ty.childNames[i]).append(") {\n");
+    sb.append(indent).append("  ").append(slots[base]).append(" = ")
+        .append(i32ToString(i)).append(";\n");
+    if (!isVoid(ty.children[i])) {
+      lowerFlatStmts(sb, ty.children[i],
+          "(" + value + " as " + ty.childNames[i] + ").value", slots,
+          base + 1, indent + "  ", uses);
+    }
+  }
+  sb.append(indent).append("}\n");
+  let total = flatCoreSlots(ty);
+  return (total as GrowableArray<String>).length;
+}
 
 /** Emit the body of one registered lift helper. */
 function emitLiftHelper(sb: StringBuilder, entry: LiftEntry,
@@ -915,17 +1312,28 @@ function renderFunc(
     if (wire.kind == TyKind.Unsupported) {
       return "parameter '" + func.params[i].name.name + "': " + wire.reason;
     }
-    if (wire.kind == TyKind.ListT || wire.kind == TyKind.RecordT ||
-        wire.kind == TyKind.VariantT || wire.kind == TyKind.OptionT ||
-        wire.kind == TyKind.ResultT || wire.kind == TyKind.TupleT) {
-      return "an aggregate parameter waits on the interop stages " +
-          "(the flat-lowering half)";
+    let blocked = lowerBlocker(wire);
+    if (blocked != "") {
+      return "parameter '" + func.params[i].name.name + "': " + blocked;
+    }
+    if (flatCoreSlots(wire) == null) {
+      return "parameter '" + func.params[i].name.name +
+          "': its variant payloads join across core types, which " +
+          "waits on the interop stages";
     }
     if (wire.kind != TyKind.Scalar) {
       anyRich = true;
     }
     params.push(wire);
     paramNames.push(camelName(func.params[i].name.name));
+  }
+  var paramFlats = 0;
+  for (let p in params) {
+    paramFlats += (flatCoreSlots(p) as GrowableArray<String>).length;
+  }
+  if (paramFlats > 16) {
+    return "parameters spilling past sixteen core values wait on the " +
+        "interop stages";
   }
   var resultTy = voidTy();
   var hasResult = false;
@@ -1013,7 +1421,12 @@ function renderFunc(
   }
 
   // The raw declaration: staged strings and lists are (ptr, len)
-  // pairs, and a spilled result appends the return area address.
+  // pairs, an aggregate is its flattened core slots, and a spilled
+  // result appends the return area address.
+  let aggregate = (kind: TyKind): boolean =>
+      kind == TyKind.ListT || kind == TyKind.RecordT ||
+      kind == TyKind.VariantT || kind == TyKind.OptionT ||
+      kind == TyKind.TupleT;
   let rawSig = new StringBuilder();
   var rawIndex = 0;
   for (var i = 0; i < params.length; i += 1) {
@@ -1028,6 +1441,14 @@ function renderFunc(
     } else if (params[i].kind == TyKind.Flags) {
       rawSig.append("a").append(i32ToString(i)).append(": u32");
       rawIndex += 1;
+    } else if (aggregate(params[i].kind)) {
+      let slots = flatCoreSlots(params[i]) as GrowableArray<String>;
+      for (var k = 0; k < slots.length; k += 1) {
+        if (k > 0) { rawSig.append(", "); }
+        rawSig.append("s").append(i32ToString(i)).append("_")
+            .append(i32ToString(k)).append(": ").append(slots[k]);
+      }
+      rawIndex += slots.length;
     } else {
       rawSig.append("p").append(i32ToString(i)).append(": i32, l")
           .append(i32ToString(i)).append(": i32");
@@ -1058,18 +1479,8 @@ function renderFunc(
   let wrapSig = new StringBuilder();
   for (var i = 0; i < params.length; i += 1) {
     if (i > 0) { wrapSig.append(", "); }
-    wrapSig.append(paramNames[i]).append(": ");
-    if (params[i].kind == TyKind.Scalar) {
-      wrapSig.append(params[i].scalar);
-    } else if (params[i].kind == TyKind.Enumeration ||
-        params[i].kind == TyKind.Flags) {
-      wrapSig.append(params[i].typeName);
-    } else if (params[i].kind == TyKind.Str) {
-      wrapSig.append("String");
-    } else {
-      uses.fixedArray = true;
-      wrapSig.append("FixedArray<u8>");
-    }
+    wrapSig.append(paramNames[i]).append(": ")
+        .append(zenaTypeOf(params[i], uses));
   }
   var wrapResult = "void";
   if (hasResult) {
@@ -1084,6 +1495,9 @@ function renderFunc(
   sb.append("export function ").append(zenaName).append("(")
       .append(wrapSig.toString()).append("): ").append(wrapResult)
       .append(" {\n");
+  // Per-function: whether THIS wrapper stages anything decides its
+  // trailing releaseStaged().
+  uses.stagedAny = false;
   let callArgs = new StringBuilder();
   var argIndex = 0;
   for (var i = 0; i < params.length; i += 1) {
@@ -1103,12 +1517,36 @@ function renderFunc(
       argIndex += 1;
       continue;
     }
+    if (aggregate(params[i].kind)) {
+      // Zero-initialized slot variables, then the lowering statements:
+      // an untaken option or a shorter variant arm leaves its slots at
+      // zero, which the canonical ABI never reads.
+      let slots = flatCoreSlots(params[i]) as GrowableArray<String>;
+      let slotNames = new GrowableArray<String>();
+      for (var k = 0; k < slots.length; k += 1) {
+        let slotName = "s" + i32ToString(i) + "_" + i32ToString(k);
+        slotNames.push(slotName);
+        let zero = if (slots[k] == "f32" || slots[k] == "f64") "0.0"
+            else "0";
+        sb.append("  var ").append(slotName).append(": ")
+            .append(slots[k]).append(" = ").append(zero).append(";\n");
+      }
+      lowerFlatStmts(sb, params[i], paramNames[i], slotNames, 0, "  ",
+          uses);
+      for (var k = 0; k < slotNames.length; k += 1) {
+        if (k > 0) { callArgs.append(", "); }
+        callArgs.append(slotNames[k]);
+      }
+      argIndex += slotNames.length;
+      continue;
+    }
     let stage = if (params[i].kind == TyKind.Str) {
-      "stringToMemory"
+      "stageString"
     } else {
-      "bytesToMemory"
+      "stageByteList"
     };
     uses.useAbi(stage);
+    uses.stagedAny = true;
     sb.append("  let (p").append(i32ToString(i)).append(", l")
         .append(i32ToString(i)).append(") = ").append(stage)
         .append("(").append(paramNames[i]).append(");\n");
@@ -1129,18 +1567,12 @@ function renderFunc(
   } else {
     sb.append("  let got = ").append(call).append(";\n");
   }
-  // The staged buffers were consumed during the call — a synchronous
-  // lowering copies before returning — so they are dead now. Scalars,
-  // enums and flags were passed by value and staged nothing.
-  for (var i = 0; i < params.length; i += 1) {
-    if (params[i].kind == TyKind.Scalar ||
-        params[i].kind == TyKind.Enumeration ||
-        params[i].kind == TyKind.Flags) {
-      continue;
-    }
-    uses.useAbi("releaseStringArgument");
-    sb.append("  releaseStringArgument(p").append(i32ToString(i))
-        .append(", l").append(i32ToString(i)).append(");\n");
+  // Everything staged was consumed during the call — a synchronous
+  // lowering copies before returning — so the arena's contents are
+  // dead now, wherever in the lowering they were staged from.
+  if (uses.stagedAny) {
+    uses.useAbi("releaseStaged");
+    sb.append("  releaseStaged();\n");
   }
   if (resultSpills) {
     uses.useAbi("freeLifted");

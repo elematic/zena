@@ -600,9 +600,9 @@ world only {
     isTrue(source.contains(
         'declare function upper_raw(p0: i32, l0: i32, ret: i32): void;'),
       'the raw string->string declaration is misflattened:\n' + source);
-    isTrue(source.contains('let (p0, l0) = stringToMemory(input);'),
+    isTrue(source.contains('let (p0, l0) = stageString(input);'),
       'the string argument is not staged:\n' + source);
-    isTrue(source.contains('releaseStringArgument(p0, l0);'),
+    isTrue(source.contains('releaseStaged();'),
       'the staged argument is not released:\n' + source);
     isTrue(source.contains('let out = liftStringAt(ret);'),
       'the spilled string result is not lifted:\n' + source);
@@ -613,7 +613,7 @@ world only {
         'declare function measure_raw(p0: i32, l0: i32): u32;'),
       'a scalar result should not spill:\n' + source);
     // A byte list stages and lifts through its own helpers.
-    isTrue(source.contains('bytesToMemory(data)'),
+    isTrue(source.contains('stageByteList(data)'),
       'the byte-list argument is not staged:\n' + source);
     isTrue(source.contains('liftBytesAt(ret)'),
       'the byte-list result is not lifted:\n' + source);
@@ -708,6 +708,47 @@ world only {
     isTrue(containsName(sectionPayload(bytes, 10),
         'wasi:geo/survey@1.0.0'),
       'the geo interface import is missing');
+  });
+
+  test('a WIT-typed module lowers aggregate parameters into flat slots',
+      (ctx: TestContext): void => {
+    // The mirror of the lift half: an aggregate parameter flattens
+    // into zero-initialized slot variables the wrapper fills — a
+    // record field by field, a variant through an if chain writing
+    // the discriminant and its own arm's prefix of the shared payload
+    // slots, an option leaving its slots at zero when none — with
+    // staged buffers registered in the arena and one releaseStaged()
+    // after the call. A list parameter stages an element buffer and
+    // writes each element at its canonical stride.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:geo/survey`);
+    // point flattens to [f64, f64, i32, i32].
+    isTrue(source.contains(
+        'declare function labelOf_raw(s0_0: f64, s0_1: f64, s0_2: i32, ' +
+        's0_3: i32): u32;'),
+      "the record parameter's raw slots are wrong:\n" + source);
+    isTrue(source.contains('var s0_0: f64 = 0.0;'),
+      'slot variables should be zero-initialized:\n' + source);
+    // The variant's arms share slots: text(string) stages, id(u32)
+    // casts, empty writes only the discriminant.
+    isTrue(source.contains('if (n is NoteText) {'),
+      'the variant lowering chain is missing:\n' + source);
+    isTrue(source.contains('} else if (n is NoteId) {'),
+      'the variant chain should else-if through the cases:\n' + source);
+    // The option wraps its payload staging in the Some arm.
+    isTrue(source.contains('if (n is Some<String>) {'),
+      'the option lowering is missing:\n' + source);
+    // The list parameter stages elements at the string pair stride.
+    isTrue(source.contains('stageBuffer('),
+      'the list parameter does not stage a buffer:\n' + source);
+    isTrue(source.contains('releaseStaged();'),
+      'staged lowerings must release after the call:\n' + source);
+    // finding's payloads join f64 (at: point) against i32 (message:
+    // string), which the flat form cannot spell yet — refused loudly.
+    isTrue(source.contains(
+        'report: parameter \'f\': its variant payloads join across ' +
+        'core types'),
+      'the cross-type join should be refused:\n' + source);
   });
 
   test('a marshaling import lowers with the canonical memory options',
