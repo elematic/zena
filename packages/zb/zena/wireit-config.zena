@@ -51,9 +51,10 @@ export class ScriptConfig {
 }
 
 let isRecognizedKey = (key: String): boolean => {
+  // Keys starting with '#' are comments by convention, like '//'.
   return key == 'command' || key == 'files' || key == 'output' ||
     key == 'dependencies' || key == 'clean' || key == 'service' ||
-    key == 'packageLocks' || key == '//';
+    key == 'packageLocks' || key == '//' || key.startsWith('#');
 };
 
 let stringList = (value: JsonValue, what: String): Array<String> => {
@@ -152,7 +153,9 @@ export class WireitWorkspace {
     }
 
     if (wireitEntry is JsonObject) {
-      if (!(scriptsEntry is String) || scriptsEntry != 'wireit') {
+      // A script run via npm needs a "wireit" scripts entry; one that
+      // exists only as a dependency of other wireit scripts has none.
+      if (scriptsEntry != null && (!(scriptsEntry is String) || scriptsEntry != 'wireit')) {
         throw new ConfigError(
           `script "${where}" has a wireit config but its scripts entry is not "wireit"`,
         );

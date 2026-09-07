@@ -13,11 +13,13 @@ import {BuildOutcome, buildTarget} from './runner.zena';
 import {ScriptRef} from './wireit-config.zena';
 
 /**
- * zb: a wireit-compatible incremental build runner. Usage, from the
- * workspace root:
+ * zb: a wireit-compatible incremental build runner.
  *
- *     zb <script>                  a root-package script
- *     zb <package-dir> <script>    a script in a package
+ *     zb [-C <workspace-root>] <script>                  a root-package script
+ *     zb [-C <workspace-root>] <package-dir> <script>    a script in a package
+ *
+ * The workspace root defaults to the current directory; -C points at a
+ * nested workspace (a directory with its own package.json tree).
  */
 
 let describe = (result: RunResult, key: String): String => {
@@ -42,21 +44,28 @@ let describe = (result: RunResult, key: String): String => {
 
 export let main = (): i32 => {
   let args = getArguments();
-  if (args.length < 2 || args.length > 3) {
-    console.log('usage: zb <script> | zb <package-dir> <script>');
+  var root = '';
+  var next = 1;
+  if (args.length > next + 1 && args[next] == '-C') {
+    root = args[next + 1];
+    next += 2;
+  }
+  let rest = args.length - next;
+  if (rest < 1 || rest > 2) {
+    console.log('usage: zb [-C <workspace-root>] [<package-dir>] <script>');
     return 2;
   }
-  let entry = if (args.length == 2)
-    new ScriptRef('', args[1])
+  let entry = if (rest == 1)
+    new ScriptRef('', args[next])
   else
-    new ScriptRef(args[1], args[2]);
+    new ScriptRef(args[next], args[next + 1]);
 
   var outcome = new BuildOutcome(
     new RunResult(new HashMap<String, StepOutcome>(), EngineState.empty()),
     new GrowableArray<String>(),
   );
   try {
-    outcome = buildTarget('', entry);
+    outcome = buildTarget(root, entry);
   } catch (e) {
     console.log('zb: ' + e.message);
     return 1;

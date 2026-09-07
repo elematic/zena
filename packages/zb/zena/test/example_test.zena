@@ -1,0 +1,79 @@
+import {suite, test} from 'zena:test';
+import {equal, fail, isTrue} from 'zena:assert';
+import {
+  FileType,
+  listDir,
+  readFile,
+  readFileBytes,
+  writeFile,
+  writeFileBytes,
+} from 'zena:fs';
+import {monotonic} from 'zena:time';
+import {RunResult, StepSource, Succeeded} from 'workflow:engine';
+import {StepKey} from 'workflow:step';
+import {ensureDir, withRoot} from '../fs-util.zena';
+import {buildTarget} from '../runner.zena';
+import {ScriptRef} from '../wireit-config.zena';
+
+/**
+ * Builds the checked-in example workspace (packages/zb/example) after
+ * copying it to /tmp. The hello-wasm package is excluded here: its
+ * command references the zena-cli binary by a path that only holds
+ * inside the repo checkout, and the README covers building it in
+ * place.
+ */
+
+let copyDir = (from: String, to: String): void => {
+  ensureDir(to);
+  for (let entry in listDir(from)) {
+    // Skip dot entries and any build state from manual runs of the
+    // example in the checkout.
+    if (entry.name == '.' || entry.name == '..' || entry.name == '.zb' ||
+        entry.name == 'out') {
+      continue;
+    }
+    let src = from + '/' + entry.name;
+    let dst = to + '/' + entry.name;
+    if (entry.fileType == FileType.Directory) {
+      copyDir(src, dst);
+    } else {
+      writeFileBytes(dst, readFileBytes(src));
+    }
+  }
+};
+
+let sourceOf = (result: RunResult, key: String): StepSource => {
+  let outcome = result.outcomeOf(new StepKey(key));
+  if (outcome is Succeeded) {
+    return outcome.source;
+  }
+  fail('step did not succeed: ' + key);
+};
+
+export let tests = suite('zb example workspace', (): void => {
+  test('the site builds, stays fresh, and rebuilds incrementally', () => {
+    let root = '/tmp/zb-example-' + i64ToString(monotonic() as i64);
+    copyDir('packages/zb/example', root);
+    let entry = new ScriptRef('site', 'build');
+
+    let first = buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+    isTrue(sourceOf(first.result, 'greeting:build') == StepSource.Ran);
+    isTrue(sourceOf(first.result, 'site:build') == StepSource.Ran);
+    equal(
+      readFile(withRoot(root, 'site/out/index.html')),
+      '<!doctype html>\n<h1>zb example site</h1>\n<pre>\nHello from zb!\n</pre>\n',
+    );
+
+    let second = buildTarget(root, entry);
+    isTrue(sourceOf(second.result, 'greeting:build') == StepSource.Fresh);
+    isTrue(sourceOf(second.result, 'site:build') == StepSource.Fresh);
+
+    writeFile(withRoot(root, 'greeting/src/more.txt'), 'A second line.\n');
+    let third = buildTarget(root, entry);
+    isTrue(third.result.allSucceeded);
+    isTrue(sourceOf(third.result, 'greeting:build') == StepSource.Ran);
+    isTrue(sourceOf(third.result, 'site:build') == StepSource.Ran);
+    isTrue(readFile(withRoot(root, 'site/out/index.html')).contains('A second line.'));
+  });
+});

@@ -74,9 +74,28 @@ let cleanOutputs = (root: String, config: ScriptConfig, ctx: RunContext): void =
 };
 
 /**
+ * The PATH prefix npm would give the script: the package's own
+ * node_modules/.bin and the workspace root's, relative to the package
+ * directory the command runs in.
+ */
+let binPathPrefix = (packageDir: String): String => {
+  if (packageDir == '') {
+    return 'node_modules/.bin';
+  }
+  let up = new StringBuilder();
+  for (let segment in packageDir.split('/')) {
+    if (segment != '') {
+      up.append('../');
+    }
+  }
+  return 'node_modules/.bin:' + up.toString() + 'node_modules/.bin';
+};
+
+/**
  * Runs one script's command and collects its outputs. The child runs
- * through `sh -c` in the package directory, like wireit through npm.
- * Waiting is synchronous, so scripts execute one at a time for now.
+ * through `sh -c` in the package directory with node_modules/.bin on
+ * PATH, like wireit through npm. Waiting is synchronous, so scripts
+ * execute one at a time for now.
  */
 export let runScript = async (
   root: String,
@@ -87,7 +106,10 @@ export let runScript = async (
   let command = config.command;
   if (command != null) {
     let cwd = withRoot(root, config.ref.packageDir);
-    let result = runIn(['sh', '-c', command], cwd);
+    let wrapped =
+      'export PATH="' + binPathPrefix(config.ref.packageDir) + ':$PATH"; ' +
+      command;
+    let result = runIn(['sh', '-c', wrapped], cwd);
     if (!result.succeeded()) {
       throw new Error(
         `script "${refKey(config.ref)}" failed (exit ${i32ToString(result.exitCode)}): ${command}\n` +
