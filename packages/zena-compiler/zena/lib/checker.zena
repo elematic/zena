@@ -6288,6 +6288,29 @@ let isReferenceType = (type: Type): boolean => {
   };
 };
 
+/**
+ * What a type is made of, with aliases peeled — including `distinct`
+ * and `opaque` ones, which change who may name a value and not how it
+ * is represented. Only questions about representation may use this;
+ * assignability and identity must keep the alias.
+ *
+ * The walk is bounded, and stops at an alias still being resolved,
+ * because a self-referential alias would otherwise spin here.
+ */
+let representationOf = (t: Type): Type => {
+  var current = t;
+  var depth = 0;
+  while (depth < 8) {
+    let step = current;
+    if (!(step is TypeAliasType) || step.resolving) {
+      return step;
+    }
+    current = step.target;
+    depth += 1;
+  }
+  return current;
+};
+
 let isNullableType = (t: Type): boolean => match (t) {
   case NullType: true
   case UnionT as u: {
@@ -6391,6 +6414,20 @@ let isValidCast = (sourceType: Type, targetType: Type): boolean => {
 
   // Primitive → Reference (not an extension on primitive): INVALID
   if (isValuePrimitive(sourceType) && isReferenceType(targetType)) {
+    return false;
+  }
+
+  // Reference → Primitive: INVALID, the mirror of the rule above. A
+  // reference holds no scalar to reinterpret, so the value has to be
+  // read out of whatever holds it. This is a question about
+  // representation, so it looks through aliases: `distinct type Name =
+  // String` is as much a reference as `String`. Two things that look
+  // like they would be caught are not — an extension class over a
+  // primitive is not a reference type (`isReferenceType` asks its
+  // onType), and an enum is neither side — so unwrapping a distinct
+  // type over a primitive and `Opcode.return_ as i32` are untouched.
+  if (isReferenceType(representationOf(sourceType)) &&
+      isValuePrimitive(representationOf(targetType))) {
     return false;
   }
 
@@ -10806,6 +10843,12 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       } else if (isValuePrimitive(sourceType) && !isValuePrimitive(targetType)) {
         errorMsg = "Cannot cast primitive type '" + typeToString(sourceType) + "' to reference type '" + typeToString(targetType) + "'. " +
                    "Use string concatenation or a conversion function instead.";
+      } else if (isReferenceType(representationOf(sourceType)) &&
+          isValuePrimitive(representationOf(targetType))) {
+        errorMsg = "Cannot cast reference type '" + typeToString(sourceType) + "' to primitive type '" + typeToString(targetType) + "'. " +
+                   "A reference holds no scalar to reinterpret; read the value out of the " +
+                   "object holding it — for a boxed primitive, '(x as Box<" +
+                   typeToString(targetType) + ">).value'.";
       }
       ctx.error(
         errorMsg,

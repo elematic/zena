@@ -1,0 +1,50 @@
+// @mode: check
+
+// A reference holds no scalar to reinterpret, so casting one to a
+// primitive is rejected — the mirror of the primitive-to-reference rule
+// in invalid-casts.zena. It used to be accepted and lowered as an
+// unwrap of `Box<target>`, which trapped for every reference that was
+// not that exact box.
+
+import {Box} from 'zena:box';
+
+class Counted {
+  count: i32;
+  new(this.count);
+}
+
+enum Color { Red, Green }
+
+distinct type Meters = f64;
+distinct type Name = String;
+
+export let main = () => {
+  let s = 'hi';
+  let n = s as i32; // @error: Cannot cast reference type
+
+  let c = new Counted(3);
+  let m = c as f64; // @error: Cannot cast reference type
+
+  let a: anyref = c;
+  let b = a as i32; // @error: Cannot cast reference type
+
+  // Even the box the old lowering guessed at has to be named now.
+  let boxed = new Box(1.5);
+  let unboxed = boxed as f64; // @error: Cannot cast reference type
+  let named = boxed.value;
+
+  // An alias renames a representation, it does not change one, so a
+  // distinct type over a reference is caught the same way.
+  let who = s as Name;
+  let w = who as i32; // @error: Cannot cast reference type
+  let backwards = s as Meters; // @error: Cannot cast reference type
+
+  // Still legal: a distinct type's representation, an enum's scalar,
+  // and primitive-to-primitive conversion.
+  let dist = 5.0 as Meters;
+  let back = dist as f64;
+  let tag = Color.Red as i32;
+  let widened = 1 as f64;
+
+  return 0;
+};

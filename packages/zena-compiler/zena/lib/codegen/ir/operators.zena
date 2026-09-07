@@ -18,16 +18,16 @@ import {
 import {
   AnyRefType, BooleanType, ClassType, EqRefType, F32Type, F64Type,
   I32Type, I64Type, InterfaceType, NullType, Type, TypeParameterType,
-  U32Type, U64Type, UnionType, baseType, instantiateClassType,
+  U32Type, U64Type, UnionType, baseType,
   typeToString, isNarrowIntType, isUnsignedIntType, narrowIntBits,
   isVoidOrNeverType,
 } from '../../types.zena';
 import {
-  ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, isRefValType, valTypeEquals,
+  ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, isRefValType, valTypeEquals,
 } from '../wasm.zena';
 import { eraseTypeParameters, getNonNullableType, typeToValTypeWithSub } from '../type-mapping.zena';
-import { getClassKey, parseI64OrU64Literal } from '../codegen-utils.zena';
-import { IrOp, IrRefField } from './ir.zena';
+import { parseI64OrU64Literal } from '../codegen-utils.zena';
+import { IrOp } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
@@ -850,30 +850,13 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
   if (isRefValType(srcVt) &&
       (dstVt is ValTypeI32 || dstVt is ValTypeI64 ||
        dstVt is ValTypeF32 || dstVt is ValTypeF64)) {
-    // Unboxing cast: `(erased as f64)` unwraps the Box<T> — the wasm
-    // scalar type is ambiguous (boolean and i32 share i32), so the
-    // Box specialization comes from the CHECKED target type.
-    let semOpt = cx.substitutedNodeType(expr);
-    if (semOpt == null || cx.wasm.boxClass == null) {
-      bail(cx, 'unbox cast type');
-    }
-    let semT = baseType(semOpt);
-    let typeArgs = new GrowableArray<Type>();
-    typeArgs.push(semT);
-    let boxCt = instantiateClassType(cx.wasm.boxClass as ClassType, typeArgs);
-    let infoOpt = if (let (true, info) = cx.wasm.classInfos.get(getClassKey(boxCt))) info else null;
-    if (infoOpt == null) {
-      bail(cx, 'unbox cast box class');
-    }
-    let boxStruct = infoOpt.structType;
-    if (boxStruct.fields.length < 2 || boxStruct.fields[1].name == null) {
-      bail(cx, 'unbox cast box shape');
-    }
-    let boxVt = new ValTypeRef(boxStruct) as ValType;
-    let boxed = cx.b.emit(IrOp.ref_cast, boxVt, value, cx.b.internType(boxVt));
-    let fieldRef = cx.b.addRef(new IrRefField(boxStruct, boxStruct.fields[1].name as String));
-    let raw = cx.b.emit(IrOp.struct_get, boxStruct.fields[1].type, boxed, fieldRef);
-    return normalizeNarrow(cx, scalarConvert(cx, raw, dstVt), narrowTarget);
+    // The checker rejects reference-to-primitive casts, so a value of
+    // reference shape reaching a scalar destination is a compiler bug
+    // rather than something to guess a representation for. This used
+    // to unwrap a `Box<T>` chosen from the target type, which made
+    // `"hi" as i32` compile and trap on a class the program never
+    // named.
+    bail(cx, 'reference operand for a scalar cast');
   }
   return normalizeNarrow(cx, scalarConvert(cx, value, dstVt), narrowTarget);
 };

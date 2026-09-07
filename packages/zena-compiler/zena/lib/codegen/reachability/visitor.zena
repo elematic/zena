@@ -653,26 +653,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     this.pass.notePendingMemberReach(getClassMethodKey(getClassKey(ct), "hashCode"));
   }
 
-  noteUnboxCast(asN: AsExpression, model: SemanticModel,
-      resolveType: (t: Type) => Type): void {
-    if (this.pass.wasm.boxClass == null) { return; }
-    let tgtOpt = model.getNodeType(asN);
-    let srcOpt = model.getNodeType(asN.expression);
-    if (tgtOpt == null || srcOpt == null) { return; }
-    let semT = baseType(resolveType(tgtOpt));
-    let dstVt = typeToValType(this.pass.wasm, semT);
-    let dstScalar = dstVt is ValTypeI32 || dstVt is ValTypeI64 ||
-        dstVt is ValTypeF32 || dstVt is ValTypeF64;
-    if (!dstScalar) { return; }
-    let srcVt = typeToValType(this.pass.wasm, resolveType(srcOpt));
-    if (!isRefValType(srcVt)) { return; }
-    let typeArgs = new GrowableArray<Type>();
-    typeArgs.push(semT);
-    let boxCt = instantiateClassType(this.pass.wasm.boxClass as ClassType, typeArgs);
-    this.pass.typeLowerer.discoverType(boxCt, model);
-    this.pass.reachablyNamedClasses.add(getClassKey(boxCt) as String);
-  }
-
   registerLiterals(root: Node): void {
     walkEnter(root, (n: Node) => {
       if (n is StringLiteral) {
@@ -770,7 +750,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         if (t != null) {
           this.pass.typeLowerer.discoverType(resolveType(t), model);
         }
-        this.noteUnboxCast(n, model, resolveType);
       }
       if (n is BinaryExpression) {
         this.noteEqualityUse(n, model, resolveType);
@@ -1652,9 +1631,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     walkEnter(root, (n: Node) => {
       if (n is ThrowExpression || n is TryExpression) {
         this.pass.noteExceptionInfra(model);
-      }
-      if (n is AsExpression) {
-        this.noteUnboxCast(n, model, resolveType);
       }
       if (n is BinaryExpression) {
         this.noteEqualityUse(n, model, resolveType);
