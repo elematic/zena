@@ -56,12 +56,12 @@ let dropIt = (f: Scoped<Future<i32>>): i32 => {
   return 0; // @error: must be consumed
 };
 
-// Inferring a container's element type from a scoped argument still
-// escapes: closing it is the `scoped T` opt-in, which will make an
-// unannotated T reject second-class arguments.
+// Inferring a container's element type from a scoped argument is the
+// bare-parameter rejection: an unrestricted T may be stored, copied,
+// or captured, and a second-class argument may do none of those.
 let box = <T>(x: T): FixedArray<T> => [x];
 let stashInBox = (r: Borrow<Res>): i32 => {
   let fut = read(r);
-  let cell = box(fut); // @missing-error: scoped type argument
+  let cell = box(fut); // @error: may not bind the unrestricted type parameter
   return cell.length;
 };

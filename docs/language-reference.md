@@ -4502,6 +4502,13 @@ first-class `Future<T>` is accepted where a `Scoped<Future<T>>` is
 expected; there is no conversion back, and casts to or from `Scoped`
 are rejected like the handle casts.
 
+A second-class type (a scoped value, or a restricted `Borrow<R>`) may
+not bind an ordinary generic type parameter: the generic body may
+store, copy, or capture a `T`, and a second-class value may do none of
+those, so `box(fut)` for `box = <T>(x: T) => …` is an error. The
+`scoped T` parameter modifier that will admit such arguments is
+planned.
+
 A scoped value follows the second-class storage rules — no fields,
 container elements, record or tuple members, no closure capture — and
 returning one requires a borrow parameter to derive from, exactly as

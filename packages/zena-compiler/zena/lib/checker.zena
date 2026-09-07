@@ -4312,6 +4312,34 @@ let rejectSecondClassTypeArguments = (
 };
 
 /**
+ * Rejects a second-class type bound to an unrestricted function type
+ * parameter (ownership.md §"Scoped type arguments"). The generic body
+ * was checked assuming a `T` may be stored, copied, and captured, so a
+ * borrow or scoped argument flowing in escapes every rule the value
+ * carries. Class type parameters are covered by the storage-position
+ * rule; this is the function half.
+ */
+let rejectSecondClassFunctionTypeArgs = (
+  ctx: CheckerContext,
+  typeParams: Array<TypeParameterType>,
+  typeArgs: GrowableArray<Type>,
+  loc: SourceLocation | null
+): void => {
+  for (var i = 0; i < typeParams.length && i < typeArgs.length; i += 1) {
+    if (!typeContainsSecondClass(typeArgs[i])) { continue; }
+    ctx.error(
+      "Type '" + typeToString(typeArgs[i]) + "' may not bind the unrestricted " +
+      "type parameter '" + typeParams[i].name + "': the generic body may " +
+      "store, copy, or capture a '" + typeParams[i].name + "', and a " +
+      "second-class value may do none of those. The parameter would have to " +
+      "be declared 'scoped " + typeParams[i].name + "'.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
+};
+
+/**
  * The derivation rule for a returned second-class value: it must derive
  * from exactly one borrow the function was handed. See ownership.md
  * §"Derived borrows".
@@ -18511,6 +18539,7 @@ let checkCallExpressionInner = (
             if (anyTypeParamConstrained(typeParams)) {
               applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
             }
+            rejectSecondClassFunctionTypeArgs(ctx, typeParams, typeArgs, loc);
             // Substitute type parameters in params and return type.
             let subParams = new GrowableArray<Type>();
             for (let param in effectiveFt.parameters) {
@@ -18588,6 +18617,7 @@ let checkCallExpressionInner = (
             if (anyTypeParamConstrained(typeParams)) {
               applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
             }
+            rejectSecondClassFunctionTypeArgs(ctx, typeParams, typeArgs, loc);
             // Substitute type parameters in params and return type.
             let subParams = new GrowableArray<Type>();
             for (let param in effectiveFt.parameters) {
