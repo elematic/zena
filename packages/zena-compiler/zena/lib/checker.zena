@@ -8268,6 +8268,24 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       if (isTail) {
         checkTailReturnContext(ctx, argument, loc);
       }
+      let tailAdopt = isTail && ctx.asyncFutureType != null;
+      if (tailAdopt && argument != null) {
+        // `tail return f()` in an async body ADOPTS: the frame's
+        // future settles from the callee's, so the operand must be
+        // the declared Future<T> itself, not the value type
+        // (async.md §8).
+        let adoptTarget = ctx.asyncFutureType as Type;
+        let argType = checkExpression(ctx, argument, adoptTarget);
+        if (!(argType is ErrorType) &&
+            !isAssignableTo(ctx, argType, adoptTarget)) {
+          ctx.error(
+            "Type mismatch: 'tail return' in an async function adopts a '" +
+            typeToString(adoptTarget) + "', got '" +
+            typeToString(argType) + "'.",
+            DiagnosticCode.TypeMismatch, loc);
+        }
+        return;
+      }
       let expectedReturn = ctx.returnType;
       if (ctx.yieldType != null && argument != null) {
         // Generators complete via bare `return;` or falling off the end;
@@ -9086,10 +9104,6 @@ let checkTailReturnContext = (
   if (ctx.yieldType != null) {
     ctx.error(
       "'tail return' is not allowed in a generator: 'return' there ends the iteration rather than returning from a frame.",
-      DiagnosticCode.TypeMismatch, loc);
-  } else if (ctx.asyncFutureType != null) {
-    ctx.error(
-      "'tail return' is not allowed in an async function: 'return' there completes the future rather than returning from a frame.",
       DiagnosticCode.TypeMismatch, loc);
   } else if (ctx.inConstructor) {
     ctx.error(

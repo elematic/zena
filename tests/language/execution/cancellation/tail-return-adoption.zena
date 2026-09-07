@@ -1,0 +1,74 @@
+// @mode: run
+// @result: 0
+
+// Cancellation delivery through async tail returns (async.md §8):
+// a checkpoint before each callee ramp keeps a pre-cancelled scope
+// from grinding through the descent, and a cancel while parked on
+// the base case propagates through the adoption chain to the root.
+
+import {
+  Future, Completer, CancelScope, drainMicrotasks,
+} from "zena:async";
+import { Error } from "zena:error";
+
+var log = "";
+var entered = 0;
+var gate: Completer<i32> = new Completer<i32>();
+
+let probe = async (f: Future<i32>): Future<void> => {
+  try {
+    let v = await f;
+    log = log + "v";
+  } cancel {
+    log = log + "C";
+  } catch (e) {
+    log = log + "e";
+  }
+};
+
+async function base(): Future<i32> {
+  return await gate.future;
+}
+
+async function countdown(n: i32): Future<i32> {
+  entered += 1;
+  if (n == 0) {
+    tail return base();
+  }
+  tail return countdown(n - 1);
+}
+
+export let main = (): i32 => {
+  // Pre-cancelled: the first tail return checkpoint raises before
+  // the second ramp ever runs.
+  log = "";
+  entered = 0;
+  let s1 = new CancelScope();
+  var f1: Future<i32> = Future.of(0);
+  s1.run(() => {
+    s1.cancel();
+    f1 = countdown(1000);
+  });
+  probe(f1);
+  drainMicrotasks();
+  if (entered != 1) { return 1; }
+  if (log != "C") { return 2; }
+
+  // Parked on the base case: a cancel lands at the leaf and
+  // propagates through the adoption chain to the root future.
+  log = "";
+  entered = 0;
+  gate = new Completer<i32>();
+  let s2 = new CancelScope();
+  var f2: Future<i32> = Future.of(0);
+  s2.run(() => {
+    f2 = countdown(50);
+  });
+  probe(f2);
+  drainMicrotasks();
+  if (entered != 51) { return 3; }
+  s2.cancel();
+  drainMicrotasks();
+  if (log != "C") { return 4; }
+  return 0;
+};

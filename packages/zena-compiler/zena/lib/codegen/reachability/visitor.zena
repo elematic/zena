@@ -1071,6 +1071,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.queueExplicitCtor(futureType);
       this.queuePrivateMethod(futureType, ':complete');
       this.queuePrivateMethod(futureType, ':fail');
+      // `tail return` adoption (async.md §8): like valueOrThrow and
+      // drainMicrotasks below, the split pass reaches this by name
+      // with no call node to find, and whether THIS function adopts
+      // is not worth an AST scan — one small method per frame future.
+      this.queuePrivateMethod(futureType, ':adoptFrom');
       // The cancellation machinery is queued only when a reached body
       // can cause a cancellation (the whole-program gate). The frame
       // future is recorded either way, so a cause discovered in a
@@ -1143,6 +1148,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   queueCancellationMachinery(futureType: ClassType, model: SemanticModel): void {
     this.queuePrivateMethod(futureType, ':cancelComplete');
     this.queueStdlibFunction('zena:async', 'currentScope');
+    // The checkpoint an async `tail return` emits before its callee's
+    // eager ramp (async.md §8) — by name, like currentScope.
+    this.queueStdlibFunction('zena:async', 'checkCancellation');
     let scopeCt = this.cancelScopeType();
     if (scopeCt != null) {
       let sct = scopeCt as ClassType;

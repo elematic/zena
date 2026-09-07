@@ -930,11 +930,16 @@ Implementation notes, each load-bearing:
   user code, so a settle may walk the whole adoption chain in one
   turn (`completeWith` in section 2 is this primitive). This is what
   actually deletes the per-level microtask.
-- **Chains must collapse.** Tail recursion via adoption otherwise
-  trades O(n) frames for an O(n) future chain — the leak naive
-  promise-adoption implementations had. Adopting a future that is
-  itself adopting points at the root (path shortening), making deep
-  tail recursion flat in frames AND futures.
+- **Chains settle iteratively, and stay O(depth) until they do.**
+  The settle walks the adoption chain in a loop (deep recursion must
+  not grow the stack at settle time), but the in-flight chain holds
+  one future per level: true path-shortening collapse would skip
+  settling intermediates that other code may hold, so it needs
+  escape information this design does not assume. And the DESCENT is
+  bounded by the native stack regardless — ramps are eager and
+  synchronous, so each recursion level is a real call frame until the
+  leaf parks; adoption removes the O(n) resume hops and frame
+  objects, not the descent depth.
 - **Adopted frames deregister from their scope.** Ramps register
   frames so `cancel` can wake them; a frame that exited by adoption
   would otherwise be one dead wake per level on cancellation —

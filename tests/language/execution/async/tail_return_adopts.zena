@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 7
+
+// tail return in an async body adopts (async.md §8): the frame
+// settles its future from the callee's with no resume and no
+// per-level microtask, and a deep tail-recursive descent stays flat.
+
+import { Future, Completer, runFuture } from "zena:async";
+
+var gate: Completer<i32> = new Completer<i32>();
+
+async function base(): Future<i32> {
+  return await gate.future;
+}
+
+async function countdown(n: i32): Future<i32> {
+  if (n == 0) {
+    tail return base();
+  }
+  tail return countdown(n - 1);
+}
+
+export let main = (): i32 => {
+  gate = new Completer<i32>();
+  let f = countdown(500);
+  gate.complete(7);
+  return runFuture(f);
+};

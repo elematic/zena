@@ -73,6 +73,7 @@ export symbol valueOrThrow;
  */
 export symbol complete;
 export symbol fail;
+export symbol adoptFrom;
 export symbol tryComplete;
 export symbol tryFail;
 export symbol cancelComplete;
@@ -103,6 +104,11 @@ export class Future<T> {
   var #state = FutureState.Pending;
   var #value: Box<T> | null = null;
   var #error: Error | null = null;
+  /** The future adopting this one's outcome (`tail return`,
+   * async.md §8): settled synchronously, in this turn, when this
+   * settles. One slot — a frame adopts exactly the future its tail
+   * return evaluated. */
+  var #adopter: Future<T>? = null;
   /** The registered waiters: null, a single Waiter — the overwhelmingly
    * common case, an awaited future has exactly one frame parked on
    * it — or a list once a second arrives. One field, discriminated on
@@ -284,6 +290,7 @@ export class Future<T> {
     this.#state = FutureState.Resolved;
     this.#value = new Box<T>(value);
     this.#notify();
+    this.#propagate();
     return true;
   }
 
@@ -302,6 +309,7 @@ export class Future<T> {
     this.#state = FutureState.Rejected;
     this.#error = error;
     this.#notify();
+    this.#propagate();
     return true;
   }
 
@@ -321,6 +329,54 @@ export class Future<T> {
     }
     this.#state = FutureState.Cancelled;
     this.#notify();
+    this.#propagate();
+  }
+
+  /**
+   * Adopts `src`'s eventual outcome as this future's own — the
+   * `tail return` primitive (async.md §8). When `src` settles, this
+   * future settles the same way, in the same turn: internal chaining
+   * runs no user code, so the always-async rule (which governs
+   * callbacks) is undisturbed, and the per-level resume and queue
+   * hop that `return await` pays are gone.
+   */
+  [adoptFrom](src: Future<T>): void {
+    if (!(this.#state == FutureState.Pending)) {
+      throw new Error('Future already completed');
+    }
+    if (!(src.#state == FutureState.Pending)) {
+      this.#copySettle(src);
+      this.#propagate();
+      return;
+    }
+    if (src.#adopter != null) {
+      throw new Error('Future already adopted');
+    }
+    src.#adopter = this;
+  }
+
+  /** Copies a settled future's outcome in and wakes waiters. Does
+   * not propagate: #propagate's loop owns the chain. */
+  #copySettle(src: Future<T>): void {
+    this.#state = src.#state;
+    this.#value = src.#value;
+    this.#error = src.#error;
+    this.#notify();
+  }
+
+  /** Settles the adoption chain, iteratively: deep tail recursion
+   * settles a deep chain in one turn without growing the stack. */
+  #propagate(): void {
+    var src: Future<T> = this;
+    while (true) {
+      let a = src.#adopter;
+      if (a == null) {
+        return;
+      }
+      src.#adopter = null;
+      a.#copySettle(src);
+      src = a;
+    }
   }
 
   /**

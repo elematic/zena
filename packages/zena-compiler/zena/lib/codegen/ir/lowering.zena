@@ -2530,6 +2530,37 @@ export final class FunctionLowerer {
   }
 
   /**
+   * `tail return f()` in an async body (async.md §8): the frame's
+   * future ADOPTS the callee's. Lowered as a checkpoint (before the
+   * callee's eager ramp — a tail-recursive descent is one synchronous
+   * cascade, and this is its only cancellation delivery point), the
+   * call, and a `ret` of the callee's future that the split pass
+   * rewrites into an adoption instead of a completion
+   * (`IrBody.adoptReturns`).
+   */
+  #lowerAdoptReturn(call: CallExpression): void {
+    if (this.#cx().finallyScopes.length > 0) {
+      this.#bail('tail return owes a finalizer');
+    }
+    if (this.wasm.scopeCancellationActive) {
+      let ck = this.wasm.getStdlibFunc('zena:async', 'checkCancellation');
+      if (ck == null) {
+        this.#bail('async tail return: checkCancellation was not reached');
+      }
+      let idx = this.b.pushArgList(new GrowableArray<i32>());
+      this.b.emitVoid(IrOp.call, idx,
+          this.b.addRef(new IrRefFunc(ck as WasmFunction)));
+    }
+    let value = this.#lowerCall(call);
+    if (!this.#cx().reachable) {
+      this.#bail('tail return call left the function');
+    }
+    let ret = this.b.ret(value);
+    this.b.body.adoptReturns.add(ret);
+    this.#cx().reachable = false;
+  }
+
+  /**
    * The type a `return e` must conform to. Normally the function's
    * single wasm result; in presplit-async mode the awaited-away value
    * type `T` of the declared `Future<T>` instead (§3: the split pass
@@ -2560,7 +2591,11 @@ export final class FunctionLowerer {
     if (argument == null || !(argument is CallExpression)) {
       this.#bail('tail return operand is not a call');
     }
-    if (this.presplitGenerator || this.presplitAsync) {
+    if (this.presplitAsync) {
+      this.#lowerAdoptReturn(argument as CallExpression);
+      return;
+    }
+    if (this.presplitGenerator) {
       this.#bail('tail return in a suspending body');
     }
     if (this.#cx().finallyScopes.length > 0) {

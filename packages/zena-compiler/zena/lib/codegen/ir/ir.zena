@@ -90,6 +90,7 @@
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
 import { HashMap } from 'zena:map';
+import { HashSet } from 'zena:set';
 import { ValType, WasmType, WideArithOpcode } from '../wasm.zena';
 import { WasmStruct, WasmFunction, WasmGlobal, WasmTag } from '../wasm-module.zena';
 
@@ -622,6 +623,15 @@ export final class IrBody {
    * they synthesize.
    */
   tryJoin = new HashMap<i32, i32>();
+
+  /**
+   * The `ret` instructions that ADOPT rather than complete: a
+   * `tail return f()` in an async body returns the callee's future,
+   * and the split pass settles the frame's future from it
+   * (async.md §8) instead of completing with a value. Instruction
+   * ids are stable through the split, like `tryJoin`'s.
+   */
+  adoptReturns = new HashSet<i32>();
 
   instCount(): i32 {
     return this.opcode.length;

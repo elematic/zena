@@ -508,6 +508,7 @@ let prepareOne = (
   let name = funcDisplayName(func);
   let completeFn = methodOf(wasm, fKey, ':complete', name);
   let failFn = methodOf(wasm, fKey, ':fail', name);
+  let adoptFn = methodOf(wasm, fKey, ':adoptFrom', name);
   let futureCtor = methodOf(wasm, fKey, '<constructor>', name);
 
   // The cancellation machinery, present only when the program can
@@ -797,7 +798,7 @@ let prepareOne = (
   let rampBody = buildRamp(func, frame, futureInfo, futureCtor, stepFunc,
       entryParamIds, sm, fatPtr, vtableGlobal);
   let stepBody = buildStepBody(presplit, cfg, frame, futureStruct, spilled,
-      pcOfBlock, dTargets, subscribeOf, hopTerms, scheduleFn, completeFn,
+      pcOfBlock, dTargets, subscribeOf, hopTerms, scheduleFn, completeFn, adoptFn,
       failFn, sm, resumeOf, shieldedAwaits,
       shieldedResumes, shieldedResumeFuture, shieldFn,
       valueVt, fatPtr,
@@ -909,6 +910,7 @@ let buildStepBody = (
   hopTerms: HashSet<i32>,
   scheduleFn: WasmFunction | null,
   completeFn: WasmFunction,
+  adoptFn: WasmFunction,
   failFn: WasmFunction,
   sm: ScopeMachinery | null,
   resumeTargets: Array<i32>,
@@ -1467,8 +1469,19 @@ let buildStepBody = (
           internVt(body, new ValTypeRef(futureStruct)), weakFut, -1);
       rebuilt.push(fut);
       body.instBlock[fut] = blockId;
+      let adopts = body.adoptReturns.has(term);
       let callIdx = body.extra.length;
-      if (valueVt == null) {
+      if (adopts) {
+        // `tail return f()`: settle the frame's future FROM the
+        // callee's (async.md §8) — the value is the future itself,
+        // present at every T.
+        if (retVal < 0) {
+          throw new Error('async split: adopting return without a future');
+        }
+        body.extra.push(2);
+        body.extra.push(fut);
+        body.extra.push(retVal);
+      } else if (valueVt == null) {
         body.extra.push(1);
         body.extra.push(fut);
       } else {
@@ -1480,7 +1493,8 @@ let buildStepBody = (
         body.extra.push(retVal);
       }
       let call = rawInst(body, IrOp.call, -1, callIdx,
-          addRawRef(body, new IrRefFunc(completeFn)));
+          addRawRef(body, new IrRefFunc(
+              if (adopts) adoptFn else completeFn)));
       rebuilt.push(call);
       body.instBlock[call] = blockId;
       body.a[term] = -1;
