@@ -3476,12 +3476,50 @@ export final class FunctionLowerer {
     if (!(srcType is ClassType) || !(tgtType is InterfaceType)) {
       this.#bail('interface adaptation shape');
     }
+    if (ia.sourceNullable) {
+      return this.#packInterfaceNullable(value, srcType, tgtType);
+    }
     return this.#packInterface(value, srcType,
         tgtType);
   }
 
   #packInterface(value: i32, ct: ClassType, it: InterfaceType): i32 {
     return this.#cx().packInterface(value, ct, it);
+  }
+
+  /**
+   * The pack for a source that can be null (`C | null` consumed as
+   * `I | null`): packing a null instance would build a fat pointer that
+   * is not itself null, and the consumer's `== null` tests the pointer.
+   * So null branches around the pack and produces a null fat pointer.
+   */
+  #packInterfaceNullable(value: i32, ct: ClassType, it: InterfaceType): i32 {
+    if (!isRefValType(this.#valueType(value))) {
+      this.#bail('nullable interface adaptation operand');
+    }
+    let isNull = this.b.emit(
+        IrOp.ref_is_null, new ValTypeI32() as ValType, value, -1);
+    let nullB = this.b.newBlock();
+    let packB = this.b.newBlock();
+    let mergeB = this.b.newBlock();
+    this.b.brIf(isNull, nullB, this.#noArgs(), packB, this.#noArgs());
+
+    this.b.switchTo(packB);
+    let packed = this.#packInterface(this.#strippedNonNull(value), ct, it);
+    let packedVt = this.#valueType(packed);
+    if (!(packedVt is ValTypeRef)) {
+      this.#bail('nullable interface adaptation result');
+    }
+    let mergedVt = new ValTypeRefNull(packedVt.target) as ValType;
+    let resultParam = this.b.blockParam(mergeB, mergedVt);
+    this.b.br(mergeB, this.#oneArg(packed));
+
+    this.b.switchTo(nullB);
+    this.b.br(mergeB, this.#oneArg(this.#nullDefault(mergedVt)));
+
+    this.b.switchTo(mergeB);
+    this.#cx().reachable = true;
+    return resultParam;
   }
 
   #lowerExpressionDispatch(expr: Expression): i32 {

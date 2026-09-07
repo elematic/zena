@@ -197,8 +197,14 @@ export final class RecordAdaptation {
 export final class InterfaceAdaptation {
   source: ClassType;
   target: InterfaceType;
-  
-  new(this.source, this.target);
+  /**
+   * The adapted expression can be null (`C | null` flowing into
+   * `I | null`), so the pack runs under a null guard and null passes
+   * through as a null fat pointer.
+   */
+  sourceNullable: boolean;
+
+  new(this.source, this.target, this.sourceNullable = false);
 }
 
 export final class FunctionAdaptation {
@@ -259,8 +265,10 @@ export final class SemanticModel {
   #interfaceAdaptations = new NodeMap<InterfaceAdaptation>();
   #resolvedOverloads = new NodeMap<FunctionType>();
 
-  setInterfaceAdaptation(node: Node, source: ClassType, target: InterfaceType): void {
-    this.#interfaceAdaptations[node] = new InterfaceAdaptation(source, target);
+  setInterfaceAdaptation(node: Node, source: ClassType, target: InterfaceType,
+      sourceNullable: boolean = false): void {
+    this.#interfaceAdaptations[node] =
+        new InterfaceAdaptation(source, target, sourceNullable);
   }
 
   /**

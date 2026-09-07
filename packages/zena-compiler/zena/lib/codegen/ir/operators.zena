@@ -25,7 +25,7 @@ import {
 import {
   ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, isRefValType, valTypeEquals,
 } from '../wasm.zena';
-import { eraseTypeParameters, typeToValTypeWithSub } from '../type-mapping.zena';
+import { eraseTypeParameters, getNonNullableType, typeToValTypeWithSub } from '../type-mapping.zena';
 import { getClassKey, parseI64OrU64Literal } from '../codegen-utils.zena';
 import { IrOp, IrRefField } from './ir.zena';
 import {
@@ -825,7 +825,11 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     // parameter re-packs for the consumer), and there the cast must
     // still run first — skipping it hands the adaptation the
     // still-wrapped fat pointer and double-wraps it.
-    if (dstSemOpt != null && baseType(dstSemOpt) is InterfaceType &&
+    // `I | null` is a destination interface too — the adaptation packs
+    // under a null guard, and a ref.cast of the class value to the
+    // fat-pointer type ahead of it would trap just the same.
+    if (dstSemOpt != null &&
+        getNonNullableType(baseType(dstSemOpt)) is InterfaceType &&
         cx.func.model.getInterfaceAdaptation(expr) != null) {
       return value;
     }

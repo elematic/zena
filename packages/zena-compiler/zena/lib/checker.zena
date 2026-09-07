@@ -6685,11 +6685,20 @@ let checkTypeParameterCast = (
 };
 
 let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void => {
+  // `C | null` is assignable to no single member of `I | null`, so the
+  // payloads are what the adaptation is about: peel null off the source
+  // and match that against the target's members. The peeled fact is
+  // carried to codegen, which packs the fat pointer under a null guard
+  // (null stays null rather than becoming a pointer to nothing).
+  let sourceIsNullable = isNullableType(sourceType);
+  let effectiveSource = if (sourceIsNullable) subtractNullFromType(sourceType)
+      else sourceType;
+
   var effectiveTarget = targetType;
   match (targetType) {
     case UnionT {types}: {
       for (let member in types) {
-        if (isAssignableTo(ctx, sourceType, member)) {
+        if (isAssignableTo(ctx, effectiveSource, member)) {
           effectiveTarget = member;
           break;
         }
@@ -6698,11 +6707,12 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
     case _: {}
   }
 
-  if (sourceType is ClassType && effectiveTarget is InterfaceType) {
-    ctx.model.setInterfaceAdaptation(node, sourceType, effectiveTarget);
+  if (effectiveSource is ClassType && effectiveTarget is InterfaceType) {
+    ctx.model.setInterfaceAdaptation(node, effectiveSource, effectiveTarget,
+        sourceIsNullable);
     let deps = ctx.currentDependencies();
     if (deps != null) {
-      let classSymId = (sourceType.genericSource ?? sourceType).symbolId;
+      let classSymId = (effectiveSource.genericSource ?? effectiveSource).symbolId;
       let ifaceSymId = (effectiveTarget.genericSource ?? effectiveTarget).symbolId;
       let key = i32ToString(classSymId as i32) + "::" + i32ToString(ifaceSymId as i32);
       deps.usedInterfaceAdaptations.add(key);
