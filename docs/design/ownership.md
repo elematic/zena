@@ -569,7 +569,9 @@ rules close it, both mirroring machinery this document already has:
 containing one". So `Array<Scoped<Future<T>>>` is itself scoped, with no
 annotation — which makes storing a scoped value in it harmless, because the
 container cannot escape either. This is the standard second-class relaxation:
-second-class values may be stored in second-class structures.
+second-class values may be stored in second-class structures. When such a
+container may exist at all — the container's lifetime against its elements'
+extents — is §"Scoped containers and extent nesting".
 
 **The combinator opts in**, exactly as containers opt into affine elements:
 
@@ -686,6 +688,111 @@ demands a `Scoped` return that is then legal.
 Staging: the type and the consumption rule first (checker only); the
 suspension relaxations second; `scoped T` and the combinator audit
 (`Future.all`, the iterator adapters) third.
+
+##### Scoped type arguments
+
+The type and its consumption rule are implemented; what remains is
+letting generic code handle scoped values. Three pieces, in dependency
+order: the default for a bare type parameter tightens, the `scoped T`
+modifier opts a body in, and containers of scoped values get a rule
+for when they may exist.
+
+**A bare type parameter rejects second-class arguments.** Binding
+`T := Scoped<Future<i32>>` (or a restricted `Borrow<R>`) at a call
+site is an error today only for containers; a plain generic function
+accepts it and its body may store, capture, or return the value — the
+`box(fut)` escape both `@missing-error` markers record. The check is
+at the binding site, where the argument's type is concrete: a type
+argument that contains a second-class type requires the parameter to
+be declared `scoped T`. This lands first; until it does, `scoped T`
+gates nothing.
+
+**The `scoped T` modifier.** `scoped` becomes a contextual modifier in
+type-parameter lists — `<scoped T>`, composing with bounds as
+`<scoped T extends Disposable>`. It widens what the parameter accepts
+to the whole no-escape column: `T` may be bound to a restricted
+borrow, a scoped value, or any first-class type. The body is checked
+at the fourth corner's discipline, the worst case it admits: every
+type mentioning `T` is second-class (no field, element, or capture;
+returns under the derivation rule, with `scoped T` parameters counting
+as sources) and `T` values are consumed exactly once per path. A
+first-class instantiation is unaffected by any of this — the body gave
+up what the argument never needed — which is why a caller with
+ordinary futures calls the same `Future.all` with `T := Future<i32>`
+and an ordinary, storable `Array<T>`. The `affine T` twin (admitting
+`Own<R>`, which is first-class) stays future work; nothing in the
+combinator audit needs it.
+
+##### Scoped containers and extent nesting
+
+Storing a scoped value in a container raises the two questions this
+section exists to answer: what makes the container's lifetime valid at
+the store, and what restricts the container afterward.
+
+Afterward is the structural half, and it is not a state change. A
+container type that contains a scoped type — `Array<Scoped<F>>`,
+`(Scoped<F>, i32)`, `Scoped<F> | null` — is itself scoped, decided by
+the containment walk the storage bans already use. The restriction
+attaches at the container's creation, before anything is stored: a
+scoped container may not be stored in the heap, captured, or returned
+outside the derivation rule, and it must be consumed exactly once —
+moving it into a `scoped T` parameter is its consumption, and the
+moves that filled it consumed the elements. Linearity composes; there
+is no point at which a store "infects" a previously unrestricted
+container, because the type carried the restriction from `new`.
+
+Validity at the store is the extent half: the container must not
+outlive any element stored in it. The checker has no lifetime
+variables, so the question is answered by **roots**, which it already
+tracks: every second-class value derives from a parameter (extent: the
+caller's scope, wider than the whole body) or from a local owner
+binding (extent: that binding's block). The store is sound when the
+container's own extent — the scope of its binding — is enclosed by the
+root's scope. Rather than compare arbitrary scopes, v1 admits the two
+shapes where the comparison is decided by construction:
+
+- **Inside a `scoped T` body, containers over `T` are unrestricted in
+  where they are declared.** Every `T` value in the body roots in a
+  parameter, whose extent encloses the whole body, so any local
+  container nests inside it. `Future.all`'s body builds its result
+  array wherever it likes.
+- **Outside, a scoped-element container exists only as a temporary**:
+  an array or tuple literal flowing directly into a `scoped T`
+  parameter — `Future.all([read(a), read(b)])`. A temporary's extent
+  is the expression itself, enclosed by the extent of everything live
+  in it, so no comparison is needed. Binding one (`let arr = [fut1,
+  fut2]`) is an error naming the call-site-literal form.
+
+The general rule — a named scoped container is legal when its
+declaration scope is enclosed by every stored element's root scope —
+needs only scope nesting, not lifetime inference, and is recorded as
+the relaxation to add when a real program needs a named or
+incrementally built scoped container. Until then the error message
+carries the workaround.
+
+##### Combinator audit
+
+With `scoped T`, the audit is one modifier per signature:
+
+```zena
+static all<scoped T>(futures: Array<T>): Future<Array<T>>
+```
+
+With `T := Scoped<Future<i32>>`, the argument array derives scoped
+(built as a call-site temporary) and the returned future derives
+scoped, so awaiting the result is its consumption. With
+`T := Future<i32>`, everything stays first-class and nothing changes
+for existing callers.
+
+The iterator adapters (`map`, `filter`, `take`) need no containers at
+all: each takes one scoped iterator — a `scoped T` receiver position
+or parameter, the single derivation source — and returns a
+`Scoped<Iterator<U>>` wrapping a generator that drives the inner
+iterator, the shape the suspension relaxations already compile.
+
+Staging within this piece: the bare-`T` tightening first (it is a
+soundness fix and retires both `@missing-error` markers); the
+`scoped T` modifier and body rules second; the stdlib audit third.
 
 #### Value types, containers, and slot references
 
