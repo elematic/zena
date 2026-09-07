@@ -584,24 +584,30 @@ With `T = Scoped<Future<String>>`, `Array<T>` derives scoped and the returned
 
 ##### The two axes, side by side
 
-`scoped T` is the escape-axis twin of [`affine T`](#affine-type-arguments):
+The universes vary along two independent axes — duplication and extent —
+but the type-parameter opt-in does not need one modifier per axis. A body
+checked at the strictest discipline the lattice contains — each `T` value
+consumed exactly once per path, and never allowed to outlive its extent —
+is sound for **every** universe: an unrestricted or borrowed argument is
+simply used once, an owned argument is moved once, a scoped argument is
+consumed as its rules require. So a single modifier, `scoped T`, admits
+the whole lattice, and the body pays the fourth corner's discipline
+whatever actually arrives. `Foo<affine scoped T>` does not exist.
 
-| Axis            | Default      | Opt-in     | What the body gives up               |
-| --------------- | ------------ | ---------- | ------------------------------------ |
-| **Duplication** | unrestricted | `affine T` | may move a `T` at most once per path |
-| **Extent**      | first-class  | `scoped T` | may not let a `T` outlive its extent |
-
-Identical in shape: widening what a parameter accepts narrows what its body may
-do, both derive structurally through containing types, and both default to the
-permissive case so existing code is unaffected. They compose — `<affine scoped
-T>` for a fully restricted parameter — and the motivating case needs the
-combination, since a `Scoped<Future<T>>` is both affine (it owns a frame) and
-scoped.
+What the fold costs is drop-style helpers: exactly-once forbids a body
+that deliberately does nothing with a `T` so implicit drop releases it
+(`discard<affine T>(x: T) => {}`). Dropping is meaningless for scoped
+values — there is no release glue — so admitting them forces
+exactly-once. If a generic drop-style helper is ever needed, an
+at-most-once variant admitting only droppable universes can be added
+then; until a program wants one, the second modifier stays out of the
+language.
 
 Costs, so this does not read as free:
 
-- **Vocabulary growth.** A fourth type constructor and a second type-parameter
-  modifier, in a design that had settled on three handles and one modifier.
+- **Vocabulary growth.** A fourth type constructor and a type-parameter
+  modifier, in a design that had settled on three handles and one
+  modifier.
 - **Every combinator that should accept scoped values needs `<scoped T>`** —
   `Future.all`, and the iterator adapters `map`/`filter`/`take`. One modifier
   each, but it is a real audit.
@@ -709,19 +715,33 @@ gates nothing.
 
 **The `scoped T` modifier.** `scoped` becomes a contextual modifier in
 type-parameter lists — `<scoped T>`, composing with bounds as
-`<scoped T extends Disposable>`. It widens what the parameter accepts
-to the whole no-escape column: `T` may be bound to a restricted
-borrow, a scoped value, or any first-class type. The body is checked
-at the fourth corner's discipline, the worst case it admits: every
-type mentioning `T` is second-class (no field, element, or capture;
-returns under the derivation rule, with `scoped T` parameters counting
-as sources) and `T` values are consumed exactly once per path. A
-first-class instantiation is unaffected by any of this — the body gave
-up what the argument never needed — which is why a caller with
-ordinary futures calls the same `Future.all` with `T := Future<i32>`
-and an ordinary, storable `Array<T>`. The `affine T` twin (admitting
-`Own<R>`, which is first-class) stays future work; nothing in the
-combinator audit needs it.
+`<scoped T extends Disposable>` — and it is the only one: it admits
+every universe, `Own<R>` included, and the body is checked at the
+fourth corner's discipline, the strictest the lattice contains (§"The
+two axes, side by side"). Every type mentioning `T` is second-class in
+the body — no field, element, or capture; returns under the derivation
+rule, with `scoped T` parameters counting as sources — and `T` values
+are consumed exactly once per path. A first-class instantiation is
+unaffected by any of this — the body gave up what the argument never
+needed — which is why a caller with ordinary futures calls the same
+`Future.all` with `T := Future<i32>` and an ordinary, storable
+`Array<T>`.
+
+The modifier applies to class type parameters the same way:
+`class Channel<scoped T>` declares that the class's methods and
+`T`-typed fields follow the discipline, and an instantiation whose
+argument is restricted derives the restriction structurally — the
+containment walk the storage bans already use. Fields typed in `T`
+are legal inside such a class; they are the container's substance,
+and the instantiated container type is what carries the restriction
+out (§"Scoped containers and extent nesting").
+
+Alternatives considered for the spelling: keeping two modifiers with
+`<affine scoped T>` as their composition (the fold above removes the
+need); a new discipline-named word such as `once T` (a second keyword
+for the same single discipline); a sigil such as `<*T>` (every other
+marker in this design is a word — `resource`, `using`, `scoped` — and
+a sigil would be the one thing a reader cannot search for).
 
 ##### Scoped containers and extent nesting
 
@@ -790,9 +810,25 @@ or parameter, the single derivation source — and returns a
 `Scoped<Iterator<U>>` wrapping a generator that drives the inner
 iterator, the shape the suspension relaxations already compile.
 
+The direction for the standard library is to annotate every type
+parameter as `scoped` wherever the implementation already passes the
+stricter body check, so restricted instantiations work without a
+parallel API. Functions and consuming methods mostly qualify as-is.
+Full collections do not yet: an API that copies an element out while
+the collection keeps it — `Array.get`, iteration that leaves elements
+in place — duplicates a `T` the discipline says is consumed once, so a
+collection serving restricted elements can offer only its moving
+subset (`pop`, `take`, draining iteration). Drop shapes fail it too:
+`HashMap.[]=` never consumes the key on the already-present path.
+Gating methods per instantiation ("`get` exists when `T` is
+unrestricted") is exactly the member-level `where` clause equality.md
+D4 already calls for, so the collections audit waits on it; the
+combinators and adapters do not.
+
 Staging within this piece: the bare-`T` tightening first (it is a
 soundness fix and retires both `@missing-error` markers); the
-`scoped T` modifier and body rules second; the stdlib audit third.
+`scoped T` modifier and body rules second; the combinator and adapter
+audit third; the collections audit after member-level `where`.
 
 #### Value types, containers, and slot references
 
@@ -1320,8 +1356,8 @@ no dispose slot to hang glue on. This is the affine twin of the
 second-class storage rule: borrows are rejected from structural types for
 extent reasons, owns for duplication reasons.
 
-**Generic fields are the other half, and defer to `affine T`.**
-`class Box<affine T> { var value: T }` stays an ordinary class; the
+**Generic fields are the other half, and defer to `scoped T`.**
+`class Box<scoped T> { var value: T }` stays an ordinary class; the
 _instantiation_ `Box<Own<File>>` is affine by "types containing one" and is
 held from a provably exclusive source under `Resource<T>` (§Containers),
 with glue derived per instantiation by monomorphization. A concrete field
@@ -1332,7 +1368,7 @@ records, and nothing here forecloses it.
 
 Implementation stages, in order: the field rule with reads-as-borrows and
 dispose glue; consuming-method move-out with per-field path checking; then
-`affine T` and the container work, which waits on member-level `where`
+`scoped T` and the container work, which waits on member-level `where`
 bounds (equality.md D4).
 
 ### Affine type arguments
@@ -1348,33 +1384,23 @@ let duplicate = <T>(x: T): (T, T) => (x, x);
 Sound for `T = i32`; for `T = Own<Descriptor>` it creates two owners of one
 handle and two drops of it.
 
-Type parameters are therefore **unrestricted by default**, and accepting affine
-arguments is opt-in per parameter:
+Type parameters are therefore **unrestricted by default**, and accepting
+restricted arguments is opt-in per parameter. The opt-in is the single
+`scoped T` modifier — it admits owned, borrowed, and scoped arguments
+alike, with the body checked at the strictest discipline any of them
+needs; §"The two axes, side by side" gives the fold and its one cost,
+and §"Scoped type arguments" the modifier's rules. This section
+originally specified a separate `affine T` for the duplication axis
+alone (at most one move per path, drops allowed, storage allowed);
+that variant is subsumed, and returns only if a program needs a
+generic body that deliberately drops a `T` — exactly-once forbids
+that, and it is the one shape the fold gives up:
 
 ```zena
-class Pool<affine T> { … }              // T may be affine
-class Array<T> { … }                    // an affine argument is rejected
-let discard = <affine T>(x: T) => {};   // fine for Own<R> and for i32
+class Pool<scoped T> { … }             // T may be owned, borrowed, or scoped
+class Array<T> { … }                   // a restricted argument is rejected
+let discard = <affine T>(x: T) => {};  // NOT in v1: needs at-most-once
 ```
-
-`affine T` drops the implicit `T extends Copyable` bound. Widening what a
-parameter accepts narrows what its body may do: inside such a body, each
-`T`-typed value may be moved at most once per path. Borrowing stays unlimited.
-
-`affine T` governs the duplication axis. Its twin on the escape axis is `scoped
-T` — see §"The two axes, side by side". They compose: `<affine scoped T>` is a
-parameter that may be both.
-
-Three things that need no opt-in, because they are the common cases:
-
-- **Not using a `T`.** `<affine T>(x: T): void => {}` needs no bound; implicit
-  drop releases `x`, and monomorphization emits that glue only for instantiations
-  where `T` is actually affine.
-- **Using it once per _path_**, across branches. `HashMap.[]=` moves `key` and
-  `value` at most once on each path; on the key-already-present path `key` is
-  never consumed and the compiler drops it.
-- **Generic fields.** `class Box<affine T> { var value: T }` — dropping the box
-  drops the `T` through derived glue.
 
 The opt-in is **declared, not inferred**. Whole-program compilation would allow
 inferring it from bodies, but then errors land inside stdlib bodies at call sites
@@ -1392,7 +1418,7 @@ site moves a `T` twice:
 new(length: i32, value: T) : super(__array_new(length, value));
 ```
 
-Under `FixedArray<affine T>` that constructor is unsound and must become
+Under `FixedArray<scoped T>` that constructor is unsound and must become
 conditionally available, which is what member-level `where` bounds are for:
 
 ```zena
@@ -1661,7 +1687,7 @@ of surface syntax.
 | **O2**   | Move checking on the flow graph                                                                           | O0, O1                            | G, V, A        |
 | **O3**   | Implicit drop                                                                                             | O2; G1 for the cancellation table | V, A           |
 | **O3.2** | Affine fields: the resource-class rule, reads borrow, dispose glue                                        | O3                                | V, A           |
-| **O3.5** | `affine T` type parameters + container opt-in                                                             | O2, A0's `where` bounds           | G, V           |
+| **O3.5** | `scoped T` type parameters + container opt-in                                                             | O2, A0's `where` bounds           | G, V           |
 | **O4**   | `isolated<T>`/`frozen<T>`/regions                                                                         | O2                                | V, A           |
 
 Implementation currently trails this document in one known place:
@@ -2079,7 +2105,7 @@ case into the general rule and re-declare the handles as
 9. Should bindgen synthesize `dispose()` for generated WIT wrappers? The release
    is always "call the imported drop function with `this.#handle`", so it can;
    hand-written resource classes still write their own.
-10. Naming: `disown`/`adopt`, `Unmanaged<T>`, `affine T`. Cheap to change until
+10. Naming: `disown`/`adopt`, `Unmanaged<T>`, `scoped T`. Cheap to change until
     `zena:ownership` has clients.
 11. ~~Should a resource's release consume its receiver?~~ — **decided**: yes,
     `[Disposable.dispose](this: Own<this>): void`. It does split `Disposable`
