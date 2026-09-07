@@ -67,13 +67,58 @@ pub(crate) fn spawn_allowed(flag: bool) -> bool {
     flag || std::env::var("ZENA_ALLOW_SPAWN").is_ok_and(|v| v == "1")
 }
 
+/// Guest-to-host directory mappings, mirroring the invocation's WASI
+/// preopens. The guest names paths by its preopen layout ('.', '/tmp'),
+/// but children spawn on the host, where those directories may live
+/// elsewhere (a sandboxed temp dir, the repo root) — so a spawn cwd
+/// must be translated before it reaches the OS.
+pub(crate) type PathMap = Vec<(String, std::path::PathBuf)>;
+
+/// Translates a guest cwd to a host path: relative paths resolve under
+/// the '.' preopen, absolute paths take their longest matching preopen
+/// prefix. An unmapped path passes through unchanged.
+fn translate_cwd(cwd: &str, map: &[(String, std::path::PathBuf)]) -> std::path::PathBuf {
+    if !cwd.starts_with('/') {
+        if let Some((_, host)) = map.iter().find(|(guest, _)| guest == ".") {
+            return if cwd == "." { host.clone() } else { host.join(cwd) };
+        }
+        return std::path::PathBuf::from(cwd);
+    }
+    let mut best: Option<(usize, &std::path::PathBuf)> = None;
+    for (guest, host) in map {
+        let matched = if guest == "/" {
+            true
+        } else {
+            cwd == guest
+                || (cwd.starts_with(guest.as_str())
+                    && cwd.as_bytes().get(guest.len()) == Some(&b'/'))
+        };
+        if matched && best.is_none_or(|(len, _)| guest.len() > len) {
+            best = Some((guest.len(), host));
+        }
+    }
+    match best {
+        Some((len, host)) => {
+            let rest = cwd[len..].trim_start_matches('/');
+            if rest.is_empty() {
+                host.clone()
+            } else {
+                host.join(rest)
+            }
+        }
+        None => std::path::PathBuf::from(cwd),
+    }
+}
+
 /// Links every `zena_process` import the module declares — real
 /// implementations when `allow` is set, trapping stubs otherwise.
 pub(crate) fn add_process_imports(
     linker: &mut Linker<MyState>,
     module: &Module,
     allow: bool,
+    path_map: PathMap,
 ) -> Result<()> {
+    let path_map = std::sync::Arc::new(path_map);
     for import in module.imports() {
         if import.module() != "zena_process" {
             continue;
@@ -115,8 +160,10 @@ pub(crate) fn add_process_imports(
                         Ok(())
                     })
                 })?,
-            "proc_spawn" => linker.func_new("zena_process", "proc_spawn", func_ty,
-                |mut caller: Caller<'_, MyState>, params, results| {
+            "proc_spawn" => {
+                let path_map = path_map.clone();
+                linker.func_new("zena_process", "proc_spawn", func_ty,
+                move |mut caller: Caller<'_, MyState>, params, results| {
                     let (argv, cwd) = with_handle::<Mutex<CmdState>, _>(
                         &mut caller, &params[0], "proc_spawn",
                         |cmd| {
@@ -139,7 +186,7 @@ pub(crate) fn add_process_imports(
                         .stdout(std::process::Stdio::piped())
                         .stderr(std::process::Stdio::piped());
                     if let Some(cwd) = &cwd {
-                        command.current_dir(cwd);
+                        command.current_dir(translate_cwd(cwd, &path_map));
                     }
                     let (tx, rx) = std::sync::mpsc::channel();
                     let shared_child = match command.spawn() {
@@ -195,7 +242,8 @@ pub(crate) fn add_process_imports(
                         ExternRef::new(&mut caller, Mutex::new(ProcState::Running(pending)))?;
                     results[0] = Val::ExternRef(Some(handle));
                     Ok(())
-                })?,
+                })?
+            }
             "proc_wait" => linker.func_new("zena_process", "proc_wait", func_ty,
                 |mut caller: Caller<'_, MyState>, params, results| {
                     let code = with_finished(&mut caller, &params[0], "proc_wait",

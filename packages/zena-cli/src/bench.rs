@@ -78,7 +78,7 @@ fn sample_wasm(engine: &Engine, module: &Module, invoke: &str, _debug: bool) -> 
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     add_stack_trace_helpers(&mut linker, engine, module)?;
     // Measured variants are workloads, not orchestrators: no spawning.
-    process::add_process_imports(&mut linker, module, false)?;
+    process::add_process_imports(&mut linker, module, false, Vec::new())?;
 
     let stdout_pipe = MemoryOutputPipe::new(64 * 1024);
     let stderr_pipe = MemoryOutputPipe::new(64 * 1024);

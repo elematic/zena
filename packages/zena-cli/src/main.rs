@@ -784,7 +784,6 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
     let mut linker: Linker<MyState> = Linker::new(&engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     add_stack_trace_helpers(&mut linker, &engine, &module)?;
-    process::add_process_imports(&mut linker, &module, allow_spawn)?;
 
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.inherit_stdio().inherit_env();
@@ -796,6 +795,7 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
 
     let repo_root = repo_root()?;
 
+    let mut path_map: process::PathMap = Vec::new();
     for dir in dirs {
         // Handle format `HOST_DIR::GUEST_DIR` standard in wasmtime CLI
         let parts: Vec<&str> = dir.split("::").collect();
@@ -820,7 +820,9 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
         let host_dir_adjusted = std::fs::canonicalize(host_dir_adjusted)?;
 
         wasi_builder.preopened_dir(&host_dir_adjusted, guest_dir, DirPerms::all(), FilePerms::all())?;
+        path_map.push((guest_dir.to_string(), host_dir_adjusted));
     }
+    process::add_process_imports(&mut linker, &module, allow_spawn, path_map)?;
 
     let wasi = wasi_builder.build_p1();
 
@@ -1205,7 +1207,10 @@ fn run_internal_tool(
     let mut linker: Linker<MyState> = Linker::new(&engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     add_stack_trace_helpers(&mut linker, &engine, &module)?;
-    process::add_process_imports(&mut linker, &module, true)?;
+    process::add_process_imports(&mut linker, &module, true, vec![
+        (".".to_string(), repo_root()?),
+        ("/".to_string(), std::path::PathBuf::from("/")),
+    ])?;
 
     let mut args = vec![src_repo_rel.to_string()];
     args.extend_from_slice(guest_args);
@@ -1256,8 +1261,6 @@ fn run_single_test(
     let mut linker: Linker<MyState> = Linker::new(engine);
     p1::add_to_linker_sync(&mut linker, |state| &mut state.wasi)?;
     add_stack_trace_helpers(&mut linker, engine, &module)?;
-    // Repo tests are trusted code (they already get full repo preopens).
-    process::add_process_imports(&mut linker, &module, true)?;
 
     let repo_root = repo_root()?;
     let stdlib_dir = std::fs::canonicalize(repo_root.join("packages/stdlib/zena"))?;
@@ -1276,6 +1279,16 @@ fn run_single_test(
         std::path::PathBuf::from("/tmp")
     };
     let tmp_host_dir = std::fs::canonicalize(tmp_host_dir)?;
+
+    // Repo tests are trusted code (they already get full repo preopens).
+    // The path map mirrors the preopens below so spawn cwds translate
+    // to host paths — the guest's /tmp is not the host's /tmp when the
+    // cache env vars redirect it (and never is on macOS).
+    process::add_process_imports(&mut linker, &module, true, vec![
+        (".".to_string(), repo_root.clone()),
+        ("/stdlib".to_string(), stdlib_dir.clone()),
+        ("/tmp".to_string(), tmp_host_dir.clone()),
+    ])?;
 
     let wasi = WasiCtxBuilder::new()
         .stdout(stdout_pipe.clone())
