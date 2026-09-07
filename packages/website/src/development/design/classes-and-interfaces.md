@@ -58,10 +58,14 @@ Which lowers to roughly this:
   (struct.new $Dog_vtable (ref.func $Dog_speak)))
 ```
 
-Because Wasm GC provides subtyping directly, an upcast is a no-op and a downcast
-is a single `ref.cast`. Aside from the vtable reference, there is no object
-header of Zena's own and no runtime type information beyond what the engine
-already keeps.
+Because Wasm GC provides subtyping directly, an upcast between classes is a
+no-op and a downcast between classes is a single `ref.cast`. Aside from the
+vtable reference, there is no object header of Zena's own and no runtime type
+information beyond what the engine already keeps.
+
+That holds for class references. A cast that crosses an interface boundary is a
+conversion rather than a test, and costs more than one instruction — see
+[Interface references](#interface-references).
 
 ## Virtual calls
 
@@ -140,6 +144,18 @@ Converting an object to an interface therefore allocates:
 ```zena
 let r: Runnable = new Task(); // allocates the fat pointer
 ```
+
+The conversion is a `struct.new` of the pair, not a `ref.cast`, and it runs
+wherever the types meet — an argument, an assignment, a return, or an explicit
+`as`. A source that can be null tests it first, since a pair built around a null
+instance is not itself null and would answer `!= null`:
+
+```zena
+let r: Runnable | null = maybeTask; // null test, then the pair on the other arm
+```
+
+So an `as` in the source is not always a cast in the output, and converting to a
+nullable interface is the one place it becomes a branch.
 
 The allocation goes away when the call site does not need the pair:
 

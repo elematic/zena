@@ -92,6 +92,17 @@ parameter.
   `try` body assigns. Every site that stores a new SSA value for a
   symbol into `env` must call `noteVarWrite` — a missed one leaves the
   handler reading a stale value, and nothing else will catch it.
+- **A pair built around a null instance is not a null pair.** An
+  interface value is a two-field struct and `I | null` is a nullable
+  reference to it, so `x == null` tests the POINTER. Packing a null
+  through `iface_pack` produces a non-null value that answers `!= null`
+  and then traps at the dispatch. A source the checker typed `C | null`
+  packs under a null guard instead (`#packInterfaceNullable`) — the one
+  path where a conversion, `as` or implicit, introduces control flow.
+  The checker sets `InterfaceAdaptation.sourceNullable`; lowering must
+  not re-derive it from the value's valtype, since a non-null-typed
+  expression can sit in a nullable slot and the extra guard would be
+  emission churn.
 - **A `finally` is emitted once, and outside its own region.** Every
   way out of the protected part — normal completion, the handler edge,
   `return`/`break`/`continue` — parks an exit code in a variable and

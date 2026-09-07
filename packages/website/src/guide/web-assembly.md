@@ -236,8 +236,8 @@ adapted function pointer from the ITable and pass the instance as the receiver.
 
 ### Native checked casts
 
-Dynamic type testing (`obj is Circle`) and downcasting (`obj as Circle`) compile
-directly to native Wasm GC instructions:
+Between class references, dynamic type testing (`obj is Circle`) and downcasting
+(`obj as Circle`) compile directly to native Wasm GC instructions:
 
 - `ref.test $Circle`: Returns `1` if the reference is an instance of `$Circle`,
   `0` otherwise.
@@ -246,6 +246,15 @@ directly to native Wasm GC instructions:
 
 These instructions execute in hardware or JIT machine code without walking
 prototype chains or checking string type tags.
+
+`as` is not a single instruction everywhere, because not every `as` is a test.
+Converting to an interface builds the fat pointer above — a `struct.new`, plus a
+null test when the source can be null, so that a null stays null rather than
+becoming a pair around nothing. Casting an interface value back to a class reads
+the instance out of the pair before the `ref.cast`. Numeric `as` compiles to the
+corresponding conversion instruction, and to a mask or a shift pair for the
+narrow integer types. None of these search a union's members at runtime: which
+conversion to emit is settled at compile time.
 
 ## Struct construction and immutability
 
