@@ -108,4 +108,53 @@ export let tests = suite('zb end to end', (): void => {
     isTrue(sourceOf(fifth.result, 'packages/app:build') == StepSource.Ran);
     equal(readFile(withRoot(root, 'packages/app/out/app.txt')), 'lib-v2\nhello-v2\n');
   });
+
+  test('untracked scripts always run and poison dependents', () => {
+    let root = '/tmp/zb-untracked-' + i64ToString(monotonic() as i64);
+    write(root, 'package.json', `{
+      "scripts": {"all": "wireit"},
+      "wireit": {
+        "all": {"dependencies": ["./use:build", "./steady:build"]}
+      }
+    }`);
+    // A command with output but no files key: inputs unknown.
+    write(root, 'gen/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "mkdir -p out && echo generated > out/g.txt",
+          "output": ["out/**"]
+        }
+      }
+    }`);
+    // Fully tracked, but downstream of the untracked script.
+    write(root, 'use/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {
+          "command": "mkdir -p out && cat ../gen/out/g.txt > out/u.txt",
+          "files": [],
+          "output": ["out/**"],
+          "dependencies": ["../gen:build"]
+        }
+      }
+    }`);
+    // Fully tracked control, with declared-empty files and output.
+    write(root, 'steady/package.json', `{
+      "scripts": {"build": "wireit"},
+      "wireit": {
+        "build": {"command": "true", "files": [], "output": []}
+      }
+    }`);
+    let entry = new ScriptRef('', 'all');
+
+    let first = buildTarget(root, entry);
+    isTrue(first.result.allSucceeded);
+
+    let second = buildTarget(root, entry);
+    isTrue(second.result.allSucceeded);
+    isTrue(sourceOf(second.result, 'gen:build') == StepSource.Ran);
+    isTrue(sourceOf(second.result, 'use:build') == StepSource.Ran);
+    isTrue(sourceOf(second.result, 'steady:build') == StepSource.Fresh);
+  });
 });

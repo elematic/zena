@@ -44,8 +44,10 @@ let configFingerprint = (config: ScriptConfig, salt: String): Fingerprint => {
   for (let glob in config.output) {
     appendSegment(sb, 'out:' + glob);
   }
-  if (!config.isWireit) {
-    // Bare npm scripts always run: salt the config so no run is fresh.
+  if (!config.fingerprintable) {
+    // Bare npm scripts and wireit scripts that omit `files` or
+    // `output` have unknown inputs or outputs: salt the config so no
+    // run is ever fresh or served from the cache.
     appendSegment(sb, 'salt:' + salt);
   }
   return new Fingerprint('sha256:' + sha256HexOfString(sb.toString()));
@@ -101,6 +103,7 @@ export let runScript = async (
   root: String,
   config: ScriptConfig,
   ctx: RunContext,
+  volatileMark: String?,
 ): Future<OutputManifest> => {
   cleanOutputs(root, config, ctx);
   let command = config.command;
@@ -121,6 +124,17 @@ export let runScript = async (
   let outputs = new GrowableArray<OutputEntry>();
   for (let path in outFiles) {
     outputs.push(new OutputEntry(path, hashFile(root, path)));
+  }
+  if (volatileMark != null) {
+    // An unfingerprintable script's true outputs are unknown, so its
+    // manifest must never repeat: dependents' cache keys change every
+    // run, which keeps them from going fresh over outputs this script
+    // may have changed without declaring (wireit poisons dependents of
+    // untracked scripts the same way).
+    outputs.push(new OutputEntry(
+      '$volatile',
+      new Fingerprint('volatile:' + volatileMark),
+    ));
   }
   return new OutputManifest(outputs);
 };
@@ -157,7 +171,12 @@ export let planScripts = (
       new StepKey(refKey(config.ref)),
       configFingerprint(config, salt),
       inputs,
-      (ctx) => runScript(root, config, ctx),
+      (ctx) => runScript(
+        root,
+        config,
+        ctx,
+        if (config.fingerprintable) null else salt,
+      ),
     ));
   }
   return new Plan(new Graph(steps), leaves);

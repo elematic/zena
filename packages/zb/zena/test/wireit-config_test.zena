@@ -126,6 +126,18 @@ export let tests = suite('wireit-config', (): void => {
     equal(config.command, 'true');
   });
 
+  test('fingerprintability follows declared files and output', () => {
+    let ws = fixture();
+    // Command with files and output declared: fully tracked.
+    isTrue(ws.scriptConfig(new ScriptRef('packages/app', 'build')).fingerprintable);
+    // Command without files/output keys: unknown inputs, never fresh.
+    isFalse(ws.scriptConfig(new ScriptRef('packages/app', 'build:dep-only')).fingerprintable);
+    // No command at all: a dependency group, always tracked.
+    isTrue(ws.scriptConfig(new ScriptRef('', 'build')).fingerprintable);
+    // Bare npm script: always runs.
+    isFalse(ws.scriptConfig(new ScriptRef('packages/app', 'lint')).fingerprintable);
+  });
+
   test('bare npm scripts always run', () => {
     let ws = fixture();
     let lint = ws.scriptConfig(new ScriptRef('packages/app', 'lint'));

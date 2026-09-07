@@ -5,6 +5,15 @@ import {OutputManifest} from 'workflow:manifest';
 import {ensureDir, ensureParentDir, withRoot} from './fs-util.zena';
 import {manifestFromJson, manifestToJson} from './state-json.zena';
 
+/**
+ * Entries with content fingerprints are files in the workspace;
+ * anything else (e.g. the '$volatile' marker of an untracked script)
+ * is virtual and has no bytes to store or restore.
+ */
+let isFileEntry = (fp: Fingerprint): boolean => {
+  return fp.value.startsWith('sha256:');
+};
+
 let blobName = (fp: Fingerprint): String => {
   // 'sha256:<hex>' -> 'sha256-<hex>', a safe file name.
   let colonSplit = fp.value.split(':');
@@ -41,11 +50,14 @@ export class DiskCache implements StepCache {
     }
     let manifest = manifestFromJson(readFile(manifestPath));
     for (let entry in manifest.outputs) {
-      if (!isFile(this.#blobPath(entry.fingerprint))) {
+      if (isFileEntry(entry.fingerprint) && !isFile(this.#blobPath(entry.fingerprint))) {
         return null;
       }
     }
     for (let entry in manifest.outputs) {
+      if (!isFileEntry(entry.fingerprint)) {
+        continue;
+      }
       let target = withRoot(this.#root, entry.name);
       ensureParentDir(target);
       writeFileBytes(target, readFileBytes(this.#blobPath(entry.fingerprint)));
@@ -57,6 +69,9 @@ export class DiskCache implements StepCache {
     ensureDir(withRoot(this.#root, '.zb/blobs'));
     ensureDir(withRoot(this.#root, '.zb/cache'));
     for (let entry in manifest.outputs) {
+      if (!isFileEntry(entry.fingerprint)) {
+        continue;
+      }
       let blob = this.#blobPath(entry.fingerprint);
       if (!exists(blob)) {
         writeFileBytes(blob, readFileBytes(withRoot(this.#root, entry.name)));

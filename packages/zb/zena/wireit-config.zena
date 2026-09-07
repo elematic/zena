@@ -33,10 +33,36 @@ export class ScriptConfig {
   /** Globs relative to the package directory. */
   files: Array<String>;
   output: Array<String>;
+  /**
+   * Whether the config declared the key at all. Omitting `files` or
+   * `output` means the inputs or outputs are unknown (wireit
+   * semantics): the script is never fresh, never cached, and its
+   * dependents cannot be either. An explicit empty array means
+   * "declared none" and tracks fully.
+   */
+  filesDeclared: boolean;
+  outputDeclared: boolean;
   dependencies: Array<ScriptRef>;
   /** 'true', 'false', or 'if-file-deleted'. */
   clean: String;
   service: boolean;
+
+  /**
+   * True when freshness and caching apply to this script at all. A
+   * command-less script is a dependency group and always tracks; one
+   * with a command needs both `files` and `output` declared.
+   */
+  fingerprintable: boolean {
+    get {
+      if (!this.isWireit) {
+        return false;
+      }
+      if (this.command == null) {
+        return true;
+      }
+      return this.filesDeclared && this.outputDeclared;
+    }
+  }
 
   new(
     this.ref,
@@ -44,6 +70,8 @@ export class ScriptConfig {
     this.command,
     this.files,
     this.output,
+    this.filesDeclared,
+    this.outputDeclared,
     this.dependencies,
     this.clean,
     this.service,
@@ -235,6 +263,8 @@ export class WireitWorkspace {
         command,
         stringList(wireitEntry['files'], `script "${where}": files`),
         stringList(wireitEntry['output'], `script "${where}": output`),
+        wireitEntry['files'] != null,
+        wireitEntry['output'] != null,
         deps,
         clean,
         service,
@@ -254,6 +284,8 @@ export class WireitWorkspace {
         scriptsEntry,
         new GrowableArray<String>(),
         new GrowableArray<String>(),
+        false,
+        false,
         new GrowableArray<ScriptRef>(),
         'false',
         false,

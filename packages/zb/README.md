@@ -18,7 +18,13 @@ Working today:
 - wireit script configs: `command`, `files`, `output`, string
   `dependencies` (including `../pkg:script` and dependency-only scripts),
   `clean` (`true`/`false`/`if-file-deleted`), comment keys
-- bare npm scripts as always-run commands
+- wireit's tracking rules: a script with a command is only fresh or
+  cacheable when both `files` and `output` are declared (an explicit
+  `[]` counts); omitting either means unknown inputs or outputs, so the
+  script always runs and so do its dependents. Command-less scripts are
+  dependency groups.
+- bare npm scripts as always-run commands (with the same dependent
+  poisoning)
 - content-addressed local cache under `.zb/` (state file, per-key
   manifests, blob store); lost state restores from cache instead of
   rebuilding
@@ -75,6 +81,23 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y \
 
 Build state lives in `example/.zb/` (gitignored, safe to delete —
 the next build restores outputs from scratch or cache).
+
+## The cache
+
+Each workspace's `.zb/` holds `state.json` (per-step freshness records:
+the last cache key and output manifest), `cache/<key>.json` (cache key →
+output manifest), and `blobs/` (output bytes, content-addressed, deduped
+across steps). To bust it: deleting `state.json` drops freshness but
+steps restore from the cache; `rm -rf .zb` forces a full rebuild. There
+is no `--force` flag yet.
+
+One semantic difference from wireit to know about: a dependency
+contributes the digest of its *outputs* to dependents' cache keys, not
+its input fingerprint. That gives early cutoff (a dependency that reruns
+but produces identical outputs leaves dependents fresh) — and it makes
+complete `output` declarations matter more than under wireit, where
+input-transitive fingerprints rerun dependents regardless. An output a
+step produces but does not declare is invisible to dependents.
 
 ## Building this repository
 
