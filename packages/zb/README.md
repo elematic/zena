@@ -1,15 +1,22 @@
 # zb
 
-An incremental build runner for [wireit](https://github.com/google/wireit)-configured
-npm workspaces, written in Zena on the `workflow` engine
-(`packages/workflow`). `docs/design/workflow.md` describes the layered
+An incremental script runner: zb runs a graph of scripts and services
+with declared inputs, outputs, and dependencies, rerunning only what
+changed. It is written in Zena on the `workflow` engine
+(`packages/workflow`); `docs/design/workflow.md` describes the layered
 design this implements and where it is headed.
 
-zb reads the same `package.json` configuration wireit does, content-hashes
-every input file, and asks the engine what to do per script: nothing (the
-previous run recorded the same fingerprints), restore from the local cache,
-or run the command. Commands run through `sh -c` in the package directory
-with `node_modules/.bin` on `PATH`, like wireit through npm.
+Configuration currently comes from a
+[wireit](https://github.com/google/wireit) compatibility mode: zb reads
+the same `package.json` wireit blocks this repository already uses.
+Zena workspaces will get their own configuration (likely as part of the
+Zena package manifests) as that format takes shape.
+
+For each script, zb content-hashes the declared inputs and asks the
+engine what to do: nothing (the previous run recorded the same
+fingerprints), restore from the local cache, or run the command.
+Commands run through `sh -c` in the package directory with
+`node_modules/.bin` on `PATH`, like wireit through npm.
 
 ## Status
 
@@ -79,17 +86,20 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y \
   --invoke main packages/zb/example/hello-wasm/out/hello.wasm
 ```
 
-Build state lives in `example/.zb/` (gitignored, safe to delete —
-the next build restores outputs from scratch or cache).
+Build state lives in each package's `.zb/` directory (gitignored, safe
+to delete — the next build restores outputs from scratch or cache).
 
 ## The cache
 
-Each workspace's `.zb/` holds `state.json` (per-step freshness records:
-the last cache key and output manifest), `cache/<key>.json` (cache key →
-output manifest), and `blobs/` (output bytes, content-addressed, deduped
-across steps). To bust it: deleting `state.json` drops freshness but
-steps restore from the cache; `rm -rf .zb` forces a full rebuild. There
-is no `--force` flag yet.
+Build state lives per package, like wireit's `.wireit/`: each package's
+`<pkg>/.zb/` holds `state.json` (freshness records for that package's
+scripts: the last cache key and output manifest), `cache/<key>.json`
+(cache key → output manifest), and `blobs/` (output bytes,
+content-addressed). Because state sits next to each `package.json`, the
+cache location does not depend on the directory zb was invoked from.
+To bust it: deleting a package's `state.json` drops freshness but its
+steps restore from the cache; deleting the package's `.zb/` (or all of
+them) forces a rebuild. There is no `--force` flag yet.
 
 One semantic difference from wireit to know about: a dependency
 contributes the digest of its *outputs* to dependents' cache keys, not

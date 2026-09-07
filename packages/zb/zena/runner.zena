@@ -1,30 +1,69 @@
 import {runFuture} from 'zena:async';
+import {HashSet} from 'zena:set';
 import {isFile, readFile, writeFile} from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {Engine, RunResult} from 'workflow:engine';
 import {Fingerprint} from 'workflow:fingerprint';
 import {EngineState} from 'workflow:state';
-import {DiskCache} from './disk-cache.zena';
+import {StepKey} from 'workflow:step';
+import {DiskCache, stateDirOf} from './disk-cache.zena';
 import {planScripts} from './builder.zena';
 import {ensureParentDir, readFileOrNull, withRoot} from './fs-util.zena';
 import {sha256HexOfString} from './sha256.zena';
 import {stateFromJson, stateToJson} from './state-json.zena';
 import {ScriptRef, WireitWorkspace, refKey} from './wireit-config.zena';
 
-let statePath = (root: String): String => withRoot(root, '.zb/state.json');
+// State is stored per package ('<pkg>/.zb/state.json'), like wireit's
+// .wireit/, so its location does not depend on the invocation
+// directory.
 
-let loadState = (root: String): EngineState => {
-  let path = statePath(root);
-  if (!isFile(path)) {
-    return EngineState.empty();
-  }
-  return stateFromJson(readFile(path));
+let packageStatePath = (root: String, stateDir: String): String => {
+  return withRoot(root, stateDir + '/state.json');
 };
 
+let loadState = (root: String, stateDirs: Array<String>): EngineState => {
+  let state = new EngineState();
+  for (let stateDir in stateDirs) {
+    let path = packageStatePath(root, stateDir);
+    if (!isFile(path)) {
+      continue;
+    }
+    stateFromJson(readFile(path)).forEach((key, record) => {
+      state.setRecord(new StepKey(key), record);
+    });
+  }
+  return state;
+};
+
+/**
+ * Writes each package's records back, merged over what its state file
+ * already holds — a run of one target must not drop a package's
+ * records for scripts outside the run's closure.
+ */
 let saveState = (root: String, result: RunResult): void => {
-  let path = statePath(root);
-  ensureParentDir(path);
-  writeFile(path, stateToJson(result.state));
+  let byDir = new HashMap<String, EngineState>();
+  let dirs = new GrowableArray<String>();
+  result.state.forEach((key, record) => {
+    let stateDir = stateDirOf(key);
+    if (!byDir.has(stateDir)) {
+      let path = packageStatePath(root, stateDir);
+      byDir[stateDir] = if (isFile(path))
+        stateFromJson(readFile(path))
+      else
+        EngineState.empty();
+      dirs.push(stateDir);
+    }
+    if (let (true, packageState) = byDir.get(stateDir)) {
+      packageState.setRecord(new StepKey(key), record);
+    }
+  });
+  for (let stateDir in dirs) {
+    if (let (true, packageState) = byDir.get(stateDir)) {
+      let path = packageStatePath(root, stateDir);
+      ensureParentDir(path);
+      writeFile(path, stateToJson(packageState));
+    }
+  }
 };
 
 /** A finished build: the engine result plus the step keys it ran. */
@@ -46,11 +85,19 @@ export let buildTarget = (root: String, entry: ScriptRef): BuildOutcome => {
   );
   let configs = workspace.collect([entry]);
   let plan = planScripts(root, configs, i64ToString(monotonic() as i64));
+  let stateDirs = new GrowableArray<String>();
+  let seenDirs = new HashSet<String>();
+  for (let config in configs) {
+    let stateDir = stateDirOf(refKey(config.ref));
+    if (seenDirs.add(stateDir)) {
+      stateDirs.push(stateDir);
+    }
+  }
   let engine = new Engine(
     (data: String) => new Fingerprint('sha256:' + sha256HexOfString(data)),
     new DiskCache(root),
   );
-  let result = runFuture(engine.run(plan.graph, plan.leaves, loadState(root)));
+  let result = runFuture(engine.run(plan.graph, plan.leaves, loadState(root, stateDirs)));
   saveState(root, result);
   let stepKeys = new GrowableArray<String>();
   for (let config in configs) {

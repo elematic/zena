@@ -1,24 +1,27 @@
 import {CacheKey} from './fingerprint.zena';
 import {OutputManifest} from './manifest.zena';
+import {StepKey} from './step.zena';
 
 /**
  * Maps cache keys to previously recorded output manifests. Hosts back
  * this with a directory, a server, a database, or memory. Returning a
  * manifest from `get` asserts that the result exists and is
- * restorable; moving output bytes around is the host's business.
+ * restorable; moving output bytes around is the host's business. The
+ * step key accompanies the cache key so a host can shard storage by
+ * step (e.g. a cache directory per package).
  */
 export interface StepCache {
-  get(key: CacheKey): Future<OutputManifest?>;
-  put(key: CacheKey, manifest: OutputManifest): Future<void>;
+  get(step: StepKey, key: CacheKey): Future<OutputManifest?>;
+  put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void>;
 }
 
 /** A cache that stores nothing; every lookup misses. */
 export class NullCache implements StepCache {
   new();
 
-  async get(key: CacheKey): Future<OutputManifest?> {
+  async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
     return null;
   }
 
-  async put(key: CacheKey, manifest: OutputManifest): Future<void> {}
+  async put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void> {}
 }

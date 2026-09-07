@@ -2,8 +2,28 @@ import {exists, isFile, readFile, readFileBytes, writeFile, writeFileBytes} from
 import {StepCache} from 'workflow:cache';
 import {CacheKey, Fingerprint} from 'workflow:fingerprint';
 import {OutputManifest} from 'workflow:manifest';
+import {StepKey} from 'workflow:step';
 import {ensureDir, ensureParentDir, withRoot} from './fs-util.zena';
 import {manifestFromJson, manifestToJson} from './state-json.zena';
+
+/**
+ * The package directory of a step key ('pkg/dir:script' — package
+ * directories never contain ':', script names may).
+ */
+export let packageDirOf = (stepKey: String): String => {
+  for (var i = 0; i < stepKey.length; i += 1) {
+    if (stepKey.getByteAt(i) == 58) {
+      return stepKey.sliceBytes(0, i);
+    }
+  }
+  throw new Error('malformed step key: ' + stepKey);
+};
+
+/** A package's build-state directory, '<pkg>/.zb'. */
+export let stateDirOf = (stepKey: String): String => {
+  let pkg = packageDirOf(stepKey);
+  return if (pkg == '') '.zb' else pkg + '/.zb';
+};
 
 /**
  * Entries with content fingerprints are files in the workspace;
@@ -24,9 +44,11 @@ let blobName = (fp: Fingerprint): String => {
 };
 
 /**
- * The local cache under .zb/: an action cache mapping cache keys to
+ * The local cache, sharded per package like wireit's .wireit/: each
+ * package's '<pkg>/.zb/' holds an action cache mapping cache keys to
  * manifests (one JSON file per key) and a content-addressed blob store
- * for output bytes. A hit materializes the outputs into the workspace
+ * for output bytes, so the cache location does not depend on where zb
+ * was invoked. A hit materializes the outputs into the workspace
  * before returning, so dependents can read them; missing blobs make
  * the entry a miss.
  */
@@ -35,22 +57,22 @@ export class DiskCache implements StepCache {
 
   new(root: String) : #root = root;
 
-  #manifestPath(key: CacheKey): String {
-    return withRoot(this.#root, '.zb/cache/' + key.value + '.json');
+  #manifestPath(step: StepKey, key: CacheKey): String {
+    return withRoot(this.#root, stateDirOf(step.value) + '/cache/' + key.value + '.json');
   }
 
-  #blobPath(fp: Fingerprint): String {
-    return withRoot(this.#root, '.zb/blobs/' + blobName(fp));
+  #blobPath(step: StepKey, fp: Fingerprint): String {
+    return withRoot(this.#root, stateDirOf(step.value) + '/blobs/' + blobName(fp));
   }
 
-  async get(key: CacheKey): Future<OutputManifest?> {
-    let manifestPath = this.#manifestPath(key);
+  async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
+    let manifestPath = this.#manifestPath(step, key);
     if (!isFile(manifestPath)) {
       return null;
     }
     let manifest = manifestFromJson(readFile(manifestPath));
     for (let entry in manifest.outputs) {
-      if (isFileEntry(entry.fingerprint) && !isFile(this.#blobPath(entry.fingerprint))) {
+      if (isFileEntry(entry.fingerprint) && !isFile(this.#blobPath(step, entry.fingerprint))) {
         return null;
       }
     }
@@ -60,23 +82,24 @@ export class DiskCache implements StepCache {
       }
       let target = withRoot(this.#root, entry.name);
       ensureParentDir(target);
-      writeFileBytes(target, readFileBytes(this.#blobPath(entry.fingerprint)));
+      writeFileBytes(target, readFileBytes(this.#blobPath(step, entry.fingerprint)));
     }
     return manifest;
   }
 
-  async put(key: CacheKey, manifest: OutputManifest): Future<void> {
-    ensureDir(withRoot(this.#root, '.zb/blobs'));
-    ensureDir(withRoot(this.#root, '.zb/cache'));
+  async put(step: StepKey, key: CacheKey, manifest: OutputManifest): Future<void> {
+    let stateDir = withRoot(this.#root, stateDirOf(step.value));
+    ensureDir(stateDir + '/blobs');
+    ensureDir(stateDir + '/cache');
     for (let entry in manifest.outputs) {
       if (!isFileEntry(entry.fingerprint)) {
         continue;
       }
-      let blob = this.#blobPath(entry.fingerprint);
+      let blob = this.#blobPath(step, entry.fingerprint);
       if (!exists(blob)) {
         writeFileBytes(blob, readFileBytes(withRoot(this.#root, entry.name)));
       }
     }
-    writeFile(this.#manifestPath(key), manifestToJson(manifest));
+    writeFile(this.#manifestPath(step, key), manifestToJson(manifest));
   }
 }
