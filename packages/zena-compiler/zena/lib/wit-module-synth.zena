@@ -117,6 +117,10 @@ final class Ty {
   var size = 0;
   var align = 1;
   var flats = 0;
+  /** ResourceH only: whether this position borrows rather than owns.
+   * Everywhere else a resource in value position is an implicit
+   * `own`, which consumes — the wrapper is marked moved when lowered. */
+  var isBorrow = false;
   new(this.kind, this.scalar = "", this.typeName = "", this.reason = "");
 }
 
@@ -306,6 +310,9 @@ function classifyType(t: Type, ifaceItems: Array<InterfaceItem>): Ty {
     if (resolved.kind != TyKind.ResourceH &&
         resolved.kind != TyKind.Unsupported) {
       return unsupported("own/borrow of a non-resource type");
+    }
+    if (resolved.kind == TyKind.ResourceH) {
+      resolved.isBorrow = t.tag == TypeTag.Borrow;
     }
     return resolved;
   }
@@ -817,6 +824,9 @@ function lowerMemStmts(sb: StringBuilder, ty: Ty, value: String,
     uses.useAbi("storeI32");
     sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
         .append(value).append(".[rawHandle]());\n");
+    if (!ty.isBorrow) {
+      sb.append(indent).append(value).append(".[markMoved]();\n");
+    }
     return;
   }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
@@ -969,6 +979,11 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   if (ty.kind == TyKind.ResourceH) {
     sb.append(indent).append(slots[base]).append(" = ").append(value)
         .append(".[rawHandle]();\n");
+    if (!ty.isBorrow) {
+      // An owned handle transfers to the callee: the wrapper's later
+      // dispose must not drop an index it no longer owns.
+      sb.append(indent).append(value).append(".[markMoved]();\n");
+    }
     return 1;
   }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
@@ -1225,6 +1240,14 @@ function renderResource(
   body.append("  /** The wire handle, module-internal. */\n");
   body.append("  [rawHandle](): i32 {\n    return this.#handle;\n");
   body.append("  }\n\n");
+  body.append("  /** The handle transferred to the host (an own\n");
+  body.append("   * parameter consumed it): dispose becomes a no-op,\n");
+  body.append("   * because the callee owns the drop now. Until affine\n");
+  body.append("   * checking covers these wrappers, a *use* after the\n");
+  body.append("   * move is a runtime trap rather than a compile\n");
+  body.append("   * error. */\n");
+  body.append("  [markMoved](): void {\n");
+  body.append("    this.#dropped = true;\n  }\n\n");
   body.append("  [Disposable.dispose](): void {\n");
   body.append("    if (!this.#dropped) {\n");
   body.append("      this.#dropped = true;\n");
@@ -1411,6 +1434,7 @@ export function synthesizeWitModule(canonicalPath: String): String {
   if (uses.anyResource) {
     // After the imports: a declaration among them is a parse error.
     sb.append("symbol rawHandle;\n");
+    sb.append("symbol markMoved;\n");
   }
   sb.append(body.toString());
   let skippedText = skipped.toString();
@@ -1649,6 +1673,9 @@ function renderFuncIn(
     } else if (params[i].kind == TyKind.Flags) {
       rawSig.append("a").append(i32ToString(i)).append(": u32");
       rawIndex += 1;
+    } else if (params[i].kind == TyKind.ResourceH) {
+      rawSig.append("a").append(i32ToString(i)).append(": i32");
+      rawIndex += 1;
     } else if (aggregate(params[i].kind)) {
       let slots = flatCoreSlots(params[i]) as GrowableArray<String>;
       for (var k = 0; k < slots.length; k += 1) {
@@ -1726,6 +1753,20 @@ function renderFuncIn(
     }
     if (params[i].kind == TyKind.Flags) {
       callArgs.append(paramNames[i]).append(" as u32");
+      argIndex += 1;
+      continue;
+    }
+    if (params[i].kind == TyKind.ResourceH) {
+      let h = "h" + i32ToString(i);
+      sb.append("  let ").append(h).append(" = ").append(paramNames[i])
+          .append(".[rawHandle]();\n");
+      if (!params[i].isBorrow) {
+        // An owned handle transfers to the callee: the wrapper's
+        // later dispose must not drop an index it no longer owns.
+        sb.append("  ").append(paramNames[i])
+            .append(".[markMoved]();\n");
+      }
+      callArgs.append(h);
       argIndex += 1;
       continue;
     }
