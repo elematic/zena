@@ -50,6 +50,14 @@ be used repeatedly afterward, and define it where it first appears. The
 same goes for figurative verbs standing in for plain ones: "what the
 annotation purchases" is "what the annotation allows".
 
+Speak plainly. Do not reach for a cute or figurative phrasing where a
+literal one is shorter and clearer — "the two loops differ only in the
+Pending case", not "the two loops are one arm apart"; "that is the only
+difference", not "that single arm is the whole design". Invented
+phrasings like these read as filler and make the reader decode a
+metaphor to recover a plain fact. If a sentence would survive the
+metaphor being deleted, delete it.
+
 Argue only against positions someone could actually hold. "Requiring
 the await is sounder and cheaper than synthesizing release glue" sets
 up a comparison the reader never proposed; if no alternative is on the

@@ -649,6 +649,13 @@ yielding `Thunk | Future<T>` union values with a small driver — still
 works in Zena, and fused generators make it cheaper than in JS. It's a
 pattern, not a blessed API; we should not ship stdlib support for it.
 
+[async-iteration.md](async-iteration.md) revisits this: Lit SSR's color
+is runtime data, which the compile-time monomorphization above does not
+reach, so that document proposes a three-armed `Step` protocol that
+blesses the pattern as one API — sync or async by the consumer's
+`for`/`for await`, not by a driver — and supersedes the
+`next(): Future<Option<T>>` shape §8.2 sketched.
+
 ## 9. Milestones
 
 Independent of, but sequenced against, ir.md's M-track (M2 parity in
