@@ -6932,13 +6932,28 @@ let isAnyRefSource = (t: Type): boolean => {
 };
 
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
-  // Automatically unwrap non-distinct type aliases
+  // Automatically unwrap non-distinct type aliases. An INTRINSIC
+  // alias (a type operator like Awaited<T>, open at a bare type
+  // parameter) does not unwrap: its placeholder target IS its
+  // operand, so unwrapping would make `R` and `Awaited<R>`
+  // interchangeable — and they differ exactly when R instantiates to
+  // a future, which is a type error deferred to whichever
+  // specialization flattens (issue #522). Operators compare
+  // nominally, in typesEqual below.
   match (source) {
-    case TypeAliasType as ta: { if (!ta.isDistinct) { return isAssignableTo(ctx, ta.target, target); } }
+    case TypeAliasType as ta: {
+      if (!ta.isDistinct && ta.intrinsicName == null) {
+        return isAssignableTo(ctx, ta.target, target);
+      }
+    }
     case _: {}
   }
   match (target) {
-    case TypeAliasType as tb: { if (!tb.isDistinct) { return isAssignableTo(ctx, source, tb.target); } }
+    case TypeAliasType as tb: {
+      if (!tb.isDistinct && tb.intrinsicName == null) {
+        return isAssignableTo(ctx, source, tb.target);
+      }
+    }
     case _: {}
   }
   // Same type (identity check via match).
@@ -7014,13 +7029,26 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case _: {}
   }
 
-  // Automatically unwrap non-distinct type aliases
+  // Automatically unwrap non-distinct type aliases. Intrinsic
+  // aliases (type operators) never unwrap: typesEqual above already
+  // matched same-operator-same-arguments, and anything else is not
+  // assignable (issue #522).
   match (source) {
-    case TypeAliasType as ta: { return isAssignableTo(ctx, ta.target, target); }
+    case TypeAliasType as ta: {
+      if (ta.intrinsicName != null) {
+        return false;
+      }
+      return isAssignableTo(ctx, ta.target, target);
+    }
     case _: {}
   }
   match (target) {
-    case TypeAliasType as tb: { return isAssignableTo(ctx, source, tb.target); }
+    case TypeAliasType as tb: {
+      if (tb.intrinsicName != null) {
+        return false;
+      }
+      return isAssignableTo(ctx, source, tb.target);
+    }
     case _: {}
   }
 

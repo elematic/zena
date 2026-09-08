@@ -1,0 +1,18 @@
+// @mode: check
+
+// R is not Awaited<R>: they differ exactly when R instantiates to a
+// future, so a body producing bare R where Awaited<R> is declared
+// errors at the definition rather than in whichever specialization
+// flattens (issue #522). The await IS the flattening.
+
+import { Future, Awaited } from "zena:async";
+
+let mapReady = async <T, R>(f: Future<T>, g: (v: T) => R): Future<Awaited<R>> => {
+  let v = await f;
+  return g(v); // @error: Type mismatch
+};
+
+let mapReadyOk = async <T, R>(f: Future<T>, g: (v: T) => R): Future<Awaited<R>> => {
+  let v = await f;
+  return await g(v);
+};
