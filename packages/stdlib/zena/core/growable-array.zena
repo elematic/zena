@@ -1,0 +1,132 @@
+import { Array, MutableArray } from 'zena:array';
+import { Iterable, Iterator } from 'zena:iterator';
+import { FilteredIterable } from 'zena:iterable-utils';
+import { FixedArray } from 'zena:fixed-array';
+import { GrowableArrayIterator } from 'zena:growable-array-iterator';
+import { IndexOutOfBoundsError } from 'zena:error';
+
+export final class GrowableArray<T> implements MutableArray<T>, Iterable<T> {
+  var #buffer: FixedArray<T>;
+  var #length = 0;
+
+  new(capacity: i32 = 8) : #buffer = __array_new_empty<T>(capacity) as FixedArray<T>;
+
+  static from<A>(seq: Array<A>): GrowableArray<A> {
+    let len = seq.length;
+    let result = new GrowableArray<A>(len);
+    var i = 0;
+    while (i < len) {
+      result.push(seq[i]);
+      i += 1;
+    }
+    return result;
+  }
+
+  length: i32 {
+    get {
+      return this.#length;
+    }
+  }
+
+  push(value: T): void {
+    if (this.#length == this.#buffer.length) {
+      this.#grow();
+    }
+    this.#buffer[this.#length] = value;
+    this.#length += 1;
+  }
+
+  pop(): T {
+    this.#length -= 1;
+    return this.#buffer[this.#length];
+  }
+
+  operator [](index: i32): T {
+    if (index < 0 || index >= this.#length) {
+      throw new IndexOutOfBoundsError(index, this.#length);
+    }
+    return this.#buffer[index];
+  }
+
+  operator []=(index: i32, value: T): void {
+    if (index < 0 || index >= this.#length) {
+      throw new IndexOutOfBoundsError(index, this.#length);
+    }
+    this.#buffer[index] = value;
+  }
+
+  map<U>(f: (item: T, index: i32, seq: GrowableArray<T>) => U): GrowableArray<U> {
+    let len = this.#length;
+    let result = new GrowableArray<U>(len);
+    var i = 0;
+    while (i < len) {
+      result.push(f(this[i], i, this as GrowableArray<T>));
+      i += 1;
+    }
+    return result;
+  }
+
+  contains(value: T): boolean {
+    for (var i = 0; i < this.#length; i += 1) {
+      if (this[i] == value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  all(predicate: (item: T) => boolean): boolean {
+    for (var i = 0; i < this.#length; i += 1) {
+      if (!predicate(this[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: T) => boolean): boolean {
+    for (var i = 0; i < this.#length; i += 1) {
+      if (predicate(this[i])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R {
+    var acc = initial;
+    for (var i = 0; i < this.#length; i += 1) {
+      acc = combine(acc, this[i]);
+    }
+    return acc;
+  }
+
+  find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _) {
+    for (var i = 0; i < this.#length; i += 1) {
+      if (predicate(this[i])) {
+        return (true, this[i]);
+      }
+    }
+    return (false, _);
+  }
+
+  filter(predicate: (item: T) => boolean): Iterable<T> {
+    return new FilteredIterable<T>(this, predicate);
+  }
+
+  [Iterable.iterator](): Iterator<T> {
+    return new GrowableArrayIterator<T>(this.#buffer, this.#length);
+  }
+
+  #grow(): void {
+    // Doubling zero must still grow, or the post-grow write traps.
+    let newCapacity = if (this.#buffer.length == 0) { 8 } else { this.#buffer.length * 2 };
+    let newBuffer = __array_new_empty<T>(newCapacity) as FixedArray<T>;
+    var i = 0;
+    while (i < this.#length) {
+      newBuffer[i] = this.#buffer[i];
+      i += 1;
+    }
+    this.#buffer = newBuffer;
+  }
+}

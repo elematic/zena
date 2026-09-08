@@ -1,0 +1,306 @@
+/**
+ * Ownership and resource management — the layer 0 drop protocol.
+ *
+ * See docs/design/ownership.md. This module is Track O's foundation: one
+ * interface that every kind of non-GC resource releases through, so that WIT
+ * handles, linear-memory allocations, WASI descriptors and FFI pointers share
+ * a single release mechanism instead of four.
+ *
+ * `Own<T>`, `Borrow<T>` and `Unmanaged<T>` are the three handle kinds;
+ * `disown` and `adopt` move a resource between the affine regime and the
+ * manually-managed one. `dispose` is what all of them ultimately call.
+ */
+
+/**
+ * A value holding something the garbage collector cannot reclaim.
+ *
+ * `dispose` is **symbol-keyed** rather than name-keyed. `dispose` is a common
+ * enough method name that a class may already have one meaning something
+ * unrelated, and this is a protocol the language itself invokes implicitly —
+ * a silent collision would be a resource released at the wrong time. Call it
+ * as `value.[Disposable.dispose]()`.
+ *
+ * ```zena
+ * import { Disposable } from 'zena:ownership';
+ *
+ * class Descriptor implements Disposable {
+ *   #handle: i32;
+ *   new(this.#handle);
+ *   [Disposable.dispose](): void { descriptorDrop(this.#handle); }
+ * }
+ * ```
+ *
+ * Disposal must be **idempotent**: `dispose()` may be called on an already
+ * disposed value and must not release the underlying resource twice. Until
+ * affine checking lands in O2, nothing statically prevents a double call, and
+ * a resource wrapper's state flag is what makes the second one a no-op.
+ */
+export interface Disposable {
+  /** The well-known symbol keying the release method. */
+  static symbol dispose;
+
+  /**
+   * Releases the underlying resource. Idempotent.
+   *
+   * Implementations must not throw: `dispose()` runs on exception-unwind
+   * paths, where a second exception would displace the one being propagated.
+   */
+  [dispose](): void;
+}
+
+/**
+ * The lifecycle accessors, symbol-keyed and deliberately **not exported**.
+ *
+ * Symbols are the only way to give a member a name no other code can write:
+ * calling one requires naming the interface that declares the symbol, so
+ * leaving `OwnState` unexported puts `state`/`setState` out of reach
+ * everywhere except this file. Reading the flag is harmless; writing it
+ * would let anything move a resource between regimes without going through
+ * `disown`/`adopt`, which is the whole check.
+ *
+ * A separate interface rather than members on `Resource` because `static
+ * symbol` is an interface-only declaration — the same arrangement
+ * `Disposable` already uses.
+ */
+interface OwnState {
+  static symbol state;
+  static symbol setState;
+
+  [state](): i32;
+  [setState](v: i32): void;
+}
+
+/**
+ * The classes declared with the `resource` modifier — those holding
+ * something the garbage collector cannot reclaim, and therefore carrying a
+ * release obligation.
+ *
+ * `resource class R` satisfies this without an `implements` clause, the way
+ * a case class satisfies `Hashable`. It exists to be **bounded against**:
+ * `disown` and `adopt` take a `T extends Resource` rather than any `T`,
+ * because moving a value between the affine and manually-managed regimes is
+ * only meaningful for something that has a disposal obligation to move.
+ *
+ * There is deliberately no way to *hold* one. Nothing is assignable to
+ * `Resource`, because the only reference to a resource a program can name is
+ * a handle — `Own<R>`, `Borrow<R>`, `Unmanaged<R>` — and those are nominally
+ * distinct types that assign to no supertype at all. That is what keeps a
+ * widening conversion from dropping the permissions the handle carries, and
+ * it is a property of the handles rather than of this interface: the same
+ * applies to every supertype, `Resource` or otherwise.
+ *
+ * Resource-ness is what this names; affineness is what `Own<T>` declares.
+ * They are separate properties — see ownership.md §"Resource-ness and
+ * affineness are different properties" — so this bound restricts neither
+ * `Own<T>` itself nor the ordinary classes it will eventually wrap.
+ *
+ * **The root of every resource hierarchy.** A `resource class` with no
+ * explicit superclass extends this one, so the lifecycle flag has an
+ * ordinary in-language home rather than a field codegen injects, and
+ * `disown`/`adopt` read it with an ordinary method call rather than an
+ * intrinsic. Being the root is also what makes ownership.md
+ * §"Resource-ness is inherited" cheap to satisfy: single inheritance means
+ * a resource cannot also extend an ordinary class, so the rule that its
+ * chain is all resources is structural rather than a check.
+ *
+ * Declaring no method that returns `this` is load-bearing, not incidental.
+ * That is the whole reason an arbitrary superclass is unsafe for a resource
+ * and this one is not.
+ */
+export resource abstract class Resource implements OwnState {
+  /**
+   * Where the resource is in its lifecycle. Private, so a subclass cannot
+   * move itself between regimes behind `disown`/`adopt`'s back.
+   *
+   * Zero-initialized by `struct.new_default`, which is why `Owned` must be
+   * 0 — a fresh resource is owned for free, with no constructor work.
+   */
+  var #state: i32 = 0;
+
+  [OwnState.state](): i32 { return this.#state; }
+  [OwnState.setState](v: i32): void { this.#state = v; }
+}
+
+/**
+ * The owning reference to a resource. Affine: it may be moved, returned or
+ * stored, but not duplicated, and it is released when it leaves scope unmoved.
+ *
+ * Erased at codegen: a `distinct type` is nominally distinct for checking but
+ * shares its target's representation, so a handle costs no allocation and no
+ * indirection. The three differ in permissions, not data.
+ *
+ * `Own<T>` is what declares **affineness**; `resource class` declares
+ * resource-ness. The two are separate on purpose — see ownership.md
+ * §"Resource-ness and affineness are different properties" — which is why
+ * `Own<T>` will also apply to ordinary classes (from a provably exclusive
+ * source) once layer 4 needs it.
+ */
+export opaque type Own<T> = T;
+
+/**
+ * A borrowed reference. Freely copied, but **second-class**: it may not be
+ * returned (except derived from a single borrow parameter), stored in a field
+ * or array, or captured by a closure. Never releases what it points at.
+ *
+ * At unrestricted instantiations `Borrow<T>` is the identity — `Borrow<i32>`
+ * is `i32` — which is what keeps container APIs from forking.
+ */
+export opaque type Borrow<T> = T;
+
+/**
+ * A disowned resource: aliasable like an ordinary reference, and **never**
+ * implicitly dropped. You must `dispose()` it yourself or `adopt()` it back
+ * into the affine world.
+ *
+ * This is the population `using` was designed for. Entering it costs
+ * leak-freedom and compile-time use-after-dispose detection; it costs neither
+ * type soundness nor memory safety, because the state flag turns a bad
+ * `adopt` into a clean error rather than a double free.
+ */
+export opaque type Unmanaged<T> = T;
+
+/**
+ * A value that may not be duplicated and may not outlive the extent it
+ * derives from — the corner of the universe table where both
+ * restrictions bind (ownership.md §"Scoped<T>: the fourth corner").
+ * The population is borrow-derived futures and iterators: an async
+ * function that holds a `Borrow` across `await` returns
+ * `Scoped<Future<T>>`, so the frame holding the borrow cannot escape
+ * the borrow's extent.
+ *
+ * A scoped value must be consumed exactly once on every path: a scoped
+ * future by `await` or a move, a scoped iterator by `for`/`in`. It may
+ * not be stored in a field, container, record, or tuple, and may not
+ * be captured by a closure. A first-class `Future<T>` coerces to
+ * `Scoped<Future<T>>`; there is no way back.
+ */
+export opaque type Scoped<T> = T;
+
+/**
+ * A resource's position in its lifecycle, held in `Resource`'s private
+ * `#state`. See ownership.md §"Disowning and adopting".
+ *
+ * The numbering is load-bearing at one point: `Owned` must be 0, because
+ * an instance is allocated with every field defaulted and nothing
+ * initializes this one — a fresh resource is owned for free.
+ *
+ * `Moved` is declared but unreachable today, reserved for move checking.
+ * `Dropped` is stored by the compiler at the top of every consuming
+ * dispose — written or synthesized — so a released resource is observably
+ * dead, and `adopt` after disposal is the clean error below.
+ */
+enum ResourceState {
+  Owned = 0,
+  Disowned = 1,
+  Moved = 2,
+  Dropped = 3,
+}
+
+/**
+ * Raised when a regime change is handed a resource in the wrong state:
+ * adopting one that was never disowned, or disowning one twice.
+ *
+ * Both are programming errors rather than expected conditions — the
+ * resource was already claimed by someone else, or already released — so
+ * they throw rather than returning a `Result`. A `tryAdopt` handing back
+ * the branch can be added if a caller ever wants it.
+ */
+export class ResourceStateError extends Error {
+  new(operation: String, actual: String, expected: String)
+    : super(operation + "() expects a resource that is " + expected +
+            ", but it is " + actual);
+}
+
+let stateName = (state: i32): String => {
+  if (state == ResourceState.Owned as i32) { return "owned"; }
+  if (state == ResourceState.Disowned as i32) { return "disowned"; }
+  if (state == ResourceState.Moved as i32) { return "moved"; }
+  return "dropped";
+};
+
+/**
+ * Throws unless `value` is in `expected`. This is the whole runtime half
+ * of the ownership model: until move checking turns these into
+ * compile errors, the flag is what keeps a double disown or a second
+ * adopter from silently minting a second owner.
+ */
+function requireState(value: Borrow<Resource>, expected: ResourceState, operation: String): void {
+  let actual = value.[OwnState.state]();
+  if (actual != expected as i32) {
+    throw new ResourceStateError(operation, stateName(actual),
+        stateName(expected as i32));
+  }
+}
+
+/**
+ * Writes the flag. Non-generic for the same reason as `requireState`.
+ */
+function setResourceState(value: Borrow<Resource>, state: i32): void {
+  value.[OwnState.setState](state);
+}
+
+/**
+ * Leaves the affine regime: takes the owning handle and hands back an
+ * aliasable one that is never implicitly dropped.
+ *
+ * ```zena
+ * let raw: Unmanaged<Descriptor> = disown(f);   // f is consumed
+ * // … alias it, store it in a field, put it in an ordinary Array …
+ * let f2: Own<Descriptor> = adopt(raw);         // back under implicit drop
+ * ```
+ *
+ * The handles are erased, so this re-types the object rather than allocating
+ * anything: `Own<T>` and `Unmanaged<T>` lower to the same wasm type, and the
+ * body compiles to an identity function returning its argument. The call
+ * itself is not yet inlined away.
+ *
+ * Requires the resource to be `owned` and leaves it `disowned`, so
+ * disowning the same resource twice throws rather than handing out two
+ * unmanaged aliases with one disposal obligation between them.
+ *
+ * `disown` **consumes** its argument. Otherwise an `Own` that will implicitly
+ * drop would coexist with an `Unmanaged` alias to the same resource, and the
+ * drop would run under an alias that outlives it. Move checking enforces the
+ * consumption for local bindings — a caller that keeps using the original
+ * `Own` after disowning it gets a compile error, through the ordinary rule
+ * that an argument to an `Own` parameter is a move. The flag still guards
+ * the routes the checker does not track, such as an `Own` read out of a
+ * field.
+ *
+ * The cast is legal here and nowhere else: `Own<T>` and `Unmanaged<T>` are
+ * opaque types declared in this file, and both erase to `T`, so re-labelling
+ * one as the other mints nothing. See ownership.md §"Handles are not
+ * forgeable" — outside this file the same cast is a diagnostic, which is what
+ * makes `disown` and `adopt` the only doors between the two regimes.
+ */
+export function disown<T extends Resource>(value: Own<T>): Unmanaged<T> {
+  requireState(value as Borrow<Resource>, ResourceState.Owned, "disown");
+  setResourceState(value as Borrow<Resource>, ResourceState.Disowned as i32);
+  return value as Unmanaged<T>;
+}
+
+/**
+ * Re-enters the affine regime: takes a disowned handle back under implicit
+ * drop, so it is released at scope exit again.
+ *
+ * The inverse of `disown`, and the only way back — `Unmanaged<R>`
+ * has no user-callable `dispose`, since it is not an owner and cannot call the
+ * consuming form. A disowned resource is either scoped with `using` or adopted
+ * back.
+ *
+ * **Throws** when the resource is not in the `disowned` state: `owned`
+ * means something else adopted it first, so two racing adopters do not both
+ * succeed — the loser gets a clear error rather than a second owner and,
+ * once implicit drop lands, a double free.
+ *
+ * `dropped` throws too: every consuming dispose sets it, so adopting an
+ * already-released resource is reported as exactly that.
+ *
+ * `adopt` cannot retract aliases. Aliasability is the point of the disowned
+ * state, so the flag is the only defence here, by design.
+ */
+export function adopt<T extends Resource>(value: Unmanaged<T>): Own<T> {
+  requireState(value as Borrow<Resource>, ResourceState.Disowned, "adopt");
+  setResourceState(value as Borrow<Resource>, ResourceState.Owned as i32);
+  return value as Own<T>;
+}

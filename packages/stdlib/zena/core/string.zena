@@ -1,0 +1,489 @@
+/**
+ * The Zena String class
+ *
+ * This is view-based design like Go, but also takes inspiration from Swift
+ * which is very strict about hiding encoding details and providing safe slicing
+ * methods. We will probably move the design to be even more like Swift in the
+ * future, further hiding encoding details and byte-based operations.
+ *
+ * Every String is a view into a backing ByteArray with start/end offsets.
+ * Slicing is O(1) and zero-copy. Use copy() to release parent memory.
+ *
+ * SAFETY: Use StringReader for parsing to ensure slices are at code point
+ * boundaries. Direct use of sliceBytes() with computed indices can split
+ * multi-byte UTF-8 sequences.
+ */
+import {FixedArray} from 'zena:fixed-array';
+import {Hashable, hash} from 'zena:hashable';
+
+export enum Encoding {
+  WTF8,    // 0 - UTF-8 with unpaired surrogates allowed
+  WTF16    // 1 - UTF-16 for JS interop
+}
+
+/**
+ * An sequence of unicode code points, stored as a view into a ByteArray with a
+ * specified encoding.
+ *
+ * Strings are immutable and comparable by value. They are created by the
+ * compiler for literals, by string operations like concatenation and slicing,
+ * StringBuilders, template literals, etc. The internal design allows for
+ * efficient slicing and concatenation without copying, while still providing
+ * value semantics for equality and immutability.
+ *
+ * Strings take care to mostly hide the underlying encoding details, in order to
+ * be portable across platforms with different native string representations.
+ * Zena can be compiled to platforms with either UTF-8 or UTF-16 native strings,
+ * and the String class abstracts over these differences, to zupport efficient
+ * string sharing with host platforms. Encoding is mostly an internal detail,
+ * but it can be observed in some cases, like the getByteAt() and sliceBytes()
+ * methods.
+ * 
+ * Use StringReader for parsing strings, which provides safe methods for slicing
+ * at code point boundaries. Use StringBuilder for efficient construction of
+ * strings from parts.
+ */
+/**
+ * Returns the ASCII lowercase of `b`, leaving every other byte or code point
+ * unchanged.
+ *
+ * ASCII-only is the point, not a shortcut. It is the operation specifications
+ * such as the WHATWG URL Standard mandate, and it is locale-independent and
+ * table-free. Unicode case mapping is a genuinely different function: it is
+ * locale-sensitive (under Turkish rules `I` lowercases to a dotless i), it can
+ * change length (uppercasing the sharp s yields `SS`), and it needs
+ * case-mapping tables that would then be reachable from every caller. It must
+ * therefore stay a separate function rather than being folded into these.
+ */
+export let asciiLowerByte = (b: i32): i32 =>
+  if (b >= 0x41 && b <= 0x5A) b + 0x20 else b;
+
+/** Returns the ASCII uppercase of `b`. See `asciiLowerByte`. */
+export let asciiUpperByte = (b: i32): i32 =>
+  if (b >= 0x61 && b <= 0x7A) b - 0x20 else b;
+
+export final class String implements Hashable {
+  // Internal storage - accessed by compiler intrinsics
+  #data: ByteArray;    // Backing storage (may be shared with other Strings)
+  #start: i32;         // Start offset into #data (inclusive)
+  #end: i32;           // End offset into #data (exclusive)
+  #encoding: Encoding;
+  /**
+   * Cached hash code. A value of 0 indicates that the hash code has not yet
+   * been computed. If a string's calculated FNV-1a hash is exactly 0, it is
+   * coerced to 1 by the compiler's hash helper to avoid redundant recomputations.
+   */
+  var #hashCode: i32 = 0;
+
+  /**
+   * Create a new array from a ByteArray.
+   *
+   * Important: This should be considered a private constructor - strings are
+   * created by the compiler for literals or by StringBuilder/transcoding
+   * functions. When Zena supports private constructors, this will be marked as
+   * private to prevent misuse.
+   */
+  new(data: ByteArray, start: i32, end: i32, encoding: Encoding)
+    : #data = data, #start = start, #end = end, #encoding = encoding;
+
+  /**
+   * Creates a String from a ByteArray with given bounds and encoding.
+   * This is used by StringBuilder and other internal operations.
+   */
+  static fromByteArray(data: ByteArray, start: i32, end: i32, encoding: Encoding): String {
+    return new String(data, start, end, encoding);
+  }
+
+  /**
+   * The encoding of the backing bytes. Encoding is deliberately an
+   * internal detail almost everywhere; this exists for boundary code —
+   * canonical-ABI marshaling, host interop — that copies the bytes
+   * verbatim and must assert what it is copying rather than assume.
+   */
+  encoding: Encoding {
+    get {
+      return this.#encoding;
+    }
+  }
+
+  /**
+   * Creates a new string by concatenating all parts.
+   * This is more efficient than chained + operators for multiple strings,
+   * as it allocates the result array only once.
+   */
+  static fromParts(parts: array<String>): String {
+    // First pass: calculate total length
+    let partsLen = __array_len(parts);
+    var totalLen = 0;
+    var i = 0;
+    while (i < partsLen) {
+      let part = __array_get(parts, i);
+      totalLen = totalLen + (part.#end - part.#start);
+      i += 1;
+    }
+
+    // Allocate result array
+    let data = __byte_array_new(totalLen);
+
+    // Second pass: copy all parts
+    var offset = 0;
+    i = 0;
+    while (i < partsLen) {
+      let part = __array_get(parts, i);
+      let partLen = part.#end - part.#start;
+      __byte_array_copy(data, offset, part.#data, part.#start, partLen);
+      offset = offset + partLen;
+      i += 1;
+    }
+
+    // Use encoding from first part, or default to WTF-8
+    var encoding = Encoding.WTF8;
+    if (partsLen > 0) {
+      encoding = __array_get(parts, 0).#encoding;
+    }
+    return new String(data, 0, totalLen, encoding);
+  }
+
+  /**
+   * The length of the string in bytes.
+   * 
+   * Since string operations like slicing and `getByteAt` operate on bytes,
+   * this consistently returns the byte capacity of the view regardless of
+   * the underlying encoding (WTF-8 or WTF-16).
+   *
+   * TODO: Rename to byteLength or remove entirely.
+   */
+  length: i32 {
+    get {
+      return this.#end - this.#start;
+    }
+  }
+
+  /**
+   * Returns the byte at the given index.
+   *
+   * For WTF-8 strings, this is the UTF-8 byte at the given index.
+   * For WTF-16 strings, this is the byte (not code unit) at the given index.
+   */
+  getByteAt(index: i32): i32 {
+    return __byte_array_get(this.#data, this.#start + index);
+  }
+
+  /**
+   * O(1) zero-copy slice by byte indices.
+   * Returns a new String sharing the backing array.
+   * 
+   * SAFETY: Indices are byte offsets, not code point offsets.
+   * Slicing in the middle of a multi-byte UTF-8 sequence produces
+   * an invalid string. Use StringReader.mark() to get safe positions.
+   */
+  sliceBytes(start: i32, end: i32): String {
+    // Clamp indices to valid range
+    var s = start;
+    var e = end;
+    let len = this.#end - this.#start;
+    if (s < 0) { s = 0; }
+    if (e > len) { e = len; }
+    if (s > e) { s = e; }
+    
+    return new String(
+      this.#data,
+      this.#start + s,
+      this.#start + e,
+      this.#encoding
+    );
+  }
+
+  /**
+   * Force a copy - creates a new String with its own backing array.
+   * Use this when you need to release the parent string's memory.
+   */
+  copy(): String {
+    let len = this.#end - this.#start;
+    let newData = __byte_array_new(len);
+    __byte_array_copy(newData, 0, this.#data, this.#start, len);
+    return new String(newData, 0, len, this.#encoding);
+  }
+
+  /**
+   * Copies bytes from this string to a target ByteArray.
+   *
+   * @param target The target ByteArray to copy to.
+   * @param targetOffset The offset in target to start writing.
+   * @param start Start byte offset in this string (default: 0).
+   * @param length Number of bytes to copy (default: rest of string from start).
+   */
+  copyBytesTo(target: ByteArray, targetOffset: i32, start: i32 = 0, length: i32 = -1): void {
+    var len = length;
+    if (len < 0) {
+      len = this.#end - this.#start - start;
+    }
+    __byte_array_copy(target, targetOffset, this.#data, this.#start + start, len);
+  }
+
+  /**
+   * Compares `length` bytes of this string starting at `thisOffset` against
+   * `other` starting at `otherOffset`.
+   */
+  #regionEquals(
+      other: String,
+      thisOffset: i32,
+      otherOffset: i32,
+      length: i32): boolean {
+
+    let thisData = this.#data;
+    let otherData = other.#data;
+
+    for (var i = 0; i < length; i += 1) {
+      if (__byte_array_get(thisData, thisOffset + i) != 
+          __byte_array_get(otherData, otherOffset + i)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Returns true if this string starts with the given prefix.
+   */
+  startsWith(prefix: String): boolean {
+    let prefixLength = prefix.#end - prefix.#start;
+    if (prefixLength > this.#end - this.#start) {
+      return false;
+    }
+    return this.#regionEquals(prefix, this.#start, prefix.#start, prefixLength);
+  }
+
+  /**
+   * Returns true if this string ends with the given suffix.
+   */
+  endsWith(suffix: String): boolean {
+    let suffixLength = suffix.#end - suffix.#start;
+    if (suffixLength > this.#end - this.#start) {
+      return false;
+    }
+    return this.#regionEquals(suffix, this.#end - suffixLength, suffix.#start, suffixLength);
+  }
+
+  /**
+   * Splits the string into an array of substrings separated by the given separator.
+   */
+  split(separator: String): FixedArray<String> {
+    let sepLength = separator.#end - separator.#start;
+    if (sepLength == 0) {
+      return new FixedArray<String>(1, this);
+    }
+
+    let haystackLength = this.#end - this.#start;
+    if (sepLength > haystackLength) {
+      return new FixedArray<String>(1, this);
+    }
+
+    // First pass: count parts
+    var count = 1;
+    var i = 0;
+    let lastIndex = sepLength - 1;
+    let firstByte = __byte_array_get(separator.#data, separator.#start);
+    let lastByte = __byte_array_get(separator.#data, separator.#start + lastIndex);
+
+    while (i <= haystackLength - sepLength) {
+      let currentIndex = this.#start + i;
+      if (__byte_array_get(this.#data, currentIndex) == firstByte &&
+          __byte_array_get(this.#data, currentIndex + lastIndex) == lastByte &&
+          (sepLength <= 2 || this.#regionEquals(separator, currentIndex + 1, separator.#start + 1, sepLength - 2))) {
+        count += 1;
+        i += sepLength;
+      } else {
+        i += 1;
+      }
+    }
+
+    // Allocate result array
+    let result = __array_new_empty<String>(count) as FixedArray<String>;
+
+    // Second pass: fill parts
+    var partIdx = 0;
+    var lastStart = 0;
+    i = 0;
+    while (i <= haystackLength - sepLength) {
+      let currentIndex = this.#start + i;
+      if (__byte_array_get(this.#data, currentIndex) == firstByte &&
+          __byte_array_get(this.#data, currentIndex + lastIndex) == lastByte &&
+          (sepLength <= 2 || this.#regionEquals(separator, currentIndex + 1, separator.#start + 1, sepLength - 2))) {
+        result[partIdx] = this.sliceBytes(lastStart, i);
+        partIdx += 1;
+        i += sepLength;
+        lastStart = i;
+      } else {
+        i += 1;
+      }
+    }
+    // Add the last part
+    let lastPart = this.sliceBytes(lastStart, haystackLength);
+    result[partIdx] = lastPart;
+
+    return result;
+  }
+
+  /**
+   * Returns the byte-index of the first occurrence of `needle`.
+   */
+  #indexOf(needle: String): i32 {
+    // This is a simplified search algorithm that checks the first and last byte
+    // of the needle to quickly skip non-matching positions. It performs well
+    // for short needles. If we find that this is a bottleneck, we can implement
+    // a more advanced algorithm like Boyer-Moore-Horspool.
+    //
+    // https://en.wikipedia.org/wiki/Boyer%E2%80%93Moore%E2%80%93Horspool_algorithm
+    //
+    // That would require building a skip table for the needle, which adds
+    // overhead for short needles, but can be faster for longer needles. For
+    // repeated searches with the same needle, we could cache the skip table,
+    // but in order to not bloat the String class with extra fields, we would
+    // need to store the skip table in a side table.
+
+    let needleLength = needle.#end - needle.#start;    
+    if (needleLength == 0) {
+      return 0;
+    }
+
+    let haystackLength = this.#end - this.#start;
+    if (needleLength > haystackLength) {
+      return -1;
+    }
+
+    let lastIndex = needleLength - 1;
+    let firstByte = __byte_array_get(needle.#data, needle.#start);
+    let lastByte = __byte_array_get(needle.#data,
+      needle.#start + lastIndex);
+
+    for (var i = 0; i <= haystackLength - needleLength; i += 1) {
+      let currentIndex = this.#start + i;
+
+      // 1. Check the first byte
+      if (__byte_array_get(this.#data, currentIndex) != firstByte) {
+        continue;
+      }
+
+      // 2. Check the last byte (this eliminates many non-matches)
+      if (__byte_array_get(this.#data, currentIndex + lastIndex) != lastByte) {
+        continue;
+      }
+
+      if (needleLength <= 2) {
+        // For 1 or 2 byte needles, we can skip the full comparison since the
+        // first and last byte checks are sufficient.
+        return i;
+      }
+
+      // 3. Only then do the full comparison
+      // TODO: Use skip tables in the future
+      if (this.#regionEquals(needle, currentIndex + 1, needle.#start + 1, needleLength - 2)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  contains(needle: String): boolean {
+    return this.#indexOf(needle) != -1;
+  }
+
+  /**
+   * Returns the backing ByteArray if the String spans the entire array (i.e. not a slice).
+   * Used for optimization by StringBuilder.
+   */
+  getBackingArrayIfFull(): ByteArray | null {
+    if (this.#start == 0 && this.#end == __byte_array_length(this.#data)) {
+      return this.#data;
+    }
+    return null;
+  }
+
+  /**
+   * Concatenates two strings and returns a new string.
+   */
+  operator +(other: String): String {
+    let len1 = this.#end - this.#start;
+    let len2 = other.#end - other.#start;
+    let newData = __byte_array_new(len1 + len2);
+    __byte_array_copy(newData, 0, this.#data, this.#start, len1);
+    __byte_array_copy(newData, len1, other.#data, other.#start, len2);
+    return new String(newData, 0, len1 + len2, this.#encoding);
+  }
+
+  /**
+   * Equality operator - compares the bytes in each view.
+   */
+  operator ==(other: String): boolean {
+    if (this === other) {
+      return true;
+    }
+    let length = other.#end - other.#start;
+    if (length != this.#end - this.#start) {
+      return false;
+    }
+    let h1 = this.#hashCode;
+    let h2 = other.#hashCode;
+    if (h1 != 0 && h2 != 0 && h1 != h2) {
+      return false;
+    }
+    return this.#regionEquals(other, this.#start, other.#start, length);
+  }
+
+  /**
+   * FNV-1a hash of the string's bytes, cached in #hashCode after the first
+   * computation. Delegates to the compiler's shared string hash helper
+   * (generateStringHashFunction), which reads and updates the cache field.
+   */
+  /**
+   * Returns this string with every ASCII letter lowercased; every other byte
+   * is left alone. See `asciiLowerByte` for why this is deliberately not
+   * Unicode-aware.
+   *
+   * Byte-wise, which is exactly right for WTF-8: an ASCII byte is always a
+   * whole code point, and no continuation byte falls in 0x41..0x5A, so no
+   * multi-byte sequence can be corrupted. A WTF-16 string would instead need
+   * code-unit stepping — and that branch belongs here, on `#encoding`, rather
+   * than in every caller, which is the reason this lives on String at all. No
+   * String method supports WTF-16 yet and nothing constructs one today.
+   *
+   * Returns `this` when there is nothing to change, so the common
+   * already-lowercase case does not allocate.
+   */
+  asciiLowerCase(): String {
+    return this.#mapAscii(true);
+  }
+
+  /** Returns this string with every ASCII letter uppercased. */
+  asciiUpperCase(): String {
+    return this.#mapAscii(false);
+  }
+
+  #mapAscii(lower: boolean): String {
+    let len = this.#end - this.#start;
+    var needsChange = false;
+    for (var i = 0; i < len; i += 1) {
+      let b = __byte_array_get(this.#data, this.#start + i);
+      let mapped = if (lower) asciiLowerByte(b) else asciiUpperByte(b);
+      if (mapped != b) {
+        needsChange = true;
+        break;
+      }
+    }
+    if (!needsChange) {
+      return this;
+    }
+    let newData = __byte_array_new(len);
+    for (var i = 0; i < len; i += 1) {
+      let b = __byte_array_get(this.#data, this.#start + i);
+      let mapped = if (lower) asciiLowerByte(b) else asciiUpperByte(b);
+      __byte_array_set(newData, i, mapped);
+    }
+    return new String(newData, 0, len, this.#encoding);
+  }
+
+  hashCode(): i32 {
+    return hash(this);
+  }
+}
