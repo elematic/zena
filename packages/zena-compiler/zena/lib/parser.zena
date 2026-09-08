@@ -351,6 +351,10 @@ export final class Parser {
   #peek2(): Token {
     return this.#tokens[this.#current + 1];
   }
+
+  #peek3(): Token {
+    return this.#tokens[this.#current + 2];
+  }
   
   #previous(): Token {
     return this.#tokens[this.#current - 1];
@@ -570,7 +574,10 @@ export final class Parser {
     // distinguishes them.
     if (this.#check(TokenType.Function) ||
         ((this.#check(TokenType.Gen) || this.#check(TokenType.Async)) &&
-         this.#peek2().kind == TokenType.Function)) {
+         this.#peek2().kind == TokenType.Function) ||
+        // `async gen function`
+        (this.#check(TokenType.Async) && this.#peek2().kind == TokenType.Gen &&
+         this.#peek3().kind == TokenType.Function)) {
       return this.#parseFunctionDeclaration(exported, topLevel, startToken);
     }
 
@@ -786,8 +793,9 @@ export final class Parser {
       isGenerator = true;
     } else if (this.#match(TokenType.Async)) {
       isAsync = true;
-      if (this.#check(TokenType.Gen)) {
-        throw this.#error('Async generators are not yet supported');
+      // `async gen function`: may await AND yield (async-iteration.md).
+      if (this.#match(TokenType.Gen)) {
+        isGenerator = true;
       }
     }
     this.#consume(TokenType.Function, "Expected 'function'");
@@ -2155,15 +2163,14 @@ export final class Parser {
 
     // Async function expression: async (params): Future<T> => { ... }
     if (this.#match(TokenType.Async)) {
-      if (this.#check(TokenType.Gen)) {
-        throw this.#error('Async generators are not yet supported');
-      }
+      // `async gen (params): Iterator<T> => { ... }`.
+      let asyncIsGen = this.#match(TokenType.Gen);
       var asyncTypeParams: GrowableArray<TypeParameter> | null = null;
       if (this.#match(TokenType.Less)) {
         asyncTypeParams = this.#parseTypeParameterList();
       }
       this.#consume(TokenType.LParen, "Expected '(' after 'async'");
-      return this.#parseArrowFunction(startToken, asyncTypeParams, false, true);
+      return this.#parseArrowFunction(startToken, asyncTypeParams, asyncIsGen, true);
     }
 
     // Generic arrow function: <T>(x: T) => x
@@ -3291,8 +3298,9 @@ export final class Parser {
     var isAsyncM = false;
     if (this.#match(TokenType.Async)) {
       isAsyncM = true;
-      if (isGen || this.#check(TokenType.Gen)) {
-        throw this.#error('Async generators are not yet supported');
+      // `async gen name(): Iterator<T>`: may await and yield.
+      if (this.#match(TokenType.Gen)) {
+        isGen = true;
       }
       if (isDeclare) {
         throw this.#error("'declare' methods cannot be async");

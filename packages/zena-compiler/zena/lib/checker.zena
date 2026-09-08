@@ -13591,6 +13591,8 @@ let checkMethodSignature = (
   }
 
   // Async methods: the annotation is the full Future<T> return type.
+  // An `async gen` method is validated as a generator (Iterator<T>)
+  // above; `async` only permits await in its body.
   if (md.isAsync) {
     // Same as async functions: the transform's failure-capture region
     // needs the exception infrastructure.
@@ -13598,7 +13600,9 @@ let checkMethodSignature = (
     if (asyncDeps != null) {
       asyncDeps.needsExceptionInfra = true;
     }
-    if (md.returnType == null) {
+    if (md.isGenerator) {
+      // return type already checked as Iterator<T>; body may await.
+    } else if (md.returnType == null) {
       ctx.error(
         "An async method requires a return type annotation of 'Future<T>'.",
         DiagnosticCode.TypeMismatch,
@@ -13909,7 +13913,11 @@ let checkMethodBody = (
     }
     ctx.setReturnType(new VoidType());
     ctx.setYieldType(yieldT);
-    ctx.setAsyncValueType(null);
+    // An `async gen` may await: a non-null asyncValueType opens the
+    // gate (checkAwaitExpression), and void is right because a
+    // generator returns through `yield`, not a frame value. No
+    // asyncFutureType: `return` ends the iteration, it does not adopt.
+    ctx.setAsyncValueType(if (md.isAsync) new VoidType() as Type else null);
     ctx.setAsyncFutureType(null);
   } else if (md.isAsync) {
     var valueT: Type = new ErrorType();
@@ -17980,7 +17988,10 @@ let checkFunctionExpression = (
     if (asyncDeps != null) {
       asyncDeps.needsExceptionInfra = true;
     }
-    if (returnTypeAnn != null) {
+    // An `async gen` returns `Iterator<T>`, validated by the generator
+    // block above; `async` here means the body may await, not that it
+    // returns a Future (async-iteration.md). Skip the Future check.
+    if (!isGenerator && returnTypeAnn != null) {
       var asyncRet = retType;
       if (isScopedType(asyncRet)) {
         let aInner = scopedInner(asyncRet);
