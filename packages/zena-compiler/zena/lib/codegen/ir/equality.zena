@@ -507,63 +507,16 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
     }
   }
 
-  // Boxed-primitive tiers, in streaming's order.
-  let boxClassOpt = cx.wasm.boxClass;
-  if (boxClassOpt != null) {
-    let boxTypes = new GrowableArray<Type>();
-    boxTypes.push(new I32Type());
-    boxTypes.push(new BooleanType());
-    boxTypes.push(new F64Type());
-    boxTypes.push(new F32Type());
-    boxTypes.push(new I64Type());
-    for (var bi = 0; bi < boxTypes.length; bi += 1) {
-      let t = boxTypes[bi];
-      let typeArgs = new GrowableArray<Type>();
-      typeArgs.push(t);
-      let boxCt = instantiateClassType(boxClassOpt, typeArgs);
-      var boxStruct: WasmStruct | null = null;
-      if (let (true, info) = cx.wasm.classInfos.get(getClassKey(boxCt))) {
-        boxStruct = info.structType;
-      }
-      if (boxStruct == null) {
-        continue;
-      }
-      if (boxStruct.fields.length < 2 || boxStruct.fields[1].name == null) {
-        continue;
-      }
-      let boxVt = new ValTypeRef(boxStruct) as ValType;
-      let valueField = boxStruct.fields[1].name as String;
-      let valueVt = boxStruct.fields[1].type;
-      let lIsB = cx.b.emit(IrOp.ref_test, i32vt, left,
-          cx.b.internType(boxVt));
-      let rIsB = cx.b.emit(IrOp.ref_test, i32vt, right,
-          cx.b.internType(boxVt));
-      let bothB = cx.b.binary(IrOp.i32_and, i32vt, lIsB, rIsB);
-      let unwrapB = cx.b.newBlock();
-      let nextB = cx.b.newBlock();
-      cx.b.brIf(bothB, unwrapB, noValues(), nextB, noValues());
-      cx.b.switchTo(unwrapB);
-      let lC = cx.b.emit(IrOp.ref_cast, boxVt, left,
-          cx.b.internType(boxVt));
-      let rC = cx.b.emit(IrOp.ref_cast, boxVt, right,
-          cx.b.internType(boxVt));
-      let fieldRef = cx.b.addRef(new IrRefField(boxStruct, valueField));
-      let lV = cx.b.emit(IrOp.struct_get, valueVt, lC, fieldRef);
-      let rVref = cx.b.addRef(new IrRefField(boxStruct, valueField));
-      let rV = cx.b.emit(IrOp.struct_get, valueVt, rC, rVref);
-      var cmpOp = IrOp.i32_eq;
-      if (t is F64Type) {
-        cmpOp = IrOp.f64_eq;
-      } else if (t is F32Type) {
-        cmpOp = IrOp.f32_eq;
-      } else if (t is I64Type) {
-        cmpOp = IrOp.i64_eq;
-      }
-      let cmp = cx.b.binary(cmpOp, i32vt, lV, rV);
-      cx.b.br(merge, oneValue(cmp));
-      cx.b.switchTo(nextB);
-    }
-  }
+  // No further tiers. `String` earns one because its `==` IS content
+  // equality at every static type; a class the compiler knows nothing
+  // about compares as its own `==` does, and for a class without one
+  // that is identity, already answered by the `ref_eq` above. This
+  // used to unwrap `Box<prim>` and compare the payloads, which made
+  // `==` mean something different through an erased operand than at
+  // the value's own static type (`Box` declares no `==`, so
+  // `a == b` on two `Box<f64>(1.5)` was false while the same pair
+  // through `anyref` was true) — and `hash` never followed, so the
+  // two together could not satisfy the eq/hash contract.
 
   // Different or non-comparable references: false.
   cx.b.br(merge, oneValue(zero));

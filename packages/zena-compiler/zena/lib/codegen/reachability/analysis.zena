@@ -15,7 +15,7 @@ import { GrowableArray } from 'zena:growable-array';
 import { OrderedMap } from 'zena:ordered-map';
 import { StringBuilder } from 'zena:string-builder';
 import {
-  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, isBoxablePrimitive, InterfaceKey,
+  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey,
 } from '../codegen-utils.zena';
 import {
   typeToValType, getClosureStruct, getInterfaceMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen,
@@ -746,26 +746,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * its struct, can appear in the emitted module — the same question
    * the type section is rooted from in `run`, asked earlier.
    *
-   * A `Box<prim>` specialization counts once registered, for the reason
-   * the type-section root gives: the erased-`==` diamond ref_tests
-   * every registered one, with no AST naming it.
+   * Instantiation and mention are the whole answer. There used to be a
+   * third case, `Box<prim>`, because the erased-`==` diamond ref_tested
+   * every registered one with no AST naming it; nothing is synthesized
+   * behind the AST's back any more.
    */
   #classHasEmissionEvidence(ct: ClassType): boolean {
     let cKeyStr = getClassKey(ct) as String;
-    if (this.instantiatedSpecializedClasses.has(cKeyStr) ||
-        this.reachablyNamedClasses.has(cKeyStr)) {
-      return true;
-    }
-    let {boxClass} = this.wasm;
-    if (boxClass != null && isConcrete(ct) &&
-        (ct.genericSource ?? ct).symbolId == boxClass.symbolId) {
-      let {typeArguments} = ct;
-      if (typeArguments != null && typeArguments.length == 1 &&
-          isBoxablePrimitive(typeArguments[0])) {
-        return true;
-      }
-    }
-    return false;
+    return this.instantiatedSpecializedClasses.has(cKeyStr) ||
+        this.reachablyNamedClasses.has(cKeyStr);
   }
 
   #populateClassStruct(ct: ClassType, populated: HashMap<ClassKey, boolean>): void {
@@ -883,9 +872,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           } else if (isWellKnown(WellKnown.TemplateStringsArrayClass,
               classType.name, classType.sourcePath)) {
             this.wasm.templateStringsArrayClass = classType;
-          } else if (isWellKnown(WellKnown.BoxClass, classType.name,
-              classType.sourcePath)) {
-            this.wasm.boxClass = classType;
           }
           var ctWalk: ClassType | null = classType;
           while (ctWalk != null) {
@@ -1740,23 +1726,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // definitions), which put 134 struct types in `return 42`'s module.
     for (let cPair in this.wasm.classInfos) {
       let cKeyStr = cPair.key as String;
-      // Box specializations are kept whenever registered: the
-      // erased-== diamond (ir/equality.zena) ref_tests every
-      // registered-and-shaped Box<prim> it finds, synthesized at
-      // lowering with no AST naming the Box. Bounded at the five
-      // primitive boxes, present only when something registered them.
-      var isBoxSpecialization = false;
-      let {boxClass} = this.wasm;
-      if (boxClass != null) {
-        let ct = cPair.value.structType.classType;
-        if (ct != null) {
-          isBoxSpecialization = isConcrete(ct) &&
-              (ct.genericSource ?? ct).symbolId == boxClass.symbolId &&
-              ct.typeArguments != null &&
-              (ct.typeArguments as Array<Type>).length == 1 &&
-              isBoxablePrimitive((ct.typeArguments as Array<Type>)[0]);
-        }
-      }
       // An EXTENSION class's struct is a placeholder: a value of the
       // class IS its representation type (typeToValType returns the
       // onType), so no cast, test, field read or signature can ever
@@ -1771,8 +1740,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
       if (!isExtensionPlaceholder &&
           (this.instantiatedSpecializedClasses.has(cKeyStr) ||
-          this.reachablyNamedClasses.has(cKeyStr) ||
-          isBoxSpecialization)) {
+          this.reachablyNamedClasses.has(cKeyStr))) {
         this.markTypeReached(cPair.value.structType);
         this.markTypeReached(cPair.value.vtableStructType);
       }

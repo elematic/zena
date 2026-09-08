@@ -1,0 +1,54 @@
+// @mode: run
+// @result: 1100
+
+// `==` on erased operands means the same thing it means at the value's
+// own static type. The compiler knows one class here, `String`, whose
+// `==` IS content equality everywhere; everything else compares as its
+// own `==` does, and for a class without one that is identity.
+//
+// It used to know `Box<T>` as well, unwrapping the five primitive
+// specializations and comparing the payloads. That made `==` answer
+// differently depending on the static type it was spelled at — `Box`
+// declares no `==`, so two `Box<f64>(1.5)` were unequal as `Box<f64>`
+// and equal through `anyref` — and `hash` never had a matching tier,
+// so the pair could not satisfy the eq/hash contract.
+
+import { Box } from 'zena:box';
+
+class Point {
+  x: i32;
+  new(this.x);
+}
+
+export let main = (): i32 => {
+  var r = 0;
+
+  let a = new Box(1.5);
+  let b = new Box(1.5);
+
+  // Same answer at the static type and through the erasure.
+  if (a == b) { r += 1; }
+  let ea: anyref = a;
+  let eb: anyref = b;
+  if (ea == eb) { r += 10; }
+
+  // Identity still holds through the erasure.
+  let ea2: anyref = a;
+  if (ea == ea2) { r += 100; }
+
+  // The string tier stays: content equality, not identity, for two
+  // separately built strings.
+  let s1: anyref = 'hi';
+  let s2: anyref = 'h' + 'i';
+  if (s1 == s2) { r += 1000; }
+
+  // A class with no `==` is identity on both sides of the erasure.
+  let p = new Point(1);
+  let q = new Point(1);
+  let ep: anyref = p;
+  let eq: anyref = q;
+  if (p == q) { r += 10000; }
+  if (ep == eq) { r += 100000; }
+
+  return r; // 100 (identity) + 1000 (string content)
+};
