@@ -21,7 +21,8 @@ import {
 import { String } from "zena:string";
 import { i32ToString } from "zena:string-convert";
 import { ByteBuffer } from 'zena:byte-buffer';
-import { Program } from '../program.zena';
+import { Program, CompilationUnit } from '../program.zena';
+import { stdlibLibraryOf } from '../stdlib-manifest.zena';
 
 import {
   compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getClassPrivateFieldKey, isPresentWordName, presentWordCount, presentWordName, FunctionAdaptationKey, getFunctionAdaptationKey, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, ClosureSpecializationKey, FunctionValueWrapperKey,
@@ -966,15 +967,38 @@ export final class WasmModule {
 
   #stdlibFuncCache = new HashMap<String, WasmFunction>();
 
-  getStdlibFunc(moduleName: String, exportName: String): WasmFunction | null {
-    let key = moduleName + "::" + exportName;
+  /**
+   * The emitted function a standard library export lowers to, or null.
+   *
+   * Keyed on the owning LIBRARY rather than a module id, and every file
+   * of that library is searched — the same rule the rooting walk in
+   * `reachability/visitor.zena` uses, and for the same reason: a
+   * library's declarations move between its files, and a re-export shim
+   * at an old path declares nothing this search can see. The two must
+   * agree, because one roots what the other emits a call to.
+   */
+  getStdlibFunc(library: String, exportName: String): WasmFunction | null {
+    let key = library + "::" + exportName;
     if (this.#stdlibFuncCache.has(key)) {
       return this.#stdlibFuncCache[key];
     }
     let prog = this.program;
     if (prog == null) { return null; }
-    if (!prog.unitsByPath.has(moduleName)) { return null; }
-    let unit = prog.unitsByPath[moduleName];
+    for (let unit in prog.units) {
+      let owner = stdlibLibraryOf(unit.ast.path);
+      if (owner == null || (owner as String) != library) {
+        continue;
+      }
+      let found = this.#findStdlibFuncIn(unit, key, exportName);
+      if (found != null) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  #findStdlibFuncIn(unit: CompilationUnit, key: String,
+      exportName: String): WasmFunction | null {
     for (let stmt in unit.ast.body) {
       match (stmt) {
         case DeclareFunction as df: {
@@ -1015,6 +1039,7 @@ export final class WasmModule {
     }
     return null;
   }
+
   mutableCapturedSymbols = new HashSet<SymbolId>();
   
   datas = new GrowableArray<ByteBuffer>();

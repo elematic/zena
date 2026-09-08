@@ -619,10 +619,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       return;
     }
     let prog = this.program;
-    if (prog == null || !prog.unitsByPath.has(componentAbiModule)) {
+    // A module id here, not the library: unitsByPath is keyed by module
+    // id, while componentAbiModule names the library getStdlibFunc wants.
+    let abiUnitId = "zena:" + componentAbiModule;
+    if (prog == null || !prog.unitsByPath.has(abiUnitId)) {
       return;
     }
-    let unit = prog.unitsByPath[componentAbiModule];
+    let unit = prog.unitsByPath[abiUnitId];
     let {model} = unit;
     let gKeys = model.globalDeclarations.keys();
     while (let (true, id) = gKeys.next()) {
@@ -663,7 +666,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (prog == null || !prog.unitsByPath.has(driverPath)) {
       return;
     }
-    let awaitPacked = this.wasm.getStdlibFunc(driverPath, 'awaitPacked');
+    let awaitPacked = this.wasm.getStdlibFunc('component-async', 'awaitPacked');
     if (awaitPacked == null || !(awaitPacked as WasmFunction).isReached) {
       return;
     }

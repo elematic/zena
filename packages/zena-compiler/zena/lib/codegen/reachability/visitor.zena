@@ -35,6 +35,7 @@ import { Program, CompilationUnit } from '../../program.zena';
 import { walkEnter } from '../../visitor.zena';
 import { resolveImportedSymbolId } from './import-resolver.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
+import { stdlibLibraryOf } from '../../stdlib-manifest.zena';
 
 /**
  * TypeLowerer translates Zena semantic types into their target WebAssembly representation,
@@ -1072,7 +1073,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // reach both pieces for any async function: two small stdlib
       // entries, and no way to be wrong about it later.
       this.queuePrivateMethod(futureType, ':valueOrThrow');
-      this.queueStdlibFunction('zena:async/executor.zena', 'drainMicrotasks');
+      this.queueStdlibFunction('async', 'drainMicrotasks');
     } else {
       this.queuePrivateMethod(futureType, ':valueOrThrow');
       this.queuePrivateMethod(futureType, ':subscribe');
@@ -1126,10 +1127,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    */
   queueCancellationMachinery(futureType: ClassType, model: SemanticModel): void {
     this.queuePrivateMethod(futureType, ':cancelComplete');
-    this.queueStdlibFunction('zena:async', 'currentScope');
+    this.queueStdlibFunction('async', 'currentScope');
     // The checkpoint an async `tail return` emits before its callee's
     // eager ramp (async.md §8) — by name, like currentScope.
-    this.queueStdlibFunction('zena:async', 'checkCancellation');
+    this.queueStdlibFunction('async', 'checkCancellation');
     let scopeCt = this.cancelScopeType();
     if (scopeCt != null) {
       let sct = scopeCt as ClassType;
@@ -1200,7 +1201,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               this.registerAsyncFuture(armResolved, model, false);
             }
           }
-          this.queueStdlibFunction('zena:async/executor.zena', 'scheduleTask');
+          this.queueStdlibFunction('async', 'scheduleTask');
         }
       }
       return;
@@ -1233,7 +1234,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // no call node for RTA to find it by — async.zena throws outright
     // if it was not reached. Root it from the async function that
     // implies it, rather than from every program.
-    this.queueStdlibFunction('zena:async/executor.zena', 'drainMicrotasks');
+    this.queueStdlibFunction('async', 'drainMicrotasks');
   }
 
   /**
@@ -1245,59 +1246,74 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * Roots a standard library function that no source names — the
    * executor entries an await needs, a template's converter.
    *
-   * Both halves must exist: the module has to be in the program, and it
-   * has to declare the export. A miss means the standard library moved
-   * under the compiler, and returning quietly would leave an emitted
-   * call pointing at a function nothing reached, so it throws. Every
-   * caller here has already decided the construct is present, so the
-   * module is never legitimately absent.
+   * Keyed on the owning LIBRARY, not a module id, and every file of that
+   * library is searched. A library's declarations move between its files
+   * as it is reorganized, and a re-export shim left at an old path is an
+   * empty module to this walk — searching the library instead of one
+   * module means neither breaks the rooting. It is the same rule the
+   * well-known declaration registry uses for types.
+   *
+   * A miss throws. Returning quietly would leave an emitted call
+   * pointing at a function nothing reached, and every caller here has
+   * already decided the construct is present. Two files of one library
+   * declaring the same name is equally an error: there would be no
+   * answer to which one the emitted call meant.
    *
    * Where lowering has a documented fallback for a helper that may not
    * exist, the caller uses `queueOptionalStdlibFunction` and takes the
    * same branch lowering will.
    */
-  queueStdlibFunction(modulePath: String, exportName: String): void {
-    if (!this.#tryQueueStdlibFunction(modulePath, exportName)) {
-      throw new Error("Standard library module '" + modulePath +
-          "' does not declare '" + exportName + "'");
+  queueStdlibFunction(library: String, exportName: String): void {
+    if (!this.#tryQueueStdlibFunction(library, exportName)) {
+      throw new Error("No file of standard library '" + library +
+          "' declares '" + exportName + "'");
     }
   }
 
   /**
-   * Roots `exportName` if the module declares it, and reports whether it
+   * Roots `exportName` if the library declares it, and reports whether it
    * did. For helpers whose absence lowering handles by emitting
    * something else; the caller must then root that something else.
    */
-  queueOptionalStdlibFunction(modulePath: String, exportName: String): boolean {
-    return this.#tryQueueStdlibFunction(modulePath, exportName);
+  queueOptionalStdlibFunction(library: String, exportName: String): boolean {
+    return this.#tryQueueStdlibFunction(library, exportName);
   }
 
-  #tryQueueStdlibFunction(modulePath: String, exportName: String): boolean {
+  #tryQueueStdlibFunction(library: String, exportName: String): boolean {
     let prog = this.pass.program;
-    if (!prog.unitsByPath.has(modulePath)) {
-      throw new Error("Standard library module '" + modulePath +
-          "' is not in the program, but '" + exportName +
-          "' is needed from it");
-    }
-    let unit = prog.unitsByPath[modulePath];
-    var rooted = false;
-    for (let stmt in unit.ast.body) {
-      if (stmt is VariableDeclaration) {
-        if (stmt.pattern is IdentifierPattern &&
-            (stmt.pattern as IdentifierPattern).name == exportName) {
-          let sym = unit.model.resolveDeclaration(stmt.pattern as IdentifierPattern);
-          if (sym == null) {
-            throw new Error("Standard library module '" + modulePath +
-                "' declares '" + exportName +
-                "' but it did not resolve to a symbol");
+    var found: Symbol | null = null;
+    var foundModel: SemanticModel | null = null;
+    for (let unit in prog.units) {
+      let owner = stdlibLibraryOf(unit.ast.path);
+      if (owner == null || (owner as String) != library) {
+        continue;
+      }
+      for (let stmt in unit.ast.body) {
+        if (stmt is VariableDeclaration) {
+          if (stmt.pattern is IdentifierPattern &&
+              (stmt.pattern as IdentifierPattern).name == exportName) {
+            let sym = unit.model.resolveDeclaration(stmt.pattern as IdentifierPattern);
+            if (sym == null) {
+              throw new Error("Standard library '" + library + "' declares '" +
+                  exportName + "' in " + unit.ast.path +
+                  " but it did not resolve to a symbol");
+            }
+            if (found != null && (found as Symbol).id != sym.id) {
+              throw new Error("Standard library '" + library +
+                  "' declares '" + exportName + "' in more than one file");
+            }
+            found = sym;
+            foundModel = unit.model;
           }
-          this.pass.queueReferrer(new Referrer(true, sym.id,
-              -1, unit.model, null, true));
-          rooted = true;
         }
       }
     }
-    return rooted;
+    if (found == null) {
+      return false;
+    }
+    this.pass.queueReferrer(new Referrer(true, (found as Symbol).id,
+        -1, foundModel as SemanticModel, null, true));
+    return true;
   }
 
   /**
@@ -1451,7 +1467,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // By symbol, not by `getStdlibFunc`: the WasmFunction may not
       // exist yet when this walk runs, and a null lookup here would
       // silently leave the call unrooted.
-      this.queueStdlibFunction('zena:string-convert', name);
+      this.queueStdlibFunction('string-convert', name);
     }
     let partCount = tpl.expressions.length * 2 + 1;
     // `__concatN` is an optimization the standard library does not
@@ -1459,7 +1475,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // when it is absent. Root whichever one lowering will emit, by
     // asking the same question it asks.
     if (partCount >= 2 && partCount <= 5 &&
-        this.queueOptionalStdlibFunction('zena:string',
+        this.queueOptionalStdlibFunction('string',
             '__concat' + i32ToString(partCount))) {
       return;
     }
