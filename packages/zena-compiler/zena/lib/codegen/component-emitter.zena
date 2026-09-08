@@ -50,6 +50,14 @@ export final class EncodedImports {
   var instanceCount = 0;
   /** Each imported interface's component instance index, by name. */
   instanceIndices = new HashMap<String, i32>();
+  /**
+   * Component type indices for the canon builtins' nominal type
+   * immediates, keyed by the builtin's `canonType` spelling
+   * (`resource:<interface>#<name>`). Aliased out of the imported
+   * instances by the encoder — a resource's type is the instance's
+   * own, and only an alias can name it.
+   */
+  canonTypeIndices = new HashMap<String, i32>();
   new();
 }
 
@@ -481,6 +489,7 @@ let canonBuiltinOpcode = (name: String): i32 => {
   if (name == "future.write") { return 0x17; }
   if (name == "future.drop-readable") { return 0x1a; }
   if (name == "future.drop-writable") { return 0x1b; }
+  if (name == "resource.drop") { return 0x03; }
   return -1;
 };
 
@@ -494,7 +503,8 @@ export let isKnownCanonBuiltin = (name: String): boolean =>
  * type is part of which builtin the declaration names.
  */
 export let isTypedCanonBuiltin = (name: String): boolean =>
-    name.startsWith("stream.") || name.startsWith("future.");
+    name.startsWith("stream.") || name.startsWith("future.") ||
+    name.startsWith("resource.");
 
 /** Whether this typed builtin's canon entry also carries canonopts. */
 let typedBuiltinTakesOpts = (name: String): boolean =>
@@ -808,9 +818,15 @@ export let emitComponent = (
   // read/write pairs carry the memory their elements move through.
   var canonTypeCount = 0;
   if (shape.builtins.length > 0) {
+    // Resource types are not declared here: they are nominal — the
+    // imported instance's own — so the encoder alias-exported them and
+    // reported their indices in `canonTypeIndices`. Only the
+    // structural stream/future types get a literal type section.
     let canonTypes = new GrowableArray<String>();
     for (let b in shape.builtins) {
-      if (b.canonType == "") { continue; }
+      if (b.canonType == "" || b.canonType.startsWith("resource:")) {
+        continue;
+      }
       var known = false;
       for (let t in canonTypes) {
         if (t == b.canonType) { known = true; }
@@ -827,6 +843,13 @@ export let emitComponent = (
       writeSection(out, ComponentSectionId.Type as i32, types);
     }
     let canonTypeIndexOf = (canonType: String): i32 => {
+      if (canonType.startsWith("resource:")) {
+        if (let (true, index) = encoded.canonTypeIndices.get(canonType)) {
+          return index;
+        }
+        throw new Error("the encoder aliased no type for '" +
+            canonType + "'");
+      }
       for (var i = 0; i < canonTypes.length; i += 1) {
         if (canonTypes[i] == canonType) {
           return encoded.typeCount + i;

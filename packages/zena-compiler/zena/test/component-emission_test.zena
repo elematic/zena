@@ -751,6 +751,47 @@ world only {
       'the cross-type join should be refused:\n' + source);
   });
 
+  test('a WIT-typed module synthesizes resource classes',
+      (ctx: TestContext): void => {
+    // A resource is a Disposable class owning the imported handle:
+    // methods lead their raw calls with the handle, the WIT
+    // constructor is `static create`, statics are statics, disposal
+    // is the canonical `resource.drop` (idempotent behind a flag),
+    // and a bare resource in value position — implicit `own` — wraps
+    // the returned handle.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:store/kv`);
+    isTrue(source.contains(
+        'export final class Bucket implements Disposable {'),
+      'the resource is not a Disposable class:\n' + source);
+    isTrue(source.contains('bucketDrop_raw(this.#handle);'),
+      'dispose does not drop the handle:\n' + source);
+    isTrue(source.contains(
+        '@external("canon", "resource.drop", ' +
+        '"resource:wasi:store/kv@1.0.0#bucket")'),
+      'the drop builtin is not typed by the imported resource:\n' +
+      source);
+    isTrue(source.contains(
+        'declare function bucketGet_raw(self: i32, p0: i32, l0: i32, ' +
+        'ret: i32): void;'),
+      "the method's raw declaration should lead with self:\n" + source);
+    isTrue(source.contains('  get(key: String): Option<String> {'),
+      'the method wrapper is not a member:\n' + source);
+    isTrue(source.contains('  static create(name: String): Bucket {'),
+      'the WIT constructor should be static create:\n' + source);
+    isTrue(source.contains('return new Bucket(got);'),
+      'an own result should wrap the returned handle:\n' + source);
+    isTrue(source.contains('this.#handle, p0, l0'),
+      'the method call should pass the handle first:\n' + source);
+    // And the consumer fixture compiles to a component naming the
+    // interface, with the alias for the drop's nominal type carrying
+    // the resource's name.
+    let bytes = compileFor(`${fixtures}/store-wit.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 10),
+        'wasi:store/kv@1.0.0'),
+      'the store interface import is missing');
+  });
+
   test('a marshaling import lowers with the canonical memory options',
       (ctx: TestContext): void => {
     // text-wit.zena imports the whole transform interface. Every one of

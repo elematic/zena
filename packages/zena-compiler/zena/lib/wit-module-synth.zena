@@ -53,7 +53,8 @@ import {
 } from 'wit-parser:document';
 import {
   InterfaceItem, InterfaceItemTag, NamedFunc, Type, TypeTag, TypeDef,
-  TypeDefTag, Id, EnumCaseDef, FlagDef, Field, Case
+  TypeDefTag, Id, EnumCaseDef, FlagDef, Field, Case, ResourceFunc,
+  ResourceFuncTag
 } from 'wit-parser:parser';
 
 
@@ -86,6 +87,9 @@ enum TyKind {
   ResultT,
   /** `tuple<...>`: an inline tuple. */
   TupleT,
+  /** A resource handle (`own`, `borrow`, or a bare resource name):
+   * one i32 index on the wire, a Disposable wrapper class here. */
+  ResourceH,
   /** Waits on the interop stages; `reason` says which. */
   Unsupported
 }
@@ -293,6 +297,18 @@ function classifyType(t: Type, ifaceItems: Array<InterfaceItem>): Ty {
     layoutRecord(ty);
     return ty;
   }
+  if (t.tag == TypeTag.Own || t.tag == TypeTag.Borrow) {
+    let inner = t.inner as Type;
+    if (inner.tag != TypeTag.Name) {
+      return unsupported("own/borrow of an unnamed type");
+    }
+    let resolved = classifyNamed((inner.name as Id).name, ifaceItems);
+    if (resolved.kind != TyKind.ResourceH &&
+        resolved.kind != TyKind.Unsupported) {
+      return unsupported("own/borrow of a non-resource type");
+    }
+    return resolved;
+  }
   if (t.tag == TypeTag.Name) {
     return classifyNamed((t.name as Id).name, ifaceItems);
   }
@@ -307,6 +323,13 @@ function classifyNamed(name: String, ifaceItems: Array<InterfaceItem>): Ty {
       if (td.name.name != name) { continue; }
       if (td.tag == TypeDefTag.Alias) {
         return classifyType(td.aliasType as Type, ifaceItems);
+      }
+      if (td.tag == TypeDefTag.Resource) {
+        let ty = new Ty(TyKind.ResourceH, "", pascalName(name));
+        ty.size = 4;
+        ty.align = 4;
+        ty.flats = 1;
+        return ty;
       }
       if (td.tag == TypeDefTag.Enum) {
         let cases = td.enumCases as GrowableArray<EnumCaseDef>;
@@ -431,6 +454,9 @@ final class SynthUses {
   var stagedAny = false;
   /** Fresh-name counter for generated locals. */
   var tmpCount = 0;
+  /** Whether any resource class rendered — pulls in Disposable and
+   * the module's handle symbol. */
+  var anyResource = false;
   new();
 
   nextTmp(): i32 {
@@ -620,6 +646,10 @@ function liftExprOf(ty: Ty, ptrExpr: String, uses: SynthUses): String {
     return "((" + discLoad(ty.size, ptrExpr, uses) + " as u32) as " +
         ty.typeName + ")";
   }
+  if (ty.kind == TyKind.ResourceH) {
+    uses.useAbi("loadI32");
+    return "new " + ty.typeName + "(loadI32(" + ptrExpr + "))";
+  }
   // RecordT, VariantT, OptionT, TupleT, ListT: a generated helper.
   return uses.liftNameOf(ty) + "(" + ptrExpr + ")";
 }
@@ -668,7 +698,8 @@ function flatCoreSlots(ty: Ty): GrowableArray<String> | null {
     out.push(coreOf(ty.scalar));
     return out;
   }
-  if (ty.kind == TyKind.Enumeration || ty.kind == TyKind.Flags) {
+  if (ty.kind == TyKind.Enumeration || ty.kind == TyKind.Flags ||
+      ty.kind == TyKind.ResourceH) {
     out.push("i32");
     return out;
   }
@@ -780,6 +811,12 @@ function lowerMemStmts(sb: StringBuilder, ty: Ty, value: String,
   if (ty.kind == TyKind.Flags) {
     sb.append(indent).append(storeCall(ty.size, false, ptrExpr,
         "((" + value + " as u32) as i32)", uses)).append(";\n");
+    return;
+  }
+  if (ty.kind == TyKind.ResourceH) {
+    uses.useAbi("storeI32");
+    sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
+        .append(value).append(".[rawHandle]());\n");
     return;
   }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
@@ -927,6 +964,11 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   if (ty.kind == TyKind.Flags) {
     sb.append(indent).append(slots[base]).append(" = ((").append(value)
         .append(" as u32) as i32);\n");
+    return 1;
+  }
+  if (ty.kind == TyKind.ResourceH) {
+    sb.append(indent).append(slots[base]).append(" = ").append(value)
+        .append(".[rawHandle]();\n");
     return 1;
   }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
@@ -1118,6 +1160,86 @@ function renderFlags(sb: StringBuilder, td: TypeDef): void {
   }
 }
 
+/**
+ * A WIT `resource`, as a Disposable handle-wrapping class: the class
+ * owns the imported handle, methods and statics ride the same
+ * marshaling machinery as free functions (a method's raw call leads
+ * with the handle), a WIT constructor becomes `static create`, and
+ * disposal is the canonical `resource.drop` — idempotent behind a
+ * flag, because nothing prevents a double call until affine checking
+ * covers these wrappers. Members that cannot render yet are skipped
+ * per member; the class itself always renders, so a handle received
+ * from elsewhere is at least holdable and droppable.
+ */
+function renderResource(
+  body: StringBuilder,
+  skipped: StringBuilder,
+  td: TypeDef,
+  interfaceName: String,
+  ifaceItems: Array<InterfaceItem>,
+  uses: SynthUses
+): void {
+  uses.anyResource = true;
+  let resourceName = td.name.name;
+  let typeName = pascalName(resourceName);
+  let rawPrefix = camelName(resourceName);
+  let members = new StringBuilder();
+  let raws = new StringBuilder();
+  let funcs = td.resourceFuncs;
+  if (funcs != null) {
+    for (let rf in funcs as GrowableArray<ResourceFunc>) {
+      var mode = new FnMode("", "", "", "", false);
+      var label = "";
+      if (rf.tag == ResourceFuncTag.Constructor) {
+        mode = new FnMode("[constructor]" + resourceName, "create",
+            rawPrefix + "Create", "static ", false, resourceName);
+        label = resourceName + " constructor";
+      } else if (rf.tag == ResourceFuncTag.Static) {
+        let fnName = rf.func.name.name;
+        mode = new FnMode("[static]" + resourceName + "." + fnName,
+            zenaMemberName(fnName), rawPrefix + pascalName(fnName),
+            "static ", false);
+        label = resourceName + "." + fnName;
+      } else {
+        let fnName = rf.func.name.name;
+        mode = new FnMode("[method]" + resourceName + "." + fnName,
+            zenaMemberName(fnName), rawPrefix + pascalName(fnName), "",
+            true);
+        label = resourceName + "." + fnName;
+      }
+      let reason = renderFuncIn(members, raws, rf.func, interfaceName,
+          ifaceItems, uses, mode);
+      if (reason != "") {
+        skipped.append("//   ").append(label).append(": ")
+            .append(reason).append("\n");
+      }
+    }
+  }
+  body.append("/** WIT `resource ").append(resourceName)
+      .append("`. */\n");
+  body.append("export final class ").append(typeName)
+      .append(" implements Disposable {\n");
+  body.append("  #handle: i32;\n");
+  body.append("  var #dropped = false;\n");
+  body.append("  new(handle: i32) : #handle = handle;\n\n");
+  body.append("  /** The wire handle, module-internal. */\n");
+  body.append("  [rawHandle](): i32 {\n    return this.#handle;\n");
+  body.append("  }\n\n");
+  body.append("  [Disposable.dispose](): void {\n");
+  body.append("    if (!this.#dropped) {\n");
+  body.append("      this.#dropped = true;\n");
+  body.append("      ").append(rawPrefix).append("Drop_raw(this.#handle);\n");
+  body.append("    }\n  }\n\n");
+  body.append(members.toString());
+  body.append("}\n");
+  body.append("@external(\"canon\", \"resource.drop\", \"resource:")
+      .append(interfaceName).append("#").append(resourceName)
+      .append("\")\n");
+  body.append("declare function ").append(rawPrefix)
+      .append("Drop_raw(handle: i32): void;\n");
+  body.append(raws.toString());
+}
+
 /** A WIT `record`, as a case class. */
 function renderRecord(sb: StringBuilder, td: TypeDef,
     ifaceItems: Array<InterfaceItem>, uses: SynthUses): String {
@@ -1213,6 +1335,9 @@ export function synthesizeWitModule(canonicalPath: String): String {
           reason = renderRecord(body, td, iface.def.items, uses);
         } else if (td.tag == TypeDefTag.Variant) {
           reason = renderVariant(body, td, iface.def.items, uses);
+        } else if (td.tag == TypeDefTag.Resource) {
+          renderResource(body, skipped, td, interfaceName,
+              iface.def.items, uses);
         } else if (td.tag != TypeDefTag.Alias) {
           reason = "types wait on the interop stages";
         }
@@ -1273,12 +1398,19 @@ export function synthesizeWitModule(canonicalPath: String): String {
     }
     sb.append(" } from 'zena:component-abi';\n");
   }
+  if (uses.anyResource) {
+    sb.append("import { Disposable } from 'zena:ownership';\n");
+  }
   if (uses.error) {
     sb.append("import { Error } from 'zena:error';\n");
   }
   if (uses.hasAsync) {
     sb.append("import { Future } from 'zena:async';\n");
     sb.append("import { awaitPacked } from 'zena:component-async';\n");
+  }
+  if (uses.anyResource) {
+    // After the imports: a declaration among them is a parse error.
+    sb.append("symbol rawHandle;\n");
   }
   sb.append(body.toString());
   let skippedText = skipped.toString();
@@ -1296,12 +1428,74 @@ export function synthesizeWitModule(canonicalPath: String): String {
  * future wrapper otherwise — or return the reason it cannot be
  * rendered yet.
  */
+/** How one WIT function renders: as a free function, or as a member
+ * of a synthesized resource class. */
+final class FnMode {
+  /** The `@external` field name: the WIT name, or a mangled
+   * `[method]r.f` / `[static]r.f` / `[constructor]r`. */
+  externField: String;
+  /** The Zena name of the wrapper. */
+  zenaName: String;
+  /** The raw declaration's name (module-level, so resource-prefixed). */
+  rawName: String;
+  /** The wrapper's declaration head: `"export function "` for a free
+   * function, `""` for a method, `"static "` for a static or a WIT
+   * constructor. */
+  declHead: String;
+  /** Whether the raw call leads with `this.#handle`. */
+  selfHandle: boolean;
+  /** A WIT constructor's implicit `own` result: the resource's WIT
+   * name, or "" for everything else. */
+  ctorResource: String;
+  new(this.externField, this.zenaName, this.rawName, this.declHead,
+      this.selfHandle, this.ctorResource = "");
+}
+
+/** Zena keywords a WIT name may collide with (`new: static func` is
+ * real, in wasi:http); the member gets a trailing underscore, which no
+ * other synthesized name contains. */
+let zenaMemberName = (witName: String): String => {
+  let camel = camelName(witName);
+  if (camel == "new" || camel == "match" || camel == "let" ||
+      camel == "var" || camel == "function" || camel == "return" ||
+      camel == "this" || camel == "class" || camel == "enum" ||
+      camel == "type" || camel == "import" || camel == "export" ||
+      camel == "using" || camel == "true" || camel == "false" ||
+      camel == "null" || camel == "if" || camel == "else" ||
+      camel == "for" || camel == "while" || camel == "in" ||
+      camel == "is" || camel == "as" || camel == "case") {
+    return camel + "_";
+  }
+  return camel;
+};
+
 function renderFunc(
   sb: StringBuilder,
   nf: NamedFunc,
   interfaceName: String,
   ifaceItems: Array<InterfaceItem>,
   uses: SynthUses
+): String {
+  let zenaName = camelName(nf.name.name);
+  return renderFuncIn(sb, sb, nf, interfaceName, ifaceItems, uses,
+      new FnMode(nf.name.name, zenaName, zenaName, "export function ",
+          false));
+}
+
+/**
+ * Render one function into `wrapSink` (the wrapper) and `rawSink`
+ * (the raw declaration — module level, which for a resource member is
+ * a different sink than the class body). Returns the reason it cannot
+ * be rendered yet, or "".
+ */
+function renderFuncIn(
+  wrapSink: StringBuilder,
+  rawSink: StringBuilder,
+  nf: NamedFunc,
+  interfaceName: String,
+  ifaceItems: Array<InterfaceItem>,
+  uses: SynthUses,
+  mode: FnMode
 ): String {
   let func = nf.func;
   let params = new GrowableArray<Ty>();
@@ -1337,6 +1531,11 @@ function renderFunc(
   }
   var resultTy = voidTy();
   var hasResult = false;
+  if (mode.ctorResource != "") {
+    // A WIT constructor returns `own<resource>` implicitly.
+    hasResult = true;
+    resultTy = classifyNamed(mode.ctorResource, ifaceItems);
+  }
   let result = func.result;
   if (result != null) {
     hasResult = true;
@@ -1357,13 +1556,18 @@ function renderFunc(
       anyRich = true;
     }
     if (resultTy.flats == 1 && resultTy.kind != TyKind.Enumeration &&
-        resultTy.kind != TyKind.Flags && resultTy.kind != TyKind.Scalar) {
+        resultTy.kind != TyKind.Flags && resultTy.kind != TyKind.Scalar &&
+        resultTy.kind != TyKind.ResourceH) {
       return "a single-flat aggregate result waits on the interop stages";
     }
   }
-  let zenaName = camelName(nf.name.name);
+  let zenaName = mode.zenaName;
+  let freeMode = mode.declHead == "export function " && !mode.selfHandle;
 
   if (func.isAsync) {
+    if (!freeMode) {
+      return "an async resource function waits on the interop stages";
+    }
     if (hasResult) {
       return "an async result waits on the subtask-read machinery";
     }
@@ -1387,11 +1591,11 @@ function renderFunc(
       sig.append(paramNames[i]).append(": ").append(params[i].scalar);
       args.append(paramNames[i]);
     }
-    sb.append("@external(\"").append(interfaceName).append("\", \"")
+    rawSink.append("@external(\"").append(interfaceName).append("\", \"")
         .append(nf.name.name).append("\", \"async\")\n");
-    sb.append("declare function ").append(zenaName)
+    rawSink.append("declare function ").append(zenaName)
         .append("_raw(").append(sig.toString()).append("): i32;\n");
-    sb.append("export function ").append(zenaName)
+    rawSink.append("export function ").append(zenaName)
         .append("(").append(sig.toString())
         .append("): Future<void> {\n  return awaitPacked(")
         .append(zenaName).append("_raw(").append(args.toString())
@@ -1404,16 +1608,16 @@ function renderFunc(
   // value.
   let resultSpills = resultTy.flats > 1;
 
-  if (!anyRich) {
+  if (!anyRich && freeMode) {
     // Every type is a flat scalar: one declaration, no wrapper.
     let sig = new StringBuilder();
     for (var i = 0; i < params.length; i += 1) {
       if (i > 0) { sig.append(", "); }
       sig.append(paramNames[i]).append(": ").append(params[i].scalar);
     }
-    sb.append("@external(\"").append(interfaceName).append("\", \"")
+    rawSink.append("@external(\"").append(interfaceName).append("\", \"")
         .append(nf.name.name).append("\")\n");
-    sb.append("export declare function ").append(zenaName)
+    rawSink.append("export declare function ").append(zenaName)
         .append("(").append(sig.toString()).append("): ")
         .append(if (hasResult) resultTy.scalar else "void")
         .append(";\n");
@@ -1429,6 +1633,10 @@ function renderFunc(
       kind == TyKind.TupleT;
   let rawSig = new StringBuilder();
   var rawIndex = 0;
+  if (mode.selfHandle) {
+    rawSig.append("self: i32");
+    rawIndex += 1;
+  }
   for (var i = 0; i < params.length; i += 1) {
     if (rawIndex > 0) { rawSig.append(", "); }
     if (params[i].kind == TyKind.Scalar) {
@@ -1465,17 +1673,21 @@ function renderFunc(
     "i32"
   } else if (resultTy.kind == TyKind.Flags) {
     "u32"
+  } else if (resultTy.kind == TyKind.ResourceH) {
+    "i32"
   } else {
     resultTy.scalar
   };
-  sb.append("@external(\"").append(interfaceName).append("\", \"")
-      .append(nf.name.name).append("\")\n");
-  sb.append("declare function ").append(zenaName).append("_raw(")
-      .append(rawSig.toString()).append("): ").append(rawResult)
-      .append(";\n");
+  rawSink.append("@external(\"").append(interfaceName).append("\", \"")
+      .append(mode.externField).append("\")\n");
+  rawSink.append("declare function ").append(mode.rawName)
+      .append("_raw(").append(rawSig.toString()).append("): ")
+      .append(rawResult).append(";\n");
 
   // The wrapper: the WIT signature in Zena spellings, staging in,
-  // lifting out.
+  // lifting out. Built into its own buffer so a member wrapper can be
+  // reindented into the class body.
+  let sb = new StringBuilder();
   let wrapSig = new StringBuilder();
   for (var i = 0; i < params.length; i += 1) {
     if (i > 0) { wrapSig.append(", "); }
@@ -1492,7 +1704,7 @@ function renderFunc(
       wrapResult = zenaTypeOf(resultTy, uses);
     }
   }
-  sb.append("export function ").append(zenaName).append("(")
+  sb.append(mode.declHead).append(zenaName).append("(")
       .append(wrapSig.toString()).append("): ").append(wrapResult)
       .append(" {\n");
   // Per-function: whether THIS wrapper stages anything decides its
@@ -1561,7 +1773,13 @@ function renderFunc(
     if (argIndex > 0) { callArgs.append(", "); }
     callArgs.append("ret");
   }
-  let call = zenaName + "_raw(" + callArgs.toString() + ")";
+  var callPrefix = "";
+  if (mode.selfHandle) {
+    callPrefix = if (callArgs.toString() == "") "this.#handle"
+        else "this.#handle, ";
+  }
+  let call = mode.rawName + "_raw(" + callPrefix + callArgs.toString() +
+      ")";
   if (resultSpills || rawResult == "void") {
     sb.append("  ").append(call).append(";\n");
   } else {
@@ -1605,9 +1823,23 @@ function renderFunc(
   } else if (resultTy.kind == TyKind.Flags) {
     sb.append("  return got as ").append(resultTy.typeName)
         .append(";\n");
+  } else if (resultTy.kind == TyKind.ResourceH) {
+    sb.append("  return new ").append(resultTy.typeName)
+        .append("(got);\n");
   } else if (rawResult != "void") {
     sb.append("  return got;\n");
   }
   sb.append("}\n");
+  if (freeMode) {
+    wrapSink.append(sb.toString());
+  } else {
+    // A member: two spaces onto every non-empty line.
+    for (let line in sb.toString().split("\n")) {
+      if (line != "") {
+        wrapSink.append("  ").append(line);
+      }
+      wrapSink.append("\n");
+    }
+  }
   return "";
 }

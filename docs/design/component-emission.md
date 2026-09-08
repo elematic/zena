@@ -1286,8 +1286,24 @@ payloads that join across core types (the joined slot needs bit-casts
 generated source cannot spell), and parameters spilling past sixteen
 core values.
 
-The next slices are resources as handle-wrapping classes, then async
-_results_ (the subtask-read machinery, C6-adjacent). The path they serve is
+Resources followed: a WIT `resource` synthesizes as a Disposable
+class owning the imported handle. Methods and statics ride the same
+marshaling machinery as free functions — a method's raw call leads
+with the handle — a WIT constructor becomes `static create`, and a
+bare resource in value position (implicit `own`) wraps the returned
+handle. Disposal is the canonical `resource.drop`, idempotent behind
+a flag until affine checking covers these wrappers; its canon entry's
+immediate is the imported resource's own *nominal* type, which only
+an alias can name, so the WIT encoder alias-exports it out of the
+imported instance and reports the index alongside its other pieces
+(`canonTypeIndices`). Handles inside aggregates lift and lower like
+any other single-word value, through a module-internal symbol-keyed
+accessor.
+
+The next slice is async _results_ (the subtask-read machinery,
+C6-adjacent) — with the value and resource surfaces closed, that and
+the `Stream<T>` boundary binding are what stand between here and
+`client.send`. The path they serve is
 `wasi:http@0.3.0`: `handle/send: async func(request) ->
 result<response, error-code>` over four resources whose bodies are
 `stream<u8>` — value marshaling, resources, the stream binding and

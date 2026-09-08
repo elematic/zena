@@ -320,6 +320,28 @@ export let encodeImportTypes = (
   }
   let encoder = new ComponentTypeEncoder(ast);
   let world = encoder.encodeWorld(derivedWorldName);
+  // The nominal type immediates the canon builtins need: a
+  // `resource.drop`'s type is the imported instance's own, reachable
+  // only through an alias the encoder appends. Resolved after the
+  // world so the instances exist, before mirroring so the alias
+  // pieces travel.
+  let resourceIndices = new HashMap<String, i32>();
+  for (let b in shape.builtins) {
+    if (!b.canonType.startsWith("resource:")) { continue; }
+    if (resourceIndices.has(b.canonType)) { continue; }
+    let spec = b.canonType.sliceBytes(9, b.canonType.length);
+    var hashAt = -1;
+    for (var i = 0; i < spec.length; i += 1) {
+      if (spec.getByteAt(i) == 35) { hashAt = i; } // '#'
+    }
+    if (hashAt < 0) {
+      throw new Error("Malformed resource canon type '" + b.canonType +
+          "' (expected resource:<interface>#<name>)");
+    }
+    resourceIndices[b.canonType] = encoder.aliasResourceType(
+        spec.sliceBytes(0, hashAt),
+        spec.sliceBytes(hashAt + 1, spec.length));
+  }
   // Mirrored into codegen's own classes: codegen calls the encoder
   // through the injected interface and does not link the WIT parser,
   // so it cannot name `EncodedWorld` itself.
@@ -332,6 +354,10 @@ export let encodeImportTypes = (
   let names = world.instanceIndices.keys();
   while (let (true, name) = names.next()) {
     out.instanceIndices[name] = world.instanceIndices[name];
+  }
+  let resourceKeys = resourceIndices.keys();
+  while (let (true, key) = resourceKeys.next()) {
+    out.canonTypeIndices[key] = resourceIndices[key];
   }
   return out;
 };

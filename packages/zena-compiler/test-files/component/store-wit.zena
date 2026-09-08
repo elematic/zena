@@ -1,0 +1,29 @@
+// Resources through a WIT-typed module: the synthesized `Bucket` is a
+// Disposable class owning the imported handle, its methods lead their
+// raw calls with the handle, the WIT constructor is `static create`,
+// and disposal is the canonical `resource.drop`. Compile-level
+// coverage — no host serves `wasi:store` — the unit tests assert the
+// synthesized source.
+import { Bucket, defaultBucket } from 'wasi:store/kv';
+import { Some } from 'zena:option';
+import { Disposable } from 'zena:ownership';
+
+export function main(): u32 {
+  var acc: u32 = 0;
+  let b = Bucket.create('main');
+  b.set('k', 'v');
+  acc += b.count();
+  let got = b.get('k');
+  if (got is Some<String>) {
+    acc += (got as Some<String>).value.length as u32;
+  }
+  let opened = Bucket.open('other');
+  if (opened is Some<Bucket>) {
+    acc += (opened as Some<Bucket>).value.count();
+  }
+  let d = defaultBucket();
+  acc += d.count();
+  d.[Disposable.dispose]();
+  b.[Disposable.dispose]();
+  return acc;
+}

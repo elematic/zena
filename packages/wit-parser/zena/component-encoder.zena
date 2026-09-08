@@ -442,6 +442,33 @@ export final class ComponentTypeEncoder {
     return false;
   }
 
+  /**
+   * The component-level type index of `typeName` exported by an
+   * already-imported interface, alias-exporting it on first use.
+   * Public for the canon builtins: `resource.drop` takes the imported
+   * resource's own (nominal) type as its immediate, which only an
+   * alias can name.
+   */
+  aliasResourceType(qualifiedInterface: String, typeName: String): i32 {
+    let reg = this.#findRegistered(qualifiedInterface);
+    if (reg == null || !this.#isResource(
+        reg as RegisteredInterface, typeName)) {
+      throw new EncodeError("'" + typeName + "' is not a resource of '" +
+          qualifiedInterface + "'");
+    }
+    return this.#aliasTypeExport(qualifiedInterface, typeName);
+  }
+
+  /** The registered interface named `qualified`, or null. */
+  #findRegistered(qualified: String): RegisteredInterface | null {
+    for (let reg in this.#interfaces) {
+      if (reg.qualifiedName == qualified) {
+        return reg;
+      }
+    }
+    return null;
+  }
+
   #aliasTypeExport(qualifiedInterface: String, typeName: String): i32 {
     let key = qualifiedInterface + "#" + typeName;
     if (let (true, existing) = this.#aliasedTypes.get(key)) {
