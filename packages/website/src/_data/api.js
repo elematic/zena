@@ -106,22 +106,52 @@ const renderType = (ref) => {
 /** Attaches rendered HTML to every type a page shows. */
 const withHtml = (ref) => (ref ? {...ref, html: renderType(ref)} : ref);
 
-const decorate = (declaration) => ({
-  ...declaration,
-  type: withHtml(declaration.type),
-  extends: Array.isArray(declaration.extends)
-    ? declaration.extends.map(withHtml)
-    : withHtml(declaration.extends),
-  implements: (declaration.implements ?? []).map(withHtml),
-  mixins: (declaration.mixins ?? []).map(withHtml),
-  members: byKind(
+const MEMBER_CATEGORIES = [
+  {title: 'Constructors', kinds: ['constructor']},
+  {title: 'Properties', kinds: ['field', 'getter', 'setter']},
+  {title: 'Methods', kinds: ['method']},
+  {title: 'Operators', kinds: ['operator']},
+  {title: 'Variants', kinds: ['variant']},
+  {title: 'Members', kinds: ['enumMember']},
+];
+
+const groupMembers = (members = []) => {
+  const groups = [];
+  for (const cat of MEMBER_CATEGORIES) {
+    const items = members.filter((m) => cat.kinds.includes(m.kind));
+    if (items.length > 0) {
+      groups.push({title: cat.title, members: items});
+    }
+  }
+  return groups;
+};
+
+const groupBySource = (members = []) => {
+  const sourceMap = new Map();
+  for (const m of members) {
+    const key = m.from ?? m.inheritedFrom ?? 'Unknown';
+    if (!sourceMap.has(key)) {
+      sourceMap.set(key, {
+        from: key,
+        fromName: m.fromName ?? (key ?? '').split('#').pop(),
+        fromUrl: m.fromUrl ?? pages.get(key) ?? null,
+        members: [],
+      });
+    }
+    sourceMap.get(key).members.push(m);
+  }
+  return Array.from(sourceMap.values()).map((source) => ({
+    ...source,
+    memberGroups: groupMembers(source.members),
+  }));
+};
+
+const decorate = (declaration) => {
+  const declaredMembers = byKind(
     (declaration.members ?? []).filter((m) => !m.inheritedFrom),
-  ).map((m) => ({...m, type: withHtml(m.type)})),
-  // Kept apart so a page can show them under their own heading, and
-  // hide them: a class that implements a wide interface inherits far
-  // more than it declares, and the declared members are what a reader
-  // came for.
-  inherited: byKind(
+  ).map((m) => ({...m, type: withHtml(m.type)}));
+
+  const inheritedMembers = byKind(
     (declaration.members ?? []).filter((m) => m.inheritedFrom),
   ).map((m) => ({
     ...m,
@@ -129,8 +159,27 @@ const decorate = (declaration) => ({
     from: m.inheritedFrom,
     fromName: (m.inheritedFrom ?? '').split('#').pop(),
     fromUrl: pages.get(m.inheritedFrom) ?? null,
-  })),
-});
+  }));
+
+  return {
+    ...declaration,
+    type: withHtml(declaration.type),
+    extends: Array.isArray(declaration.extends)
+      ? declaration.extends.map(withHtml)
+      : withHtml(declaration.extends),
+    implements: (declaration.implements ?? []).map(withHtml),
+    mixins: (declaration.mixins ?? []).map(withHtml),
+    members: declaredMembers,
+    memberGroups: groupMembers(declaredMembers),
+    // Kept apart so a page can show them under their own heading, and
+    // hide them: a class that implements a wide interface inherits far
+    // more than it declares, and the declared members are what a reader
+    // came for.
+    inherited: inheritedMembers,
+    inheritedGroups: groupMembers(inheritedMembers),
+    inheritedSources: groupBySource(inheritedMembers),
+  };
+};
 
 /**
  * Declarations grouped by kind, in the order a reader wants them: the

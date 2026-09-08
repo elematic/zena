@@ -34,40 +34,47 @@ eleventyComputed:
     </p>
   {% endif %}
 
-  {% if params.length %}
-    <dl class="api-params">
-      {% for tag in params %}
-        <dt><code>{{ tag.name }}</code></dt>
-        <dd>{{ tag.text | markdown | safe }}</dd>
+  {% if params.length or returns or throws.length or examples.length %}
+    <div class="api-tags">
+      {% if params.length %}
+        <dl class="api-params">
+          {% for tag in params %}
+            <dt><code>{{ tag.name }}</code></dt>
+            <dd>{{ tag.text | markdown | safe }}</dd>
+          {% endfor %}
+        </dl>
+      {% endif %}
+
+      {% if returns %}
+        <p class="api-returns">
+          <span class="api-label">Returns</span> {{ returns.text | markdown | safe }}
+        </p>
+      {% endif %}
+
+      {% for tag in throws %}
+        <p class="api-throws">
+          <span class="api-label">Throws</span> <code>{{ tag.name }}</code>
+          {{ tag.text | markdown | safe }}
+        </p>
       {% endfor %}
-    </dl>
+
+      {% for tag in examples %}
+        <div class="api-example">{{ tag.text | markdown | safe }}</div>
+      {% endfor %}
+    </div>
   {% endif %}
-
-  {% if returns %}
-    <p class="api-returns">
-      <span class="api-label">Returns</span> {{ returns.text | markdown | safe }}
-    </p>
-  {% endif %}
-
-  {% for tag in throws %}
-    <p class="api-throws">
-      <span class="api-label">Throws</span> <code>{{ tag.name }}</code>
-      {{ tag.text | markdown | safe }}
-    </p>
-  {% endfor %}
-
-  {% for tag in examples %}
-    <div class="api-example">{{ tag.text | markdown | safe }}</div>
-  {% endfor %}
 {% endmacro %}
 
-{% macro members(entries) %}
+{% macro memberList(entries) %}
   {% if entries.length %}
-    <div class="api-members">
+    <div class="api-member-list">
       {% for member in entries %}
         <div class="api-member" id="{{ member.anchor }}">
-          <div class="api-member-signature">
-            {{ member.signature | highlight('zena') | safe }}
+          <div class="api-member-header">
+            <div class="api-member-signature">
+              {{ member.signature | highlight('zena') | safe }}
+            </div>
+            <a class="api-member-anchor" href="#{{ member.anchor }}" aria-label="Permalink to {{ member.name }}">#</a>
           </div>
           {{ doc(member) }}
         </div>
@@ -99,71 +106,99 @@ eleventyComputed:
 {% for group in module.groups %}
   <h2 id="{{ group.kind }}">{{ group.title }}</h2>
   {% for declaration in group.declarations %}
-    <h3 id="{{ declaration.anchor }}">{{ declaration.name }}</h3>
+    <h3 class="api-declaration-title" id="{{ declaration.anchor }}"><a class="header-anchor" href="#{{ declaration.anchor }}" aria-hidden="true"></a>{{ declaration.name }}</h3>
     <div class="api-declaration">
-      <div class="api-signature">
-        {{ declaration.signature | highlight('zena') | safe }}
+      <div class="api-declaration-header">
+        <div class="api-signature">
+          {{ declaration.signature | highlight('zena') | safe }}
+        </div>
+        {% if declaration.extends or declaration.implements.length or declaration.mixins.length or declaration.reexportedFrom %}
+          <div class="api-declaration-meta">
+            {% if declaration.extends %}
+              <div class="api-meta-item">
+                <span class="api-meta-label">Extends</span>
+                <span class="api-meta-value">
+                  {%- if declaration.extends.length -%}
+                    {%- for one in declaration.extends -%}
+                      <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
+                    {%- endfor -%}
+                  {%- else -%}
+                    <code>{{ declaration.extends.html | safe }}</code>
+                  {%- endif -%}
+                </span>
+              </div>
+            {% endif %}
+            {% if declaration.implements.length %}
+              <div class="api-meta-item">
+                <span class="api-meta-label">Implements</span>
+                <span class="api-meta-value">
+                  {%- for one in declaration.implements -%}
+                    <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
+                  {%- endfor -%}
+                </span>
+              </div>
+            {% endif %}
+            {% if declaration.mixins.length %}
+              <div class="api-meta-item">
+                <span class="api-meta-label">Mixes in</span>
+                <span class="api-meta-value">
+                  {%- for one in declaration.mixins -%}
+                    <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
+                  {%- endfor -%}
+                </span>
+              </div>
+            {% endif %}
+            {% if declaration.reexportedFrom %}
+              <div class="api-meta-item">
+                <span class="api-meta-label">Re-exported from</span>
+                <span class="api-meta-value"><code>{{ declaration.reexportedFrom }}</code></span>
+              </div>
+            {% endif %}
+          </div>
+        {% endif %}
       </div>
-      {% if declaration.extends or declaration.implements.length or declaration.mixins.length %}
-        <dl class="api-relations">
-          {% if declaration.extends %}
-            <dt>Extends</dt>
-            <dd>
-              {%- if declaration.extends.length -%}
-                {%- for one in declaration.extends -%}
-                  <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
-                {%- endfor -%}
-              {%- else -%}
-                <code>{{ declaration.extends.html | safe }}</code>
-              {%- endif -%}
-            </dd>
-          {% endif %}
-          {% if declaration.implements.length %}
-            <dt>Implements</dt>
-            <dd>
-              {%- for one in declaration.implements -%}
-                <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
-              {%- endfor -%}
-            </dd>
-          {% endif %}
-          {% if declaration.mixins.length %}
-            <dt>Mixes in</dt>
-            <dd>
-              {%- for one in declaration.mixins -%}
-                <code>{{ one.html | safe }}</code>{% if not loop.last %}, {% endif %}
-              {%- endfor -%}
-            </dd>
-          {% endif %}
-        </dl>
+      {% if declaration.doc.description or declaration.doc.tags.length %}
+        <div class="api-declaration-doc">
+          {{ doc(declaration) }}
+        </div>
       {% endif %}
-      {% if declaration.reexportedFrom %}
-        <p class="api-source">
-          Re-exported from <code>{{ declaration.reexportedFrom }}</code>.
-        </p>
+      {% if declaration.memberGroups.length %}
+        <div class="api-members-container">
+          {% for memberGroup in declaration.memberGroups %}
+            <div class="api-member-group">
+              <div class="api-member-group-title">{{ memberGroup.title }}</div>
+              {{ memberList(memberGroup.members) }}
+            </div>
+          {% endfor %}
+        </div>
       {% endif %}
-      {{ doc(declaration) }}
-      {{ members(declaration.members) }}
       {% if declaration.inherited.length %}
         <details class="api-inherited">
-          <summary>
-            {{ declaration.inherited.length }} inherited
-            member{% if declaration.inherited.length != 1 %}s{% endif %}
+          <summary class="api-inherited-summary">
+            <span class="api-inherited-title">
+              {{ declaration.inherited.length }} inherited
+              member{% if declaration.inherited.length != 1 %}s{% endif %}
+            </span>
           </summary>
-          <div class="api-members">
-            {% for member in declaration.inherited %}
-              <div class="api-member" id="{{ member.anchor }}">
-                <div class="api-member-signature">
-                  {{ member.signature | highlight('zena') | safe }}
+          <div class="api-inherited-body">
+            {% for source in declaration.inheritedSources %}
+              <div class="api-inherited-source">
+                <div class="api-inherited-source-header">
+                  <span class="api-inherited-source-label">From</span>
+                  {% if source.fromUrl %}
+                    <a href="{{ source.fromUrl }}"><code>{{ source.fromName }}</code></a>
+                  {% else %}
+                    <code>{{ source.fromName }}</code>
+                  {% endif %}
                 </div>
-                <p class="api-source">
-                  From
-                  {%- if member.fromUrl %}
-                    <a href="{{ member.fromUrl }}"><code>{{ member.fromName }}</code></a>
-                  {%- else %}
-                    <code>{{ member.fromName }}</code>
-                  {%- endif %}.
-                </p>
-                {{ doc(member) }}
+                {% for memberGroup in source.memberGroups %}
+                  <div class="api-member-group">
+                    {% if source.memberGroups.length > 1 %}
+                      <div class="api-member-group-title">{{ memberGroup.title }}</div>
+                    {% endif %}
+                    {{ memberList(memberGroup.members) }}
+                  </div>
+                {% endfor %}
               </div>
             {% endfor %}
           </div>
