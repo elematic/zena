@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 7
+
+// A var(#x)-backed field with a FIELD initializer (issue #463): the
+// member registers under the setter name, and both the initializer
+// check and constructor synthesis must look it up through the
+// rename. The no-constructor case silently DROPPED the initializer
+// before the fix (the field defaulted), so the values here assert
+// the initializers actually ran.
+
+class Holder {
+  tag: i32;
+  new(this.tag);
+}
+
+class Bare {
+  var(#n) n: i32 = 5;
+}
+
+class WithCtor {
+  var(#n) n: i32 = 5;
+  #x: i32;
+  new(x: i32) : #x = x;
+  bump(): void { this.#n += 1; }
+  sum(): i32 { return this.n + this.#x; }
+}
+
+class RefField {
+  var(#h) h: Holder = new Holder(3);
+}
+
+class Cell<T> {
+  var(#v) v: T;
+  new(v: T) : #v = v;
+  put(nv: T): void { this.#v = nv; }
+}
+
+export let main = (): i32 => {
+  let b = new Bare();
+  if (b.n != 5) { return 1; }
+  let w = new WithCtor(1);
+  w.bump();
+  if (w.sum() != 7) { return 2; }
+  let r = new RefField();
+  if (r.h.tag != 3) { return 3; }
+  let c = new Cell(6);
+  c.put(7);
+  if (c.v != 7) { return 4; }
+  return 7;
+};

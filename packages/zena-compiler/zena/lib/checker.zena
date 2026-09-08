@@ -12985,7 +12985,16 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               var isPriorLocal = false;
               var fi = 0;
               while (fi <= fieldIndex) {
-                if (fieldOrder[fi] == k) {
+                // A `var(#x) x` field's member key is its SETTER name;
+                // fieldOrder carries the declared one.
+                var declared = fieldOrder[fi];
+                let fsnOrder = classType.fieldSetterNames;
+                if (fsnOrder != null) {
+                  if (let (true, mapped) = fsnOrder.get(declared)) {
+                    declared = mapped;
+                  }
+                }
+                if (declared == k) {
                   isPriorLocal = true;
                 }
                 fi = fi + 1;
@@ -13004,7 +13013,15 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
             kh = kh + 1;
           }
 
-          let fieldInfo = classType.members[fieldName];
+          // A `var(#x) x` field is registered under its SETTER name.
+          var lookupField = fieldName;
+          let fsn = classType.fieldSetterNames;
+          if (fsn != null) {
+            if (let (true, mapped) = fsn.get(fieldName)) {
+              lookupField = mapped;
+            }
+          }
+          let fieldInfo = classType.members[lookupField];
           let fieldType = fieldInfo.type;
           let initType = checkExpression(ctx, value, fieldType);
 
