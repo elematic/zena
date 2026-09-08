@@ -781,7 +781,7 @@ shapes where the comparison is decided by construction:
   parameter — `Future.all([read(a), read(b)])`. A temporary's extent
   is the expression itself, enclosed by the extent of everything live
   in it, so no comparison is needed. Binding one (`let arr = [fut1,
-  fut2]`) is an error naming the call-site-literal form.
+fut2]`) is an error naming the call-site-literal form.
 
 The general rule — a named scoped container is legal when its
 declaration scope is enclosed by every stored element's root scope —

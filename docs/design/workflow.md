@@ -25,7 +25,7 @@ This document plans a family of tools built around one core library:
 The Zena monorepo builds with Wireit today. Wireit's model is small and
 good: npm scripts annotated with dependencies, input files, and output
 files; a script reruns only when the fingerprint of its inputs changes;
-outputs can be cached and restored; *services* are scripts that stay
+outputs can be cached and restored; _services_ are scripts that stay
 running, signal readiness, and shut down when their last dependent
 finishes.
 
@@ -97,7 +97,7 @@ Package `workflow`, registered in `zena-packages.json` like `wit-parser`.
   with a fingerprint, plus optional per-output dependency records (see
   fine-grained tracking below). Manifests are plain data and serializable.
 - **Service** — a step variant whose callback resolves not on completion
-  but on *readiness*, returning a handle with a `stop` operation.
+  but on _readiness_, returning a handle with a `stop` operation.
 
 ### Host interface
 
@@ -123,7 +123,7 @@ class RunContext {
 }
 ```
 
-Restoring cached output *bytes* (e.g. copying files out of a cache
+Restoring cached output _bytes_ (e.g. copying files out of a cache
 directory) is the host's business: `StepCache.get` returning a manifest
 means "this result exists and is restorable"; the engine then asks the
 host to materialize it only when a dependent actually needs it. Hosts
@@ -194,7 +194,7 @@ The engine verifies the merge covers every output.
 
 Correctness rules:
 
-- Dependency records are advisory *observations by the step itself*
+- Dependency records are advisory _observations by the step itself_
   (like compiler depfiles). A step that reports wrong records gets wrong
   incremental builds — same trust model as Wireit's `files` globs, and
   same remedy: a paranoid mode that also runs from scratch and compares
@@ -202,7 +202,7 @@ Correctness rules:
 - Records are only consulted when the config fingerprint matches the
   recording run. A rule upgrade invalidates everything, no exceptions.
 - The whole-step cache key is unchanged by this feature; fine-grained
-  state only accelerates the *miss* path.
+  state only accelerates the _miss_ path.
 
 This subsumes Wireit issue #168: a host that just wants the changed-file
 list gets it from `delta` without recording any per-output data.
@@ -310,7 +310,7 @@ Remote hits restore only the outputs a dependent actually needs.
 
 A rule is a function from parameters to step definitions. The TypeScript
 rule above expands to the full stanza: the `tsc` command, the source
-globs, `tsconfig.json` *and every file the tsconfig `extends`* in the
+globs, `tsconfig.json` _and every file the tsconfig `extends`_ in the
 inputs, the output globs derived from `outDir`, and incremental-friendly
 cleaning — none of it repeated per package, all of it versioned with the
 rule.
@@ -318,7 +318,7 @@ rule.
 Reading the tsconfig requires I/O, which is why rules cannot be purely
 declarative. A rule runs at graph-construction time with a narrow
 context: it may read files it names, and every read is automatically
-recorded as an input of the *configuration* itself, so editing a
+recorded as an input of the _configuration_ itself, so editing a
 tsconfig re-expands the rule. This closes the "forgot to list the
 tsconfig" class of bug structurally.
 
@@ -416,7 +416,7 @@ on its own and none blocks the ones before it.
 
 - **Adopting Bazel's model** (actions, providers, remote execution API).
   The action-cache/CAS split is adopted; the rest is oversized for a
-  Wireit-shaped tool, and remote *execution* is out of scope entirely.
+  Wireit-shaped tool, and remote _execution_ is out of scope entirely.
 - **A filesystem interface in the core library.** A `Filesystem` trait
   the engine calls directly would make the build system slightly shorter
   and every other host worse: the durable runner has no filesystem, the

@@ -102,7 +102,8 @@ for (let n = 0; n < layer; n += 1) {
 
 if (missing.length > 0) {
   console.log('\nManifest entries with no file:');
-  for (const [name, path] of missing.sort()) console.log(`  ${name} -> ${path}`);
+  for (const [name, path] of missing.sort())
+    console.log(`  ${name} -> ${path}`);
 }
 
 if (remaining.size > 0) {

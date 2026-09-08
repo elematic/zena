@@ -1259,7 +1259,7 @@ range check (an out-of-range discriminant is a loud error, not a
 value that defeats exhaustive matching later); a `flags` becomes a
 `distinct type … = u32` with one power-of-two constant per label.
 
-The aggregate *lift* half is built on top of them: records (case
+The aggregate _lift_ half is built on top of them: records (case
 classes), variants (sealed hierarchies, case classes prefixed with
 the variant's name because two variants may declare same-named
 cases), options, tuples, and lists of all of these, recursively. A
@@ -1293,7 +1293,7 @@ with the handle — a WIT constructor becomes `static create`, and a
 bare resource in value position (implicit `own`) wraps the returned
 handle. Disposal is the canonical `resource.drop`, idempotent behind
 a flag until affine checking covers these wrappers; its canon entry's
-immediate is the imported resource's own *nominal* type, which only
+immediate is the imported resource's own _nominal_ type, which only
 an alias can name, so the WIT encoder alias-exports it out of the
 imported instance and reports the index alongside its other pieces
 (`canonTypeIndices`). Handles inside aggregates lift and lower like
@@ -1307,7 +1307,7 @@ the `Stream<T>` boundary binding are what stand between here and
 `wasi:http@0.3.0`: `handle/send: async func(request) ->
 result<response, error-code>` over four resources whose bodies are
 `stream<u8>` — value marshaling, resources, the stream binding and
-async results, in that order, with async *exports* (the service
+async results, in that order, with async _exports_ (the service
 world's handler) after the client side works.
 
 ### C6 — p3 streams and futures. Ahead of C4, after the interop async slice.

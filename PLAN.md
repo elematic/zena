@@ -152,85 +152,75 @@ This document tracks completed work and planned features. For project instructio
     way to cancel carries none of the machinery), `TaskGroup.race`
     (loser-cancelling), `FutureClaim` (counted consumer interest), and
     generator disposal.
-  - **The async roadmap**, roughly in order:
-    1. ~~**Reseed.**~~ Done — the bootstrap now carries closure
-       specialization and the prelude-closure checker fixes.
-    2. **Library cleanup.** `onComplete` is dropped, the flattening
-       `then` deleted the then/flatMap waiter classes outright, and
-       the zero-allocation await invariant is documented where the
-       code enforces it. What remains is collapsing the other
-       combinators (`allOf`, `race`) into ordinary async code the way
-       `then` went.
-       Three compiler issues feed this and everything below, as
-       simplifiers: the diverging-catch region fix (#426 — its
-       workaround shapes `then`'s body), `this` typing as the bare
-       generic source in a generic class body (#434), and zero-width
-       locals (#435 — `let v = await f` at `Future<void>`, which also
-       retires `[failure]()`).
-    3. **Async iteration**: `async gen` functions (the two split
-       passes already share their machinery), an `AsyncIterator<T>`
-       protocol (`next(): Future<...>` — streams.md's convenience
-       layer), and an explicit `for await` loop — explicit because
-       suspension points are where cancellation delivers, and loop
-       syntax should not hide one. Early exit disposes through the
-       generator-disposal machinery, which for an async generator is
-       exactly right: its pending `next()` is real work.
-    4. **`await` on tuple and record literals of futures** —
-       `let (a, b) = await (getA(), getB());` and
-       `let {x, y} = await {x: fx(), y: fy()};` — the typed form of
-       JS's `all`/`allKeyed`/`await*`, heterogeneous and with no
-       combinator name to learn. **`allSettled` and `any` are done**:
-       `allSettled` collects `Outcome<T>` (`Settled`/`Failed`) in
-       input order and is ordinary async code — no early exit to
-       take — while `any` (first value wins; total failure fails with
-       an `AggregateError` in input order) joins `all` and `race` in
-       the subscription shape, because answering before every input
-       settles takes concurrent observation that sequential awaiting
-       cannot express. That boundary is the collapse's real extent:
-       `then` collapsed because it observes ONE future. Still open
-       here: the composable resilience combinators below. One
-       lowering follow-up: at
-       specializations where the operand is not a future, `return
+  - **The async roadmap**, roughly in order: 1. ~~**Reseed.**~~ Done — the bootstrap now carries closure
+    specialization and the prelude-closure checker fixes. 2. **Library cleanup.** `onComplete` is dropped, the flattening
+    `then` deleted the then/flatMap waiter classes outright, and
+    the zero-allocation await invariant is documented where the
+    code enforces it. What remains is collapsing the other
+    combinators (`allOf`, `race`) into ordinary async code the way
+    `then` went.
+    Three compiler issues feed this and everything below, as
+    simplifiers: the diverging-catch region fix (#426 — its
+    workaround shapes `then`'s body), `this` typing as the bare
+    generic source in a generic class body (#434), and zero-width
+    locals (#435 — `let v = await f` at `Future<void>`, which also
+    retires `[failure]()`). 3. **Async iteration**: `async gen` functions (the two split
+    passes already share their machinery), an `AsyncIterator<T>`
+    protocol (`next(): Future<...>` — streams.md's convenience
+    layer), and an explicit `for await` loop — explicit because
+    suspension points are where cancellation delivers, and loop
+    syntax should not hide one. Early exit disposes through the
+    generator-disposal machinery, which for an async generator is
+    exactly right: its pending `next()` is real work. 4. **`await` on tuple and record literals of futures** —
+    `let (a, b) = await (getA(), getB());` and
+    `let {x, y} = await {x: fx(), y: fy()};` — the typed form of
+    JS's `all`/`allKeyed`/`await*`, heterogeneous and with no
+    combinator name to learn. **`allSettled` and `any` are done**:
+    `allSettled` collects `Outcome<T>` (`Settled`/`Failed`) in
+    input order and is ordinary async code — no early exit to
+    take — while `any` (first value wins; total failure fails with
+    an `AggregateError` in input order) joins `all` and `race` in
+    the subscription shape, because answering before every input
+    settles takes concurrent observation that sequential awaiting
+    cannot express. That boundary is the collapse's real extent:
+    `then` collapsed because it observes ONE future. Still open
+    here: the composable resilience combinators below. One
+    lowering follow-up: at
+    specializations where the operand is not a future, `return
 await x` pays the bare-value queue hop for nothing — return
-       position can elide it.
-    5. **Composable resilience over real cancellation — done**
-       (`zena:task`, operations as values): `Op<T> = () => Future<T>` and combinators
-       from `Op<T>` to `Op<T>` — `timeout`, `deadline` (one budget
-       across every retry, on the monotonic clock), `retry` (with
-       exponential backoff), `fallback`, `hedge` — so composition
-       order is syntax: `retry(3, timeout(100, op))` is a per-attempt
-       budget, `timeout(500, retry(3, op))` an overall one. The two
-       soundness rules held: policies act on FAILURES and never on
-       cancellation (`catch` cannot observe the channel, so retrying
-       cancelled work is not expressible), and the racing combinators
-       start candidates in a `TaskGroup`, so losers and expired
-       attempts are actually cancelled. One ergonomic wart: applying
-       a combinator and calling the result in one expression
-       (`retry(3, op)()`) trips the callee-kind lowering gap (#448).
-    6. **`checkCancellation()` is done** — the opt-in sync checkpoint
-       for CPU-bound work with no natural suspension point (a
-       parser's token loop): raises on the cancellation channel, so
-       cleanup and propagation work exactly as at a real suspension
-       point, where `currentScope().isCancelled` remains the
-       poll-only form. `shielded` composes automatically (the ambient
-       is rebound), and it is an observe site — it never opens the
-       whole-program gate, and under a closed gate the check is a
-       branch never taken. Kotlin's `ensureActive`, .NET's
-       `ThrowIfCancellationRequested`.
-    7. **Unhandled rejections.** A rejected future nobody observes
-       currently vanishes, which is a fuzzy fallback. Design: a
-       rejected future with no waiters joins a pending-unhandled
-       list, any observation clears it, and drain quiescence reports
-       the remainder through a settable handler, loud by default.
-    8. **`async { ... }` blocks** — an expression of type `Future<T>`
-       desugaring to an immediately-called async function expression,
-       for awaiting inside sync contexts.
-    9. **JS interop**: Zena async exports surfacing as Promises, and
-       the `AbortSignal` ↔ `CancelScope` bridge in both directions
-       (a signal cancels a scope; a scope hands `fetch` a signal).
-    10. **WASI p3 as the primary parker** for the wasi target,
-        retiring `poll_oneoff` — rides the components track's
-        `Stream<T>`-across-the-boundary work.
+    position can elide it. 5. **Composable resilience over real cancellation — done**
+    (`zena:task`, operations as values): `Op<T> = () => Future<T>` and combinators
+    from `Op<T>` to `Op<T>` — `timeout`, `deadline` (one budget
+    across every retry, on the monotonic clock), `retry` (with
+    exponential backoff), `fallback`, `hedge` — so composition
+    order is syntax: `retry(3, timeout(100, op))` is a per-attempt
+    budget, `timeout(500, retry(3, op))` an overall one. The two
+    soundness rules held: policies act on FAILURES and never on
+    cancellation (`catch` cannot observe the channel, so retrying
+    cancelled work is not expressible), and the racing combinators
+    start candidates in a `TaskGroup`, so losers and expired
+    attempts are actually cancelled. One ergonomic wart: applying
+    a combinator and calling the result in one expression
+    (`retry(3, op)()`) trips the callee-kind lowering gap (#448). 6. **`checkCancellation()` is done** — the opt-in sync checkpoint
+    for CPU-bound work with no natural suspension point (a
+    parser's token loop): raises on the cancellation channel, so
+    cleanup and propagation work exactly as at a real suspension
+    point, where `currentScope().isCancelled` remains the
+    poll-only form. `shielded` composes automatically (the ambient
+    is rebound), and it is an observe site — it never opens the
+    whole-program gate, and under a closed gate the check is a
+    branch never taken. Kotlin's `ensureActive`, .NET's
+    `ThrowIfCancellationRequested`. 7. **Unhandled rejections.** A rejected future nobody observes
+    currently vanishes, which is a fuzzy fallback. Design: a
+    rejected future with no waiters joins a pending-unhandled
+    list, any observation clears it, and drain quiescence reports
+    the remainder through a settable handler, loud by default. 8. **`async { ... }` blocks** — an expression of type `Future<T>`
+    desugaring to an immediately-called async function expression,
+    for awaiting inside sync contexts. 9. **JS interop**: Zena async exports surfacing as Promises, and
+    the `AbortSignal` ↔ `CancelScope` bridge in both directions
+    (a signal cancels a scope; a scope hands `fetch` a signal). 10. **WASI p3 as the primary parker** for the wasi target,
+    retiring `poll_oneoff` — rides the components track's
+    `Stream<T>`-across-the-boundary work.
   - Open type-system threads feeding this roadmap (from the #335
     review): `WithDefault<T>` (the honest type of a default-initialized
     generic field; de-boxes `Future.#value` and gives collections an

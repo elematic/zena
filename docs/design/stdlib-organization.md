@@ -569,6 +569,7 @@ reaches `String`:
     So the order within this step is: convert any remaining literal check
     over a member's declarations, reseed, then move that member. Members
     the compiler never checks — the bulk of them — move immediately.
+
 15. Reseed.
 16. Delete the shims and the old registry locations.
 

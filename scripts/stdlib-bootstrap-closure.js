@@ -36,7 +36,10 @@ const STDLIB = 'packages/stdlib/zena';
 const MANIFEST = 'packages/stdlib/stdlib-manifest.json';
 const PRELUDE = 'packages/zena-compiler/zena/lib/prelude.zena';
 const ENTRY = 'packages/zena-compiler/zena/cli/main.zena';
-const ALSO_COMPILED = ['packages/wit-parser/zena', 'packages/zena-formatter/zena'];
+const ALSO_COMPILED = [
+  'packages/wit-parser/zena',
+  'packages/zena-formatter/zena',
+];
 
 /** `build:cli` builds no component, so a virtual module's component entry is
  * never resolved by the bootstrap — nor is anything only that entry imports.
@@ -100,7 +103,8 @@ while (files.length > 0) {
   walked.add(path);
   for (const spec of matchAll(FROM_IMPORT, uncommented(path))) {
     if (spec.startsWith('zena:')) seed.add(spec.slice('zena:'.length));
-    else if (spec.startsWith('.')) files.push(normalize(join(dirname(path), spec)));
+    else if (spec.startsWith('.'))
+      files.push(normalize(join(dirname(path), spec)));
   }
 }
 
@@ -146,6 +150,8 @@ console.log(`Freely movable (${free.length}) — repoint the manifest and move:`
 console.log(`  ${free.join(', ')}`);
 if (targetGated.size > 0) {
   console.log();
-  console.log('Target-gated, free for the bootstrap but resolved by a component');
+  console.log(
+    'Target-gated, free for the bootstrap but resolved by a component',
+  );
   console.log(`build: ${[...targetGated].sort().join(', ')}`);
 }

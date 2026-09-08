@@ -10,7 +10,6 @@ However, Zena is still very early in developemt, changing quite fast, and not
 yet friendly to external contributors. We do want to get there as soon as
 possible though.
 
-
 Right now there are two major hurdles to easily accepting external code
 contributions:
 
@@ -20,16 +19,17 @@ contributions:
    locally. We are moving our workflow to GitHub, starting with issues, but
    GitHub CI needs to be configured and the workflow moved to public pull
    requests.
-   
+
    In addition, development pace is very fast: major language design changes and
    repository reorganizations are still happening regularly. Many design docs
    are out of date. It's just a bit chaotic right now.
+
 1. **AI-assisted contribution policy.** The project itself is written almost
    entirely by AI under human direction and review (see
    [Built with AI](/development/built-with-ai/)), so we do want to accept
    AI-assisted contributions. However, reviewing AI-generated code requires
    significant care, and we need to figure out how to handle it.
-   
+
    In our own workflow, we know how we prompt, ensure agents read context files,
    understand our model's and harness's behavior, scrutenize as needed, and
    iterate through back-and-forth conversations. We cannot assume external pull
@@ -38,7 +38,7 @@ contributions:
    open source right now is the imbalance between the minimal time required to
    generate a change and the substantial maintainer time required to review,
    verify, and debug it.
-   
+
    We policy and guidelines to make this manageable, and we need to finish
    normalizing our workflow so contributors can follow it too. We will draw up a
    workable contribution policy soon.
@@ -158,7 +158,7 @@ npm run format        # fix
 npm run format:check  # verify
 ```
 
-Formatting currently does *not* run the Zena formatter on Zena files.
+Formatting currently does _not_ run the Zena formatter on Zena files.
 
 ## Working alongside agents
 

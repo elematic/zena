@@ -175,7 +175,6 @@ Two API stances, decided here:
   adoption; an async `return` deliberately does NOT do a general
   "one implicit await" the way JS's `resolve()` does. Three reasons,
   each about something JS does not have:
-
   - `Future<Future<T>>` is representable, so general adoption must be
     type-directed — `return f` would adopt when the declared value
     type is `X` and pass through when it is `Future<X>` — and in a
@@ -208,6 +207,7 @@ Two API stances, decided here:
   adoption's performance without its implicitness: lowering
   `return await f` to forwarding where the semantics above are
   provably undisturbed.
+
 - **Combinators need no primitives.** `then`/`map`/`flatMap`/`all`/
   `race` are ordinary library code over `subscribe` — which is why
   v1's core surface is only `await`, `onComplete`, `resolve`/`fail`,

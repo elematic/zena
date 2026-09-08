@@ -38,7 +38,7 @@ lowered, GVN'd, verified, and emitted inside the code-section loop
   body in memory at once.
 - **Everything already has a number by the time bodies exist.** The
   harvest pass (ir.md §10) wants to drop functions, types, and vtable
-  slots the loop killed, which means indices must bind *after*
+  slots the loop killed, which means indices must bind _after_
   optimization.
 
 The restructure splits compilation into three stages:
@@ -52,7 +52,7 @@ The restructure splits compilation into three stages:
 `WasmFunction`, `IrRefField` a struct plus field name — and emission
 reads numeric indices off the target objects at emit time, so moving
 layout after the loop is a scheduling change, not a representation
-change. The eager vtable *contents* RTA builds (which slots exist,
+change. The eager vtable _contents_ RTA builds (which slots exist,
 which globals initialize them) stay as they are in the first stages;
 deferring slot layout itself is a later stage (see Harvest below).
 
@@ -93,7 +93,7 @@ stays a cast.
 transitively. Purity comes from a per-op effects table: calls, stores,
 `var_set`/`global_set`, throws, and potentially-trapping ops are kept;
 allocations (`struct_new`, `array_new*`) are removable when unused
-since allocation alone is unobservable. A trapping `ref_cast` is *not*
+since allocation alone is unobservable. A trapping `ref_cast` is _not_
 removable even when unused — it either folds in `simplify` when proven
 safe or stays.
 
@@ -141,7 +141,7 @@ remapped, merge `refTable`/`typeTable` entries by interning, rewrite
 continuation block whose parameter is the call's result (`ret_multi`
 becomes multiple parameters), give callee `var` slots fresh variable
 ids. A callee's own `try_br` regions splice intact. The open risk from
-ir.md §15 is inlining a body *containing* protected regions into a
+ir.md §15 is inlining a body _containing_ protected regions into a
 protected region — the emitter's region nesting reconstruction must
 handle the nesting. If it fights back, v1 declines that combination
 (inline sites inside a protected region accept only try-free callees)
@@ -439,7 +439,7 @@ Steps 1–3 are independent of the restructure and start immediately;
 ## Parity milestones
 
 Counters and suite-wide numbers track progress; these milestones define
-*done* for the abstractions the language most wants to be free. Each is
+_done_ for the abstractions the language most wants to be free. Each is
 a pair of programs — the same workload written abstractly and written
 concretely — compiled by the same compiler and compared with the
 existing harness: `zena-cli bench`'s Welch's-t sampling must call their
@@ -461,7 +461,7 @@ in the loop. Achievable at step 9 (its gate names this pair).
 **P2 — iterator evaporation.** `for (let x in arr)` through the
 general iterator protocol against the C-style index loop. Array
 `for-in` today bypasses the protocol by a lowering special case; this
-pair compiles the *general* path (special case disabled) and demands
+pair compiles the _general_ path (special case disabled) and demands
 the iterator object dissolve: devirtualize and inline `iterator()` and
 `next()`, then scalar-replace an allocation with a **mutable** index
 field into a loop-carried block parameter — SROA v2's mem2reg, plus
@@ -476,13 +476,12 @@ to scheduled.
 and summing it, called with a `FixedArray<i32>`, against the identical
 function taking `FixedArray<i32>`. Three regimes, gated separately:
 
-- *Callee inlined:* provenance devirtualization inside the caller
+- _Callee inlined:_ provenance devirtualization inside the caller
   closes it — parity from step 9's pass set.
-- *Not inlined, one live implementation:* CHA devirtualization plus
+- _Not inlined, one live implementation:_ CHA devirtualization plus
   fat-pointer parameter scalarization make the specialized body
   identical to the concrete one — parity at step 13.
-- *Not inlined, several live implementations:* per-type cloning (step
-  13) buys parity at the cost of duplication; without a clone, parity
+- _Not inlined, several live implementations:_ per-type cloning (step 13) buys parity at the cost of duplication; without a clone, parity
   is impossible in principle — the dispatch must execute somewhere —
   and the target drops to array-mutability.md's bound of hoisted
   fat-pointer/vtable loads (LICM, step 12) and one indirect call per

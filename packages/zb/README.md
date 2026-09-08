@@ -102,7 +102,7 @@ steps restore from the cache; deleting the package's `.zb/` (or all of
 them) forces a rebuild. There is no `--force` flag yet.
 
 One semantic difference from wireit to know about: a dependency
-contributes the digest of its *outputs* to dependents' cache keys, not
+contributes the digest of its _outputs_ to dependents' cache keys, not
 its input fingerprint. That gives early cutoff (a dependency that reruns
 but produces identical outputs leaves dependents fresh) — and it makes
 complete `output` declarations matter more than under wireit, where
@@ -114,11 +114,11 @@ step produces but does not declare is invisible to dependents.
 zb builds real targets of this monorepo from its existing wireit
 configuration, measured on a warm checkout:
 
-| Command | First run | Fresh rerun |
-|---|---|---|
-| `packages/stdlib build` (tsc) | ~8s | <1s |
-| `packages/zena-compiler build:cli` (the compiler, via the bootstrap, plus its cargo and stdlib dependencies) | ~28s | ~11s |
-| `build` (the whole monorepo: every package, the self-hosted compiler rebuild, the language-service wasm, the website) | minutes | ~30s, 24 steps |
+| Command                                                                                                               | First run | Fresh rerun    |
+| --------------------------------------------------------------------------------------------------------------------- | --------- | -------------- |
+| `packages/stdlib build` (tsc)                                                                                         | ~8s       | <1s            |
+| `packages/zena-compiler build:cli` (the compiler, via the bootstrap, plus its cargo and stdlib dependencies)          | ~28s      | ~11s           |
+| `build` (the whole monorepo: every package, the self-hosted compiler rebuild, the language-service wasm, the website) | minutes   | ~30s, 24 steps |
 
 The root build converges over two runs: the first zb build regenerates
 some outputs with contents that differ from wireit's, so a handful of

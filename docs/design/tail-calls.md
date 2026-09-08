@@ -64,7 +64,7 @@ reported by the checker, at the `tail return` statement.
    type is that same type. The wasm instruction requires the callee's
    results to be assignable to the caller's, and any Zena conversion
    between two different types (packing a class into an interface, for
-   one) is code that would have to run *after* the callee returned — the
+   one) is code that would have to run _after_ the callee returned — the
    frame the tail call just discarded. Requiring the types to match is
    the rule that makes "this compiles" and "this is a tail call" the
    same question.

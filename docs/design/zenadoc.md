@@ -151,15 +151,15 @@ description, and the first paragraph of the description is the summary
 
 Recognized tags:
 
-| Tag                    | Meaning                                        |
-| ---------------------- | ---------------------------------------------- |
-| `@param name text`     | Describes one parameter                        |
-| `@returns text`        | Describes the return value                     |
-| `@throws Type text`    | An error this can throw                        |
-| `@example title?`      | Following fenced code block is an example      |
-| `@deprecated text?`    | Marks the declaration deprecated               |
-| `@see target`          | A related declaration, module id, or URL       |
-| `@since version`       | Version the declaration appeared in            |
+| Tag                 | Meaning                                   |
+| ------------------- | ----------------------------------------- |
+| `@param name text`  | Describes one parameter                   |
+| `@returns text`     | Describes the return value                |
+| `@throws Type text` | An error this can throw                   |
+| `@example title?`   | Following fenced code block is an example |
+| `@deprecated text?` | Marks the declaration deprecated          |
+| `@see target`       | A related declaration, module id, or URL  |
+| `@since version`    | Version the declaration appeared in       |
 
 Unrecognized tags are preserved verbatim rather than dropped, so a
 package can carry its own conventions and a consumer can render or
@@ -255,7 +255,7 @@ type parameter `T` and a class `T` render identically and resolve
 differently, and an imported name resolves to the module that declares
 it rather than the one that imports it.
 
-A type reference resolves to the module that *declares* a type, which
+A type reference resolves to the module that _declares_ a type, which
 is often a package-private file with no page —
 `zena:simd/shapes.zena#F32x4` is published as `zena:simd#F32x4`.
 Serialization rewrites a link to the page that hosts the declaration,

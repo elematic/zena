@@ -84,10 +84,10 @@ settable slot would let a second observer silently disconnect the
 first.
 
 The `Op` is given at construction, not per `run()`: an op is the
-operation *with its policies already composed* —
+operation _with its policies already composed_ —
 `new Task(retry(3, timeout(100, fetchUser)))` — and a task that could
 run a different op each time would be a cell of cells, with no way to
-say what the task is a task *of*. Parameterizing a run ("fetch user
+say what the task is a task _of_. Parameterizing a run ("fetch user
 N") is closing over the parameter and building a new task, or making
 the op read its argument from where the caller put it — the same
 answer @lit/task gives with its `args` callback, minus the reactive
@@ -119,7 +119,7 @@ Three surfaces, from cheapest to richest, each pull-shaped (read
   superseded one.
 - **`changed()`**, the conflating wakeup: a future settling at the
   next transition. A consumer loop `while (true) { render(task.state);
-  await task.changed(); }` sees every state it is fast enough to see
+await task.changed(); }` sees every state it is fast enough to see
   and the latest one when it is not — which is the correct degradation
   for a type whose essence is latest-wins.
 
