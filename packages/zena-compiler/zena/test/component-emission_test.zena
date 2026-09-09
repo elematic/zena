@@ -602,7 +602,7 @@ world only {
       'the raw string->string declaration is misflattened:\n' + source);
     isTrue(source.contains('let (p0, l0) = stageString(input);'),
       'the string argument is not staged:\n' + source);
-    isTrue(source.contains('releaseStaged();'),
+    isTrue(source.contains('releaseStagedFrom(m0);'),
       'the staged argument is not released:\n' + source);
     isTrue(source.contains('let out = liftStringAt(ret);'),
       'the spilled string result is not lifted:\n' + source);
@@ -710,6 +710,45 @@ world only {
       'the geo interface import is missing');
   });
 
+  test('an async WIT import with a result lifts through the return area',
+      (ctx: TestContext): void => {
+    // `fetch-point: async func(name: string) -> result<point,
+    // finding>` — the async lowering flattens the staged string (two
+    // core values, within the async limit of four), appends the
+    // return-area address, and hands back the packed subtask. The
+    // wrapper is an async function: stage, call, await the driver,
+    // release its own staging range, then lift the result the host
+    // wrote — into Outcome, because a future's payload must be
+    // storable and the inline Result is return-position-only.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:geo/survey`);
+    isTrue(source.contains(
+        '@external("wasi:geo/survey@1.0.0", "fetch-point", "async")'),
+      'the raw import is not async-lowered:\n' + source);
+    isTrue(source.contains(
+        'declare function fetchPoint_raw(p0: i32, l0: i32, ret: i32): i32;'),
+      'the async raw signature is wrong:\n' + source);
+    isTrue(source.contains(
+        'export async function fetchPoint(name: String): ' +
+        'Future<Outcome<Point, Finding>> {'),
+      'the wrapper should be an async function returning an ' +
+      'Outcome:\n' + source);
+    isTrue(source.contains('await awaitPacked(packed);'),
+      'the wrapper does not await its subtask:\n' + source);
+    isTrue(source.contains('return new Ok<Point, Finding>(ok);'),
+      "the result's ok arm should be an Outcome:\n" + source);
+    // An async function with a rich parameter and no result also
+    // rides the async wrapper, still Future<void>.
+    isTrue(source.contains(
+        'export async function pushLabels(names: Array<String>): ' +
+        'Future<void> {'),
+      'the rich-parameter async wrapper is wrong:\n' + source);
+    // And the consumer awaiting both compiles to a component.
+    let bytes = compileFor(`${fixtures}/fetch-wit.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 11), 'run'),
+      'an awaiting program should be entered through the async entry');
+  });
+
   test('a WIT-typed module lowers aggregate parameters into flat slots',
       (ctx: TestContext): void => {
     // The mirror of the lift half: an aggregate parameter flattens
@@ -741,7 +780,7 @@ world only {
     // The list parameter stages elements at the string pair stride.
     isTrue(source.contains('stageBuffer('),
       'the list parameter does not stage a buffer:\n' + source);
-    isTrue(source.contains('releaseStaged();'),
+    isTrue(source.contains('releaseStagedFrom(m0);'),
       'staged lowerings must release after the call:\n' + source);
     // finding's payloads join f64 (at: point) against i32 (message:
     // string), which the flat form cannot spell yet — refused loudly.

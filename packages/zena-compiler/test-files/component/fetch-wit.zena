@@ -1,0 +1,28 @@
+// Async WIT imports with results and rich parameters: the synthesized
+// wrapper is an async function that stages, calls the async-lowered
+// raw import, awaits the subtask through the driver, releases its own
+// staging range, and lifts the result the host wrote through the
+// trailing return area — an Outcome, since a future's payload must be
+// storable and the inline Result is return-position-only.
+// Compile-level coverage; the unit tests assert the synthesized
+// source.
+import { fetchPoint, pushLabels, Point, Finding } from 'wasi:geo/survey';
+import { Ok } from 'zena:result';
+import { drainMicrotasks, Future } from 'zena:async';
+
+async function go(): Future<u32> {
+  let labels = new GrowableArray<String>();
+  labels.push('a');
+  labels.push('b');
+  await pushLabels(labels);
+  let got = await fetchPoint('origin');
+  if (got is Ok<Point, Finding>) {
+    return (got as Ok<Point, Finding>).value.x as u32;
+  }
+  return 0;
+}
+
+export function main(): void {
+  go();
+  drainMicrotasks();
+}

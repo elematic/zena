@@ -464,6 +464,8 @@ final class SynthUses {
   /** Whether any resource class rendered — pulls in Disposable and
    * the module's handle symbol. */
   var anyResource = false;
+  /** Whether an async result rendered — pulls in Outcome/Ok/Err. */
+  var outcome = false;
   new();
 
   nextTmp(): i32 {
@@ -772,6 +774,20 @@ function lowerBlocker(ty: Ty): String {
     }
   }
   return "";
+}
+
+/** Whether lowering `ty` may stage arena buffers. */
+function mayStage(ty: Ty): boolean {
+  if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList ||
+      ty.kind == TyKind.ListT) {
+    return true;
+  }
+  for (let child in ty.children) {
+    if (mayStage(child)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** The abi store call for a value of `size` bytes at `ptrExpr`. */
@@ -1413,6 +1429,9 @@ export function synthesizeWitModule(canonicalPath: String): String {
   if (uses.result) {
     sb.append("import { Result } from 'zena:result';\n");
   }
+  if (uses.outcome) {
+    sb.append("import { Outcome, Ok, Err } from 'zena:result';\n");
+  }
   if (uses.abi.length > 0) {
     sb.append("import { ");
     for (var i = 0; i < uses.abi.length; i += 1) {
@@ -1592,45 +1611,53 @@ function renderFuncIn(
     if (!freeMode) {
       return "an async resource function waits on the interop stages";
     }
-    if (hasResult) {
-      return "an async result waits on the subtask-read machinery";
+    // The async lowering flattens at most four core parameter values
+    // before spilling all of them through one pointer, which is not
+    // rendered yet.
+    if (paramFlats > 4) {
+      return "async parameters spilling past four core values wait " +
+          "on the interop stages";
     }
-    if (anyRich) {
-      return "an async function with non-scalar parameters waits on " +
-          "the interop stages";
-    }
-    // The raw import's core result is the packed `(subtask << 4) |
-    // state` the canonical `async` lowering returns; `awaitPacked`
-    // turns it into the future. The `_raw` suffix cannot collide with
-    // another rendered function: WIT names are kebab-case, so no
-    // camelName output contains an underscore.
-    uses.hasAsync = true;
-    let sig = new StringBuilder();
-    let args = new StringBuilder();
-    for (var i = 0; i < params.length; i += 1) {
-      if (i > 0) {
-        sig.append(", ");
-        args.append(", ");
+    if (!anyRich && !hasResult) {
+      // Flat scalars, no result: the thin form. The raw import's core
+      // result is the packed `(subtask << 4) | state` the canonical
+      // `async` lowering returns; `awaitPacked` turns it into the
+      // future. The `_raw` suffix cannot collide with another
+      // rendered function: WIT names are kebab-case, so no camelName
+      // output contains an underscore.
+      uses.hasAsync = true;
+      let sig = new StringBuilder();
+      let args = new StringBuilder();
+      for (var i = 0; i < params.length; i += 1) {
+        if (i > 0) {
+          sig.append(", ");
+          args.append(", ");
+        }
+        sig.append(paramNames[i]).append(": ").append(params[i].scalar);
+        args.append(paramNames[i]);
       }
-      sig.append(paramNames[i]).append(": ").append(params[i].scalar);
-      args.append(paramNames[i]);
+      rawSink.append("@external(\"").append(interfaceName)
+          .append("\", \"").append(nf.name.name)
+          .append("\", \"async\")\n");
+      rawSink.append("declare function ").append(zenaName)
+          .append("_raw(").append(sig.toString()).append("): i32;\n");
+      rawSink.append("export function ").append(zenaName)
+          .append("(").append(sig.toString())
+          .append("): Future<void> {\n  return awaitPacked(")
+          .append(zenaName).append("_raw(").append(args.toString())
+          .append("));\n}\n");
+      return "";
     }
-    rawSink.append("@external(\"").append(interfaceName).append("\", \"")
-        .append(nf.name.name).append("\", \"async\")\n");
-    rawSink.append("declare function ").append(zenaName)
-        .append("_raw(").append(sig.toString()).append("): i32;\n");
-    rawSink.append("export function ").append(zenaName)
-        .append("(").append(sig.toString())
-        .append("): Future<void> {\n  return awaitPacked(")
-        .append(zenaName).append("_raw(").append(args.toString())
-        .append("));\n}\n");
-    return "";
+    // Anything richer takes the general path below as an async
+    // wrapper: stage, call, await the subtask, then lift the result
+    // the host wrote through the trailing return area — an async
+    // lowering spills any result, whatever its flat count.
   }
 
   // The result spills — the raw call takes a return area address and
   // returns nothing — exactly when it flattens to more than one core
-  // value.
-  let resultSpills = resultTy.flats > 1;
+  // value. An async result always spills.
+  let resultSpills = if (func.isAsync) hasResult else resultTy.flats > 1;
 
   if (!anyRich && freeMode) {
     // Every type is a flat scalar: one declaration, no wrapper.
@@ -1694,7 +1721,9 @@ function renderFuncIn(
     if (rawIndex > 0) { rawSig.append(", "); }
     rawSig.append("ret: i32");
   }
-  let rawResult = if (resultSpills || !hasResult) {
+  let rawResult = if (func.isAsync) {
+    "i32"
+  } else if (resultSpills || !hasResult) {
     "void"
   } else if (resultTy.kind == TyKind.Enumeration) {
     "i32"
@@ -1706,7 +1735,11 @@ function renderFuncIn(
     resultTy.scalar
   };
   rawSink.append("@external(\"").append(interfaceName).append("\", \"")
-      .append(mode.externField).append("\")\n");
+      .append(mode.externField);
+  if (func.isAsync) {
+    rawSink.append("\", \"async");
+  }
+  rawSink.append("\")\n");
   rawSink.append("declare function ").append(mode.rawName)
       .append("_raw(").append(rawSig.toString()).append("): ")
       .append(rawResult).append(";\n");
@@ -1724,19 +1757,48 @@ function renderFuncIn(
   var wrapResult = "void";
   if (hasResult) {
     if (resultTy.kind == TyKind.ResultT) {
-      uses.result = true;
-      wrapResult = "Result<" + zenaTypeOf(resultTy.children[0], uses) +
-          ", " + zenaTypeOf(resultTy.children[1], uses) + ">";
+      if (func.isAsync) {
+        // A future's payload must be storable, which the inline
+        // Result is not (return-position-only): the async form
+        // carries Outcome, its heap counterpart.
+        uses.outcome = true;
+        wrapResult = "Outcome<" +
+            zenaTypeOf(resultTy.children[0], uses) + ", " +
+            zenaTypeOf(resultTy.children[1], uses) + ">";
+      } else {
+        uses.result = true;
+        wrapResult = "Result<" +
+            zenaTypeOf(resultTy.children[0], uses) + ", " +
+            zenaTypeOf(resultTy.children[1], uses) + ">";
+      }
     } else {
       wrapResult = zenaTypeOf(resultTy, uses);
     }
   }
-  sb.append(mode.declHead).append(zenaName).append("(")
+  var declHead = mode.declHead;
+  if (func.isAsync) {
+    uses.hasAsync = true;
+    declHead = "export async function ";
+    wrapResult = "Future<" + wrapResult + ">";
+  }
+  sb.append(declHead).append(zenaName).append("(")
       .append(wrapSig.toString()).append("): ").append(wrapResult)
       .append(" {\n");
-  // Per-function: whether THIS wrapper stages anything decides its
-  // trailing releaseStaged().
-  uses.stagedAny = false;
+  // Release is by arena range: an async wrapper suspended on its
+  // subtask still owns live staging (the callee may lift arguments
+  // after the call returns), so each wrapper frees exactly what it
+  // staged and nothing an interleaved wrapper still owes.
+  var anyStaging = false;
+  for (let p in params) {
+    if (mayStage(p)) {
+      anyStaging = true;
+    }
+  }
+  if (anyStaging) {
+    uses.useAbi("stagedMark");
+    uses.useAbi("releaseStagedFrom");
+    sb.append("  let m0 = stagedMark();\n");
+  }
   let callArgs = new StringBuilder();
   var argIndex = 0;
   for (var i = 0; i < params.length; i += 1) {
@@ -1821,36 +1883,53 @@ function renderFuncIn(
   }
   let call = mode.rawName + "_raw(" + callPrefix + callArgs.toString() +
       ")";
-  if (resultSpills || rawResult == "void") {
+  if (func.isAsync) {
+    // The call hands back the packed subtask; the await parks until
+    // the host reports it returned — which is also when the trailing
+    // return area holds the result and the staged arguments are
+    // certainly consumed.
+    sb.append("  let packed = ").append(call).append(";\n");
+    sb.append("  await awaitPacked(packed);\n");
+  } else if (resultSpills || rawResult == "void") {
     sb.append("  ").append(call).append(";\n");
   } else {
     sb.append("  let got = ").append(call).append(";\n");
   }
-  // Everything staged was consumed during the call — a synchronous
-  // lowering copies before returning — so the arena's contents are
-  // dead now, wherever in the lowering they were staged from.
-  if (uses.stagedAny) {
-    uses.useAbi("releaseStaged");
-    sb.append("  releaseStaged();\n");
+  // A synchronous lowering consumed the staged arguments during the
+  // call; an asynchronous one has by the time the subtask returned.
+  if (anyStaging) {
+    sb.append("  releaseStagedFrom(m0);\n");
   }
   if (resultSpills) {
     uses.useAbi("freeLifted");
     if (resultTy.kind == TyKind.ResultT) {
-      // A top-level result lifts into the inline Result: read the
-      // discriminant, lift the live arm, free the area, return the
-      // matching inline arm.
+      // A top-level result lifts into the inline Result — or, from an
+      // async wrapper, into Outcome, because a future's payload must
+      // be storable and the inline form is return-position-only.
       let payoff = payloadOffset(resultTy);
+      let okZ = zenaTypeOf(resultTy.children[0], uses);
+      let errZ = zenaTypeOf(resultTy.children[1], uses);
       sb.append("  if (").append(discLoad(1, "ret", uses))
           .append(" == 0) {\n    let ok = ")
           .append(liftExprOf(resultTy.children[0],
               "ret + " + i32ToString(payoff), uses))
-          .append(";\n    freeLifted(ret);\n")
-          .append("    return (true, ok, _);\n  }\n")
-          .append("  let err = ")
+          .append(";\n    freeLifted(ret);\n");
+      if (func.isAsync) {
+        sb.append("    return new Ok<").append(okZ).append(", ")
+            .append(errZ).append(">(ok);\n  }\n");
+      } else {
+        sb.append("    return (true, ok, _);\n  }\n");
+      }
+      sb.append("  let err = ")
           .append(liftExprOf(resultTy.children[1],
               "ret + " + i32ToString(payoff), uses))
-          .append(";\n  freeLifted(ret);\n")
-          .append("  return (false, _, err);\n");
+          .append(";\n  freeLifted(ret);\n");
+      if (func.isAsync) {
+        sb.append("  return new Err<").append(okZ).append(", ")
+            .append(errZ).append(">(err);\n");
+      } else {
+        sb.append("  return (false, _, err);\n");
+      }
     } else {
       sb.append("  let out = ")
           .append(liftExprOf(resultTy, "ret", uses)).append(";\n");
@@ -1867,7 +1946,7 @@ function renderFuncIn(
   } else if (resultTy.kind == TyKind.ResourceH) {
     sb.append("  return new ").append(resultTy.typeName)
         .append("(got);\n");
-  } else if (rawResult != "void") {
+  } else if (!func.isAsync && rawResult != "void") {
     sb.append("  return got;\n");
   }
   sb.append("}\n");

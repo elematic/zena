@@ -405,9 +405,23 @@ export function stageByteList(bytes: FixedArray<u8>): (i32, i32) {
   return (ptr, len);
 }
 
-/** Free everything staged since the last release. */
-export function releaseStaged(): void {
-  while (stagedPtrs.length > 0) {
+/**
+ * The arena's current position, taken before a wrapper stages
+ * anything. Release is by range (`releaseStagedFrom`), not pop-all:
+ * an async-lowered call's arguments may be lifted by the callee after
+ * the call returns (the STARTING state), so a wrapper suspended on
+ * its subtask still owns live staging — and any wrapper that ran in
+ * the meantime must free only its own.
+ */
+export function stagedMark(): i32 {
+  return stagedPtrs.length;
+}
+
+/** Free everything staged since `mark`. Ranges nest like the calls
+ * that created them, so popping to a mark never frees an outer
+ * wrapper's still-live staging. */
+export function releaseStagedFrom(mark: i32): void {
+  while (stagedPtrs.length > mark) {
     defaultAllocator.free(stagedPtrs.pop());
   }
 }

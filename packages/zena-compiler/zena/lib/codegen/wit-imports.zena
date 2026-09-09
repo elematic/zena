@@ -611,6 +611,15 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
           if (meta.paramFlatCount > 16) 1 else meta.paramFlatCount;
       var expectedResults = 0;
       if (imp.lowerAsync) {
+        // The async lowering flattens at most four parameter core
+        // values before spilling all of them through one pointer, any
+        // result rides a trailing return-area address, and the one
+        // core result is the packed subtask.
+        expectedParams =
+            if (meta.paramFlatCount > 4) 1 else meta.paramFlatCount;
+        if (meta.resultFlatCount > 0) {
+          expectedParams += 1;
+        }
         expectedResults = 1;
       } else if (meta.resultFlatCount > 1) {
         expectedParams += 1;

@@ -1300,10 +1300,26 @@ imported instance and reports the index alongside its other pieces
 any other single-word value, through a module-internal symbol-keyed
 accessor.
 
-The next slice is async _results_ (the subtask-read machinery,
-C6-adjacent) — with the value and resource surfaces closed, that and
-the `Stream<T>` boundary binding are what stand between here and
-`client.send`. The path they serve is
+Async results followed, and the mechanism turned out simpler than
+this document had guessed: no subtask-read machinery — the async
+lowering spills any result through a trailing return-area address
+(and flattens at most four parameter core values before spilling
+them, a tighter limit than the synchronous sixteen), and the value
+is simply there once the subtask reports RETURNED. The synthesized
+wrapper is an async *function*: stage, call, `await` the driver's
+future, release its own staging, lift from the return area. A
+top-level `result<T, E>` arrives as `Outcome<T, E>` — a future's
+payload must be storable, and the inline `Result` is
+return-position-only. The staging arena became range-based
+(`stagedMark`/`releaseStagedFrom`) in the same change: an async
+callee may lift its arguments *after* the call returns, so a
+suspended wrapper still owns live staging, and a pop-all release
+from any wrapper that ran meanwhile would have freed it.
+
+With that, `client.send`'s call shape works end to end at the type
+level. What stands before `wasi:http` is the `Stream<T>` boundary
+binding (bodies) — and after the client, async *exports* for the
+service world. The path they serve is
 `wasi:http@0.3.0`: `handle/send: async func(request) ->
 result<response, error-code>` over four resources whose bodies are
 `stream<u8>` — value marshaling, resources, the stream binding and
