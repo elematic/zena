@@ -1,0 +1,35 @@
+// @mode: run
+// @result: 5
+
+// The stdlib Step<V> type, named through the zena:async facade. A
+// producer typed as Step<i32> constructs its Done and Ready arms
+// directly — the Pending arm's future lane (Future<Option<i32>>) is a
+// hole on those steps, defaulting to a null ref — and a match over
+// Step<i32> narrows each arm's binding by its discriminant.
+//
+// (Forwarding a narrower arm set, e.g. a sync-only producer, where the
+// wider Step<i32> is expected needs runtime lane widening and is left
+// to the protocol slice; here the producer is typed as Step<i32>.)
+
+import { Step } from 'zena:async';
+
+function stepNext(tag: i32): Step<i32> {
+  if (tag == 0) {
+    return (0, _, _);
+  }
+  return (1, 5, _);
+}
+
+let consume = (tag: i32): i32 => {
+  var out = 0;
+  match (stepNext(tag)) {
+    case (0, _, _): { out = 0; }          // Done
+    case (1, let v, _): { out = v; }       // Ready: v is i32
+    case (2, _, let pending): { out = 1; } // Pending: never taken here
+  }
+  return out;
+};
+
+export let main = (): i32 => {
+  return consume(1);  // Ready -> 5
+};

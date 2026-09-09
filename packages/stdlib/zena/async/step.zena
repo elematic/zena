@@ -1,0 +1,26 @@
+/**
+ * Step<V> — one result of a sync-or-async iterator's `next()`
+ * (docs/design/async-iteration.md). It is an inline multi-value, so it
+ * travels in stack slots and the synchronous cases allocate nothing.
+ *
+ * The three arms are the dispositions of a single step:
+ * - `Done` (discriminant 0): no more items.
+ * - `Ready` (discriminant 1): a value, available now.
+ * - `Pending` (discriminant 2): a value or the end is coming; await the
+ *   future to learn which. The future carries `Option<V>` — an inline
+ *   `Step` cannot be a future's type argument, and `Option<V>` is the
+ *   storable form that still says whether the awaited item is a value
+ *   (`Some`) or the end (`None`).
+ *
+ * A caller always learns the disposition synchronously, from the
+ * discriminant; only in `Pending` does it wait, and then only for the
+ * eventual item.
+ */
+
+import { Future } from './future.zena';
+import { Option } from 'zena:option';
+
+export type Step<V> =
+    inline (0, _, _)                    // Done
+  | inline (1, V, _)                    // Ready
+  | inline (2, _, Future<Option<V>>);   // Pending

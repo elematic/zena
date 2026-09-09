@@ -1,0 +1,32 @@
+// @mode: check
+
+// Arm-set typing for the stdlib Step<V> (docs/design/async-iteration.md).
+// A narrower arm set — Done and Ready, no Pending — is a subtype of the
+// mixed Step<i32>, so a producer of the narrower set may be returned
+// where Step<i32> is expected. A match over Step<i32> narrows each arm's
+// binding by its discriminant: `v` is `i32`, `pending` is
+// `Future<Option<i32>>`. Any narrowing or subtyping failure would raise
+// a diagnostic here; this file asserts there are none.
+
+import { Step } from 'zena:async';
+
+function syncNext(tag: i32): inline (0, _, _) | inline (1, i32, _) {
+  if (tag == 0) {
+    return (0, _, _);
+  }
+  return (1, 5, _);
+}
+
+function anyNext(tag: i32): Step<i32> {
+  return syncNext(tag);
+}
+
+let consume = (tag: i32): i32 => {
+  var out = 0;
+  match (anyNext(tag)) {
+    case (0, _, _): { out = 0; }
+    case (1, let v, _): { out = v; }
+    case (2, _, let pending): { out = 1; }
+  }
+  return out;
+};
