@@ -2504,10 +2504,13 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
  * default-iterator sequences (which don't).
  */
 export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
-  if (stmt.isAwait) {
-    // The Step-protocol desugar (async-iteration.md) is a later slice.
-    bail(cx, 'for await codegen not implemented');
-  }
+  // `for await` over a synchronous iterable never awaits: every step is
+  // Ready, so the loop is exactly a `for` (async-iteration.md, "a `for
+  // await` over [a sync iterator] never awaits"). The Pending arm — the
+  // only place `for` and `for await` differ — arises only for an
+  // iterator whose `next()` returns the three-arm Step, handled in
+  // `lowerForInIteratorLoop`; until such iterators exist, `isAwait`
+  // needs no special treatment here.
   var iterableType = cx.substitutedNodeType(stmt.iterable);
   if (iterableType == null) {
     bail(cx, 'untyped for-in iterable');
