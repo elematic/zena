@@ -62,23 +62,32 @@ arm.
 
 ## The Step protocol
 
-`next()` is a synchronous call. Its result is an inline multi-value —
-a tagged union of three shapes, the form the `Result` type uses, so it
-travels in stack slots and allocates nothing:
+`next()` is a synchronous call. Its result is an inline multi-value
+that travels in stack slots and allocates nothing. It names three
+dispositions — Done, Ready, and Pending — encoded as a boolean
+inline union in the form the `Result` type uses:
 
 ```zena
-type Step<V> =
-    inline (0, _, _)                    // Done: no more items
-  | inline (1, V, _)                    // Ready: a value, available now
-  | inline (2, _, Future<Option<V>>);   // Pending: a value or the end,
-                                        //   coming; await the future
+// more = false is Done. more = true carries a value lane and a
+// nullable future lane: a null future is Ready (the value is in the
+// value lane), a set future is Pending (await it).
+type Step<V> = inline (true, V, Future<Option<V>>?) | inline (false, _, _);
 ```
 
-The first lane is the discriminant, the second the value (set only by
-Ready), the third a future (set only by Pending). Because it is an
-inline multi-value, `Step` is return-position only: `next()` returns
-it and the caller reads it at once, and the synchronous cases, Done
-and Ready, allocate nothing.
+An earlier draft wrote three integer-tagged arms
+(`inline (0, _, _) | inline (1, V, _) | inline (2, _, Future<...>)`).
+That does not lower: an inline union discriminates on the first
+element as a boolean — a value-or-not flag, the same one
+`Iterator.next()` already returns — so it distinguishes two arms, not
+three, and an all-hole `Done` arm has no wasm representation. The
+boolean encoding above is the same three dispositions in two arms the
+backend supports: `more` splits Done from the rest, and the nullable
+future lane splits Ready from Pending. Because it is an inline
+multi-value, `Step` is return-position only: `next()` returns it and
+the caller reads it at once, and the synchronous cases, Done and
+Ready, allocate nothing. In Pending the value lane holds the value
+type's default (a null reference or a zero), read only in the Ready
+case.
 
 The Pending future carries `Option<V>`, not another `Step`: an inline
 `Step` cannot be a `Future`'s type argument, and `Option<V>`
@@ -106,22 +115,27 @@ One type covers the range:
 The two loops differ only in the Pending case — `for` throws, `for
 await` awaits:
 
+`next()`'s result is destructured at the call, never stored — an
+inline multi-value has no home in a local:
+
 ```zena
 // for (x in it) body            // for await (x in it) body
-var s = it.next();
 while (true) {
-  if (let (1, value, _) = s) {           // Ready
-    let x = value;
-    body;
-    s = it.next();
-  } else if (let (2, _, pending) = s) {  // Pending
-    throw new AsyncInSyncIteration();     // for
-    match (await pending) {               // for await
-      case Some {value}: { let x = value; body; s = it.next(); }
-      case None: break;
+  if (let (true, value, pending) = it.next()) {   // more
+    if (pending == null) {                        // Ready
+      let x = value;
+      body;
+    } else {                                      // Pending
+      throw new AsyncInSyncIteration();            // for
+      if (let Some {value} = await pending) {      // for await
+        let x = value;
+        body;
+      } else {
+        break;
+      }
     }
   } else {
-    break;                               // Done
+    break;                                        // Done
   }
 }
 ```
@@ -176,29 +190,25 @@ before yielding.
 ## Representation and cost
 
 `Step` is the inline multi-value union above, not a heap type — so
-the synchronous path never pays JS's per-item allocation. It lowers to
-three wasm results — an `i32` discriminant, a value
-lane, and a `(ref null Future<T>)` lane null on every synchronous
-step — and every iterator in the family returns exactly these three,
-whatever subset of the discriminants it actually produces (see "The
-arm set is part of the type"). Today's protocol is already an
-inline-tuple union —
-`inline (true, T) | inline (false, _)` — whose `false` arm holes the
+the synchronous path never pays JS's per-item allocation. Its mixed
+form lowers to three wasm results — the boolean `more` flag, a value
+lane, and a `(ref null Future<Option<T>>)` lane null on every
+synchronous step. Today's protocol is already an inline-tuple union,
+`inline (true, T) | inline (false, _)`, whose `false` arm holes the
 value lane, so that lane is *already* `(ref null T)` for reference
 `T`, and its `ref.as_non_null` on each value read is a cost the
-synchronous protocol already pays. The three-arm form does not add
-it. The genuine marginal cost over today is therefore only the extra
-`(ref null Future<T>)` result — one nullref moved across the call,
-register-cheap and dwarfed by call overhead — and a three-way
-discriminant branch rather than two. Both are noise: no memory
-traffic, nothing per-element that a loop body doing real work would
-notice.
+synchronous protocol already pays. The mixed form does not add it.
+The genuine marginal cost over today is therefore only the extra
+`(ref null Future<Option<T>>)` result — one nullref moved across the
+call, register-cheap and dwarfed by call overhead — and one branch on
+whether it is null. Both are noise: no memory traffic, nothing
+per-element that a loop body doing real work would notice.
 
 Three tiers erase it:
 
 - **Fusion — zero cost, the common case.** `for`-in over arrays,
   ranges, and known containers lowers to an index loop and never
-  calls `next()`; the three-arm cost exists only for iteration over a
+  calls `next()`; the future-lane cost exists only for iteration over a
   genuine custom iterator (streams.md, "the seam is where the
   compiler earns its keep").
 - **Concrete-type erasure.** When the loop's iterator type is known
@@ -222,34 +232,33 @@ union becomes an implementation detail of `next()`.
 
 ## The arm set is part of the type
 
-`next()`'s return arms compose by ordinary union subtyping, and that
-is what keeps the third arm from bloating loops that do not need it:
+`next()`'s return type composes by ordinary union subtyping, keeping
+the future lane out of loops that do not need it:
 
-- sync-only — `inline (0, _, _) | inline (1, T, _)`, two lanes,
-  byte-identical to today's `Iterator<T>`.
-- async-only — `inline (0, _, _) | inline (2, _, Future<T>)`, two
-  lanes, the classic always-deferred iterator.
-- mixed — all three, the Lit case.
+- sync-only — `inline (true, T, _) | inline (false, _, _)`, two lanes.
+  This is exactly today's `Iterator<T>`: a `gen` with no `await`
+  produces the existing protocol unchanged.
+- async-only — `inline (true, _, Future<Option<T>>) | inline (false, _, _)`,
+  two lanes, the value lane holed because every item defers.
+- mixed — `inline (true, T, Future<Option<T>>?) | inline (false, _, _)`,
+  three lanes, the Lit case.
 
-Each is a subtype of the mixed union. A `gen` with no `await` returns
-the sync-only set, so `for`/`for await` over it emit no `Pending`
-arm — no bloat, the same loop today's protocol produces. A sync `for`
-over an async-only iterator is *statically* a guaranteed throw and so
-a compile error ("always async; use `for await`"), while a sync `for`
-over a mixed iterator compiles and throws only if a `Pending` arrives
-at runtime — the runtime-versus-static color distinction, enforced by
-the arm set rather than by two separate protocol types.
+A `gen` with no `await` produces the sync-only shape, so `for`/`for
+await` over it never touch a future lane — the loop today's protocol
+produces. A sync `for` over an async-only iterator is *statically* a
+guaranteed throw and so a compile error ("always async; use `for
+await`"), while a sync `for` over a mixed iterator compiles and
+throws only if a Pending arrives at runtime — the runtime-versus-
+static color distinction, enforced by the type rather than by two
+separate protocol types.
 
-The refinement is in the discriminant, not the arity: all three
-lower to the *same* three wasm results — `i32`, value, future — with
-the unused lanes null on the arms that do not use them. A sync-only
-`next()` still returns three values; it simply never sets the future
-lane. Keeping the representation uniform is what makes the subtyping
-seamless: a sync-only iterator is a subtype of the mixed one with no
-adaptation and no signature mismatch, so it drops behind the
-`Iterator<V>` interface into one vtable slot, and a virtual `next()`
-needs no padding. The always-present future lane is the uniform cost
-established above — a nullref result, noise.
+Behind the `Iterator<V>` interface a single vtable slot needs one
+signature, the mixed three-lane form; a sync-only implementation
+stored there sets the future lane null and a consumer holding only
+`Iterator<V>` runs the three-lane loop. So the future lane's cost —
+a nullref result and one branch on it, noise — falls on abstractly-
+held iterators, where iterator polymorphism is actually used, and a
+concrete sync-only iterator pays nothing.
 
 What the arm set changes is the *consumer loop*, not the call: a loop
 over a sync-only iterator omits the `Pending` branch (and its throw
