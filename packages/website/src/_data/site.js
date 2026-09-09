@@ -5,6 +5,7 @@ export default {
     'Zena is a statically typed language that compiles to small, fast WebAssembly GC binaries, with a familiar syntax and a sound type system.',
   url: 'https://zena-lang.dev',
   repo: 'https://github.com/elematic/zena',
+  bluesky: 'https://bsky.app/profile/zena-lang.dev',
   editLinkPattern:
     'https://github.com/elematic/zena/edit/main/packages/website/src/:path',
   googleAnalyticsId: 'G-X25YB8GXGS',
