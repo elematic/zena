@@ -66,7 +66,7 @@ export let lowerStringLiteral = (cx: LoweringContext, lit: StringLiteral): i32 =
 /**
  * Template literals: quasi/expression parts in order, primitives
  * converted through the zena:string-convert helpers, then joined —
- * __concatN for 2..5 parts, else array.new_fixed + String.fromParts
+ * __concatN for 2..5 parts, else array.new_fixed + String.fromRawParts
  * (streaming's shape exactly).
  */
 export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i32 => {
@@ -100,15 +100,18 @@ export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i
       return cx.reassertNonNull(call, cx.exprVt(tpl as Expression));
     }
   }
+  // fromRawParts is the concrete raw-array entry; the public fromParts
+  // is generic over the array representation and has no single
+  // signature to call by name.
   let fromPartsOpt = if (cx.wasm.stringClass != null) {
     let key = getClassMethodKey(
-        getClassKey(cx.wasm.stringClass as ClassType), 'fromParts');
+        getClassKey(cx.wasm.stringClass as ClassType), 'fromRawParts');
     if (let (true, f) = cx.wasm.classMethodMap.get(key)) f else null
   } else {
     null
   };
   if (fromPartsOpt == null) {
-    cx.fail('String.fromParts missing');
+    cx.fail('String.fromRawParts missing');
   }
   let fromParts = fromPartsOpt;
   let fsig = fromParts.signature;
