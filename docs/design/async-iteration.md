@@ -103,12 +103,12 @@ neither depends on surface `match`.
 
 A surface `match` over `Step` is what a program writes only when it
 drives `next()` itself, which is rare (see "Hand-written consumption"
-below). That path needs one backend feature not present yet: a `match`
-over an inline-tuple union that narrows an arm's payload by its
-discriminant literal (`case (1, v, _)` binds `v: V`; today it stays
-`V | _` and is unusable). It is worth building on its own — defining
-`Option`/`Result` over inline tuples gains the same narrowing — but it
-is not on the loop's critical path.
+below). That path relies on a `match` over an inline-tuple union
+narrowing an arm's payload by its discriminant literal (`case (1, v, _)`
+binds `v: V`, not `V | _`). It is worth having on its own — defining
+`Option`/`Result` over inline tuples gains the same narrowing — and it
+is not on the loop's critical path. The full three-arm shape, including
+the all-hole `Done` arm, constructs and narrow-consumes as written.
 
 `Step` shares Option's and Result's inline-union shape but is not one
 of them, and the optionality operators — `??` and the rest — stay
