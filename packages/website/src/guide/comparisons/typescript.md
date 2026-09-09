@@ -206,7 +206,7 @@ Point(x: f64, y: f64)`), and **extension classes** that allow you to add new
 | **Constructor shorthand** | `constructor(public x: number) {}`      | `x: f64; new(this.x);`                                              |
 | **Mixins**                | Mixin factory functions                 | `class Dog with Friendly implements Animal`                         |
 | **Map literal**           | `new Map([['a', 1]])`                   | `{'a' => 1}`                                                        |
-| **Array literal**         | `[1, 2, 3]`                             | `[1, 2, 3]` _(FixedArray)_ or `Array.from([1, 2, 3])`               |
+| **Array literal**         | `[1, 2, 3]`                             | `[1, 2, 3]` _(immutable)_, `fixed([1, 2, 3])`, `growable([1, 2, 3])` |
 | **Type assertion**        | `x as string` _(erased at runtime)_     | `x as String` _(checked downcast)_                                  |
 | **Type test**             | `x instanceof MyClass`                  | `x is MyClass` _(also `x is Array<i32>`)_                           |
 | **Multi-value return**    | `return [val, true];` _(heap array)_    | `return (val, true);` _(unboxed stack tuple)_                       |

@@ -9,7 +9,20 @@ export final class GrowableArray<T> implements MutableArray<T>, Iterable<T> {
   var #buffer: FixedArray<T>;
   var #length = 0;
 
-  new(capacity: i32 = 8) : #buffer = __array_new_empty<T>(capacity) as FixedArray<T>;
+  /**
+   * `adopting`, when given, becomes the backing storage, full: length
+   * starts at its length, no copy is made, and `capacity` is ignored.
+   * The caller must hand the buffer over — writes through either alias
+   * would be visible through the other. `from` copies; this adopts.
+   * (A constructor parameter rather than a static so it works from
+   * generic bodies — see the issue linked from `growable` below.)
+   */
+  new(capacity: i32 = 8, adopting: FixedArray<T> | null = null)
+    : #buffer = adopting ?? (__array_new_empty<T>(capacity) as FixedArray<T>) {
+    if (adopting != null) {
+      this.#length = this.#buffer.length;
+    }
+  }
 
   static from<A>(seq: Array<A>): GrowableArray<A> {
     let len = seq.length;
@@ -21,6 +34,7 @@ export final class GrowableArray<T> implements MutableArray<T>, Iterable<T> {
     }
     return result;
   }
+
 
   length: i32 {
     get {
@@ -129,4 +143,17 @@ export final class GrowableArray<T> implements MutableArray<T>, Iterable<T> {
     }
     this.#buffer = newBuffer;
   }
+}
+
+/**
+ * A growable array from an array literal: `growable([1, 2, 3])`.
+ *
+ * The parameter supplies the mutable context, so the literal builds
+ * directly as a FixedArray and is adopted as the backing storage —
+ * no copy, unlike `GrowableArray.from` over an interface-typed source.
+ * Until literal decorators land, this is the concise spelling for a
+ * growable array with initial contents.
+ */
+export function growable<T>(items: FixedArray<T>): GrowableArray<T> {
+  return new GrowableArray<T>(0, items);
 }

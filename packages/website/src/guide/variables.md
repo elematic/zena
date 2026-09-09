@@ -188,8 +188,8 @@ let (found, score) = scores.get('Alice');
 
 ### Array destructuring
 
-Arrays (`FixedArray`, `GrowableArray`, and the `Array` interface) are unpacked
-using bracket syntax `[]`:
+Arrays (`ImmutableArray`, `FixedArray`, `GrowableArray`, and the `Array`
+interface) are unpacked using bracket syntax `[]`:
 
 ```zena
 let numbers = [10, 20, 30, 40];

@@ -201,9 +201,9 @@ needed. They come from the _prelude_, which is implicitly imported.
 | `None`                  | Variant of `Option` representing no value                    |
 | `Array<T>`              | Universal read-only array interface (`length`, `[i]`, `map`) |
 | `MutableArray<T>`       | Mutable array interface (`[i] = v`)                          |
-| `GrowableArray<T>`      | Resizable array (`new GrowableArray<T>()`, `push`)           |
-| `FixedArray<T>`         | Fixed-size array (literal syntax: `[1, 2, 3]`)               |
-| `ImmutableArray<T>`     | Read-only fixed array view                                   |
+| `GrowableArray<T>`      | Resizable array (`growable([1, 2, 3])`, `push`)              |
+| `FixedArray<T>`         | Fixed-size mutable array (`fixed([1, 2, 3])`)                |
+| `ImmutableArray<T>`     | Immutable array — what a `[1, 2, 3]` literal is              |
 | `Map<K, V>`             | Hash map (literal syntax: `{"a" => 1}`)                      |
 | `Box<T>`                | Wraps a primitive for use in a union or `anyref`             |
 | `BoundedRange`          | Range with start and end (`1..10`)                           |
@@ -1805,12 +1805,28 @@ Zena provides universal interfaces for indexed collections (`Array<T>` and `Muta
 - **`Array<T>`**: The universal indexed read-only interface (`length`, `operator [](i32): T`, `map`, `:Iterable.iterator()`). Implemented by `FixedArray<T>`, `GrowableArray<T>`, and `ImmutableArray<T>`.
 - **`MutableArray<T>`**: The mutable indexed interface extending `Array<T>` (`operator []=(i32, T): void`). Implemented by `FixedArray<T>` and `GrowableArray<T>`.
 
-### FixedArray
+### Literals
 
-`FixedArray<T>` has a fixed size set at creation and maps directly to a native WebAssembly GC array (`array<T>`). The `[...]` literal syntax creates a `FixedArray`.
+An array literal is an `ImmutableArray<T>` — Wasm's immutable `(array T)` —
+unless the context wants mutable elements (a `FixedArray`, `MutableArray`, or
+`array<var T>` expected type), in which case it builds directly as a
+`FixedArray<T>`. The `fixed(...)` and `growable(...)` helpers supply that
+context in expression position:
 
 ```zena
-let nums = [1, 2, 3]; // FixedArray<i32>
+let nums = [1, 2, 3];                     // ImmutableArray<i32>
+let buf: FixedArray<i32> = [1, 2, 3];     // FixedArray via the annotation
+let inline = fixed([1, 2, 3]);            // FixedArray, no annotation, no copy
+let grow = growable([1, 2, 3]);           // GrowableArray adopting the literal
+```
+
+### FixedArray
+
+`FixedArray<T>` has a fixed size set at creation and maps directly to a native
+WebAssembly GC array of mutable elements (`array<var T>`).
+
+```zena
+let nums = fixed([1, 2, 3]); // FixedArray<i32>
 let arr = new FixedArray<i32>(10, 0); // Size 10, initialized to 0
 arr[0] = 42;
 let len = arr.length; // 10
@@ -1818,10 +1834,12 @@ let len = arr.length; // 10
 
 ### GrowableArray
 
-`GrowableArray<T>` is a dynamic, resizable array. Use `new GrowableArray<T>()` or `GrowableArray.from(...)`.
+`GrowableArray<T>` is a dynamic, resizable array. `growable([...])` adopts a
+literal as its storage without copying; `GrowableArray.from(seq)` copies from
+any array; `new GrowableArray<T>()` makes an empty one.
 
 ```zena
-let arr = GrowableArray.from([1, 2, 3]); // Growable array from FixedArray
+let arr = growable([1, 2, 3]);
 arr.push(4); // [1, 2, 3, 4]
 let len = arr.length; // 4
 let first = arr[0]; // 1
@@ -1832,23 +1850,24 @@ let empty = new GrowableArray<i32>(); // Empty growable array
 
 ### ImmutableArray
 
-`ImmutableArray<T>` provides a read-only view over a fixed array.
+`ImmutableArray<T>` is the immutable array — a distinct WebAssembly type from
+`FixedArray<T>`, with no subtyping or casting between them. Writes are
+compile-time errors, and the immutability is real at runtime, not a view over
+mutable storage.
 
 ```zena
-let fixed = [1, 2, 3];
-let immutable = fixed as ImmutableArray<i32>;
+let immutable = [1, 2, 3];  // ImmutableArray<i32>
 let first = immutable[0];
+immutable[0] = 9;           // error: elements are immutable
 ```
 
 ### Slicing
 
-Use range syntax to slice arrays. Slices share backing storage with the original
-array.
+Use range syntax to slice a `FixedArray`. Slices are independent copies.
 
 ```zena
-let arr = [1, 2, 3, 4, 5];
-let slice = arr[1..4];    // [2, 3, 4] (view, shares storage)
-let copy = arr[1..4].copy();  // Independent copy
+let arr = fixed([1, 2, 3, 4, 5]);
+let slice = arr[1..4];    // [2, 3, 4] (a fresh FixedArray)
 ```
 
 ### Map

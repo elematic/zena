@@ -1231,11 +1231,11 @@ increment(10, 5); // 15
    site. Unlike Python, default values are not shared or cached between calls.
 
    ```zena
-   import {Array} from 'zena:array';
+   import {GrowableArray} from 'zena:growable-array';
 
    class Processor {
-     // A new Array is created for each call that uses the default
-     process(items: Array<i32> = new Array<i32>()): i32 {
+     // A new array is created for each call that uses the default
+     process(items: GrowableArray<i32> = new GrowableArray<i32>()): i32 {
        let len = items.length;
        items.push(1);
        return len;
@@ -1753,7 +1753,7 @@ class Counter {
   increment(n: i32): void { this.count += n; }
 }
 
-var arr = [10, 20, 30];
+let arr = fixed([10, 20, 30]);
 arr[1] += 5;  // arr[1] is now 25
 ```
 
@@ -4132,11 +4132,14 @@ Collections like `FixedArray<T>`, `GrowableArray<T>`, `HashMap<K, V>`, `HashSet<
 
 `FixedArray<T>` is a fixed-size array of mutable elements backed directly by a
 WASM-GC array. The `[...]` literal syntax creates an `ImmutableArray<T>` by
-default; a `FixedArray` contextual type makes the literal mutable:
+default; a `FixedArray` contextual type makes the literal mutable, and the
+`fixed(...)` helper supplies that context in expression position (it returns
+its argument unchanged and inlines away):
 
 ```zena
 let nums = [1, 2, 3];                 // ImmutableArray<i32>
 let names: FixedArray<String> = ["Alice", "Bob"];  // mutable elements
+let inline = fixed([1, 2, 3]);        // mutable, no annotation needed
 let empty: FixedArray<i32> = [];      // empty (type annotation required)
 ```
 
@@ -4169,17 +4172,19 @@ mutable `(array (mut T))`. Wasm gives no subtyping between the two in
 either direction, so they do not interchange. See
 `docs/design/array-mutability.md`.
 
-#### Array\<T\>
+#### GrowableArray\<T\>
 
-`Array<T>` is a growable array that automatically resizes its backing storage.
-Use `Array.from()` to create one from a fixed array, or `new Array<T>()` for
-an empty growable array. A literal syntax for growable arrays is planned.
+`GrowableArray<T>` is a growable array that automatically resizes its backing
+storage. (`Array<T>` is the read-only interface every array implements.)
+`growable([...])` builds one from a literal without copying — the literal
+becomes the backing storage; `GrowableArray.from(seq)` copies from any array,
+and `new GrowableArray<T>()` makes an empty one.
 
 ```zena
-let grow = Array.from([1, 2, 3]);   // Array<i32> from FixedArray
+let grow = growable([1, 2, 3]);     // GrowableArray<i32>, no copy
 grow.push(4);                       // [1, 2, 3, 4]
 
-let empty = new Array<i32>();       // empty growable array
+let empty = new GrowableArray<i32>();  // empty growable array
 ```
 
 ### Map<K, V>

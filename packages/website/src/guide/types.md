@@ -105,7 +105,7 @@ References point to heap-allocated objects managed by the WebAssembly GC:
 
 - `String` (UTF-8 string instances).
 - Class instances and closures.
-- Fixed and growable arrays (`FixedArray<T>`, `Array<T>`).
+- Arrays (`ImmutableArray<T>`, `FixedArray<T>`, `GrowableArray<T>`).
 - Records and boxed tuples.
 
 References are non-nullable by default.

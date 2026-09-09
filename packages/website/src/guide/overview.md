@@ -137,8 +137,9 @@ while (let (true, item) = iterator.next()) { }
 ## Collections
 
 ```zena
-let fixed: FixedArray<i32> = [1, 2, 3];   // fixed size, a Wasm GC array
-let list = Array.from([1, 2, 3]);         // growable
+let frozen = [1, 2, 3];                   // immutable, a Wasm GC array
+let buf = fixed([1, 2, 3]);               // fixed size, mutable elements
+let list = growable([1, 2, 3]);           // growable
 list.push(4);
 
 let scores = {'Alice' => 95, 'Bob' => 87};

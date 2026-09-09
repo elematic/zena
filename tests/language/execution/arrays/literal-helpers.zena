@@ -1,0 +1,33 @@
+// @mode: run
+// @stdlib: true
+// @result: 655432
+
+import { fixed } from 'zena:fixed-array';
+import { growable, GrowableArray } from 'zena:growable-array';
+
+// `fixed` and `growable` give a literal a mutable home in expression
+// position: their parameter is the context that makes the literal build
+// as a FixedArray, so `fixed` is the identity and `growable` adopts the
+// literal as its backing storage — neither copies.
+export let main = (): i32 => {
+  var acc = 0;
+  let f = fixed([1, 2, 3]);
+  f[0] = 7;
+  if (f[0] + f[1] + f[2] == 12) { acc += 2; }
+
+  let g = growable([10, 20]);
+  if (g.length == 2) { acc += 30; }
+  g.push(30);
+  g[0] = 40;
+  if (g.length == 3 && g[0] + g[1] + g[2] == 90) { acc += 400; }
+
+  let empty = growable<i32>([]);
+  empty.push(5);
+  if (empty.length == 1 && empty[0] == 5) { acc += 5000; }
+
+  // The adopting constructor is the no-copy path the helper rides on.
+  let adopted = new GrowableArray<i32>(0, fixed([9]));
+  adopted.push(9);
+  if (adopted.length == 2 && adopted[0] + adopted[1] == 18) { acc += 650000; }
+  return acc;
+};

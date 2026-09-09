@@ -61,7 +61,7 @@ they carry information:
 let count = 42;          // i32
 let ratio = 0.5;         // f64
 let name = 'Zena';       // String
-let flags = [1, 2, 3];   // FixedArray<i32>
+let flags = [1, 2, 3];   // ImmutableArray<i32>
 
 var total = 0;           // `var` because it changes
 for (let n in flags) {
