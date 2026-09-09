@@ -7,6 +7,7 @@ export default {
   repo: 'https://github.com/elematic/zena',
   editLinkPattern:
     'https://github.com/elematic/zena/edit/main/packages/website/src/:path',
+  googleAnalyticsId: 'G-X25YB8GXGS',
   footer: {
     message: 'Released under the MIT License.',
     copyright: `Copyright © ${new Date().getFullYear()} Zena contributors`,
