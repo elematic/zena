@@ -188,29 +188,29 @@ Point(x: f64, y: f64)`), and **extension classes** that allow you to add new
 
 ## Cheat sheet
 
-| Feature                   | TypeScript / JavaScript                 | Zena                                                                |
-| :------------------------ | :-------------------------------------- | :------------------------------------------------------------------ |
-| **Immutable variable**    | `const x = 10;`                         | `let x = 10;`                                                       |
-| **Mutable variable**      | `let x = 10;`                           | `var x = 10;`                                                       |
-| **Numeric types**         | `number` / `bigint`                     | `i32`, `i64`, `u32`, `u64`, `f32`, `f64`                            |
-| **String type**           | `string`                                | `String`                                                            |
-| **Nullable reference**    | `string \| null \| undefined`           | `String \| null` or `String?`\_                                     |
-| **Top type**              | `any` / `unknown`                       | None. _(`anyref` for references only; use `Box<T>` for primitives)_ |
-| **Conditionals**          | `const v = cond ? a : b;`               | `let v = if (cond) a else b;`                                       |
-| **Truthiness check**      | `if (str) { ... }`                      | `if (str != null && str.length > 0) { ... }`                        |
-| **Switch / Match**        | `switch (x) { case 1: ...; break; }`    | `match (x) { case 1: ... }`                                         |
-| **Iteration**             | `for (const item of items)`             | `for (let item in items)`                                           |
-| **Increment**             | `i++;` / `++i;`                         | `i += 1;`                                                           |
-| **Top-level function**    | `function add(a: number, b: number) {}` | `function add(a: i32, b: i32): i32 {}`                              |
-| **Local closure**         | `const add = (a, b) => a + b;`          | `let add = (a: i32, b: i32) => a + b;`                              |
-| **Constructor shorthand** | `constructor(public x: number) {}`      | `x: f64; new(this.x);`                                              |
-| **Mixins**                | Mixin factory functions                 | `class Dog with Friendly implements Animal`                         |
-| **Map literal**           | `new Map([['a', 1]])`                   | `{'a' => 1}`                                                        |
+| Feature                   | TypeScript / JavaScript                 | Zena                                                                 |
+| :------------------------ | :-------------------------------------- | :------------------------------------------------------------------- |
+| **Immutable variable**    | `const x = 10;`                         | `let x = 10;`                                                        |
+| **Mutable variable**      | `let x = 10;`                           | `var x = 10;`                                                        |
+| **Numeric types**         | `number` / `bigint`                     | `i32`, `i64`, `u32`, `u64`, `f32`, `f64`                             |
+| **String type**           | `string`                                | `String`                                                             |
+| **Nullable reference**    | `string \| null \| undefined`           | `String \| null` or `String?`\_                                      |
+| **Top type**              | `any` / `unknown`                       | None. _(`anyref` for references only; use `Box<T>` for primitives)_  |
+| **Conditionals**          | `const v = cond ? a : b;`               | `let v = if (cond) a else b;`                                        |
+| **Truthiness check**      | `if (str) { ... }`                      | `if (str != null && str.length > 0) { ... }`                         |
+| **Switch / Match**        | `switch (x) { case 1: ...; break; }`    | `match (x) { case 1: ... }`                                          |
+| **Iteration**             | `for (const item of items)`             | `for (let item in items)`                                            |
+| **Increment**             | `i++;` / `++i;`                         | `i += 1;`                                                            |
+| **Top-level function**    | `function add(a: number, b: number) {}` | `function add(a: i32, b: i32): i32 {}`                               |
+| **Local closure**         | `const add = (a, b) => a + b;`          | `let add = (a: i32, b: i32) => a + b;`                               |
+| **Constructor shorthand** | `constructor(public x: number) {}`      | `x: f64; new(this.x);`                                               |
+| **Mixins**                | Mixin factory functions                 | `class Dog with Friendly implements Animal`                          |
+| **Map literal**           | `new Map([['a', 1]])`                   | `{'a' => 1}`                                                         |
 | **Array literal**         | `[1, 2, 3]`                             | `[1, 2, 3]` _(immutable)_, `fixed([1, 2, 3])`, `growable([1, 2, 3])` |
-| **Type assertion**        | `x as string` _(erased at runtime)_     | `x as String` _(checked downcast)_                                  |
-| **Type test**             | `x instanceof MyClass`                  | `x is MyClass` _(also `x is Array<i32>`)_                           |
-| **Multi-value return**    | `return [val, true];` _(heap array)_    | `return (val, true);` _(unboxed stack tuple)_                       |
-| **Resource disposal**     | `using res = getResource();`            | `using let res = getResource();`                                    |
+| **Type assertion**        | `x as string` _(erased at runtime)_     | `x as String` _(checked downcast)_                                   |
+| **Type test**             | `x instanceof MyClass`                  | `x is MyClass` _(also `x is Array<i32>`)_                            |
+| **Multi-value return**    | `return [val, true];` _(heap array)_    | `return (val, true);` _(unboxed stack tuple)_                        |
+| **Resource disposal**     | `using res = getResource();`            | `using let res = getResource();`                                     |
 
 ## Next
 
