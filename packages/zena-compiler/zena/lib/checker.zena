@@ -11277,7 +11277,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       deps.needsExceptionInfra = true;
     }
     let argType = checkExpression(ctx, argument, null);
-    let errorType = ctx.resolveTypeName("Error");
+    // `throw` is defined over the stdlib `Error`, so resolve it through the
+    // prelude rather than the enclosing scope, which a program that declares
+    // its own class of that name would otherwise win.
+    let errorType = ctx.resolvePreludeType("Error") ?? ctx.resolveTypeName("Error");
     if (errorType != null) {
       let isError = isAssignableTo(ctx, argType, errorType);
       var isActuallyError = isError;
@@ -11330,7 +11333,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let paramId = param;
         let info = ctx.model.resolveDeclaration(paramId);
         if (info != null) {
-          let errorType = ctx.resolveTypeName("Error");
+          // The catch parameter binds the stdlib `Error`; see the note on
+          // `throw` above for why the prelude is asked first.
+          let errorType =
+              ctx.resolvePreludeType("Error") ?? ctx.resolveTypeName("Error");
           ctx.declareBinding(info, if (errorType != null) errorType else new ErrorType());
         }
       }

@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 42
+
+// A program may declare classes that happen to share a name with a stdlib
+// class the compiler has to find for itself. `String` backs the hash helper
+// built for string-keyed maps, and `Error` types the exception payload; both
+// are located through the module they come from, so the declarations below
+// do not stand in for them.
+
+import { String as StdString } from 'zena:string';
+import { Error as StdError } from 'zena:error';
+
+/** Not the stdlib String. */
+class String {
+  v: i32;
+  new(this.v);
+}
+
+/** Not the stdlib Error. */
+class Error {
+  code: i32;
+  new(this.code);
+}
+
+export function main(): i32 {
+  let mine = new String(10);
+  let mineErr = new Error(20);
+
+  // Forces the string-hash helper, which must be built over the stdlib
+  // String's struct rather than whichever same-named struct comes last.
+  let counts = new HashMap<StdString, i32>();
+  counts['alpha'] = 4;
+  counts['beta'] = 8;
+
+  // Forces the exception payload type, which must be the stdlib Error.
+  var caught = 0;
+  try {
+    throw new StdError('boom');
+  } catch (e) {
+    caught = 1;
+  }
+
+  // 10 + 20 + 4 + 8 = 42, and the catch must have run.
+  return if (caught == 1) {
+    mine.v + mineErr.code + counts['alpha'] + counts['beta']
+  } else {
+    0
+  };
+}

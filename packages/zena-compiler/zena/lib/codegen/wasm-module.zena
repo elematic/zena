@@ -912,6 +912,7 @@ export final class WasmModule {
   var program: Program | null = null;
   var stringClass: ClassType | null = null;
   var templateStringsArrayClass: ClassType | null = null;
+  var errorClass: ClassType | null = null;
   exportMap = new HashMap<ExportKey, WasmFunction>();
   exportGlobalMap = new HashMap<ExportGlobalKey, WasmGlobal>();
   classInfos = new HashMap<ClassKey, ClassCodegenInfo>();
@@ -1577,16 +1578,20 @@ export final class WasmModule {
       return;
     }
     
-    var errorStruct: WasmStruct | null = null;
-    for (let pair in this.classInfos) {
-      let info = pair.value;
-      let s = info.structType;
-      let name = s.name;
-      if (name != null && name == "Error") {
-        errorStruct = s;
+    // The payload type is the stdlib `Error`, found through the class RTA
+    // recognized rather than by struct name — a program may declare its own
+    // class called `Error`.
+    let errorClassOpt = this.errorClass;
+    let errorStruct = if (errorClassOpt != null) {
+      if (let (true, info) = this.classInfos.get(getClassKey(errorClassOpt))) {
+        info.structType
+      } else {
+        null
       }
-    }
-    
+    } else {
+      null
+    };
+
     let payloadType = if (errorStruct != null) new ValTypeRefNull(errorStruct) else new ValTypeEqRef();
     
     let params = new GrowableArray<ValType>();
@@ -1752,18 +1757,22 @@ export final class WasmModule {
     if (this.stringHashFunc != null) {
       return;
     }
-    var stringStruct: WasmStruct | null = null;
-    for (let pair in this.classInfos) {
-      let info = pair.value;
-      let s = info.structType;
-      let name = s.name;
-      if (name != null && name == "String") {
-        stringStruct = s;
-      }
+    // Found through the class RTA recognized, not by struct name: a program
+    // may declare its own class called `String`.
+    let stringClassOpt = this.stringClass;
+    if (stringClassOpt == null) {
+      throw new Error("$stringHash discovery: String class not recognized!");
     }
-    if (stringStruct == null) {
+    let stringInfoOpt =
+        if (let (true, info) = this.classInfos.get(getClassKey(stringClassOpt))) {
+          info
+        } else {
+          null
+        };
+    if (stringInfoOpt == null) {
       throw new Error("$stringHash discovery: String class struct not found!");
     }
+    let stringStruct = stringInfoOpt.structType;
     let params = new GrowableArray<ValType>();
     params.push(new ValTypeRefNull(stringStruct));
     let returns = new GrowableArray<ValType>();
