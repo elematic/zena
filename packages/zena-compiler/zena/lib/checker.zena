@@ -8953,7 +8953,12 @@ case _: {
     case SymbolDeclaration as sd: {
       checkSymbolDeclaration(ctx, sd);
     }
-    case ForInStatement {pattern, iterable, body, loc}: {
+    case ForInStatement {pattern, iterable, body, isAwait, loc}: {
+      if (isAwait && ctx.asyncValueType == null) {
+        ctx.error(
+          "'for await' is only valid inside the body of an 'async' function or 'async gen'.",
+          DiagnosticCode.TypeMismatch, loc);
+      }
       var iterableType = checkExpression(ctx, iterable, null);
       // Driving a scoped iterator is its consumption (ownership.md
       // §"Required consumption"): the loop moves the binding — its exit

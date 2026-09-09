@@ -900,6 +900,9 @@ export final class Parser {
   }
   
   #parseForStatement(startToken: Token): Statement {
+    // `for await (x in it)` consumes its elements asynchronously
+    // (async-iteration.md). The flag only applies to the for-in form.
+    let isAwait = this.#match(TokenType.Await);
     this.#consume(TokenType.LParen, "Expected '(' after 'for'");
     
     if (this.#match(TokenType.Let)) {
@@ -911,14 +914,14 @@ export final class Parser {
         let iterable = this.#parseExpression();
         this.#consume(TokenType.RParen, "Expected ')' after for-in iterable");
         let body = this.#parseStatement();
-        return new ForInStatement(pattern, iterable, body, this.#makeLocation(startToken));
+        return new ForInStatement(pattern, iterable, body, isAwait, this.#makeLocation(startToken));
       }
       
       // C-style for with let declaration
       this.#consume(TokenType.Equals, "Expected '=' or 'in' after pattern in for statement");
       let initExpr = this.#parseExpression();
       let init = new VariableDeclaration('let', pattern, null, initExpr, false, this.#makeLocation(startToken));
-      return this.#parseCStyleFor(startToken, init);
+      return this.#parseCStyleFor(startToken, init, isAwait);
     }
     
     if (this.#match(TokenType.Var)) {
@@ -934,7 +937,7 @@ export final class Parser {
       this.#consume(TokenType.Equals, "Expected '=' after variable name");
       let initExpr = this.#parseExpression();
       let init = new VariableDeclaration('var', pattern, typeAnnotation, initExpr, false, this.#makeLocation(varStart));
-      return this.#parseCStyleFor(startToken, init);
+      return this.#parseCStyleFor(startToken, init, isAwait);
     }
     
     // Parse init as expression, or empty
@@ -943,10 +946,13 @@ export final class Parser {
       init = this.#parseExpression();
     }
     
-    return this.#parseCStyleFor(startToken, init);
+    return this.#parseCStyleFor(startToken, init, isAwait);
   }
   
-  #parseCStyleFor(startToken: Token, init: Node | null): ForStatement {
+  #parseCStyleFor(startToken: Token, init: Node | null, isAwait: boolean): ForStatement {
+    if (isAwait) {
+      throw this.#error("'for await' requires an 'in' clause: 'for await (let x in it)'");
+    }
     this.#consume(TokenType.Semi, "Expected ';' after for initializer");
     
     var test: Expression | null = null;

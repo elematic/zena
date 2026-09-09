@@ -1,0 +1,30 @@
+// @mode: check
+
+// `for await` consumes an iterator asynchronously (async-iteration.md).
+// It is valid only in an async function or async gen; a sync function
+// using it is an error.
+
+import { Iterator } from 'zena:iterator';
+import { Future } from 'zena:async';
+
+let consume = async (it: Iterator<i32>): Future<i32> => {
+  var total = 0;
+  for await (let x in it) {
+    total += x;
+  }
+  return total;
+};
+
+async gen function passthrough(it: Iterator<i32>): Iterator<i32> {
+  for await (let x in it) {
+    yield x;
+  }
+}
+
+let sync = (it: Iterator<i32>): i32 => {
+  var total = 0;
+  for await (let x in it) { // @error: 'for await' is only valid inside the body of an 'async' function or 'async gen'
+    total += x;
+  }
+  return total;
+};
