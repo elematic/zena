@@ -159,6 +159,20 @@ export final class SharedCheckerState {
   var preludeRegistered: boolean = false;
 
   /**
+   * The type of each well-known standard library declaration, keyed by its
+   * `WellKnown` variant.
+   *
+   * Distinct from `preludeTypes`, which answers a different question. The
+   * prelude is the set of names a program can use without importing them,
+   * so it is keyed by name and a program's own declaration of that name
+   * shadows it — correctly, for ordinary name resolution. This map is the
+   * compiler's own handle on specific declarations, filled by matching the
+   * library a module belongs to against the well-known registry, so nothing
+   * a program declares can stand in for one.
+   */
+  wellKnownTypes = new HashMap<i32, Type>();
+
+  /**
    * The canonical nominal type for each class/interface/variant
    * declaration, keyed by its declaring symbol. Shared across every
    * checking pass of a compilation so a declaration has exactly ONE
@@ -1492,7 +1506,7 @@ final class CheckerContext {
           }
           case EnumDeclaration as ed: {
             let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
-            let backingType = if (isStringEnum) { this.resolvePreludeType("String") as Type } else { new I32Type() as Type };
+            let backingType = if (isStringEnum) { this.resolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
             let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null, false, "");
             let fields = new HashMap<String, Type>();
             for (let member in ed.members) {
@@ -1661,7 +1675,7 @@ final class CheckerContext {
       }
       case EnumDeclaration as ed: {
         let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
-        let backingType = if (isStringEnum) { this.resolvePreludeType("String") as Type } else { new I32Type() as Type };
+        let backingType = if (isStringEnum) { this.resolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
         return new TypeAliasType(ed.name.name, null, backingType, true, null, false, "");
       }
       case TypeAliasDeclaration as ta: {
@@ -1765,14 +1779,23 @@ final class CheckerContext {
   }
 
   /**
-   * Resolve a prelude type by name. Used for identity-based type comparisons
-   * (e.g. checking if a ClassType is the prelude Array).
+   * The type of a well-known standard library declaration, or null when the
+   * library declaring it is not part of this compilation.
+   *
+   * Nothing a program declares is ever returned here: the map is filled by
+   * matching a module's library against the well-known registry, not by
+   * name. A caller that falls back to name resolution on null undoes that.
    */
-  resolvePreludeType(name: String): Type | null {
-    if (let (true, t) = this.#sharedState.preludeTypes.get(name)) {
+  resolveWellKnownType(w: WellKnown): Type | null {
+    if (let (true, t) = this.#sharedState.wellKnownTypes.get(w as i32)) {
       return t;
     }
     return null;
+  }
+
+  /** Records `w`'s type as its declaring library is checked. */
+  registerWellKnownType(w: WellKnown, t: Type): void {
+    this.#sharedState.wellKnownTypes[w as i32] = t;
   }
 
   // --- Pipeline ---
@@ -5357,7 +5380,7 @@ let getElementTypeFromClass = (
   iterableExpr: Expression
 ): Type => {
   // If the class IS Iterator, use its first type argument.
-  let iteratorPrelude = ctx.resolvePreludeType("Iterator");
+  let iteratorPrelude = ctx.resolveWellKnownType(WellKnown.IteratorInterface);
   if (iteratorPrelude is InterfaceType) {
     if (ct.id == iteratorPrelude.id) {
        let {typeArguments} = ct;
@@ -5397,7 +5420,7 @@ let getElementTypeFromClass = (
  * Returns the element type T if found, null otherwise.
  */
 let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | null => {
-  let prelude = ctx.resolvePreludeType("Iterable");
+  let prelude = ctx.resolveWellKnownType(WellKnown.IterableInterface);
   if (prelude == null) { return null; }
   match (prelude) {
     case InterfaceType as iterableType: {
@@ -6201,23 +6224,25 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
  * Check if `source` is assignable to `target`.
  */
 /**
- * Check if a ClassType is a specific prelude type by identity (type id comparison).
- * Works for both uninstantiated and instantiated generic types because
- * instantiateClassType preserves the source type's id.
+ * Whether a ClassType is a well-known standard library class, by identity
+ * (type id comparison). Works for both uninstantiated and instantiated
+ * generic types because instantiateClassType preserves the source type's id.
  */
-let isPreludeClassType = (ctx: CheckerContext, ct: ClassType, preludeName: String): boolean => {
-  let prelude = ctx.resolvePreludeType(preludeName);
-  if (prelude == null) { return false; }
-  match (prelude) {
+let isWellKnownClassType = (ctx: CheckerContext, ct: ClassType,
+    w: WellKnown): boolean => {
+  let known = ctx.resolveWellKnownType(w);
+  if (known == null) { return false; }
+  match (known) {
     case ClassType as pt: { return ct.id == pt.id; }
     case _: { return false; }
   }
 };
 
-let isPreludeInterfaceType = (ctx: CheckerContext, it: InterfaceType, preludeName: String): boolean => {
-  let prelude = ctx.resolvePreludeType(preludeName);
-  if (prelude == null) { return false; }
-  match (prelude) {
+let isWellKnownInterfaceType = (ctx: CheckerContext, it: InterfaceType,
+    w: WellKnown): boolean => {
+  let known = ctx.resolveWellKnownType(w);
+  if (known == null) { return false; }
+  match (known) {
     case InterfaceType as pt: { return it.id == pt.id; }
     case _: { return false; }
   }
@@ -6230,7 +6255,7 @@ let isPreludeInterfaceType = (ctx: CheckerContext, it: InterfaceType, preludeNam
 let widenType = (ctx: CheckerContext, t: Type): Type => match (t) {
   case BoolLiteralType {}: new BooleanType()
   case StringLiteralType {}: {
-    let stringType = ctx.resolvePreludeType("String");
+    let stringType = ctx.resolveWellKnownType(WellKnown.StringClass);
     if (stringType != null) {
       stringType
     } else {
@@ -7091,7 +7116,7 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   if (source is BoolLiteralType && target is BooleanType) { return true; }
   if (source is StringLiteralType &&
       target is ClassType &&
-      isPreludeClassType(ctx, target, "String")) {
+      isWellKnownClassType(ctx, target, WellKnown.StringClass)) {
     return true;
   }
   if (source is NumLiteralType && isNumericType(target)) {
@@ -7267,9 +7292,9 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
           // representation: mutable elements match the mutable-backed
           // classes, immutable elements match ImmutableArray.
           let isArrayLike = if (elementsMutable) {
-            isPreludeClassType(ctx, tgtClass, "GrowableArray") || isPreludeClassType(ctx, tgtClass, "Array") || isPreludeClassType(ctx, tgtClass, "FixedArray")
+            isWellKnownClassType(ctx, tgtClass, WellKnown.GrowableArrayClass) || isWellKnownClassType(ctx, tgtClass, WellKnown.ArrayInterface) || isWellKnownClassType(ctx, tgtClass, WellKnown.FixedArrayClass)
           } else {
-            isPreludeClassType(ctx, tgtClass, "ImmutableArray")
+            isWellKnownClassType(ctx, tgtClass, WellKnown.ImmutableArrayClass)
           };
           if (isArrayLike && tgtClass.typeArguments != null) {
             let tgtArgs = tgtClass.typeArguments as Array<Type>;
@@ -7285,7 +7310,7 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
         case InterfaceType as tgtIface: {
           // Both backing classes implement Array and Iterable; only the
           // mutable one implements MutableArray.
-          let isIfaceLike = isPreludeInterfaceType(ctx, tgtIface, "Array") || isPreludeInterfaceType(ctx, tgtIface, "Iterable") || (elementsMutable && isPreludeInterfaceType(ctx, tgtIface, "MutableArray"));
+          let isIfaceLike = isWellKnownInterfaceType(ctx, tgtIface, WellKnown.ArrayInterface) || isWellKnownInterfaceType(ctx, tgtIface, WellKnown.IterableInterface) || (elementsMutable && isWellKnownInterfaceType(ctx, tgtIface, WellKnown.MutableArrayInterface));
           if (isIfaceLike && tgtIface.typeArguments != null) {
             let tgtArgs = tgtIface.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {
@@ -9504,7 +9529,7 @@ let getArrayPatternElementType = (ctx: CheckerContext, t: Type): Type | null => 
       return elementType;
     }
     case ClassType as ct: {
-      let iteratorPrelude = ctx.resolvePreludeType("Iterator");
+      let iteratorPrelude = ctx.resolveWellKnownType(WellKnown.IteratorInterface);
       if (iteratorPrelude is InterfaceType && ct.id == (iteratorPrelude as InterfaceType).id) {
         let {typeArguments} = ct;
         if (typeArguments != null && typeArguments.length > 0) {
@@ -9561,7 +9586,7 @@ let getArrayPatternRestType = (ctx: CheckerContext, t: Type, elemType: Type): Ty
     // source's element mutability, and codegen builds it mutable.
     return new ArrayType(elemType, true);
   }
-  let faType = ctx.resolvePreludeType("FixedArray");
+  let faType = ctx.resolveWellKnownType(WellKnown.FixedArrayClass);
   if (faType is ClassType) {
     let args = new GrowableArray<Type>();
     args.push(elemType);
@@ -10291,7 +10316,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
   case StringLiteral {value, loc}: {
     // String literals ALWAYS have type String (the stdlib class from the prelude).
-    let stringType = ctx.resolvePreludeType("String");
+    let stringType = ctx.resolveWellKnownType(WellKnown.StringClass);
     if (stringType != null) {
       return stringType;
     }
@@ -10959,7 +10984,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       if (expectedType != null) {
         match (expectedType) {
           case ClassType as ct: {
-            if ((isPreludeClassType(ctx, ct, "GrowableArray") || isPreludeClassType(ctx, ct, "Array") || isPreludeClassType(ctx, ct, "FixedArray") || isPreludeClassType(ctx, ct, "ImmutableArray")) && ct.typeArguments != null) {
+            if ((isWellKnownClassType(ctx, ct, WellKnown.GrowableArrayClass) || isWellKnownClassType(ctx, ct, WellKnown.ArrayInterface) || isWellKnownClassType(ctx, ct, WellKnown.FixedArrayClass) || isWellKnownClassType(ctx, ct, WellKnown.ImmutableArrayClass)) && ct.typeArguments != null) {
               let typeArgs = ct.typeArguments as Array<Type>;
               if (typeArgs.length > 0) {
                 inferredElementType = typeArgs[0];
@@ -10967,9 +10992,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             }
           }
           case InterfaceType as it: {
-            if ((isPreludeInterfaceType(ctx, it, "Array") ||
-                 isPreludeInterfaceType(ctx, it, "MutableArray") ||
-                 isPreludeInterfaceType(ctx, it, "Iterable")) &&
+            if ((isWellKnownInterfaceType(ctx, it, WellKnown.ArrayInterface) ||
+                 isWellKnownInterfaceType(ctx, it, WellKnown.MutableArrayInterface) ||
+                 isWellKnownInterfaceType(ctx, it, WellKnown.IterableInterface)) &&
                 it.typeArguments != null) {
               let typeArgs = it.typeArguments as Array<Type>;
               if (typeArgs.length > 0) {
@@ -11017,13 +11042,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       // `FixedArray<T>` does.
       match (baseType(subtractNullFromType(expectedType))) {
         case ClassType as ect: {
-          if (isPreludeClassType(ctx, ect, "FixedArray") ||
-              isPreludeClassType(ctx, ect, "GrowableArray")) {
+          if (isWellKnownClassType(ctx, ect, WellKnown.FixedArrayClass) ||
+              isWellKnownClassType(ctx, ect, WellKnown.GrowableArrayClass)) {
             wantsMutable = true;
           }
         }
         case InterfaceType as eit: {
-          if (isPreludeInterfaceType(ctx, eit, "MutableArray")) {
+          if (isWellKnownInterfaceType(ctx, eit, WellKnown.MutableArrayInterface)) {
             wantsMutable = true;
           }
         }
@@ -11277,10 +11302,10 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       deps.needsExceptionInfra = true;
     }
     let argType = checkExpression(ctx, argument, null);
-    // `throw` is defined over the stdlib `Error`, so resolve it through the
-    // prelude rather than the enclosing scope, which a program that declares
-    // its own class of that name would otherwise win.
-    let errorType = ctx.resolvePreludeType("Error") ?? ctx.resolveTypeName("Error");
+    // `throw` is defined over the stdlib `Error`, so ask for that
+    // declaration rather than for whatever the name resolves to here: a
+    // program may declare its own class called `Error`.
+    let errorType = ctx.resolveWellKnownType(WellKnown.ErrorClass);
     if (errorType != null) {
       let isError = isAssignableTo(ctx, argType, errorType);
       var isActuallyError = isError;
@@ -11334,9 +11359,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let info = ctx.model.resolveDeclaration(paramId);
         if (info != null) {
           // The catch parameter binds the stdlib `Error`; see the note on
-          // `throw` above for why the prelude is asked first.
-          let errorType =
-              ctx.resolvePreludeType("Error") ?? ctx.resolveTypeName("Error");
+          // `throw` above.
+          let errorType = ctx.resolveWellKnownType(WellKnown.ErrorClass);
           ctx.declareBinding(info, if (errorType != null) errorType else new ErrorType());
         }
       }
@@ -11743,7 +11767,7 @@ let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
   // Case classes nominally implement Hashable: their synthesized
   // hashCode()/== make them valid hash keys, so they are assignable to the
   // well-known Hashable interface without an explicit implements clause.
-  let hashable = ctx.resolvePreludeType("Hashable");
+  let hashable = ctx.resolveWellKnownType(WellKnown.HashableInterface);
   if (hashable is InterfaceType) {
     var already = false;
     for (let impl in ct.implementsList) {
@@ -14467,7 +14491,7 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
 
 let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   let i32Type = new I32Type();
-  let stringType = ctx.resolvePreludeType("String");
+  let stringType = ctx.resolveWellKnownType(WellKnown.StringClass);
   let {name} = ed.name;
   let {members} = ed;
   var isStringEnum = false;
@@ -16035,12 +16059,14 @@ let resolveArrayBackingClass = (
   ctx: CheckerContext,
   elementsMutable: boolean
 ): ClassType | null => {
-  let name = if (elementsMutable) "FixedArray" else "ImmutableArray";
+  let w = if (elementsMutable) WellKnown.FixedArrayClass
+      else WellKnown.ImmutableArrayClass;
+  let name = wellKnownName(w);
   let {currentClass} = ctx;
   if (currentClass != null && currentClass.name == name) {
     return currentClass;
   }
-  let resolved = ctx.resolvePreludeType(name);
+  let resolved = ctx.resolveWellKnownType(w);
   if (resolved is ClassType) {
     return resolved as ClassType;
   }
@@ -17651,7 +17677,7 @@ let extractIteratorYieldType = (ctx: CheckerContext, t: Type): Type | null => {
   if (!(t is InterfaceType)) {
     return null;
   }
-  let prelude = ctx.resolvePreludeType("Iterator");
+  let prelude = ctx.resolveWellKnownType(WellKnown.IteratorInterface);
   if (prelude == null || !(prelude is InterfaceType)) {
     return null;
   }
@@ -17677,7 +17703,7 @@ let makeIteratorType = (
   yieldType: Type,
   loc: SourceLocation | null
 ): Type => {
-  let prelude = ctx.resolvePreludeType("Iterator");
+  let prelude = ctx.resolveWellKnownType(WellKnown.IteratorInterface);
   if (prelude == null || !(prelude is InterfaceType)) {
     ctx.error(
       "Generator functions require the 'Iterator' interface from the prelude.",
@@ -17725,7 +17751,7 @@ let makeFutureType = (
   valueType: Type,
   loc: SourceLocation | null
 ): Type => {
-  let prelude = ctx.resolvePreludeType('Future');
+  let prelude = ctx.resolveWellKnownType(WellKnown.FutureClass);
   if (prelude == null || !(prelude is ClassType)) {
     ctx.error(
       "Async functions require the 'Future' class from the prelude.",
@@ -17856,7 +17882,7 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
     // operator instance stays symbolic until substitution closes T.
     let args = new GrowableArray<Type>();
     args.push(operandType);
-    let awaitedAlias = ctx.resolvePreludeType('Awaited');
+    let awaitedAlias = ctx.resolveWellKnownType(WellKnown.AwaitedAlias);
     if (awaitedAlias != null && awaitedAlias is TypeAliasType) {
       let inst = instantiateTypeAliasType(awaitedAlias, args);
       inst.target = operandType;

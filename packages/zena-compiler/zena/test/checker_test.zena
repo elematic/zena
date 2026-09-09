@@ -24,6 +24,7 @@ import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
 import {
   Type, I32Type, BooleanType, VoidType, TypeParameterType, FieldInfo, MethodInfo, BoolLiteralType, ClassType, InterfaceType, FunctionType, UnionType, InlineTupleType, HoleType, typeToString, TypeId,
 } from '../lib/types.zena';
+import { WellKnown } from '../lib/well-known.zena';
 import { VariableDeclaration, Identifier, Node } from '../lib/ast.zena';
 
 // ============================================================================
@@ -132,7 +133,24 @@ let createTestSharedState = (): SharedCheckerState => {
   let hashMethodType = new FunctionType(new GrowableArray<Type>(), null, new I32Type());
   hashableIface.members["hashCode"] = new MethodInfo(hashMethodType, false, false, false, false);
   sharedState.preludeTypes["Hashable"] = hashableIface as Type;
-  
+
+  // The checker asks for well-known declarations by registry variant, not by
+  // name, so a mock standard library has to say which slot each stand-in
+  // fills. In a real compilation this comes from the library a declaration
+  // is declared in; these types are built here and belong to no module.
+  let known = (w: WellKnown, t: Type): void => {
+    sharedState.wellKnownTypes[w as i32] = t;
+  };
+  known(WellKnown.StringClass, stringClass as Type);
+  known(WellKnown.FixedArrayClass, fixedArrayClass as Type);
+  known(WellKnown.GrowableArrayClass, growableArrayClass as Type);
+  known(WellKnown.ArrayInterface, growableArrayClass as Type);
+  known(WellKnown.FutureClass, futureClass as Type);
+  known(WellKnown.IteratorInterface, iteratorIface as Type);
+  known(WellKnown.IterableInterface, iterableIface as Type);
+  known(WellKnown.ResourceClass, resourceClass as Type);
+  known(WellKnown.HashableInterface, hashableIface as Type);
+
   return sharedState;
 };
 

@@ -26,6 +26,7 @@ import {
 import { CompilerHost, LibraryLoader, SourceFile } from './library-loader.zena';
 import { buildStdlibConfig } from './package-manifest.zena';
 import { getStandardPrelude, getTargetRuntimeModules } from './prelude.zena';
+import { allWellKnown, isWellKnown, wellKnownName } from './well-known.zena';
 import { Symbol, makeSymbolIdGenerator } from './scope/symbol.zena';
 import { Scope, ScopeKind } from './scope/scope.zena';
 import { ScopeBuilder, ScopeResult, ModuleExports as ScopeModuleExports, UnresolvedName } from './scope/scope-builder.zena';
@@ -39,7 +40,7 @@ import { Diagnostic, SourceSpan } from './diagnostics.zena';
 import { SemanticModel } from './semantic-model.zena';
 import { performance } from './time.zena';
 import {
-  Type, ClassType, FunctionType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo, RecordType, TypeParameterType, TypeAliasType, SymbolType, ArrayType, TupleType, InlineTupleType, UnionType, BoolLiteralType, StringLiteralType, NumLiteralType, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, V128Type, BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyRefType, EqRefType, ThisType, ErasedType,
+  Type, ClassType, FunctionType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo, RecordType, TypeParameterType, TypeAliasType, SymbolType, ArrayType, TupleType, InlineTupleType, UnionType, BoolLiteralType, StringLiteralType, NumLiteralType, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, V128Type, BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyRefType, EqRefType, ThisType, ErasedType, declaringModuleOf,
 } from './types.zena';
 
 /** Re-export types used by consumers. */
@@ -1623,6 +1624,26 @@ export let checkCompilation = (
           }
           ni += 1;
         }
+      }
+
+      // Record the well-known declarations this file owns. Membership is
+      // decided by the library that declares the type — read off the type
+      // itself, the same value every other `isWellKnown` caller passes —
+      // so a program that declares its own `Error` or `Array` never lands
+      // here. `file.path` is not that value: a stdlib file may be loaded
+      // under a filesystem path rather than its `zena:` id.
+      for (let w in allWellKnown()) {
+        let name = wellKnownName(w);
+        if (!exports.has(name)) { continue; }
+        let exp = exports[name] as Symbol;
+        if (!exp.isType()) { continue; }
+        let bt = checkResult.model.getExportType(name);
+        let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
+        if (t == null) { continue; }
+        let declaredIn = declaringModuleOf(t as Type);
+        if (declaredIn == null) { continue; }
+        if (!isWellKnown(w, name, declaredIn as String)) { continue; }
+        sharedState.wellKnownTypes[w as i32] = t;
       }
     }
 

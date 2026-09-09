@@ -43,6 +43,8 @@ export enum WellKnown {
   /** `Future<T>` and `CancelScope`, which `async`/`await` lower onto. */
   FutureClass,
   CancelScopeClass,
+  /** `Awaited<T>`, the type operator an `await`'s result is read through. */
+  AwaitedAlias,
   /** `Hashable`, which a generic's `Hashable` bound is satisfied against
    * — including by primitives, which implement it structurally. */
   HashableInterface,
@@ -78,16 +80,20 @@ final class Location {
 }
 
 var locations: HashMap<i32, Location> | null = null;
+var ordered: GrowableArray<WellKnown> | null = null;
 
 let buildLocations = (): HashMap<i32, Location> => {
   let t = new HashMap<i32, Location>();
+  let order = new GrowableArray<WellKnown>();
   let add = (w: WellKnown, library: String, name: String): void => {
     t[w as i32] = new Location(library, name);
+    order.push(w);
   };
   /** Registers a declaration that is mid-move to another library. */
   let moving = (w: WellKnown, library: String, name: String,
       movingTo: String): void => {
     t[w as i32] = new Location(library, name, movingTo);
+    order.push(w);
   };
   moving(WellKnown.StringClass, 'string', 'String', 'core');
   moving(WellKnown.TemplateStringsArrayClass,
@@ -104,6 +110,7 @@ let buildLocations = (): HashMap<i32, Location> => {
   // the library is what lets that be true without a prefix match.
   add(WellKnown.FutureClass, 'async', 'Future');
   add(WellKnown.CancelScopeClass, 'async', 'CancelScope');
+  add(WellKnown.AwaitedAlias, 'async', 'Awaited');
   moving(WellKnown.HashableInterface, 'hashable', 'Hashable', 'core');
   moving(WellKnown.ResourceClass, 'ownership', 'Resource', 'core');
   moving(WellKnown.OwnAlias, 'ownership', 'Own', 'core');
@@ -111,7 +118,20 @@ let buildLocations = (): HashMap<i32, Location> => {
   moving(WellKnown.UnmanagedAlias, 'ownership', 'Unmanaged', 'core');
   moving(WellKnown.ScopedAlias, 'ownership', 'Scoped', 'core');
   locations = t;
+  ordered = order;
   return t;
+};
+
+/**
+ * Every well-known declaration, in registration order. A caller that has to
+ * visit them all — filling the checker's table as each library is checked —
+ * iterates this instead of repeating the list.
+ */
+export let allWellKnown = (): GrowableArray<WellKnown> => {
+  if (ordered == null) {
+    buildLocations();
+  }
+  return ordered as GrowableArray<WellKnown>;
 };
 
 let locationOf = (w: WellKnown): Location => {
