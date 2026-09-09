@@ -1202,8 +1202,14 @@ final class CheckerContext {
     }
     if (result == null) {
       let created = new TypeParameterType(tp.name, constraint, defaultType);
+      created.isScoped = tp.isScoped;
       this.#sharedState.typeParameterTypes[key] = created as Type;
       result = created;
+    }
+    if (tp.isScoped) {
+      // The canonical object may have been created from a mention that
+      // did not carry the modifier; the declaration's spelling wins.
+      result.isScoped = true;
     }
     // A resolution can reach the parameter before the declaring pass has
     // resolved its constraint/default annotations (creating the canonical
@@ -4133,6 +4139,9 @@ let isSecondClass = (t: Type): boolean => {
   // that holds a borrow, so the extent restriction is unconditional
   // (ownership.md §"Scoped<T>: the fourth corner").
   if (isScopedType(t)) { return true; }
+  // A `scoped T` parameter's values are checked at the same
+  // discipline — the worst case the parameter admits.
+  if (t is TypeParameterType && t.isScoped) { return true; }
   if (ownershipHandleName(t) != "Borrow") { return false; }
   let inner = ownershipHandleInner(t);
   if (inner == null) { return false; }
@@ -4163,6 +4172,16 @@ let typeCarriesOwner = (t: Type): boolean => {
     return typeCarriesOwner(t.target);
   }
   return false;
+};
+
+/**
+ * A type whose values follow the scoped consumption rules — the
+ * `Scoped` wrapper itself, or a `scoped T` parameter's values, which
+ * the body checks at the same discipline.
+ */
+let isScopedValueType = (t: Type): boolean => {
+  if (isScopedType(t)) { return true; }
+  return t is TypeParameterType && t.isScoped;
 };
 
 /**
@@ -4346,11 +4365,16 @@ let rejectAffineStructuralMember = (
  */
 let rejectSecondClassTypeArguments = (
   ctx: CheckerContext,
+  typeParams: Array<TypeParameterType>,
   typeArgs: Array<Type>,
   loc: SourceLocation | null
 ): void => {
-  for (let a in typeArgs) {
-    rejectSecondClassStorage(ctx, a, "a container", loc);
+  for (var i = 0; i < typeArgs.length; i += 1) {
+    // A `scoped` class parameter admits the argument; the instantiated
+    // type then carries the restriction itself (ownership.md §"Scoped
+    // containers and extent nesting").
+    if (i < typeParams.length && typeParams[i].isScoped) { continue; }
+    rejectSecondClassStorage(ctx, typeArgs[i], "a container", loc);
   }
 };
 
@@ -4369,6 +4393,7 @@ let rejectSecondClassFunctionTypeArgs = (
   loc: SourceLocation | null
 ): void => {
   for (var i = 0; i < typeParams.length && i < typeArgs.length; i += 1) {
+    if (typeParams[i].isScoped) { continue; }
     if (!typeContainsSecondClass(typeArgs[i])) { continue; }
     ctx.error(
       "Type '" + typeToString(typeArgs[i]) + "' may not bind the unrestricted " +
@@ -4591,9 +4616,9 @@ let recordArgumentMove = (ctx: CheckerContext, arg: Expression, paramType: Type)
   // A scoped sink consumes the argument too: handing a scoped value to
   // a scoped parameter (or rebinding it, which comes through here with
   // the declaration's type as the sink) is its one permitted move.
-  if (isScopedType(sinkType)) {
+  if (isScopedValueType(sinkType)) {
     let at = ctx.model.getNodeType(arg);
-    if (at != null && isScopedType(at)) {
+    if (at != null && isScopedValueType(at)) {
       ctx.recordFlowMove(info.id, info.name, arg.loc);
     }
     return;
@@ -4693,7 +4718,7 @@ let registerOwnParamCandidates = (
       let si2 = ctx.model.resolveDeclaration(param);
       if (si2 != null) {
         ctx.markParamDerivedSecondClass(si2.id);
-        if (isScopedType(t)) {
+        if (isScopedValueType(t)) {
           ctx.registerScopedCandidate(si2, param as Node);
           ctx.recordBorrowBirth(si2.id);
         }
@@ -6070,7 +6095,7 @@ let instantiateGenericClass = (
       i += 1;
     }
     applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
-    rejectSecondClassTypeArguments(ctx, typeArgs, loc);
+    rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
     return instantiateClassType(ct, typeArgs);
   }
 
@@ -6107,7 +6132,7 @@ let instantiateGenericClass = (
 
   // Apply missing default types and check constraints before instantiating.
   applyAndCheckTypeArguments(ctx, typeParams, typeArgs, loc);
-  rejectSecondClassTypeArguments(ctx, typeArgs, loc);
+  rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
 
   // Create instantiated class type using factory function.
   return instantiateClassType(ct, typeArgs);
@@ -8541,7 +8566,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
       // clean path for `fut` and any OTHER live scoped binding errors.
       if (argument != null && argument is Identifier) {
         let rt = ctx.model.getNodeType(argument as Node);
-        if (rt != null && isScopedType(rt)) {
+        if (rt != null && isScopedValueType(rt)) {
           let rsym = ctx.model.resolve(argument);
           if (rsym != null) {
             ctx.recordFlowMove(rsym.id, rsym.name, loc);
@@ -9215,7 +9240,7 @@ let checkVariableDeclaration = (
   // each return (ownership.md §"Required consumption"). One whose
   // initializer mentions a parameter-rooted second-class binding
   // derives from it, and carries that root to the await check.
-  if (kind == "let" && pattern is IdentifierPattern && isScopedType(declType)) {
+  if (kind == "let" && pattern is IdentifierPattern && isScopedValueType(declType)) {
     let scopedSym = ctx.model.resolveDeclaration(pattern);
     if (scopedSym != null) {
       ctx.registerScopedCandidate(scopedSym, pattern as Node);
@@ -10447,7 +10472,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (resolved != null) {
       // An owned binding is dead after a move on any path to here, and
       // a scoped binding after the consumption that moved it.
-      if (ownershipHandleName(resolved) == "Own" || isScopedType(resolved)) {
+      if (ownershipHandleName(resolved) == "Own" || isScopedValueType(resolved)) {
         let moveSym = ctx.model.resolve(expr);
         if (moveSym != null) {
           ctx.checkMoveUse(expr, moveSym);

@@ -1691,11 +1691,14 @@ of surface syntax.
 | **O4**   | `isolated<T>`/`frozen<T>`/regions                                                                         | O2                                | V, A           |
 
 Implementation currently trails this document in one known place:
-`Scoped<T>` is implemented — the type, its storage rules, the
-required-consumption verdict, and the suspension relaxations (§"What
-the annotation allows") — but the `scoped T` type-parameter opt-in and
-the combinator audit are not, so a scoped future cannot pass through
-`Future.all` yet. The `dropped` state is set at the top of
+`Scoped<T>` and the `scoped T` modifier are implemented — the type,
+its storage rules, the required-consumption verdict, the suspension
+relaxations (§"What the annotation allows"), the bare-parameter
+rejection, and the modifier with its body discipline — but the
+combinator audit and the container shapes of §"Scoped containers and
+extent nesting" are not, so a scoped future cannot pass through
+`Future.all` yet and a `scoped T` body cannot build containers of `T`.
+The `dropped` state is set at the top of
 every consuming dispose — written or synthesized — so every release
 route marks it and a bad `adopt` reports "dropped" rather than blaming
 a phantom owner; and the §"Borrows and suspension" liveness rule is

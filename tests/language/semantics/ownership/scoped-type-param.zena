@@ -1,0 +1,69 @@
+// @mode: check
+// The `scoped T` modifier (ownership.md §"Scoped type arguments"):
+// it admits second-class arguments, and the body is checked at the
+// fourth corner's discipline — every T consumed exactly once, no
+// storage, no capture. First-class instantiations are unaffected.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let x = await tick();
+  return x;
+};
+
+// The modifier admits the scoped argument the bare-parameter rule
+// rejects; returning the value is its consumption, and the scoped
+// parameter is the derivation source the return needs.
+let keep = <scoped T>(x: T): T => {
+  return x;
+};
+
+let admitted = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let fut = keep(read(r));
+  return await fut;
+};
+
+// An unrestricted instantiation is unaffected by the discipline.
+let plain = (): i32 => {
+  return keep(42);
+};
+
+// Consuming twice: the first move kills the binding — and the value
+// the dead read produced is itself scoped, so leaving it behind is
+// the abandonment error.
+let usedTwice = <scoped T>(x: T): T => {
+  let a = keep(x);
+  let b = keep(x); // @error: may have been moved
+  return b; // @error: must be consumed
+};
+
+// Consuming never: a scoped parameter is a consume candidate for the
+// whole body.
+let dropped = <scoped T>(x: T): i32 => {
+  return 0; // @error: must be consumed
+};
+
+// The body may not store a T: containers stay banned until the
+// collections take the modifier themselves.
+let boxed = <scoped T>(x: T): i32 => {
+  let xs = new GrowableArray<T>(); // @error: may not be stored
+  xs.push(x);
+  return 0;
+};
+
+// The body may not capture a T. The closure also has no borrow to
+// derive its second-class return from, and the capture is not a
+// consumption, so all three rules report.
+let captured = <scoped T>(x: T): i32 => {
+  // @error: no borrow parameter
+  let get = (): T => x; // @error: may not be captured
+  return 0; // @error: must be consumed
+};

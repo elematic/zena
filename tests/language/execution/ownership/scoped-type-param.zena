@@ -1,0 +1,34 @@
+// @mode: run
+// @result: 63
+// A `scoped T` function serves a scoped argument and an ordinary one
+// with the same body: the modifier is checking discipline, not
+// representation.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  size(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let x = await tick();
+  return r.size() + x;
+};
+
+let keep = <scoped T>(x: T): T => {
+  return x;
+};
+
+export let main = async (): Future<i32> => {
+  let owner = new Res(20);
+  let fut = keep(read(owner));
+  let a = await fut;
+  let b = keep(42);
+  return a + b;
+};

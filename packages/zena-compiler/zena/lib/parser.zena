@@ -2460,35 +2460,50 @@ export final class Parser {
     let params = new GrowableArray<TypeParameter>(4);
     
     let startToken = this.#peek();
+    // `scoped` is contextual: a modifier only when another identifier
+    // follows, so a parameter NAMED scoped (`<scoped>`, `<scoped extends
+    // X>`) still parses.
+    var isScoped = false;
+    if (this.#check(TokenType.Identifier) && this.#peek().value == 'scoped' &&
+        this.#peek2().kind == TokenType.Identifier) {
+      this.#advance();
+      isScoped = true;
+    }
     let name = this.#advance().value;
-    
+
     var constraint: TypeAnnotation | null = null;
     if (this.#match(TokenType.Extends)) {
       constraint = this.#parseTypeAnnotation();
     }
-    
+
     var defaultType: TypeAnnotation | null = null;
     if (this.#match(TokenType.Equals)) {
       defaultType = this.#parseTypeAnnotation();
     }
-    
-    params.push(new TypeParameter(name, constraint, defaultType, this.#makeLocation(startToken)));
+
+    params.push(new TypeParameter(name, constraint, defaultType, isScoped, this.#makeLocation(startToken)));
     
     while (this.#match(TokenType.Comma) && !this.#checkGreater()) {
       let tpStart = this.#peek();
+      var tpScoped = false;
+      if (this.#check(TokenType.Identifier) && this.#peek().value == 'scoped' &&
+          this.#peek2().kind == TokenType.Identifier) {
+        this.#advance();
+        tpScoped = true;
+      }
       let tpName = this.#advance().value;
-      
+
       var tpConstraint: TypeAnnotation | null = null;
       if (this.#match(TokenType.Extends)) {
         tpConstraint = this.#parseTypeAnnotation();
       }
-      
+
       var tpDefault: TypeAnnotation | null = null;
       if (this.#match(TokenType.Equals)) {
         tpDefault = this.#parseTypeAnnotation();
       }
-      
-      params.push(new TypeParameter(tpName, tpConstraint, tpDefault, this.#makeLocation(tpStart)));
+
+      params.push(new TypeParameter(tpName, tpConstraint, tpDefault, tpScoped, this.#makeLocation(tpStart)));
     }
     
     this.#consumeGreater("Expected '>' after type parameters");

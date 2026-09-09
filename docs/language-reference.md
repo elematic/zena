@@ -4531,9 +4531,26 @@ are rejected like the handle casts.
 A second-class type (a scoped value, or a restricted `Borrow<R>`) may
 not bind an ordinary generic type parameter: the generic body may
 store, copy, or capture a `T`, and a second-class value may do none of
-those, so `box(fut)` for `box = <T>(x: T) => …` is an error. The
-`scoped T` parameter modifier that will admit such arguments is
-planned.
+those, so `box(fut)` for `box = <T>(x: T) => …` is an error.
+
+Declaring the parameter `scoped` admits such arguments:
+
+```zena
+let keep = <scoped T>(x: T): T => {
+  return x;
+};
+```
+
+`scoped` is contextual — a parameter named `scoped` still parses — and
+composes with bounds (`<scoped T extends Disposable>`). The body of a
+`scoped T` generic is checked at the strictest discipline any argument
+could need: every `T` value is consumed exactly once per path (a move
+to another `scoped` parameter, or a return, which counts the parameter
+as its derivation source), and a `T` may not be stored in a field or
+container or captured by a closure. An unrestricted instantiation —
+`keep(42)` — is unaffected; the same body serves both. Storing `T`
+values in containers inside such a body waits on the standard library
+collections adopting the modifier themselves.
 
 A scoped value follows the second-class storage rules — no fields,
 container elements, record or tuple members, no closure capture — and
