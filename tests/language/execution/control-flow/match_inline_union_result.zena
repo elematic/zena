@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 9
+
+// match arms over an inline-tuple union narrow each binding by the
+// arm's discriminant literal. `checkedSub` returns a Result-like
+// `inline (true, i32, _) | inline (false, _, String)`; the success arm
+// binds `v: i32` and the error arm binds `e: String`, so both `v` and
+// `e.length` type-check and lower. This replaces the former semantics
+// test that pinned per-arm narrowing as unimplemented.
+
+let checkedSub = (
+  a: i32,
+  b: i32,
+): inline (true, i32, _) | inline (false, _, String) => {
+  if (b > a) {
+    return (false, _, "underflow");
+  }
+  return (true, a - b, _);
+};
+
+let valueOrErrorLength = (a: i32, b: i32): i32 => {
+  var out = 0;
+  match (checkedSub(a, b)) {
+    case (true, let v, _): { out = v; }
+    case (false, _, let e): { out = e.length; }
+  }
+  return out;
+};
+
+export let main = (): i32 => {
+  // b > a takes the error arm: "underflow".length == 9.
+  return valueOrErrorLength(3, 10);
+};

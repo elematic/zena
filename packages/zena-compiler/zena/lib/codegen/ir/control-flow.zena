@@ -378,6 +378,49 @@ let lowerValueRegionRest = (cx: LoweringContext, value: i32,
  * the checker proves exhaustiveness, mirroring streaming's trailing
  * unreachable.
  */
+/**
+ * A `match` discriminant whose type is a single inline tuple or a
+ * union of them arrives as multi-value lanes, not a boxed struct, so
+ * it is decomposed with the same `multiSource` machinery as a
+ * let-condition rather than read with `struct_get`.
+ */
+let isInlineTupleUnionSource = (t: Type): boolean => {
+  if (t is InlineTupleType) { return true; }
+  if (!(t is UnionType)) { return false; }
+  let types = t.types;
+  if (types.length == 0) { return false; }
+  for (let member in types) {
+    if (!(member is InlineTupleType)) { return false; }
+  }
+  return true;
+};
+
+/**
+ * Tests and binds one tuple-pattern arm against the discriminant's
+ * lanes. Literal lanes (the discriminant) branch to `failB` on
+ * mismatch; the surviving lanes bind directly, so nothing is boxed.
+ * The checker has already narrowed each binding to the arm its
+ * discriminant selects.
+ */
+let lowerInlineTupleArm = (cx: LoweringContext, pat: TuplePattern,
+    lanes: Array<i32>, failB: i32): void => {
+  if (lanes.length != pat.elements.length) {
+    bail(cx, 'match inline union arity');
+  }
+  for (var i = 0; i < pat.elements.length; i += 1) {
+    let el = pat.elements[i];
+    if (el != null && patternRefutable(cx, el)) {
+      lowerPatternTest(cx, el, lanes[i], failB);
+    }
+  }
+  for (var i = 0; i < pat.elements.length; i += 1) {
+    let el = pat.elements[i];
+    if (el != null && patternBinds(cx, el)) {
+      lowerPatternBindings(cx, el, lanes[i]);
+    }
+  }
+};
+
 export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
@@ -392,7 +435,16 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
     null
   };
 
-  let disc = lowerExpr(cx, expr.discriminant, null);
+  let discType = cx.substitutedNodeType(expr.discriminant);
+  let lanes = if (discType != null && isInlineTupleUnionSource(discType)) {
+    multiSource(cx, expr.discriminant)
+  } else {
+    null
+  };
+  var disc = -1;
+  if (lanes == null) {
+    disc = lowerExpr(cx, expr.discriminant, null);
+  }
 
   let mergeSyms = new GrowableArray<SymbolId>();
   for (let mc in expr.cases) {
@@ -419,8 +471,19 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
     } else {
       exhausted = true;
     }
-    lowerPatternTest(cx, mc.pattern, disc, failB);
-    lowerPatternBindings(cx, mc.pattern, disc);
+    if (lanes != null) {
+      let laneVals = lanes as Array<i32>;
+      if (mc.pattern is TuplePattern) {
+        lowerInlineTupleArm(cx, mc.pattern as TuplePattern, laneVals, failB);
+      } else if (patternBinds(cx, mc.pattern) || patternRefutable(cx, mc.pattern)) {
+        // An inline multi-value has no single value to bind or test
+        // against; only a wildcard (`case _`) is admissible here.
+        bail(cx, 'match over inline union pattern');
+      }
+    } else {
+      lowerPatternTest(cx, mc.pattern, disc, failB);
+      lowerPatternBindings(cx, mc.pattern, disc);
+    }
     if (mc.guard != null) {
       let cond = lowerExpr(cx, mc.guard as Expression, null);
       branchUnless(cx, cond, failB);

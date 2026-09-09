@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 42
+
+// A `match` over a union of inline tuples narrows each arm's bindings
+// by the arm's discriminant literal: in `case (1, v, _)` the value lane
+// binds as `i32`, not `i32 | _`, so it is usable directly. Without the
+// narrowing the binding would be `i32 | _` and `total + v` would not
+// type-check.
+
+function make(tag: i32): inline (1, i32, _) | inline (2, _, i32) {
+  if (tag == 1) {
+    return (1, 40, _);
+  }
+  return (2, _, 2);
+}
+
+export let main = (): i32 => {
+  var total = 0;
+  match (make(1)) {
+    case (1, let v, _): { total = total + v; }
+    case (2, _, let f): { total = total + f; }
+  }
+  match (make(2)) {
+    case (1, let v, _): { total = total + v; }
+    case (2, _, let f): { total = total + f; }
+  }
+  return total;  // 40 + 2 = 42
+};

@@ -1,0 +1,22 @@
+// @mode: run
+// @result: 5
+
+// The narrowed value lane may be a reference type. `case (1, let s, _)`
+// binds `s` as `String` (not `String | _`), so a method call on it
+// type-checks and the lane read lowers without boxing.
+
+function make(tag: i32): inline (1, String, _) | inline (2, _, i32) {
+  if (tag == 1) {
+    return (1, "hello", _);
+  }
+  return (2, _, 99);
+}
+
+export let main = (): i32 => {
+  var out = 0;
+  match (make(1)) {
+    case (1, let s, _): { out = s.length; }  // "hello" -> 5
+    case (2, _, let n): { out = n; }
+  }
+  return out;
+};

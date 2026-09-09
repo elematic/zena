@@ -9832,6 +9832,42 @@ let patternCanMatchType = (ctx: CheckerContext, pattern: Node, t: Type): boolean
   }
 };
 
+/**
+ * Drop the members of a union scrutinee that a tuple pattern's literal
+ * lanes rule out, so a discriminated arm binds only the surviving
+ * members' lanes. `case (1, v, _)` over
+ * `inline (0, _, _) | inline (1, V, _) | inline (2, _, F)` keeps just
+ * the `1` arm, so lane 1 types as `V` rather than the whole-union
+ * `V | _`. A member whose discriminant lane is a non-literal type is
+ * kept (the pattern could match it at runtime), so the union collapses
+ * only where the discriminants are literal types. Non-union scrutinees
+ * and unions with a non-tuple member are returned unchanged for the
+ * existing lane merge to handle.
+ */
+let narrowTupleUnionByPattern = (ctx: CheckerContext, t: Type,
+    tuplePat: TuplePattern): Type => {
+  match (t) {
+    case UnionT {types}: {
+      let kept = new GrowableArray<Type>();
+      for (let member in types) {
+        if (!(member is TupleT) && !(member is InlineTupleT)) {
+          return t;
+        }
+        if (patternCanMatchType(ctx, tuplePat, member)) {
+          kept.push(member);
+        }
+      }
+      if (kept.length == 0 || kept.length == types.length) {
+        return t;
+      }
+      return createUnionType(kept);
+    }
+    case _: {
+      return t;
+    }
+  }
+};
+
 let narrowTypeByPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): Type => {
   match (t) {
     case UnionT {types}: {
@@ -17547,7 +17583,8 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
     }
     case TuplePattern as tuplePat: {
       let {elements} = tuplePat;
-      let elementTypes = getTuplePatternElementTypes(expectedType);
+      let narrowed = narrowTupleUnionByPattern(ctx, expectedType, tuplePat);
+      let elementTypes = getTuplePatternElementTypes(narrowed);
       if (elementTypes == null) {
         if (!(expectedType is ErrorType) && !(expectedType is UnknownType)) {
           ctx.error(
