@@ -1779,12 +1779,21 @@ final class CheckerContext {
   }
 
   /**
-   * The type of a well-known standard library declaration, or null when the
-   * library declaring it is not part of this compilation.
+   * The type of a well-known standard library declaration, or null when
+   * there is not one to give.
    *
    * Nothing a program declares is ever returned here: the map is filled by
    * matching a module's library against the well-known registry, not by
    * name. A caller that falls back to name resolution on null undoes that.
+   *
+   * Null rather than a throw, because a miss is reachable two ways and
+   * neither is a bug. A declaration is registered once its own module has
+   * been checked, so its module asks before it can be answered — checking
+   * `core/fixed-array.zena` looks up `FixedArray` for the array literals in
+   * it. And a predicate ("is this type the standard library's `Array`?") is
+   * asked in compilations that never load that library, where the answer is
+   * no rather than an error. Callers treat null as "not that type", which is
+   * correct in both.
    */
   resolveWellKnownType(w: WellKnown): Type | null {
     if (let (true, t) = this.#sharedState.wellKnownTypes.get(w as i32)) {
