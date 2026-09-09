@@ -16228,6 +16228,23 @@ ${describeIndexParameters(candidates, it.typeParameters, it.typeArguments)}.`,
       return new ErrorType();
     }
     case ErrorType: { return new ErrorType(); }
+    case TypeParameterType {constraint}: {
+      // Index access resolves through the bound, the same way member
+      // access does: the generic body is checked once against the
+      // constraint, and every specialization's receiver is a concrete
+      // type that lowers directly. This is what makes
+      // `<A extends Array<T>>` the signature that accepts every array
+      // representation at no cost — see docs/design/array-mutability.md.
+      if (constraint != null) {
+        return resolveIndexType(ctx, constraint, index, loc, node);
+      }
+      ctx.error(
+        "Index access not supported on type '" + typeToString(objectType) + "'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
     case _: {
       ctx.error(
         "Index access not supported on type '" + typeToString(objectType) + "'.",

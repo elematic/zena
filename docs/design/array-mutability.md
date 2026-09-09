@@ -430,16 +430,14 @@ A direct array parameter and a bare `array.len`, with no fat pointer and
 no dispatch. So `function sum<A extends Array<i32>>(arr: A)` is the
 signature that accepts every array representation at no cost.
 
-It does not work yet. Operators do not resolve through a type parameter's
-constraint:
-
-```
-probe.zena:24:37 - Error: Index access not supported on type 'A'.
-```
-
-`arr.length` resolves through the bound and `arr[i]` does not. Making
-operator and member lookup consult a type parameter's constraint turns
-the recommended signature into a usable one.
+Index reads now resolve through a type parameter's constraint the same
+way member access always has, so the recommended signature is usable:
+`arr.length` and `arr[i]` both check against the bound and lower against
+the specialization's concrete receiver
+(`tests/language/execution/generics/index-through-bound.zena`).
+`String.fromParts<A extends Array<String>>` is the first stdlib user.
+Index writes through a bound remain unresolved, which is the right
+default while the only bounds worth writing are the read-only `Array<T>`.
 
 This covers code that can be generic, which is most of it. The four
 optimizations above are what cover code that must be dynamically
