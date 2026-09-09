@@ -13,6 +13,7 @@
  * boundaries. Direct use of sliceBytes() with computed indices can split
  * multi-byte UTF-8 sequences.
  */
+import {Array} from 'zena:array';
 import {FixedArray} from 'zena:fixed-array';
 import {Hashable, hash} from 'zena:hashable';
 
@@ -110,14 +111,18 @@ export final class String implements Hashable {
    * Creates a new string by concatenating all parts.
    * This is more efficient than chained + operators for multiple strings,
    * as it allocates the result array only once.
+   *
+   * Generic over the array representation: element access resolves
+   * through the bound, so each specialization reads its receiver
+   * directly with no interface dispatch.
    */
-  static fromParts(parts: array<var String>): String {
+  static fromParts<A extends Array<String>>(parts: A): String {
     // First pass: calculate total length
-    let partsLen = __array_len(parts);
+    let partsLen = parts.length;
     var totalLen = 0;
     var i = 0;
     while (i < partsLen) {
-      let part = __array_get(parts, i);
+      let part = parts[i];
       totalLen = totalLen + (part.#end - part.#start);
       i += 1;
     }
@@ -129,7 +134,7 @@ export final class String implements Hashable {
     var offset = 0;
     i = 0;
     while (i < partsLen) {
-      let part = __array_get(parts, i);
+      let part = parts[i];
       let partLen = part.#end - part.#start;
       __byte_array_copy(data, offset, part.#data, part.#start, partLen);
       offset = offset + partLen;
@@ -139,7 +144,7 @@ export final class String implements Hashable {
     // Use encoding from first part, or default to WTF-8
     var encoding = Encoding.WTF8;
     if (partsLen > 0) {
-      encoding = __array_get(parts, 0).#encoding;
+      encoding = parts[0].#encoding;
     }
     return new String(data, 0, totalLen, encoding);
   }
@@ -147,10 +152,12 @@ export final class String implements Hashable {
   /**
    * The raw-array entry the compiler's synthesized string joins call —
    * template-literal lowering resolves it by name against a
-   * one-parameter raw-array signature. User code calls fromParts.
+   * one-parameter raw-array signature. Its body is also the call site
+   * that keeps the FixedArray<String> specialization of fromParts
+   * reachable. User code calls fromParts.
    */
   static fromRawParts(parts: array<var String>): String {
-    return String.fromParts(parts);
+    return String.fromParts(parts as FixedArray<String>);
   }
 
   /**
