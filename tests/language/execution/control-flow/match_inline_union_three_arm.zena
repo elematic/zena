@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 143
+
+// The full three-arm Step shape, including the all-hole Done arm
+// `(0, _, _)`. Exercises constructing every arm in producer position
+// against a known return type, and narrowing each on the consumer side.
+
+function step(tag: i32): inline (0, _, _) | inline (1, i32, _) | inline (2, _, i32) {
+  if (tag == 0) {
+    return (0, _, _);
+  }
+  if (tag == 1) {
+    return (1, 40, _);
+  }
+  return (2, _, 3);
+}
+
+let handle = (tag: i32): i32 => {
+  var out = 0;
+  match (step(tag)) {
+    case (0, _, _): { out = 100; }
+    case (1, let v, _): { out = v; }
+    case (2, _, let f): { out = f; }
+  }
+  return out;
+};
+
+export let main = (): i32 => {
+  return handle(0) + handle(1) + handle(2);  // 100 + 40 + 3
+};
