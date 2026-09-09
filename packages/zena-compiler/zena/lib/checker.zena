@@ -13526,7 +13526,22 @@ let checkMethodSignature = (
   if (astTypeParameters != null) {
     let typeParameters = new GrowableArray<TypeParameterType>();
     for (let astParam in astTypeParameters) {
-      let tpType = ctx.getOrCreateTypeParameter(astParam, null, null);
+      // Resolve the bound like class and interface parameters do —
+      // without it, member and index lookup through the bound see an
+      // unconstrained parameter in the method's body.
+      var constraint: Type | null = null;
+      if (astParam.constraint != null) {
+        // A bound names a class, not a value, so a resource class is
+        // spellable here — same reason as an extends clause.
+        ctx.resourceMentionOk = true;
+        constraint = resolveTypeAnnotation(ctx, astParam.constraint as TypeAnnotation);
+        ctx.resourceMentionOk = false;
+      }
+      var defaultT: Type | null = null;
+      if (astParam.defaultType != null) {
+        defaultT = resolveTypeAnnotation(ctx, astParam.defaultType as TypeAnnotation);
+      }
+      let tpType = ctx.getOrCreateTypeParameter(astParam, constraint, defaultT);
       typeParameters.push(tpType);
       ctx.declareTypeName(astParam.name, tpType);
       ctx.registerTypeParameter(astParam, tpType);
