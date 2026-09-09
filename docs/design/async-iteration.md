@@ -89,6 +89,18 @@ Ready, allocate nothing. In Pending the value lane holds the value
 type's default (a null reference or a zero), read only in the Ready
 case.
 
+`Step` shares Option's and Result's boolean-inline-union shape but is
+not one of them, and the optionality operators — `??` and the rest —
+stay nominal to `Option`/`Result`, not structural over any boolean
+inline union. Option's `true` arm always holds the value; a Step's
+`more` arm holds it only when Ready, so a structural `??` would return
+the Pending placeholder. A mixed `Step` is consumed by `for`, `for
+await`, or an explicit `next()` match, where Pending is handled rather
+than hidden. (A synchronous single-step accessor that throws on
+Pending could be added later; it would be a Step-specific operator,
+not the Option `??`. Defining `Option`/`Result` themselves in terms of
+inline tuples, with `??`, is separate future work.)
+
 The Pending future carries `Option<V>`, not another `Step`: an inline
 `Step` cannot be a `Future`'s type argument, and `Option<V>`
 (`Some<V> | None`) is the storable form that still says whether the
