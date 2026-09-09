@@ -116,7 +116,7 @@ import {
 } from './diagnostics.zena';
 import { Symbol, SymbolId, noSymbolId } from './scope/symbol.zena';
 import { ScopeResult, ModuleExports } from './scope/scope-builder.zena';
-import { WellKnown, isWellKnown } from './well-known.zena';
+import { WellKnown, isWellKnown, wellKnownLibrary, wellKnownName } from './well-known.zena';
 
 let lookupBindingTypeInDeps = (ctx: CheckerContext, sym: Symbol): Type | null => {
   let models = ctx.depModels;
@@ -1506,7 +1506,7 @@ final class CheckerContext {
           }
           case EnumDeclaration as ed: {
             let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
-            let backingType = if (isStringEnum) { this.resolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
+            let backingType = if (isStringEnum) { this.tryResolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
             let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null, false, "");
             let fields = new HashMap<String, Type>();
             for (let member in ed.members) {
@@ -1675,7 +1675,7 @@ final class CheckerContext {
       }
       case EnumDeclaration as ed: {
         let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
-        let backingType = if (isStringEnum) { this.resolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
+        let backingType = if (isStringEnum) { this.tryResolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
         return new TypeAliasType(ed.name.name, null, backingType, true, null, false, "");
       }
       case TypeAliasDeclaration as ta: {
@@ -1779,27 +1779,38 @@ final class CheckerContext {
   }
 
   /**
-   * The type of a well-known standard library declaration, or null when
-   * there is not one to give.
+   * The type of a well-known standard library declaration, for a caller
+   * asking whether some type is that declaration. Null means no — either
+   * the library is not part of this compilation, or its own module is the
+   * one being checked and has not finished registering yet.
    *
-   * Nothing a program declares is ever returned here: the map is filled by
+   * Nothing a program declares is ever returned: the map is filled by
    * matching a module's library against the well-known registry, not by
    * name. A caller that falls back to name resolution on null undoes that.
-   *
-   * Null rather than a throw, because a miss is reachable two ways and
-   * neither is a bug. A declaration is registered once its own module has
-   * been checked, so its module asks before it can be answered — checking
-   * `core/fixed-array.zena` looks up `FixedArray` for the array literals in
-   * it. And a predicate ("is this type the standard library's `Array`?") is
-   * asked in compilations that never load that library, where the answer is
-   * no rather than an error. Callers treat null as "not that type", which is
-   * correct in both.
    */
-  resolveWellKnownType(w: WellKnown): Type | null {
+  tryResolveWellKnownType(w: WellKnown): Type | null {
     if (let (true, t) = this.#sharedState.wellKnownTypes.get(w as i32)) {
       return t;
     }
     return null;
+  }
+
+  /**
+   * The type of a well-known standard library declaration, for a caller
+   * that cannot proceed without it — the checker is about to give this
+   * declaration's members to an expression, so a miss is a compiler bug
+   * rather than an answer.
+   *
+   * A caller that can be asked about a library this compilation never
+   * loads wants `tryResolveWellKnownType` instead.
+   */
+  resolveWellKnownType(w: WellKnown): Type {
+    if (let (true, t) = this.#sharedState.wellKnownTypes.get(w as i32)) {
+      return t;
+    }
+    throw new Error("No standard library '" + wellKnownLibrary(w) +
+        "' declaring '" + wellKnownName(w) + "' in this compilation, asked " +
+        "while checking " + this.filePath);
   }
 
   /** Records `w`'s type as its declaring library is checked. */
@@ -5389,7 +5400,7 @@ let getElementTypeFromClass = (
   iterableExpr: Expression
 ): Type => {
   // If the class IS Iterator, use its first type argument.
-  let iteratorPrelude = ctx.resolveWellKnownType(WellKnown.IteratorInterface);
+  let iteratorPrelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
   if (iteratorPrelude is InterfaceType) {
     if (ct.id == iteratorPrelude.id) {
        let {typeArguments} = ct;
@@ -5429,7 +5440,7 @@ let getElementTypeFromClass = (
  * Returns the element type T if found, null otherwise.
  */
 let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | null => {
-  let prelude = ctx.resolveWellKnownType(WellKnown.IterableInterface);
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.IterableInterface);
   if (prelude == null) { return null; }
   match (prelude) {
     case InterfaceType as iterableType: {
@@ -6239,7 +6250,7 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
  */
 let isWellKnownClassType = (ctx: CheckerContext, ct: ClassType,
     w: WellKnown): boolean => {
-  let known = ctx.resolveWellKnownType(w);
+  let known = ctx.tryResolveWellKnownType(w);
   if (known == null) { return false; }
   match (known) {
     case ClassType as pt: { return ct.id == pt.id; }
@@ -6247,9 +6258,34 @@ let isWellKnownClassType = (ctx: CheckerContext, ct: ClassType,
   }
 };
 
+/**
+ * `FixedArray`, or the class being checked when that class is FixedArray.
+ *
+ * FixedArray is an extension class ON `array<T>`, so inside its own body
+ * `this` is the array it extends, and the cases that hand array members to
+ * an expression run while checking the very class they would otherwise ask
+ * the registry for. The registry does not have it: a declaration is
+ * registered once its module finishes checking. `currentClass` is that same
+ * declaration, so ask it first.
+ *
+ * Matched by name, deliberately, unlike every other well-known lookup. The
+ * same file can be reached under two module ids — `zena:fixed-array` from
+ * the prelude and its filesystem path when checked as an entry point —
+ * which produces two nominal FixedArray types, and comparing the canonical
+ * location would fail for the second and leave the expression typed as the
+ * other copy. See docs/design/stdlib-organization.md.
+ */
+let fixedArrayType = (ctx: CheckerContext): Type => {
+  let {currentClass} = ctx;
+  if (currentClass != null && currentClass.name == "FixedArray") {
+    return currentClass as Type;
+  }
+  return ctx.resolveWellKnownType(WellKnown.FixedArrayClass);
+};
+
 let isWellKnownInterfaceType = (ctx: CheckerContext, it: InterfaceType,
     w: WellKnown): boolean => {
-  let known = ctx.resolveWellKnownType(w);
+  let known = ctx.tryResolveWellKnownType(w);
   if (known == null) { return false; }
   match (known) {
     case InterfaceType as pt: { return it.id == pt.id; }
@@ -6264,7 +6300,7 @@ let isWellKnownInterfaceType = (ctx: CheckerContext, it: InterfaceType,
 let widenType = (ctx: CheckerContext, t: Type): Type => match (t) {
   case BoolLiteralType {}: new BooleanType()
   case StringLiteralType {}: {
-    let stringType = ctx.resolveWellKnownType(WellKnown.StringClass);
+    let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
     if (stringType != null) {
       stringType
     } else {
@@ -9538,7 +9574,7 @@ let getArrayPatternElementType = (ctx: CheckerContext, t: Type): Type | null => 
       return elementType;
     }
     case ClassType as ct: {
-      let iteratorPrelude = ctx.resolveWellKnownType(WellKnown.IteratorInterface);
+      let iteratorPrelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
       if (iteratorPrelude is InterfaceType && ct.id == (iteratorPrelude as InterfaceType).id) {
         let {typeArguments} = ct;
         if (typeArguments != null && typeArguments.length > 0) {
@@ -9595,7 +9631,7 @@ let getArrayPatternRestType = (ctx: CheckerContext, t: Type, elemType: Type): Ty
     // source's element mutability, and codegen builds it mutable.
     return new ArrayType(elemType, true);
   }
-  let faType = ctx.resolveWellKnownType(WellKnown.FixedArrayClass);
+  let faType = fixedArrayType(ctx);
   if (faType is ClassType) {
     let args = new GrowableArray<Type>();
     args.push(elemType);
@@ -10325,7 +10361,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
   case StringLiteral {value, loc}: {
     // String literals ALWAYS have type String (the stdlib class from the prelude).
-    let stringType = ctx.resolveWellKnownType(WellKnown.StringClass);
+    let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
     if (stringType != null) {
       return stringType;
     }
@@ -11314,7 +11350,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // `throw` is defined over the stdlib `Error`, so ask for that
     // declaration rather than for whatever the name resolves to here: a
     // program may declare its own class called `Error`.
-    let errorType = ctx.resolveWellKnownType(WellKnown.ErrorClass);
+    let errorType = ctx.tryResolveWellKnownType(WellKnown.ErrorClass);
     if (errorType != null) {
       let isError = isAssignableTo(ctx, argType, errorType);
       var isActuallyError = isError;
@@ -11369,7 +11405,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         if (info != null) {
           // The catch parameter binds the stdlib `Error`; see the note on
           // `throw` above.
-          let errorType = ctx.resolveWellKnownType(WellKnown.ErrorClass);
+          let errorType = ctx.tryResolveWellKnownType(WellKnown.ErrorClass);
           ctx.declareBinding(info, if (errorType != null) errorType else new ErrorType());
         }
       }
@@ -11776,7 +11812,7 @@ let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
   // Case classes nominally implement Hashable: their synthesized
   // hashCode()/== make them valid hash keys, so they are assignable to the
   // well-known Hashable interface without an explicit implements clause.
-  let hashable = ctx.resolveWellKnownType(WellKnown.HashableInterface);
+  let hashable = ctx.tryResolveWellKnownType(WellKnown.HashableInterface);
   if (hashable is InterfaceType) {
     var already = false;
     for (let impl in ct.implementsList) {
@@ -14500,7 +14536,7 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
 
 let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   let i32Type = new I32Type();
-  let stringType = ctx.resolveWellKnownType(WellKnown.StringClass);
+  let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
   let {name} = ed.name;
   let {members} = ed;
   var isStringEnum = false;
@@ -16075,7 +16111,10 @@ let resolveArrayBackingClass = (
   if (currentClass != null && currentClass.name == name) {
     return currentClass;
   }
-  let resolved = ctx.resolveWellKnownType(w);
+  // Nullable: this answers "which class backs a bare array", and a
+  // compilation without that library has no answer. Callers that cannot
+  // proceed without one say so themselves.
+  let resolved = ctx.tryResolveWellKnownType(w);
   if (resolved is ClassType) {
     return resolved as ClassType;
   }
@@ -17686,7 +17725,7 @@ let extractIteratorYieldType = (ctx: CheckerContext, t: Type): Type | null => {
   if (!(t is InterfaceType)) {
     return null;
   }
-  let prelude = ctx.resolveWellKnownType(WellKnown.IteratorInterface);
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
   if (prelude == null || !(prelude is InterfaceType)) {
     return null;
   }
@@ -17712,7 +17751,7 @@ let makeIteratorType = (
   yieldType: Type,
   loc: SourceLocation | null
 ): Type => {
-  let prelude = ctx.resolveWellKnownType(WellKnown.IteratorInterface);
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
   if (prelude == null || !(prelude is InterfaceType)) {
     ctx.error(
       "Generator functions require the 'Iterator' interface from the prelude.",
@@ -17760,7 +17799,7 @@ let makeFutureType = (
   valueType: Type,
   loc: SourceLocation | null
 ): Type => {
-  let prelude = ctx.resolveWellKnownType(WellKnown.FutureClass);
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.FutureClass);
   if (prelude == null || !(prelude is ClassType)) {
     ctx.error(
       "Async functions require the 'Future' class from the prelude.",
@@ -17891,7 +17930,7 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
     // operator instance stays symbolic until substitution closes T.
     let args = new GrowableArray<Type>();
     args.push(operandType);
-    let awaitedAlias = ctx.resolveWellKnownType(WellKnown.AwaitedAlias);
+    let awaitedAlias = ctx.tryResolveWellKnownType(WellKnown.AwaitedAlias);
     if (awaitedAlias != null && awaitedAlias is TypeAliasType) {
       let inst = instantiateTypeAliasType(awaitedAlias, args);
       inst.target = operandType;
