@@ -63,41 +63,59 @@ arm.
 ## The Step protocol
 
 `next()` is a synchronous call. Its result is an inline multi-value
-that travels in stack slots and allocates nothing. It names three
-dispositions — Done, Ready, and Pending — encoded as a boolean
-inline union in the form the `Result` type uses:
+that travels in stack slots and allocates nothing — a tagged union of
+three arms, one per disposition:
 
 ```zena
-// more = false is Done. more = true carries a value lane and a
-// nullable future lane: a null future is Ready (the value is in the
-// value lane), a set future is Pending (await it).
-type Step<V> = inline (true, V, Future<Option<V>>?) | inline (false, _, _);
+type Step<V> =
+    inline (0, _, _)                    // Done: no more items
+  | inline (1, V, _)                    // Ready: a value, available now
+  | inline (2, _, Future<Option<V>>);   // Pending: a value or the end,
+                                        //   coming; await the future
 ```
 
-An earlier draft wrote three integer-tagged arms
-(`inline (0, _, _) | inline (1, V, _) | inline (2, _, Future<...>)`).
-That does not lower: an inline union discriminates on the first
-element as a boolean — a value-or-not flag, the same one
-`Iterator.next()` already returns — so it distinguishes two arms, not
-three, and an all-hole `Done` arm has no wasm representation. The
-boolean encoding above is the same three dispositions in two arms the
-backend supports: `more` splits Done from the rest, and the nullable
-future lane splits Ready from Pending. Because it is an inline
-multi-value, `Step` is return-position only: `next()` returns it and
-the caller reads it at once, and the synchronous cases, Done and
-Ready, allocate nothing. In Pending the value lane holds the value
-type's default (a null reference or a zero), read only in the Ready
-case.
+The first lane is the discriminant, the value lane is set only by
+Ready, the future lane only by Pending; the other lanes are holes.
+Because it is an inline multi-value, `Step` is return-position only:
+`next()` returns it and the caller reads it at once, and Done and
+Ready allocate nothing.
 
-`Step` shares Option's and Result's boolean-inline-union shape but is
-not one of them, and the optionality operators — `??` and the rest —
-stay nominal to `Option`/`Result`, not structural over any boolean
-inline union. Option's `true` arm always holds the value; a Step's
-`more` arm holds it only when Ready, so a structural `??` would return
-the Pending placeholder. A mixed `Step` is consumed by `for`, `for
-await`, or an explicit `next()` match, where Pending is handled rather
-than hidden. (A synchronous single-step accessor that throws on
-Pending could be added later; it would be a Step-specific operator,
+Each arm's payload is honestly typed: the value lane is `V | _` across
+the union — real in Ready, a hole elsewhere — so it is inaccessible
+until a `match` arm narrows it to the arm it belongs to. This is what
+makes the three-arm form sound where a two-arm boolean encoding
+(`inline (true, V, Future<Option<V>>?) | inline (false, _, _)`, Ready
+as a null future and Pending as a set one) is not: there the value
+lane is a real `V` in the shared `true` arm, so it reads as accessible
+while holding a placeholder in Pending — the type would permit reading
+a value that is not there. The three-arm form binds `v` only in the
+Ready arm.
+
+The verbosity of matching three arms by hand is not a cost the common
+code pays, because `for` and `for await` are the usual consumers and
+they are lowered directly: the loop reads the discriminant lane as an
+`i32` and branches on it in the backend (as today's two-arm loop reads
+its done flag), never routing through a surface `match`. A producer —
+an `async gen` state machine — constructs the arms against the known
+`Step<V>` type for the same reason. Direct lowering of both is what
+the `for await` desugar and the `async gen` return lowering need, and
+neither depends on surface `match`.
+
+A surface `match` over `Step` is what a program writes only when it
+drives `next()` itself, which is rare (see "Hand-written consumption"
+below). That path needs one backend feature not present yet: a `match`
+over an inline-tuple union that narrows an arm's payload by its
+discriminant literal (`case (1, v, _)` binds `v: V`; today it stays
+`V | _` and is unusable). It is worth building on its own — defining
+`Option`/`Result` over inline tuples gains the same narrowing — but it
+is not on the loop's critical path.
+
+`Step` shares Option's and Result's inline-union shape but is not one
+of them, and the optionality operators — `??` and the rest — stay
+nominal to `Option`/`Result`. A mixed `Step` is consumed by `for`,
+`for await`, or an explicit `next()` match, where Pending is handled
+rather than hidden. (A synchronous single-step accessor that throws
+on Pending could be added later; it would be a Step-specific operator,
 not the Option `??`. Defining `Option`/`Result` themselves in terms of
 inline tuples, with `??`, is separate future work.)
 
@@ -124,30 +142,27 @@ One type covers the range:
 
 ## Consuming: `for` and `for await`
 
-The two loops differ only in the Pending case — `for` throws, `for
-await` awaits:
-
-`next()`'s result is destructured at the call, never stored — an
-inline multi-value has no home in a local:
+The two loops differ only in the Pending arm — `for` throws, `for
+await` awaits. The shape below is the semantics; the backend lowers it
+directly, reading the discriminant lane as an `i32` and branching,
+rather than emitting a surface `match` (`next()`'s inline multi-value
+has no home in a local, so it is consumed at the call either way):
 
 ```zena
 // for (x in it) body            // for await (x in it) body
 while (true) {
-  if (let (true, value, pending) = it.next()) {   // more
-    if (pending == null) {                        // Ready
-      let x = value;
-      body;
-    } else {                                      // Pending
-      throw new AsyncInSyncIteration();            // for
-      if (let Some {value} = await pending) {      // for await
+  match (it.next()) {
+    case (0, _, _): break;                    // Done
+    case (1, value, _): { let x = value; body; }   // Ready
+    case (2, _, pending): {                   // Pending
+      throw new AsyncInSyncIteration();        // for
+      if (let Some {value} = await pending) {  // for await
         let x = value;
         body;
       } else {
         break;
       }
     }
-  } else {
-    break;                                        // Done
   }
 }
 ```
@@ -166,6 +181,27 @@ mostly-synchronous iterator suspends rarely, and cancellation is
 delivered at each await, keeping suspension points visible (async.md
 §2). Leaving the loop early disposes the iterator through the existing
 generator-disposal path (generators.md §6).
+
+## Hand-written consumption
+
+Driving `next()` by hand — a surface `match` over `Step`, the verbose
+case — is rare, because `for`/`for await` cover iteration and are
+lowered without it. The remaining reason to reach for `next()` is a
+peek: does the iterator have a next element, often just whether it has
+any element at all. That is better served by a named accessor than by
+matching the protocol:
+
+- `isEmpty` / `first(): Option<V>` for the sync-only case, and their
+  awaiting counterparts where a value may defer;
+- array spread (`[...it]`) or a `collect` combinator to drain an
+  iterator into a container.
+
+These are ordinary library functions over `next()`; a program written
+against them never spells out the three arms. So the protocol's
+three-arm shape stays inside the compiler's loop lowering and a small
+set of combinators, and the surface `match` narrowing — worth building
+for `Option`/`Result` regardless — is not what iteration or the
+common peek depends on.
 
 ## Producing: `gen` and `async gen`
 
@@ -203,7 +239,7 @@ before yielding.
 
 `Step` is the inline multi-value union above, not a heap type — so
 the synchronous path never pays JS's per-item allocation. Its mixed
-form lowers to three wasm results — the boolean `more` flag, a value
+form lowers to three wasm results — an `i32` discriminant, a value
 lane, and a `(ref null Future<Option<T>>)` lane null on every
 synchronous step. Today's protocol is already an inline-tuple union,
 `inline (true, T) | inline (false, _)`, whose `false` arm holes the
@@ -247,13 +283,12 @@ union becomes an implementation detail of `next()`.
 `next()`'s return type composes by ordinary union subtyping, keeping
 the future lane out of loops that do not need it:
 
-- sync-only — `inline (true, T, _) | inline (false, _, _)`, two lanes.
+- sync-only — `inline (0, _, _) | inline (1, T, _)`, no `Pending` arm.
   This is exactly today's `Iterator<T>`: a `gen` with no `await`
   produces the existing protocol unchanged.
-- async-only — `inline (true, _, Future<Option<T>>) | inline (false, _, _)`,
-  two lanes, the value lane holed because every item defers.
-- mixed — `inline (true, T, Future<Option<T>>?) | inline (false, _, _)`,
-  three lanes, the Lit case.
+- async-only — `inline (0, _, _) | inline (2, _, Future<Option<T>>)`,
+  no `Ready` arm; every item defers.
+- mixed — all three arms, the Lit case.
 
 A `gen` with no `await` produces the sync-only shape, so `for`/`for
 await` over it never touch a future lane — the loop today's protocol
