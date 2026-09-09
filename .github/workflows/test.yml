@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Cache Nix Store
+        uses: DeterminateSystems/magic-nix-cache-action@v15
+
+      - name: Setup Wireit GitHub Actions Caching
+        uses: google/wireit@setup-github-actions-caching/v2
+
+      - name: Install npm dependencies
+        run: nix develop --command npm ci
+
+      - name: Check code formatting
+        run: nix develop --command npm run format:check
+
+      - name: Run test suite
+        run: nix develop --command npm test
+
