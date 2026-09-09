@@ -3552,10 +3552,17 @@ export final class Parser {
     var depth = 1;
     this.#advance(); // skip past '<' (already consumed by caller check)
     while (depth > 0 && !this.#isAtEnd()) {
+      // A nested generic's closers lex as shift tokens
+      // (`Array<String>>` ends in one GreaterGreater), so each one
+      // closes several depths at once.
       if (this.#check(TokenType.Less)) {
         depth = depth + 1;
       } else if (this.#check(TokenType.Greater)) {
         depth = depth - 1;
+      } else if (this.#check(TokenType.GreaterGreater)) {
+        depth = depth - 2;
+      } else if (this.#check(TokenType.GreaterGreaterGreater)) {
+        depth = depth - 3;
       }
       if (depth > 0) {
         this.#advance();
@@ -3563,8 +3570,8 @@ export final class Parser {
     }
     // After matching '>', check if next token is '('
     var result = false;
-    if (depth == 0) {
-      this.#advance(); // skip '>'
+    if (depth <= 0) {
+      this.#advance(); // skip the closing '>' (or the shift token that ends it)
       result = this.#check(TokenType.LParen);
     }
     this.#current = saved;
