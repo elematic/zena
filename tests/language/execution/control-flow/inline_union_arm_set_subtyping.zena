@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 107
+
+// Arm-set typing over inline-tuple unions. A generic type alias names a
+// union of inline tuples; a narrower arm set (no Pending arm) is a
+// subtype of the wider one, so a function returning the narrow set may
+// be forwarded where the wide set is expected. The future lane uses i32
+// as a stand-in here; the stdlib Step uses Future<Option<V>>.
+
+type Step<V> = inline (0, _, _) | inline (1, V, _) | inline (2, _, i32);
+type SyncStep<V> = inline (0, _, _) | inline (1, V, _);
+
+function syncNext(tag: i32): SyncStep<i32> {
+  if (tag == 0) {
+    return (0, _, _);
+  }
+  return (1, 7, _);
+}
+
+// SyncStep<i32> flows where the wider Step<i32> is expected.
+function anyNext(tag: i32): Step<i32> {
+  return syncNext(tag);
+}
+
+let consume = (tag: i32): i32 => {
+  var out = 0;
+  match (anyNext(tag)) {
+    case (0, _, _): { out = 100; }
+    case (1, let v, _): { out = v; }
+    case (2, _, let f): { out = f; }
+  }
+  return out;
+};
+
+export let main = (): i32 => {
+  return consume(0) + consume(1);  // 100 (Done) + 7 (Ready)
+};

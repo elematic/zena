@@ -9846,24 +9846,30 @@ let patternCanMatchType = (ctx: CheckerContext, pattern: Node, t: Type): boolean
  */
 let narrowTupleUnionByPattern = (ctx: CheckerContext, t: Type,
     tuplePat: TuplePattern): Type => {
-  match (t) {
+  // Resolve through type aliases (e.g. a named `Step<V>`) so an aliased
+  // union narrows like one written inline.
+  var resolved = t;
+  while (resolved is TypeAliasType) {
+    resolved = resolved.target;
+  }
+  match (resolved) {
     case UnionT {types}: {
       let kept = new GrowableArray<Type>();
       for (let member in types) {
         if (!(member is TupleT) && !(member is InlineTupleT)) {
-          return t;
+          return resolved;
         }
         if (patternCanMatchType(ctx, tuplePat, member)) {
           kept.push(member);
         }
       }
       if (kept.length == 0 || kept.length == types.length) {
-        return t;
+        return resolved;
       }
       return createUnionType(kept);
     }
     case _: {
-      return t;
+      return resolved;
     }
   }
 };
