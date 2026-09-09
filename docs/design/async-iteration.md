@@ -16,7 +16,7 @@ left as "a pattern, not a blessed API."
 Lit SSR renders a template to a sequence of chunks. The template's
 structure is known synchronously — Lit walks its parts without
 waiting. But a bound value may be a `Promise`, an async iterable, or a
-plain string, decided by the *data* rendered, not by the template's
+plain string, decided by the _data_ rendered, not by the template's
 type. So one template instance is sometimes fully synchronous and
 sometimes not, and the consumer's context decides what to do about it:
 
@@ -29,7 +29,7 @@ Neither existing answer fits. `Future<Option<T>>` forces the React
 consumer async — it must await `next()` even to learn the sequence is
 over, though the structure was synchronous all along. Compile-time
 monomorphization forces the choice at compile time — but a sync
-consumer of a template that *turns out* to contain a Promise is a
+consumer of a template that _turns out_ to contain a Promise is a
 runtime condition, so the sync instantiation's "genuine suspension is
 a compile error" fires nowhere useful; the Promise is application
 data, not a static suspension point.
@@ -43,7 +43,7 @@ data, not a static suspension point.
 
 `Future<Option<T>>` defers both: you await even to learn `done`.
 Lit's hand-rolled sync-iterator-of-promises defers only the value —
-the iterator is synchronous, the *values* may be promises — which is
+the iterator is synchronous, the _values_ may be promises — which is
 why it is sync-consumable, and why it cannot express a socket.
 
 This is why the shapes proposed in passing do not work.
@@ -53,7 +53,7 @@ runtime type test on a single reference, and an inline multi-value is
 not a single testable value — the two arms have incompatible
 representations (stacked values versus one heap reference). And
 `inline (boolean, V | Future<V>)` keeps `done` synchronous while
-letting the value defer — Lit's shape exactly — but it *cannot*
+letting the value defer — Lit's shape exactly — but it _cannot_
 express deferred structure: the `boolean` is eager, so "I don't yet
 know whether I'm done" has nowhere to live. That is the worry about
 "waiting to see if we have a value," and it is real. The fix is to
@@ -243,7 +243,7 @@ form lowers to three wasm results — an `i32` discriminant, a value
 lane, and a `(ref null Future<Option<T>>)` lane null on every
 synchronous step. Today's protocol is already an inline-tuple union,
 `inline (true, T) | inline (false, _)`, whose `false` arm holes the
-value lane, so that lane is *already* `(ref null T)` for reference
+value lane, so that lane is _already_ `(ref null T)` for reference
 `T`, and its `ref.as_non_null` on each value read is a cost the
 synchronous protocol already pays. The mixed form does not add it.
 The genuine marginal cost over today is therefore only the extra
@@ -292,7 +292,7 @@ the future lane out of loops that do not need it:
 
 A `gen` with no `await` produces the sync-only shape, so `for`/`for
 await` over it never touch a future lane — the loop today's protocol
-produces. A sync `for` over an async-only iterator is *statically* a
+produces. A sync `for` over an async-only iterator is _statically_ a
 guaranteed throw and so a compile error ("always async; use `for
 await`"), while a sync `for` over a mixed iterator compiles and
 throws only if a Pending arrives at runtime — the runtime-versus-
@@ -307,7 +307,7 @@ a nullref result and one branch on it, noise — falls on abstractly-
 held iterators, where iterator polymorphism is actually used, and a
 concrete sync-only iterator pays nothing.
 
-What the arm set changes is the *consumer loop*, not the call: a loop
+What the arm set changes is the _consumer loop_, not the call: a loop
 over a sync-only iterator omits the `Pending` branch (and its throw
 or await), because the discriminant provably never reaches it; a loop
 over a mixed iterator carries all three. So the third arm's code
@@ -348,7 +348,7 @@ microtask, so a synchronous turn stays synchronous while remaining
 cancellable. (Polling every turn is cheap; a counter could poll every
 N to trade latency for even less, but per-turn is the default.)
 
-A microtask per turn is *not* needed for correctness. The always-async
+A microtask per turn is _not_ needed for correctness. The always-async
 rule (async.md §2) governs future callbacks — deterministic
 observation order — and a `Ready` turn runs no callback; it processes
 a value, the way an async function runs to its next `await`. Only a
@@ -361,7 +361,7 @@ the hop is the always-async guarantee: skipping it when the queue
 happens to be empty is exactly the "sometimes synchronous, sometimes
 not" nondeterminism the rule exists to remove, since identical code
 would then behave differently by queue contents. A queue-state flag
-would only gate an *optional* fairness-yield on synchronous turns, and
+would only gate an _optional_ fairness-yield on synchronous turns, and
 this design does not add one by default.
 
 ## Open questions
@@ -380,6 +380,6 @@ this design does not add one by default.
   `Task`'s state. `Done`/`Value`/`Later`? Bikeshed deferred.
 - **Relationship to §8.3 monomorphization.** These are complementary
   (runtime color versus static), and both can exist. Whether a
-  maybe-async `gen` can *also* be monomorphized — a sync instantiation
+  maybe-async `gen` can _also_ be monomorphized — a sync instantiation
   whose `Pending` arm is statically dead — is a later optimization,
   not a v1 question.
