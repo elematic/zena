@@ -4557,6 +4557,18 @@ container or captured by a closure. An unrestricted instantiation —
 values in containers inside such a body waits on the standard library
 collections adopting the modifier themselves.
 
+Containers of scoped values exist in exactly two shapes. A signature
+may say `Array<T>` under a `scoped T`, and a caller supplies it with
+an array literal written directly in the argument position —
+`allScoped([read(a), read(b)])` — where a first-class future coerces
+into the literal like anywhere else. Binding such a literal
+(`let arr = [fut1, fut2]`) or naming the container type in an
+annotation is an error: the literal is consumed by the call it flows
+into, which is what bounds its extent. `Awaited<T>` strips the
+wrapper with the future — `Awaited<Scoped<Future<i32>>>` is `i32` —
+so an all-style combinator's result array is ordinary first-class
+data.
+
 A scoped value follows the second-class storage rules — no fields,
 container elements, record or tuple members, no closure capture — and
 returning one requires a borrow parameter to derive from, exactly as

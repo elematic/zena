@@ -1405,8 +1405,16 @@ export let isFutureClassType = (t: Type): boolean => {
  */
 export let awaitedTypeOf = (t: Type): Type => {
   let unwrapArm = (arm: Type): Type => {
-    if (isFutureClassType(arm)) {
-      let args = (arm as ClassType).typeArguments;
+    // Awaiting is a scoped future's consumption, so the wrapper
+    // unwraps with the future it carries: Awaited<Scoped<Future<U>>>
+    // is U.
+    var core = arm;
+    if (isScopedType(core)) {
+      let inner = scopedInner(core);
+      if (inner != null) { core = inner; }
+    }
+    if (isFutureClassType(core)) {
+      let args = (core as ClassType).typeArguments;
       if (args != null && args.length == 1) {
         return args[0];
       }

@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 68
+// The container shapes for scoped futures (ownership.md §"Scoped
+// containers and extent nesting"): a literal of scoped futures flows
+// into a scoped-T parameter as a call-site temporary, a first-class
+// future coerces into the same literal, and an all-style combinator
+// awaits each element and derives a scoped result.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+import {Awaited} from 'zena:async';
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  size(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let x = await tick();
+  return r.size() + x;
+};
+
+/**
+ * `Future.all` for scoped inputs. Awaiting in input order still
+ * completes when the slowest settles, because futures are eager: the
+ * inputs are all already running.
+ */
+let allScoped = async <scoped T>(futures: Array<T>): Scoped<Future<Array<Awaited<T>>>> => {
+  let out = new GrowableArray<Awaited<T>>();
+  for (let f in futures) {
+    out.push(await f);
+  }
+  return out;
+};
+
+export let main = async (): Future<i32> => {
+  let owner = new Res(30);
+  let fut = allScoped([read(owner), read(owner), tick()]);
+  let vals = await fut;
+  var sum = 0;
+  for (let v in vals) {
+    sum += v;
+  }
+  // 31 + 31 + 1 = 63, plus 5.
+  return sum + 5;
+};

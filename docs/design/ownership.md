@@ -856,17 +856,36 @@ carries the workaround.
 
 ##### Combinator audit
 
-With `scoped T`, the audit is one modifier per signature:
+The design sketch here was one modifier on `Future.all` itself; the
+implementation found the return type does not survive that. An
+all-combinator that admits scoped inputs must await them, so its
+result carries the values (`Awaited<T>`), and its body awaits
+parameter-rooted scoped values, so its own future must be scoped:
 
 ```zena
-static all<scoped T>(futures: Array<T>): Future<Array<T>>
+static async allScoped<scoped T>(
+    futures: Array<T>): Scoped<Future<Array<Awaited<T>>>>
 ```
 
-With `T := Scoped<Future<i32>>`, the argument array derives scoped
-(built as a call-site temporary) and the returned future derives
-scoped, so awaiting the result is its consumption. With
-`T := Future<i32>`, everything stays first-class and nothing changes
-for existing callers.
+That signature cannot be `all`'s — existing callers would receive a
+scoped result they must consume — so the scoped-capable form is a
+second static. Its body awaits the inputs in order, which keeps
+`all`'s completion time because futures are eager: the inputs are all
+already running, and waiting on them one at a time still finishes when
+the slowest settles. A failure propagates when its turn is reached
+(earliest index rather than first in time), which is the one contract
+difference from `all`.
+
+`Awaited` participates: awaiting is a scoped future's consumption, so
+`Awaited<Scoped<Future<U>>>` is `U`, and the symbolic `Awaited<T>` is
+first-class whatever `T` is — a future's payload cannot be
+second-class, since `Future<second-class>` is itself a storage error.
+
+The container shapes and `Awaited` rules are implemented; the stdlib
+`allScoped` itself waits on the next reseed, because the checked-in
+bootstrap compiles `zena:async` with its own older checker — stdlib
+code may use a new checker rule only after a reseed carries it, the
+same two-step that governs new syntax.
 
 The iterator adapters (`map`, `filter`, `take`, in `zena:ownership`)
 need no containers and, it turned out, no `scoped T` either: each is a
@@ -1762,10 +1781,13 @@ Implementation currently trails this document in one known place:
 `Scoped<T>` and the `scoped T` modifier are implemented — the type,
 its storage rules, the required-consumption verdict, the suspension
 relaxations (§"What the annotation allows"), the bare-parameter
-rejection, the modifier with its body discipline, and the scoped
-iterator adapters — but the container shapes of §"Scoped containers
-and extent nesting" are not, so a scoped future cannot pass through
-`Future.all` yet and a `scoped T` body cannot build containers of `T`.
+rejection, the modifier with its body discipline, the scoped iterator
+adapters, and the container shapes of §"Scoped containers and extent
+nesting" — `Array<T>` signatures, call-site literals, and the
+`Awaited` rules. What remains is the stdlib `allScoped` itself, which
+waits on the next reseed (§"Combinator audit"), and in-body container
+CREATION (`new GrowableArray<T>()` under a `scoped T`), which stays
+rejected until containers get a consumption story.
 The `dropped` state is set at the top of
 every consuming dispose — written or synthesized — so every release
 route marks it and a bad `adopt` reports "dropped" rather than blaming

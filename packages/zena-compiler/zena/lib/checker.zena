@@ -4192,17 +4192,52 @@ let isScopedValueType = (t: Type): boolean => {
  * not a storage loophole.
  */
 let typeContainsSecondClass = (t: Type): boolean => {
+  return typeContainsSecondClassAtDepth(t, 0);
+};
+
+let typeContainsSecondClassAtDepth = (t: Type, depth: i32): boolean => {
+  if (depth > 32) { return false; }
   if (isSecondClass(t)) { return true; }
   if (t is UnionT) {
     for (let m in t.types) {
-      if (typeContainsSecondClass(m)) { return true; }
+      if (typeContainsSecondClassAtDepth(m, depth + 1)) { return true; }
     }
     return false;
   }
   if (t is TypeAliasType) {
     if (isOwnershipWrapper(t) || isScopedType(t)) { return false; }
+    // Awaited<T> strips the wrappers by meaning, and a future's payload
+    // cannot be second-class (Future<second-class> is a storage error),
+    // so the symbolic form is first-class whatever T is.
+    if (t.intrinsicName == 'type.awaited') { return false; }
     if (t.resolving) { return false; }
-    return typeContainsSecondClass(t.target);
+    return typeContainsSecondClassAtDepth(t.target, depth + 1);
+  }
+  // A container derives the restriction from its arguments —
+  // `Array<Scoped<F>>` and `Array<T>` under a scoped T are
+  // second-class values (ownership.md §"Scoped containers and extent
+  // nesting"). Such instantiations exist only in the sanctioned
+  // shapes; the walk is what restricts the values they produce.
+  if (t is ClassType) {
+    let args = t.typeArguments;
+    if (args != null) {
+      for (let a in args) {
+        if (typeContainsSecondClassAtDepth(a, depth + 1)) { return true; }
+      }
+    }
+    return false;
+  }
+  if (t is InterfaceType) {
+    let iargs = t.typeArguments;
+    if (iargs != null) {
+      for (let a in iargs) {
+        if (typeContainsSecondClassAtDepth(a, depth + 1)) { return true; }
+      }
+    }
+    return false;
+  }
+  if (t is ArrayType) {
+    return typeContainsSecondClassAtDepth(t.elementType, depth + 1);
   }
   return false;
 };
@@ -4242,6 +4277,96 @@ let mentionsParamDerived = (ctx: CheckerContext, e: Node): boolean => {
     }
   });
   return found;
+};
+
+/**
+ * typeContainsSecondClass, excluding `scoped` type parameters. The
+ * symbolic containment a scoped-T signature mentions — `Array<T>` as
+ * a parameter type — is sanctioned, because the argument is checked
+ * where `T` is bound; a concrete second-class argument
+ * (`Array<Scoped<F>>`) stays a storage error wherever it is written
+ * (ownership.md §"Scoped containers and extent nesting").
+ */
+let typeContainsConcreteSecondClass = (t: Type): boolean => {
+  return typeContainsConcreteSecondClassAtDepth(t, 0);
+};
+
+let typeContainsConcreteSecondClassAtDepth = (t: Type, depth: i32): boolean => {
+  if (depth > 32) { return false; }
+  if (t is TypeParameterType) { return false; }
+  if (isSecondClass(t)) { return true; }
+  if (t is UnionT) {
+    for (let m in t.types) {
+      if (typeContainsConcreteSecondClassAtDepth(m, depth + 1)) { return true; }
+    }
+    return false;
+  }
+  if (t is TypeAliasType) {
+    if (isOwnershipWrapper(t) || isScopedType(t)) { return false; }
+    if (t.intrinsicName == 'type.awaited') { return false; }
+    if (t.resolving) { return false; }
+    return typeContainsConcreteSecondClassAtDepth(t.target, depth + 1);
+  }
+  if (t is ClassType) {
+    let args = t.typeArguments;
+    if (args != null) {
+      for (let a in args) {
+        if (typeContainsConcreteSecondClassAtDepth(a, depth + 1)) { return true; }
+      }
+    }
+    return false;
+  }
+  if (t is InterfaceType) {
+    let iargs = t.typeArguments;
+    if (iargs != null) {
+      for (let a in iargs) {
+        if (typeContainsConcreteSecondClassAtDepth(a, depth + 1)) { return true; }
+      }
+    }
+    return false;
+  }
+  if (t is ArrayType) {
+    return typeContainsConcreteSecondClassAtDepth(t.elementType, depth + 1);
+  }
+  return false;
+};
+
+/**
+ * Whether `expected` is a container type whose element type is
+ * second-class — the shape a `scoped T` parameter presents to an
+ * argument literal, raw (`Array<T>`) or substituted
+ * (`Array<Scoped<F>>`).
+ */
+let scopedElementsExpected = (expected: Type | null): boolean => {
+  if (expected == null) { return false; }
+  let e = expected as Type;
+  match (e) {
+    case ArrayType {elementType}: { return typeContainsSecondClass(elementType); }
+    case ClassType {typeArguments}: {
+      if (typeArguments != null && typeArguments.length > 0) {
+        return typeContainsSecondClass(typeArguments[0]);
+      }
+      return false;
+    }
+    case InterfaceType {typeArguments}: {
+      if (typeArguments != null && typeArguments.length > 0) {
+        return typeContainsSecondClass(typeArguments[0]);
+      }
+      return false;
+    }
+    case _: { return false; }
+  }
+};
+
+/** The annotation-position variant of rejectSecondClassStorage. */
+let rejectConcreteSecondClassStorage = (
+  ctx: CheckerContext,
+  t: Type,
+  where: String,
+  loc: SourceLocation | null
+): void => {
+  if (!typeContainsConcreteSecondClass(t)) { return; }
+  rejectSecondClassStorage(ctx, t, where, loc);
 };
 
 /**
@@ -4883,7 +5008,11 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
           // handles themselves are the exception -- `Borrow<File>` is the
           // borrow, not something holding one.
           if (!argsMayBeResource) {
-            rejectSecondClassStorage(ctx, resolvedArg, "a container", typeArgument.loc);
+            // Annotation position: `Array<T>` under a `scoped T` is a
+            // sanctioned signature shape, so the check ignores scoped
+            // type parameters; concrete second-class arguments still
+            // reject.
+            rejectConcreteSecondClassStorage(ctx, resolvedArg, "a container", typeArgument.loc);
           }
                     resolvedArgs.push(resolvedArg);
         }
@@ -11140,7 +11269,17 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
 
     // Inference reaches `Array<Borrow<R>>` with no one writing the type
     // down, so the annotation-level check above is not enough on its own.
-    rejectSecondClassStorage(ctx, inferredElementType, "an array", loc);
+    // The one sanctioned shape is the call-site temporary: a literal
+    // checked against an expected type whose element is already
+    // second-class — a `scoped T` parameter, raw or substituted — is
+    // consumed by the call it flows into, so its elements never
+    // outlive their extents (ownership.md §"Scoped containers and
+    // extent nesting"). Spelling such a type in an annotation is
+    // rejected at the annotation, so a binding cannot reach here with
+    // one.
+    if (!scopedElementsExpected(expectedType)) {
+      rejectSecondClassStorage(ctx, inferredElementType, "an array", loc);
+    }
 
     // A literal is an ImmutableArray unless the context demands mutable
     // elements: an expected FixedArray or GrowableArray, the
@@ -17890,6 +18029,16 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
   // Awaiting is a scoped future's consumption (ownership.md §"Required
   // consumption"): the binding is moved into the await, and the rest of
   // the check sees the future behind the wrapper.
+  // A `scoped T` operand consumes the same way a concrete scoped
+  // future does; only the concrete wrapper has an inner to peel.
+  if (isScopedValueType(operandType) && !isScopedType(operandType)) {
+    if (aw.argument is Identifier) {
+      let scopedTSym = ctx.model.resolve(aw.argument);
+      if (scopedTSym != null) {
+        ctx.recordFlowMove(scopedTSym.id, scopedTSym.name, aw.argument.loc);
+      }
+    }
+  }
   if (isScopedType(operandType)) {
     let inner = scopedInner(operandType);
     if (inner != null) {

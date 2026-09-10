@@ -1,0 +1,50 @@
+// @mode: check
+// Container shapes for scoped values (ownership.md §"Scoped containers
+// and extent nesting"): `Array<T>` under a `scoped T` is a sanctioned
+// signature, a literal of scoped futures is legal only flowing
+// directly into such a parameter, and every way to name or bind the
+// container otherwise is rejected.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+import {Awaited} from 'zena:async';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let x = await tick();
+  return x;
+};
+
+// The sanctioned shapes together: the signature, the call-site
+// literal, and the elementwise await.
+let allScoped = async <scoped T>(futures: Array<T>): Scoped<Future<Array<Awaited<T>>>> => {
+  let out = new GrowableArray<Awaited<T>>();
+  for (let f in futures) {
+    out.push(await f);
+  }
+  return out;
+};
+
+let ok = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let vals = await allScoped([read(r), tick()]);
+  return vals[0];
+};
+
+// Binding the literal names a container whose extent nothing bounds.
+let bound = (r: Borrow<Res>): i32 => {
+  let arr = [read(r), read(r)]; // @error: may not be stored in an array
+  return 0;
+};
+
+// Naming the container type in an annotation is rejected at the
+// annotation, so a binding cannot launder the literal through one.
+let annotated = (r: Borrow<Res>): i32 => {
+  let arr: Array<Scoped<Future<i32>>> = [read(r)]; // @error: may not be stored in a container
+  return 0;
+};
