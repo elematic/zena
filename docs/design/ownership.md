@@ -659,10 +659,60 @@ contained change.
 One gap remains: an exception raised between creating a scoped future
 and awaiting it unwinds the caller while the frame still holds the
 borrow. This is open question 4 restricted to one window, and the window
-is small — the creation and the `await` are usually adjacent. Closing it
-needs a scope exit that cancels the frame and then awaits its
-settlement, which requires suspension inside finalizers, something the
-split pass does not support.
+is small — the creation and the `await` are usually adjacent. The
+recorded fix is drop-triggered cancellation (§"Dropped scoped
+futures"), whose glue runs synchronously and so fits an unwind path.
+
+##### Dropped scoped futures
+
+A recorded direction, not adopted: the must-consume rule stands until
+the pieces below exist. Dropping a scoped future would cancel and
+detach its frame, which relaxes required consumption to ordinary
+affine dropping and closes open question 4's exception window with
+the same glue.
+
+Cancellation alone does not work: `FutureClaim` shows the shape — its
+dispose releases a claim and the scope cancels one queue turn later —
+and for a borrow-holding frame that turn is too late, because the
+cancellation unwind (finalizers, user code) runs after the owner's
+scope released the resource. The sound form is **cancel plus
+synchronous detach**: at the abandonment site, cancel the frame's
+scope, unhook the frame from the waiter list it is parked on so no
+settle ever resumes it, and release the frame's own live resources
+through the per-state drop table — the statically known set of `Own`
+locals live at each suspension point — without executing any code in
+the frame. A detached frame's `finally` blocks do not run; anything
+expressed as a `Disposable` is covered by the table, bare side-effect
+cleanup is not, the same contract abandoned generators already have.
+
+The abandonment sites are static — they are exactly where the
+must-consume analysis reports its error today — so the glue is
+synthesized directly, with a runtime helper rooted the way implicit
+drop roots `:dispose`. No `Disposable` conformance on futures, and no
+method on `Scoped<T>`, which erases and could not carry one.
+
+Chains cascade through the drop table, not the scope tree. `sink(fut)`
+creates `sink`'s scope and `fut`'s scope as siblings under the
+caller's current scope, so cancelling one does not reach the other —
+but the per-state table for `sink`'s parked state lists `fut` among
+its live scoped values, and dropping a scoped-future entry recurses:
+cancel its scope, detach its frame, apply its table. The scope object
+still earns its place for side work the frame spawned under itself
+and for the cooperative raise when the frame is mid-run rather than
+parked.
+
+Two pieces are open. The per-state drop table is the machinery open
+question 4 already names, and the split pass does not emit it. And
+the carrier is unsettled: the drop glue needs the scope and a
+back-pointer to the producing frame, which the deliberately minimal
+`Future<T>` does not hold. One candidate is a
+`DetachableFuture<T> extends Future<T>` holding both, minted only by
+`Scoped`-declaring ramps — ordinary futures pay nothing, the glue
+`ref.test`s for it, and a coerced first-class future fails the test
+and drops as a no-op, which is sound because its frame holds no
+borrows. Whether a subclass is the right shape, or the scope and
+frame belong in the frame-future unification async-runtime-shape.md
+plans, is not decided.
 
 **Creation.** An async body whose signature declares `Scoped<Future<T>>`
 under the single-borrow-parameter rule creates one, as does a `gen` body
@@ -2116,7 +2166,8 @@ case into the general rule and re-declare the handles as
    answered by the per-state drop table.) This is the residual gate on
    §"Lifting the restriction": second-class futures make the common case nest
    structurally, leaving only the paths that abandon a frame without a scope
-   exit.
+   exit. §"Dropped scoped futures" records the direction: cancel plus
+   synchronous detach through that same table.
 5. Raw linear-memory access: privileged allocator module, or a general `unsafe`?
 6. Mutable-field narrowing: stay restrictive, adopt TypeScript's unsoundness, or
    use whole-program reachability for `#private` fields?
