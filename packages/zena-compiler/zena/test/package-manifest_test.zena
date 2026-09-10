@@ -6,7 +6,7 @@ import { suite, test } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { ModuleExport } from '../lib/module-resolver.zena';
 import { loadPackageMap, buildStdlibConfig } from '../lib/package-manifest.zena';
-import { stdlibLibraryOf } from '../lib/stdlib-manifest.zena';
+import { stdlibLibraryOf, stdlibLibraryAnswers } from '../lib/stdlib-manifest.zena';
 import { MockHost } from './test-utils.zena';
 
 export let tests = suite("Package Manifest", () => {
@@ -167,6 +167,29 @@ export let tests = suite("Package Manifest", () => {
       equal(stdlibLibraryOf("zena:core/string.zena"), "string");
       equal(stdlibLibraryOf("zena:core/index.zena"), "core");
       equal(stdlibLibraryOf("zena:core/not-a-module.zena"), "core");
+    });
+
+    test("a library answers for itself", () => {
+      isTrue(stdlibLibraryAnswers("string", "string"));
+      isTrue(stdlibLibraryAnswers("core", "core"));
+    });
+
+    test("a library moving into another answers for it too", () => {
+      // string-convert's files are moving into core. Until the reseed after
+      // they land, a bootstrap attributes them to core by the directory
+      // rule, so a lookup naming string-convert has to accept core.
+      isTrue(stdlibLibraryAnswers("core", "string-convert"));
+    });
+
+    test("the grace is one exact destination, not a fallback to core", () => {
+      // A library with no move recorded gets nothing, so a lookup that
+      // should fail cannot find something plausible elsewhere in core.
+      isFalse(stdlibLibraryAnswers("core", "json"));
+      isFalse(stdlibLibraryAnswers("core", "regex"));
+      // And the grace does not run backwards.
+      isFalse(stdlibLibraryAnswers("string-convert", "core"));
+      // Nor sideways to another library that is also moving.
+      isFalse(stdlibLibraryAnswers("string", "string-convert"));
     });
 
     test("a name is not matched by prefix", () => {

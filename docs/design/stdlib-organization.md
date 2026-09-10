@@ -392,6 +392,40 @@ too. Two consequences set the shape of the migration:
 
 Every phase below is ordered around those two rules.
 
+### A library named by a lookup moves the same way a declaration does
+
+The registry's `movingTo` carries a declaration's new library for the length
+of a move. Some lookups name a library rather than a declaration —
+`queueStdlibFunction` and `getStdlibFunc` root standard library functions by
+`(library, export name)` — and those need the same grace, for the same
+reason and on the same schedule. `stdlibLibraryAnswers` in
+`stdlib-manifest.zena` records it.
+
+Moving `string-convert` without it fails in two ways, in order. Without a
+shim at the old path the bootstrap cannot resolve the module at all:
+
+```
+Failed to read file: /stdlib/string-convert.zena
+```
+
+With the shim, resolution succeeds and the roots fail instead, because the
+bootstrap's manifest does not name `core/string-convert.zena` as an entry —
+so `stdlibLibraryOf` falls through to the directory rule and answers `core`:
+
+```
+No file of standard library 'string-convert' declares 'i32ToString'
+```
+
+`string` survived its own move only because its single by-library lookup
+(`__concatN`) is the optional variant, which takes a miss for an answer.
+
+An entry is one exact destination. There is deliberately no fallback to
+`core` for libraries with no entry: that would let a lookup that should have
+failed find something plausible in another library, which is the class of
+silent miss Phase 0 exists to remove. The scan's existing "declared in more
+than one file" throw keeps a widened scan honest. Each entry is deleted by
+the reseed after its files land, like `movingTo`.
+
 ## Migration
 
 Each numbered item is a pull request. Phases are sequential; items within a

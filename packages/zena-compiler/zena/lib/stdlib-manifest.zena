@@ -313,3 +313,48 @@ export let stdlibLibraryOf = (moduleId: String): String | null => {
   }
   return null;
 };
+
+/**
+ * The library a library's files are moving into, for the length of the move.
+ *
+ * The counterpart of `movingTo` in the well-known registry, which does this
+ * for a single declaration. A lookup that names a library instead — the
+ * roots taken by `queueStdlibFunction` and `getStdlibFunc` — needs the same
+ * grace for the same reason: the checked-in bootstrap answers with ITS
+ * manifest, which does not name the new path until the reseed after the
+ * files land, so until then `stdlibLibraryOf` attributes a moved file to
+ * the directory it now sits in.
+ *
+ * An entry is one exact destination, not a relaxation. There is deliberately
+ * no fallback to `core` for libraries with no entry here: that would let a
+ * lookup that should have failed find something plausible in another
+ * library. Each entry is deleted by the reseed after its files land.
+ */
+var libraryMoves: HashMap<String, String> | null = null;
+
+let buildLibraryMoves = (): HashMap<String, String> => {
+  let t = new HashMap<String, String>();
+  // See docs/design/stdlib-organization.md, Phase 1.
+  t["string-convert"] = "core";
+  libraryMoves = t;
+  return t;
+};
+
+/**
+ * Whether a module owned by `owner` answers a lookup for `library` — the
+ * same library, or the one it is moving into while it moves.
+ */
+export let stdlibLibraryAnswers = (owner: String, library: String): boolean => {
+  if (owner == library) {
+    return true;
+  }
+  let moves = if (libraryMoves != null) {
+    libraryMoves as HashMap<String, String>
+  } else {
+    buildLibraryMoves()
+  };
+  if (let (true, destination) = moves.get(library)) {
+    return owner == destination;
+  }
+  return false;
+};
