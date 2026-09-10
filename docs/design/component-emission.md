@@ -594,8 +594,8 @@ representation, so they cannot be declared in a world, and per 1.10 they
 cannot be stubbed by an adapter either.
 
 **Fix**: make the hooks target-conditional, as `zena:console` already is
-— `error/stack-host.zena` keeps the two `@external` declarations,
-`error/stack-none.zena` returns `null` from both, and `error.zena`
+— `core/error/stack-host.zena` keeps the two `@external` declarations,
+`core/error/stack-none.zena` returns `null` from both, and `error.zena`
 imports them from `'zena:error-stack'`. One file split, one manifest
 entry, one import line. The `js` and `zena-cli` targets keep the host
 hooks; the `component` target does not get stack traces until there is
