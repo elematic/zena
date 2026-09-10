@@ -82,16 +82,24 @@ With concurrent `handle` calls that breaks in three places:
    returning `WAIT` on the shared set is invalid; each task needs its
    own set, and each waitable must be joined to the set of the task
    that will consume its completion.
-3. **Completion crosses tasks through shared Zena state.** Task A's
-   callback drains the microtask queue; that drain may complete a
-   future task B is awaiting and run B's continuations to B's logical
-   end — while the host still thinks B is parked. B's value exists,
-   but B's `task.return` cannot legally happen until B is re-entered,
-   and B re-enters only if something in *B's* set fires. If B's last
-   awaited waitable was consumed by A's drain, nothing ever fires.
+3. **A task's work can finish during another task's entry.** The
+   instance has one microtask queue, and the runtime runs the
+   microtask checkpoint at every host→guest entry — the export call,
+   and each callback re-entry (see "The microtask checkpoint" below;
+   this is exactly JS's model, with the checkpoint at the end of every
+   macrotask). A continuation runs at the first checkpoint after its
+   future settles, whichever task's entry that turns out to be: if
+   task B awaits a `Completer` that task A's code completes, B's
+   continuations run during A's entry, possibly to B's logical end.
+   JS has no notion of "which request is running" and does not care;
+   the component model does — B's `task.return` must be issued from
+   one of B's own entries, and B is only re-entered when something in
+   *B's* set fires. If B's last host-owed event was already consumed,
+   nothing ever fires.
 
-Problem 3 is the real design problem, and the fix is a self-wake
-channel:
+Problem 3 is the real design problem. Per-task microtask queues would
+not remove it: B's continuation would then wait for a B entry that
+nothing triggers. The fix is a self-wake channel:
 
 - Each task's context carries a canonical **future pair** created at
   task start (`future.new`). The readable end joins the task's set.
@@ -108,6 +116,31 @@ A task that completes without ever suspending skips all of this: the
 wrapper sees the result before returning and calls `task.return`
 directly, exactly as the import driver's RETURNED-inside-the-lowering
 fast path does.
+
+### The microtask checkpoint
+
+`drainMicrotasks()` is the checkpoint a JS engine runs implicitly at
+the end of every macrotask: run every queued continuation until the
+queue is empty. Zena code has no engine around it — "the end of the
+macrotask" is the return from a wasm export to the host — so the
+runtime's own entry points run the checkpoint explicitly, at that
+boundary and nowhere else: the component driver's `componentPoll`
+(after the entry call) and `componentResume` (after each callback
+re-entry), the `__zena_drain` export a JS host re-enters through, and
+the level-0 `main` wrapper for hosts with no event loop at all
+(async.md §4), which also throws on a still-pending future rather
+than returning a wrong answer — the deadlock a `sleep()` produces
+where nothing can wake the module. `runFuture` is the same
+checkpoint packaged for a synchronous caller, and documented as
+top-level only for the same reason.
+
+Nothing else should call it, and the design above never does: the
+driver's checkpoint at each entry is the whole story. The
+`main(): void { go(); drainMicrotasks(); }` idiom that many fixtures
+carry predates async `main` on the component target and is
+redundant there (the poll drains); with async `main` driven directly,
+the idiom retires, and the export deserves to become an internal of
+the drivers rather than public surface.
 
 ### The task registry
 
