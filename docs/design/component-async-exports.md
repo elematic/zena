@@ -132,18 +132,28 @@ final class TaskContext {
 - The entry (`main`) becomes just another task, removing the current
   special-casing rather than adding to it.
 
-**To verify against wasmtime before building** (each is a small probe,
-in the spirit of the timer and stream probes that preceded C6):
+**To verify against wasmtime before building** (each a small probe,
+in the spirit of the timer and stream probes that preceded C6). Two
+of the three are already answered:
 
-- whether an export lifted async may call `task.return` from a
-  callback re-entry rather than the initial call (the design depends
-  on it);
+- ~~whether an export lifted async may call `task.return` from a
+  callback re-entry rather than the initial call~~ — **proven**: the
+  existing entry does exactly this. `componentResume` calls
+  `task.return` from a callback re-entry whenever the drain empties
+  the registries, and the timer fixture exercises it in CI.
 - whether a subtask or stream end may be *created* by task A and its
   completion consumed while task B is the running task (cross-task
-  awaits make this reachable);
-- whether `wasmtime serve` runs a p3 `service` world at all in the
-  pinned version, or whether the first consumer is component-to-
-  component composition instead.
+  awaits make this reachable) — genuinely open; needs two live
+  tasks, so it becomes the first increment of the export work rather
+  than a standalone probe.
+- ~~whether `wasmtime serve` runs a p3 `service` world in the pinned
+  version~~ — **yes**: v47's `serve` command implements
+  `wasmtime_wasi_http::p3::WasiHttpView` and wires
+  `p3::add_to_linker` under `-S p3` (`src/commands/serve.rs`). Its
+  concurrency default is telling: 1 in-flight request for a WASIp2
+  component, **128 for WASIp3** — concurrent `handle` calls are the
+  default operating condition, not an edge case, which is why Part 2
+  is load-bearing.
 
 ## Part 3: What this unlocks beyond http
 
