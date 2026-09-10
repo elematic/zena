@@ -14,7 +14,7 @@
  * test would leave `--target component` unexercised end to end.
  */
 
-import {execFileSync, spawnSync} from 'node:child_process';
+import {execFileSync, spawn, spawnSync} from 'node:child_process';
 import {mkdirSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -66,8 +66,37 @@ interface Fixture {
   wasi: string[];
   /** A declared world to compile against: [witFile, worldName]. */
   wit?: [string, string];
+  /**
+   * Serve `[port, body]` on 127.0.0.1 while the invocations run: a
+   * local HTTP server for a fixture whose imports reach the network.
+   * A child process, because the runner's own event loop is blocked
+   * inside spawnSync while wasmtime runs.
+   */
+  serve?: [number, string];
   invocations: Invocation[];
 }
+
+/** Start a one-body HTTP server child and block until it accepts. */
+const startServer = (port: number, body: string) => {
+  const script =
+    `require('node:http').createServer((req, res) => {` +
+    `res.writeHead(200, {'content-type': 'text/plain'});` +
+    `res.end(${JSON.stringify(body)});` +
+    `}).listen(${port}, '127.0.0.1');`;
+  const child = spawn('node', ['-e', script], {stdio: 'ignore'});
+  const probe =
+    `require('node:net').connect(${port}, '127.0.0.1')` +
+    `.on('connect', () => process.exit(0))` +
+    `.on('error', () => process.exit(1));`;
+  for (let tries = 0; tries < 100; tries++) {
+    if (spawnSync('node', ['-e', probe]).status === 0) {
+      return child;
+    }
+    spawnSync('node', ['-e', 'setTimeout(() => {}, 100);']);
+  }
+  child.kill();
+  throw new Error(`local server on port ${port} never accepted`);
+};
 
 const FIXTURES: Fixture[] = [
   {
@@ -204,6 +233,23 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'webget',
+    wasi: ['p3=y', 'http=y'],
+    // Real p3 wasi:http: the synthesized types/client modules carry a
+    // whole GET — Fields and Request resources, a lowered trailers
+    // future, bare-result setters, `client.send`, and a response body
+    // that is a canonical stream read to EOF — against a local node
+    // server the runner starts for the duration.
+    serve: [18923, 'hello from the host'],
+    invocations: [
+      {
+        invoke: 'run()',
+        expect: '()',
+        expectOutput: ['200', 'body ok'],
+      },
+    ],
+  },
+  {
     name: 'promise',
     wasi: ['p3=y'],
     // A canonical future round trip inside one guest: `future.new`,
@@ -305,6 +351,16 @@ for (const fixture of FIXTURES) {
   }
   console.log(`  ${GREEN}✓${NC} validates`);
 
+  let server: ReturnType<typeof spawn> | null = null;
+  if (fixture.serve) {
+    try {
+      server = startServer(fixture.serve[0], fixture.serve[1]);
+    } catch (e) {
+      fail((e as Error).message);
+      continue;
+    }
+  }
+
   for (const {
     invoke,
     expect,
@@ -380,6 +436,10 @@ for (const fixture of FIXTURES) {
       }
     }
     console.log(`  ${GREEN}✓${NC} ${invoke} => ${actual}${timing}`);
+  }
+
+  if (server !== null) {
+    server.kill();
   }
 }
 

@@ -1,0 +1,85 @@
+// An HTTP GET over real p3 wasi:http — a smoke test that a request
+// can be made at all, written the way real code would: build a
+// request, send it, read the body into a String, look at it. The
+// e2e script serves 127.0.0.1:18923 from a local node server while
+// this runs under wasmtime, and asserts the two printed lines.
+import { console } from 'zena:console';
+import { Fields, Request, Response, ErrorCode, Scheme, SchemeHTTP } from 'wasi:http/types';
+import { send } from 'wasi:http/client';
+import { Completer, Future } from 'zena:async';
+import { Outcome, Ok } from 'zena:result';
+import { Option, some, none } from 'zena:option';
+import { FixedArray } from 'zena:fixed-array';
+import { Stream } from 'zena:stream';
+import { String, Encoding } from 'zena:string';
+import { newByteArray } from 'zena:byte-array';
+import { i32ToString } from 'zena:string-convert';
+
+/** The one spellable value of type void: `Ok<void, E>` still takes a
+ * constructor argument, and a call to a void function is it. */
+function unit(): void {}
+
+/** The whole body of `stream`, decoded as text. Reads to end-of-
+ * stream in chunks, then wraps the bytes as a String — Zena strings
+ * are views over byte arrays, so no re-encoding happens. The helper
+ * `zena:http` should eventually offer (#569), inlined until then. */
+async function readAllText(stream: Stream<u8>): Future<String> {
+  let chunk = new FixedArray<u8>(256, 0);
+  let collected = new GrowableArray<u8>();
+  while (true) {
+    let n = await stream.read(chunk);
+    if (n == 0) {
+      break;
+    }
+    for (var i = 0; i < n; i += 1) {
+      collected.push(chunk[i]);
+    }
+  }
+  let bytes = newByteArray(collected.length);
+  for (var i = 0; i < collected.length; i += 1) {
+    bytes[i] = collected[i];
+  }
+  return String.fromByteArray(bytes, 0, collected.length, Encoding.WTF8);
+}
+
+export async function main(): Future<void> {
+  // A request's trailers are a future the SENDER resolves: the host
+  // will not consider the request body finished until it settles.
+  // This GET has no body and no trailers, so it settles up front
+  // with "no trailers, successfully".
+  let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
+  trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
+  // `Request.new_` is WIT's `new: static func` — a static rather
+  // than a constructor because it returns a pair: the request, and a
+  // future that resolves once the request has been transmitted
+  // (unobserved here; a client that cares about send errors before
+  // the response arrives would await it).
+  let (request, transmitted) =
+      Request.new_(Fields.create(), none, trailers.future, none);
+  // A p3 request carries no URL string; scheme, authority and path
+  // are set separately.
+  request.setScheme(some(new SchemeHTTP() as Scheme));
+  request.setAuthority(some('127.0.0.1:18923'));
+  request.setPathWithQuery(some('/hello'));
+  let result = await send(request);
+  if (!(result is Ok<Response, ErrorCode>)) {
+    console.log('send failed');
+    return;
+  }
+  let response = (result as Ok<Response, ErrorCode>).value;
+  console.log(i32ToString(response.getStatusCode() as i32));
+  // `consume-body` takes a future the READER resolves to say how
+  // receiving went — the mirror of the trailers future above. This
+  // test trusts the transport, so it settles it with success once
+  // the body is read; the returned trailers future goes unobserved.
+  let bodyDone = new Completer<Outcome<void, ErrorCode>>();
+  let (body, respTrailers) =
+      Response.consumeBody(response, bodyDone.future);
+  let text = await readAllText(body);
+  bodyDone.complete(new Ok<void, ErrorCode>(unit()));
+  if (text == 'hello from the host') {
+    console.log('body ok');
+  } else {
+    console.log('body mismatch: ' + text);
+  }
+}

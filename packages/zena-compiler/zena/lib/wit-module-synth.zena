@@ -2116,7 +2116,10 @@ function renderFuncIn(
       anyRich = true;
     }
     params.push(wire);
-    paramNames.push(camelName(func.params[i].name.name));
+    // The same keyword mangling members get: wasi:http spells
+    // `consume-body: static func(this: request, ...)`, and `this` is
+    // not a parameter name Zena will take.
+    paramNames.push(zenaMemberName(func.params[i].name.name));
   }
   var paramFlats = 0;
   for (let p in params) {
@@ -2147,7 +2150,12 @@ function renderFuncIn(
     if (resultTy.kind != TyKind.Scalar) {
       anyRich = true;
     }
-    if (resultTy.flats == 1 && resultTy.kind != TyKind.Enumeration &&
+    // A bare `-> result` (both arms void) is one discriminant on the
+    // wire, returned directly and rebuilt from `witUnit()` lanes.
+    let bareResult = resultTy.kind == TyKind.ResultT &&
+        isVoid(resultTy.children[0]) && isVoid(resultTy.children[1]);
+    if (resultTy.flats == 1 && !bareResult &&
+        resultTy.kind != TyKind.Enumeration &&
         resultTy.kind != TyKind.Flags && resultTy.kind != TyKind.Scalar &&
         resultTy.kind != TyKind.ResourceH &&
         resultTy.kind != TyKind.StreamH &&
@@ -2284,7 +2292,9 @@ function renderFuncIn(
     "u32"
   } else if (resultTy.kind == TyKind.ResourceH ||
       resultTy.kind == TyKind.StreamH ||
-      resultTy.kind == TyKind.FutureH) {
+      resultTy.kind == TyKind.FutureH ||
+      resultTy.kind == TyKind.ResultT) {
+    // A non-spilled result is the bare `-> result`: one discriminant.
     "i32"
   } else {
     resultTy.scalar
@@ -2309,9 +2319,16 @@ function renderFuncIn(
     wrapSig.append(paramNames[i]).append(": ")
         .append(zenaTypeOf(params[i], uses));
   }
+  let bothArmsVoid = resultTy.kind == TyKind.ResultT &&
+      isVoid(resultTy.children[0]) && isVoid(resultTy.children[1]);
   var wrapResult = "void";
   if (hasResult) {
-    if (resultTy.kind == TyKind.ResultT) {
+    if (bothArmsVoid && !func.isAsync) {
+      // A bare `-> result` has exactly two outcomes and no payloads:
+      // a boolean, true for ok. The inline Result cannot carry two
+      // zero-width lanes.
+      wrapResult = "boolean";
+    } else if (resultTy.kind == TyKind.ResultT) {
       if (func.isAsync) {
         // A future's payload must be storable, which the inline
         // Result is not (return-position-only): the async form
@@ -2545,6 +2562,10 @@ function renderFuncIn(
     sb.append("  return liftFuture")
         .append(i32ToString(uses.futureIndexOf(resultTy)))
         .append("(got);\n");
+  } else if (resultTy.kind == TyKind.ResultT) {
+    // The bare `-> result`: the wire value is the discriminant, and
+    // the Zena shape is a boolean, true for ok.
+    sb.append("  return got == 0;\n");
   } else if (!func.isAsync && rawResult != "void") {
     sb.append("  return got;\n");
   }

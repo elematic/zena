@@ -50,6 +50,7 @@ import {
   Ast, AstItem, AstItemTag, InterfaceDef, WorldDef, InterfaceItem,
   InterfaceItemTag, TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func,
   ResourceFunc, ResourceFuncTag, Use, UsePath, UsePathTag,
+  IdUsePath, PackageUsePath,
   PackageName, WorldItem, WorldItemTag, Import, Export, ExternKind,
   ExternKindTag, Id, Field, Case, EnumCaseDef, FlagDef, Parser,
 } from './parser.zena';
@@ -1072,7 +1073,7 @@ final class FlatIface {
 
 function flatMetaOfType(
   interfaces: Array<FlatIface>,
-  itemsOf: Array<InterfaceItem>,
+  owner: FlatIface,
   t: Type
 ): WitFlatMeta {
   let prim = primOpcodeOf(t.tag);
@@ -1091,14 +1092,14 @@ function flatMetaOfType(
   if (t.tag == TypeTag.Tuple) {
     let meta = new WitFlatMeta();
     for (let m in t.types as GrowableArray<Type>) {
-      let inner = flatMetaOfType(interfaces, itemsOf, m);
+      let inner = flatMetaOfType(interfaces, owner, m);
       meta.flatCount += inner.flatCount;
       if (inner.needsMemory) { meta.needsMemory = true; }
     }
     return meta;
   }
   if (t.tag == TypeTag.Option) {
-    let inner = flatMetaOfType(interfaces, itemsOf, t.inner as Type);
+    let inner = flatMetaOfType(interfaces, owner, t.inner as Type);
     return new WitFlatMeta(1 + inner.flatCount, inner.needsMemory);
   }
   if (t.tag == TypeTag.Result) {
@@ -1109,20 +1110,20 @@ function flatMetaOfType(
     var mem = false;
     let ok = t.okType;
     if (ok != null) {
-      let m = flatMetaOfType(interfaces, itemsOf, ok as Type);
+      let m = flatMetaOfType(interfaces, owner, ok as Type);
       payload = m.flatCount;
       if (m.needsMemory) { mem = true; }
     }
     let err = t.errType;
     if (err != null) {
-      let m = flatMetaOfType(interfaces, itemsOf, err as Type);
+      let m = flatMetaOfType(interfaces, owner, err as Type);
       if (m.flatCount > payload) { payload = m.flatCount; }
       if (m.needsMemory) { mem = true; }
     }
     return new WitFlatMeta(1 + payload, mem);
   }
   if (t.tag == TypeTag.Name) {
-    return flatMetaOfName(interfaces, itemsOf, (t.name as Id).name);
+    return flatMetaOfName(interfaces, owner, (t.name as Id).name);
   }
   // stream/future: a handle end, one core i32, no memory of its own —
   // the real answer, not a fallback. map/error-context: the encoder
@@ -1133,10 +1134,10 @@ function flatMetaOfType(
 
 function flatMetaOfName(
   interfaces: Array<FlatIface>,
-  itemsOf: Array<InterfaceItem>,
+  owner: FlatIface,
   name: String
 ): WitFlatMeta {
-  for (let item in itemsOf) {
+  for (let item in owner.items) {
     if (item.tag == InterfaceItemTag.TypeDef) {
       let td = item.typeDef as TypeDef;
       if (td.name.name != name) { continue; }
@@ -1150,7 +1151,7 @@ function flatMetaOfName(
       if (td.tag == TypeDefTag.Record) {
         let meta = new WitFlatMeta();
         for (let f in td.fields as GrowableArray<Field>) {
-          let inner = flatMetaOfType(interfaces, itemsOf, f.type);
+          let inner = flatMetaOfType(interfaces, owner, f.type);
           meta.flatCount += inner.flatCount;
           if (inner.needsMemory) { meta.needsMemory = true; }
         }
@@ -1162,14 +1163,14 @@ function flatMetaOfName(
         for (let c in td.cases as GrowableArray<Case>) {
           let payloadType = c.type;
           if (payloadType != null) {
-            let m = flatMetaOfType(interfaces, itemsOf, payloadType as Type);
+            let m = flatMetaOfType(interfaces, owner, payloadType as Type);
             if (m.flatCount > payload) { payload = m.flatCount; }
             if (m.needsMemory) { mem = true; }
           }
         }
         return new WitFlatMeta(1 + payload, mem);
       }
-      return flatMetaOfType(interfaces, itemsOf, td.aliasType as Type);
+      return flatMetaOfType(interfaces, owner, td.aliasType as Type);
     } else if (item.tag == InterfaceItemTag.Use) {
       let use = item.use as Use;
       for (let n in use.names) {
@@ -1177,26 +1178,46 @@ function flatMetaOfName(
         let localName =
             if (asName == null) n.name.name else (asName as Id).name;
         if (localName != name) { continue; }
+        // The wanted interface, package-qualified. A bare `use foo`
+        // means the OWNER's package's `foo` — matching by trailing
+        // name alone resolved wasi:http/client's `use types` to
+        // wasi:cli/types, whichever registered first — and a
+        // package-path use spells its package outright.
         let sourceName = use.from.getName().name;
+        let from = use.from;
+        var wantPackage = "";
+        if (from is PackageUsePath) {
+          let p = from.packageId as PackageName;
+          wantPackage = p.namespace.name + ":" + p.name.name;
+        } else {
+          var slashAt = -1;
+          for (var i = 0; i < owner.name.length; i += 1) {
+            if (owner.name.getByteAt(i) == 47) { slashAt = i; } // '/'
+          }
+          if (slashAt > 0) {
+            wantPackage = owner.name.sliceBytes(0, slashAt);
+          }
+        }
+        let want = wantPackage + "/" + sourceName;
         for (let iface in interfaces) {
-          // Match by trailing interface name: `use` paths inside a
-          // package name interfaces bare, and the registry holds them
-          // qualified.
-          if (iface.name == sourceName ||
-              iface.name.endsWith("/" + sourceName) ||
-              iface.name.contains("/" + sourceName + "@")) {
-            return flatMetaOfName(interfaces, iface.items, n.name.name);
+          if (iface.name == want || iface.name.startsWith(want + "@")) {
+            return flatMetaOfName(interfaces, iface, n.name.name);
           }
         }
       }
     }
   }
-  throw new EncodeError("flattening cannot resolve type '" + name + "'");
+  var known = "";
+  for (let iface in interfaces) {
+    known = known + " " + iface.name;
+  }
+  throw new EncodeError("flattening cannot resolve type '" + name +
+      "' (interfaces:" + known + ")");
 }
 
 function funcMetaOf(
   interfaces: Array<FlatIface>,
-  itemsOf: Array<InterfaceItem>,
+  owner: FlatIface,
   func: Func,
   selfParams: i32
 ): WitFuncMeta {
@@ -1204,13 +1225,13 @@ function funcMetaOf(
   meta.isAsync = func.isAsync;
   meta.paramFlatCount = selfParams;
   for (let p in func.params) {
-    let m = flatMetaOfType(interfaces, itemsOf, p.type);
+    let m = flatMetaOfType(interfaces, owner, p.type);
     meta.paramFlatCount += m.flatCount;
     if (m.needsMemory) { meta.needsMemory = true; }
   }
   let result = func.result;
   if (result != null) {
-    let m = flatMetaOfType(interfaces, itemsOf, result as Type);
+    let m = flatMetaOfType(interfaces, owner, result as Type);
     meta.resultFlatCount = m.flatCount;
     if (m.needsMemory) { meta.needsMemory = true; }
   }
@@ -1261,7 +1282,7 @@ export let funcFlatMeta = (
       if (item.tag == InterfaceItemTag.Func) {
         let nf = item.func as NamedFunc;
         if (nf.name.name == fieldName) {
-          return funcMetaOf(interfaces, iface.items, nf.func, 0);
+          return funcMetaOf(interfaces, iface, nf.func, 0);
         }
       } else if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
@@ -1280,7 +1301,7 @@ export let funcFlatMeta = (
           }
           if (exported != fieldName) { continue; }
           let meta =
-              funcMetaOf(interfaces, iface.items, rf.func.func, selfParams);
+              funcMetaOf(interfaces, iface, rf.func.func, selfParams);
           if (rf.tag == ResourceFuncTag.Constructor) {
             meta.resultFlatCount = 1; // the own handle
           }
