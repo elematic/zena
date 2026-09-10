@@ -1,0 +1,37 @@
+// Cross-interface `use` for the WIT-typed-module tests, shaped like
+// wasi:http: one interface declares the types — a record with a
+// nested enum field, a variant, a resource — and a second interface
+// reaches them through `use`, in parameters, results and a future
+// payload. The consumer imports classes from BOTH synthesized
+// modules and passes values across.
+package wasi:relay@1.0.0;
+
+interface data {
+  enum level {
+    low,
+    high,
+  }
+
+  record packet {
+    level: level,
+    body: string,
+  }
+
+  variant fault {
+    lost,
+    garbled(string),
+  }
+
+  resource channel {
+    label: func() -> string;
+  }
+}
+
+interface forwarding {
+  use data.{packet, fault, channel, level};
+
+  forward: async func(p: packet) -> result<packet, fault>;
+  attach: func(c: channel) -> u32;
+  grade: func() -> level;
+  confirm: func() -> future<result<_, fault>>;
+}

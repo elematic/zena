@@ -962,6 +962,64 @@ world only {
       'the pipe interface import is missing');
   });
 
+  test('a WIT interface reaches another interface through use',
+      (ctx: TestContext): void => {
+    // `forwarding` does `use data.{packet, fault, channel, level}`:
+    // the used types' declarations live in `data`'s synthesized
+    // module, so `forwarding`'s module imports them — the sealed base
+    // and every case, for a variant — and declares nothing locally.
+    // The resource crosses because the marshaling symbols live in
+    // `zena:component-abi`, one identity for every synthesized
+    // module, rather than per-module.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:relay/forwarding`);
+    isTrue(source.contains(
+        "import { Level, Packet, Fault, FaultLost, FaultGarbled, " +
+        "Channel } from 'wasi:relay/data';"),
+      'the used types are not imported from the sibling module:\n' +
+      source);
+    isTrue(!source.contains('export class Packet'),
+      'a used record must not be re-declared:\n' + source);
+    isTrue(!source.contains('export sealed class Fault'),
+      'a used variant must not be re-declared:\n' + source);
+    isTrue(source.contains(
+        'export async function forward(p: Packet): ' +
+        'Future<Outcome<Packet, Fault>> {'),
+      'the used types should spell the signature:\n' + source);
+    isTrue(source.contains('attach(c: Channel): u32'),
+      'a used resource parameter is not rendered:\n' + source);
+    isTrue(source.contains('c.[rawHandle]()'),
+      "the used resource's handle member is not reached:\n" + source);
+    isTrue(source.contains('function liftLevel(disc: i32): Level {'),
+      'the enum lift should name the imported enum:\n' + source);
+    isTrue(source.contains(
+        '"future:wasi:relay/forwarding@1.0.0#result<_, fault>'),
+      "the future's canon type should name the using interface:\n" +
+      source);
+    // The declaring module still declares, importing the shared
+    // marshaling symbols from the abi.
+    let dataSource = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:relay/data`);
+    isTrue(dataSource.contains(
+        'export class Packet(level: Level, body: String)'),
+      "the declaring module lost its record:\n" + dataSource);
+    isTrue(dataSource.contains('rawHandle, markMoved'),
+      'the marshaling symbols should come from the abi:\n' +
+      dataSource);
+    isTrue(!dataSource.contains('symbol rawHandle;'),
+      'per-module symbols must be gone:\n' + dataSource);
+    // And a consumer using classes from BOTH modules compiles, with
+    // both interfaces imported — `data` first (dependency order), so
+    // the forwarding import is the second import section.
+    let bytes = compileFor(`${fixtures}/relay-wit.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 10),
+        'wasi:relay/data@1.0.0'),
+      'the data interface import is missing');
+    isTrue(containsName(sectionPayloadAfter(bytes, 10, 1),
+        'wasi:relay/forwarding@1.0.0'),
+      'the forwarding interface import is missing');
+  });
+
   test('a stream-only program still gets the async entry',
       (ctx: TestContext): void => {
     // `pipe.zena` awaits canonical copies (`awaitWaitable`) but never

@@ -86,6 +86,22 @@ export function findInterface(
   namespace: String,
   interfacePath: String
 ): FoundInterface {
+  let found = findInterfaceOrNull(ast, namespace, interfacePath);
+  if (found == null) {
+    throw new Error("WIT interface '" + namespace + ":" + interfacePath +
+        "' is not declared by the package's WIT.");
+  }
+  return found as FoundInterface;
+}
+
+/** `findInterface`, but an absent interface is null rather than a
+ * throw — for callers with their own way of saying no, like a `use`
+ * hop reported as a per-member skip. A duplicate still throws. */
+export function findInterfaceOrNull(
+  ast: Ast,
+  namespace: String,
+  interfacePath: String
+): FoundInterface | null {
   var found: FoundInterface | null = null;
   var matches = 0;
   let consider = (pkg: PackageName | null, items: Array<AstItem>): void => {
@@ -113,9 +129,5 @@ export function findInterface(
     throw new Error("WIT interface '" + namespace + ":" + interfacePath +
         "' is declared more than once (differing versions?) — pin one.");
   }
-  if (found == null) {
-    throw new Error("WIT interface '" + namespace + ":" + interfacePath +
-        "' is not declared by the package's WIT.");
-  }
-  return found as FoundInterface;
+  return found;
 }

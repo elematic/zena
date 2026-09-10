@@ -59,12 +59,13 @@ import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
 import { parse } from 'wit-parser:wit';
 import {
-  readWitSource, findInterface, FoundInterface
+  readWitSource, findInterface, findInterfaceOrNull, FoundInterface
 } from 'wit-parser:document';
 import {
   InterfaceItem, InterfaceItemTag, NamedFunc, Type, TypeTag, TypeDef,
   TypeDefTag, Id, EnumCaseDef, FlagDef, Field, Case, ResourceFunc,
-  ResourceFuncTag
+  ResourceFuncTag, Ast, PackageName, Use, UsePath, IdUsePath,
+  PackageUsePath
 } from 'wit-parser:parser';
 
 
@@ -79,6 +80,43 @@ export function isWitModulePath(path: String): boolean {
  * and classification — which sees only nodes — slices it out by span.
  */
 var currentWitSource = "";
+
+/**
+ * The parsed document and the package whose interface classification
+ * is currently reading — a `use` hop switches the package (a bare
+ * `use foo` resolves against the interface's own package, and a
+ * nested package's is not the document's main one).
+ */
+var currentAst: Ast | null = null;
+var currentPackage: PackageName | null = null;
+
+/**
+ * Which synthesized module declares the types classification meets:
+ * the unversioned `ns:pkg/iface` specifier. `selfSpecifier` is the
+ * module being synthesized; `currentSpecifier` tracks `use` hops, and
+ * a named type minted under a foreign specifier owes an import line
+ * from that sibling module rather than a local declaration.
+ */
+var selfSpecifier = "";
+var currentSpecifier = "";
+
+/** One imported type name owed to a sibling synthesized module. */
+final class UsedTypeImport {
+  specifier: String;
+  name: String;
+  new(this.specifier, this.name);
+}
+
+var usedTypeImports = new GrowableArray<UsedTypeImport>();
+
+function noteUsedImport(specifier: String, name: String): void {
+  for (let existing in usedTypeImports) {
+    if (existing.specifier == specifier && existing.name == name) {
+      return;
+    }
+  }
+  usedTypeImports.push(new UsedTypeImport(specifier, name));
+}
 
 /** A span's source text with whitespace runs collapsed to one space,
  * so it can ride inside a generated string literal. */
@@ -172,6 +210,24 @@ final class Ty {
 
 let unsupported = (reason: String): Ty =>
     new Ty(TyKind.Unsupported, "", "", reason);
+
+/**
+ * A named type just classified: when it belongs to another interface
+ * (the classification is inside a `use` hop), its Zena declarations
+ * live in that interface's synthesized module, so the current module
+ * imports them — the sealed base and every case, for a variant.
+ */
+function noteNamedType(ty: Ty): void {
+  if (currentSpecifier == selfSpecifier || ty.typeName == "") {
+    return;
+  }
+  noteUsedImport(currentSpecifier, ty.typeName);
+  if (ty.kind == TyKind.VariantT) {
+    for (let caseName in ty.childNames) {
+      noteUsedImport(currentSpecifier, caseName);
+    }
+  }
+}
 
 /** The stand-in for an absent variant payload or result arm. */
 let voidTy = (): Ty => {
@@ -416,6 +472,7 @@ function classifyNamed(name: String, ifaceItems: Array<InterfaceItem>): Ty {
         ty.size = 4;
         ty.align = 4;
         ty.flats = 1;
+        noteNamedType(ty);
         return ty;
       }
       if (td.tag == TypeDefTag.Enum) {
@@ -425,6 +482,7 @@ function classifyNamed(name: String, ifaceItems: Array<InterfaceItem>): Ty {
         ty.size = discSize(cases.length);
         ty.align = ty.size;
         ty.flats = 1;
+        noteNamedType(ty);
         return ty;
       }
       if (td.tag == TypeDefTag.Flags) {
@@ -435,6 +493,7 @@ function classifyNamed(name: String, ifaceItems: Array<InterfaceItem>): Ty {
             else if (flags.length <= 16) 2 else 4;
         ty.align = ty.size;
         ty.flats = 1;
+        noteNamedType(ty);
         return ty;
       }
       if (td.tag == TypeDefTag.Record) {
@@ -448,6 +507,7 @@ function classifyNamed(name: String, ifaceItems: Array<InterfaceItem>): Ty {
           ty.childNames.push(camelName(f.name.name));
         }
         layoutRecord(ty);
+        noteNamedType(ty);
         return ty;
       }
       if (td.tag == TypeDefTag.Variant) {
@@ -467,12 +527,71 @@ function classifyNamed(name: String, ifaceItems: Array<InterfaceItem>): Ty {
           ty.childNames.push(pascalName(name) + pascalName(c.name.name));
         }
         layoutVariant(ty, cases.length);
+        noteNamedType(ty);
         return ty;
       }
     break;
   }
+  // Not declared here: a `use` may bring the name in from another
+  // interface, whose synthesized module then owns the declarations.
+  for (let item in ifaceItems) {
+    if (item.tag != InterfaceItemTag.Use) { continue; }
+    let use = item.use as Use;
+    for (let n in use.names) {
+      let asName = n.asName;
+      if (asName != null) {
+        if ((asName as Id).name == name) {
+          return unsupported(
+              "a renaming `use` waits on the interop stages");
+        }
+        continue;
+      }
+      if (n.name.name != name) { continue; }
+      return classifyUsed(use, name);
+    }
+  }
   return unsupported("the named type '" + name +
       "' waits on the interop stages");
+}
+
+/**
+ * Classify a `use`d name in its source interface's context: the
+ * package switches for the hop (a bare `use foo` resolves against
+ * the interface's own package), and the specifier switches so named
+ * types minted inside record their sibling-module imports.
+ */
+function classifyUsed(use: Use, name: String): Ty {
+  let ast = currentAst;
+  let pkg = currentPackage;
+  if (ast == null || pkg == null) {
+    return unsupported("`use` resolution has no document context");
+  }
+  let from = use.from;
+  var ns = (pkg as PackageName).namespace.name;
+  var path = "";
+  if (from is IdUsePath) {
+    path = (pkg as PackageName).name.name + "/" +
+        ((from as IdUsePath).id as Id).name;
+  } else {
+    let p = (from as PackageUsePath).packageId as PackageName;
+    ns = p.namespace.name;
+    path = p.name.name + "/" +
+        ((from as PackageUsePath).name as Id).name;
+  }
+  let target = findInterfaceOrNull(ast as Ast, ns, path);
+  if (target == null) {
+    return unsupported("`use` names '" + ns + ":" + path +
+        "', which this package's WIT does not declare");
+  }
+  let found = target as FoundInterface;
+  let savedPackage = currentPackage;
+  let savedSpecifier = currentSpecifier;
+  currentPackage = found.packageName;
+  currentSpecifier = ns + ":" + path;
+  let ty = classifyNamed(name, found.def.items);
+  currentPackage = savedPackage;
+  currentSpecifier = savedSpecifier;
+  return ty;
 }
 
 /**
@@ -1023,9 +1142,11 @@ function lowerMemStmts(sb: StringBuilder, ty: Ty, value: String,
   }
   if (ty.kind == TyKind.ResourceH) {
     uses.useAbi("storeI32");
+    uses.useAbi("rawHandle");
     sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
         .append(value).append(".[rawHandle]());\n");
     if (!ty.isBorrow) {
+      uses.useAbi("markMoved");
       sb.append(indent).append(value).append(".[markMoved]();\n");
     }
     return;
@@ -1220,11 +1341,13 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     return 1;
   }
   if (ty.kind == TyKind.ResourceH) {
+    uses.useAbi("rawHandle");
     sb.append(indent).append(slots[base]).append(" = ").append(value)
         .append(".[rawHandle]();\n");
     if (!ty.isBorrow) {
       // An owned handle transfers to the callee: the wrapper's later
       // dispose must not drop an index it no longer owns.
+      uses.useAbi("markMoved");
       sb.append(indent).append(value).append(".[markMoved]();\n");
     }
     return 1;
@@ -1578,6 +1701,11 @@ function renderResource(
   uses: SynthUses
 ): void {
   uses.anyResource = true;
+  // The symbol-keyed members: shared identities from the abi module,
+  // so another synthesized module's marshaling reaches the same
+  // members (a per-module symbol would not).
+  uses.useAbi("rawHandle");
+  uses.useAbi("markMoved");
   let resourceName = td.name.name;
   let typeName = pascalName(resourceName);
   let rawPrefix = camelName(resourceName);
@@ -1718,6 +1846,11 @@ export function synthesizeWitModule(canonicalPath: String): String {
   currentWitSource = witSource;
   let ast = parse(witSource);
   let iface = findInterface(ast, namespace, interfacePath);
+  currentAst = ast;
+  currentPackage = iface.packageName;
+  selfSpecifier = namespace + ":" + interfacePath;
+  currentSpecifier = selfSpecifier;
+  usedTypeImports = new GrowableArray<UsedTypeImport>();
   let version = iface.packageName.version;
   var interfaceName = namespace + ":" + interfacePath;
   if (version != null) {
@@ -1836,6 +1969,29 @@ export function synthesizeWitModule(canonicalPath: String): String {
     }
     sb.append(" } from 'zena:component-stream';\n");
   }
+  // Sibling synthesized modules whose types this interface `use`s:
+  // the declarations live there, so this module imports them.
+  {
+    let specifiers = new GrowableArray<String>();
+    for (let u in usedTypeImports) {
+      var known = false;
+      for (let s in specifiers) {
+        if (s == u.specifier) { known = true; }
+      }
+      if (!known) { specifiers.push(u.specifier); }
+    }
+    for (let spec in specifiers) {
+      sb.append("import { ");
+      var first = true;
+      for (let u in usedTypeImports) {
+        if (u.specifier != spec) { continue; }
+        if (!first) { sb.append(", "); }
+        first = false;
+        sb.append(u.name);
+      }
+      sb.append(" } from '").append(spec).append("';\n");
+    }
+  }
   if (uses.anyResource) {
     sb.append("import { Disposable } from 'zena:ownership';\n");
   }
@@ -1852,11 +2008,6 @@ export function synthesizeWitModule(canonicalPath: String): String {
     sb.append("import { awaitPacked } from 'zena:component-async';\n");
   } else if (uses.awaitWaitable) {
     sb.append("import { awaitWaitable } from 'zena:component-async';\n");
-  }
-  if (uses.anyResource) {
-    // After the imports: a declaration among them is a parse error.
-    sb.append("symbol rawHandle;\n");
-    sb.append("symbol markMoved;\n");
   }
   sb.append(body.toString());
   let skippedText = skipped.toString();
@@ -2223,12 +2374,14 @@ function renderFuncIn(
       continue;
     }
     if (params[i].kind == TyKind.ResourceH) {
+      uses.useAbi("rawHandle");
       let h = "h" + i32ToString(i);
       sb.append("  let ").append(h).append(" = ").append(paramNames[i])
           .append(".[rawHandle]();\n");
       if (!params[i].isBorrow) {
         // An owned handle transfers to the callee: the wrapper's
         // later dispose must not drop an index it no longer owns.
+        uses.useAbi("markMoved");
         sb.append("  ").append(paramNames[i])
             .append(".[markMoved]();\n");
       }

@@ -1,0 +1,28 @@
+// Cross-interface `use` end to end at compile level: `forwarding`
+// reaches `data`'s types through `use`, so its synthesized module
+// imports the classes from `data`'s synthesized module rather than
+// re-declaring them, and this consumer constructs values with one
+// module's classes and passes them through the other's functions.
+import { Packet, Level, Fault } from 'wasi:relay/data';
+import { forward, grade, confirm } from 'wasi:relay/forwarding';
+import { Ok } from 'zena:result';
+import { drainMicrotasks, Future } from 'zena:async';
+
+async function go(): Future<u32> {
+  let sent = new Packet(Level.High, 'payload');
+  let got = await forward(sent);
+  var acc = (grade() as i32) as u32;
+  if (got is Ok<Packet, Fault>) {
+    acc += (got as Ok<Packet, Fault>).value.body.length as u32;
+  }
+  let confirmed = await confirm();
+  if (confirmed is Ok<void, Fault>) {
+    acc += 1;
+  }
+  return acc;
+}
+
+export function main(): void {
+  go();
+  drainMicrotasks();
+}
