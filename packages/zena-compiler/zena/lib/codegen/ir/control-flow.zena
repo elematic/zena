@@ -2433,22 +2433,49 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
   cx.b.switchTo(header);
   cx.applyParams(carried, headerParams);
   let results = cx.slotCallMulti(iter, 'next');
-  // A zero-width element drops its `next()` lane, so the protocol
-  // result is the done flag alone.
+  // A zero-width element drops its `next()` value lane. Two protocols:
+  // the boolean two-arm form `inline (true, T) | inline (false, _)` has
+  // a flag plus the value (one lane when the value is zero-width); the
+  // three-arm Step `inline (0,_,_) | inline (1,V,_) | inline (2,_,F)`
+  // adds a future lane (async-iteration.md), so its `next()` returns
+  // one more result.
   let zeroWidthElem = bindVtOpt != null &&
       (bindVtOpt as ValType) is ValTypeVoid;
-  let expectedLanes = if (zeroWidthElem) 1 else 2;
-  if (results.length != expectedLanes ||
-      !(cx.valueTypeOf(results[0]) is ValTypeI32)) {
+  let booleanLanes = if (zeroWidthElem) 1 else 2;
+  let stepLanes = if (zeroWidthElem) 2 else 3;
+  if (results.length < 1 || !(cx.valueTypeOf(results[0]) is ValTypeI32)) {
     bail(cx, 'iterator next shape');
   }
-  let ok = results[0];
+  let isStep = results.length == stepLanes;
+  if (!isStep && results.length != booleanLanes) {
+    bail(cx, 'iterator next shape');
+  }
+  let disc = results[0];
   var elem = if (zeroWidthElem) -1 else results[1];
 
   let bodyB = cx.b.newBlock();
   let exitB = cx.b.newBlock();
   let exitParams = cx.addParams(exitB, carried);
-  cx.b.brIf(ok, bodyB, noValues(), exitB, cx.envValues(carried));
+  if (isStep) {
+    // Step discriminant: 0 = Done (exit), 1 = Ready (bind + body),
+    // 2 = Pending. `disc != 0` splits Done from the rest; a second test
+    // splits Ready from Pending.
+    let restB = cx.b.newBlock();
+    cx.b.brIf(disc, restB, noValues(), exitB, cx.envValues(carried));
+    cx.b.switchTo(restB);
+    let two = cx.b.constI32(2, new ValTypeI32() as ValType);
+    let isPending = cx.b.binary(IrOp.i32_eq, new ValTypeI32(), disc, two);
+    let pendingB = cx.b.newBlock();
+    cx.b.brIf(isPending, pendingB, noValues(), bodyB, noValues());
+    cx.b.switchTo(pendingB);
+    // A Pending step has no producer yet (it needs `async gen`); the
+    // `for`-throws / `for await`-suspends handling lands with it. Until
+    // then a Pending arrival at runtime traps — unreachable for every
+    // iterator that exists.
+    cx.b.unreachable();
+  } else {
+    cx.b.brIf(disc, bodyB, noValues(), exitB, cx.envValues(carried));
+  }
 
   cx.b.switchTo(bodyB);
   if (zeroWidthElem) {

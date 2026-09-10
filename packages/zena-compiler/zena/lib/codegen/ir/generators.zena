@@ -685,7 +685,13 @@ let prepareOne = (
   let vst = wasm.interfaceVTableStructs[iKey];
   wasm.usedInterfaceMembers[getInterfaceMemberKey(iKey, 'next')] = true;
   let slotSig = getInterfaceMemberSignature(wasm, iface, 'next');
-  if (slotSig.returns.length != 2 || !(slotSig.returns[0] is ValTypeI32)) {
+  // Two protocol shapes: the boolean two-arm form (flag, value) and the
+  // three-arm Step (discriminant, value, future). A `gen` produces only
+  // Done and Ready, so under Step it fills the future lane with a
+  // default (null) on every step (async-iteration.md, "a `gen` produces
+  // only Done and Ready").
+  if ((slotSig.returns.length != 2 && slotSig.returns.length != 3) ||
+      !(slotSig.returns[0] is ValTypeI32)) {
     throw new Error('unexpected Iterator.next result shape for generator: ' +
         funcDisplayName(func));
   }
@@ -1091,9 +1097,18 @@ let buildNextBody = (
   let doneDflt = rawDefaultOf(body, slotSig.returns[1]);
   placeInst(body, doneBlock, doneDflt);
   let doneExtra = body.extra.length;
-  body.extra.push(2);
-  body.extra.push(doneFlag);
-  body.extra.push(doneDflt);
+  if (slotSig.returns.length == 3) {
+    let doneFut = rawDefaultOf(body, slotSig.returns[2]);
+    placeInst(body, doneBlock, doneFut);
+    body.extra.push(3);
+    body.extra.push(doneFlag);
+    body.extra.push(doneDflt);
+    body.extra.push(doneFut);
+  } else {
+    body.extra.push(2);
+    body.extra.push(doneFlag);
+    body.extra.push(doneDflt);
+  }
   let doneRet = rawInst(body, IrOp.ret_multi, -1, doneExtra, -1);
   placeInst(body, doneBlock, doneRet);
 
@@ -1124,9 +1139,18 @@ let buildNextBody = (
     let cdDflt = rawDefaultOf(body, slotSig.returns[1]);
     placeInst(body, cancelDoneB, cdDflt);
     let cdExtra = body.extra.length;
-    body.extra.push(2);
-    body.extra.push(cdFlag);
-    body.extra.push(cdDflt);
+    if (slotSig.returns.length == 3) {
+      let cdFut = rawDefaultOf(body, slotSig.returns[2]);
+      placeInst(body, cancelDoneB, cdFut);
+      body.extra.push(3);
+      body.extra.push(cdFlag);
+      body.extra.push(cdDflt);
+      body.extra.push(cdFut);
+    } else {
+      body.extra.push(2);
+      body.extra.push(cdFlag);
+      body.extra.push(cdDflt);
+    }
     let cdRet = rawInst(body, IrOp.ret_multi, -1, cdExtra, -1);
     placeInst(body, cancelDoneB, cdRet);
     let rtIdx = body.extra.length;
@@ -1385,9 +1409,19 @@ let buildNextBody = (
       rebuilt.push(flag);
       body.instBlock[flag] = blockId;
       let retIdx = body.extra.length;
-      body.extra.push(2);
-      body.extra.push(flag);
-      body.extra.push(yieldVal);
+      if (slotSig.returns.length == 3) {
+        let yFut = rawDefaultOf(body, slotSig.returns[2]);
+        rebuilt.push(yFut);
+        body.instBlock[yFut] = blockId;
+        body.extra.push(3);
+        body.extra.push(flag);
+        body.extra.push(yieldVal);
+        body.extra.push(yFut);
+      } else {
+        body.extra.push(2);
+        body.extra.push(flag);
+        body.extra.push(yieldVal);
+      }
       body.opcode[term] = IrOp.ret_multi as i32;
       body.a[term] = retIdx;
       body.b[term] = -1;
@@ -1418,9 +1452,19 @@ let buildNextBody = (
       rebuilt.push(dflt);
       body.instBlock[dflt] = blockId;
       let retIdx = body.extra.length;
-      body.extra.push(2);
-      body.extra.push(flag);
-      body.extra.push(dflt);
+      if (slotSig.returns.length == 3) {
+        let rFut = rawDefaultOf(body, slotSig.returns[2]);
+        rebuilt.push(rFut);
+        body.instBlock[rFut] = blockId;
+        body.extra.push(3);
+        body.extra.push(flag);
+        body.extra.push(dflt);
+        body.extra.push(rFut);
+      } else {
+        body.extra.push(2);
+        body.extra.push(flag);
+        body.extra.push(dflt);
+      }
       body.opcode[term] = IrOp.ret_multi as i32;
       body.a[term] = retIdx;
       body.b[term] = -1;
