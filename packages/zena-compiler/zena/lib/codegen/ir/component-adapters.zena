@@ -64,6 +64,7 @@ import { ExportKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
 import { componentAbiModule, ComponentValType } from '../component-emitter.zena';
 import { componentTypeOf, declaredTypeOf } from '../component-shape.zena';
+import { ClassType, VoidType } from '../../types.zena';
 
 /** Bodies for the synthesized entry, by function uid. */
 var entryBodies = new HashMap<i32, IrBody>();
@@ -111,23 +112,48 @@ export let prepareComponentEntry = (
       'with no main to drive.'
     );
   }
-  let main = wasm.exportMap[key];
+  var main = wasm.exportMap[key];
+  // `async function main(): Future<void>` is the natural spelling of
+  // a program that awaits, and it drives identically to a sync main
+  // that fires an async helper: the entry calls the RAMP and drops
+  // the future — completion is observable through the driver's
+  // registries, which is what the poll below already watches. The
+  // level-0 wrapper the async pass exported (drain, then unwrap)
+  // must not be the callee: its unwrap throws on a future the host
+  // still owes events to.
+  var mainIsAsync = false;
+  let rampBack = main.asyncMainRamp;
+  if (main.isAsyncMainWrapper && rampBack != null) {
+    main = rampBack as WasmFunction;
+    mainIsAsync = true;
+  }
   if (main.signature.params.length != 0) {
     throw new Error(
       'The component target cannot drive a main that takes parameters.'
     );
   }
   if (main.signature.returns.length != 0) {
-    // The lifted entry is `async func()`, and its result would have to
-    // travel through `task.return` long after main returned. Rather
-    // than stash it somewhere and hope, say so: a component whose
-    // program sleeps returns nothing today.
-    throw new Error(
-      'A program that sleeps on the component target must declare ' +
-      '`main(): void`. The entry is lifted async, and an async lift ' +
-      'returns its result through task.return after the event loop ' +
-      'finishes, which is not where main returned it.'
-    );
+    var returnsVoidFuture = false;
+    let declared = declaredTypeOf(main, 'export');
+    let ret = declared.returnType;
+    if (ret is ClassType && ret.name == 'Future') {
+      let targs = ret.typeArguments;
+      if (targs != null && targs.length == 1 && targs[0] is VoidType) {
+        returnsVoidFuture = true;
+      }
+    }
+    if (!(mainIsAsync && returnsVoidFuture)) {
+      // Anything with a value is still refused: the lifted entry is
+      // `async func()`, and a result would have to travel through
+      // `task.return` long after main returned.
+      throw new Error(
+        'A program that sleeps on the component target must declare ' +
+        '`main(): void` or `async function main(): Future<void>`. The ' +
+        'entry is lifted async, and an async lift returns its result ' +
+        'through task.return after the event loop finishes, which is ' +
+        'not where main returned it.'
+      );
+    }
   }
 
   let entrySig = wasm.getSignature(new GrowableArray<ValType>(0), i32Results());
@@ -140,7 +166,14 @@ export let prepareComponentEntry = (
   let b = new IrBuilder();
   let block = b.newBlock();
   b.switchTo(block);
-  b.callFunc(b.addRef(new IrRefFunc(main)), new GrowableArray<i32>(0), null);
+  if (mainIsAsync) {
+    // The frame future, deliberately unobserved (see above).
+    b.callFunc(b.addRef(new IrRefFunc(main)), new GrowableArray<i32>(0),
+        main.signature.returns[0]);
+  } else {
+    b.callFunc(b.addRef(new IrRefFunc(main)), new GrowableArray<i32>(0),
+        null);
+  }
   let code = b.callFunc(b.addRef(new IrRefFunc(poll)),
       new GrowableArray<i32>(0), new ValTypeI32());
   b.ret(code);
