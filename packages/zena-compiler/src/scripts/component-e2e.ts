@@ -282,7 +282,7 @@ const FIXTURES: Fixture[] = [
       {
         invoke: 'run()',
         expect: '()',
-        minWallMs: 250,
+        minWallMs: 900,
         maxCpuFraction: 0.5,
       },
     ],
