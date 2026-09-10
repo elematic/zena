@@ -890,10 +890,72 @@ world only {
         'ints: the result: stream elements other than u8 wait'),
       'a non-u8 stream element should refuse:\n' + source);
     isTrue(source.contains(
-        'status: the result: future values wait'),
-      'a future value should refuse:\n' + source);
+        'ping: the result: a bare future waits'),
+      'a bare future should refuse:\n' + source);
     // And the consumer fixture compiles to a component naming the
     // interface.
+    let bytes = compileFor(`${fixtures}/pipe-wit.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 10),
+        'wasi:pipe/pipes@1.0.0'),
+      'the pipe interface import is missing');
+  });
+
+  test('a WIT future<T> binds to Future through generated helpers',
+      (ctx: TestContext): void => {
+    // A `future<T>` in any position is one end-handle on the wire
+    // and a `Future` in the signature, moved by generated
+    // per-payload-type helpers: each payload type gets its own five
+    // canon builtin declares — the field disambiguated `#k` so
+    // several payload types coexist as distinct core imports — at
+    // the payload's own component type. A `result` payload rides
+    // `Outcome`, and a bare arm — in a future payload or a plain
+    // sync result — is a `void` lane filled by `witUnit()`.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:pipe/pipes`);
+    // A scalar-payload future result, lifted directly.
+    isTrue(source.contains('export function finish(): Future<u32> {'),
+      'a future result should be a Future:\n' + source);
+    isTrue(source.contains('return liftFuture0(got);'),
+      'a direct future result should lift through its helper:\n' +
+      source);
+    isTrue(source.contains(
+        '@external("canon", "future.read#0", ' +
+        '"future:wasi:pipe/pipes@1.0.0#u32,async")'),
+      "the read builtin is not typed by the payload:\n" + source);
+    // The future parameter: an Outcome payload with a bare ok arm.
+    isTrue(source.contains(
+        'export function deliver(done: Future<Outcome<void, ' +
+        'PipeError>>): u32 {'),
+      'a future parameter should carry Outcome with a void lane:\n' +
+      source);
+    isTrue(source.contains('deliver_raw(lowerFuture1(done))'),
+      'a future parameter should lower through its helper:\n' +
+      source);
+    isTrue(source.contains(
+        '@external("canon", "future.write#1", ' +
+        '"future:wasi:pipe/pipes@1.0.0#result<_, pipe-error>,async")'),
+      "the write builtin is not typed by the payload:\n" + source);
+    isTrue(source.contains('return new Ok<void, PipeError>(witUnit());'),
+      "the bare ok arm should lift as witUnit:\n" + source);
+    // The pump lowers the Outcome into the canonical variant layout.
+    isTrue(source.contains('async function pumpFuture1(value: ' +
+        'Future<Outcome<void, PipeError>>, end: i32): Future<void> {'),
+      'the lower pump is missing:\n' + source);
+    isTrue(source.contains('if (v is Ok<void, PipeError>) {'),
+      'the pump should lower the Outcome by case:\n' + source);
+    // A rich future inside a tuple lifts from memory by helper.
+    isTrue(source.contains('liftFuture2(loadI32('),
+      'a future in an aggregate should lift from memory:\n' + source);
+    isTrue(source.contains(
+        'Future<Outcome<Option<String>, PipeError>>'),
+      "the rich payload's Zena type is wrong:\n" + source);
+    // A sync bare-arm result rides the inline Result's void lane.
+    isTrue(source.contains(
+        'export function commit(): Result<void, PipeError> {'),
+      'a sync bare-arm result should be Result<void, E>:\n' + source);
+    isTrue(source.contains('return (true, witUnit(), _);'),
+      "the sync bare ok arm should return witUnit:\n" + source);
+    // And the consumer fixture compiles to a component.
     let bytes = compileFor(`${fixtures}/pipe-wit.zena`, 'component');
     isTrue(containsName(sectionPayload(bytes, 10),
         'wasi:pipe/pipes@1.0.0'),

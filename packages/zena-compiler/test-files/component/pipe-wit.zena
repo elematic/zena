@@ -1,13 +1,22 @@
-// Byte streams through a WIT-typed module: stream results and
-// parameters bind to `zena:stream`'s `Stream<u8>`, pumped across the
-// canonical ends by `zena:component-stream`. Compile-only — no host
-// serves `wasi:pipe` — so the point is the whole surface compiling:
-// a direct stream result, a stream parameter, streams inside a tuple
-// and an option, and an async transfer. The async transfer roots the
-// driver, so the entry is callback-lifted and `main` returns void.
-import { source, sink, tee, open, transfer } from 'wasi:pipe/pipes';
+// Byte streams and futures through a WIT-typed module: stream
+// positions bind to `zena:stream`'s `Stream<u8>` pumped by
+// `zena:component-stream`, future positions bind to `Future` moved by
+// generated per-payload-type helpers, and a bare result arm is a
+// `void` lane. Compile-only — no host serves `wasi:pipe` — so the
+// point is the whole surface compiling: a direct stream result, a
+// stream parameter, streams inside a tuple and an option, an async
+// transfer, a scalar-payload future result, a future parameter with
+// an Outcome payload, a rich future inside a tuple, and a sync
+// bare-arm result. The async transfer roots the driver, so the entry
+// is callback-lifted and `main` returns void.
+import {
+  source, sink, tee, open, transfer, finish, deliver, submit, commit,
+  PipeError, PipeErrorClosed,
+} from 'wasi:pipe/pipes';
 import { Stream, StreamWriter } from 'zena:stream';
-import { Some } from 'zena:option';
+import { Some, Option } from 'zena:option';
+import { Completer, drainMicrotasks, Future } from 'zena:async';
+import { Outcome, Ok } from 'zena:result';
 
 export function main(): void {
   let incoming = source();
@@ -19,5 +28,28 @@ export function main(): void {
   transfer(left);
   if (open('names') is Some<Stream<u8>>) {
     right.stop();
+  }
+  let counted = finish();
+  let done = new Completer<Outcome<void, PipeError>>();
+  deliver(done.future);
+  let (accepted, confirmation) = submit('names');
+  if (let (false, _, error) = commit()) {
+    if (error is PipeErrorClosed) {
+      incoming.stop();
+    }
+  }
+  consume(counted, accepted, confirmation);
+  drainMicrotasks();
+}
+
+async function consume(
+  counted: Future<u32>,
+  accepted: u32,
+  confirmation: Future<Outcome<Option<String>, PipeError>>
+): Future<void> {
+  let n = await counted;
+  let got = await confirmation;
+  if (n == accepted && got is Ok<Option<String>, PipeError>) {
+    return;
   }
 }

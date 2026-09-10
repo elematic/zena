@@ -1,17 +1,29 @@
-// Byte streams in signatures for the WIT-typed-module tests: a
-// direct stream result (one flat handle), a stream parameter, streams
-// inside aggregates (a spilled tuple result, an option), an async
-// function moving a stream — and the refused shapes, a non-u8 element
-// and a future value.
+// Byte streams and futures in signatures for the WIT-typed-module
+// tests: a direct stream result (one flat handle), a stream
+// parameter, streams inside aggregates (a spilled tuple result, an
+// option), an async function moving a stream; a scalar-payload future
+// result, a future parameter whose result payload has a bare ok arm,
+// a rich-payload future inside a tuple, a sync bare-arm result — and
+// the refused shapes, a non-u8 stream element and a bare future.
 package wasi:pipe@1.0.0;
 
 interface pipes {
+  variant pipe-error {
+    closed,
+    message(string),
+  }
+
   source: func() -> stream<u8>;
   sink: func(data: stream<u8>) -> u32;
   tee: func() -> tuple<stream<u8>, stream<u8>>;
   open: func(name: string) -> option<stream<u8>>;
   transfer: async func(data: stream<u8>) -> u64;
 
+  finish: func() -> future<u32>;
+  deliver: func(done: future<result<_, pipe-error>>) -> u32;
+  submit: func(name: string) -> tuple<u32, future<result<option<string>, pipe-error>>>;
+  commit: func() -> result<_, pipe-error>;
+
   ints: func() -> stream<u32>;
-  status: func() -> future<u32>;
+  ping: func() -> future;
 }

@@ -39,9 +39,15 @@
  * - `stream<u8>` in any position is `zena:stream`'s `Stream<u8>`: one
  *   end-handle on the wire, connected by `zena:component-stream`'s
  *   pumps (`lowerByteStream` going in, `liftByteStream` coming out).
+ * - `future<T>` in any position is a `Future`: one end-handle on the
+ *   wire, moved by generated per-payload-type helpers over the
+ *   `future.*` canon builtins (each declared at the payload's own
+ *   component type, `future:<interface>#<payload>`). A `result`
+ *   payload rides `Outcome`, and a bare result arm — `result<_, E>`
+ *   anywhere — is a `void` lane filled by `witUnit()`.
  *
  * A function whose signature needs more — non-u8 stream elements,
- * `future` values, variant payloads joining across core types — is
+ * bare futures, variant payloads joining across core types — is
  * listed in the synthesized module's header comment with its reason,
  * and importing it reports a missing export.
  */
@@ -66,6 +72,33 @@ import {
 export function isWitModulePath(path: String): boolean {
   return path.startsWith("wit:");
 }
+
+/**
+ * The WIT source the module being synthesized was parsed from. A
+ * future's canon type spelling carries its payload's source text,
+ * and classification — which sees only nodes — slices it out by span.
+ */
+var currentWitSource = "";
+
+/** A span's source text with whitespace runs collapsed to one space,
+ * so it can ride inside a generated string literal. */
+let spanText = (start: i32, end: i32): String => {
+  var out = "";
+  var pendingSpace = false;
+  for (var i = start; i < end; i += 1) {
+    let c = currentWitSource.getByteAt(i);
+    if (c == 32 || c == 9 || c == 10 || c == 13) {
+      pendingSpace = out != "";
+      continue;
+    }
+    if (pendingSpace) {
+      out = out + " ";
+      pendingSpace = false;
+    }
+    out = out + currentWitSource.sliceBytes(i, i + 1);
+  }
+  return out;
+};
 
 /** How a WIT type crosses the boundary in the rendered slice. */
 enum TyKind {
@@ -97,6 +130,9 @@ enum TyKind {
   /** `stream<u8>`: one end-handle i32 on the wire, `zena:stream`'s
    * `Stream<u8>` here, pumped by `zena:component-stream`. */
   StreamH,
+  /** `future<T>`: one end-handle i32 on the wire, a `Future` here,
+   * read and written by generated per-payload-type helpers. */
+  FutureH,
   /** Waits on the interop stages; `reason` says which. */
   Unsupported
 }
@@ -128,6 +164,9 @@ final class Ty {
    * Everywhere else a resource in value position is an implicit
    * `own`, which consumes — the wrapper is marked moved when lowered. */
   var isBorrow = false;
+  /** FutureH only: the payload's WIT source text, whitespace
+   * collapsed — the canon type spelling the generated builtins name. */
+  var witText = "";
   new(this.kind, this.scalar = "", this.typeName = "", this.reason = "");
 }
 
@@ -325,7 +364,22 @@ function classifyType(t: Type, ifaceItems: Array<InterfaceItem>): Ty {
     return ty;
   }
   if (t.tag == TypeTag.Future) {
-    return unsupported("future values wait on the interop stages");
+    let inner = t.inner;
+    if (inner == null) {
+      return unsupported("a bare future waits on the interop stages");
+    }
+    let payloadType = inner as Type;
+    let payload = classifyType(payloadType, ifaceItems);
+    if (payload.kind == TyKind.Unsupported) {
+      return payload;
+    }
+    let ty = new Ty(TyKind.FutureH);
+    ty.children.push(payload);
+    ty.size = 4;
+    ty.align = 4;
+    ty.flats = 1;
+    ty.witText = spanText(payloadType.span.start, payloadType.span.end);
+    return ty;
   }
   if (t.tag == TypeTag.Own || t.tag == TypeTag.Borrow) {
     let inner = t.inner as Type;
@@ -466,6 +520,18 @@ final class LiftEntry {
   new(this.key, this.name, this.ty);
 }
 
+/** One future payload type the module moves: owed its per-type canon
+ * builtin declares and its lift/lower helpers. */
+final class FutureEntry {
+  /** The payload's WIT text — the dedup key and the canon spelling. */
+  key: String;
+  /** This entry's suffix in generated names (`liftFuture0`). */
+  index: i32;
+  /** The FutureH that registered it. */
+  ty: Ty;
+  new(this.key, this.index, this.ty);
+}
+
 /** What one module's rendering pulled in, for its import lines. */
 final class SynthUses {
   var hasAsync = false;
@@ -496,6 +562,13 @@ final class SynthUses {
   var anyResource = false;
   /** Whether an async result rendered — pulls in Outcome/Ok/Err. */
   var outcome = false;
+  /** Whether generated code parks on `awaitWaitable`. */
+  var awaitWaitable = false;
+  /** Whether a bare result arm rendered — pulls in the `witUnit`
+   * helper, the one spellable void value. */
+  var unit = false;
+  /** Future payload types moved, each owed declares and helpers. */
+  futures = new GrowableArray<FutureEntry>();
   new();
 
   nextTmp(): i32 {
@@ -516,6 +589,17 @@ final class SynthUses {
       if (existing == name) { return; }
     }
     this.componentStream.push(name);
+  }
+
+  /** The generated-name suffix for `ty`'s future payload,
+   * registering the entry on first sight. */
+  futureIndexOf(ty: Ty): i32 {
+    for (let existing in this.futures) {
+      if (existing.key == ty.witText) { return existing.index; }
+    }
+    let index = this.futures.length;
+    this.futures.push(new FutureEntry(ty.witText, index, ty));
+    return index;
   }
 
   needEnumLift(ty: Ty): void {
@@ -552,6 +636,7 @@ function structuralKey(ty: Ty): String {
   if (ty.kind == TyKind.Str) { return "string"; }
   if (ty.kind == TyKind.BytesList) { return "bytes"; }
   if (ty.kind == TyKind.StreamH) { return "stream<u8>"; }
+  if (ty.kind == TyKind.FutureH) { return "future(" + ty.witText + ")"; }
   var key = if (ty.kind == TyKind.ListT) "list("
       else if (ty.kind == TyKind.OptionT) "option("
       else if (ty.kind == TyKind.ResultT) "result("
@@ -591,10 +676,28 @@ function zenaTypeOf(ty: Ty, uses: SynthUses): String {
     uses.stream = true;
     return "Stream<u8>";
   }
+  if (ty.kind == TyKind.FutureH) {
+    return "Future<" + futurePayloadZenaType(ty.children[0], uses) + ">";
+  }
   // Enumeration, Flags, RecordT, VariantT — all named. ResultT never
   // reaches here: top-level results are handled in renderFunc, and
   // nested ones are refused before rendering.
   return ty.typeName;
+}
+
+/**
+ * The Zena spelling of a future's payload. A `result` payload rides
+ * `Outcome` — a future's value must be storable, and the inline
+ * `Result` is return-position-only — with `void` standing in for a
+ * bare arm; everything else spells as itself.
+ */
+function futurePayloadZenaType(payload: Ty, uses: SynthUses): String {
+  if (payload.kind == TyKind.ResultT) {
+    uses.outcome = true;
+    return "Outcome<" + zenaTypeOf(payload.children[0], uses) + ", " +
+        zenaTypeOf(payload.children[1], uses) + ">";
+  }
+  return zenaTypeOf(payload, uses);
 }
 
 /** Whether `ty` (or anything inside it) cannot be lifted yet. */
@@ -603,8 +706,27 @@ function liftBlocker(ty: Ty, nested: boolean): String {
     return ty.reason;
   }
   if (ty.kind == TyKind.ResultT && nested) {
-    return "a nested result waits on the interop stages (Outcome " +
-        "construction at void arms)";
+    return "a nested result waits on the interop stages";
+  }
+  if (ty.kind == TyKind.FutureH) {
+    // The payload lifts inside the generated helper. A result payload
+    // is allowed — it lifts into Outcome there — so only its arms are
+    // nested; the helper also *lowers* the payload when the future is
+    // lowered, so both directions must work.
+    let payload = ty.children[0];
+    if (payload.kind == TyKind.ResultT) {
+      for (let arm in payload.children) {
+        if (isVoid(arm)) { continue; }
+        let blocked = liftBlocker(arm, true);
+        if (blocked != "") { return blocked; }
+        let unlowerable = lowerBlocker(arm);
+        if (unlowerable != "") { return unlowerable; }
+      }
+      return "";
+    }
+    let blocked = liftBlocker(payload, true);
+    if (blocked != "") { return blocked; }
+    return lowerBlocker(payload);
   }
   for (let child in ty.children) {
     if (isVoid(child)) { continue; }
@@ -706,6 +828,11 @@ function liftExprOf(ty: Ty, ptrExpr: String, uses: SynthUses): String {
     uses.useComponentStream("liftByteStream");
     return "liftByteStream(loadI32(" + ptrExpr + "))";
   }
+  if (ty.kind == TyKind.FutureH) {
+    uses.useAbi("loadI32");
+    return "liftFuture" + i32ToString(uses.futureIndexOf(ty)) +
+        "(loadI32(" + ptrExpr + "))";
+  }
   // RecordT, VariantT, OptionT, TupleT, ListT: a generated helper.
   return uses.liftNameOf(ty) + "(" + ptrExpr + ")";
 }
@@ -755,7 +882,8 @@ function flatCoreSlots(ty: Ty): GrowableArray<String> | null {
     return out;
   }
   if (ty.kind == TyKind.Enumeration || ty.kind == TyKind.Flags ||
-      ty.kind == TyKind.ResourceH || ty.kind == TyKind.StreamH) {
+      ty.kind == TyKind.ResourceH || ty.kind == TyKind.StreamH ||
+      ty.kind == TyKind.FutureH) {
     out.push("i32");
     return out;
   }
@@ -813,6 +941,11 @@ function lowerBlocker(ty: Ty): String {
     return "a result parameter waits on the interop stages (the " +
         "inline Result is return-position-only)";
   }
+  if (ty.kind == TyKind.FutureH) {
+    // The generated helper moves the payload both ways; the lift
+    // blocker's future case checks both directions.
+    return liftBlocker(ty, true);
+  }
   for (let child in ty.children) {
     if (isVoid(child)) { continue; }
     let blocked = lowerBlocker(child);
@@ -828,6 +961,11 @@ function mayStage(ty: Ty): boolean {
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList ||
       ty.kind == TyKind.ListT) {
     return true;
+  }
+  if (ty.kind == TyKind.FutureH) {
+    // The payload stages inside the generated pump's own arena range,
+    // not the wrapper's frame.
+    return false;
   }
   for (let child in ty.children) {
     if (mayStage(child)) {
@@ -897,6 +1035,41 @@ function lowerMemStmts(sb: StringBuilder, ty: Ty, value: String,
     uses.useComponentStream("lowerByteStream");
     sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
         .append("lowerByteStream(").append(value).append("));\n");
+    return;
+  }
+  if (ty.kind == TyKind.FutureH) {
+    uses.useAbi("storeI32");
+    sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
+        .append("lowerFuture").append(i32ToString(uses.futureIndexOf(ty)))
+        .append("(").append(value).append("));\n");
+    return;
+  }
+  if (ty.kind == TyKind.ResultT) {
+    // Only reachable as a future payload: the value is an Outcome,
+    // and it lowers as the canonical two-case variant.
+    uses.outcome = true;
+    let okZ = zenaTypeOf(ty.children[0], uses);
+    let errZ = zenaTypeOf(ty.children[1], uses);
+    let payoff = payloadOffset(ty);
+    uses.useAbi("storeU8");
+    sb.append(indent).append("if (").append(value).append(" is Ok<")
+        .append(okZ).append(", ").append(errZ).append(">) {\n");
+    sb.append(indent).append("  storeU8(").append(ptrExpr)
+        .append(", 0);\n");
+    if (!isVoid(ty.children[0])) {
+      lowerMemStmts(sb, ty.children[0],
+          "(" + value + " as Ok<" + okZ + ", " + errZ + ">).value",
+          displaced(ptrExpr, payoff), indent + "  ", uses);
+    }
+    sb.append(indent).append("} else {\n");
+    sb.append(indent).append("  storeU8(").append(ptrExpr)
+        .append(", 1);\n");
+    if (!isVoid(ty.children[1])) {
+      lowerMemStmts(sb, ty.children[1],
+          "(" + value + " as Err<" + okZ + ", " + errZ + ">).error",
+          displaced(ptrExpr, payoff), indent + "  ", uses);
+    }
+    sb.append(indent).append("}\n");
     return;
   }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
@@ -1062,6 +1235,12 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
         .append(value).append(");\n");
     return 1;
   }
+  if (ty.kind == TyKind.FutureH) {
+    sb.append(indent).append(slots[base]).append(" = lowerFuture")
+        .append(i32ToString(uses.futureIndexOf(ty))).append("(")
+        .append(value).append(");\n");
+    return 1;
+  }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
     let stage = if (ty.kind == TyKind.Str) "stageString"
         else "stageByteList";
@@ -1211,6 +1390,134 @@ function emitLiftHelper(sb: StringBuilder, entry: LiftEntry,
     sb.append("  if (count > 0) {\n    freeLifted(base);\n  }\n");
     sb.append("  return out;\n");
   }
+  sb.append("}\n");
+}
+
+/**
+ * One future payload type's generated surface: the five per-type
+ * canon builtin declares (each field disambiguated `#k`, because the
+ * canon entry's type is part of which builtin it is, and every
+ * declaration is its own core import), the lift helper that reads a
+ * received end into a `Future`, and the lower helper that makes a
+ * fresh pair, hands over the readable end and pumps the guest future
+ * into the writable one. A `result` payload rides `Outcome` — a
+ * future's value must be storable — with `witUnit()` filling a bare
+ * arm.
+ */
+function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
+    interfaceName: String, uses: SynthUses): void {
+  let k = i32ToString(entry.index);
+  let payload = entry.ty.children[0];
+  let canonType = "future:" + interfaceName + "#" + entry.ty.witText;
+  let z = futurePayloadZenaType(payload, uses);
+  uses.awaitWaitable = true;
+  uses.error = true;
+  uses.useAbi("resultArea");
+  uses.useAbi("freeLifted");
+  uses.useAbi("stagedMark");
+  uses.useAbi("releaseStagedFrom");
+  uses.useAbi("stageBuffer");
+  let declare = (builtin: String, options: String, name: String,
+      sig: String): void => {
+    sb.append("@external(\"canon\", \"").append(builtin).append("#")
+        .append(k).append("\", \"").append(canonType).append(options)
+        .append("\")\n");
+    sb.append("declare function ").append(name).append(k)
+        .append("_raw").append(sig).append(";\n");
+  };
+  declare("future.new", "", "futureNew", "(): u64");
+  declare("future.read", ",async", "futureRead",
+      "(end: i32, ptr: i32): i32");
+  declare("future.write", ",async", "futureWrite",
+      "(end: i32, ptr: i32): i32");
+  declare("future.drop-readable", "", "futureDropReadable",
+      "(end: i32): void");
+  declare("future.drop-writable", "", "futureDropWritable",
+      "(end: i32): void");
+
+  // The lift: one read, parked on the driver when BLOCKED (-1); the
+  // low CopyResult bits are 0 (COMPLETED) exactly when a value
+  // arrived, and a peer that dropped its end without writing fails
+  // the future with a throw.
+  sb.append("async function liftFuture").append(k)
+      .append("(end: i32): Future<").append(z).append("> {\n");
+  sb.append("  let ret = resultArea(")
+      .append(i32ToString(payload.size)).append(");\n");
+  sb.append("  var packed = futureRead").append(k)
+      .append("_raw(end, ret);\n");
+  sb.append("  if (packed == -1) {\n");
+  sb.append("    packed = await awaitWaitable(end);\n  }\n");
+  sb.append("  futureDropReadable").append(k).append("_raw(end);\n");
+  sb.append("  if ((packed & 15) != 0) {\n");
+  sb.append("    freeLifted(ret);\n");
+  sb.append("    throw new Error(")
+      .append("'the future was dropped without a value');\n  }\n");
+  if (payload.kind == TyKind.ResultT) {
+    let okZ = zenaTypeOf(payload.children[0], uses);
+    let errZ = zenaTypeOf(payload.children[1], uses);
+    let payoff = payloadOffset(payload);
+    var okExpr = "ok";
+    var errExpr = "err";
+    if (isVoid(payload.children[0])) {
+      uses.unit = true;
+      okExpr = "witUnit()";
+    }
+    if (isVoid(payload.children[1])) {
+      uses.unit = true;
+      errExpr = "witUnit()";
+    }
+    sb.append("  if (").append(discLoad(1, "ret", uses))
+        .append(" == 0) {\n");
+    if (okExpr == "ok") {
+      sb.append("    let ok = ")
+          .append(liftExprOf(payload.children[0],
+              "ret + " + i32ToString(payoff), uses))
+          .append(";\n");
+    }
+    sb.append("    freeLifted(ret);\n");
+    sb.append("    return new Ok<").append(okZ).append(", ")
+        .append(errZ).append(">(").append(okExpr).append(");\n  }\n");
+    if (errExpr == "err") {
+      sb.append("  let err = ")
+          .append(liftExprOf(payload.children[1],
+              "ret + " + i32ToString(payoff), uses))
+          .append(";\n");
+    }
+    sb.append("  freeLifted(ret);\n");
+    sb.append("  return new Err<").append(okZ).append(", ")
+        .append(errZ).append(">(").append(errExpr).append(");\n");
+  } else {
+    sb.append("  let out = ")
+        .append(liftExprOf(payload, "ret", uses)).append(";\n");
+    sb.append("  freeLifted(ret);\n");
+    sb.append("  return out;\n");
+  }
+  sb.append("}\n");
+
+  // The lower: a fresh pair, the readable end handed over as the
+  // value, and a pump that writes the guest future's value once it
+  // settles. The staging range spans the write's await — the callee
+  // lifts the payload when the copy completes, not before.
+  sb.append("function lowerFuture").append(k).append("(value: Future<")
+      .append(z).append(">): i32 {\n");
+  sb.append("  let pair = futureNew").append(k).append("_raw();\n");
+  sb.append("  pumpFuture").append(k)
+      .append("(value, (pair >> 32) as i32);\n");
+  sb.append("  return pair as i32;\n}\n");
+  sb.append("async function pumpFuture").append(k)
+      .append("(value: Future<").append(z)
+      .append(">, end: i32): Future<void> {\n");
+  sb.append("  let v = await value;\n");
+  sb.append("  let m0 = stagedMark();\n");
+  sb.append("  let buf = stageBuffer(")
+      .append(i32ToString(payload.size)).append(");\n");
+  lowerMemStmts(sb, payload, "v", "buf", "  ", uses);
+  sb.append("  var packed = futureWrite").append(k)
+      .append("_raw(end, buf);\n");
+  sb.append("  if (packed == -1) {\n");
+  sb.append("    packed = await awaitWaitable(end);\n  }\n");
+  sb.append("  releaseStagedFrom(m0);\n");
+  sb.append("  futureDropWritable").append(k).append("_raw(end);\n");
   sb.append("}\n");
 }
 
@@ -1407,7 +1714,9 @@ export function synthesizeWitModule(canonicalPath: String): String {
   let namespace = spec.sliceBytes(0, colon);
   let interfacePath = spec.sliceBytes(colon + 1, spec.length);
 
-  let ast = parse(readWitSource(witRoot));
+  let witSource = readWitSource(witRoot);
+  currentWitSource = witSource;
+  let ast = parse(witSource);
   let iface = findInterface(ast, namespace, interfacePath);
   let version = iface.packageName.version;
   var interfaceName = namespace + ":" + interfacePath;
@@ -1457,11 +1766,27 @@ export function synthesizeWitModule(canonicalPath: String): String {
   }
   // Lift helpers registered while rendering may register more as they
   // are emitted (a record's field lifting a nested option), so this
-  // drains a worklist rather than walking a snapshot.
-  while (uses.emittedLifts < uses.lifts.length) {
-    let entry = uses.lifts[uses.emittedLifts];
-    uses.emittedLifts += 1;
-    emitLiftHelper(body, entry, uses);
+  // drains a worklist rather than walking a snapshot. Future helpers
+  // join the same drain: emitting one may register payload lift
+  // helpers, and a payload may register further futures.
+  var emittedFutures = 0;
+  while (uses.emittedLifts < uses.lifts.length ||
+      emittedFutures < uses.futures.length) {
+    while (uses.emittedLifts < uses.lifts.length) {
+      let entry = uses.lifts[uses.emittedLifts];
+      uses.emittedLifts += 1;
+      emitLiftHelper(body, entry, uses);
+    }
+    if (emittedFutures < uses.futures.length) {
+      emitFutureHelpers(body, uses.futures[emittedFutures],
+          interfaceName, uses);
+      emittedFutures += 1;
+    }
+  }
+  if (uses.unit) {
+    body.append("/** The one spellable void value: a bare result ")
+        .append("arm's stand-in. */\n");
+    body.append("function witUnit(): void {}\n");
   }
   for (let lifted in uses.enumLifts) {
     // The host is obligated to produce a valid discriminant, but a
@@ -1517,9 +1842,16 @@ export function synthesizeWitModule(canonicalPath: String): String {
   if (uses.error) {
     sb.append("import { Error } from 'zena:error';\n");
   }
-  if (uses.hasAsync) {
+  if (uses.hasAsync || uses.futures.length > 0) {
     sb.append("import { Future } from 'zena:async';\n");
+  }
+  if (uses.hasAsync && uses.awaitWaitable) {
+    sb.append("import { awaitPacked, awaitWaitable } " +
+        "from 'zena:component-async';\n");
+  } else if (uses.hasAsync) {
     sb.append("import { awaitPacked } from 'zena:component-async';\n");
+  } else if (uses.awaitWaitable) {
+    sb.append("import { awaitWaitable } from 'zena:component-async';\n");
   }
   if (uses.anyResource) {
     // After the imports: a declaration among them is a parse error.
@@ -1661,18 +1993,14 @@ function renderFuncIn(
     if (blocked != "") {
       return "the result: " + blocked;
     }
-    if (resultTy.kind == TyKind.ResultT) {
-      if (isVoid(resultTy.children[0]) || isVoid(resultTy.children[1])) {
-        return "a bare result arm waits on zero-width Result lanes";
-      }
-    }
     if (resultTy.kind != TyKind.Scalar) {
       anyRich = true;
     }
     if (resultTy.flats == 1 && resultTy.kind != TyKind.Enumeration &&
         resultTy.kind != TyKind.Flags && resultTy.kind != TyKind.Scalar &&
         resultTy.kind != TyKind.ResourceH &&
-        resultTy.kind != TyKind.StreamH) {
+        resultTy.kind != TyKind.StreamH &&
+        resultTy.kind != TyKind.FutureH) {
       return "a single-flat aggregate result waits on the interop stages";
     }
   }
@@ -1773,7 +2101,8 @@ function renderFuncIn(
       rawSig.append("a").append(i32ToString(i)).append(": u32");
       rawIndex += 1;
     } else if (params[i].kind == TyKind.ResourceH ||
-        params[i].kind == TyKind.StreamH) {
+        params[i].kind == TyKind.StreamH ||
+        params[i].kind == TyKind.FutureH) {
       rawSig.append("a").append(i32ToString(i)).append(": i32");
       rawIndex += 1;
     } else if (aggregate(params[i].kind)) {
@@ -1803,7 +2132,8 @@ function renderFuncIn(
   } else if (resultTy.kind == TyKind.Flags) {
     "u32"
   } else if (resultTy.kind == TyKind.ResourceH ||
-      resultTy.kind == TyKind.StreamH) {
+      resultTy.kind == TyKind.StreamH ||
+      resultTy.kind == TyKind.FutureH) {
     "i32"
   } else {
     resultTy.scalar
@@ -1913,6 +2243,13 @@ function renderFuncIn(
       argIndex += 1;
       continue;
     }
+    if (params[i].kind == TyKind.FutureH) {
+      callArgs.append("lowerFuture")
+          .append(i32ToString(uses.futureIndexOf(params[i])))
+          .append("(").append(paramNames[i]).append(")");
+      argIndex += 1;
+      continue;
+    }
     if (aggregate(params[i].kind)) {
       // Zero-initialized slot variables, then the lowering statements:
       // an untaken option or a shorter variant arm leaves its slots at
@@ -1990,26 +2327,47 @@ function renderFuncIn(
       let payoff = payloadOffset(resultTy);
       let okZ = zenaTypeOf(resultTy.children[0], uses);
       let errZ = zenaTypeOf(resultTy.children[1], uses);
+      // A bare arm has no bytes to lift and no local to bind — a
+      // `void` local is not a thing — so its value is a `witUnit()`
+      // call in argument position.
+      var okExpr = "ok";
+      var errExpr = "err";
+      if (isVoid(resultTy.children[0])) {
+        uses.unit = true;
+        okExpr = "witUnit()";
+      }
+      if (isVoid(resultTy.children[1])) {
+        uses.unit = true;
+        errExpr = "witUnit()";
+      }
       sb.append("  if (").append(discLoad(1, "ret", uses))
-          .append(" == 0) {\n    let ok = ")
-          .append(liftExprOf(resultTy.children[0],
-              "ret + " + i32ToString(payoff), uses))
-          .append(";\n    freeLifted(ret);\n");
+          .append(" == 0) {\n");
+      if (okExpr == "ok") {
+        sb.append("    let ok = ")
+            .append(liftExprOf(resultTy.children[0],
+                "ret + " + i32ToString(payoff), uses))
+            .append(";\n");
+      }
+      sb.append("    freeLifted(ret);\n");
       if (func.isAsync) {
         sb.append("    return new Ok<").append(okZ).append(", ")
-            .append(errZ).append(">(ok);\n  }\n");
+            .append(errZ).append(">(").append(okExpr).append(");\n  }\n");
       } else {
-        sb.append("    return (true, ok, _);\n  }\n");
+        sb.append("    return (true, ").append(okExpr)
+            .append(", _);\n  }\n");
       }
-      sb.append("  let err = ")
-          .append(liftExprOf(resultTy.children[1],
-              "ret + " + i32ToString(payoff), uses))
-          .append(";\n  freeLifted(ret);\n");
+      if (errExpr == "err") {
+        sb.append("  let err = ")
+            .append(liftExprOf(resultTy.children[1],
+                "ret + " + i32ToString(payoff), uses))
+            .append(";\n");
+      }
+      sb.append("  freeLifted(ret);\n");
       if (func.isAsync) {
         sb.append("  return new Err<").append(okZ).append(", ")
-            .append(errZ).append(">(err);\n");
+            .append(errZ).append(">(").append(errExpr).append(");\n");
       } else {
-        sb.append("  return (false, _, err);\n");
+        sb.append("  return (false, _, ").append(errExpr).append(");\n");
       }
     } else {
       sb.append("  let out = ")
@@ -2030,6 +2388,10 @@ function renderFuncIn(
   } else if (resultTy.kind == TyKind.StreamH) {
     uses.useComponentStream("liftByteStream");
     sb.append("  return liftByteStream(got);\n");
+  } else if (resultTy.kind == TyKind.FutureH) {
+    sb.append("  return liftFuture")
+        .append(i32ToString(uses.futureIndexOf(resultTy)))
+        .append("(got);\n");
   } else if (!func.isAsync && rawResult != "void") {
     sb.append("  return got;\n");
   }

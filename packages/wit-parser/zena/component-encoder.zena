@@ -51,12 +51,35 @@ import {
   InterfaceItemTag, TypeDef, TypeDefTag, Type, TypeTag, NamedFunc, Func,
   ResourceFunc, ResourceFuncTag, Use, UsePath, UsePathTag,
   PackageName, WorldItem, WorldItemTag, Import, Export, ExternKind,
-  ExternKindTag, Id, Field, Case, EnumCaseDef, FlagDef,
+  ExternKindTag, Id, Field, Case, EnumCaseDef, FlagDef, Parser,
 } from './parser.zena';
 
 /** A failure to encode: a construct the encoder cannot express yet. */
 export class EncodeError extends Error {
   new(message: String) : super(message);
+}
+
+/**
+ * A WIT type expression, parsed alone: wrapped in a one-alias
+ * document so the ordinary parser reads it, then unwrapped. Names
+ * stay syntactic — the caller resolves them against an interface.
+ */
+function parseTypeText(text: String): Type {
+  let ast = Parser.parse(
+      "package canon:payload;\ninterface t {\n  type p = " + text +
+      ";\n}\n");
+  for (let item in ast.items) {
+    if (item.tag != AstItemTag.Interface) { continue; }
+    for (let ii in (item.interfaceDef as InterfaceDef).items) {
+      if (ii.tag != InterfaceItemTag.TypeDef) { continue; }
+      let td = ii.typeDef as TypeDef;
+      if (td.tag == TypeDefTag.Alias) {
+        return td.aliasType as Type;
+      }
+    }
+  }
+  throw new EncodeError("cannot parse the canon type payload '" +
+      text + "'");
 }
 
 // Component binary section ids. They are not core wasm's — a component
@@ -168,6 +191,14 @@ final class Scope {
   /** Structural key of an anonymous type → its index here. */
   anon = new HashMap<String, i32>();
   var atComponentLevel = false;
+  /**
+   * Component-level only: the interface whose declarations resolve
+   * named types this scope meets, each alias-exported from the
+   * imported instance on first use. Set for a canon builtin's type —
+   * a `future<result<option<trailers>, error-code>>` names the
+   * interface's types from outside any instance scope.
+   */
+  var aliasSource: RegisteredInterface | null = null;
   new();
 }
 
@@ -457,6 +488,51 @@ export final class ComponentTypeEncoder {
           qualifiedInterface + "'");
     }
     return this.#aliasTypeExport(qualifiedInterface, typeName);
+  }
+
+  /**
+   * The component-level type index of `future<payloadText>`, the
+   * payload parsed as WIT against `qualifiedInterface`'s declarations
+   * — named types alias-exported from the imported instance on first
+   * use. Public for the canon builtins: the future.* family's canon
+   * entry carries the future's own component type, and a payload like
+   * `result<option<trailers>, error-code>` names the interface's
+   * types from outside any instance scope. An empty `payloadText` is
+   * the bare `future`.
+   */
+  aliasFutureType(qualifiedInterface: String, payloadText: String): i32 {
+    let key = qualifiedInterface + "#future<" + payloadText + ">";
+    if (let (true, existing) = this.#aliasedTypes.get(key)) {
+      return existing;
+    }
+    let reg = this.#findRegistered(qualifiedInterface);
+    if (reg == null) {
+      throw new EncodeError("'" + qualifiedInterface +
+          "' is not a known interface");
+    }
+    if (!this.#instanceIndex.has(qualifiedInterface)) {
+      throw new EncodeError("'" + qualifiedInterface +
+          "' is not imported yet, so nothing can use its types");
+    }
+    let scope = new Scope();
+    scope.atComponentLevel = true;
+    scope.typeCount = this.#result.typeCount;
+    scope.aliasSource = reg;
+    var inner = -1;
+    if (payloadText != "") {
+      inner = this.#encodeType(scope, parseTypeText(payloadText));
+    }
+    let body = new ByteBuffer();
+    body.writeByte(0x65);
+    if (payloadText != "") {
+      body.writeByte(0x01);
+      writeValType(body, inner);
+    } else {
+      body.writeByte(0x00);
+    }
+    let index = this.#declareType(scope, body);
+    this.#aliasedTypes[key] = index;
+    return index;
   }
 
   /** The registered interface named `qualified`, or null. */
@@ -864,6 +940,23 @@ export final class ComponentTypeEncoder {
     if (let (true, index) = scope.named.get(name)) {
       return index;
     }
+    let source = scope.aliasSource;
+    if (source != null) {
+      let reg = source as RegisteredInterface;
+      if (!this.#declaresType(reg, name)) {
+        throw new EncodeError("'" + reg.qualifiedName +
+            "' declares no type '" + name + "'");
+      }
+      let index = this.#aliasTypeExport(reg.qualifiedName, name);
+      // The alias appended a component-level type; a component-level
+      // scope counts the same index space, so it catches up.
+      scope.typeCount = this.#result.typeCount;
+      scope.named[name] = index;
+      if (this.#isResource(reg, name)) {
+        scope.resourceIndices[index] = true;
+      }
+      return index;
+    }
     if (scope.atComponentLevel) {
       throw new EncodeError("a world-level function names type '" +
           name + "', which needs world-level `use` encoding");
@@ -871,6 +964,28 @@ export final class ComponentTypeEncoder {
     throw new EncodeError("type '" + name +
         "' is not defined before its first use; declaration order " +
         "is encoding order");
+  }
+
+  /** Whether `reg` declares `name` — as a type definition or a `use`d
+   * name — so an alias export of it can be valid. */
+  #declaresType(reg: RegisteredInterface, name: String): boolean {
+    for (let item in reg.items) {
+      if (item.tag == InterfaceItemTag.TypeDef) {
+        if ((item.typeDef as TypeDef).name.name == name) {
+          return true;
+        }
+      } else if (item.tag == InterfaceItemTag.Use) {
+        for (let n in (item.use as Use).names) {
+          let asName = n.asName;
+          let localName =
+              if (asName == null) n.name.name else (asName as Id).name;
+          if (localName == name) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
   }
 
   /** An `own`/`borrow` of `resourceIndex`, deduplicated like any anon. */

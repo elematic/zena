@@ -1378,8 +1378,29 @@ guest reader drops the readable end. Synthesized WIT modules bind
 driver's rooting gate opens for `awaitWaitable` as well as
 `awaitPacked`, so a stream-only program still gets the async entry.
 
-Still C6: non-u8 stream elements, and `future.read` for outcomes that
-are actually wanted (`future<T>` values still refuse).
+**`future<T>` values are built.** A future in any WIT position is one
+end-handle on the wire and a `Future` in the signature, moved by
+per-payload-type helpers the synthesizer generates: five canon
+builtin declares — the field disambiguated (`future.read#0`,
+`future.read#1`) so several payload types coexist as distinct core
+imports and canon entries — plus a lift helper (read once, park on
+the driver when BLOCKED, drop the readable end, fail the future with
+a throw when the peer dropped without writing) and a lower helper (a
+fresh pair, the readable end handed over, a pump writing the guest
+future's settled value). The canon entry's type is the future's own
+component type: the encoder's `aliasFutureType` parses the payload's
+WIT text against the imported interface, alias-exporting every named
+type it mentions — which is how a payload like
+`result<option<trailers>, error-code>` reaches types only an
+instance export can name. Read/write entries at such types carry
+`realloc` beside the memory, because lowering a rich payload into
+the guest allocates. A `result` payload rides `Outcome` (a future's
+value must be storable), and a bare result arm — in a future payload
+or a plain sync result — is a `void` lane filled by a generated
+`witUnit()`, which probing showed constructs and matches fine in
+both the inline `Result` and `Outcome`.
+
+Still C6: non-u8 stream elements and the bare `future` (no payload).
 
 ---
 

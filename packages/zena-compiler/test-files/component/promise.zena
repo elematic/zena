@@ -1,0 +1,68 @@
+// A canonical future, guest to guest: a fresh pair from
+// `future.new`, one task reading the readable end and one writing
+// the writable end, both async-lowered — whichever side arrives
+// first parks on the driver's waitable set and is resumed by its
+// copy event. The value crosses linear memory, so a printed `42`
+// proves new/read/write/drop and the driver's FUTURE_* dispatch
+// without a host interface. The hand-written builtins here use the
+// primitive `future<u32>` spelling; the synthesized modules' rich
+// `future:<interface>#<payload>` spelling is unit-tested instead,
+// since no host serves a fixture interface.
+import { console } from 'zena:console';
+import { Memory, defaultAllocator } from 'zena:memory';
+import { awaitWaitable } from 'zena:component-async';
+import { drainMicrotasks } from 'zena:async';
+import { i32ToString } from 'zena:string-convert';
+import { Error } from 'zena:error';
+
+@external("canon", "future.new", "future<u32>")
+declare function futureNew(): u64;
+@external("canon", "future.read", "future<u32>,async")
+declare function futureRead(end: i32, ptr: i32): i32;
+@external("canon", "future.write", "future<u32>,async")
+declare function futureWrite(end: i32, ptr: i32): i32;
+@external("canon", "future.drop-readable", "future<u32>")
+declare function futureDropReadable(end: i32): void;
+@external("canon", "future.drop-writable", "future<u32>")
+declare function futureDropWritable(end: i32): void;
+
+let mem = Memory.default;
+
+async function produce(end: i32): Future<void> {
+  if (let (true, buf) = defaultAllocator.alloc(4)) {
+    mem.setI32(buf, 42);
+    var packed = futureWrite(end, buf);
+    if (packed == -1) {
+      packed = await awaitWaitable(end);
+    }
+    defaultAllocator.free(buf);
+    futureDropWritable(end);
+    return;
+  }
+  throw new Error('could not allocate the write buffer');
+}
+
+async function consume(end: i32): Future<void> {
+  if (let (true, buf) = defaultAllocator.alloc(4)) {
+    var packed = futureRead(end, buf);
+    if (packed == -1) {
+      packed = await awaitWaitable(end);
+    }
+    futureDropReadable(end);
+    if ((packed & 15) == 0) {
+      console.log(i32ToString(mem.getI32(buf)));
+    } else {
+      console.log('dropped');
+    }
+    defaultAllocator.free(buf);
+    return;
+  }
+  throw new Error('could not allocate the read buffer');
+}
+
+export function main(): void {
+  let pair = futureNew();
+  consume(pair as i32);
+  produce((pair >> 32) as i32);
+  drainMicrotasks();
+}

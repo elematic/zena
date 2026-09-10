@@ -204,6 +204,21 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'promise',
+    wasi: ['p3=y'],
+    // A canonical future round trip inside one guest: `future.new`,
+    // an async-lowered read parked on the driver, the write resuming
+    // it through a FUTURE_READ event, and both ends dropped. The
+    // printed value crossed linear memory.
+    invocations: [
+      {
+        invoke: 'run()',
+        expect: '()',
+        expectOutput: ['42'],
+      },
+    ],
+  },
+  {
     name: 'clock',
     wasi: ['p3=y'],
     // A real monotonic reading, so the value is not predictable; that it

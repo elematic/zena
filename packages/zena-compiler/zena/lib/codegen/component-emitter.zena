@@ -469,11 +469,27 @@ let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => 
 };
 
 /**
+ * A builtin field name without its `#<n>` disambiguator. A per-type
+ * builtin may be declared at several types — `future.read#0`,
+ * `future.read#1` — and each declaration is its own core import and
+ * canon entry, but the opcode is the base name's.
+ */
+export let canonBuiltinBaseName = (name: String): String => {
+  for (var i = 0; i < name.length; i += 1) {
+    if (name.getByteAt(i) == 35) { // '#'
+      return name.sliceBytes(0, i);
+    }
+  }
+  return name;
+};
+
+/**
  * The canonical-builtin opcodes this emitter knows: the waitable-set
  * family the async event loop needs, and the stream/future families
  * (C6). Resources' builtins wait on the interop stages.
  */
-let canonBuiltinOpcode = (name: String): i32 => {
+let canonBuiltinOpcode = (fieldName: String): i32 => {
+  let name = canonBuiltinBaseName(fieldName);
   if (name == "waitable-set.new") { return 0x1f; }
   if (name == "waitable-set.wait") { return 0x20; }
   if (name == "waitable-set.drop") { return 0x22; }
@@ -508,9 +524,28 @@ export let isTypedCanonBuiltin = (name: String): boolean =>
     name.startsWith("resource.");
 
 /** Whether this typed builtin's canon entry also carries canonopts. */
-let typedBuiltinTakesOpts = (name: String): boolean =>
-    name == "stream.read" || name == "stream.write" ||
-    name == "future.read" || name == "future.write";
+let typedBuiltinTakesOpts = (fieldName: String): boolean => {
+  let name = canonBuiltinBaseName(fieldName);
+  return name == "stream.read" || name == "stream.write" ||
+      name == "future.read" || name == "future.write";
+};
+
+/**
+ * Whether a typed builtin's payload moves through linear memory —
+ * which its read/write canon entries then name as an option. A
+ * `stream<u8>` spelling carries an element; a `future:<iface>#<p>`
+ * spelling carries one exactly when the payload text is non-empty.
+ */
+let canonTypeUsesMemory = (canonType: String): boolean => {
+  if (canonType.startsWith("future:")) {
+    var hashAt = -1;
+    for (var i = 0; i < canonType.length; i += 1) {
+      if (canonType.getByteAt(i) == 35) { hashAt = i; break; } // '#'
+    }
+    return hashAt >= 0 && hashAt < canonType.length - 1;
+  }
+  return canonType.contains("<");
+};
 
 /** The WIT spelling of a primitive, as a component primvaltype, or 0. */
 let witPrimByte = (name: String): i32 => {
@@ -701,7 +736,7 @@ export let emitComponent = (
   // their canon entries name the memory — the same early placement a
   // memory-carrying lower forces.
   for (let b in shape.builtins) {
-    if (typedBuiltinTakesOpts(b.name) && b.canonType.contains("<")) {
+    if (typedBuiltinTakesOpts(b.name) && canonTypeUsesMemory(b.canonType)) {
       lowersNeedMemory = true;
     }
     if (b.name == "waitable-set.wait") {
@@ -821,11 +856,14 @@ export let emitComponent = (
   if (shape.builtins.length > 0) {
     // Resource types are not declared here: they are nominal — the
     // imported instance's own — so the encoder alias-exported them and
-    // reported their indices in `canonTypeIndices`. Only the
-    // structural stream/future types get a literal type section.
+    // reported their indices in `canonTypeIndices`. `future:<iface>#`
+    // types went the same way — their payloads name the interface's
+    // types, which only aliases reach. Only the primitive-element
+    // stream/future spellings get a literal type section.
     let canonTypes = new GrowableArray<String>();
     for (let b in shape.builtins) {
-      if (b.canonType == "" || b.canonType.startsWith("resource:")) {
+      if (b.canonType == "" || b.canonType.startsWith("resource:") ||
+          b.canonType.startsWith("future:")) {
         continue;
       }
       var known = false;
@@ -844,7 +882,8 @@ export let emitComponent = (
       writeSection(out, ComponentSectionId.Type as i32, types);
     }
     let canonTypeIndexOf = (canonType: String): i32 => {
-      if (canonType.startsWith("resource:")) {
+      if (canonType.startsWith("resource:") ||
+          canonType.startsWith("future:")) {
         if (let (true, index) = encoded.canonTypeIndices.get(canonType)) {
           return index;
         }
@@ -877,19 +916,30 @@ export let emitComponent = (
       if (isTypedCanonBuiltin(b.name)) {
         builtins.writeULEB128(canonTypeIndexOf(b.canonType));
         if (typedBuiltinTakesOpts(b.name)) {
+          // A `future:` payload may hold strings or lists, which a
+          // read lowers into the guest through `realloc`; a stream's
+          // primitive elements land in the caller's buffer and need
+          // none.
+          let withRealloc = b.canonType.startsWith("future:") &&
+              canonTypeUsesMemory(b.canonType);
           var optionCount = 0;
           if (b.isAsync) { optionCount += 1; }
-          if (b.canonType.contains("<")) { optionCount += 1; }
+          if (canonTypeUsesMemory(b.canonType)) { optionCount += 1; }
+          if (withRealloc) { optionCount += 1; }
           builtins.writeULEB128(optionCount);
           if (b.isAsync) {
             builtins.writeByte(0x06); // async: BLOCKED instead of waiting
           }
-          if (b.canonType.contains("<")) {
+          if (canonTypeUsesMemory(b.canonType)) {
             // The element moves through linear memory: the runtime
             // memory module's, aliased as core memory 0 ahead of the
             // lowers by the same trigger that placed it early.
             builtins.writeByte(0x03); // memory
             builtins.writeULEB128(0);
+          }
+          if (withRealloc) {
+            builtins.writeByte(0x04); // realloc
+            builtins.writeULEB128(earlyReallocCoreFunc);
           }
         }
       }

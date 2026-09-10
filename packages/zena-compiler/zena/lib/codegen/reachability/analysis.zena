@@ -922,7 +922,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               }
               this.symbolIdToModel[vId] = model;
 
-              let rawVariantType = model.getNodeType(variant);
+              // The node may carry no type (whether it does varies
+              // with what else the checker visited), but the resolved
+              // symbol always knows its binding — and a silent skip
+              // here leaves the case class without a struct, which a
+              // lowered `is`/`as` against it then trips over.
+              var rawVariantType = model.getNodeType(variant);
+              if (!(rawVariantType is ClassType)) {
+                rawVariantType = model.getBindingTypeDirect(variantSym);
+              }
               if (rawVariantType is ClassType) {
                 var vWalk: ClassType | null = rawVariantType;
                 while (vWalk != null) {

@@ -327,18 +327,38 @@ export let encodeImportTypes = (
   // pieces travel.
   let resourceIndices = new HashMap<String, i32>();
   for (let b in shape.builtins) {
-    if (!b.canonType.startsWith("resource:")) { continue; }
+    if (b.canonType.startsWith("resource:")) {
+      if (resourceIndices.has(b.canonType)) { continue; }
+      let spec = b.canonType.sliceBytes(9, b.canonType.length);
+      var hashAt = -1;
+      for (var i = 0; i < spec.length; i += 1) {
+        if (spec.getByteAt(i) == 35) { hashAt = i; } // '#'
+      }
+      if (hashAt < 0) {
+        throw new Error("Malformed resource canon type '" + b.canonType +
+            "' (expected resource:<interface>#<name>)");
+      }
+      resourceIndices[b.canonType] = encoder.aliasResourceType(
+          spec.sliceBytes(0, hashAt),
+          spec.sliceBytes(hashAt + 1, spec.length));
+      continue;
+    }
+    // `future:<interface>#<payload-wit>`: the future's own component
+    // type, its payload's named types alias-exported from the
+    // interface's imported instance. The FIRST '#' splits — a
+    // qualified interface name contains none, a payload may.
+    if (!b.canonType.startsWith("future:")) { continue; }
     if (resourceIndices.has(b.canonType)) { continue; }
-    let spec = b.canonType.sliceBytes(9, b.canonType.length);
+    let spec = b.canonType.sliceBytes(7, b.canonType.length);
     var hashAt = -1;
     for (var i = 0; i < spec.length; i += 1) {
-      if (spec.getByteAt(i) == 35) { hashAt = i; } // '#'
+      if (spec.getByteAt(i) == 35) { hashAt = i; break; } // '#'
     }
     if (hashAt < 0) {
-      throw new Error("Malformed resource canon type '" + b.canonType +
-          "' (expected resource:<interface>#<name>)");
+      throw new Error("Malformed future canon type '" + b.canonType +
+          "' (expected future:<interface>#<payload>)");
     }
-    resourceIndices[b.canonType] = encoder.aliasResourceType(
+    resourceIndices[b.canonType] = encoder.aliasFutureType(
         spec.sliceBytes(0, hashAt),
         spec.sliceBytes(hashAt + 1, spec.length));
   }

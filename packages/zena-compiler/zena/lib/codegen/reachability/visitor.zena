@@ -1659,6 +1659,18 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is LetPatternCondition) {
         this.discoverPatternTypes(n.pattern, model, resolveType);
       }
+      // `x is T`: the test's own type is boolean, so the target class
+      // appears on no expression node — the annotation is the only
+      // mention, exactly as in registerInstantiations. Without this, a
+      // case class named only by an `is` (never constructed, never
+      // cast to) has no struct when the body arrives through a symbol
+      // referrer, and lowering bails with 'is target kind'.
+      if (n is IsExpression) {
+        let annotated = model.getNodeType(n.typeAnnotation);
+        if (annotated != null) {
+          this.pass.typeLowerer.discoverType(resolveType(annotated), model);
+        }
+      }
       if (n is StringLiteral) {
         this.noteStringLiteral(n.value);
       }
@@ -2641,13 +2653,33 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           isExternal = true;
           // A third argument is the import's canonical options, comma
           // separated. `async` is one; a WIT type spelling (`stream<u8>`,
-          // `future`) names the type a typed canonical builtin operates
-          // on. The rest of the canonical option space (memory, realloc,
-          // string-encoding) is the compiler's business rather than the
-          // program's, because only the compiler knows where the memory
-          // lives.
+          // `future:<interface>#<payload>`) names the type a typed
+          // canonical builtin operates on. The rest of the canonical
+          // option space (memory, realloc, string-encoding) is the
+          // compiler's business rather than the program's, because only
+          // the compiler knows where the memory lives. The split is
+          // depth-aware: a future payload like `result<a, b>` carries
+          // commas of its own, so only depth-zero commas separate.
           if (dec.args.length == 3) {
-            for (let option in dec.args[2].value.split(",")) {
+            let raw = dec.args[2].value;
+            let optionList = new GrowableArray<String>();
+            var depth = 0;
+            var from = 0;
+            for (var oi = 0; oi <= raw.length; oi += 1) {
+              if (oi < raw.length) {
+                let c = raw.getByteAt(oi);
+                if (c == 60) { depth += 1; continue; } // '<'
+                if (c == 62) { depth -= 1; continue; } // '>'
+                if (c != 44 || depth > 0) { continue; } // ','
+              }
+              var piece = raw.sliceBytes(from, oi);
+              while (piece.startsWith(" ")) {
+                piece = piece.sliceBytes(1, piece.length);
+              }
+              optionList.push(piece);
+              from = oi + 1;
+            }
+            for (let option in optionList) {
               if (option == "async") {
                 externalAsync = true;
               } else if (option.startsWith("stream") ||
