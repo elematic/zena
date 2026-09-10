@@ -4541,6 +4541,11 @@ let keep = <scoped T>(x: T): T => {
 };
 ```
 
+`zena:ownership` exports `map`, `filter` and `take` for scoped
+iterators: each consumes a `Scoped<Iterator<T>>` and derives a scoped
+result, so a borrow-holding generator's elements can be transformed
+before the loop that drives them.
+
 `scoped` is contextual — a parameter named `scoped` still parses — and
 composes with bounds (`<scoped T extends Disposable>`). The body of a
 `scoped T` generic is checked at the strictest discipline any argument

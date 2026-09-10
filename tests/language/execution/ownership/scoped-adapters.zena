@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 24
+// The scoped iterator adapters: map, filter and take from
+// zena:ownership chain over a borrow-holding generator, each consuming
+// its input and deriving a scoped result, all driven inside the
+// owner's scope.
+import {Own, Borrow, Scoped, Disposable, map, filter, take} from 'zena:ownership';
+
+resource class Res {
+  #n: i32;
+  new(n: i32) : #n = n;
+  size(): i32 { return this.#n; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+/** Yields base, base+1, ... base+4. */
+let counting = gen (r: Borrow<Res>): Scoped<Iterator<i32>> => {
+  var i = 0;
+  while (i < 5) {
+    yield r.size() + i;
+    i += 1;
+  }
+};
+
+export let main = (): i32 => {
+  let owner = new Res(1);
+  // 1,2,3,4,5 -> doubled 2,4,6,8,10 -> evens all -> take 3: 2,4,6
+  let doubled = map(counting(owner), (v: i32) => v * 2);
+  let taken = take(filter(doubled, (v: i32) => v % 2 == 0), 3);
+  var sum = 0;
+  for (let v in taken) {
+    sum += v;
+  }
+  // 2 + 4 + 6 = 12; doubled to prove the loop ran to completion.
+  return sum * 2;
+};

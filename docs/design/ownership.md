@@ -642,6 +642,20 @@ included (generator disposal, cancellation.md), so driving a scoped
 iterator ends its frame inside the extent too. The checker enforces the
 rule with the same every-path analysis that decides field move-out.
 
+The two populations do not need the rule equally. An abandoned scoped
+future is the danger the rule exists for: the executor's queues
+reference the frame, so it runs again later, possibly after the
+borrow's owner scope has ended. An abandoned scoped iterator is inert:
+a generator's ramp is lazy, so an undriven frame has run no body code,
+nothing else references it, and the borrow inside is never read —
+dropping one leaks at most what dropping a first-class generator
+already leaks. The rule covers both because "a scoped value is
+consumed exactly once" stays one sentence, a `scoped T` body must
+assume the future case anyway, and an adapter chain nothing drives is
+a bug worth reporting. If the uniformity costs more friction than it
+buys, relaxing monomorphic scoped iterators to droppable is a
+contained change.
+
 One gap remains: an exception raised between creating a scoped future
 and awaiting it unwinds the caller while the frame still holds the
 borrow. This is open question 4 restricted to one window, and the window
@@ -804,11 +818,15 @@ scoped, so awaiting the result is its consumption. With
 `T := Future<i32>`, everything stays first-class and nothing changes
 for existing callers.
 
-The iterator adapters (`map`, `filter`, `take`) need no containers at
-all: each takes one scoped iterator — a `scoped T` receiver position
-or parameter, the single derivation source — and returns a
-`Scoped<Iterator<U>>` wrapping a generator that drives the inner
-iterator, the shape the suspension relaxations already compile.
+The iterator adapters (`map`, `filter`, `take`, in `zena:ownership`)
+need no containers and, it turned out, no `scoped T` either: each is a
+generator taking one concrete `Scoped<Iterator<T>>` — the single
+derivation source; the element type stays an ordinary parameter — and
+returning a `Scoped<Iterator<U>>`, the shape the suspension
+relaxations already compile. The discipline shaped one detail: every
+path out of an adapter must consume its input, so `take` always
+enters its loop, and `take(it, 0)` pulls one element before the frame
+is disposed.
 
 The direction for the standard library is to annotate every type
 parameter as `scoped` wherever the implementation already passes the
@@ -1694,9 +1712,9 @@ Implementation currently trails this document in one known place:
 `Scoped<T>` and the `scoped T` modifier are implemented — the type,
 its storage rules, the required-consumption verdict, the suspension
 relaxations (§"What the annotation allows"), the bare-parameter
-rejection, and the modifier with its body discipline — but the
-combinator audit and the container shapes of §"Scoped containers and
-extent nesting" are not, so a scoped future cannot pass through
+rejection, the modifier with its body discipline, and the scoped
+iterator adapters — but the container shapes of §"Scoped containers
+and extent nesting" are not, so a scoped future cannot pass through
 `Future.all` yet and a `scoped T` body cannot build containers of `T`.
 The `dropped` state is set at the top of
 every consuming dispose — written or synthesized — so every release

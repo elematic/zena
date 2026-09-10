@@ -1,0 +1,42 @@
+// @mode: check
+// The scoped iterator adapters follow the consumption rules like any
+// scoped values: each call consumes its input, the result must be
+// consumed in turn, and an abandoned link in the chain is an error.
+import {Own, Borrow, Scoped, Disposable, map, filter} from 'zena:ownership';
+
+resource class Res {
+  new();
+  size(): i32 { return 4; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let counting = gen (r: Borrow<Res>): Scoped<Iterator<i32>> => {
+  yield r.size();
+};
+
+// The blessed chain: every link consumed, the last by the loop.
+let chained = (r: Borrow<Res>): i32 => {
+  let doubled = map(counting(r), (v: i32) => v * 2);
+  var sum = 0;
+  for (let v in doubled) {
+    sum += v;
+  }
+  return sum;
+};
+
+// A bound link nothing drives is an abandoned frame.
+let abandoned = (r: Borrow<Res>): i32 => {
+  let doubled = map(counting(r), (v: i32) => v * 2);
+  return 0; // @error: must be consumed
+};
+
+// A link consumed twice is a use after move.
+let doubleFed = (r: Borrow<Res>): i32 => {
+  let source = counting(r);
+  let a = map(source, (v: i32) => v);
+  let b = filter(source, (v: i32) => true); // @error: may have been moved
+  var sum = 0;
+  for (let v in a) { sum += v; }
+  for (let v in b) { sum += v; }
+  return sum;
+};

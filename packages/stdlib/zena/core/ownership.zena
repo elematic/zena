@@ -10,6 +10,7 @@
  * `disown` and `adopt` move a resource between the affine regime and the
  * manually-managed one. `dispose` is what all of them ultimately call.
  */
+import { Iterator } from 'zena:iterator';
 
 /**
  * A value holding something the garbage collector cannot reclaim.
@@ -304,3 +305,45 @@ export function adopt<T extends Resource>(value: Unmanaged<T>): Own<T> {
   setResourceState(value as Borrow<Resource>, ResourceState.Owned as i32);
   return value as Own<T>;
 }
+
+// ---------------------------------------------------------------------------
+// Scoped iterator adapters
+// ---------------------------------------------------------------------------
+
+/**
+ * The elements of a scoped iterator mapped through `f`. Driving the
+ * result drives `it`, inside the same extent — the input is consumed
+ * (a scoped iterator is driven exactly once), and the result derives
+ * from the same borrow, so it is scoped too.
+ */
+export let map = gen <T, U>(it: Scoped<Iterator<T>>, f: (v: T) => U): Scoped<Iterator<U>> => {
+  for (let v in it) {
+    yield f(v);
+  }
+};
+
+/** The elements of a scoped iterator for which `keep` answers true. */
+export let filter = gen <T>(it: Scoped<Iterator<T>>, keep: (v: T) => boolean): Scoped<Iterator<T>> => {
+  for (let v in it) {
+    if (keep(v)) {
+      yield v;
+    }
+  }
+};
+
+/**
+ * At most the first `count` elements of a scoped iterator. The loop is
+ * always entered — every path out of this body must consume `it` — so
+ * with `count <= 0` one element is still pulled from the source before
+ * the frame is disposed.
+ */
+export let take = gen <T>(it: Scoped<Iterator<T>>, count: i32): Scoped<Iterator<T>> => {
+  var left = count;
+  for (let v in it) {
+    if (left <= 0) {
+      return;
+    }
+    yield v;
+    left -= 1;
+  }
+};
