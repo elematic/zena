@@ -187,6 +187,23 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'pipe',
+    wasi: ['p3=y'],
+    // A canonical byte stream round trip inside one guest: a
+    // `Stream<u8>` lowered to a fresh canonical pair, its readable
+    // end lifted back, and the bytes verified after crossing the
+    // async `stream.read`/`stream.write` builtins with the driver's
+    // event dispatch resuming the blocked pumps. A small read buffer
+    // and two writes force partial drains on both sides.
+    invocations: [
+      {
+        invoke: 'run()',
+        expect: '()',
+        expectOutput: ['round trip ok'],
+      },
+    ],
+  },
+  {
     name: 'clock',
     wasi: ['p3=y'],
     // A real monotonic reading, so the value is not predictable; that it

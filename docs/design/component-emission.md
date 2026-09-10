@@ -1356,10 +1356,30 @@ stdout's failure to stdout). Typed builtins are declared once —
 module needing one another module already declares imports the
 declaration, because a component rejects duplicate core import names.
 
-Still C6: `zena:stream`'s `Stream<T>` crossing the boundary — async
-reads and writes joined to `zena:component-async`'s set, its callback
-dispatching stream and future events beside subtasks — and
-`future.read` for outcomes that are actually wanted.
+**The `Stream<u8>` boundary binding is built.** The driver's callback
+dispatches stream and future events beside subtasks: an async copy
+that returned BLOCKED parks its end in a second registry
+(`awaitWaitable`), and the end's event — carrying the packed
+`(progress << 4) | CopyResult` — resolves the future with the
+payload. A delivered end leaves the waitable set with its event,
+because a join is persistent and a set dropped at exit with members
+still in it traps. On top of that, `zena:component-stream` connects a
+`zena:stream` `Stream<u8>` to a canonical end with a background pump
+per direction: `lowerByteStream` makes a fresh pair, pumps the guest
+stream into the writable end and hands over the readable end — the
+transferable value — while `liftByteStream` pumps a received readable
+end into a `StreamWriter`, whose backpressure keeps the pump from
+reading the host faster than the guest consumes. Ends close in both
+directions: a finished source drops the writable end (canonical
+end-of-stream), a host drop closes the guest stream, and a stopped
+guest reader drops the readable end. Synthesized WIT modules bind
+`stream<u8>` in any position — parameters, results, inside aggregates
+— through those two calls, one i32 end-handle on the wire. The
+driver's rooting gate opens for `awaitWaitable` as well as
+`awaitPacked`, so a stream-only program still gets the async entry.
+
+Still C6: non-u8 stream elements, and `future.read` for outcomes that
+are actually wanted (`future<T>` values still refuse).
 
 ---
 

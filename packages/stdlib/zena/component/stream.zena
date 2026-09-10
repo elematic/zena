@@ -8,8 +8,9 @@
  * Two kinds of consumer meet the canonical stream protocol, and they
  * wait differently. Async code joins its ends to
  * `zena:component-async`'s waitable set and is resumed through the
- * callback; that binding — `zena:stream`'s `Stream<T>` crossing the
- * boundary — is the next slice of this module. Synchronous code cannot
+ * callback: `lowerByteStream` and `liftByteStream` connect a
+ * `zena:stream` `Stream<u8>` to a canonical end through a background
+ * pump riding that set. Synchronous code cannot
  * be resumed, so it *blocks*, on this module's own waitable set via
  * the blocking `waitable-set.wait` builtin — a separate set, so a
  * blocking wait here can never swallow an event the program's event
@@ -25,11 +26,15 @@
 
 import { String } from 'zena:string';
 import { Error } from 'zena:error';
+import { FixedArray } from 'zena:fixed-array';
 import { Memory, defaultAllocator } from 'zena:memory';
+import { Stream, StreamWriter } from 'zena:stream';
 // A core module may not import one canonical builtin under the same
 // name twice, so the waitable builtins have exactly one declaring
 // module — the driver — and everyone else imports the declarations.
-import { waitableSetNew, waitableJoin } from 'zena:component-async';
+import {
+  waitableSetNew, waitableJoin, awaitWaitable
+} from 'zena:component-async';
 
 /**
  * The two ends of a `stream<u8>`, as unforgeable handle types: a
@@ -73,6 +78,26 @@ declare function streamWrite(
   ptr: i32,
   len: i32
 ): i32;
+
+/**
+ * The copy out: up to `len` stream bytes into memory at `ptr`,
+ * returning `(progress << 4) | result` — COMPLETED with how many
+ * bytes arrived, DROPPED when the writable end is gone — or BLOCKED
+ * when none exist yet, in which case the copy is in flight and its
+ * completion arrives as a STREAM_READ event.
+ */
+@external("canon", "stream.read", "stream<u8>,async")
+declare function streamRead(
+  end: ReadableByteStream,
+  ptr: i32,
+  len: i32
+): i32;
+
+@external("canon", "stream.drop-readable", "stream<u8>")
+declare function streamDropReadable(end: ReadableByteStream): void;
+
+@external("canon", "stream.drop-writable", "stream<u8>")
+declare function streamDropWritable(end: WritableByteStream): void;
 
 /**
  * The blocking wait: suspends this task until something in the set
@@ -176,4 +201,124 @@ export function writeStringBlocking(
     flushBlocking(end, buffer, len);
     defaultAllocator.free(buffer);
   }
+}
+
+// ============================================================================
+// The event-loop binding: `Stream<u8>` across the boundary
+// ============================================================================
+
+/** Bytes a pump moves per canonical copy: one staging chunk. */
+let CHUNK = 4096;
+
+/**
+ * A guest `Stream<u8>` as a canonical `stream<u8>` value: a fresh
+ * pair, a background pump copying the guest stream into the writable
+ * end, and the readable end — which IS the transferable value —
+ * returned as the wire handle. The pump ends the canonical stream
+ * when the source ends, and stops the source when the host reader
+ * drops its end.
+ */
+export function lowerByteStream(source: Stream<u8>): i32 {
+  let pair = newByteStreamPair();
+  pumpOut(source, pair.writable);
+  return pair.readable as i32;
+}
+
+/**
+ * A canonical `stream<u8>` handle as a guest `Stream<u8>`: a
+ * background pump reads the readable end on the event loop and
+ * delivers into a `StreamWriter`, whose stream is returned — with the
+ * writer's backpressure, so the pump never reads the host faster than
+ * the guest consumes. The pump closes the stream when the host drops
+ * its writable end, and drops the readable end when the guest reader
+ * stops.
+ */
+export function liftByteStream(handle: i32): Stream<u8> {
+  let writer = new StreamWriter<u8>();
+  pumpIn(handle as ReadableByteStream, writer);
+  return writer.stream;
+}
+
+/** The guest-to-host pump behind `lowerByteStream`. */
+async function pumpOut(
+  source: Stream<u8>,
+  end: WritableByteStream
+): Future<void> {
+  if (let (true, chunk) = defaultAllocator.alloc(CHUNK)) {
+    let buf = new FixedArray<u8>(CHUNK, 0);
+    var open = true;
+    while (open) {
+      let n = await source.read(buf);
+      if (n == 0) {
+        // The source ended: dropping the writable end below is the
+        // canonical end-of-stream.
+        break;
+      }
+      for (var i = 0; i < n; i += 1) {
+        mem[chunk + i] = buf[i] as i32;
+      }
+      var at = 0;
+      while (at < n) {
+        var packed = streamWrite(end, chunk + at, n - at);
+        if (packed == BLOCKED) {
+          packed = await awaitWaitable(end as i32);
+        }
+        if ((packed & RESULT_MASK) != RESULT_COMPLETED) {
+          // The host reader dropped its end: the rest of the source
+          // will never be delivered, which its producer learns as
+          // any reader stop — writes completing `false`.
+          source.stop();
+          open = false;
+          break;
+        }
+        at += packed >> 4;
+      }
+    }
+    defaultAllocator.free(chunk);
+    streamDropWritable(end);
+    return;
+  }
+  throw new Error('could not allocate a stream pump buffer');
+}
+
+/** The host-to-guest pump behind `liftByteStream`. */
+async function pumpIn(
+  end: ReadableByteStream,
+  writer: StreamWriter<u8>
+): Future<void> {
+  if (let (true, chunk) = defaultAllocator.alloc(CHUNK)) {
+    var open = true;
+    while (open) {
+      var packed = streamRead(end, chunk, CHUNK);
+      if (packed == BLOCKED) {
+        packed = await awaitWaitable(end as i32);
+      }
+      let n = packed >> 4;
+      let completed = (packed & RESULT_MASK) == RESULT_COMPLETED;
+      if (n > 0) {
+        let buf = new FixedArray<u8>(n, 0);
+        for (var i = 0; i < n; i += 1) {
+          buf[i] = mem[chunk + i] as u8;
+        }
+        let delivered = await writer.writeAll(buf, n);
+        if (!delivered) {
+          // The guest reader stopped: dropping the readable end below
+          // disclaims the rest to the host.
+          open = false;
+        }
+      } else if (completed) {
+        throw new Error('the stream read made no progress');
+      }
+      if (!completed) {
+        // The host writer dropped its end — any final bytes were
+        // delivered above: end-of-stream.
+        open = false;
+      }
+    }
+    defaultAllocator.free(chunk);
+    writer.close();
+    streamDropReadable(end);
+    return;
+  }
+  throw new Error('could not allocate a stream pump buffer');
 }

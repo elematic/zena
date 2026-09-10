@@ -1,0 +1,23 @@
+// Byte streams through a WIT-typed module: stream results and
+// parameters bind to `zena:stream`'s `Stream<u8>`, pumped across the
+// canonical ends by `zena:component-stream`. Compile-only — no host
+// serves `wasi:pipe` — so the point is the whole surface compiling:
+// a direct stream result, a stream parameter, streams inside a tuple
+// and an option, and an async transfer. The async transfer roots the
+// driver, so the entry is callback-lifted and `main` returns void.
+import { source, sink, tee, open, transfer } from 'wasi:pipe/pipes';
+import { Stream, StreamWriter } from 'zena:stream';
+import { Some } from 'zena:option';
+
+export function main(): void {
+  let incoming = source();
+  let outgoing = new StreamWriter<u8>();
+  if (sink(outgoing.stream) != (0 as u32)) {
+    incoming.stop();
+  }
+  let (left, right) = tee();
+  transfer(left);
+  if (open('names') is Some<Stream<u8>>) {
+    right.stop();
+  }
+}

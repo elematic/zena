@@ -1,0 +1,63 @@
+// A canonical byte stream, guest to guest: `lowerByteStream` turns a
+// `zena:stream` source into a canonical readable end — a fresh pair
+// with a background pump behind it — and `liftByteStream` turns that
+// end back into a `Stream<u8>`. The bytes cross linear memory through
+// the canonical `stream.read`/`stream.write` builtins, with the
+// driver's event dispatch resuming whichever pump blocked, so a
+// verified round trip proves the whole event-loop binding without
+// needing a host interface. The read buffer is smaller than the
+// message and the message arrives in two writes, so partial drains
+// happen on both sides.
+import { console } from 'zena:console';
+import { lowerByteStream, liftByteStream } from 'zena:component-stream';
+import { StreamWriter } from 'zena:stream';
+import { FixedArray } from 'zena:fixed-array';
+import { String } from 'zena:string';
+import { drainMicrotasks } from 'zena:async';
+
+let toBytes = (s: String): FixedArray<u8> => {
+  let bytes = new FixedArray<u8>(s.length, 0);
+  for (var i = 0; i < s.length; i += 1) {
+    bytes[i] = s.getByteAt(i) as u8;
+  }
+  return bytes;
+};
+
+async function feed(writer: StreamWriter<u8>): Future<void> {
+  await writer.writeAll(toBytes('across the '));
+  await writer.writeAll(toBytes('canonical boundary'));
+  writer.close();
+}
+
+async function runPipe(): Future<void> {
+  let writer = new StreamWriter<u8>();
+  let incoming = liftByteStream(lowerByteStream(writer.stream));
+  feed(writer);
+  let expected = 'across the canonical boundary';
+  let buf = new FixedArray<u8>(8, 0);
+  var total = 0;
+  var matches = true;
+  while (true) {
+    let n = await incoming.read(buf);
+    if (n == 0) {
+      break;
+    }
+    for (var i = 0; i < n; i += 1) {
+      if (total + i >= expected.length ||
+          (buf[i] as i32) != expected.getByteAt(total + i)) {
+        matches = false;
+      }
+    }
+    total += n;
+  }
+  if (matches && total == expected.length) {
+    console.log('round trip ok');
+  } else {
+    console.log('round trip mismatch');
+  }
+}
+
+export function main(): void {
+  runPipe();
+  drainMicrotasks();
+}

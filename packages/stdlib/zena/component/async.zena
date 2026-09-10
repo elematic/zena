@@ -1,7 +1,8 @@
 /**
  * @file
  *
- * The component target's async-import driver: subtasks in, futures out.
+ * The component target's async-import driver: waitables in, futures
+ * out.
  *
  * An async-lowered import returns immediately with a packed value —
  * `(subtask << 4) | state` — instead of blocking. This module turns
@@ -12,16 +13,20 @@
  * callback with a RETURNED subtask, the completer resolves and the
  * microtask queue drains.
  *
+ * Stream and future ends ride the same set through `awaitWaitable`:
+ * an async copy that returned BLOCKED parks here, and the end's next
+ * event — carrying the packed `(progress << 4) | CopyResult` —
+ * resolves the future with that payload. The callback dispatches on
+ * the event *kind*, because `code` means a `CallState` for a subtask
+ * and a copy result for an end, and the two must never be confused.
+ *
  * It generalizes what `time/p3.zena` built for the one timer wait —
  * that driver now delegates here — from "at most one subtask" to a
- * registry of any number, which is what synthesized WIT imports need:
- * two in-flight `wait-for`s from different call sites are two
- * subtasks, each with its own future.
+ * registry of any number, which is what synthesized WIT imports need.
  *
  * The entry and callback the compiler wires (`componentPoll`,
- * `componentResume`) live here now, since the driver is no longer the
- * timer's private business. Only the `component` target resolves this
- * module.
+ * `componentResume`) live here, and only the `component` target
+ * resolves this module.
  */
 
 import { HashMap } from 'zena:map';
@@ -70,13 +75,15 @@ let STATE_MASK = 15;
 let STATE_RETURNED = 2;
 
 /**
- * The event kind the callback's first argument carries. Only SUBTASK
- * events resolve anything here today: `code` means a `CallState` for a
- * subtask and a packed copy result for a stream or future end, so
- * dispatching on the kind is what keeps the two from being confused
- * when the stream events arrive (the async-stream slice).
+ * The event kinds the callback's first argument carries, from the
+ * canonical ABI's EventCode: SUBTASK's `code` is a `CallState`; the
+ * stream and future kinds carry a packed copy result instead.
  */
 let EVENT_SUBTASK = 1;
+let EVENT_STREAM_READ = 2;
+let EVENT_STREAM_WRITE = 3;
+let EVENT_FUTURE_READ = 4;
+let EVENT_FUTURE_WRITE = 5;
 
 // ============================================================================
 // The driver
@@ -92,6 +99,21 @@ var waitableSet = 0;
 let pending = new HashMap<i32, Completer<void>>();
 
 /**
+ * In-flight stream and future copies, by end handle, each owed one
+ * event whose packed payload resolves the future. Read ends and write
+ * ends are distinct handle indices, and an end has at most one copy
+ * in flight, so the handle is the whole key.
+ */
+let pendingCopies = new HashMap<i32, Completer<i32>>();
+
+let ensureSet = (): i32 => {
+  if (waitableSet == 0) {
+    waitableSet = waitableSetNew();
+  }
+  return waitableSet;
+};
+
+/**
  * An async-lowered import's packed result, as a future.
  *
  * State RETURNED means the call finished inside the lowering — the
@@ -105,12 +127,22 @@ export function awaitPacked(packed: i32): Future<void> {
     completer.complete();
     return completer.future;
   }
-  if (waitableSet == 0) {
-    waitableSet = waitableSetNew();
-  }
   let subtask = packed >> 4;
-  waitableJoin(subtask, waitableSet);
+  waitableJoin(subtask, ensureSet());
   pending[subtask] = completer;
+  return completer.future;
+}
+
+/**
+ * A stream or future end's next event, as a future of the packed
+ * `(progress << 4) | CopyResult` payload. The caller has just issued
+ * an async copy on `end` and got BLOCKED back: the copy is in flight,
+ * and the payload arrives when the host has moved what it can.
+ */
+export function awaitWaitable(end: i32): Future<i32> {
+  let completer = new Completer<i32>();
+  waitableJoin(end, ensureSet());
+  pendingCopies[end] = completer;
   return completer.future;
 }
 
@@ -121,7 +153,7 @@ export function awaitPacked(packed: i32): Future<void> {
  * nothing, for a `main(): void` — has to be returned before exiting.
  */
 let nextCode = (): i32 => {
-  if (pending.size == 0) {
+  if (pending.size == 0 && pendingCopies.size == 0) {
     // Every handle the task took out has to be given back before it
     // returns: an outstanding waitable set at exit is a leak the host
     // reports rather than collects.
@@ -147,22 +179,40 @@ export function componentPoll(): i32 {
 /**
  * The callback the host re-enters through when a waitable fires.
  *
- * `waitable` is the subtask the event is about and `code` is its new
- * state. A subtask is delivered more than once — it starts, and later
- * it returns — and only the final state resolves anything. Dropping a
- * subtask before it has resolved traps, so the state is checked rather
- * than assumed: anything short of RETURNED goes straight back to
- * waiting, without draining, because nothing has completed.
+ * A SUBTASK event's `code` is its new state — a subtask is delivered
+ * more than once, and only RETURNED resolves anything (dropping an
+ * unresolved subtask traps, so the state is checked rather than
+ * assumed). A stream or future event's `code` is the packed copy
+ * payload, delivered exactly once per parked copy, and it resolves
+ * the end's completer with the payload for the parked reader or
+ * writer to decode.
  */
 export function componentResume(event: i32, waitable: i32, code: i32): i32 {
-  if (event != EVENT_SUBTASK || code != STATE_RETURNED) {
-    return WAIT | (waitableSet << 4);
+  if (event == EVENT_SUBTASK) {
+    if (code != STATE_RETURNED) {
+      return WAIT | (waitableSet << 4);
+    }
+    if (let (true, completer) = pending.get(waitable)) {
+      pending.delete(waitable);
+      subtaskDrop(waitable);
+      completer.complete();
+    }
+    drainMicrotasks();
+    return nextCode();
   }
-  if (let (true, completer) = pending.get(waitable)) {
-    pending.delete(waitable);
-    subtaskDrop(waitable);
-    completer.complete();
+  if (event == EVENT_STREAM_READ || event == EVENT_STREAM_WRITE ||
+      event == EVENT_FUTURE_READ || event == EVENT_FUTURE_WRITE) {
+    if (let (true, completer) = pendingCopies.get(waitable)) {
+      pendingCopies.delete(waitable);
+      // A join is persistent: the end would stay in the set after its
+      // event, and a set dropped at exit with members still in it
+      // traps. The end leaves the set with its event; the next copy
+      // that blocks joins it again.
+      waitableJoin(waitable, 0);
+      completer.complete(code);
+    }
+    drainMicrotasks();
+    return nextCode();
   }
-  drainMicrotasks();
-  return nextCode();
+  return WAIT | (waitableSet << 4);
 }

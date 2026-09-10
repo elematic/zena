@@ -838,6 +838,80 @@ world only {
       'the store interface import is missing');
   });
 
+  test('a WIT stream<u8> binds to Stream through the pumps',
+      (ctx: TestContext): void => {
+    // A `stream<u8>` in any position is one end-handle on the wire
+    // and `zena:stream`'s `Stream<u8>` in the signature, connected by
+    // `zena:component-stream`'s pumps: `lowerByteStream` going in
+    // (fresh pair, pump, pass the readable end), `liftByteStream`
+    // coming out. Streams inside aggregates ride the same expression
+    // forms as any handle. Non-u8 elements and future values refuse.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#wasi:pipe/pipes`);
+    isTrue(source.contains("import { Stream } from 'zena:stream';"),
+      'the stream type is not imported:\n' + source);
+    isTrue(source.contains(
+        "import { liftByteStream, lowerByteStream } " +
+        "from 'zena:component-stream';"),
+      'the pumps are not imported:\n' + source);
+    // A direct stream result: one flat i32, lifted without a spill.
+    isTrue(source.contains('declare function source_raw(): i32;'),
+      "the stream result's raw declaration is wrong:\n" + source);
+    isTrue(source.contains('export function source(): Stream<u8> {'),
+      'a stream result should be a Stream<u8>:\n' + source);
+    isTrue(source.contains('return liftByteStream(got);'),
+      'a direct stream result should lift through the pump:\n' +
+      source);
+    // A stream parameter: lowered in argument position.
+    isTrue(source.contains('declare function sink_raw(a0: i32): u32;'),
+      "the stream parameter's raw declaration is wrong:\n" + source);
+    isTrue(source.contains('sink_raw(lowerByteStream(data))'),
+      'a stream parameter should lower through the pump:\n' + source);
+    // Streams inside aggregates: a spilled tuple result and an
+    // option, both lifting each end from memory.
+    isTrue(source.contains('): (Stream<u8>, Stream<u8>) {'),
+      'a tuple of streams should be an inline tuple:\n' + source);
+    isTrue(source.contains('liftByteStream(loadI32(ptr))'),
+      'a stream in an aggregate is not lifted from memory:\n' + source);
+    isTrue(source.contains('liftByteStream(loadI32(ptr + 4))'),
+      "the tuple's second stream is not lifted at its offset:\n" +
+      source);
+    // The async transfer: the stream lowers beside the return area.
+    isTrue(source.contains(
+        'declare function transfer_raw(a0: i32, ret: i32): i32;'),
+      "the async raw signature is wrong:\n" + source);
+    isTrue(source.contains(
+        'export async function transfer(data: Stream<u8>): ' +
+        'Future<u64> {'),
+      'the async wrapper should carry the stream parameter:\n' +
+      source);
+    // The refused shapes say why.
+    isTrue(source.contains(
+        'ints: the result: stream elements other than u8 wait'),
+      'a non-u8 stream element should refuse:\n' + source);
+    isTrue(source.contains(
+        'status: the result: future values wait'),
+      'a future value should refuse:\n' + source);
+    // And the consumer fixture compiles to a component naming the
+    // interface.
+    let bytes = compileFor(`${fixtures}/pipe-wit.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 10),
+        'wasi:pipe/pipes@1.0.0'),
+      'the pipe interface import is missing');
+  });
+
+  test('a stream-only program still gets the async entry',
+      (ctx: TestContext): void => {
+    // `pipe.zena` awaits canonical copies (`awaitWaitable`) but never
+    // an async-lowered import (`awaitPacked`): the driver's rooting
+    // gate must open for either door, or the entry stays sync-lifted
+    // and stream events are never dispatched.
+    let bytes = compileFor(`${fixtures}/pipe.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 11), 'run'),
+      'a stream-awaiting program should be entered through the ' +
+      'async entry');
+  });
+
   test('a marshaling import lowers with the canonical memory options',
       (ctx: TestContext): void => {
     // text-wit.zena imports the whole transform interface. Every one of

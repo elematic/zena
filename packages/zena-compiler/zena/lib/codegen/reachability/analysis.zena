@@ -656,9 +656,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * interface *declaring* an async function and calls none of them,
    * because a synthesized WIT module always links the driver for its
    * wrappers. So the gate is that the program's own traversal, which
-   * has just finished, reached `awaitPacked`: the one door into the
-   * driver's registry. A program that never awaits an async-lowered
-   * import keeps the synchronous lift.
+   * has just finished, reached a door into the driver's registries:
+   * `awaitPacked` (subtasks) or `awaitWaitable` (stream and future
+   * copies). A program that never awaits an async-lowered import or
+   * a canonical copy keeps the synchronous lift.
    */
   #rootComponentAsyncDriver(): void {
     let driverPath = 'zena:component/async.zena';
@@ -667,7 +668,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       return;
     }
     let awaitPacked = this.wasm.getStdlibFunc('component-async', 'awaitPacked');
-    if (awaitPacked == null || !(awaitPacked as WasmFunction).isReached) {
+    let awaitWaitable =
+        this.wasm.getStdlibFunc('component-async', 'awaitWaitable');
+    let anyDoorReached =
+        (awaitPacked != null && (awaitPacked as WasmFunction).isReached) ||
+        (awaitWaitable != null && (awaitWaitable as WasmFunction).isReached);
+    if (!anyDoorReached) {
       return;
     }
     let unit = prog.unitsByPath[driverPath];
