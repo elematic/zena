@@ -1336,6 +1336,41 @@ final class CheckerContext {
     if (d == null) {
       return null;
     }
+    // A transparent type alias across a back edge gets an identity-bearing
+    // SHELL: its body (which may name types only the origin's scope can
+    // resolve, the whole reason for the cycle) is left as a hole here and
+    // filled in by the origin's own registration (#materializeType's
+    // alias arm reuses this object). Distinct/opaque aliases keep their
+    // existing handling.
+    if (d is TypeAliasDeclaration && !(d as TypeAliasDeclaration).isDistinct) {
+      let ta = d as TypeAliasDeclaration;
+      if (let (true, cached) = this.#sharedState.declaredNominalTypes.get(target.id)) {
+        this.#materializedTypes[info.id] = cached;
+        this.#materializedTypes[target.id] = cached;
+        this.model.setBindingType(info, cached);
+        return cached;
+      }
+      this.enterScope();
+      var typeParams: Array<TypeParameterType> | null = null;
+      let declParams = ta.typeParameters;
+      if (declParams != null) {
+        let tps = new GrowableArray<TypeParameterType>();
+        for (let param in declParams) {
+          let tp = this.getOrCreateTypeParameter(param, null, null);
+          tps.push(tp);
+          this.declareTypeName(tp.name, tp);
+        }
+        typeParams = tps;
+      }
+      this.exitScope();
+      let shell = new TypeAliasType(ta.name.name, typeParams, new HoleType(),
+          ta.isDistinct, null, ta.isOpaque, target.modulePath);
+      this.#sharedState.declaredNominalTypes[target.id] = shell;
+      this.#materializedTypes[info.id] = shell;
+      this.#materializedTypes[target.id] = shell;
+      this.model.setBindingType(info, shell);
+      return shell;
+    }
     var nominal = false;
     match (d) {
       case ClassDeclaration: { nominal = true; }
@@ -1437,6 +1472,21 @@ final class CheckerContext {
           this.#materializedTypes[target.id] = cached;
           this.model.setBindingType(info, cached);
           return cached;
+        }
+      }
+      case TypeAliasDeclaration as ta: {
+        // A transparent alias is identity-stable across passes like a
+        // nominal type. Its body is filled in by the origin's own
+        // registration (registerTypeAliasDeclaration), so a lookup here
+        // returns the canonical shell without re-resolving the body —
+        // which an importer's scope could not resolve anyway.
+        if (!ta.isDistinct) {
+          if (let (true, cached) = this.#sharedState.declaredNominalTypes.get(target.id)) {
+            this.#materializedTypes[info.id] = cached;
+            this.#materializedTypes[target.id] = cached;
+            this.model.setBindingType(info, cached);
+            return cached;
+          }
         }
       }
       case _: {}
@@ -1717,9 +1767,27 @@ final class CheckerContext {
           }
         }
         
-        let aliasType = new TypeAliasType(
+        // A transparent alias is identity-stable across import-cycle
+        // re-checks, exactly like a nominal type: reuse the canonical
+        // shell (which an importer across a back edge may have created)
+        // and refill it in place, rather than minting a second identity.
+        var aliasType = new TypeAliasType(
           ta.name.name, typeParams, new HoleType(), ta.isDistinct, null,
           ta.isOpaque, info.modulePath);
+        if (!ta.isDistinct) {
+          if (let (true, shell) = this.#sharedState.declaredNominalTypes.get(info.id)) {
+            match (shell) {
+              case TypeAliasType as existing: {
+                existing.typeParameters = typeParams;
+                existing.target = new HoleType();
+                existing.intrinsicName = null;
+                aliasType = existing;
+              }
+              case _: {}
+            }
+          }
+          this.#sharedState.declaredNominalTypes[info.id] = aliasType;
+        }
         // A decorated alias names a builtin type operator; validation
         // of the decorator itself happens when the STATEMENT checks
         // (checkStatement's TypeAliasDeclaration arm), where errors
@@ -3328,11 +3396,25 @@ final class CheckerContext {
 
   // --- Error helpers ---
 
+  var #diagnosticsSuppressed = false;
+
+  /**
+   * Silence error/warning emission. Used when a registration pass
+   * re-resolves a type only to fill its identity (a cross-cycle alias
+   * shell's body), not to re-report — the authoritative resolution has
+   * already reported once.
+   */
+  setDiagnosticsSuppressed(v: boolean): void {
+    this.#diagnosticsSuppressed = v;
+  }
+
   error(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    if (this.#diagnosticsSuppressed) { return; }
     this.diagnostics.reportError(message, code, loc);
   }
 
   warning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    if (this.#diagnosticsSuppressed) { return; }
     this.diagnostics.reportWarning(message, code, loc);
   }
 }
@@ -3583,12 +3665,10 @@ let checkCyclicImportRules = (
       }
     }
     case TypeAliasDeclaration {}: {
-      if (originRechecked) {
-        ctx.error(
-          "Cyclic import of type alias '" + importedName +
-            "': type aliases cannot cross an import cycle",
-          DiagnosticCode.CyclicImport, spec.loc);
-      }
+      // A transparent alias crosses a back edge as an identity-bearing
+      // shell — a canonical TypeAliasType created on first demand and
+      // filled in by the origin's registration, the same way nominal
+      // types cross (docs/design/import-cycles.md). So no error here.
     }
     case MixinDeclaration {}: {
       if (originRechecked) {
@@ -3749,8 +3829,8 @@ export let checkModule = (
       case InterfaceDeclaration as id: { checkInterfaceDeclaration(ctx, id); }
       case EnumDeclaration as ed: { checkEnumDeclaration(ctx, ed); }
       case MixinDeclaration as md: { checkMixinDeclaration(ctx, md); }
-      case TypeAliasDeclaration {name}: {
-        ctx.resolveTypeName(name.name);
+      case TypeAliasDeclaration as ta: {
+        registerTypeAliasDeclaration(ctx, ta);
       }
       case DeclareFunction as df: { checkDeclareFunction(ctx, df); }
       case SymbolDeclaration as sd: { checkSymbolDeclaration(ctx, sd); }
@@ -12165,6 +12245,75 @@ let getOrCreateMixinApplication = (
   } else {
     return template;
   }
+};
+
+/**
+ * Fills a transparent alias's canonical type object in place, the way
+ * registerClassDeclaration fills a class shell: the object's identity
+ * is stable across import-cycle re-checks, its type parameters and
+ * target are re-resolved each pass. This is what lets a transparent
+ * alias cross an import cycle's back edge — an importer holds the shell
+ * and the origin fills its body here (docs/design/import-cycles.md).
+ */
+let registerTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration): void => {
+  if (ta.isDistinct) {
+    // Distinct/opaque aliases are nominal already; the old path handles
+    // them.
+    ctx.resolveTypeName(ta.name.name);
+    return;
+  }
+  let t = ctx.resolveTypeName(ta.name.name);
+  if (t == null) {
+    return;
+  }
+  var aliasType: TypeAliasType | null = null;
+  match (t) {
+    case TypeAliasType as a: { aliasType = a; }
+    case _: { return; }
+  }
+  let alias = aliasType as TypeAliasType;
+  ctx.enterScope();
+  let declParams = ta.typeParameters;
+  var typeParams: Array<TypeParameterType> | null = null;
+  if (declParams != null) {
+    let tps = new GrowableArray<TypeParameterType>();
+    typeParams = tps;
+    for (let param in declParams) {
+      let tp = ctx.getOrCreateTypeParameter(param, null, null);
+      tps.push(tp);
+      ctx.declareTypeName(tp.name, tp);
+      ctx.registerTypeParameter(param, tp);
+    }
+    for (var i = 0; i < declParams.length; i += 1) {
+      let param = declParams[i];
+      let c = param.constraint;
+      if (c != null) {
+        ctx.resourceMentionOk = true;
+        tps[i].constraint = resolveTypeAnnotation(ctx, c, false);
+        ctx.resourceMentionOk = false;
+      }
+      let dt = param.defaultType;
+      if (dt != null) {
+        tps[i].defaultType = resolveTypeAnnotation(ctx, dt, false);
+      }
+    }
+  }
+  alias.typeParameters = typeParams;
+  alias.resolving = true;
+  let bodyAnn = ta.typeAnnotation;
+  if (bodyAnn != null) {
+    // Re-resolve the target so a cross-cycle reference picks up the
+    // origin's now-filled types on the second pass. Diagnostics are
+    // suppressed: resolveTypeName above already materialized the alias
+    // and reported any target errors (union-mixing, inline-tuple
+    // position) once — re-reporting them here doubles them (and this
+    // runs on every cyclic re-check pass besides).
+    ctx.setDiagnosticsSuppressed(true);
+    alias.target = resolveTypeAnnotation(ctx, bodyAnn, true);
+    ctx.setDiagnosticsSuppressed(false);
+  }
+  alias.resolving = false;
+  ctx.exitScope();
 };
 
 let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void => {

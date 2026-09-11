@@ -51,12 +51,22 @@ implementation in both compilers.
      back edge) and filled in by the declaring module's own
      registration. Mutually recursive classes across two modules are
      the canonical use.
-   - **Mixins, enums, and type aliases**: rejected across a back edge
-     when the origin is re-checked. Mixin members are _copied_ into
-     hosts at application time (a copy from a not-yet-filled shell
-     would go stale), and enum/alias resolution is transparent and
-     pass-dependent rather than identity-bearing. These can be lifted
-     later if a real program needs them.
+   - **Transparent type aliases**: fine, anywhere. A transparent alias
+     gets the same identity-bearing canonical object a nominal type
+     does — a shell created on first demand by an importer across a back
+     edge, filled in by the origin's own registration
+     (`registerTypeAliasDeclaration`) each pass. An importer holds the
+     shell without expanding it (its body may name types only the
+     origin's scope can resolve); the origin resolves the body. The
+     `Iterator<T>.next(): Step<T>` protocol, where `Step` is an inline
+     alias whose async arm names `Future` from a module that imports
+     the collections back, is the canonical use.
+   - **Mixins and enums**: rejected across a back edge when the origin
+     is re-checked. Mixin members are _copied_ into hosts at application
+     time (a copy from a not-yet-filled shell would go stale), and enum
+     resolution is transparent and pass-dependent rather than
+     identity-bearing. These can be lifted later if a real program
+     needs them.
 
 5. **Initializer hazard, accepted.** A module-level initializer may
    _call_ a legally-imported function that transitively reads globals
@@ -150,8 +160,6 @@ import cycle (the exporting module's initializers have not run)`
 - `Cyclic import of mixin 'M': mixins cannot cross an import cycle
 (mixin members are copied at application time)`
 - `Cyclic import of enum 'E': enums cannot cross an import cycle`
-- `Cyclic import of type alias 'A': type aliases cannot cross an import
-cycle`
 - `Cyclic import of 'f': a function crossing an import cycle needs an
 explicit signature (annotate every parameter and the return type)`
 - `Cyclic namespace import: 'x' originates in a module that has not

@@ -1,0 +1,20 @@
+// @mode: run
+// @result: 6
+
+// A transparent type alias (`Step2`) crossing an import cycle's back
+// edge, resolved as an identity-bearing shell filled in by its origin
+// (docs/design/import-cycles.md — the alias restriction, lifted).
+import { Counter } from './iter.zena';
+
+export let main = (): i32 => {
+  let c = new Counter();
+  var sum = 0;
+  var going = true;
+  while (going) {
+    match (c.next()) {
+      case (0, _): { going = false; }
+      case (1, let t): { sum = sum + t.n; }
+    }
+  }
+  return sum;  // 1 + 2 + 3 = 6
+};
