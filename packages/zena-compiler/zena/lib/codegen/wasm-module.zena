@@ -1005,6 +1005,26 @@ export final class WasmModule {
     return null;
   }
 
+  /**
+   * A top-level function of the unit at `path`, by name, or null. For
+   * modules the compiler wrote itself (the component entry wrapper),
+   * which are not stdlib libraries and not the entry, so neither
+   * lookup above reaches them.
+   */
+  getUnitFunc(path: String, name: String): WasmFunction | null {
+    let key = path + "::" + name;
+    if (this.#stdlibFuncCache.has(key)) {
+      return this.#stdlibFuncCache[key];
+    }
+    let prog = this.program;
+    if (prog == null) { return null; }
+    for (let unit in prog.units) {
+      if (unit.ast.path != path) { continue; }
+      return this.#findStdlibFuncIn(unit, key, name);
+    }
+    return null;
+  }
+
   #findStdlibFuncIn(unit: CompilationUnit, key: String,
       exportName: String): WasmFunction | null {
     for (let stmt in unit.ast.body) {
@@ -1116,6 +1136,13 @@ export final class WasmModule {
    */
   var componentEntryFunc: WasmFunction | null = null;
   var componentCallbackFunc: WasmFunction | null = null;
+  /**
+   * The component type of the value the async entry returns through
+   * `task.return`, or -1 when it returns nothing. Set with the entry
+   * (component-adapters.zena) from what the program's `main` resolves
+   * to; the shape puts it on the entry's lifted type.
+   */
+  var componentEntryResult = -1;
   /**
    * The `$componentExport` wrapper for each export whose signature
    * carries a `string`, keyed by the export's own name. An export with

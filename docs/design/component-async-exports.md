@@ -46,23 +46,45 @@ module can name — the same reason the entry is built in
 
 Building rich marshaling in `IrBuilder` would rebuild everything the
 synthesizer says in Zena, badly. The alternative that keeps the
-generated code as source: the program declares its export against the
-WIT (mechanism to be settled — plausibly `export function handle(...)`
-type-checked against the world, as `--wit`/`--world` already checks
-declared surfaces), and the compiler synthesizes a *wrapper module* —
-source, like a WIT-typed module, importing both the program's function
-and the types module — whose exported wrapper is what gets lifted.
-The host-facing wrapper is then ordinary Zena: lift the request handle
-into `Request`, call the program's `handle`, await it, lower the
-`Outcome` through `task.return`.
+generated code as source is a *wrapper module* the compiler writes and
+loads beside the entry: source, like a WIT-typed module, importing the
+program's function and any types module it needs, whose exported
+wrapper is what gets lifted. The host-facing wrapper is then ordinary
+Zena: lift the request handle into `Request`, call the program's
+`handle`, await it, lower the `Outcome` through `task.return`.
 
-`task.return` with a rich result is itself new: today it is declared
-`task.return: func()` (the entry returns nothing) and its canon entry
-carries the lifted type. A `result<response, error-code>` result means
-the canon entry's type is that result — the same component-type
-aliasing the `future.*` builtins use (`future:<iface>#<payload>`
-generalizes to `return:<iface>#<type>`), and the call site passes the
-flattened value or spills it, per the same rules as any lowering.
+**The mechanism is in place**, with the async entry as its first user
+(`lib/component-entry.zena`). `Compiler.compile` decides from the
+entry's syntax alone whether a wrapper is needed, writes its source,
+and hands it to the loader with the import of the entry *pinned* to
+the entry's already-loaded path (`LibraryLoader.loadSynthesized`), so
+the wrapper joins the same compile and the entry is never loaded twice
+under two spellings of its path. Codegen finds the wrapper's function
+by name in the wrapper unit (`WasmModule.getUnitFunc`), the way it
+finds driver functions; the wrapper is not the entry and exports
+nothing at the component level itself. The entry adapter calls the
+wrapper's `run` in place of `main`, and the shape gives the lifted
+entry the result type the wrapper returns through.
+
+The entry's case: `export async function main(): Future<u32>`. The
+lifted entry is `async func() -> u32`, and the value cannot come back
+from the call that started main. The wrapper declares
+`task.return` at `u32` under its own name (`task.return#main`, beside
+the driver's bare one, disambiguated the way the per-type `future.*`
+builtins are) and calls the driver's `finishTask(main(), ret)`, which
+parks the typed return on the task until main's future settles and
+calls it from the task's own entry — see "One task per call". The
+result types the wrapper can name without importing anything are the
+flat scalars; a richer result waits on the types module import below.
+
+`task.return` with a rich result is the remaining half: a
+`result<response, error-code>` result means the canon entry's type is
+that result — the same component-type aliasing the `future.*` builtins
+use (`future:<iface>#<payload>` generalizes to `return:<iface>#<type>`)
+— and the call site passes the flattened value or spills it, per the
+same rules as any lowering. Its `memory` option must equal the lift's
+(the canonical ABI's `canon_task_return` traps on a mismatch), so a
+rich export's lift and its return carry memory together.
 
 ## Part 2: One task per call
 
@@ -144,26 +166,39 @@ the drivers rather than public surface.
 
 ### The task registry
 
-`zena:component-async` grows a task table:
+`zena:component-async` keeps a context per task (landed):
 
 ```zena
 final class TaskContext {
-  set: i32;                       // this task's waitable set
-  wakeWritable: i32;              // fires the callback when work done
-  var result: ...;                // parked until task.return
+  var waitableSet: WaitableSet;   // this task's waitable set
+  var pendingWaitables: i32;      // joined and still owed an event
+  var returnsValue: boolean;      // typed task.return, not the bare one
+  var pendingReturn: (() => void) | null;  // the typed return, once known
+  var returned: boolean;
+  var failure: Error | null;      // reported instead of a return
 }
 ```
 
-- The callback's routing changes from "the one task" to a lookup:
-  every waitable is registered with the task context that owns it, so
-  `componentResume(event, waitable, code)` finds the context, runs the
-  completion, drains, and answers for *that* task — `EXIT` after its
-  `task.return`, or `WAIT | (ctx.set << 4)`.
+- The callback routes by owner: every waitable is registered with the
+  task context that joined it, so `componentResume(event, waitable,
+  code)` finds the context, runs the completion, drains, and answers
+  for *that* task — `EXIT` after its `task.return`, or
+  `WAIT | (ctx.waitableSet << 4)`.
 - `pending` and `pendingCopies` stay global maps (a waitable index is
-  instance-global), but each entry records its owning context so the
+  instance-global); the `owners` map says whose each one is, so the
   post-drain answer is computed against the right task.
-- The entry (`main`) becomes just another task, removing the current
-  special-casing rather than adding to it.
+- The entry (`main`) is task 0, the same as any other.
+- A task with a value hands the driver its future and typed return
+  through `finishTask(result, ret)`. The driver parks `ret` on the
+  context when the future settles and calls it from the task's own
+  entry — the next `componentPoll` or `componentResume` answering for
+  that task — which is what "issued from the task's own execution"
+  requires. A task that runs out of waitables with its value still
+  pending is a deadlock, reported as one rather than returned wrongly.
+  The self-wake future above is what makes "the task's own entry"
+  arrive when the settling happened during another task's; with one
+  task there is always a next entry of its own, and the wake is the
+  next increment.
 
 **To verify against wasmtime before building** (each a small probe,
 in the spirit of the timer and stream probes that preceded C6). Two
@@ -204,10 +239,13 @@ yet and composition needs.
 ## Sequencing
 
 1. Probes for the three open questions above.
-2. Driver generalization to task contexts (`main` becomes task 0) —
-   no new surface, all existing tests must stay green.
-3. `task.return` with a typed result (canon type aliasing + call
-   sites).
+2. ~~Driver generalization to task contexts (`main` becomes task 0)~~
+   — landed (#571), no new surface.
+3. `task.return` with a typed result — landed for flat scalars, with
+   the wrapper-module mechanism and the async entry as its user
+   (`main(): Future<u32>` returns `42` through `task.return#main`,
+   e2e). Remaining: the `return:<iface>#<type>` aliasing for rich
+   results, which arrives with its first user in 4.
 4. Export wrapper synthesis for one async export with rich types, and
    the world plumbing to declare it.
 5. Instance-grouped exports.

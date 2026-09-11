@@ -65,6 +65,9 @@ import { String } from 'zena:string';
 import { componentAbiModule, ComponentValType } from '../component-emitter.zena';
 import { componentTypeOf, declaredTypeOf } from '../component-shape.zena';
 import { ClassType, VoidType } from '../../types.zena';
+import {
+  isComponentEntryPath, componentEntryRunName
+} from '../../component-entry.zena';
 
 /** Bodies for the synthesized entry, by function uid. */
 var entryBodies = new HashMap<i32, IrBody>();
@@ -132,26 +135,46 @@ export let prepareComponentEntry = (
       'The component target cannot drive a main that takes parameters.'
     );
   }
+  // What the entry calls: `main` itself, or, when main's future
+  // carries a value, the wrapper's `run` (lib/component-entry.zena),
+  // which starts main and hands the driver the typed `task.return` to
+  // call once the value is known. The lifted entry then has that
+  // result type, and the value reaches the host through the return
+  // rather than through the callee.
+  var callee = main;
+  var calleeReturnsFuture = mainIsAsync;
+  wasm.componentEntryResult = -1;
   if (main.signature.returns.length != 0) {
-    var returnsVoidFuture = false;
+    var accepted = false;
     let declared = declaredTypeOf(main, 'export');
     let ret = declared.returnType;
-    if (ret is ClassType && ret.name == 'Future') {
+    if (mainIsAsync && ret is ClassType && ret.name == 'Future') {
       let targs = ret.typeArguments;
-      if (targs != null && targs.length == 1 && targs[0] is VoidType) {
-        returnsVoidFuture = true;
+      if (targs != null && targs.length == 1) {
+        let payload = targs[0];
+        if (payload is VoidType) {
+          accepted = true;
+        } else {
+          let result = componentTypeOf(wasm, payload);
+          let run = entryWrapperRun(wasm);
+          if (result >= 0 && run != null) {
+            callee = run;
+            calleeReturnsFuture = false;
+            wasm.componentEntryResult = result;
+            pass.markFunctionReached(run);
+            accepted = true;
+          }
+        }
       }
     }
-    if (!(mainIsAsync && returnsVoidFuture)) {
-      // Anything with a value is still refused: the lifted entry is
-      // `async func()`, and a result would have to travel through
-      // `task.return` long after main returned.
+    if (!accepted) {
       throw new Error(
         'A program that sleeps on the component target must declare ' +
-        '`main(): void` or `async function main(): Future<void>`. The ' +
-        'entry is lifted async, and an async lift returns its result ' +
-        'through task.return after the event loop finishes, which is ' +
-        'not where main returned it.'
+        '`main(): void`, `async function main(): Future<void>`, or an ' +
+        'exported `async function main(): Future<T>` with T a flat ' +
+        'scalar. The entry is lifted async, and an async lift returns ' +
+        'its result through task.return once the value is known, which ' +
+        'is not where main returned it.'
       );
     }
   }
@@ -166,12 +189,12 @@ export let prepareComponentEntry = (
   let b = new IrBuilder();
   let block = b.newBlock();
   b.switchTo(block);
-  if (mainIsAsync) {
+  if (calleeReturnsFuture) {
     // The frame future, deliberately unobserved (see above).
-    b.callFunc(b.addRef(new IrRefFunc(main)), new GrowableArray<i32>(0),
-        main.signature.returns[0]);
+    b.callFunc(b.addRef(new IrRefFunc(callee)), new GrowableArray<i32>(0),
+        callee.signature.returns[0]);
   } else {
-    b.callFunc(b.addRef(new IrRefFunc(main)), new GrowableArray<i32>(0),
+    b.callFunc(b.addRef(new IrRefFunc(callee)), new GrowableArray<i32>(0),
         null);
   }
   let code = b.callFunc(b.addRef(new IrRefFunc(poll)),
@@ -182,6 +205,23 @@ export let prepareComponentEntry = (
   wasm.componentEntryFunc = entry;
   wasm.componentCallbackFunc = resume;
   pass.markFunctionReached(resume);
+};
+
+/**
+ * The `run` of the entry wrapper the compiler loaded beside the entry,
+ * or null when the program has no wrapper.
+ */
+let entryWrapperRun = (wasm: WasmModule): WasmFunction | null => {
+  let prog = wasm.program;
+  if (prog == null) {
+    return null;
+  }
+  for (let unit in prog.units) {
+    if (isComponentEntryPath(unit.ast.path)) {
+      return wasm.getUnitFunc(unit.ast.path, componentEntryRunName);
+    }
+  }
+  return null;
 };
 
 let i32Results = (): GrowableArray<ValType> => {

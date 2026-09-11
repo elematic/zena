@@ -15,6 +15,7 @@ import { isTrue, equal, throws } from 'zena:assert';
 import { readFile } from 'zena:fs';
 import { newByteArray } from 'zena:byte-array';
 import { Array } from 'zena:array';
+import { ImmutableArray } from 'zena:immutable-array';
 import { HashMap } from 'zena:map';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
@@ -230,6 +231,19 @@ let containsName = (payload: ByteArray, name: String): boolean => {
   return false;
 };
 
+/** Whether `payload` contains `pattern`'s bytes contiguously. */
+let containsBytes = (payload: ByteArray, pattern: ImmutableArray<i32>): boolean => {
+  if (payload.length < pattern.length) { return false; }
+  for (var i = 0; i <= payload.length - pattern.length; i += 1) {
+    var matches = true;
+    for (var j = 0; j < pattern.length; j += 1) {
+      if (payload[i + j] != pattern[j]) { matches = false; break; }
+    }
+    if (matches) { return true; }
+  }
+  return false;
+};
+
 let idsToString = (ids: Array<i32>): String => {
   var out = "";
   for (let id in ids) {
@@ -295,6 +309,31 @@ export let tests = suite('Component emission', (): void => {
         compileFor(`${fixtures}/clock.zena`, 'component'), 11);
     isTrue(containsName(plain, 'main'),
       'a component with no async driver does not export `main`');
+  });
+
+  test('an async main with a value returns it through a typed task.return',
+      (ctx: TestContext): void => {
+    // The lifted entry is `async func() -> u32`: the value cannot come
+    // back from the call that started main, so the compiler loads a
+    // wrapper beside the entry declaring `task.return` at main's
+    // result type (lib/component-entry.zena), and the driver calls it
+    // once main's future settles. The core module imports that
+    // declaration under its own name, beside the driver's bare one.
+    let bytes = compileFor(`${fixtures}/exit-value.zena`, 'component');
+    isTrue(containsName(sectionPayload(bytes, 11), 'run'),
+      'the valued async entry is not exported as `run`');
+    isTrue(containsName(bytes, 'task.return#main'),
+      'the typed task.return for main is not imported');
+    // The entry's lifted type: async (0x43), no params, one result,
+    // u32 (0x79).
+    let entryType = [0x43, 0x00, 0x00, 0x79];
+    isTrue(containsBytes(bytes, entryType),
+      'the async entry is not lifted as `async func() -> u32`');
+    // The typed return's canon entry: opcode 0x09, one u32 result, no
+    // options.
+    let typedReturn = [0x09, 0x00, 0x79, 0x00];
+    isTrue(containsBytes(bytes, typedReturn),
+      'the typed task.return canon entry is missing');
   });
 
   test('a component with no imports carries no import machinery', (ctx: TestContext): void => {

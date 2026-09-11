@@ -203,12 +203,40 @@ export class LibraryLoader {
       this.#cache.delete(path);
     }
 
-    let isStdlib = path.startsWith("zena:") || path.contains("stdlib");
-    let packageName = this.#resolver.findPackageForPath(path);
-
     let tLoad = performance.start("load");
     let source = this.#host.readFile(path);
     this.loadTime = this.loadTime + performance.end(tLoad);
+    return this.#register(path, source, version, null);
+  }
+
+  /**
+   * Load a module the compiler wrote itself, from its source rather
+   * than from the host. `pinned` maps import specifiers the source
+   * uses to paths that are already loaded, so a synthesized module can
+   * import the entry it was written for without the resolver spelling
+   * the entry's path a second way and loading it twice. Every other
+   * import resolves as usual.
+   */
+  loadSynthesized(
+    path: String,
+    source: String,
+    pinned: HashMap<String, String>
+  ): SourceFile {
+    if (this.#cache.has(path)) {
+      return this.#cache[path];
+    }
+    return this.#register(path, source, null, pinned);
+  }
+
+  /** Parse `source` as the module at `path`, cache it, and load what it imports. */
+  #register(
+    path: String,
+    source: String,
+    version: String | null,
+    pinned: HashMap<String, String> | null
+  ): SourceFile {
+    let isStdlib = path.startsWith("zena:") || path.contains("stdlib");
+    let packageName = this.#resolver.findPackageForPath(path);
 
     let tParse = performance.start("parse");
     var parseErrors: GrowableArray<Diagnostic> = new GrowableArray<Diagnostic>(0);
@@ -231,50 +259,40 @@ export class LibraryLoader {
     record.completeness = completeness;
     this.#cache[path] = record;
 
-    // Resolve and recursively load imports.
+    // Resolve and recursively load imports. A failure to resolve or
+    // load a dependency is left for type checking to report as
+    // ModuleNotFound.
+    let follow = (specifier: String): void => {
+      // An empty specifier is the parser's stand-in for one that has not
+      // been typed yet (see #missingModuleSpecifier). There is nothing to
+      // resolve, so the declaration contributes no dependency.
+      if (specifier == "") {
+        return;
+      }
+      if (pinned != null && pinned.has(specifier)) {
+        record.imports[specifier] = pinned[specifier];
+        return;
+      }
+      try {
+        let resolved = this.#resolver.resolve(specifier, path);
+        record.imports[specifier] = resolved.path;
+        this.load(resolved.path, null);
+      } catch (e) {
+        // Reported by the checker, against the import that named it.
+      }
+    };
     var i = 0;
     while (i < ast.body.length) {
       let stmt = ast.body[i];
       match (stmt) {
-        // An empty specifier is the parser's stand-in for one that has not
-        // been typed yet (see #missingModuleSpecifier). There is nothing to
-        // resolve, so the declaration contributes no dependency.
         case ImportDeclaration {moduleSpecifier}: {
-          let specifier = moduleSpecifier.value;
-          if (specifier != "") {
-            try {
-              let resolved = this.#resolver.resolve(specifier, path);
-              record.imports[specifier] = resolved.path;
-              this.load(resolved.path, null);
-            } catch (e) {
-              // Could not resolve or load dependency.
-              // It will be reported as ModuleNotFound during type checking.
-            }
-          }
+          follow(moduleSpecifier.value);
         }
         case ExportAllDeclaration {moduleSpecifier}: {
-          let specifier = moduleSpecifier.value;
-          if (specifier != "") {
-            try {
-              let resolved = this.#resolver.resolve(specifier, path);
-              record.imports[specifier] = resolved.path;
-              this.load(resolved.path, null);
-            } catch (e) {
-              // Could not resolve or load dependency.
-            }
-          }
+          follow(moduleSpecifier.value);
         }
         case ExportFromDeclaration {moduleSpecifier}: {
-          let specifier = moduleSpecifier.value;
-          if (specifier != "") {
-            try {
-              let resolved = this.#resolver.resolve(specifier, path);
-              record.imports[specifier] = resolved.path;
-              this.load(resolved.path, null);
-            } catch (e) {
-              // Could not resolve or load dependency.
-            }
-          }
+          follow(moduleSpecifier.value);
         }
         case _: {}
       }

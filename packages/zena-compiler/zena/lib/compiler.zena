@@ -26,6 +26,8 @@ import {
 import { CompilerHost, LibraryLoader, SourceFile } from './library-loader.zena';
 import { buildStdlibConfig } from './package-manifest.zena';
 import { getStandardPrelude, getTargetRuntimeModules } from './prelude.zena';
+import { targetEmitsComponent } from './targets.zena';
+import { componentEntryWrapperFor } from './component-entry.zena';
 import { allWellKnown, isWellKnown, wellKnownName } from './well-known.zena';
 import { Symbol, makeSymbolIdGenerator } from './scope/symbol.zena';
 import { Scope, ScopeKind } from './scope/scope.zena';
@@ -308,6 +310,20 @@ export final class Compiler {
     // Load the entry point and all transitive dependencies.
     let entry = this.#loader.load(entryPoint, version);
     entries.push(entry);
+
+    // The component target's entry wrapper, when the program's async
+    // `main` returns a value: a module the compiler writes beside the
+    // entry, importing it (see component-entry.zena). After the entry
+    // for the same reason as the runtime modules below.
+    if (targetEmitsComponent(this.#resolver.target)) {
+      let wrapper = componentEntryWrapperFor(entryPoint, entry.ast);
+      if (wrapper != null) {
+        let pinned = new HashMap<String, String>();
+        pinned[wrapper.entrySpecifier] = wrapper.entryPath;
+        entries.push(this.#loader.loadSynthesized(
+            wrapper.path, wrapper.source, pinned));
+      }
+    }
 
     // The target's own runtime modules, after the entry so that they
     // cannot shift its symbol ids — see getTargetRuntimeModules.

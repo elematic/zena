@@ -1,0 +1,180 @@
+/**
+ * @file
+ *
+ * The component target's entry wrapper: a module the compiler writes
+ * for a program whose async `main` returns a value.
+ *
+ * A callback-lifted export hands its result to the host through
+ * `task.return`, a canonical builtin whose canon entry carries the
+ * result's type. The core function that calls it has to be declared
+ * at that type, and nothing in the standard library can name what a
+ * particular program's `main` returns. So the declaration is written
+ * here, per program, into a small module loaded beside the entry. The
+ * module imports the program's `main`, declares `task.return` at
+ * main's result type, and exports `run`, which starts `main` and
+ * hands its future to the driver together with the typed return to
+ * call once the future settles. The entry adapter
+ * (`codegen/ir/component-adapters.zena`) calls `run` in place of
+ * `main`.
+ *
+ * Whether a program gets a wrapper is decided from the entry's syntax
+ * alone, the annotation on `main`, so the wrapper can be loaded in the
+ * same compile as the entry, before anything is checked. A `main`
+ * whose result is not a flat scalar gets no wrapper, and the adapter
+ * reports what is supported.
+ *
+ * See docs/design/component-async-exports.md.
+ */
+
+import { String } from 'zena:string';
+import { StringBuilder } from 'zena:string-builder';
+import {
+  Module, FunctionDeclaration, VariableDeclaration, FunctionExpression,
+  IdentifierPattern, NamedTypeAnnotation
+} from './ast.zena';
+
+/** What the wrapper's path adds to the entry's. */
+let wrapperSuffix = '.component-entry.zena';
+
+/** Whether `path` names a wrapper this module wrote. */
+export function isComponentEntryPath(path: String): boolean {
+  return path.endsWith(wrapperSuffix);
+}
+
+/** The core function name the adapter looks for in the wrapper. */
+export let componentEntryRunName = 'run';
+
+/**
+ * A wrapper to load beside the entry. `entrySpecifier` is how the
+ * wrapper's source imports the entry, and `entryPath` is the loaded
+ * entry's path, which the loader pins that specifier to so the entry
+ * is not loaded a second time under a differently spelled path.
+ */
+export final class ComponentEntryWrapper {
+  path: String;
+  source: String;
+  entrySpecifier: String;
+  entryPath: String;
+  new(this.path, this.source, this.entrySpecifier, this.entryPath);
+}
+
+/**
+ * The flat scalar types a `main` may return through the wrapper:
+ * the ones that lift as one core value, and that a synthesized module
+ * can name without importing anything.
+ */
+let scalarResults = [
+  'bool', 'i8', 'u8', 'i16', 'u16', 'i32', 'u32', 'i64', 'u64',
+  'f32', 'f64'
+];
+
+let isScalarResult = (name: String): boolean => {
+  for (let s in scalarResults) {
+    if (s == name) { return true; }
+  }
+  return false;
+};
+
+/**
+ * The scalar `T` of an `async` function annotated `Future<T>`, or the
+ * empty string when the function is not that shape.
+ */
+let asyncScalarResultOf = (func: FunctionExpression): String => {
+  if (!func.isAsync) { return ''; }
+  let annotation = func.returnType;
+  if (annotation is NamedTypeAnnotation) {
+    if (annotation.name == 'Future') {
+      let args = annotation.typeArguments;
+      if (args != null) {
+        if (args.length == 1) {
+          let arg = args[0];
+          if (arg is NamedTypeAnnotation) {
+            if (arg.typeArguments == null) {
+              if (isScalarResult(arg.name)) {
+                return arg.name;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return '';
+};
+
+/**
+ * The scalar result of the module's exported async `main`, or the
+ * empty string. Both spellings count: `export async function main()`
+ * and `export let main = async () => ...`.
+ */
+let mainScalarResultOf = (ast: Module): String => {
+  for (let stmt in ast.body) {
+    if (stmt is FunctionDeclaration) {
+      if (stmt.exported) {
+        if (stmt.name.name == 'main') {
+          return asyncScalarResultOf(stmt.func);
+        }
+      }
+    } else if (stmt is VariableDeclaration) {
+      if (stmt.exported) {
+        let pattern = stmt.pattern;
+        if (pattern is IdentifierPattern) {
+          if (pattern.name == 'main') {
+            let init = stmt.init;
+            if (init is FunctionExpression) {
+              return asyncScalarResultOf(init);
+            }
+          }
+        }
+      }
+    }
+  }
+  return '';
+};
+
+/** The last path segment. */
+let baseName = (path: String): String => {
+  var from = 0;
+  for (var i = 0; i < path.length; i += 1) {
+    if (path.getByteAt(i) == 47) { from = i + 1; } // '/'
+  }
+  return path.sliceBytes(from, path.length);
+};
+
+/**
+ * The wrapper for the entry at `entryPath` with syntax `ast`, or null
+ * when the program's `main` returns nothing, is synchronous, or
+ * returns something other than a flat scalar.
+ */
+export function componentEntryWrapperFor(
+  entryPath: String,
+  ast: Module
+): ComponentEntryWrapper | null {
+  let result = mainScalarResultOf(ast);
+  if (result == '') {
+    return null;
+  }
+  let specifier = './' + baseName(entryPath);
+  let sb = new StringBuilder();
+  sb.append('// Written by the compiler for the component target: the ');
+  sb.append('async entry\'s wrapper.\n');
+  sb.append('// `main` returns its value through a future, and the ');
+  sb.append('host receives it\n');
+  sb.append('// through the `task.return` declared here at that ');
+  sb.append('type, once the future\n');
+  sb.append('// settles. See docs/design/component-async-exports.md.\n');
+  sb.append('import { main } from \'').append(specifier).append('\';\n');
+  sb.append('import { finishTask } from \'zena:component-async\';\n\n');
+  sb.append('@external("canon", "task.return#main")\n');
+  sb.append('declare function taskReturnMain(value: ').append(result)
+      .append('): void;\n\n');
+  sb.append('export function ').append(componentEntryRunName)
+      .append('(): void {\n');
+  sb.append('  finishTask<').append(result).append('>(main(), (value: ')
+      .append(result).append('): void => {\n');
+  sb.append('    taskReturnMain(value);\n');
+  sb.append('  });\n');
+  sb.append('}\n');
+  return new ComponentEntryWrapper(entryPath + wrapperSuffix,
+      sb.toString(), specifier, entryPath);
+}

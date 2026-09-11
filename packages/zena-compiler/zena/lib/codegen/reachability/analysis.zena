@@ -32,6 +32,7 @@ import { walkEnter } from '../../visitor.zena';
 import { performance } from '../../time.zena';
 import { componentAbiModule } from '../component-emitter.zena';
 import { targetEmitsComponent } from '../../targets.zena';
+import { isComponentEntryPath } from '../../component-entry.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 
 final class ParsedMethodRef {
@@ -670,9 +671,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let awaitPacked = this.wasm.getStdlibFunc('component-async', 'awaitPacked');
     let awaitWaitable =
         this.wasm.getStdlibFunc('component-async', 'awaitWaitable');
-    let anyDoorReached =
+    var anyDoorReached =
         (awaitPacked != null && (awaitPacked as WasmFunction).isReached) ||
         (awaitWaitable != null && (awaitWaitable as WasmFunction).isReached);
+    // An entry wrapper hands the driver main's value through
+    // `finishTask`, which only the entry and callback can deliver: a
+    // program with one is driven whether or not it ever awaits an
+    // import.
+    for (let unit in prog.units) {
+      if (isComponentEntryPath(unit.ast.path)) {
+        anyDoorReached = true;
+      }
+    }
     if (!anyDoorReached) {
       return;
     }
@@ -1096,8 +1106,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // the component's event loop calls `componentPoll` and
       // `componentResume` from outside the program — but its exports
       // root conditionally, after the main traversal below: see
-      // `#rootComponentAsyncDriver`.
-      let isHostBoundary = unit.ast.path == 'zena:js/index.zena';
+      // `#rootComponentAsyncDriver`. The component entry wrapper the
+      // compiler writes (lib/component-entry.zena) is one too: the
+      // entry adapter calls its `run` from outside the program.
+      let isHostBoundary = unit.ast.path == 'zena:js/index.zena' ||
+          isComponentEntryPath(unit.ast.path);
       // The root set is `main` plus the exports of those two units.
       // Every other unit is a library: its globals are roots only if
       // something reaches them. Queuing them all — which is what this

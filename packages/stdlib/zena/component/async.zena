@@ -32,6 +32,7 @@
  */
 
 import { HashMap } from 'zena:map';
+import { Error } from 'zena:error';
 import { Completer, drainMicrotasks } from 'zena:async';
 
 // ============================================================================
@@ -153,6 +154,18 @@ final class TaskContext {
    * owed an event for. Zero means the task has nothing left to wait
    * on. */
   var pendingWaitables = 0;
+  /** Whether this task hands the host a value through a typed
+   * `task.return` (see `finishTask`), rather than the bare one the
+   * driver calls for a task that returns nothing. */
+  var returnsValue = false;
+  /** The typed return, ready to call: set once the task's result is
+   * known, called from the task's own entry, then cleared. */
+  var pendingReturn: (() => void) | null = null;
+  /** Whether the typed return has been called. */
+  var returned = false;
+  /** What the task's result failed with, if it did. Reported by the
+   * next answer to the host instead of a return. */
+  var failure: Error | null = null;
 }
 
 /**
@@ -263,18 +276,68 @@ export function awaitWaitable(end: i32): Future<i32> {
 }
 
 /**
+ * Hand the running task's result to the host once `result` settles:
+ * `ret` is the typed `task.return` for the task's result type, and
+ * the driver calls it from the task's own entry — the one running now
+ * if the value is already known by the time the entry asks what to
+ * do next, else the callback re-entry after which it is. A failure
+ * is reported from that entry instead. Called by the entry wrapper
+ * the compiler writes for an async `main` that returns a value
+ * (lib/component-entry.zena in the compiler).
+ */
+export async function finishTask<T>(
+  result: Future<T>,
+  ret: (value: T) => void
+): Future<void> {
+  let ctx = currentContext();
+  ctx.returnsValue = true;
+  try {
+    let value = await result;
+    ctx.pendingReturn = (): void => {
+      ret(value);
+    };
+  } catch (e) {
+    ctx.failure = e;
+  }
+}
+
+/**
  * Decide how the task returns to the host: EXIT once it has nothing
  * left to wait on — after `task.return`, and after dropping its
  * waitable set, since a set left alive at exit is a leak the host
  * reports rather than collects — or WAIT naming its set otherwise.
+ *
+ * A task with a value calls its typed return as soon as the value is
+ * known, here, from its own entry: `task.return` must be issued by
+ * the task it belongs to. That can be before EXIT — the task may still
+ * have waitables to see out — but never after, and a task that runs
+ * out of things to wait on with no value is a deadlock, reported as
+ * such rather than returned wrongly typed.
  */
 let nextCode = (ctx: TaskContext): CallbackCode => {
+  let failure = ctx.failure;
+  if (failure != null) {
+    throw failure;
+  }
+  let ret = ctx.pendingReturn;
+  if (ret != null) {
+    ctx.pendingReturn = null;
+    ctx.returned = true;
+    ret();
+  }
   if (ctx.pendingWaitables == 0) {
+    if (ctx.returnsValue && !ctx.returned) {
+      throw new Error(
+        "Deadlock: the task has nothing left to wait on, and its " +
+        "result is still pending");
+    }
     if ((ctx.waitableSet as i32) != 0) {
       waitableSetDrop(ctx.waitableSet);
       ctx.waitableSet = 0 as WaitableSet;
     }
-    taskReturn();
+    if (!ctx.returnsValue) {
+      taskReturn();
+    }
     return exitCode();
   }
   return waitOn(ctx.waitableSet);

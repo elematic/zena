@@ -265,6 +265,15 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'exit-value',
+    wasi: ['p3=y'],
+    // An async main with a value: the entry is lifted `async func() ->
+    // u32`, and the value reaches the host through a typed
+    // `task.return` issued from the callback re-entry after the timer
+    // fires — not from the call that started main.
+    invocations: [{invoke: 'run()', expect: '42'}],
+  },
+  {
     name: 'clock',
     wasi: ['p3=y'],
     // A real monotonic reading, so the value is not predictable; that it

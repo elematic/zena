@@ -1,0 +1,22 @@
+// Dev tool: print the component entry wrapper the compiler would write
+// for a program, or say that it writes none. Usage:
+//   zena-cli run zena/dev/dump-entry-wrapper.zena --dir . -- <entry.zena>
+import { getArguments } from 'zena:cli';
+import { readFile } from 'zena:fs';
+import { parse } from '../lib/parser.zena';
+import { componentEntryWrapperFor } from '../lib/component-entry.zena';
+
+export function main(): i32 {
+  let args = getArguments();
+  let path = args[args.length - 1];
+  let ast = parse(readFile(path), path);
+  let wrapper = componentEntryWrapperFor(path, ast);
+  if (wrapper == null) {
+    console.log('no wrapper: main is not an exported async function ' +
+        'returning a Future of a flat scalar');
+    return 0;
+  }
+  console.log(wrapper.path);
+  console.log(wrapper.source);
+  return 0;
+}

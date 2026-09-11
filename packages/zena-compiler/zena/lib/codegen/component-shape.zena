@@ -34,7 +34,9 @@ import {
   componentCallbackExport, componentTypeNeedsMemory,
   componentSignatureNeedsMemory, componentRuntimeNamespace
 } from './component-emitter.zena';
-import { ImportTypeEncoder } from './component-emitter.zena';
+import {
+  ImportTypeEncoder, canonBuiltinBaseName
+} from './component-emitter.zena';
 
 /** Look through type aliases (`type`, `distinct type`) to the type itself. */
 let underlying = (t: Type): Type => match (t) {
@@ -296,10 +298,12 @@ export let buildComponentShape = (
         );
       }
       var builtinResult = noComponentResult;
-      if (field == "task.return") {
+      if (canonBuiltinBaseName(field) == "task.return") {
         // `task.return` carries the lifted task's result, so its type
         // comes from what the declaration takes, not from what it
-        // returns.
+        // returns. Declared more than once at different result types
+        // (the driver's bare one, an entry wrapper's typed one), each
+        // under its own `#name`, as the per-type builtins are.
         let declared = declaredTypeOf(f, "import");
         if (declared.parameters.length == 1) {
           builtinResult = componentTypeOf(wasm, declared.parameters[0]);
@@ -403,10 +407,17 @@ export let buildComponentShape = (
         "re-enter it through."
       );
     }
+    // Its result is what the program's main resolves to, returned
+    // through the typed `task.return` the entry wrapper declares —
+    // nothing, for a main that returns nothing.
+    var entryResult = noComponentResult;
+    if (wasm.componentEntryResult >= 0) {
+      entryResult = wasm.componentEntryResult;
+    }
     shape.exports.push(new ComponentExportFunc(
       componentEntryExport, "run",
       new ComponentFuncType(new GrowableArray<i32>(), new GrowableArray<String>(),
-          noComponentResult, true),
+          entryResult, true),
       componentCallbackExport));
   }
 
