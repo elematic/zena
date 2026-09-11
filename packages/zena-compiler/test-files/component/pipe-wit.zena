@@ -8,17 +8,17 @@
 // transfer, a scalar-payload future result, a future parameter with
 // an Outcome payload, a rich future inside a tuple, and a sync
 // bare-arm result. The async transfer roots the driver, so the entry
-// is callback-lifted and `main` returns void.
+// is callback-lifted and `main` is async.
 import {
   source, sink, tee, open, transfer, finish, deliver, submit, commit,
   PipeError, PipeErrorClosed,
 } from 'wasi:pipe/pipes';
 import { Stream, StreamWriter } from 'zena:stream';
 import { Some, Option } from 'zena:option';
-import { Completer, drainMicrotasks, Future } from 'zena:async';
+import { Completer, Future } from 'zena:async';
 import { Outcome, Ok } from 'zena:result';
 
-export function main(): void {
+export async function main(): Future<void> {
   let incoming = source();
   let outgoing = new StreamWriter<u8>();
   if (sink(outgoing.stream) != (0 as u32)) {
@@ -38,8 +38,7 @@ export function main(): void {
       incoming.stop();
     }
   }
-  consume(counted, accepted, confirmation);
-  drainMicrotasks();
+  await consume(counted, accepted, confirmation);
 }
 
 async function consume(

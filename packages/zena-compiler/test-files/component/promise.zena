@@ -11,7 +11,7 @@
 import { console } from 'zena:console';
 import { Memory, defaultAllocator } from 'zena:memory';
 import { awaitWaitable } from 'zena:component-async';
-import { drainMicrotasks } from 'zena:async';
+import { Future } from 'zena:async';
 import { i32ToString } from 'zena:string-convert';
 import { Error } from 'zena:error';
 
@@ -60,9 +60,9 @@ async function consume(end: i32): Future<void> {
   throw new Error('could not allocate the read buffer');
 }
 
-export function main(): void {
+export async function main(): Future<void> {
   let pair = futureNew();
-  consume(pair as i32);
-  produce((pair >> 32) as i32);
-  drainMicrotasks();
+  let consumed = consume(pair as i32);
+  await produce((pair >> 32) as i32);
+  await consumed;
 }
