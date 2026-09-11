@@ -232,26 +232,38 @@ Until #458 lands, measure a hello-world before wiring the prelude to
 `core` rather than assuming the fix made facades free. After it lands,
 this section is history.
 
-**Measured, with `core` re-exporting all twenty-three members.** Importing
-one name costs **32 bytes** on a minimal program and **33 bytes** on one
-that builds strings, splits them and iterates the result:
+**Measured, with `core` re-exporting all twenty-three members, and then
+reduced to nothing.** The first measurement was 32 bytes on a program
+returning `'hello'.length` (292 to 324) and 33 on one that builds strings,
+splits them and iterates the result (5,788 to 5,821) — constant rather
+than proportional, which said the cost was structural rather than code.
 
-| program                        | own module | via `zena:core` | added |
-| ------------------------------ | ---------- | --------------- | ----- |
-| returns `'hello'.length`        | 292        | 324             | +32   |
-| StringBuilder, split, for-in    | 5,788      | 5,821           | +33   |
+All of it was one class. `TemplateStringsArray` was instantiated because
+the class was *visible*, not because anything built one:
 
-The cost is **constant, not proportional** — the struct layouts of the
-classes the facade exposes, and no code. An unused import of
-`zena:string-builder` under its own name costs nothing at all (292 bytes,
-byte-identical to no import), so the 32 bytes are the facade's, not the
-import's.
+```zena
+let {templateStringsArrayClass} = this.wasm;
+if (templateStringsArrayClass != null) {
+  this.specializer.instantiateClassType(tsaClass, ...);
+}
+```
 
-That is small enough for the entrypoints to collapse. It is not small
-enough to ignore when deciding whether the **prelude** should name `core`:
-the prelude reaches every program, so it would move from an opt-in 32
-bytes to a floor, and the parse-and-check cost above is the larger half of
-that question anyway.
+That sat directly below the comment explaining why `String` is *not*
+instantiated on discovery — "discovering the class is not evidence that a
+String value exists" — with the same reasoning never applied to the line
+under it. The 32 bytes were its struct, the two `String` arrays its
+fields name, and its vtable global.
+
+Only a tagged template builds one, and `registerTaggedTemplate` already
+runs per tagged template, so the root moved there. A facade re-exporting
+`TemplateStringsArray` now costs **zero bytes** — 292 against 292, byte
+for byte — and a tagged template still ships the class. Both directions
+are pinned in `binary-size_test`, because the first test passes trivially
+if the class stops being emitted at all.
+
+So the entrypoints can collapse for free. Whether the **prelude** should
+name `core` is still a separate question: the parse-and-check cost is the
+larger half of it, and that does not go away.
 
 ### Libraries the target list omits
 

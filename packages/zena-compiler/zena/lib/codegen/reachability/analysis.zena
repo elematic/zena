@@ -1213,11 +1213,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // String value exists. A program that builds one reaches its
     // constructor through the normal graph, and a string literal
     // instantiates it below through the literal helpers.
-    let {templateStringsArrayClass} = this.wasm;
-    if (templateStringsArrayClass != null) {
-      let tsaClass = templateStringsArrayClass;
-      this.specializer.instantiateClassType(tsaClass, this.getClassModel(tsaClass));
-    }
+    // TemplateStringsArray is not instantiated here either, for the same
+    // reason. Only a tagged template builds one, and
+    // `registerTaggedTemplate` instantiates the class when it finds one.
+    // Doing it here cost every module that could see the class — which
+    // is every module importing a library that re-exports it — its
+    // struct, the two String arrays its fields name, and a vtable
+    // global, for a program with no tagged template in it.
 
     this.#rootComponentAbi();
 

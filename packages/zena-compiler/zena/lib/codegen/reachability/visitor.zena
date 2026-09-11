@@ -1610,6 +1610,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           var tsaStruct: WasmStruct | null = null;
           let tsaClass = this.pass.wasm.templateStringsArrayClass;
           if (tsaClass != null) {
+            // A tagged template is the only thing that builds one, so
+            // this is where the class becomes real. Instantiating it
+            // because it was merely discovered would put its struct, its
+            // two String arrays and its vtable global into every module
+            // that imports a library re-exporting it — the same reason
+            // `String` is not instantiated at discovery either.
+            this.pass.specializer.instantiateClassType(
+                tsaClass, this.pass.getClassModel(tsaClass));
             let key = getClassKey(tsaClass);
             if (let (true, tsaInfo) = this.pass.wasm.classInfos.get(key)) {
               tsaStruct = tsaInfo.structType;
