@@ -407,14 +407,24 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
-          this.#exports[name.name] = info;
+          // Export the declaration's own symbol — not a fresh one. A
+          // separate export symbol has no importTarget back to the
+          // declaration, so an importer's resolveTarget() lands on it
+          // rather than the declaration. Across an import cycle's back
+          // edge that mints a second nominal identity (one the origin
+          // fills, one an empty shell an importer resolved) that never
+          // reconciles, since the dep-model binding lookup that unifies
+          // them acyclically has no filled origin yet. Functions and
+          // values already export their declaration symbol directly.
+          this.#exports[name.name] = this.#current.getLocal(name.name) as Symbol;
         }
       }
       case EnumDeclaration {name, exported}: {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
+          // An enum materializes to a TypeAliasType, so it keeps a
+          // distinct export symbol for the same reason a type alias does.
           let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
           this.#exports[name.name] = info;
         }
@@ -434,6 +444,9 @@ export final class ScopeBuilder {
         }
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
+          // A transparent alias already crosses import cycles through its
+          // own shell (registerTypeAliasDeclaration); it keeps a distinct
+          // export symbol so the alias-target check is not driven twice.
           let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
           this.#exports[name.name] = info;
         }
