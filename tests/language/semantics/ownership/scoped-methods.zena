@@ -1,0 +1,60 @@
+// @mode: check
+// Scoped returns on METHODS: the signature validation accepts a
+// Scoped-wrapped Future or Iterator, and the body then gets the
+// suspension relaxations exactly as a function expression does. A
+// method without the wrapper keeps the bans.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+
+resource class Res {
+  new();
+  size(): i32 { return 4; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+class Readers {
+  new();
+
+  // An async method holding its borrow across await, behind Scoped.
+  async read(r: Borrow<Res>): Scoped<Future<i32>> {
+    let x = await tick();
+    return r.size() + x;
+  }
+
+  // The same body without the wrapper keeps the suspension ban.
+  async unrelaxed(r: Borrow<Res>): Future<i32> {
+    let x = await tick();
+    return r.size() + x; // @error: suspension
+  }
+
+  // A generator method taking a borrow behind a scoped iterator.
+  gen pair(r: Borrow<Res>): Scoped<Iterator<i32>> {
+    yield r.size();
+    yield r.size() + 1;
+  }
+
+  // Without the wrapper the generator parameter ban stands.
+  gen banned(r: Borrow<Res>): Iterator<i32> { // @error: may not take
+    yield r.size();
+  }
+
+  // A static async method with a scoped type parameter.
+  static async first<scoped T>(f: T): Scoped<Future<i32>> {
+    let v = await f;
+    return 1;
+  }
+}
+
+let drive = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let rs = new Readers();
+  let a = await rs.read(r);
+  var sum = a;
+  let it = rs.pair(r);
+  for (let v in it) {
+    sum += v;
+  }
+  return sum;
+};

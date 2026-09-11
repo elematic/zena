@@ -4585,9 +4585,10 @@ if (fast) {
 return 0;            // error: 'fut' must be consumed on every path
 ```
 
-The annotation is what lifts the suspension rules. An async function
-that declares a `Scoped<Future<T>>` return (with one borrow parameter
-to derive from) may hold its borrow across `await`: the frame's only
+The annotation is what lifts the suspension rules, on function
+expressions and methods alike (static methods included). An async
+function that declares a `Scoped<Future<T>>` return (with one borrow
+parameter to derive from) may hold its borrow across `await`: the frame's only
 first-class escape is the returned scoped future, which cannot outlive
 the borrow's extent. A generator may take restricted borrow parameters
 when its return type is `Scoped<Iterator<T>>`; the caller consumes the

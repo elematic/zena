@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 6
+// A Scoped return on a STATIC async method: the method-signature
+// validation peels the wrapper the same way the function-expression
+// path does, so a class can host an all-style combinator for scoped
+// inputs. The method type parameter is scoped, the array literal is a
+// call-site temporary, and the result is awaited in the owner's scope.
+import {Own, Borrow, Scoped, Disposable} from 'zena:ownership';
+import {Awaited} from 'zena:async';
+
+resource class Res {
+  new();
+  size(): i32 { return 4; }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
+  let x = await tick();
+  return r.size() + x;
+};
+
+class Combo {
+  new();
+  static async allScoped<scoped T>(
+      futures: Array<T>): Scoped<Future<Array<Awaited<T>>>> {
+    let out = new GrowableArray<Awaited<T>>();
+    for (let f in futures) {
+      out.push(await f);
+    }
+    return out;
+  }
+}
+
+export let main = async (): Future<i32> => {
+  let owner = new Res();
+  let vals = await Combo.allScoped([read(owner), tick()]);
+  // 5 + 1
+  return vals[0] + vals[1];
+};

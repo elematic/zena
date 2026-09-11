@@ -881,11 +881,13 @@ difference from `all`.
 first-class whatever `T` is — a future's payload cannot be
 second-class, since `Future<second-class>` is itself a storage error.
 
-The container shapes and `Awaited` rules are implemented; the stdlib
-`allScoped` itself waits on the next reseed, because the checked-in
-bootstrap compiles `zena:async` with its own older checker — stdlib
-code may use a new checker rule only after a reseed carries it, the
-same two-step that governs new syntax.
+The container shapes and `Awaited` rules are implemented, and a static
+async method may declare the scoped return — the method-signature
+validation peels the wrapper as the function-expression path does.
+The stdlib `allScoped` itself waits on the next reseed, because the
+checked-in bootstrap compiles `zena:async` with its own older checker —
+stdlib code may use a new checker rule only after a reseed carries it,
+the same two-step that governs new syntax.
 
 The iterator adapters (`map`, `filter`, `take`, in `zena:ownership`)
 need no containers and, it turned out, no `scoped T` either: each is a

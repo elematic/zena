@@ -13927,6 +13927,15 @@ let checkMethodSignature = (
     retType = resolveTypeAnnotation(ctx, returnType, true);
   }
 
+  // A `Scoped` return on an async or gen method is validated against
+  // the Future/Iterator it wraps; the signature keeps the wrapper, and
+  // the body check peels it again for the suspension relaxations.
+  var sigCore = retType;
+  if ((md.isGenerator || md.isAsync) && isScopedType(sigCore)) {
+    let sigInner = scopedInner(sigCore);
+    if (sigInner != null) { sigCore = sigInner; }
+  }
+
   // Generator methods: the annotation is the full Iterator<T> return
   // type. Methods do not infer return types, so it is required.
   if (md.isGenerator) {
@@ -13937,7 +13946,7 @@ let checkMethodSignature = (
         md.loc
       );
       retType = makeIteratorType(ctx, new ErrorType(), md.loc);
-    } else if (extractIteratorYieldType(ctx, retType) == null) {
+    } else if (extractIteratorYieldType(ctx, sigCore) == null) {
       ctx.error(
         "A generator's return type must be 'Iterator<T>', got '" +
         typeToString(retType) + "'.",
@@ -13967,7 +13976,7 @@ let checkMethodSignature = (
         md.loc
       );
       retType = makeFutureType(ctx, new ErrorType(), md.loc);
-    } else if (extractFutureValueType(ctx, retType) == null) {
+    } else if (extractFutureValueType(ctx, sigCore) == null) {
       ctx.error(
         "An async function's return type must be 'Future<T>', got '" +
         typeToString(retType) + "'.",
