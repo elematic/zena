@@ -22,7 +22,9 @@
  *
  * It generalizes what `time/p3.zena` built for the one timer wait —
  * that driver now delegates here — from "at most one subtask" to a
- * registry of any number, which is what synthesized WIT imports need.
+ * registry of any number, which is what synthesized WIT imports need,
+ * and keeps that registry per task: each waitable belongs to the task
+ * whose entry registered it, and the callback answers for the owner.
  *
  * The entry and callback the compiler wires (`componentPoll`,
  * `componentResume`) live here, and only the `component` target
@@ -36,48 +38,85 @@ import { Completer, drainMicrotasks } from 'zena:async';
 // The canonical builtins
 // ============================================================================
 
+// These are Component Model builtins, not WASI: functions the host
+// provides to every component, named by `@external("canon", ...)`.
+//
+// A *waitable* is a host-side handle the host can report an event on:
+// a subtask (an async import call in progress), or one end of a
+// stream or future. A *waitable set* is a host-side group of
+// waitables — the host owns the set and the grouping, and the guest
+// only holds its handle. `waitable-set.new` makes an empty one,
+// `waitable.join` puts a waitable into a set, and a paused task names
+// a set for the host to wake it for. Nothing here is a Zena `Set<T>`.
+//
 // Exported: a core module may not import one canonical builtin under
 // the same name twice, so any other module needing these — the
 // console's blocked-write wait, say — imports the declarations from
 // here rather than redeclaring them.
 
+/** A waitable's handle: a subtask, or a stream or future end. One
+ * host table holds them all, so one type names them all. */
+export distinct type Waitable = i32;
+
+/** A waitable set's handle. Zero is never one — the host never hands
+ * out 0 — which is what lets a field mean "no set yet". */
+export distinct type WaitableSet = i32;
+
 @external("canon", "waitable-set.new")
-export declare function waitableSetNew(): i32;
+export declare function waitableSetNew(): WaitableSet;
 
 @external("canon", "waitable-set.drop")
-declare function waitableSetDrop(set: i32): void;
+declare function waitableSetDrop(set: WaitableSet): void;
 
+/** Put `waitable` into `set`; a set of 0 removes it from whichever set
+ * it is in. A join is persistent until the next join. */
 @external("canon", "waitable.join")
-export declare function waitableJoin(waitable: i32, set: i32): void;
+export declare function waitableJoin(waitable: Waitable, set: WaitableSet): void;
 
 @external("canon", "subtask.drop")
-declare function subtaskDrop(subtask: i32): void;
+declare function subtaskDrop(subtask: Waitable): void;
 
 @external("canon", "task.return")
 declare function taskReturn(): void;
 
 // ============================================================================
-// Callback codes and states
+// Callback codes and packed values
 // ============================================================================
+
+/**
+ * What the entry and the callback return to the host: the low four
+ * bits are the code — EXIT or WAIT — and, for WAIT, the rest is the
+ * waitable set to wake the task for, so a WAIT is
+ * `WAIT | (set << 4)`.
+ */
+export distinct type CallbackCode = i32;
 
 /** Done: the task has returned and must not be re-entered. */
 let EXIT = 0;
 /** Wake me when something in this waitable set fires. */
 let WAIT = 2;
 
+let exitCode = (): CallbackCode => EXIT as CallbackCode;
+let waitOn = (set: WaitableSet): CallbackCode =>
+    (WAIT | ((set as i32) << 4)) as CallbackCode;
+
 /**
- * The low four bits of a packed async-lowered result, and the `code` a
- * subtask event carries, are both a `CallState`. A subtask is reported
- * more than once — it starts, and later it returns — and only RETURNED
- * means there is a completed subtask to resolve and drop.
+ * An async-lowered import returns `(subtask << 4) | state`: the
+ * subtask's handle in the high bits, and its `CallState` in the low
+ * four. The same state is the `code` a SUBTASK event carries. A
+ * subtask is reported more than once — it starts, and later it
+ * returns — and only RETURNED means there is a completed subtask to
+ * resolve and drop.
  */
 let STATE_MASK = 15;
 let STATE_RETURNED = 2;
 
 /**
  * The event kinds the callback's first argument carries, from the
- * canonical ABI's EventCode: SUBTASK's `code` is a `CallState`; the
- * stream and future kinds carry a packed copy result instead.
+ * canonical ABI's EventCode. A SUBTASK event's `code` is a
+ * `CallState`; a stream or future event's `code` is the copy's
+ * packed payload, `(progress << 4) | CopyResult`, decoded by the
+ * reader or writer that parked on it.
  */
 let EVENT_SUBTASK = 1;
 let EVENT_STREAM_READ = 2;
@@ -90,13 +129,49 @@ let EVENT_FUTURE_WRITE = 5;
 // ============================================================================
 
 /**
- * The waitable set the host wakes us on, created on first use. Zero is
- * not a valid set index, so it doubles as "not yet created".
+ * A task is one call from the host into an export that was lifted
+ * async. It starts when the host calls the export, pauses by returning
+ * a WAIT code that names a waitable set, and resumes when the host
+ * calls `componentResume` with an event for something in that set.
+ * It ends when it calls `task.return` and returns EXIT. The lifted
+ * entry's `main` is the first task; the service world's exported
+ * `handle`, called once per request, will be the others
+ * (docs/design/component-async-exports.md, Part 2).
+ *
+ * A waitable is a host-side handle the host can report an event on:
+ * a subtask (an async import call in progress), or one end of a
+ * stream or future. A waitable set is a host-side group of them,
+ * identified by an i32 like every other handle; the `waitable.join`
+ * builtin puts a waitable into a set, and a paused task names the set
+ * it wants to be woken for. Neither is a Zena collection.
  */
-var waitableSet = 0;
+final class TaskContext {
+  /** This task's waitable set, or 0 before it needs one. Created
+   * lazily by `ensureSet`. */
+  var waitableSet = 0 as WaitableSet;
+  /** How many waitables this task has joined to its set and is still
+   * owed an event for. Zero means the task has nothing left to wait
+   * on. */
+  var pendingWaitables = 0;
+}
+
+/**
+ * The task that is running: the one the host called into, or re-
+ * entered through the callback. Tracked because the host does not say
+ * which task an export call or callback belongs to — the guest has
+ * to know. Code that starts a wait (`awaitPacked`, `awaitWaitable`)
+ * joins the waitable to this task's set, since this is the task the
+ * host will resume when the event arrives; and after resuming a task
+ * the callback reports whether that task is done or what it waits
+ * on next.
+ */
+var currentTask: TaskContext | null = null;
+
+/** Which task each in-flight waitable was joined for, by handle. */
+let owners = new HashMap<Waitable, TaskContext>();
 
 /** In-flight subtasks, each owed one completion. */
-let pending = new HashMap<i32, Completer<void>>();
+let pending = new HashMap<Waitable, Completer<void>>();
 
 /**
  * In-flight stream and future copies, by end handle, each owed one
@@ -104,22 +179,61 @@ let pending = new HashMap<i32, Completer<void>>();
  * ends are distinct handle indices, and an end has at most one copy
  * in flight, so the handle is the whole key.
  */
-let pendingCopies = new HashMap<i32, Completer<i32>>();
+let pendingCopies = new HashMap<Waitable, Completer<i32>>();
 
-let ensureSet = (): i32 => {
-  if (waitableSet == 0) {
-    waitableSet = waitableSetNew();
+/** The running task, created lazily: the first task is whichever
+ * code first waits or polls, which is the entry's. (`??=` would say
+ * this in one line, but it does not lower on a module-level `var`
+ * yet — #572.) */
+let currentContext = (): TaskContext => {
+  let existing = currentTask;
+  if (existing != null) {
+    return existing;
   }
-  return waitableSet;
+  let fresh = new TaskContext();
+  currentTask = fresh;
+  return fresh;
+};
+
+/** Create the task's waitable set if it has none yet. */
+let ensureSet = (ctx: TaskContext): WaitableSet => {
+  if ((ctx.waitableSet as i32) == 0) {
+    ctx.waitableSet = waitableSetNew();
+  }
+  return ctx.waitableSet;
+};
+
+/** Join `waitable` to the running task's set and record that the
+ * task is waiting on it. */
+let register = (waitable: Waitable): void => {
+  let ctx = currentContext();
+  waitableJoin(waitable, ensureSet(ctx));
+  owners[waitable] = ctx;
+  ctx.pendingWaitables += 1;
+};
+
+/** Look up which task was waiting on `waitable`, forget the
+ * waitable, and count it off that task. Null if none was. */
+let release = (waitable: Waitable): TaskContext | null => {
+  if (let (true, ctx) = owners.get(waitable)) {
+    owners.delete(waitable);
+    ctx.pendingWaitables -= 1;
+    return ctx;
+  }
+  return null;
 };
 
 /**
- * An async-lowered import's packed result, as a future.
+ * An async-lowered import's packed result, as a future. `packed` is
+ * the raw `(subtask << 4) | state` the lowering returned (see
+ * STATE_MASK), taken as an i32 because that is what a raw import
+ * hands back.
  *
  * State RETURNED means the call finished inside the lowering — the
  * timer had already expired, the write already flushed — and the
  * future arrives completed, with no subtask to own. Anything else is a
- * subtask: joined to the set, registered, resolved by the callback.
+ * subtask: joined to the running task's set, registered, resolved by
+ * the callback.
  */
 export function awaitPacked(packed: i32): Future<void> {
   let completer = new Completer<void>();
@@ -127,8 +241,8 @@ export function awaitPacked(packed: i32): Future<void> {
     completer.complete();
     return completer.future;
   }
-  let subtask = packed >> 4;
-  waitableJoin(subtask, ensureSet());
+  let subtask = (packed >> 4) as Waitable;
+  register(subtask);
   pending[subtask] = completer;
   return completer.future;
 }
@@ -137,47 +251,50 @@ export function awaitPacked(packed: i32): Future<void> {
  * A stream or future end's next event, as a future of the packed
  * `(progress << 4) | CopyResult` payload. The caller has just issued
  * an async copy on `end` and got BLOCKED back: the copy is in flight,
- * and the payload arrives when the host has moved what it can.
+ * and the payload arrives when the host has moved what it can. `end`
+ * is the raw handle as the copy builtin took it.
  */
 export function awaitWaitable(end: i32): Future<i32> {
   let completer = new Completer<i32>();
-  waitableJoin(end, ensureSet());
-  pendingCopies[end] = completer;
+  let waitable = end as Waitable;
+  register(waitable);
+  pendingCopies[waitable] = completer;
   return completer.future;
 }
 
 /**
- * What the entry and the callback both end with: either something is
- * still in flight, in which case tell the host which set to wake us
- * on, or nothing is, in which case the task is done and its result —
- * nothing, for a `main(): void` — has to be returned before exiting.
+ * Decide how the task returns to the host: EXIT once it has nothing
+ * left to wait on — after `task.return`, and after dropping its
+ * waitable set, since a set left alive at exit is a leak the host
+ * reports rather than collects — or WAIT naming its set otherwise.
  */
-let nextCode = (): i32 => {
-  if (pending.size == 0 && pendingCopies.size == 0) {
-    // Every handle the task took out has to be given back before it
-    // returns: an outstanding waitable set at exit is a leak the host
-    // reports rather than collects.
-    if (waitableSet != 0) {
-      waitableSetDrop(waitableSet);
-      waitableSet = 0;
+let nextCode = (ctx: TaskContext): CallbackCode => {
+  if (ctx.pendingWaitables == 0) {
+    if ((ctx.waitableSet as i32) != 0) {
+      waitableSetDrop(ctx.waitableSet);
+      ctx.waitableSet = 0 as WaitableSet;
     }
     taskReturn();
-    return EXIT;
+    return exitCode();
   }
-  return WAIT | (waitableSet << 4);
+  return waitOn(ctx.waitableSet);
 };
 
 /**
- * Called by the synthesized entry after `main` returns: run everything
- * that can run now, then either exit or ask to be woken.
+ * Called by the synthesized entry after `main` returns: run the
+ * microtask checkpoint, then either exit or ask to be woken.
  */
-export function componentPoll(): i32 {
+export function componentPoll(): CallbackCode {
+  let ctx = currentContext();
   drainMicrotasks();
-  return nextCode();
+  return nextCode(ctx);
 }
 
 /**
- * The callback the host re-enters through when a waitable fires.
+ * The callback the host calls when a waitable fires. It resolves the
+ * completer parked on that waitable, runs the microtask checkpoint —
+ * the runtime's, at the host boundary, where a JS engine runs its own
+ * — and answers for the task that was waiting on the waitable.
  *
  * A SUBTASK event's `code` is its new state — a subtask is delivered
  * more than once, and only RETURNED resolves anything (dropping an
@@ -187,32 +304,43 @@ export function componentPoll(): i32 {
  * the end's completer with the payload for the parked reader or
  * writer to decode.
  */
-export function componentResume(event: i32, waitable: i32, code: i32): i32 {
-  if (event == EVENT_SUBTASK) {
-    if (code != STATE_RETURNED) {
-      return WAIT | (waitableSet << 4);
+export function componentResume(
+  event: i32,
+  fired: i32,
+  code: i32
+): CallbackCode {
+  let waitable = fired as Waitable;
+  if (event == EVENT_SUBTASK && code != STATE_RETURNED) {
+    // Started, not returned: nothing to resolve, keep waiting.
+    var set = currentContext().waitableSet;
+    if (let (true, known) = owners.get(waitable)) {
+      set = known.waitableSet;
     }
+    return waitOn(set);
+  }
+  let isCopy = event == EVENT_STREAM_READ || event == EVENT_STREAM_WRITE ||
+      event == EVENT_FUTURE_READ || event == EVENT_FUTURE_WRITE;
+  if (event != EVENT_SUBTASK && !isCopy) {
+    return waitOn(currentContext().waitableSet);
+  }
+  let released = release(waitable);
+  let ctx = if (released != null) released else currentContext();
+  currentTask = ctx;
+  if (event == EVENT_SUBTASK) {
     if (let (true, completer) = pending.get(waitable)) {
       pending.delete(waitable);
       subtaskDrop(waitable);
       completer.complete();
     }
-    drainMicrotasks();
-    return nextCode();
+  } else if (let (true, completer) = pendingCopies.get(waitable)) {
+    pendingCopies.delete(waitable);
+    // A join is persistent: the end would stay in the set after its
+    // event, and a set dropped at exit with members still in it
+    // traps. The end leaves the set with its event; the next copy
+    // that blocks joins it again.
+    waitableJoin(waitable, 0 as WaitableSet);
+    completer.complete(code);
   }
-  if (event == EVENT_STREAM_READ || event == EVENT_STREAM_WRITE ||
-      event == EVENT_FUTURE_READ || event == EVENT_FUTURE_WRITE) {
-    if (let (true, completer) = pendingCopies.get(waitable)) {
-      pendingCopies.delete(waitable);
-      // A join is persistent: the end would stay in the set after its
-      // event, and a set dropped at exit with members still in it
-      // traps. The end leaves the set with its event; the next copy
-      // that blocks joins it again.
-      waitableJoin(waitable, 0);
-      completer.complete(code);
-    }
-    drainMicrotasks();
-    return nextCode();
-  }
-  return WAIT | (waitableSet << 4);
+  drainMicrotasks();
+  return nextCode(ctx);
 }

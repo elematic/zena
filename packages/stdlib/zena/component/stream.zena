@@ -33,7 +33,7 @@ import { Stream, StreamWriter } from 'zena:stream';
 // name twice, so the waitable builtins have exactly one declaring
 // module — the driver — and everyone else imports the declarations.
 import {
-  waitableSetNew, waitableJoin, awaitWaitable
+  waitableSetNew, waitableJoin, awaitWaitable, Waitable, WaitableSet
 } from 'zena:component-async';
 
 /**
@@ -123,7 +123,7 @@ let mem = Memory.default;
 
 /** The blocking writers' waitable set, created on first block. Zero is
  * not a valid set index, so it doubles as "not yet created". */
-var blockingSet = 0;
+var blockingSet = 0 as WaitableSet;
 
 /**
  * A blocked write's completion, waited for in place. Only the end
@@ -132,12 +132,12 @@ var blockingSet = 0;
  * breakdown worth trapping over.
  */
 let awaitWrite = (end: WritableByteStream): i32 => {
-  if (blockingSet == 0) {
+  if ((blockingSet as i32) == 0) {
     blockingSet = waitableSetNew();
   }
-  waitableJoin(end as i32, blockingSet);
+  waitableJoin((end as i32) as Waitable, blockingSet);
   if (let (true, eventArea) = defaultAllocator.alloc(8)) {
-    let event = waitableSetWait(blockingSet, eventArea);
+    let event = waitableSetWait(blockingSet as i32, eventArea);
     let waitable = mem.getI32(eventArea);
     let payload = mem.getI32(eventArea + 4);
     defaultAllocator.free(eventArea);
