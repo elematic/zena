@@ -232,6 +232,27 @@ Until #458 lands, measure a hello-world before wiring the prelude to
 `core` rather than assuming the fix made facades free. After it lands,
 this section is history.
 
+**Measured, with `core` re-exporting all twenty-three members.** Importing
+one name costs **32 bytes** on a minimal program and **33 bytes** on one
+that builds strings, splits them and iterates the result:
+
+| program                        | own module | via `zena:core` | added |
+| ------------------------------ | ---------- | --------------- | ----- |
+| returns `'hello'.length`        | 292        | 324             | +32   |
+| StringBuilder, split, for-in    | 5,788      | 5,821           | +33   |
+
+The cost is **constant, not proportional** — the struct layouts of the
+classes the facade exposes, and no code. An unused import of
+`zena:string-builder` under its own name costs nothing at all (292 bytes,
+byte-identical to no import), so the 32 bytes are the facade's, not the
+import's.
+
+That is small enough for the entrypoints to collapse. It is not small
+enough to ignore when deciding whether the **prelude** should name `core`:
+the prelude reaches every program, so it would move from an opt-in 32
+bytes to a floor, and the parse-and-check cost above is the larger half of
+that question anyway.
+
 ### Libraries the target list omits
 
 The proposed 17-library list has no place for `async`, `stream`, `bench`,

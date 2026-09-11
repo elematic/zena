@@ -2,15 +2,51 @@
  * zena:core — the standard library's foundation: the types the language
  * itself is defined in terms of, and the utilities they are built from.
  *
- * The library is published before it owns anything. `stdlibLibraryOf`
- * attributes a file under `core/` to this library only if `core` is a
- * published module, and the well-known declaration registry keys on the
- * owning library — so a declaration cannot move here until a bootstrap
- * exists that already knows the name. Publishing it empty is how that
- * bootstrap gets made; see docs/design/stdlib-organization.md, Phase 1.
+ * Everything here is also importable under its own module name, and those
+ * names are what the rest of the tree still uses. This entry point is what
+ * lets an import site move over one area at a time; the old names are
+ * retired once nothing imports them, which is Phase 3 of
+ * docs/design/stdlib-organization.md.
  *
- * Members arrive by moving their files under core/ and repointing their
- * manifest entries, so each keeps its own module name for now and this
- * facade stays empty. It gains re-exports only once the entrypoints
- * collapse, which is Phase 3.
+ * Re-exported by module name rather than by file, so `error-stack` keeps
+ * the per-target entry its manifest gives it — the host hooks it names
+ * trade in `anyref`, which a component cannot declare.
+ *
+ * Importing this loads all of it. Thirteen of these modules are in the
+ * prelude already, so they are in every program's graph either way; the
+ * rest are what an importer adds. See "What a facade costs" in the plan.
  */
+
+// The language's own vocabulary: the types syntax lowers onto.
+export * from 'zena:string';
+export * from 'zena:error';
+export * from 'zena:error-stack';
+export * from 'zena:option';
+export * from 'zena:result';
+export * from 'zena:box';
+export * from 'zena:range';
+export * from 'zena:hashable';
+export * from 'zena:ownership';
+export * from 'zena:template-strings-array';
+
+// Iteration.
+export * from 'zena:iterator';
+export * from 'zena:iterable-utils';
+export * from 'zena:array-iterator';
+export * from 'zena:growable-array-iterator';
+
+// The array types. Implemented here because `String.split` returns a
+// `FixedArray<String>`, which would otherwise put `collections` below
+// `string` and above `error` — a cycle. `collections` re-exports them,
+// which is where a reader looks for them.
+export * from 'zena:array';
+export * from 'zena:fixed-array';
+export * from 'zena:growable-array';
+export * from 'zena:immutable-array';
+
+// Bytes and string building.
+export * from 'zena:byte-array';
+export * from 'zena:byte-buffer';
+export * from 'zena:string-builder';
+export * from 'zena:string-convert';
+export * from 'zena:string-reader';
