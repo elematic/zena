@@ -176,21 +176,15 @@ export let tests = suite("Package Manifest", () => {
       isTrue(stdlibLibraryAnswers("core", "core"));
     });
 
-    test("a library moving into another answers for it too", () => {
-      // string-convert's files are moving into core. Until the reseed after
-      // they land, a bootstrap attributes them to core by the directory
-      // rule, so a lookup naming string-convert has to accept core.
-      isTrue(stdlibLibraryAnswers("core", "string-convert"));
-    });
-
-    test("the grace is one exact destination, not a fallback to core", () => {
-      // A library with no move recorded gets nothing, so a lookup that
-      // should fail cannot find something plausible elsewhere in core.
+    test("no library answers for another between migrations", () => {
+      // The move table is empty at rest, so a lookup naming a library has
+      // exactly one answer. An entry exists only while a library's files
+      // are mid-move, and `string-convert` — the one that has needed it so
+      // far — now lives where the manifest says it does.
+      isFalse(stdlibLibraryAnswers("core", "string-convert"));
       isFalse(stdlibLibraryAnswers("core", "json"));
       isFalse(stdlibLibraryAnswers("core", "regex"));
-      // And the grace does not run backwards.
       isFalse(stdlibLibraryAnswers("string-convert", "core"));
-      // Nor sideways to another library that is also moving.
       isFalse(stdlibLibraryAnswers("string", "string-convert"));
     });
 
