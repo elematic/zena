@@ -1,0 +1,13 @@
+// @mode: run
+// @result: 42
+// Regression for interfaces crossing an import cycle's back edge
+// (docs/design/import-cycles.md). counter.zena declares `Seq` and imports
+// `compute` back from impl.zena, closing a cycle; impl.zena imports `Seq`
+// and reads its member through a generic bound (`S extends Seq`), passing
+// a class that implements it. Before an interface exported its own
+// declaration symbol, the importer resolved a second, empty identity, so
+// this failed to type-check: `Property 'first' does not exist on
+// interface 'Seq'` and `Cell does not satisfy constraint 'Seq'`.
+import { start } from './counter.zena';
+
+export let main = (): i32 => start();
