@@ -26,7 +26,8 @@ import { Error } from 'zena:error';
 import { i32ToString } from 'zena:string-convert';
 import { parse } from 'wit-parser:wit';
 import {
-  ComponentTypeEncoder, EncodedWorld, funcFlatMeta, WitFuncMeta,
+  ComponentTypeEncoder, EncodedWorld, funcFlatMeta, worldFuncFlatMeta,
+  WitFuncMeta,
   worldNames, qualifiedInterfaceName
 } from 'wit-parser:component-encoder';
 import {
@@ -320,66 +321,71 @@ export let encodeImportTypes = (
   }
   let encoder = new ComponentTypeEncoder(ast);
   let world = encoder.encodeWorld(derivedWorldName);
-  // The nominal type immediates the canon builtins need: a
-  // `resource.drop`'s type is the imported instance's own, reachable
-  // only through an alias the encoder appends. Resolved after the
-  // world so the instances exist, before mirroring so the alias
-  // pieces travel.
-  let resourceIndices = new HashMap<String, i32>();
-  for (let b in shape.builtins) {
-    if (b.canonType.startsWith("resource:")) {
-      if (resourceIndices.has(b.canonType)) { continue; }
-      let spec = b.canonType.sliceBytes(9, b.canonType.length);
-      var hashAt = -1;
-      for (var i = 0; i < spec.length; i += 1) {
-        if (spec.getByteAt(i) == 35) { hashAt = i; } // '#'
-      }
-      if (hashAt < 0) {
-        throw new Error("Malformed resource canon type '" + b.canonType +
-            "' (expected resource:<interface>#<name>)");
-      }
-      resourceIndices[b.canonType] = encoder.aliasResourceType(
-          spec.sliceBytes(0, hashAt),
-          spec.sliceBytes(hashAt + 1, spec.length));
-      continue;
-    }
-    // `future:<interface>#<payload-wit>`: the future's own component
-    // type, its payload's named types alias-exported from the
-    // interface's imported instance. The FIRST '#' splits — a
-    // qualified interface name contains none, a payload may.
-    if (!b.canonType.startsWith("future:")) { continue; }
-    if (resourceIndices.has(b.canonType)) { continue; }
-    let spec = b.canonType.sliceBytes(7, b.canonType.length);
+  let canonTypes = resolveCanonTypes(encoder, shape);
+  // Mirrored after everything is encoded: the canon types appended
+  // component-level types the count has to include.
+  let out = mirrorEncodedWorld(world);
+  copyIndices(canonTypes, out.canonTypeIndices);
+  return out;
+};
+
+/** Copy every entry of `from` into `into`. */
+let copyIndices = (from: HashMap<String, i32>,
+    into: HashMap<String, i32>): void => {
+  let keys = from.keys();
+  while (let (true, key) = keys.next()) {
+    into[key] = from[key];
+  }
+};
+
+/**
+ * The type immediates the canon builtins need, by their `canonType`
+ * spelling. A `resource.drop`'s type is the imported instance's own,
+ * reachable only through an alias the encoder appends; a
+ * `future:<interface>#<payload-wit>` is the future's own component
+ * type, its payload's named types alias-exported from the interface's
+ * imported instance; a `return:<interface>#<type-wit>` is the result
+ * type a typed `task.return` carries, named against the interface, or
+ * structural at the component level when the interface is empty.
+ * Resolved after the world so the instances exist, before mirroring so
+ * the alias pieces travel. The FIRST '#' splits — a qualified interface
+ * name contains none, a type may.
+ */
+let resolveCanonTypes = (
+  encoder: ComponentTypeEncoder,
+  shape: ComponentShape
+): HashMap<String, i32> => {
+  let indices = new HashMap<String, i32>();
+  let split = (canonType: String, prefixLength: i32,
+      expected: String): (String, String) => {
+    let spec = canonType.sliceBytes(prefixLength, canonType.length);
     var hashAt = -1;
     for (var i = 0; i < spec.length; i += 1) {
       if (spec.getByteAt(i) == 35) { hashAt = i; break; } // '#'
     }
     if (hashAt < 0) {
-      throw new Error("Malformed future canon type '" + b.canonType +
-          "' (expected future:<interface>#<payload>)");
+      throw new Error("Malformed canon type '" + canonType +
+          "' (expected " + expected + ")");
     }
-    resourceIndices[b.canonType] = encoder.aliasFutureType(
-        spec.sliceBytes(0, hashAt),
+    return (spec.sliceBytes(0, hashAt),
         spec.sliceBytes(hashAt + 1, spec.length));
+  };
+  for (let b in shape.builtins) {
+    let canonType = b.canonType;
+    if (indices.has(canonType)) { continue; }
+    if (canonType.startsWith("resource:")) {
+      let (iface, name) = split(canonType, 9, "resource:<interface>#<name>");
+      indices[canonType] = encoder.aliasResourceType(iface, name);
+    } else if (canonType.startsWith("future:")) {
+      let (iface, payload) =
+          split(canonType, 7, "future:<interface>#<payload>");
+      indices[canonType] = encoder.aliasFutureType(iface, payload);
+    } else if (canonType.startsWith("return:")) {
+      let (iface, text) = split(canonType, 7, "return:<interface>#<type>");
+      indices[canonType] = encoder.encodeTypeText(iface, text);
+    }
   }
-  // Mirrored into codegen's own classes: codegen calls the encoder
-  // through the injected interface and does not link the WIT parser,
-  // so it cannot name `EncodedWorld` itself.
-  let out = new EncodedImports();
-  for (let piece in world.pieces) {
-    out.pieces.push(new EncodedImportPiece(piece.id, piece.payload));
-  }
-  out.typeCount = world.typeCount;
-  out.instanceCount = world.instanceCount;
-  let names = world.instanceIndices.keys();
-  while (let (true, name) = names.next()) {
-    out.instanceIndices[name] = world.instanceIndices[name];
-  }
-  let resourceKeys = resourceIndices.keys();
-  while (let (true, key) = resourceKeys.next()) {
-    out.canonTypeIndices[key] = resourceIndices[key];
-  }
-  return out;
+  return indices;
 };
 
 /** `EncodedWorld`, mirrored into codegen's own classes. */
@@ -582,7 +588,26 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
     this.#checkImports(shape);
     this.#checkExports(shape);
     let encoder = new ComponentTypeEncoder(this.#ast);
-    return mirrorEncodedWorld(encoder.encodeWorld(this.#worldName));
+    let world = encoder.encodeWorld(this.#worldName);
+    let canonTypes = resolveCanonTypes(encoder, shape);
+    // An async export's lifted type is the WIT's, encoded here rather
+    // than derived from a core signature: its parameters and result
+    // may be any WIT type the wrapper marshals. Its memory need
+    // decides the lift's options, and its typed return's, together.
+    let exportTypes = new HashMap<String, i32>();
+    for (let e in shape.exports) {
+      if (!e.witTyped) { continue; }
+      exportTypes[e.exportName] =
+          encoder.encodeWorldExportFuncType(this.#worldName, e.exportName);
+      let meta = worldFuncFlatMeta(this.#ast, this.#worldName, e.exportName);
+      if (meta != null) {
+        e.needsMemoryLift = (meta as WitFuncMeta).needsMemory;
+      }
+    }
+    let out = mirrorEncodedWorld(world);
+    copyIndices(canonTypes, out.canonTypeIndices);
+    copyIndices(exportTypes, out.exportTypeIndices);
+    return out;
   }
 
   /**
@@ -689,7 +714,26 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
             e.exportName + ": func(...);` to the world, or stop " +
             "exporting it.");
       }
-      this.#checkExportSignature(declaredOpt as DeclaredExport, e);
+      let declared = declaredOpt as DeclaredExport;
+      if (declared.func.isAsync) {
+        // Implemented through the wrapper the compiler wrote for it
+        // (wit-module-synth's `synthesizeExportWrapper`), lifted with
+        // the callback and typed from the WIT in `encode`. The program's
+        // own signature was checked against the WIT when the wrapper
+        // was written.
+        if (e.callbackCoreName == "") {
+          throw new Error("The declared world exports '" + e.exportName +
+              "' as an async function, and the program's export is " +
+              "synchronous. Declare it `export async function " +
+              e.exportName + "(...)`.");
+        }
+        continue;
+      }
+      if (e.callbackCoreName != "") {
+        throw new Error("The program's '" + e.exportName + "' is async, " +
+            "and the declared world exports it as a synchronous function.");
+      }
+      this.#checkExportSignature(declared, e);
     }
   }
 

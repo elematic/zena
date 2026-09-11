@@ -54,19 +54,24 @@
 import { HashMap } from 'zena:map';
 import { Array } from 'zena:array';
 import { Error } from 'zena:error';
-import { WasmModule, WasmFunction } from '../wasm-module.zena';
+import {
+  WasmModule, WasmFunction, ComponentAsyncExport
+} from '../wasm-module.zena';
 import { ValType, ValTypeI32 } from '../wasm.zena';
+import { FunctionDeclaration } from '../../ast.zena';
 import { IrBody } from './ir.zena';
 import { IrBuilder } from './builder.zena';
 import { IrRefFunc } from './ir.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import { ExportKey } from '../codegen-utils.zena';
 import { String } from 'zena:string';
-import { componentAbiModule, ComponentValType } from '../component-emitter.zena';
+import {
+  componentAbiModule, ComponentValType, toKebabName
+} from '../component-emitter.zena';
 import { componentTypeOf, declaredTypeOf } from '../component-shape.zena';
 import { ClassType, VoidType } from '../../types.zena';
 import {
-  isComponentEntryPath, componentEntryRunName
+  isComponentEntryPath, componentEntryRunName, componentExportSuffix
 } from '../../component-entry.zena';
 
 /** Bodies for the synthesized entry, by function uid. */
@@ -108,8 +113,18 @@ export let prepareComponentEntry = (
     return;
   }
 
+  // The callback is one function for every task, whichever export
+  // started it.
+  wasm.componentCallbackFunc = resume;
+  pass.markFunctionReached(resume);
+  prepareAsyncExports(wasm, pass, poll);
+
   let key = 'main' as ExportKey;
   if (!wasm.exportMap.has(key)) {
+    if (wasm.componentAsyncExports.length > 0) {
+      // A service: entered through its exports, with no main to run.
+      return;
+    }
     throw new Error(
       'The component target linked the p3 async driver into a program ' +
       'with no main to drive.'
@@ -203,8 +218,6 @@ export let prepareComponentEntry = (
   entryBodies[entry.uid] = b.finish();
 
   wasm.componentEntryFunc = entry;
-  wasm.componentCallbackFunc = resume;
-  pass.markFunctionReached(resume);
 };
 
 /**
@@ -222,6 +235,65 @@ let entryWrapperRun = (wasm: WasmModule): WasmFunction | null => {
     }
   }
   return null;
+};
+
+/**
+ * One adapter per async export the entry wrapper implements. The
+ * wrapper's `<name>_export` function takes the export's flattened
+ * core parameters and returns nothing: it starts the program's
+ * function and hands the driver the typed return. The adapter around
+ * it is what the component lifts, with the callback: call the
+ * wrapper, then ask the driver what to do next, exactly as the entry
+ * does for main.
+ */
+let prepareAsyncExports = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis,
+  poll: WasmFunction
+): void => {
+  let prog = wasm.program;
+  if (prog == null) {
+    return;
+  }
+  for (let unit in prog.units) {
+    if (!isComponentEntryPath(unit.ast.path)) { continue; }
+    for (let stmt in unit.ast.body) {
+      if (stmt is FunctionDeclaration) {
+        let name = stmt.name.name;
+        if (!name.endsWith(componentExportSuffix)) { continue; }
+        let found = wasm.getUnitFunc(unit.ast.path, name);
+        if (found == null) {
+          throw new Error('The entry wrapper declares ' + name +
+              ' and codegen registered no function for it.');
+        }
+        let target = found as WasmFunction;
+        pass.markFunctionReached(target);
+        let exportName = toKebabName(name.sliceBytes(0,
+            name.length - componentExportSuffix.length));
+        let sig = wasm.getSignature(target.signature.params, i32Results());
+        let adapter = new WasmFunction(sig, null, target.model);
+        adapter.name = name + '$componentRun';
+        adapter.isComponentAdapter = true;
+        wasm.addFunction(adapter);
+        pass.markFunctionReached(adapter);
+
+        let b = new IrBuilder();
+        let block = b.newBlock();
+        let args = new GrowableArray<i32>();
+        for (let vt in target.signature.params) {
+          args.push(b.blockParam(block, vt));
+        }
+        b.switchTo(block);
+        b.callFunc(b.addRef(new IrRefFunc(target)), args, null);
+        let code = b.callFunc(b.addRef(new IrRefFunc(poll)),
+            new GrowableArray<i32>(0), new ValTypeI32());
+        b.ret(code);
+        entryBodies[adapter.uid] = b.finish();
+        wasm.componentAsyncExports.push(
+            new ComponentAsyncExport(exportName, adapter));
+      }
+    }
+  }
 };
 
 let i32Results = (): GrowableArray<ValType> => {

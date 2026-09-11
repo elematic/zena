@@ -16,8 +16,9 @@ import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from '..
 import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
 import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
 import {
-  isWitModulePath, synthesizeWitModule
+  isWitModulePath, synthesizeWitModule, synthesizeExportWrapper
 } from '../lib/wit-module-synth.zena';
+import { ComponentEntryWrapper } from '../lib/component-entry.zena';
 import { readWitSource } from 'wit-parser:document';
 
 class WasiHost implements CompilerHost {
@@ -183,6 +184,17 @@ export let main = (): i32 => {
   let packages = loadPackages(host);
   let options = new CompilerOptions(target, "/stdlib", packages);
   options.time = time;
+  if (witSource != "") {
+    // Against a declared world the entry wrapper also implements the
+    // world's async exports, which takes the WIT the compiler itself
+    // does not link.
+    let declaredWit = witSource;
+    let declaredWorld = worldName;
+    options.componentWrapperSynth =
+        (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
+            synthesizeExportWrapper(declaredWit, declaredWorld, entryPath,
+                ast);
+  }
   let compiler = createCompiler(host, options);
 
   console.log("Compiling " + filename + "...");

@@ -65,8 +65,16 @@ import {
   InterfaceItem, InterfaceItemTag, NamedFunc, Type, TypeTag, TypeDef,
   TypeDefTag, Id, EnumCaseDef, FlagDef, Field, Case, ResourceFunc,
   ResourceFuncTag, Ast, PackageName, Use, UsePath, IdUsePath,
-  PackageUsePath
+  PackageUsePath, AstItemTag, WorldDef, WorldItemTag, Export,
+  ExternKindTag, Func
 } from 'wit-parser:parser';
+import { Module } from './ast.zena';
+import { knownWasiPackagesWit } from './codegen/wasi-interfaces.zena';
+import {
+  ComponentEntryWrapper, componentEntryPathFor,
+  componentEntrySpecifierFor, componentExportSuffix,
+  mainScalarResultOf, renderMainWrapper, renderWrapperHeader
+} from './component-entry.zena';
 
 
 /** Whether `path` is a synthesized WIT module's canonical path. */
@@ -1429,6 +1437,31 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     let total = flatCoreSlots(ty);
     return (total as GrowableArray<String>).length;
   }
+  if (ty.kind == TyKind.ResultT) {
+    // Only reachable as an async export's result: the value is an
+    // Outcome, lowered as the canonical two-case variant.
+    uses.outcome = true;
+    let okZ = zenaTypeOf(ty.children[0], uses);
+    let errZ = zenaTypeOf(ty.children[1], uses);
+    sb.append(indent).append("if (").append(value).append(" is Ok<")
+        .append(okZ).append(", ").append(errZ).append(">) {\n");
+    sb.append(indent).append("  ").append(slots[base]).append(" = 0;\n");
+    if (!isVoid(ty.children[0])) {
+      lowerFlatStmts(sb, ty.children[0],
+          "(" + value + " as Ok<" + okZ + ", " + errZ + ">).value",
+          slots, base + 1, indent + "  ", uses);
+    }
+    sb.append(indent).append("} else {\n");
+    sb.append(indent).append("  ").append(slots[base]).append(" = 1;\n");
+    if (!isVoid(ty.children[1])) {
+      lowerFlatStmts(sb, ty.children[1],
+          "(" + value + " as Err<" + okZ + ", " + errZ + ">).error",
+          slots, base + 1, indent + "  ", uses);
+    }
+    sb.append(indent).append("}\n");
+    let total = flatCoreSlots(ty);
+    return (total as GrowableArray<String>).length;
+  }
   // VariantT: an if chain; every arm writes the discriminant and its
   // own prefix of the shared payload slots.
   for (var i = 0; i < ty.children.length; i += 1) {
@@ -2583,3 +2616,267 @@ function renderFuncIn(
   }
   return "";
 }
+
+/** One async function export of a declared world. */
+final class AsyncWorldExport {
+  name: String;
+  func: Func;
+  new(this.name, this.func);
+}
+
+/**
+ * The entry wrapper for a program compiled against a declared world
+ * (`--wit`/`--world`): one `<name>_export` function per async
+ * function export of the world, each declaring `task.return` at the
+ * export's result type, plus `main`'s own wrapper when it returns a
+ * scalar (component-entry.zena). Null when the program needs neither.
+ *
+ * A wrapper takes the export's flattened core parameters as the
+ * canonical ABI hands them to the lift — a string as its pointer and
+ * length in linear memory — lifts them, calls the program's function,
+ * and hands the driver its future together with the typed return,
+ * which lowers the future's value to the return's flat parameters
+ * through the same staging the import wrappers use. Parameters may be
+ * flat scalars and strings; a result may be anything the import path
+ * lowers, a `result` carried as `Outcome`. Named types are not
+ * resolvable at world level yet (they need world-level `use`), and
+ * anything refused fails the compile with the reason: the world
+ * declares the export async, and nothing else could implement it.
+ */
+export function synthesizeExportWrapper(
+  witSource: String,
+  worldName: String,
+  entryPath: String,
+  entryAst: Module
+): ComponentEntryWrapper | null {
+  // With the compiler's own WASI WIT riding along, as the declared-
+  // world encoder parses it: a world may import `wasi:cli/stdout`
+  // without vendoring it, unless the document declares those packages
+  // itself.
+  var source = witSource;
+  if (!source.contains("package wasi:cli@0.3.0")) {
+    source = source + "\n" + knownWasiPackagesWit();
+  }
+  let ast = parse(source);
+  var world: WorldDef | null = null;
+  for (let item in ast.items) {
+    if (item.tag == AstItemTag.World) {
+      let def = item.worldDef as WorldDef;
+      if (world == null && (worldName == "" || def.name.name == worldName)) {
+        world = def;
+      }
+    }
+  }
+  let exports = new GrowableArray<AsyncWorldExport>();
+  if (world != null) {
+    for (let wi in (world as WorldDef).items) {
+      if (wi.tag != WorldItemTag.Export) { continue; }
+      let kind = (wi.exportItem as Export).kind;
+      if (kind.tag != ExternKindTag.Func) { continue; }
+      let func = kind.funcDef as Func;
+      if (!func.isAsync) { continue; }
+      exports.push(new AsyncWorldExport((kind.name as Id).name, func));
+    }
+  }
+  let mainResult = mainScalarResultOf(entryAst);
+  if (exports.length == 0 && mainResult == "") {
+    return null;
+  }
+
+  currentWitSource = witSource;
+  currentAst = ast;
+  currentPackage = ast.packageName;
+  selfSpecifier = "";
+  currentSpecifier = "";
+  usedTypeImports = new GrowableArray<UsedTypeImport>();
+  let noItems = new GrowableArray<InterfaceItem>();
+  let uses = new SynthUses();
+  let body = new StringBuilder();
+  let imported = new GrowableArray<String>();
+  if (mainResult != "") {
+    imported.push("main");
+    renderMainWrapper(body, mainResult);
+  }
+  for (let e in exports) {
+    let zenaName = camelName(e.name);
+    imported.push(zenaName);
+    body.append("\n");
+    renderExportWrapper(body, e.name, zenaName, e.func, noItems, uses);
+  }
+
+  let specifier = componentEntrySpecifierFor(entryPath);
+  let sb = new StringBuilder();
+  renderWrapperHeader(sb);
+  sb.append("import { ");
+  for (var i = 0; i < imported.length; i += 1) {
+    if (i > 0) { sb.append(", "); }
+    sb.append(imported[i]);
+  }
+  sb.append(" } from '").append(specifier).append("';\n");
+  sb.append("import { finishTask } from 'zena:component-async';\n");
+  if (uses.outcome) {
+    sb.append("import { Outcome, Ok, Err } from 'zena:result';\n");
+  }
+  if (uses.option) {
+    sb.append("import { Option, Some, some, none } from 'zena:option';\n");
+  }
+  if (uses.array) {
+    sb.append("import { Array } from 'zena:array';\n");
+  }
+  if (uses.fixedArray) {
+    sb.append("import { FixedArray } from 'zena:fixed-array';\n");
+  }
+  if (uses.error) {
+    sb.append("import { Error } from 'zena:error';\n");
+  }
+  if (uses.abi.length > 0) {
+    sb.append("import { ");
+    for (var i = 0; i < uses.abi.length; i += 1) {
+      if (i > 0) { sb.append(", "); }
+      sb.append(uses.abi[i]);
+    }
+    sb.append(" } from 'zena:component-abi';\n");
+  }
+  sb.append("\n").append(body.toString());
+  return new ComponentEntryWrapper(componentEntryPathFor(entryPath),
+      sb.toString(), specifier, entryPath);
+}
+
+/**
+ * One async export's typed return and `<name>_export` wrapper. Throws
+ * with the reason on a parameter or result this cannot marshal.
+ */
+function renderExportWrapper(sb: StringBuilder, witName: String,
+    zenaName: String, func: Func, items: Array<InterfaceItem>,
+    uses: SynthUses): void {
+  let refuse = (what: String, why: String): Error =>
+      new Error("The declared world's async export '" + witName + "', " +
+          what + ": " + why);
+  let rawSig = new StringBuilder();
+  let liftStmts = new StringBuilder();
+  let callArgs = new StringBuilder();
+  for (var i = 0; i < func.params.length; i += 1) {
+    let p = func.params[i];
+    let ty = classifyType(p.type, items);
+    let k = i32ToString(i);
+    if (i > 0) {
+      rawSig.append(", ");
+      callArgs.append(", ");
+    }
+    if (ty.kind == TyKind.Scalar) {
+      rawSig.append("a").append(k).append(": ").append(ty.scalar);
+      callArgs.append("a").append(k);
+    } else if (ty.kind == TyKind.Str) {
+      // The host lowered the string into linear memory through the
+      // lift's realloc; the guest owns that buffer and frees it once
+      // the value is copied out.
+      uses.useAbi("stringFromMemory");
+      uses.useAbi("releaseStringArgument");
+      rawSig.append("p").append(k).append(": i32, l").append(k)
+          .append(": i32");
+      liftStmts.append("  let v").append(k).append(" = stringFromMemory(p")
+          .append(k).append(", l").append(k).append(");\n");
+      liftStmts.append("  releaseStringArgument(p").append(k)
+          .append(", l").append(k).append(");\n");
+      callArgs.append("v").append(k);
+    } else if (ty.kind == TyKind.Unsupported) {
+      throw refuse("parameter '" + p.name.name + "'", ty.reason);
+    } else {
+      throw refuse("parameter '" + p.name.name + "'",
+          "only flat scalars and strings cross into an async export yet");
+    }
+  }
+
+  let result = func.result;
+  var hasResult = false;
+  var resultTy = voidTy();
+  var zenaResult = "void";
+  var slotNames = new GrowableArray<String>();
+  var slotTypes = new GrowableArray<String>();
+  if (result != null) {
+    hasResult = true;
+    let resultType = result as Type;
+    resultTy = classifyType(resultType, items);
+    if (resultTy.kind == TyKind.Unsupported) {
+      throw refuse("the result", resultTy.reason);
+    }
+    if (resultTy.kind == TyKind.ResultT) {
+      for (let child in resultTy.children) {
+        if (isVoid(child)) { continue; }
+        let blocked = lowerBlocker(child);
+        if (blocked != "") { throw refuse("the result", blocked); }
+      }
+    } else {
+      let blocked = lowerBlocker(resultTy);
+      if (blocked != "") { throw refuse("the result", blocked); }
+    }
+    let slots = flatCoreSlots(resultTy);
+    if (slots == null) {
+      throw refuse("the result", "its variant payloads join across " +
+          "core types, which waits on the interop stages");
+    }
+    slotTypes = slots as GrowableArray<String>;
+    if (slotTypes.length > 16) {
+      throw refuse("the result", "a result spilling past sixteen core " +
+          "values waits on the interop stages");
+    }
+    zenaResult = futurePayloadZenaType(resultTy, uses);
+    // The typed return, at the WIT's own spelling of the result: the
+    // encoder writes the type, and the flat parameters are its
+    // flattening.
+    let typeText = spanText(resultType.span.start, resultType.span.end);
+    sb.append("@external(\"canon\", \"task.return#").append(witName)
+        .append("\", \"return:#").append(typeText).append("\")\n");
+    sb.append("declare function taskReturn").append(pascalName(witName))
+        .append("(");
+    for (var k = 0; k < slotTypes.length; k += 1) {
+      let slotName = "s" + i32ToString(k);
+      slotNames.push(slotName);
+      if (k > 0) { sb.append(", "); }
+      sb.append(slotName).append(": ").append(slotTypes[k]);
+    }
+    sb.append("): void;\n\n");
+  }
+
+  sb.append("export function ").append(zenaName)
+      .append(componentExportSuffix).append("(").append(rawSig.toString())
+      .append("): void {\n");
+  sb.append(liftStmts.toString());
+  if (!hasResult) {
+    // Nothing to return: the driver's bare `task.return` closes the
+    // task once its work is done, as it does for a `main` that
+    // returns nothing.
+    sb.append("  ").append(zenaName).append("(").append(callArgs.toString())
+        .append(");\n}\n");
+    return;
+  }
+  sb.append("  finishTask<").append(zenaResult).append(">(")
+      .append(zenaName).append("(").append(callArgs.toString())
+      .append("), (value: ").append(zenaResult).append("): void => {\n");
+  let staging = mayStage(resultTy);
+  if (staging) {
+    // Staged until the return has consumed them: `task.return` lifts
+    // its arguments during the call.
+    uses.useAbi("stagedMark");
+    uses.useAbi("releaseStagedFrom");
+    sb.append("    let m0 = stagedMark();\n");
+  }
+  for (var k = 0; k < slotNames.length; k += 1) {
+    let zero = if (slotTypes[k] == "f32" || slotTypes[k] == "f64") "0.0"
+        else "0";
+    sb.append("    var ").append(slotNames[k]).append(": ")
+        .append(slotTypes[k]).append(" = ").append(zero).append(";\n");
+  }
+  lowerFlatStmts(sb, resultTy, "value", slotNames, 0, "    ", uses);
+  sb.append("    taskReturn").append(pascalName(witName)).append("(");
+  for (var k = 0; k < slotNames.length; k += 1) {
+    if (k > 0) { sb.append(", "); }
+    sb.append(slotNames[k]);
+  }
+  sb.append(");\n");
+  if (staging) {
+    sb.append("    releaseStagedFrom(m0);\n");
+  }
+  sb.append("  });\n}\n");
+}
+

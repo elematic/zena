@@ -291,14 +291,37 @@ export let buildComponentShape = (
               "@external(\"canon\", \"" + field + "\", \"stream<u8>\")."
           );
         }
-      } else if (f.importCanonType != "") {
+      } else if (f.importCanonType != "" &&
+          !(canonBuiltinBaseName(field) == "task.return" &&
+            f.importCanonType.startsWith("return:"))) {
         throw new Error(
           "The canonical builtin '" + field + "' takes no type option; " +
-            "only the stream.* and future.* families are per-type."
+            "only the stream.* and future.* families are per-type, and " +
+            "task.return takes a `return:` result type."
         );
       }
       var builtinResult = noComponentResult;
-      if (canonBuiltinBaseName(field) == "task.return") {
+      var returnsFor = "";
+      if (canonBuiltinBaseName(field) == "task.return" &&
+          f.importCanonType.startsWith("return:")) {
+        // A `return:<interface>#<type>` option: the result is a WIT
+        // type the encoder writes, and the declaration's parameters
+        // are its flattening, which the wrapper that declared it
+        // spelled from the same WIT. The name after `#` is the export
+        // this returns for: `task.return#describe` returns for the
+        // world's `describe`.
+        var hashAt = -1;
+        for (var i = 0; i < field.length; i += 1) {
+          if (field.getByteAt(i) == 35) { hashAt = i; } // '#'
+        }
+        if (hashAt < 0) {
+          throw new Error(
+            "A typed task.return is declared as 'task.return#<export>', " +
+              "naming the export it returns for; '" + field + "' names " +
+              "none.");
+        }
+        returnsFor = field.sliceBytes(hashAt + 1, field.length);
+      } else if (canonBuiltinBaseName(field) == "task.return") {
         // `task.return` carries the lifted task's result, so its type
         // comes from what the declaration takes, not from what it
         // returns. Declared more than once at different result types
@@ -342,7 +365,7 @@ export let buildComponentShape = (
       if (!duplicate) {
         shape.builtins.push(
             new ComponentCanonBuiltin(field, builtinResult,
-                f.importCanonType, f.importIsAsync));
+                f.importCanonType, f.importIsAsync, returnsFor));
       }
       continue;
     }
@@ -421,11 +444,46 @@ export let buildComponentShape = (
       componentCallbackExport));
   }
 
+  // The declared world's async exports, each lifted from the adapter
+  // the compiler built around the wrapper module's function
+  // (component-adapters.zena), with the callback like the entry. The
+  // lifted type is the WIT's, which the encoder writes; the core-shaped
+  // signature here carries nothing.
+  for (let asyncExport in wasm.componentAsyncExports) {
+    if (wasm.componentCallbackFunc == null) {
+      throw new Error(
+        "The component target has an async export with no callback to " +
+        "re-enter it through."
+      );
+    }
+    let adapterName = asyncExport.adapter.name;
+    if (adapterName == null) {
+      throw new Error("The async export adapter for '" +
+          asyncExport.exportName + "' has no name to alias it by.");
+    }
+    let lifted = new ComponentExportFunc(
+      adapterName as String, asyncExport.exportName,
+      new ComponentFuncType(new GrowableArray<i32>(), new GrowableArray<String>(),
+          noComponentResult, true),
+      componentCallbackExport);
+    lifted.witTyped = true;
+    shape.exports.push(lifted);
+  }
+
   let exportKeys = wasm.exportMap.keys();
   while (let (true, key) = exportKeys.next()) {
     let f = wasm.exportMap[key];
     let coreName = key as String;
     if (entry != null && coreName == "main") {
+      continue;
+    }
+    // The program's own async function behind a wrapped export: the
+    // adapter above is what the host reaches, not the function.
+    var wrapped = false;
+    for (let asyncExport in wasm.componentAsyncExports) {
+      if (asyncExport.exportName == toKebabName(coreName)) { wrapped = true; }
+    }
+    if (wrapped) {
       continue;
     }
     let exportName = toKebabName(coreName);

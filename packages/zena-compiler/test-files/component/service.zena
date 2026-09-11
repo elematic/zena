@@ -1,0 +1,29 @@
+// A service: no main, only the async exports `service.wit` declares.
+// Each is an exported async function whose future the compiler-written
+// wrapper hands to the driver with a `task.return` typed by the WIT —
+// a `result<string, string>` arrives as `Outcome<String, String>` and
+// goes back the same way — and the host reaches each through an
+// adapter lifted with the callback, so a call that sleeps hands the
+// process back to the host while it does.
+import { Outcome, Ok, Err } from 'zena:result';
+import { Future } from 'zena:async';
+import { sleep, milliseconds } from 'zena:time';
+
+let names = ['zero', 'one', 'two', 'three'];
+
+export async function describe(n: u32): Future<Outcome<String, String>> {
+  await sleep(milliseconds(10));
+  if (n >= (names.length as u32)) {
+    return new Err<String, String>('too big');
+  }
+  return new Ok<String, String>(names[n as i32]);
+}
+
+export async function shout(name: String): Future<String> {
+  return name + '!';
+}
+
+export async function count(items: u32): Future<u32> {
+  await sleep(milliseconds(10));
+  return items + (1 as u32);
+}

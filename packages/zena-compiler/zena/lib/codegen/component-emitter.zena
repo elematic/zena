@@ -58,6 +58,12 @@ export final class EncodedImports {
    * own, and only an alias can name it.
    */
   canonTypeIndices = new HashMap<String, i32>();
+  /**
+   * Component type indices for the exports whose lifted type the
+   * encoder wrote from the WIT rather than the emitter from a core
+   * signature — the declared world's async exports — by export name.
+   */
+  exportTypeIndices = new HashMap<String, i32>();
   new();
 }
 
@@ -264,11 +270,18 @@ export final class ComponentCanonBuiltin {
    * option — return BLOCKED instead of waiting for the copy event.
    */
   isAsync: boolean;
+  /**
+   * A typed `task.return`'s export: the name after `#` in
+   * `task.return#<name>`, when its `canonType` is a `return:`
+   * spelling. The return's `memory` option must equal that export's
+   * lift's, so the emitter reads the need off the export.
+   */
+  returnsFor: String;
 
   // -1 is `noComponentResult`, spelled out: a default initializer
   // cannot name a module-level binding.
   new(this.name, this.result = -1, this.canonType = "",
-      this.isAsync = false);
+      this.isAsync = false, this.returnsFor = "");
 }
 
 /**
@@ -311,13 +324,29 @@ export final class ComponentExportFunc {
    * waits. See docs/design/component-emission.md 1.7.
    */
   callbackCoreName: String;
+  /**
+   * Whether the lifted type comes from the WIT through the encoder
+   * (`EncodedImports.exportTypeIndices`) rather than from `signature`
+   * — a declared world's async export, whose parameters and result may
+   * be any WIT type its wrapper marshals. `signature` then says
+   * nothing about the types.
+   */
+  var witTyped = false;
+  /**
+   * For a WIT-typed export: whether its parameters or result move
+   * through linear memory, decided by the encoder from the WIT. The
+   * lift then carries the memory options, and so does the typed
+   * `task.return` that returns for it.
+   */
+  var needsMemoryLift = false;
 
   new(this.coreName, this.exportName, this.signature,
       this.callbackCoreName = "");
 
   /** Whether lifting this export needs a memory and a `realloc`. */
   needsMemory(): boolean {
-    return componentSignatureNeedsMemory(this.signature);
+    return this.needsMemoryLift ||
+        componentSignatureNeedsMemory(this.signature);
   }
 
   /**
@@ -451,6 +480,21 @@ let writeResultList = (buffer: ByteBuffer, result: i32): void => {
   } else {
     buffer.writeByte(0x00); // one result, unnamed
     buffer.writeByte(result);
+  }
+};
+
+/**
+ * A valtype as the encoder reports one: a primitive's code, stored
+ * negated (`0x79` for u32 arrives as -0x79), or a component type
+ * index. Signed on purpose in the index case: the position's grammar
+ * is `typeidx | primvaltype`, and the primitives are the negative
+ * SLEB128 space, so an unsigned index of 64..127 would collide.
+ */
+let writeEncodedValType = (buffer: ByteBuffer, code: i32): void => {
+  if (code < 0) {
+    buffer.writeByte(0 - code);
+  } else {
+    buffer.writeSLEB128(code);
   }
 };
 
@@ -735,11 +779,20 @@ export let emitComponent = (
   // and `waitable-set.wait` delivers its event pair through it, so
   // their canon entries name the memory — the same early placement a
   // memory-carrying lower forces.
+  // A typed `task.return` names the memory exactly when the export it
+  // returns for lifts with one.
+  let typedReturnNeedsMemory = (b: ComponentCanonBuiltin): boolean => {
+    if (!b.canonType.startsWith("return:")) { return false; }
+    for (let e in shape.exports) {
+      if (e.exportName == b.returnsFor && e.needsMemory()) { return true; }
+    }
+    return false;
+  };
   for (let b in shape.builtins) {
     if (typedBuiltinTakesOpts(b.name) && canonTypeUsesMemory(b.canonType)) {
       lowersNeedMemory = true;
     }
-    if (b.name == "waitable-set.wait") {
+    if (b.name == "waitable-set.wait" || typedReturnNeedsMemory(b)) {
       lowersNeedMemory = true;
     }
   }
@@ -863,7 +916,8 @@ export let emitComponent = (
     let canonTypes = new GrowableArray<String>();
     for (let b in shape.builtins) {
       if (b.canonType == "" || b.canonType.startsWith("resource:") ||
-          b.canonType.startsWith("future:")) {
+          b.canonType.startsWith("future:") ||
+          b.canonType.startsWith("return:")) {
         continue;
       }
       var known = false;
@@ -883,7 +937,8 @@ export let emitComponent = (
     }
     let canonTypeIndexOf = (canonType: String): i32 => {
       if (canonType.startsWith("resource:") ||
-          canonType.startsWith("future:")) {
+          canonType.startsWith("future:") ||
+          canonType.startsWith("return:")) {
         if (let (true, index) = encoded.canonTypeIndices.get(canonType)) {
           return index;
         }
@@ -906,8 +961,24 @@ export let emitComponent = (
       }
       builtins.writeByte(opcode);
       if (canonBuiltinBaseName(b.name) == "task.return") {
-        writeResultList(builtins, b.result);
-        builtins.writeULEB128(0); // no canonical options
+        if (b.canonType.startsWith("return:")) {
+          // The result type the encoder wrote from the WIT, and the
+          // memory option exactly when the export this returns for
+          // lifts with one: the canonical ABI traps on a mismatch
+          // between the two.
+          builtins.writeByte(0x00); // one result, unnamed
+          writeEncodedValType(builtins, canonTypeIndexOf(b.canonType));
+          if (typedReturnNeedsMemory(b)) {
+            builtins.writeULEB128(1);
+            builtins.writeByte(0x03); // memory
+            builtins.writeULEB128(0); // the runtime module's, memory 0
+          } else {
+            builtins.writeULEB128(0);
+          }
+        } else {
+          writeResultList(builtins, b.result);
+          builtins.writeULEB128(0); // no canonical options
+        }
       }
       if (b.name == "waitable-set.wait") {
         builtins.writeByte(0x00); // not cancellable
@@ -1160,20 +1231,31 @@ export let emitComponent = (
   writeSection(out, ComponentSectionId.Alias as i32, exportAliases);
 
   // --- type: one functype per export --------------------------------------
+  // Except the WIT-typed ones, whose functype the encoder already
+  // wrote among the import front matter's types; the rest continue
+  // the component type index space after the front matter's types and
+  // the canon-builtin types section, when there was one.
+  let firstExportType = encoded.typeCount + canonTypeCount;
+  let exportTypeIndex = new GrowableArray<i32>();
   let exportTypes = new ByteBuffer();
-  exportTypes.writeULEB128(shape.exports.length);
+  var declaredExportTypes = 0;
   for (let e in shape.exports) {
+    if (let (true, index) = encoded.exportTypeIndices.get(e.exportName)) {
+      exportTypeIndex.push(index);
+      continue;
+    }
+    exportTypeIndex.push(firstExportType + declaredExportTypes);
+    declaredExportTypes += 1;
     writeFuncType(exportTypes, e.signature);
   }
-  writeSection(out, ComponentSectionId.Type as i32, exportTypes);
+  if (declaredExportTypes > 0) {
+    let section = new ByteBuffer();
+    section.writeULEB128(declaredExportTypes);
+    section.writeBuffer(exportTypes);
+    writeSection(out, ComponentSectionId.Type as i32, section);
+  }
 
   // --- canon: lift each export --------------------------------------------
-  // The component-level type index continues after everything the
-  // encoder defined.
-  // The export lift types continue the component type index space:
-  // after the import front matter's types, and after the canon-builtin
-  // types section when there was one.
-  let firstExportType = encoded.typeCount + canonTypeCount;
   let lifts = new ByteBuffer();
   lifts.writeULEB128(shape.exports.length);
   for (var i = 0; i < shape.exports.length; i += 1) {
@@ -1209,7 +1291,7 @@ export let emitComponent = (
       lifts.writeByte(0x05); // post-return
       lifts.writeULEB128(postReturnCoreFunc);
     }
-    lifts.writeULEB128(firstExportType + i);
+    lifts.writeULEB128(exportTypeIndex[i]);
   }
   writeSection(out, ComponentSectionId.Canon as i32, lifts);
 

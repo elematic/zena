@@ -1,0 +1,26 @@
+// The world `service.zena` is compiled against: async function
+// exports with rich types, each implemented by an exported async
+// function and lifted through the wrapper the compiler writes. The
+// values come back through typed `task.return`s, one per export.
+//
+// The clock the exports sleep on is vendored here: the compiler
+// carries only wasi:cli's WIT for a declared world to import by name.
+package test:service@1.0.0;
+
+world service {
+  import wasi:clocks/monotonic-clock@0.3.0;
+
+  export describe: async func(n: u32) -> result<string, string>;
+  export shout: async func(name: string) -> string;
+  export count: async func(items: u32) -> u32;
+}
+
+package wasi:clocks@0.3.0 {
+  interface monotonic-clock {
+    type instant = u64;
+    type duration = u64;
+
+    now: func() -> instant;
+    wait-for: async func(how-long: duration);
+  }
+}

@@ -27,7 +27,9 @@ import { CompilerHost, LibraryLoader, SourceFile } from './library-loader.zena';
 import { buildStdlibConfig } from './package-manifest.zena';
 import { getStandardPrelude, getTargetRuntimeModules } from './prelude.zena';
 import { targetEmitsComponent } from './targets.zena';
-import { componentEntryWrapperFor } from './component-entry.zena';
+import {
+  componentEntryWrapperFor, ComponentEntryWrapper
+} from './component-entry.zena';
 import { allWellKnown, isWellKnown, wellKnownName } from './well-known.zena';
 import { Symbol, makeSymbolIdGenerator } from './scope/symbol.zena';
 import { Scope, ScopeKind } from './scope/scope.zena';
@@ -107,6 +109,19 @@ export final class CompilerOptions {
    * about source being typed want it on, builds want it off.
    */
   var recoverFromParseErrors: boolean = false;
+
+  /**
+   * The component target's entry wrapper writer, when the driver has
+   * one that knows more than the compiler alone: given the entry's
+   * path and syntax, the wrapper to load beside it, or null. The
+   * default writes `main`'s wrapper (component-entry.zena); a driver
+   * compiling against a declared world injects
+   * wit-module-synth's, which also wraps the world's async exports,
+   * because the compiler does not link the WIT parser.
+   */
+  var componentWrapperSynth:
+      ((entryPath: String, ast: Module) => ComponentEntryWrapper | null)
+      | null = null;
 
   new(
     target: String,
@@ -316,7 +331,12 @@ export final class Compiler {
     // entry, importing it (see component-entry.zena). After the entry
     // for the same reason as the runtime modules below.
     if (targetEmitsComponent(this.#resolver.target)) {
-      let wrapper = componentEntryWrapperFor(entryPoint, entry.ast);
+      let synth = this.#options.componentWrapperSynth;
+      let wrapper = if (synth != null) {
+        synth(entryPoint, entry.ast)
+      } else {
+        componentEntryWrapperFor(entryPoint, entry.ast)
+      };
       if (wrapper != null) {
         let pinned = new HashMap<String, String>();
         pinned[wrapper.entrySpecifier] = wrapper.entryPath;

@@ -37,8 +37,11 @@ import {
   deriveImportsWit, encodeImportTypes, makeImportEncoder
 } from '../lib/codegen/wit-imports.zena';
 import {
-  isWitModulePath, synthesizeWitModule
+  isWitModulePath, synthesizeWitModule, synthesizeExportWrapper
 } from '../lib/wit-module-synth.zena';
+import { ComponentEntryWrapper } from '../lib/component-entry.zena';
+import { Module } from '../lib/ast.zena';
+import { parse } from '../lib/parser.zena';
 import { readWitSource } from 'wit-parser:document';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { assertFunctionUsesTimes } from './wat-invariants.zena';
@@ -69,10 +72,23 @@ let testPackages = (host: CompilerHost): HashMap<String, PackageConfig> => {
 };
 
 /** The compiled program, ready for whichever generator wants it. */
-let programFor = (path: String, target: String): Program => {
+let programFor = (
+  path: String,
+  target: String,
+  witSource: String = '',
+  worldName: String = ''
+): Program => {
   let host = new PlainHost();
   let packages = testPackages(host);
-  let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
+  let options = new CompilerOptions(target, stdlibRoot, packages);
+  if (witSource != '') {
+    // As the CLI injects it under --wit: the entry wrapper also
+    // implements the declared world's async exports.
+    options.componentWrapperSynth =
+        (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
+            synthesizeExportWrapper(witSource, worldName, entryPath, ast);
+  }
+  let c = createCompiler(host, options);
   let result = c.compile(path);
   let checked = checkCompilation(result, null, false);
   for (let diag in checked.diagnostics) {
@@ -120,7 +136,8 @@ let compileForWorld = (
   generator.runtimeMemoryModule = compileComponentRuntimeModule(
       host, stdlibRoot, loadPackageMap(host, 'zena-packages.json'));
   generator.importEncoder = makeImportEncoder(witSource, worldName);
-  return generator.generate(programFor(path, 'component')).toByteArray();
+  return generator.generate(
+      programFor(path, 'component', witSource, worldName)).toByteArray();
 };
 
 /** The payload of the (`skip`+1)-th section with `id`, or empty. */
@@ -334,6 +351,54 @@ export let tests = suite('Component emission', (): void => {
     let typedReturn = [0x09, 0x00, 0x79, 0x00];
     isTrue(containsBytes(bytes, typedReturn),
       'the typed task.return canon entry is missing');
+  });
+
+  test('a declared world\'s async exports lift through wrappers typed ' +
+      'by the WIT', (ctx: TestContext): void => {
+    // Each async function export of the world gets a `<name>_export`
+    // wrapper in the module the compiler writes beside the entry: it
+    // lifts the flattened parameters, calls the program's function,
+    // and hands the driver the future with a `task.return` declared at
+    // the WIT's result type. The lift's type is the WIT's, written by
+    // the encoder, and its memory options agree with the return's.
+    let wit = readFile(`${fixtures}/service.wit`);
+    let entry = `${fixtures}/service.zena`;
+    let wrapperOpt = synthesizeExportWrapper(wit, 'service', entry,
+        parse(readFile(entry), entry));
+    isTrue(wrapperOpt != null, 'the service world gets no wrapper');
+    let source = (wrapperOpt as ComponentEntryWrapper).source;
+    isTrue(source.contains('@external("canon", "task.return#describe", ' +
+        '"return:#result<string, string>")'),
+      'the typed return is not declared at the WIT result:\n' + source);
+    isTrue(source.contains('declare function taskReturnDescribe(' +
+        's0: i32, s1: i32, s2: i32): void;'),
+      'the typed return does not take the flattened result:\n' + source);
+    isTrue(source.contains('export function describe_export(a0: u32): void {'),
+      'the export wrapper is missing:\n' + source);
+    isTrue(source.contains('finishTask<Outcome<String, String>>(describe(a0), ' +
+        '(value: Outcome<String, String>): void => {'),
+      'the wrapper does not hand the driver the future:\n' + source);
+    isTrue(source.contains('if (value is Ok<String, String>) {'),
+      'the result is not lowered by case:\n' + source);
+    isTrue(source.contains('let v0 = stringFromMemory(p0, l0);'),
+      'a string parameter is not lifted from memory:\n' + source);
+    isTrue(source.contains('releaseStringArgument(p0, l0);'),
+      'a string parameter buffer is not released:\n' + source);
+    // The component: every export lifted, each typed return imported.
+    let bytes = compileForWorld(entry, wit, 'service');
+    let exportSection = sectionPayload(bytes, 11);
+    isTrue(containsName(exportSection, 'describe') &&
+        containsName(exportSection, 'shout') &&
+        containsName(exportSection, 'count'),
+      'the async exports are not all exported');
+    isTrue(containsName(bytes, 'task.return#describe') &&
+        containsName(bytes, 'task.return#shout') &&
+        containsName(bytes, 'task.return#count'),
+      'the typed returns are not all imported');
+    // `count` returns a u32 through memory-less lift and return: opcode
+    // 0x09, one result, u32, no options.
+    isTrue(containsBytes(bytes, [0x09, 0x00, 0x79, 0x00]),
+      "count's typed return canon entry is missing");
   });
 
   test('a component with no imports carries no import machinery', (ctx: TestContext): void => {

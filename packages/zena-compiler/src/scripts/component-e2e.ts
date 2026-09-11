@@ -265,6 +265,23 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'service',
+    wasi: ['p3=y'],
+    wit: ['service.wit', 'service'],
+    // A declared world's async exports with rich types: no main, each
+    // export lifted with the callback through the wrapper the compiler
+    // writes, its value returned through a `task.return` typed by the
+    // WIT — a `result<string, string>` both ways, a string in and out,
+    // a scalar — with the lift's and the return's memory options
+    // agreeing.
+    invocations: [
+      {invoke: 'describe(1)', expect: 'ok("one")'},
+      {invoke: 'describe(9)', expect: 'err("too big")'},
+      {invoke: 'shout("hi")', expect: '"hi!"'},
+      {invoke: 'count(41)', expect: '42'},
+    ],
+  },
+  {
     name: 'exit-value',
     wasi: ['p3=y'],
     // An async main with a value: the entry is lifted `async func() ->

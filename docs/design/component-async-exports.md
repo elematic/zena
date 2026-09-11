@@ -246,8 +246,21 @@ yet and composition needs.
    (`main(): Future<u32>` returns `42` through `task.return#main`,
    e2e). Remaining: the `return:<iface>#<type>` aliasing for rich
    results, which arrives with its first user in 4.
-4. Export wrapper synthesis for one async export with rich types, and
-   the world plumbing to declare it.
+4. Export wrapper synthesis for async exports with rich types, and the
+   world plumbing to declare them — landed for a world's *function*
+   exports (`service.wit` / `service.zena`, e2e): `wit-module-synth`'s
+   `synthesizeExportWrapper` writes one `<name>_export` wrapper per
+   async export, injected into `compile` through
+   `CompilerOptions.componentWrapperSynth` because the compiler does
+   not link the WIT parser; the encoder writes each lift's type from
+   the WIT (`EncodedImports.exportTypeIndices`) and the typed return's
+   result (`return:<interface>#<type>`, the interface empty at world
+   level); the lift's and the return's memory options are one
+   decision (`needsMemoryLift`). Parameters cross as flat scalars and
+   strings; results as anything the import path lowers, a `result` as
+   `Outcome`. Named types wait on 5: at world level they need
+   world-level `use`, and the http world's come through its exported
+   interface.
 5. Instance-grouped exports.
 6. The http `service` world end to end — `wasmtime serve` if the
    probe says yes, composition with a Zena client otherwise — then

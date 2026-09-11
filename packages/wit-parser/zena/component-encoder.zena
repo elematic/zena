@@ -264,21 +264,8 @@ export final class ComponentTypeEncoder {
    * from the world's own list still gets an instance.
    */
   encodeWorld(worldName: String): EncodedWorld {
-    var world: WorldDef | null = null;
-    for (let item in this.#ast.items) {
-      if (item.tag == AstItemTag.World) {
-        let def = item.worldDef as WorldDef;
-        if (def.name.name == worldName) {
-          world = def;
-        }
-      }
-    }
-    if (world == null) {
-      throw new EncodeError(
-          "no world named '" + worldName + "' in this document");
-    }
-
-    for (let item in (world as WorldDef).items) {
+    let world = this.#findWorld(worldName);
+    for (let item in world.items) {
       if (item.tag == WorldItemTag.Import) {
         this.#encodeWorldImport((item.importItem as Import).kind);
       } else if (item.tag == WorldItemTag.Export) {
@@ -534,6 +521,77 @@ export final class ComponentTypeEncoder {
     let index = this.#declareType(scope, body);
     this.#aliasedTypes[key] = index;
     return index;
+  }
+
+  /**
+   * The component-level valtype — a primitive's code, or a type
+   * index — of the WIT type `typeText`. Parsed against
+   * `qualifiedInterface`'s declarations when one is named, its named
+   * types alias-exported from the imported instance on first use;
+   * at the component's own level when the name is empty, where only
+   * structural types can appear. Public for the canon builtins: a
+   * typed `task.return` carries the result type of the export it
+   * returns for.
+   */
+  encodeTypeText(qualifiedInterface: String, typeText: String): i32 {
+    let key = qualifiedInterface + "#type:" + typeText;
+    if (let (true, existing) = this.#aliasedTypes.get(key)) {
+      return existing;
+    }
+    let scope = new Scope();
+    scope.atComponentLevel = true;
+    scope.typeCount = this.#result.typeCount;
+    if (qualifiedInterface != "") {
+      let reg = this.#findRegistered(qualifiedInterface);
+      if (reg == null) {
+        throw new EncodeError("'" + qualifiedInterface +
+            "' is not a known interface");
+      }
+      if (!this.#instanceIndex.has(qualifiedInterface)) {
+        throw new EncodeError("'" + qualifiedInterface +
+            "' is not imported yet, so nothing can use its types");
+      }
+      scope.aliasSource = reg;
+    }
+    let code = this.#encodeType(scope, parseTypeText(typeText));
+    this.#aliasedTypes[key] = code;
+    return code;
+  }
+
+  /**
+   * The component-level function type of the world's function export
+   * `exportName`, for the lift of the core function implementing it.
+   * Its types are structural, like a world-level import's: a named
+   * type would need world-level `use` encoding.
+   */
+  encodeWorldExportFuncType(worldName: String, exportName: String): i32 {
+    let world = this.#findWorld(worldName);
+    for (let item in world.items) {
+      if (item.tag != WorldItemTag.Export) { continue; }
+      let kind = (item.exportItem as Export).kind;
+      if (kind.tag != ExternKindTag.Func) { continue; }
+      if ((kind.name as Id).name != exportName) { continue; }
+      let func = kind.funcDef as Func;
+      let scope = new Scope();
+      scope.atComponentLevel = true;
+      scope.typeCount = this.#result.typeCount;
+      return this.#encodeFuncType(scope, func, -1, func.isAsync);
+    }
+    throw new EncodeError("world '" + worldName +
+        "' exports no function named '" + exportName + "'");
+  }
+
+  #findWorld(worldName: String): WorldDef {
+    for (let item in this.#ast.items) {
+      if (item.tag == AstItemTag.World) {
+        let def = item.worldDef as WorldDef;
+        if (def.name.name == worldName) {
+          return def;
+        }
+      }
+    }
+    throw new EncodeError(
+        "no world named '" + worldName + "' in this document");
   }
 
   /** The registered interface named `qualified`, or null. */
@@ -1256,6 +1314,65 @@ function funcMetaOf(
  * Null when the interface or the function is not in the document,
  * which callers treat as its own loud error.
  */
+/**
+ * The flattening of the world's function export `exportName`, or null
+ * when the world exports no function by that name. A world-level
+ * function's types are structural, so they resolve against no
+ * interface.
+ *
+ * The memory need is an export's, not an import's: the lift moves
+ * parameters and result through memory when a type of theirs does, or
+ * when either spills past sixteen core values. An async import's
+ * result spills through a return area; an async export's goes through
+ * `task.return`, whose flat parameters carry it.
+ */
+export let worldFuncFlatMeta = (
+  ast: Ast,
+  worldName: String,
+  exportName: String
+): WitFuncMeta | null => {
+  let interfaces = new GrowableArray<FlatIface>();
+  for (let item in ast.items) {
+    if (item.tag == AstItemTag.Interface) {
+      let def = item.interfaceDef as InterfaceDef;
+      interfaces.push(new FlatIface(
+          qualifiedInterfaceName(ast.packageName, def.name.name),
+          def.items));
+    }
+  }
+  let owner = new FlatIface("", new GrowableArray<InterfaceItem>());
+  for (let item in ast.items) {
+    if (item.tag != AstItemTag.World) { continue; }
+    let def = item.worldDef as WorldDef;
+    if (def.name.name != worldName) { continue; }
+    for (let wi in def.items) {
+      if (wi.tag != WorldItemTag.Export) { continue; }
+      let kind = (wi.exportItem as Export).kind;
+      if (kind.tag != ExternKindTag.Func) { continue; }
+      if ((kind.name as Id).name != exportName) { continue; }
+      let func = kind.funcDef as Func;
+      let meta = new WitFuncMeta();
+      meta.isAsync = func.isAsync;
+      for (let p in func.params) {
+        let m = flatMetaOfType(interfaces, owner, p.type);
+        meta.paramFlatCount += m.flatCount;
+        if (m.needsMemory) { meta.needsMemory = true; }
+      }
+      let result = func.result;
+      if (result != null) {
+        let m = flatMetaOfType(interfaces, owner, result as Type);
+        meta.resultFlatCount = m.flatCount;
+        if (m.needsMemory) { meta.needsMemory = true; }
+      }
+      if (meta.paramFlatCount > 16 || meta.resultFlatCount > 16) {
+        meta.needsMemory = true;
+      }
+      return meta;
+    }
+  }
+  return null;
+};
+
 export let funcFlatMeta = (
   ast: Ast,
   interfaceName: String,
