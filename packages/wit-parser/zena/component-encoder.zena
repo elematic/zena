@@ -151,6 +151,16 @@ let primOpcodeOf = (tag: TypeTag): i32 => {
   return -1;
 };
 
+/**
+ * Where a `use`d name comes from: the qualified name of the interface
+ * that declares it, and the name it has there (a `use` may rename).
+ */
+final class UseHop {
+  source: String;
+  typeName: String;
+  new(this.source, this.typeName);
+}
+
 /** One interface the document defines, under its import name. */
 final class RegisteredInterface {
   /** The name the component imports it by: `ns:pkg/iface@version`. */
@@ -428,6 +438,27 @@ export final class ComponentTypeEncoder {
    * or through a `type` alias of either. Resource-ness survives every
    * hop, and it decides whether a value-position mention is a handle.
    */
+  /**
+   * The interface `reg` `use`s `name` from, and the name there, or
+   * null when `reg` does not `use` it.
+   */
+  #useSourceOf(reg: RegisteredInterface, name: String): UseHop | null {
+    for (let item in reg.items) {
+      if (item.tag != InterfaceItemTag.Use) { continue; }
+      let use = item.use as Use;
+      for (let n in use.names) {
+        let asName = n.asName;
+        let localName =
+            if (asName == null) n.name.name else (asName as Id).name;
+        if (localName == name) {
+          let source = this.#resolveInterface(use.from, reg.packageName);
+          return new UseHop(source.qualifiedName, n.name.name);
+        }
+      }
+    }
+    return null;
+  }
+
   #isResource(reg: RegisteredInterface, name: String): boolean {
     for (let item in reg.items) {
       if (item.tag == InterfaceItemTag.TypeDef) {
@@ -542,20 +573,49 @@ export final class ComponentTypeEncoder {
     scope.atComponentLevel = true;
     scope.typeCount = this.#result.typeCount;
     if (qualifiedInterface != "") {
+      // Imported or exported: an exported interface's named types
+      // reach it through `use`, and `#namedIndex` follows the use to
+      // the imported source.
       let reg = this.#findRegistered(qualifiedInterface);
       if (reg == null) {
         throw new EncodeError("'" + qualifiedInterface +
             "' is not a known interface");
-      }
-      if (!this.#instanceIndex.has(qualifiedInterface)) {
-        throw new EncodeError("'" + qualifiedInterface +
-            "' is not imported yet, so nothing can use its types");
       }
       scope.aliasSource = reg;
     }
     let code = this.#encodeType(scope, parseTypeText(typeText));
     this.#aliasedTypes[key] = code;
     return code;
+  }
+
+  /**
+   * The component-level function type of `funcName` in the exported
+   * interface `qualifiedInterface`, for the lift of the core function
+   * implementing it. Its named types come through the interface's
+   * `use`s, alias-exported from the imported sources; a type the
+   * exported interface declares itself is not encodable yet.
+   */
+  encodeExportedInterfaceFuncType(
+    qualifiedInterface: String,
+    funcName: String
+  ): i32 {
+    let reg = this.#findRegistered(qualifiedInterface);
+    if (reg == null) {
+      throw new EncodeError("'" + qualifiedInterface +
+          "' is not a known interface");
+    }
+    for (let item in (reg as RegisteredInterface).items) {
+      if (item.tag != InterfaceItemTag.Func) { continue; }
+      let nf = item.func as NamedFunc;
+      if (nf.name.name != funcName) { continue; }
+      let scope = new Scope();
+      scope.atComponentLevel = true;
+      scope.typeCount = this.#result.typeCount;
+      scope.aliasSource = reg;
+      return this.#encodeFuncType(scope, nf.func, -1, nf.func.isAsync);
+    }
+    throw new EncodeError("'" + qualifiedInterface +
+        "' declares no function '" + funcName + "'");
   }
 
   /**
@@ -1006,7 +1066,24 @@ export final class ComponentTypeEncoder {
         throw new EncodeError("'" + reg.qualifiedName +
             "' declares no type '" + name + "'");
       }
-      let index = this.#aliasTypeExport(reg.qualifiedName, name);
+      // An imported interface's types alias out of its instance. An
+      // exported interface has no instance to alias from; a type it
+      // `use`s aliases out of the imported source instead, under the
+      // source's own name for it.
+      var index = -1;
+      if (this.#instanceIndex.has(reg.qualifiedName)) {
+        index = this.#aliasTypeExport(reg.qualifiedName, name);
+      } else {
+        let hop = this.#useSourceOf(reg, name);
+        if (hop == null) {
+          throw new EncodeError("'" + reg.qualifiedName +
+              "' is exported, and its own type '" + name +
+              "' is not encodable yet: only types it `use`s from an " +
+              "imported interface are");
+        }
+        let h = hop as UseHop;
+        index = this.#aliasTypeExport(h.source, h.typeName);
+      }
       // The alias appended a component-level type; a component-level
       // scope counts the same index space, so it catches up.
       scope.typeCount = this.#result.typeCount;
@@ -1314,6 +1391,56 @@ function funcMetaOf(
  * Null when the interface or the function is not in the document,
  * which callers treat as its own loud error.
  */
+/** Every interface of the document, main package and nested. */
+function registeredFlatIfaces(ast: Ast): GrowableArray<FlatIface> {
+  let interfaces = new GrowableArray<FlatIface>();
+  let register = (pkg: PackageName | null, items: Array<AstItem>): void => {
+    for (let item in items) {
+      if (item.tag == AstItemTag.Interface) {
+        let def = item.interfaceDef as InterfaceDef;
+        interfaces.push(new FlatIface(
+            qualifiedInterfaceName(pkg, def.name.name), def.items));
+      }
+    }
+  };
+  register(ast.packageName, ast.items);
+  for (let nested in ast.nestedPackages) {
+    register(nested.name, nested.items);
+  }
+  return interfaces;
+}
+
+/**
+ * An export's flattening: the lift moves parameters and result
+ * through memory when a type of theirs does, or when either spills
+ * past sixteen core values. An async import's result spills through a
+ * return area; an async export's goes through `task.return`, whose
+ * flat parameters carry it, so the import rule does not apply.
+ */
+function exportMetaOf(
+  interfaces: Array<FlatIface>,
+  owner: FlatIface,
+  func: Func
+): WitFuncMeta {
+  let meta = new WitFuncMeta();
+  meta.isAsync = func.isAsync;
+  for (let p in func.params) {
+    let m = flatMetaOfType(interfaces, owner, p.type);
+    meta.paramFlatCount += m.flatCount;
+    if (m.needsMemory) { meta.needsMemory = true; }
+  }
+  let result = func.result;
+  if (result != null) {
+    let m = flatMetaOfType(interfaces, owner, result as Type);
+    meta.resultFlatCount = m.flatCount;
+    if (m.needsMemory) { meta.needsMemory = true; }
+  }
+  if (meta.paramFlatCount > 16 || meta.resultFlatCount > 16) {
+    meta.needsMemory = true;
+  }
+  return meta;
+}
+
 /**
  * The flattening of the world's function export `exportName`, or null
  * when the world exports no function by that name. A world-level
@@ -1350,28 +1477,36 @@ export let worldFuncFlatMeta = (
       let kind = (wi.exportItem as Export).kind;
       if (kind.tag != ExternKindTag.Func) { continue; }
       if ((kind.name as Id).name != exportName) { continue; }
-      let func = kind.funcDef as Func;
-      let meta = new WitFuncMeta();
-      meta.isAsync = func.isAsync;
-      for (let p in func.params) {
-        let m = flatMetaOfType(interfaces, owner, p.type);
-        meta.paramFlatCount += m.flatCount;
-        if (m.needsMemory) { meta.needsMemory = true; }
-      }
-      let result = func.result;
-      if (result != null) {
-        let m = flatMetaOfType(interfaces, owner, result as Type);
-        meta.resultFlatCount = m.flatCount;
-        if (m.needsMemory) { meta.needsMemory = true; }
-      }
-      if (meta.paramFlatCount > 16 || meta.resultFlatCount > 16) {
-        meta.needsMemory = true;
-      }
-      return meta;
+      return exportMetaOf(interfaces, owner, kind.funcDef as Func);
     }
   }
   return null;
 };
+
+/**
+ * The flattening of `funcName` in the exported interface
+ * `interfaceName`, or null when no such function exists. The memory
+ * need is an export's, as `worldFuncFlatMeta` computes it.
+ */
+export let interfaceExportFlatMeta = (
+  ast: Ast,
+  interfaceName: String,
+  funcName: String
+): WitFuncMeta | null => {
+  let interfaces = registeredFlatIfaces(ast);
+  for (let iface in interfaces) {
+    if (iface.name != interfaceName) { continue; }
+    for (let item in iface.items) {
+      if (item.tag != InterfaceItemTag.Func) { continue; }
+      let nf = item.func as NamedFunc;
+      if (nf.name.name == funcName) {
+        return exportMetaOf(interfaces, iface, nf.func);
+      }
+    }
+  }
+  return null;
+};
+
 
 export let funcFlatMeta = (
   ast: Ast,

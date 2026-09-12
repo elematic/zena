@@ -27,13 +27,13 @@ import { i32ToString } from 'zena:string-convert';
 import { parse } from 'wit-parser:wit';
 import {
   ComponentTypeEncoder, EncodedWorld, funcFlatMeta, worldFuncFlatMeta,
-  WitFuncMeta,
+  interfaceExportFlatMeta, WitFuncMeta,
   worldNames, qualifiedInterfaceName
 } from 'wit-parser:component-encoder';
 import {
   Ast, AstItemTag, WorldDef, WorldItemTag, Import, Export, ExternKind,
   ExternKindTag, UsePath, UsePathTag, Id, Func, Type, TypeTag, PackageName,
-  AstItem, InterfaceDef
+  AstItem, InterfaceDef, InterfaceItem, InterfaceItemTag, NamedFunc
 } from 'wit-parser:parser';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc,
@@ -468,19 +468,60 @@ let exportableWitOpcode = (t: Type): i32 => {
  * vendoring it — unless the document declares those packages itself,
  * in which case its definitions win and ours stay out of the way.
  */
-let parseWithWasi = (witSource: String): Ast => {
+let parseWithWasi = (witSource: String, packagesWit: String = ""): Ast => {
+  return parse(withWasiPackages(witSource, packagesWit));
+};
+
+/**
+ * `witSource` with the compiler's WASI WIT and the program's WIT-backed
+ * packages appended, so a declared world can import their interfaces
+ * by name (`wasi:cli/stdout`, `wasi:http/types`) without vendoring
+ * them — unless the document declares a package itself, in which case
+ * its definitions win and ours stay out of the way.
+ */
+export let withWasiPackages = (witSource: String,
+    packagesWit: String = ""): String => {
   var source = witSource;
   if (!source.contains("package wasi:cli@0.3.0")) {
     source = source + "\n" + knownWasiPackagesWit();
   }
-  return parse(source);
+  if (packagesWit != "" && !declaresAnyOf(witSource, packagesWit)) {
+    source = source + "\n" + packagesWit;
+  }
+  return source;
 };
 
-/** One function export a declared world demands of the program. */
+/**
+ * Whether `source` declares any package `packagesWit` declares, in
+ * either spelling: `package ns:pkg@v;` heading a file, or
+ * `package ns:pkg@v {` nesting one.
+ */
+let declaresAnyOf = (source: String, packagesWit: String): boolean => {
+  for (let line in packagesWit.split("\n")) {
+    if (!line.startsWith("package ")) { continue; }
+    var end = line.length;
+    for (var i = 8; i < line.length; i += 1) {
+      let c = line.getByteAt(i);
+      if (c == 59 || c == 32 || c == 123) { end = i; break; } // ';' ' ' '{'
+    }
+    let name = line.sliceBytes(0, end);
+    if (source.contains(name + ";") || source.contains(name + " {")) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * One function export a declared world demands of the program: a
+ * world-level function, or a function of an exported interface, whose
+ * qualified name is `instanceName` (empty at world level).
+ */
 final class DeclaredExport {
   name: String;
   func: Func;
-  new(this.name, this.func);
+  instanceName: String;
+  new(this.name, this.func, this.instanceName = "");
 }
 
 /**
@@ -506,7 +547,8 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
   /** The world's function exports, in declaration order. */
   #declaredExports = new GrowableArray<DeclaredExport>();
 
-  new(witSource: String, worldName: String) : #ast = parseWithWasi(witSource) {
+  new(witSource: String, worldName: String, packagesWit: String = "")
+      : #ast = parseWithWasi(witSource, packagesWit) {
     var name = worldName;
     if (name == "") {
       let names = worldNames(this.#ast);
@@ -575,9 +617,58 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
           new DeclaredExport((kind.name as Id).name, kind.funcDef as Func));
       return;
     }
-    throw new Error("The declared world exports an interface, which a " +
-        "program cannot implement yet — only function exports are " +
-        "supported (interface exports arrive with bindgen).");
+    if (kind.tag == ExternKindTag.Path) {
+      // An exported interface: the component exports an instance of
+      // that name, and each of the interface's functions is one export
+      // the program provides, lifted into it.
+      let path = kind.path as UsePath;
+      let qualified = if (path.tag == UsePathTag.Id) {
+        qualifiedInterfaceName(this.#ast.packageName, (path.id as Id).name)
+      } else {
+        qualifiedInterfaceName(path.packageId, (path.name as Id).name)
+      };
+      let items = this.#interfaceItems(qualified);
+      if (items == null) {
+        throw new Error("The declared world exports '" + qualified +
+            "', which the document does not declare.");
+      }
+      for (let item in items as Array<InterfaceItem>) {
+        if (item.tag == InterfaceItemTag.Func) {
+          let nf = item.func as NamedFunc;
+          this.#declaredExports.push(
+              new DeclaredExport(nf.name.name, nf.func, qualified));
+        } else if (item.tag == InterfaceItemTag.TypeDef) {
+          throw new Error("The declared world exports '" + qualified +
+              "', which declares a type of its own; an exported " +
+              "interface can only `use` types from imported ones yet.");
+        }
+      }
+      return;
+    }
+    throw new Error("The declared world exports an inline interface, " +
+        "which a program cannot implement yet.");
+  }
+
+  /** The items of the interface `qualified` declares, or null. */
+  #interfaceItems(qualified: String): Array<InterfaceItem> | null {
+    for (let item in this.#ast.items) {
+      if (item.tag != AstItemTag.Interface) { continue; }
+      let def = item.interfaceDef as InterfaceDef;
+      if (qualifiedInterfaceName(this.#ast.packageName, def.name.name) ==
+          qualified) {
+        return def.items;
+      }
+    }
+    for (let nested in this.#ast.nestedPackages) {
+      for (let item in nested.items) {
+        if (item.tag != AstItemTag.Interface) { continue; }
+        let def = item.interfaceDef as InterfaceDef;
+        if (qualifiedInterfaceName(nested.name, def.name.name) == qualified) {
+          return def.items;
+        }
+      }
+    }
+    return null;
   }
 
   witProvided(interfaceName: String): boolean {
@@ -597,9 +688,17 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
     let exportTypes = new HashMap<String, i32>();
     for (let e in shape.exports) {
       if (!e.witTyped) { continue; }
-      exportTypes[e.exportName] =
-          encoder.encodeWorldExportFuncType(this.#worldName, e.exportName);
-      let meta = worldFuncFlatMeta(this.#ast, this.#worldName, e.exportName);
+      var meta: WitFuncMeta | null = null;
+      if (e.instanceName == "") {
+        exportTypes[e.typeKey()] =
+            encoder.encodeWorldExportFuncType(this.#worldName, e.exportName);
+        meta = worldFuncFlatMeta(this.#ast, this.#worldName, e.exportName);
+      } else {
+        exportTypes[e.typeKey()] = encoder.encodeExportedInterfaceFuncType(
+            e.instanceName, e.exportName);
+        meta = interfaceExportFlatMeta(this.#ast, e.instanceName,
+            e.exportName);
+      }
       if (meta != null) {
         e.needsMemoryLift = (meta as WitFuncMeta).needsMemory;
       }
@@ -715,6 +814,10 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
             "exporting it.");
       }
       let declared = declaredOpt as DeclaredExport;
+      // The export lands in the instance the world puts it in. Names
+      // are matched across the world's exports as a whole, so one
+      // name in two exported interfaces is not supported yet.
+      e.instanceName = declared.instanceName;
       if (declared.func.isAsync) {
         // Implemented through the wrapper the compiler wrote for it
         // (wit-module-synth's `synthesizeExportWrapper`), lifted with
@@ -815,5 +918,5 @@ export let makeImportEncoder = (
   if (witSource == null) {
     return new DerivedImportEncoder(packagesWit);
   }
-  return new DeclaredWorldEncoder(witSource as String, worldName);
+  return new DeclaredWorldEncoder(witSource as String, worldName, packagesWit);
 };

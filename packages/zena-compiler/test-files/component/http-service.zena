@@ -1,0 +1,51 @@
+// A wasi:http service: `handle` answers every request with a text
+// body naming the path it was asked for. The world exports the
+// `handler` interface as an instance, the compiler-written wrapper
+// lifts the request handle into `Request` and lowers the `Outcome`
+// into a `task.return` typed `result<response, error-code>`, and
+// `wasmtime serve` drives it — the e2e script fetches a path and
+// reads the body back.
+//
+// The body is a `Stream<u8>` the response is built around, written by
+// a background task: a stream write meets its reader, and the reader
+// is the host, which reads only once the response has been returned.
+import { Fields, Request, Response, ErrorCode } from 'wasi:http/types';
+import { Completer, Future } from 'zena:async';
+import { Outcome, Ok } from 'zena:result';
+import { Option, some, none } from 'zena:option';
+import { StreamWriter } from 'zena:stream';
+import { FixedArray } from 'zena:fixed-array';
+
+/**
+ * Write `text`'s bytes to `writer`, then end the stream. The bytes
+ * are copied: the writer carries `FixedArray<u8>` buffers, and a
+ * String is a view over a `ByteArray`, a different array type. A
+ * `Stream<u8>` write from a byte-array range would remove the copy
+ * (#569).
+ */
+async function sendBody(writer: StreamWriter<u8>, text: String): Future<void> {
+  let bytes = new FixedArray<u8>(text.length, 0);
+  for (var i = 0; i < text.length; i += 1) {
+    bytes[i] = text.getByteAt(i) as u8;
+  }
+  await writer.writeAll(bytes, text.length);
+  writer.close();
+}
+
+export async function handle(request: Request): Future<Outcome<Response, ErrorCode>> {
+  // The path and query the request asked for, `/` when it named none.
+  var path = '/';
+  let requestedPath = request.getPathWithQuery();
+  if (requestedPath is Some<String>) {
+    path = (requestedPath as Some<String>).value;
+  }
+  let writer = new StreamWriter<u8>();
+  sendBody(writer, 'hello from zena at ' + path);
+  // The response's trailers are a future the sender resolves; this
+  // service sends none, so it settles up front.
+  let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
+  trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
+  let (response, transmitted) =
+      Response.new_(Fields.create(), some(writer.stream), trailers.future);
+  return new Ok<Response, ErrorCode>(response);
+}

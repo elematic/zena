@@ -73,8 +73,29 @@ interface Fixture {
    * inside spawnSync while wasmtime runs.
    */
   serve?: [number, string];
+  /**
+   * Run the component under `wasmtime serve` on 127.0.0.1:port
+   * instead of invoking exports: fetch `path` from it and compare the
+   * response body to `body`. For a wasi:http service world.
+   */
+  serveRequest?: [number, string, string];
   invocations: Invocation[];
 }
+
+/** Wait until 127.0.0.1:`port` accepts a connection, or give up. */
+const waitForPort = (port: number): boolean => {
+  const probe =
+    `require('node:net').connect(${port}, '127.0.0.1')` +
+    `.on('connect', () => process.exit(0))` +
+    `.on('error', () => process.exit(1));`;
+  for (let tries = 0; tries < 100; tries++) {
+    if (spawnSync('node', ['-e', probe]).status === 0) {
+      return true;
+    }
+    spawnSync('node', ['-e', 'setTimeout(() => {}, 100);']);
+  }
+  return false;
+};
 
 /** Start a one-body HTTP server child and block until it accepts. */
 const startServer = (port: number, body: string) => {
@@ -265,6 +286,19 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'http-service',
+    wasi: ['p3=y', 'http=y'],
+    wit: ['http-service.wit', 'http-service'],
+    // The wasi:http service world: `wasi:http/handler@0.3.0` exported
+    // as an instance whose `handle` the program implements, driven by
+    // `wasmtime serve`. The request handle lifts into `Request`, the
+    // `Outcome<Response, ErrorCode>` lowers into a typed
+    // `task.return`, and the body streams out through a canonical
+    // stream after the response has been returned.
+    serveRequest: [18924, '/greet', 'hello from zena at /greet'],
+    invocations: [],
+  },
+  {
     name: 'service',
     wasi: ['p3=y'],
     wit: ['service.wit', 'service'],
@@ -376,6 +410,47 @@ for (const fixture of FIXTURES) {
     continue;
   }
   console.log(`  ${GREEN}✓${NC} validates`);
+
+  if (fixture.serveRequest) {
+    // A service: wasmtime serves it, and the runner is its client.
+    const [port, path, body] = fixture.serveRequest;
+    const flags = ['-W', 'gc=y,function-references=y,exceptions=y'];
+    for (const feature of fixture.wasi) {
+      flags.push('-S', feature);
+    }
+    const served = spawn(
+      'wasmtime',
+      ['serve', ...flags, '--addr', `127.0.0.1:${port}`, out],
+      {stdio: ['ignore', 'ignore', 'pipe']},
+    );
+    let servedErr = '';
+    served.stderr?.on('data', (chunk) => {
+      servedErr += chunk.toString();
+    });
+    if (!waitForPort(port)) {
+      served.kill();
+      fail(`wasmtime serve never accepted on port ${port}:\n${servedErr}`);
+      continue;
+    }
+    // Through node's own fetch: the CI sandbox has node and nothing
+    // else on the path.
+    const client =
+      `fetch('http://127.0.0.1:${port}${path}', {signal: AbortSignal.timeout(10000)})` +
+      `.then((r) => r.text()).then((t) => process.stdout.write(t))` +
+      `.catch((e) => { process.stderr.write(String(e)); process.exit(1); });`;
+    const fetched = spawnSync('node', ['-e', client], {encoding: 'utf8'});
+    served.kill();
+    if (fetched.status !== 0) {
+      fail(`GET ${path} failed: ${fetched.stderr ?? fetched.error}\n${servedErr}`);
+      continue;
+    }
+    if (fetched.stdout !== body) {
+      fail(`GET ${path} returned '${fetched.stdout}', expected '${body}'\n${servedErr}`);
+      continue;
+    }
+    console.log(`  ${GREEN}✓${NC} GET ${path} => '${body}'`);
+    continue;
+  }
 
   let server: ReturnType<typeof spawn> | null = null;
   if (fixture.serve) {

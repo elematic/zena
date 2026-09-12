@@ -261,7 +261,26 @@ yet and composition needs.
    `Outcome`. Named types wait on 5: at world level they need
    world-level `use`, and the http world's come through its exported
    interface.
-5. Instance-grouped exports.
-6. The http `service` world end to end — `wasmtime serve` if the
-   probe says yes, composition with a Zena client otherwise — then
-   provider components for the fixture interfaces.
+5. Instance-grouped exports — landed: a world's `export
+   wasi:http/handler@0.3.0;` gathers the interface's functions into a
+   component instance exported under that name (emitter: an instance
+   from inline exports, then an instance export). The functions' named
+   types come through the interface's `use`s: the encoder follows a
+   `use` to the imported source and aliases the type out of *that*
+   instance (`#useSourceOf`), both for the lift's type
+   (`encodeExportedInterfaceFuncType`) and for the typed return's
+   (`return:wasi:http/handler@0.3.0#result<response, error-code>`). A
+   type an exported interface declares itself is still refused. The
+   wrapper lifts an owned resource parameter into its synthesized
+   class (`new Request(a0)`), imported from the types module, and the
+   declared world assigns each export its instance. A declared world
+   also gets the manifest's WIT-backed packages spliced in, so
+   `import wasi:http/types@0.3.0;` needs no vendoring.
+6. The http `service` world end to end — landed through `wasmtime
+   serve`: `http-service.zena` implements `handle`, builds a
+   `Response` around a `Stream<u8>` a background task writes, and the
+   e2e fetches a path and reads the body back (the stream is pumped
+   after `task.return`, from callback re-entries). Remaining: provider
+   components for the fixture interfaces (composition tests), the
+   self-wake future for concurrent tasks, and sync functions in
+   exported interfaces.

@@ -184,16 +184,55 @@ export let main = (): i32 => {
   let packages = loadPackages(host);
   let options = new CompilerOptions(target, "/stdlib", packages);
   options.time = time;
+  // The WIT-backed packages' real source, so the encoder emits their
+  // interfaces' true types rather than deriving them from the
+  // synthesized declarations (which are flattened core shapes), and so
+  // a declared world can import their interfaces by name. Name-sorted:
+  // a HashMap iterates in uid order, which depends on what the process
+  // did earlier, and emitted bytes must not.
+  var packagesWit = "";
+  if (targetEmitsComponent(target)) {
+    let witPackages = new GrowableArray<String>();
+    let packageNames = packages.keys();
+    while (let (true, packageName) = packageNames.next()) {
+      if (packages[packageName].witRoot != null) {
+        witPackages.push(packageName);
+      }
+    }
+    let byteLess = (x: String, y: String): boolean => {
+      var minLen = x.length;
+      if (y.length < minLen) { minLen = y.length; }
+      for (var i = 0; i < minLen; i += 1) {
+        let d = x.getByteAt(i) - y.getByteAt(i);
+        if (d != 0) { return d < 0; }
+      }
+      return x.length < y.length;
+    };
+    for (var a = 0; a < witPackages.length; a += 1) {
+      for (var b = a + 1; b < witPackages.length; b += 1) {
+        if (byteLess(witPackages[b], witPackages[a])) {
+          let t = witPackages[a];
+          witPackages[a] = witPackages[b];
+          witPackages[b] = t;
+        }
+      }
+    }
+    for (let packageName in witPackages) {
+      packagesWit = packagesWit +
+          readWitSource(packages[packageName].witRoot as String) + "\n";
+    }
+  }
   if (witSource != "") {
     // Against a declared world the entry wrapper also implements the
     // world's async exports, which takes the WIT the compiler itself
     // does not link.
     let declaredWit = witSource;
     let declaredWorld = worldName;
+    let declaredPackages = packagesWit;
     options.componentWrapperSynth =
         (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
             synthesizeExportWrapper(declaredWit, declaredWorld, entryPath,
-                ast);
+                ast, declaredPackages);
   }
   let compiler = createCompiler(host, options);
 
@@ -273,43 +312,12 @@ export let main = (): i32 => {
       // is only known after its own compile, and this one is small.
       generator.runtimeMemoryModule =
           compileComponentRuntimeModule(host, "/stdlib", packages);
-      // The WIT-backed packages' real source, so the encoder emits
-      // their interfaces' true types rather than deriving them from
-      // the synthesized declarations (which are flattened core shapes).
-      // Name-sorted: a HashMap iterates in uid order, which depends on
-      // what the process did earlier, and emitted bytes must not.
-      let witPackages = new GrowableArray<String>();
-      let packageNames = packages.keys();
-      while (let (true, packageName) = packageNames.next()) {
-        if (packages[packageName].witRoot != null) {
-          witPackages.push(packageName);
-        }
-      }
-      let byteLess = (x: String, y: String): boolean => {
-        var minLen = x.length;
-        if (y.length < minLen) { minLen = y.length; }
-        for (var i = 0; i < minLen; i += 1) {
-          let d = x.getByteAt(i) - y.getByteAt(i);
-          if (d != 0) { return d < 0; }
-        }
-        return x.length < y.length;
-      };
-      for (var a = 0; a < witPackages.length; a += 1) {
-        for (var b = a + 1; b < witPackages.length; b += 1) {
-          if (byteLess(witPackages[b], witPackages[a])) {
-            let t = witPackages[a];
-            witPackages[a] = witPackages[b];
-            witPackages[b] = t;
-          }
-        }
-      }
-      var packagesWit = "";
-      for (let packageName in witPackages) {
-        packagesWit = packagesWit +
-            readWitSource(packages[packageName].witRoot as String) + "\n";
-      }
+      // A declared world compiles against its own document, with the
+      // WIT-backed packages spliced in so it can import their
+      // interfaces by name; without one, each interface's WIT is
+      // derived from the program, except for the packages' own.
       generator.importEncoder = if (witPath != "") {
-        makeImportEncoder(witSource, worldName)
+        makeImportEncoder(witSource, worldName, packagesWit)
       } else {
         makeImportEncoder(null, "", packagesWit)
       };

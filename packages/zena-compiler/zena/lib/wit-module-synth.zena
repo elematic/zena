@@ -65,11 +65,11 @@ import {
   InterfaceItem, InterfaceItemTag, NamedFunc, Type, TypeTag, TypeDef,
   TypeDefTag, Id, EnumCaseDef, FlagDef, Field, Case, ResourceFunc,
   ResourceFuncTag, Ast, PackageName, Use, UsePath, IdUsePath,
-  PackageUsePath, AstItemTag, WorldDef, WorldItemTag, Export,
+  PackageUsePath, UsePathTag, AstItemTag, WorldDef, WorldItemTag, Export,
   ExternKindTag, Func
 } from 'wit-parser:parser';
 import { Module } from './ast.zena';
-import { knownWasiPackagesWit } from './codegen/wasi-interfaces.zena';
+import { withWasiPackages } from './codegen/wit-imports.zena';
 import {
   ComponentEntryWrapper, componentEntryPathFor,
   componentEntrySpecifierFor, componentExportSuffix,
@@ -1046,7 +1046,17 @@ function flatCoreSlots(ty: Ty): GrowableArray<String> | null {
     for (var i = 0; i < arm.length; i += 1) {
       if (i < joined.length) {
         if (joined[i] != arm[i]) {
-          return null;
+          // The canonical join of two arms' slot types: an i32 beside
+          // an i64 is an i64, which the narrower arm widens into
+          // (`writeSlot`). A float beside an integer joins through
+          // reinterpretation, not lowered here yet.
+          let a = joined[i];
+          let b = arm[i];
+          if ((a == "i32" && b == "i64") || (a == "i64" && b == "i32")) {
+            joined[i] = "i64";
+          } else {
+            return null;
+          }
         }
       } else {
         joined.push(arm[i]);
@@ -1330,28 +1340,52 @@ function emitListStaging(sb: StringBuilder, ty: Ty, value: String,
  * Unwritten slots keep their zero initializers, which is what an
  * absent option payload or a shorter variant arm leaves behind.
  */
+/**
+ * The core types of the slots `lowerFlatStmts` is filling, parallel to
+ * the slot names: a variant's arms share slots, and a slot two arms
+ * disagree on is the canonical join of their types (an i32 beside an
+ * i64 is an i64), so an arm's narrower value widens on the way in.
+ * Set by the caller that declared the slots.
+ */
+var currentSlotTypes = new GrowableArray<String>();
+
+/**
+ * `slot = expr;`, widening an i32 `expr` when the slot is an i64 —
+ * the one join this file lowers (the canonical ABI also joins floats
+ * with integers, through reinterpretation, which waits on a need).
+ */
+let writeSlot = (sb: StringBuilder, indent: String, slot: String,
+    slotIndex: i32, expr: String, haveCore: String): void => {
+  var rhs = expr;
+  if (slotIndex < currentSlotTypes.length &&
+      currentSlotTypes[slotIndex] == "i64" && haveCore == "i32") {
+    rhs = "((" + expr + ") as i64)";
+  }
+  sb.append(indent).append(slot).append(" = ").append(rhs).append(";\n");
+};
+
 function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     slots: GrowableArray<String>, base: i32, indent: String,
     uses: SynthUses): i32 {
   if (ty.kind == TyKind.Scalar) {
-    sb.append(indent).append(slots[base]).append(" = ")
-        .append(castToCore(ty.scalar, value)).append(";\n");
+    writeSlot(sb, indent, slots[base], base, castToCore(ty.scalar, value),
+        coreOf(ty.scalar));
     return 1;
   }
   if (ty.kind == TyKind.Enumeration) {
-    sb.append(indent).append(slots[base]).append(" = (").append(value)
-        .append(" as i32);\n");
+    writeSlot(sb, indent, slots[base], base, "(" + value + " as i32)",
+        "i32");
     return 1;
   }
   if (ty.kind == TyKind.Flags) {
-    sb.append(indent).append(slots[base]).append(" = ((").append(value)
-        .append(" as u32) as i32);\n");
+    writeSlot(sb, indent, slots[base], base,
+        "((" + value + " as u32) as i32)", "i32");
     return 1;
   }
   if (ty.kind == TyKind.ResourceH) {
     uses.useAbi("rawHandle");
-    sb.append(indent).append(slots[base]).append(" = ").append(value)
-        .append(".[rawHandle]();\n");
+    writeSlot(sb, indent, slots[base], base, value + ".[rawHandle]()",
+        "i32");
     if (!ty.isBorrow) {
       // An owned handle transfers to the callee: the wrapper's later
       // dispose must not drop an index it no longer owns.
@@ -1362,14 +1396,14 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   }
   if (ty.kind == TyKind.StreamH) {
     uses.useComponentStream("lowerByteStream");
-    sb.append(indent).append(slots[base]).append(" = lowerByteStream(")
-        .append(value).append(");\n");
+    writeSlot(sb, indent, slots[base], base,
+        "lowerByteStream(" + value + ")", "i32");
     return 1;
   }
   if (ty.kind == TyKind.FutureH) {
-    sb.append(indent).append(slots[base]).append(" = lowerFuture")
-        .append(i32ToString(uses.futureIndexOf(ty))).append("(")
-        .append(value).append(");\n");
+    writeSlot(sb, indent, slots[base], base,
+        "lowerFuture" + i32ToString(uses.futureIndexOf(ty)) + "(" +
+        value + ")", "i32");
     return 1;
   }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
@@ -1382,19 +1416,15 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     sb.append(indent).append("let (").append(p).append(", ").append(l)
         .append(") = ").append(stage).append("(").append(value)
         .append(");\n");
-    sb.append(indent).append(slots[base]).append(" = ").append(p)
-        .append(";\n");
-    sb.append(indent).append(slots[base + 1]).append(" = ").append(l)
-        .append(";\n");
+    writeSlot(sb, indent, slots[base], base, p, "i32");
+    writeSlot(sb, indent, slots[base + 1], base + 1, l, "i32");
     return 2;
   }
   if (ty.kind == TyKind.ListT) {
     emitListStaging(sb, ty, value, indent, uses,
         (buf: String, count: String): void => {
-      sb.append(indent).append(slots[base]).append(" = ").append(buf)
-          .append(";\n");
-      sb.append(indent).append(slots[base + 1]).append(" = ")
-          .append(count).append(";\n");
+      writeSlot(sb, indent, slots[base], base, buf, "i32");
+      writeSlot(sb, indent, slots[base + 1], base + 1, count, "i32");
     });
     return 2;
   }
@@ -1428,8 +1458,7 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     let inner = ty.children[0];
     sb.append(indent).append("if (").append(value).append(" is Some<")
         .append(zenaTypeOf(inner, uses)).append(">) {\n");
-    sb.append(indent).append("  ").append(slots[base])
-        .append(" = 1;\n");
+    writeSlot(sb, indent + "  ", slots[base], base, "1", "i32");
     lowerFlatStmts(sb, inner,
         "(" + value + " as Some<" + zenaTypeOf(inner, uses) + ">).value",
         slots, base + 1, indent + "  ", uses);
@@ -1445,14 +1474,14 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     let errZ = zenaTypeOf(ty.children[1], uses);
     sb.append(indent).append("if (").append(value).append(" is Ok<")
         .append(okZ).append(", ").append(errZ).append(">) {\n");
-    sb.append(indent).append("  ").append(slots[base]).append(" = 0;\n");
+    writeSlot(sb, indent + "  ", slots[base], base, "0", "i32");
     if (!isVoid(ty.children[0])) {
       lowerFlatStmts(sb, ty.children[0],
           "(" + value + " as Ok<" + okZ + ", " + errZ + ">).value",
           slots, base + 1, indent + "  ", uses);
     }
     sb.append(indent).append("} else {\n");
-    sb.append(indent).append("  ").append(slots[base]).append(" = 1;\n");
+    writeSlot(sb, indent + "  ", slots[base], base, "1", "i32");
     if (!isVoid(ty.children[1])) {
       lowerFlatStmts(sb, ty.children[1],
           "(" + value + " as Err<" + okZ + ", " + errZ + ">).error",
@@ -1469,8 +1498,7 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     if (i > 0) { sb.append("} else "); }
     sb.append("if (").append(value).append(" is ")
         .append(ty.childNames[i]).append(") {\n");
-    sb.append(indent).append("  ").append(slots[base]).append(" = ")
-        .append(i32ToString(i)).append(";\n");
+    writeSlot(sb, indent + "  ", slots[base], base, i32ToString(i), "i32");
     if (!isVoid(ty.children[i])) {
       lowerFlatStmts(sb, ty.children[i],
           "(" + value + " as " + ty.childNames[i] + ").value", slots,
@@ -2458,6 +2486,7 @@ function renderFuncIn(
       // an untaken option or a shorter variant arm leaves its slots at
       // zero, which the canonical ABI never reads.
       let slots = flatCoreSlots(params[i]) as GrowableArray<String>;
+      currentSlotTypes = slots;
       let slotNames = new GrowableArray<String>();
       for (var k = 0; k < slots.length; k += 1) {
         let slotName = "s" + i32ToString(i) + "_" + i32ToString(k);
@@ -2617,10 +2646,18 @@ function renderFuncIn(
   return "";
 }
 
-/** One async function export of a declared world. */
+/**
+ * One async function export of a declared world: at world level, or
+ * of an exported interface, whose entry in the interfaces list,
+ * qualified name (the `return:` scope) and module specifier it then
+ * carries.
+ */
 final class AsyncWorldExport {
   name: String;
   func: Func;
+  var interfaceIndex = -1;
+  var qualifiedInterface = "";
+  var specifier = "";
   new(this.name, this.func);
 }
 
@@ -2647,16 +2684,12 @@ export function synthesizeExportWrapper(
   witSource: String,
   worldName: String,
   entryPath: String,
-  entryAst: Module
+  entryAst: Module,
+  packagesWit: String = ""
 ): ComponentEntryWrapper | null {
-  // With the compiler's own WASI WIT riding along, as the declared-
-  // world encoder parses it: a world may import `wasi:cli/stdout`
-  // without vendoring it, unless the document declares those packages
-  // itself.
-  var source = witSource;
-  if (!source.contains("package wasi:cli@0.3.0")) {
-    source = source + "\n" + knownWasiPackagesWit();
-  }
+  // With the compiler's WASI WIT and the program's WIT-backed packages
+  // riding along, as the declared-world encoder parses it.
+  let source = withWasiPackages(witSource, packagesWit);
   let ast = parse(source);
   var world: WorldDef | null = null;
   for (let item in ast.items) {
@@ -2667,23 +2700,66 @@ export function synthesizeExportWrapper(
       }
     }
   }
+  // World-level async function exports, and the async functions of
+  // each exported interface, which land in an instance of the
+  // interface's name and resolve their named types through its
+  // `use`s.
   let exports = new GrowableArray<AsyncWorldExport>();
+  let interfaces = new GrowableArray<FoundInterface>();
+  let interfaceExports = new GrowableArray<AsyncWorldExport>();
   if (world != null) {
     for (let wi in (world as WorldDef).items) {
       if (wi.tag != WorldItemTag.Export) { continue; }
       let kind = (wi.exportItem as Export).kind;
-      if (kind.tag != ExternKindTag.Func) { continue; }
-      let func = kind.funcDef as Func;
-      if (!func.isAsync) { continue; }
-      exports.push(new AsyncWorldExport((kind.name as Id).name, func));
+      if (kind.tag == ExternKindTag.Func) {
+        let func = kind.funcDef as Func;
+        if (!func.isAsync) { continue; }
+        exports.push(new AsyncWorldExport((kind.name as Id).name, func));
+      } else if (kind.tag == ExternKindTag.Path) {
+        let path = kind.path as UsePath;
+        var namespace = "";
+        var interfacePath = "";
+        if (path.tag == UsePathTag.Id) {
+          let main = ast.packageName as PackageName;
+          namespace = main.namespace.name;
+          interfacePath = main.name.name + "/" + (path.id as Id).name;
+        } else {
+          let pkg = path.packageId as PackageName;
+          namespace = pkg.namespace.name;
+          interfacePath = pkg.name.name + "/" + (path.name as Id).name;
+        }
+        let found = findInterfaceOrNull(ast, namespace, interfacePath);
+        if (found == null) {
+          throw new Error("The declared world exports '" + namespace + ":" +
+              interfacePath + "', which the document does not declare.");
+        }
+        let iface = found as FoundInterface;
+        var qualified = namespace + ":" + interfacePath;
+        let version = iface.packageName.version;
+        if (version != null) {
+          qualified = qualified + "@" + (version as String);
+        }
+        for (let item in iface.def.items) {
+          if (item.tag != InterfaceItemTag.Func) { continue; }
+          let nf = item.func as NamedFunc;
+          if (!nf.func.isAsync) { continue; }
+          let e = new AsyncWorldExport(nf.name.name, nf.func);
+          e.interfaceIndex = interfaces.length;
+          e.qualifiedInterface = qualified;
+          e.specifier = namespace + ":" + interfacePath;
+          interfaceExports.push(e);
+        }
+        interfaces.push(iface);
+      }
     }
   }
   let mainResult = mainScalarResultOf(entryAst);
-  if (exports.length == 0 && mainResult == "") {
+  if (exports.length == 0 && interfaceExports.length == 0 &&
+      mainResult == "") {
     return null;
   }
 
-  currentWitSource = witSource;
+  currentWitSource = source;
   currentAst = ast;
   currentPackage = ast.packageName;
   selfSpecifier = "";
@@ -2701,7 +2777,20 @@ export function synthesizeExportWrapper(
     let zenaName = camelName(e.name);
     imported.push(zenaName);
     body.append("\n");
-    renderExportWrapper(body, e.name, zenaName, e.func, noItems, uses);
+    renderExportWrapper(body, e.name, zenaName, e.func, noItems, uses, "");
+  }
+  for (let e in interfaceExports) {
+    let iface = interfaces[e.interfaceIndex];
+    // Types classify in the interface's own context: a `use`d type
+    // hops to its source module, which the wrapper then imports.
+    currentPackage = iface.packageName;
+    selfSpecifier = e.specifier;
+    currentSpecifier = e.specifier;
+    let zenaName = camelName(e.name);
+    imported.push(zenaName);
+    body.append("\n");
+    renderExportWrapper(body, e.name, zenaName, e.func, iface.def.items,
+        uses, e.qualifiedInterface);
   }
 
   let specifier = componentEntrySpecifierFor(entryPath);
@@ -2737,6 +2826,29 @@ export function synthesizeExportWrapper(
     }
     sb.append(" } from 'zena:component-abi';\n");
   }
+  // The synthesized modules whose types the wrappers name: a resource
+  // parameter lifts into its class, a result lowers out of one.
+  {
+    let specifiers = new GrowableArray<String>();
+    for (let u in usedTypeImports) {
+      var known = false;
+      for (let s in specifiers) {
+        if (s == u.specifier) { known = true; }
+      }
+      if (!known) { specifiers.push(u.specifier); }
+    }
+    for (let spec in specifiers) {
+      sb.append("import { ");
+      var first = true;
+      for (let u in usedTypeImports) {
+        if (u.specifier != spec) { continue; }
+        if (!first) { sb.append(", "); }
+        first = false;
+        sb.append(u.name);
+      }
+      sb.append(" } from '").append(spec).append("';\n");
+    }
+  }
   sb.append("\n").append(body.toString());
   return new ComponentEntryWrapper(componentEntryPathFor(entryPath),
       sb.toString(), specifier, entryPath);
@@ -2748,7 +2860,7 @@ export function synthesizeExportWrapper(
  */
 function renderExportWrapper(sb: StringBuilder, witName: String,
     zenaName: String, func: Func, items: Array<InterfaceItem>,
-    uses: SynthUses): void {
+    uses: SynthUses, returnScope: String): void {
   let refuse = (what: String, why: String): Error =>
       new Error("The declared world's async export '" + witName + "', " +
           what + ": " + why);
@@ -2779,11 +2891,19 @@ function renderExportWrapper(sb: StringBuilder, witName: String,
       liftStmts.append("  releaseStringArgument(p").append(k)
           .append(", l").append(k).append(");\n");
       callArgs.append("v").append(k);
+    } else if (ty.kind == TyKind.ResourceH && !ty.isBorrow) {
+      // An owned handle: the wrapper's class around it, which the
+      // program then owns and disposes.
+      rawSig.append("a").append(k).append(": i32");
+      liftStmts.append("  let v").append(k).append(" = new ")
+          .append(ty.typeName).append("(a").append(k).append(");\n");
+      callArgs.append("v").append(k);
     } else if (ty.kind == TyKind.Unsupported) {
       throw refuse("parameter '" + p.name.name + "'", ty.reason);
     } else {
       throw refuse("parameter '" + p.name.name + "'",
-          "only flat scalars and strings cross into an async export yet");
+          "only flat scalars, strings and owned resources cross into an " +
+          "async export yet");
     }
   }
 
@@ -2826,7 +2946,8 @@ function renderExportWrapper(sb: StringBuilder, witName: String,
     // flattening.
     let typeText = spanText(resultType.span.start, resultType.span.end);
     sb.append("@external(\"canon\", \"task.return#").append(witName)
-        .append("\", \"return:#").append(typeText).append("\")\n");
+        .append("\", \"return:").append(returnScope).append("#")
+        .append(typeText).append("\")\n");
     sb.append("declare function taskReturn").append(pascalName(witName))
         .append("(");
     for (var k = 0; k < slotTypes.length; k += 1) {
@@ -2867,6 +2988,7 @@ function renderExportWrapper(sb: StringBuilder, witName: String,
     sb.append("    var ").append(slotNames[k]).append(": ")
         .append(slotTypes[k]).append(" = ").append(zero).append(";\n");
   }
+  currentSlotTypes = slotTypes;
   lowerFlatStmts(sb, resultTy, "value", slotNames, 0, "    ", uses);
   sb.append("    taskReturn").append(pascalName(witName)).append("(");
   for (var k = 0; k < slotNames.length; k += 1) {

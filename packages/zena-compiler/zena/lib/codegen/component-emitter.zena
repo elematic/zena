@@ -339,9 +339,21 @@ export final class ComponentExportFunc {
    * `task.return` that returns for it.
    */
   var needsMemoryLift = false;
+  /**
+   * The qualified name of the exported interface this function belongs
+   * to (`wasi:http/handler@0.3.0`), or empty for a world-level export.
+   * Exports of one interface are grouped into a component instance
+   * exported under that name; the declared world assigns it.
+   */
+  var instanceName = "";
 
   new(this.coreName, this.exportName, this.signature,
       this.callbackCoreName = "");
+
+  /** The key `EncodedImports.exportTypeIndices` files this export under. */
+  typeKey(): String {
+    return this.instanceName + "#" + this.exportName;
+  }
 
   /** Whether lifting this export needs a memory and a `realloc`. */
   needsMemory(): boolean {
@@ -1240,7 +1252,7 @@ export let emitComponent = (
   let exportTypes = new ByteBuffer();
   var declaredExportTypes = 0;
   for (let e in shape.exports) {
-    if (let (true, index) = encoded.exportTypeIndices.get(e.exportName)) {
+    if (let (true, index) = encoded.exportTypeIndices.get(e.typeKey())) {
       exportTypeIndex.push(index);
       continue;
     }
@@ -1295,19 +1307,64 @@ export let emitComponent = (
   }
   writeSection(out, ComponentSectionId.Canon as i32, lifts);
 
-  // --- export --------------------------------------------------------------
+  // --- instance + export ----------------------------------------------------
   // Component function indices: the aliased imports come first, then the
-  // lifted exports.
+  // lifted exports. A world-level export is exported as the function
+  // itself. The functions of an exported interface are gathered into a
+  // component instance exported under the interface's name, so the host
+  // finds `handle` inside `wasi:http/handler@0.3.0`; the instances take
+  // the indices after the imported ones.
   var firstExportFunc = 0;
   for (let group in groups) {
     firstExportFunc += group.funcs.length;
   }
+  let instanceNames = new GrowableArray<String>();
+  for (let e in shape.exports) {
+    if (e.instanceName == "") { continue; }
+    var seen = false;
+    for (let name in instanceNames) {
+      if (name == e.instanceName) { seen = true; }
+    }
+    if (!seen) { instanceNames.push(e.instanceName); }
+  }
+  if (instanceNames.length > 0) {
+    let instances = new ByteBuffer();
+    instances.writeULEB128(instanceNames.length);
+    for (let name in instanceNames) {
+      instances.writeByte(0x01); // an instance from inline exports
+      var count = 0;
+      for (let e in shape.exports) {
+        if (e.instanceName == name) { count += 1; }
+      }
+      instances.writeULEB128(count);
+      for (var i = 0; i < shape.exports.length; i += 1) {
+        let e = shape.exports[i];
+        if (e.instanceName != name) { continue; }
+        writeExternName(instances, e.exportName);
+        instances.writeByte(0x01); // sort: func
+        instances.writeULEB128(firstExportFunc + i);
+      }
+    }
+    writeSection(out, ComponentSectionId.Instance as i32, instances);
+  }
   let exports = new ByteBuffer();
-  exports.writeULEB128(shape.exports.length);
+  var exportCount = instanceNames.length;
+  for (let e in shape.exports) {
+    if (e.instanceName == "") { exportCount += 1; }
+  }
+  exports.writeULEB128(exportCount);
   for (var i = 0; i < shape.exports.length; i += 1) {
-    writeExternName(exports, shape.exports[i].exportName);
+    let e = shape.exports[i];
+    if (e.instanceName != "") { continue; }
+    writeExternName(exports, e.exportName);
     exports.writeByte(0x01); // sort: func
     exports.writeULEB128(firstExportFunc + i);
+    exports.writeByte(0x00); // no ascribed type
+  }
+  for (var k = 0; k < instanceNames.length; k += 1) {
+    writeExternName(exports, instanceNames[k]);
+    exports.writeByte(0x05); // sort: instance
+    exports.writeULEB128(encoded.instanceCount + k);
     exports.writeByte(0x00); // no ascribed type
   }
   writeSection(out, ComponentSectionId.Export as i32, exports);

@@ -401,6 +401,38 @@ export let tests = suite('Component emission', (): void => {
       "count's typed return canon entry is missing");
   });
 
+  test('an exported interface\'s async function wraps with its used types',
+      (ctx: TestContext): void => {
+    // The wasi:http service world exports the `handler` interface,
+    // whose `handle` takes the types interface's `request` and returns
+    // its `response` or `error-code`. The wrapper lifts the request
+    // handle into the synthesized `Request` class, imported from the
+    // types module, and declares its return at the WIT's result under
+    // the exporting interface, whose `use`s the encoder follows.
+    let wit = readFile(`${fixtures}/http-service.wit`);
+    let http = readFile('packages/stdlib/wit/http.wit');
+    let entry = `${fixtures}/http-service.zena`;
+    let wrapperOpt = synthesizeExportWrapper(wit, 'http-service', entry,
+        parse(readFile(entry), entry), http);
+    isTrue(wrapperOpt != null, 'the http service world gets no wrapper');
+    let source = (wrapperOpt as ComponentEntryWrapper).source;
+    isTrue(source.contains('@external("canon", "task.return#handle", ' +
+        '"return:wasi:http/handler@0.3.0#result<response, error-code>")'),
+      'the typed return is not declared under the exporting interface:\n' +
+      source);
+    isTrue(source.contains('export function handle_export(a0: i32): void {'),
+      'the export wrapper is missing:\n' + source);
+    isTrue(source.contains('let v0 = new Request(a0);'),
+      'the request handle is not lifted into its class:\n' + source);
+    isTrue(source.contains('finishTask<Outcome<Response, ErrorCode>>(' +
+        'handle(v0), (value: Outcome<Response, ErrorCode>): void => {'),
+      'the wrapper does not hand the driver the future:\n' + source);
+    isTrue(source.contains(" } from 'wasi:http/types';"),
+      'the used types are not imported from the types module:\n' + source);
+    isTrue(source.contains('.[rawHandle]();'),
+      'the response handle is not lowered out of its class:\n' + source);
+  });
+
   test('a component with no imports carries no import machinery', (ctx: TestContext): void => {
     // No instance type, no import, no lowering, no synthesized instance
     // — just the module, its instantiation, and the lifted export. This
