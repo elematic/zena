@@ -2148,6 +2148,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 let resolvedIfaceStr = i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32) + "." + setterName;
                 this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
               }
+            } else if (resolvedObj is ClassType) {
+              let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
+              let setterName = "set#" + propName;
+              let acc = this.pass.cha.findImplementingAccessor(resolvedObj, setterName);
+              if (acc != null) {
+                let targetModel = this.pass.getClassModel(resolvedObj);
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), resolvedObj, this.pass.currentReachable));
+              }
             }
           }
         } else if (n.left is IndexExpression) {

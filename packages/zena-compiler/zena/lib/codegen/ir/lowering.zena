@@ -1145,13 +1145,13 @@ export final class FunctionLowerer {
       }
       params = new GrowableArray<Parameter>();
       bodyNode = node.getter as Node;
-      paramOffset = 1;
+      paramOffset = if (this.func.isStatic) 0 else 1;
     } else if (node is SetterInfo) {
       // Written setter body: `this` plus the single value parameter
       // (a bare Identifier, bound manually after the entry params).
       params = new GrowableArray<Parameter>();
       bodyNode = node.body;
-      paramOffset = 1;
+      paramOffset = if (this.func.isStatic) 0 else 1;
       setterParamIdent = node.param;
     } else {
       let fExpr = node as FunctionExpression;
@@ -5339,6 +5339,34 @@ export final class FunctionLowerer {
     let ct = eraseTypeParameters(this.wasm, selfR) as ClassType;
     let propName = getMemberPropertyName(
         member.isSymbolAccess, member.property.name);
+    var setter: WasmFunction | null = null;
+    var currClass: ClassType | null = ct;
+    while (currClass != null && setter == null) {
+      let key = getClassMethodKey(
+          getClassKey(currClass), 'set#' + propName);
+      if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+        if (f.isStatic) {
+          setter = f;
+        }
+      }
+      currClass = currClass.superType;
+    }
+    if (setter != null) {
+      let sig = setter.signature;
+      if (sig.params.length != 1 || sig.returns.length != 0) {
+        this.#bail('static setter shape');
+      }
+      var value = -1;
+      if (assign.operator == null) {
+        value = this.#lowerExpressionCtx(assign.value, sig.params[0]);
+      } else {
+        let current = this.#lowerStaticMemberRead(member, ct);
+        value = this.#combineCompound(current, assign, member as Expression);
+      }
+      this.b.callFunc(this.b.addRef(new IrRefFunc(setter)),
+          this.#oneArg(value), null);
+      return value;
+    }
     let g = this.#staticFieldGlobal(ct, propName);
     if (g == null) {
       this.#bail('static member not found');

@@ -3441,7 +3441,7 @@ export final class Parser {
         typeAnnotation = this.#parseTypeAnnotation();
       }
       if (typeAnnotation != null && this.#check(TokenType.LBrace)) {
-        return this.#parseAccessorBlock(hashName, typeAnnotation, isFinal, decorators, startToken);
+        return this.#parseAccessorBlock(hashName, typeAnnotation, isFinal, isStatic, decorators, startToken);
       }
       var value: Expression | null = null;
       if (this.#match(TokenType.Equals)) {
@@ -3451,7 +3451,7 @@ export final class Parser {
         throw this.#error("Private field must have a type annotation or initializer");
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, false, false, mutability, decorators, null, this.#makeLocation(startToken));
+      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isStatic, false, mutability, decorators, null, this.#makeLocation(startToken));
     }
     
     // Static symbol declaration: static symbol name;
@@ -3488,7 +3488,7 @@ export final class Parser {
       
       // Check for accessor block
       if (this.#check(TokenType.LBrace)) {
-        return this.#parseAccessorBlock(symPropName, symTypeAnnotation, isFinal, decorators, startToken);
+        return this.#parseAccessorBlock(symPropName, symTypeAnnotation, isFinal, isStatic, decorators, startToken);
       }
       
       var symFieldValue: Expression | null = null;
@@ -3496,7 +3496,7 @@ export final class Parser {
         symFieldValue = this.#parseExpression();
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(symPropName, symTypeAnnotation, symFieldValue, isFinal, false, false, false, mutability, decorators, null, this.#makeLocation(startToken));
+      return new FieldDefinition(symPropName, symTypeAnnotation, symFieldValue, isFinal, false, isStatic, false, mutability, decorators, null, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();
@@ -3544,7 +3544,7 @@ export final class Parser {
     
     // Check for accessor block
     if (typeAnnotation != null && this.#check(TokenType.LBrace)) {
-      return this.#parseAccessorBlock(name, typeAnnotation, isFinal, decorators, startToken);
+      return this.#parseAccessorBlock(name, typeAnnotation, isFinal, isStatic, decorators, startToken);
     }
     
     var fieldValue: Expression | null = null;
@@ -3593,7 +3593,7 @@ export final class Parser {
     return result;
   }
   
-  #parseAccessorBlock(name: Node, typeAnnotation: TypeAnnotation, isFinal: boolean, decorators: GrowableArray<Decorator>, startToken: Token): AccessorDeclaration {
+  #parseAccessorBlock(name: Node, typeAnnotation: TypeAnnotation, isFinal: boolean, isStatic: boolean, decorators: GrowableArray<Decorator>, startToken: Token): AccessorDeclaration {
     this.#consume(TokenType.LBrace, "Expected '{' for accessor block");
     
     var getter: BlockStatement | null = null;
@@ -3631,7 +3631,7 @@ export final class Parser {
     }
     
     this.#consume(TokenType.RBrace, "Expected '}' after accessor block");
-    return new AccessorDeclaration(name, typeAnnotation, getter, setter, isFinal, false, decorators, this.#makeLocation(startToken));
+    return new AccessorDeclaration(name, typeAnnotation, getter, setter, isFinal, isStatic, decorators, this.#makeLocation(startToken));
   }
   
   #parseMethodBody(name: Node, typeParameters: GrowableArray<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isDeclare: boolean, isStatic: boolean, isGenerator: boolean, isAsync: boolean, decorators: GrowableArray<Decorator>, startToken: Token): MethodDefinition {

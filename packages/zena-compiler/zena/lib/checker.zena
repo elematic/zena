@@ -10600,6 +10600,33 @@ let collectApplicableOperatorOverloads = (
   }
 };
 
+let isStaticReceiver = (ctx: CheckerContext, object: Expression): boolean => {
+  if (object is Identifier) {
+    let sym = ctx.model.resolve(object);
+    if (sym != null) {
+      if (sym.declaration is ClassDeclaration) {
+        return true;
+      } else if (sym.declaration is ImportSpecifier) {
+        let spec = sym.declaration as ImportSpecifier;
+        let importedName = spec.imported.name;
+        let deps = ctx.depExports;
+        if (deps != null) {
+          for (let specifier in deps.keys()) {
+            if (let (true, depMod) = deps.get(specifier)) {
+              if (let (true, exp) = depMod.get(importedName)) {
+                if (exp.isType()) {
+                  return true;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
+};
+
 let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
@@ -10862,11 +10889,28 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let objectType = checkExpression(ctx, object, null);
         match (objectType) {
           case ClassType as ct: {
+            let isStatic = isStaticReceiver(ctx, object);
             // Check if it's a field
             if (ct.members.has(propName)) {
               let m = ct.members[propName];
               match (m) {
                 case FieldInfo as fi: {
+                  if (isStatic && !fi.isStatic) {
+                    ctx.error(
+                      "Cannot access instance member '" + propName + "' on class '" + ct.name + "'.",
+                      DiagnosticCode.InvalidAssignment,
+                      loc
+                    );
+                    return new ErrorType();
+                  }
+                  if (!isStatic && fi.isStatic) {
+                    ctx.error(
+                      "Cannot access static member '" + propName + "' on an instance of '" + ct.name + "'.",
+                      DiagnosticCode.InvalidAssignment,
+                      loc
+                    );
+                    return new ErrorType();
+                  }
                   if (!fi.isMutable) {
                     ctx.error(
                       "Cannot assign to read-only property '" + propName + "'.",
@@ -10879,7 +10923,30 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
                 case _: {
                   // Check for setter method (set#propName)
                   let setterName = "set#" + propName;
-                  if (!ct.members.has(setterName)) {
+                  if (ct.members.has(setterName)) {
+                    let setterInfo = ct.members[setterName];
+                    match (setterInfo) {
+                      case MethodInfo as mi: {
+                        if (isStatic && !mi.isStatic) {
+                          ctx.error(
+                            "Cannot access instance member '" + propName + "' on class '" + ct.name + "'.",
+                            DiagnosticCode.InvalidAssignment,
+                            loc
+                          );
+                          return new ErrorType();
+                        }
+                        if (!isStatic && mi.isStatic) {
+                          ctx.error(
+                            "Cannot access static member '" + propName + "' on an instance of '" + ct.name + "'.",
+                            DiagnosticCode.InvalidAssignment,
+                            loc
+                          );
+                          return new ErrorType();
+                        }
+                      }
+                      case _: {}
+                    }
+                  } else {
                     // Check if there's a getter only (read-only property)
                     let getterName = "get#" + propName;
                     if (ct.members.has(getterName)) {
@@ -10896,7 +10963,30 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             } else {
               // Check for setter method (set#propName)
               let setterName = "set#" + propName;
-              if (!ct.members.has(setterName)) {
+              if (ct.members.has(setterName)) {
+                let setterInfo = ct.members[setterName];
+                match (setterInfo) {
+                  case MethodInfo as mi: {
+                    if (isStatic && !mi.isStatic) {
+                      ctx.error(
+                        "Cannot access instance member '" + propName + "' on class '" + ct.name + "'.",
+                        DiagnosticCode.InvalidAssignment,
+                        loc
+                      );
+                      return new ErrorType();
+                    }
+                    if (!isStatic && mi.isStatic) {
+                      ctx.error(
+                        "Cannot access static member '" + propName + "' on an instance of '" + ct.name + "'.",
+                        DiagnosticCode.InvalidAssignment,
+                        loc
+                      );
+                      return new ErrorType();
+                    }
+                  }
+                  case _: {}
+                }
+              } else {
                 // Check if there's a getter only (read-only property)
                 let getterName = "get#" + propName;
                 if (ct.members.has(getterName)) {
@@ -15939,32 +16029,7 @@ let checkMemberExpression = (
     }
   }
 
-  var isStatic = false;
-  if (object is Identifier) {
-    let sym = ctx.model.resolve(object);
-    if (sym != null) {
-      if (sym.declaration is ClassDeclaration) {
-        isStatic = true;
-      } else if (sym.declaration is ImportSpecifier) {
-        let spec = sym.declaration as ImportSpecifier;
-        let importedName = spec.imported.name;
-        let deps = ctx.depExports;
-        if (deps != null) {
-          var foundType = false;
-          for (let specifier in deps.keys()) {
-            if (let (true, depMod) = deps.get(specifier)) {
-              if (let (true, exp) = depMod.get(importedName)) {
-                if (exp.isType()) {
-                  foundType = true;
-                }
-              }
-            }
-          }
-          isStatic = foundType;
-        }
-      }
-    }
-  }
+  let isStatic = isStaticReceiver(ctx, object);
   ctx.model.setStaticAccess(expr, isStatic);
 
   let propName = getMemberPropertyName(isSymbolAccess, property.name);
@@ -16089,7 +16154,7 @@ let checkMemberExpression = (
   }
 
   let ownerRead = ctx.owningReceiver && object is ThisExpression;
-  let resultType = resolveMemberType(ctx, receiverType, propName, loc, ownerRead);
+  let resultType = resolveMemberType(ctx, receiverType, propName, loc, ownerRead, isStatic);
   if (ownerRead && typeCarriesOwner(resultType)) {
     // The read kept its owner type for move-out; a read after the
     // field was moved is the path use-after-move.
@@ -16144,7 +16209,8 @@ let resolveMemberType = (
   objectType: Type,
   propName: String,
   loc: SourceLocation | null,
-  ownerRead: boolean
+  ownerRead: boolean,
+  isStaticAccess: boolean = false
 ): Type => {
   // Member access forwards through the ownership handles. `Own<R>`,
   // `Borrow<R>` and `Unmanaged<R>` carry no members of their own — they
@@ -16155,7 +16221,7 @@ let resolveMemberType = (
   let handleInner = ownershipHandleInner(objectType);
   if (handleInner != null) {
     rejectConsumingThroughNonOwner(ctx, objectType, handleInner, propName, loc);
-    return resolveMemberType(ctx, handleInner, propName, loc, ownerRead);
+    return resolveMemberType(ctx, handleInner, propName, loc, ownerRead, isStaticAccess);
   }
 
   match (objectType) {
@@ -16207,7 +16273,24 @@ let resolveMemberType = (
       }
       // Check fields first.
       if (ct.members.has(propName) && ct.members[propName] is FieldInfo) {
-        let fieldType = ct.members[propName].type;
+        let fi = ct.members[propName] as FieldInfo;
+        if (isStaticAccess && !fi.isStatic) {
+          ctx.error(
+            "Cannot access instance member '" + propName + "' on class '" + ct.name + "'.",
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
+        if (!isStaticAccess && fi.isStatic) {
+          ctx.error(
+            "Cannot access static member '" + propName + "' on an instance of '" + ct.name + "'.",
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
+        let fieldType = fi.type;
         // Substitute type parameters if this is an instantiated generic class.
         let subField = substituteTypeParams(ct.typeParameters, ct.typeArguments, fieldType);
         let resolved = substituteThisType(ct as Type, subField);
@@ -16222,17 +16305,54 @@ let resolveMemberType = (
       }
       // Check methods.
       if (ct.members.has(propName) && ct.members[propName] is MethodInfo) {
-        let methodInfo = ct.members[propName];
+        let methodInfo = ct.members[propName] as MethodInfo;
+        if (isStaticAccess && !methodInfo.isStatic) {
+          ctx.error(
+            "Cannot access instance member '" + propName + "' on class '" + ct.name + "'.",
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
+        if (!isStaticAccess && methodInfo.isStatic) {
+          ctx.error(
+            "Cannot access static member '" + propName + "' on an instance of '" + ct.name + "'.",
+            DiagnosticCode.PropertyNotFound,
+            loc
+          );
+          return new ErrorType();
+        }
         let subMethod = substituteTypeParams(ct.typeParameters, ct.typeArguments, methodInfo.type);
         return substituteThisType(ct as Type, subMethod);
       }
       // Check for getter method (get#propName)
       let getterName = "get#" + propName;
       if (ct.members.has(getterName)) {
-        let getterInfo = ct.members[getterName];
-        // Return the return type of the getter
-        let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
-        return substituteThisType(ct as Type, subGetter);
+        let getterMember = ct.members[getterName];
+        match (getterMember) {
+          case MethodInfo as getterInfo: {
+            if (isStaticAccess && !getterInfo.isStatic) {
+              ctx.error(
+                "Cannot access instance member '" + propName + "' on class '" + ct.name + "'.",
+                DiagnosticCode.PropertyNotFound,
+                loc
+              );
+              return new ErrorType();
+            }
+            if (!isStaticAccess && getterInfo.isStatic) {
+              ctx.error(
+                "Cannot access static member '" + propName + "' on an instance of '" + ct.name + "'.",
+                DiagnosticCode.PropertyNotFound,
+                loc
+              );
+              return new ErrorType();
+            }
+            // Return the return type of the getter
+            let subGetter = substituteTypeParams(ct.typeParameters, ct.typeArguments, (getterInfo.type as FunctionType).returnType);
+            return substituteThisType(ct as Type, subGetter);
+          }
+          case _: {}
+        }
       }
       ctx.error(
         "Property '" + propName + "' does not exist on type '" + ct.name + "'.",
@@ -16355,7 +16475,7 @@ let resolveMemberType = (
     }
     case TypeParameterType {name as tname, constraint}: {
       if (constraint != null) {
-        return resolveMemberType(ctx, constraint, propName, loc, ownerRead);
+        return resolveMemberType(ctx, constraint, propName, loc, ownerRead, isStaticAccess);
       }
       ctx.error(
         "Property '" + propName + "' does not exist on type '" + tname + "'.",
@@ -16365,7 +16485,7 @@ let resolveMemberType = (
       return new ErrorType();
     }
     case TypeAliasType as tat: {
-      return resolveMemberType(ctx, tat.target, propName, loc, ownerRead);
+      return resolveMemberType(ctx, tat.target, propName, loc, ownerRead, isStaticAccess);
     }
     case ErrorType: { return new ErrorType(); }
     case _: {
