@@ -83,7 +83,7 @@ const primitiveTypes = new Set([
 ]);
 
 export interface ZenaState {
-  inBlockComment: number;
+  inBlockComment: boolean;
   stringType: string | null;
   templateDepth: number;
 }
@@ -98,27 +98,23 @@ export const zenaLanguage = StreamLanguage.define<ZenaState>({
   },
   startState(): ZenaState {
     return {
-      inBlockComment: 0,
+      inBlockComment: false,
       stringType: null,
       templateDepth: 0,
     };
   },
   token(stream, state) {
     // 1. Block comment handling
-    if (state.inBlockComment > 0) {
+    if (state.inBlockComment) {
       if (stream.match('*/')) {
-        state.inBlockComment--;
-        return 'comment';
-      }
-      if (stream.match('/*')) {
-        state.inBlockComment++;
+        state.inBlockComment = false;
         return 'comment';
       }
       stream.next();
       return 'comment';
     }
     if (stream.match('/*')) {
-      state.inBlockComment = 1;
+      state.inBlockComment = true;
       return 'comment';
     }
     if (stream.match('//')) {
