@@ -475,6 +475,38 @@ export final class String implements Hashable {
   }
 
   /**
+   * Compares this string with `other` in lexicographical code point order.
+   *
+   * Returns:
+   * - `< 0` if `this < other`
+   * - `0` if `this == other`
+   * - `> 0` if `this > other`
+   *
+   * In UTF-8, lexicographical byte comparison matches Unicode code point order.
+   */
+  compareTo(other: String): i32 {
+    if (this === other) {
+      return 0;
+    }
+    let thisLen = this.#end - this.#start;
+    let otherLen = other.#end - other.#start;
+    let minLen = if (thisLen < otherLen) thisLen else otherLen;
+    let thisData = this.#data;
+    let otherData = other.#data;
+    let thisStart = this.#start;
+    let otherStart = other.#start;
+
+    for (var i = 0; i < minLen; i += 1) {
+      let b1 = __byte_array_get(thisData, thisStart + i);
+      let b2 = __byte_array_get(otherData, otherStart + i);
+      if (b1 != b2) {
+        return b1 - b2;
+      }
+    }
+    return thisLen - otherLen;
+  }
+
+  /**
    * FNV-1a hash of the string's bytes, cached in #hashCode after the first
    * computation. Delegates to the compiler's shared string hash helper
    * (generateStringHashFunction), which reads and updates the cache field.

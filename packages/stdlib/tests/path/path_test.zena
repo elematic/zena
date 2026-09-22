@@ -1,0 +1,439 @@
+// Tests for zena:path module
+import {suite, test, TestContext} from 'zena:test';
+import {equal, notEqual, isTrue, isFalse, isNull, isNotNull, throws} from 'zena:assert';
+import {
+  separator, delimiter, isAbsolute, split, normalize,
+  dirname, basename, extname, withExtension, join, join2,
+  stripPrefix, relative, Path, AbsolutePath, RelativePath,
+  PathSegment, FilePath, DirectoryPath
+} from 'zena:path';
+
+export let tests = suite('Path', (): void => {
+  test('constants', (ctx: TestContext): void => {
+    equal(separator, '/');
+    equal(delimiter, ':');
+  });
+
+  test('isAbsolute', (ctx: TestContext): void => {
+    isTrue(isAbsolute('/'));
+    isTrue(isAbsolute('/a/b/c'));
+    isTrue(isAbsolute('/foo'));
+    isFalse(isAbsolute(''));
+    isFalse(isAbsolute('foo'));
+    isFalse(isAbsolute('foo/bar'));
+    isFalse(isAbsolute('./foo'));
+    isFalse(isAbsolute('../foo'));
+  });
+
+  test('split', (ctx: TestContext): void => {
+    let parts1 = split('/a/b/c');
+    equal(parts1.length, 3);
+    equal(parts1[0].value, 'a');
+    equal(parts1[1].value, 'b');
+    equal(parts1[2].value, 'c');
+
+    let parts2 = split('foo//bar/baz/');
+    equal(parts2.length, 3);
+    equal(parts2[0].value, 'foo');
+    equal(parts2[1].value, 'bar');
+    equal(parts2[2].value, 'baz');
+
+    let parts3 = split('/');
+    equal(parts3.length, 0);
+
+    let parts4 = split('');
+    equal(parts4.length, 0);
+  });
+
+  test('normalize', (ctx: TestContext): void => {
+    equal(normalize(''), '.');
+    equal(normalize('.'), '.');
+    equal(normalize('/'), '/');
+    equal(normalize('///'), '/');
+    equal(normalize('/a/b/../c/./d'), '/a/c/d');
+    equal(normalize('/a/b/../../..'), '/');
+    equal(normalize('a//b/./c'), 'a/b/c');
+    equal(normalize('a/b/..'), 'a');
+    equal(normalize('a/b/../..'), '.');
+    equal(normalize('../../a/b'), '../../a/b');
+    equal(normalize('a/../../b'), '../b');
+    equal(normalize('/a/./b/../c'), '/a/c');
+  });
+
+  test('dirname', (ctx: TestContext): void => {
+    equal(dirname('/a/b/c'), '/a/b');
+    equal(dirname('/a/b'), '/a');
+    equal(dirname('/a'), '/');
+    equal(dirname('/'), '/');
+    equal(dirname('///'), '/');
+    equal(dirname('a/b'), 'a');
+    equal(dirname('a/b/c'), 'a/b');
+    equal(dirname('a'), '.');
+    equal(dirname(''), '.');
+    equal(dirname('/a/b/'), '/a');
+    equal(dirname('a/b/'), 'a');
+    equal(dirname('/a//b'), '/a');
+  });
+
+  test('basename', (ctx: TestContext): void => {
+    equal(basename('/a/b/c.zena'), 'c.zena');
+    equal(basename('/a/b/c.zena', '.zena'), 'c');
+    equal(basename('/a/b/c.zena', 'zena'), 'c.');
+    equal(basename('/a/b/'), 'b');
+    equal(basename('/a/b///'), 'b');
+    equal(basename('/'), '/');
+    equal(basename('///'), '/');
+    equal(basename(''), '');
+    equal(basename('c.zena'), 'c.zena');
+    equal(basename('c.zena', '.zena'), 'c');
+    equal(basename('.zena', '.zena'), '.zena');
+  });
+
+  test('extname', (ctx: TestContext): void => {
+    equal(extname('foo.zena'), '.zena');
+    equal(extname('foo.bar.zena'), '.zena');
+    equal(extname('/path/to/file.ext'), '.ext');
+    equal(extname('foo'), '');
+    equal(extname('foo.'), '.');
+    equal(extname('.gitignore'), '');
+    equal(extname('.foo.bar'), '.bar');
+    equal(extname('/a/b.c/d'), '');
+    equal(extname('/a/b.c/d.zena'), '.zena');
+    equal(extname(''), '');
+    equal(extname('.'), '');
+    equal(extname('..'), '');
+  });
+
+  test('withExtension', (ctx: TestContext): void => {
+    equal(withExtension('main.wasm', 'cwasm'), 'main.cwasm');
+    equal(withExtension('main.wasm', '.cwasm'), 'main.cwasm');
+    equal(withExtension('main.wasm', ''), 'main');
+    equal(withExtension('main', '.wasm'), 'main.wasm');
+    equal(withExtension('main', 'wasm'), 'main.wasm');
+    equal(withExtension('src/lib/foo.bar.zena', '.ts'), 'src/lib/foo.bar.ts');
+  });
+
+  test('join2', (ctx: TestContext): void => {
+    equal(join2('a', 'b'), 'a/b');
+    equal(join2('/a', 'b'), '/a/b');
+    equal(join2('a', '/b'), '/b');
+    equal(join2('', 'b'), 'b');
+    equal(join2('a', ''), 'a');
+    equal(join2('a/b', '../c'), 'a/c');
+  });
+
+  test('join', (ctx: TestContext): void => {
+    let arr1 = new GrowableArray<String>();
+    arr1.push('a');
+    arr1.push('b');
+    arr1.push('c');
+    equal(join(arr1), 'a/b/c');
+
+    let arr2 = new GrowableArray<String>();
+    arr2.push('/a');
+    arr2.push('b');
+    arr2.push('..');
+    arr2.push('c');
+    equal(join(arr2), '/a/c');
+
+    let arr3 = new GrowableArray<String>();
+    arr3.push('a');
+    arr3.push('/b');
+    arr3.push('c');
+    equal(join(arr3), '/b/c');
+  });
+
+  test('stripPrefix', (ctx: TestContext): void => {
+    let s1 = stripPrefix('/a/b/c', '/a/b');
+    isNotNull(s1);
+    equal(s1 as String, 'c');
+
+    let s2 = stripPrefix('/a/b/c', '/a/b/');
+    isNotNull(s2);
+    equal(s2 as String, 'c');
+
+    let s3 = stripPrefix('/a/bc', '/a/b');
+    isNull(s3);
+
+    let s4 = stripPrefix('/a/b', '/a/b');
+    isNotNull(s4);
+    equal(s4 as String, '');
+
+    let s5 = stripPrefix('foo/bar/baz', 'foo');
+    isNotNull(s5);
+    equal(s5 as String, 'bar/baz');
+  });
+
+  test('relative', (ctx: TestContext): void => {
+    equal(relative('/a/b', '/a/b/c/d'), 'c/d');
+    equal(relative('/a/b/c', '/a/b'), '..');
+    equal(relative('/a/b/c', '/a/d/e'), '../../d/e');
+    equal(relative('/a/b', '/a/b'), '.');
+    equal(relative('a/b', 'a/b/c'), 'c');
+    equal(relative('a/b/c', 'a/b'), '..');
+  });
+
+  test('Path class', (ctx: TestContext): void => {
+    let p = new Path('/a/b/c.txt');
+    isTrue(p.isAbsolute);
+    equal(p.value, '/a/b/c.txt');
+    equal(p.toString(), '/a/b/c.txt');
+    equal(p.length, 10);
+    equal(p.basename(), 'c.txt');
+    equal(p.basename('.txt'), 'c');
+    equal(p.extname(), '.txt');
+
+    let dir = p.dirname();
+    equal(dir.value, '/a/b');
+    equal(p.parent().value, '/a/b');
+
+    let unnorm = new Path('/a/b/../c/./d');
+    equal(unnorm.normalize().value, '/a/c/d');
+
+    let parts = p.split();
+    equal(parts.length, 3);
+    equal(parts[0].value, 'a');
+    equal(parts[1].value, 'b');
+    equal(parts[2].value, 'c.txt');
+
+    let joined = dir.join(new RelativePath('extra'));
+    equal(joined.value, '/a/b/extra');
+
+    let rel = new Path('/a/b').relative(new Path('/a/b/c/d'));
+    equal(rel.value, 'c/d');
+
+    let stripped = p.stripPrefix(new Path('/a/b'));
+    isNotNull(stripped);
+    if (stripped != null) {
+      equal(stripped.value, 'c.txt');
+    }
+
+    let fp = p.toFilePath();
+    equal(fp.value, '/a/b/c.txt');
+
+    let dp = p.toDirectoryPath();
+    equal(dp.value, '/a/b/c.txt');
+  });
+
+  test('AbsolutePath class', (ctx: TestContext): void => {
+    let abs = new AbsolutePath('/a/b/c.txt');
+    isTrue(abs.isAbsolute);
+    equal(abs.value, '/a/b/c.txt');
+    equal(abs.toString(), '/a/b/c.txt');
+    equal(abs.length, 10);
+    equal(abs.basename(), 'c.txt');
+    equal(abs.basename('.txt'), 'c');
+    equal(abs.extname(), '.txt');
+
+    // dirname and parent return AbsolutePath
+    let parentDir: AbsolutePath = abs.dirname();
+    equal(parentDir.value, '/a/b');
+    equal(abs.parent().value, '/a/b');
+
+    // join with RelativePath returns AbsolutePath
+    let child: AbsolutePath = parentDir.join(new RelativePath('d/e'));
+    equal(child.value, '/a/b/d/e');
+
+    // join with PathSegment returns AbsolutePath
+    let seg = new PathSegment('file.txt');
+    let joinedSeg: AbsolutePath = parentDir.join(seg);
+    equal(joinedSeg.value, '/a/b/file.txt');
+
+    // normalize preserves AbsolutePath type
+    let unnorm = new AbsolutePath('/a/b/../c/./d');
+    let norm: AbsolutePath = unnorm.normalize();
+    equal(norm.value, '/a/c/d');
+
+    // withExtension and withoutExtension preserve AbsolutePath type
+    let withExt: AbsolutePath = abs.withExtension('.md');
+    equal(withExt.value, '/a/b/c.md');
+    let noExt: AbsolutePath = abs.withoutExtension();
+    equal(noExt.value, '/a/b/c');
+
+    // toAbsolutePath is identity
+    let sameAbs: AbsolutePath = abs.toAbsolutePath();
+    equal(sameAbs.value, abs.value);
+
+    // Constructor validation throws on relative path
+    throws((): void => {
+      new AbsolutePath('relative/path');
+    });
+  });
+
+  test('RelativePath class', (ctx: TestContext): void => {
+    let rel = new RelativePath('a/b/c.txt');
+    isFalse(rel.isAbsolute);
+    equal(rel.value, 'a/b/c.txt');
+    equal(rel.toString(), 'a/b/c.txt');
+    equal(rel.length, 9);
+    equal(rel.basename(), 'c.txt');
+    equal(rel.extname(), '.txt');
+
+    // dirname and parent return RelativePath
+    let parentDir: RelativePath = rel.dirname();
+    equal(parentDir.value, 'a/b');
+    equal(rel.parent().value, 'a/b');
+
+    // join with RelativePath returns RelativePath
+    let child: RelativePath = parentDir.join(new RelativePath('d/e'));
+    equal(child.value, 'a/b/d/e');
+
+    // join with PathSegment returns RelativePath
+    let seg = new PathSegment('file.txt');
+    let joinedSeg: RelativePath = parentDir.join(seg);
+    equal(joinedSeg.value, 'a/b/file.txt');
+
+    // normalize preserves RelativePath type
+    let unnorm = new RelativePath('a/b/../c/./d');
+    let norm: RelativePath = unnorm.normalize();
+    equal(norm.value, 'a/c/d');
+
+    // withExtension and withoutExtension preserve RelativePath type
+    let withExt: RelativePath = rel.withExtension('.md');
+    equal(withExt.value, 'a/b/c.md');
+    let noExt: RelativePath = rel.withoutExtension();
+    equal(noExt.value, 'a/b/c');
+
+    // toRelativePath is identity
+    let sameRel: RelativePath = rel.toRelativePath();
+    equal(sameRel.value, rel.value);
+
+    // Constructor validation throws on absolute path
+    throws((): void => {
+      new RelativePath('/absolute/path');
+    });
+  });
+
+  test('PathSegment class', (ctx: TestContext): void => {
+    let seg = new PathSegment('documents');
+    isFalse(seg.isAbsolute);
+    equal(seg.value, 'documents');
+    equal(seg.toString(), 'documents');
+    equal(seg.length, 9);
+    equal(seg.basename(), 'documents');
+
+    // PathSegment.split() returns [this] without multi-segment split
+    let parts: FixedArray<PathSegment> = seg.split();
+    equal(parts.length, 1);
+    equal(parts[0].value, 'documents');
+
+    // PathSegment is a RelativePath
+    let rel: RelativePath = seg;
+    equal(rel.value, 'documents');
+
+    // Constructor validation: rejects empty string
+    throws((): void => {
+      new PathSegment('');
+    });
+
+    // Constructor validation: rejects string containing '/'
+    throws((): void => {
+      new PathSegment('a/b');
+    });
+  });
+
+  test('relative() and stripPrefix() return RelativePath', (ctx: TestContext): void => {
+    let p1 = new AbsolutePath('/a/b');
+    let p2 = new AbsolutePath('/a/b/c/d');
+    let rel: RelativePath = p1.relative(p2);
+    equal(rel.value, 'c/d');
+
+    let joined: AbsolutePath = p1.join(rel);
+    equal(joined.value, '/a/b/c/d');
+
+    let stripped: RelativePath | null = p2.stripPrefix(p1);
+    isNotNull(stripped);
+    if (stripped != null) {
+      equal(stripped.value, 'c/d');
+    }
+  });
+
+  test('toAbsolutePath and toRelativePath conversion', (ctx: TestContext): void => {
+    let pAbs = new Path('/x/y/z');
+    let abs: AbsolutePath = pAbs.toAbsolutePath();
+    equal(abs.value, '/x/y/z');
+
+    let pRel = new Path('x/y/z');
+    let rel: RelativePath = pRel.toRelativePath();
+    equal(rel.value, 'x/y/z');
+
+    // Conversion throws if precondition violated
+    throws((): void => {
+      pAbs.toRelativePath();
+    });
+
+    throws((): void => {
+      pRel.toAbsolutePath();
+    });
+  });
+
+  test('FilePath class', (ctx: TestContext): void => {
+    let fp = new FilePath('/src/lib/main.wasm');
+    equal(fp.extension, '.wasm');
+    equal(fp.basename(), 'main.wasm');
+    equal(fp.parent().value, '/src/lib');
+
+    let changed = fp.withExtension('.cwasm');
+    equal(changed.value, '/src/lib/main.cwasm');
+    equal(changed.extension, '.cwasm');
+
+    let noExt = fp.withoutExtension();
+    equal(noExt.value, '/src/lib/main');
+    equal(noExt.extension, '');
+
+    let norm = new FilePath('/a/b/../file.txt').normalize();
+    equal(norm.value, '/a/file.txt');
+  });
+
+  test('DirectoryPath class', (ctx: TestContext): void => {
+    let dp = new DirectoryPath('/home/user');
+    isTrue(dp.isAbsolute);
+    equal(dp.parent().value, '/home');
+
+    let joined = dp.join('docs');
+    equal(joined.value, '/home/user/docs');
+
+    let file = dp.file('notes.txt');
+    equal(file.value, '/home/user/notes.txt');
+    equal(file.extension, '.txt');
+
+    let subDir = dp.directory('projects');
+    equal(subDir.value, '/home/user/projects');
+
+    let subDir2 = dp.dir('music');
+    equal(subDir2.value, '/home/user/music');
+
+    let norm = new DirectoryPath('/a/b/../c/').normalize();
+    equal(norm.value, '/a/c');
+  });
+
+  test('Path subtyping', (ctx: TestContext): void => {
+    let describePath = (p: Path): String => {
+      return p.value;
+    };
+
+    let abs = new AbsolutePath('/root/dir');
+    let rel = new RelativePath('local/dir');
+    let seg = new PathSegment('file.txt');
+    let fp = new FilePath('/file.txt');
+    let dp = new DirectoryPath('/dir');
+
+    // AbsolutePath, RelativePath, PathSegment, FilePath, DirectoryPath can all be passed where Path is expected
+    equal(describePath(abs), '/root/dir');
+    equal(describePath(rel), 'local/dir');
+    equal(describePath(seg), 'file.txt');
+    equal(describePath(fp), '/file.txt');
+    equal(describePath(dp), '/dir');
+
+    // PathSegment can be passed where RelativePath is expected
+    let describeRel = (r: RelativePath): String => r.value;
+    equal(describeRel(seg), 'file.txt');
+    equal(describeRel(rel), 'local/dir');
+
+    let p1: Path = fp;
+    let p2: Path = dp;
+    equal(p1.basename(), 'file.txt');
+    equal(p2.basename(), 'dir');
+  });
+});
+

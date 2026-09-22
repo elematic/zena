@@ -1,0 +1,675 @@
+/**
+ * Path Standard Library - Path manipulation and parsing utilities.
+ *
+ * Provides cross-platform path operations for manipulating filesystem paths,
+ * both via standalone functions on raw strings and through a strongly-typed
+ * hierarchy of zero-overhead extension classes on String.
+ *
+ * All operations operate on forward-slash ('/') delimited paths as standard
+ * in WebAssembly and POSIX environments.
+ *
+ * ### Strongly-Typed Path Hierarchy
+ *
+ * - `Path`: Base extension class on String providing common path methods
+ *   (`normalize`, `dirname`, `parent`, `basename`, `extname`, `withExtension`,
+ *   `withoutExtension`, `split`, `relative`, `stripPrefix`, `join`).
+ * - `AbsolutePath`: Validated absolute path (must start with '/'). Joining a
+ *   `RelativePath` onto an `AbsolutePath` statically yields an `AbsolutePath`.
+ * - `RelativePath`: Validated relative path (must not start with '/').
+ * - `PathSegment`: Validated single-component relative path (non-empty, no
+ *   '/').
+ *   Its `split()` returns an array containing only itself.
+ * - `FilePath` / `DirectoryPath`: Extension classes specializing file and
+ *   directory path semantics.
+ *
+ * Operations that preserve rootedness (`normalize`, `withExtension`,
+ * `withoutExtension`) return `this`, maintaining the caller's static type.
+ * Relative computations (`relative`, `stripPrefix`) statically return
+ *  `RelativePath`.
+ *
+ * ### Function-Based Operations
+ *
+ * Top-level utility functions are also provided for direct string manipulation:
+ * `isAbsolute`, `split`, `normalize`, `dirname`, `basename`, `extname`,
+ * `withExtension`, `join`, `join2`, `relative`, and `stripPrefix`.
+ */
+import { FixedArray, GrowableArray, StringBuilder, StringReader } from 'zena:core';
+
+/** The path segment separator ('/'). */
+export let separator: String = '/';
+
+/** The platform path list delimiter (':' in POSIX/WASI). */
+export let delimiter: String = ':';
+
+/**
+ * Returns true if `path` is an absolute path (starts with '/').
+ */
+export let isAbsolute = (path: String): boolean => {
+  return path.length > 0 && path.getByteAt(0) == 47;
+};
+
+/**
+ * Splits `path` by the separator into non-empty segments using a two-pass
+ * approach that returns a fixed-size array of PathSegments.
+ *
+ * @example
+ * ```zena
+ * split('/foo/bar/baz') // ['foo', 'bar', 'baz']
+ * split('a//b')         // ['a', 'b']
+ * ```
+ */
+export let split = (path: String): FixedArray<PathSegment> => {
+  if (path.length == 0) {
+    return new FixedArray<PathSegment>(0, new PathSegment.unchecked(''));
+  }
+
+  let reader = new StringReader(path);
+
+  // Pass 1: count non-empty segments
+  var count = 0;
+  var segStart = 0;
+  while (!reader.isAtEnd) {
+    let pos = reader.position;
+    if (reader.advanceByte() == 47) {
+      if (pos > segStart) {
+        count += 1;
+      }
+      segStart = pos + 1;
+    }
+  }
+  if (segStart < path.length) {
+    count += 1;
+  }
+
+  if (count == 0) {
+    return new FixedArray<PathSegment>(0, new PathSegment.unchecked(''));
+  }
+
+  // Pass 2: populate segments
+  let parts = new FixedArray<PathSegment>(count, new PathSegment.unchecked(''));
+  reader.reset(0);
+  var idx = 0;
+  segStart = 0;
+  while (!reader.isAtEnd) {
+    let pos = reader.position;
+    if (reader.advanceByte() == 47) {
+      if (pos > segStart) {
+        parts[idx] = new PathSegment.unchecked(path.sliceBytes(segStart, pos));
+        idx += 1;
+      }
+      segStart = pos + 1;
+    }
+  }
+  if (segStart < path.length) {
+    parts[idx] = new PathSegment.unchecked(path.sliceBytes(segStart, path.length));
+  }
+
+  return parts;
+};
+
+/**
+ * Normalizes `path`, resolving '.' and '..' segments and collapsing
+ * multiple consecutive slashes.
+ *
+ * Leading '/' is preserved for absolute paths. Leading '..' segments
+ * are preserved for relative paths that navigate above their starting point.
+ *
+ * @example
+ * ```zena
+ * normalize('/a/b/../c/./d') // '/a/c/d'
+ * normalize('a//b/./c')      // 'a/b/c'
+ * normalize('')              // '.'
+ * ```
+ */
+export let normalize = (path: String): String => {
+  if (path.length == 0) {
+    return '.';
+  }
+
+  let isAbs = isAbsolute(path);
+  let segments = new GrowableArray<String>();
+  let reader = new StringReader(path);
+  var segStart = 0;
+
+  while (!reader.isAtEnd) {
+    let pos = reader.position;
+    if (reader.advanceByte() == 47) {
+      if (pos > segStart) {
+        let seg = path.sliceBytes(segStart, pos);
+        if (seg == '..') {
+          if (segments.length > 0 && segments[segments.length - 1] != '..') {
+            segments.pop();
+          } else if (!isAbs) {
+            segments.push(seg);
+          }
+        } else if (seg != '.') {
+          segments.push(seg);
+        }
+      }
+      segStart = pos + 1;
+    }
+  }
+
+  if (segStart < path.length) {
+    let seg = path.sliceBytes(segStart, path.length);
+    if (seg == '..') {
+      if (segments.length > 0 && segments[segments.length - 1] != '..') {
+        segments.pop();
+      } else if (!isAbs) {
+        segments.push(seg);
+      }
+    } else if (seg != '.') {
+      segments.push(seg);
+    }
+  }
+
+  if (segments.length == 0) {
+    return if (isAbs) '/' else '.';
+  }
+
+  let sb = new StringBuilder();
+  if (isAbs) {
+    sb.append('/');
+  }
+  for (var j = 0; j < segments.length; j += 1) {
+    if (j > 0) {
+      sb.append('/');
+    }
+    sb.append(segments[j]);
+  }
+  return sb.toString();
+};
+
+/**
+ * Returns the directory name of `path`, similar to POSIX dirname.
+ * Trailing slashes are ignored.
+ *
+ * @example
+ * ```zena
+ * dirname('/a/b/c') // '/a/b'
+ * dirname('/a')     // '/'
+ * dirname('a/b')    // 'a'
+ * dirname('a')      // '.'
+ * dirname('/')      // '/'
+ * ```
+ */
+export let dirname = (path: String): String => {
+  if (path.length == 0) {
+    return '.';
+  }
+
+  // Strip trailing slashes
+  var end = path.length - 1;
+  for (; end > 0 && path.getByteAt(end) == 47; end -= 1) {}
+  if (end == 0 && path.getByteAt(0) == 47) {
+    return '/';
+  }
+
+  // Find the last separator before `end`
+  var i = end;
+  for (; i >= 0 && path.getByteAt(i) != 47; i -= 1) {}
+  if (i < 0) {
+    return '.';
+  }
+
+  // Strip redundant slashes before the separator
+  for (; i > 0 && path.getByteAt(i - 1) == 47; i -= 1) {}
+  return if (i == 0) '/' else path.sliceBytes(0, i);
+};
+
+/**
+ * Returns the last component of `path`, similar to POSIX basename.
+ * If `suffix` is provided and the basename ends with `suffix` (and is longer
+ * than `suffix`), the suffix is removed.
+ *
+ * @example
+ * ```zena
+ * basename('/a/b/c.zena')         // 'c.zena'
+ * basename('/a/b/c.zena', '.zena') // 'c'
+ * basename('/a/b/')                // 'b'
+ * basename('/')                    // '/'
+ * ```
+ */
+export let basename = (path: String, suffix: String = ''): String => {
+  if (path.length == 0) {
+    return '';
+  }
+
+  var end = path.length - 1;
+  for (; end > 0 && path.getByteAt(end) == 47; end -= 1) {}
+  if (end == 0 && path.getByteAt(0) == 47) {
+    return '/';
+  }
+
+  var i = end;
+  for (; i >= 0 && path.getByteAt(i) != 47; i -= 1) {}
+  let base = path.sliceBytes(i + 1, end + 1);
+  if (suffix.length > 0 && base.endsWith(suffix) && base.length > suffix.length) {
+    return base.sliceBytes(0, base.length - suffix.length);
+  }
+  return base;
+};
+
+/**
+ * Returns the extension of `path` from the last '.' to the end of the
+ * filename. Returns an empty string if there is no '.' or if the '.' is the
+ * first character of the filename (e.g. '.gitignore').
+ *
+ * @example
+ * ```zena
+ * extname('foo.zena')     // '.zena'
+ * extname('foo.bar.zena') // '.zena'
+ * extname('foo')          // ''
+ * extname('.gitignore')   // ''
+ * extname('foo.')         // '.'
+ * ```
+ */
+export let extname = (path: String): String => {
+  let base = basename(path);
+  if (base.length == 0 || base == '.' || base == '..') {
+    return '';
+  }
+
+  var dotIndex = 0 - 1;
+  for (var i = base.length - 1; i >= 0; i -= 1) {
+    if (base.getByteAt(i) == 46) { // 46 = '.'
+      dotIndex = i;
+      break;
+    }
+  }
+
+  if (dotIndex <= 0) {
+    return '';
+  }
+  return base.sliceBytes(dotIndex, base.length);
+};
+
+/**
+ * Replaces or appends the extension of `path`.
+ * If `newExt` does not start with '.', one is automatically added
+ * (unless `newExt` is empty, in which case the extension is removed).
+ *
+ * @example
+ * ```zena
+ * withExtension('main.wasm', 'cwasm')  // 'main.cwasm'
+ * withExtension('main.wasm', '.cwasm') // 'main.cwasm'
+ * withExtension('main.wasm', '')       // 'main'
+ * withExtension('main', '.wasm')       // 'main.wasm'
+ * ```
+ */
+export let withExtension = (path: String, newExt: String): String => {
+  let ext = extname(path);
+  let prefix = if (ext.length > 0) {
+    path.sliceBytes(0, path.length - ext.length)
+  } else {
+    path
+  };
+  let extToAdd = if (newExt.length > 0 && !newExt.startsWith('.')) {
+    `.${newExt}`
+  } else {
+    newExt
+  };
+  return `${prefix}${extToAdd}`;
+};
+
+/**
+ * Joins two path segments and normalizes the result.
+ * If `b` is an absolute path, it replaces `a`.
+ */
+export let join2 = (a: String, b: String): String => {
+  if (a.length == 0) {
+    return normalize(b);
+  }
+  if (b.length == 0) {
+    return normalize(a);
+  }
+  if (isAbsolute(b)) {
+    return normalize(b);
+  }
+  return normalize(`${a}/${b}`);
+};
+
+/**
+ * Joins all given path segments together and normalizes the resulting path.
+ * If any segment is absolute, preceding segments are ignored.
+ */
+export let join = (parts: Array<String>): String => {
+  let sb = new StringBuilder();
+  for (let part in parts) {
+    if (part.length > 0) {
+      if (isAbsolute(part)) {
+        sb.clear();
+        sb.append(part);
+      } else if (sb.length == 0) {
+        sb.append(part);
+      } else {
+        sb.append('/');
+        sb.append(part);
+      }
+    }
+  }
+  return normalize(sb.toString());
+};
+
+/**
+ * Strips `prefix` from `path` if `path` begins with `prefix` at a directory boundary.
+ * Returns the remainder (without leading slash), or null if `prefix` does not match.
+ *
+ * @example
+ * ```zena
+ * stripPrefix('/a/b/c', '/a/b')  // 'c'
+ * stripPrefix('/a/b/c', '/a/b/') // 'c'
+ * stripPrefix('/a/bc', '/a/b')   // null
+ * stripPrefix('/a/b', '/a/b')    // ''
+ * ```
+ */
+export let stripPrefix = (path: String, prefix: String): String | null => {
+  let pNorm = normalize(path);
+  let prefNorm = normalize(prefix);
+  if (pNorm == prefNorm) {
+    return '';
+  }
+  let prefWithSlash = if (prefNorm.endsWith('/')) prefNorm else `${prefNorm}/`;
+  if (pNorm.startsWith(prefWithSlash)) {
+    return pNorm.sliceBytes(prefWithSlash.length, pNorm.length);
+  }
+  return null;
+};
+
+/**
+ * Computes the relative path from `from` to `to`.
+ * If both paths resolve to the same location, returns '.'.
+ *
+ * @example
+ * ```zena
+ * relative('/a/b', '/a/b/c/d') // 'c/d'
+ * relative('/a/b/c', '/a/b')    // '..'
+ * relative('/a/b/c', '/a/d/e')  // '../../d/e'
+ * ```
+ */
+export let relative = (from: String, to: String): String => {
+  let fromNorm = normalize(from);
+  let toNorm = normalize(to);
+
+  if (fromNorm == toNorm) {
+    return '.';
+  }
+
+  let fromIsAbs = isAbsolute(fromNorm);
+  let toIsAbs = isAbsolute(toNorm);
+
+  if (fromIsAbs != toIsAbs) {
+    return toNorm;
+  }
+
+  let fromParts = split(fromNorm);
+  let toParts = split(toNorm);
+
+  var common = 0;
+  for (; common < fromParts.length && common < toParts.length; common += 1) {
+    if (fromParts[common].value != toParts[common].value) {
+      break;
+    }
+  }
+
+  let upCount = fromParts.length - common;
+  let downCount = toParts.length - common;
+  if (upCount == 0 && downCount == 0) {
+    return '.';
+  }
+
+  let sb = new StringBuilder();
+  for (var i = 0; i < upCount; i += 1) {
+    if (i > 0) {
+      sb.append('/');
+    }
+    sb.append('..');
+  }
+
+  for (var j = common; j < toParts.length; j += 1) {
+    if (sb.length > 0) {
+      sb.append('/');
+    }
+    sb.append(toParts[j].value);
+  }
+
+  return sb.toString();
+};
+
+/**
+ * A strongly-typed representation of a filesystem path.
+ *
+ * Implemented as an extension class on String, carrying zero runtime allocation
+ * overhead while providing type safety and convenient path methods.
+ */
+export extension class Path on String {
+  new(value: String) : super(value);
+
+  /** The underlying string value of this path. */
+  value: String {
+    get {
+      return this as String;
+    }
+  }
+
+  /** Length of the path in bytes. */
+  length: i32 {
+    get {
+      return (this as String).length;
+    }
+  }
+
+  /** True if this path is absolute (starts with '/'). */
+  isAbsolute: boolean {
+    get {
+      return isAbsolute(this as String);
+    }
+  }
+
+  /** Returns a normalized copy of this path, preserving its concrete type. */
+  normalize(): this {
+    return normalize(this as String) as this;
+  }
+
+  /** Returns the directory portion of this path. */
+  dirname(): Path {
+    return new Path(dirname(this as String));
+  }
+
+  /** Alias for dirname(). */
+  parent(): Path {
+    return (this as Path).dirname();
+  }
+
+  /** Returns the last component of this path. */
+  basename(suffix: String = ''): String {
+    return basename(this as String, suffix);
+  }
+
+  /** Returns the file extension, or '' if none. */
+  extname(): String {
+    return extname(this as String);
+  }
+
+  /** Returns a copy with the extension replaced or appended, preserving concrete type. */
+  withExtension(newExt: String): this {
+    return withExtension(this as String, newExt) as this;
+  }
+
+  /** Returns a copy with the extension removed, preserving concrete type. */
+  withoutExtension(): this {
+    return withExtension(this as String, '') as this;
+  }
+
+  /** Joins a relative path to this path. */
+  join(rel: RelativePath): Path {
+    return new Path(join2(this as String, rel as String));
+  }
+
+  /** Splits this path into non-empty segments. */
+  split(): FixedArray<PathSegment> {
+    return split(this as String);
+  }
+
+  /** Computes the relative path from this path to `to`. */
+  relative(to: Path): RelativePath {
+    return new RelativePath.unchecked(relative(this as String, to as String));
+  }
+
+  /** Strips `prefix` from this path if it begins with `prefix`. */
+  stripPrefix(prefix: Path): RelativePath | null {
+    let result = stripPrefix(this as String, prefix as String);
+    if (result != null) {
+      return new RelativePath.unchecked(result as String);
+    }
+    return null;
+  }
+
+  /** Converts this path to an AbsolutePath, throwing if not absolute. */
+  toAbsolutePath(): AbsolutePath {
+    return new AbsolutePath(this as String);
+  }
+
+  /** Converts this path to a RelativePath, throwing if absolute. */
+  toRelativePath(): RelativePath {
+    return new RelativePath(this as String);
+  }
+
+  /** Converts this path to a FilePath. */
+  toFilePath(): FilePath {
+    return new FilePath(this as String);
+  }
+
+  /** Converts this path to a DirectoryPath. */
+  toDirectoryPath(): DirectoryPath {
+    return new DirectoryPath(this as String);
+  }
+
+  /** Returns the underlying string. */
+  toString(): String {
+    return this as String;
+  }
+}
+
+/**
+ * An absolute filesystem path (starts with '/').
+ */
+export extension class AbsolutePath extends Path {
+  new(value: String) : super(value) {
+    if (!isAbsolute(value)) {
+      throw new Error(`Expected absolute path starting with '/', got '${value}'`);
+    }
+  }
+
+  new unchecked(value: String) : super(value);
+
+  /** Joins a relative path to this absolute path, producing an AbsolutePath. */
+  join(rel: RelativePath): AbsolutePath {
+    return new AbsolutePath.unchecked(join2(this as String, rel as String));
+  }
+
+  /** Returns the directory portion of this path as an AbsolutePath. */
+  dirname(): AbsolutePath {
+    return new AbsolutePath.unchecked(dirname(this as String));
+  }
+
+  /** Alias for dirname(). */
+  parent(): AbsolutePath {
+    return (this as AbsolutePath).dirname();
+  }
+
+  toAbsolutePath(): AbsolutePath {
+    return this;
+  }
+}
+
+/**
+ * A relative filesystem path (does not start with '/').
+ */
+export extension class RelativePath extends Path {
+  new(value: String) : super(value) {
+    if (isAbsolute(value)) {
+      throw new Error(`Expected relative path not starting with '/', got '${value}'`);
+    }
+  }
+
+  new unchecked(value: String) : super(value);
+
+  /** Joins a relative path to this relative path, producing a RelativePath. */
+  join(rel: RelativePath): RelativePath {
+    return new RelativePath.unchecked(join2(this as String, rel as String));
+  }
+
+  /** Returns the directory portion of this path as a RelativePath. */
+  dirname(): RelativePath {
+    return new RelativePath.unchecked(dirname(this as String));
+  }
+
+  /** Alias for dirname(). */
+  parent(): RelativePath {
+    return (this as RelativePath).dirname();
+  }
+
+  toRelativePath(): RelativePath {
+    return this;
+  }
+}
+
+/**
+ * A single path segment (non-empty, contains no '/').
+ */
+export extension class PathSegment extends RelativePath {
+  new(value: String) : super(value) {
+    if (value.length == 0 || value.contains('/')) {
+      throw new Error(`Invalid path segment: '${value}' contains '/' or is empty`);
+    }
+  }
+
+  new unchecked(value: String) : super(value);
+
+  /** A single segment splits into an array containing only itself. */
+  split(): FixedArray<PathSegment> {
+    return [this as PathSegment];
+  }
+}
+
+/**
+ * A strongly-typed filesystem path representing a file.
+ */
+export extension class FilePath extends Path {
+  new(value: String) : super(value);
+
+  /** The file extension (including leading dot), or '' if none. */
+  extension: String {
+    get {
+      return extname(this as String);
+    }
+  }
+}
+
+/**
+ * A strongly-typed filesystem path representing a directory.
+ */
+export extension class DirectoryPath extends Path {
+  new(value: String) : super(value);
+
+  /** Joins a child path segment to this directory. */
+  join(segment: String): Path {
+    return new Path(join2(this as String, segment));
+  }
+
+  /** Joins a file name to this directory, returning a FilePath. */
+  file(name: String): FilePath {
+    return new FilePath(join2(this as String, name));
+  }
+
+  /** Joins a child directory name to this directory, returning a DirectoryPath. */
+  dir(name: String): DirectoryPath {
+    return new DirectoryPath(join2(this as String, name));
+  }
+
+  /** Joins a child directory name to this directory, returning a DirectoryPath. */
+  directory(name: String): DirectoryPath {
+    return new DirectoryPath(join2(this as String, name));
+  }
+}

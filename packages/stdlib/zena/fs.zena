@@ -29,6 +29,7 @@
 
 import { newByteArray, Encoding } from 'zena:core';
 import { Memory, defaultAllocator } from 'zena:memory';
+import { GlobPattern, hasMagic } from './glob.zena';
 
 // ============================================================================
 // Error Types
@@ -1077,3 +1078,191 @@ export let rmdir = (path: String): void => {
   let (dirFd, relPath) = __resolvePreopen(path);
   dirFd.rmdirAt(relPath);
 };
+
+// ============================================================================
+// Filesystem Globbing
+// ============================================================================
+
+/**
+ * Options for directory globbing.
+ */
+export class GlobOptions {
+  var cwd: String = ".";
+  var onlyFiles: boolean = true;
+  var exclude = new GrowableArray<String>();
+}
+
+/**
+ * Sorts an array of strings in-place using insertion sort.
+ *
+ * Insertion sort maintains a sorted prefix `arr[0..i-1]`. For each element
+ * `arr[i]`, preceding elements greater than it are shifted one position to the
+ * right until the insertion point is found.
+ *
+ * ### Performance Characteristics:
+ * - **Time Complexity**: $O(n^2)$ worst/average case; $O(n)$ best case when
+ *   already or nearly sorted (common for filesystem directory listings).
+ * - **Space Complexity**: $O(1)$ auxiliary memory (in-place).
+ * - **Stability**: Stable (preserves original order for equal elements).
+ * - **Pairwise Comparisons**: Each distinct pair of strings `(arr[a], arr[b])`
+ *   is compared at most once during the sort.
+ *
+ * ### Note on String Comparison Overhead & Alternatives:
+ * While pairwise string comparisons are not repeated, byte-wise comparisons start
+ * at index 0 on every call to `compareTo`. For file paths sharing long common
+ * prefixes (e.g. `packages/stdlib/...`), this rescans identical prefix bytes.
+ * If glob result sets grow large, a string-specialized algorithm such as
+ * **Multikey Quicksort (three-way radix quicksort)** or **MSD Radix Sort** would
+ * eliminate this by tracking character depth during partitioning so that shared
+ * prefix characters are never re-compared.
+ */
+let __sortStrings = (arr: GrowableArray<String>): void => {
+  for (var i = 1; i < arr.length; i += 1) {
+    let cur = arr[i];
+    var j = i - 1;
+    for (; j >= 0 && arr[j].compareTo(cur) > 0; j -= 1) {
+      arr[j + 1] = arr[j];
+    }
+    arr[j + 1] = cur;
+  }
+};
+
+let __getBaseDir = (pattern: String): String => {
+  var lastSlash = 0 - 1;
+  for (var i = 0; i < pattern.length; i += 1) {
+    let b = pattern.getByteAt(i);
+    if (b == 42 || b == 63 || b == 91) { // magic char
+      break;
+    }
+    if (b == 47) { // '/'
+      lastSlash = i;
+    }
+  }
+  if (lastSlash < 0) {
+    return ".";
+  }
+  if (lastSlash == 0) {
+    return "/";
+  }
+  return pattern.sliceBytes(0, lastSlash);
+};
+
+let __scanDir = (
+  currentDir: String,
+  relPrefix: String,
+  globPattern: GlobPattern,
+  excludePatterns: GrowableArray<GlobPattern>,
+  onlyFiles: boolean,
+  results: GrowableArray<String>
+): void => {
+  let entries = try {
+    listDir(currentDir)
+  } catch (e) {
+    return;
+  };
+
+  for (let entry in entries) {
+    if (entry.name == "." || entry.name == "..") {
+      continue;
+    }
+
+    let relPath = if (relPrefix.length == 0 || relPrefix == ".") {
+      entry.name
+    } else {
+      relPrefix + "/" + entry.name
+    };
+
+    let fullPath = if (currentDir == ".") {
+      entry.name
+    } else {
+      currentDir + "/" + entry.name
+    };
+
+    // Check exclusion
+    var excluded = false;
+    for (var ex = 0; ex < excludePatterns.length; ex += 1) {
+      if (excludePatterns[ex].matches(relPath) || excludePatterns[ex].matches(fullPath)) {
+        excluded = true;
+        break;
+      }
+    }
+
+    if (excluded) {
+      continue;
+    }
+
+    let isDir = entry.fileType == FileType.Directory;
+
+    if (globPattern.matches(relPath)) {
+      if (!onlyFiles || !isDir) {
+        results.push(relPath);
+      }
+    }
+
+    if (isDir) {
+      __scanDir(fullPath, relPath, globPattern, excludePatterns, onlyFiles, results);
+    }
+  }
+};
+
+/**
+ * Searches the filesystem for files and directories matching `pattern`.
+ *
+ * @param pattern The glob pattern (e.g. 'tests/path/*_test.zena')
+ * @param options Optional configuration for root directory, file filtering, and excludes
+ * @returns Array of matching relative paths, sorted deterministically
+ */
+export let glob = (
+  pattern: String,
+  options: GlobOptions | null = null
+): Array<String> => {
+  let opts = if (options != null) {
+    options as GlobOptions
+  } else {
+    new GlobOptions()
+  };
+
+  let results = new GrowableArray<String>();
+  let excludePatterns = new GrowableArray<GlobPattern>();
+  for (var ex = 0; ex < opts.exclude.length; ex += 1) {
+    excludePatterns.push(new GlobPattern(opts.exclude[ex]));
+  }
+
+  if (!hasMagic(pattern)) {
+    let target = if (opts.cwd == ".") {
+      pattern
+    } else {
+      opts.cwd + "/" + pattern
+    };
+    if (exists(target)) {
+      var excluded = false;
+      for (var ex = 0; ex < excludePatterns.length; ex += 1) {
+        if (excludePatterns[ex].matches(pattern)) {
+          excluded = true;
+          break;
+        }
+      }
+      if (!excluded) {
+        results.push(pattern);
+      }
+    }
+    return results;
+  }
+
+  let baseDir = __getBaseDir(pattern);
+  let scanRoot = if (opts.cwd == ".") {
+    baseDir
+  } else if (baseDir == ".") {
+    opts.cwd
+  } else {
+    opts.cwd + "/" + baseDir
+  };
+
+  let relPrefix = if (baseDir == ".") "" else baseDir;
+  let globPattern = new GlobPattern(pattern);
+
+  __scanDir(scanRoot, relPrefix, globPattern, excludePatterns, opts.onlyFiles, results);
+  __sortStrings(results);
+  return results;
+};
+

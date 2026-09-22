@@ -9,6 +9,7 @@ import { suite, test, TestContext } from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {
   readFile, writeFile, exists, isFile, isDirectory, unlink, getPreopens,
+  glob, GlobOptions
 } from 'zena:fs';
 
 export let tests = suite('Filesystem', (): void => {
@@ -69,6 +70,28 @@ export let tests = suite('Filesystem', (): void => {
     equal(read, content);
     
     unlink(testPath);
+  });
+
+  test('glob filesystem search', (ctx: TestContext): void => {
+    let found = glob('packages/stdlib/tests/path/*_test.zena');
+    isTrue(found.length > 0);
+    equal(found[0], 'packages/stdlib/tests/path/path_test.zena');
+
+    // Test with cwd option
+    let cwdOpts = new GlobOptions();
+    cwdOpts.cwd = 'packages/stdlib';
+    let foundCwd = glob('tests/path/*_test.zena', cwdOpts);
+    isTrue(foundCwd.length > 0);
+    equal(foundCwd[0], 'tests/path/path_test.zena');
+
+    // Test with exclude
+    let opts = new GlobOptions();
+    opts.cwd = 'packages/stdlib';
+    let excludes = new GrowableArray<String>();
+    excludes.push('**/path_test.zena');
+    opts.exclude = excludes;
+    let excluded = glob('tests/path/*_test.zena', opts);
+    equal(excluded.length, 0);
   });
 });
 

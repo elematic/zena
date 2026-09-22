@@ -1,0 +1,131 @@
+/**
+ * Glob Standard Library - Pattern matching and regex translation.
+ *
+ * Provides glob pattern compilation, string matching, and regex generation.
+ * Supports standard glob wildcards:
+ * - `*` matches any characters within a path segment (not crossing '/')
+ * - `**` matches across directory boundaries (zero or more directories)
+ * - `?` matches any single non-separator character
+ * - `[abc]` and `[a-z]` match character classes and ranges
+ * - `[!abc]` matches inverted character classes
+ *
+ * For filesystem search with glob patterns, see `zena:fs.glob()`.
+ */
+
+import { Regex } from 'zena:regex';
+import { StringBuilder } from 'zena:core';
+
+// ============================================================================
+// Pattern Inspection & Translation
+// ============================================================================
+
+/**
+ * Returns true if `pattern` contains any glob wildcard characters ('*', '?', '[').
+ */
+export let hasMagic = (pattern: String): boolean => {
+  for (var i = 0; i < pattern.length; i += 1) {
+    let b = pattern.getByteAt(i);
+    if (b == 42 || b == 63 || b == 91) { // '*', '?', '['
+      return true;
+    }
+  }
+  return false;
+};
+
+/**
+ * Translates a glob pattern to an anchored regular expression string.
+ */
+export let globToRegex = (pattern: String): String => {
+  let sb = new StringBuilder();
+  sb.appendByte(94); // '^'
+  var i = 0;
+
+  while (i < pattern.length) {
+    let b = pattern.getByteAt(i);
+
+    if (b == 42) { // '*'
+      if (i + 1 < pattern.length && pattern.getByteAt(i + 1) == 42) { // '**'
+        i += 2;
+        if (i < pattern.length && pattern.getByteAt(i) == 47) { // '/**/'
+          i += 1;
+          sb.append('(?:.*/)?');
+        } else {
+          sb.append('.*');
+        }
+      } else {
+        sb.append('[^/]*');
+        i += 1;
+      }
+    } else if (b == 63) { // '?'
+      sb.append('[^/]');
+      i += 1;
+    } else if (b == 91) { // '['
+      sb.appendByte(91);
+      i += 1;
+      if (i < pattern.length && pattern.getByteAt(i) == 33) { // '[!' -> '[^'
+        sb.appendByte(94); // '^'
+        i += 1;
+      }
+      while (i < pattern.length && pattern.getByteAt(i) != 93) { // ']'
+        let cb = pattern.getByteAt(i);
+        if (cb == 92) { // escape in bracket
+          sb.appendByte(92);
+          i += 1;
+          if (i < pattern.length) {
+            sb.appendByte(pattern.getByteAt(i));
+          }
+        } else {
+          sb.appendByte(cb);
+        }
+        i += 1;
+      }
+      if (i < pattern.length && pattern.getByteAt(i) == 93) {
+        sb.appendByte(93);
+        i += 1;
+      }
+    } else if (b == 46 || b == 43 || b == 40 || b == 41 || b == 123 || b == 125 ||
+               b == 124 || b == 94 || b == 36 || b == 92) {
+      // Escape regex metacharacters: . + ( ) { } | ^ $ \
+      sb.appendByte(92);
+      sb.appendByte(b);
+      i += 1;
+    } else {
+      sb.appendByte(b);
+      i += 1;
+    }
+  }
+
+  sb.appendByte(36); // '$'
+  return sb.toString();
+};
+
+// ============================================================================
+// GlobPattern Class
+// ============================================================================
+
+/**
+ * A compiled glob pattern for efficient repeated matching against paths.
+ */
+export class GlobPattern {
+  pattern: String;
+  #regex: Regex;
+
+  new(pattern: String)
+    : pattern = pattern,
+      #regex = new Regex(globToRegex(pattern));
+
+  /**
+   * Returns true if `path` matches this glob pattern.
+   */
+  matches(path: String): boolean {
+    return this.#regex.test(path);
+  }
+}
+
+/**
+ * Tests if `path` matches `pattern`.
+ */
+export let matchGlob = (pattern: String, path: String): boolean => {
+  let gp = new GlobPattern(pattern);
+  return gp.matches(path);
+};

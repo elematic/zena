@@ -1,0 +1,72 @@
+// Tests for zena:glob module
+import {suite, test, TestContext} from 'zena:test';
+import {equal, notEqual, isTrue, isFalse, greater} from 'zena:assert';
+import {hasMagic, globToRegex, GlobPattern, matchGlob} from 'zena:glob';
+
+export let tests = suite('Glob', (): void => {
+  test('hasMagic', (ctx: TestContext): void => {
+    isTrue(hasMagic('*.zena'));
+    isTrue(hasMagic('tests/**/*.zena'));
+    isTrue(hasMagic('test_?.zena'));
+    isTrue(hasMagic('file[0-9].txt'));
+    isFalse(hasMagic('foo/bar/baz.zena'));
+    isFalse(hasMagic('plain_filename.txt'));
+    isFalse(hasMagic(''));
+  });
+
+  test('single star wildcard (*)', (ctx: TestContext): void => {
+    let pat = new GlobPattern('*.zena');
+    isTrue(pat.matches('foo.zena'));
+    isTrue(pat.matches('test_runner.zena'));
+    isFalse(pat.matches('foo.txt'));
+    isFalse(pat.matches('dir/foo.zena'));
+
+    let dirPat = new GlobPattern('src/*.zena');
+    isTrue(dirPat.matches('src/main.zena'));
+    isFalse(dirPat.matches('src/sub/main.zena'));
+    isFalse(dirPat.matches('other/main.zena'));
+  });
+
+  test('double star wildcard (**)', (ctx: TestContext): void => {
+    let pat = new GlobPattern('**/*.zena');
+    isTrue(pat.matches('foo.zena'));
+    isTrue(pat.matches('src/foo.zena'));
+    isTrue(pat.matches('a/b/c/foo.zena'));
+    isFalse(pat.matches('foo.txt'));
+    isFalse(pat.matches('a/b/c/foo.txt'));
+
+    let prefixPat = new GlobPattern('tests/**');
+    isTrue(prefixPat.matches('tests/foo'));
+    isTrue(prefixPat.matches('tests/a/b/c'));
+    isFalse(prefixPat.matches('other/a/b/c'));
+  });
+
+  test('question mark wildcard (?)', (ctx: TestContext): void => {
+    let pat = new GlobPattern('file?.txt');
+    isTrue(pat.matches('file1.txt'));
+    isTrue(pat.matches('fileA.txt'));
+    isFalse(pat.matches('file12.txt'));
+    isFalse(pat.matches('file.txt'));
+    isFalse(pat.matches('file/.txt'));
+  });
+
+  test('character class ([...])', (ctx: TestContext): void => {
+    let pat = new GlobPattern('file[0-9].txt');
+    isTrue(pat.matches('file0.txt'));
+    isTrue(pat.matches('file5.txt'));
+    isTrue(pat.matches('file9.txt'));
+    isFalse(pat.matches('fileA.txt'));
+
+    let negPat = new GlobPattern('file[!0-9].txt');
+    isTrue(negPat.matches('fileA.txt'));
+    isFalse(negPat.matches('file0.txt'));
+  });
+
+  test('matchGlob helper', (ctx: TestContext): void => {
+    isTrue(matchGlob('*.wasm', 'out.wasm'));
+    isFalse(matchGlob('*.wasm', 'out.wat'));
+    isTrue(matchGlob('foo/**/bar', 'foo/bar'));
+    isTrue(matchGlob('foo/**/bar', 'foo/sub/bar'));
+    isTrue(matchGlob('foo/**/bar', 'foo/a/b/c/bar'));
+  });
+});

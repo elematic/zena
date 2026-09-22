@@ -1,5 +1,5 @@
 import { suite, test } from 'zena:test';
-import {equal} from 'zena:assert';
+import {equal, isTrue} from 'zena:assert';
 
 export let tests = suite('String', () => {
   test('toBytes and fromBytes round-trip the stored bytes', () => {
@@ -174,6 +174,39 @@ export let tests = suite('String', () => {
       equal(parts[0], "a");
       equal(parts[1], "b");
       equal(parts[2], "c");
+    });
+  });
+
+  suite('compareTo', () => {
+    test('returns 0 for equal strings', () => {
+      let s = "hello";
+      equal(s.compareTo(s), 0);
+      equal("hello".compareTo("hello"), 0);
+      equal("".compareTo(""), 0);
+    });
+
+    test('returns negative when this < other', () => {
+      isTrue("a".compareTo("b") < 0);
+      isTrue("apple".compareTo("banana") < 0);
+      isTrue("abc".compareTo("abd") < 0);
+      isTrue("".compareTo("a") < 0);
+    });
+
+    test('returns positive when this > other', () => {
+      isTrue("b".compareTo("a") > 0);
+      isTrue("banana".compareTo("apple") > 0);
+      isTrue("abd".compareTo("abc") > 0);
+      isTrue("a".compareTo("") > 0);
+    });
+
+    test('orders prefixes before longer strings', () => {
+      isTrue("abc".compareTo("abcd") < 0);
+      isTrue("abcd".compareTo("abc") > 0);
+    });
+
+    test('orders UTF-8 multi-byte characters by code point', () => {
+      isTrue("café".compareTo("cafe") > 0);
+      isTrue("α".compareTo("β") < 0);
     });
   });
 });
