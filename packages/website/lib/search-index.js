@@ -50,6 +50,7 @@ const entriesForPage = (url, breadcrumb, html) => {
 const SECTIONS = [
   ['/guide/', 'Guide'],
   ['/reference/', 'Reference'],
+  ['/api/', 'API'],
   ['/development/design/', 'Design'],
   ['/development/', 'Development'],
 ];

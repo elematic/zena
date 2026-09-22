@@ -18,8 +18,8 @@ internally managed memory views.
 
 For usage guidelines, memory management patterns, and parsing examples, see the
 [Strings Guide](/guide/strings/). For standard library builder and
-parser classes, see the [`StringBuilder`](/reference/stdlib/core/#stringbuilder) and
-[`StringReader`](/reference/stdlib/core/#stringreader) API documentation.
+parser classes, see the [`StringBuilder`](/api/core/#stringbuilder) and
+[`StringReader`](/api/core/#stringreader) API documentation.
 
 ## The String type
 
@@ -51,7 +51,7 @@ new(data: ByteArray, start: i32, end: i32, encoding: Encoding);
 ```
 
 In standard application code, create strings using literals, template expressions,
-or [`StringBuilder`](/reference/stdlib/core/#stringbuilder). The direct constructor
+or [`StringBuilder`](/api/core/#stringbuilder). The direct constructor
 is intended for internal runtime operations.
 
 ## String literals and escapes
@@ -193,7 +193,7 @@ characters (`\` and `n`) rather than being converted to line feed characters.
 
 ### The dedent tag
 
-The standard library exports a built-in [`dedent`](/reference/stdlib/core/#dedent)
+The standard library exports a built-in [`dedent`](/api/core/#dedent)
 tag in `zena:core`. It strips common leading indentation and
 trims opening and closing blank lines:
 
@@ -226,7 +226,7 @@ let c = text[0];
 
 Subscripting by raw integer index is prohibited to prevent splitting multi-byte
 UTF-8 sequences or surrogate pairs. For character-aware scanning and parsing, use
-[`StringReader`](/reference/stdlib/core/#stringreader).
+[`StringReader`](/api/core/#stringreader).
 
 ### Byte operations
 
@@ -247,7 +247,7 @@ sliceBytes(start: i32, end: i32): String;
 `sliceBytes` and `getByteAt` operate on raw byte offsets, not Unicode code points.
 Calling `sliceBytes` with arbitrary offsets can slice through the middle of a
 multi-byte UTF-8 sequence, producing an invalid string. Use
-[`StringReader`](/reference/stdlib/core/#stringreader) to determine safe slice positions.
+[`StringReader`](/api/core/#stringreader) to determine safe slice positions.
 :::
 
 ### Memory retention and copying
@@ -322,7 +322,7 @@ split(separator: String): FixedArray<String>;
 ```
 
 For cursor-based tokenization, sequential scanning, and parsing at UTF-8 code point
-boundaries, use [`StringReader`](/reference/stdlib/core/#stringreader).
+boundaries, use [`StringReader`](/api/core/#stringreader).
 
 ### ASCII case conversion
 
@@ -341,7 +341,7 @@ they return `this` directly without allocating a new string.
 
 ### Hashing
 
-`String` implements the [`Hashable`](/reference/stdlib/core/#hashable) interface:
+`String` implements the [`Hashable`](/api/core/#hashable) interface:
 
 ```zena
 hashCode(): i32;
@@ -373,7 +373,7 @@ The `Encoding` enum defines supported encodings:
 ```zena
 export enum Encoding {
   WTF8, // 0 - UTF-8 allowing unpaired surrogates
-  WTF16 // 1 - UTF-16 for JS interop
+  WTF16 // 1 - WTF-16 for JS interop
 }
 ```
 
@@ -394,7 +394,7 @@ operator +(other: String): String;
 Concatenating strings with `+` inside a loop repeatedly allocates new byte arrays,
 creating an O(n²) performance hazard identical to naive concatenation in Java.
 For dynamic or iterative string generation, use
-[`StringBuilder`](/reference/stdlib/core/#stringbuilder). For interpolating values
+[`StringBuilder`](/api/core/#stringbuilder). For interpolating values
 into static text, prefer [template literals](#template-literals).
 
 ### Future architectural direction

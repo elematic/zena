@@ -64,5 +64,5 @@ still open to change — nothing in Zena is frozen yet.
 - [Strings](/reference/strings/) — string literals, template interpolation, and encodings
 - [Pattern matching](/reference/pattern-matching/) — `match`, patterns, exhaustiveness
 - [Classes](/reference/classes/) — nominal classes and object orientation
-- [Standard library](/reference/stdlib/) — what ships with Zena
+- [Standard library](/api/) — what ships with Zena
 - [CLI](/reference/cli/) — every command and flag

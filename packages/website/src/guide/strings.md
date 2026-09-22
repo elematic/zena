@@ -185,7 +185,7 @@ are generally preferred over chaining `+` operators.
 
 When assembling strings dynamically or repeatedly inside loops, chaining `+`
 allocates a new string and copies bytes on every iteration. Use
-[`StringBuilder`](/reference/stdlib/core/#stringbuilder) instead to accumulate
+[`StringBuilder`](/api/core/#stringbuilder) instead to accumulate
 content with buffered geometric growth.
 
 ### Searching and splitting
@@ -204,7 +204,7 @@ let fruits = csv.split(",");         // FixedArray<String> with 3 elements
 ```
 
 For cursor-based tokenization, custom parsing, or scanning character by character
-across safe Unicode boundaries, use [`StringReader`](/reference/stdlib/core/#stringreader)
+across safe Unicode boundaries, use [`StringReader`](/api/core/#stringreader)
 from `zena:core`.
 
 ### ASCII case conversion
@@ -307,7 +307,7 @@ Unicode code-point and grapheme-cluster iterators. For text parsing today, use
 ### Safe parsing with StringReader
 
 To navigate and parse strings safely at Unicode code point boundaries, use
-[`StringReader`](/reference/stdlib/core/#stringreader) from `zena:core`:
+[`StringReader`](/api/core/#stringreader) from `zena:core`:
 
 ```zena
 import {StringReader} from 'zena:core';
@@ -389,7 +389,7 @@ total length and allocate the result buffer once.
 ### Building strings with StringBuilder
 
 For iterative string construction across loops or conditional logic, use
-[`StringBuilder`](/reference/stdlib/core/#stringbuilder) from `zena:core`:
+[`StringBuilder`](/api/core/#stringbuilder) from `zena:core`:
 
 ```zena
 import {StringBuilder} from 'zena:core';

@@ -517,31 +517,6 @@ To add a page: add it to the sidebar with an `outline`, then run
     - @external
     - Status of @pure
     - Future user-defined decorators
-- **Standard Library**
-  - ✅ [Overview](src/reference/stdlib/index.md) — `/reference/stdlib/`
-    - What ships with Zena
-    - Importing
-    - Stability
-  - ⚙️ zena:assert — `/reference/stdlib/assert/`
-  - ⚙️ zena:async — `/reference/stdlib/async/`
-  - ⚙️ zena:bench — `/reference/stdlib/bench/`
-  - ⚙️ zena:cli — `/reference/stdlib/cli/`
-  - ⚙️ zena:collections — `/reference/stdlib/collections/`
-  - ⚙️ zena:console — `/reference/stdlib/console/`
-  - ⚙️ zena:core — `/reference/stdlib/core/`
-  - ⚙️ zena:fs — `/reference/stdlib/fs/`
-  - ⚙️ zena:json — `/reference/stdlib/json/`
-  - ⚙️ zena:math — `/reference/stdlib/math/`
-  - ⚙️ zena:memory — `/reference/stdlib/memory/`
-  - ⚙️ zena:process — `/reference/stdlib/process/`
-  - ⚙️ zena:regex — `/reference/stdlib/regex/`
-  - ⚙️ zena:simd — `/reference/stdlib/simd/`
-  - ⚙️ zena:stream — `/reference/stdlib/stream/`
-  - ⚙️ zena:task — `/reference/stdlib/task/`
-  - ⚙️ zena:test — `/reference/stdlib/test/`
-  - ⚙️ zena:time — `/reference/stdlib/time/`
-  - ⚙️ zena:url — `/reference/stdlib/url/`
-  - ⚙️ zena:wasi — `/reference/stdlib/wasi/`
 - **Toolchain**
   - 📝 [CLI](src/reference/cli.md) — `/reference/cli/`
     - zena build
@@ -571,7 +546,32 @@ To add a page: add it to the sidebar with an `outline`, then run
   - 📝 [Grammar](src/reference/grammar.md) — `/reference/grammar/`
   - 📝 [Keywords](src/reference/keywords.md) — `/reference/keywords/`
 
-## /development/
+## API
+
+- ✅ [Overview](src/api/index.md) — `/api/`
+  - Libraries
+- ⚙️ zena:assert — `/api/assert/`
+- ⚙️ zena:async — `/api/async/`
+- ⚙️ zena:bench — `/api/bench/`
+- ⚙️ zena:cli — `/api/cli/`
+- ⚙️ zena:collections — `/api/collections/`
+- ⚙️ zena:console — `/api/console/`
+- ⚙️ zena:core — `/api/core/`
+- ⚙️ zena:fs — `/api/fs/`
+- ⚙️ zena:json — `/api/json/`
+- ⚙️ zena:math — `/api/math/`
+- ⚙️ zena:memory — `/api/memory/`
+- ⚙️ zena:process — `/api/process/`
+- ⚙️ zena:regex — `/api/regex/`
+- ⚙️ zena:simd — `/api/simd/`
+- ⚙️ zena:stream — `/api/stream/`
+- ⚙️ zena:task — `/api/task/`
+- ⚙️ zena:test — `/api/test/`
+- ⚙️ zena:time — `/api/time/`
+- ⚙️ zena:url — `/api/url/`
+- ⚙️ zena:wasi — `/api/wasi/`
+
+## Development
 
 - **Development**
   - ✅ [Overview](src/development/index.md) — `/development/`

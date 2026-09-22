@@ -62,10 +62,7 @@ const byKind = (members = []) =>
 const pages = new Map();
 for (const module of docs.modules) {
   for (const declaration of module.declarations ?? []) {
-    pages.set(
-      declaration.id,
-      `/reference/stdlib/${module.name}/#${declaration.anchor}`,
-    );
+    pages.set(declaration.id, `/api/${module.name}/#${declaration.anchor}`);
   }
 }
 
@@ -208,7 +205,7 @@ export default {
   ...docs,
   stdlib: docs.modules.map((module) => ({
     ...module,
-    url: `/reference/stdlib/${module.name}/`,
+    url: `/api/${module.name}/`,
     groups: groupsFor(module.declarations ?? []),
     count: (module.declarations ?? []).length,
   })),

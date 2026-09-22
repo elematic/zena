@@ -23,8 +23,8 @@ const stdlibModules = () => {
     );
     return docs.modules.map((module) => ({
       text: module.id,
-      link: `/reference/stdlib/${module.name}/`,
-      // Rendered by src/reference/stdlib/module.njk. Marked so the
+      link: `/api/${module.name}/`,
+      // Rendered by src/api/module.njk. Marked so the
       // scaffolder does not write a placeholder over the generated page.
       generated: true,
     }));
@@ -968,22 +968,6 @@ const reference = [
     ],
   },
   {
-    text: 'Standard Library',
-    collapsed: true,
-    items: [
-      {
-        text: 'Overview',
-        link: '/reference/stdlib/',
-        outline: ['What ships with Zena', 'Importing', 'Stability'],
-      },
-      // One entry per module the standard library exports, from the
-      // extracted API rather than a list kept by hand: a module added to
-      // the stdlib manifest appears here, and one removed stops
-      // appearing, without anyone editing this file.
-      ...stdlibModules(),
-    ],
-  },
-  {
     text: 'Toolchain',
     collapsed: true,
     items: [
@@ -1187,8 +1171,18 @@ const development = [
   },
 ];
 
+const api = [
+  {
+    text: 'Overview',
+    link: '/api/',
+    outline: ['Libraries'],
+  },
+  ...stdlibModules(),
+];
+
 export default {
   '/guide/': guide,
   '/reference/': reference,
+  '/api/': api,
   '/development/': development,
 };

@@ -18,7 +18,12 @@ import sidebar from '../src/_data/sidebar.js';
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
 const OUT = fileURLToPath(new URL('../CONTENT.md', import.meta.url));
 
-const SECTION_TITLES = {'/guide/': 'Guide', '/reference/': 'Reference'};
+const SECTION_TITLES = {
+  '/guide/': 'Guide',
+  '/reference/': 'Reference',
+  '/api/': 'API',
+  '/development/': 'Development',
+};
 
 /** Mirrors the path mapping in scaffold-docs.js. */
 const sourcePathFor = (link, allLinks) => {
