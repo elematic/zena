@@ -12084,6 +12084,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             propExpected = expectedProps[name.name];
           }
           let valType = checkExpression(ctx, value, propExpected);
+          if (propExpected != null) {
+            checkAndRegisterInterfaceAdaptation(ctx, value, valType, propExpected);
+          }
           propTypes[name.name] = valType;
           if (literalOptionals != null) { literalOptionals.delete(name.name); }
         }
@@ -12192,28 +12195,83 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     tupleT
   }
   case MapLiteral {entries, loc}: {
+    var expectedKeyType: Type | null = null;
+    var expectedValType: Type | null = null;
+    if (expectedType != null) {
+      let nonNullExpected = baseType(subtractNullFromType(expectedType as Type));
+      match (nonNullExpected) {
+        case ClassType as ct: {
+          if (ct.typeArguments != null) {
+            let targs = ct.typeArguments as Array<Type>;
+            if (targs.length >= 2) {
+              expectedKeyType = targs[0];
+              expectedValType = targs[1];
+            }
+          }
+        }
+        case InterfaceType as it: {
+          if (it.typeArguments != null) {
+            let targs = it.typeArguments as Array<Type>;
+            if (targs.length >= 2) {
+              expectedKeyType = targs[0];
+              expectedValType = targs[1];
+            }
+          }
+        }
+        case _: {}
+      }
+    }
     if (entries.length == 0) {
-      ctx.error("Empty map literal requires type annotation. Use 'new HashMap<K, V>()' instead.", DiagnosticCode.TypeMismatch, loc);
-      new ErrorType()
+      if (expectedKeyType != null && expectedValType != null) {
+        let hashMapType = ctx.resolveTypeName("HashMap");
+        if (hashMapType != null) {
+          match (hashMapType) {
+            case ClassType as hm: {
+              let typeArgs = new GrowableArray<Type>();
+              typeArgs.push(expectedKeyType as Type);
+              typeArgs.push(expectedValType as Type);
+              instantiateClassType(hm, typeArgs) as Type
+            }
+            case _: new ErrorType()
+          }
+        } else {
+          new ErrorType()
+        }
+      } else {
+        ctx.error("Empty map literal requires type annotation. Use 'new HashMap<K, V>()' instead.", DiagnosticCode.TypeMismatch, loc);
+        new ErrorType()
+      }
     } else {
       // Check all entries and unify key/value types.
-      let firstKeyType = checkExpression(ctx, entries[0].key, null);
-      let firstValType = checkExpression(ctx, entries[0].value, null);
+      let firstKeyType = checkExpression(ctx, entries[0].key, expectedKeyType);
+      let firstValType = checkExpression(ctx, entries[0].value, expectedValType);
+      let targetKeyType = if (expectedKeyType != null) expectedKeyType as Type else firstKeyType;
+      let targetValType = if (expectedValType != null) expectedValType as Type else firstValType;
+      if (expectedKeyType != null) {
+        checkAndRegisterInterfaceAdaptation(ctx, entries[0].key, firstKeyType, targetKeyType);
+      }
+      if (expectedValType != null) {
+        checkAndRegisterInterfaceAdaptation(ctx, entries[0].value, firstValType, targetValType);
+      }
       var ei = 1;
       while (ei < entries.length) {
-        let kt = checkExpression(ctx, entries[ei].key, null);
-        if (!isAssignableTo(ctx, kt, firstKeyType)) {
+        let kt = checkExpression(ctx, entries[ei].key, expectedKeyType);
+        if (!isAssignableTo(ctx, kt, targetKeyType)) {
           ctx.error(
-            "Map key type mismatch: expected '" + typeToString(firstKeyType) + "', got '" + typeToString(kt) + "'.",
+            "Map key type mismatch: expected '" + typeToString(targetKeyType) + "', got '" + typeToString(kt) + "'.",
             DiagnosticCode.TypeMismatch, entries[ei].key.loc
           );
+        } else if (expectedKeyType != null) {
+          checkAndRegisterInterfaceAdaptation(ctx, entries[ei].key, kt, targetKeyType);
         }
-        let vt = checkExpression(ctx, entries[ei].value, null);
-        if (!isAssignableTo(ctx, vt, firstValType)) {
+        let vt = checkExpression(ctx, entries[ei].value, expectedValType);
+        if (!isAssignableTo(ctx, vt, targetValType)) {
           ctx.error(
-            "Map value type mismatch: expected '" + typeToString(firstValType) + "', got '" + typeToString(vt) + "'.",
+            "Map value type mismatch: expected '" + typeToString(targetValType) + "', got '" + typeToString(vt) + "'.",
             DiagnosticCode.TypeMismatch, entries[ei].value.loc
           );
+        } else if (expectedValType != null) {
+          checkAndRegisterInterfaceAdaptation(ctx, entries[ei].value, vt, targetValType);
         }
         ei += 1;
       }
@@ -12223,8 +12281,8 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         match (hashMapType) {
           case ClassType as hm: {
             let typeArgs = new Array<Type>();
-            typeArgs.push(firstKeyType);
-            typeArgs.push(firstValType);
+            typeArgs.push(targetKeyType);
+            typeArgs.push(targetValType);
             instantiateClassType(hm, typeArgs) as Type
           }
           case _: new ErrorType()
