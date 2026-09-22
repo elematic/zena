@@ -84,6 +84,13 @@ export type CommandConfig = {
   description?: String,
   help?: String,
   options?: Map<String, OptionConfig>,
+  /**
+   * Stop reading options at the first positional argument, so that
+   * everything after it lands in `rest` even if it looks like an option.
+   * What a command that hands its tail to another program needs:
+   * `mytool run prog --verbose` passes `--verbose` to `prog`.
+   */
+  stopAtPositional?: boolean,
 };
 
 /**
@@ -95,6 +102,8 @@ export type ParserConfig = {
   help?: String,
   options?: Map<String, OptionConfig>,
   commands?: Map<String, CommandConfig>,
+  /** See `CommandConfig.stopAtPositional`. */
+  stopAtPositional?: boolean,
 };
 
 /**
@@ -245,6 +254,8 @@ export class ArgParser {
   #options = new OrderedHashMap<String, OptionConfig>();
   #byAbbr = new HashMap<String, OptionConfig>();
   #commands = new OrderedHashMap<String, ArgParser>();
+  /** See `CommandConfig.stopAtPositional`. */
+  var stopAtPositional: boolean = false;
 
   new(
     this.programName = '',
@@ -269,6 +280,7 @@ export class ArgParser {
     if (let {commands} = config) {
       this.addCommands(commands);
     }
+    this.stopAtPositional = config.stopAtPositional ?? false;
   }
 
   /**
@@ -298,6 +310,7 @@ export class ArgParser {
     if (let {options} = config) {
       commandParser.addOptions(options);
     }
+    commandParser.stopAtPositional = config.stopAtPositional ?? false;
     this.#commands[name] = commandParser;
     return commandParser;
   }
@@ -494,6 +507,9 @@ export class ArgParser {
 
       // Positional argument
       rest.push(arg);
+      if (this.stopAtPositional) {
+        stopOptions = true;
+      }
       i += 1;
     }
 

@@ -362,6 +362,54 @@ export let tests = suite('Args', (): void => {
     isTrue(res.hasOption('defaulted'));
   });
 
+  test('stopAtPositional hands the tail to the positional', (ctx: TestContext): void => {
+    // A command that runs another program: everything after the program
+    // name is that program's, even when it looks like an option here.
+    let parser = new ArgParser.fromConfig({
+      name: 'app',
+      commands: {
+        'run' => {
+          stopAtPositional: true,
+          options: {'verbose' => {type: OptionType.Flag, abbr: 'v'}},
+        },
+      },
+    });
+
+    let args = new GrowableArray<String>();
+    args.push('run');
+    args.push('-v');
+    args.push('prog.zena');
+    args.push('-v');
+    args.push('--unknown');
+    args.push('tail');
+
+    let res = parser.parse(args);
+    equal(res.commandName, 'run');
+    let sub = res.commandArgs;
+    isNotNull(sub);
+    if (sub != null) {
+      // The -v before the positional is the command's...
+      isTrue(sub.getFlag('verbose'));
+      // ...and everything from the positional on is the program's,
+      // including an option this parser never declared.
+      equal(sub.rest.length, 4);
+      equal(sub.rest[0], 'prog.zena');
+      equal(sub.rest[1], '-v');
+      equal(sub.rest[2], '--unknown');
+      equal(sub.rest[3], 'tail');
+    }
+
+    // Without it, an undeclared option after a positional is an error.
+    let strict = new ArgParser('app')
+      .addOption('verbose', {type: OptionType.Flag, abbr: 'v'});
+    let strictArgs = new GrowableArray<String>();
+    strictArgs.push('prog.zena');
+    strictArgs.push('--unknown');
+    throws(() => {
+      strict.parse(strictArgs);
+    });
+  });
+
   test('option name validation', (ctx: TestContext): void => {
     // Option without a name throws
     throws(() => {
