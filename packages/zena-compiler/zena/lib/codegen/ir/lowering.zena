@@ -2775,6 +2775,12 @@ export final class FunctionLowerer {
               this.b.unreachable();
               this.#cx().reachable = false;
             }
+          } else if (expression is CallExpression &&
+              this.#isInlineTupleTyped(expression)) {
+            // A multi-value call as a statement — a `Result<T, E>`
+            // returned for its effect: the values are produced as a
+            // destructuring site would take them, and dropped.
+            this.#lowerMultiSource(expression);
           } else {
             this.#lowerExpression(expression);
           }
@@ -8158,6 +8164,16 @@ export final class FunctionLowerer {
    */
   #substitutedNodeType(expr: Expression): Type | null {
     return this.#cx().substitutedNodeType(expr);
+  }
+
+  /** Whether `expr`'s type is a multi-value shape — an inline tuple,
+   * or a union of them like `Result<T, E>`'s two arms. */
+  #isInlineTupleTyped(expr: Expression): boolean {
+    let t = this.#substitutedNodeType(expr);
+    if (t == null) {
+      return false;
+    }
+    return inlineLaneValTypes(this.wasm, t) != null;
   }
 
   /** Base type of #substitutedNodeType (unions unwrapped by baseType). */

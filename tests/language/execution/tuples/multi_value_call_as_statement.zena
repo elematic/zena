@@ -1,0 +1,41 @@
+// @mode: run
+// @result: 7
+
+// A call returning an inline tuple — a `Result<T, E>` most often —
+// dropped as a statement: the values are produced and discarded, and
+// the call's effects still happen. A free function, a method and a
+// static method alike.
+import { Result } from 'zena:core';
+
+var effects = 0;
+
+let tryIt = (n: i32): Result<i32, String> => {
+  effects += n;
+  if (n > 3) {
+    return (false, _, 'big');
+  }
+  return (true, n, _);
+};
+
+class Counter {
+  var count = 0;
+  bump(n: i32): Result<i32, String> {
+    this.count += n;
+    return (true, this.count, _);
+  }
+  static twice(n: i32): Result<i32, String> {
+    effects += n * 2;
+    return (true, n, _);
+  }
+}
+
+export let main = (): i32 => {
+  tryIt(1);
+  tryIt(4);
+  let c = new Counter();
+  c.bump(2);
+  Counter.twice(1);
+  // 1 + 4 from tryIt, 2 from twice: 7 in effects, and the counter
+  // moved too.
+  return effects - (c.count - 2);
+};
