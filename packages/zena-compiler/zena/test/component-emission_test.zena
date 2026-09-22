@@ -632,6 +632,28 @@ export function reset(): boolean { return true; }
       `an explicit-identifier prefix leaked into the synthesized source:\n${source}`);
   });
 
+  test('an async method on an imported resource renders as an async member',
+      (ctx: TestContext): void => {
+    // `descriptor`'s `get-type` is `async func` on the resource: the
+    // raw declaration is the async lowering with the implicit `self`
+    // handle first and the return area last, and the member wrapper
+    // awaits the packed subtask, then lifts the result into Outcome.
+    // Refused as "waits on the interop stages" until now.
+    let source = synthesizeWitModule(
+        `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
+        readWitSource(`${stdlibRoot}/wit`));
+    isTrue(source.contains('@external("wasi:filesystem/types@0.3.0", "[method]descriptor.get-type", "async")'),
+      `the method is not declared with the async option:\n${source}`);
+    isTrue(source.contains('declare function descriptorGetType_raw(self: i32, ret: i32): i32;'),
+      `the raw declaration lacks self and the return area:\n${source}`);
+    isTrue(source.contains('  async getType(): Future<Outcome<DescriptorType, ErrorCode>> {'),
+      `the wrapper is not an async member:\n${source}`);
+    isTrue(source.contains('await awaitPacked(packed);'),
+      `the wrapper does not await the subtask:\n${source}`);
+    isTrue(!source.contains('an async resource function waits'),
+      `an async resource function is still refused:\n${source}`);
+  });
+
   test('a component with no imports carries no import machinery', (ctx: TestContext): void => {
     // No instance type, no import, no lowering, no synthesized instance
     // — just the module, its instantiation, and the lifted export. This

@@ -2523,17 +2523,15 @@ function renderFuncIn(
   let freeMode = mode.declHead == "export function " && !mode.selfHandle;
 
   if (func.isAsync) {
-    if (!freeMode) {
-      return "an async resource function waits on the interop stages";
-    }
     // The async lowering flattens at most four core parameter values
-    // before spilling all of them through one pointer, which is not
-    // rendered yet.
-    if (paramFlats > 4) {
+    // — a method's implicit `self` handle among them — before spilling
+    // all of them through one pointer, which is not rendered yet.
+    let selfFlats = if (mode.selfHandle) 1 else 0;
+    if (paramFlats + selfFlats > 4) {
       return "async parameters spilling past four core values wait " +
           "on the interop stages";
     }
-    if (!anyRich && !hasResult) {
+    if (!anyRich && !hasResult && freeMode) {
       // Flat scalars, no result: the thin form. The raw import's core
       // result is the packed `(subtask << 4) | state` the canonical
       // `async` lowering returns; `awaitPacked` turns it into the
@@ -2563,10 +2561,11 @@ function renderFuncIn(
           .append("));\n}\n");
       return "";
     }
-    // Anything richer takes the general path below as an async
-    // wrapper: stage, call, await the subtask, then lift the result
-    // the host wrote through the trailing return area — an async
-    // lowering spills any result, whatever its flat count.
+    // Anything richer — and every resource function, whose `self`
+    // handle the general path prefixes — takes the general path
+    // below as an async wrapper: stage, call, await the subtask, then
+    // lift the result the host wrote through the trailing return area
+    // — an async lowering spills any result, whatever its flat count.
   }
 
   // The result spills — the raw call takes a return area address and
@@ -2706,7 +2705,10 @@ function renderFuncIn(
   var declHead = mode.declHead;
   if (func.isAsync) {
     uses.hasAsync = true;
-    declHead = "export async function ";
+    // A free function exports; a method, static or constructor keeps
+    // its member head with `async` in front.
+    declHead = if (freeMode) "export async function "
+        else mode.declHead + "async ";
     wrapResult = "Future<" + wrapResult + ">";
   }
   sb.append(declHead).append(zenaName).append("(")

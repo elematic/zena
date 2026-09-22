@@ -91,6 +91,9 @@ interface Fixture {
    * that crosses between two Zena components is what is tested.
    */
   compose?: string[];
+  /** Preopen a scratch directory for the run: `--dir`, for a fixture
+   * that imports wasi:filesystem. */
+  preopen?: boolean;
   invocations: Invocation[];
 }
 
@@ -326,6 +329,18 @@ const FIXTURES: Fixture[] = [
       {invoke: 'describe(9)', expect: 'err("too big")'},
       {invoke: 'shout("hi")', expect: '"hi!"'},
       {invoke: 'count(41)', expect: '42'},
+    ],
+  },
+  {
+    name: 'fs-probe',
+    wasi: ['p3=y'],
+    preopen: true,
+    // Async methods on an imported resource, against real
+    // wasi:filesystem: the preopened directory's `get-type` and
+    // `stat` are `async func` on the `descriptor` resource; the type
+    // comes back as the `descriptor-type` variant's `directory` case.
+    invocations: [
+      {invoke: 'main()', expect: '0', expectOutput: ['directory true']},
     ],
   },
   {
@@ -629,6 +644,9 @@ for (const fixture of FIXTURES) {
     const flags = ['-W', 'gc=y,function-references=y,exceptions=y'];
     for (const feature of fixture.wasi) {
       flags.push('-S', feature);
+    }
+    if (fixture.preopen) {
+      flags.push('--dir', outDir);
     }
     // Through `time -p` (POSIX, so the format is fixed) rather than
     // spawnSync directly: Node reports no CPU time for a child, and CPU

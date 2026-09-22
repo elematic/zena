@@ -1,0 +1,35 @@
+// Async methods on an imported resource: the preopened directory is a
+// `descriptor`, and `get-type` and `stat` are `async func` on it — an
+// async lowering with the implicit `self` handle, its packed subtask
+// awaited, the result lifted from the trailing return area. Real
+// wasi:filesystem under `wasmtime -S p3=y --dir`.
+import { getDirectories } from 'wasi:filesystem/preopens';
+import {
+  Descriptor, DescriptorType, DescriptorTypeDirectory, DescriptorStat,
+  ErrorCode
+} from 'wasi:filesystem/types';
+import { Future } from 'zena:async';
+import { Outcome, Ok } from 'zena:core';
+
+export async function main(): Future<u32> {
+  let dirs = getDirectories();
+  if (dirs.length == 0) {
+    console.log('no preopens');
+    return 1 as u32;
+  }
+  let (dir, path) = dirs[0];
+  let kind = await dir.getType();
+  if (!(kind is Ok<DescriptorType, ErrorCode>)) {
+    console.log('get-type failed');
+    return 2 as u32;
+  }
+  let isDir = (kind as Ok<DescriptorType, ErrorCode>).value is DescriptorTypeDirectory;
+  console.log(`directory ${isDir}`);
+  let stat = await dir.stat();
+  if (!(stat is Ok<DescriptorStat, ErrorCode>)) {
+    console.log('stat failed');
+    return 3 as u32;
+  }
+  console.log(`links ${(stat as Ok<DescriptorStat, ErrorCode>).value.linkCount}`);
+  return 0 as u32;
+}
