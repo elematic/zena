@@ -151,17 +151,19 @@ export class MemberInfo {
   var isPrivate: boolean;
 
   /**
-   * The `SymbolType` id of the symbol that named this member, for a
-   * member declared as `:sym`; -1 when the member is name-keyed, or when
-   * the key is the qualified `:Iface.sym` form (whose visibility is the
-   * interface's, not a symbol binding's).
+   * The `SymbolType` id of the symbol that named this member; -1 when the
+   * member is name-keyed. Both symbol spellings set it: a top-level
+   * `symbol sym` reached as `:sym`, and a `static symbol` reached as
+   * `:Owner.sym`.
    *
    * Member keys mangle a symbol to `":" + name`, so the key alone cannot
    * tell two same-named symbols apart — which is what let a consumer read
-   * a private symbol-keyed member by declaring a symbol of its own.
-   * Access compares this id; -1 means "unknown", and the check is skipped
-   * rather than guessed (an inherited member copied into a subtype's
-   * table loses it).
+   * a private symbol-keyed member by declaring a symbol of its own. Access
+   * compares this id, and a member copied into a subtype's table carries
+   * it along so the comparison still holds one level down.
+   *
+   * A symbol-keyed member always has one, so -1 on a `:`-prefixed key
+   * means the declaration failed to resolve and was already reported.
    */
   var symbolTypeId: i32 = -1;
 
@@ -334,6 +336,13 @@ export final class ClassType extends Type {
    * but is treated as immutable during codegen to emit `WasmStruct`s.
    */
   var members: Map<String, MemberInfo> = new Map<String, MemberInfo>.ordered();
+  /**
+   * Always empty: only an interface declares `static symbol`s, and the
+   * checker rejects one written on a class or mixin body. Carried so that
+   * `Owner.sym` resolves against any named owner and answers "declares no
+   * static symbol" rather than "is not a type that has them".
+   */
+  var staticSymbols: Map<String, Type> = new Map<String, Type>.ordered();
   var constructorType: FunctionType | null = null;
   var constructors: Map<String, FunctionType> = new Map<String, FunctionType>();
   var fieldSetterNames: Map<String, String> | null = null;
@@ -606,6 +615,7 @@ let substituteInType = (
         inst.declaredFields = ct.declaredFields;
         inst.forwardVariantNames = ct.forwardVariantNames;
         inst.members = ct.members;
+        inst.staticSymbols = ct.staticSymbols;
         if (ct.onType != null) {
           inst.onType = substituteInType(ct.onType, combinedParams, combinedArgs);
         }
@@ -679,6 +689,7 @@ let substituteInType = (
         }
         inst.extendsList = newExtends;
         inst.members = it.members;
+        inst.staticSymbols = it.staticSymbols;
         inst.constructors = it.constructors;
         inst.sourcePath = it.sourcePath;
         substitutionFrames.pop();
@@ -771,6 +782,7 @@ let substituteInType = (
         inst.genericSource = mt.genericSource ?? mt;
         inst.onType = mt.onType;
         inst.members = mt.members;
+        inst.staticSymbols = mt.staticSymbols;
         inst.sourcePath = mt.sourcePath;
         inst
       } else {
@@ -995,6 +1007,7 @@ export let instantiateClassType = (
     result.mixins.push((subM ?? m) as MixinType);
   }
   result.members = source.members;
+  result.staticSymbols = source.staticSymbols;
   result.constructorType = if (source.constructorType != null) {
     let ctor = source.constructorType as FunctionType;
     let newParams = new Array<Type>();
@@ -1085,6 +1098,15 @@ export final class InterfaceType extends Type {
   var typeArguments: Array<Type> | null = null;
   var extendsList: GrowableArray<InterfaceType> = new Array<InterfaceType>();
   var members: Map<String, MemberInfo> = new Map<String, MemberInfo>.ordered();
+  /**
+   * The `static symbol` declarations this type makes, keyed by their
+   * declared name. A static symbol is reached only through the type that
+   * declares it — `Disposable.dispose` — so it lives here rather than in
+   * `members`, and it never enters a lexical scope. The values are the
+   * canonical `SymbolType` per declaration, which is what gives a
+   * symbol-keyed member an identity distinct from its spelling.
+   */
+  var staticSymbols: Map<String, Type> = new Map<String, Type>.ordered();
   var genericSource: InterfaceType | null = null;
   var interfaceKey: String | null = null;
   var sourcePath: String = "";
@@ -1123,6 +1145,7 @@ export let instantiateInterfaceType = (
   // issue we can copy the arrays here.
   result.extendsList = source.extendsList;
   result.members = source.members;
+  result.staticSymbols = source.staticSymbols;
   result.constructors = source.constructors;
   result.sourcePath = source.sourcePath;
   return result;
@@ -1156,6 +1179,13 @@ export final class MixinType extends Type {
   var typeArguments: Array<Type> | null = null;
   var onType: Type | null = null;
   var members: Map<String, MemberInfo> = new Map<String, MemberInfo>.ordered();
+  /**
+   * Always empty: only an interface declares `static symbol`s, and the
+   * checker rejects one written on a class or mixin body. Carried so that
+   * `Owner.sym` resolves against any named owner and answers "declares no
+   * static symbol" rather than "is not a type that has them".
+   */
+  var staticSymbols: Map<String, Type> = new Map<String, Type>.ordered();
   var genericSource: MixinType | null = null;
   var sourcePath: String = "";
   var mixins: GrowableArray<MixinType> = new Array<MixinType>();
@@ -1191,6 +1221,7 @@ export let instantiateMixinType = (
   result.genericSource = source;
   result.onType = source.onType;
   result.members = source.members;
+  result.staticSymbols = source.staticSymbols;
   result.sourcePath = source.sourcePath;
   result.mixins = new Array<MixinType>();
   // Copy and substitute mixins

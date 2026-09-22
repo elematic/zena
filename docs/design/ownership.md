@@ -83,7 +83,7 @@ a foreign pointer all release through the same mechanism:
 ```zena
 export interface Disposable {
   static symbol dispose;
-  [dispose](): void;
+  [Disposable.dispose](): void;
 }
 ```
 

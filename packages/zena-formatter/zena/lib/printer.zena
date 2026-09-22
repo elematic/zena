@@ -600,7 +600,31 @@ let printClassMember = (member: Node): Doc => {
   return withComments(member, doc);
 };
 
+/**
+ * Whether a static field is really a `static symbol` declaration, which
+ * the parser shapes as a static field annotated with the bare name
+ * `symbol`. There is no `symbol` type to annotate a field with
+ * otherwise, so the name is unambiguous.
+ */
+let isSymbolFieldDeclaration = (field: FieldDefinition): boolean => {
+  if (!field.isStatic) { return false; }
+  let ann = field.typeAnnotation;
+  if (ann == null) { return false; }
+  return match (ann as TypeAnnotation) {
+    case NamedTypeAnnotation {name, typeArguments}:
+      name == 'symbol' && typeArguments == null
+    case _: false
+  };
+};
+
 let printFieldDefinition = (field: FieldDefinition): Doc => {
+  // `static symbol sym;` — a declaration, not a field with a type.
+  // Printing it as one spells `static sym: symbol;`, which does not
+  // parse back.
+  if (isSymbolFieldDeclaration(field)) {
+    return concat(docs3(
+      text('static symbol '), printNodeName(field.name), text(';')));
+  }
   let parts = new Array<Doc>();
   if (field.isStatic) { parts.push(text('static ')); }
   if (field.isAbstract) { parts.push(text('abstract ')); }
@@ -795,7 +819,9 @@ let printInterfaceMember = (member: Node): Doc => {
     case MethodDefinition {}: printMethodDefinition(member)
     case MethodSignature {name, typeParameters, params, returnType}: {
       let parts = new Array<Doc>();
-      parts.push(text((name as Identifier).name));
+      // Not always an Identifier: a symbol-keyed signature such as
+      // `[Disposable.dispose](): void;` carries a SymbolPropertyName.
+      parts.push(printNodeName(name));
       if (typeParameters != null) {
         parts.push(printTypeParams(typeParameters));
       }
@@ -824,6 +850,13 @@ let printInterfaceMember = (member: Node): Doc => {
       parts.push(printTypeAnnotation(typeAnnotation));
       parts.push(text(';'));
       concat(parts)
+    }
+    // `static symbol sym;`. The statement printer spells a top-level
+    // `symbol sym;`, which is a different declaration — printing one as
+    // the other would drop the `static` and move the symbol out of the
+    // type that owns it.
+    case SymbolDeclaration {name}: {
+      concat(docs3(text('static symbol '), text(name.name), text(';')))
     }
     case _: text('/* unknown interface member */')
   };

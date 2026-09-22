@@ -571,6 +571,35 @@ let tests = suite('formatter', () => {
     let result = format('let x: {a?: String, b: i32} = y;');
     check('optional record property', result, 'let x: {a?: String, b: i32} = y;\n');
   });
+
+  // An interface's `static symbol` had no printer arm at all, so it came
+  // out as `/* unknown interface member */` — formatting a file deleted
+  // the declaration.
+  test('keeps an interface static symbol declaration', (t: TestContext) => {
+    let result = format('interface D{static symbol dispose;}');
+    check('static symbol', result,
+        'interface D {\n  static symbol dispose;\n}\n');
+  });
+
+  // A symbol-keyed signature's name is a SymbolPropertyName, which the
+  // interface-member printer cast straight to Identifier.
+  test('keeps a symbol-keyed method signature', (t: TestContext) => {
+    let result = format('interface D{static symbol dispose;[D.dispose]():void;}');
+    check('symbol-keyed signature', result,
+        'interface D {\n  static symbol dispose;\n  [D.dispose](): void;\n}\n');
+  });
+
+  test('keeps a symbol-keyed method definition', (t: TestContext) => {
+    let result = format('class C implements D{[D.dispose]():void{}}');
+    check('symbol-keyed method', result,
+        'class C implements D {\n  [D.dispose](): void {}\n}\n');
+  });
+
+  // A top-level symbol keeps its own spelling, without a `static`.
+  test('keeps a top-level symbol declaration', (t: TestContext) => {
+    let result = format('export symbol shared;');
+    check('top-level symbol', result, 'export symbol shared;\n');
+  });
 });
 
 // Entry point - returns number of failed tests (0 = success)

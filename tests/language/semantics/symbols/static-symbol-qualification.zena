@@ -1,0 +1,41 @@
+// @mode: check
+
+// A `static symbol` is never in scope under its bare name — not even
+// inside the body that declares it. Naming it takes the type that
+// declares it, which is what makes that type the whole of its
+// visibility. `docs/design/classes.md` §9.2.
+
+interface Disposable {
+  static symbol dispose;
+
+  [Disposable.dispose](): void;
+}
+
+interface Bare {
+  static symbol act;
+
+  // The bare name resolves to nothing: a static symbol is not a lexical
+  // binding. Before this was checked, the key was minted from the text
+  // and the member existed under a symbol that did not.
+  [act](): void; // @error: is a static symbol of 'Bare'
+}
+
+interface Unknown {
+  static symbol real;
+
+  // The qualifier resolves, the property does not.
+  [Unknown.notDeclared](): void; // @error: declares no static symbol
+}
+
+// A name no type declares gets the plain message rather than the hint.
+interface Nothing {
+  [nowhere](): void; // @error: Cannot find symbol 'nowhere'
+}
+
+class Impl implements Disposable {
+  [Disposable.dispose](): void {}
+}
+
+let use = (d: Impl): void => {
+  d.[Disposable.dispose]();
+};

@@ -1,0 +1,34 @@
+// @mode: check
+
+// Two symbols of the same name are two different symbols, but a member
+// key mangles a symbol down to its name, so a type naming both declares
+// two members in one slot. Only one of them survives in the member
+// table, which would make every later check compare the wrong pair. The
+// clash is reported at the second declaration instead.
+
+interface Reader {
+  static symbol act;
+
+  [Reader.act](): i32;
+}
+
+interface Writer {
+  static symbol act;
+
+  [Writer.act](): String;
+}
+
+// Each on its own is fine — the symbols never collide with each other,
+// only with a same-named one in the same body.
+class ReadOnly implements Reader {
+  [Reader.act](): i32 { return 1; }
+}
+
+class WriteOnly implements Writer {
+  [Writer.act](): String { return "x"; }
+}
+
+class Both implements Reader, Writer {
+  [Reader.act](): i32 { return 1; }
+  [Writer.act](): String { return "x"; } // @error: declares two members keyed ':act'
+}

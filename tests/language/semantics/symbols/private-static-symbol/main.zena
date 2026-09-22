@@ -1,0 +1,25 @@
+// @mode: check
+
+// The static-symbol counterpart of `private-symbol/`. An interface's
+// static symbols used to carry no identity at all, so a member keyed by
+// one answered "unknown" to the access check and every caller was let
+// through. Declaring an ordinary symbol of the same name was enough to
+// read — and write — an unexported protocol member.
+import { Holder, Shared } from './lib.zena';
+
+// A symbol of this module's own. Same name as the library's, different
+// symbol.
+symbol peek;
+
+let test = (): void => {
+  let h = new Holder(41);
+
+  // Allowed: the interface is exported, so its static symbol is nameable.
+  let ok: i32 = h.[Shared.look]();
+
+  // Allowed: the library's own accessor.
+  let alsoOk: i32 = h.reveal();
+
+  // Not allowed: a same-named symbol is not the same symbol.
+  let forged: i32 = h.[peek](); // @error: keyed by a different symbol
+};

@@ -4110,9 +4110,22 @@ export let beginModule = (
     );
   }
 
+  // === Phase 0: Bind top-level symbols ===
+  // Before any type registers, because a member key may name a symbol
+  // declared BELOW the type that uses it, and which symbol names a member
+  // must not depend on where in the file it was declared. A type stamps
+  // its members' symbol identities as it registers them, so the bindings
+  // have to exist by then.
+  for (let stmt in ast.body) {
+    match (stmt) {
+      case SymbolDeclaration as sd: { checkSymbolDeclaration(ctx, sd); }
+      case _: {}
+    }
+  }
+
   // === Phase 1: Register all declaration signatures ===
   // Process imports and register type declarations (classes, interfaces,
-  // enums, mixins, type aliases, declared functions, symbols) so that ALL
+  // enums, mixins, type aliases, declared functions) so that ALL
   // member signatures are available before any bodies are checked.
   var ri = 0;
   while (ri < ast.body.length) {
@@ -4127,41 +4140,10 @@ export let beginModule = (
         registerTypeAliasDeclaration(ctx, ta);
       }
       case DeclareFunction as df: { checkDeclareFunction(ctx, df); }
-      case SymbolDeclaration as sd: { checkSymbolDeclaration(ctx, sd); }
+      case SymbolDeclaration {}: {} // Phase 0.
       case _: {} // Non-declaration statements handled in Phase 2.
     }
     ri += 1;
-  }
-
-  // === Phase 1b: Record symbol-keyed members' symbol identities ===
-  // After Phase 1, so a `symbol` declared BELOW the class that keys a
-  // member by it is already bound: which symbol names a member must not
-  // depend on where in the file it was declared.
-  for (let stmt in ast.body) {
-    match (stmt) {
-      case ClassDeclaration as cd: {
-        let t = ctx.resolveTypeName(cd.name.name);
-        if (t is ClassType) {
-          recordSymbolKeyedMemberIdentities(
-              ctx, t.members, cd.body);
-        }
-      }
-      case InterfaceDeclaration as id: {
-        let t = ctx.resolveTypeName(id.name.name);
-        if (t is InterfaceType) {
-          recordSymbolKeyedMemberIdentities(
-              ctx, t.members, id.body);
-        }
-      }
-      case MixinDeclaration as md: {
-        let t = ctx.resolveTypeName(md.name.name);
-        if (t is MixinType) {
-          recordSymbolKeyedMemberIdentities(
-              ctx, t.members, md.body);
-        }
-      }
-      case _: {}
-    }
   }
 
   return new ModuleCheck(ctx, ast, scopeResult, state);
@@ -8472,6 +8454,57 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
     }
   }
 };
+
+/**
+ * A parent's member re-typed for the subtype that inherits it.
+ *
+ * Carries `symbolTypeId` across. A symbol-keyed member that lost it on
+ * the way down would answer -1 to `declaredSymbolIdOfMember`, and the
+ * access check would have nothing to compare against one level below the
+ * declaring type — which is where most calls to an inherited protocol
+ * method are.
+ */
+let inheritedMember = (parentMember: MemberInfo, subType: Type): MemberInfo => {
+  let copy = match (parentMember) {
+    case FieldInfo as fi: {
+      new FieldInfo(
+        subType,
+        fi.isMutable,
+        fi.isAbstract,
+        fi.isStatic,
+        fi.isPrivate,
+        fi.hasInitializer
+      ) as MemberInfo
+    }
+    case MethodInfo as mi: {
+      new MethodInfo(
+        subType,
+        mi.isAbstract,
+        mi.isStatic,
+        mi.isPrivate,
+        mi.isFinal
+      ) as MemberInfo
+    }
+    case _: parentMember
+  };
+  copy.symbolTypeId = parentMember.symbolTypeId;
+  return copy;
+};
+
+/**
+ * The key a member is registered under: its plain name, or `":" + name`
+ * for a symbol-keyed one. Both symbol spellings mangle to the same key —
+ * `:sym` and `:Owner.sym` — so the key alone never distinguishes two
+ * same-named symbols. `MemberInfo.symbolTypeId` is what does.
+ */
+/**
+ * Marks a symbol-keyed member whose key was claimed by two different
+ * symbols in one body. The clash is reported where it is declared, and
+ * every check downstream would otherwise compare one declaration's type
+ * against the other's interface. Distinct from -1, which means the
+ * member is name-keyed.
+ */
+let ambiguousSymbolId: i32 = -2;
 
 let getMemberName = (node: Node): String => {
   return match (node) {
@@ -12845,28 +12878,7 @@ let inheritMembersFrom = (fromClass: ClassType, toClass: ClassType): void => {
         continue;
       }
       let subType = substituteTypeParams(fromClass.typeParameters, fromClass.typeArguments, parentMember.type);
-      toClass.members[key] = match (parentMember) {
-        case FieldInfo as fi: {
-          new FieldInfo(
-            subType,
-            fi.isMutable,
-            fi.isAbstract,
-            fi.isStatic,
-            fi.isPrivate,
-            fi.hasInitializer
-          ) as MemberInfo
-        }
-        case MethodInfo as mi: {
-          new MethodInfo(
-            subType,
-            mi.isAbstract,
-            mi.isStatic,
-            mi.isPrivate,
-            mi.isFinal
-          ) as MemberInfo
-        }
-        case _: parentMember
-      };
+      toClass.members[key] = inheritedMember(parentMember, subType);
     }
   }
 };
@@ -13049,6 +13061,12 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
   // Record the declaring file for cross-module goto-definition.
   classType.sourcePath = ctx.filePath;
+
+  // Before the body: a member's key may name a static symbol this very
+  // class declares, and `Owner.sym` has to resolve by the time that
+  // member is registered.
+  registerStaticSymbols(
+      ctx, className, classType.staticSymbols, cd.body, false);
 
   // Flags — ClassDeclaration is authoritative, overriding any
   // previously materialized flags (e.g., from SealedVariant).
@@ -13465,15 +13483,13 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   for (let member in cd.body) {
     match (member) {
       case FieldDefinition as fd: {
-        let fieldName = match (fd.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        // `static symbol sym;` is shaped as a static field annotated
+        // `symbol`, but it declares a symbol rather than storage: it is
+        // registered on the type's staticSymbols and has no member and no
+        // type of its own. Registering it as a field asks for a type
+        // called `symbol`, which does not exist.
+        if (fd.isStatic && isSymbolFieldAnnotation(fd)) { continue; }
+        let fieldName = getMemberName(fd.name as Node);
         let fieldType = if (fd.typeAnnotation != null) {
           let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
           rejectSecondClassStorage(ctx, resolved, "a field", fd.loc);
@@ -13677,15 +13693,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
         }      }
       case MethodDefinition as md: {
-        let methodName = match (md.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        let methodName = getMemberName(md.name as Node);
 
         if (md.isConstructor) {
           if (methodName == "<constructor>") {
@@ -13939,15 +13947,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         }
       }
       case AccessorDeclaration as acc: {
-        let accName = match (acc.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        let accName = getMemberName(acc.name as Node);
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
 
         if (acc.isStatic) {
@@ -14264,6 +14264,12 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
     }
   }
 
+  // Every member is registered by now, so each symbol-keyed one can be
+  // given the identity of the symbol that named it — and a key that names
+  // no symbol is reported.
+  recordSymbolKeyedMemberIdentities(
+      ctx, classType.members, cd.body, className, classType.staticSymbols);
+
   ctx.exitClass();
   ctx.exitScope();
 };
@@ -14274,15 +14280,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
  * after all declaration signatures have been registered.
  */
 /** The name a field is declared under (a symbol-keyed one as `:name`). */
-let fieldDeclaredName = (fd: FieldDefinition): String => match (fd.name) {
-  case Identifier {name}: name
-  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-    case Identifier {name}: name
-    case MemberExpression {property}: property.name
-    case _: "<symbol>"
-  }
-  case _: "<unknown>"
-};
+let fieldDeclaredName = (fd: FieldDefinition): String => getMemberName(fd.name as Node);
 
 /**
  * Resolve a field's type if it is still to be inferred from its
@@ -14449,15 +14447,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   for (let bodyMember in cd.body) {
     match (bodyMember) {
       case FieldDefinition as fd: {
-        let fn = match (fd.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        let fn = getMemberName(fd.name as Node);
         fieldOrder.push(fn);
       }
       case _: {}
@@ -14477,15 +14467,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       case MethodDefinition as md: {
         if (md.body != null) {
           ctx.enterNodeReferrer(md.id as i32);
-          let methodName = match (md.name) {
-            case Identifier {name}: name
-            case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-              case Identifier {name}: name
-              case MemberExpression {property}: property.name
-              case _: "<symbol>"
-            }
-            case _: "<unknown>"
-          };
+          let methodName = getMemberName(md.name as Node);
           if (md.isConstructor) {
             let ctorType = if (classType.constructors.has(methodName)) {
               classType.constructors[methodName]
@@ -14532,15 +14514,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
         }
       }
       case AccessorDeclaration as acc: {
-        let accName = match (acc.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        let accName = getMemberName(acc.name as Node);
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
 
         // Check getter body.
@@ -14606,6 +14580,29 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
               if (classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
                 let classMethodInfo = classType.members[methodName];
                 let classMethod = classMethodInfo.type;
+                // Two symbols of the same name mangle to one member key, so
+                // a class implementing both interfaces has one slot where it
+                // needs two. Say that, rather than letting the signature
+                // comparison below report a type mismatch between members
+                // that were never meant to be the same member.
+                if (classMethodInfo.symbolTypeId == ambiguousSymbolId) {
+                  // Reported at the declaration; the surviving member is
+                  // one of the two and matches neither interface.
+                  continue;
+                }
+                if (ifaceMethodInfo.symbolTypeId >= 0 &&
+                    classMethodInfo.symbolTypeId >= 0 &&
+                    ifaceMethodInfo.symbolTypeId != classMethodInfo.symbolTypeId) {
+                  ctx.error(
+                    "Class '" + className + "' cannot implement interface '" +
+                    iface.name + "': its '" + methodName + "' is keyed by a " +
+                    "different symbol of the same name, and a class holds " +
+                    "one member per name. Rename one of the symbols.",
+                    DiagnosticCode.IncompatibleTypes,
+                    cd.loc
+                  );
+                  continue;
+                }
                 // Check signature compatibility.
                 let expectedMethodType0 = substituteTypeParams(iface.typeParameters, iface.typeArguments, ifaceMethod);
                 
@@ -14684,15 +14681,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   var sawOwnDispose = false;
   for (let member in cd.body) {
     if (member is MethodDefinition) {
-      let mName = match (member.name) {
-        case Identifier {name}: name
-        case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-          case Identifier {name}: name
-          case MemberExpression {property}: property.name
-          case _: "<symbol>"
-        }
-        case _: ""
-      };
+      let mName = getMemberName(member.name as Node);
       if (mName == ":dispose") { sawOwnDispose = true; }
     }
     if (member is FieldDefinition && !member.isStatic && !member.isAbstract &&
@@ -15618,6 +15607,12 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
 
   ifaceType.sourcePath = ctx.filePath;
 
+  // Before type parameters and before the body: a member's key may name a
+  // static symbol this very interface declares, and `Owner.sym` has to
+  // resolve by the time that member is registered.
+  registerStaticSymbols(
+      ctx, ifaceName, ifaceType.staticSymbols, id.body, true);
+
   // Type parameters.
   ctx.enterScope();
   let {typeParameters} = id;
@@ -15663,28 +15658,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           for (let key in pt.members.keys()) {
             if (let (true, parentMember) = pt.members.get(key)) {
               let subType = substituteTypeParams(pt.typeParameters, pt.typeArguments, parentMember.type);
-              ifaceType.members[key] = match (parentMember) {
-                case FieldInfo as fi: {
-                  new FieldInfo(
-                    subType,
-                    fi.isMutable,
-                    fi.isAbstract,
-                    fi.isStatic,
-                    fi.isPrivate,
-                    fi.hasInitializer
-                  ) as MemberInfo
-                }
-                case MethodInfo as mi: {
-                  new MethodInfo(
-                    subType,
-                    mi.isAbstract,
-                    mi.isStatic,
-                    mi.isPrivate,
-                    mi.isFinal
-                  ) as MemberInfo
-                }
-                case _: parentMember
-              };
+              ifaceType.members[key] = inheritedMember(parentMember, subType);
             }
           }
         }
@@ -15738,15 +15712,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         if (returnType != null) {
           retType = resolveTypeAnnotation(ctx, returnType, true);
         }
-        let methodName = match (ms.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        let methodName = getMemberName(ms.name as Node);
         let ft = new FunctionType(paramTypes, null, retType);
         ft.typeParameters = typeParams;
         let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
@@ -15772,15 +15738,9 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         );
       }
       case FieldDefinition as fd: {
-        let fieldName = match (fd.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-         };
+        // See the class body: a static symbol declaration is not storage.
+        if (fd.isStatic && isSymbolFieldAnnotation(fd)) { continue; }
+        let fieldName = getMemberName(fd.name as Node);
         let fieldType = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
         let isMutable = fd.mutability != null && fd.mutability == "var";
         let isPrivate = fieldName.length > 0 && fieldName.sliceBytes(0, 1) == "#";
@@ -15811,6 +15771,12 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
     }
   }
   ctx.exitInterface();
+
+  // Every member is registered by now, so each symbol-keyed one can be
+  // given the identity of the symbol that named it — and a key that names
+  // no symbol is reported.
+  recordSymbolKeyedMemberIdentities(
+      ctx, ifaceType.members, id.body, ifaceName, ifaceType.staticSymbols);
 
   // Register interface in type namespace.
   ctx.declareTypeName(ifaceName, ifaceType);
@@ -16287,6 +16253,10 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   // Record the declaring file for cross-module lookup and reachability.
   mixinType.sourcePath = ctx.filePath;
 
+  // Before the body, for the same reason as a class's.
+  registerStaticSymbols(
+      ctx, mixinName, mixinType.staticSymbols, md.body, false);
+
   // Type parameters.
   ctx.enterScope();
   let {typeParameters} = md;
@@ -16440,15 +16410,16 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
     let member = md.body[b_idx];
     match (member) {
       case FieldDefinition as fd: {
-        let fieldName = match (fd.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        // `static symbol sym;` is shaped as a static field annotated
+        // `symbol`, but it declares a symbol rather than storage: it is
+        // registered on the type's staticSymbols and has no member and no
+        // type of its own. Registering it as a field asks for a type
+        // called `symbol`, which does not exist.
+        if (fd.isStatic && isSymbolFieldAnnotation(fd)) {
+          b_idx = b_idx + 1;
+          continue;
+        }
+        let fieldName = getMemberName(fd.name as Node);
         let fieldType = if (fd.typeAnnotation != null) {
           resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation)
         } else {
@@ -16483,15 +16454,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
         }
       }
       case MethodDefinition as methDef: {
-        let methodName = match (methDef.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        let methodName = getMemberName(methDef.name as Node);
 
         // Reject constructors in mixins.
         if (methDef.isConstructor || methodName == "<constructor>") {
@@ -16530,15 +16493,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       }
       case AccessorDeclaration as acc: {
         let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-        let accName = match (acc.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-         };
+        let accName = getMemberName(acc.name as Node);
         let isPrivate = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
         if (isPrivate) {
           // Private accessors register only their get#/set# methods,
@@ -16589,6 +16544,10 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
   ctx.exitInterface();
 
+  // As for an interface: members are registered, so stamp and report.
+  recordSymbolKeyedMemberIdentities(
+      ctx, mixinType.members, md.body, mixinName, mixinType.staticSymbols);
+
   // Register mixin type early so it's available in model during body checking.
   ctx.declareTypeName(mixinName, mixinType);
   let info = ctx.model.resolveDeclaration(md);
@@ -16608,15 +16567,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
     let member = md.body[bmi];
     match (member) {
       case MethodDefinition as methDef: {
-        let methodName = match (methDef.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-         };
+        let methodName = getMemberName(methDef.name as Node);
          if (!methDef.isConstructor && methodName != "<constructor>" && methDef.body != null && mixinType.members.has(methodName)) {
            if (let (true, methodTypeInfo) = mixinType.members.get(methodName)) {
              ctx.enterNodeReferrer(methDef.id as i32);
@@ -17235,43 +17186,254 @@ let checkConstructorArguments = (
 // ============================================================================
 
 /**
- * The symbol a `:sym` member key names, when the key is an unqualified
- * symbol reference. Null for the qualified `:Iface.sym` form, whose name
- * lives on the interface rather than in a symbol binding.
+ * Whether a static field is really a `static symbol` declaration.
+ *
+ * A class spells one as `static symbol sym;`, which the parser shapes as
+ * a static field annotated with the bare name `symbol`. There is no
+ * `symbol` type to annotate a field with otherwise, so the name is
+ * unambiguous.
  */
-let resolveSymbolKeyBinding = (
-    ctx: CheckerContext, path: Expression): SymbolType | null => {
-  if (!(path is Identifier)) {
-    return null;
-  }
-  let t = ctx.resolveIdentifier(path as Node);
-  if (t == null) {
-    return null;
-  }
-  if (!(t is SymbolType)) {
-    return null;
-  }
-  return t;
+let isSymbolFieldAnnotation = (fd: FieldDefinition): boolean => {
+  let ann = fd.typeAnnotation;
+  if (ann == null) { return false; }
+  return match (ann as TypeAnnotation) {
+    case NamedTypeAnnotation {name, typeArguments}:
+      name == "symbol" && typeArguments == null
+    case _: false
+  };
 };
 
 /**
- * The unqualified symbol reference a member's name node carries, or null
- * for a name-keyed member or the qualified `:Iface.sym` form.
+ * The `staticSymbols` map of a named type, or null for anything else.
  */
-let unqualifiedSymbolRefOf = (nameNode: Node): Expression | null => {
+let staticSymbolsOf = (t: Type): Map<String, Type> | null => {
+  return match (t) {
+    case ClassType as ct: ct.staticSymbols
+    case InterfaceType as it: it.staticSymbols
+    case MixinType as mt: mt.staticSymbols
+    case _: null
+  };
+};
+
+/**
+ * The symbol a member key names, for both spellings.
+ *
+ * `:sym` is an ordinary lexical reference, so a top-level `symbol sym`
+ * has to be in scope. `:Owner.sym` names a `static symbol` on the type
+ * `Owner`, which is reached only through that type — it never enters a
+ * lexical scope, so the qualifier is the whole of its visibility.
+ *
+ * Reports the reason it failed when `report` is set, and returns null.
+ * Callers that only want the identity pass false.
+ */
+let resolveSymbolPath = (
+    ctx: CheckerContext,
+    path: Expression,
+    report: boolean,
+    loc: SourceLocation | null,
+    enclosingName: String = "",
+    enclosingSymbols: Map<String, Type> | null = null): SymbolType | null => {
+  match (path) {
+    case Identifier as ident: {
+      let t = ctx.resolveIdentifier(ident as Node);
+      if (t != null && t is SymbolType) {
+        return t as SymbolType;
+      }
+      if (report) {
+        // A static symbol is deliberately NOT in scope under its bare
+        // name. When the name is one the enclosing type declares, that is
+        // almost always what was meant, so name the spelling that reaches
+        // it rather than leaving the reader to wonder why a name they can
+        // see right above did not resolve.
+        var ownedByEnclosing = false;
+        if (enclosingSymbols != null) {
+          ownedByEnclosing =
+              (enclosingSymbols as Map<String, Type>).has(ident.name);
+        }
+        if (ownedByEnclosing) {
+          ctx.error(
+            "'" + ident.name + "' is a static symbol of '" + enclosingName +
+            "'. Write '" + enclosingName + "." + ident.name +
+            "': a static symbol is named through the type that declares it.",
+            DiagnosticCode.SymbolNotFound,
+            loc
+          );
+        } else {
+          ctx.error(
+            "Cannot find symbol '" + ident.name +
+            "'. A symbol-keyed member can only be named where its symbol " +
+            "is in scope.",
+            DiagnosticCode.SymbolNotFound,
+            loc
+          );
+        }
+      }
+      return null;
+    }
+    case MemberExpression {object, property}: {
+      if (!(object is Identifier)) {
+        if (report) {
+          ctx.error(
+            "A symbol key must be a symbol name or 'Type.symbol'.",
+            DiagnosticCode.SymbolNotFound,
+            loc
+          );
+        }
+        return null;
+      }
+      let ownerName = (object as Identifier).name;
+      var ownerType = ctx.resolveTypeReference(object as Node, ownerName);
+      if (ownerType == null) {
+        ownerType = ctx.resolveIdentifier(object as Node);
+      }
+      if (ownerType == null) {
+        if (report) {
+          ctx.error(
+            "Cannot find name '" + ownerName + "' declaring symbol '" +
+            property.name + "'.",
+            DiagnosticCode.SymbolNotFound,
+            loc
+          );
+        }
+        return null;
+      }
+      let symbols = staticSymbolsOf(baseType(ownerType as Type));
+      if (symbols == null) {
+        if (report) {
+          ctx.error(
+            "'" + ownerName + "' is not a class, interface or mixin, so it " +
+            "declares no static symbols.",
+            DiagnosticCode.SymbolNotFound,
+            loc
+          );
+        }
+        return null;
+      }
+      if (let (true, sym) = (symbols as Map<String, Type>).get(property.name)) {
+        if (sym is SymbolType) {
+          return sym as SymbolType;
+        }
+      }
+      if (report) {
+        ctx.error(
+          "'" + ownerName + "' declares no static symbol '" + property.name +
+          "'.",
+          DiagnosticCode.SymbolNotFound,
+          loc
+        );
+      }
+      return null;
+    }
+    case _: {
+      if (report) {
+        ctx.error(
+          "A symbol key must be a symbol name or 'Type.symbol'.",
+          DiagnosticCode.SymbolNotFound,
+          loc
+        );
+      }
+      return null;
+    }
+  }
+};
+
+/**
+ * The symbol reference a member's name node carries, or null for a
+ * name-keyed member.
+ */
+let symbolRefOfMemberName = (nameNode: Node): Expression | null => {
   if (!(nameNode is SymbolPropertyName)) {
     return null;
   }
-  let ref = nameNode.symbolRef;
-  if (ref is Identifier) {
-    return ref;
+  return nameNode.symbolRef;
+};
+
+/** The name node a declaration body member is declared under. */
+let memberNameNodeOf = (member: Node): Node | null => {
+  return match (member) {
+    case FieldDefinition as fd: fd.name as Node
+    case MethodDefinition as md: md.name as Node
+    case AccessorDeclaration as ad: ad.name as Node
+    case MethodSignature as ms: ms.name as Node
+    case AccessorSignature as asig: asig.name as Node
+    case PropertySignature as ps: ps.name as Node
+    case _: null
+  };
+};
+
+/**
+ * Registers the `static symbol` declarations a body makes on the type
+ * that declares them, so `Owner.sym` resolves and the members it keys
+ * can carry its identity.
+ *
+ * An interface spells one `static symbol sym;`, which the parser shapes
+ * as a `SymbolDeclaration`. A class body parses the same words into a
+ * static `FieldDefinition` annotated `symbol`, which is rejected here —
+ * see the comment on that branch.
+ */
+let registerStaticSymbols = (
+    ctx: CheckerContext,
+    ownerName: String,
+    symbols: Map<String, Type>,
+    body: Array<Node>,
+    ownerIsInterface: boolean): void => {
+  for (let member in body) {
+    var symName: String = "";
+    var node: Node | null = null;
+    match (member) {
+      case SymbolDeclaration as sd: {
+        symName = sd.name.name;
+        node = sd as Node;
+      }
+      case FieldDefinition as fd: {
+        if (fd.isStatic && isSymbolFieldAnnotation(fd)) {
+          symName = getMemberName(fd.name as Node);
+          node = fd as Node;
+        }
+      }
+      case _: {}
+    }
+    if (node == null || symName == "") { continue; }
+    // A class body parses `static symbol sym;` — the syntax test
+    // `symbols/class-static-symbol.zena` pins that — but nothing below
+    // the checker knows what to do with it: it is not storage, so it has
+    // no struct slot, and codegen's walks over a class body expect every
+    // field to be one. It has never worked; every symbol in the language
+    // is a top-level `symbol` or an interface's. Say so here rather than
+    // let it reach a backend that will trap.
+    if (!ownerIsInterface) {
+      ctx.error(
+        "'static symbol' is an interface declaration. Declare '" + symName +
+        "' on an interface, or as a top-level 'symbol " + symName + ";'.",
+        DiagnosticCode.IncompatibleTypes,
+        (node as Node).loc
+      );
+      continue;
+    }
+    let sym = ctx.canonicalSymbolType(node as Node, ownerName + "." + symName);
+    if (let (true, existing) = symbols.get(symName)) {
+      // A declaration is registered again whenever its module is
+      // re-checked, and `canonicalSymbolType` is keyed by source
+      // location, so the same declaration hands back the same type. A
+      // different one is a real duplicate.
+      if (!typesEqual(existing, sym)) {
+        ctx.error(
+          "'" + ownerName + "' already declares a static symbol '" + symName +
+          "'.",
+          DiagnosticCode.DuplicateDeclaration,
+          (node as Node).loc
+        );
+      }
+      continue;
+    }
+    symbols[symName] = sym;
   }
-  return null;
 };
 
 /**
  * Records, on each symbol-keyed member a declaration body declares, the
- * identity of the symbol that named it.
+ * identity of the symbol that named it, and reports a key that names no
+ * symbol at all.
  *
  * Run as one pass over the body rather than at each member-registration
  * site: the same key is registered from a dozen places (fields, methods,
@@ -17281,22 +17443,54 @@ let unqualifiedSymbolRefOf = (nameNode: Node): Expression | null => {
 let recordSymbolKeyedMemberIdentities = (
     ctx: CheckerContext,
     members: Map<String, MemberInfo>,
-    body: Array<Node>): void => {
+    body: Array<Node>,
+    ownerName: String,
+    ownerSymbols: Map<String, Type>): void => {
+  // Which symbol each key was claimed by in THIS body, so a second
+  // declaration under the same key is recognised as the duplicate it is.
+  let declaredHere = new Map<String, i32>();
   for (let member in body) {
-    var nameNode: Node | null = null;
-    match (member) {
-      case FieldDefinition as fd: { nameNode = fd.name; }
-      case MethodDefinition as md: { nameNode = md.name; }
-      case AccessorDeclaration as ad: { nameNode = ad.name; }
-      case _: {}
-    }
+    let nameNode = memberNameNodeOf(member);
     if (nameNode == null) { continue; }
-    let ref = unqualifiedSymbolRefOf(nameNode);
+    let ref = symbolRefOfMemberName(nameNode as Node);
     if (ref == null) { continue; }
-    let sym = resolveSymbolKeyBinding(ctx, ref);
+    let key = getMemberName(nameNode as Node);
+    // A body is walked once per registration pass, and a module in an
+    // import cycle is registered more than once. Stamping is idempotent;
+    // reporting is not, so a member that already carries its identity is
+    // left alone — unless THIS body is what put it there, which is the
+    // duplicate below.
+    var settled = false;
+    if (let (true, seen) = members.get(key)) {
+      settled = seen.symbolTypeId >= 0;
+    }
+    if (settled && !declaredHere.has(key)) { continue; }
+    let sym = resolveSymbolPath(
+        ctx, ref as Expression, true, (nameNode as Node).loc,
+        ownerName, ownerSymbols);
     if (sym == null) { continue; }
     let id = sym.id as i32;
-    let key = ":" + (ref as Identifier).name;
+    // Two symbols of the same name mangle to one key, so a body naming
+    // both declares two members in one slot. Only one of them survives in
+    // the member table, which makes every later check compare the wrong
+    // pair — say it here, at the second declaration, and mark the slot so
+    // nothing downstream reports the wreckage as a type mismatch.
+    if (let (true, firstId) = declaredHere.get(key)) {
+      if (firstId != id) {
+        ctx.error(
+          "'" + ownerName + "' declares two members keyed '" + key +
+          "' by different symbols of the same name. A type holds one " +
+          "member per name — rename one of the symbols.",
+          DiagnosticCode.DuplicateDeclaration,
+          (nameNode as Node).loc
+        );
+        if (let (true, info) = members.get(key)) {
+          info.symbolTypeId = ambiguousSymbolId;
+        }
+      }
+      continue;
+    }
+    declaredHere[key] = id;
     let candidates = new Array<String>();
     candidates.push(key);
     candidates.push("get#" + key);
@@ -17311,15 +17505,33 @@ let recordSymbolKeyedMemberIdentities = (
 
 /**
  * The symbol id recorded for `propName` on `receiverType`, searching the
- * class's ancestors and the interfaces in scope; -1 when the member is
- * not found or carries no recorded symbol (see `MemberInfo.symbolTypeId`,
- * which fails open on purpose).
+ * class's ancestors and the interfaces it implements.
+ *
+ * -1 means the receiver has no such member at all — a missing member is
+ * reported by the member lookup itself, so there is nothing to compare
+ * and nothing to say here. Every member that IS found under a `:`-prefixed
+ * key carries an id, because a key that resolved to no symbol was reported
+ * at its declaration.
  */
 let declaredSymbolIdOfMember = (receiverType: Type, propName: String): i32 => {
   var current: Type = receiverType;
   var guard = 0;
   while (guard < 64) {
     guard += 1;
+    // An `Own<R>`/`Borrow<R>`/`Unmanaged<R>` receiver is the resource it
+    // wraps as far as members go, and a transparent alias is its target.
+    // Stopping at the wrapper would answer -1 for every resource in the
+    // language, which is most of what symbol keys guard.
+    let inner = ownershipHandleInner(current);
+    if (inner != null) {
+      current = inner as Type;
+      continue;
+    }
+    let peeled = baseType(current);
+    if (!(peeled === current)) {
+      current = peeled;
+      continue;
+    }
     match (current) {
       case ClassType as ct: {
         if (let (true, info) = ct.members.get(propName)) {
@@ -17356,14 +17568,7 @@ let declaredSymbolIdOfMember = (receiverType: Type, propName: String): i32 => {
  * `classes.md` §9.4 says visibility follows the ordinary export rules —
  * "if you don't export the symbol, outside modules cannot call or
  * implement the method" — and `zena:ownership` relies on exactly that to
- * keep the resource lifecycle flag unwritable. Nothing enforced it:
- * member keys are the mangled string `":" + name` on both sides, so a
- * consumer reached a private symbol-keyed member by writing its name,
- * with no symbol of its own declared anywhere.
- *
- * Both spellings are checked here. `x.:sym` must resolve to a symbol
- * binding in scope; `x.:Iface.sym` must resolve the interface that
- * declares the symbol, which is what an unexported interface withholds.
+ * keep the resource lifecycle flag unwritable.
  */
 let checkSymbolKeyAccess = (
     ctx: CheckerContext,
@@ -17371,49 +17576,26 @@ let checkSymbolKeyAccess = (
     propName: String,
     receiverType: Type,
     loc: SourceLocation | null): void => {
-  match (path) {
-    case Identifier as ident: {
-      let sym = resolveSymbolKeyBinding(ctx, ident as Expression);
-      if (sym == null) {
-        ctx.error(
-          "Cannot find symbol '" + ident.name + "' for member '" + propName +
-          "'. A symbol-keyed member can only be named where its symbol is " +
-          "in scope.",
-          DiagnosticCode.SymbolNotFound,
-          loc
-        );
-        return;
-      }
-      // The symbol resolved — but to WHICH one? Two modules may each
-      // declare `symbol secret`, and the mangled key ":secret" is the
-      // same string for both. Identity is the only thing that separates
-      // a module's own member from the one it is reaching into.
-      let declared = declaredSymbolIdOfMember(receiverType, propName);
-      if (declared >= 0 && declared != (sym.id as i32)) {
-        ctx.error(
-          "Member '" + propName + "' is keyed by a different symbol '" +
-          ident.name + "' than the one in scope here. Import the symbol " +
-          "that declares it, if it is exported.",
-          DiagnosticCode.PrivateAccess,
-          loc
-        );
-      }
-    }
-    case MemberExpression {object}: {
-      // `:Iface.sym` — the qualifier is what has to be visible.
-      if (object is Identifier) {
-        if (ctx.resolveTypeReference(object as Node, object.name) == null &&
-            ctx.resolveIdentifier(object as Node) == null) {
-          ctx.error(
-            "Cannot find name '" + object.name + "' declaring member '" +
-            propName + "'.",
-            DiagnosticCode.SymbolNotFound,
-            loc
-          );
-        }
-      }
-    }
-    case _: {}
+  // Both spellings resolve through the same door, and both must land on a
+  // symbol: `:sym` on one in lexical scope, `:Owner.sym` on one the named
+  // type declares. An unexported owner withholds the second the way an
+  // unexported `symbol` withholds the first.
+  let sym = resolveSymbolPath(ctx, path, true, loc);
+  if (sym == null) {
+    return;
+  }
+  // The key resolved — but to WHICH symbol? Two modules may each declare
+  // `symbol secret`, and the mangled key ":secret" is the same string for
+  // both. Identity is the only thing that separates a module's own member
+  // from the one it is reaching into.
+  let declared = declaredSymbolIdOfMember(receiverType, propName);
+  if (declared >= 0 && declared != (sym.id as i32)) {
+    ctx.error(
+      "Member '" + propName + "' is keyed by a different symbol than the " +
+      "one named here. Name the symbol that declares it, if it is visible.",
+      DiagnosticCode.PrivateAccess,
+      loc
+    );
   }
 };
 

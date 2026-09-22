@@ -618,7 +618,8 @@ Sometimes APIs need to expose methods for system use (e.g., iteration, serializa
 
 ### 9.2. Defining Symbols
 
-Symbols are declared using the `symbol` keyword. They can be top-level constants or static members of classes/interfaces.
+Symbols are declared using the `symbol` keyword. A symbol is either a
+top-level declaration or a `static symbol` on an interface.
 
 ```zena
 // Top-level symbol
@@ -632,6 +633,35 @@ interface Iterable<T> {
   [Iterable.iterator](): Iterator<T>;
 }
 ```
+
+The two kinds differ in how you name them, and the difference is the
+point of having both.
+
+A top-level symbol is an ordinary binding. `[mySymbol]` is a lexical
+reference to it, so it resolves wherever the name is in scope and is
+withheld from other modules by not exporting it.
+
+A static symbol is never in scope under its bare name — not even inside
+the body that declares it. It is reached only through the type that
+declares it, so you write `[Iterable.iterator]` in `Iterable` itself,
+exactly as an implementer and a caller do. Writing the bare `[iterator]`
+there is an error:
+
+```
+'iterator' is a static symbol of 'Iterable'. Write 'Iterable.iterator':
+a static symbol is named through the type that declares it.
+```
+
+Requiring the qualifier is what makes the type the whole of the symbol's
+visibility: an unexported interface withholds its static symbols the way
+an unexported `symbol` withholds itself, and there is no second spelling
+that bypasses it. It also keeps one name for one thing — the declaration,
+the implementations and the call sites all say `Iterable.iterator`.
+
+A class body parses `static symbol` too, but the checker rejects it. A
+symbol is an identity rather than storage, so a class has no slot to put
+one in and nothing below the checker knows what to lay out for it.
+Declare the symbol on an interface, or at the top level of the module.
 
 ### 9.3. Implementing & Calling Symbols
 
@@ -648,19 +678,36 @@ class MyList<T> implements Iterable<T> {
 // Usage
 let list = new MyList();
 // list.iterator(); // Error: No such method
-let it = list[Iterable.iterator](); // OK
+let it = list.[Iterable.iterator](); // OK
 ```
 
 ### 9.4. Semantics & Compilation
 
 - **Static Resolution**: Unlike JavaScript, Zena symbols are resolved at **compile time**. The compiler maps each symbol to a unique VTable index.
 - **No Dynamic Lookup**: The expression inside `[...]` must be a compile-time constant resolving to a symbol. Dynamic expressions like `list[getRandomSymbol()]()` are **not supported** to ensure performance and AOT compatibility.
-- **Access Control**: Visibility is controlled via standard `export` rules. If you don't export the symbol, outside modules cannot call or implement the method.
+- **Access Control**: Visibility is controlled via standard `export` rules. If you don't export the symbol — or, for a static symbol, the type that declares it — outside modules cannot call or implement the method. A symbol is an identity rather than a spelling, so another module declaring a symbol of the same name does not reach the member: the compiler compares which symbol keyed it, not what it is called.
 
 ### 9.5. Comparison to "Protected"
 
 - **Flexibility**: Symbols can be shared across unrelated libraries (if the symbol itself is shared), allowing for "friend" access patterns beyond just subclasses.
-- **No Collisions**: Two interfaces can define methods with the same _name_ but different _symbols_, allowing a class to implement both without conflict.
+- **No Accidental Collisions**: A symbol-keyed method never collides with a name-keyed one. `[Iterable.iterator]` and a plain `iterator()` are different members, so adding a protocol method to a type cannot capture a method that was already there.
+
+A class still holds one member per name, and a symbol-keyed member is
+held under its symbol's name. So two interfaces whose symbols happen to
+share a name cannot both be implemented by one class, and the compiler
+says so:
+
+```
+Class 'Both' cannot implement interface 'B': its ':act' is keyed by a
+different symbol of the same name, and a class holds one member per
+name. Rename one of the symbols.
+```
+
+The symbols stay distinct — a call naming one never reaches a member
+keyed by the other — but there is nowhere to put the second member.
+Naming a static symbol after the protocol it belongs to, as
+`Iterable.iterator` and `Disposable.dispose` do, makes the clash
+unlikely in practice.
 
 ## 10. Initialization & Safety
 
