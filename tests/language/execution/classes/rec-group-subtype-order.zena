@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 42
+
+// Verify that when a subtype and its supertype belong to the same mutually
+// recursive type group, the supertype is emitted before the subtype in the
+// Wasm type section as required by the WebAssembly GC specification.
+
+class Holder {
+  var entry: BaseNode | null = null;
+  new();
+}
+
+class BaseNode {
+  var holder: Holder | null = null;
+  new();
+  value(): i32 { return 10; }
+}
+
+class SubNode extends BaseNode {
+  var extra: i32 = 32;
+  new() : super();
+  value(): i32 { return this.extra; }
+}
+
+export function main(): i32 {
+  let holder = new Holder();
+  let sub = new SubNode();
+  sub.holder = holder;
+  holder.entry = sub;
+
+  let base: BaseNode = holder.entry as BaseNode;
+  return base.value() + 10; // 32 + 10 = 42
+}

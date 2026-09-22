@@ -2069,6 +2069,109 @@ export final class WasmModule {
         members[mj + 1] = mkey;
         mi += 1;
       }
+
+      // WebAssembly GC requires that supertypes be defined before subtypes
+      // even within a recursive type group. If any member has a supertype
+      // that is also in this group, topologically sort members so that
+      // all supertypes precede their subtypes, breaking ties by first-seen order.
+      if (members.length > 1) {
+        let memberSet = new Map<i32, boolean>();
+        for (let m in members) {
+          memberSet[m] = true;
+        }
+        var hasIntraGroupSubtype = false;
+        for (let m in members) {
+          let t = uniqueTypes[m];
+          if (t is WasmStruct) {
+            let s = (t as WasmStruct).superStruct;
+            if (s != null) {
+              if (let (true, sp) = posOf.get(s as WasmStruct)) {
+                if (let (true, _present) = memberSet.get(sp)) {
+                  hasIntraGroupSubtype = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        if (hasIntraGroupSubtype) {
+          let childrenOf = new Map<i32, GrowableArray<i32>>();
+          let inDegree = new Map<i32, i32>();
+          for (let m in members) {
+            inDegree[m] = 0;
+          }
+          for (let m in members) {
+            let t = uniqueTypes[m];
+            if (t is WasmStruct) {
+              let s = (t as WasmStruct).superStruct;
+              if (s != null) {
+                if (let (true, sp) = posOf.get(s as WasmStruct)) {
+                  if (let (true, _present) = memberSet.get(sp)) {
+                    inDegree[m] = 1;
+                    var ch: GrowableArray<i32> | null = null;
+                    if (let (true, existing) = childrenOf.get(sp)) {
+                      ch = existing;
+                    } else {
+                      let arr = new Array<i32>();
+                      childrenOf[sp] = arr;
+                      ch = arr;
+                    }
+                    (ch as GrowableArray<i32>).push(m);
+                  }
+                }
+              }
+            }
+          }
+          let ready = new Array<i32>();
+          for (let m in members) {
+            if (inDegree[m] == 0) {
+              ready.push(m);
+            }
+          }
+          let sortedMembers = new Array<i32>();
+          while (ready.length > 0) {
+            let curr = ready[0];
+            var ri = 0;
+            while (ri < ready.length - 1) {
+              ready[ri] = ready[ri + 1];
+              ri += 1;
+            }
+            ready.pop();
+            sortedMembers.push(curr);
+
+            if (let (true, ch) = childrenOf.get(curr)) {
+              for (let child in ch) {
+                let d = inDegree[child] - 1;
+                inDegree[child] = d;
+                if (d == 0) {
+                  var insertAt = ready.length;
+                  var ci = 0;
+                  while (ci < ready.length) {
+                    if (ready[ci] > child) {
+                      insertAt = ci;
+                      break;
+                    }
+                    ci += 1;
+                  }
+                  ready.push(child);
+                  var cj = ready.length - 1;
+                  while (cj > insertAt) {
+                    ready[cj] = ready[cj - 1];
+                    cj -= 1;
+                  }
+                  ready[insertAt] = child;
+                }
+              }
+            }
+          }
+          var si = 0;
+          while (si < members.length) {
+            members[si] = sortedMembers[si];
+            si += 1;
+          }
+        }
+      }
+
       let intraIndex = new Map<i32, i32>();
       for (var i = 0; i < members.length; i += 1) {
         intraIndex[members[i]] = i;
