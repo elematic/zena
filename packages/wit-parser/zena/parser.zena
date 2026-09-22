@@ -1103,7 +1103,15 @@ export class Parser {
     let token = this.#peek();
     if (token.type == TokenType.Id || token.type == TokenType.ExplicitId) {
       this.#advance();
-      return new Id(this.#text(token.span), token.span);
+      var text = this.#text(token.span);
+      if (token.type == TokenType.ExplicitId) {
+        // `%type`, `%flags`: the prefix only escapes a keyword, and is
+        // no part of the name. Every consumer — the resolver, the
+        // component encoder's export names, the synthesizer's Zena
+        // spellings — wants the name itself.
+        text = text.sliceBytes(1, text.length);
+      }
+      return new Id(text, token.span);
     }
     throw new ParseError("expected identifier", token.span);
   }

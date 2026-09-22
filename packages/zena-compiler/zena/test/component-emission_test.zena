@@ -616,6 +616,22 @@ export function reset(): boolean { return true; }
       'the instance does not export its functions beside its types');
   });
 
+  test('an explicit identifier synthesizes under its bare name',
+      (ctx: TestContext): void => {
+    // `wasi:filesystem/types` spells two record fields `%type` and a
+    // parameter `%flags`: the `%` escapes a keyword and is no part of
+    // the name. The parser drops it, so the module renders `type` as
+    // a field — before, the whole module failed to synthesize, and
+    // every import from it reported as "Module not found".
+    let source = synthesizeWitModule(
+        `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
+        readWitSource(`${stdlibRoot}/wit`));
+    isTrue(source.contains('type: DescriptorType'),
+      `the escaped field is not rendered under its bare name:\n${source}`);
+    isTrue(!source.contains('%'),
+      `an explicit-identifier prefix leaked into the synthesized source:\n${source}`);
+  });
+
   test('a component with no imports carries no import machinery', (ctx: TestContext): void => {
     // No instance type, no import, no lowering, no synthesized instance
     // — just the module, its instantiation, and the lifted export. This

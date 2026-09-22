@@ -298,14 +298,6 @@ let isValidMapKeyType = (t: Type): boolean => {
          t.tag == TypeTag.Char || t.tag == TypeTag.String;
 };
 
-/** Strip the explicit identifier prefix (%) if present. */
-let stripExplicitPrefix = (s: String): String => {
-  if (s.length > 0 && s.getByteAt(0) == 37) {  // '%' = 37
-    return s.sliceBytes(1, s.length);
-  }
-  return s;
-};
-
 /** Check if a Docs has an @unstable attribute (feature gated). */
 let isGated = (docs: Docs): boolean => {
   if (docs.attributes == null) {
@@ -1347,7 +1339,7 @@ export class Resolver {
       // Inner type should always be a Name (enforced by parser)
       if (inner.tag == TypeTag.Name) {
         let rawName = (inner.name as Id).name;
-        let name = stripExplicitPrefix(rawName);
+        let name = rawName;
         let sym = this.#findSymbol(name);
         if (sym == null) {
           throw new ResolveError("type `" + rawName + "` does not exist", inner.span);
@@ -1381,8 +1373,7 @@ export class Resolver {
     // Check for named type references
     if (t.tag == TypeTag.Name) {
       let rawName = (t.name as Id).name;
-      // Strip explicit identifier prefix (%) if present
-      let name = stripExplicitPrefix(rawName);
+      let name = rawName;
       // Check for cycle
       if (this.#isResolving(name)) {
         throw new ResolveError(
