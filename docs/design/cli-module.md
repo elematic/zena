@@ -140,8 +140,10 @@ are cached under their own `.cwasm` name, because wasmtime refuses a
 - `zena build` with no argument runs the `build` target of the package
   the user is in.
 - `zena build test` runs that package's `test` target, and
-  `zena build packages/zb:test` runs the `test` target of another
-  package, in the `<package>:<script>` form wireit dependencies use. zb
+  `zena build ./packages/zb:test` runs the `test` target of another
+  package, in the `<path>:<script>` form wireit dependencies use. As in
+  wireit, the leading `./` is what marks the part before the colon as a
+  path, so `test` alone is always a script of the current package. zb
   reads the targets from each package's wireit configuration and runs
   them.
 
