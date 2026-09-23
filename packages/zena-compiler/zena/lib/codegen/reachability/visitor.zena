@@ -3,7 +3,7 @@ import { collectValueExports } from '../lookup.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
 } from './context.zena';
-import { SemanticModel } from '../../semantic-model.zena';
+import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
   isScopedType, scopedInner,
@@ -856,7 +856,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is NewExpression) {
         let neType = model.getNodeType(n);
         let ctorName = if (n.constructorName != null) {
-          getNodeMemberName(n.constructorName as Node)
+          getNodeMemberName(model, n.constructorName as Node)
         } else {
           "<constructor>"
         };
@@ -1022,7 +1022,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let targetName = if (ctorMethodKey == "<constructor>") "<constructor>" else if (ctorMethodKey.startsWith("<constructor>.")) ctorMethodKey.sliceBytes(14, ctorMethodKey.length) else ctorMethodKey;
     for (let member in cdNode.body) {
       if (member is MethodDefinition) {
-        if (member.isConstructor && ctorMethodName(member) == targetName) {
+        if (member.isConstructor && ctorMethodName(cdModel, member) == targetName) {
           this.pass.queueReferrer(new Referrer(false, noSymbolId,
               (member as Node).id as i32, cdModel, resolved, true));
         }
@@ -1051,7 +1051,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     };
     for (let member in decl.body) {
       if (member is MethodDefinition) {
-        if (member.isConstructor && ctorMethodName(member) == targetName) {
+        if (member.isConstructor && ctorMethodName(declModel, member) == targetName) {
           this.pass.specializer.instantiateInterfaceConstructor(it, targetName, member, declModel);
           return;
         }
@@ -1576,7 +1576,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let cdModel = this.pass.classModels[declId];
           for (let member in cdNode.body) {
             if (member is MethodDefinition && !member.isConstructor) {
-              if (ctorMethodName(member) == methName) {
+              if (ctorMethodName(cdModel, member) == methName) {
                 if (typeArguments != null &&
                     typeArguments.length > 0) {
                   // Generic private method: register the monomorphized
@@ -1639,9 +1639,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       let member = members[i];
       var name = "";
       if (member is MethodDefinition && !member.isConstructor) {
-        name = ctorMethodName(member);
+        name = ctorMethodName(cdModel, member);
       } else if (member is AccessorDeclaration) {
-        name = accessorMemberName(member);
+        name = accessorMemberName(cdModel, member);
       } else {
         continue;
       }
@@ -1776,7 +1776,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is NewExpression) {
         let neType = model.getNodeType(n);
         let ctorName = if (n.constructorName != null) {
-          getNodeMemberName(n.constructorName as Node)
+          getNodeMemberName(model, n.constructorName as Node)
         } else {
           "<constructor>"
         };
@@ -3143,40 +3143,18 @@ let matchOverloadForImport = (t1: Type, t2: Type): boolean => {
 };
 
 
-let accessorMemberName = (acc: AccessorDeclaration): String => {
-  return match (acc.name) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let accessorMemberName =
+    (model: SemanticModel, acc: AccessorDeclaration): String => {
+  return memberKeyOf(model, acc.name as Node);
 };
 
-let getNodeMemberName = (node: Node): String => {
-  return match (node) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let getNodeMemberName = (model: SemanticModel, node: Node): String => {
+  return memberKeyOf(model, node);
 };
 
-let ctorMethodName = (md: MethodDefinition): String => {
-  return match (md.name) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let ctorMethodName =
+    (model: SemanticModel, md: MethodDefinition): String => {
+  return memberKeyOf(model, md.name as Node);
 };
 
 /**

@@ -156,11 +156,11 @@ export class MemberInfo {
    * `symbol sym` reached as `:sym`, and a `static symbol` reached as
    * `:Owner.sym`.
    *
-   * Member keys mangle a symbol to `":" + name`, so the key alone cannot
-   * tell two same-named symbols apart — which is what let a consumer read
-   * a private symbol-keyed member by declaring a symbol of its own. Access
-   * compares this id, and a member copied into a subtype's table carries
-   * it along so the comparison still holds one level down.
+   * The member's key already carries the symbol's identity (`:act_87`,
+   * see `symbolMemberKey` in the checker), so two same-named symbols key
+   * two members and a lookup by the wrong one simply misses. This id is
+   * the same identity in a form an access can compare against directly,
+   * and a member copied into a subtype's table carries it along.
    *
    * A symbol-keyed member always has one, so -1 on a `:`-prefixed key
    * means the declaration failed to resolve and was already reported.
@@ -1658,9 +1658,29 @@ export let instantiateTypeAliasType = (
 
 export type GenericNamedType = ClassType | InterfaceType | MixinType | TypeAliasType;
 
+/**
+ * A `symbol` declaration's type: a name and an identity, and nothing
+ * else. Two declarations that spell the same name are two symbols, which
+ * is the whole point of having them — so `id` is what distinguishes a
+ * member keyed by one from a member keyed by the other, and `name` is
+ * only ever for reading.
+ *
+ * `debugName` qualifies the name for a message (`Disposable.dispose`);
+ * `name` is the bare spelling, which is what a member key carries.
+ *
+ * `protocolKey` is set for the standard library symbols the compiler
+ * invokes itself — `Disposable.dispose` when it drops a resource,
+ * `Iterable.iterator` when it lowers a `for`-in, the async runtime's hooks
+ * (the table is `protocolSymbolKey` in `well-known.zena`). Their identity
+ * is fixed by the language, the way a well-known type's is, so their
+ * member key is a constant codegen can name (`:dispose`) rather than one
+ * minted from a per-compilation id.
+ */
 export final class SymbolType(
   id: TypeId,
-  debugName: String | null
+  debugName: String | null,
+  name: String,
+  protocolKey: String | null
 ) extends Type
 
 export final class ThisType extends Type {

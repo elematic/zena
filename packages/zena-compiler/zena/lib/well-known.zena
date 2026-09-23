@@ -155,6 +155,80 @@ export let wellKnownName = (w: WellKnown): String => {
 };
 
 /**
+ * The standard library symbols the compiler names itself, and the fixed
+ * member key each one keys.
+ *
+ * A member keyed by a symbol is normally keyed by that symbol's identity,
+ * minted per compilation (`:act_87`), so two same-named symbols key two
+ * members. Codegen cannot resolve anything, though, so the members it
+ * calls on its own — the release action it runs when a resource is
+ * dropped, the iterator a `for`-in asks for, the async runtime's hooks —
+ * have to be nameable as constants. Each row is one such symbol: the
+ * library that declares it, the type that declares it when it is a
+ * `static symbol` (empty for a top-level `symbol`), and its name.
+ *
+ * Matching is exact on all three, so a program's own `symbol complete` or
+ * `interface Disposable` keys by identity like any other symbol.
+ */
+final class ProtocolSymbol {
+  library: String;
+  owner: String;
+  name: String;
+  new(this.library, this.owner, this.name);
+}
+
+var protocolSymbols: GrowableArray<ProtocolSymbol> | null = null;
+
+let buildProtocolSymbols = (): GrowableArray<ProtocolSymbol> => {
+  let t = new Array<ProtocolSymbol>();
+  let add = (library: String, owner: String, name: String): void => {
+    t.push(new ProtocolSymbol(library, owner, name));
+  };
+  // Dropping a resource runs its release action.
+  add('core', 'Disposable', 'dispose');
+  // A `for`-in over anything but an array asks for an iterator.
+  add('core', 'Iterable', 'iterator');
+  // The async runtime's hooks, which `async`/`await` lower onto.
+  add('async', '', 'registerTask');
+  add('async', '', 'install');
+  add('async', '', 'checkpoint');
+  add('async', '', 'shieldScope');
+  add('async', '', 'subscribe');
+  add('async', '', 'valueOrThrow');
+  add('async', '', 'complete');
+  add('async', '', 'fail');
+  add('async', '', 'adoptFrom');
+  add('async', '', 'cancelComplete');
+  protocolSymbols = t;
+  return t;
+};
+
+/**
+ * The fixed member key of the symbol `name` declared in `modulePath` —
+ * on the type `owner`, or at the top level when `owner` is empty — when
+ * it is one the compiler names itself; null for every other symbol.
+ */
+export let protocolSymbolKey = (
+    owner: String, name: String, modulePath: String): String | null => {
+  let library = stdlibLibraryOf(modulePath);
+  if (library == null) {
+    return null;
+  }
+  let rows = if (protocolSymbols != null) {
+    protocolSymbols as GrowableArray<ProtocolSymbol>
+  } else {
+    buildProtocolSymbols()
+  };
+  for (let row in rows) {
+    if (row.name == name && row.owner == owner &&
+        row.library == (library as String)) {
+      return ":" + name;
+    }
+  }
+  return null;
+};
+
+/**
  * Whether a declaration named `name` in the module `modulePath` is the
  * well-known declaration `w`.
  *

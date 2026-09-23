@@ -736,3 +736,47 @@ export final class SymbolPropertyName(
 export let getMemberPropertyName = (isSymbolAccess: boolean, name: String): String => {
   return if (isSymbolAccess) ":" + name else name;
 };
+
+/**
+ * The key a member's name node spells, before any symbol is resolved.
+ *
+ * Correct for a name-keyed member, and a stand-in for a symbol-keyed one
+ * whose symbol did not resolve — that failure is reported at the
+ * declaration, so the value only has to be something consistent. The
+ * real key for a symbol-keyed member carries the symbol's identity and
+ * comes from `SemanticModel.memberKey`.
+ */
+export let syntacticMemberName = (node: Node): String => {
+  return match (node) {
+    case Identifier {name}: name
+    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
+      case Identifier {name}: name
+      case MemberExpression {property}: property.name
+      case _: "<symbol>"
+    }
+    case _: "<unknown>"
+  };
+};
+
+/**
+ * Whether a static field is really a `static symbol` declaration.
+ *
+ * An interface spells one as a `SymbolDeclaration`, but a class or mixin
+ * body parses the same words into a static field annotated with the bare
+ * name `symbol`. There is no `symbol` type to annotate a field with
+ * otherwise, so the name is unambiguous.
+ *
+ * A symbol is an identity rather than storage, so such a field declares
+ * no member and needs no cell: the checker registers it on the type's
+ * static symbols, and everything that walks a body's fields skips it.
+ */
+export let isSymbolFieldDeclaration = (field: FieldDefinition): boolean => {
+  if (!field.isStatic) { return false; }
+  let ann = field.typeAnnotation;
+  if (ann == null) { return false; }
+  return match (ann as TypeAnnotation) {
+    case NamedTypeAnnotation {name, typeArguments}:
+      name == "symbol" && typeArguments == null
+    case _: false
+  };
+};

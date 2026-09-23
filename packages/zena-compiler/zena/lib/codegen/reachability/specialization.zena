@@ -1,10 +1,10 @@
 import {
   Referrer, ReachabilityContext, SpecializerInterface, ClassInterfacePair,
 } from './context.zena';
-import { SemanticModel } from '../../semantic-model.zena';
+import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
 import {
-  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer,
+  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
 } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
 import {
@@ -102,15 +102,11 @@ export final class Specializer implements SpecializerInterface {
     for (let member in cd.body) {
       if (!(member is FieldDefinition)) { continue; }
       if (!member.isStatic) { continue; }
-      let fieldName = match (member.name) {
-        case Identifier {name}: name
-        case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-          case Identifier {name}: name
-          case MemberExpression {property}: property.name
-          case _: "<symbol>"
-        }
-        case _: ""
-      };
+      // `static symbol sym;` parses as a static field annotated `symbol`,
+      // but a symbol is an identity rather than storage: it has no value,
+      // so there is no global to hold it and no type to give one.
+      if (isSymbolFieldDeclaration(member)) { continue; }
+      let fieldName = memberKeyOf(model, member.name as Node);
       if (fieldName == "") { continue; }
       let name = cd.name.name + "_" + fieldName;
       // One global per class, not per specialization: two instantiations
@@ -560,15 +556,7 @@ export final class Specializer implements SpecializerInterface {
       if (ms is MethodDefinition) {
         if (ms.isStatic) { continue; }
         if (ms.isConstructor) { continue; }
-        let methName = match (ms.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: ""
-        };
+        let methName = memberKeyOf(sourceModel, ms.name as Node);
         if (methName != "") {
           var vtableMethName = methName;
           if (ct.members.has(methName)) {
@@ -600,15 +588,7 @@ export final class Specializer implements SpecializerInterface {
         }
       } else if (ms is AccessorDeclaration) {
         if (ms.isStatic) { continue; }
-        let accName = match (ms.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: ""
-        };
+        let accName = memberKeyOf(sourceModel, ms.name as Node);
         // Private-named accessors are lexical, never virtual: no
         // vtable slots (like private methods).
         if (accName != "" &&
@@ -636,15 +616,7 @@ export final class Specializer implements SpecializerInterface {
         }
       } else if (ms is FieldDefinition) {
         if (ms.isStatic) { continue; }
-        let fieldName = match (ms.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: ""
-        };
+        let fieldName = memberKeyOf(sourceModel, ms.name as Node);
         if (ms.setterName != null && fieldName != "") {
           let getterName = "get#" + fieldName;
           var found = false;
@@ -695,15 +667,7 @@ export final class Specializer implements SpecializerInterface {
         if (typeParameters != null && typeParameters.length > 0) {
           continue;
         }
-        let methName = match (ms.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        let methName = memberKeyOf(sourceModel, ms.name as Node);
         // Mixin private methods register under the mixin's scope key
         // ("<scope>::#name") so a host's same-named private is a
         // different function; bodies from mixins carry the scope for
@@ -720,15 +684,7 @@ export final class Specializer implements SpecializerInterface {
         applyMixinPrivateScope(regFn, ms as Node, msScope);
       } else if (ms is AccessorDeclaration) {
         let declNode = allDecls[msIdx];
-        let accName = match (ms.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<symbol>"
-          }
-          case _: "<unknown>"
-        };
+        let accName = memberKeyOf(sourceModel, ms.name as Node);
         let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
         if (ms.getter != null) {
           var getterRegName = "get#" + accName;
@@ -751,15 +707,7 @@ export final class Specializer implements SpecializerInterface {
         }
       } else if (ms is FieldDefinition) {
         let declNode = allDecls[msIdx];
-        let fieldName = match (ms.name) {
-          case Identifier {name}: name
-          case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-            case Identifier {name}: name
-            case MemberExpression {property}: property.name
-            case _: "<unknown>"
-          }
-          case _: "<unknown>"
-        };
+        let fieldName = memberKeyOf(sourceModel, ms.name as Node);
         if (fieldName != "") {
           if (!fieldName.startsWith("#")) {
             this.registerClassMethod(ct, declNode, "get#" + fieldName, null, true, false, fieldName, allModels[msIdx]);
@@ -1417,15 +1365,7 @@ export final class Specializer implements SpecializerInterface {
       if (cDecl is ClassDeclaration) {
         for (let ms in cDecl.body) {
           if (ms is FieldDefinition) {
-            let fName = match (ms.name) {
-              case Identifier {name}: name
-              case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-                case Identifier {name}: name
-                case MemberExpression {property}: property.name
-                case _: "<symbol>"
-              }
-              case _: ""
-            };
+            let fName = memberKeyOf(model, ms.name as Node);
             if (fName == backingFieldName) {
               decs = ms.decorators;
             }
@@ -1604,7 +1544,8 @@ export final class Specializer implements SpecializerInterface {
         if (md.superInitializer != null) {
           let si = md.superInitializer as SuperInitializer;
           if (si.constructorName != null) {
-            superCtorMeth = "<constructor>." + getNodeMemberName(si.constructorName as Node);
+            superCtorMeth = "<constructor>." +
+                getNodeMemberName(currentFunc.model, si.constructorName as Node);
           }
         }
       }
@@ -1780,15 +1721,7 @@ export final class Specializer implements SpecializerInterface {
           if (typeParameters != null && typeParameters.length > 0) {
             continue;
           }
-          let methName = match (ms.name) {
-            case Identifier {name}: name
-            case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-              case Identifier {name}: name
-              case MemberExpression {property}: property.name
-              case _: "<symbol>"
-            }
-            case _: ""
-          };
+          let methName = memberKeyOf(sourceModel, ms.name as Node);
           if (methName != "") {
             var vtableMethName = methName;
             if (ct.members.has(methName)) {
@@ -1825,15 +1758,7 @@ export final class Specializer implements SpecializerInterface {
           }
         } else if (ms is AccessorDeclaration) {
           let declNode = allDecls[msIdx];
-          let accName = match (ms.name) {
-            case Identifier {name}: name
-            case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-              case Identifier {name}: name
-              case MemberExpression {property}: property.name
-              case _: "<unknown>"
-            }
-            case _: "<unknown>"
-          };
+          let accName = memberKeyOf(sourceModel, ms.name as Node);
           let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
           if (ms.getter != null) {
             var getterRegName = "get#" + accName;
@@ -1856,15 +1781,7 @@ export final class Specializer implements SpecializerInterface {
           }
         } else if (ms is FieldDefinition) {
           let declNode = allDecls[msIdx];
-          let fieldName = match (ms.name) {
-            case Identifier {name}: name
-            case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-              case Identifier {name}: name
-              case MemberExpression {property}: property.name
-              case _: "<unknown>"
-            }
-            case _: "<unknown>"
-          };
+          let fieldName = memberKeyOf(sourceModel, ms.name as Node);
           if (fieldName != "") {
             if (!fieldName.startsWith("#")) {
               let getterName = "get#" + fieldName;
@@ -2034,15 +1951,7 @@ export final class Specializer implements SpecializerInterface {
       if (cdDecl == null) return false;
       for (let ms in cdDecl.body) {
         if (ms is FieldDefinition) {
-          let fieldName = match (ms.name) {
-            case Identifier {name}: name
-            case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-              case Identifier {name}: name
-              case MemberExpression {property}: property.name
-              case _: "<symbol>"
-            }
-            case _: ""
-          };
+          let fieldName = memberKeyOf(sourceModel, ms.name as Node);
           if (fieldName == targetFieldName) {
             return ms.isStatic;
           }
@@ -2173,7 +2082,8 @@ export final class Specializer implements SpecializerInterface {
           if (md.superInitializer != null) {
             let si = md.superInitializer as SuperInitializer;
             if (si.constructorName != null) {
-              superCtorMeth = '<constructor>.' + getNodeMemberName(si.constructorName as Node);
+              superCtorMeth = '<constructor>.' +
+                  getNodeMemberName(currFn.model, si.constructorName as Node);
             }
           }
         }
@@ -2234,7 +2144,8 @@ export final class Specializer implements SpecializerInterface {
         if (md.superInitializer != null) {
           let si = md.superInitializer as SuperInitializer;
           if (si.constructorName != null) {
-            superCtorMeth = '<constructor>.' + getNodeMemberName(si.constructorName as Node);
+            superCtorMeth = '<constructor>.' +
+                  getNodeMemberName(factory.model, si.constructorName as Node);
           }
         }
       }
@@ -2427,32 +2338,16 @@ export final class Specializer implements SpecializerInterface {
   }
 }
 
-let getNodeMemberName = (node: Node): String => {
-  return match (node) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let getNodeMemberName = (model: SemanticModel, node: Node): String => {
+  return memberKeyOf(model, node as Node);
 };
 
 let isConstructorMethodName = (name: String): boolean => {
   return name == "<constructor>" || (name.length > 14 && name.startsWith("<constructor>."));
 };
 
-let getMethodName = (md: MethodDefinition): String => {
-  return match (md.name) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let getMethodName = (model: SemanticModel, md: MethodDefinition): String => {
+  return memberKeyOf(model, md.name as Node);
 };
 
 /**

@@ -1,10 +1,8 @@
 // @mode: check
 
-// Two symbols of the same name are two different symbols, but a member
-// key mangles a symbol down to its name, so a type naming both declares
-// two members in one slot. Only one of them survives in the member
-// table, which would make every later check compare the wrong pair. The
-// clash is reported at the second declaration instead.
+// Two symbols of the same name are two different symbols, and a class may
+// implement a member for each. What keys a member is the symbol's identity,
+// so naming it the same as another symbol costs nothing.
 
 interface Reader {
   static symbol act;
@@ -18,17 +16,15 @@ interface Writer {
   [Writer.act](): String;
 }
 
-// Each on its own is fine — the symbols never collide with each other,
-// only with a same-named one in the same body.
-class ReadOnly implements Reader {
+class Both implements Reader, Writer {
   [Reader.act](): i32 { return 1; }
-}
-
-class WriteOnly implements Writer {
   [Writer.act](): String { return "x"; }
 }
 
-class Both implements Reader, Writer {
-  [Reader.act](): i32 { return 1; }
-  [Writer.act](): String { return "x"; } // @error: declares two members keyed ':act'
-}
+let use = (b: Both): i32 => {
+  let n: i32 = b.[Reader.act]();
+  let s: String = b.[Writer.act]();
+  // Each access reaches its own member, with its own type.
+  let wrong: String = b.[Reader.act](); // @error: Type mismatch
+  return n + s.length;
+};

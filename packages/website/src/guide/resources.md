@@ -102,7 +102,7 @@ The foundation of resource cleanup is the `Disposable` interface from
 ```zena
 interface Disposable {
   static symbol dispose;
-  [dispose](): void;
+  [Disposable.dispose](): void;
 }
 ```
 

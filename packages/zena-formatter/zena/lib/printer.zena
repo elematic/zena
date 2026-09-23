@@ -11,7 +11,7 @@ import { parse } from 'zena-compiler:parser';
 import {
   Comment, Node, Module, // Expressions
   Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, CallExpression, MemberExpression, IndexExpression, ThisExpression, SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral, TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, // Statements
-  Statement, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, Decorator, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, // Patterns
+  Statement, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, Decorator, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, isSymbolFieldDeclaration, // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
   TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, SymbolPropertyName,
@@ -598,23 +598,6 @@ let printClassMember = (member: Node): Doc => {
     case _: text('/* unknown member */')
   };
   return withComments(member, doc);
-};
-
-/**
- * Whether a static field is really a `static symbol` declaration, which
- * the parser shapes as a static field annotated with the bare name
- * `symbol`. There is no `symbol` type to annotate a field with
- * otherwise, so the name is unambiguous.
- */
-let isSymbolFieldDeclaration = (field: FieldDefinition): boolean => {
-  if (!field.isStatic) { return false; }
-  let ann = field.typeAnnotation;
-  if (ann == null) { return false; }
-  return match (ann as TypeAnnotation) {
-    case NamedTypeAnnotation {name, typeArguments}:
-      name == 'symbol' && typeArguments == null
-    case _: false
-  };
 };
 
 let printFieldDefinition = (field: FieldDefinition): Doc => {

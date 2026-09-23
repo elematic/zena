@@ -5,7 +5,7 @@ import {
   Node, NodeId, ClassDeclaration, MethodDefinition, FieldDefinition, AccessorDeclaration, TypeAnnotation, Identifier, SymbolPropertyName, MemberExpression,
 } from '../../ast.zena';
 import { SymbolId } from '../../scope/symbol.zena';
-import { SemanticModel } from '../../semantic-model.zena';
+import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
   collectMixinMembers, findMixinDeclaration, MixinKey, getSignatureKey, InterfaceKey, getInterfaceKey,
 } from '../codegen-utils.zena';
@@ -85,7 +85,7 @@ export final class ClassHierarchyAnalysis {
           for (let member in (body as Array<Node>)) {
             if (member is MethodDefinition) {
               if (member.isAbstract) { continue; }
-              let name = getMethodName(member);
+              let name = getMethodName(model as SemanticModel, member);
               if (matchMemberName(name, mName)) {
                 if (!this.implementingMethodCache.has(startClassId)) {
                   this.implementingMethodCache[startClassId] = new Map<String, MethodDefinition>();
@@ -142,7 +142,7 @@ export final class ClassHierarchyAnalysis {
           for (let member in (body as Array<Node>)) {
             if (member is MethodDefinition) {
               if (member.isAbstract) { continue; }
-              let name = getMethodName(member);
+              let name = getMethodName(model as SemanticModel, member);
               if (matchMemberName(name, mName)) {
                 let mType = model.getNodeType(member);
                 if (mType is FunctionType) {
@@ -205,15 +205,7 @@ export final class ClassHierarchyAnalysis {
           for (let member in (body as Array<Node>)) {
             if (member is FieldDefinition) {
               if (member.isAbstract) { continue; }
-              let name = match (member.name) {
-                case Identifier {name}: name
-                case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-                  case Identifier {name}: name
-                  case MemberExpression {property}: property.name
-                  case _: "<symbol>"
-                }
-                case _: ""
-              };
+              let name = memberKeyOf(model, member.name as Node);
               if (matchMemberName(name, fName)) {
                 if (!this.implementingFieldCache.has(startClassId)) {
                   this.implementingFieldCache[startClassId] = new Map<String, FieldDefinition>();
@@ -272,7 +264,7 @@ export final class ClassHierarchyAnalysis {
         if (body != null) {
           for (let member in (body as Array<Node>)) {
             if (member is AccessorDeclaration) {
-              let name = getAccessorName(member);
+              let name = getAccessorName(model as SemanticModel, member);
               if (accName.length > 4 && member.getter != null && accName.sliceBytes(0, 4) == "get#") {
                 let targetProp = accName.sliceBytes(4, accName.length);
                 if (matchMemberName(name, targetProp)) {
@@ -409,28 +401,13 @@ let matchMemberName = (name: String, target: String): boolean => {
   return false;
 };
 
-let getMethodName = (md: MethodDefinition): String => {
-  return match (md.name) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let getMethodName = (model: SemanticModel, md: MethodDefinition): String => {
+  return memberKeyOf(model, md.name as Node);
 };
 
-let getAccessorName = (acc: AccessorDeclaration): String => {
-  return match (acc.name) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let getAccessorName =
+    (model: SemanticModel, acc: AccessorDeclaration): String => {
+  return memberKeyOf(model, acc.name as Node);
 };
 
 let collectMixinSymbolIds = (

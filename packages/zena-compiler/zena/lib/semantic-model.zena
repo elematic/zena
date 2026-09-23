@@ -42,11 +42,45 @@ import {
 } from './types.zena';
 import { Diagnostic } from './diagnostics.zena';
 import {
-  Node, NodeId, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, IdGenerator,
+  Node, NodeId, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, IdGenerator, syntacticMemberName, MemberExpression, getMemberPropertyName,
 } from './ast.zena';
 import { Symbol, SymbolId } from './scope/symbol.zena';
 import { SymbolMap } from './scope/scope-builder.zena';
 import { NodeMap } from './node-map.zena';
+
+/**
+ * The key a member is registered under: the plain name for a name-keyed
+ * member, and for a symbol-keyed one the key the checker recorded, which
+ * carries the symbol's identity so two same-named symbols key two
+ * different members.
+ *
+ * Every pass that looks a member up goes through here. Falling back to
+ * the spelling keeps a member whose symbol failed to resolve consistent
+ * between passes; that failure is already reported at its declaration.
+ */
+export let memberKeyOf = (model: SemanticModel, nameNode: Node): String => {
+  let recorded = model.memberKey(nameNode);
+  if (recorded != null) {
+    return recorded as String;
+  }
+  return syntacticMemberName(nameNode);
+};
+
+/**
+ * The key a symbol-keyed ACCESS looks its member up by.
+ *
+ * The checker records it on the access node, because `x.[Reader.act]()`
+ * and `x.[Writer.act]()` differ only in the symbol the path resolves to
+ * and nothing downstream can resolve one. A name-keyed access is its
+ * property name, as it has always been.
+ */
+export let accessKeyOf = (model: SemanticModel, expr: MemberExpression): String => {
+  let recorded = model.memberKey(expr as Node);
+  if (recorded != null) {
+    return recorded as String;
+  }
+  return getMemberPropertyName(expr.isSymbolAccess, expr.property.name);
+};
 
 export type SemanticModelProgramUnit = {
   path: String,
@@ -149,6 +183,9 @@ export final class ModelIndex {
 
     let saKeys = model.staticAccesses.map.keys();
     while (let (true, k) = saKeys.next()) { this.nodeToModel[k] = model; }
+
+    let mkKeys = model.memberKeys.map.keys();
+    while (let (true, k) = mkKeys.next()) { this.nodeToModel[k] = model; }
 
     let sdKeys = model.scopeExitDrops.map.keys();
     while (let (true, k) = sdKeys.next()) { this.nodeToModel[k] = model; }
@@ -467,6 +504,50 @@ export final class SemanticModel {
       let owner = index.ownerOfNode(node.id);
       if (owner != null && owner != this) {
         return owner.getDefaultArgParamNamesDirect(node);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The key a symbol-keyed member is registered under, per name node and
+   * per symbol-keyed member access.
+   *
+   * Two symbols may share a name, so the name alone cannot key a member:
+   * a class implementing two interfaces whose symbols are both called
+   * `act` needs two members. The key therefore carries the symbol's
+   * identity, which only the checker knows — every later pass reads it
+   * back from here rather than rebuilding it from the source text.
+   */
+  #memberKeys = new NodeMap<String>();
+
+  setMemberKey(node: Node, key: String): void {
+    this.#memberKeys[node] = key;
+  }
+
+  /** The recorded key, or null where the checker recorded none. */
+  memberKeyDirect(node: Node): String | null {
+    if (let (true, k) = this.#memberKeys.get(node)) {
+      return k;
+    }
+    return null;
+  }
+
+  /**
+   * The recorded key, following the node to the model that owns it — a
+   * member declared in one module is keyed by that module's checker and
+   * read by codegen walking from another.
+   */
+  memberKey(node: Node): String | null {
+    let direct = this.memberKeyDirect(node);
+    if (direct != null) {
+      return direct;
+    }
+    let {index} = this;
+    if (index != null) {
+      let owner = index.ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.memberKeyDirect(node);
       }
     }
     return null;
@@ -989,6 +1070,7 @@ export final class SemanticModel {
   defaultArgsOwners: NodeMap<Type> { get { return this.#defaultArgsOwners; } }
   defaultArgParamNames: NodeMap<Array<String>> { get { return this.#defaultArgParamNames; } }
   staticAccesses: NodeMap<boolean> { get { return this.#staticAccesses; } }
+  memberKeys: NodeMap<String> { get { return this.#memberKeys; } }
   scopeExitDrops: NodeMap<boolean> { get { return this.#scopeExitDrops; } }
   edgeDrops: NodeMap<Array<EdgeDrop>> { get { return this.#edgeDrops; } }
   movedOutFields: NodeMap<Array<String>> { get { return this.#movedOutFields; } }

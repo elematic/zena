@@ -397,7 +397,7 @@ import { Disposable } from 'zena:core';
 
 export interface Disposable {
   static symbol dispose;
-  [dispose](): void;
+  [Disposable.dispose](): void;
 }
 ```
 

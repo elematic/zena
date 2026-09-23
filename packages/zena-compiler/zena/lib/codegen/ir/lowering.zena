@@ -21,7 +21,7 @@ import {
   ownershipHandleName, soleNonNullMember,
 } from '../../types.zena';
 import {
-  RecordAdaptation, FunctionAdaptation,
+  RecordAdaptation, FunctionAdaptation, SemanticModel, memberKeyOf, accessKeyOf,
 } from '../../semantic-model.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -2094,7 +2094,7 @@ export final class FunctionLowerer {
       }
       var superCtorMeth = '<constructor>';
       if (si.constructorName != null) {
-        superCtorMeth = '<constructor>.' + getNodeMemberName(si.constructorName as Node);
+        superCtorMeth = '<constructor>.' + getNodeMemberName(this.func.model, si.constructorName as Node);
       }
       let superKey = getClassMethodKey(
           getClassKey(superWithCtor), superCtorMeth);
@@ -2187,8 +2187,7 @@ export final class FunctionLowerer {
     if (this.#isZeroWidthExpr(member as Expression)) {
       return NO_VALUE;
     }
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     var actualName = propName;
     if (ct.fieldSetterNames != null) {
       let mapping = ct.fieldSetterNames as Map<String, String>;
@@ -2312,7 +2311,7 @@ export final class FunctionLowerer {
         if (md.superInitializer != null) {
           let si = md.superInitializer as SuperInitializer;
           if (si.constructorName != null) {
-            superCtorSuffix = "." + getNodeMemberName(si.constructorName as Node);
+            superCtorSuffix = "." + getNodeMemberName(this.func.model, si.constructorName as Node);
           }
         }
       }
@@ -2994,8 +2993,7 @@ export final class FunctionLowerer {
       if (objT != null && init.args.length == 0 &&
           this.#resolveSelfType(objT) is InterfaceType) {
         let recv = this.#lowerExpression(member.object);
-        let raw = this.#cx().slotCallOnValue(recv, getMemberPropertyName(
-            member.isSymbolAccess, member.property.name));
+        let raw = this.#cx().slotCallOnValue(recv, accessKeyOf(this.func.model, member));
         return this.#weaveMultiSource(init, raw);
       }
       let rep = this.#lowerMethodCall(init, member, out);
@@ -3197,8 +3195,7 @@ export final class FunctionLowerer {
       this.#bail('static receiver kind');
     }
     let ct = eraseTypeParameters(this.wasm, resolved) as ClassType;
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     var name = propName;
     // Overload choice belongs to the checker; the recorded selection
     // reproduces the registered slot name. No record = no overloads.
@@ -4102,8 +4099,7 @@ export final class FunctionLowerer {
   #lowerRecordReadOn(rt: RecordType, member: MemberExpression,
       recvIn: i32): i32 {
     let dispatch = this.#cx().recordDispatchOf(rt);
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     let recv = this.#conformRecordReceiver(dispatch, recvIn);
     let result = this.#recordDispatchRead(dispatch, propName, recv);
     return this.#reassertNonNull(result, this.#exprValType(member));
@@ -4553,7 +4549,7 @@ export final class FunctionLowerer {
     }
     var ctorMethName = '<constructor>';
     if (expr.constructorName != null) {
-      ctorMethName = '<constructor>.' + getNodeMemberName(expr.constructorName as Node);
+      ctorMethName = '<constructor>.' + getNodeMemberName(this.func.model, expr.constructorName as Node);
     }
     if (classType.isExtension) {
       // Extension `new` is a plain call: the constructor takes the
@@ -4615,7 +4611,7 @@ export final class FunctionLowerer {
   #lowerInterfaceNew(expr: NewExpression, it: InterfaceType): i32 {
     var ctorName = '<constructor>';
     if (expr.constructorName != null) {
-      ctorName = getNodeMemberName(expr.constructorName as Node);
+      ctorName = getNodeMemberName(this.func.model, expr.constructorName as Node);
     }
     let targsOpt = it.typeArguments;
     let typeArgs: Array<Type> = if (targsOpt != null) targsOpt else new Array<Type>();
@@ -4830,8 +4826,7 @@ export final class FunctionLowerer {
         this.#bail('interface compound write');
       }
       let it = this.#resolveSelfType(objT) as InterfaceType;
-      let propName2 = getMemberPropertyName(
-          member.isSymbolAccess, member.property.name);
+      let propName2 = accessKeyOf(this.func.model, member);
       let setterArgs = new Array<Expression>();
       setterArgs.push(assign.value);
       // Setter dispatch returns no value; assignment-as-expression on
@@ -4851,7 +4846,7 @@ export final class FunctionLowerer {
     // Setter-side override checks (the read-side resolve checked get#):
     // neither a redefined setter between receiver and declarer nor a
     // transitive-subclass setter may exist for a direct struct.set.
-    let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     let isPrivateWrite = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
     var infoOpt: ClassCodegenInfo | null = null;
     if (let (true, info) = this.wasm.classInfos.get(getClassKey(receiverCt))) {
@@ -4929,8 +4924,7 @@ export final class FunctionLowerer {
   #lowerSetterWrite(assign: AssignmentExpression, member: MemberExpression,
       receiver: i32, receiverCt: ClassType, getter: WasmFunction,
       getterVirtual: boolean): i32 {
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
     var setterVirtual = false;
     var vtInfoOpt: ClassCodegenInfo | null = null;
@@ -5148,8 +5142,7 @@ export final class FunctionLowerer {
         this.#bail('static interface access');
       }
       let it = this.#resolveSelfType(objectType) as InterfaceType;
-      let propName = getMemberPropertyName(
-          member.isSymbolAccess, member.property.name);
+      let propName = accessKeyOf(this.func.model, member);
       let result = this.#lowerInterfaceDispatch(
           it, 'get#' + propName, member.object, null);
       return this.#reassertNonNull(result, this.#exprValType(member));
@@ -5194,8 +5187,7 @@ export final class FunctionLowerer {
   #lowerSuperRead(member: MemberExpression): i32 {
     let superCt = this.#superClassOfThis();
     let receiver = this.#lowerThis(member as Expression);
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     var getter: WasmFunction | null = null;
     var curr: ClassType | null = superCt;
     while (curr != null && getter == null) {
@@ -5297,8 +5289,7 @@ export final class FunctionLowerer {
       member: MemberExpression): i32 {
     let superCt = this.#superClassOfThis();
     let receiver = this.#lowerThis(member as Expression);
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     var setter: WasmFunction | null = null;
     var curr: ClassType | null = superCt;
     while (curr != null && setter == null) {
@@ -5370,8 +5361,7 @@ export final class FunctionLowerer {
       multiOut: Array<i32> | null): i32 {
     let superCt = this.#superClassOfThis();
     let receiver = this.#lowerThis(member.object);
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     if (propName.length > 0 && propName.sliceBytes(0, 1) == '#') {
       this.#bail('super private call');
     }
@@ -5463,8 +5453,7 @@ export final class FunctionLowerer {
       this.#bail('static receiver kind');
     }
     let ct = eraseTypeParameters(this.wasm, selfR) as ClassType;
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     var setter: WasmFunction | null = null;
     var currClass: ClassType | null = ct;
     while (currClass != null && setter == null) {
@@ -5520,8 +5509,7 @@ export final class FunctionLowerer {
    * global's declared type is wider — streaming's shape.
    */
   #lowerStaticMemberRead(member: MemberExpression, ct: ClassType): i32 {
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     var getter: WasmFunction | null = null;
     var currClass: ClassType | null = ct;
     while (currClass != null && getter == null) {
@@ -5630,8 +5618,7 @@ export final class FunctionLowerer {
     // FixedArray length intrinsic in the streaming backend).
     let recvArr = asWasmArray(this.#valueType(receiver));
     if (recvArr != null) {
-      let arrProp = getMemberPropertyName(
-          member.isSymbolAccess, member.property.name);
+      let arrProp = accessKeyOf(this.func.model, member);
       if (arrProp == "length") {
         return this.b.emit(IrOp.array_len, new ValTypeI32(), receiver, -1);
       }
@@ -5825,8 +5812,7 @@ export final class FunctionLowerer {
     // to `R`, and member access forwards through it (ownership.md §Handles).
     let selfResolved = eraseTypeParameters(this.wasm, this.#resolveSelfType(objectType));
     if (selfResolved is InterfaceType) {
-      let propName = getMemberPropertyName(
-          member.isSymbolAccess, member.property.name);
+      let propName = accessKeyOf(this.func.model, member);
       // A generic method dispatches through the slot RTA minted for
       // the solved type-argument list — the same specialized-name
       // mangle the class-side monomorphized copies register under.
@@ -5898,7 +5884,7 @@ export final class FunctionLowerer {
     if (classInfo == null) {
       this.#bail('method receiver not discovered');
     }
-    let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     // One namespace, one lookup: the checker's member info names the
     // KIND. A field holding a function value is a member read plus a
     // closure call — decided here, before method resolution, never as
@@ -6616,7 +6602,7 @@ export final class FunctionLowerer {
       this.#bail('receiver class not discovered');
     }
     let {structType} = classInfo;
-    let propName = getMemberPropertyName(member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     var lookupName = propName;
     if (propName.length > 0 && propName.sliceBytes(0, 1) == "#") {
       if (this.func.classType == null) {
@@ -7091,8 +7077,7 @@ export final class FunctionLowerer {
    * path): sequential numeric values with literal overrides, or the
    * member's string literal for string enums. */
   #lowerEnumMember(ed: EnumDeclaration, member: MemberExpression): i32 {
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     let isStringEnum = ed.members.length > 0 &&
         ed.members[0].initializer is StringLiteral;
     var nextValue = 0;
@@ -7138,8 +7123,7 @@ export final class FunctionLowerer {
    * streaming backend's matching. Receiver is argument 0.
    */
   #lowerArrayExtensionCall(call: CallExpression, member: MemberExpression, elemType: Type, elemsMutable: boolean): i32 {
-    let propName = getMemberPropertyName(
-        member.isSymbolAccess, member.property.name);
+    let propName = accessKeyOf(this.func.model, member);
     // Overloaded extension methods (slice(start) / slice(start, end))
     // register under mangled names; the checker records the selected
     // declaration per call node (member-lookup.md §5.2).
@@ -8357,14 +8341,6 @@ export let coalesceArmAdaptation = (cx: LoweringContext,
     bin: BinaryExpression, value: i32): i32 =>
     hostOf(cx).hostCoalesceArmAdaptation(bin, value);
 
-let getNodeMemberName = (node: Node): String => {
-  return match (node) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let getNodeMemberName = (model: SemanticModel, node: Node): String => {
+  return memberKeyOf(model, node);
 };

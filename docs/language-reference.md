@@ -3749,7 +3749,7 @@ members.
 #### Declaration
 
 Symbols are declared using the `symbol` keyword, either at the top level of a
-module or as a `static symbol` on an interface.
+module or as a `static symbol` on a class, interface or mixin.
 
 ```zena
 // Top-level symbol
@@ -3812,18 +3812,14 @@ let it = list.[Iterable.iterator]();
 - **Compile-Time Resolution**: Symbols are resolved at compile time. The name
   inside `[...]` is a symbol name or `Type.symbol`, never an arbitrary
   expression.
-- **Symbols Have Their Own Identity**: Two modules that each declare
-  `symbol secret` have declared two different symbols. A member keyed by one
-  of them is out of reach from the other, because the compiler records which
-  symbol keyed the member and compares that, so a matching name gets a
-  consumer nowhere.
+- **Symbols Have Their Own Identity**: Two declarations that spell the same
+  name are two symbols, and a member is keyed by its symbol. So one class can
+  implement both `[Reader.act]` and `[Writer.act]`, each call reaching its own
+  method; and a module that declares its own `symbol secret` names a
+  different member from the library's, and finds nothing.
 - **Access Control**: Visibility is controlled via standard `export` rules. If a
   symbol is not exported — or, for a static symbol, the type that declares it —
   it cannot be used outside the library.
-- **One Member Per Name**: A symbol-keyed member is held under its symbol's
-  name, so one type cannot declare two members keyed by same-named symbols.
-  A class implementing two interfaces whose symbols share a name runs into
-  this, and the compiler reports it at the second declaration.
 - **Distinct from Indexing**: The `[symbol]` declaration and `.[symbol]` access
   syntax is distinct from operator `[]` definitions (`operator []`) and indexing
   access (`obj[expr]`), avoiding ambiguity.

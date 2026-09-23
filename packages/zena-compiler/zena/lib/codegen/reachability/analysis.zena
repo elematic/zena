@@ -2,7 +2,7 @@ import { Program, CompilationUnit } from '../../program.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack,
 } from '../wasm-module.zena';
-import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
+import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
   Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType,
 } from '../../types.zena';
@@ -3706,7 +3706,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 // node-driven path never creates an unscoped twin.
                 let mixScope = mixinScopeOfMember(this.program, this.classModels[lookupId], cd, node);
                 let nodeModel = mixinModelOfMember(this.program, this.classModels[lookupId], cd, node) ?? this.classModels[lookupId];
-                var methName = getMethodName(node);
+                var methName = getMethodName(nodeModel, node);
                 if (node.isConstructor) {
                   methName = if (methName == "<constructor>") "<constructor>" else "<constructor>." + methName;
                 } else if (mixScope != null && methName.length > 0 &&
@@ -3774,15 +3774,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               } else if (node is AccessorDeclaration && refItem.classType != null && !refClassIsErasure) {
                 let ct = refItem.classType as ClassType;
                 getClassKey(ct);
-                let accName = match (node.name) {
-                  case Identifier {name}: name
-                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-                    case Identifier {name}: name
-                    case MemberExpression {property}: property.name
-                    case _: "<symbol>"
-                  }
-                  case _: ""
-                };
+                let accName = memberKeyOf(model, node.name as Node);
                 if (accName != "") {
                   let lookupId = (ct.genericSource ?? ct).symbolId;
                   let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
@@ -3828,15 +3820,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               } else if (node is FieldDefinition && refItem.classType != null) {
                 let ct = refItem.classType as ClassType;
                 let cKey = getClassKey(ct);
-                let propName = match (node.name) {
-                  case Identifier {name}: name
-                  case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-                    case Identifier {name}: name
-                    case MemberExpression {property}: property.name
-                    case _: "<symbol>"
-                  }
-                  case _: ""
-                };
+                let propName = memberKeyOf(model, node.name as Node);
                 let {typeParameters} = ct;
                 let isGenericTemplate = typeParameters != null && 
                                         typeParameters.length > 0 && 
@@ -3921,16 +3905,8 @@ let enclosingOwnTypeParameters = (model: SemanticModel, node: Node): Array<TypeP
   return null;
 };
 
-let getMethodName = (md: MethodDefinition): String => {
-  return match (md.name) {
-    case Identifier {name}: name
-    case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
-      case Identifier {name}: name
-      case MemberExpression {property}: property.name
-      case _: "<symbol>"
-    }
-    case _: ""
-  };
+let getMethodName = (model: SemanticModel, md: MethodDefinition): String => {
+  return memberKeyOf(model, md.name as Node);
 };
 
 

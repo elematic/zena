@@ -1,26 +1,23 @@
 // @mode: check
 
-// A class body parses `static symbol` — `syntax/symbols/class-static-symbol.zena`
-// pins that — but a symbol is not storage, so a class has nothing to hold
-// and nothing below the checker knows what to lay out for it. The
-// declaration is reported here rather than reaching a backend that traps.
+// A symbol is an identity rather than storage, so it occupies nothing on
+// the type that declares it — on an interface or on a class alike. A class
+// body parses `static symbol` into a static field annotated `symbol`; the
+// checker registers it as the class's static symbol and it has no cell.
 
 class Holder {
-  static symbol tag; // @error: 'static symbol' is an interface declaration
+  static symbol tag;
 
   n: i32 = 7;
+
+  [Holder.tag](): i32 { return this.n; }
 }
 
-// The two forms that do work.
-symbol topLevel;
+// The bare name is not in scope in a class body either.
+class Bare {
+  static symbol tag;
 
-interface Protocol {
-  static symbol act;
-
-  [Protocol.act](): void;
+  [tag](): i32 { return 1; } // @error: is a static symbol of 'Bare'
 }
 
-class Doer implements Protocol {
-  [Protocol.act](): void {}
-  [topLevel](): i32 { return 1; }
-}
+let use = (h: Holder): i32 => h.[Holder.tag]();

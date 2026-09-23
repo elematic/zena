@@ -1,0 +1,45 @@
+// @mode: run
+// @result: 321201
+
+// Two interfaces declare a static symbol called `act`, and one class
+// implements both. Each symbol keys its own member, so each call — direct
+// and through either interface — must reach its own method.
+
+interface Reader {
+  static symbol act;
+
+  [Reader.act](): i32;
+}
+
+interface Writer {
+  static symbol act;
+
+  [Writer.act](): i32;
+}
+
+class Both implements Reader, Writer {
+  [Reader.act](): i32 { return 1; }
+  [Writer.act](): i32 { return 20; }
+}
+
+// A class-level static symbol works the same way.
+class Tagged {
+  static symbol tag;
+
+  [Tagged.tag](): i32 { return 3; }
+}
+
+let viaReader = (r: Reader): i32 => r.[Reader.act]();
+let viaWriter = (w: Writer): i32 => w.[Writer.act]();
+
+// Each call lands in its own decimal digit, so a call that reached the
+// other interface's method shows up as a wrong digit rather than a sum
+// that happens to match.
+export let main = (): i32 => {
+  let b = new Both();
+  return b.[Reader.act]()              //      1
+      + b.[Writer.act]() * 10          //    200
+      + viaReader(b) * 1000            //   1000
+      + viaWriter(b) * 1000            //  20000
+      + new Tagged().[Tagged.tag]() * 100000;  // 300000
+};

@@ -248,7 +248,8 @@ collide with public member names:
 ```zena
 interface Inspectable {
   static symbol inspect;
-  [inspect](): String;
+  // A static symbol is always named through its type, even here.
+  [Inspectable.inspect](): String;
 }
 
 class User implements Inspectable {
