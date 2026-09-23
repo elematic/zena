@@ -569,7 +569,28 @@ export let tests = suite('Component emission', (): void => {
     // interface declares them: a record's fields take consecutive
     // slots, a variant's cases share the payload slots after the
     // discriminant.
-    let wit = readFile(`${fixtures}/wit-pkg/relay.wit`) + `
+    // The relay fixture's shapes, with `confirm` async: a future
+    // result is pumped by callback re-entries, which a synchronous
+    // export never gets.
+    let wit = `
+package fixture:relay@1.0.0;
+
+interface data {
+  enum level { low, high }
+  record packet { level: level, body: string }
+  variant fault { lost, garbled(string) }
+  resource channel { label: func() -> string; }
+}
+
+interface forwarding {
+  use data.{packet, fault, channel, level};
+  forward: async func(p: packet) -> result<packet, fault>;
+  attach: func(c: channel) -> u32;
+  grade: func() -> level;
+  confirm: async func() -> future<result<_, fault>>;
+  reset: func() -> result;
+}
+
 world provider {
   import fixture:relay/data@1.0.0;
   export fixture:relay/forwarding@1.0.0;
@@ -580,7 +601,7 @@ world provider {
 export function forward(p: Packet): Outcome<Packet, Fault> { return new Ok<Packet, Fault>(p); }
 export function attach(c: Channel): u32 { return 1 as u32; }
 export function grade(): Level { return Level.High; }
-export function confirm(): Future<Outcome<void, Fault>> { return Future.of<Outcome<void, Fault>>(new Ok<void, Fault>(witUnit())); }
+export async function confirm(): Future<Future<Outcome<void, Fault>>> { return Future.of<Outcome<void, Fault>>(new Ok<void, Fault>(witUnit())); }
 export function reset(): boolean { return true; }
 `, entry);
     let wrapperOpt = synthesizeExportWrapper(wit, 'provider', entry, program,
@@ -652,6 +673,46 @@ export function reset(): boolean { return true; }
       `the wrapper does not await the subtask:\n${source}`);
     isTrue(!source.contains('an async resource function waits'),
       `an async resource function is still refused:\n${source}`);
+  });
+
+  test('a stream of records renders per-element pumps',
+      (ctx: TestContext): void => {
+    // `stream<frame-event>`: the five stream builtins declared per
+    // element, typed against the interface like a future's payload,
+    // a lift that reads a chunk of records out of a return area into
+    // a StreamWriter, and a lower that writes the guest stream's
+    // records one at a time — `Stream<FrameEvent>` in the signatures.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/gfx.wit#test:gfx/feed`, packagesWit());
+    isTrue(source.contains(`@external("canon", "stream.read#0", "stream:test:gfx/feed@1.0.0#frame-event,async")`),
+      `the stream read is not declared per element:\n${source}`);
+    isTrue(source.contains(`export async function frames(count: u32): Future<Stream<FrameEvent>> {`),
+      `the stream result is not a Stream<FrameEvent>:\n${source}`);
+    isTrue(source.contains(`function liftStream0(end: i32): Stream<FrameEvent> {`),
+      `the lift helper is missing:\n${source}`);
+    isTrue(source.contains(`items.push(liftFrameEvent(buf + i * 16));`),
+      `the inbound pump does not lift each record at its stride:\n${source}`);
+    isTrue(source.contains(`export async function sink(events: Stream<PointerEvent>): Future<u32> {`),
+      `the stream parameter is not a Stream<PointerEvent>:\n${source}`);
+    isTrue(source.contains(`let item = await source.readOne();`),
+      `the outbound pump does not read one element at a time:\n${source}`);
+    isTrue(source.contains(`import { Stream, StreamWriter } from 'zena:stream';`),
+      `the writer is not imported:\n${source}`);
+    isTrue(!source.contains('Not yet importable'),
+      `something in the feed interface was skipped:\n${source}`);
+  });
+
+  test('a borrowed cross-package resource inside a record parameter compiles',
+      (ctx: TestContext): void => {
+    // wasi-gfx's shape: `context-configuration` carries
+    // `borrow<gpu-device>` used from another package, passed to a
+    // resource method. The program compiles and the component's
+    // import carries the borrow in the record.
+    let bytes = compileFor(`${fixtures}/gfx-configure.zena`, 'component');
+    isTrue(containsName(bytes, 'fixture:gfx/surface@1.0.0'),
+      'the surface interface import is missing');
+    isTrue(containsName(bytes, 'context-configuration'),
+      'the configuration record is not in the import');
   });
 
   test('a component with no imports carries no import machinery', (ctx: TestContext): void => {
@@ -1213,7 +1274,7 @@ world only {
     // forms as any handle. Non-u8 elements and future values refuse.
     let source = synthesizeWitModule(
         `wit:${fixtures}/wit-pkg#fixture:pipe/pipes`);
-    isTrue(source.contains("import { Stream } from 'zena:stream';"),
+    isTrue(source.contains("import { Stream, StreamWriter } from 'zena:stream';"),
       'the stream type is not imported:\n' + source);
     isTrue(source.contains(
         "import { liftByteStream, lowerByteStream } " +
@@ -1250,10 +1311,12 @@ world only {
         'Future<u64> {'),
       'the async wrapper should carry the stream parameter:\n' +
       source);
-    // The refused shapes say why.
-    isTrue(source.contains(
-        'ints: the result: stream elements other than u8 wait'),
-      'a non-u8 stream element should refuse:\n' + source);
+    // A stream of anything but bytes rides generated pumps.
+    isTrue(source.contains('export function ints(): Stream<u32> {'),
+      'a typed stream result should be a Stream<u32>:\n' + source);
+    isTrue(source.contains('return liftStream0(got);'),
+      'a typed stream result should lift through its helper:\n' + source);
+    // The refused shape says why.
     isTrue(source.contains(
         'ping: the result: a bare future waits'),
       'a bare future should refuse:\n' + source);

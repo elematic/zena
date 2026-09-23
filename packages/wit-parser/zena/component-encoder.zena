@@ -555,7 +555,26 @@ export final class ComponentTypeEncoder {
    * function's future, whose payload is structural.
    */
   aliasFutureType(qualifiedInterface: String, payloadText: String): i32 {
-    let key = qualifiedInterface + "#future<" + payloadText + ">";
+    return this.#aliasEndType(0x65, "future", qualifiedInterface,
+        payloadText);
+  }
+
+  /**
+   * The component-level type index of `stream<elementText>`, the
+   * element parsed against `qualifiedInterface`'s declarations the
+   * way a future's payload is. Public for the canon builtins: the
+   * stream.* family's canon entry carries the stream's own type.
+   */
+  aliasStreamType(qualifiedInterface: String, elementText: String): i32 {
+    return this.#aliasEndType(0x66, "stream", qualifiedInterface,
+        elementText);
+  }
+
+  /** `future<p>` (0x65) or `stream<e>` (0x66) at component level,
+   * memoized per interface and payload spelling. */
+  #aliasEndType(opcode: i32, head: String, qualifiedInterface: String,
+      payloadText: String): i32 {
+    let key = qualifiedInterface + "#" + head + "<" + payloadText + ">";
     if (let (true, existing) = this.#aliasedTypes.get(key)) {
       return existing;
     }
@@ -575,7 +594,7 @@ export final class ComponentTypeEncoder {
       inner = this.#encodeType(scope, parseTypeText(payloadText));
     }
     let body = new ByteBuffer();
-    body.writeByte(0x65);
+    body.writeByte(opcode);
     if (payloadText != "") {
       body.writeByte(0x01);
       writeValType(body, inner);

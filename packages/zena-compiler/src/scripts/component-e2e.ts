@@ -415,6 +415,31 @@ const FIXTURES: Fixture[] = [
     invocations: [{invoke: 'main()', expect: '49'}],
   },
   {
+    name: 'gfx-provider',
+    wasi: ['p3=y'],
+    wit: ['gfx.wit', 'provider'],
+    // The provider half of the typed-stream composition: `frames`
+    // returns a `stream<frame-event>` a background task writes, and
+    // `sink` reads a `stream<pointer-event>`. Built and validated
+    // here; run composed, below.
+    invocations: [],
+  },
+  {
+    name: 'gfx-consumer',
+    wasi: ['p3=y'],
+    wit: ['gfx.wit', 'consumer'],
+    compose: ['gfx-provider'],
+    // Records across canonical streams in both directions, with both
+    // sides generated: the consumer reads three frame records one at
+    // a time from the provider's stream, then writes two pointer
+    // records (one carrying a string) into a stream the provider
+    // sums. 0+1+2 frames, plus 2 (the pressed button) + 3 + 2 (label
+    // bytes) from the sink.
+    invocations: [
+      {invoke: 'main()', expect: '10', expectOutput: ['frames 3']},
+    ],
+  },
+  {
     name: 'compose-provider',
     wasi: ['p3=y'],
     wit: ['compose.wit', 'provider'],

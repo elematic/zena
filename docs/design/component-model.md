@@ -409,7 +409,8 @@ the measurement.)
 | `stream<u8>`                        | `zena:stream`'s `Stream<u8>`              | **0**             | ✅ synthesized              |
 | `future<T>`                         | `Future` (result payloads ride `Outcome`) | **0**             | ✅ synthesized              |
 | `result<_, E>` (bare arm)           | a `void` lane, `witUnit()`-filled         | **0**             | ✅ synthesized              |
-| `stream<T>` (other) / bare `future` | —                                         | **0**             | waits on the interop stages |
+| `stream<T>` (other)                  | `Stream<T>`, generated per-element pumps  | **0**             | landed (typed streams)      |
+| bare `future`                        | —                                         | **0**             | waits on the interop stages |
 
 **Name mapping.** WIT names are kebab-case and Zena identifiers cannot
 contain `-`, so synthesized modules convert: functions and parameters

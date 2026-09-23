@@ -1,0 +1,41 @@
+// The provider half of the typed-stream composition: `frames` hands
+// out a stream of records a background task writes, and `sink` reads
+// a stream of records the consumer wrote. Each record crosses the
+// composed boundary through a canonical `stream<T>` the
+// compiler-written pumps carry element by element — including the
+// string inside `pointer-event`.
+import { FrameEvent, PointerEvent } from 'test:gfx/feed';
+import { Stream, StreamWriter } from 'zena:stream';
+import { Future } from 'zena:async';
+import { Some } from 'zena:core';
+
+async function produce(writer: StreamWriter<FrameEvent>, count: i32): Future<void> {
+  for (var i = 0; i < count; i += 1) {
+    await writer.write(new FrameEvent(i as u64, (i as f32) * 16.5));
+  }
+  writer.close();
+}
+
+export async function frames(count: u32): Future<Stream<FrameEvent>> {
+  let writer = new StreamWriter<FrameEvent>();
+  produce(writer, count as i32);
+  return writer.stream;
+}
+
+export async function sink(events: Stream<PointerEvent>): Future<u32> {
+  var buttons = 0 as u32;
+  var open = true;
+  while (open) {
+    let item = await events.readOne();
+    if (item is Some<PointerEvent>) {
+      let e = (item as Some<PointerEvent>).value;
+      if (e.down) {
+        buttons += e.button as u32;
+      }
+      buttons += e.label.length as u32;
+    } else {
+      open = false;
+    }
+  }
+  return buttons;
+}

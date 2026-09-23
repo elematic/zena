@@ -397,3 +397,29 @@ async func()` is the entry itself — the wrapper synthesizer skips
     float lowered as its bits and lifted back through the `zena:math`
     reinterpret intrinsics, an integer widened and wrapped — so
     `report(finding)` imports and exports alike.
+11. Typed streams — landed as the `gfx` fixtures, for the graphics
+    work's event streams (`on-frame: func() -> stream<frame-event>`).
+    A `stream<T>` of anything but `u8` is `Stream<T>` in the
+    bindings, carried by a generated pair of pumps per element type,
+    the mirror of a future's: the five stream builtins declared per
+    element (`stream.read#k`, typed `stream:<iface>#<element>` by the
+    encoder, with the memory and `realloc` options since an element
+    may hold a string), a lift that reads a chunk of elements out of
+    a return area through the memory lift and delivers them into a
+    `StreamWriter`, and a lower that takes the guest stream's elements
+    one at a time with the new `Stream.readOne()` and writes each
+    from a staged buffer. Bytes keep `zena:wasi`'s pumps. Both
+    directions run composed: the provider's `frames` stream of
+    records is read one at a time by the consumer, and the consumer's
+    stream of records, one carrying a string, is summed by the
+    provider's `sink`.
+    Two rules came out of it. A stream or future on a **synchronous**
+    export is refused by name: its pump is driven by the host's
+    callback re-entries, which a synchronous export never gets, so
+    the pump would park forever on its first copy — `frames` is
+    `async func`. And the driver's `nextCode` now runs the microtask
+    checkpoint again after the typed return: lowering the returned
+    value starts the pump, whose first step is a queue hop and whose
+    first copy joins the task's set, and deciding EXIT before that hop
+    ran left the provider's task gone with its pump parked — the
+    composed run hung on the consumer's first read until it did.

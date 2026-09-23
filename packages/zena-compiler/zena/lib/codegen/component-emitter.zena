@@ -630,7 +630,7 @@ let typedBuiltinTakesOpts = (fieldName: String): boolean => {
  * spelling carries one exactly when the payload text is non-empty.
  */
 let canonTypeUsesMemory = (canonType: String): boolean => {
-  if (canonType.startsWith("future:")) {
+  if (canonType.startsWith("future:") || canonType.startsWith("stream:")) {
     var hashAt = -1;
     for (var i = 0; i < canonType.length; i += 1) {
       if (canonType.getByteAt(i) == 35) { hashAt = i; break; } // '#'
@@ -966,6 +966,7 @@ export let emitComponent = (
     for (let b in shape.builtins) {
       if (b.canonType == "" || b.canonType.startsWith("resource:") ||
           b.canonType.startsWith("future:") ||
+          b.canonType.startsWith("stream:") ||
           b.canonType.startsWith("return:")) {
         continue;
       }
@@ -987,6 +988,7 @@ export let emitComponent = (
     let canonTypeIndexOf = (canonType: String): i32 => {
       if (canonType.startsWith("resource:") ||
           canonType.startsWith("future:") ||
+          canonType.startsWith("stream:") ||
           canonType.startsWith("return:")) {
         if (let (true, index) = encoded.canonTypeIndices.get(canonType)) {
           return index;
@@ -1036,11 +1038,12 @@ export let emitComponent = (
       if (isTypedCanonBuiltin(b.name)) {
         builtins.writeULEB128(canonTypeIndexOf(b.canonType));
         if (typedBuiltinTakesOpts(b.name)) {
-          // A `future:` payload may hold strings or lists, which a
-          // read lowers into the guest through `realloc`; a stream's
-          // primitive elements land in the caller's buffer and need
-          // none.
-          let withRealloc = b.canonType.startsWith("future:") &&
+          // A `future:` payload or a `stream:` element may hold
+          // strings or lists, which a read lowers into the guest
+          // through `realloc`; a spelled `stream<u8>`'s bytes land in
+          // the caller's buffer and need none.
+          let withRealloc = (b.canonType.startsWith("future:") ||
+              b.canonType.startsWith("stream:")) &&
               canonTypeUsesMemory(b.canonType);
           var optionCount = 0;
           if (b.isAsync) { optionCount += 1; }

@@ -1,0 +1,36 @@
+// The consumer half of the typed-stream composition: reads the
+// provider's `stream<frame-event>` one record at a time, and writes a
+// `stream<pointer-event>` the provider sums up. Frames 0, 1, 2 sum to
+// 3; the two pointer events sum to 1 + 2 (buttons, one of them down
+// so only 2 counts) plus 3 + 2 label bytes — 7; the total is 10.
+import { frames, sink, FrameEvent, PointerEvent } from 'test:gfx/feed';
+import { StreamWriter } from 'zena:stream';
+import { Future } from 'zena:async';
+import { Some } from 'zena:core';
+
+async function press(writer: StreamWriter<PointerEvent>): Future<void> {
+  await writer.write(new PointerEvent(1.0, 2.0, 1 as u8, false, 'tap'));
+  await writer.write(new PointerEvent(3.0, 4.0, 2 as u8, true, 'ok'));
+  writer.close();
+}
+
+export async function main(): Future<u32> {
+  let incoming = await frames(3 as u32);
+  var frameSum = 0 as u64;
+  var count = 0;
+  var open = true;
+  while (open) {
+    let item = await incoming.readOne();
+    if (item is Some<FrameEvent>) {
+      frameSum += (item as Some<FrameEvent>).value.frame;
+      count += 1;
+    } else {
+      open = false;
+    }
+  }
+  console.log(`frames ${count}`);
+  let writer = new StreamWriter<PointerEvent>();
+  press(writer);
+  let buttons = await sink(writer.stream);
+  return (frameSum as u32) + buttons;
+}

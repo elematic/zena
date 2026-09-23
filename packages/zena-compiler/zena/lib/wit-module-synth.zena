@@ -413,15 +413,32 @@ function classifyType(t: Type, ifaceItems: Array<InterfaceItem>): Ty {
     if (element == null) {
       return unsupported("a bare stream waits on the interop stages");
     }
-    let el = classifyType(element as Type, ifaceItems);
-    if (el.kind != TyKind.Scalar || el.scalar != "u8") {
-      return unsupported(
-          "stream elements other than u8 wait on the interop stages");
+    let elementType = element as Type;
+    let el = classifyType(elementType, ifaceItems);
+    if (el.kind == TyKind.Unsupported) {
+      return el;
     }
     let ty = new Ty(TyKind.StreamH);
     ty.size = 4;
     ty.align = 4;
     ty.flats = 1;
+    if (el.kind == TyKind.Scalar && el.scalar == "u8") {
+      // Bytes: `zena:wasi`'s pumps, with no element marshaling.
+      return ty;
+    }
+    // Any other element rides a generated pair of pumps that lift and
+    // lower each element through memory, so the element must move
+    // both ways.
+    let unliftable = liftBlocker(el, true);
+    if (unliftable != "") {
+      return unsupported(unliftable);
+    }
+    let unlowerable = lowerBlocker(el);
+    if (unlowerable != "") {
+      return unsupported(unlowerable);
+    }
+    ty.children.push(el);
+    ty.witText = spanText(elementType.span.start, elementType.span.end);
     return ty;
   }
   if (t.tag == TypeTag.Future) {
@@ -697,6 +714,13 @@ final class SynthUses {
   var unit = false;
   /** Future payload types moved, each owed declares and helpers. */
   futures = new Array<FutureEntry>();
+  /** Typed stream element types moved — anything but `u8`, whose
+   * pumps live in `zena:wasi` — each owed declares and helpers. */
+  streams = new Array<FutureEntry>();
+  /** How many of `streams` have had their helpers emitted. */
+  var emittedStreams = 0;
+  /** Whether a typed stream rendered — pulls in `StreamWriter`. */
+  var streamWriter = false;
   /** How many of `futures` have had their helpers emitted. */
   var emittedFutures = 0;
   /** Whether a lifted future rendered — pulls in `DeferredFuture`,
@@ -722,6 +746,17 @@ final class SynthUses {
       if (existing == name) { return; }
     }
     this.componentStream.push(name);
+  }
+
+  /** The generated-name suffix for `ty`'s stream element,
+   * registering the entry on first sight. */
+  streamIndexOf(ty: Ty): i32 {
+    for (let existing in this.streams) {
+      if (existing.key == ty.witText) { return existing.index; }
+    }
+    let index = this.streams.length;
+    this.streams.push(new FutureEntry(ty.witText, index, ty));
+    return index;
   }
 
   /** The generated-name suffix for `ty`'s future payload,
@@ -783,7 +818,10 @@ function structuralKey(ty: Ty): String {
   if (ty.kind == TyKind.Scalar) { return ty.scalar; }
   if (ty.kind == TyKind.Str) { return "string"; }
   if (ty.kind == TyKind.BytesList) { return "bytes"; }
-  if (ty.kind == TyKind.StreamH) { return "stream<u8>"; }
+  if (ty.kind == TyKind.StreamH) {
+    return if (isTypedStream(ty)) "stream(" + ty.witText + ")"
+        else "stream<u8>";
+  }
   if (ty.kind == TyKind.FutureH) { return "future(" + ty.witText + ")"; }
   var key = if (ty.kind == TyKind.ListT) "list("
       else if (ty.kind == TyKind.OptionT) "option("
@@ -822,7 +860,7 @@ function zenaTypeOf(ty: Ty, uses: SynthUses): String {
   }
   if (ty.kind == TyKind.StreamH) {
     uses.stream = true;
-    return "Stream<u8>";
+    return "Stream<" + streamElementZenaType(ty, uses) + ">";
   }
   if (ty.kind == TyKind.FutureH) {
     return "Future<" + futurePayloadZenaType(ty.children[0], uses) + ">";
@@ -973,8 +1011,7 @@ function liftExprOf(ty: Ty, ptrExpr: String, uses: SynthUses): String {
   }
   if (ty.kind == TyKind.StreamH) {
     uses.useAbi("loadI32");
-    uses.useComponentStream("liftByteStream");
-    return "liftByteStream(loadI32(" + ptrExpr + "))";
+    return streamLiftCall(ty, "loadI32(" + ptrExpr + ")", uses);
   }
   if (ty.kind == TyKind.FutureH) {
     uses.useAbi("loadI32");
@@ -1206,9 +1243,8 @@ function lowerMemStmts(sb: StringBuilder, ty: Ty, value: String,
   }
   if (ty.kind == TyKind.StreamH) {
     uses.useAbi("storeI32");
-    uses.useComponentStream("lowerByteStream");
     sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
-        .append("lowerByteStream(").append(value).append("));\n");
+        .append(streamLowerCall(ty, value, uses)).append(");\n");
     return;
   }
   if (ty.kind == TyKind.FutureH) {
@@ -1445,9 +1481,8 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     return 1;
   }
   if (ty.kind == TyKind.StreamH) {
-    uses.useComponentStream("lowerByteStream");
     writeSlot(sb, indent, slots[base], base,
-        "lowerByteStream(" + value + ")", "i32");
+        streamLowerCall(ty, value, uses), "i32");
     return 1;
   }
   if (ty.kind == TyKind.FutureH) {
@@ -1699,8 +1734,7 @@ function liftFlatExpr(ty: Ty, slotTypes: GrowableArray<String>,
     return "new " + ty.typeName + "(" + slot(base, "i32") + ")";
   }
   if (ty.kind == TyKind.StreamH) {
-    uses.useComponentStream("liftByteStream");
-    return "liftByteStream(" + slot(base, "i32") + ")";
+    return streamLiftCall(ty, slot(base, "i32"), uses);
   }
   if (ty.kind == TyKind.FutureH) {
     return "liftFuture" + i32ToString(uses.futureIndexOf(ty)) + "(" +
@@ -1799,6 +1833,182 @@ function emitFlatLiftHelper(sb: StringBuilder, entry: LiftEntry,
     sb.append("  throw new Error('invalid ").append(ty.typeName)
         .append(" discriminant');\n");
   }
+  sb.append("}\n");
+}
+
+/** The `zena:stream` import a module that rendered streams needs. */
+let streamImport = (uses: SynthUses): String =>
+    if (uses.streamWriter) "import { Stream, StreamWriter } from 'zena:stream';\n"
+    else "import { Stream } from 'zena:stream';\n";
+
+/** Whether `ty` is or contains a stream or future end. */
+function carriesEnd(ty: Ty): boolean {
+  if (ty.kind == TyKind.StreamH || ty.kind == TyKind.FutureH) {
+    return true;
+  }
+  for (let child in ty.children) {
+    if (carriesEnd(child)) { return true; }
+  }
+  return false;
+}
+
+/** Whether a stream position carries an element other than `u8`,
+ * moved by generated pumps rather than `zena:wasi`'s byte pumps. */
+let isTypedStream = (ty: Ty): boolean => ty.children.length > 0;
+
+/** The Zena spelling of a stream's element. */
+function streamElementZenaType(ty: Ty, uses: SynthUses): String {
+  return if (isTypedStream(ty)) zenaTypeOf(ty.children[0], uses) else "u8";
+}
+
+/** The expression lifting a stream handle into a `Stream<T>`. */
+function streamLiftCall(ty: Ty, handle: String, uses: SynthUses): String {
+  if (isTypedStream(ty)) {
+    return "liftStream" + i32ToString(uses.streamIndexOf(ty)) + "(" +
+        handle + ")";
+  }
+  uses.useComponentStream("liftByteStream");
+  return "liftByteStream(" + handle + ")";
+}
+
+/** The expression lowering a `Stream<T>` into a stream handle. */
+function streamLowerCall(ty: Ty, value: String, uses: SynthUses): String {
+  if (isTypedStream(ty)) {
+    return "lowerStream" + i32ToString(uses.streamIndexOf(ty)) + "(" +
+        value + ")";
+  }
+  uses.useComponentStream("lowerByteStream");
+  return "lowerByteStream(" + value + ")";
+}
+
+/** Elements a typed inbound pump reads per canonical copy. */
+let STREAM_CHUNK = 64;
+
+/**
+ * One typed stream element's generated surface: the five per-type
+ * canon builtin declares (`#k`-disambiguated like a future's, the
+ * canon type spelled `stream:<iface>#<element>`), the lift helper
+ * that reads a received end into a `Stream<T>` through a
+ * `StreamWriter`, and the lower helper that makes a fresh pair, hands
+ * over the readable end and pumps the guest stream's elements into
+ * the writable one. Each element crosses through memory at its
+ * canonical layout — the read pump lifts a chunk of them out of a
+ * return area, the write pump lowers one at a time into a staged
+ * buffer — so a string or list inside an element is fine. Bytes keep
+ * `zena:wasi`'s chunked pumps, which never marshal.
+ */
+function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
+    interfaceName: String, uses: SynthUses): void {
+  let k = i32ToString(entry.index);
+  let element = entry.ty.children[0];
+  let canonType = "stream:" + interfaceName + "#" + entry.ty.witText;
+  let z = zenaTypeOf(element, uses);
+  uses.awaitWaitable = true;
+  uses.error = true;
+  uses.option = true;
+  uses.stream = true;
+  uses.streamWriter = true;
+  uses.fixedArray = true;
+  uses.useAbi("resultArea");
+  uses.useAbi("freeLifted");
+  uses.useAbi("stagedMark");
+  uses.useAbi("releaseStagedFrom");
+  uses.useAbi("stageBuffer");
+  let declare = (builtin: String, options: String, name: String,
+      sig: String): void => {
+    sb.append("@external(\"canon\", \"").append(builtin).append("#")
+        .append(k).append("\", \"").append(canonType).append(options)
+        .append("\")\n");
+    sb.append("declare function ").append(name).append(k)
+        .append("_raw").append(sig).append(";\n");
+  };
+  declare("stream.new", "", "streamNew", "(): u64");
+  declare("stream.read", ",async", "streamRead",
+      "(end: i32, ptr: i32, count: i32): i32");
+  declare("stream.write", ",async", "streamWrite",
+      "(end: i32, ptr: i32, count: i32): i32");
+  declare("stream.drop-readable", "", "streamDropReadable",
+      "(end: i32): void");
+  declare("stream.drop-writable", "", "streamDropWritable",
+      "(end: i32): void");
+
+  // The lift: a writer whose stream is handed out at once, fed by a
+  // pump that reads the host's end a chunk at a time, lifts each
+  // element, and delivers with the writer's backpressure. The pump
+  // closes the stream when the host drops its writable end, and
+  // drops the readable end when the guest reader stops.
+  let size = i32ToString(element.size);
+  sb.append("function liftStream").append(k)
+      .append("(end: i32): Stream<").append(z).append("> {\n");
+  sb.append("  let writer = new StreamWriter<").append(z).append(">();\n");
+  sb.append("  pumpStreamIn").append(k).append("(end, writer);\n");
+  sb.append("  return writer.stream;\n}\n");
+  sb.append("async function pumpStreamIn").append(k)
+      .append("(end: i32, writer: StreamWriter<").append(z)
+      .append(">): Future<void> {\n");
+  sb.append("  var open = true;\n");
+  sb.append("  while (open) {\n");
+  sb.append("    let buf = resultArea(").append(i32ToString(STREAM_CHUNK))
+      .append(" * ").append(size).append(");\n");
+  sb.append("    var packed = streamRead").append(k)
+      .append("_raw(end, buf, ").append(i32ToString(STREAM_CHUNK))
+      .append(");\n");
+  sb.append("    if (packed == -1) {\n");
+  sb.append("      packed = await awaitWaitable(end);\n    }\n");
+  sb.append("    let n = packed >> 4;\n");
+  sb.append("    let completed = (packed & 15) == 0;\n");
+  sb.append("    if (n > 0) {\n");
+  sb.append("      let items = new GrowableArray<").append(z)
+      .append(">();\n");
+  sb.append("      for (var i = 0; i < n; i += 1) {\n");
+  sb.append("        items.push(")
+      .append(liftExprOf(element, "buf + i * " + size, uses))
+      .append(");\n      }\n");
+  sb.append("      let delivered = await writer.writeAll(")
+      .append("FixedArray.from(items), n);\n");
+  sb.append("      if (!delivered) {\n        open = false;\n      }\n");
+  sb.append("    } else if (completed) {\n");
+  sb.append("      freeLifted(buf);\n");
+  sb.append("      throw new Error('the stream read made no progress');\n");
+  sb.append("    }\n");
+  sb.append("    freeLifted(buf);\n");
+  sb.append("    if (!completed) {\n      open = false;\n    }\n");
+  sb.append("  }\n");
+  sb.append("  writer.close();\n");
+  sb.append("  streamDropReadable").append(k).append("_raw(end);\n");
+  sb.append("}\n");
+
+  // The lower: a fresh pair, the readable end handed over as the
+  // value, and a pump that takes the guest stream's elements one at a
+  // time and writes each into the writable end, staged until the
+  // copy completes. A dropped host end stops the source.
+  sb.append("function lowerStream").append(k).append("(source: Stream<")
+      .append(z).append(">): i32 {\n");
+  sb.append("  let pair = streamNew").append(k).append("_raw();\n");
+  sb.append("  pumpStreamOut").append(k)
+      .append("(source, (pair >> 32) as i32);\n");
+  sb.append("  return pair as i32;\n}\n");
+  sb.append("async function pumpStreamOut").append(k)
+      .append("(source: Stream<").append(z)
+      .append(">, end: i32): Future<void> {\n");
+  sb.append("  var open = true;\n");
+  sb.append("  while (open) {\n");
+  sb.append("    let item = await source.readOne();\n");
+  sb.append("    if (!(item is Some<").append(z).append(">)) {\n");
+  sb.append("      open = false;\n    } else {\n");
+  sb.append("      let v = (item as Some<").append(z).append(">).value;\n");
+  sb.append("      let m0 = stagedMark();\n");
+  sb.append("      let buf = stageBuffer(").append(size).append(");\n");
+  lowerMemStmts(sb, element, "v", "buf", "      ", uses);
+  sb.append("      var packed = streamWrite").append(k)
+      .append("_raw(end, buf, 1);\n");
+  sb.append("      if (packed == -1) {\n");
+  sb.append("        packed = await awaitWaitable(end);\n      }\n");
+  sb.append("      releaseStagedFrom(m0);\n");
+  sb.append("      if ((packed & 15) != 0) {\n");
+  sb.append("        source.stop();\n        open = false;\n      }\n");
+  sb.append("    }\n  }\n");
+  sb.append("  streamDropWritable").append(k).append("_raw(end);\n");
   sb.append("}\n");
 }
 
@@ -2246,7 +2456,7 @@ export function synthesizeWitModule(canonicalPath: String,
     sb.append("import { Outcome, Ok, Err } from 'zena:core';\n");
   }
   if (uses.stream) {
-    sb.append("import { Stream } from 'zena:stream';\n");
+    sb.append(streamImport(uses));
   }
   if (uses.abi.length > 0) {
     sb.append("import { ");
@@ -2332,7 +2542,8 @@ function drainHelpers(body: StringBuilder, uses: SynthUses,
     interfaceName: String): void {
   while (uses.emittedLifts < uses.lifts.length ||
       uses.emittedFlatLifts < uses.flatLifts.length ||
-      uses.emittedFutures < uses.futures.length) {
+      uses.emittedFutures < uses.futures.length ||
+      uses.emittedStreams < uses.streams.length) {
     while (uses.emittedLifts < uses.lifts.length) {
       let entry = uses.lifts[uses.emittedLifts];
       uses.emittedLifts += 1;
@@ -2347,6 +2558,11 @@ function drainHelpers(body: StringBuilder, uses: SynthUses,
       emitFutureHelpers(body, uses.futures[uses.emittedFutures],
           interfaceName, uses);
       uses.emittedFutures += 1;
+    }
+    if (uses.emittedStreams < uses.streams.length) {
+      emitStreamHelpers(body, uses.streams[uses.emittedStreams],
+          interfaceName, uses);
+      uses.emittedStreams += 1;
     }
   }
 }
@@ -2765,9 +2981,7 @@ function renderFuncIn(
       continue;
     }
     if (params[i].kind == TyKind.StreamH) {
-      uses.useComponentStream("lowerByteStream");
-      callArgs.append("lowerByteStream(").append(paramNames[i])
-          .append(")");
+      callArgs.append(streamLowerCall(params[i], paramNames[i], uses));
       argIndex += 1;
       continue;
     }
@@ -2915,8 +3129,8 @@ function renderFuncIn(
     sb.append("  return new ").append(resultTy.typeName)
         .append("(got);\n");
   } else if (resultTy.kind == TyKind.StreamH) {
-    uses.useComponentStream("liftByteStream");
-    sb.append("  return liftByteStream(got);\n");
+    sb.append("  return ").append(streamLiftCall(resultTy, "got", uses))
+        .append(";\n");
   } else if (resultTy.kind == TyKind.FutureH) {
     sb.append("  return liftFuture")
         .append(i32ToString(uses.futureIndexOf(resultTy)))
@@ -3152,7 +3366,7 @@ export function synthesizeExportWrapper(
     sb.append("import { Result } from 'zena:core';\n");
   }
   if (uses.stream) {
-    sb.append("import { Stream } from 'zena:stream';\n");
+    sb.append(streamImport(uses));
   }
   if (uses.abi.length > 0) {
     sb.append("import { ");
@@ -3381,6 +3595,22 @@ function renderSyncExportWrapper(sb: StringBuilder, witName: String,
   let refuse = (what: String, why: String): Error =>
       new Error("The declared world's export '" + witName + "', " +
           what + ": " + why);
+  // A stream or future is pumped from the task that owns it, by the
+  // host's callback re-entries — after the value has been returned,
+  // for a result. A synchronous export has no task and is never
+  // re-entered, so its pump would park forever on the first copy.
+  let pumped = "a stream or future is pumped by callback re-entries, " +
+      "which a synchronous export never gets; declare the export " +
+      "`async func`";
+  for (let p in func.params) {
+    if (carriesEnd(classifyType(p.type, items))) {
+      throw refuse("parameter '" + p.name.name + "'", pumped);
+    }
+  }
+  if (func.result != null &&
+      carriesEnd(classifyType(func.result as Type, items))) {
+    throw refuse("the result", pumped);
+  }
   let params = renderWrapperParams(witName, func, items, uses);
   let result = func.result;
   if (result == null) {

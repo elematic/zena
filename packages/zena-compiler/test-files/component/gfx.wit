@@ -1,0 +1,41 @@
+// Typed streams across a composed boundary: a Zena provider exports
+// `feed` and a Zena consumer imports it, so records cross a canonical
+// `stream<T>` in both directions with both sides generated — one of
+// them carrying a string. The shape wasi-gfx's event streams have,
+// minus the resource that owns them (see wit-pkg/gfx.wit).
+//
+// Stdio is the stdlib's vendored WASI WIT, imported by name.
+package test:gfx@1.0.0;
+
+interface feed {
+  record frame-event {
+    frame: u64,
+    elapsed-ms: f32,
+  }
+
+  record pointer-event {
+    x: f32,
+    y: f32,
+    button: u8,
+    down: bool,
+    label: string,
+  }
+
+  // Both async: a stream is pumped from the task that owns it, by
+  // callback re-entries after the value has been returned, and a
+  // synchronous export is never re-entered.
+  frames: async func(count: u32) -> stream<frame-event>;
+  sink: async func(events: stream<pointer-event>) -> u32;
+}
+
+world provider {
+  export feed;
+}
+
+world consumer {
+  import wasi:cli/stdout@0.3.0;
+  import wasi:cli/stderr@0.3.0;
+  import feed;
+
+  export main: async func() -> u32;
+}

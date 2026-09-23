@@ -7,6 +7,7 @@ import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {drainMicrotasks, runFuture} from 'zena:async';
 import {Stream, StreamWriter, readAllText, textStream} from 'zena:stream';
+import {Some} from 'zena:core';
 
 class Item {
   n: i32;
@@ -30,6 +31,33 @@ let sumAll = async (s: Stream<Item>, buf: FixedArray<Item>): Future<i32> => {
 };
 
 export let tests = suite('Stream', (): void => {
+  test('readOne takes elements one at a time and none at the end', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    // Pending first: the write meets it.
+    let r1 = w.stream.readOne();
+    drainMicrotasks();
+    isFalse(r1.isCompleted);
+    let wa = w.write('a');
+    let got1 = runFuture(r1);
+    isTrue(got1 is Some<String>);
+    equal((got1 as Some<String>).value, 'a');
+    isTrue(runFuture(wa));
+    // A batch write drains one element per readOne, completing once
+    // the last is taken.
+    let src = new Array<String>.fixed(2, '');
+    src[0] = 'b';
+    src[1] = 'c';
+    let wb = w.writeAll(src);
+    equal((runFuture(w.stream.readOne()) as Some<String>).value, 'b');
+    drainMicrotasks();
+    isFalse(wb.isCompleted);
+    equal((runFuture(w.stream.readOne()) as Some<String>).value, 'c');
+    isTrue(runFuture(wb));
+    // Closed: none, at once.
+    w.close();
+    isFalse(runFuture(w.stream.readOne()) is Some<String>);
+  });
+
   test('a text stream carries the text to end-of-stream', (ctx: TestContext): void => {
     equal(runFuture(readAllText(textStream('hello, stream'))), 'hello, stream');
   });

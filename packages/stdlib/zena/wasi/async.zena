@@ -439,6 +439,13 @@ let nextCode = (ctx: TaskContext): CallbackCode => {
     ctx.pendingReturn = null;
     ctx.returned = true;
     ret();
+    // Lowering the value can start work: a stream or future in it
+    // gets a pump, whose first step is a queue hop and whose first
+    // copy joins this task's set. Run the checkpoint again so that
+    // work has happened before the task decides whether it has
+    // anything left to wait on — else it exits with the pump parked
+    // on a hop nothing will ever drain.
+    drainMicrotasks();
   }
   if (ctx.pendingWaitables == 0) {
     if (ctx.returnsValue && !ctx.returned) {

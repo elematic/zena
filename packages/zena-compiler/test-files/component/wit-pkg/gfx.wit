@@ -1,0 +1,48 @@
+// A stand-in for wasi-gfx's surface, compiled against as a consumer:
+// resource methods returning typed event streams, and a configuration
+// record carrying a borrowed resource `use`d from another package —
+// what the graphics work needs from the bindings. Compile-level only:
+// an exported resource is not providable yet, so the runnable typed
+// stream fixture is `gfx.wit`'s `feed` beside the other fixtures.
+package fixture:gfx@1.0.0;
+
+interface device {
+  resource gpu-device {
+    label: func() -> string;
+  }
+  enum texture-format {
+    rgba8,
+    bgra8,
+  }
+}
+
+interface surface {
+  use device.{gpu-device, texture-format};
+
+  record frame-event {
+    frame: u64,
+    elapsed-ms: f32,
+  }
+
+  record pointer-event {
+    x: f32,
+    y: f32,
+    button: u8,
+    down: bool,
+  }
+
+  record context-configuration {
+    device: borrow<gpu-device>,
+    format: texture-format,
+  }
+
+  resource context {
+    configure: func(desc: context-configuration);
+  }
+
+  resource surface {
+    on-frame: func() -> stream<frame-event>;
+    on-pointer-down: func() -> stream<pointer-event>;
+    get-context: func() -> context;
+  }
+}

@@ -32,7 +32,9 @@ import {
   componentAbiUnitId, componentDriverUnitId
 } from '../component-emitter.zena';
 import { targetEmitsComponent } from '../../targets.zena';
-import { isComponentEntryPath } from '../../component-entry.zena';
+import {
+  isComponentEntryPath, componentSyncExportSuffix
+} from '../../component-entry.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 
 final class ParsedMethodRef {
@@ -616,7 +618,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * reaches this branch with a unit to root.
    */
   #rootComponentAbi(): void {
-    if (!this.wasm.componentMovesStrings) {
+    if (!this.wasm.componentMovesStrings && !this.#wrapperHasSyncExport()) {
       return;
     }
     let prog = this.program;
@@ -645,6 +647,30 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.queueReferrer(new Referrer(true, id, -1, model, null, true));
       }
     }
+  }
+
+  /**
+   * Whether the entry wrapper the compiler wrote declares a
+   * synchronous export wrapper (`<name>_export_sync`): a result richer
+   * than a string may come back through a return area the host
+   * releases with `post-return`, and the lift's memory options name
+   * `realloc` — both the ABI's, referenced by nothing in the program.
+   */
+  #wrapperHasSyncExport(): boolean {
+    let prog = this.program;
+    if (prog == null) {
+      return false;
+    }
+    for (let unit in prog.units) {
+      if (!isComponentEntryPath(unit.ast.path)) { continue; }
+      for (let stmt in unit.ast.body) {
+        if (stmt is FunctionDeclaration &&
+            stmt.name.name.endsWith(componentSyncExportSuffix)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**

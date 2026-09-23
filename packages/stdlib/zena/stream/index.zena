@@ -18,7 +18,7 @@
  * ```
  */
 
-import { Error, FixedArray } from 'zena:core';
+import { Error, FixedArray, Option, Some, some, none } from 'zena:core';
 import { Completer, Future } from 'zena:async';
 
 /** The write capability's entry points, unexported so a `Stream`
@@ -49,6 +49,9 @@ export class Stream<T> {
    * together. A write rendezvouses with it immediately — latency of
    * one element through the batch API. */
   var #pendingRead: Completer<i32> | null;
+  /** The one pending `readOne`, exclusive with `#pendingRead`: a
+   * read of a single element with no buffer of the caller's. */
+  var #pendingOne: Completer<Option<T>> | null;
   var #pendingBuf: FixedArray<T> | null;
   var #closed: boolean = false;
   var #stopped: boolean = false;
@@ -59,7 +62,7 @@ export class Stream<T> {
    * it still costs the queue hop, per the always-async rule.
    */
   read(buf: FixedArray<T>): Future<i32> {
-    if (this.#pendingRead != null) {
+    if (this.#pendingRead != null || this.#pendingOne != null) {
       throw new Error('zena:stream: one read may be pending at a time');
     }
     if (buf.length == 0) {
@@ -79,14 +82,7 @@ export class Stream<T> {
         i += 1;
       }
       this.#writeOffset += n;
-      if (this.#writeOffset >= this.#writeEnd) {
-        let done = this.#writeDone as Completer<boolean>;
-        this.#writeBuf = null;
-        this.#writeDone = null;
-        this.#writeOffset = 0;
-        this.#writeEnd = 0;
-        done.complete(true);
-      }
+      this.#completeIfDrained();
       return Future.of(n);
     }
     if (this.#closed) {
@@ -96,6 +92,49 @@ export class Stream<T> {
     this.#pendingRead = c;
     this.#pendingBuf = buf;
     return c.future;
+  }
+
+  /**
+   * One element, or `none` at end-of-stream: a read of one that needs
+   * no buffer of the caller's, for a consumer that takes elements one
+   * at a time — an event loop, or the pump that carries a typed
+   * stream across a component boundary. The same exclusivity as
+   * `read`: one read of either kind may be pending.
+   */
+  readOne(): Future<Option<T>> {
+    if (this.#pendingRead != null || this.#pendingOne != null) {
+      throw new Error('zena:stream: one read may be pending at a time');
+    }
+    if (this.#stopped) {
+      return Future.of<Option<T>>(none);
+    }
+    let src = this.#writeBuf;
+    if (src != null) {
+      let from = src as FixedArray<T>;
+      let value = from[this.#writeOffset];
+      this.#writeOffset += 1;
+      this.#completeIfDrained();
+      return Future.of<Option<T>>(some(value));
+    }
+    if (this.#closed) {
+      return Future.of<Option<T>>(none);
+    }
+    let c = new Completer<Option<T>>();
+    this.#pendingOne = c;
+    return c.future;
+  }
+
+  /** The pending write drained by reads: it completes `true` and the
+   * slot clears. */
+  #completeIfDrained(): void {
+    if (this.#writeOffset >= this.#writeEnd) {
+      let done = this.#writeDone as Completer<boolean>;
+      this.#writeBuf = null;
+      this.#writeDone = null;
+      this.#writeOffset = 0;
+      this.#writeEnd = 0;
+      done.complete(true);
+    }
   }
 
   /**
@@ -124,6 +163,11 @@ export class Stream<T> {
       this.#pendingBuf = null;
       (pending as Completer<i32>).complete(0);
     }
+    let pendingOne = this.#pendingOne;
+    if (pendingOne != null) {
+      this.#pendingOne = null;
+      (pendingOne as Completer<Option<T>>).complete(none);
+    }
   }
 
   /**
@@ -138,6 +182,12 @@ export class Stream<T> {
       return Future.of(false as boolean);
     }
     this.#checkWritable();
+    let pendingOne = this.#pendingOne;
+    if (pendingOne != null) {
+      this.#pendingOne = null;
+      (pendingOne as Completer<Option<T>>).complete(some(value));
+      return Future.of(true as boolean);
+    }
     let pending = this.#pendingRead;
     if (pending != null) {
       let buf = this.#pendingBuf as FixedArray<T>;
@@ -170,6 +220,18 @@ export class Stream<T> {
       return Future.of(false as boolean);
     }
     this.#checkWritable();
+    let pendingOne = this.#pendingOne;
+    if (pendingOne != null) {
+      // Rendezvous with the blocked one-element reader; the rest parks.
+      this.#pendingOne = null;
+      (pendingOne as Completer<Option<T>>).complete(some(buf[0]));
+      if (count == 1) {
+        return Future.of(true as boolean);
+      }
+      let parked = this.#park(buf, count);
+      this.#writeOffset = 1;
+      return parked;
+    }
     let pending = this.#pendingRead;
     if (pending != null) {
       // Rendezvous with the blocked reader first; the rest parks.
@@ -228,6 +290,11 @@ export class Stream<T> {
       this.#pendingRead = null;
       this.#pendingBuf = null;
       (pending as Completer<i32>).complete(0);
+    }
+    let pendingOne = this.#pendingOne;
+    if (pendingOne != null) {
+      this.#pendingOne = null;
+      (pendingOne as Completer<Option<T>>).complete(none);
     }
   }
 }
