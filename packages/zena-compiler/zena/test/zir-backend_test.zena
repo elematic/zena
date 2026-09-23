@@ -1093,6 +1093,22 @@ export let tests = suite('zir backend', (): void => {
     isTrue(!parts[1].contains('ref.cast'), 'and no longer inside it');
   });
 
+  test('a class whose every allocation is forwarded away leaves no type behind', (ctx: TestContext): void => {
+    // At -O2 the constructor inlines, the field read forwards to the
+    // argument, DCE deletes the allocation, and nothing emitted names
+    // Dead any more: neither its struct nor its vtable struct is in
+    // the type section. At -O1 the constructor is still a call that
+    // allocates, so the types stay.
+    let source =
+        'class Dead { x: i32; new(this.x); }\n' +
+        'let f = (n: i32): i32 => new Dead(n).x;\n' +
+        'export let main = (): i32 => f(3);';
+    isTrue(!compileWithZirAt(source, 2).contains('$Dead'),
+        'at -O2 no type named after Dead survives');
+    isTrue(compileWithZirAt(source, 1).contains('$Dead'),
+        'at -O1 the constructor allocates and its types stay');
+  });
+
   test('-O2 specializes a function on the class its callers pack', (ctx: TestContext): void => {
     // total takes Shape and has two call sites with two loops, so it
     // stays a function; every caller packs a Circle. The clone takes

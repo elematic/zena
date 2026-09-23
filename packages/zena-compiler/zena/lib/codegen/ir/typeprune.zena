@@ -1,0 +1,203 @@
+/**
+ * Type pruning, the last harvest stage (docs/design/
+ * optimization-pipeline.md §Harvest and layout feedback): after the
+ * functions and globals nothing reaches are gone, delete the types
+ * nothing names any more.
+ *
+ * Reachability analysis lays out a struct for every class the program
+ * might instantiate and a signature for every function it might call,
+ * and the optimization loop then removes most of that: a class whose
+ * every allocation was forwarded away, an interface pair whose every
+ * pack died, a callee inlined at every site and harvested. Their types
+ * stayed in the type section, so the two benchmark programs that sum
+ * an array through the `Array` interface and through `FixedArray`
+ * directly emitted the same code with 172 types against 35.
+ *
+ * A type is live when something that will be emitted names it: the
+ * signature of a surviving function, import or tag; a global's type or
+ * initializer (a vtable's struct, a singleton's class struct); and, in
+ * each surviving body, what its live instructions name: every result
+ * type, every cast target, the struct or array an allocation or a
+ * field access refers to, and the mutable-variable types. A live struct keeps its supertype
+ * and its field types, a live array its element type, a live
+ * signature its parameters and results.
+ *
+ * Removal keeps the order layout chose, so every reference still
+ * points at an earlier group or the same one, and rebinds indices the
+ * way layout does. A rec group loses only its dead members; a group
+ * emptied disappears. Whatever dies gets index -1, so a reference the
+ * roots missed fails loudly in the emitter rather than naming the
+ * wrong type.
+ *
+ * Determinism: roots in module order, the closure over a worklist
+ * seeded in that order; no iteration over hash containers.
+ */
+import {
+  IrBody, IrOp, IrRefClassInterface, IrRefField, IrRefType,
+} from './ir.zena';
+import { Map } from 'zena:collections';
+import {
+  WasmModule, WasmStruct, WasmArray, WasmSignature,
+} from '../wasm-module.zena';
+import { ValType, WasmType, refTargetOf } from '../wasm.zena';
+import { getClassKey } from '../codegen-utils.zena';
+
+/** Deletes the types nothing names; returns how many went. */
+export let pruneTypes = (wasm: WasmModule, bodies: Array<IrBody>): i32 => {
+  let count = wasm.types.length;
+  let position = new Map<WasmType, i32>();
+  for (var i = 0; i < count; i += 1) {
+    position[wasm.types[i]] = i;
+  }
+  let live = new Array<boolean>();
+  for (var i = 0; i < count; i += 1) {
+    live.push(false);
+  }
+  let work = new Array<i32>();
+  let mark = (t: WasmType): void => {
+    if (let (true, i) = position.get(t)) {
+      if (!live[i]) {
+        live[i] = true;
+        work.push(i);
+      }
+    }
+  };
+  let markVal = (vt: ValType): void => {
+    let t = refTargetOf(vt);
+    if (t != null) {
+      mark(t);
+    }
+  };
+
+  for (let f in wasm.functionImports) {
+    mark(f.signature);
+  }
+  for (let f in wasm.functions) {
+    mark(f.signature);
+  }
+  for (let tag in wasm.tags) {
+    mark(tag.signature);
+  }
+  for (let g in wasm.globals) {
+    markVal(g.type);
+    let init = g.initVTable;
+    if (init != null) {
+      mark(init.structType);
+    }
+    let singleton = g.initSingletonStruct;
+    if (singleton != null) {
+      if (let (true, info) = wasm.classInfos.get(getClassKey(singleton))) {
+        mark(info.structType);
+      }
+    }
+  }
+  // A body's type and ref tables keep every entry ever interned, dead
+  // instructions' included, so the roots are what the live
+  // instructions name: each result type, a cast's target, and the ref
+  // of the ops whose ref slot names a struct or an array (the others
+  // name functions, globals, tags and literals). Every mutable
+  // variable gets a local, so their types all count.
+  let markRef = (body: IrBody, idx: i32): void => {
+    let r = body.refTable[idx];
+    if (r is IrRefType) {
+      mark(r.target);
+    } else if (r is IrRefField) {
+      mark(r.owner);
+    } else if (r is IrRefClassInterface) {
+      mark(r.classStruct);
+      mark(r.ifaceStruct);
+    }
+  };
+  for (let body in bodies) {
+    for (let vt in body.varTypes) {
+      markVal(vt);
+    }
+    let n = body.instCount();
+    for (var inst = 0; inst < n; inst += 1) {
+      let op = body.op(inst);
+      if (op == IrOp.nop) {
+        continue;
+      }
+      let ty = body.typeId[inst];
+      if (ty >= 0) {
+        markVal(body.typeTable[ty]);
+      }
+      let bv = body.b[inst];
+      if (op == IrOp.ref_test || op == IrOp.ref_cast) {
+        if (bv >= 0) {
+          markVal(body.typeTable[bv]);
+        }
+      } else if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail) {
+        markVal(body.typeTable[body.extra[bv]]);
+      } else if (op == IrOp.struct_get || op == IrOp.struct_set ||
+          op == IrOp.struct_new || op == IrOp.struct_new_default ||
+          op == IrOp.array_new || op == IrOp.array_new_data ||
+          op == IrOp.array_new_fixed) {
+        markRef(body, bv);
+      }
+    }
+  }
+
+  while (work.length > 0) {
+    let t = wasm.types[work.pop()];
+    if (t is WasmStruct) {
+      let sup = t.superStruct;
+      if (sup != null) {
+        mark(sup);
+      }
+      for (let f in t.fields) {
+        markVal(f.type);
+      }
+    } else if (t is WasmArray) {
+      markVal(t.elementType);
+    } else if (t is WasmSignature) {
+      for (let p in t.params) {
+        markVal(p);
+      }
+      for (let r in t.returns) {
+        markVal(r);
+      }
+    }
+  }
+
+  var removed = 0;
+  for (var i = 0; i < count; i += 1) {
+    if (!live[i]) {
+      removed += 1;
+    }
+  }
+  if (removed == 0) {
+    return 0;
+  }
+
+  // Compact in layout order, one group at a time.
+  let kept = new Array<WasmType>();
+  let groupSizes = new Array<i32>();
+  var next = 0;
+  for (let size in wasm.typeRecGroupSizes) {
+    var survivors = 0;
+    for (var k = 0; k < size; k += 1) {
+      let t = wasm.types[next];
+      if (live[next]) {
+        kept.push(t);
+        survivors += 1;
+      } else {
+        t.index = -1;
+      }
+      next += 1;
+    }
+    if (survivors > 0) {
+      groupSizes.push(survivors);
+    }
+  }
+  if (next != count) {
+    throw new Error('type pruning: rec group sizes cover ' +
+        i32ToString(next) + ' types but the layout has ' + i32ToString(count));
+  }
+  wasm.types = kept;
+  wasm.typeRecGroupSizes = groupSizes;
+  for (var i = 0; i < kept.length; i += 1) {
+    kept[i].index = i;
+  }
+  return removed;
+};

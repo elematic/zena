@@ -40,6 +40,7 @@ import { runSccp } from './ir/sccp.zena';
 import { runSroa } from './ir/sroa.zena';
 import { runJumpThreading } from './ir/thread.zena';
 import { runSpecialize } from './ir/specialize.zena';
+import { pruneTypes } from './ir/typeprune.zena';
 import { printIr } from './ir/printer.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
@@ -760,6 +761,14 @@ export final class ModuleGenerator {
       zirHarvestedGlobals = harvested.globals;
     }
 
+    // With the dead functions and globals gone, the types only they
+    // named go too. Emission reads type indices off the objects, so
+    // this has to run before the type section is emitted.
+    var zirTypesRemoved = 0;
+    if (this.optLevel >= 1) {
+      zirTypesRemoved = pruneTypes(wasm, bodies);
+    }
+
     let tEmitOther = performance.start("codegen-emit-other");
     this.emitter.emitModuleStart();
     // Rec groups come from layout()'s SCC pass: one group per
@@ -1086,6 +1095,8 @@ export final class ModuleGenerator {
       console.log("zir harvest: " + i32ToString(zirHarvestedFunctions) +
           " unreachable functions and " + i32ToString(zirHarvestedGlobals) +
           " globals removed");
+      console.log("zir types: " + i32ToString(zirTypesRemoved) +
+          " unreferenced types removed");
       console.log("zir locals: " + i32ToString(zirGraduated) +
           " ref locals non-null, " + i32ToString(zirDemoted) +
           " kept nullable (init rollback)");
