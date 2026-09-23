@@ -84,7 +84,7 @@
 
           src = ./.;
 
-          npmDepsHash = "sha256-KDMnVv/edeiyhzrpmLjrwo9fOdz3/ohDhUya8Yr7pMs=";
+          npmDepsHash = "sha256-T/jTWRqTSZ84Je9foRJgPm429S9nozEoi6BAzncTOaY=";
 
           # Don't compile native addons. buildNpmPackage runs `npm rebuild`
           # after the install, which tries to build keytar's native binding
@@ -97,13 +97,18 @@
           npmRebuildFlags = [ "--ignore-scripts" ];
 
           # `npm run build` compiles the Rust crates (packages/zena-cli,
-          # packages/zena-run and the packages/zena-runtime library they
-          # share, `cargo build --release`). Vendor their crates from
-          # Cargo.lock so cargo runs offline in the sandbox; cargoSetupHook
-          # wires up CARGO_HOME + the vendored registry. (No git sources in the
-          # lockfile, so no per-crate outputHashes are needed.)
+          # packages/zena-run, packages/zenafx, and the packages/zena-runtime
+          # library they share, `cargo build --release`). Vendor their crates
+          # from Cargo.lock so cargo runs offline in the sandbox;
+          # cargoSetupHook wires up CARGO_HOME + the vendored registry.
           cargoDeps = pkgs.rustPlatform.importCargoLock {
             lockFile = ./Cargo.lock;
+            outputHashes = {
+              "frame-buffer-wasmtime-0.3.0" = "sha256-H4aCxBhb0L59/9JY1L0ZMIjFEsULOd/6sDdk0HKLP4E=";
+              "surface-wasmtime-0.3.0" = "sha256-H4aCxBhb0L59/9JY1L0ZMIjFEsULOd/6sDdk0HKLP4E=";
+              "wasi-gfx-runtime-shared-0.3.0" = "sha256-H4aCxBhb0L59/9JY1L0ZMIjFEsULOd/6sDdk0HKLP4E=";
+              "wasi-webgpu-wasmtime-0.3.0" = "sha256-H4aCxBhb0L59/9JY1L0ZMIjFEsULOd/6sDdk0HKLP4E=";
+            };
           };
 
           nativeBuildInputs = [
@@ -127,10 +132,10 @@
             cp package.json $out/lib/zena/
             cp target/release/zena-cli $out/lib/zena/zena-cli
 
-            # zena-run only runs compiled modules and needs no repository
-            # tree, so it is installed as-is.
+            # Standalone runtime binaries that run compiled modules:
             mkdir -p $out/bin
             cp target/release/zena-run $out/bin/zena-run
+            cp target/release/zfx $out/bin/zfx
 
             # The zena command is zena-cli (Rust/wasmtime host) running the
             # compiler the build produced. ZENA_REPO_ROOT locates the stdlib
@@ -209,6 +214,10 @@
           zena = flake-utils.lib.mkApp {
             drv = zena;
             name = "zena";
+          };
+          zfx = flake-utils.lib.mkApp {
+            drv = zena;
+            name = "zfx";
           };
         };
 

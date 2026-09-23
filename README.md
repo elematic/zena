@@ -75,12 +75,14 @@ Zena builds on TypeScript-like syntax while enforcing strict static guarantees:
 - **Zero-boxing generics:** Generics are monomorphized to concrete Wasm types, avoiding runtime wrapper objects.
 - **Compact binaries:** Aggressive dead-code elimination and optimization passes remove unused functions, classes, and types.
 
-### Unified Toolchain
+### Toolchain & Runtimes
 
-The `zena` CLI is a single tool that includes:
+Zena provides a self-hosted toolchain and specialized execution runtimes on Wasmtime:
 
-- **Self-hosted compiler:** Written in Zena and compiling to native Wasm with a ZIR (CFG/SSA) backend.
-- **Integrated tools:** Test runner, code formatter, and language server (LSP).
+- **`zena-cli` (`zena`)**: The primary developer tool, bundling the self-hosted compiler, test runner, benchmark runner, and documentation generator (`zena doc`).
+- **`zena-run`**: A lightweight standalone runner that executes compiled Zena modules (`zena-cli` target) on Wasmtime without compiler overhead.
+- **`zfx` (`zenafx`)**: An experimental graphical runtime for WebAssembly components, providing GPU-accelerated rendering (`wasi:webgpu`) and OS window presentation (`wasi-gfx:surface`).
+- **Integrated tools**: Language server (LSP), CodeMirror 6 support, VS Code extension, and an interactive online playground.
 
 ## Status
 

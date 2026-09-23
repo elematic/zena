@@ -156,14 +156,20 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 - **`packages/zena-compiler`**: The self-hosted compiler (`@zena-lang/zena-compiler`). (See [CONTEXT.md](packages/zena-compiler/CONTEXT.md); the ZIR backend and the reachability pass each have their own CONTEXT.md under `zena/lib/codegen/`. The checked-in bootstrap lives in `bootstrap/`.)
 - **`packages/stdlib`**: Standard library (`@zena-lang/stdlib`).
-- **`packages/zena-cli`**: Native Rust CLI for executing Zena via Wasmtime: compiler driver, test, bench and doc runners. (See [CONTEXT.md](packages/zena-cli/CONTEXT.md)).
-- **`packages/zena-runtime`**: Rust library shared by `zena-cli` and `zena-run`: the wasmtime engine configuration, the `.cwasm` cache, and the host imports a `zena-cli`-target module needs (`env` stack traces, `zena_process`). The Rust counterpart of `packages/runtime`.
+- **`packages/zena-cli`**: Native Rust CLI for compiling and executing Zena via Wasmtime: compiler driver, test, bench and doc runners. (See [CONTEXT.md](packages/zena-cli/CONTEXT.md)).
+- **`packages/zena-runtime`**: Rust library shared by `zena-cli`, `zena-run`, and `zenafx`: the wasmtime engine configuration, the `.cwasm` cache, and the host imports a `zena-cli`-target module needs (`env` stack traces, `zena_process`). The Rust counterpart of `packages/runtime`.
 - **`packages/zena-run`**: Minimal Rust binary that runs one compiled Zena module on wasmtime with those imports, without the compiler.
+- **`packages/zenafx`**: Experimental runtime binary (`zfx`) for graphical programs: runs WebAssembly components with GPU hardware acceleration via `wasi:webgpu` and OS window presentation via `wasi-gfx:surface`. (See [graphical-runtime.md](docs/design/graphical-runtime.md)).
+- **`packages/wit-parser`**: WIT (WebAssembly Interface Types) parser, resolver, and component encoder (`@zena-lang/wit-parser`). (See [wit-parser.md](docs/design/wit-parser.md)).
+- **`packages/zena-formatter`**: Code formatter for Zena (`@zena-lang/zena-formatter`).
+- **`packages/zb`**: Zena build orchestrator tool (`@zena-lang/zb`).
+- **`packages/workflow`**: Workflow automation package (`@zena-lang/workflow`).
 - **`packages/runtime`**: JS runtime helpers.
 - **`packages/language-service`**: `lsp.zena` and the `lsp.wasm` it builds, plus the JS API around it (`@zena-lang/language-service`). Published.
 - **`packages/zenadoc`**: API documentation extraction — reads a package's source and emits JSON describing its public API (`@zena-lang/zenadoc`). See [zenadoc.md](docs/design/zenadoc.md).
 - **`packages/codemirror`**: Zena support for CodeMirror 6 (`@zena-lang/codemirror`). Published.
 - **`packages/playground`**: the `<zena-playground>` element (`@zena-lang/playground`). Published.
+- **`packages/vscode-zena`**: VS Code extension providing syntax highlighting and language server client integration.
 - **`tests/language/`**: Portable language tests.
 - **`docs/language-reference.md`**: Official language reference.
 - **`docs/design/`**: Design documents for complex features.
