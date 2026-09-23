@@ -5,7 +5,7 @@ Runs one compiled Zena module on wasmtime.
 ```bash
 zena-run prog.wasm arg1 arg2
 zena-run --dir . --dir /tmp prog.wasm
-zena-run --allow-spawn tool.wasm       # lets the program use zena:process
+zena-run --allow-spawn tool.wasm       # lets it use zena:process and zena:wasm
 zena-run -g prog.wasm                  # no inlining: backtraces name functions
 zena-run --no-cache prog.wasm          # compile in memory, write nothing
 ```
@@ -13,7 +13,8 @@ zena-run --no-cache prog.wasm          # compile in memory, write nothing
 This is the smallest host a module built for the `zena-cli` compilation
 target can run under. Plain `wasmtime run` cannot run such a module: it
 imports `env.captureStackTrace` and `env.formatStackTrace` for `Error`'s
-stack traces, and `zena_process` when it uses `zena:process`. Those imports,
+stack traces, `zena_process` when it uses `zena:process`, and `zena_wasm`
+when it uses `zena:wasm` to run other modules. Those imports,
 the engine flags Zena output needs, and the `.cwasm` cache come from the
 [`zena-runtime`](../zena-runtime) crate, which [`zena-cli`](../zena-cli)
 shares. The difference between the two binaries is that `zena-cli` also

@@ -39,6 +39,75 @@ pub fn config(debug: bool) -> Config {
     config
 }
 
+/// How often an interruptible engine's epoch advances, and so the
+/// resolution of a time limit.
+pub const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// The epoch deadline of a store with no time limit.
+///
+/// Wasmtime stores `current_epoch + deadline` with a plain add, so the
+/// deadline has to leave room for the epoch to grow; `u64::MAX` would
+/// wrap to a deadline in the past. Half of it, at one tick per
+/// [`EPOCH_TICK`], is out of reach.
+pub const NO_DEADLINE: u64 = u64::MAX / 2;
+
+/// The engine that runs modules with a time limit (`zena:wasm`'s
+/// `withTimeout`), one per `debug` setting, created on first use.
+///
+/// It is [`config`] with epoch interruption on: compiled code checks the
+/// engine's epoch at function entries and loop back edges, and a ticker
+/// thread advances the epoch every [`EPOCH_TICK`]. Those checks cost
+/// every call something, so only runs that ask for a limit use this
+/// engine; every other module runs on an engine without them. Its
+/// modules are cached under their own `.cwasm` name
+/// ([`crate::cache::cwasm_path_for_variant`]), because wasmtime refuses a
+/// `.cwasm` compiled with different settings.
+///
+/// Every store on it needs a deadline, or it traps at the first call:
+/// set one with `store.set_epoch_deadline`, [`NO_DEADLINE`] for none.
+pub fn interruptible_engine(debug: bool) -> Result<Engine> {
+    let cell = if debug {
+        &INTERRUPTIBLE_DEBUG
+    } else {
+        &INTERRUPTIBLE_RELEASE
+    };
+    if let Some(engine) = cell.get() {
+        return Ok(engine.clone());
+    }
+    let mut config = config(debug);
+    config.epoch_interruption(true);
+    let created = Engine::new(&config)?;
+    let mut started_here = false;
+    let engine = cell
+        .get_or_init(|| {
+            started_here = true;
+            created
+        })
+        .clone();
+    // One ticker per engine, started by whichever thread created it.
+    if started_here {
+        let ticked = engine.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(EPOCH_TICK);
+                ticked.increment_epoch();
+            }
+        });
+    }
+    Ok(engine)
+}
+
+static INTERRUPTIBLE_RELEASE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+static INTERRUPTIBLE_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+
+/// Whether `engine` is one of the [`interruptible_engine`]s. A module run
+/// from inside one runs on it too, and is cached under its name.
+pub fn is_interruptible(engine: &Engine) -> bool {
+    [&INTERRUPTIBLE_RELEASE, &INTERRUPTIBLE_DEBUG]
+        .iter()
+        .any(|cell| cell.get().is_some_and(|e| Engine::same(e, engine)))
+}
+
 /// Selects the wasmtime GC collector via the ZENA_GC env var
 /// (null | drc | copying). Defaults to wasmtime's Auto.
 pub fn apply_gc_config(config: &mut Config) {

@@ -1,0 +1,89 @@
+// zena:wasm: running other modules and reading how they ended. The
+// modules are hand-written .wat fixtures, so nothing here depends on
+// the compiler. Repo tests run with the spawn grant, which covers
+// zena:wasm too.
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {RunOptions, RunOutcome, runModule, startModule} from 'zena:wasm';
+
+let fixtures = 'packages/stdlib/tests/wasm/fixtures';
+
+let fixture = (name: String): String => `${fixtures}/${name}`;
+
+export let tests = suite('wasm', (): void => {
+  test('a returned status is the exit code', () => {
+    let result = runModule(fixture('returns.wat'));
+    equal(result.outcome, RunOutcome.Returned);
+    equal(result.exitCode, 7);
+    isFalse(result.succeeded());
+
+    let other = runModule(fixture('returns.wat'), new RunOptions().invoking('other'));
+    equal(other.exitCode, 11);
+  });
+
+  test('exit ends the run with its code', () => {
+    let result = runModule(fixture('wasi.wat'), new RunOptions().invoking('exits'));
+    equal(result.outcome, RunOutcome.Returned);
+    equal(result.exitCode, 3);
+  });
+
+  test('a trap is reported, not propagated', () => {
+    let result = runModule(fixture('traps.wat'));
+    equal(result.outcome, RunOutcome.Trapped);
+    equal(result.exitCode, -1);
+    isTrue(result.message.contains('unreachable'));
+  });
+
+  test('output is captured and arguments are passed', () => {
+    let result = runModule(
+      fixture('wasi.wat'),
+      new RunOptions().withArgs(['prog', 'a', 'b']),
+    );
+    equal(result.outcome, RunOutcome.Returned);
+    equal(result.stdout, 'hello\n');
+    // main returns its argument count.
+    equal(result.exitCode, 3);
+  });
+
+  test('a directory is preopened only when handed over', () => {
+    let without = runModule(fixture('wasi.wat'), new RunOptions().invoking('preopen'));
+    // EBADF: fd 3 is not a preopened directory.
+    equal(without.exitCode, 8);
+
+    let shared = runModule(
+      fixture('wasi.wat'),
+      new RunOptions().invoking('preopen').withDir('.', '.'),
+    );
+    equal(shared.exitCode, 0);
+  });
+
+  test('a path outside this program\'s reach does not start', () => {
+    let outside = runModule(fixture('returns.wat'), new RunOptions().withDir('/etc', '/etc'));
+    equal(outside.outcome, RunOutcome.Failed);
+    isTrue(outside.message.contains('/etc'));
+
+    let climbing = runModule(fixture('../fixtures/returns.wat'));
+    equal(climbing.outcome, RunOutcome.Failed);
+
+    let missing = runModule(fixture('no-such-module.wat'));
+    equal(missing.outcome, RunOutcome.Failed);
+  });
+
+  test('a run past its time limit is stopped', () => {
+    let result = runModule(fixture('loops.wat'), new RunOptions().withTimeout(100 as i64));
+    equal(result.outcome, RunOutcome.TimedOut);
+    // It cannot have stopped before its limit.
+    isTrue(result.callNanos >= (90000000 as i64));
+  });
+
+  test('several runs can be in flight at once', () => {
+    let first = startModule(fixture('loops.wat'), new RunOptions().withTimeout(100 as i64));
+    let second = startModule(fixture('returns.wat'));
+    let third = startModule(fixture('traps.wat'));
+    equal(third.wait().outcome, RunOutcome.Trapped);
+    equal(second.wait().exitCode, 7);
+    equal(first.wait().outcome, RunOutcome.TimedOut);
+    // Waiting again returns the same result.
+    equal(second.wait().exitCode, 7);
+  });
+});

@@ -90,8 +90,9 @@ enum Commands {
         #[arg(long = "no-cache")]
         no_cache: bool,
 
-        /// Allow the program to spawn host processes via zena:process
-        /// (a deliberate sandbox escape; ZENA_ALLOW_SPAWN=1 also works)
+        /// Allow the program to spawn host processes via zena:process and
+        /// run other Wasm modules via zena:wasm (a deliberate sandbox
+        /// escape; ZENA_ALLOW_SPAWN=1 also works)
         #[arg(long = "allow-spawn")]
         allow_spawn: bool,
 
@@ -678,7 +679,7 @@ fn run_wasm(file: &str, invoke: &str, _verbose: bool, dirs: &[String], args: &[S
         wasi_builder.preopened_dir(&host_dir_adjusted, &guest_dir, FsPerms::ReadWrite)?;
         path_map.push((guest_dir, host_dir_adjusted));
     }
-    let spawn = if allow_spawn { Spawn::Allow(path_map) } else { Spawn::Deny };
+    let spawn = if allow_spawn { Spawn::Allow(zena_runtime::Grant { path_map, debug }) } else { Spawn::Deny };
     let mut linker: Linker<HostState> = Linker::new(&engine);
     zena_runtime::add_to_linker(&mut linker, &engine, &module, spawn)?;
 
@@ -921,10 +922,13 @@ fn run_internal_tool(
     let module = load_or_compile_module(&engine, &cached, &cwasm)?;
 
     let mut linker: Linker<HostState> = Linker::new(&engine);
-    zena_runtime::add_to_linker(&mut linker, &engine, &module, Spawn::Allow(vec![
-        (".".to_string(), repo_root()?),
-        ("/".to_string(), std::path::PathBuf::from("/")),
-    ]))?;
+    zena_runtime::add_to_linker(&mut linker, &engine, &module, Spawn::Allow(zena_runtime::Grant {
+        path_map: vec![
+            (".".to_string(), repo_root()?),
+            ("/".to_string(), std::path::PathBuf::from("/")),
+        ],
+        debug,
+    }))?;
 
     let mut args = vec![src_repo_rel.to_string()];
     args.extend_from_slice(guest_args);
@@ -994,11 +998,14 @@ fn run_single_test(
     // to host paths — the guest's /tmp is not the host's /tmp when the
     // cache env vars redirect it (and never is on macOS).
     let mut linker: Linker<HostState> = Linker::new(engine);
-    zena_runtime::add_to_linker(&mut linker, engine, &module, Spawn::Allow(vec![
-        (".".to_string(), repo_root.clone()),
-        ("/stdlib".to_string(), stdlib_dir.clone()),
-        ("/tmp".to_string(), tmp_host_dir.clone()),
-    ]))?;
+    zena_runtime::add_to_linker(&mut linker, engine, &module, Spawn::Allow(zena_runtime::Grant {
+        path_map: vec![
+            (".".to_string(), repo_root.clone()),
+            ("/stdlib".to_string(), stdlib_dir.clone()),
+            ("/tmp".to_string(), tmp_host_dir.clone()),
+        ],
+        debug,
+    }))?;
 
     let wasi = WasiCtxBuilder::new()
         .stdout(stdout_pipe.clone())

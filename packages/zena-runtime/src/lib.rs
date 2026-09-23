@@ -1,10 +1,11 @@
 //! Host side of the `zena-cli` compilation target.
 //!
-//! A Zena module compiled for the `zena-cli` target imports three things
-//! from its host: WASI preview 1, two `env` functions that back
-//! `Error`'s stack traces (`captureStackTrace`, `formatStackTrace`), and
-//! the `zena_process` module behind `zena:process` when the program uses
-//! it. This crate implements all of that on wasmtime, plus the engine
+//! A Zena module compiled for the `zena-cli` target imports from its
+//! host: WASI preview 1, two `env` functions that back `Error`'s stack
+//! traces (`captureStackTrace`, `formatStackTrace`), and, when the
+//! program uses them, the `zena_process` module behind `zena:process`
+//! and the `zena_wasm` module behind `zena:wasm`, which runs other Wasm
+//! modules. This crate implements all of that on wasmtime, plus the engine
 //! configuration such a module needs (GC, exception handling, typed
 //! function references, tail calls) and a cache of ahead-of-time
 //! compiled modules so repeated runs skip Cranelift.
@@ -42,6 +43,7 @@ pub mod engine;
 pub mod process;
 pub mod stack_trace;
 pub mod strings;
+pub mod wasm_runner;
 
 pub use process::{PathMap, spawn_allowed};
 
@@ -51,20 +53,34 @@ pub struct HostState {
     pub wasi: WasiP1Ctx,
 }
 
-/// Whether the module may spawn host processes through `zena:process`.
+/// Whether the module may spawn host processes through `zena:process`
+/// and run other Wasm modules through `zena:wasm`.
 ///
-/// Spawning leaves the WASI sandbox, so it is granted per instantiation.
-/// `Allow` carries the guest-to-host directory map that translates the
-/// working directory a guest asks for into a host path (see [`PathMap`]).
+/// Both leave the WASI sandbox, so they are granted together, per
+/// instantiation.
 pub enum Spawn {
-    /// Link every `zena_process` import to a stub that traps with an
-    /// explanation, so a program that never spawns still instantiates.
+    /// Link every `zena_process` and `zena_wasm` import to a stub that
+    /// traps with an explanation, so a program that uses neither still
+    /// instantiates.
     Deny,
-    Allow(PathMap),
+    Allow(Grant),
+}
+
+/// What a module granted [`Spawn::Allow`] needs to use the grant.
+pub struct Grant {
+    /// The guest-to-host directory map, mirroring the module's preopens.
+    /// It translates a directory the guest names (a spawn's working
+    /// directory, a module path, a directory handed to a run) into a
+    /// host path. See [`PathMap`].
+    pub path_map: PathMap,
+    /// Whether the engine is the debug configuration
+    /// ([`engine::config`]). A module started through `zena:wasm` is
+    /// cached under the matching `.cwasm` name; see [`cache`].
+    pub debug: bool,
 }
 
 /// Links everything a `zena-cli`-target module imports: WASI preview 1,
-/// the `env` stack-trace functions, and `zena_process`.
+/// the `env` stack-trace functions, `zena_process` and `zena_wasm`.
 pub fn add_to_linker(
     linker: &mut Linker<HostState>,
     engine: &Engine,
@@ -73,11 +89,16 @@ pub fn add_to_linker(
 ) -> Result<()> {
     p1::add_to_linker_sync(linker, |state| &mut state.wasi)?;
     stack_trace::add_to_linker(linker, engine, module)?;
-    let (allow, path_map) = match spawn {
-        Spawn::Deny => (false, Vec::new()),
-        Spawn::Allow(map) => (true, map),
+    let grant = match spawn {
+        Spawn::Deny => None,
+        Spawn::Allow(grant) => Some(grant),
+    };
+    let (allow, path_map) = match &grant {
+        None => (false, Vec::new()),
+        Some(grant) => (true, grant.path_map.clone()),
     };
     process::add_to_linker(linker, module, allow, path_map)?;
+    wasm_runner::add_to_linker(linker, module, grant)?;
     Ok(())
 }
 

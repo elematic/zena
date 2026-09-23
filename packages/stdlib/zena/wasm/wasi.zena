@@ -1,0 +1,319 @@
+/**
+ * zena:wasm — running other Wasm modules and waiting for their results.
+ *
+ * A module cannot start a Wasm engine by itself, so this is a host
+ * import (wasm module `zena_wasm`), provided by `zena-cli` and
+ * `zena-run`. It is granted together with `zena:process`: a program
+ * that may spawn processes may also run modules, and one that may not
+ * gets imports that trap at the first call.
+ *
+ * ```zena
+ * import { RunOptions, runModule } from 'zena:wasm';
+ *
+ * let result = runModule(
+ *   'out/array_test.wasm',
+ *   new RunOptions().withArgs(['array_test']).withDir('.', '.'),
+ * );
+ * if (!result.succeeded()) {
+ *   console.error(result.stdout);
+ *   console.error(result.message);
+ * }
+ * ```
+ *
+ * Each run gets a fresh store on its own host thread. `startModule`
+ * returns straight away, so several modules can run at once; `wait`
+ * blocks until one ends. A trap is reported in the result and does not
+ * affect the caller.
+ *
+ * Paths — the module's, and each directory handed to it — are in this
+ * program's own view of the filesystem and are translated through its
+ * preopens. A path outside them, or with a `..` segment, makes the run
+ * fail to start: a program can pass on only what it can reach itself.
+ */
+
+/** Opaque host-side handle to a run being configured. */
+distinct type RunConfigRef = anyref;
+
+/** Opaque host-side handle to a started run. */
+distinct type RunRef = anyref;
+
+@external("zena_wasm", "run_new")
+declare function __runNew(path: String): RunConfigRef;
+
+@external("zena_wasm", "run_arg")
+declare function __runArg(config: RunConfigRef, arg: String): void;
+
+@external("zena_wasm", "run_env")
+declare function __runEnv(config: RunConfigRef, key: String, value: String): void;
+
+@external("zena_wasm", "run_inherit_env")
+declare function __runInheritEnv(config: RunConfigRef): void;
+
+@external("zena_wasm", "run_dir")
+declare function __runDir(config: RunConfigRef, from: String, to: String): void;
+
+@external("zena_wasm", "run_invoke")
+declare function __runInvoke(config: RunConfigRef, name: String): void;
+
+@external("zena_wasm", "run_inherit_stdio")
+declare function __runInheritStdio(config: RunConfigRef): void;
+
+@external("zena_wasm", "run_grant")
+declare function __runGrant(config: RunConfigRef): void;
+
+@external("zena_wasm", "run_timeout")
+declare function __runTimeout(config: RunConfigRef, millis: i64): void;
+
+/** Starts the run; does not block. */
+@external("zena_wasm", "run_start")
+declare function __runStart(config: RunConfigRef): RunRef;
+
+/** Blocks until the run ends; returns its exit code. */
+@external("zena_wasm", "run_wait")
+declare function __runWait(run: RunRef): i32;
+
+@external("zena_wasm", "run_outcome")
+declare function __runOutcome(run: RunRef): i32;
+
+@external("zena_wasm", "run_message")
+declare function __runMessage(run: RunRef): String;
+
+@external("zena_wasm", "run_stdout")
+declare function __runStdout(run: RunRef): String;
+
+@external("zena_wasm", "run_stderr")
+declare function __runStderr(run: RunRef): String;
+
+@external("zena_wasm", "run_call_nanos")
+declare function __runCallNanos(run: RunRef): i64;
+
+/** How a run ended. */
+export enum RunOutcome {
+  /**
+   * The exported function returned, or the module ended itself with
+   * `exit(code)`. `exitCode` says which status it ended with.
+   */
+  Returned,
+  /** The module trapped. `message` has the trap and its backtrace. */
+  Trapped,
+  /** The run was stopped at its time limit. */
+  TimedOut,
+  /**
+   * The module did not start: it could not be read, compiled, linked
+   * or instantiated, or a path it was given is outside what this
+   * program can reach. `message` says which.
+   */
+  Failed,
+}
+
+let outcomeOf = (code: i32): RunOutcome => {
+  if (code == 0) {
+    return RunOutcome.Returned;
+  }
+  if (code == 1) {
+    return RunOutcome.Trapped;
+  }
+  if (code == 2) {
+    return RunOutcome.TimedOut;
+  }
+  return RunOutcome.Failed;
+};
+
+/** What a finished run produced. */
+export class RunResult {
+  outcome: RunOutcome;
+  /**
+   * The status the module ended with: the `i32` its exported function
+   * returned, the code it passed to `exit`, or 0 when the function
+   * returns nothing. -1 when it trapped, timed out or failed to start.
+   */
+  exitCode: i32;
+  /** Why a run trapped, timed out or failed to start; otherwise ''. */
+  message: String;
+  /** What the module wrote, when its output was captured; otherwise ''. */
+  stdout: String;
+  stderr: String;
+  /**
+   * How long the exported call took, in nanoseconds. Loading and
+   * instantiating the module are not included, so this is the number a
+   * benchmark wants.
+   */
+  callNanos: i64;
+
+  new(
+    this.outcome,
+    this.exitCode,
+    this.message,
+    this.stdout,
+    this.stderr,
+    this.callNanos,
+  );
+
+  /** True when the module returned or exited with status 0. */
+  succeeded(): boolean {
+    return this.outcome == RunOutcome.Returned && this.exitCode == 0;
+  }
+}
+
+/**
+ * How to run a module. Every method returns the options, so a
+ * configuration reads as one expression.
+ */
+export final class RunOptions {
+  var #args = new GrowableArray<String>();
+  var #envKeys = new GrowableArray<String>();
+  var #envValues = new GrowableArray<String>();
+  var #inheritEnv = false;
+  var #dirsFrom = new GrowableArray<String>();
+  var #dirsTo = new GrowableArray<String>();
+  var #invoke = 'main';
+  var #inheritStdio = false;
+  var #grant = false;
+  var #timeoutMillis: i64 = 0 as i64;
+
+  new();
+
+  /**
+   * The module's argument vector, program name first, as `getArguments()`
+   * will return it inside the module.
+   */
+  withArgs(args: Array<String>): RunOptions {
+    for (let arg in args) {
+      this.#args.push(arg);
+    }
+    return this;
+  }
+
+  /** Sets one environment variable in the module's environment. */
+  withEnv(key: String, value: String): RunOptions {
+    this.#envKeys.push(key);
+    this.#envValues.push(value);
+    return this;
+  }
+
+  /** Gives the module this program's own environment variables. */
+  inheritingEnv(): RunOptions {
+    this.#inheritEnv = true;
+    return this;
+  }
+
+  /**
+   * Preopens a directory for the module: `from` in this program's view,
+   * appearing as `to` in the module's. `withDir('.', '.')` shares this
+   * program's working directory.
+   */
+  withDir(from: String, to: String): RunOptions {
+    this.#dirsFrom.push(from);
+    this.#dirsTo.push(to);
+    return this;
+  }
+
+  /** The exported function to call. `main` unless set. */
+  invoking(name: String): RunOptions {
+    this.#invoke = name;
+    return this;
+  }
+
+  /**
+   * Connects the module to this program's own stdin, stdout and stderr,
+   * so what it prints appears as it prints it. Output is captured into
+   * the result otherwise.
+   */
+  inheritingStdio(): RunOptions {
+    this.#inheritStdio = true;
+    return this;
+  }
+
+  /**
+   * Lets the module spawn processes and run modules itself, within the
+   * directories it was given.
+   */
+  granting(): RunOptions {
+    this.#grant = true;
+    return this;
+  }
+
+  /**
+   * Stops the run if its exported call runs longer than this. The limit
+   * is checked every few milliseconds, so it is approximate. A
+   * non-positive limit means none.
+   */
+  withTimeout(millis: i64): RunOptions {
+    this.#timeoutMillis = millis;
+    return this;
+  }
+
+  /** Builds the host-side configuration for a run of `path`. */
+  #configure(path: String): RunConfigRef {
+    let config = __runNew(path);
+    for (let arg in this.#args) {
+      __runArg(config, arg);
+    }
+    if (this.#inheritEnv) {
+      __runInheritEnv(config);
+    }
+    for (var i = 0; i < this.#envKeys.length; i += 1) {
+      __runEnv(config, this.#envKeys[i], this.#envValues[i]);
+    }
+    for (var i = 0; i < this.#dirsFrom.length; i += 1) {
+      __runDir(config, this.#dirsFrom[i], this.#dirsTo[i]);
+    }
+    __runInvoke(config, this.#invoke);
+    if (this.#inheritStdio) {
+      __runInheritStdio(config);
+    }
+    if (this.#grant) {
+      __runGrant(config);
+    }
+    if (this.#timeoutMillis > (0 as i64)) {
+      __runTimeout(config, this.#timeoutMillis);
+    }
+    return config;
+  }
+
+  /** Starts a run of `path` with these options. */
+  start(path: String): Run {
+    return new Run(__runStart(this.#configure(path)));
+  }
+}
+
+/**
+ * A started run. `wait` blocks until it ends; waiting again returns the
+ * same result.
+ */
+export final class Run {
+  #run: RunRef;
+  var #result: RunResult | null = null;
+
+  new(run: RunRef) : #run = run;
+
+  wait(): RunResult {
+    let cached = this.#result;
+    if (cached != null) {
+      return cached;
+    }
+    let code = __runWait(this.#run);
+    let result = new RunResult(
+      outcomeOf(__runOutcome(this.#run)),
+      code,
+      __runMessage(this.#run),
+      __runStdout(this.#run),
+      __runStderr(this.#run),
+      __runCallNanos(this.#run),
+    );
+    this.#result = result;
+    return result;
+  }
+}
+
+/** Starts a module without waiting for it. */
+export let startModule = (
+  path: String,
+  options: RunOptions = new RunOptions(),
+): Run => options.start(path);
+
+/** Runs a module to completion. */
+export let runModule = (
+  path: String,
+  options: RunOptions = new RunOptions(),
+): RunResult => options.start(path).wait();

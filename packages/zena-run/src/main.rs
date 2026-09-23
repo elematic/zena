@@ -11,7 +11,7 @@ use clap::Parser;
 use std::path::Path;
 use wasmtime::{Engine, Linker, Store};
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
-use zena_runtime::{DirMapping, HostState, Spawn};
+use zena_runtime::{DirMapping, Grant, HostState, Spawn};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -30,8 +30,9 @@ struct Cli {
     #[arg(long, default_value = "main")]
     invoke: String,
 
-    /// Allow the program to spawn host processes via zena:process
-    /// (a deliberate sandbox escape; ZENA_ALLOW_SPAWN=1 also works)
+    /// Allow the program to spawn host processes via zena:process and run
+    /// other Wasm modules via zena:wasm (a deliberate sandbox escape;
+    /// ZENA_ALLOW_SPAWN=1 also works)
     #[arg(long = "allow-spawn")]
     allow_spawn: bool,
 
@@ -84,7 +85,10 @@ fn main() -> Result<()> {
     }
 
     let spawn = if zena_runtime::spawn_allowed(cli.allow_spawn) {
-        Spawn::Allow(path_map)
+        Spawn::Allow(Grant {
+            path_map,
+            debug: cli.debug,
+        })
     } else {
         Spawn::Deny
     };

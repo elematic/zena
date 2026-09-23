@@ -13,10 +13,18 @@ it:
   `Error`'s stack traces. Every module imports these because `Error` is in
   the prelude. (`env.getStackTrace`, which does both in one call, is also
   provided; nothing in the stdlib imports it.)
-- **`zena_process`**, the ten functions behind `zena:process`, when the
+- **`zena_process`**, the eleven functions behind `zena:process`, when the
   program uses that module. Spawning host processes leaves the sandbox, so
   the embedder grants it per instantiation (`Spawn::Allow`) or links
   trapping stubs (`Spawn::Deny`).
+- **`zena_wasm`**, the functions behind `zena:wasm`, which starts other
+  Wasm modules and waits for their results (`wasm_runner.rs`). It is
+  granted with `zena_process`. Each run gets a fresh store on its own
+  thread, and directories handed to a run are translated through the
+  caller's own preopens, so a module can pass on only what it can reach.
+  A run with a time limit uses a second engine with epoch interruption on
+  (`engine::interruptible_engine`), so programs that never ask for a
+  limit do not pay for its checks.
 
 Strings cross the boundary through four helpers every compiled module
 exports (`$stringCreate`, `$stringSetByte`, `$stringGetLength`,

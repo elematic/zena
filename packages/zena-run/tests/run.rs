@@ -125,6 +125,27 @@ fn process_imports_trap_without_the_grant() {
 }
 
 #[test]
+fn wasm_imports_trap_without_the_grant() {
+    // Running a module is granted with spawning; the real imports are
+    // exercised end to end by packages/stdlib/tests/wasm, which runs
+    // under the grant.
+    let path = module_file(
+        "run-module",
+        r#"(module
+          (import "zena_wasm" "run_new" (func $run_new (param externref) (result externref)))
+          (memory (export "memory") 1)
+          (func (export "main") (drop (call $run_new (ref.null extern)))))"#,
+    );
+    let out = zena_run(&[path.to_str().unwrap()]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("zena:wasm needs the same explicit grant"),
+        "expected the grant hint in: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn refuses_zena_source() {
     let dir = std::env::temp_dir().join(format!("zena-run-test-{}-source", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

@@ -13,13 +13,24 @@ use wasmtime::{Engine, Module};
 /// path. A `.wat` file caches as `foo.wat.cwasm` so it does not collide
 /// with a sibling `foo.wasm`'s cache.
 pub fn cwasm_path_for(wasm_path: &Path, debug: bool) -> PathBuf {
-    let is_wat = wasm_path.extension().is_some_and(|e| e == "wat");
-    let suffix = match (is_wat, debug) {
-        (false, false) => "cwasm",
-        (false, true) => "debug.cwasm",
-        (true, false) => "wat.cwasm",
-        (true, true) => "wat.debug.cwasm",
-    };
+    cwasm_path_for_variant(wasm_path, debug, false)
+}
+
+/// [`cwasm_path_for`], for either engine configuration: `interruptible`
+/// selects [`crate::engine::interruptible_engine`]'s, whose compiled code
+/// differs and so needs its own file.
+pub fn cwasm_path_for_variant(wasm_path: &Path, debug: bool, interruptible: bool) -> PathBuf {
+    let mut suffix = String::new();
+    if wasm_path.extension().is_some_and(|e| e == "wat") {
+        suffix.push_str("wat.");
+    }
+    if interruptible {
+        suffix.push_str("interruptible.");
+    }
+    if debug {
+        suffix.push_str("debug.");
+    }
+    suffix.push_str("cwasm");
     wasm_path.with_extension(suffix)
 }
 
@@ -27,6 +38,21 @@ pub fn cwasm_path_for(wasm_path: &Path, debug: bool) -> PathBuf {
 /// writing the cache entry first when it is missing or stale.
 pub fn load_module(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<Module> {
     load_or_compile_module(engine, wasm_path, &cwasm_path_for(wasm_path, debug))
+}
+
+/// [`load_module`], for either engine configuration; see
+/// [`cwasm_path_for_variant`].
+pub fn load_module_variant(
+    engine: &Engine,
+    wasm_path: &Path,
+    debug: bool,
+    interruptible: bool,
+) -> Result<Module> {
+    load_or_compile_module(
+        engine,
+        wasm_path,
+        &cwasm_path_for_variant(wasm_path, debug, interruptible),
+    )
 }
 
 /// Compiles a module in memory, touching no cache files.
@@ -151,6 +177,16 @@ mod tests {
         assert_eq!(
             cwasm_path_for(wat, true),
             Path::new("out/prog.wat.debug.cwasm")
+        );
+        // The interruptible engine compiles different code, so it never
+        // shares a file with the ordinary one.
+        assert_eq!(
+            cwasm_path_for_variant(wasm, false, true),
+            Path::new("out/prog.interruptible.cwasm")
+        );
+        assert_eq!(
+            cwasm_path_for_variant(wat, true, true),
+            Path::new("out/prog.wat.interruptible.debug.cwasm")
         );
     }
 
