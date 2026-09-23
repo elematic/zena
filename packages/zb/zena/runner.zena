@@ -2,7 +2,14 @@ import {runFuture} from 'zena:async';
 import { HashSet } from 'zena:collections';
 import {isFile, readFile, writeFile} from 'zena:fs';
 import {monotonic} from 'zena:time';
-import {Engine, RunResult} from 'workflow:engine';
+import {
+  Engine,
+  Failed,
+  RunResult,
+  Skipped,
+  StepSource,
+  Succeeded,
+} from 'workflow:engine';
 import {Fingerprint} from 'workflow:fingerprint';
 import {EngineState} from 'workflow:state';
 import {StepKey} from 'workflow:step';
@@ -64,6 +71,45 @@ let saveState = (root: String, result: RunResult): void => {
       writeFile(path, stateToJson(packageState));
     }
   }
+};
+
+/** How one step of a finished build went, as `reportBuild` prints it. */
+let describeStep = (result: RunResult, key: String): String => {
+  let outcome = result.outcomeOf(new StepKey(key));
+  if (outcome is Succeeded) {
+    if (outcome.source == StepSource.Fresh) {
+      return 'fresh';
+    }
+    if (outcome.source == StepSource.Cache) {
+      return 'restored';
+    }
+    return 'ran';
+  }
+  if (outcome is Failed) {
+    return 'FAILED: ' + outcome.error.message;
+  }
+  if (outcome is Skipped) {
+    return 'skipped (' + outcome.reason + ')';
+  }
+  return 'unknown';
+};
+
+/**
+ * Prints each step of a finished build and whether the build succeeded,
+ * and returns the exit status: 0 when every step succeeded, 1 otherwise.
+ * `zb` and `zena build <target>` both report this way.
+ */
+export let reportBuild = (outcome: BuildOutcome): i32 => {
+  let result = outcome.result;
+  for (let key in outcome.stepKeys) {
+    console.log(key + ': ' + describeStep(result, key));
+  }
+  if (!result.allSucceeded) {
+    console.log('build failed');
+    return 1;
+  }
+  console.log('build succeeded');
+  return 0;
 };
 
 /** A finished build: the engine result plus the step keys it ran. */

@@ -1,15 +1,5 @@
 import {getArguments} from 'zena:cli';
-import {
-  Failed,
-  RunResult,
-  Skipped,
-  StepOutcome,
-  StepSource,
-  Succeeded,
-} from 'workflow:engine';
-import {EngineState} from 'workflow:state';
-import {StepKey} from 'workflow:step';
-import {BuildOutcome, buildTarget} from './runner.zena';
+import {BuildOutcome, buildTarget, reportBuild} from './runner.zena';
 import {ScriptRef} from './wireit-config.zena';
 
 /**
@@ -21,27 +11,6 @@ import {ScriptRef} from './wireit-config.zena';
  * The workspace root defaults to the current directory; -C points at a
  * nested workspace (a directory with its own package.json tree).
  */
-
-let describe = (result: RunResult, key: String): String => {
-  let outcome = result.outcomeOf(new StepKey(key));
-  if (outcome is Succeeded) {
-    if (outcome.source == StepSource.Fresh) {
-      return 'fresh';
-    }
-    if (outcome.source == StepSource.Cache) {
-      return 'restored';
-    }
-    return 'ran';
-  }
-  if (outcome is Failed) {
-    return 'FAILED: ' + outcome.error.message;
-  }
-  if (outcome is Skipped) {
-    return 'skipped (' + outcome.reason + ')';
-  }
-  return 'unknown';
-};
-
 export let main = (): i32 => {
   let args = getArguments();
   var root = '';
@@ -60,24 +29,15 @@ export let main = (): i32 => {
   else
     new ScriptRef(args[next], args[next + 1]);
 
-  var outcome = new BuildOutcome(
-    new RunResult(new HashMap<String, StepOutcome>(), EngineState.empty()),
-    new GrowableArray<String>(),
-  );
+  var outcome: BuildOutcome | null = null;
   try {
     outcome = buildTarget(root, entry);
   } catch (e) {
     console.log('zb: ' + e.message);
     return 1;
   }
-  let result = outcome.result;
-  for (let key in outcome.stepKeys) {
-    console.log(key + ': ' + describe(result, key));
-  }
-  if (!result.allSucceeded) {
-    console.log('build failed');
+  if (outcome == null) {
     return 1;
   }
-  console.log('build succeeded');
-  return 0;
+  return reportBuild(outcome);
 };
