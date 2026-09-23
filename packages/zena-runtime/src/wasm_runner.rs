@@ -26,7 +26,7 @@ use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 use crate::engine::{
-    interruptible_engine, is_interruptible, reserve_gc_heap, EPOCH_TICK, NO_DEADLINE,
+    EPOCH_TICK, NO_DEADLINE, interruptible_engine, is_interruptible, reserve_gc_heap, shared_engine,
 };
 use crate::strings::{make_guest_string, param_to_externref, read_guest_string};
 use crate::{Grant, HostState, PathMap, Spawn};
@@ -46,6 +46,9 @@ struct RunConfig {
     inherit_stdio: bool,
     grant: bool,
     timeout: Option<Duration>,
+    /// Run on a debug engine: no inlining, so backtraces name every
+    /// function. Starts as the caller's own setting.
+    debug: bool,
 }
 
 /// How a run ended. The numbers are what `run_outcome` returns.
@@ -165,28 +168,32 @@ pub fn add_to_linker(
             continue;
         };
         match name.as_str() {
-            "run_new" => linker.func_new(
-                "zena_wasm",
-                "run_new",
-                func_ty,
-                |mut caller: Caller<'_, HostState>, params, results| {
-                    let path = read_guest_string(&mut caller, &params[0])?;
-                    let config = RunConfig {
-                        path,
-                        args: Vec::new(),
-                        env: Vec::new(),
-                        inherit_env: false,
-                        dirs: Vec::new(),
-                        invoke: "main".to_string(),
-                        inherit_stdio: false,
-                        grant: false,
-                        timeout: None,
-                    };
-                    let handle = ExternRef::new(&mut caller, Mutex::new(config))?;
-                    results[0] = Val::ExternRef(Some(handle));
-                    Ok(())
-                },
-            )?,
+            "run_new" => {
+                let debug = grant.debug;
+                linker.func_new(
+                    "zena_wasm",
+                    "run_new",
+                    func_ty,
+                    move |mut caller: Caller<'_, HostState>, params, results| {
+                        let path = read_guest_string(&mut caller, &params[0])?;
+                        let config = RunConfig {
+                            path,
+                            args: Vec::new(),
+                            env: Vec::new(),
+                            inherit_env: false,
+                            dirs: Vec::new(),
+                            invoke: "main".to_string(),
+                            inherit_stdio: false,
+                            grant: false,
+                            timeout: None,
+                            debug,
+                        };
+                        let handle = ExternRef::new(&mut caller, Mutex::new(config))?;
+                        results[0] = Val::ExternRef(Some(handle));
+                        Ok(())
+                    },
+                )?
+            }
             "run_arg" => linker.func_new(
                 "zena_wasm",
                 "run_arg",
@@ -257,6 +264,14 @@ pub fn add_to_linker(
                     with_config(&mut caller, &params[0], "run_grant", |c| c.grant = true)
                 },
             )?,
+            "run_debug" => linker.func_new(
+                "zena_wasm",
+                "run_debug",
+                func_ty,
+                |mut caller: Caller<'_, HostState>, params, _results| {
+                    with_config(&mut caller, &params[0], "run_debug", |c| c.debug = true)
+                },
+            )?,
             "run_timeout" => linker.func_new(
                 "zena_wasm",
                 "run_timeout",
@@ -297,6 +312,7 @@ pub fn add_to_linker(
                                     inherit_stdio: c.inherit_stdio,
                                     grant: c.grant,
                                     timeout: c.timeout,
+                                    debug: c.debug,
                                 })
                             },
                         )?;
@@ -360,8 +376,13 @@ pub fn add_to_linker(
                     func_ty,
                     move |mut caller: Caller<'_, HostState>, params, results| {
                         let path = read_guest_string(&mut caller, &params[0])?;
+                        let Val::I32(debug) = params[1] else {
+                            return Err(wasmtime::Error::msg(
+                                "module_precompile: debug not an i32",
+                            ));
+                        };
                         let outcome = match translate(&path, &grant.path_map) {
-                            Some(host) => precompile(&host, grant.debug),
+                            Some(host) => precompile(&host, debug != 0),
                             None => {
                                 format!("{path} is outside every directory this module can reach")
                             }
@@ -411,7 +432,8 @@ fn start(engine: Engine, config: RunConfig, grant: &Grant) -> std::sync::mpsc::R
             }
         }
     }
-    let debug = grant.debug;
+    let debug = config.debug;
+    let same_as_caller = debug == grant.debug;
     std::thread::spawn(move || {
         let finished = match (module_path, refused) {
             (None, _) => Finished::failed(format!(
@@ -421,11 +443,14 @@ fn start(engine: Engine, config: RunConfig, grant: &Grant) -> std::sync::mpsc::R
             (_, Some(message)) => Finished::failed(message),
             (Some(path), None) => {
                 // A time limit needs the engine whose code checks the
-                // epoch. Without one, the run shares its caller's engine.
+                // epoch. Without one, the run shares its caller's engine,
+                // unless it asked for a different debug setting.
                 let engine = if config.timeout.is_some() {
                     interruptible_engine(debug)
-                } else {
+                } else if same_as_caller {
                     Ok(engine)
+                } else {
+                    shared_engine(debug)
                 };
                 match engine {
                     Ok(engine) => run(&engine, &path, &config, dirs, debug),

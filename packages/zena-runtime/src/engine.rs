@@ -97,6 +97,25 @@ pub fn interruptible_engine(debug: bool) -> Result<Engine> {
     Ok(engine)
 }
 
+/// The engine for a run whose debug setting differs from its caller's
+/// (`zena:wasm`'s `debugging`), one per setting, created on first use.
+/// A run with the caller's setting shares the caller's engine instead.
+pub fn shared_engine(debug: bool) -> Result<Engine> {
+    let cell = if debug {
+        &SHARED_DEBUG
+    } else {
+        &SHARED_RELEASE
+    };
+    if let Some(engine) = cell.get() {
+        return Ok(engine.clone());
+    }
+    let created = Engine::new(&config(debug))?;
+    Ok(cell.get_or_init(|| created).clone())
+}
+
+static SHARED_RELEASE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+static SHARED_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+
 static INTERRUPTIBLE_RELEASE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
 static INTERRUPTIBLE_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
 

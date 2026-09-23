@@ -61,6 +61,9 @@ declare function __runInheritStdio(config: RunConfigRef): void;
 @external("zena_wasm", "run_grant")
 declare function __runGrant(config: RunConfigRef): void;
 
+@external("zena_wasm", "run_debug")
+declare function __runDebug(config: RunConfigRef): void;
+
 @external("zena_wasm", "run_timeout")
 declare function __runTimeout(config: RunConfigRef, millis: i64): void;
 
@@ -92,7 +95,7 @@ declare function __runResultText(run: RunRef): String;
 
 /** Writes a module's `.cwasm`; returns '' or why it could not. */
 @external("zena_wasm", "module_precompile")
-declare function __modulePrecompile(path: String): String;
+declare function __modulePrecompile(path: String, debug: boolean): String;
 
 /** How a run ended. */
 export enum RunOutcome {
@@ -191,6 +194,7 @@ export final class RunOptions {
   var #inheritStdio = false;
   var #grant = false;
   var #timeoutMillis: i64 = 0 as i64;
+  var #debug = false;
 
   new();
 
@@ -264,6 +268,16 @@ export final class RunOptions {
     return this;
   }
 
+  /**
+   * Runs the module with inlining off, so a trap's backtrace names every
+   * function on the way to it. A run otherwise has its caller's
+   * setting.
+   */
+  debugging(): RunOptions {
+    this.#debug = true;
+    return this;
+  }
+
   /** Builds the host-side configuration for a run of `path`. */
   #configure(path: String): RunConfigRef {
     let config = __runNew(path);
@@ -285,6 +299,9 @@ export final class RunOptions {
     }
     if (this.#grant) {
       __runGrant(config);
+    }
+    if (this.#debug) {
+      __runDebug(config);
     }
     if (this.#timeoutMillis > (0 as i64)) {
       __runTimeout(config, this.#timeoutMillis);
@@ -344,6 +361,8 @@ export let runModule = (
  * Compiles a module to machine code now and caches it beside the file,
  * so that its first run does not pay for the compile. Returns '' on
  * success and the reason otherwise. Running a module caches it the same
- * way; this is for doing it ahead of time.
+ * way; this is for doing it ahead of time. `debug` compiles it for runs
+ * that ask for `debugging`.
  */
-export let precompileModule = (path: String): String => __modulePrecompile(path);
+export let precompileModule = (path: String, debug: boolean = false): String =>
+  __modulePrecompile(path, debug);
