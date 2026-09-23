@@ -277,12 +277,12 @@ pub fn add_to_linker(
                 "run_timeout",
                 func_ty,
                 |mut caller: Caller<'_, HostState>, params, _results| {
-                    let Val::I64(millis) = params[1] else {
-                        return Err(wasmtime::Error::msg("run_timeout: millis not an i64"));
+                    let Val::I64(nanos) = params[1] else {
+                        return Err(wasmtime::Error::msg("run_timeout: nanos not an i64"));
                     };
                     with_config(&mut caller, &params[0], "run_timeout", |c| {
-                        c.timeout = if millis > 0 {
-                            Some(Duration::from_millis(millis as u64))
+                        c.timeout = if nanos > 0 {
+                            Some(Duration::from_nanos(nanos as u64))
                         } else {
                             None
                         }
