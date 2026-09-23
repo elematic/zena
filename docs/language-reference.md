@@ -3748,8 +3748,9 @@ members.
 
 #### Declaration
 
-Symbols are declared using the `symbol` keyword, either at the top level of a
-module or as a `static symbol` on a class, interface or mixin.
+A `symbol` declaration creates a compile-time-only, globally unique value. It
+can be declared at the top level of a module, or as a static member of a class,
+interface or mixin.
 
 ```zena
 // Top-level symbol
@@ -3763,31 +3764,8 @@ interface Iterable<T> {
 }
 ```
 
-#### Naming a Symbol
-
-A top-level symbol is an ordinary binding, so `[mySymbol]` is a lexical
-reference and resolves wherever the name is in scope.
-
-A static symbol is different: it is never in scope under its bare name, not
-even inside the body that declares it. The only way to name one is through the
-type that declares it, so `Iterable` writes `[Iterable.iterator]` in its own
-body, the same spelling an implementer and a caller use.
-
-```zena
-interface Iterable<T> {
-  static symbol iterator;
-
-  [iterator](): Iterator<T>;           // Error
-  [Iterable.iterator](): Iterator<T>;  // OK
-}
-```
-
-The error names the spelling to use:
-
-```
-'iterator' is a static symbol of 'Iterable'. Write 'Iterable.iterator':
-a static symbol is named through the type that declares it.
-```
+A static symbol is named through its type, like any static member — so
+`Iterable` itself writes `[Iterable.iterator]`.
 
 #### Usage
 
@@ -3812,11 +3790,6 @@ let it = list.[Iterable.iterator]();
 - **Compile-Time Resolution**: Symbols are resolved at compile time. The name
   inside `[...]` is a symbol name or `Type.symbol`, never an arbitrary
   expression.
-- **Symbols Have Their Own Identity**: Two declarations that spell the same
-  name are two symbols, and a member is keyed by its symbol. So one class can
-  implement both `[Reader.act]` and `[Writer.act]`, each call reaching its own
-  method; and a module that declares its own `symbol secret` names a
-  different member from the library's, and finds nothing.
 - **Access Control**: Visibility is controlled via standard `export` rules. If a
   symbol is not exported — or, for a static symbol, the type that declares it —
   it cannot be used outside the library.

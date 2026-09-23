@@ -4120,9 +4120,8 @@ export let beginModule = (
   // its members' symbol identities as it registers them, so the bindings
   // have to exist by then.
   for (let stmt in ast.body) {
-    match (stmt) {
-      case SymbolDeclaration as sd: { checkSymbolDeclaration(ctx, sd); }
-      case _: {}
+    if (stmt is SymbolDeclaration) {
+      checkSymbolDeclaration(ctx, stmt);
     }
   }
 
@@ -8461,11 +8460,9 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
 /**
  * A parent's member re-typed for the subtype that inherits it.
  *
- * Carries `symbolTypeId` across. A symbol-keyed member that lost it on
- * the way down would answer -1 to `declaredSymbolIdOfMember`, and the
- * access check would have nothing to compare against one level below the
- * declaring type — which is where most calls to an inherited protocol
- * method are.
+ * Carries `symbolTypeId` across, so a symbol-keyed member keeps its
+ * symbol's identity one level below the type that declared it — which is
+ * where most calls to an inherited protocol method are.
  */
 let inheritedMember = (parentMember: MemberInfo, subType: Type): MemberInfo => {
   let copy = match (parentMember) {
@@ -17272,10 +17269,9 @@ let staticSymbolsOf = (t: Type): Map<String, Type> | null => {
 /**
  * The symbol a member key names, for both spellings.
  *
- * `:sym` is an ordinary lexical reference, so a top-level `symbol sym`
- * has to be in scope. `:Owner.sym` names a `static symbol` on the type
- * `Owner`, which is reached only through that type — it never enters a
- * lexical scope, so the qualifier is the whole of its visibility.
+ * These are ordinary references: `:sym` names a top-level `symbol` in
+ * lexical scope, and `:Owner.sym` names a static member of `Owner`, the
+ * way any static member is named.
  *
  * Reports the reason it failed when `report` is set, and returns null.
  * Callers that only want the identity pass false.
@@ -17294,11 +17290,9 @@ let resolveSymbolPath = (
         return t as SymbolType;
       }
       if (report) {
-        // A static symbol is deliberately NOT in scope under its bare
-        // name. When the name is one the enclosing type declares, that is
-        // almost always what was meant, so name the spelling that reaches
-        // it rather than leaving the reader to wonder why a name they can
-        // see right above did not resolve.
+        // Like any static member, a static symbol is not in scope under
+        // its bare name. When the name is one the enclosing type declares,
+        // that is almost always what was meant, so say how to name it.
         var ownedByEnclosing = false;
         if (enclosingSymbols != null) {
           ownedByEnclosing =
@@ -17308,7 +17302,7 @@ let resolveSymbolPath = (
           ctx.error(
             "'" + ident.name + "' is a static symbol of '" + enclosingName +
             "'. Write '" + enclosingName + "." + ident.name +
-            "': a static symbol is named through the type that declares it.",
+            "', as with any static member.",
             DiagnosticCode.SymbolNotFound,
             loc
           );

@@ -618,9 +618,9 @@ Sometimes APIs need to expose methods for system use (e.g., iteration, serializa
 
 ### 9.2. Defining Symbols
 
-Symbols are declared using the `symbol` keyword. A symbol is either a
-top-level declaration or a `static symbol` on a class, interface or
-mixin.
+A `symbol` declaration creates a compile-time-only, globally unique value.
+It can be declared at the top level of a module, or as a static member of
+a class, interface or mixin.
 
 ```zena
 // Top-level symbol
@@ -635,33 +635,13 @@ interface Iterable<T> {
 }
 ```
 
-The two kinds differ in how you name them, and the difference is the
-point of having both.
+Symbols are named like any other value. A top-level symbol is named
+directly, and a static symbol is named through its type, as any static
+member is — including inside the type that declares it, so `Iterable`
+writes `[Iterable.iterator]`.
 
-A top-level symbol is an ordinary binding. `[mySymbol]` is a lexical
-reference to it, so it resolves wherever the name is in scope and is
-withheld from other modules by not exporting it.
-
-A static symbol is never in scope under its bare name — not even inside
-the body that declares it. It is reached only through the type that
-declares it, so you write `[Iterable.iterator]` in `Iterable` itself,
-exactly as an implementer and a caller do. Writing the bare `[iterator]`
-there is an error:
-
-```
-'iterator' is a static symbol of 'Iterable'. Write 'Iterable.iterator':
-a static symbol is named through the type that declares it.
-```
-
-Requiring the qualifier is what makes the type the whole of the symbol's
-visibility: an unexported interface withholds its static symbols the way
-an unexported `symbol` withholds itself, and there is no second spelling
-that bypasses it. It also keeps one name for one thing — the declaration,
-the implementations and the call sites all say `Iterable.iterator`.
-
-A class declares one the same way, with the same rule for naming it. A
-symbol is an identity with no value, so it takes up nothing on the type
-that declares it: a class's `static symbol` has no field and no global.
+Because a symbol exists only at compile time, a static symbol takes up
+no space on the type that declares it.
 
 ### 9.3. Implementing & Calling Symbols
 
@@ -686,29 +666,11 @@ let it = list.[Iterable.iterator](); // OK
 - **Static Resolution**: Unlike JavaScript, Zena symbols are resolved at **compile time**. The compiler maps each symbol to a unique VTable index.
 - **No Dynamic Lookup**: The expression inside `[...]` must be a compile-time constant resolving to a symbol. Dynamic expressions like `list[getRandomSymbol()]()` are **not supported** to ensure performance and AOT compatibility.
 - **Access Control**: Visibility is controlled via standard `export` rules. If you don't export the symbol — or, for a static symbol, the type that declares it — outside modules cannot call or implement the method.
-- **Identity**: Two declarations that spell the same name are two symbols. A member is keyed by its symbol's identity, so another module declaring its own `symbol secret` names a different member, and finds nothing, rather than reaching the one it was never given.
 
 ### 9.5. Comparison to "Protected"
 
 - **Flexibility**: Symbols can be shared across unrelated libraries (if the symbol itself is shared), allowing for "friend" access patterns beyond just subclasses.
-- **No Collisions**: A symbol-keyed member never collides with a name-keyed one, or with a member keyed by a different symbol. `[Iterable.iterator]` and a plain `iterator()` are different members, and so are `[Reader.act]` and `[Writer.act]` — one class can implement both interfaces, and each call reaches its own method.
-
-```zena
-interface Reader {
-  static symbol act;
-  [Reader.act](): i32;
-}
-
-interface Writer {
-  static symbol act;
-  [Writer.act](): String;
-}
-
-class Both implements Reader, Writer {
-  [Reader.act](): i32 { return 1; }
-  [Writer.act](): String { return "x"; }
-}
-```
+- **No Collisions**: Two interfaces can define methods with the same _name_ but different _symbols_, allowing a class to implement both without conflict.
 
 ## 10. Initialization & Safety
 

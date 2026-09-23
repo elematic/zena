@@ -766,17 +766,14 @@ export let syntacticMemberName = (node: Node): String => {
  * name `symbol`. There is no `symbol` type to annotate a field with
  * otherwise, so the name is unambiguous.
  *
- * A symbol is an identity rather than storage, so such a field declares
- * no member and needs no cell: the checker registers it on the type's
- * static symbols, and everything that walks a body's fields skips it.
+ * A symbol exists only at compile time, so such a field declares no member
+ * and needs no cell: the checker registers it on the type's static
+ * symbols, and everything that walks a body's fields skips it.
  */
 export let isSymbolFieldDeclaration = (field: FieldDefinition): boolean => {
   if (!field.isStatic) { return false; }
-  let ann = field.typeAnnotation;
-  if (ann == null) { return false; }
-  return match (ann as TypeAnnotation) {
-    case NamedTypeAnnotation {name, typeArguments}:
-      name == "symbol" && typeArguments == null
-    case _: false
-  };
+  if (let NamedTypeAnnotation {name, typeArguments} = field.typeAnnotation) {
+    return name == "symbol" && typeArguments == null;
+  }
+  return false;
 };
