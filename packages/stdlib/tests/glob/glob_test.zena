@@ -1,6 +1,6 @@
 // Tests for zena:glob module
 import {suite, test, TestContext} from 'zena:test';
-import {equal, notEqual, isTrue, isFalse, greater} from 'zena:assert';
+import {equal, notEqual, isTrue, isFalse, greater, throws} from 'zena:assert';
 import {hasMagic, globToRegex, GlobPattern, matchGlob} from 'zena:glob';
 
 export let tests = suite('Glob', (): void => {
@@ -9,6 +9,7 @@ export let tests = suite('Glob', (): void => {
     isTrue(hasMagic('tests/**/*.zena'));
     isTrue(hasMagic('test_?.zena'));
     isTrue(hasMagic('file[0-9].txt'));
+    isTrue(hasMagic('index.{js,d.ts}'));
     isFalse(hasMagic('foo/bar/baz.zena'));
     isFalse(hasMagic('plain_filename.txt'));
     isFalse(hasMagic(''));
@@ -60,6 +61,46 @@ export let tests = suite('Glob', (): void => {
     let negPat = new GlobPattern('file[!0-9].txt');
     isTrue(negPat.matches('fileA.txt'));
     isFalse(negPat.matches('file0.txt'));
+  });
+
+  test('brace alternatives ({a,b})', (ctx: TestContext): void => {
+    let pat = new GlobPattern('index.{js,d.ts,js.map}');
+    isTrue(pat.matches('index.js'));
+    isTrue(pat.matches('index.d.ts'));
+    isTrue(pat.matches('index.js.map'));
+    isFalse(pat.matches('index.ts'));
+    isFalse(pat.matches('index.{js,d.ts,js.map}'));
+
+    // Alternatives hold glob syntax of their own, and whole segments.
+    let dirs = new GlobPattern('{src,test}/**/*.zena');
+    isTrue(dirs.matches('src/a.zena'));
+    isTrue(dirs.matches('test/deep/b.zena'));
+    isFalse(dirs.matches('lib/a.zena'));
+
+    let wild = new GlobPattern('out/*.{wasm,w?t}');
+    isTrue(wild.matches('out/cli.wasm'));
+    isTrue(wild.matches('out/cli.wat'));
+    isFalse(wild.matches('out/cli.js'));
+
+    // Nesting, and an empty alternative.
+    let nested = new GlobPattern('a{b,c{d,e}}f');
+    isTrue(nested.matches('abf'));
+    isTrue(nested.matches('acdf'));
+    isTrue(nested.matches('acef'));
+    isFalse(nested.matches('acf'));
+
+    let optional = new GlobPattern('main{,.test}.zena');
+    isTrue(optional.matches('main.zena'));
+    isTrue(optional.matches('main.test.zena'));
+
+    // A comma outside braces is an ordinary character.
+    isTrue(matchGlob('a,b', 'a,b'));
+  });
+
+  test('an unclosed brace is rejected when the pattern is built', (ctx: TestContext): void => {
+    throws(() => {
+      new GlobPattern('index.{js,ts');
+    });
   });
 
   test('matchGlob helper', (ctx: TestContext): void => {

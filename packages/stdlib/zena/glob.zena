@@ -7,6 +7,9 @@
  * - `?` matches any single character
  * - `[...]` matches character ranges and classes
  * - `[!...]` matches inverted character classes
+ * - `{a,b}` matches any one of its comma-separated alternatives, each of
+ *   which may hold wildcards or further braces (`{src,test}/**`,
+ *   `index.{js,d.ts}`, `main{,.test}.zena`)
  *
  * ## Examples
  *
@@ -28,12 +31,12 @@ import { StringBuilder } from 'zena:core';
 // ============================================================================
 
 /**
- * Returns true if `pattern` contains any glob wildcard characters ('*', '?', '[').
+ * Returns true if `pattern` contains any glob syntax ('*', '?', '[', '{').
  */
 export let hasMagic = (pattern: String): boolean => {
   for (var i = 0; i < pattern.length; i += 1) {
     let b = pattern.getByteAt(i);
-    if (b == 42 || b == 63 || b == 91) { // '*', '?', '['
+    if (b == 42 || b == 63 || b == 91 || b == 123) { // '*', '?', '[', '{'
       return true;
     }
   }
@@ -42,19 +45,56 @@ export let hasMagic = (pattern: String): boolean => {
 
 /**
  * Translates a glob pattern to an anchored regular expression string.
+ *
+ * @throws Error if a `{` has no matching `}`.
  */
 export let globToRegex = (pattern: String): String => {
   let sb = new StringBuilder();
   sb.appendByte(94); // '^'
-  var i = 0;
+  translateRange(pattern, 0, pattern.length, sb);
+  sb.appendByte(36); // '$'
+  return sb.toString();
+};
 
-  while (i < pattern.length) {
+/**
+ * The index one past a `[...]` class starting at `start`, or `end` if it
+ * runs off the range. Brace scanning skips classes whole, so a `{` or
+ * `,` inside one stays a class member.
+ */
+let skipClass = (pattern: String, start: i32, end: i32): i32 => {
+  var i = start + 1;
+  if (i < end && pattern.getByteAt(i) == 33) { // '[!'
+    i += 1;
+  }
+  while (i < end && pattern.getByteAt(i) != 93) { // ']'
+    if (pattern.getByteAt(i) == 92) { // escaped member
+      i += 1;
+    }
+    i += 1;
+  }
+  return if (i < end) i + 1 else end;
+};
+
+/**
+ * Translates `pattern[start..end)` into `sb`. A `{a,b}` becomes the
+ * alternation `(?:a|b)`, each alternative translated the same way, so
+ * alternatives nest and carry wildcards of their own.
+ */
+let translateRange = (
+  pattern: String,
+  start: i32,
+  end: i32,
+  sb: StringBuilder,
+): void => {
+  var i = start;
+
+  while (i < end) {
     let b = pattern.getByteAt(i);
 
     if (b == 42) { // '*'
-      if (i + 1 < pattern.length && pattern.getByteAt(i + 1) == 42) { // '**'
+      if (i + 1 < end && pattern.getByteAt(i + 1) == 42) { // '**'
         i += 2;
-        if (i < pattern.length && pattern.getByteAt(i) == 47) { // '/**/'
+        if (i < end && pattern.getByteAt(i) == 47) { // '/**/'
           i += 1;
           sb.append('(?:.*/)?');
         } else {
@@ -67,19 +107,21 @@ export let globToRegex = (pattern: String): String => {
     } else if (b == 63) { // '?'
       sb.append('[^/]');
       i += 1;
+    } else if (b == 123) { // '{'
+      i = translateBraces(pattern, i, end, sb);
     } else if (b == 91) { // '['
       sb.appendByte(91);
       i += 1;
-      if (i < pattern.length && pattern.getByteAt(i) == 33) { // '[!' -> '[^'
+      if (i < end && pattern.getByteAt(i) == 33) { // '[!' -> '[^'
         sb.appendByte(94); // '^'
         i += 1;
       }
-      while (i < pattern.length && pattern.getByteAt(i) != 93) { // ']'
+      while (i < end && pattern.getByteAt(i) != 93) { // ']'
         let cb = pattern.getByteAt(i);
         if (cb == 92) { // escape in bracket
           sb.appendByte(92);
           i += 1;
-          if (i < pattern.length) {
+          if (i < end) {
             sb.appendByte(pattern.getByteAt(i));
           }
         } else {
@@ -87,13 +129,13 @@ export let globToRegex = (pattern: String): String => {
         }
         i += 1;
       }
-      if (i < pattern.length && pattern.getByteAt(i) == 93) {
+      if (i < end && pattern.getByteAt(i) == 93) {
         sb.appendByte(93);
         i += 1;
       }
-    } else if (b == 46 || b == 43 || b == 40 || b == 41 || b == 123 || b == 125 ||
+    } else if (b == 46 || b == 43 || b == 40 || b == 41 || b == 125 ||
                b == 124 || b == 94 || b == 36 || b == 92) {
-      // Escape regex metacharacters: . + ( ) { } | ^ $ \
+      // Escape regex metacharacters: . + ( ) } | ^ $ \
       sb.appendByte(92);
       sb.appendByte(b);
       i += 1;
@@ -102,9 +144,46 @@ export let globToRegex = (pattern: String): String => {
       i += 1;
     }
   }
+};
 
-  sb.appendByte(36); // '$'
-  return sb.toString();
+/**
+ * Translates the `{...}` group opening at `open` and returns the index
+ * after its closing `}`. Commas split alternatives only at the group's
+ * own depth; nested groups are translated when their alternative is.
+ */
+let translateBraces = (
+  pattern: String,
+  open: i32,
+  end: i32,
+  sb: StringBuilder,
+): i32 => {
+  var depth = 0;
+  var altStart = open + 1;
+  var i = open;
+  sb.append('(?:');
+  while (i < end) {
+    let b = pattern.getByteAt(i);
+    if (b == 91) { // '['
+      i = skipClass(pattern, i, end);
+      continue;
+    }
+    if (b == 123) { // '{'
+      depth += 1;
+    } else if (b == 125) { // '}'
+      depth -= 1;
+      if (depth == 0) {
+        translateRange(pattern, altStart, i, sb);
+        sb.appendByte(41); // ')'
+        return i + 1;
+      }
+    } else if (b == 44 && depth == 1) { // ','
+      translateRange(pattern, altStart, i, sb);
+      sb.appendByte(124); // '|'
+      altStart = i + 1;
+    }
+    i += 1;
+  }
+  throw new Error(`Unclosed brace in glob pattern: ${pattern}`);
 };
 
 // ============================================================================
