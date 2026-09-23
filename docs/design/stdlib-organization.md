@@ -142,47 +142,44 @@ after the prelude switch — see "What a facade costs", where a much smaller
 facade change cost every binary 9.5% — and if either regresses, keep the
 implementation grouping and have the prelude name a narrower module.
 
-Which modules are denied the prelude is narrower than "the stdlib". The
-prelude scope is assembled from the export maps of the modules the prelude
-names, so those modules — and anything they re-export from, transitively —
-must have their scopes built before the prelude scope exists, and handing
-it back to them would be circular. That set is what `Compiler#preludeClosure`
-computes, and it follows **re-export** edges only (`export * from`,
-`export {…} from`): those are the only edges that grow an export map. A
-module reached by an ordinary `import` contributes nothing to its
-importer's exports, is not consulted while the prelude scope is being
-assembled, and so keeps the prelude like any other module. The walk is
-exhaustive rather than merely narrower: a name is in an export map
-because the module declares it or because one of those two statements
-put it there, and the grammar has no bare `export { x };` that could
-re-export an import without naming the module it came from.
+The prelude is a set of imports every module gets without writing them.
+Each module's scope sits inside a prelude scope that holds one import
+binding per prelude name, between the builtin primitives and the module's
+own declarations. A name resolves there by the ordinary scope lookup, and
+the module's own declarations and imports shadow it as any inner scope
+does. The bindings a module reads are its implicit imports, and the
+compiler gives each the import declaration it stands for: an import of
+the name from the module that declares it (`zena:core/array.zena` for
+`Array`). From there it is an ordinary import. It adds an edge to the
+module graph, so the declaring module is checked first or shares a cycle
+with the user; it resolves to the declaration's own symbol; and it
+crosses an import cycle by the same rules as any other import. A prelude
+binding the module never reads is never wired and adds no edge.
 
-Following ordinary imports as well — which the closure did until
-elematic/zena#594 — meant any module a prelude module happened to import
-lost the prelude silently. `zena:string-builder` spells `String` without
-importing it, so a single `import { StringBuilder }` in a prelude module
-left `String.fromByteArray` unresolvable. The checker did not notice,
-because `resolveObjectType` reads such a name out of
-`SharedCheckerState.preludeValues`; ZIR lowering has no such fallback, so
-a name-resolution bug surfaced as `zir unsupported: unresolved identifier`.
+The implicit import names the declaring module rather than the prelude
+specifier (`zena:core`) because that module is the real dependency. It
+is also how the library's own files import each other: a file behind the
+`zena:core` facade that imported a sibling's name through the facade
+would put itself on a cycle with the facade that re-exports it.
 
-Giving those modules the prelude does not make their prelude imports
-redundant, and the compiler no longer says it does. A prelude name is only
-usable once its module has been checked, and inside the prelude's load
-closure — everything the prelude's modules reach by any import — nothing
-but a real import edge orders one of those checks ahead of another. Drop
-`import { FixedArray }` from `core/growable-array-iterator.zena` and the
-name still resolves, but `zena:fixed-array` may be checked after the module
-that uses it, so `FixedArray` materializes as an empty placeholder and the
-build fails with `FixedArray<T>` not assignable to `FixedArray<T>`. So
-`Imported symbol 'X' is unnecessary because it is in the prelude` is
-withheld inside that closure. Outside it the question does not arise:
-`computeGraph` is a depth-first post-order seeded with the prelude's
-modules ahead of the entry point, so the whole prelude has a model before
-any other module is checked.
-
-The ordering itself is still fragile, and withholding the warning only
-stops the compiler recommending a change that breaks the build.
+This replaced an earlier prelude scope, shared by every module, that
+held the prelude's exported symbols themselves. It was assembled from the
+export maps of the modules the prelude names, so those modules, and
+everything they re-exported, could not be given it without a circularity.
+They resolved prelude names from records the checker filled in as each
+module finished checking, and a prelude reference added no edge to the
+module graph. The check order therefore decided whether a name had a type
+yet. Inside an import cycle every body is checked before any member
+finishes, so a cycle through the prelude's own modules left names like
+`String` and `Array` unresolved, and a module that used a prelude name
+without importing anything could be checked before the name's module
+existed at all. An explicit import of a prelude name was the workaround,
+which is why the "unnecessary import" warning used to be withheld inside
+the prelude's modules. The implicit import gives the same edge, so those
+explicit imports are redundant now, but the checked-in bootstrap compiler
+predates implicit imports and still orders the library by them. The
+library keeps them, and the warning stays off for the standard library,
+until the bootstrap is reseeded with a compiler that has this change.
 `tryResolveWellKnownType` reads a cache the check fills in topological
 order, and prelude modules with no import edge between them are ordered by
 `getStandardPrelude`'s `HashMap` key iteration. Making that

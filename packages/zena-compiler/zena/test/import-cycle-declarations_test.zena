@@ -1,0 +1,281 @@
+/**
+ * A declaration on an import cycle resolves wherever it is used, however
+ * the name reached the module that uses it.
+ *
+ * An interface reached through an ordinary import, a re-export facade, or
+ * a class field type resolves its members across a cycle, whether it is
+ * plain, generic, or inherited. So does an enum, whether its module is
+ * checked after the one that uses it (a back edge) or before it
+ * (registered, and not yet finished).
+ *
+ * The prelude is a set of ordinary imports every module gets without
+ * writing them, so a prelude name on a cycle is no different: a module
+ * that uses one depends on the module that declares it, and the two are
+ * ordered and checked like any other pair on a cycle.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal } from 'zena:assert';
+import { checkCompilation } from '../lib/compiler.zena';
+import { Diagnostic } from '../lib/diagnostics.zena';
+import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
+
+/** Print each error with its line, so a failure shows what did not resolve. */
+let show = (errors: Array<Diagnostic>, label: String): void => {
+  if (errors.length > 0) {
+    console.log(label + ": " + i32ToString(errors.length) + " errors");
+    for (let e in errors) {
+      let loc = e.location;
+      var where = "";
+      if (loc != null) {
+        where = " (line " + i32ToString(loc.line) + ")";
+      }
+      console.log("  " + e.message + where);
+    }
+  }
+};
+
+export let tests = suite('Declarations on Import Cycles', () => {
+
+  test('plain interface member resolves across a cycle', () => {
+    let host = new MockHost();
+    // shape imports geometry (forward edge); geometry imports Shape from
+    // shape (back edge) and calls a method on it.
+    host.addFile("/project/shape.zena",
+      "import { helper } from './geometry.zena';\n" +
+      "export interface Shape { area(): i32; }\n" +
+      "export let shapeHelper = (): i32 => helper();\n");
+    host.addFile("/project/geometry.zena",
+      "import { Shape } from './shape.zena';\n" +
+      "export let helper = (): i32 => 5;\n" +
+      "export let measure = (s: Shape): i32 => s.area();\n");
+    host.addFile("/project/main.zena",
+      "import { measure } from './geometry.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "plain interface");
+    equal(errors.length, 0);
+  });
+
+  test('generic interface instantiation resolves across a cycle', () => {
+    let host = new MockHost();
+    // Mirrors `Array<Waiter>.length`: a generic interface defined on the
+    // cycle, instantiated with a type argument by a module across the back
+    // edge, with a member accessed on the instantiation.
+    host.addFile("/project/box.zena",
+      "import { helper } from './user.zena';\n" +
+      "export interface Box<T> { get(): T; }\n" +
+      "export let boxHelper = (): i32 => helper();\n");
+    host.addFile("/project/user.zena",
+      "import { Box } from './box.zena';\n" +
+      "export let helper = (): i32 => 5;\n" +
+      "export let unwrap = (b: Box<i32>): i32 => b.get();\n");
+    host.addFile("/project/main.zena",
+      "import { unwrap } from './user.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "generic interface");
+    equal(errors.length, 0);
+  });
+
+  test('inherited interface member resolves across a cycle', () => {
+    let host = new MockHost();
+    // Mirrors `Array extends Iterable`: an interface on the cycle inherits
+    // from another interface reached across the back edge, and the
+    // inherited member is called.
+    host.addFile("/project/base.zena",
+      "import { helper } from './derived.zena';\n" +
+      "export interface Animal { sound(): i32; }\n" +
+      "export let baseHelper = (): i32 => helper();\n");
+    host.addFile("/project/derived.zena",
+      "import { Animal } from './base.zena';\n" +
+      "export interface Dog extends Animal { fetch(): i32; }\n" +
+      "export let helper = (): i32 => 5;\n" +
+      "export let describe = (d: Dog): i32 => d.sound() + d.fetch();\n");
+    host.addFile("/project/main.zena",
+      "import { describe } from './derived.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "inherited interface");
+    equal(errors.length, 0);
+  });
+
+  test('plain interface member resolves through a re-export across a cycle', () => {
+    let host = new MockHost();
+    // Models how `Array` reaches a cycle module in the stdlib: not by a
+    // direct import of its defining module, but through a facade that
+    // re-exports it with `export *`. The facade, the defining module, and
+    // the consumer all sit on one cycle.
+    host.addFile("/project/rdef.zena",
+      "import { rHelper } from './rconsumer.zena';\n" +
+      "export interface RShape { area(): i32; }\n");
+    host.addFile("/project/rfacade.zena",
+      "export * from './rdef.zena';\n");
+    host.addFile("/project/rconsumer.zena",
+      "import { RShape } from './rfacade.zena';\n" +
+      "export let rHelper = (): i32 => 5;\n" +
+      "export let rMeasure = (s: RShape): i32 => s.area();\n");
+    host.addFile("/project/main.zena",
+      "import { rMeasure } from './rconsumer.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "re-export plain interface");
+    equal(errors.length, 0);
+  });
+
+  test('generic interface instantiation resolves through a re-export across a cycle', () => {
+    let host = new MockHost();
+    // The closest model of `Array<Waiter>.length`: a generic interface,
+    // reached through a facade's `export *`, instantiated with a type
+    // argument by a consumer on the same cycle, with a member accessed.
+    host.addFile("/project/gdef.zena",
+      "import { gHelper } from './gconsumer.zena';\n" +
+      "export interface GBox<T> { get(): T; }\n");
+    host.addFile("/project/gfacade.zena",
+      "export * from './gdef.zena';\n");
+    host.addFile("/project/gconsumer.zena",
+      "import { GBox } from './gfacade.zena';\n" +
+      "export let gHelper = (): i32 => 5;\n" +
+      "export let gUnwrap = (b: GBox<i32>): i32 => b.get();\n");
+    host.addFile("/project/main.zena",
+      "import { gUnwrap } from './gconsumer.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "re-export generic interface");
+    equal(errors.length, 0);
+  });
+
+  test('interface as a class field type resolves across a cycle', () => {
+    let host = new MockHost();
+    // Mirrors `TaskQueue`, whose `#items` field is typed by an interface
+    // (`Array`) defined across the cycle. A field type is resolved when
+    // the class is registered, earlier than a function body is checked, so
+    // it can see the interface before its members are filled.
+    host.addFile("/project/fdef.zena",
+      "import { fHelper } from './fconsumer.zena';\n" +
+      "export interface FShape { area(): i32; }\n");
+    host.addFile("/project/fconsumer.zena",
+      "import { FShape } from './fdef.zena';\n" +
+      "export let fHelper = (): i32 => 5;\n" +
+      "export class FHolder {\n" +
+      "  #s: FShape;\n" +
+      "  new(s: FShape) : #s = s;\n" +
+      "  measure(): i32 { return this.#s.area(); }\n" +
+      "}\n");
+    host.addFile("/project/main.zena",
+      "import { FHolder } from './fconsumer.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "field-type interface");
+    equal(errors.length, 0);
+  });
+
+  test('generic interface as a class field type resolves across a cycle', () => {
+    let host = new MockHost();
+    // The nearest model of `TaskQueue.#items: Array<Waiter>`: a generic
+    // interface, instantiated as the type of a class field, defined across
+    // the cycle, with a member reached through the field.
+    host.addFile("/project/hdef.zena",
+      "import { hHelper } from './hconsumer.zena';\n" +
+      "export interface HBox<T> { get(): T; }\n");
+    host.addFile("/project/hconsumer.zena",
+      "import { HBox } from './hdef.zena';\n" +
+      "export let hHelper = (): i32 => 5;\n" +
+      "export class HHolder {\n" +
+      "  #b: HBox<i32>;\n" +
+      "  new(b: HBox<i32>) : #b = b;\n" +
+      "  unwrap(): i32 { return this.#b.get(); }\n" +
+      "}\n");
+    host.addFile("/project/main.zena",
+      "import { HHolder } from './hconsumer.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "field-type generic interface");
+    equal(errors.length, 0);
+  });
+
+  test('prelude name resolves inside the cycle it is declared on', () => {
+    let host = new MockHost();
+    let compiler = makeCompiler(host);
+    // `array.zena` uses `Iterable` through the prelude, importing nothing,
+    // and `iterator.zena` imports from `array.zena`. The prelude's import
+    // is the only edge from `array` to `iterator`, so it is what puts the
+    // two on one cycle, and what gets `Iterable` checked before its members
+    // are asked for.
+    host.addFile("zena:core/iterator.zena",
+      "import { Holder } from './array.zena';\n" +
+      "export interface Iterator<T> {}\n" +
+      "export interface Iterable<T> { count(): i32; }\n");
+    host.addFile("zena:core/array.zena",
+      "export class Array {} export class FixedArray<T> {} export class GrowableArray<T> {}\n" +
+      "export class Holder {}\n" +
+      "export let countOf = (x: Iterable<i32>): i32 => x.count();\n");
+    host.addFile("/project/main.zena",
+      "export let n = (x: Iterable<i32>): i32 => x.count();\n" +
+      "export function main(): i32 { return 0; }\n");
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "prelude name on a cycle");
+    equal(errors.length, 0);
+  });
+
+  test('enum member resolves across a back edge', () => {
+    let host = new MockHost();
+    // The entry imports `edef`, so `euse` is checked first and reaches
+    // `Color` over the back edge — the order `string-convert` meets
+    // `Encoding` in when the stdlib's arrays and futures share a cycle.
+    host.addFile("/project/edef.zena",
+      "import { eHelper } from './euse.zena';\n" +
+      "export enum Color { Red, Green }\n" +
+      "export let fromDef = (): i32 => eHelper();\n");
+    host.addFile("/project/euse.zena",
+      "import { Color } from './edef.zena';\n" +
+      "export let eHelper = (): i32 => 5;\n" +
+      "export let isRed = (c: Color): boolean => c == Color.Red;\n");
+    host.addFile("/project/main.zena",
+      "import { fromDef } from './edef.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "enum");
+    equal(errors.length, 0);
+  });
+
+  test('enum member resolves from a cycle member that has not finished', () => {
+    let host = new MockHost();
+    // The entry imports `euse`, so `edef` is checked first: it has
+    // registered `Color` but not finished when `euse` asks for it — the
+    // order `string-convert.zena` meets `Encoding` in.
+    host.addFile("/project/edef.zena",
+      "import { eHelper } from './euse.zena';\n" +
+      "export enum Color { Red, Green }\n" +
+      "export let fromDef = (): i32 => eHelper();\n");
+    host.addFile("/project/euse.zena",
+      "import { Color } from './edef.zena';\n" +
+      "export let eHelper = (): i32 => 5;\n" +
+      "export let isRed = (c: Color): boolean => c == Color.Red;\n");
+    host.addFile("/project/main.zena",
+      "import { isRed } from './euse.zena';\n" +
+      "export function main(): i32 { return 0; }\n");
+    let compiler = makeCompiler(host);
+    let result = compiler.compile("/project/main.zena");
+    let errors = errorDiagnostics(checkCompilation(result).diagnostics);
+    show(errors, "enum, origin first");
+    equal(errors.length, 0);
+  });
+});

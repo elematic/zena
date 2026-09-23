@@ -30,10 +30,10 @@ import {
 } from './component-entry.zena';
 import { allWellKnown, isWellKnown, wellKnownName } from './well-known.zena';
 import { Symbol, makeSymbolIdGenerator } from './scope/symbol.zena';
-import { Scope, ScopeKind } from './scope/scope.zena';
+import { Scope } from './scope/scope.zena';
 import { ScopeBuilder, ScopeResult, ModuleExports as ScopeModuleExports, UnresolvedName } from './scope/scope-builder.zena';
 import {
-  ImportDeclaration, ExportFromDeclaration, ExportAllDeclaration, MemberExpression, FieldDefinition, MethodDefinition, ClassDeclaration, Identifier, Expression, ThisExpression, Node, Module, SourceLocation,
+  ImportDeclaration, ImportSpecifier, StringLiteral, Statement, ExportFromDeclaration, ExportAllDeclaration, MemberExpression, FieldDefinition, MethodDefinition, ClassDeclaration, Identifier, Expression, ThisExpression, Node, Module, SourceLocation,
 } from './ast.zena';
 import { parse } from './parser.zena';
 import { checkModule, beginModule, finishModule, ModuleCheck, CheckResult, SharedCheckerState } from './checker.zena';
@@ -381,13 +381,14 @@ export final class Compiler {
       entries.push(this.#loader.load(resolved.path, null));
     }
 
-    // Compute topological order.
-    let graph = this.#loader.computeGraph(entries);
-
-    // Run scope analysis on all source files in dependency order.
+    // Run scope analysis on every loaded file. This gives each file's
+    // implicit prelude imports their edges, so it comes first.
     let tScope = performance.start("scope");
-    this.#resolveScopes(graph.files);
+    this.#resolveScopes(this.#loader.computeGraph(entries).files);
     performance.end(tScope);
+
+    // Compute topological order, over explicit and implicit imports alike.
+    let graph = this.#loader.computeGraph(entries);
 
     return new CompilationResult(graph.files, entry, graph.hasCycle);
   }
@@ -416,197 +417,165 @@ export final class Compiler {
    * one pass can expose names an earlier pass missed), and missing
    * names are recorded only after the fixpoint settles.
    *
-   * The prelude scope is built between the stdlib and user phases: it
-   * reads stdlib export maps, which must be fully wired (stdlib index
-   * modules re-export), and user scope trees take it as their parent.
+   * The prelude is a set of imports every module gets without writing
+   * them, and nothing more. Each module's scope sits inside a prelude
+   * scope with one import binding per prelude name, so a name resolves
+   * there by the same scope lookup as any other. The bindings a module
+   * reads are its implicit imports: once the export maps are wired,
+   * each gets the import declaration it stands for, naming the module
+   * that declares the name, and an edge in the module graph. From then
+   * on it is ordered, wired, checked and cycle-checked like any other
+   * import. The graph is computed after this, so it sees those edges.
    *
    * Optimisation: a SourceFile reused from the loader cache keeps its
-   * scope tree (source unchanged), but wiring still runs — a changed
-   * dependency may carry fresh symbols.
+   * scope tree (source unchanged) and the implicit imports already
+   * added to its AST, but wiring still runs — a changed dependency may
+   * carry fresh symbols.
    */
   #resolveScopes(files: GrowableArray<SourceFile>): void {
-    // Only the prelude's own transitive closure is denied the prelude —
-    // those are the modules where injecting it would be circular. Every
-    // other stdlib module (zena:fs, zena:regex, zena:bench, ...) is
-    // ordinary code and sees the prelude exactly like user code does.
-    let core = this.#preludeClosure(files);
-
-    // A wider set, and for a different purpose: everything the prelude's
-    // modules reach by any import. Those modules do take the prelude,
-    // but an import of a prelude name is still load-bearing there —
-    // it is what orders the check. See ScopeBuilder's
-    // `#preludeImportsAreLoadBearing`.
-    let loadClosure = this.#preludeLoadClosure(files);
-
-    // Phase 1: scope trees for the prelude closure, with no prelude parent.
+    let preludeNames = this.#preludeNames();
+    let withImplicit = new Array<SourceFile>();
     for (let lib in files) {
-      if (core.has(lib.path) && lib.scopeResult == null) {
-        let builder = new ScopeBuilder(lib.path, null, this.#symbolIdGenerator);
-        lib.scopeResult = builder.build(lib.ast);
+      if (lib.scopeResult == null) {
+        let builder = new ScopeBuilder(lib.path, preludeNames, this.#symbolIdGenerator,
+            this.#loader.nodeIdGenerator, !lib.isStdlib);
+        let scopeResult = builder.build(lib.ast);
+        lib.scopeResult = scopeResult;
         this.#snapshotLocalExports(lib);
+        if (scopeResult.implicitImports.length > 0) {
+          withImplicit.push(lib);
+        }
       }
     }
 
-    // Phase 2: wire those imports to fixpoint (the prelude reads them).
-    this.#wireToFixpoint(files, core);
-
-    // Phase 3: the prelude scope, parent of every other module's scope.
-    let preludeScope = this.#buildPreludeScope();
-
-    // Phase 4: everything else — non-closure stdlib and user code alike.
-    for (let lib in files) {
-      if (!core.has(lib.path) && lib.scopeResult == null) {
-        let builder = new ScopeBuilder(lib.path, preludeScope, this.#symbolIdGenerator,
-            loadClosure.has(lib.path));
-        lib.scopeResult = builder.build(lib.ast);
-        this.#snapshotLocalExports(lib);
-      }
+    // The prelude's export maps are complete once re-exports are wired,
+    // which is what naming each implicit import's module reads.
+    this.#wireToFixpoint(files, null);
+    for (let lib in withImplicit) {
+      this.#attachImplicitImports(lib);
     }
 
-    // Phase 5: wire everything to fixpoint, then record what is
-    // still missing.
+    // Wire again, now including the implicit imports, then record what
+    // is still missing.
     this.#wireToFixpoint(files, null);
     for (let lib in files) {
       let {scopeResult} = lib;
       if (scopeResult != null) {
         this.#wireImports(lib, scopeResult, true);
+        this.#addDeclaringModules(lib, scopeResult);
       }
     }
   }
 
   /**
-   * The modules whose export maps the prelude scope reads, by path.
+   * Make each module depend on the modules that declare what it imports.
    *
-   * These are the only modules that must be built without a prelude
-   * parent: the prelude scope is assembled from their exports, so
-   * handing it back to them would be circular. Everything else in the
-   * stdlib is ordinary code — it was never the source of the
-   * circularity, and denying it the prelude only produced silent
-   * divergence from the bootstrap, which resolved prelude names in
-   * stdlib modules regardless.
+   * An import through a facade names the facade, and the facade's
+   * re-export is what finds the declaration — but the module that
+   * declares the name is the real dependency, and the one whose check
+   * has to come first. Without the edge, a facade that sits on an import
+   * cycle hides that dependency from the evaluation order: `zena:async`'s
+   * `step.zena` imported `Option` from `zena:core`, the facade was a
+   * member of the cycle, and `core/option.zena` was checked after
+   * `Step` had been built around `Option`'s empty placeholder.
    *
-   * The walk follows **re-export** edges only (`export * from`,
-   * `export {…} from`), because those are the only edges that grow a
-   * module's export map, and an export map is all `#buildPreludeScope`
-   * reads. An ordinary `import` binds a name inside the importer's
-   * body and contributes nothing to its exports, so a module reached
-   * that way is not consulted before the prelude scope exists and has
-   * no reason to be denied it.
-   *
-   * That makes the walk exhaustive rather than merely narrower: a name
-   * is in a module's export map because the module declares it, or
-   * because one of those two statements put it there — `#wireImports`
-   * rebuilds the map from exactly those three sources, and the grammar
-   * has no bare `export { x };` that could re-export an import without
-   * naming the module it came from.
-   *
-   * Following ordinary imports too — which this did until
-   * elematic/zena#594 — let any module a prelude module happened to
-   * import lose the prelude silently. `zena:string-builder` spells
-   * `String` without importing it, so one `import { StringBuilder }`
-   * in a prelude module left `String.fromByteArray` unresolvable; the
-   * checker read the name out of `SharedCheckerState.preludeValues`
-   * and only ZIR lowering, which has no such fallback, said so.
-   *
-   * Computed rather than listed, so it cannot drift as the prelude changes.
+   * The edge is keyed by the declaring module's own path, the way an
+   * implicit prelude import names it.
    */
-  #preludeClosure(files: GrowableArray<SourceFile>): Set<String> {
-    let byPath = new Map<String, SourceFile>();
-    for (let lib in files) {
-      byPath[lib.path] = lib;
-    }
-
-    let closure = new Set<String>();
-    let pending = new Array<String>();
-
-    let prelude = getStandardPrelude(this.#resolver.target);
-    let specifierIter = prelude.keys();
-    while (let (true, specifier) = specifierIter.next()) {
-      pending.push(this.#resolver.resolve(specifier, "").path);
-    }
-
-    while (pending.length > 0) {
-      let path = pending.pop();
-      if (!closure.has(path)) {
-        closure.add(path);
-        if (let (true, lib) = byPath.get(path)) {
-          var j = 0;
-          while (j < lib.ast.body.length) {
-            let spec = match (lib.ast.body[j]) {
-              case ExportAllDeclaration {moduleSpecifier}: moduleSpecifier.value
-              case ExportFromDeclaration {moduleSpecifier}: moduleSpecifier.value
-              case _: ""
-            };
-            if (spec != "" && lib.imports.has(spec)) {
-              let dep = lib.imports[spec];
-              if (!closure.has(dep)) {
-                pending.push(dep);
-              }
+  #addDeclaringModules(lib: SourceFile, scopeResult: ScopeResult): void {
+    for (let stmt in moduleStatements(lib)) {
+      if (let ImportDeclaration {imports} = stmt) {
+        for (let spec in imports) {
+          if (spec.imported.name == "*") {
+            continue;
+          }
+          let localSym = scopeResult.symbols.getByNode(spec);
+          if (localSym != null && localSym.importTarget != null) {
+            let declaredIn = localSym.resolveTarget().modulePath;
+            if (declaredIn != "" && declaredIn != lib.path && this.#loader.get(declaredIn) != null) {
+              lib.imports[declaredIn] = declaredIn;
             }
-            j = j + 1;
           }
         }
       }
     }
-    return closure;
+  }
+
+  /** Each prelude name, mapped to the specifier it is listed under. */
+  #preludeNames(): Map<String, String> {
+    let names = new Map<String, String>();
+    let prelude = getStandardPrelude(this.#resolver.target);
+    let specifierIter = prelude.keys();
+    while (let (true, specifier) = specifierIter.next()) {
+      for (let name in prelude[specifier]) {
+        names[name] = specifier;
+      }
+    }
+    return names;
   }
 
   /**
-   * Everything the prelude's modules reach, by any import, by path.
+   * Give a module's implicit prelude imports their import declarations.
    *
-   * Not the set denied the prelude — that is `#preludeClosure`, and it
-   * is a subset of this one. This is the set where an import of a
-   * prelude name still earns its place, because inside it nothing but
-   * a real import edge orders one module's check ahead of another's.
-   * Drop `import { FixedArray }` from `core/growable-array-iterator.zena`
-   * and the name still resolves, but `zena:fixed-array` may be checked
-   * after the module that uses it, so `FixedArray` materializes as an
-   * empty placeholder and the build fails with `FixedArray<T>` not
-   * assignable to `FixedArray<T>`.
+   * Each names the module that declares the name, found by following
+   * the prelude specifier's export to its declaration — the dependency
+   * the name really is. Naming the prelude specifier instead would put
+   * every module a facade re-exports on a cycle with that facade the
+   * moment it used a sibling's name, which is not how any of them would
+   * write the import by hand either.
    *
-   * Outside this set the question does not arise. `computeGraph` is a
-   * depth-first post-order seeded with the prelude's modules ahead of
-   * the entry point, so every module the prelude reaches is sorted
-   * before every module it does not, and by the time ordinary stdlib
-   * or user code is checked the whole prelude has a model.
-   *
-   * The ordering itself is the fragile part, and it is not fixed here:
-   * `tryResolveWellKnownType` reads a cache that the check fills in
-   * topological order. This set is how the compiler avoids *advising*
-   * a change that would break the build in the meantime.
+   * The declarations are kept beside the module's AST rather than in it
+   * (`ScopeResult.implicitImportDeclarations`); the parent map records
+   * them as the module's children, as a parser would have.
    */
-  #preludeLoadClosure(files: GrowableArray<SourceFile>): Set<String> {
-    let byPath = new Map<String, SourceFile>();
-    for (let lib in files) {
-      byPath[lib.path] = lib;
-    }
-
-    let closure = new Set<String>();
-    let pending = new Array<String>();
-
-    let prelude = getStandardPrelude(this.#resolver.target);
-    let specifierIter = prelude.keys();
-    while (let (true, specifier) = specifierIter.next()) {
-      pending.push(this.#resolver.resolve(specifier, "").path);
-    }
-
-    while (pending.length > 0) {
-      let path = pending.pop();
-      if (!closure.has(path)) {
-        closure.add(path);
-        if (let (true, lib) = byPath.get(path)) {
-          let depIter = lib.imports.keys();
-          while (let (true, spec) = depIter.next()) {
-            if (let (true, dep) = lib.imports.get(spec)) {
-              if (!closure.has(dep)) {
-                pending.push(dep);
-              }
-            }
+  #attachImplicitImports(lib: SourceFile): void {
+    let scopeResult = lib.scopeResult as ScopeResult;
+    let origins = new Array<String>();
+    let byOrigin = new Map<String, GrowableArray<ImportSpecifier>>();
+    for (let implicit in scopeResult.implicitImports) {
+      let name = implicit.spec.imported.name;
+      let preludePath = this.#resolver.resolve(implicit.preludeSpecifier, "").path;
+      var origin = preludePath;
+      let preludeLib = this.#loader.get(preludePath);
+      if (preludeLib != null && preludeLib.scopeResult != null) {
+        let exports = (preludeLib.scopeResult as ScopeResult).exports;
+        if (let (true, exp) = exports.get(name)) {
+          let declaredIn = exp.resolveTarget().modulePath;
+          if (declaredIn != "") {
+            origin = declaredIn;
           }
         }
       }
+      if (!byOrigin.has(origin)) {
+        origins.push(origin);
+        byOrigin[origin] = new Array<ImportSpecifier>();
+      }
+      byOrigin[origin].push(implicit.spec);
     }
-    return closure;
+
+    let nodeIds = this.#loader.nodeIdGenerator;
+    let parents = scopeResult.parents;
+    for (let origin in origins) {
+      // Located at the first name it imports, like its specifiers.
+      let specs = byOrigin[origin];
+      let loc = specs[0].loc;
+      let specifier = new StringLiteral(origin, loc);
+      specifier.id = nodeIds.next();
+      let decl = new ImportDeclaration(specifier, specs, loc);
+      decl.id = nodeIds.next();
+      scopeResult.implicitImportDeclarations.push(decl);
+      parents[decl] = lib.ast;
+      parents[specifier] = decl;
+      for (let spec in specs) {
+        parents[spec] = decl;
+        parents[spec.imported] = spec;
+        parents[spec.local] = spec;
+      }
+      // The specifier is the module's own canonical path, so it maps to
+      // itself; the resolver is not asked, as a user could not name a
+      // library's private member file this way.
+      lib.imports[origin] = origin;
+    }
   }
 
   /**
@@ -631,38 +600,6 @@ export final class Compiler {
     }
   }
 
-  #buildPreludeScope(): Scope | null {
-    let prelude = getStandardPrelude(this.#resolver.target);
-    let scope = new Scope(ScopeKind.Module, null, this.#symbolIdGenerator);
-
-    let specifierIter = prelude.keys();
-    while (let (true, specifier) = specifierIter.next()) {
-      let resolved = this.#resolver.resolve(specifier, "");
-      let lib = this.#loader.get(resolved.path);
-      if (lib != null && lib.scopeResult != null) {
-        let exports = (lib.scopeResult as ScopeResult).exports;
-        let namesToImport = prelude[specifier];
-        
-        var i = 0;
-        while (i < namesToImport.length) {
-          let name = namesToImport[i];
-          
-          let info = if (let (true, val) = exports.get(name)) { val } else { null };
-          if (info != null) {
-            if (info.isValue()) {
-              scope.inject(name, info);
-            }
-            if (info.isType()) {
-              scope.inject(name, info);
-            }
-          }
-          
-          i = i + 1;
-        }
-      }
-    }
-    return scope;
-  }
 
   /**
    * Wire up import specifiers to their resolved symbols from dependency
@@ -684,7 +621,6 @@ export final class Compiler {
    * recordings from the previous compile).
    */
   #wireImports(lib: SourceFile, result: ScopeResult, record: boolean): boolean {
-    let {ast} = lib;
     var changed = false;
 
     // The export map is rebuilt from the local-declaration snapshot on
@@ -703,9 +639,10 @@ export final class Compiler {
       }
     }
 
+    let statements = moduleStatements(lib);
     var j = 0;
-    while (j < ast.body.length) {
-      match (ast.body[j]) {
+    while (j < statements.length) {
+      match (statements[j]) {
         case ImportDeclaration {moduleSpecifier, imports}: {
           let specifier = moduleSpecifier.value;
           if (lib.imports.has(specifier)) {
@@ -726,7 +663,7 @@ export final class Compiler {
                     this.#recordUnresolved(result, importedName, spec);
                   }
                 } else if (exp != null) {
-                  let localSym = result.rootScope.getLocal(spec.local.name);
+                  let localSym = result.symbols.getByNode(spec);
                   if (localSym != null && localSym.importTarget != exp) {
                     localSym.importTarget = exp;
                     changed = true;
@@ -1450,6 +1387,24 @@ let mixinTypeEquals = (
  * where the GrowableArray<String> contains the imported names (prefixed "v:" or
  * "t:" to match signature keys).
  */
+/**
+ * A module's top-level statements, preceded by the import declarations
+ * its implicit prelude imports stand for — every import it makes.
+ */
+let moduleStatements = (lib: SourceFile): GrowableArray<Statement> => {
+  let statements = new Array<Statement>(lib.ast.body.length);
+  let {scopeResult} = lib;
+  if (scopeResult != null) {
+    for (let decl in scopeResult.implicitImportDeclarations) {
+      statements.push(decl);
+    }
+  }
+  for (let stmt in lib.ast.body) {
+    statements.push(stmt);
+  }
+  return statements;
+};
+
 let buildReverseDeps = (
   files: GrowableArray<SourceFile>
 ): Map<String, Map<String, GrowableArray<String>>> => {
@@ -1457,7 +1412,7 @@ let buildReverseDeps = (
 
   for (let file in files) {
     // Walk the AST to find import/re-export declarations and their names.
-    for (let statement in file.ast.body) {
+    for (let statement in moduleStatements(file)) {
       match (statement) {
         case ImportDeclaration {moduleSpecifier, imports}: {
           let specifier = moduleSpecifier.value;
@@ -1925,12 +1880,11 @@ export let checkCompilation = (
   // What a checked file contributes: its result, the prelude and
   // well-known declarations it owns, and its export signature — which
   // decides whether its importers must re-check.
-  let recordChecked = (file: SourceFile, checkResult: CheckResult): void => {
-    allResults[file.path] = checkResult;
-    allSources[file.path] = file.source;
-    allAsts[file.path] = file.ast;
-
-    // Register prelude types with the shared state as prelude modules compile.
+  //
+  // The prelude and well-known records come first, as a helper of their
+  // own: a member of an import cycle records them once the whole cycle
+  // has registered, before any member's bodies are checked.
+  let recordPreludeNames = (file: SourceFile, model: SemanticModel): void => {
     if (file.isStdlib && file.scopeResult != null) {
       let exports = (file.scopeResult as ScopeResult).exports;
       let stdlibPrelude = getStandardPrelude("host");
@@ -1943,14 +1897,14 @@ export let checkCompilation = (
           if (exports.has(name)) {
             let exp = exports[name] as Symbol;
             if (exp.isType()) {
-              let bt = checkResult.model.getExportType(name);
-              let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
+              let bt = model.getExportType(name);
+              let t = if (bt != null) { bt } else { model.getBindingType(exp) };
               if (t != null) {
                 sharedState.preludeTypes[name] = t;
               }
             }
             if (exp.isValue()) {
-              let t = checkResult.model.getBindingType(exp);
+              let t = model.getBindingType(exp);
               if (t != null) {
                 sharedState.preludeValues[name] = t;
               }
@@ -1971,8 +1925,8 @@ export let checkCompilation = (
         if (!exports.has(name)) { continue; }
         let exp = exports[name] as Symbol;
         if (!exp.isType()) { continue; }
-        let bt = checkResult.model.getExportType(name);
-        let t = if (bt != null) { bt } else { checkResult.model.getBindingType(exp) };
+        let bt = model.getExportType(name);
+        let t = if (bt != null) { bt } else { model.getBindingType(exp) };
         if (t == null) { continue; }
         let declaredIn = declaringModuleOf(t as Type);
         if (declaredIn == null) { continue; }
@@ -1980,6 +1934,13 @@ export let checkCompilation = (
         sharedState.wellKnownTypes[w as i32] = t;
       }
     }
+  };
+
+  let recordChecked = (file: SourceFile, checkResult: CheckResult): void => {
+    allResults[file.path] = checkResult;
+    allSources[file.path] = file.source;
+    allAsts[file.path] = file.ast;
+    recordPreludeNames(file, checkResult.model);
 
     // Compute export signature and compare with previous.
     let {scopeResult} = file;
@@ -2083,6 +2044,18 @@ export let checkCompilation = (
     // diagnostics with them. Modules outside the cycle come later in
     // evaluation order and are checked once, against these results.
     if (let (true, members) = cyclesEndingAt.get(fileIndex)) {
+      // The compiler's own lookups of well-known declarations — the
+      // `String` an enum is backed by, the `Future` and `Awaited` an
+      // `await` is typed with — read shared records that are otherwise
+      // filled only as each module finishes, which inside a cycle is
+      // after every body in it has been checked. Record them from the
+      // first registrations: the canonical types exist by now, and the
+      // second registrations and the bodies below read them.
+      for (let member in members) {
+        if (let (true, mc) = inProgress.get(member.path)) {
+          recordPreludeNames(member, mc.ctx.model);
+        }
+      }
       for (let member in members) {
         if (inProgress.has(member.path)) {
           let again = beginFile(member, allResults, inProgress, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths);

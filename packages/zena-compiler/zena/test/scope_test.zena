@@ -523,9 +523,8 @@ export let tests = suite('Scope', (): void => {
     });
 
     test('unnecessary prelude import is flagged', (ctx: TestContext): void => {
-      let prelude = new Scope(ScopeKind.Module, null);
-      let dummy = parse("class String {}", "string.zena");
-      prelude.declare("String", false, dummy.body[0], "string.zena");
+      let prelude = new Map<String, String>();
+      prelude["String"] = "zena:core";
 
       let source = "import { String } from 'zena:string'; let s: String = 'hello';";
       let mod = parse(source, 'test.zena');
@@ -539,9 +538,8 @@ export let tests = suite('Scope', (): void => {
     });
 
     test('renamed prelude import is not flagged as unnecessary', (ctx: TestContext): void => {
-      let prelude = new Scope(ScopeKind.Module, null);
-      let dummy = parse("class String {}", "string.zena");
-      prelude.declare("String", false, dummy.body[0], "string.zena");
+      let prelude = new Map<String, String>();
+      prelude["String"] = "zena:core";
 
       let source = "import { String as MyString } from 'zena:string'; let s: MyString = 'hello';";
       let mod = parse(source, 'test.zena');
@@ -551,6 +549,40 @@ export let tests = suite('Scope', (): void => {
       equal(result.unnecessaryImports.length, 0);
       equal(result.unusedImportDeclarations.length, 0);
       equal(result.unusedImportedSymbols.length, 0);
+    });
+
+    test('a prelude name the module uses is bound as an implicit import', (ctx: TestContext): void => {
+      let prelude = new Map<String, String>();
+      prelude["String"] = "zena:core";
+      prelude["Array"] = "zena:core";
+      let mod = parse("let s: String = 'hello';", 'test.zena');
+      let result = new ScopeBuilder("test.zena", prelude).build(mod);
+
+      // Only the name the module uses, bound like any import.
+      equal(result.implicitImports.length, 1);
+      let implicit = result.implicitImports[0];
+      equal(implicit.spec.imported.name, "String");
+      equal(implicit.preludeSpecifier, "zena:core");
+      equal(result.unresolvedNames.length, 0);
+      equal(result.unnecessaryImports.length, 0);
+    });
+
+    test('a module\'s own declaration of a prelude name is not imported', (ctx: TestContext): void => {
+      let prelude = new Map<String, String>();
+      prelude["String"] = "zena:core";
+      let mod = parse("class String {} let s: String = new String();", 'test.zena');
+      let result = new ScopeBuilder("test.zena", prelude).build(mod);
+
+      equal(result.implicitImports.length, 0);
+    });
+
+    test('an explicit import of a prelude name wins over the implicit one', (ctx: TestContext): void => {
+      let prelude = new Map<String, String>();
+      prelude["String"] = "zena:core";
+      let mod = parse("import { String as S } from 'zena:core'; let s: S = 'hello';", 'test.zena');
+      let result = new ScopeBuilder("test.zena", prelude).build(mod);
+
+      equal(result.implicitImports.length, 0);
     });
 
     test('duplicate imports are flagged', (ctx: TestContext): void => {

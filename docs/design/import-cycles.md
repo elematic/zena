@@ -61,12 +61,18 @@ implementation in both compilers.
      `Iterator<T>.next(): Step<T>` protocol, where `Step` is an inline
      alias whose async arm names `Future` from a module that imports
      the collections back, is the canonical use.
-   - **Mixins and enums**: rejected across a back edge when the origin
-     is re-checked. Mixin members are _copied_ into hosts at application
-     time (a copy from a not-yet-filled shell would go stale), and enum
-     resolution is transparent and pass-dependent rather than
-     identity-bearing. These can be lifted later if a real program
-     needs them.
+   - **Enums** cross the same way. An enum has two faces, `Color` the
+     type and `Color` the value whose fields are its members, and each
+     declaration has one canonical object for each, created by whichever
+     side asks first (keyed by the declaration's location) and filled in
+     by the enum's own registration, which supplies the backing type.
+     The member names come from the declaration. `zena:core`'s
+     `Encoding` and `zena:async`'s `FutureState` are used by modules on
+     the same cycle as their declaring modules.
+   - **Mixins**: rejected across a back edge when the origin is
+     re-checked. Mixin members are _copied_ into hosts at application
+     time, and a copy from a not-yet-filled shell would go stale. This
+     can be lifted later if a real program needs it.
 
 5. **Initializer hazard, accepted.** A module-level initializer may
    _call_ a legally-imported function that transitively reads globals
@@ -149,8 +155,10 @@ compile time. The component computation is what remains of it.
   longer aborts compilation; the `"Dependency cycle detected"` exit in
   `cli/main.zena` is gone.
 - **Scope wiring** (`compiler.zena`): scope trees for all files are
-  built first (stdlib, then — after the prelude scope — user files),
-  then import wiring runs as a fixpoint: each pass rebuilds a file's
+  built first, each inside a prelude scope whose bindings become the
+  file's implicit imports when read (see "`core` and the prelude" in
+  stdlib-organization.md), then import
+  wiring runs as a fixpoint: each pass rebuilds a file's
   export map from a snapshot of its local declarations plus its
   re-export statements in order (last writer wins, as before), until no
   export map changes. Unresolved names are recorded once, after the
@@ -191,7 +199,6 @@ through hops, like the self-hosted `Symbol.resolveTarget()` chain.
 import cycle (the exporting module's initializers have not run)`
 - `Cyclic import of mixin 'M': mixins cannot cross an import cycle
 (mixin members are copied at application time)`
-- `Cyclic import of enum 'E': enums cannot cross an import cycle`
 - `Cyclic import of 'f': a function crossing an import cycle needs an
 explicit signature (annotate every parameter and the return type)`
 - `Cyclic namespace import: 'x' originates in a module that has not

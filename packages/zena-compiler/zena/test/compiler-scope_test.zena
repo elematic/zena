@@ -237,22 +237,17 @@ export let tests = suite('Compiler Scope Integration', () => {
 
   });
 
-  suite('prelude closure', () => {
+  suite('prelude imports', () => {
 
-    // elematic/zena#594. Only the modules whose exports assemble the
-    // prelude scope are built without it; an ordinary import out of a
-    // prelude module reaches code that is not consulted before the
-    // prelude exists, so that code keeps the prelude like any other
-    // module. Denying it was silent — the checker read the name out of
-    // SharedCheckerState.preludeValues and only ZIR lowering said so.
-    test('an ordinary import out of a prelude module keeps the prelude', () => {
+    // elematic/zena#594: a library file that spells a prelude name
+    // without importing it resolves the name like any other module.
+    test('a library file using a prelude name without importing it resolves it', () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
       // `helper` spells a prelude name without importing it, exactly as
       // zena:string-builder spells `String`.
       host.addFile("zena:core/helper.zena",
           "export let widen = (s: String): String => s;");
-      // zena:string is a prelude module; give it an ordinary import.
       host.addFile("zena:core/string.zena",
           "import { widen } from './helper.zena'; export class String {}");
       host.addFile("/project/main.zena", "let x = 1;");
@@ -266,39 +261,42 @@ export let tests = suite('Compiler Scope Integration', () => {
       isTrue(helperScope.rootScope.resolve("String") != null);
     });
 
-    // The other half of the same rule: a module whose exports the
-    // prelude scope actually reads must still be built without it, or
-    // assembling the prelude would be circular.
-    test('a re-export out of a prelude module is denied the prelude', () => {
+    // The prelude is imports every module gets without writing them. A
+    // name used without an import becomes one, and it names the module
+    // that declares the name — here behind a re-export — which is also
+    // what the module now depends on.
+    test('a prelude name used without an import is imported from its declaring module', () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
       host.addFile("zena:core/string-impl.zena", "export class String {}");
       host.addFile("zena:core/string.zena",
           "export { String } from './string-impl.zena';");
-      host.addFile("/project/main.zena", "let x = 1;");
+      host.addFile("/project/main.zena", "let s: String = 'hi';");
 
-      compiler.compile("/project/main.zena");
+      let result = compiler.compile("/project/main.zena");
 
-      // The prelude name still arrives in user code through the re-export.
-      let mainScope = compiler.getSourceFile("/project/main.zena") as SourceFile;
-      let mainResult = mainScope.scopeResult as ScopeResult;
-      isTrue(mainResult.rootScope.resolve("String") != null);
+      let main = result.entry;
+      let mainScope = main.scopeResult as ScopeResult;
+      equal(mainScope.implicitImports.length, 1);
+      isTrue(mainScope.rootScope.resolve("String") != null);
+      isTrue(main.imports.has("zena:core/string-impl.zena"));
+      equal(mainScope.implicitImportDeclarations.length, 1);
+      equal(mainScope.implicitImportDeclarations[0].moduleSpecifier.value,
+          "zena:core/string-impl.zena");
+      // The module's own AST is left as the source wrote it.
+      equal(main.ast.body.length, 1);
     });
 
-    // Also elematic/zena#594. Giving these modules the prelude made the
-    // compiler start calling their prelude imports unnecessary, which is
-    // advice that does not compile: inside the prelude's load closure the
-    // import is what orders the check, and without it the name
-    // materializes as an empty placeholder.
-    test('a prelude import inside the prelude load closure is not called unnecessary', () => {
+    // The implicit import orders the check as an explicit one would, but
+    // the checked-in bootstrap compiler predates it and still orders the
+    // library's own modules by these imports — so the library keeps them,
+    // and is not told they are unnecessary, until the bootstrap is
+    // reseeded.
+    test('a prelude import inside the library is not yet called unnecessary', () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
-      // `Future` comes from `zena:async`, which the prelude also names,
-      // so this is a prelude import made from inside the closure.
       host.addFile("zena:core/helper.zena",
           "import { Future } from 'zena:async'; export let each = (f: Future<i32>): void => {};");
-      // An ordinary import, so helper is in the load closure but not in
-      // the set whose exports assemble the prelude.
       host.addFile("zena:core/string.zena",
           "import { each } from './helper.zena'; export class String {}");
       host.addFile("/project/main.zena", "let x = 1;");
@@ -310,9 +308,7 @@ export let tests = suite('Compiler Scope Integration', () => {
       equal(helperScope.unnecessaryImports.length, 0);
     });
 
-    // Outside the closure the whole prelude already has a model, so the
-    // import really is redundant and the warning still fires.
-    test('a prelude import outside the load closure is still called unnecessary', () => {
+    test('a prelude import in user code is called unnecessary', () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
       host.addFile("/project/main.zena",

@@ -1,7 +1,7 @@
 import { Set } from 'zena:collections';
 import { NodeMap } from '../node-map.zena';
 import {
-  Node, NodeId, Module, SourceLocation, IdGenerator,
+  Node, NodeId, Module, SourceLocation, IdGenerator, makeNodeIdGenerator,
   // Sealed base types
   Expression, Statement, Pattern, TypeAnnotation,
   // Expressions
@@ -18,7 +18,7 @@ import {
   WhileStatement, ForStatement, ForInStatement, ClassDeclaration,
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
   ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration,
-  DeclareFunction, SymbolDeclaration,
+  DeclareFunction, SymbolDeclaration, ImportSpecifier,
   // Patterns
   BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern,
@@ -109,6 +109,25 @@ export final class SymbolMap {
 }
 
 /**
+ * A prelude name a module uses, as the import it stands for.
+ *
+ * The prelude is a set of ordinary imports every module gets without
+ * writing them. Each module's scope has an outer prelude scope holding
+ * one import binding per prelude name, so a name the module does not
+ * declare or import itself resolves there, through the same scope chain
+ * as any other name. The bindings the module reads are its implicit
+ * imports; the compiler gives each the import declaration it stands for,
+ * naming the module that declares the name. From there it is an import
+ * like any other: it orders the check, it keeps the declaration's
+ * identity, and it crosses an import cycle by the same rules.
+ */
+export final class ImplicitImport(
+  spec: ImportSpecifier,
+  /** The prelude specifier the name is listed under, e.g. `zena:core`. */
+  preludeSpecifier: String
+)
+
+/**
  * The result of scope building for a single module.
  *
  * TODO: This could be a record type instead of a class
@@ -155,7 +174,19 @@ export final class ScopeResult(
   /**
    * Parent pointer map from node → parent node.
    */
-  parents: NodeMap<Node>
+  parents: NodeMap<Node>,
+
+  /** The prelude names this module uses, bound as implicit imports. */
+  implicitImports: GrowableArray<ImplicitImport>,
+
+  /**
+   * The import declarations those implicit imports stand for, added by
+   * the compiler once it knows which module declares each name. They are
+   * kept here, out of the module's AST, so the AST stays what the source
+   * says: tools that read it — documentation, formatting, the language
+   * service — see only what was written.
+   */
+  implicitImportDeclarations: GrowableArray<ImportDeclaration>
 )
 
 let populateParents = (ast: Node, parents: NodeMap<Node>): void => {
@@ -197,30 +228,40 @@ export final class ScopeBuilder {
   #allImportDeclarations = new Array<ImportDeclaration>();
 
   /**
-   * Whether an import of a prelude name still earns its place here.
-   *
-   * Inside the prelude's own load closure it does. A prelude name is
-   * checked into a usable type only once its module has a model, and
-   * within that closure nothing but a real import edge orders one of
-   * those modules ahead of another — drop the import and the name
-   * materializes as an empty placeholder (elematic/zena#594). Outside
-   * the closure the question does not arise: the prelude's modules are
-   * seeded into the graph walk first, so all of them are checked
-   * before any module that is not one of their dependencies.
-   *
-   * So the "unnecessary" warning is withheld here rather than handed
-   * out as advice that does not compile.
+   * The prelude: each name every module may use without importing it,
+   * mapped to the specifier it is listed under. Null builds a module
+   * with no prelude at all.
    */
-  #preludeImportsAreLoadBearing: boolean;
+  #preludeNames: Map<String, String> | null;
+  #nodeIds: IdGenerator<NodeId>;
 
-  new(modulePath: String, preludeScope: Scope | null = null, symbolIdGenerator: IdGenerator<SymbolId> | null = null,
-      preludeImportsAreLoadBearing: boolean = false)
+  /** The prelude scope's bindings, one per prelude name, in prelude order. */
+  #preludeBindings = new Array<ImplicitImport>();
+
+  /**
+   * Whether to call an explicit import of a prelude name unnecessary.
+   * Off for the standard library for now: the checked-in bootstrap
+   * compiler predates implicit prelude imports and orders the prelude's
+   * own modules by those explicit imports, so they stay until the
+   * bootstrap is reseeded with this compiler.
+   */
+  #warnUnnecessaryPreludeImports: boolean;
+
+  new(modulePath: String, preludeNames: Map<String, String> | null = null,
+      symbolIdGenerator: IdGenerator<SymbolId> | null = null,
+      nodeIds: IdGenerator<NodeId> | null = null,
+      warnUnnecessaryPreludeImports: boolean = true)
     : #modulePath = modulePath,
-      #preludeImportsAreLoadBearing = preludeImportsAreLoadBearing {
+      #preludeNames = preludeNames,
+      // Without the loader's generator (a module built on its own, as in
+      // tests), draw ids for the prelude's nodes from a range no parse
+      // reaches.
+      #nodeIds = nodeIds ?? makeNodeIdGenerator(1073741824),
+      #warnUnnecessaryPreludeImports = warnUnnecessaryPreludeImports {
     if (symbolIdGenerator != null) {
       this.#symbolIdGenerator = symbolIdGenerator;
     }
-    this.#current = new Scope(ScopeKind.Module, preludeScope, this.#symbolIdGenerator);
+    this.#current = new Scope(ScopeKind.Module, null, this.#symbolIdGenerator);
   }
 
   #isUnusedButAllowed(sym: Symbol): boolean {
@@ -251,6 +292,7 @@ export final class ScopeBuilder {
   build(ast: Node): ScopeResult {
     populateParents(ast, this.#parents);
     this.#declareBuiltins();
+    this.#declarePrelude(ast.loc);
     match (ast) {
       case Module {body}: {
         this.#processStatements(body);
@@ -298,13 +340,13 @@ export final class ScopeBuilder {
         seenImportedNames.add(localName);
 
         // 2. Check for unnecessary prelude import (only when not renamed).
-        // Load-bearing here means the import orders the check, not just
-        // the name — see #preludeImportsAreLoadBearing.
+        // The prelude would import the name anyway, and its implicit
+        // import orders the check just as this one does.
         let parentScope = this.#current.parent;
         if (spec.imported.name == spec.local.name &&
             parentScope != null &&
             parentScope.resolve(localName) != null) {
-          if (!this.#preludeImportsAreLoadBearing) {
+          if (this.#warnUnnecessaryPreludeImports) {
             unnecessaryImports.push(sym);
           }
           hasUsedOrSuppressedOrSpecial = true;
@@ -344,7 +386,9 @@ export final class ScopeBuilder {
       unusedImportedSymbols,
       unnecessaryImports,
       duplicateImports,
-      this.#parents
+      this.#parents,
+      this.#usedPreludeBindings(),
+      new Array<ImportDeclaration>(0)
     );
   }
 
@@ -375,6 +419,46 @@ export final class ScopeBuilder {
 
     // Re-parent the module scope onto the builtins scope.
     this.#current = new Scope(ScopeKind.Module, builtins, this.#symbolIdGenerator);
+  }
+
+  /**
+   * Put the prelude between the builtins and the module's own scope: one
+   * import binding per prelude name, bound like an explicit import and
+   * wired later. The module's declarations and imports shadow them, as
+   * any inner scope does. They are located at the top of the module,
+   * where the imports they stand for would be written.
+   */
+  #declarePrelude(loc: SourceLocation | null): void {
+    let preludeNames = this.#preludeNames;
+    if (preludeNames == null) {
+      return;
+    }
+    let prelude = new Scope(ScopeKind.Module, this.#current.parent, this.#symbolIdGenerator);
+    let nameIter = preludeNames.keys();
+    while (let (true, name) = nameIter.next()) {
+      let imported = new Identifier(name, loc);
+      imported.id = this.#nodeIds.next();
+      let local = new Identifier(name, loc);
+      local.id = this.#nodeIds.next();
+      let spec = new ImportSpecifier(imported, local, loc);
+      spec.id = this.#nodeIds.next();
+      prelude.declare(name, false, spec, this.#modulePath);
+      this.#symbols.record(spec, prelude.getLocal(name) as Symbol);
+      this.#preludeBindings.push(new ImplicitImport(spec, preludeNames[name]));
+    }
+    this.#current = new Scope(ScopeKind.Module, prelude, this.#symbolIdGenerator);
+  }
+
+  /** The prelude bindings this module read: its implicit imports. */
+  #usedPreludeBindings(): GrowableArray<ImplicitImport> {
+    let used = new Array<ImplicitImport>();
+    for (let binding in this.#preludeBindings) {
+      let sym = this.#symbols.getByNode(binding.spec);
+      if (sym != null && this.#isRead.has(sym.id)) {
+        used.push(binding);
+      }
+    }
+    return used;
   }
 
   /**

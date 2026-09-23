@@ -155,6 +155,12 @@ let lookupBindingTypeInDeps = (ctx: CheckerContext, sym: Symbol): Type | null =>
  * #materializedTypes. Type parameters are registered there via
  * registerTypeParameter() as soon as each TypeParameterType is created.
  */
+/**
+ * An enum's two faces, created once per declaration: `Color` as a type,
+ * and `Color` as the value whose fields are its members (`Color.Red`).
+ */
+export final class CanonicalEnum(type: TypeAliasType, value: RecordT)
+
 export final class SharedCheckerState {
   var typeIdGenerator = makeTypeIdGenerator();
   preludeTypes = new Map<String, Type>();
@@ -186,6 +192,15 @@ export final class SharedCheckerState {
    * (docs/design/import-cycles.md).
    */
   declaredNominalTypes = new Map<SymbolId, Type>();
+
+  /**
+   * The canonical type and value of each enum declaration, keyed like
+   * `declaredSymbolTypes` by the declaration's source location. An enum
+   * crosses an import cycle the way a nominal type does: whichever side
+   * asks first creates the entry, and the enum's own registration fills
+   * in its backing type (docs/design/import-cycles.md).
+   */
+  declaredEnums = new Map<String, CanonicalEnum>();
 
   /**
    * The canonical TypeParameterType per declared type parameter, keyed
@@ -1350,6 +1365,33 @@ final class CheckerContext {
   }
 
   /**
+   * The one type and value for an enum declaration, for the whole
+   * compilation. Its members come from the declaration; its backing type
+   * is a hole until the enum's own registration fills it in.
+   */
+  canonicalEnum(ed: EnumDeclaration): CanonicalEnum {
+    var key = "id:" + i32ToString(ed.id as i32);
+    if (ed.loc != null) {
+      let loc = ed.loc as SourceLocation;
+      key = (loc.path ?? "") + "#" + i32ToString(loc.start);
+    }
+    if (let (true, existing) = this.#sharedState.declaredEnums.get(key)) {
+      return existing;
+    }
+    let enumType = new TypeAliasType(ed.name.name, null, new HoleType(), true, null, false, "");
+    enumType.enumDeclaration = ed;
+    let fields = new Map<String, Type>();
+    for (let member in ed.members) {
+      fields[member.name.name] = enumType;
+    }
+    let enumValue = new RecordT(fields, null);
+    enumValue.enumDeclaration = ed;
+    let created = new CanonicalEnum(enumType, enumValue);
+    this.#sharedState.declaredEnums[key] = created;
+    return created;
+  }
+
+  /**
    * Declare a type name in the module (outermost) scope. Used for sealed
    * variant types that need to be visible outside the class scope.
    */
@@ -1412,8 +1454,25 @@ final class CheckerContext {
    * here is the same object the origin module's own registration later
    * fills (SharedCheckerState.declaredNominalTypes).
    */
-  materializeCyclicImport(info: Symbol, name: String): Type | null {
+  materializeCyclicImport(info: Symbol, name: String, valueNamespace: boolean = false): Type | null {
     let target = info.resolveTarget();
+    // An enum is one object on both sides of any edge, type and value,
+    // and its own registration fills that object in — so whether the
+    // enum's module is later in the cycle, or registered and not yet
+    // finished, the canonical entry is the answer.
+    let enumDecl = target.declaration;
+    if (enumDecl != null) {
+      match (enumDecl) {
+        case EnumDeclaration as ed: {
+          let canonical = this.canonicalEnum(ed);
+          if (valueNamespace) {
+            return canonical.value;
+          }
+          return canonical.type;
+        }
+        case _: {}
+      }
+    }
     // Only a genuine back edge of the current compilation may create a
     // shell: the origin evaluates later, so it has no model YET and its
     // own registration is guaranteed to fill this object. Any other
@@ -1659,14 +1718,11 @@ final class CheckerContext {
           case EnumDeclaration as ed: {
             let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
             let backingType = if (isStringEnum) { this.tryResolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
-            let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null, false, "");
-            enumType.enumDeclaration = ed;
-            let fields = new Map<String, Type>();
-            for (let member in ed.members) {
-              fields[member.name.name] = enumType;
+            let canonical = this.canonicalEnum(ed);
+            if (canonical.type.target is HoleType) {
+              canonical.type.target = backingType;
             }
-            let enumValueType = new RecordT(fields, null);
-            enumValueType.enumDeclaration = ed;
+            let enumValueType = canonical.value;
             let valueInfo = this.model.resolveDeclaration(declNode);
             if (valueInfo != null) {
               this.declareBinding(valueInfo, enumValueType);
@@ -1829,9 +1885,11 @@ final class CheckerContext {
       case EnumDeclaration as ed: {
         let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
         let backingType = if (isStringEnum) { this.tryResolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
-        let enumType = new TypeAliasType(ed.name.name, null, backingType, true, null, false, "");
-        enumType.enumDeclaration = ed;
-        return enumType;
+        let canonical = this.canonicalEnum(ed);
+        if (canonical.type.target is HoleType) {
+          canonical.type.target = backingType;
+        }
+        return canonical.type;
       }
       case TypeAliasDeclaration as ta: {
         this.enterScope();
@@ -3925,12 +3983,9 @@ let checkCyclicImportRules = (
       }
     }
     case EnumDeclaration {}: {
-      if (originRechecked) {
-        ctx.error(
-          "Cyclic import of enum '" + importedName +
-            "': enums cannot cross an import cycle",
-          DiagnosticCode.CyclicImport, spec.loc);
-      }
+      // An enum crosses a back edge as its canonical type and value,
+      // created on first demand and filled in by the enum's own
+      // registration (docs/design/import-cycles.md). So no error here.
     }
     case TypeAliasDeclaration {}: {
       // A transparent alias crosses a back edge as an identity-bearing
@@ -4142,6 +4197,11 @@ export let beginModule = (
   // Process imports and register type declarations (classes, interfaces,
   // enums, mixins, type aliases, declared functions) so that ALL
   // member signatures are available before any bodies are checked.
+  // The module's implicit prelude imports first, ahead of the imports
+  // it writes, as though written at the top of the file.
+  for (let implicitImport in scopeResult.implicitImportDeclarations) {
+    checkStatement(ctx, implicitImport);
+  }
   var ri = 0;
   while (ri < ast.body.length) {
     let stmt = ast.body[ri];
@@ -9637,7 +9697,7 @@ case _: {
               let recordType = new RecordT(properties, null);
               
               // Register it as a value import in the local scope.
-              let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
+              let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
               if (localValInfo != null) {
                 ctx.declareBinding(localValInfo, recordType);
               }
@@ -9658,7 +9718,7 @@ case _: {
                   DiagnosticCode.SymbolNotFound,
                   spec.loc
                 );
-                let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
                 if (localValInfo != null) {
                   ctx.declareBinding(localValInfo, new ErrorType());
                 }
@@ -9695,7 +9755,7 @@ case _: {
                     ctx.declareTypeName(localName, resolvedType);
                     
                     // Bind directly to the local TYPE symbol for this import.
-                    let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                    let localTypeInfo = ctx.scopeResult.symbols.getByNode(spec);
                     if (localTypeInfo != null) {
                       ctx.registerType(localTypeInfo, resolvedType);
                     }
@@ -9705,7 +9765,7 @@ case _: {
                     // member definitions (fields, methods, constructors).
                     let decl = typeExport.declaration;
                     if (decl != null) {
-                      let localTypeInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                      let localTypeInfo = ctx.scopeResult.symbols.getByNode(spec);
                       match (decl) {
                         case ClassDeclaration {name}: {
                           let preludeType = ctx.resolveTypeName(name.name);
@@ -9763,7 +9823,7 @@ case _: {
                 }
 
                 if (valueExport != null) {
-                  let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
+                  let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
                   if (localValInfo != null) {
                     var resolvedValType = if (depModel != null) {
                       let t = depModel.getBindingType(valueExport);
@@ -9775,7 +9835,7 @@ case _: {
                       // Cycle back edge, first pass: nominal declarations
                       // (class constructor values) resolve via their
                       // canonical shell.
-                      resolvedValType = ctx.materializeCyclicImport(valueExport, importedName);
+                      resolvedValType = ctx.materializeCyclicImport(valueExport, importedName, true);
                     }
                     if (resolvedValType == null) {
                       // A function from a member of the same import cycle
@@ -9814,7 +9874,7 @@ case _: {
           );
           for (let spec in imports) {
             let localName = spec.local.name;
-            let localValInfo = ctx.scopeResult.rootScope.getLocal(localName);
+            let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
             if (localValInfo != null) {
               ctx.declareBinding(localValInfo, new ErrorType());
             }
@@ -16310,8 +16370,12 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
 
   let strType = if (stringType != null) { stringType } else { new ErrorType() as Type };
   let backingType = if (isStringEnum) { strType } else { i32Type as Type };
-  let enumType = new TypeAliasType(name, null, backingType, true, null, false, "");
-  enumType.enumDeclaration = ed;
+  // The enum's canonical objects, which an importer across an import
+  // cycle may already hold: fill in the backing type rather than mint a
+  // second identity.
+  let canonical = ctx.canonicalEnum(ed);
+  let enumType = canonical.type;
+  enumType.target = backingType;
 
   // Register the enum in the type namespace.
   ctx.declareTypeName(name, enumType);
@@ -16319,13 +16383,8 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   if (info2 != null) {
     ctx.registerType(info2, enumType as Type);
   }
-  // Create a record type for the value namespace (e.g., Color.Red).
-  let fields = new Map<String, Type>();
-  for (let member in members) {
-    fields[member.name.name] = enumType;
-  }
-  let enumValueType = new RecordT(fields, null);
-  enumValueType.enumDeclaration = ed;
+  // The value namespace (e.g., Color.Red).
+  let enumValueType = canonical.value;
 
   // Register the enum value in the value namespace.
   let info = ctx.model.resolveDeclaration(ed);
@@ -20022,10 +20081,11 @@ let makeIteratorType = (
  */
 let extractFutureValueType = (ctx: CheckerContext, t: Type): Type | null => {
   // By name and declaring module (isFutureClassType) rather than by
-  // prelude identity: the prelude closure is denied the prelude, so
-  // an identity check cannot see Future from INSIDE zena:async — and
-  // that is exactly where the library's own async code (thenImpl)
-  // awaits. The module id is reserved, so the name cannot be spoofed.
+  // identity with a recorded Future: inside zena:async's own files —
+  // exactly where the library's own async code (thenImpl) awaits —
+  // there may be no record yet, since it is filled as the declaring
+  // module is checked. The module id is reserved, so the name cannot
+  // be spoofed.
   if (!isFutureClassType(t)) {
     return null;
   }
@@ -20196,9 +20256,9 @@ let checkAwaitExpression = (ctx: CheckerContext, aw: AwaitExpression): Type => {
       inst.target = operandType;
       return applyTypeIntrinsic(inst);
     }
-    // Inside the prelude closure — zena:async's own files, where the
-    // library's async code lives — the prelude is not in reach. Mint
-    // the operator instance directly: alias equality is by name and
+    // Inside zena:async's own files, where the library's async code
+    // lives, the declared operator may not be recorded yet. Mint the
+    // operator instance directly: alias equality is by name and
     // arguments, so this and the declared operator's instances agree.
     let synth = new TypeAliasType('Awaited', null, operandType, false,
         args, false, 'zena:async/future.zena');
