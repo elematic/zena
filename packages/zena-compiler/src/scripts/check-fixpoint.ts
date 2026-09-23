@@ -34,8 +34,9 @@ const stageB = join(pkgDir, stageBRel);
 const stageC = join(pkgDir, stageCRel);
 
 /**
- * Which compiler `zena-cli` uses, defined in packages/zena-cli/src/main.rs —
- * a path to a .wasm, defaulting to zena/out/cli.wasm (stage A).
+ * Which compiler `zena-cli` uses, defined in packages/zena-cli/zena/compile.zena
+ * — a path to a .wasm. Without it, the compiler linked into the CLI module
+ * compiles, and that is HEAD's compiler too.
  */
 const COMPILER_ENV = 'ZENA_COMPILER_WASM';
 
@@ -61,10 +62,11 @@ try {
 }
 
 // This whole check rests on zena-cli honouring COMPILER_ENV. If it ever stops
-// doing so, stage C would be built by the default compiler — which is stage A,
-// whose output *is* stage B — and the comparison below would pass while
-// testing nothing. Prove the variable still takes effect before relying on it:
-// point it somewhere that does not exist and require the build to fail.
+// doing so, stage C would be built by the default compiler — HEAD's compiler
+// in the CLI module, whose output is stage B's — and the comparison below
+// would pass while testing nothing. Prove the variable still takes effect
+// before relying on it: point it somewhere that does not exist and require the
+// build to fail.
 try {
   build(stageC, join('zena', 'out', 'definitely-not-a-compiler.wasm'));
   console.error(`✗ ${COMPILER_ENV} is being ignored by zena-cli.`);
@@ -75,7 +77,7 @@ try {
     '  would be built by the default compiler and this check would',
   );
   console.error(
-    '  compare stage B against itself. See packages/zena-cli/src/main.rs.',
+    '  compare stage B against itself. See packages/zena-cli/zena/compile.zena.',
   );
   process.exit(1);
 } catch {

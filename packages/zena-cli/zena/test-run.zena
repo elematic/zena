@@ -1,27 +1,28 @@
 /**
- * Orchestrator for `zena-cli test`: runs each test file in its own
- * `zena-cli test --single` worker process via zena:process, with a
- * bounded pool, and formats the results. One process per test keeps a
- * trapping or leaking test from taking the runner (or its siblings)
- * down with it.
+ * `zena test`: find the test files, then run each in a copy of this
+ * module.
  *
- * Usage (spawned by `zena-cli test`):
- *   test-run <selfExe> <parallelism> <debug 0|1> <testFile>...
- *
- * Worker protocol: exit 0 = pass, anything else = fail; stdout/stderr
- * are the test's captured streams, shown only for failures.
+ * A copy (`zena test --single <file>`) compiles its file in test mode
+ * through the cache, runs the compiled test with `zena:wasm`, and prints
+ * what the test printed. This module starts a bounded number of copies
+ * at once, again with `zena:wasm`, and reports each file in order as
+ * pass or fail. Each copy and each test runs in its own store, so a
+ * trapping test takes nothing else down and its memory goes with it.
  */
 
-import { getArguments } from 'zena:cli';
+import { ParsedArgs } from 'zena:args';
+import { HashSet } from 'zena:collections';
 import { StringBuilder } from 'zena:core';
-import { Process, spawn } from 'zena:process';
-
-/** A test whose worker process has been started. */
-class RunningTest {
-  path: String;
-  process: Process;
-  new(this.path, this.process);
-}
+import { GlobOptions, exists, glob, isDirectory } from 'zena:fs';
+import { hasMagic } from 'zena:glob';
+import { AbsolutePath, RelativePath, extname } from 'zena:path';
+import { Run, RunOutcome, runModule, startModule } from 'zena:wasm';
+import { CompileFailure, CompileRequest, compileCached } from './compile.zena';
+import {
+  Options, cliModule, hostEnv, parallelism, repoRelative, repoRoot, resolveUserPath,
+  stdlibDir
+} from './env.zena';
+import { hostDir } from './run.zena';
 
 /** ANSI SGR sequence (string literals have no escape for ESC). */
 let sgr = (code: String): String => {
@@ -37,85 +38,229 @@ let green = sgr('32');
 let red = sgr('31');
 let reset = sgr('0');
 
-/** Waits on a finished test and prints its result line. Returns pass? */
+/**
+ * The glob pattern one `zena test` argument stands for, relative to the
+ * repository root, or null when it names nothing. A directory means
+ * every `_test.zena` file beneath it.
+ */
+let testPattern = (argument: String): String | null => {
+  let resolved = resolveUserPath(argument);
+  let fromRoot = repoRelative(resolved);
+  if (hasMagic(argument)) {
+    return fromRoot;
+  }
+  if (!exists(resolved.value)) {
+    return null;
+  }
+  if (isDirectory(resolved.value)) {
+    return fromRoot + '/**/*_test.zena';
+  }
+  return fromRoot;
+};
+
+/** The test files the arguments name, repo-relative and in order. */
+let findTests = (args: ParsedArgs): Array<String> | null => {
+  let excludes = args.getMultiOption('exclude');
+  var filter = '';
+  if (let (true, value) = args.getOption('filter')) {
+    filter = value;
+  }
+  let found = new GrowableArray<String>();
+  let seen = new HashSet<String>();
+  for (let argument in args.rest) {
+    let pattern = testPattern(argument);
+    if (pattern == null) {
+      console.error('Error: path not found: ' + argument);
+      return null;
+    }
+    let opts = new GlobOptions();
+    opts.cwd = repoRoot().value;
+    for (let exclude in excludes) {
+      opts.exclude.push(exclude);
+    }
+    for (let match in glob(pattern, opts)) {
+      if (extname(match) != '.zena') {
+        continue;
+      }
+      if (filter != '' && !match.contains(filter)) {
+        continue;
+      }
+      if (seen.add(match)) {
+        found.push(match);
+      }
+    }
+  }
+  return found;
+};
+
+/** A test file whose copy of this module has been started. */
+class RunningTest {
+  path: String;
+  run: Run;
+  new(this.path, this.run);
+}
+
+let printIndented = (label: String, text: String): void => {
+  if (text.length == 0) {
+    return;
+  }
+  console.log(`      --- ${label} ---`);
+  for (let line in text.split('\n')) {
+    console.log(`      ${line}`);
+  }
+};
+
+/** Waits for a test and prints its result line. Returns whether it passed. */
 let report = (running: RunningTest): boolean => {
-  let res = running.process.wait();
-  let ms = (res.wallNanos as f64) / 1000000.0;
+  let result = running.run.wait();
+  let ms = (result.callTime as i64 as f64) / 1000000.0;
   let tenths = ((ms * 10.0) as i64 as f64) / 10.0;
-  if (res.exitCode == 0) {
+  if (result.succeeded()) {
     console.log(`${green}PASS${reset}  ${running.path} (${tenths}ms)`);
     return true;
   }
   console.log(`${red}FAIL${reset}  ${running.path} (${tenths}ms)`);
-  if (res.stdout.length > 0) {
-    console.log('      --- Stdout ---');
-    for (let line in res.stdout.split('\n')) {
-      console.log(`      ${line}`);
-    }
-  }
-  if (res.stderr.length > 0) {
-    console.log('      --- Stderr ---');
-    for (let line in res.stderr.split('\n')) {
-      console.log(`      ${line}`);
-    }
+  printIndented('Stdout', result.stdout);
+  printIndented('Stderr', result.stderr);
+  if (result.message != '') {
+    printIndented('Error', result.message);
   }
   return false;
 };
 
-export let main = (): i32 => {
-  let args = getArguments();
-  if (args.length < 5) {
-    console.error('Usage: test-run <selfExe> <parallelism> <debug 0|1> <testFile>...');
-    return 1;
+/** Starts a copy of this module on one test file. */
+let startWorker = (file: String, options: Options): Run => {
+  let args = new GrowableArray<String>();
+  args.push('zena');
+  if (options.debug) {
+    args.push('-g');
   }
-  let selfExe = args[1];
-  var parallelism = 1;
-  if (let (true, n) = parseI64(args[2])) {
-    if (n > 1) {
-      parallelism = n as i32;
-    }
-  }
-  let debug = args[3] == '1';
+  args.push('test');
+  args.push('--single');
+  // Absolute: the copy measures relative paths from where the user is,
+  // and `file` is relative to the repository root.
+  args.push(repoRoot().join(new RelativePath(file)).value);
+  // The same view of the filesystem this module has, the repository
+  // root first as `.` so relative paths mean the same thing, and the
+  // variables the host told this module.
+  return startModule(cliModule().value, {
+    args: args,
+    env: hostEnv(),
+    inheritEnv: true,
+    dirs: [{from: repoRoot().value, to: '.'}, {from: '/', to: '/'}],
+    grant: true,
+  });
+};
 
-  let files = new GrowableArray<String>();
-  var i = 4;
-  while (i < args.length) {
-    files.push(args[i]);
-    i += 1;
+export let testCommand = (args: ParsedArgs, options: Options): i32 => {
+  if (args.getFlag('single')) {
+    return runSingle(args, options);
   }
+  if (args.rest.length == 0) {
+    console.error('Error: test needs a file, directory or glob');
+    return 2;
+  }
+  let files = findTests(args);
+  if (files == null) {
+    return 2;
+  }
+  if (files.length == 0) {
+    console.error('Error: no tests found matching the path or filter');
+    return 2;
+  }
+  console.log(`Running ${files.length} tests...`);
 
-  // Sliding-window pool: at most `parallelism` workers in flight;
-  // results print in submission order as the window advances.
+  // A sliding window: at most `limit` copies in flight, results printed
+  // in file order as the window advances.
+  let limit = parallelism();
   var passed = 0;
   var failed = 0;
   let running = new GrowableArray<RunningTest>();
   var reported = 0;
   var next = 0;
   while (next < files.length || reported < running.length) {
-    if (running.length - reported >= parallelism || next >= files.length) {
-      let oldest = running[reported];
-      reported += 1;
-      if (report(oldest)) {
+    if (running.length - reported >= limit || next >= files.length) {
+      if (report(running[reported])) {
         passed += 1;
       } else {
         failed += 1;
       }
+      reported += 1;
       continue;
     }
     let file = files[next];
     next += 1;
-    let argv = new GrowableArray<String>();
-    argv.push(selfExe);
-    if (debug) {
-      argv.push('-g');
-    }
-    argv.push('test');
-    argv.push('--single');
-    argv.push(file);
-    running.push(new RunningTest(file, spawn(argv)));
+    running.push(new RunningTest(file, startWorker(file, options)));
   }
 
   console.log('');
   console.log(`Test Summary: ${passed} passed, ${failed} failed`);
   return if (failed > 0) { 1 } else { 0 };
+};
+
+/** Writes captured output through without adding a newline of its own. */
+let echo = (text: String, toError: boolean): void => {
+  if (text == '') {
+    return;
+  }
+  let trimmed = if (text.endsWith('\n')) text.sliceBytes(0, text.length - 1) else text;
+  if (toError) {
+    console.error(trimmed);
+  } else {
+    console.log(trimmed);
+  }
+};
+
+/**
+ * `zena test --single <file>`: compile one test file and run it,
+ * printing what it printed. Returns 0 when it passed: its `main`
+ * returned 0 and it printed no `FAIL`.
+ *
+ * The test gets the repository as `.`, the standard library as
+ * `/stdlib` and a temporary directory as `/tmp`, and may spawn
+ * processes: repository tests are trusted code.
+ */
+let runSingle = (args: ParsedArgs, options: Options): i32 => {
+  if (args.rest.length != 1) {
+    console.error('Error: test --single takes exactly one file');
+    return 2;
+  }
+  let file = args.rest[0];
+  let request = new CompileRequest(resolveUserPath(file));
+  request.testMode = true;
+  var module: AbsolutePath | null = null;
+  try {
+    module = compileCached(request, options);
+  } catch (e) {
+    console.error(e.message);
+    return 1;
+  }
+  if (module == null) {
+    return 1;
+  }
+  let result = runModule(module.value, {
+    args: [file],
+    inheritEnv: true,
+    dirs: [
+      {from: repoRoot().value, to: '.'},
+      {from: stdlibDir().value, to: '/stdlib'},
+      {from: hostDir('/tmp').value, to: '/tmp'},
+    ],
+    grant: true,
+    debug: options.debug,
+  });
+  echo(result.stdout, false);
+  if (result.outcome == RunOutcome.Returned && result.exitCode == 0 &&
+      !result.stdout.contains('FAIL')) {
+    return 0;
+  }
+  echo(result.stderr, true);
+  if (result.message != '') {
+    console.error(result.message);
+  } else if (result.exitCode != 0) {
+    console.error(`Suite returned non-zero code: ${result.exitCode}`);
+  } else {
+    console.error('Suite reported failure in output');
+  }
+  return 1;
 };

@@ -138,14 +138,14 @@
             cp target/release/zfx $out/bin/zfx
 
             # The zena command is zena-cli (Rust/wasmtime host) running the
-            # compiler the build produced. ZENA_REPO_ROOT locates the stdlib
-            # and source files, ZENA_COMPILER_WASM the compiler; both default
-            # to the installed tree and can be overridden to point at a
-            # checkout (zena-cli only compiles files under ZENA_REPO_ROOT).
+            # CLI module the build produced
+            # (packages/zena-cli/out/zena.wasm), which has the compiler in
+            # it. ZENA_REPO_ROOT locates the module and the stdlib; it
+            # defaults to the installed tree and can be overridden to point
+            # at a checkout.
             cat > $out/bin/zena << EOF
             #!${pkgs.bash}/bin/bash
             export ZENA_REPO_ROOT="\''${ZENA_REPO_ROOT:-$out/lib/zena}"
-            export ZENA_COMPILER_WASM="\''${ZENA_COMPILER_WASM:-$out/lib/zena/packages/zena-compiler/zena/out/cli.wasm}"
             exec $out/lib/zena/zena-cli "\$@"
             EOF
             chmod +x $out/bin/zena

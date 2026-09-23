@@ -1,33 +1,28 @@
 /**
- * Orchestrator for `zena-cli bench`: the whole Tachometer-style loop in
- * Zena. Parses the bench config, collects samples round-robin across
- * variants via zena:process, analyzes with zena:bench (the single
- * implementation of the statistics), prints the report, and writes the
- * result JSON.
- *
- * The host contributes two things this program cannot do itself: the
- * zena_process capability, and the hidden `zena-cli sample` worker that
- * instantiates a wasm/wat/zena module fresh per sample and prints the
- * timed milliseconds of one exported call.
- *
- * Usage (spawned by `zena-cli bench`):
- *   bench-run <config.json> <outPath|-> <selfExe> <debug 0|1>
+ * `zena bench`: the whole Tachometer-style loop. Parses the bench
+ * config, collects samples round-robin across variants, analyzes with
+ * zena:bench (the single implementation of the statistics), prints the
+ * report, and writes the result JSON.
  *
  * Sample semantics per variant kind:
- * - `zena` / `wasm` / `wat`: one `sample` worker run per sample; the
- *   worker self-reports the timed call, so worker startup and module
- *   instantiation are excluded from the measurement.
+ * - `zena` / `wasm` / `wat`: the module (compiled once, for `zena`) is
+ *   run with `zena:wasm`, in a fresh store per sample. The sample is the
+ *   time the exported call took, so loading and instantiating the module
+ *   are left out of the measurement.
  * - `command`: one process run per sample; the last non-empty stdout
  *   line parsing as a float is taken as milliseconds (ANSI-stripped —
  *   Node colorizes numbers through some pipes). If nothing parses, wall
  *   time is used and the report calls out that it includes startup.
  */
 
-import { getArguments, exit } from 'zena:cli';
-import { readFile, writeFile } from 'zena:fs';
+import { ParsedArgs } from 'zena:args';
+import { exit } from 'zena:cli';
+import { exists, readFile, writeFile } from 'zena:fs';
 import { StringBuilder } from 'zena:core';
 import { parseJson, JsonObject, JsonArray, JsonValue } from 'zena:json';
+import { AbsolutePath, RelativePath } from 'zena:path';
 import { runIn } from 'zena:process';
+import { RunOutcome, runModule } from 'zena:wasm';
 import {
   BenchOptions,
   NamedSamples,
@@ -36,22 +31,32 @@ import {
   reportToJson,
   nowMs,
 } from 'zena:bench';
+import { CompileRequest, compileCached } from './compile.zena';
+import { Options, repoRelative, repoRoot, resolveUserPath } from './env.zena';
 
-/** One benchmark variant: a command to run once per sample. */
+/**
+ * One benchmark variant: a command to run once per sample, or a module
+ * to call once per sample.
+ */
 class BenchVariant {
   name: String;
+  /** The command, for a command variant; empty otherwise. */
   argv: Array<String>;
   cwd: String | null;
-  /**
-   * Command variants may fall back to wall time when they don't
-   * self-report; `sample` worker variants must always parse.
-   */
-  isCommand: boolean;
+  /** The module to run, for a module variant; '' otherwise. */
+  module: String;
+  invoke: String;
   samples: GrowableArray<f64>;
   var wallClockFallback: boolean = false;
 
-  new(this.name, this.argv, this.cwd, this.isCommand)
+  new(this.name, this.argv, this.cwd, this.module, this.invoke)
     : samples = new GrowableArray<f64>();
+
+  isCommand: boolean {
+    get {
+      return this.module == '';
+    }
+  }
 }
 
 let numberOf = (v: JsonValue, fallback: f64): f64 => {
@@ -183,7 +188,23 @@ let parseReportedMs = (stdout: String): (boolean, f64) => {
 };
 
 /** Takes one sample of a variant; exits the program on variant failure. */
-let sampleVariant = (v: BenchVariant): f64 => {
+let sampleVariant = (v: BenchVariant, debug: boolean): f64 => {
+  if (!v.isCommand) {
+    // Measured variants are workloads, not tools: no spawning, and
+    // their output is captured and dropped.
+    let result = runModule(v.module, {
+      args: ['bench-variant'],
+      invoke: v.invoke,
+      debug: debug,
+    });
+    if (result.outcome != RunOutcome.Returned) {
+      console.error(`variant '${v.name}' failed:`);
+      console.error(result.message);
+      console.error(result.stderr);
+      exit(1);
+    }
+    return (result.callTime as i64 as f64) / 1000000.0;
+  }
   let res = runIn(v.argv, v.cwd);
   if (res.exitCode != 0) {
     console.error(`variant '${v.name}' failed (exit ${res.exitCode}):`);
@@ -194,26 +215,28 @@ let sampleVariant = (v: BenchVariant): f64 => {
   if (parsed) {
     return ms;
   }
-  if (!v.isCommand) {
-    console.error(`variant '${v.name}': sample worker printed no timing:`);
-    console.error(res.stdout);
-    console.error(res.stderr);
-    exit(1);
-  }
   v.wallClockFallback = true;
   return (res.wallNanos as f64) / 1000000.0;
 };
 
-export let main = (): i32 => {
-  let args = getArguments();
-  if (args.length < 5) {
-    console.error('Usage: bench-run <config.json> <outPath|-> <selfExe> <debug 0|1>');
-    return 1;
+export let benchCommand = (args: ParsedArgs, cliOptions: Options): i32 => {
+  if (args.rest.length == 0) {
+    console.error('Error: bench needs a config file');
+    return 2;
   }
-  let configPath = args[1];
-  let outArg = args[2];
-  let selfExe = args[3];
-  let debug = args[4] == '1';
+  let config = resolveUserPath(args.rest[0]);
+  if (!exists(config.value)) {
+    console.error('Error: bench config not found: ' + config.value);
+    return 2;
+  }
+  // Repo-relative, like the paths in the config, so that they resolve
+  // the same way from the repository root.
+  let configPath = repoRelative(config);
+  var outArg = '-';
+  if (let (true, out) = args.getOption('out')) {
+    outArg = resolveUserPath(out).value;
+  }
+  let debug = cliOptions.debug;
   let configDir = dirName(configPath);
 
   let parsed = parseJson(readFile(configPath));
@@ -294,11 +317,12 @@ export let main = (): i32 => {
         console.error(`bench-run: variant ${name}: empty command`);
         return 1;
       }
-      variants.push(new BenchVariant(name, argv, configDir, true));
+      variants.push(new BenchVariant(name, argv, configDir, '', ''));
       continue;
     }
 
-    // zena / wasm / wat variants run through the `sample` worker.
+    // zena / wasm / wat variants are modules, run with zena:wasm.
+    let isZena = stringOf(specVal['zena'], '').length > 0;
     var file = stringOf(specVal['zena'], '');
     if (file.length == 0) {
       file = stringOf(specVal['wasm'], '');
@@ -310,16 +334,26 @@ export let main = (): i32 => {
       console.error(`bench-run: variant ${name}: needs one of \`zena\`, \`wasm\`, \`wat\`, \`command\``);
       return 1;
     }
-    let argv = new GrowableArray<String>();
-    argv.push(selfExe);
-    if (debug) {
-      argv.push('-g');
-    }
-    argv.push('sample');
-    argv.push(joinPath(configDir, file));
-    argv.push('--invoke');
-    argv.push(stringOf(specVal['invoke'], 'main'));
-    variants.push(new BenchVariant(name, argv, null, false));
+    let joined = joinPath(configDir, file);
+    let path = if (joined.startsWith('/')) {
+      new AbsolutePath(joined)
+    } else {
+      repoRoot().join(new RelativePath(joined))
+    };
+    // A `zena` variant is compiled once, through the cache, before any
+    // sampling starts.
+    let module = if (isZena) {
+      compileCached(new CompileRequest(path), cliOptions)
+    } else {
+      path
+    };
+    variants.push(new BenchVariant(
+      name,
+      new GrowableArray<String>(),
+      null,
+      module.value,
+      stringOf(specVal['invoke'], 'main'),
+    ));
   }
   if (variants.length == 0) {
     console.error('bench-run: config has no variants');
@@ -335,7 +369,7 @@ export let main = (): i32 => {
     var r = 0;
     while (r < n) {
       for (let v in variants) {
-        v.samples.push(sampleVariant(v));
+        v.samples.push(sampleVariant(v, debug));
       }
       r += 1;
     }
@@ -348,7 +382,7 @@ export let main = (): i32 => {
   var w = 0;
   while (w < options.warmupRuns) {
     for (let v in variants) {
-      sampleVariant(v);
+      sampleVariant(v, debug);
     }
     w += 1;
   }

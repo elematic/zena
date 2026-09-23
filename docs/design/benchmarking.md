@@ -96,16 +96,15 @@ versions, or Zena vs a frozen reference vs Node — needs processes,
 which WASI cannot spawn. That capability is now a stdlib library,
 `zena:process` (host imports provided by zena-cli to trusted
 invocations only; see `packages/stdlib/zena/process/README.md`), and
-the orchestrator is itself a Zena program:
-`packages/zena-cli/zena/bench-run.zena` parses the config, runs the
-round-robin sampling loop by spawning one process per sample, analyzes
-with `zena:bench`'s `analyze()` — one implementation of the math — and
-writes the report. The Rust side (`packages/zena-cli/src/bench.rs`)
-contributes only what the guest cannot do: the spawn capability and a
-hidden `zena-cli sample` worker that instantiates a wasm/wat/zena
-module fresh per sample, times one exported call (instantiation
-excluded), and prints the milliseconds — every variant kind is measured
-through self-reported output, uniformly.
+the orchestrator is itself a Zena program, part of the `zena` command
+(`packages/zena-cli/zena/bench-run.zena`). It parses the config, runs
+the round-robin sampling loop, analyzes with `zena:bench`'s `analyze()`
+— one implementation of the math — and writes the report. A `zena`,
+`wasm` or `wat` variant is run with `zena:wasm` in a fresh store per
+sample, and the sample is the time the exported call took, as the host
+measured it, so loading and instantiating the module are left out. A
+`command` variant is one process per sample, spawned with
+`zena:process`, and reports its own time on stdout.
 
 ```sh
 zena-cli bench benchmarks/fib.json          # prints report, writes fib.results.json

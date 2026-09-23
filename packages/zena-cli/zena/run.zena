@@ -1,0 +1,119 @@
+/**
+ * `zena run`: compile a source file through the cache, or take a
+ * compiled module as it is, and run it with `zena:wasm`, attached to
+ * the terminal.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { getEnv } from 'zena:cli';
+import { exists, isDirectory } from 'zena:fs';
+import { AbsolutePath, RelativePath, extname } from 'zena:path';
+import { DirMapping, RunOutcome, runModule } from 'zena:wasm';
+import { CompileRequest, compileCached, ensureDir } from './compile.zena';
+import { Options, envSet, repoRoot, resolveUserPath } from './env.zena';
+
+/**
+ * A `--dir` value, `HOST` or `HOST::GUEST`, as a directory mapping. The
+ * host side is measured from where the user ran the command; the guest
+ * side is the name the program sees, and is the host side as typed when
+ * there is no `::`.
+ */
+let dirMapping = (spec: String): DirMapping => {
+  var host = spec;
+  var guest = spec;
+  for (var i = 0; i + 1 < spec.length; i += 1) {
+    if (spec.getByteAt(i) == 58 && spec.getByteAt(i + 1) == 58) {
+      host = spec.sliceBytes(0, i);
+      guest = spec.sliceBytes(i + 2, spec.length);
+      break;
+    }
+  }
+  return {from: hostDir(host).value, to: guest};
+};
+
+/**
+ * A host directory to hand a program. Under ZENA_PROJECT_CACHE or
+ * ZENA_LOCAL_CACHE, a directory under `/tmp` moves to `.zena/tmp` in the
+ * repository, for sandboxes where `/tmp` is not writable.
+ */
+export let hostDir = (path: String): AbsolutePath => {
+  let resolved = resolveUserPath(path);
+  if ((envSet('ZENA_PROJECT_CACHE') || envSet('ZENA_LOCAL_CACHE')) &&
+      (resolved.value == '/tmp' || resolved.value.startsWith('/tmp/'))) {
+    let rest = resolved.value.sliceBytes(4, resolved.value.length);
+    let moved = new AbsolutePath(repoRoot().value + '/.zena/tmp' + rest);
+    ensureDir(moved.value);
+    return moved;
+  }
+  if (!isDirectory(resolved.value)) {
+    throw new Error(`--dir ${path}: no such directory`);
+  }
+  return resolved;
+};
+
+/** Whether the user granted spawning, by flag or ZENA_ALLOW_SPAWN=1. */
+let spawnAllowed = (flag: boolean): boolean => {
+  if (flag) {
+    return true;
+  }
+  return getEnv('ZENA_ALLOW_SPAWN') == '1';
+};
+
+export let runCommand = (args: ParsedArgs, options: Options): i32 => {
+  if (args.rest.length == 0) {
+    console.error('Error: run needs a .zena or .wasm file');
+    return 2;
+  }
+  let file = args.rest[0];
+  let path = resolveUserPath(file);
+  if (!exists(path.value)) {
+    console.error(`Error: no such file: ${file}`);
+    return 2;
+  }
+  let ext = extname(path.value);
+  let module = if (ext == '.wasm' || ext == '.wat') {
+    path
+  } else {
+    let request = new CompileRequest(path);
+    request.time = args.getFlag('time');
+    // The compiler's own output is kept out of the program's unless
+    // something goes wrong or `-v` asks for it.
+    compileCached(request, options, args.getFlag('no-cache'), !options.verbose)
+  };
+
+  // argv[0] is the program, by the usual convention; everything after
+  // the file belongs to it.
+  let programArgs = new GrowableArray<String>();
+  programArgs.push(module.value);
+  for (var i = 1; i < args.rest.length; i += 1) {
+    programArgs.push(args.rest[i]);
+  }
+  var invoke = 'main';
+  if (let (true, name) = args.getOption('invoke')) {
+    invoke = name;
+  }
+  let dirs = new GrowableArray<DirMapping>();
+  for (let spec in args.getMultiOption('dir')) {
+    dirs.push(dirMapping(spec));
+  }
+  let result = runModule(module.value, {
+    args: programArgs,
+    inheritEnv: true,
+    inheritStdio: true,
+    invoke: invoke,
+    dirs: dirs,
+    grant: spawnAllowed(args.getFlag('allow-spawn')),
+    debug: options.debug,
+  });
+  if (result.outcome == RunOutcome.Returned) {
+    if (result.resultText != '') {
+      console.log(result.resultText);
+    }
+    return 0;
+  }
+  if (result.outcome == RunOutcome.Exited) {
+    return result.exitCode;
+  }
+  console.error(result.message);
+  return 1;
+};

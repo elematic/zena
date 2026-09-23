@@ -1,0 +1,444 @@
+/**
+ * `zena` — the command line.
+ *
+ * This is the CLI module: the whole `zena` command, compiled to one Wasm
+ * module that the `zena-cli` binary runs. It reads the command line,
+ * compiles with the compiler linked into it, runs programs and tests
+ * with `zena:wasm`, and builds targets with zb. See
+ * docs/design/cli-module.md, and env.zena for what the host tells it.
+ */
+
+import { ArgParser, OptionType, ParsedArgs } from 'zena:args';
+import { getArguments, getEnv } from 'zena:cli';
+import { exists, isFile, readFile, writeFile } from 'zena:fs';
+import { AbsolutePath, extname } from 'zena:path';
+import { precompileModule } from 'zena:wasm';
+import { DiagnosticSeverity, SourceSpan } from 'zena-compiler:diagnostics';
+import { format } from 'zena-formatter:printer';
+import { documentPackage, DocumentOptions } from 'zenadoc:document';
+import { packageToJson } from 'zenadoc:json';
+import { loadPackage } from 'zenadoc:package';
+import { buildTarget, reportBuild } from 'zb:runner';
+import { ScriptRef } from 'zb:wireit-config';
+import { benchCommand } from './bench-run.zena';
+import { CompileFailure, CompileRequest, compileTo } from './compile.zena';
+import { Options, repoRelative, resolveUserPath, userCwd } from './env.zena';
+import { runCommand } from './run.zena';
+import { testCommand } from './test-run.zena';
+
+/** The whole command line, described once. */
+let describe = (): ArgParser => {
+  let help = {type: OptionType.Flag, abbr: 'h', help: 'Print help'};
+  let noCache = {
+    type: OptionType.Flag,
+    help: 'Compile even if the cache has an answer',
+  };
+  let time = {type: OptionType.Flag, help: "Print the compiler's phase timings"};
+  return new ArgParser.fromConfig({
+    name: 'zena',
+    help: 'The Zena compiler and toolchain',
+    options: {
+      'help' => help,
+      'version' => {type: OptionType.Flag, abbr: 'V', help: 'Print the version'},
+      'verbose' => {
+        type: OptionType.Flag,
+        abbr: 'v',
+        help: 'Print what the tool is doing',
+      },
+      'debug' => {
+        type: OptionType.Flag,
+        abbr: 'g',
+        help: 'Name functions in modules, and turn off inlining so traps name them',
+      },
+      'opt-level' => {abbr: 'O', help: 'Optimization level: 0, 1, 2 or s'},
+    },
+    commands: {
+      'build' => {
+        help: 'Compile a Zena file to WebAssembly, or build a target',
+        options: {
+          'help' => help,
+          'output' => {abbr: 'o', help: 'Where to write the module'},
+          'target' => {
+            abbr: 't',
+            help: 'Compilation target, such as zena-cli or host',
+          },
+          'wit' => {help: "The component's world, a .wit file or directory"},
+          'world' => {help: 'Which world, when the document declares several'},
+          'time' => time,
+          'no-cache' => noCache,
+        },
+      },
+      'run' => {
+        help: 'Compile and run a Zena file, or run a compiled module',
+        // Everything after the file belongs to the program being run.
+        stopAtPositional: true,
+        options: {
+          'help' => help,
+          'invoke' => {help: 'The exported function to call'},
+          'dir' => {
+            type: OptionType.MultiString,
+            help: 'Pre-open a directory, as HOST or HOST::GUEST',
+          },
+          'time' => time,
+          'no-cache' => noCache,
+          'allow-spawn' => {
+            type: OptionType.Flag,
+            help: 'Let the program spawn processes and run modules',
+          },
+        },
+      },
+      'test' => {
+        help: 'Run the test suites in .zena files',
+        options: {
+          'help' => help,
+          'filter' => {
+            abbr: 'f',
+            help: 'Only run files whose path contains this',
+          },
+          'exclude' => {
+            type: OptionType.MultiString,
+            help: 'Skip files matching this glob',
+          },
+          'single' => {
+            type: OptionType.Flag,
+            help: 'Run one file in this process (what each test runs as)',
+          },
+        },
+      },
+      'doc' => {
+        help: "Extract a package's API as JSON",
+        options: {
+          'help' => help,
+          'output' => {abbr: 'o', help: 'Where to write the JSON'},
+          'name' => {help: "The package's name, overriding the manifest's"},
+          'target' => {
+            abbr: 't',
+            defaultVal: 'zena-cli',
+            help: 'Which target decides virtual modules',
+          },
+          'include-private' => {
+            type: OptionType.Flag,
+            help: 'Document non-exported and #private members',
+          },
+        },
+      },
+      'fmt' => {
+        help: 'Format Zena files',
+        options: {
+          'help' => help,
+          'write' => {
+            type: OptionType.Flag,
+            abbr: 'w',
+            help: 'Rewrite the files in place',
+          },
+          'check' => {
+            type: OptionType.Flag,
+            help: 'List files that are not formatted, and fail if any',
+          },
+        },
+      },
+      'bench' => {
+        help: 'Run a benchmark suite, comparing variants round-robin',
+        options: {
+          'help' => help,
+          'out' => {abbr: 'o', help: 'Where to write the report JSON'},
+        },
+      },
+      'precompile' => {
+        help: 'Compile a .wasm to machine code ahead of its first run',
+        options: {'help' => help},
+      },
+    },
+  });
+};
+
+export let main = (): i32 => {
+  let parser = describe();
+  var parsed: ParsedArgs | null = null;
+  try {
+    parsed = parser.parse(getArguments(), 1);
+  } catch (e) {
+    console.error('Error: ' + e.message);
+    console.error('');
+    console.error(parser.formatHelp());
+    return 2;
+  }
+  let args = parsed;
+  if (args == null) {
+    return 2;
+  }
+  try {
+    return dispatch(parser, args);
+  } catch (e) {
+    if (e is CompileFailure) {
+      // The compiler has already said what went wrong.
+      console.error('Error: ' + e.message);
+      return 1;
+    }
+    console.error('Error: ' + e.message);
+    return 1;
+  }
+};
+
+let dispatch = (parser: ArgParser, args: ParsedArgs): i32 => {
+  if (args.getFlag('version')) {
+    console.log('zena ' + (getEnv('ZENA_VERSION') ?? 'dev'));
+    return 0;
+  }
+  let name = args.commandName;
+  let sub = args.commandArgs;
+  if (name == null || sub == null) {
+    if (args.getFlag('help')) {
+      console.log(parser.formatHelp());
+      return 0;
+    }
+    console.error('Error: a subcommand is required');
+    console.error('');
+    console.error(parser.formatHelp());
+    return 2;
+  }
+  if (sub.getFlag('help')) {
+    console.log(parser.formatHelp());
+    return 0;
+  }
+  var optLevel: String | null = null;
+  if (let (true, level) = args.getOption('opt-level')) {
+    optLevel = level;
+  }
+  let options = new Options(args.getFlag('verbose'), args.getFlag('debug'), optLevel);
+  if (name == 'build') {
+    return build(sub, options);
+  }
+  if (name == 'run') {
+    return runCommand(sub, options);
+  }
+  if (name == 'test') {
+    return testCommand(sub, options);
+  }
+  if (name == 'doc') {
+    return doc(sub);
+  }
+  if (name == 'fmt') {
+    return fmt(sub);
+  }
+  if (name == 'bench') {
+    return benchCommand(sub, options);
+  }
+  if (name == 'precompile') {
+    return precompile(sub, options);
+  }
+  console.error('Error: no such subcommand: ' + name);
+  return 2;
+};
+
+/**
+ * `zena build`: an argument naming a `.zena` file compiles that file;
+ * anything else is a build target, run with zb.
+ */
+let build = (args: ParsedArgs, options: Options): i32 => {
+  if (args.rest.length > 1) {
+    console.error('Error: build takes one file or target');
+    return 2;
+  }
+  let argument = if (args.rest.length == 0) 'build' else args.rest[0];
+  let path = resolveUserPath(argument);
+  if (extname(argument) == '.zena' || isFile(path.value)) {
+    return buildFile(args, options, argument, path);
+  }
+  return buildScript(argument);
+};
+
+/**
+ * Compiles one file, always: invoking `build` on a file is the request
+ * to compile it, and the scripts that do so track their own inputs.
+ */
+let buildFile = (
+  args: ParsedArgs,
+  options: Options,
+  argument: String,
+  path: AbsolutePath,
+): i32 => {
+  if (!isFile(path.value)) {
+    console.error(`Error: no such file: ${argument}`);
+    return 2;
+  }
+  var output = '';
+  if (let (true, value) = args.getOption('output')) {
+    output = value;
+  }
+  if (output == '') {
+    console.error('Error: build needs -o <FILE>');
+    return 2;
+  }
+  let request = new CompileRequest(path);
+  request.time = args.getFlag('time');
+  if (let (true, target) = args.getOption('target')) {
+    request.target = target;
+  }
+  if (let (true, wit) = args.getOption('wit')) {
+    request.wit = resolveUserPath(wit);
+  }
+  if (let (true, world) = args.getOption('world')) {
+    request.world = world;
+  }
+  compileTo(request, options, resolveUserPath(output));
+  return 0;
+};
+
+/**
+ * Runs a build target with zb: `test` is a script of the package the
+ * user is in, and `./packages/zb:test` a script of another package, in
+ * the form wireit dependencies use. The workspace is the nearest
+ * directory, from where the user is, whose package.json declares
+ * `workspaces`.
+ */
+let buildScript = (argument: String): i32 => {
+  var packagePath = '.';
+  var script = argument;
+  if (argument.startsWith('.')) {
+    var colon = -1;
+    for (var i = argument.length - 1; i >= 0; i -= 1) {
+      if (argument.getByteAt(i) == 58) {
+        colon = i;
+        break;
+      }
+    }
+    if (colon < 0) {
+      console.error(`Error: ${argument} names a package; add :<script>`);
+      return 2;
+    }
+    packagePath = argument.sliceBytes(0, colon);
+    script = argument.sliceBytes(colon + 1, argument.length);
+  }
+  let packageDir = resolveUserPath(packagePath);
+  if (!isFile(packageDir.value + '/package.json')) {
+    console.error(`Error: no package.json in ${packageDir.value}`);
+    return 2;
+  }
+  let root = workspaceRoot(packageDir);
+  let relative = packageDir.stripPrefix(root);
+  let packageRef = if (relative == null) '' else relative.value;
+  let outcome = buildTarget(root.value, new ScriptRef(packageRef, script));
+  return reportBuild(outcome);
+};
+
+/** The nearest directory at or above `from` whose package.json has workspaces. */
+let workspaceRoot = (from: AbsolutePath): AbsolutePath => {
+  var dir = from;
+  while (true) {
+    let manifest = dir.value + '/package.json';
+    if (isFile(manifest) && readFile(manifest).contains('"workspaces"')) {
+      return dir;
+    }
+    if (dir.value == '/') {
+      return from;
+    }
+    dir = dir.parent();
+  }
+  return from;
+};
+
+/**
+ * `zena doc`: a package's API as JSON. An input inside the repository
+ * is read repo-relative, which is what makes the `root` and `file` paths
+ * in the JSON repo-relative, and so checkable in.
+ */
+let doc = (args: ParsedArgs): i32 => {
+  if (args.rest.length != 1) {
+    console.error('Error: doc needs a path');
+    return 2;
+  }
+  let path = resolveUserPath(args.rest[0]);
+  if (!exists(path.value)) {
+    console.error('Error: no such path: ' + path.value);
+    return 2;
+  }
+  let options = new DocumentOptions();
+  options.includePrivate = args.getFlag('include-private');
+  if (let (true, target) = args.getOption('target')) {
+    options.target = target;
+  }
+  var name: String | null = null;
+  if (let (true, value) = args.getOption('name')) {
+    name = value;
+  }
+  let pkg = loadPackage(repoRelative(path), name, options.target);
+  let result = documentPackage(pkg, options);
+  for (let failure in result.failures) {
+    console.error('Failed to document ' + failure);
+  }
+  for (let diagnostic in result.diagnostics) {
+    if (diagnostic.severity == DiagnosticSeverity.Error) {
+      console.error(where(diagnostic.location) + diagnostic.message);
+    }
+  }
+  let json = packageToJson(result.docs);
+  if (let (true, output) = args.getOption('output')) {
+    writeFile(resolveUserPath(output).value, json);
+  } else {
+    console.log(json);
+  }
+  // The JSON is written either way: a package that does not check is
+  // exactly when someone wants to read its docs.
+  return if (result.hasErrors()) 1 else 0;
+};
+
+let where = (location: SourceSpan | null): String => {
+  if (location == null) {
+    return '';
+  }
+  return location.file + ':' + i32ToString(location.line) + ':' +
+      i32ToString(location.column) + ' - ';
+};
+
+/**
+ * `zena fmt`: prints one file formatted, or with `--write` rewrites each
+ * file, or with `--check` lists the files that are not formatted.
+ */
+let fmt = (args: ParsedArgs): i32 => {
+  if (args.rest.length == 0) {
+    console.error('Error: fmt needs a file');
+    return 2;
+  }
+  let write = args.getFlag('write');
+  let check = args.getFlag('check');
+  if (!write && !check && args.rest.length > 1) {
+    console.error('Error: fmt prints one file; use --write or --check for several');
+    return 2;
+  }
+  var unformatted = 0;
+  for (let file in args.rest) {
+    let path = resolveUserPath(file).value;
+    let source = readFile(path);
+    let formatted = format(source);
+    if (check) {
+      if (formatted != source) {
+        console.log(file);
+        unformatted += 1;
+      }
+    } else if (write) {
+      if (formatted != source) {
+        writeFile(path, formatted);
+      }
+    } else {
+      console.log(formatted);
+    }
+  }
+  return if (unformatted > 0) 1 else 0;
+};
+
+/** `zena precompile`: machine code for a module, cached beside it. */
+let precompile = (args: ParsedArgs, options: Options): i32 => {
+  if (args.rest.length != 1) {
+    console.error('Error: precompile needs a .wasm file');
+    return 2;
+  }
+  let path = resolveUserPath(args.rest[0]);
+  let failure = precompileModule(path.value, options.debug);
+  if (failure != '') {
+    console.error('Error: ' + failure);
+    return 1;
+  }
+  console.log('Precompiled ' + path.value);
+  return 0;
+};

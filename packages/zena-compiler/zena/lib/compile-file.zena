@@ -33,6 +33,18 @@ import {
 import { ComponentEntryWrapper } from './component-entry.zena';
 import { readWitSource } from 'wit-parser:document';
 
+/**
+ * "-O" levels: 0, 1, 2, and s (size — the loop with budgets down,
+ * currently equal to 2). Returns -1 on anything else.
+ */
+export let parseOptLevel = (text: String): i32 => {
+  if (text == "0") { return 0; }
+  if (text == "1") { return 1; }
+  if (text == "2") { return 2; }
+  if (text == "s") { return 2; }
+  return -1;
+};
+
 /** What to compile, where to put it, and how. */
 export class CompileFileOptions {
   /** The source file, relative to the working directory. */
@@ -60,6 +72,13 @@ export class CompileFileOptions {
   var stdlibRoot = "/stdlib";
   /** Print "Compiling ..." and "Success: wrote ..." lines. */
   var progress = false;
+  /**
+   * Called with each source file's path just before the compiler reads
+   * it, as the compiler names it: relative to the working directory, or
+   * under `stdlibRoot`. A compile cache records these to know when its
+   * entry is stale.
+   */
+  var onRead = (path: String): void => {};
 
   new(this.entry, this.outPath);
 }
@@ -73,9 +92,10 @@ class FileHost implements CompilerHost {
   testMode: boolean;
   entryPath: String;
   stdlibRoot: String;
+  onRead: (path: String) => void;
   /** The WIT-backed packages' source, once it has been read. */
   var packagesWit = "";
-  new(this.testMode, this.entryPath, this.stdlibRoot);
+  new(this.testMode, this.entryPath, this.stdlibRoot, this.onRead);
 
   readFile(path: String): String {
     // A WIT-backed package's module: no file exists — the source is
@@ -87,6 +107,8 @@ class FileHost implements CompilerHost {
     if (path.startsWith("zena:")) {
       actualPath = this.stdlibRoot + "/" + stdlibIdToRelativeFile(path);
     }
+    let onRead = this.onRead;
+    onRead(actualPath);
     let content = readFile(actualPath);
     if (this.testMode && path == this.entryPath) {
       // A file that declares its own entry point is left alone. This runs
@@ -171,7 +193,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     witSource = readWitSource(witPath);
   }
 
-  let host = new FileHost(options.testMode, filename, stdlibRoot);
+  let host = new FileHost(options.testMode, filename, stdlibRoot, options.onRead);
   let packages = loadPackages(host);
   // A declared world's document answers for its own packages: the
   // program imports the world's interfaces by name (`test:app/oracle`

@@ -2,76 +2,75 @@
 
 This document is to be used by AI agents (and human developers) to understand
 the architectural boundaries, design decisions, and debugging expectations for
-the `zena-cli` Rust package.
+the `zena` command. The design is in
+[docs/design/cli-module.md](../../docs/design/cli-module.md).
 
 ## Architecture & Responsibilities
 
-0. **Two crates, one host**
-   - Everything a compiled module needs from its host lives in
-     `packages/zena-runtime`: the wasmtime `Config` (`engine::config`), the
-     `.cwasm` cache (`cache`), the `env` stack-trace imports, `zena_process`,
-     and the guest-string helpers. This crate adds the compiler invocation,
-     the compile cache under `.zena/cache` or the user cache dir, and the
-     `test`, `bench`, `doc` and `precompile` commands.
-   - `packages/zena-run` is the other embedder of `zena-runtime`: it runs a
-     compiled module and nothing more. A change to how modules are linked or
-     configured belongs in `zena-runtime`, so both binaries pick it up.
+1. **The command is a Zena program: the CLI module**
+   - `zena/main.zena` reads the command line (`zena:args`) and dispatches.
+     Beside it: `env.zena` (what the host told the module, shared flags),
+     `compile.zena` (compiling, and the compile cache), `run.zena`,
+     `test-run.zena`, `bench-run.zena`.
+   - It is built to `out/zena.wasm` by `build:module`, with the compiler
+     (`zena-compiler:compile-file`), zb, zenadoc and the formatter linked
+     in. Other programs (the VS Code extension's `lsp.wasm`, the
+     playground) have their own entry points built from the same
+     libraries.
 
-1. **Host Language Integration (Rust/Wasmtime)**
-   - The CLI leverages **Wasmtime** to execute Zena's output. Zena is uniquely
-     tied to experimental/advanced WebAssembly features.
-   - `zena_runtime::engine::config` always enables Garbage Collection (`gc`),
-     Exception Handling (`exceptions`), Typed Function References
-     (`function-references`), tail calls and wide arithmetic. If Zena
-     compilation/instantiation fails with validation errors, verify that
-     Wasmtime feature flags are correctly toggled there.
+2. **The host binary: `src/main.rs`**
+   - Loads the CLI module and runs its `main`, with WASI preview 1 and the
+     `zena-runtime` imports. It has no command-line logic of its own.
+   - Preopens the repository root as `.` (first, so relative paths mean the
+     repository: the compiler reads `zena-packages.json` and
+     `packages/stdlib/zena` relative to it) and `/` as `/`.
+   - Grants spawning, so zb can run build commands and the module can run
+     other modules with `zena:wasm`.
+   - Sets `ZENA_REPO_ROOT`, `ZENA_CWD` (where the user is; user paths are
+     resolved against it, see `resolveUserPath`), `ZENA_CLI_MODULE` and
+     `ZENA_AVAILABLE_PARALLELISM`.
+   - `ZENA_REPO_ROOT` defaults to the checkout the binary was built in;
+     `ZENA_CLI_MODULE` defaults to `packages/zena-cli/out/zena.wasm` under
+     it.
 
-2. **Host Capabilities Beyond WASI (`zena_process`)**
-   - `zena:process` (stdlib) is backed by the `zena_process` import module
-     implemented in `zena-runtime`'s `process.rs`. Spawning escapes the WASI
-     sandbox, so it is granted per invocation (`Spawn::Allow` vs
-     `Spawn::Deny`): the orchestrator programs under `zena/`
-     (`bench-run.zena`, `test-run.zena`) and repo tests get real
-     implementations; `zena-cli run` requires `--allow-spawn` or
-     `ZENA_ALLOW_SPAWN=1`; everything else gets trapping stubs.
-   - The `bench` and `test` subcommands are thin: they compile and run
-     those Zena orchestrators via `run_internal_tool`, which also spawns
-     this binary back in hidden worker modes (`sample`, `test --single`).
-   - `doc` is thin the same way, running `packages/zenadoc/zena/cli/main.zena`
-     (see `docs/design/zenadoc.md`). It needs no spawn capability; what it
-     needs is that the guest works from the repository root, which is why
-     it passes an input path inside the checkout repo-relative and an
-     output path absolute.
+3. **Compiling**
+   - In-process by default: the compiler is part of the module. With
+     `ZENA_COMPILER_WASM` set, that compiler module is run instead, through
+     `zena:wasm`, with the preopens `zc` expects. Build scripts use it to
+     pick a compiler (`build:self-hosted` uses stage A, the fixpoint check
+     uses stage B).
+   - `run`, `test` and `bench` compile through a cache (`compileCached`): a
+     module plus a `.deps` file listing every file the compile read, with
+     modification time and size. `build` always compiles.
 
-3. **WASI Virtual Filesystem Boundaries**
-   - Zena's `stdlib/fs` interfaces natively with WASI Preview 1.
-   - The CLI uses `wasmtime-wasi` to safely expose OS capabilities to the
-     sandbox. When the Zena standard library resolves file logic across various
-     host directories (e.g., using temp vs root paths), the Rust CLI provides
-     the respective directory map (preopen capabilities).
-   - If a new system-level module (like `net`) is added to Zena, this CLI will
-     be responsible for providing the host capability implementation via WASI.
+4. **Tests**
+   - `zena test` finds files with `zena:fs`'s `glob`, then starts one copy
+     of the CLI module per file (`zena test --single <file>`) with
+     `zena:wasm`, at most `ZENA_TEST_PARALLELISM` (default: CPUs, up to 8)
+     at a time. Each copy compiles its file in test mode and runs it with
+     `zena:wasm`, with the repository as `.`, the stdlib as `/stdlib` and a
+     temporary directory as `/tmp`.
 
-4. **Output Standardization (Silent by Default)**
-   - Following strict Unix philosophy and mirroring standard Node CLI behavior,
-     the Zena CLI execution engine is **silent by default**.
-   - Standard output (`stdout`) represents **only** the executing `.zena`
-     program's output, enabling clean pipelines (e.g., `zena run data.zena |
-grep foo`).
-   - Diagnostic text (e.g., "Compiling...", "Running executable...") is hidden
-     behind the `--verbose` / `-v` flag.
+5. **The bootstrap and the build order**
+   - `zena-run` runs the checked-in bootstrap to build the compiler
+     (`zena-compiler:build:cli`), and then that compiler to build the CLI
+     module. Neither step needs `zena-cli`, which needs the module.
+
+6. **Output Standardization (Silent by Default)**
+   - Standard output is the program's own output only, so
+     `zena run data.zena | grep foo` works. The compiler's output from a
+     `run` is held back unless the compile fails; with the in-process
+     compiler, diagnostics go to stderr and `--time` reports to stdout.
 
 ## Agent Guidelines & Warnings
 
-- **Debugging Crashes**: By default, you will not see Wasm engine setups or host
-  reading traps. If you encounter inexplicable exits or test failures related to
-  the CLI, **always re-run the command with the `--verbose` flag**.
-- **Workspace Navigation**: Remember this is a standard Rust application living
-  in an NPM monorepo. The Cargo workspace is the repository root
+- **A change to the CLI module needs a rebuild of the module**, not just of
+  the binary: `npm run build -w @zena-lang/zena-cli` does both.
+- **Debugging**: `-g` names functions in compiled modules and turns off
+  wasmtime's inlining for the runs the command starts. The CLI module is
+  built with its name section, so a trap inside it prints a readable
+  backtrace.
+- **Workspace Navigation**: The Cargo workspace is the repository root
   (`Cargo.toml` and `Cargo.lock` there); use `cargo build -p zena-cli`,
-  `cargo check`, and `cargo clippy` from the root, and `cargo test -p
-zena-runtime -p zena-cli -p zena-run` for all three crates.
-- **Tests**: When expanding standard library tests that interact with this CLI,
-  remember that test environments map different paths (like `/tmp`), which rely
-  entirely on `wasmtime_wasi::Dir` mappings being present in the CLI
-  bootstrapper.
+  `cargo check`, and `cargo clippy` from the root, and
+  `cargo test -p zena-runtime -p zena-cli -p zena-run` for all three crates.

@@ -8,10 +8,9 @@ statistics implementation:
   registered on a `BenchRunner`, timed with the WASI monotonic clock.
 - **`zena-cli bench`** — cross-binary comparison (Zena vs a pinned
   `.wat` milestone vs Node). The orchestration is itself a Zena program
-  (`packages/zena-cli/zena/bench-run.zena`) that spawns one process per
-  sample via `zena:process` and analyzes with this library; the host
-  contributes the spawn capability and a hidden `sample` worker that
-  times one fresh-instance call of a wasm/wat/zena module.
+  (`packages/zena-cli/zena/bench-run.zena`) that takes each sample of a
+  module with `zena:wasm`, and each sample of a command with
+  `zena:process`, and analyzes with this library.
 
 The full rationale and architecture live in
 [docs/design/benchmarking.md](../../../../docs/design/benchmarking.md).
@@ -95,12 +94,11 @@ variants:
 Paths are relative to the config file's directory. Sample semantics
 differ by variant kind:
 
-- **`zena` / `wasm` / `wat`** — each sample is one run of the hidden
-  `zena-cli sample` worker: a fresh instance plus one timed call of the
-  exported function (default `main`, override with `"invoke"`), with
-  the milliseconds self-reported by the worker — so worker startup,
-  module compilation (cached), and instantiation are all excluded from
-  the measurement.
+- **`zena` / `wasm` / `wat`** — each sample is one run of the module
+  with `zena:wasm`: a fresh store plus one timed call of the exported
+  function (default `main`, override with `"invoke"`), timed by the host
+  — so module compilation (done once, and cached) and instantiation are
+  excluded from the measurement.
 - **`command`** — each sample is one process run, but the measurement is
   the guest's **self-reported** milliseconds: the last non-empty stdout
   line that parses as a float (ANSI escapes stripped). This excludes

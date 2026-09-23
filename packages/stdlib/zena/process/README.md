@@ -80,10 +80,10 @@ stdlib module:
 
 ## Implementation notes
 
-The host side lives in `packages/zena-cli/src/process.rs`. Strings
+The host side lives in `packages/zena-runtime/src/process.rs`. Strings
 cross the boundary through the `$stringCreate` / `$stringSetByte` /
 `$stringGetByte` / `$stringGetLength` helpers every compiled Zena
 module exports; handles cross as `externref`s wrapping host state.
-Consumers in-repo: `bench-run.zena` (the benchmark orchestrator) and
-`test-run.zena` (the test-runner pool), both under
-`packages/zena-cli/zena/`.
+Consumers in-repo: zb, which runs build commands, and `zena bench`
+(`packages/zena-cli/zena/bench-run.zena`), which runs command variants.
+Running another Wasm module is `zena:wasm`'s job.

@@ -1,0 +1,384 @@
+/**
+ * Compiling a source file: in this module, with the compiler linked in,
+ * or with another compiler module when `ZENA_COMPILER_WASM` names one.
+ *
+ * The build scripts set `ZENA_COMPILER_WASM` to choose which compiler
+ * builds a file: the bootstrap builds the compiler, and the fixpoint
+ * check builds the compiler with itself. That compiler is run through
+ * `zena:wasm` with the same flags and preopens `zc` has always had.
+ *
+ * `zena run`, `zena test` and `zena bench` compile through a cache. An
+ * entry is the module plus a list of every file the compile read, with
+ * each file's modification time and size, and it is fresh while all of
+ * them still match. The key covers everything else that changes the
+ * output: the source path, the flags, and this module's own identity,
+ * since the compiler is part of it.
+ */
+
+import { getEnv } from 'zena:cli';
+import { HashSet } from 'zena:collections';
+import {
+  exists, isFile, mkdir, readFile, readFileBytes, rename, stat, unlink,
+  writeFile, writeFileBytes
+} from 'zena:fs';
+import { AbsolutePath, basename, dirname, extname } from 'zena:path';
+import { monotonic } from 'zena:time';
+import { runModule } from 'zena:wasm';
+import {
+  CompileFileOptions, compileFile, parseOptLevel
+} from 'zena-compiler:compile-file';
+import { sha256HexOfString } from 'zb:sha256';
+import {
+  Options, cliModule, envSet, repoRelative, repoRoot, resolveUserPath, stdlibDir
+} from './env.zena';
+
+/** What to compile, and how. */
+export final class CompileRequest {
+  source: AbsolutePath;
+  /** The compilation target; null for the compiler's default. */
+  var target: String | null = null;
+  /** A WIT file or directory declaring a component's world. */
+  var wit: AbsolutePath | null = null;
+  var world: String | null = null;
+  /** Compile a test suite, giving it a `main` that runs `tests`. */
+  var testMode = false;
+  /** Print the compiler's phase timings. */
+  var time = false;
+
+  new(this.source);
+}
+
+/** A compile that failed. Its diagnostics have already been printed. */
+export final class CompileFailure extends Error {
+  new(message: String) : super(message);
+}
+
+/**
+ * The optimization level, from `-O` or else ZENA_OPT_LEVEL, as the text
+ * the user gave; '' for the default.
+ */
+let optLevelText = (options: Options): String => {
+  let flag = options.optLevel;
+  if (flag != null) {
+    return flag;
+  }
+  return getEnv('ZENA_OPT_LEVEL') ?? '';
+};
+
+/** The compiler module ZENA_COMPILER_WASM names, or null for this one. */
+let externalCompiler = (): AbsolutePath | null => {
+  let named = getEnv('ZENA_COMPILER_WASM');
+  if (named == null) {
+    return null;
+  }
+  let path = resolveUserPath(named);
+  if (!isFile(path.value)) {
+    throw new CompileFailure(
+      `Compiler WASM not found at ${path.value}. Please build it first.`,
+    );
+  }
+  return path;
+};
+
+/**
+ * Compiles `request` to `out`. With `quiet`, what the compiler prints
+ * is held back and shown only if the compile fails, so that `zena run`'s
+ * output is the program's alone.
+ */
+export let compileTo = (
+  request: CompileRequest,
+  options: Options,
+  out: AbsolutePath,
+  quiet: boolean = false,
+): void => {
+  compileRecording(request, options, out, quiet, (path: String): void => {});
+};
+
+let compileRecording = (
+  request: CompileRequest,
+  options: Options,
+  out: AbsolutePath,
+  quiet: boolean,
+  onRead: (path: String) => void,
+): void => {
+  ensureDir(dirname(out.value));
+  let compiler = externalCompiler();
+  if (compiler != null) {
+    compileWith(compiler, request, options, out, quiet);
+    return;
+  }
+  let compileOptions = new CompileFileOptions(repoRelative(request.source), out.value);
+  compileOptions.stdlibRoot = 'packages/stdlib/zena';
+  compileOptions.testMode = request.testMode;
+  compileOptions.time = request.time;
+  compileOptions.debugNames = options.debug;
+  compileOptions.warnUnnecessaryCasts = envSet('ZENA_WARN_UNNECESSARY_CASTS');
+  compileOptions.onRead = onRead;
+  let target = request.target;
+  if (target != null) {
+    compileOptions.target = target;
+  }
+  let wit = request.wit;
+  if (wit != null) {
+    compileOptions.witPath = repoRelative(wit);
+  }
+  let world = request.world;
+  if (world != null) {
+    compileOptions.worldName = world;
+  }
+  let level = optLevelText(options);
+  if (level != '') {
+    let parsed = parseOptLevel(level);
+    if (parsed < 0) {
+      throw new CompileFailure(
+        `invalid optimization level '${level}' (expected 0, 1, 2, or s)`,
+      );
+    }
+    compileOptions.optLevel = parsed;
+  }
+  var status = 1;
+  try {
+    status = compileFile(compileOptions);
+  } catch (e) {
+    // compileFile printed the error and its stack on the way out.
+    throw new CompileFailure(`the compiler failed on ${request.source.value}`);
+  }
+  if (status != 0) {
+    throw new CompileFailure(`${request.source.value} did not compile`);
+  }
+};
+
+/**
+ * Runs another compiler module, as `zc`, with the preopens it expects:
+ * the repository root as `.`, the standard library as `/stdlib`, and
+ * the output's directory under its own name.
+ */
+let compileWith = (
+  compiler: AbsolutePath,
+  request: CompileRequest,
+  options: Options,
+  out: AbsolutePath,
+  quiet: boolean,
+): void => {
+  let args = new GrowableArray<String>();
+  args.push('zc');
+  args.push(repoRelative(request.source));
+  args.push('-o');
+  args.push(out.value);
+  let target = request.target;
+  if (target != null) {
+    args.push('-t');
+    args.push(target);
+  }
+  if (request.time) {
+    args.push('--time');
+  }
+  if (request.testMode) {
+    args.push('--test');
+  }
+  let wit = request.wit;
+  if (wit != null) {
+    args.push('--wit');
+    args.push(repoRelative(wit));
+  }
+  let world = request.world;
+  if (world != null) {
+    args.push('--world');
+    args.push(world);
+  }
+  let outDir = dirname(out.value);
+  // Flags reach the compiler as environment variables: the checked-in
+  // bootstrap predates them and would read an unknown flag as the input
+  // file.
+  let env = new Map<String, String>();
+  if (options.debug) {
+    env['ZENA_DEBUG_NAMES'] = '1';
+  }
+  let level = options.optLevel;
+  if (level != null) {
+    env['ZENA_OPT_LEVEL'] = level;
+  }
+  let result = runModule(compiler.value, {
+    args: args,
+    env: env,
+    inheritEnv: true,
+    dirs: [
+      {from: repoRoot().value, to: '.'},
+      {from: stdlibDir().value, to: '/stdlib'},
+      {from: outDir, to: outDir},
+    ],
+    inheritStdio: !quiet,
+  });
+  if (result.succeeded() && isFile(out.value)) {
+    return;
+  }
+  printCaptured(result.stdout);
+  printCaptured(result.stderr);
+  if (result.message != '') {
+    console.error(result.message);
+  }
+  throw new CompileFailure(`${request.source.value} did not compile`);
+};
+
+let printCaptured = (text: String): void => {
+  if (text == '') {
+    return;
+  }
+  if (text.endsWith('\n')) {
+    console.error(text.sliceBytes(0, text.length - 1));
+  } else {
+    console.error(text);
+  }
+};
+
+/** Creates a directory and any parents it needs. */
+export let ensureDir = (path: String): void => {
+  if (path == '' || path == '/' || path == '.' || exists(path)) {
+    return;
+  }
+  ensureDir(dirname(path));
+  if (!exists(path)) {
+    mkdir(path);
+  }
+};
+
+/**
+ * Where compiled modules are cached: `.zena/cache` in the repository
+ * when ZENA_PROJECT_CACHE or ZENA_LOCAL_CACHE is set, and otherwise
+ * `zena/wasm_objects` under the user's cache directory.
+ */
+export let cacheDir = (): String => {
+  if (envSet('ZENA_PROJECT_CACHE') || envSet('ZENA_LOCAL_CACHE')) {
+    return repoRoot().value + '/.zena/cache';
+  }
+  let xdg = getEnv('XDG_CACHE_HOME');
+  if (xdg != null && xdg != '') {
+    return xdg + '/zena/wasm_objects';
+  }
+  let home = getEnv('HOME');
+  if (home == null || home == '') {
+    return repoRoot().value + '/.zena/cache';
+  }
+  return home + '/.cache/zena/wasm_objects';
+};
+
+/** A file's identity for the cache: its modification time and size. */
+let identity = (path: String): String => {
+  let info = stat(path);
+  return `${info.modified} ${info.size}`;
+};
+
+/** What decides the module a compile produces, apart from its sources. */
+let cacheKey = (request: CompileRequest, options: Options): String => {
+  let compiler = getEnv('ZENA_COMPILER_WASM') ?? cliModule().value;
+  var key = 'zena-cache-1\n' + request.source.value + '\n';
+  key = key + `test=${request.testMode} debug=${options.debug}\n`;
+  key = key + `target=${request.target ?? ''} opt=${optLevelText(options)}\n`;
+  key = key + `wide=${envSet('ZENA_WIDE_ARITHMETIC')}\n`;
+  key = key + compiler + ' ' + identity(resolveUserPath(compiler).value) + '\n';
+  return sha256HexOfString(key).sliceBytes(0, 16);
+};
+
+/** The index of the first space at or after `from`, or -1. */
+let spaceAfter = (text: String, from: i32): i32 => {
+  if (from < 0) {
+    return -1;
+  }
+  for (var i = from; i < text.length; i += 1) {
+    if (text.getByteAt(i) == 32) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+let joinLines = (lines: Array<String>): String => {
+  var text = '';
+  for (let line in lines) {
+    text = text + line + '\n';
+  }
+  return text;
+};
+
+/**
+ * Whether every file a cache entry lists still has the modification
+ * time and size it had when the entry was written.
+ */
+let entryIsFresh = (depsPath: String, modulePath: String): boolean => {
+  if (!isFile(depsPath) || !isFile(modulePath)) {
+    return false;
+  }
+  let lines = readFile(depsPath).split('\n');
+  var checked = 0;
+  for (let line in lines) {
+    if (line == '') {
+      continue;
+    }
+    // "<modified> <size> <path>"; the path may contain spaces.
+    let first = spaceAfter(line, 0);
+    let second = spaceAfter(line, first + 1);
+    if (first < 0 || second < 0) {
+      return false;
+    }
+    let path = line.sliceBytes(second + 1, line.length);
+    let recorded = line.sliceBytes(0, second);
+    let current = try { identity(path) } catch (e) { '' };
+    if (current != recorded) {
+      return false;
+    }
+    checked += 1;
+  }
+  return checked > 0;
+};
+
+/**
+ * Compiles through the cache and returns the cached module's path.
+ * A module that is already there and fresh is not compiled again.
+ */
+export let compileCached = (
+  request: CompileRequest,
+  options: Options,
+  noCache: boolean = false,
+  quiet: boolean = true,
+): AbsolutePath => {
+  let dir = cacheDir();
+  ensureDir(dir);
+  let stem = basename(request.source.value, extname(request.source.value));
+  let name = `${stem}_${cacheKey(request, options)}`;
+  let modulePath = `${dir}/${name}.wasm`;
+  let depsPath = `${dir}/${name}.deps`;
+  if (!noCache && getEnv('ZENA_COMPILER_WASM') == null &&
+      entryIsFresh(depsPath, modulePath)) {
+    return new AbsolutePath(modulePath);
+  }
+
+  // Written beside the entry and renamed into place, so a reader never
+  // sees half a module. Two processes compiling the same file at once
+  // both compile it, and the second rename wins.
+  let unique = i64ToString(monotonic() as i64);
+  let tempModule = `${dir}/${name}.tmp-${unique}.wasm`;
+  let deps = new GrowableArray<String>();
+  let seen = new HashSet<String>();
+  compileRecording(
+    request,
+    options,
+    new AbsolutePath(tempModule),
+    quiet,
+    (path: String): void => {
+      if (seen.add(path)) {
+        // Taken before the compiler reads the file, so an edit made
+        // during the compile leaves the entry stale, not wrongly fresh.
+        try {
+          deps.push(`${identity(path)} ${path}`);
+        } catch (e) {
+          // A file that cannot be read fails the compile anyway.
+        }
+      }
+    },
+  );
+  rename(tempModule, modulePath);
+  let tempDeps = `${dir}/${name}.tmp-${unique}.deps`;
+  writeFile(tempDeps, joinLines(deps));
+  rename(tempDeps, depsPath);
+  return new AbsolutePath(modulePath);
+};

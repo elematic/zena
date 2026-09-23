@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "build": "wireit",
+    "build:host": "wireit",
+    "build:module": "wireit",
     "test": "wireit",
     "zena": "wireit"
   },
@@ -15,6 +17,13 @@
       ]
     },
     "build": {
+      "#": "The zena command: the host binary and the CLI module it runs.",
+      "dependencies": [
+        "build:host",
+        "build:module"
+      ]
+    },
+    "build:host": {
       "command": "cargo build --release -p zena-cli",
       "#files": "The crate depends on ../zena-runtime, so its sources are inputs too. The workspace manifest and lockfile at the repo root pin every dependency version.",
       "files": [
@@ -29,6 +38,33 @@
       "output": [],
       "dependencies": []
     },
+    "build:module": {
+      "#command": "The compiler just built from source compiles the CLI module, run on zena-run with the preopens `zc` expects. It keeps its name section, like the compiler, so a trap in it names functions. The module then precompiles itself, so the first zena commands do not race to run Cranelift on it.",
+      "command": "mkdir -p out && cd ../.. && ZENA_GC_RESERVE_MB=1536 ZENA_DEBUG_NAMES=1 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/zena/out/cli.wasm packages/zena-cli/zena/main.zena -o packages/zena-cli/out/zena.wasm && ./target/release/zena-cli precompile packages/zena-cli/out/zena.wasm",
+      "files": [
+        "zena/**/*.zena",
+        "../zena-compiler/zena/out/cli.wasm",
+        "../zena-compiler/zena/lib/**/*.zena",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/zena/wit/*.wit",
+        "../wit-parser/zena/**/*.zena",
+        "../zb/zena/**/*.zena",
+        "../workflow/zena/**/*.zena",
+        "../zenadoc/zena/lib/**/*.zena",
+        "../zena-formatter/zena/lib/**/*.zena",
+        "../../zena-packages.json"
+      ],
+      "output": [
+        "out/zena.wasm",
+        "out/zena.cwasm"
+      ],
+      "dependencies": [
+        "build:host",
+        "../zena-run:build",
+        "../zena-compiler:build:cli",
+        "../stdlib:lib"
+      ]
+    },
     "test": {
       "command": "cargo test --release -p zena-runtime -p zena-cli",
       "#command": "--release reuses the dependency artifacts the build step produced instead of compiling wasmtime a second time in the dev profile.",
@@ -42,7 +78,7 @@
       ],
       "output": [],
       "dependencies": [
-        "build"
+        "build:host"
       ]
     }
   }

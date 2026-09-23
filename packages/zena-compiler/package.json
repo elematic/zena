@@ -43,19 +43,21 @@
       ]
     },
     "build:cli": {
-      "command": "ZENA_GC_RESERVE_MB=1536 ZENA_COMPILER_WASM=bootstrap/cli.wasm ../../target/release/zena-cli build zena/cli/main.zena -o zena/out/cli.wasm",
+      "#command": "The bootstrap compiles the compiler, run on zena-run with the preopens `zc` expects: the repository as `.` and the standard library as `/stdlib`. It cannot go through zena-cli, whose module this compiler builds.",
+      "command": "mkdir -p zena/out && cd ../.. && ZENA_GC_RESERVE_MB=1536 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/bootstrap/cli.wasm packages/zena-compiler/zena/cli/main.zena -o packages/zena-compiler/zena/out/cli.wasm",
       "files": [
         "zena/**/*.zena",
         "bootstrap/cli.wasm",
         "../stdlib/zena/**/*.zena",
         "../stdlib/zena/wit/*.wit",
-        "../wit-parser/zena/**/*.zena"
+        "../wit-parser/zena/**/*.zena",
+        "../../zena-packages.json"
       ],
       "output": [
         "zena/out/cli.wasm"
       ],
       "dependencies": [
-        "../zena-cli:build",
+        "../zena-run:build",
         "../stdlib:lib"
       ]
     },
@@ -89,7 +91,7 @@
       ]
     },
     "build:self-hosted": {
-      "command": "ZENA_GC_RESERVE_MB=1536 ../../target/release/zena-cli -g -O2 build zena/cli/main.zena -o zena/out/cli-self.wasm && ../../target/release/zena-cli precompile zena/out/cli-self.wasm",
+      "command": "ZENA_GC_RESERVE_MB=1536 ZENA_COMPILER_WASM=zena/out/cli.wasm ../../target/release/zena-cli -g -O2 build zena/cli/main.zena -o zena/out/cli-self.wasm && ../../target/release/zena-cli precompile zena/out/cli-self.wasm",
       "files": [
         "zena/**/*.zena",
         "zena/out/cli.wasm",
