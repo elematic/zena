@@ -1,34 +1,23 @@
 /**
- * zena:stream — the rendezvous stream (docs/design/streams.md).
+ * Asynchronous data streaming between producers and consumers.
  *
- * A stream is a rendezvous, not a queue: a read and a write meet, and
- * elements move directly from the writer's slice into the reader's
- * buffer. Both ends are affine — one pending read and one pending
- * write at a time, matching the WIT ABI, where each end is one
- * resource with one operation in flight. Fan-in from several
- * producers, like fan-out to several consumers, is an explicit
- * adapter over a stream, not a mode the stream carries.
+ * Provides `Stream<T>` for reading data and `StreamWriter<T>` for writing data
+ * with built-in backpressure. Elements move directly from writers to readers,
+ * with writers awaiting until written data has been consumed.
  *
- * Reads are batched with the 1..N contract — `read(buf)` completes
- * with between 1 and `buf.length` elements the moment any exist, and
- * 0 is end-of-stream. The batch a read drains is the pending write's
- * slice: `writeAll(buf, count)` is the ABI's buffer-carrying write,
- * and `write(value)` is its one-element form. Backpressure is the
- * writer awaiting: a write's future completes when its slice is fully
- * consumed.
+ * ## Examples
  *
- * The ends are capabilities, mirroring `Future`/`Completer`: a
- * `Stream<T>` reference confers reading, and `StreamWriter<T>` — whose
- * `.stream` is the value handed out — is the write capability. The
- * stream's mutation surface is keyed by symbols this module does not
- * export.
+ * ```zena
+ * import { StreamWriter } from 'zena:stream';
  *
- * Errors ride no channel here, matching WIT `stream<T>`: a stream
- * ends, and whatever produced it exposes how it ended as a future
- * beside it. A stopped reader is data to the writer (`write` completes
- * `false`), and a closed writer is data to the reader (`read`
- * completes 0).
+ * let writer = new StreamWriter<String>();
+ * let stream = writer.stream;
+ *
+ * writer.write('first chunk');
+ * writer.close();
+ * ```
  */
+
 import { Error, FixedArray } from 'zena:core';
 import { Completer, Future } from 'zena:async';
 

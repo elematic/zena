@@ -1,22 +1,21 @@
 /**
- * zena:fetch — HTTP requests over `wasi:http@0.3.0`, for the component
- * target.
+ * HTTP client for making network requests.
  *
- * The same API as the JS target's (fetch/host.zena): `fetch(url)`
- * resolves with a `Response` once the status and headers are in, and
- * the body is read separately with `text()` or `bytes()` — a 404 is a
- * normal completion, not a failure. The future fails only when there
- * is no response at all: the host could not resolve, connect to, or
- * hear back from the server.
+ * `fetch(url)` sends an HTTP request and completes with a `Response`. The response
+ * provides the HTTP status and methods for asynchronously reading the response body.
  *
- * Underneath, a request is a `wasi:http/types` resource sent through
- * `wasi:http/client`'s `send`, and a body is a canonical `stream<u8>`
- * the host writes and this module pumps into a byte buffer. The
- * request's trailers are a future the sender resolves; a GET carries
- * none, so it is settled up front. The response body's completion is
- * a future the reader resolves, settled here once the stream has
- * ended.
+ * ## Examples
+ *
+ * ```zena
+ * import { fetch } from 'zena:fetch';
+ *
+ * let response = await fetch('https://example.com/api/data');
+ * if (response.ok) {
+ *   let text = await response.text();
+ * }
+ * ```
  */
+
 import { URL } from 'zena:url';
 import { Completer } from 'zena:async';
 import { Outcome, Ok, Err } from 'zena:core';

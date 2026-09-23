@@ -1,26 +1,27 @@
 /**
- * zena:bench — a Tachometer-style benchmark runner (CLI-only).
+ * Statistical benchmark runner for comparing execution performance across
+ * code variants.
  *
- * Architecture copied from Google's Tachometer
- * (https://github.com/google/tachometer), minus the browsers:
+ * Samples variants in round-robin order to minimize thermal throttling and
+ * system load bias. Each variant's execution distribution is summarized with a
+ * 95% confidence interval of the mean, and variants are compared via confidence
+ * intervals of the difference of means.
  *
- * - Variants are sampled in ROUND-ROBIN order, one sample per variant per
- *   round, so drifting CPU load or thermal throttling biases every variant
- *   equally instead of penalizing whichever ran last.
- * - Each variant's samples form a distribution, summarized with a 95%
- *   confidence interval of the mean (./stats.zena, re-exported here).
- * - Variants are compared via the CI of the DIFFERENCE of means: if that
- *   interval excludes zero the conclusion "A is faster than B" is robust;
- *   if it straddles zero the honest answer is "unsure" — and the runner
- *   keeps sampling until every comparison is resolved against the
- *   configured horizons or the time budget is exhausted.
+ * ## Examples
  *
- * This module measures in-process variants (closures in one binary).
- * Cross-binary comparison — the same workload compiled by two compiler
- * versions, or against a pinned .wat milestone — needs a host-side
- * orchestrator; see docs/design/benchmarking.md.
+ * ```zena
+ * import { BenchRunner } from 'zena:bench';
  *
- * WASI-only, like zena:fs: it imports the WASI monotonic clock directly.
+ * let runner = new BenchRunner('string-concat');
+ * runner.add('builder', () => {
+ *   // benchmark workload A
+ * });
+ * runner.add('operator', () => {
+ *   // benchmark workload B
+ * });
+ *
+ * let report = runner.run();
+ * ```
  */
 
 import { StringBuilder } from 'zena:core';

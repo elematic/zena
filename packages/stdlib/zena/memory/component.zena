@@ -1,21 +1,22 @@
 /**
- * @file
+ * Low-level access to WebAssembly linear memory and memory allocators.
  *
- * `zena:memory` on the component target: the same surface, delegating
- * to the runtime memory module.
+ * Provides `Memory` for reading and writing typed values at raw byte addresses,
+ * and allocator implementations (`Allocator`, `FreeListAllocator`, `BumpAllocator`)
+ * for managing linear memory buffers.
  *
- * A component's linear memory lives in a separate core module,
- * instantiated before the program — that is what lets a lowered import
- * carry a `string` or `list`, whose canonical options must name a
- * memory that exists before the program module does (see
- * docs/design/component-emission.md, 1.3). The free list lives there
- * with it: two allocators handing out blocks from the same pages would
- * corrupt each other, so this variant keeps no allocation state at all
- * and routes every request through the runtime module's `realloc`.
+ * ## Examples
  *
- * The `Memory` class itself is unchanged — `memory.size`, loads and
- * stores address memory index 0, which on this target is the imported
- * memory. Only the allocator differs.
+ * ```zena
+ * import { Memory, defaultAllocator } from 'zena:memory';
+ *
+ * if (let (true, ptr) = defaultAllocator.alloc(64)) {
+ *   let mem = Memory.default;
+ *   mem.setI32(ptr, 42);
+ *   let val = mem.getI32(ptr);
+ *   defaultAllocator.free(ptr);
+ * }
+ * ```
  */
 
 import { Allocator } from '../memory.zena';

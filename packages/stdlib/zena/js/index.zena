@@ -1,28 +1,16 @@
 /**
- * zena:js — interop with a JavaScript host. Currently the host-async
- * completion registry: futures the host settles from its own event
- * loop (docs/design/async.md §4, Level 2). The generic call layer over
- * host-object references (docs/design/host-interop.md, "Generic JS
- * interop") will live here too.
+ * Interoperability utilities for JavaScript hosts.
  *
- * The module is virtual, resolving only on the JS-hosted targets: this
- * push-completion protocol assumes an embedder with an event loop that
- * calls back into the module's exports, which no other target has.
- * WASI p1 blocks in a parker (`zena:time`'s wasi entry) and the
- * component target's futures ride the canonical ABI's waitables, so a
- * build for either fails at import resolution rather than linking a
- * registry nothing would ever complete.
+ * Provides the host-async completion registry for bridging asynchronous host
+ * operations to Zena `Future`s using numeric handles.
  *
- * ## The shape
- *
- * A host cannot be handed a `Completer`: a GC reference means nothing to
- * something that has to name the pending operation later, from outside
- * the module. So the boundary currency is an **i32 handle**. `pending`
- * mints one, keeps the completer on this side, and returns both — the
- * handle to pass outward with the request, and the `Future` to await:
+ * ## Examples
  *
  * ```zena
- * @external("web", "fetch_text")
+ * import { pending } from 'zena:js';
+ * import { Future } from 'zena:async';
+ *
+ * @external('web', 'fetch_text')
  * declare function __fetch_text(handle: i32, url: String, len: i32): void;
  *
  * export let fetchText = (url: String): Future<String> => {
@@ -31,38 +19,8 @@
  *   return p.future;
  * };
  * ```
- *
- * When the operation finishes the host calls `__zena_complete_string`
- * (or the sibling for its payload) and then `__zena_drain`. Those
- * exports are this module's `complete*` functions, and they exist in a
- * program exactly when it imports this module — importing it is the
- * signal the compiler roots them on, so a program that does no host I/O
- * links none of this.
- *
- * ## Why the registry needs no type tag
- *
- * `HashMap<i32, AnyCompleter>` really is just ID → completer. Erasing
- * the payload type is what lets one map hold all of them, and getting it
- * back is an ordinary downcast, which `ref.cast` checks: a handle
- * registered for `String` and completed with an `i32` fails the `is`
- * test, exactly, and gets a message naming both. The completer's own
- * specialized type is the tag. (Erasing through an *interface* would not
- * work — see the note on `AnyCompleter` in zena:async.)
- *
- * Registration is therefore a single generic function rather than one
- * per payload type. Only *delivery* is per-type, and that is unavoidable
- * — each one is a wasm export whose signature has to name the payload.
- * The set is small and closed because it is bounded by what a host can
- * produce at all: nothing, an integer, a double, a string, or a
- * reference to one of its own objects.
- *
- * The reference kind registers as `pending<anyref>()` — one canonical
- * payload type, because the check above is exact and the host-side
- * `complete` export can name only one. A binding that wants a typed
- * handle casts the awaited anyref to its own distinct type; the
- * engine's unified garbage collector owns the object's lifetime, so
- * holding it imposes no release obligation.
  */
+
 import { AnyCompleter, Completer } from 'zena:async';
 
 /** A registered operation: the handle to hand outward, and the future to

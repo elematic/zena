@@ -1,32 +1,20 @@
 /**
- * zena:task — operations as values (docs/design/cancellation.md;
- * PLAN.md, async roadmap).
+ * Composable combinators for deferred asynchronous operations.
  *
- * An operation that can be started is a value, `Op<T> = () =>
- * Future<T>`, and this module is the algebra over such values:
- * combinators from `Op<T>` to `Op<T>`, so composition order is
- * syntax: `retry(3, timeout(milliseconds(100), op))` gives every
- * attempt its own 100ms budget, `timeout(milliseconds(500),
- * retry(3, op))` one budget over all of them.
+ * An operation `Op<T>` is a function returning a `Future<T>`. This library
+ * provides combinators for wrapping operations with execution policies such as
+ * timeouts (`timeout`), retries with backoff (`retry`), deadlines (`deadline`),
+ * and fallbacks (`fallback`).
  *
- * Two rules make the algebra sound. Policies act on FAILURES and
- * never on cancellation: an ambient cancel passes through every
- * combinator untouched — `catch` cannot observe the cancellation
- * channel, so retrying cancelled work is not even expressible here —
- * because a retry after cancel would outlive the scope tree that
- * cancelled it. And racing combinators start their candidates inside
- * a `TaskGroup`, so a loser or an expired attempt is actually
- * cancelled rather than left running (the thing a resilience layer
- * over bare promises cannot do).
+ * ## Examples
  *
- * An `Op` is called once per attempt: the operation must be a
- * future-RETURNING function, not a future. A future is work already
- * started — it cannot be attempted again.
+ * ```zena
+ * import { retry, timeout, Op } from 'zena:task';
+ * import { milliseconds } from 'zena:time';
  *
- * The planned Task class — an operation's observable lifecycle
- * (initial, pending, complete, error), in the style of @lit/task —
- * belongs here too: a Task runs an `Op`, and these combinators are
- * the policies a Task runs it under.
+ * let fetchWithRetry = retry(3, timeout(milliseconds(500), myFetchOp));
+ * let future = fetchWithRetry();
+ * ```
  */
 
 import { Error, i64ToString } from 'zena:core';

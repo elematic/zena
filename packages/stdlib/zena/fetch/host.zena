@@ -1,27 +1,21 @@
 /**
- * zena:fetch — HTTP requests over the host's own fetch()
- * (docs/design/async.md §4, Level 2).
+ * HTTP client for making network requests.
  *
- * The API follows the web's: `fetch(url)` resolves with a `Response`
- * whose `status`/`ok` the caller inspects, and whose body is read
- * separately with `text()` — a 404 is a normal completion, not a
- * failure. The future fails only when there is no response at all: a
- * network error, a CORS refusal, a host with no fetch().
+ * `fetch(url)` sends an HTTP request and completes with a `Response`. The response
+ * provides the HTTP status and methods for asynchronously reading the response body.
  *
- * The host's response object crosses the boundary as a reference
- * (docs/design/host-interop.md, "Host object handles"): `fetch`
- * completes with the object itself, held here as an opaque anyref the
- * engine's unified garbage collector owns. A `Response` therefore
- * carries no release obligation — when it dies, the host object is
- * collectable — and `text()` is a second host-async completion against
- * the same reference. Keeping the body on the host until it is read is
- * also the structure a streamed body needs later: the host side holds
- * the stream, and reads cross one chunk at a time.
+ * ## Examples
  *
- * The host side inherits fetch()'s web semantics deliberately, CORS
- * included: in a browser, a request only succeeds where the page could
- * have made it itself.
+ * ```zena
+ * import { fetch } from 'zena:fetch';
+ *
+ * let response = await fetch('https://example.com/api/data');
+ * if (response.ok) {
+ *   let text = await response.text();
+ * }
+ * ```
  */
+
 import { pending } from 'zena:js';
 import { URL } from 'zena:url';
 

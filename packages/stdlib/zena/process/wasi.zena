@@ -1,19 +1,24 @@
 /**
- * zena:process — spawning host processes from Zena programs.
+ * Spawning and managing host processes from Zena programs.
  *
- * WASI itself cannot create processes, so these services are host
- * imports (wasm module `zena_process`) that only the `zena-cli` host
- * provides — and only to invocations it trusts: its own orchestrator
- * programs (the bench and test runners), repo tests, and `zena-cli run`
- * when passed `--allow-spawn` (or ZENA_ALLOW_SPAWN=1). Everywhere else
- * the host links trapping stubs, so importing this library always
- * compiles for wasi-family targets, but calling into it without the
- * grant fails loudly at the first call — spawning is a deliberate
- * sandbox escape and must stay opt-in.
+ * Provides `run` and `spawn` to execute child processes and capture standard
+ * output, standard error, execution duration, and exit codes.
  *
- * Strings cross the boundary via the `$string*` helper exports every
- * Zena module carries; process handles are opaque host references, so
- * their lifetime is managed by the GC like any other object.
+ * ::: note Permission Required
+ * Spawning host processes requires running with the `--allow-spawn` CLI flag or
+ * setting `ZENA_ALLOW_SPAWN=1` in the environment.
+ * :::
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { run } from 'zena:process';
+ *
+ * let result = run(['echo', 'hello']);
+ * if (result.success) {
+ *   let text = result.stdout;
+ * }
+ * ```
  */
 
 /** Opaque host-side handle to a command being built. */

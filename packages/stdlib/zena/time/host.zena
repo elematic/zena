@@ -1,27 +1,21 @@
 /**
- * zena:time — JS/non-WASI host entry (docs/design/async.md §4).
+ * Monotonic time measurement, durations, and timers.
  *
- * A timer is not special here. Once a host can settle a future by handle
- * (§4 Level 2), `sleep` is an ordinary host-async binding whose host side
- * happens to be `setTimeout` — so this entry is six lines of registration
- * and none of the machinery the WASI entry needs.
+ * Provides `Instant` for points in time, `Duration` for spans of time,
+ * `monotonic()` for reading the system monotonic clock, and `sleep(duration)`
+ * for asynchronous waiting.
  *
- * That machinery — the `Clock` interface, the timer queue, the `Parker`
- * the drain loop consults — exists because WASI can genuinely *block*:
- * its drain has to sort pending deadlines itself and sleep on the nearest
- * one through `poll_oneoff`. A browser main thread cannot block at all
- * (`Atomics.wait` throws there, and JSPI is not in every engine — Safari
- * has neither), so it never wants any of that: the JS event loop already
- * is the timer queue, and it already sorts by deadline. `time/queue.zena`
- * is therefore reachable only from `time/wasi.zena`.
+ * ## Examples
  *
- * A consequence worth knowing, unchanged from before: an async `main`
- * returns before its timers have fired, so the value arrives later.
- * `@zena-lang/runtime`'s `run()` drives that and hands back a promise.
+ * ```zena
+ * import { monotonic, sleep, milliseconds } from 'zena:time';
  *
- * This inherits `setTimeout`'s web semantics deliberately, including the
- * >=4ms floor browsers impose once timeouts nest more than five deep.
+ * let start = monotonic();
+ * await sleep(milliseconds(50));
+ * let elapsed = monotonic() - start;
+ * ```
  */
+
 import { pending } from 'zena:js';
 import { Instant, Duration } from './types.zena';
 

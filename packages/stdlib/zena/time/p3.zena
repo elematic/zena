@@ -1,26 +1,19 @@
 /**
- * zena:time — WASI preview 3 entry, for the `component` target.
+ * Monotonic time measurement, durations, and timers.
  *
- * The p1 clock can read the time but can only *wait* by blocking:
- * `poll_oneoff` stops the module until the deadline. p3's `wait-for` is
- * `async`, and lowered with the canonical `async` option it returns
- * immediately, handing back a subtask handle instead of waiting. The
- * host wakes the guest through the entry's callback when it fires.
+ * Provides `Instant` for points in time, `Duration` for spans of time,
+ * `monotonic()` for reading the system monotonic clock, and `sleep(duration)`
+ * for asynchronous waiting.
  *
- * So this is the third `Clock`, and it sits on the *same* side of
- * `wait` as the JS driver: it returns false, the drain unwinds, and
- * something re-enters it later. `queue.zena`'s park/drain loop is
- * unchanged — the difference between a browser's `setTimeout` and a p3
- * timer is entirely in who does the waking.
+ * ## Examples
  *
- * The waking itself lives in `zena:wasi`, the driver every
- * async-lowered import shares: the clock hands `wait-for`'s packed
- * result to `awaitPacked` and keeps the future, and the driver's
- * callback resolves it when the host reports the subtask returned.
- * This module used to own that machinery for its one subtask; the
- * registry generalized it away.
+ * ```zena
+ * import { monotonic, sleep, milliseconds } from 'zena:time';
  *
- * See docs/design/component-emission.md, Part 5, and async.md §4.
+ * let start = monotonic();
+ * await sleep(milliseconds(50));
+ * let elapsed = monotonic() - start;
+ * ```
  */
 
 import { awaitPacked } from 'zena:wasi';

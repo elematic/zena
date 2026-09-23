@@ -1,34 +1,27 @@
 /**
- * zena:async — futures, the executor, cancellation scopes, and the
- * task/claim layers over them (docs/design/async.md,
- * docs/design/cancellation.md).
+ * Asynchronous programming primitives: futures, completers, structured
+ * concurrency with task groups, cancellation scopes, and microtask scheduling.
  *
- * The module is a facade: `Future`/`Completer` and the executor live
- * in ./async/ files and are re-exported here by name. The settle
- * symbols those files share are deliberately NOT re-exported, which is
- * what keeps a future unreadable except by subscribing (the files
- * themselves are not importable as modules, so the symbols stay
- * unnameable outside zena:async).
+ * `Future<T>` represents a value delivered asynchronously, produced through a
+ * `Completer<T>`. Callbacks attached via `then` run asynchronously through the
+ * FIFO microtask queue. `TaskGroup` coordinates concurrent tasks with structured
+ * lifetime and error propagation, and `CancelScope` provides hierarchical
+ * cancellation.
  *
- * Deliberately ordinary Zena: no async/gen syntax appears here, so
- * this module compiles with no bootstrapping problem. The
- * `async`/`await` surface lowers onto these types; from non-async code
- * they are used directly via callbacks.
+ * ## Examples
  *
- * Semantics pinned here:
- * - A future settles exactly once; settling twice throws
- *   (`tryComplete`/`tryFail` report it instead, for callers racing on
- *   purpose).
- * - Callbacks always run from the FIFO microtask queue, never
- *   synchronously inside complete()/fail()/then() — the
- *   "always async" rule, so completion order is deterministic and
- *   re-entrancy surprises are impossible.
+ * ```zena
+ * import { Future, Completer, scheduleMicrotask } from 'zena:async';
  *
- * Implementation note (compiler limitation worked around, loud when
- * hit): no closures are created inside generic code here — the
- * bootstrap compiler predates per-instantiation closure
- * specialization — which is why the combinators and waiters are
- * written as classes rather than callbacks.
+ * let completer = new Completer<String>();
+ * scheduleMicrotask(() => {
+ *   completer.complete('done');
+ * });
+ *
+ * completer.future.then((value: String): void => {
+ *   // handle completed value
+ * });
+ * ```
  */
 
 import { Error, Disposable } from 'zena:core';

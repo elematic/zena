@@ -1,30 +1,23 @@
 /**
- * Filesystem Standard Library - WASI Preview 1 Implementation
- * 
- * Provides file and directory operations using wasi_snapshot_preview1 interfaces.
- * See docs/design/filesystem.md for the full design.
- * 
- * ## WASI Capability-Based Security
- * 
- * WASI uses a capability-based security model for filesystem access. Unlike
- * traditional operating systems where processes can access any file path they
- * have permission to, WASI programs have NO filesystem access by default.
- * 
- * Access is granted through "preopened directories" - directories that the
- * host environment explicitly passes to the WASM module at startup. The module
- * can only access files within these preopened directories.
- * 
- * For example, when running with wasmtime:
+ * File system operations: reading, writing, querying metadata, and directory
+ * traversal.
+ *
+ * In WebAssembly environments, filesystem access is restricted to preopened
+ * directories provided by the host runtime. High-level functions such as
+ * `readFile`, `writeFile`, and `readDir` operate relative to the default
+ * preopened directory. `getPreopens()` and `Descriptor` allow explicit access
+ * to multiple preopened directories.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { readFile, writeFile, exists } from 'zena:fs';
+ *
+ * writeFile('example.txt', 'Hello, Zena!');
+ * if (exists('example.txt')) {
+ *   let content = readFile('example.txt');
+ * }
  * ```
- * wasmtime run --dir /data::/data --dir /tmp::/tmp myprogram.wasm
- * ```
- * This grants access to `/data` and `/tmp` on the host, mapped to the same
- * paths in the guest. Without these flags, the program cannot access the
- * filesystem at all.
- * 
- * The high-level functions (`readFile`, `writeFile`, etc.) use the first
- * preopened directory as the root. For more control, use `getPreopens()` to
- * access all available directories, or work with `Descriptor` objects directly.
  */
 
 import { newByteArray, Encoding } from 'zena:core';
