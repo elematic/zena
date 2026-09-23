@@ -79,44 +79,55 @@ import when that lands; see [workflow.md](./workflow.md#file-watching).
 ### Running a module
 
 The Zena side sees a library, `zena:wasm`, in the shape of
-`zena:process`. Roughly (the exact names are settled in the change that
-adds it):
+`zena:process`:
 
 ```zena
-import { loadModule, startModule, RunOptions } from 'zena:wasm';
+import { RunOptions, startModule } from 'zena:wasm';
 
-let module = loadModule('/work/zena/.zena/cache/array_test_1f2e.wasm');
-let run = startModule(module, new RunOptions()
-  .withArgs(['array_test'])
-  .withDir('/work/zena', '.')
-  .capturingOutput());
+let run = startModule(
+  '.zena/cache/array_test_1f2e.wasm',
+  new RunOptions()
+    .withArgs(['array_test'])
+    .withDir('.', '.')
+    .withTimeout(60000 as i64),
+);
 let result = run.wait();
-// result.exitCode, result.trapped, result.message, result.backtrace,
-// result.stdout, result.stderr, result.callNanos
+// result.outcome (Returned, Trapped, TimedOut or Failed), result.exitCode,
+// result.message, result.stdout, result.stderr, result.callNanos
 ```
 
-- `loadModule` reads a `.wasm` file. The host keeps the `.cwasm` cache
-  next to it, as it does today, including the file lock that stops
-  twenty processes from running Cranelift on the same module at once.
-- `startModule` returns straight away. The host runs the module on its
-  own thread with a fresh store, so several can run at once. Options
-  cover the arguments, the environment, preopened directories, whether
-  the module may spawn processes or run modules itself, whether its
-  stdio is captured or connected to the terminal, and a time limit.
-- `wait` blocks until the run ends. A trap is reported in the result;
-  it does not propagate to the caller. The result includes the time the
-  exported call took, excluding instantiation, which is the measurement
-  `zena bench` needs.
+- `startModule` returns straight away. The host loads the module through
+  the `.cwasm` cache it keeps today, including the file lock that stops
+  twenty processes from running Cranelift on the same module at once,
+  and runs it on its own thread with a fresh store, so several can run
+  at once. Options cover the arguments, the environment, preopened
+  directories, whether the module may spawn processes or run modules
+  itself, whether its stdio is captured or connected to the terminal,
+  and a time limit.
+- `wait` blocks until the run ends. A trap is reported in the result
+  with its backtrace; it does not propagate to the caller. The result
+  includes the time the exported call took, excluding loading and
+  instantiation, which is the measurement `zena bench` needs.
 
-Running a module is granted together with spawning. A module that can
-run another module can give it any preopened directory, so it has the
-same reach as a process. A module started without the grant gets
-trapping stubs, as `zena_process` does today.
+Running a module is granted together with spawning. A module started
+without the grant gets trapping stubs, as `zena_process` does today.
+Paths are in the caller's own view of the filesystem: the module's path
+and every directory handed to it are translated through the caller's
+preopens, and a path outside them, or one with a `..` segment, makes the
+run fail to start. So a module can pass on only what it can reach
+itself.
 
-The time limit uses wasmtime's epoch interruption. That changes the
-code Cranelift generates for every module, so turning it on invalidates
-every cached `.cwasm` once and costs a small amount of speed. That cost
-is measured in the change that adds it before it is kept.
+The time limit uses wasmtime's epoch interruption: compiled code checks
+a counter at function entries and loop back edges, and a thread advances
+the counter. On the compiler compiling itself, the median CPU time over
+five alternating rounds was 44.3 s without it and 46.7 s with it, but
+rounds of the same binary spread by about 10% on the machine measured, so
+the cost is somewhere from nothing to a few percent. The normal engine
+therefore stays without it, and a run that asks for a time limit uses a
+second engine that has it on, created once per process. Programs that
+never ask for a limit pay nothing. The second engine's compiled modules
+are cached under their own `.cwasm` name, because wasmtime refuses a
+`.cwasm` compiled with different settings.
 
 ## What each command does
 
@@ -257,7 +268,7 @@ one reseed.
 Each is one pull request:
 
 1. **Running a module.** The `zena:wasm` library and its host import in
-   `zena-runtime`, with the time limit and its measured cost. `zena:fs`
+   `zena-runtime`, with the time limit on its own engine. `zena:fs`
    gains `modified` and `rename`. `zena:process` gains inherited stdio.
 2. **The CLI module.** `zena build` (files and targets), `run`, `test`,
    `doc`, `fmt` and `bench`, with the compile cache in Zena. The build
