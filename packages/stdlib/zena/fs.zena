@@ -97,6 +97,8 @@ export enum FileType {
 export type FileStat = {
   fileType: FileType,
   size: i64,
+  /** When the contents last changed, in nanoseconds since the Unix epoch. */
+  modified: i64,
 };
 
 // Directory entry
@@ -220,6 +222,17 @@ declare function __wasi_path_unlink_file(
   fd: i32,
   pathPtr: i32,
   pathLen: i32
+): i32;
+
+// Rename a file or directory, possibly into another preopened directory
+@external("wasi_snapshot_preview1", "path_rename")
+declare function __wasi_path_rename(
+  fd: i32,
+  oldPathPtr: i32,
+  oldPathLen: i32,
+  newFd: i32,
+  newPathPtr: i32,
+  newPathLen: i32
 ): i32;
 
 // Remove a directory
@@ -604,9 +617,10 @@ export class Descriptor {
     let fileTypeRaw = mem[SCRATCH_PTR + 16];
     let size = mem.getI64(SCRATCH_PTR + 32);
     
-    return { 
-      fileType: __wasiFiletypeToFileType(fileTypeRaw), 
-      size: size 
+    return {
+      fileType: __wasiFiletypeToFileType(fileTypeRaw),
+      size: size,
+      modified: mem.getI64(SCRATCH_PTR + 48)
     };
   }
 
@@ -631,9 +645,10 @@ export class Descriptor {
     let fileTypeRaw = mem[SCRATCH_PTR + 16];
     let size = mem.getI64(SCRATCH_PTR + 32);
     
-    return { 
-      fileType: __wasiFiletypeToFileType(fileTypeRaw), 
-      size: size 
+    return {
+      fileType: __wasiFiletypeToFileType(fileTypeRaw),
+      size: size,
+      modified: mem.getI64(SCRATCH_PTR + 48)
     };
   }
 
@@ -1056,6 +1071,33 @@ export let mkdir = (path: String): void => {
 export let unlink = (path: String): void => {
   let (dirFd, relPath) = __resolvePreopen(path);
   dirFd.unlinkAt(relPath);
+};
+
+/**
+ * Renames a file or directory. When `to` is an existing file it is
+ * replaced in one step, so a reader opening `to` sees either the old file
+ * or the new one and never a partly written file. Writing to a temporary
+ * name and renaming it into place relies on this.
+ *
+ * @throws FsError if `from` does not exist or the rename is not allowed.
+ */
+export let rename = (from: String, to: String): void => {
+  let (fromDir, fromRel) = __resolvePreopen(from);
+  let (toDir, toRel) = __resolvePreopen(to);
+  let (fromPtr, fromLen) = __stringToLinear(fromRel);
+  let (toPtr, toLen) = __stringToLinear(toRel);
+  let errno = __wasi_path_rename(fromDir.fd, fromPtr, fromLen, toDir.fd, toPtr, toLen);
+  __checkErrno(errno, `rename '${from}' to '${to}'`);
+};
+
+/**
+ * The type, size and modification time of a file or directory.
+ *
+ * @throws FsError if the path does not exist.
+ */
+export let stat = (path: String): FileStat => {
+  let (dirFd, relPath) = __resolvePreopen(path);
+  return dirFd.statAt(relPath);
 };
 
 /**

@@ -9,7 +9,7 @@ import { suite, test, TestContext } from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {
   readFile, writeFile, exists, isFile, isDirectory, unlink, getPreopens,
-  glob, GlobOptions
+  glob, GlobOptions, rename, stat, FileType
 } from 'zena:fs';
 
 export let tests = suite('Filesystem', (): void => {
@@ -102,6 +102,26 @@ export let tests = suite('Filesystem', (): void => {
     equal(found[0], 'packages/stdlib/tests/glob/glob_test.zena');
     equal(found[1], 'packages/stdlib/tests/path/path_test.zena');
   });
+
+  test('stat reports a modification time', (ctx: TestContext): void => {
+    let path = '/tmp/zena-fs-stat-test.txt';
+    writeFile(path, 'x');
+    let info = stat(path);
+    equal(info.fileType, FileType.RegularFile);
+    equal(info.size, 1 as i64);
+    // Nanoseconds since the Unix epoch: 2020-01-01 is 1.5777e18.
+    isTrue(info.modified > (1577836800000000000 as i64));
+    unlink(path);
+  });
+
+  test('rename moves a file and replaces an existing one', (ctx: TestContext): void => {
+    let from = '/tmp/zena-fs-rename-from.txt';
+    let to = '/tmp/zena-fs-rename-to.txt';
+    writeFile(to, 'old');
+    writeFile(from, 'new');
+    rename(from, to);
+    isFalse(exists(from));
+    equal(readFile(to), 'new');
+    unlink(to);
+  });
 });
-
-

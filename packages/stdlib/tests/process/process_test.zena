@@ -4,7 +4,7 @@
 // standalone runs need --allow-spawn / ZENA_ALLOW_SPAWN=1).
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {run, runIn, spawn} from 'zena:process';
+import {run, runIn, runInheriting, spawn} from 'zena:process';
 
 export let tests = suite('zena:process', (): void => {
   test('run captures stdout, stderr, and the exit code', (ctx: TestContext): void => {
@@ -14,6 +14,16 @@ export let tests = suite('zena:process', (): void => {
     equal(res.stderr, 'err');
     isFalse(res.succeeded());
     isTrue(res.wallNanos > 0 as i64, 'wallNanos is positive');
+  });
+
+  test('runInheriting passes the exit code and captures nothing', (ctx: TestContext): void => {
+    // What the child prints goes to this process's own stdout, which the
+    // test cannot read back; what it can check is that none of it was
+    // captured and the status still arrives.
+    let res = runInheriting(['sh', '-c', 'echo inherited; exit 3']);
+    equal(res.exitCode, 3);
+    equal(res.stdout, '');
+    equal(res.stderr, '');
   });
 
   test('succeeded on a zero exit', (ctx: TestContext): void => {

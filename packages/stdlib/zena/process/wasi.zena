@@ -36,6 +36,10 @@ declare function __cmdArg(cmd: CmdRef, arg: String): void;
 @external("zena_process", "cmd_cwd")
 declare function __cmdCwd(cmd: CmdRef, cwd: String): void;
 
+/** Hands the child this process's own stdin, stdout and stderr. */
+@external("zena_process", "cmd_inherit_stdio")
+declare function __cmdInheritStdio(cmd: CmdRef): void;
+
 /** Starts the process; does not block. */
 @external("zena_process", "proc_spawn")
 declare function __procSpawn(cmd: CmdRef): ProcRef;
@@ -133,14 +137,24 @@ export final class Process {
  * several processes and waiting on each is how a caller runs work in
  * parallel. A process that cannot be started at all (e.g. the executable
  * does not exist) traps with a descriptive message when waited on.
+ *
+ * With `inheritStdio`, the child reads this process's stdin and writes to
+ * its stdout and stderr directly, and nothing is captured.
  */
-export let spawnIn = (argv: Array<String>, cwd: String | null): Process => {
+export let spawnIn = (
+  argv: Array<String>,
+  cwd: String | null,
+  inheritStdio: boolean = false,
+): Process => {
   let cmd = __cmdNew();
   for (let arg in argv) {
     __cmdArg(cmd, arg);
   }
   if (cwd != null) {
     __cmdCwd(cmd, cwd);
+  }
+  if (inheritStdio) {
+    __cmdInheritStdio(cmd);
   }
   return new Process(__procSpawn(cmd));
 };
@@ -154,3 +168,17 @@ export let runIn = (argv: Array<String>, cwd: String | null): ProcessResult =>
 
 /** Run a process to completion in the host's working directory. */
 export let run = (argv: Array<String>): ProcessResult => spawnIn(argv, null).wait();
+
+/**
+ * Runs a process attached to this one's own streams: what it prints
+ * appears as it prints it, and it reads this process's stdin. For handing
+ * the terminal to another program, where output should interleave live
+ * instead of arriving all at once when the child exits.
+ *
+ * Nothing is captured, so the result's `stdout` and `stderr` are empty;
+ * `exitCode` and `wallNanos` are set.
+ */
+export let runInheriting = (
+  argv: Array<String>,
+  cwd: String | null = null,
+): ProcessResult => spawnIn(argv, cwd, true).wait();

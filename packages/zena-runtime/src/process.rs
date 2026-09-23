@@ -26,6 +26,11 @@ use crate::strings::{make_guest_string, param_to_externref, read_guest_string};
 struct CmdState {
     argv: Vec<String>,
     cwd: Option<String>,
+    /// Whether the child writes to this process's own stdout and stderr
+    /// and reads its stdin, rather than to pipes the host drains. What
+    /// an inheriting child writes is never captured, so its
+    /// `ProcessResult` carries empty streams.
+    inherit_stdio: bool,
 }
 
 struct Finished {
@@ -174,6 +179,22 @@ pub fn add_to_linker(
                     })
                 },
             )?,
+            "cmd_inherit_stdio" => linker.func_new(
+                "zena_process",
+                "cmd_inherit_stdio",
+                func_ty,
+                |mut caller: Caller<'_, HostState>, params, _results| {
+                    with_handle::<Mutex<CmdState>, _>(
+                        &mut caller,
+                        &params[0],
+                        "cmd_inherit_stdio",
+                        |cmd| {
+                            cmd.lock().unwrap().inherit_stdio = true;
+                            Ok(())
+                        },
+                    )
+                },
+            )?,
             "cmd_cwd" => linker.func_new(
                 "zena_process",
                 "cmd_cwd",
@@ -193,13 +214,13 @@ pub fn add_to_linker(
                     "proc_spawn",
                     func_ty,
                     move |mut caller: Caller<'_, HostState>, params, results| {
-                        let (argv, cwd) = with_handle::<Mutex<CmdState>, _>(
+                        let (argv, cwd, inherit_stdio) = with_handle::<Mutex<CmdState>, _>(
                             &mut caller,
                             &params[0],
                             "proc_spawn",
                             |cmd| {
                                 let cmd = cmd.lock().unwrap();
-                                Ok((cmd.argv.clone(), cmd.cwd.clone()))
+                                Ok((cmd.argv.clone(), cmd.cwd.clone(), cmd.inherit_stdio))
                             },
                         )?;
                         if argv.is_empty() {
@@ -212,11 +233,23 @@ pub fn add_to_linker(
                         // parent reads the other would otherwise deadlock.
                         let t0 = Instant::now();
                         let mut command = std::process::Command::new(&argv[0]);
-                        command
-                            .args(&argv[1..])
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::piped())
-                            .stderr(std::process::Stdio::piped());
+                        command.args(&argv[1..]);
+                        if inherit_stdio {
+                            // The child writes straight to this process's
+                            // streams, so its output interleaves live
+                            // instead of arriving in one lump at exit.
+                            // Nothing is captured: `child.stdout` is None
+                            // below and the drain threads read nothing.
+                            command
+                                .stdin(std::process::Stdio::inherit())
+                                .stdout(std::process::Stdio::inherit())
+                                .stderr(std::process::Stdio::inherit());
+                        } else {
+                            command
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::piped())
+                                .stderr(std::process::Stdio::piped());
+                        }
                         if let Some(cwd) = &cwd {
                             command.current_dir(translate_cwd(cwd, &path_map));
                         }
