@@ -1,28 +1,100 @@
 /**
  * File path manipulation and inspection for forward-slash delimited paths.
  *
- * Provides standalone functions (`join`, `dirname`, `basename`, `extname`,
- * `normalize`, `relative`) and typed path wrapper classes (`Path`,
- * `AbsolutePath`, `RelativePath`, `PathSegment`).
+ * This module provides two complementary APIs:
+ *
+ * 1. **Standalone string functions**: (`join`, `dirname`, `basename`, `extname`,
+ *    `normalize`, `relative`, `split`, `stripPrefix`) operate directly on
+ *    standard `String` values.
+ * 2. **Strongly typed path classes**: (`Path`, `AbsolutePath`, `RelativePath`,
+ *    `PathSegment`, `FilePath`, `DirectoryPath`) wrap `String` as extension
+ *    classes to enforce path invariants at compile time with zero runtime
+ *    allocation overhead.
+ *
+ * ## Strongly Typed Paths
+ *
+ * Using plain strings for paths can lead to subtle bugs, such as passing a
+ * relative path where an absolute path is required or joining two absolute
+ * paths together. The typed path hierarchy models path distinctions in the
+ * type system:
+ *
+ * - `Path`: Base extension class for any path.
+ * - `AbsolutePath`: A path guaranteed to start with `/`.
+ * - `RelativePath`: A path guaranteed not to start with `/`.
+ * - `PathSegment`: A single non-empty relative component containing no `/`.
+ * - `FilePath`: A path representing a file.
+ * - `DirectoryPath`: A path representing a directory, with fluent child navigation.
+ *
+ * Because these are Zena extension classes on `String`, they are erased at
+ * runtime. A `Path` or `AbsolutePath` is represented as an unboxed `String`
+ * in WebAssembly memory with no object wrappers and no virtual method tables.
+ *
+ * ### Constructing and Validating Paths
+ *
+ * Standard constructors validate format at runtime and throw `Error` on invalid
+ * input:
+ *
+ * ```zena
+ * let abs = new AbsolutePath('/usr/local/bin');
+ * let rel = new RelativePath('src/main.zena');
+ * let seg = new PathSegment('main.zena');
+ * ```
+ *
+ * When input is already known to be valid (for example, output from an internal
+ * helper), the `unchecked` constructors bypass validation checks:
+ *
+ * ```zena
+ * let fastAbs = new AbsolutePath.unchecked('/etc/hosts');
+ * ```
+ *
+ * ### Type-Safe Path Operations
+ *
+ * Typed paths enforce sound combinations. For example, `AbsolutePath.join()`
+ * requires a `RelativePath` parameter and returns an `AbsolutePath`:
+ *
+ * ```zena
+ * let root = new AbsolutePath('/home/user');
+ * let sub = new RelativePath('projects/zena');
+ * let projectDir = root.join(sub); // AbsolutePath: '/home/user/projects/zena'
+ * ```
+ *
+ * ### Conversions
+ *
+ * A general `Path` can be converted to more specific types:
+ * - `toAbsolutePath()` and `toRelativePath()` validate at runtime and throw
+ *   `Error` if the path does not match the target format.
+ * - `toFilePath()` and `toDirectoryPath()` are erased compile-time casts with
+ *   no runtime checks.
  *
  * ## Examples
  *
  * ```zena
- * import { join, dirname, basename, extname } from 'zena:path';
+ * import { join, dirname, basename, extname, AbsolutePath, RelativePath, DirectoryPath } from 'zena:path';
  *
- * let fullPath = join('src/lib', 'index.zena');
+ * // Standalone functions on strings:
+ * let fullPath = join(['src/lib', 'index.zena']);
  * let dir = dirname(fullPath);
  * let file = basename(fullPath);
  * let ext = extname(fullPath);
+ *
+ * // Strongly typed path classes:
+ * let project = new DirectoryPath('/workspace/app');
+ * let src = project.dir('src');
+ * let mainFile = src.file('main.zena');
+ * let extStr = mainFile.extension; // '.zena'
  * ```
  */
 
 import { FixedArray, GrowableArray, StringBuilder, StringReader } from 'zena:core';
 
-/** The path segment separator ('/'). */
+/**
+ * The path segment separator ('/').
+ */
 export let separator: String = '/';
 
-/** The platform path list delimiter (':' in POSIX/WASI). */
+/**
+ * The platform path list delimiter (':' in POSIX/WASI).
+ */
 export let delimiter: String = ':';
 
 /**
@@ -423,84 +495,139 @@ export let relative = (from: String, to: String): String => {
 /**
  * A strongly-typed representation of a filesystem path.
  *
- * Implemented as an extension class on String, carrying zero runtime allocation
- * overhead while providing type safety and convenient path methods.
+ * `Path` is the base extension class for all path types, extending `String`.
+ * It provides methods for path inspection, normalization, extension handling,
+ * and navigation.
+ *
+ * ## Subclasses
+ *
+ * - `AbsolutePath`: An absolute path starting with `/`.
+ * - `RelativePath`: A relative path not starting with `/`.
+ * - `PathSegment`: A single non-empty relative component containing no `/`.
+ *   (Subclass of `RelativePath`.)
+ * - `FilePath`: A path representing a file, with file-specific properties like
+ *   `extension`.
+ * - `DirectoryPath`: A path representing a directory, with fluent methods
+ *   (`file`, `dir`, `directory`) for building child paths.
+ *
+ * ## Performance Characteristics
+ *
+ * All path classes are Zena extension classes on `String`. At runtime, they are
+ * erased to plain strings with zero heap allocation overhead, no wrappers,
+ * and no virtual dispatch.
  */
 export extension class Path on String {
+
+  /**
+   * Constructs a `Path` from a string.
+   *
+   * Zero-cost compile-time cast. Performs no runtime validation check and no
+   * heap allocation.
+   */
   new(value: String) : super(value);
 
-  /** The underlying string value of this path. */
+  /**
+   * The underlying string value of this path.
+   *
+   * Zero-cost getter returning the underlying `String` directly.
+   */
   value: String {
     get {
       return this as String;
     }
   }
 
-  /** Length of the path in bytes. */
+  /**
+   * Length of the path in bytes.
+   */
   length: i32 {
     get {
       return (this as String).length;
     }
   }
 
-  /** True if this path is absolute (starts with '/'). */
+  /**
+   * True if this path is absolute (starts with '/').
+   */
   isAbsolute: boolean {
     get {
       return isAbsolute(this as String);
     }
   }
 
-  /** Returns a normalized copy of this path, preserving its concrete type. */
+  /**
+   * Returns a normalized copy of this path, preserving its concrete type.
+   */
   normalize(): this {
     return normalize(this as String) as this;
   }
 
-  /** Returns the directory portion of this path. */
+  /**
+   * Returns the directory portion of this path.
+   */
   dirname(): Path {
     return new Path(dirname(this as String));
   }
 
-  /** Alias for dirname(). */
+  /**
+   * Alias for dirname().
+   */
   parent(): Path {
     return (this as Path).dirname();
   }
 
-  /** Returns the last component of this path. */
+  /**
+   * Returns the last component of this path.
+   */
   basename(suffix: String = ''): String {
     return basename(this as String, suffix);
   }
 
-  /** Returns the file extension, or '' if none. */
+  /**
+   * Returns the file extension, or '' if none.
+   */
   extname(): String {
     return extname(this as String);
   }
 
-  /** Returns a copy with the extension replaced or appended, preserving concrete type. */
+  /**
+   * Returns a copy with the extension replaced or appended, preserving concrete type.
+   */
   withExtension(newExt: String): this {
     return withExtension(this as String, newExt) as this;
   }
 
-  /** Returns a copy with the extension removed, preserving concrete type. */
+  /**
+   * Returns a copy with the extension removed, preserving concrete type.
+   */
   withoutExtension(): this {
     return withExtension(this as String, '') as this;
   }
 
-  /** Joins a relative path to this path. */
+  /**
+   * Joins a relative path to this path.
+   */
   join(rel: RelativePath): Path {
     return new Path(join2(this as String, rel as String));
   }
 
-  /** Splits this path into non-empty segments. */
+  /**
+   * Splits this path into non-empty segments.
+   */
   split(): FixedArray<PathSegment> {
     return split(this as String);
   }
 
-  /** Computes the relative path from this path to `to`. */
+  /**
+   * Computes the relative path from this path to `to`.
+   */
   relative(to: Path): RelativePath {
     return new RelativePath.unchecked(relative(this as String, to as String));
   }
 
-  /** Strips `prefix` from this path if it begins with `prefix`. */
+  /**
+   * Strips `prefix` from this path if it begins with `prefix`.
+   */
   stripPrefix(prefix: Path): RelativePath | null {
     let result = stripPrefix(this as String, prefix as String);
     if (result != null) {
@@ -509,27 +636,56 @@ export extension class Path on String {
     return null;
   }
 
-  /** Converts this path to an AbsolutePath, throwing if not absolute. */
+  /**
+   * Converts this path to an `AbsolutePath`.
+   *
+   * Performs a runtime check to verify the path starts with '/'.
+   * Zero heap allocation (extension classes are erased at runtime).
+   *
+   * @throws Error If this path is not absolute (does not start with '/').
+   */
   toAbsolutePath(): AbsolutePath {
     return new AbsolutePath(this as String);
   }
 
-  /** Converts this path to a RelativePath, throwing if absolute. */
+  /**
+   * Converts this path to a `RelativePath`.
+   *
+   * Performs a runtime check to verify the path does not start with '/'.
+   * Zero heap allocation (extension classes are erased at runtime).
+   *
+   * @throws Error If this path is absolute (starts with '/').
+   */
   toRelativePath(): RelativePath {
     return new RelativePath(this as String);
   }
 
-  /** Converts this path to a FilePath. */
+  /**
+   * Converts this path to a `FilePath`.
+   *
+   * Zero-cost compile-time cast. Performs no runtime validation check and no
+   * heap allocation.
+   */
   toFilePath(): FilePath {
     return new FilePath(this as String);
   }
 
-  /** Converts this path to a DirectoryPath. */
+  /**
+   * Converts this path to a `DirectoryPath`.
+   *
+   * Zero-cost compile-time cast. Performs no runtime validation check and no
+   * heap allocation.
+   */
   toDirectoryPath(): DirectoryPath {
     return new DirectoryPath(this as String);
   }
 
-  /** Returns the underlying string. */
+  /**
+   * Returns the underlying string.
+   *
+   * Zero-cost erased cast returning the underlying `String` directly with no
+   * copy or allocation.
+   */
   toString(): String {
     return this as String;
   }
@@ -537,31 +693,59 @@ export extension class Path on String {
 
 /**
  * An absolute filesystem path (starts with '/').
+ *
+ * Subclass of `Path`. Enforces that the path begins with a leading forward slash.
  */
 export extension class AbsolutePath extends Path {
+
+  /**
+   * Constructs an `AbsolutePath`, validating that `value` starts with '/'.
+   *
+   * Performs a runtime check. Zero heap allocation (erased at runtime).
+   *
+   * @throws Error If `value` does not start with '/'.
+   */
   new(value: String) : super(value) {
     if (!isAbsolute(value)) {
       throw new Error(`Expected absolute path starting with '/', got '${value}'`);
     }
   }
 
+  /**
+   * Constructs an `AbsolutePath` without runtime validation.
+   *
+   * Use when `value` is already known to start with '/'.
+   * Zero-cost compile-time cast with no runtime check and no allocation.
+   */
   new unchecked(value: String) : super(value);
 
-  /** Joins a relative path to this absolute path, producing an AbsolutePath. */
+  /**
+   * Joins a relative path to this absolute path, producing an AbsolutePath.
+   */
   join(rel: RelativePath): AbsolutePath {
     return new AbsolutePath.unchecked(join2(this as String, rel as String));
   }
 
-  /** Returns the directory portion of this path as an AbsolutePath. */
+  /**
+   * Returns the directory portion of this path as an AbsolutePath.
+   */
   dirname(): AbsolutePath {
     return new AbsolutePath.unchecked(dirname(this as String));
   }
 
-  /** Alias for dirname(). */
+  /**
+   * Alias for dirname().
+   */
   parent(): AbsolutePath {
     return (this as AbsolutePath).dirname();
   }
 
+  /**
+   * Returns this path as an `AbsolutePath`.
+   *
+   * Zero-cost identity operation (`return this;`). Performs no runtime check
+   * and no allocation.
+   */
   toAbsolutePath(): AbsolutePath {
     return this;
   }
@@ -569,31 +753,60 @@ export extension class AbsolutePath extends Path {
 
 /**
  * A relative filesystem path (does not start with '/').
+ *
+ * Subclass of `Path`. Enforces that the path does not begin with a leading
+ * forward slash.
  */
 export extension class RelativePath extends Path {
+
+  /**
+   * Constructs a `RelativePath`, validating that `value` does not start with '/'.
+   *
+   * Performs a runtime check. Zero heap allocation (erased at runtime).
+   *
+   * @throws Error If `value` starts with '/'.
+   */
   new(value: String) : super(value) {
     if (isAbsolute(value)) {
       throw new Error(`Expected relative path not starting with '/', got '${value}'`);
     }
   }
 
+  /**
+   * Constructs a `RelativePath` without runtime validation.
+   *
+   * Use when `value` is already known not to start with '/'.
+   * Zero-cost compile-time cast with no runtime check and no allocation.
+   */
   new unchecked(value: String) : super(value);
 
-  /** Joins a relative path to this relative path, producing a RelativePath. */
+  /**
+   * Joins a relative path to this relative path, producing a RelativePath.
+   */
   join(rel: RelativePath): RelativePath {
     return new RelativePath.unchecked(join2(this as String, rel as String));
   }
 
-  /** Returns the directory portion of this path as a RelativePath. */
+  /**
+   * Returns the directory portion of this path as a RelativePath.
+   */
   dirname(): RelativePath {
     return new RelativePath.unchecked(dirname(this as String));
   }
 
-  /** Alias for dirname(). */
+  /**
+   * Alias for dirname().
+   */
   parent(): RelativePath {
     return (this as RelativePath).dirname();
   }
 
+  /**
+   * Returns this path as a `RelativePath`.
+   *
+   * Zero-cost identity operation (`return this;`). Performs no runtime check
+   * and no allocation.
+   */
   toRelativePath(): RelativePath {
     return this;
   }
@@ -601,14 +814,31 @@ export extension class RelativePath extends Path {
 
 /**
  * A single path segment (non-empty, contains no '/').
+ *
+ * Subclass of `RelativePath`. Represents an individual component within a path.
  */
 export extension class PathSegment extends RelativePath {
+
+  /**
+   * Constructs a `PathSegment`, validating that `value` is non-empty and
+   * contains no '/'.
+   *
+   * Performs a runtime check. Zero heap allocation (erased at runtime).
+   *
+   * @throws Error If `value` is empty or contains '/'.
+   */
   new(value: String) : super(value) {
     if (value.length == 0 || value.contains('/')) {
       throw new Error(`Invalid path segment: '${value}' contains '/' or is empty`);
     }
   }
 
+  /**
+   * Constructs a `PathSegment` without runtime validation.
+   *
+   * Use when `value` is already known to be a non-empty string with no '/'.
+   * Zero-cost compile-time cast with no runtime check and no allocation.
+   */
   new unchecked(value: String) : super(value);
 
   /** A single segment splits into an array containing only itself. */
@@ -619,11 +849,23 @@ export extension class PathSegment extends RelativePath {
 
 /**
  * A strongly-typed filesystem path representing a file.
+ *
+ * Subclass of `Path`. Provides access to file-specific properties like
+ * `extension`.
  */
 export extension class FilePath extends Path {
+  
+  /**
+   * Constructs a `FilePath` from a string.
+   *
+   * Zero-cost compile-time cast. Performs no runtime validation check and no
+   * heap allocation.
+   */
   new(value: String) : super(value);
 
-  /** The file extension (including leading dot), or '' if none. */
+  /**
+   * The file extension (including leading dot), or '' if none.
+   */
   extension: String {
     get {
       return extname(this as String);
@@ -633,26 +875,44 @@ export extension class FilePath extends Path {
 
 /**
  * A strongly-typed filesystem path representing a directory.
+ *
+ * Subclass of `Path`. Provides convenience methods for navigating and creating
+ * child paths.
  */
 export extension class DirectoryPath extends Path {
+
+  /**
+   * Constructs a `DirectoryPath` from a string.
+   *
+   * Zero-cost compile-time cast. Performs no runtime validation check and no
+   * heap allocation.
+   */
   new(value: String) : super(value);
 
-  /** Joins a child path segment to this directory. */
+  /**
+   * Joins a child path segment to this directory.
+   */
   join(segment: String): Path {
     return new Path(join2(this as String, segment));
   }
 
-  /** Joins a file name to this directory, returning a FilePath. */
+  /**
+   * Joins a file name to this directory, returning a FilePath.
+   */
   file(name: String): FilePath {
     return new FilePath(join2(this as String, name));
   }
 
-  /** Joins a child directory name to this directory, returning a DirectoryPath. */
+  /**
+   * Joins a child directory name to this directory, returning a DirectoryPath.
+   */
   dir(name: String): DirectoryPath {
     return new DirectoryPath(join2(this as String, name));
   }
 
-  /** Joins a child directory name to this directory, returning a DirectoryPath. */
+  /**
+   * Joins a child directory name to this directory, returning a DirectoryPath.
+   */
   directory(name: String): DirectoryPath {
     return new DirectoryPath(join2(this as String, name));
   }
