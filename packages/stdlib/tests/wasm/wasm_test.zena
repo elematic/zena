@@ -4,7 +4,10 @@
 // zena:wasm too.
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isTrue} from 'zena:assert';
-import {RunOptions, RunOutcome, runModule, startModule} from 'zena:wasm';
+import {exists} from 'zena:fs';
+import {
+  RunOptions, RunOutcome, precompileModule, runModule, startModule,
+} from 'zena:wasm';
 
 let fixtures = 'packages/stdlib/tests/wasm/fixtures';
 
@@ -15,16 +18,36 @@ export let tests = suite('wasm', (): void => {
     let result = runModule(fixture('returns.wat'));
     equal(result.outcome, RunOutcome.Returned);
     equal(result.exitCode, 7);
+    equal(result.resultText, '7');
     isFalse(result.succeeded());
 
     let other = runModule(fixture('returns.wat'), new RunOptions().invoking('other'));
     equal(other.exitCode, 11);
   });
 
+  test('a result of any type is reported as text', () => {
+    let float = runModule(fixture('returns.wat'), new RunOptions().invoking('float'));
+    equal(float.resultText, '2.5');
+    equal(float.exitCode, 0);
+
+    let nothing = runModule(fixture('returns.wat'), new RunOptions().invoking('nothing'));
+    equal(nothing.outcome, RunOutcome.Returned);
+    equal(nothing.resultText, '');
+    isTrue(nothing.succeeded());
+  });
+
   test('exit ends the run with its code', () => {
     let result = runModule(fixture('wasi.wat'), new RunOptions().invoking('exits'));
-    equal(result.outcome, RunOutcome.Returned);
+    equal(result.outcome, RunOutcome.Exited);
     equal(result.exitCode, 3);
+    equal(result.resultText, '');
+  });
+
+  test('a module can be compiled ahead of its first run', () => {
+    equal(precompileModule(fixture('traps.wat')), '');
+    isTrue(exists(fixture('traps.wat.cwasm')));
+    isTrue(precompileModule('/etc/passwd').contains('outside'));
+    isTrue(precompileModule(fixture('no-such-module.wat')).contains('no such module'));
   });
 
   test('a trap is reported, not propagated', () => {

@@ -26,7 +26,7 @@ use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
 
 use crate::engine::{
-    EPOCH_TICK, NO_DEADLINE, interruptible_engine, is_interruptible, reserve_gc_heap,
+    interruptible_engine, is_interruptible, reserve_gc_heap, EPOCH_TICK, NO_DEADLINE,
 };
 use crate::strings::{make_guest_string, param_to_externref, read_guest_string};
 use crate::{Grant, HostState, PathMap, Spawn};
@@ -51,17 +51,22 @@ struct RunConfig {
 /// How a run ended. The numbers are what `run_outcome` returns.
 #[derive(Clone, Copy)]
 enum Outcome {
-    /// The export returned, or the module called `proc_exit`.
+    /// The export returned.
     Returned = 0,
     Trapped = 1,
     TimedOut = 2,
     /// The module could not be read, compiled, linked or instantiated.
     Failed = 3,
+    /// The module ended itself with `proc_exit` (Zena's `exit(code)`).
+    Exited = 4,
 }
 
 struct Finished {
     outcome: Outcome,
     exit_code: i32,
+    /// The export's first result, formatted as `zena run` prints it; ''
+    /// when it returned nothing or did not return.
+    result_text: String,
     message: String,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
@@ -73,6 +78,7 @@ impl Finished {
         Finished {
             outcome: Outcome::Failed,
             exit_code: -1,
+            result_text: String::new(),
             message,
             stdout: Vec::new(),
             stderr: Vec::new(),
@@ -326,7 +332,7 @@ pub fn add_to_linker(
                     Ok(())
                 },
             )?,
-            "run_message" | "run_stdout" | "run_stderr" => {
+            "run_message" | "run_stdout" | "run_stderr" | "run_result_text" => {
                 let which = name.clone();
                 linker.func_new(
                     "zena_wasm",
@@ -337,10 +343,30 @@ pub fn add_to_linker(
                             Ok(match which.as_str() {
                                 "run_message" => f.message.clone().into_bytes(),
                                 "run_stdout" => f.stdout.clone(),
+                                "run_result_text" => f.result_text.clone().into_bytes(),
                                 _ => f.stderr.clone(),
                             })
                         })?;
                         results[0] = make_guest_string(&mut caller, &bytes)?;
+                        Ok(())
+                    },
+                )?
+            }
+            "module_precompile" => {
+                let grant = grant.clone();
+                linker.func_new(
+                    "zena_wasm",
+                    "module_precompile",
+                    func_ty,
+                    move |mut caller: Caller<'_, HostState>, params, results| {
+                        let path = read_guest_string(&mut caller, &params[0])?;
+                        let outcome = match translate(&path, &grant.path_map) {
+                            Some(host) => precompile(&host, grant.debug),
+                            None => {
+                                format!("{path} is outside every directory this module can reach")
+                            }
+                        };
+                        results[0] = make_guest_string(&mut caller, outcome.as_bytes())?;
                         Ok(())
                     },
                 )?
@@ -494,28 +520,28 @@ fn run(
     let t0 = Instant::now();
     let called = crate::call_export(&mut store, &instance, &config.invoke);
     let call_nanos = t0.elapsed().as_nanos() as i64;
-    drop(store);
 
-    let (stdout, stderr) = match captured {
-        Some((out, err)) => (out.contents().to_vec(), err.contents().to_vec()),
-        None => (Vec::new(), Vec::new()),
-    };
-    let (outcome, exit_code, message) = match called {
+    let (outcome, exit_code, result_text, message) = match called {
         Ok(results) => {
             // A Zena program's `main` returns its status.
             let code = match results.first() {
                 Some(Val::I32(code)) => *code,
                 _ => 0,
             };
-            (Outcome::Returned, code, String::new())
+            let text = results
+                .first()
+                .map(crate::format_result)
+                .unwrap_or_default();
+            (Outcome::Returned, code, text, String::new())
         }
         Err(e) => {
             if let Some(code) = crate::exit_code(&e) {
-                (Outcome::Returned, code, String::new())
+                (Outcome::Exited, code, String::new(), String::new())
             } else if e.downcast_ref::<Trap>() == Some(&Trap::Interrupt) {
                 (
                     Outcome::TimedOut,
                     -1,
+                    String::new(),
                     "stopped at its time limit".to_string(),
                 )
             } else {
@@ -523,17 +549,40 @@ fn run(
                 if let Some(bt) = e.downcast_ref::<wasmtime::WasmBacktrace>() {
                     message.push_str(&format!("\nWasm Backtrace:\n{bt}"));
                 }
-                (Outcome::Trapped, -1, message)
+                (Outcome::Trapped, -1, String::new(), message)
             }
         }
+    };
+    drop(store);
+
+    let (stdout, stderr) = match captured {
+        Some((out, err)) => (out.contents().to_vec(), err.contents().to_vec()),
+        None => (Vec::new(), Vec::new()),
     };
     Finished {
         outcome,
         exit_code,
+        result_text,
         message,
         stdout,
         stderr,
         call_nanos,
+    }
+}
+
+/// Writes a module's `.cwasm` beside it now, so later runs skip Cranelift.
+/// Returns '' on success and the reason otherwise.
+fn precompile(path: &PathBuf, debug: bool) -> String {
+    let engine = match Engine::new(&crate::engine::config(debug)) {
+        Ok(engine) => engine,
+        Err(e) => return format!("{e:#}"),
+    };
+    if !path.is_file() {
+        return format!("no such module: {}", path.display());
+    }
+    match crate::cache::precompile(&engine, path, debug) {
+        Ok(_) => String::new(),
+        Err(e) => format!("{e:#}"),
     }
 }
 

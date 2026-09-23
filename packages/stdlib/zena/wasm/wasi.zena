@@ -87,13 +87,22 @@ declare function __runStderr(run: RunRef): String;
 @external("zena_wasm", "run_call_nanos")
 declare function __runCallNanos(run: RunRef): i64;
 
+@external("zena_wasm", "run_result_text")
+declare function __runResultText(run: RunRef): String;
+
+/** Writes a module's `.cwasm`; returns '' or why it could not. */
+@external("zena_wasm", "module_precompile")
+declare function __modulePrecompile(path: String): String;
+
 /** How a run ended. */
 export enum RunOutcome {
   /**
-   * The exported function returned, or the module ended itself with
-   * `exit(code)`. `exitCode` says which status it ended with.
+   * The exported function returned. `exitCode` is the `i32` it returned,
+   * and `resultText` its first result however typed.
    */
   Returned,
+  /** The module ended itself with `exit(code)`; `exitCode` is the code. */
+  Exited,
   /** The module trapped. `message` has the trap and its backtrace. */
   Trapped,
   /** The run was stopped at its time limit. */
@@ -106,6 +115,7 @@ export enum RunOutcome {
   Failed,
 }
 
+/** The host's numbering of how a run ended. */
 let outcomeOf = (code: i32): RunOutcome => {
   if (code == 0) {
     return RunOutcome.Returned;
@@ -115,6 +125,9 @@ let outcomeOf = (code: i32): RunOutcome => {
   }
   if (code == 2) {
     return RunOutcome.TimedOut;
+  }
+  if (code == 4) {
+    return RunOutcome.Exited;
   }
   return RunOutcome.Failed;
 };
@@ -128,6 +141,12 @@ export class RunResult {
    * returns nothing. -1 when it trapped, timed out or failed to start.
    */
   exitCode: i32;
+  /**
+   * What the exported function returned, formatted the way `zena run`
+   * prints it (`7`, `2.5`); '' when it returned nothing or did not
+   * return.
+   */
+  resultText: String;
   /** Why a run trapped, timed out or failed to start; otherwise ''. */
   message: String;
   /** What the module wrote, when its output was captured; otherwise ''. */
@@ -143,6 +162,7 @@ export class RunResult {
   new(
     this.outcome,
     this.exitCode,
+    this.resultText,
     this.message,
     this.stdout,
     this.stderr,
@@ -151,7 +171,8 @@ export class RunResult {
 
   /** True when the module returned or exited with status 0. */
   succeeded(): boolean {
-    return this.outcome == RunOutcome.Returned && this.exitCode == 0;
+    return (this.outcome == RunOutcome.Returned || this.outcome == RunOutcome.Exited) &&
+        this.exitCode == 0;
   }
 }
 
@@ -296,6 +317,7 @@ export final class Run {
     let result = new RunResult(
       outcomeOf(__runOutcome(this.#run)),
       code,
+      __runResultText(this.#run),
       __runMessage(this.#run),
       __runStdout(this.#run),
       __runStderr(this.#run),
@@ -317,3 +339,11 @@ export let runModule = (
   path: String,
   options: RunOptions = new RunOptions(),
 ): RunResult => options.start(path).wait();
+
+/**
+ * Compiles a module to machine code now and caches it beside the file,
+ * so that its first run does not pay for the compile. Returns '' on
+ * success and the reason otherwise. Running a module caches it the same
+ * way; this is for doing it ahead of time.
+ */
+export let precompileModule = (path: String): String => __modulePrecompile(path);
