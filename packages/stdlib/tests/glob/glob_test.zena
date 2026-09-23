@@ -1,7 +1,7 @@
 // Tests for zena:glob module
 import {suite, test, TestContext} from 'zena:test';
 import {equal, notEqual, isTrue, isFalse, greater, throws} from 'zena:assert';
-import {hasMagic, globToRegex, GlobPattern, matchGlob} from 'zena:glob';
+import {hasMagic, globToRegex, GlobPattern, GlobSet, matchGlob} from 'zena:glob';
 
 export let tests = suite('Glob', (): void => {
   test('hasMagic', (ctx: TestContext): void => {
@@ -101,6 +101,28 @@ export let tests = suite('Glob', (): void => {
     throws(() => {
       new GlobPattern('index.{js,ts');
     });
+  });
+
+  test('GlobSet: the last pattern to match decides', (ctx: TestContext): void => {
+    let set = new GlobSet(['zena/**/*.zena', '!zena/**/*_test.zena']);
+    isTrue(set.matches('zena/lib/engine.zena'));
+    isFalse(set.matches('zena/test/engine_test.zena'));
+    isFalse(set.matches('README.md'));
+
+    // A later positive pattern takes a path back.
+    let reInclude = new GlobSet(['src/**', '!src/tmp/**', 'src/tmp/keep.ts']);
+    isTrue(reInclude.matches('src/a.ts'));
+    isFalse(reInclude.matches('src/tmp/x.ts'));
+    isTrue(reInclude.matches('src/tmp/keep.ts'));
+
+    // Negation only ever removes: a list of nothing but negations
+    // matches nothing.
+    let onlyNegations = new GlobSet(['!*.ts']);
+    isFalse(onlyNegations.matches('a.js'));
+
+    let braces = new GlobSet(['index.{js,d.ts}']);
+    isTrue(braces.matches('index.d.ts'));
+    equal(braces.size, 1);
   });
 
   test('matchGlob helper', (ctx: TestContext): void => {

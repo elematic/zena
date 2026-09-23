@@ -11,6 +11,9 @@
  *   which may hold wildcards or further braces (`{src,test}/**`,
  *   `index.{js,d.ts}`, `main{,.test}.zena`)
  *
+ * `GlobSet` reads a list of patterns with `!` exclusions, the way
+ * `.gitignore` does.
+ *
  * ## Examples
  *
  * ```zena
@@ -216,3 +219,50 @@ export let matchGlob = (pattern: String, path: String): boolean => {
   let gp = new GlobPattern(pattern);
   return gp.matches(path);
 };
+
+/**
+ * An ordered list of patterns in which a `!` prefix excludes, read the
+ * way `.gitignore` and wireit read theirs: a path is in the set when the
+ * last pattern that matches it is a positive one.
+ *
+ * `['src/**', '!src/tmp/**', 'src/tmp/keep.ts']` takes `src/a.ts` and
+ * `src/tmp/keep.ts` and leaves out `src/tmp/x.ts`. A path no pattern
+ * matches is not in the set, so a list of only negations is empty.
+ */
+export class GlobSet {
+  #patterns: GrowableArray<GlobPattern>;
+  #negated: GrowableArray<boolean>;
+
+  new(patterns: Array<String>)
+      : #patterns = new GrowableArray<GlobPattern>(),
+        #negated = new GrowableArray<boolean>() {
+    for (let raw in patterns) {
+      var pattern = raw;
+      var negated = false;
+      if (pattern.startsWith('!')) {
+        negated = true;
+        pattern = pattern.sliceBytes(1, pattern.length);
+      }
+      this.#patterns.push(new GlobPattern(pattern));
+      this.#negated.push(negated);
+    }
+  }
+
+  /** How many patterns the set holds, negations included. */
+  size: i32 {
+    get {
+      return this.#patterns.length;
+    }
+  }
+
+  /** Whether `path` is in the set. */
+  matches(path: String): boolean {
+    var included = false;
+    for (var i = 0; i < this.#patterns.length; i += 1) {
+      if (this.#patterns[i].matches(path)) {
+        included = !this.#negated[i];
+      }
+    }
+    return included;
+  }
+}
