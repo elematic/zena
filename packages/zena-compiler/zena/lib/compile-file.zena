@@ -1,0 +1,405 @@
+/**
+ * Compiling one source file to a module on disk: what `zc` does, as a
+ * function other programs can call. The compiler's own command line
+ * (`zena/cli/main.zena`) and the `zena` command line both use it.
+ *
+ * It reads source and writes the module through `zena:fs`, so the caller
+ * decides what it can reach through its preopens: the entry and its
+ * package manifest are read relative to the working directory, and the
+ * standard library from `stdlibRoot`.
+ */
+
+import { getEnv } from 'zena:cli';
+import { readFile, writeFileBytes, writeFile, exists } from 'zena:fs';
+import { CompilerHost } from './library-loader.zena';
+import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
+import { loadPackageMap } from './package-manifest.zena';
+import {
+  createCompiler, CompilerOptions, checkCompilation, withBuiltinPackages
+} from './compiler.zena';
+import { DiagnosticSeverity, SourceSpan } from './diagnostics.zena';
+import { BinaryGenerator } from './codegen/binary-generator.zena';
+import { WatGenerator } from './codegen/wat-generator.zena';
+import { Program, CompilationUnit } from './program.zena';
+import { Module } from './ast.zena';
+import { performance } from './time.zena';
+import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from './targets.zena';
+import { compileComponentRuntimeModule } from './codegen/component-runtime.zena';
+import { makeImportEncoder } from './codegen/wit-imports.zena';
+import {
+  isWitModulePath, synthesizeWitModule, synthesizeExportWrapper,
+  declaredPackageNamespaces
+} from './wit-module-synth.zena';
+import { ComponentEntryWrapper } from './component-entry.zena';
+import { readWitSource } from 'wit-parser:document';
+
+/** What to compile, where to put it, and how. */
+export class CompileFileOptions {
+  /** The source file, relative to the working directory. */
+  entry: String;
+  /** Where to write the module; a `.wat` path writes the text form. */
+  outPath: String;
+  var target = "zena-cli";
+  /**
+   * Compile a test suite: a file without its own `main` gets one that
+   * runs `tests` through `zena:test`'s `runAndReport`.
+   */
+  var testMode = false;
+  /** Print a report of how long each compiler phase took. */
+  var time = false;
+  /** A WIT file or directory declaring the component's world. */
+  var witPath = "";
+  /** Which world in `witPath`, when it declares several. */
+  var worldName = "";
+  /** Emit a name section, so traps name functions. */
+  var debugNames = false;
+  var warnUnnecessaryCasts = false;
+  /** 0, 1 or 2; see docs/design/optimization-pipeline.md. */
+  var optLevel = 1;
+  /** Where the standard library's `zena/` directory is. */
+  var stdlibRoot = "/stdlib";
+  /** Print "Compiling ..." and "Success: wrote ..." lines. */
+  var progress = false;
+
+  new(this.entry, this.outPath);
+}
+
+/**
+ * The host the compiler reads source through: files from the working
+ * directory, `zena:` modules from the standard library, and WIT-backed
+ * modules synthesized from their WIT.
+ */
+class FileHost implements CompilerHost {
+  testMode: boolean;
+  entryPath: String;
+  stdlibRoot: String;
+  /** The WIT-backed packages' source, once it has been read. */
+  var packagesWit = "";
+  new(this.testMode, this.entryPath, this.stdlibRoot);
+
+  readFile(path: String): String {
+    // A WIT-backed package's module: no file exists — the source is
+    // synthesized from the package's WIT.
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path, this.packagesWit);
+    }
+    var actualPath = path;
+    if (path.startsWith("zena:")) {
+      actualPath = this.stdlibRoot + "/" + stdlibIdToRelativeFile(path);
+    }
+    let content = readFile(actualPath);
+    if (this.testMode && path == this.entryPath) {
+      // A file that declares its own entry point is left alone. This runs
+      // before the source is parsed, so the test is textual; what matters is
+      // that it be narrow enough not to fire on ordinary prose or data.
+      //
+      // It used to look for "let main", "main =" or "main(" anywhere in the
+      // file, which matched far more than declarations: `let mainScope`, and
+      // — inside a string literal — the `domain(` of a URL pattern. A suite
+      // that merely mentioned one got no entry point and then failed with
+      // "Failed to find `main` export", naming nothing in the file that
+      // caused it. See tests/test/wrapper-main-substring_test.zena.
+      if (content.contains("export let main ") ||
+          content.contains("export let main=") ||
+          content.contains("export function main(")) {
+        return content;
+      }
+      return "import {runAndReport} from 'zena:test';\n" +
+        content +
+        "\nexport let main = (): i32 => {\n  return runAndReport(tests, (s: String): void => {\n    console.log(s);\n  });\n};\n";
+    }
+    return content;
+  }
+}
+
+// Load package configs ("zena-compiler:parser" → file path) from the manifest
+// in the working directory. A missing manifest is fine — standalone files need
+// only stdlib and relative imports — but a malformed one throws loudly.
+let loadPackages = (host: CompilerHost): Map<String, PackageConfig> => {
+  if (!exists("zena-packages.json")) {
+    return new Map<String, PackageConfig>();
+  }
+  return loadPackageMap(host, "zena-packages.json");
+};
+
+let reportDiagnosticLine = (kind: String, file: String, line: i32, column: i32, message: String): void => {
+  console.error(file + ":" + i32ToString(line) + ":" + i32ToString(column) + " - " + kind + ": " + message);
+};
+
+/**
+ * Compiles `options.entry` and writes the module to `options.outPath`.
+ * Returns 0 on success. On a mistake in the options or an error in the
+ * program it prints the diagnostics to stderr and returns 1; it never
+ * ends the process, so a caller can compile again.
+ */
+export let compileFile = (options: CompileFileOptions): i32 => {
+  let filename = options.entry;
+  let outPath = options.outPath;
+  let target = options.target;
+  let witPath = options.witPath;
+  let worldName = options.worldName;
+  let stdlibRoot = options.stdlibRoot;
+
+  if (!isKnownTarget(target)) {
+    console.error("Error: invalid target '" + target + "' (expected " +
+        knownTargetsDescription() + ")");
+    return 1;
+  }
+  // A declared world (docs/design/component-emission.md, Part 3): the
+  // WIT becomes the authority the program is compiled against, and
+  // disagreements between it and the Zena are errors.
+  if ((witPath != "" || worldName != "") && !targetEmitsComponent(target)) {
+    console.error(
+        "Error: --wit/--world declare a component's world, and the " +
+        "target is '" + target + "'. Use --target component.");
+    return 1;
+  }
+  if (worldName != "" && witPath == "") {
+    console.error("Error: --world names a world in a --wit document, " +
+        "and no --wit was given.");
+    return 1;
+  }
+
+  // The declared world's WIT: one file, or a directory whose *.wit
+  // files are concatenated in name order into one document.
+  var witSource = "";
+  if (witPath != "") {
+    if (!exists(witPath)) {
+      console.error("Error: --wit path does not exist: " + witPath);
+      return 1;
+    }
+    witSource = readWitSource(witPath);
+  }
+
+  let host = new FileHost(options.testMode, filename, stdlibRoot);
+  let packages = loadPackages(host);
+  // A declared world's document answers for its own packages: the
+  // program imports the world's interfaces by name (`test:app/oracle`
+  // for a document declaring `package test:app`), and the resolver
+  // maps the namespace to a WIT-backed package rooted at the document.
+  // A namespace the manifest or the stdlib already provides keeps its
+  // package — a document vendoring `wasi:clocks` does not take over
+  // `wasi` — and its interfaces are reached as before.
+  if (witSource != "") {
+    for (let namespace in declaredPackageNamespaces(witSource)) {
+      if (namespace == "wasi" || packages.has(namespace)) { continue; }
+      let declared = new PackageConfig("", null);
+      declared.witRoot = witPath;
+      packages[namespace] = declared;
+    }
+  }
+  let compilerOptions = new CompilerOptions(target, stdlibRoot, packages);
+  compilerOptions.time = options.time;
+  // The WIT-backed packages' real source, so the encoder emits their
+  // interfaces' true types rather than deriving them from the
+  // synthesized declarations (which are flattened core shapes), and so
+  // a declared world can import their interfaces by name. Name-sorted:
+  // a HashMap iterates in uid order, which depends on what the process
+  // did earlier, and emitted bytes must not.
+  var packagesWit = "";
+  if (targetEmitsComponent(target)) {
+    // Including the packages the stdlib carries (`wasi`), the same
+    // set the resolver sees.
+    let allPackages = withBuiltinPackages(stdlibRoot, packages);
+    let witPackages = new Array<String>();
+    let packageNames = allPackages.keys();
+    for (let packageName in packageNames) {
+      let root = allPackages[packageName].witRoot;
+      // The declared document is the world's own source, parsed
+      // alongside these; it does not ride along a second time.
+      if (root != null && (root as String) != witPath) {
+        witPackages.push(packageName);
+      }
+    }
+    let byteLess = (x: String, y: String): boolean => {
+      var minLen = x.length;
+      if (y.length < minLen) { minLen = y.length; }
+      for (var i = 0; i < minLen; i += 1) {
+        let d = x.getByteAt(i) - y.getByteAt(i);
+        if (d != 0) { return d < 0; }
+      }
+      return x.length < y.length;
+    };
+    for (var a = 0; a < witPackages.length; a += 1) {
+      for (var b = a + 1; b < witPackages.length; b += 1) {
+        if (byteLess(witPackages[b], witPackages[a])) {
+          let t = witPackages[a];
+          witPackages[a] = witPackages[b];
+          witPackages[b] = t;
+        }
+      }
+    }
+    for (let packageName in witPackages) {
+      packagesWit = packagesWit +
+          readWitSource(allPackages[packageName].witRoot as String) + "\n";
+    }
+    host.packagesWit = packagesWit;
+  }
+  if (witSource != "") {
+    // Against a declared world the entry wrapper also implements the
+    // world's async exports, which takes the WIT the compiler itself
+    // does not link.
+    let declaredWit = witSource;
+    let declaredWorld = worldName;
+    let declaredPackages = packagesWit;
+    compilerOptions.componentWrapperSynth =
+        (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
+            synthesizeExportWrapper(declaredWit, declaredWorld, entryPath,
+                ast, declaredPackages);
+  }
+  let compiler = createCompiler(host, compilerOptions);
+
+  if (options.progress) {
+    console.log("Compiling " + filename + "...");
+  }
+  try {
+    let compResult = compiler.compile(filename);
+
+    let checkResults = checkCompilation(compResult, null, false, options.warnUnnecessaryCasts);
+    let {diagnostics} = checkResults;
+    var hasError = false;
+    for (let diag in diagnostics) {
+      if (diag.severity == DiagnosticSeverity.Error) {
+        if (diag.location != null) {
+          let loc = diag.location as SourceSpan;
+          reportDiagnosticLine("Error", loc.file, loc.line, loc.column, diag.message);
+        } else {
+          console.error("Error: " + diag.message);
+        }
+        hasError = true;
+      } else if (options.warnUnnecessaryCasts && diag.severity == DiagnosticSeverity.Warning) {
+        if (diag.location != null) {
+          let loc = diag.location as SourceSpan;
+          reportDiagnosticLine("Warning", loc.file, loc.line, loc.column, diag.message);
+        } else {
+          console.error("Warning: " + diag.message);
+        }
+      }
+    }
+
+    if (hasError) {
+      return 1;
+    }
+
+    checkResults.results[filename].model;
+    let entryAst = compResult.entry.ast;
+    let units = new Array<CompilationUnit>();
+    var entryUnit: CompilationUnit | null = null;
+    for (let file in compResult.files) {
+      let res = checkResults.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+    let tCodegen = performance.start("codegen");
+    let program = new Program(units, entryUnit);
+
+    // Every compile goes AST -> ZIR -> wasm; a lowering bail is a
+    // fatal error. ZENA_ZIR_STATS=1 prints the lowered count.
+    let zirStats = getEnv("ZENA_ZIR_STATS") != null;
+
+    // ZENA_WIDE_ARITHMETIC=1 emits the wide-arithmetic proposal's
+    // instructions instead of the sequences that mean the same thing.
+    // Opt-in because V8 does not implement the proposal yet.
+    let wideArithmetic = getEnv("ZENA_WIDE_ARITHMETIC") != null;
+
+    // `-o out.wat` emits the WAT text directly — the readable form of
+    // exactly what the binary build would contain, for inspecting a
+    // program's emitted shape (`zena build hello.zena -o hello.wat`).
+    if (outPath.endsWith(".wat")) {
+      let watOnly = new WatGenerator(target, zirStats, options.optLevel);
+      watOnly.wideArithmetic = wideArithmetic;
+      writeFile(outPath, watOnly.generate(program));
+      performance.end(tCodegen);
+      if (options.progress) {
+        console.log("Success: wrote " + outPath);
+      }
+      return 0;
+    }
+
+    let generator = new BinaryGenerator(target, zirStats, options.debugNames, options.optLevel);
+    generator.wideArithmetic = wideArithmetic;
+    if (targetEmitsComponent(target)) {
+      // The component's second core module, owning linear memory and
+      // the allocator. Compiled up front — whether the program needs it
+      // is only known after its own compile, and this one is small.
+      generator.runtimeMemoryModule =
+          compileComponentRuntimeModule(host, stdlibRoot, packages);
+      // A declared world compiles against its own document, with the
+      // WIT-backed packages spliced in so it can import their
+      // interfaces by name; without one, each interface's WIT is
+      // derived from the program, except for the packages' own.
+      generator.importEncoder = if (witPath != "") {
+        makeImportEncoder(witSource, worldName, packagesWit)
+      } else {
+        makeImportEncoder(null, "", packagesWit)
+      };
+    }
+    let wasmBytes = generator.generate(program).toByteArray();
+    writeFileBytes(outPath, wasmBytes);
+
+    // The WAT dump runs a SECOND full generator pass and its text
+    // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
+    // so it is opt-in for debugging.
+    if (getEnv("ZENA_EMIT_WAT") != null) {
+      let watGenerator = new WatGenerator(target, false, options.optLevel);
+      let watString = watGenerator.generate(program);
+      writeFile(outPath + ".wat", watString);
+    }
+    performance.end(tCodegen);
+
+    if (options.progress) {
+      console.log("Success: wrote " + outPath);
+    }
+
+    if (options.time) {
+      let loadTime = compiler.loadTime;
+      let parseTime = compiler.parseTime;
+      let scopeTime = performance.getDuration("scope");
+      let checkTime = performance.getDuration("check");
+      let codegenTime = performance.getDuration("codegen");
+      let discoveryTime = performance.getDuration("codegen-discovery");
+      let discoveryInitTime = performance.getDuration("codegen-discovery-init");
+      let discoveryQueuesTime = performance.getDuration("codegen-discovery-queues");
+      let discoveryLayoutTime = performance.getDuration("codegen-discovery-layout");
+      let layoutTime = performance.getDuration("codegen-layout");
+      let emitCodeTime = performance.getDuration("codegen-emit-code");
+      let emitOtherTime = performance.getDuration("codegen-emit-other");
+      let totalTime = loadTime + parseTime + scopeTime + checkTime + codegenTime;
+
+      console.log("");
+      console.log("=== Compiler Timing Report ===");
+      console.log("File Load:  " + f64ToString(loadTime) + " ms");
+      console.log("Pure Parse: " + f64ToString(parseTime) + " ms");
+      console.log("Scope:      " + f64ToString(scopeTime) + " ms");
+      console.log("Check:      " + f64ToString(checkTime) + " ms");
+      console.log("Codegen:    " + f64ToString(codegenTime) + " ms");
+      console.log("  Discovery:  " + f64ToString(discoveryTime) + " ms");
+      console.log("    Discovery Init:   " + f64ToString(discoveryInitTime) + " ms");
+      console.log("    Discovery Queues: " + f64ToString(discoveryQueuesTime) + " ms");
+      console.log("    Discovery Layout: " + f64ToString(discoveryLayoutTime) + " ms");
+      console.log("  Layout:     " + f64ToString(layoutTime) + " ms");
+      console.log("  Emit Code:  " + f64ToString(emitCodeTime) + " ms");
+      console.log("  Emit Other: " + f64ToString(emitOtherTime) + " ms");
+      console.log("------------------------------");
+      console.log("Total:      " + f64ToString(totalTime) + " ms");
+      console.log("==============================");
+    }
+  } catch (e) {
+    console.log("Exception caught in CLI compiler!");
+    if (e is Error) {
+      console.log("Error message: " + e.message);
+      let stack = e.getStackTrace();
+      if (stack != null) {
+        console.log("Stack Trace: \n" + stack);
+      }
+    }
+    throw e;
+  }
+
+  return 0;
+};
