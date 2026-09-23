@@ -1,7 +1,13 @@
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isTrue} from 'zena:assert';
-import {GlobSet, expandBraces, matchGlob, splitBase} from '../glob.zena';
+import {GlobSet, matchGlob} from 'zena:glob';
+import {splitBase} from '../fs-walk.zena';
 
+/**
+ * The glob forms wireit configs in this repository use. Matching itself
+ * is zena:glob's; these stay here so a change there that would drop a
+ * build input shows up as a zb failure.
+ */
 export let tests = suite('glob', (): void => {
   test('stars stay within a segment', () => {
     isTrue(matchGlob('src/*.ts', 'src/a.ts'));
@@ -31,12 +37,8 @@ export let tests = suite('glob', (): void => {
     isFalse(matchGlob('tsconfig.json', 'src/tsconfig.json'));
   });
 
-  test('braces expand', () => {
-    let expanded = expandBraces('index.{js,d.ts}');
-    equal(expanded.length, 2);
-    equal(expanded[0], 'index.js');
-    equal(expanded[1], 'index.d.ts');
-    isTrue(matchGlob('index.{js,d.ts}', 'index.js') == false);
+  test('braces pick one alternative', () => {
+    isTrue(matchGlob('index.{js,d.ts}', 'index.js'));
     let set = new GlobSet(['index.{js,d.ts,js.map}']);
     isTrue(set.matches('index.js'));
     isTrue(set.matches('index.d.ts'));
@@ -75,5 +77,9 @@ export let tests = suite('glob', (): void => {
     let g5 = splitBase('index.{js,d.ts}');
     equal(g5.base, '');
     equal(g5.rest, 'index.{js,d.ts}');
+
+    let g6 = splitBase('packages/{app,lib}/src/*.ts');
+    equal(g6.base, 'packages');
+    equal(g6.rest, '{app,lib}/src/*.ts');
   });
 });

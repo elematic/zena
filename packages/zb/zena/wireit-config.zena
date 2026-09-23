@@ -6,7 +6,7 @@ import {
   JsonValue,
   parseJson,
 } from 'zena:json';
-import {joinPath} from './path.zena';
+import {joinWorkspace} from './fs-util.zena';
 
 /** Raised for malformed or unsupported build configuration. */
 export class ConfigError extends Error {
@@ -124,7 +124,7 @@ export let resolveDependency = (from: String, dep: String): ScriptRef => {
         `dependency "${dep}" of ${from} has a path but no script name`,
       );
     }
-    let target = joinPath(from, dep.sliceBytes(0, colon));
+    let target = joinWorkspace(from, dep.sliceBytes(0, colon));
     if (target.startsWith('..')) {
       throw new ConfigError(
         `dependency "${dep}" of ${from} escapes the workspace`,
@@ -151,7 +151,7 @@ export class WireitWorkspace {
     if (let (true, cached) = this.#packages.get(packageDir)) {
       return cached;
     }
-    let path = joinPath(packageDir, 'package.json');
+    let path = joinWorkspace(packageDir, 'package.json');
     let readFile = this.#readFile;
     let content = readFile(path);
     if (content == null) {

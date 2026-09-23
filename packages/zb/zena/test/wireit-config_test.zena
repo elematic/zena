@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isNull, isTrue, throws} from 'zena:assert';
-import {dirName, joinPath, normalizePath} from '../path.zena';
+import {joinWorkspace} from '../fs-util.zena';
 import {
   ScriptRef,
   WireitWorkspace,
@@ -64,13 +64,13 @@ let fixture = (): WireitWorkspace => {
 };
 
 export let tests = suite('wireit-config', (): void => {
-  test('paths normalize', () => {
-    equal(normalizePath('packages/app/../lib'), 'packages/lib');
-    equal(normalizePath('./a/b/'), 'a/b');
-    equal(joinPath('', 'package.json'), 'package.json');
-    equal(joinPath('packages/app', '../lib'), 'packages/lib');
-    equal(dirName('a/b/c.txt'), 'a/b');
-    equal(dirName('c.txt'), '');
+  test('workspace paths normalize, with the root as the empty path', () => {
+    equal(joinWorkspace('', 'package.json'), 'package.json');
+    equal(joinWorkspace('packages/app', '../lib'), 'packages/lib');
+    equal(joinWorkspace('', './a/b/'), 'a/b');
+    // zena:path calls the root '.'; zb keys the root package by ''.
+    equal(joinWorkspace('packages/app', '../..'), '');
+    equal(joinWorkspace('', ''), '');
   });
 
   test('dependency references resolve', () => {
@@ -89,6 +89,11 @@ export let tests = suite('wireit-config', (): void => {
     let colons = resolveDependency('', './packages/app:precompile:cli');
     equal(colons.packageDir, 'packages/app');
     equal(colons.script, 'precompile:cli');
+
+    // A dependency on the root package resolves to the root's key.
+    let root = resolveDependency('packages/app', '../..:build');
+    equal(root.packageDir, '');
+    equal(refKey(root), ':build');
 
     throws((): void => {
       resolveDependency('', '../outside:build');

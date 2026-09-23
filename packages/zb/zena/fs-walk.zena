@@ -2,11 +2,47 @@ import {FileType, exists, isFile, listDir, readFileBytes} from 'zena:fs';
 import { HashSet } from 'zena:collections';
 import {compareStrings, sortBy} from 'workflow:canonical';
 import {Fingerprint} from 'workflow:fingerprint';
-import {withRoot} from './fs-util.zena';
-import {GlobSet, splitBase} from './glob.zena';
-import {joinPath} from './path.zena';
+import {StringBuilder} from 'zena:core';
+import {GlobSet, hasMagic} from 'zena:glob';
+import {isAbsolute} from 'zena:path';
+import {joinWorkspace, withRoot} from './fs-util.zena';
 import {sha256Hex} from './sha256.zena';
 import {ConfigError} from './wireit-config.zena';
+
+/**
+ * A pattern split at its first segment with glob syntax in it: the
+ * literal directory prefix to walk from, and the pattern for paths
+ * relative to it. A fully literal pattern splits into its directory and
+ * file name. `''` is the workspace root.
+ */
+export class GlobBase(base: String, rest: String)
+
+export let splitBase = (pattern: String): GlobBase => {
+  let segments = pattern.split('/');
+  var literal = 0;
+  while (literal < segments.length && !hasMagic(segments[literal])) {
+    literal += 1;
+  }
+  if (literal == segments.length) {
+    // Fully literal: the last segment is the file name.
+    literal = segments.length - 1;
+  }
+  let base = new StringBuilder();
+  for (var i = 0; i < literal; i += 1) {
+    if (i > 0) {
+      base.append('/');
+    }
+    base.append(segments[i]);
+  }
+  let rest = new StringBuilder();
+  for (var i = literal; i < segments.length; i += 1) {
+    if (i > literal) {
+      rest.append('/');
+    }
+    rest.append(segments[i]);
+  }
+  return new GlobBase(base.toString(), rest.toString());
+};
 
 /** Directories never worth walking for build inputs or outputs. */
 let skipDir = (name: String): boolean => {
@@ -37,10 +73,10 @@ let collectFiles = (
     }
     if (entry.fileType == FileType.Directory) {
       if (!skipDir(entry.name)) {
-        collectFiles(root, joinPath(dir, entry.name), set, out, seen);
+        collectFiles(root, joinWorkspace(dir, entry.name), set, out, seen);
       }
     } else {
-      let path = joinPath(dir, entry.name);
+      let path = joinWorkspace(dir, entry.name);
       if (set.matches(path) && seen.add(path)) {
         out.push(path);
       }
@@ -51,8 +87,9 @@ let collectFiles = (
 /**
  * Expands a package's glob list to sorted workspace-relative file
  * paths. Patterns are interpreted relative to `packageDir` and may
- * reach sibling packages with '../'; escaping the workspace is an
- * error. Negations apply across the whole list in order.
+ * reach sibling packages with '../'; escaping the workspace, by climbing
+ * out of it or by naming an absolute path, is an error. Negations apply
+ * across the whole list in order.
  */
 export let expandGlobs = (
   root: String,
@@ -69,8 +106,8 @@ export let expandGlobs = (
       negated = true;
       pattern = pattern.sliceBytes(1, pattern.length);
     }
-    let workspaceRelative = joinPath(packageDir, pattern);
-    if (workspaceRelative.startsWith('..')) {
+    let workspaceRelative = joinWorkspace(packageDir, pattern);
+    if (workspaceRelative.startsWith('..') || isAbsolute(workspaceRelative)) {
       throw new ConfigError(
         `glob "${raw}" in ${packageDir} escapes the workspace`,
       );

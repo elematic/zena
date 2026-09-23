@@ -138,7 +138,8 @@ whose outputs changed on disk.
 - `zena/runner.zena` — config → plan → engine run → persisted state
 - `zena/wireit-config.zena` — package.json wireit parsing and resolution
 - `zena/builder.zena` — script configs → workflow steps and run callbacks
-- `zena/fs-walk.zena`, `zena/glob.zena` — input discovery
+- `zena/fs-walk.zena` — input discovery: walks each glob's literal base
+  directory and keeps what `zena:glob`'s `GlobSet` matches
 - `zena/disk-cache.zena`, `zena/state-json.zena` — the `.zb/` formats
 - `zena/sha256.zena` — content fingerprints
 

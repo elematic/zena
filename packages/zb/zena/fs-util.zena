@@ -1,5 +1,5 @@
 import {exists, isFile, mkdir, readFile, unlink} from 'zena:fs';
-import {dirName} from './path.zena';
+import {dirname, join2} from 'zena:path';
 
 /**
  * Small filesystem helpers over zena:fs. Workspace paths are
@@ -7,6 +7,17 @@ import {dirName} from './path.zena';
  * without normalizing, so the root may be absolute ('/tmp/x') or ''
  * for the current directory.
  */
+
+/**
+ * Joins and normalizes two workspace paths. The workspace root is `''`
+ * throughout zb — it keys the root package and appears in `.zb/` state —
+ * where zena:path spells it `'.'`, so `joinWorkspace('packages/zb',
+ * '../..')` is `''`.
+ */
+export let joinWorkspace = (base: String, rel: String): String => {
+  let joined = join2(base, rel);
+  return if (joined == '.') '' else joined;
+};
 
 export let withRoot = (root: String, path: String): String => {
   if (root == '') {
@@ -30,13 +41,13 @@ export let ensureDir = (path: String): void => {
   if (path == '' || path == '.' || exists(path)) {
     return;
   }
-  ensureDir(dirName(path));
+  ensureDir(dirname(path));
   mkdir(path);
 };
 
 /** Creates the directory a file will be written into. */
 export let ensureParentDir = (path: String): void => {
-  ensureDir(dirName(path));
+  ensureDir(dirname(path));
 };
 
 export let deleteIfExists = (path: String): void => {
