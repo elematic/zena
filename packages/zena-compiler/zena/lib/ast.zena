@@ -772,7 +772,11 @@ export let syntacticMemberName = (node: Node): String => {
  */
 export let isSymbolFieldDeclaration = (field: FieldDefinition): boolean => {
   if (!field.isStatic) { return false; }
-  if (let NamedTypeAnnotation {name, typeArguments} = field.typeAnnotation) {
+  let ann = field.typeAnnotation;
+  // `if (let ...)` against a null value traps rather than not matching
+  // (#663), so null is ruled out first.
+  if (ann == null) { return false; }
+  if (let NamedTypeAnnotation {name, typeArguments} = ann as TypeAnnotation) {
     return name == "symbol" && typeArguments == null;
   }
   return false;

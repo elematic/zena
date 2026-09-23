@@ -2257,6 +2257,19 @@ final class CheckerContext {
     }
   }
 
+  /**
+   * The types whose bodies are open, innermost last — for a class, an
+   * interface or a mixin, whether its member signatures or its method
+   * bodies are being checked. Only read to phrase the missing-name
+   * error: a bare name that one of these declares as a static member is
+   * almost always that member written without its type.
+   */
+  #declaringTypes = new Array<Type>();
+
+  pushDeclaringType(t: Type): void { this.#declaringTypes.push(t); }
+  popDeclaringType(): void { this.#declaringTypes.pop(); }
+  declaringTypes: Array<Type> { get { return this.#declaringTypes; } }
+
   /** Whether the method being checked consumes its receiver. */
   owningReceiver: boolean { get { return this.#owningReceiver; } }
 
@@ -8562,8 +8575,7 @@ let getMemberName = (ctx: CheckerContext, node: Node): String => {
   if (recorded != null) {
     return recorded as String;
   }
-  let sym = resolveSymbolPath(
-      ctx, (node as SymbolPropertyName).symbolRef, false, node.loc);
+  let sym = lookupSymbolPath(ctx, (node as SymbolPropertyName).symbolRef);
   if (sym == null) {
     return syntacticMemberName(node);
   }
@@ -8598,7 +8610,7 @@ let accessMemberKey = (
   if (symbolPath == null) {
     return ":" + property.name;
   }
-  let sym = resolveSymbolPath(ctx, symbolPath as Expression, false, expr.loc);
+  let sym = lookupSymbolPath(ctx, symbolPath as Expression);
   if (sym == null) {
     return ":" + property.name;
   }
@@ -11219,6 +11231,27 @@ let isStaticReceiver = (ctx: CheckerContext, object: Expression): boolean => {
   return false;
 };
 
+/**
+ * Whether `object` names a class, interface or mixin, so that a member
+ * read on it is a static read. `isStaticReceiver` answers for classes
+ * (and imported types); an interface or mixin name can hold static
+ * symbols too.
+ */
+let namesDeclaredType = (ctx: CheckerContext, object: Expression): boolean => {
+  if (isStaticReceiver(ctx, object)) {
+    return true;
+  }
+  if (!(object is Identifier)) {
+    return false;
+  }
+  let sym = ctx.model.resolve(object);
+  if (sym == null) {
+    return false;
+  }
+  let decl = sym.declaration;
+  return decl is InterfaceDeclaration || decl is MixinDeclaration;
+};
+
 let checkExpression = (ctx: CheckerContext, expr: Expression, expectedType: Type | null): Type => {
   let t = checkExpressionInner(ctx, expr, expectedType);
   // Record the inferred type in the semantic model.
@@ -11322,7 +11355,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         preludeVal
       } else {
         ctx.error(
-          "Variable '" + name + "' not found.",
+          "Variable '" + name + "' not found." + staticMemberHint(ctx, name),
           DiagnosticCode.SymbolNotFound,
           loc
         );
@@ -14358,7 +14391,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   // given the identity of the symbol that named it — and a key that names
   // no symbol is reported.
   recordSymbolKeyedMemberIdentities(
-      ctx, classType.members, cd.body, className, classType.staticSymbols);
+      ctx, classType as Type, classType.members, cd.body);
 
   ctx.exitClass();
   ctx.exitScope();
@@ -15840,12 +15873,6 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   }
   ctx.exitInterface();
 
-  // Every member is registered by now, so each symbol-keyed one can be
-  // given the identity of the symbol that named it — and a key that names
-  // no symbol is reported.
-  recordSymbolKeyedMemberIdentities(
-      ctx, ifaceType.members, id.body, ifaceName, ifaceType.staticSymbols);
-
   // Register interface in type namespace.
   ctx.declareTypeName(ifaceName, ifaceType);
   let ifaceInfo = ctx.model.resolveDeclaration(id);
@@ -15853,6 +15880,13 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
     ctx.declareBinding(ifaceInfo, ifaceType);
     ctx.model.addDeclaredInterface(ifaceInfo.id, id);
   }
+
+  // Every member is registered by now, so each symbol-keyed one can be
+  // given the identity of the symbol that named it — and a key that names
+  // no symbol is reported. After the binding above, because the key is
+  // checked as an ordinary expression and `Iface.sym` names this interface.
+  recordSymbolKeyedMemberIdentities(
+      ctx, ifaceType as Type, ifaceType.members, id.body);
 
   ctx.exitScope();
 };
@@ -16612,10 +16646,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   }
   ctx.exitInterface();
 
-  // As for an interface: members are registered, so stamp and report.
-  recordSymbolKeyedMemberIdentities(
-      ctx, mixinType.members, md.body, mixinName, mixinType.staticSymbols);
-
   // Register mixin type early so it's available in model during body checking.
   ctx.declareTypeName(mixinName, mixinType);
   let info = ctx.model.resolveDeclaration(md);
@@ -16624,6 +16654,11 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
     ctx.declareBinding(info, mixinType);
     ctx.model.addDeclaredMixin(info.id, md);
   }
+
+  // As for an interface: members are registered and the mixin's name is
+  // bound, so its symbol keys can be checked, stamped and reported.
+  recordSymbolKeyedMemberIdentities(
+      ctx, mixinType as Type, mixinType.members, md.body);
 
   // 2. Check bodies
   ctx.enterClass(thisType);
@@ -17267,67 +17302,88 @@ let staticSymbolsOf = (t: Type): Map<String, Type> | null => {
 };
 
 /**
- * The symbol a member key names, for both spellings.
- *
- * These are ordinary references: `:sym` names a top-level `symbol` in
- * lexical scope, and `:Owner.sym` names a static member of `Owner`, the
- * way any static member is named.
- *
- * Reports the reason it failed when `report` is set, and returns null.
- * Callers that only want the identity pass false.
+ * Whether `t` declares a static member — field, method, accessor or
+ * symbol — called `name`.
  */
-let resolveSymbolPath = (
-    ctx: CheckerContext,
-    path: Expression,
-    report: boolean,
-    loc: SourceLocation | null,
-    enclosingName: String = "",
-    enclosingSymbols: Map<String, Type> | null = null): SymbolType | null => {
+let declaresStaticMember = (t: Type, name: String): boolean => {
+  let symbols = staticSymbolsOf(t);
+  if (symbols != null && (symbols as Map<String, Type>).has(name)) {
+    return true;
+  }
+  let members: Map<String, MemberInfo> | null = match (t) {
+    case ClassType as ct: ct.members
+    case InterfaceType as it: it.members
+    case MixinType as mt: mt.members
+    case _: null
+  };
+  if (members == null) {
+    return false;
+  }
+  for (let key in [name, "get#" + name]) {
+    if (let (true, info) = (members as Map<String, MemberInfo>).get(key)) {
+      if (info.isStatic) { return true; }
+    }
+  }
+  return false;
+};
+
+/** The declared name of a class, interface or mixin; "" for anything else. */
+let declaredTypeName = (t: Type): String => {
+  return match (t) {
+    case ClassType as ct: ct.name
+    case InterfaceType as it: it.name
+    case MixinType as mt: mt.name
+    case _: ""
+  };
+};
+
+/**
+ * The suffix for a missing-name error when the name is a static member of
+ * a type whose body encloses the reference — the usual cause of that
+ * error inside a type, since a static member is only ever named through
+ * its type. Empty when no enclosing type declares it.
+ */
+let staticMemberHint = (ctx: CheckerContext, name: String): String => {
+  let candidates = new Array<Type>();
+  let declaring = ctx.declaringTypes;
+  var i = declaring.length - 1;
+  while (i >= 0) {
+    candidates.push(declaring[i]);
+    i -= 1;
+  }
+  let {currentClass} = ctx;
+  if (currentClass != null) {
+    candidates.push(currentClass as Type);
+  }
+  for (let t in candidates) {
+    let typeName = declaredTypeName(t);
+    if (typeName != "" && declaresStaticMember(t, name)) {
+      return " Did you mean '" + typeName + "." + name + "'?";
+    }
+  }
+  return "";
+};
+
+/**
+ * The symbol a member key names, found without reporting anything.
+ *
+ * Member keys are minted during registration, before the path itself is
+ * checked, so this has to be a quiet lookup. It finds exactly what
+ * `checkSymbolPath` finds — a top-level `symbol` in scope for `sym`, a
+ * static symbol of `Owner` for `Owner.sym` — and a path it cannot find is
+ * reported there, as an ordinary expression.
+ */
+let lookupSymbolPath = (ctx: CheckerContext, path: Expression): SymbolType | null => {
   match (path) {
     case Identifier as ident: {
       let t = ctx.resolveIdentifier(ident as Node);
       if (t != null && t is SymbolType) {
         return t as SymbolType;
       }
-      if (report) {
-        // Like any static member, a static symbol is not in scope under
-        // its bare name. When the name is one the enclosing type declares,
-        // that is almost always what was meant, so say how to name it.
-        var ownedByEnclosing = false;
-        if (enclosingSymbols != null) {
-          ownedByEnclosing =
-              (enclosingSymbols as Map<String, Type>).has(ident.name);
-        }
-        if (ownedByEnclosing) {
-          ctx.error(
-            "'" + ident.name + "' is a static symbol of '" + enclosingName +
-            "'. Write '" + enclosingName + "." + ident.name +
-            "', as with any static member.",
-            DiagnosticCode.SymbolNotFound,
-            loc
-          );
-        } else {
-          // Naming a symbol is an ordinary reference, so a name that is
-          // not in scope is the ordinary error. That it was about to key
-          // a member is beside the point when nothing of that name exists.
-          ctx.error(
-            "Variable '" + ident.name + "' not found.",
-            DiagnosticCode.SymbolNotFound,
-            loc
-          );
-        }
-      }
       return null;
     }
     case MemberExpression {object, property}: {
       if (!(object is Identifier)) {
-        if (report) {
-          ctx.error(
-            "A symbol key must be a symbol name or 'Type.symbol'.",
-            DiagnosticCode.SymbolNotFound,
-            loc
-          );
-        }
         return null;
       }
       let ownerName = (object as Identifier).name;
@@ -17336,25 +17392,10 @@ let resolveSymbolPath = (
         ownerType = ctx.resolveIdentifier(object as Node);
       }
       if (ownerType == null) {
-        if (report) {
-          ctx.error(
-            "Type '" + ownerName + "' not found.",
-            DiagnosticCode.SymbolNotFound,
-            loc
-          );
-        }
         return null;
       }
       let symbols = staticSymbolsOf(baseType(ownerType as Type));
       if (symbols == null) {
-        if (report) {
-          ctx.error(
-            "Property '" + property.name + "' does not exist on type '" +
-            ownerName + "'.",
-            DiagnosticCode.PropertyNotFound,
-            loc
-          );
-        }
         return null;
       }
       if (let (true, sym) = (symbols as Map<String, Type>).get(property.name)) {
@@ -17362,30 +17403,47 @@ let resolveSymbolPath = (
           return sym as SymbolType;
         }
       }
-      if (report) {
-        // The member does not exist at all, which is the whole of the
-        // problem; that the use site wanted a symbol is secondary. Same
-        // wording as any other missing member.
-        ctx.error(
-          "Property '" + property.name + "' does not exist on type '" +
-          ownerName + "'.",
-          DiagnosticCode.PropertyNotFound,
-          loc
-        );
-      }
       return null;
     }
     case _: {
-      if (report) {
-        ctx.error(
-          "A symbol key must be a symbol name or 'Type.symbol'.",
-          DiagnosticCode.SymbolNotFound,
-          loc
-        );
-      }
       return null;
     }
   }
+};
+
+/**
+ * Checks the path inside `[...]` as the expression it is, and requires it
+ * to be a symbol.
+ *
+ * `sym` and `Owner.sym` are an ordinary name and an ordinary static member
+ * read, so they are checked like any other, and a name or member that does
+ * not exist is reported the way it would be anywhere. The one thing that
+ * is particular to a member key is that what it names has to be a symbol.
+ * Returns null after reporting when either fails.
+ */
+let checkSymbolPath = (ctx: CheckerContext, path: Expression): SymbolType | null => {
+  let t = checkExpression(ctx, path, null);
+  if (t is SymbolType) {
+    return t as SymbolType;
+  }
+  if (!(t is ErrorType)) {
+    ctx.error(
+      "'" + symbolPathText(path) + "' is not a symbol.",
+      DiagnosticCode.TypeMismatch,
+      path.loc
+    );
+  }
+  return null;
+};
+
+/** The source spelling of a symbol path, for a message. */
+let symbolPathText = (path: Expression): String => {
+  return match (path) {
+    case Identifier {name}: name
+    case MemberExpression {object, property}:
+      symbolPathText(object) + "." + property.name
+    case _: "<expression>"
+  };
 };
 
 /**
@@ -17479,10 +17537,9 @@ let registerStaticSymbols = (
  */
 let recordSymbolKeyedMemberIdentities = (
     ctx: CheckerContext,
+    owner: Type,
     members: Map<String, MemberInfo>,
-    body: Array<Node>,
-    ownerName: String,
-    ownerSymbols: Map<String, Type>): void => {
+    body: Array<Node>): void => {
   for (let member in body) {
     let nameNode = memberNameNodeOf(member);
     if (nameNode == null) { continue; }
@@ -17499,9 +17556,9 @@ let recordSymbolKeyedMemberIdentities = (
       settled = seen.symbolTypeId >= 0;
     }
     if (settled) { continue; }
-    let sym = resolveSymbolPath(
-        ctx, ref as Expression, true, (nameNode as Node).loc,
-        ownerName, ownerSymbols);
+    ctx.pushDeclaringType(owner);
+    let sym = checkSymbolPath(ctx, ref as Expression);
+    ctx.popDeclaringType();
     if (sym == null) { continue; }
     let id = sym.id as i32;
     let candidates = new Array<String>();
@@ -17531,11 +17588,8 @@ let recordSymbolKeyedMemberIdentities = (
  * Returns false when the path names nothing, having reported why, so the
  * member lookup does not report the same mistake a second time.
  */
-let checkSymbolKeyAccess = (
-    ctx: CheckerContext,
-    path: Expression,
-    loc: SourceLocation | null): boolean => {
-  return resolveSymbolPath(ctx, path, true, loc) != null;
+let checkSymbolKeyAccess = (ctx: CheckerContext, path: Expression): boolean => {
+  return checkSymbolPath(ctx, path) != null;
 };
 
 let checkMemberExpression = (
@@ -17558,6 +17612,18 @@ let checkMemberExpression = (
 
   let isStatic = isStaticReceiver(ctx, object);
   ctx.model.setStaticAccess(expr, isStatic);
+
+  // `Owner.sym` reads a static symbol, the same way `Owner.count` reads a
+  // static field. A symbol exists only at compile time, so there is no
+  // member to look up at run time; its value is its type.
+  if (!isSymbolAccess && namesDeclaredType(ctx, object)) {
+    let symbols = staticSymbolsOf(baseType(objectTypeRaw));
+    if (symbols != null) {
+      if (let (true, sym) = (symbols as Map<String, Type>).get(property.name)) {
+        return sym;
+      }
+    }
+  }
 
   let propName = accessMemberKey(
       ctx, expr as Node, isSymbolAccess, property, expr.symbolPath);
@@ -17620,7 +17686,7 @@ let checkMemberExpression = (
   }
 
   if (isSymbolAccess && expr.symbolPath != null) {
-    if (!checkSymbolKeyAccess(ctx, expr.symbolPath as Expression, loc)) {
+    if (!checkSymbolKeyAccess(ctx, expr.symbolPath as Expression)) {
       return new ErrorType();
     }
   }

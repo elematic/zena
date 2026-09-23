@@ -1,9 +1,8 @@
 // @mode: check
 
-// A `static symbol` is never in scope under its bare name — not even
-// inside the body that declares it. Naming it takes the type that
-// declares it, which is what makes that type the whole of its
-// visibility. `docs/design/classes.md` §9.2.
+// The name inside `[...]` is an ordinary expression — a name, or a static
+// member read through its type — checked like any other, and it has to be
+// a symbol.
 
 interface Disposable {
   static symbol dispose;
@@ -14,10 +13,9 @@ interface Disposable {
 interface Bare {
   static symbol act;
 
-  // The bare name resolves to nothing: a static symbol is not a lexical
-  // binding. Before this was checked, the key was minted from the text
-  // and the member existed under a symbol that did not.
-  [act](): void; // @error: is a static symbol of 'Bare'
+  // Like any static member, a static symbol is not in scope under its bare
+  // name, and the error is the ordinary one.
+  [act](): void; // @error: Variable 'act' not found. Did you mean 'Bare.act'?
 }
 
 interface Unknown {
@@ -25,12 +23,22 @@ interface Unknown {
 
   // The qualifier resolves and the property does not. That it does not
   // exist at all is the problem, so that is what is reported.
-  [Unknown.notDeclared](): void; // @error: Property 'notDeclared' does not exist on type 'Unknown'
+  [Unknown.notDeclared](): void; // @error: Property 'notDeclared' does not exist on interface 'Unknown'
 }
 
 // A name nothing declares is the ordinary missing-name error.
 interface Nothing {
   [nowhere](): void; // @error: Variable 'nowhere' not found
+}
+
+// A path that resolves has to resolve to a symbol — the one check that is
+// particular to a member key.
+class WithField {
+  static count: i32 = 0;
+}
+
+interface NotASymbol {
+  [WithField.count](): void; // @error: 'WithField.count' is not a symbol
 }
 
 class Impl implements Disposable {

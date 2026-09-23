@@ -1055,12 +1055,11 @@ export final class ScopeBuilder {
   }
 
   /**
-   * Resolve the symbol a `:sym`-keyed member declaration names.
+   * Record the references in a symbol-keyed member's name.
    *
-   * The declaring side needs the reference for the same reason the access
-   * side does: the member key is the mangled string `":" + name`, so the
-   * only thing that can tell one module's `symbol secret` from another's
-   * is which binding the reference resolved to.
+   * `[sym]` and `[Owner.sym]` are ordinary expressions, and the checker
+   * checks them as such, so their names need references like any other.
+   * Class, mixin and interface bodies all come through here.
    */
   #processSymbolKeyedName(member: Node): void {
     var nameNode: Node | null = null;
@@ -1068,14 +1067,14 @@ export final class ScopeBuilder {
       case FieldDefinition as fd: { nameNode = fd.name; }
       case MethodDefinition as md: { nameNode = md.name; }
       case AccessorDeclaration as acc: { nameNode = acc.name; }
+      case MethodSignature as ms: { nameNode = ms.name; }
       case _: {}
     }
+    // `if (let ...)` against a null value traps rather than not matching
+    // (#663), so null is ruled out first.
     if (nameNode == null) { return; }
-    match (nameNode) {
-      case SymbolPropertyName {symbolRef}: {
-        this.#processExpression(symbolRef);
-      }
-      case _: {}
+    if (let SymbolPropertyName {symbolRef} = nameNode as Node) {
+      this.#processExpression(symbolRef);
     }
   }
 
@@ -1178,6 +1177,7 @@ export final class ScopeBuilder {
    */
   #processInterfaceBody(members: Array<Node>): void {
     for (let member in members) {
+      this.#processSymbolKeyedName(member);
       match (member) {
         case MethodSignature as ms: {
           this.#enterScope(ScopeKind.Function);
