@@ -1167,6 +1167,18 @@ const development = [
           'Patterns as strings',
         ],
       },
+      {
+        text: 'WebAssembly alignment',
+        link: '/development/design/wasm-alignment/',
+        outline: [
+          'Design premise',
+          'Type system and primitives',
+          'Object model and memory layout',
+          'Functions and calling conventions',
+          'Memory management and runtime footprint',
+          'Host interoperability and component model',
+        ],
+      },
     ],
   },
 ];

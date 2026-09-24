@@ -32,6 +32,58 @@ const escapeHtml = (s) =>
     (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c],
   );
 
+const RAW_BLOCK_TAGS = [
+  'zena-playground',
+  'zena-example-playground',
+  'zena-project',
+];
+const OPEN_TAG_RE = new RegExp(
+  `^<(${RAW_BLOCK_TAGS.join('|')})(?=[\\s/>]|$)`,
+  'i',
+);
+const CLOSE_TAG_RE = new RegExp(`</(${RAW_BLOCK_TAGS.join('|')})>`, 'i');
+
+/**
+ * Custom block rule to treat `<zena-playground>` and related components as
+ * atomic raw HTML blocks (similar to `<script>` or `<pre>`), preventing
+ * CommonMark from terminating the HTML block at blank lines and injecting `<p>`.
+ */
+const rawCustomElementBlock = (state, startLine, endLine, silent) => {
+  let pos = state.bMarks[startLine] + state.tShift[startLine];
+  let max = state.eMarks[startLine];
+
+  if (state.sCount[startLine] - state.blkIndent >= 4) return false;
+  if (!state.md.options.html) return false;
+  if (state.src.charCodeAt(pos) !== 0x3c /* < */) return false;
+
+  let lineText = state.src.slice(pos, max);
+  if (!OPEN_TAG_RE.test(lineText)) return false;
+  if (silent) return true;
+
+  let nextLine = startLine + 1;
+  if (!CLOSE_TAG_RE.test(lineText)) {
+    for (; nextLine < endLine; nextLine++) {
+      if (state.sCount[nextLine] < state.blkIndent) break;
+
+      pos = state.bMarks[nextLine] + state.tShift[nextLine];
+      max = state.eMarks[nextLine];
+      lineText = state.src.slice(pos, max);
+
+      if (CLOSE_TAG_RE.test(lineText)) {
+        if (lineText.length !== 0) nextLine++;
+        break;
+      }
+    }
+  }
+
+  state.line = nextLine;
+  const token = state.push('html_block', '', 0);
+  token.map = [startLine, nextLine];
+  token.content = state.getLines(startLine, nextLine, state.blkIndent, true);
+
+  return true;
+};
+
 /**
  * Applies the site's markdown conventions to Eleventy's markdown-it instance.
  *
@@ -40,6 +92,12 @@ const escapeHtml = (s) =>
  */
 export const configureMarkdown = (md, highlighter) => {
   md.set({html: true, linkify: true, typographer: false});
+
+  md.block.ruler.before(
+    'html_block',
+    'zena_raw_custom_elements',
+    rawCustomElementBlock,
+  );
 
   // Without this, linkify reads bare filenames as bare domains: prose mentioning
   // `strings.md` renders as a link to http://strings.md. Explicit `http://…`

@@ -31,6 +31,8 @@ alternatives were, and why this one won.
   primitives are never boxed implicitly, and why `any` was removed.
 - [**Regular expressions**](/development/design/regex/) — a regex engine written
   in Zena, with no `/pattern/` literal.
+- [**WebAssembly alignment**](/development/design/wasm-alignment/) — a catalog
+  of design decisions in Zena that align directly with WebAssembly and WebAssembly GC.
 
 ## The working documents
 

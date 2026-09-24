@@ -53,6 +53,7 @@ const SECTIONS = [
   ['/api/', 'API'],
   ['/development/design/', 'Design'],
   ['/development/', 'Development'],
+  ['/blog/', 'Blog'],
 ];
 
 export const writeSearchIndex = async (dir, results) => {

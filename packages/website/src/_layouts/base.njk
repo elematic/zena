@@ -19,13 +19,39 @@
     <meta name="description" content="{{ description or site.description }}" />
     <link rel="canonical" href="{{ site.url }}{{ page.url }}" />
 
-    <meta property="og:type" content="website" />
+    {# Open Graph #}
+    {% set isBlogPost = layout == 'blog-post.njk' or tags == 'posts' %}
+    {% set heroImage = hero.image if hero and hero.image else (hero if hero else image) %}
+    {% set heroAlt = hero.alt if hero and hero.alt else (title or site.title) %}
+    <meta property="og:site_name" content="{{ site.title }}" />
+    <meta property="og:type" content="{% if isBlogPost %}article{% else %}website{% endif %}" />
     <meta property="og:title" content="{{ title or site.title }}" />
     <meta
       property="og:description"
       content="{{ description or site.description }}"
     />
+    <meta property="og:url" content="{{ site.url }}{{ page.url }}" />
+    {% if isBlogPost and page.date %}
+    <meta property="article:published_time" content="{{ page.date | isoDate }}" />
+    {% endif %}
+
+    {# Twitter / Social Card #}
+    {% if heroImage %}
+    {% set socialImageUrl = heroImage | absoluteUrl(site.url) %}
+    <meta property="og:image" content="{{ socialImageUrl }}" />
+    <meta property="og:image:alt" content="{{ heroAlt }}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="{{ socialImageUrl }}" />
+    <meta name="twitter:image:alt" content="{{ heroAlt }}" />
+    {% else %}
     <meta name="twitter:card" content="summary" />
+    {% endif %}
+    <meta name="twitter:title" content="{{ title or site.title }}" />
+    <meta
+      name="twitter:description"
+      content="{{ description or site.description }}"
+    />
+    <meta name="twitter:url" content="{{ site.url }}{{ page.url }}" />
 
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/css/style.css" />

@@ -10,4 +10,5 @@ export default [
   {text: 'API', link: '/api/', match: '/api/'},
   {text: 'Development', link: '/development/', match: '/development/'},
   {text: 'Playground', link: '/playground/', match: '/playground/'},
+  {text: 'Blog', link: '/blog/', match: '/blog/'},
 ];

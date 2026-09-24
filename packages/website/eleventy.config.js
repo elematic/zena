@@ -179,7 +179,48 @@ export default async function (eleventyConfig) {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
+      timeZone: 'UTC',
     }),
+  );
+
+  /** Formats a date into a YYYY/MM slug for blog post URLs. */
+  eleventyConfig.addFilter('dateSlug', (value) => {
+    const d = new Date(value);
+    const year = d.getUTCFullYear();
+    const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+    return `${year}/${month}`;
+  });
+
+  /** Formats a date into an ISO YYYY-MM-DD string for time tags. */
+  eleventyConfig.addFilter(
+    'isoDate',
+    (value) => new Date(value).toISOString().split('T')[0],
+  );
+
+  /** Resolves a URL to an absolute URL using the site base URL if relative. */
+  eleventyConfig.addFilter(
+    'absoluteUrl',
+    (url, base = 'https://zena-lang.dev') => {
+      if (!url) return '';
+      if (url.startsWith('http://') || url.startsWith('https://')) return url;
+      return new URL(url, base).toString();
+    },
+  );
+
+  /** Estimates reading time for prose content. */
+  eleventyConfig.addFilter('readingTime', (content) => {
+    const text = String(content ?? '').replace(/<[^>]+>/g, '');
+    const words = text.trim().split(/\s+/).filter(Boolean).length;
+    const minutes = Math.max(1, Math.round(words / 200));
+    return `${minutes} min read`;
+  });
+
+  /* Collections ---------------------------------------------------------- */
+
+  eleventyConfig.addCollection('posts', (collectionApi) =>
+    collectionApi
+      .getFilteredByGlob('src/blog/posts/*.md')
+      .sort((a, b) => b.date - a.date),
   );
 
   /* Shortcodes ----------------------------------------------------------- */
