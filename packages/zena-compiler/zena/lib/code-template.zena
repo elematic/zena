@@ -1,0 +1,337 @@
+/**
+ * Template tag and code emission helpers for synthesizing Zena source code.
+ */
+import {
+  TemplateStringsArray, StringBuilder, FixedArray, GrowableArray
+} from 'zena:core';
+
+/**
+ * A deferred Zena code template.
+ */
+export final class ZenaTemplate {
+  strings: TemplateStringsArray;
+  values: FixedArray<anyref>;
+  new(this.strings, this.values);
+}
+
+/**
+ * Tagged template function for Zena code generation.
+ */
+export let zena = (strings: TemplateStringsArray, values: FixedArray<anyref>): ZenaTemplate => {
+  return new ZenaTemplate(strings, values);
+};
+
+/** Whether `b` can be part of a line's indentation: space (0x20) or tab (0x09). */
+let isIndentByte = (b: i32): boolean => b == 0x20 || b == 0x09;
+
+/** The index of the next `\n` in `[from, end)`, or -1 if none. */
+let nextNewline = (seg: String, from: i32, end: i32): i32 => {
+  for (var i = from; i < end; i += 1) {
+    if (seg.getByteAt(i) == 0x0A) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+/**
+ * Where content starts in the first literal: past the opening line when
+ * that line is blank, and at 0 otherwise.
+ */
+let contentStart = (first: String): i32 => {
+  let len = first.length;
+  for (var i = 0; i < len; i += 1) {
+    let b = first.getByteAt(i);
+    if (b == 0x0A) {
+      return i + 1;
+    }
+    if (!isIndentByte(b) && b != 0x0D) {
+      return 0;
+    }
+  }
+  return 0;
+};
+
+/**
+ * Where content ends in the last literal: before the closing line when
+ * that line is blank — dropping its line break with it — and at the end
+ * otherwise.
+ */
+let contentEnd = (last: String): i32 => {
+  let len = last.length;
+  var i = len - 1;
+  while (i >= 0) {
+    let b = last.getByteAt(i);
+    if (b == 0x0A) {
+      if (i > 0 && last.getByteAt(i - 1) == 0x0D) {
+        return i - 1;
+      }
+      return i;
+    }
+    if (!isIndentByte(b)) {
+      return len;
+    }
+    i -= 1;
+  }
+  return len;
+};
+
+/**
+ * Calculates the common indentation prefix length across all content lines
+ * in the template.
+ */
+let computeCommonIndentLen = (
+    strings: TemplateStringsArray,
+    start0: i32,
+    endN: i32): i32 => {
+  let segCount = strings.length;
+  var commonIndent: String | null = null;
+
+  for (var s = 0; s < segCount; s += 1) {
+    let seg = strings[s];
+    let segEnd = if (s == segCount - 1) endN else seg.length;
+    let valueFollows = s < segCount - 1;
+    var pos = if (s == 0) start0 else 0;
+    var atLineStart = s == 0;
+
+    while (pos < segEnd) {
+      if (atLineStart) {
+        var wsEnd = pos;
+        while (wsEnd < segEnd && isIndentByte(seg.getByteAt(wsEnd))) {
+          wsEnd += 1;
+        }
+
+        // Check if the rest of the line is blank:
+        var isBlank = false;
+        if (wsEnd >= segEnd) {
+          isBlank = !valueFollows;
+        } else {
+          let b = seg.getByteAt(wsEnd);
+          if (b == 0x0A) {
+            isBlank = true;
+          } else if (b == 0x0D) {
+            isBlank = wsEnd + 1 < segEnd && seg.getByteAt(wsEnd + 1) == 0x0A;
+          }
+        }
+
+        if (!isBlank) {
+          let currentIndent = seg.sliceBytes(pos, wsEnd);
+          if (commonIndent == null) {
+            commonIndent = currentIndent;
+          } else {
+            let existing = commonIndent as String;
+            let limit = if (existing.length < currentIndent.length) existing.length else currentIndent.length;
+            var matchLen = 0;
+            while (matchLen < limit && existing.getByteAt(matchLen) == currentIndent.getByteAt(matchLen)) {
+              matchLen += 1;
+            }
+            commonIndent = existing.sliceBytes(0, matchLen);
+          }
+        }
+
+        pos = wsEnd;
+        atLineStart = false;
+        if (pos >= segEnd) {
+          break;
+        }
+      }
+
+      let nl = nextNewline(seg, pos, segEnd);
+      if (nl < 0) {
+        break;
+      }
+      pos = nl + 1;
+      atLineStart = true;
+    }
+  }
+
+  return if (commonIndent != null) (commonIndent as String).length else 0;
+};
+
+/**
+ * Emits a string value into `sb`, indenting any newlines with `lineIndent`.
+ */
+function emitString(sb: StringBuilder, lineIndent: String, str: String): void {
+  var pos = 0;
+  let len = str.length;
+  while (pos < len) {
+    let nl = nextNewline(str, pos, len);
+    if (nl < 0) {
+      sb.append(str.sliceBytes(pos, len));
+      break;
+    }
+    sb.append(str.sliceBytes(pos, nl + 1));
+    sb.append(lineIndent);
+    pos = nl + 1;
+  }
+}
+
+/**
+ * Emits a single interpolated value into `sb`.
+ */
+function emitValue(sb: StringBuilder, lineIndent: String, val: anyref, indentFirst: boolean): void {
+  if (val == null) {
+    return;
+  }
+  if (val is ZenaTemplate) {
+    emit(sb, lineIndent, val as ZenaTemplate, indentFirst);
+    return;
+  }
+  if (val is String) {
+    let str = val as String;
+    if (indentFirst) {
+      sb.append(lineIndent);
+    }
+    emitString(sb, lineIndent, str);
+    return;
+  }
+  if (val is GrowableArray<ZenaTemplate>) {
+    let arr = val as GrowableArray<ZenaTemplate>;
+    for (var i = 0; i < arr.length; i += 1) {
+      if (i > 0) {
+        sb.append("\n").append(lineIndent);
+      }
+      emit(sb, lineIndent, arr[i], false);
+    }
+    return;
+  }
+  if (val is FixedArray<ZenaTemplate>) {
+    let arr = val as FixedArray<ZenaTemplate>;
+    for (var i = 0; i < arr.length; i += 1) {
+      if (i > 0) {
+        sb.append("\n").append(lineIndent);
+      }
+      emit(sb, lineIndent, arr[i], false);
+    }
+    return;
+  }
+  if (val is GrowableArray<String>) {
+    let arr = val as GrowableArray<String>;
+    for (var i = 0; i < arr.length; i += 1) {
+      if (i > 0) {
+        sb.append("\n").append(lineIndent);
+      }
+      emitString(sb, lineIndent, arr[i]);
+    }
+    return;
+  }
+  if (val is FixedArray<String>) {
+    let arr = val as FixedArray<String>;
+    for (var i = 0; i < arr.length; i += 1) {
+      if (i > 0) {
+        sb.append("\n").append(lineIndent);
+      }
+      emitString(sb, lineIndent, arr[i]);
+    }
+    return;
+  }
+  if (val is GrowableArray<anyref>) {
+    let arr = val as GrowableArray<anyref>;
+    for (var i = 0; i < arr.length; i += 1) {
+      if (i > 0) {
+        sb.append("\n").append(lineIndent);
+      }
+      emitValue(sb, lineIndent, arr[i], false);
+    }
+    return;
+  }
+  if (val is FixedArray<anyref>) {
+    let arr = val as FixedArray<anyref>;
+    for (var i = 0; i < arr.length; i += 1) {
+      if (i > 0) {
+        sb.append("\n").append(lineIndent);
+      }
+      emitValue(sb, lineIndent, arr[i], false);
+    }
+    return;
+  }
+}
+
+/**
+ * Emits a `ZenaTemplate` into `sb` prefixed by `baseIndent`.
+ */
+export function emit(sb: StringBuilder, baseIndent: String, template: ZenaTemplate,
+    indentFirstLine: boolean = true): void {
+  let segCount = template.strings.length;
+  if (segCount == 0) {
+    return;
+  }
+
+  let start0 = contentStart(template.strings[0]);
+  var endN = contentEnd(template.strings[segCount - 1]);
+  if (segCount == 1 && endN < start0) {
+    endN = start0;
+  }
+
+  let commonIndentLen = computeCommonIndentLen(template.strings, start0, endN);
+
+  var atLineStart = true;
+  var isFirstLine = true;
+  var currentLineIndent = baseIndent;
+
+  for (var s = 0; s < segCount; s += 1) {
+    let seg = template.strings[s];
+    let segEnd = if (s == segCount - 1) endN else seg.length;
+    var pos = if (s == 0) start0 else 0;
+
+    while (pos < segEnd) {
+      if (atLineStart) {
+        // Strip common indentation:
+        var wsEnd = pos;
+        while (wsEnd < segEnd && isIndentByte(seg.getByteAt(wsEnd))) {
+          wsEnd += 1;
+        }
+
+        let wsLen = wsEnd - pos;
+        let drop = if (wsLen < commonIndentLen) wsLen else commonIndentLen;
+        pos += drop;
+
+        if (!isFirstLine || indentFirstLine) {
+          sb.append(baseIndent);
+        }
+        isFirstLine = false;
+
+        // Measure the remaining indentation on this line:
+        var relWsEnd = pos;
+        while (relWsEnd < segEnd && isIndentByte(seg.getByteAt(relWsEnd))) {
+          relWsEnd += 1;
+        }
+        let relativeIndent = seg.sliceBytes(pos, relWsEnd);
+        sb.append(relativeIndent);
+        currentLineIndent = baseIndent + relativeIndent;
+        pos = relWsEnd;
+
+        atLineStart = false;
+        if (pos >= segEnd) {
+          break;
+        }
+      }
+
+      let nl = nextNewline(seg, pos, segEnd);
+      if (nl < 0) {
+        sb.append(seg.sliceBytes(pos, segEnd));
+        pos = segEnd;
+        break;
+      }
+
+      sb.append(seg.sliceBytes(pos, nl + 1));
+      pos = nl + 1;
+      atLineStart = true;
+      currentLineIndent = baseIndent;
+    }
+
+    if (s < template.values.length) {
+      emitValue(sb, currentLineIndent, template.values[s], false);
+    }
+  }
+}
+
+/**
+ * Renders a `ZenaTemplate` to a String.
+ */
+export function render(template: ZenaTemplate, baseIndent: String = ""): String {
+  let sb = new StringBuilder();
+  emit(sb, baseIndent, template);
+  return sb.toString();
+}
+

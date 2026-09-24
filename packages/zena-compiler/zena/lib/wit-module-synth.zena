@@ -72,6 +72,7 @@ import {
   mainScalarResultOf, hasAsyncMain, renderMainWrapper, renderWrapperHeader,
   componentSyncExportSuffix
 } from './component-entry.zena';
+import { zena, emit } from './code-template.zena';
 
 
 /** Whether `path` is a synthesized WIT module's canonical path. */
@@ -1384,24 +1385,30 @@ function emitListStaging(sb: StringBuilder, ty: Ty, value: String,
   let element = ty.children[0];
   uses.useAbi("stageBuffer");
   uses.stagedAny = true;
-  let b = "b" + i32ToString(uses.nextTmp());
-  let n = "n" + i32ToString(uses.nextTmp());
-  let idx = "i" + i32ToString(uses.nextTmp());
-  sb.append(indent).append("var ").append(b).append(" = 0;\n");
-  sb.append(indent).append("let ").append(n).append(" = ")
-      .append(value).append(".length;\n");
-  sb.append(indent).append("if (").append(n).append(" > 0) {\n");
-  sb.append(indent).append("  ").append(b).append(" = stageBuffer(")
-      .append(n).append(" * ").append(i32ToString(element.size))
-      .append(");\n");
-  sb.append(indent).append("  for (var ").append(idx)
-      .append(" = 0; ").append(idx).append(" < ").append(n)
-      .append("; ").append(idx).append(" += 1) {\n");
-  lowerMemStmts(sb, element, value + "[" + idx + "]",
-      b + " + " + idx + " * " + i32ToString(element.size),
-      indent + "    ", uses);
-  sb.append(indent).append("  }\n");
-  sb.append(indent).append("}\n");
+  let b = `b${uses.nextTmp()}`;
+  let n = `n${uses.nextTmp()}`;
+  let idx = `i${uses.nextTmp()}`;
+  let elemSize = `${element.size}`;
+
+  let bodySb = new StringBuilder();
+  lowerMemStmts(bodySb, element, `${value}[${idx}]`,
+      `${b} + ${idx} * ${elemSize}`, "", uses);
+  var body = bodySb.toString();
+  if (body.endsWith("\n")) {
+    body = body.sliceBytes(0, body.length - 1);
+  }
+
+  emit(sb, indent, zena`
+    var ${b} = 0;
+    let ${n} = ${value}.length;
+    if (${n} > 0) {
+      ${b} = stageBuffer(${n} * ${elemSize});
+      for (var ${idx} = 0; ${idx} < ${n}; ${idx} += 1) {
+        ${body}
+      }
+    }
+  `);
+  sb.append("\n");
   finish(b, n);
 }
 

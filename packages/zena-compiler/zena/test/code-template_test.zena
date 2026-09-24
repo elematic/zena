@@ -1,0 +1,96 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import { zena, render, ZenaTemplate } from '../lib/code-template.zena';
+
+export let tests = suite('code-template', (): void => {
+  test('basic dedent without holes', (ctx: TestContext): void => {
+    let t = zena`
+      let x = 1;
+      let y = 2;
+    `;
+    equal(render(t), 'let x = 1;\nlet y = 2;');
+  });
+
+  test('basic dedent with base indent', (ctx: TestContext): void => {
+    let t = zena`
+      let x = 1;
+      let y = 2;
+    `;
+    equal(render(t, '  '), '  let x = 1;\n  let y = 2;');
+  });
+
+  test('inline string interpolation', (ctx: TestContext): void => {
+    let name = 'foo';
+    let value = '42';
+    let t = zena`
+      let ${name} = ${value};
+    `;
+    equal(render(t), 'let foo = 42;');
+  });
+
+  test('nested template indentation', (ctx: TestContext): void => {
+    let body = zena`
+      let inner = 1;
+      let inner2 = 2;
+    `;
+    let t = zena`
+      if (true) {
+        ${body}
+      }
+    `;
+    equal(render(t), 'if (true) {\n  let inner = 1;\n  let inner2 = 2;\n}');
+  });
+
+  test('array of templates indentation', (ctx: TestContext): void => {
+    let items = new Array<ZenaTemplate>();
+    items.push(zena`var a = 1;`);
+    items.push(zena`var b = 2;`);
+    let t = zena`
+      function init() {
+        ${items}
+      }
+    `;
+    equal(render(t), 'function init() {\n  var a = 1;\n  var b = 2;\n}');
+  });
+
+  test('multiline string indentation', (ctx: TestContext): void => {
+    let multi = 'line1\nline2';
+    let t = zena`
+      function test() {
+        ${multi}
+      }
+    `;
+    equal(render(t), 'function test() {\n  line1\n  line2\n}');
+  });
+
+  test('emitListStaging shape', (ctx: TestContext): void => {
+    let b = 'b0';
+    let n = 'n1';
+    let idx = 'i2';
+    let elemSize = '4';
+    let value = 'items';
+    let body = 'storeI32(b0 + i2 * 4, items[i2]);\nstoreI32(b0 + i2 * 4 + 4, 0);';
+    let t = zena`
+      var ${b} = 0;
+      let ${n} = ${value}.length;
+      if (${n} > 0) {
+        ${b} = stageBuffer(${n} * ${elemSize});
+        for (var ${idx} = 0; ${idx} < ${n}; ${idx} += 1) {
+          ${body}
+        }
+      }
+    `;
+    let expected =
+      'var b0 = 0;\n' +
+      'let n1 = items.length;\n' +
+      'if (n1 > 0) {\n' +
+      '  b0 = stageBuffer(n1 * 4);\n' +
+      '  for (var i2 = 0; i2 < n1; i2 += 1) {\n' +
+      '    storeI32(b0 + i2 * 4, items[i2]);\n' +
+      '    storeI32(b0 + i2 * 4 + 4, 0);\n' +
+      '  }\n' +
+      '}';
+    equal(render(t), expected);
+  });
+});
+
