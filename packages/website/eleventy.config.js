@@ -6,6 +6,12 @@ import {createZenaHighlighter, renderCodeBlock} from './lib/highlight.js';
 import {configureMarkdown} from './lib/markdown.js';
 import {writeSearchIndex} from './lib/search-index.js';
 import {extractOutline} from './lib/toc.js';
+import {
+  escapeXml,
+  getNewestDate,
+  htmlToAbsoluteUrls,
+  isoDateTime,
+} from './lib/feed.js';
 
 const require = createRequire(import.meta.url);
 
@@ -214,6 +220,13 @@ export default async function (eleventyConfig) {
     const minutes = Math.max(1, Math.round(words / 200));
     return `${minutes} min read`;
   });
+
+  /* Feed filters --------------------------------------------------------- */
+
+  eleventyConfig.addFilter('htmlToAbsoluteUrls', htmlToAbsoluteUrls);
+  eleventyConfig.addFilter('isoDateTime', isoDateTime);
+  eleventyConfig.addFilter('getNewestDate', getNewestDate);
+  eleventyConfig.addFilter('escapeXml', escapeXml);
 
   /* Collections ---------------------------------------------------------- */
 

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>{{ site.title }} Blog</title>
+  <subtitle>{{ site.description }}</subtitle>
+  <link href="{{ (feedUrl or '/blog/feed.xml') | absoluteUrl(site.url) }}" rel="self" type="application/atom+xml"/>
+  <link href="{{ '/blog/' | absoluteUrl(site.url) }}" rel="alternate" type="text/html"/>
+  <id>{{ '/blog/' | absoluteUrl(site.url) }}</id>
+  <updated>{{ collections.posts | getNewestDate | isoDateTime }}</updated>
+  <rights>{{ site.footer.copyright }}</rights>
+  <generator uri="https://www.11ty.dev/">Eleventy</generator>
+  {%- for post in collections.posts %}
+  {%- set postUrl = post.url | absoluteUrl(site.url) %}
+  {%- set authorId = post.data.author or 'justinfagnani' %}
+  {%- set authorData = authors[authorId] %}
+  <entry>
+    <title>{{ post.data.title }}</title>
+    <link href="{{ postUrl }}" rel="alternate" type="text/html"/>
+    <id>{{ postUrl }}</id>
+    <published>{{ post.date | isoDateTime }}</published>
+    <updated>{{ post.date | isoDateTime }}</updated>
+    {%- if authorData %}
+    <author>
+      <name>{{ authorData.name }}</name>
+      {%- if authorData.url %}
+      <uri>{{ authorData.url }}</uri>
+      {%- endif %}
+    </author>
+    {%- endif %}
+    {%- if post.data.description %}
+    <summary type="html">{{ post.data.description }}</summary>
+    {%- endif %}
+    <content type="html">{{ (post.templateContent or post.content) | htmlToAbsoluteUrls(site.url) }}</content>
+  </entry>
+  {%- endfor %}
+</feed>
+
