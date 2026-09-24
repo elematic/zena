@@ -287,12 +287,11 @@ export let tests = suite('Compiler Scope Integration', () => {
       equal(main.ast.body.length, 1);
     });
 
-    // The implicit import orders the check as an explicit one would, but
-    // the checked-in bootstrap compiler predates it and still orders the
-    // library's own modules by these imports — so the library keeps them,
-    // and is not told they are unnecessary, until the bootstrap is
-    // reseeded.
-    test('a prelude import inside the library is not yet called unnecessary', () => {
+    // The implicit import orders the check as an explicit one would, so
+    // writing a prelude import out is redundant inside the library as
+    // much as outside it (elematic/zena#594 withheld the warning there,
+    // when the explicit import was the only edge).
+    test('a prelude import inside the library is called unnecessary', () => {
       let host = new MockHost();
       let compiler = makeCompiler(host);
       host.addFile("zena:core/helper.zena",
@@ -305,7 +304,7 @@ export let tests = suite('Compiler Scope Integration', () => {
 
       let helper = compiler.getSourceFile("zena:core/helper.zena") as SourceFile;
       let helperScope = helper.scopeResult as ScopeResult;
-      equal(helperScope.unnecessaryImports.length, 0);
+      equal(helperScope.unnecessaryImports.length, 1);
     });
 
     test('a prelude import in user code is called unnecessary', () => {

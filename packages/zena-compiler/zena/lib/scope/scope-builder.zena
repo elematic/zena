@@ -238,26 +238,15 @@ export final class ScopeBuilder {
   /** The prelude scope's bindings, one per prelude name, in prelude order. */
   #preludeBindings = new Array<ImplicitImport>();
 
-  /**
-   * Whether to call an explicit import of a prelude name unnecessary.
-   * Off for the standard library for now: the checked-in bootstrap
-   * compiler predates implicit prelude imports and orders the prelude's
-   * own modules by those explicit imports, so they stay until the
-   * bootstrap is reseeded with this compiler.
-   */
-  #warnUnnecessaryPreludeImports: boolean;
-
   new(modulePath: String, preludeNames: Map<String, String> | null = null,
       symbolIdGenerator: IdGenerator<SymbolId> | null = null,
-      nodeIds: IdGenerator<NodeId> | null = null,
-      warnUnnecessaryPreludeImports: boolean = true)
+      nodeIds: IdGenerator<NodeId> | null = null)
     : #modulePath = modulePath,
       #preludeNames = preludeNames,
       // Without the loader's generator (a module built on its own, as in
       // tests), draw ids for the prelude's nodes from a range no parse
       // reaches.
-      #nodeIds = nodeIds ?? makeNodeIdGenerator(1073741824),
-      #warnUnnecessaryPreludeImports = warnUnnecessaryPreludeImports {
+      #nodeIds = nodeIds ?? makeNodeIdGenerator(1073741824) {
     if (symbolIdGenerator != null) {
       this.#symbolIdGenerator = symbolIdGenerator;
     }
@@ -346,9 +335,7 @@ export final class ScopeBuilder {
         if (spec.imported.name == spec.local.name &&
             parentScope != null &&
             parentScope.resolve(localName) != null) {
-          if (this.#warnUnnecessaryPreludeImports) {
-            unnecessaryImports.push(sym);
-          }
+          unnecessaryImports.push(sym);
           hasUsedOrSuppressedOrSpecial = true;
           continue;
         }

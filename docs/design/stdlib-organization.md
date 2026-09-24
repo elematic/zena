@@ -175,11 +175,9 @@ finishes, so a cycle through the prelude's own modules left names like
 without importing anything could be checked before the name's module
 existed at all. An explicit import of a prelude name was the workaround,
 which is why the "unnecessary import" warning used to be withheld inside
-the prelude's modules. The implicit import gives the same edge, so those
-explicit imports are redundant now, but the checked-in bootstrap compiler
-predates implicit imports and still orders the library by them. The
-library keeps them, and the warning stays off for the standard library,
-until the bootstrap is reseeded with a compiler that has this change.
+the prelude's modules. The implicit import gives the same edge, so the
+library no longer writes its prelude imports out, and the warning applies
+to it like any other code.
 `tryResolveWellKnownType` reads a cache the check fills in topological
 order, and prelude modules with no import edge between them are ordered by
 `getStandardPrelude`'s `HashMap` key iteration. Making that
