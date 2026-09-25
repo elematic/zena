@@ -35,6 +35,13 @@
  *   buffer as it goes. A top-level `result<T, E>` lifts into the
  *   inline `Result<T, E>`; a nested one would need `Outcome` and
  *   waits.
+ * - Parameters spill the other way: past sixteen core values on a
+ *   synchronous call, or four on an asynchronous one (a method's
+ *   `self` handle counts), the wrapper stages one buffer laid out
+ *   like a record, stores each parameter at its aligned offset, and
+ *   the raw call takes that address as its one argument. The buffer
+ *   is freed with the wrapper's other staging, after the call — or,
+ *   for an async lowering, after the subtask has returned.
  *
  * - `stream<u8>` in any position is `zena:stream`'s `Stream<u8>`: one
  *   end-handle on the wire, connected by `zena:wasi`'s
@@ -2691,6 +2698,50 @@ function renderFunc(
 }
 
 /**
+ * The spilled parameters of one call: a staged buffer holding the
+ * `self` handle (a method's first parameter) and then each parameter
+ * at its aligned offset, lowered the way a record's fields are. The
+ * buffer is arena-tracked, so the wrapper's release after the call
+ * frees it with everything else it staged — after the subtask has
+ * returned, for an async lowering, since the callee reads the
+ * parameters out of the caller's memory when it starts.
+ */
+function emitSpilledParams(sb: StringBuilder, params: Array<Ty>,
+    paramNames: Array<String>, selfHandle: boolean,
+    uses: SynthUses): void {
+  var offset = 0;
+  var maxAlign = 1;
+  let offsets = new Array<i32>();
+  if (selfHandle) {
+    offset = 4;
+    maxAlign = 4;
+  }
+  for (let p in params) {
+    if (p.align > maxAlign) { maxAlign = p.align; }
+    offset = alignTo(offset, p.align);
+    offsets.push(offset);
+    offset += p.size;
+  }
+  let size = `${alignTo(offset, maxAlign)}`;
+  uses.useAbi("stageBuffer");
+  uses.stagedAny = true;
+  let stores = new Array<ZenaTemplate>();
+  if (selfHandle) {
+    uses.useAbi("storeI32");
+    stores.push(zena`storeI32(args, this.#handle);`);
+  }
+  for (var i = 0; i < params.length; i += 1) {
+    let at = if (offsets[i] == 0) "args" else `args + ${offsets[i]}`;
+    stores.push(lowerMemStmts(params[i], paramNames[i], at, uses));
+  }
+  emit(sb, "  ", zena`
+    let args = stageBuffer(${size});
+    ${stores}
+  `);
+  sb.append("\n");
+}
+
+/**
  * Render one function into `wrapSink` (the wrapper) and `rawSink`
  * (the raw declaration — module level, which for a resource member is
  * a different sink than the class body). Returns the reason it cannot
@@ -2736,10 +2787,14 @@ function renderFuncIn(
   for (let p in params) {
     paramFlats += (flatCoreSlots(p) as GrowableArray<String>).length;
   }
-  if (paramFlats > 16) {
-    return "parameters spilling past sixteen core values wait on the " +
-        "interop stages";
-  }
+  // Past sixteen core values in a synchronous lowering, or four in an
+  // asynchronous one, the parameters — a method's `self` handle among
+  // them — travel as one address: the wrapper lays them out in memory
+  // it owns, back to back at their aligned offsets, and the raw call
+  // takes that address alone. The encoder counts the same way.
+  let selfFlats = if (mode.selfHandle) 1 else 0;
+  let paramsSpill =
+      paramFlats + selfFlats > (if (func.isAsync) 4 else 16);
   var resultTy = voidTy();
   var hasResult = false;
   if (mode.ctorResource != "") {
@@ -2778,15 +2833,7 @@ function renderFuncIn(
   let freeMode = mode.declHead == "export function " && !mode.selfHandle;
 
   if (func.isAsync) {
-    // The async lowering flattens at most four core parameter values
-    // — a method's implicit `self` handle among them — before spilling
-    // all of them through one pointer, which is not rendered yet.
-    let selfFlats = if (mode.selfHandle) 1 else 0;
-    if (paramFlats + selfFlats > 4) {
-      return "async parameters spilling past four core values wait " +
-          "on the interop stages";
-    }
-    if (!anyRich && !hasResult && freeMode) {
+    if (!anyRich && !hasResult && freeMode && !paramsSpill) {
       // Flat scalars, no result: the thin form. The raw import's core
       // result is the packed `(subtask << 4) | state` the canonical
       // `async` lowering returns; `awaitPacked` turns it into the
@@ -2828,8 +2875,10 @@ function renderFuncIn(
   // value. An async result always spills.
   let resultSpills = if (func.isAsync) hasResult else resultTy.flats > 1;
 
-  if (!anyRich && freeMode) {
-    // Every type is a flat scalar: one declaration, no wrapper.
+  if (!anyRich && freeMode && !paramsSpill && !func.isAsync) {
+    // Every type is a flat scalar: one declaration, no wrapper. An
+    // async function with a result never is: its result rides the
+    // trailing return area, so it takes the wrapper below.
     let sig = new StringBuilder();
     for (var i = 0; i < params.length; i += 1) {
       if (i > 0) { sig.append(", "); }
@@ -2853,11 +2902,14 @@ function renderFuncIn(
       kind == TyKind.TupleT;
   let rawSig = new StringBuilder();
   var rawIndex = 0;
-  if (mode.selfHandle) {
+  if (paramsSpill) {
+    rawSig.append("args: i32");
+    rawIndex += 1;
+  } else if (mode.selfHandle) {
     rawSig.append("self: i32");
     rawIndex += 1;
   }
-  for (var i = 0; i < params.length; i += 1) {
+  for (var i = 0; i < params.length && !paramsSpill; i += 1) {
     if (rawIndex > 0) { rawSig.append(", "); }
     if (params[i].kind == TyKind.Scalar) {
       rawSig.append("a").append(i32ToString(i)).append(": ")
@@ -2973,7 +3025,7 @@ function renderFuncIn(
   // subtask still owns live staging (the callee may lift arguments
   // after the call returns), so each wrapper frees exactly what it
   // staged and nothing an interleaved wrapper still owes.
-  var anyStaging = false;
+  var anyStaging = paramsSpill;
   for (let p in params) {
     if (mayStage(p)) {
       anyStaging = true;
@@ -2986,7 +3038,12 @@ function renderFuncIn(
   }
   let callArgs = new StringBuilder();
   var argIndex = 0;
-  for (var i = 0; i < params.length; i += 1) {
+  if (paramsSpill) {
+    emitSpilledParams(sb, params, paramNames, mode.selfHandle, uses);
+    callArgs.append("args");
+    argIndex += 1;
+  }
+  for (var i = 0; i < params.length && !paramsSpill; i += 1) {
     if (argIndex > 0) { callArgs.append(", "); }
     if (params[i].kind == TyKind.Scalar) {
       callArgs.append(paramNames[i]);
@@ -3077,7 +3134,7 @@ function renderFuncIn(
     callArgs.append("ret");
   }
   var callPrefix = "";
-  if (mode.selfHandle) {
+  if (mode.selfHandle && !paramsSpill) {
     callPrefix = if (callArgs.toString() == "") "this.#handle"
         else "this.#handle, ";
   }

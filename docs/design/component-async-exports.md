@@ -423,3 +423,23 @@ async func()` is the entry itself — the wrapper synthesizer skips
     first copy joins the task's set, and deciding EXIT before that hop
     ran left the provider's task gone with its pump parked — the
     composed run hung on the consumer's first read until it did.
+12. Spilled parameters on imports — landed as the `spill` fixtures.
+    Running the WIT the `zenafx` triangle fixture actually uses
+    through the synthesizer (all of `wasi:webgpu/webgpu` and the two
+    `wasi-gfx:surface` interfaces) left exactly five functions
+    refused, the five the triangle calls: `request-adapter`,
+    `request-device`, `create-render-pipeline`, `begin-render-pass`
+    and `create-view`. Each takes parameters that flatten past the
+    canonical limit — sixteen core values on a synchronous call, four
+    on an asynchronous one, a method's `self` handle among them — and
+    the ABI then passes every parameter through one address. The
+    export side already lifted that shape (step 9); the import
+    wrapper now lowers it: one staged buffer laid out like a record,
+    the handle first, each parameter stored at its aligned offset
+    through the memory lowering, the address as the raw call's one
+    argument, and the buffer freed with the wrapper's other staging —
+    after the call, or after the subtask has returned. The encoder
+    already counted this way, so the declaration check needed nothing.
+    Composed: the consumer's seventeen-argument `sum` and `describe`
+    (a string among them) and five-argument async `sum-async` run
+    against a Zena provider.

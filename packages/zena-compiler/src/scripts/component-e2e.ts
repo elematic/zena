@@ -440,6 +440,30 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'spill-provider',
+    wasi: ['p3=y'],
+    wit: ['spill.wit', 'provider'],
+    // The provider half of the spill composition: `wide`'s functions
+    // take more parameters than the canonical ABI passes as core
+    // values, and the wrapper lifts them out of the caller's memory.
+    // Built and validated here; run composed, below.
+    invocations: [],
+  },
+  {
+    name: 'spill-consumer',
+    wasi: ['p3=y'],
+    wit: ['spill.wit', 'consumer'],
+    compose: ['spill-provider'],
+    // Spilled parameters on imports, with both sides generated: the
+    // consumer's seventeen-argument `sum` and `describe` (a string
+    // among them) and five-argument async `sum-async` each lower into
+    // one staged buffer and pass its address; the provider lifts the
+    // values back. 1+…+17 = 153, plus 1+…+5 = 15.
+    invocations: [
+      {invoke: 'main()', expect: '168', expectOutput: ['described 136 z']},
+    ],
+  },
+  {
     name: 'compose-provider',
     wasi: ['p3=y'],
     wit: ['compose.wit', 'provider'],

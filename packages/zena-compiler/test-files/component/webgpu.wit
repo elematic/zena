@@ -1,0 +1,848 @@
+// The WIT the zenafx triangle fixture is built against, as
+// `wasm-tools component wit packages/zenafx/fixtures/triangle.wasm`
+// prints it: the world, all of `wasi:webgpu/webgpu@0.3.0-rc.2`, and
+// both `wasi-gfx:surface@0.2.0` interfaces. A unit test synthesizes
+// every interface in it and checks nothing is refused, so the
+// bindings the graphics work needs stay whole as the synthesizer
+// changes. Regenerate it from the fixture rather than editing it.
+package root:component;
+
+world root {
+  import wasi:webgpu/webgpu@0.3.0-rc.2;
+  import wasi-gfx:surface/surface@0.2.0;
+  import wasi-gfx:surface/surface-webgpu@0.2.0;
+  import print: func(s: string);
+
+  export start: async func();
+}
+package wasi:webgpu@0.3.0-rc.2 {
+  interface webgpu {
+    resource record-option-gpu-size64;
+
+    resource gpu-adapter {
+      request-device: async func(descriptor: option<gpu-device-descriptor>) -> result<gpu-device, request-device-error>;
+    }
+
+    resource gpu-device {
+      queue: func() -> gpu-queue;
+      create-pipeline-layout: func(descriptor: gpu-pipeline-layout-descriptor) -> gpu-pipeline-layout;
+      create-shader-module: func(descriptor: gpu-shader-module-descriptor) -> gpu-shader-module;
+      create-render-pipeline: func(descriptor: gpu-render-pipeline-descriptor) -> gpu-render-pipeline;
+      create-command-encoder: func(descriptor: option<gpu-command-encoder-descriptor>) -> gpu-command-encoder;
+    }
+
+    resource gpu {
+      request-adapter: async func(options: option<gpu-request-adapter-options>) -> option<gpu-adapter>;
+      get-preferred-canvas-format: func() -> gpu-texture-format;
+    }
+
+    enum gpu-power-preference {
+      low-power,
+      high-performance,
+    }
+
+    record gpu-request-adapter-options {
+      feature-level: option<string>,
+      power-preference: option<gpu-power-preference>,
+      force-fallback-adapter: option<bool>,
+      xr-compatible: option<bool>,
+    }
+
+    enum gpu-feature-name {
+      core-features-and-limits,
+      depth-clip-control,
+      depth32float-stencil8,
+      texture-compression-bc,
+      texture-compression-bc-sliced3d,
+      texture-compression-etc2,
+      texture-compression-astc,
+      texture-compression-astc-sliced3d,
+      timestamp-query,
+      indirect-first-instance,
+      shader-f16,
+      rg11b10ufloat-renderable,
+      bgra8unorm-storage,
+      float32-filterable,
+      float32-blendable,
+      clip-distances,
+      dual-source-blending,
+      subgroups,
+      texture-formats-tier1,
+      texture-formats-tier2,
+      primitive-index,
+      texture-component-swizzle,
+    }
+
+    record gpu-queue-descriptor {
+      label: option<string>,
+    }
+
+    record gpu-device-descriptor {
+      required-features: option<list<gpu-feature-name>>,
+      required-limits: option<record-option-gpu-size64>,
+      default-queue: option<gpu-queue-descriptor>,
+      label: option<string>,
+    }
+
+    variant request-device-error-kind {
+      type-error,
+      operation-error,
+    }
+
+    record request-device-error {
+      kind: request-device-error-kind,
+      message: string,
+    }
+
+    enum gpu-texture-format {
+      r8unorm,
+      r8snorm,
+      r8uint,
+      r8sint,
+      r16unorm,
+      r16snorm,
+      r16uint,
+      r16sint,
+      r16float,
+      rg8unorm,
+      rg8snorm,
+      rg8uint,
+      rg8sint,
+      r32uint,
+      r32sint,
+      r32float,
+      rg16unorm,
+      rg16snorm,
+      rg16uint,
+      rg16sint,
+      rg16float,
+      rgba8unorm,
+      rgba8unorm-srgb,
+      rgba8snorm,
+      rgba8uint,
+      rgba8sint,
+      bgra8unorm,
+      bgra8unorm-srgb,
+      rgb9e5ufloat,
+      rgb10a2uint,
+      rgb10a2unorm,
+      rg11b10ufloat,
+      rg32uint,
+      rg32sint,
+      rg32float,
+      rgba16unorm,
+      rgba16snorm,
+      rgba16uint,
+      rgba16sint,
+      rgba16float,
+      rgba32uint,
+      rgba32sint,
+      rgba32float,
+      stencil8,
+      depth16unorm,
+      depth24plus,
+      depth24plus-stencil8,
+      depth32float,
+      depth32float-stencil8,
+      bc1-rgba-unorm,
+      bc1-rgba-unorm-srgb,
+      bc2-rgba-unorm,
+      bc2-rgba-unorm-srgb,
+      bc3-rgba-unorm,
+      bc3-rgba-unorm-srgb,
+      bc4-r-unorm,
+      bc4-r-snorm,
+      bc5-rg-unorm,
+      bc5-rg-snorm,
+      bc6h-rgb-ufloat,
+      bc6h-rgb-float,
+      bc7-rgba-unorm,
+      bc7-rgba-unorm-srgb,
+      etc2-rgb8unorm,
+      etc2-rgb8unorm-srgb,
+      etc2-rgb8a1unorm,
+      etc2-rgb8a1unorm-srgb,
+      etc2-rgba8unorm,
+      etc2-rgba8unorm-srgb,
+      eac-r11unorm,
+      eac-r11snorm,
+      eac-rg11unorm,
+      eac-rg11snorm,
+      astc4x4-unorm,
+      astc4x4-unorm-srgb,
+      astc5x4-unorm,
+      astc5x4-unorm-srgb,
+      astc5x5-unorm,
+      astc5x5-unorm-srgb,
+      astc6x5-unorm,
+      astc6x5-unorm-srgb,
+      astc6x6-unorm,
+      astc6x6-unorm-srgb,
+      astc8x5-unorm,
+      astc8x5-unorm-srgb,
+      astc8x6-unorm,
+      astc8x6-unorm-srgb,
+      astc8x8-unorm,
+      astc8x8-unorm-srgb,
+      astc10x5-unorm,
+      astc10x5-unorm-srgb,
+      astc10x6-unorm,
+      astc10x6-unorm-srgb,
+      astc10x8-unorm,
+      astc10x8-unorm-srgb,
+      astc10x10-unorm,
+      astc10x10-unorm-srgb,
+      astc12x10-unorm,
+      astc12x10-unorm-srgb,
+      astc12x12-unorm,
+      astc12x12-unorm-srgb,
+    }
+
+    resource gpu-queue {
+      submit: func(command-buffers: list<borrow<gpu-command-buffer>>);
+    }
+
+    resource gpu-bind-group-layout;
+
+    type gpu-size32 = u32;
+
+    record gpu-pipeline-layout-descriptor {
+      bind-group-layouts: list<option<borrow<gpu-bind-group-layout>>>,
+      immediate-size: option<gpu-size32>,
+      label: option<string>,
+    }
+
+    resource gpu-pipeline-layout;
+
+    variant gpu-layout-mode {
+      specific(borrow<gpu-pipeline-layout>),
+      auto,
+    }
+
+    record gpu-shader-module-compilation-hint {
+      entry-point: string,
+      layout: option<gpu-layout-mode>,
+    }
+
+    record gpu-shader-module-descriptor {
+      code: string,
+      compilation-hints: option<list<gpu-shader-module-compilation-hint>>,
+      label: option<string>,
+    }
+
+    resource gpu-shader-module;
+
+    type gpu-size64 = u64;
+
+    enum gpu-vertex-step-mode {
+      vertex,
+      instance,
+    }
+
+    enum gpu-vertex-format {
+      uint8,
+      uint8x2,
+      uint8x4,
+      sint8,
+      sint8x2,
+      sint8x4,
+      unorm8,
+      unorm8x2,
+      unorm8x4,
+      snorm8,
+      snorm8x2,
+      snorm8x4,
+      uint16,
+      uint16x2,
+      uint16x4,
+      sint16,
+      sint16x2,
+      sint16x4,
+      unorm16,
+      unorm16x2,
+      unorm16x4,
+      snorm16,
+      snorm16x2,
+      snorm16x4,
+      float16,
+      float16x2,
+      float16x4,
+      %float32,
+      float32x2,
+      float32x3,
+      float32x4,
+      uint32,
+      uint32x2,
+      uint32x3,
+      uint32x4,
+      sint32,
+      sint32x2,
+      sint32x3,
+      sint32x4,
+      unorm1010102,
+      unorm8x4-bgra,
+    }
+
+    type gpu-index32 = u32;
+
+    record gpu-vertex-attribute {
+      format: gpu-vertex-format,
+      offset: gpu-size64,
+      shader-location: gpu-index32,
+    }
+
+    record gpu-vertex-buffer-layout {
+      array-stride: gpu-size64,
+      step-mode: option<gpu-vertex-step-mode>,
+      attributes: list<gpu-vertex-attribute>,
+    }
+
+    resource record-gpu-pipeline-constant-value;
+
+    record gpu-vertex-state {
+      buffers: option<list<option<gpu-vertex-buffer-layout>>>,
+      module: borrow<gpu-shader-module>,
+      entry-point: option<string>,
+      constants: option<record-gpu-pipeline-constant-value>,
+    }
+
+    enum gpu-primitive-topology {
+      point-list,
+      line-list,
+      line-strip,
+      triangle-list,
+      triangle-strip,
+    }
+
+    enum gpu-index-format {
+      uint16,
+      uint32,
+    }
+
+    enum gpu-front-face {
+      ccw,
+      cw,
+    }
+
+    enum gpu-cull-mode {
+      none,
+      front,
+      back,
+    }
+
+    record gpu-primitive-state {
+      topology: option<gpu-primitive-topology>,
+      strip-index-format: option<gpu-index-format>,
+      front-face: option<gpu-front-face>,
+      cull-mode: option<gpu-cull-mode>,
+      unclipped-depth: option<bool>,
+    }
+
+    enum gpu-compare-function {
+      never,
+      less,
+      equal,
+      less-equal,
+      greater,
+      not-equal,
+      greater-equal,
+      always,
+    }
+
+    enum gpu-stencil-operation {
+      keep,
+      zero,
+      replace,
+      invert,
+      increment-clamp,
+      decrement-clamp,
+      increment-wrap,
+      decrement-wrap,
+    }
+
+    record gpu-stencil-face-state {
+      compare: option<gpu-compare-function>,
+      fail-op: option<gpu-stencil-operation>,
+      depth-fail-op: option<gpu-stencil-operation>,
+      pass-op: option<gpu-stencil-operation>,
+    }
+
+    type gpu-stencil-value = u32;
+
+    type gpu-depth-bias = s32;
+
+    record gpu-depth-stencil-state {
+      format: gpu-texture-format,
+      depth-write-enabled: option<bool>,
+      depth-compare: option<gpu-compare-function>,
+      stencil-front: option<gpu-stencil-face-state>,
+      stencil-back: option<gpu-stencil-face-state>,
+      stencil-read-mask: option<gpu-stencil-value>,
+      stencil-write-mask: option<gpu-stencil-value>,
+      depth-bias: option<gpu-depth-bias>,
+      depth-bias-slope-scale: option<f32>,
+      depth-bias-clamp: option<f32>,
+    }
+
+    type gpu-sample-mask = u32;
+
+    record gpu-multisample-state {
+      count: option<gpu-size32>,
+      mask: option<gpu-sample-mask>,
+      alpha-to-coverage-enabled: option<bool>,
+    }
+
+    enum gpu-blend-operation {
+      add,
+      subtract,
+      reverse-subtract,
+      min,
+      max,
+    }
+
+    enum gpu-blend-factor {
+      zero,
+      one,
+      src,
+      one-minus-src,
+      src-alpha,
+      one-minus-src-alpha,
+      dst,
+      one-minus-dst,
+      dst-alpha,
+      one-minus-dst-alpha,
+      src-alpha-saturated,
+      constant,
+      one-minus-constant,
+      src1,
+      one-minus-src1,
+      src1-alpha,
+      one-minus-src1-alpha,
+    }
+
+    record gpu-blend-component {
+      operation: option<gpu-blend-operation>,
+      src-factor: option<gpu-blend-factor>,
+      dst-factor: option<gpu-blend-factor>,
+    }
+
+    record gpu-blend-state {
+      color: gpu-blend-component,
+      alpha: gpu-blend-component,
+    }
+
+    flags gpu-color-write {
+      red,
+      green,
+      blue,
+      alpha,
+      all,
+    }
+
+    record gpu-color-target-state {
+      format: gpu-texture-format,
+      blend: option<gpu-blend-state>,
+      write-mask: option<gpu-color-write>,
+    }
+
+    record gpu-fragment-state {
+      targets: list<option<gpu-color-target-state>>,
+      module: borrow<gpu-shader-module>,
+      entry-point: option<string>,
+      constants: option<record-gpu-pipeline-constant-value>,
+    }
+
+    record gpu-render-pipeline-descriptor {
+      vertex: gpu-vertex-state,
+      primitive: option<gpu-primitive-state>,
+      depth-stencil: option<gpu-depth-stencil-state>,
+      multisample: option<gpu-multisample-state>,
+      fragment: option<gpu-fragment-state>,
+      layout: gpu-layout-mode,
+      label: option<string>,
+    }
+
+    resource gpu-render-pipeline;
+
+    record gpu-command-encoder-descriptor {
+      label: option<string>,
+    }
+
+    resource gpu-command-encoder {
+      begin-render-pass: func(descriptor: gpu-render-pass-descriptor) -> gpu-render-pass-encoder;
+      finish: func(descriptor: option<gpu-command-buffer-descriptor>) -> gpu-command-buffer;
+    }
+
+    resource gpu-texture-view;
+
+    type gpu-integer-coordinate = u32;
+
+    record gpu-color {
+      r: f64,
+      g: f64,
+      b: f64,
+      a: f64,
+    }
+
+    enum gpu-load-op {
+      load,
+      clear,
+    }
+
+    enum gpu-store-op {
+      store,
+      discard,
+    }
+
+    record gpu-render-pass-color-attachment {
+      view: borrow<gpu-texture-view>,
+      depth-slice: option<gpu-integer-coordinate>,
+      resolve-target: option<borrow<gpu-texture-view>>,
+      clear-value: option<gpu-color>,
+      load-op: gpu-load-op,
+      store-op: gpu-store-op,
+    }
+
+    record gpu-render-pass-depth-stencil-attachment {
+      view: borrow<gpu-texture-view>,
+      depth-clear-value: option<f32>,
+      depth-load-op: option<gpu-load-op>,
+      depth-store-op: option<gpu-store-op>,
+      depth-read-only: option<bool>,
+      stencil-clear-value: option<gpu-stencil-value>,
+      stencil-load-op: option<gpu-load-op>,
+      stencil-store-op: option<gpu-store-op>,
+      stencil-read-only: option<bool>,
+    }
+
+    resource gpu-query-set;
+
+    record gpu-render-pass-timestamp-writes {
+      query-set: borrow<gpu-query-set>,
+      beginning-of-pass-write-index: option<gpu-size32>,
+      end-of-pass-write-index: option<gpu-size32>,
+    }
+
+    record gpu-render-pass-descriptor {
+      color-attachments: list<option<gpu-render-pass-color-attachment>>,
+      depth-stencil-attachment: option<gpu-render-pass-depth-stencil-attachment>,
+      occlusion-query-set: option<borrow<gpu-query-set>>,
+      timestamp-writes: option<gpu-render-pass-timestamp-writes>,
+      max-draw-count: option<gpu-size64>,
+      label: option<string>,
+    }
+
+    resource gpu-render-pass-encoder {
+      end: func();
+      set-pipeline: func(pipeline: borrow<gpu-render-pipeline>);
+      draw: func(vertex-count: gpu-size32, instance-count: option<gpu-size32>, first-vertex: option<gpu-size32>, first-instance: option<gpu-size32>);
+    }
+
+    record gpu-command-buffer-descriptor {
+      label: option<string>,
+    }
+
+    resource gpu-command-buffer;
+
+    resource gpu-texture {
+      create-view: func(descriptor: option<gpu-texture-view-descriptor>) -> gpu-texture-view;
+    }
+
+    enum gpu-texture-view-dimension {
+      d1,
+      d2,
+      d2-array,
+      cube,
+      cube-array,
+      d3,
+    }
+
+    flags gpu-texture-usage {
+      copy-src,
+      copy-dst,
+      texture-binding,
+      storage-binding,
+      render-attachment,
+      transient-attachment,
+    }
+
+    enum gpu-texture-aspect {
+      all,
+      stencil-only,
+      depth-only,
+    }
+
+    record gpu-texture-view-descriptor {
+      format: option<gpu-texture-format>,
+      dimension: option<gpu-texture-view-dimension>,
+      usage: option<gpu-texture-usage>,
+      aspect: option<gpu-texture-aspect>,
+      base-mip-level: option<gpu-integer-coordinate>,
+      mip-level-count: option<gpu-integer-coordinate>,
+      base-array-layer: option<gpu-integer-coordinate>,
+      array-layer-count: option<gpu-integer-coordinate>,
+      swizzle: option<string>,
+      label: option<string>,
+    }
+
+    enum predefined-color-space {
+      srgb,
+      display-p3,
+    }
+
+    enum gpu-canvas-tone-mapping-mode {
+      standard,
+      extended,
+    }
+
+    record gpu-canvas-tone-mapping {
+      mode: option<gpu-canvas-tone-mapping-mode>,
+    }
+
+    enum gpu-canvas-alpha-mode {
+      opaque,
+      premultiplied,
+    }
+
+    get-gpu: func() -> gpu;
+  }
+}
+
+
+package wasi-gfx:surface@0.2.0 {
+  interface surface {
+    resource surface {
+      constructor(desc: create-desc);
+      on-resize: func() -> stream<resize-event>;
+      on-frame: func() -> stream<frame-event>;
+      on-pointer-up: func() -> stream<pointer-event>;
+      on-pointer-down: func() -> stream<pointer-event>;
+      on-pointer-move: func() -> stream<pointer-event>;
+      on-key-up: func() -> stream<key-event>;
+      on-key-down: func() -> stream<key-event>;
+    }
+
+    record create-desc {
+      height: option<u32>,
+      width: option<u32>,
+    }
+
+    record resize-event {
+      height: u32,
+      width: u32,
+    }
+
+    record frame-event {
+      nothing: bool,
+    }
+
+    record pointer-event {
+      x: f64,
+      y: f64,
+    }
+
+    enum key {
+      backquote,
+      backslash,
+      bracket-left,
+      bracket-right,
+      comma,
+      digit0,
+      digit1,
+      digit2,
+      digit3,
+      digit4,
+      digit5,
+      digit6,
+      digit7,
+      digit8,
+      digit9,
+      equal,
+      intl-backslash,
+      intl-ro,
+      intl-yen,
+      key-a,
+      key-b,
+      key-c,
+      key-d,
+      key-e,
+      key-f,
+      key-g,
+      key-h,
+      key-i,
+      key-j,
+      key-k,
+      key-l,
+      key-m,
+      key-n,
+      key-o,
+      key-p,
+      key-q,
+      key-r,
+      key-s,
+      key-t,
+      key-u,
+      key-v,
+      key-w,
+      key-x,
+      key-y,
+      key-z,
+      minus,
+      period,
+      quote,
+      semicolon,
+      slash,
+      alt-left,
+      alt-right,
+      backspace,
+      caps-lock,
+      context-menu,
+      control-left,
+      control-right,
+      enter,
+      meta-left,
+      meta-right,
+      shift-left,
+      shift-right,
+      space,
+      tab,
+      convert,
+      kana-mode,
+      lang1,
+      lang2,
+      lang3,
+      lang4,
+      lang5,
+      non-convert,
+      delete,
+      end,
+      help,
+      home,
+      insert,
+      page-down,
+      page-up,
+      arrow-down,
+      arrow-left,
+      arrow-right,
+      arrow-up,
+      num-lock,
+      numpad0,
+      numpad1,
+      numpad2,
+      numpad3,
+      numpad4,
+      numpad5,
+      numpad6,
+      numpad7,
+      numpad8,
+      numpad9,
+      numpad-add,
+      numpad-backspace,
+      numpad-clear,
+      numpad-clear-entry,
+      numpad-comma,
+      numpad-decimal,
+      numpad-divide,
+      numpad-enter,
+      numpad-equal,
+      numpad-hash,
+      numpad-memory-add,
+      numpad-memory-clear,
+      numpad-memory-recall,
+      numpad-memory-store,
+      numpad-memory-subtract,
+      numpad-multiply,
+      numpad-paren-left,
+      numpad-paren-right,
+      numpad-star,
+      numpad-subtract,
+      escape,
+      f1,
+      f2,
+      f3,
+      f4,
+      f5,
+      f6,
+      f7,
+      f8,
+      f9,
+      f10,
+      f11,
+      f12,
+      fn,
+      fn-lock,
+      print-screen,
+      scroll-lock,
+      pause,
+      browser-back,
+      browser-favorites,
+      browser-forward,
+      browser-home,
+      browser-refresh,
+      browser-search,
+      browser-stop,
+      eject,
+      launch-app1,
+      launch-app2,
+      launch-mail,
+      media-play-pause,
+      media-select,
+      media-stop,
+      media-track-next,
+      media-track-previous,
+      power,
+      sleep,
+      audio-volume-down,
+      audio-volume-mute,
+      audio-volume-up,
+      wake-up,
+      hyper,
+      super,
+      turbo,
+      abort,
+      resume,
+      suspend,
+      again,
+      copy,
+      cut,
+      find,
+      open,
+      paste,
+      props,
+      select,
+      undo,
+      hiragana,
+      katakana,
+    }
+
+    record key-event {
+      key: option<key>,
+      text: option<string>,
+      alt-key: bool,
+      ctrl-key: bool,
+      meta-key: bool,
+      shift-key: bool,
+    }
+  }
+  interface surface-webgpu {
+    use surface.{surface};
+    use wasi:webgpu/webgpu@0.3.0-rc.2.{gpu-device, gpu-texture-format, gpu-texture-usage, predefined-color-space, gpu-canvas-tone-mapping, gpu-canvas-alpha-mode, gpu-texture};
+
+    resource context {
+      constructor(surface: borrow<surface>);
+      configure: func(configuration: context-configuration);
+      get-current-texture: func() -> gpu-texture;
+      present: func();
+    }
+
+    record context-configuration {
+      device: borrow<gpu-device>,
+      format: gpu-texture-format,
+      usage: option<gpu-texture-usage>,
+      view-formats: option<list<gpu-texture-format>>,
+      color-space: option<predefined-color-space>,
+      tone-mapping: option<gpu-canvas-tone-mapping>,
+      alpha-mode: option<gpu-canvas-alpha-mode>,
+    }
+  }
+}

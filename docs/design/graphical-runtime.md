@@ -147,6 +147,8 @@ if (func.isAsync) {
 
 The compiler must lower and synthesize async methods on resource classes.
 
+_Landed 2026-09-22 (PR #660)._
+
 ### 2. Typed Streams of Records
 
 The event loop in `wasi-gfx:surface` uses typed event streams:
@@ -162,6 +164,9 @@ resource surface {
 Zena's `Stream<T>` supports `stream<u8>` for byte I/O. Non-`u8` stream elements
 require canonical lowering and lifting of record payloads across the stream
 boundary.
+
+_Landed 2026-09-23 (PR #668): a `stream<T>` of records is `Stream<T>` in the
+bindings, in both directions._
 
 ### 3. Borrowed Resource Arguments Across Packages
 
@@ -182,6 +187,32 @@ record context-configuration {
 
 The compiler must handle borrowed resource handles that cross between imported
 WIT packages.
+
+_Already worked on the import side; pinned by a unit test in PR #668._
+
+### 4. Parameters Past the Core-Value Limit
+
+Found by running the triangle fixture's own WIT (`wasm-tools component wit
+packages/zenafx/fixtures/triangle.wasm`) through the synthesizer once the three
+above had landed: every interface synthesized, and exactly five functions were
+still refused — the five the triangle calls. `request-adapter`,
+`request-device`, `create-render-pipeline`, `begin-render-pass` and
+`create-view` take parameters that flatten past the canonical ABI's limit
+(sixteen core values on a synchronous call, four on an asynchronous one, a
+method's `self` handle among them), so the ABI passes them through one address
+into memory the caller owns.
+
+_Landed: the import wrapper stages one buffer, stores each parameter at its
+aligned offset, and passes the address; the `spill` fixtures run it composed._
+
+### What remains for Phase 2
+
+The package mapping. The CLI keeps the `wasi` namespace for the stdlib's
+vendored WASI packages even when a `--wit` document declares another `wasi:`
+package, so `import { Gpu } from 'wasi:webgpu/webgpu'` does not resolve against
+the document today. Vendoring `wasi:webgpu` and `wasi-gfx:surface` beside the
+stdlib's WASI WIT (they come from the wasi-gfx repository rather than the WASI
+release the vendoring script pins) is the planned route.
 
 ---
 

@@ -675,6 +675,80 @@ export function reset(): boolean { return true; }
       `an async resource function is still refused:\n${source}`);
   });
 
+  test('parameters past the core-value limit spill into one staged buffer',
+      (ctx: TestContext): void => {
+    // The spill fixture: `sum`'s seventeen core values and the `gpu`
+    // method's sixteen-plus-`self` spill on a synchronous call, and
+    // `sum-async`'s five — or `request`'s `self` plus an option of a
+    // record — on an asynchronous one. Each wrapper stages one buffer
+    // laid out like a record, stores the parameters at their aligned
+    // offsets (a method's handle first), and passes its address as the
+    // raw call's one argument; `four` sits exactly at the async limit
+    // and stays flat.
+    let source = synthesizeWitModule(
+        `wit:${fixtures}/wit-pkg#fixture:spill/wide`, packagesWit());
+    isTrue(!source.contains('Not yet importable'),
+      `something is still refused:\n${source}`);
+    isTrue(source.contains('declare function sum_raw(args: i32): u32;'),
+      `the synchronous spill does not take one address:\n${source}`);
+    isTrue(source.contains('let args = stageBuffer(68);'),
+      `seventeen u32s are not 68 staged bytes:\n${source}`);
+    isTrue(source.contains('storeI32(args + 64, (q as i32));'),
+      `the last parameter is not stored at its offset:\n${source}`);
+    isTrue(source.contains('let got = sum_raw(args);'),
+      `the raw call does not pass the buffer:\n${source}`);
+    isTrue(source.contains('declare function sumAsync_raw(args: i32, ret: i32): i32;'),
+      `the async spill does not take the address and the return area:\n${source}`);
+    isTrue(source.contains('let packed = sumAsync_raw(args, ret);\n  await awaitPacked(packed);\n  releaseStagedFrom(m0);'),
+      `the async wrapper does not free the buffer after the subtask returns:\n${source}`);
+    isTrue(source.contains('declare function four_raw(a0: u32, a1: u32, a2: u32, a3: u32, ret: i32): i32;'),
+      `four core values should stay flat:\n${source}`);
+    isTrue(source.contains('declare function gpuPoke_raw(args: i32): void;'),
+      `the method's self does not count toward the spill:\n${source}`);
+    isTrue(source.contains('storeI32(args, this.#handle);'),
+      `the method's handle is not first in the buffer:\n${source}`);
+    isTrue(source.contains('declare function gpuRequest_raw(args: i32, ret: i32): i32;'),
+      `the async method does not spill:\n${source}`);
+    isTrue(source.contains('let (ptr'),
+      `the option's string is not staged into the buffer:\n${source}`);
+  });
+
+  test('the graphics runtime fixture\'s WIT synthesizes whole',
+      (ctx: TestContext): void => {
+    // `webgpu.wit` is the WIT the zenafx triangle fixture is built
+    // against, as wasm-tools prints it: all of `wasi:webgpu/webgpu`
+    // and both `wasi-gfx:surface` interfaces — 18 resources, 34
+    // records, 21 enums, flags, variants, borrows inside records and
+    // lists, typed event streams, async resource methods, and five
+    // functions whose parameters spill. Every interface synthesizes
+    // and nothing in any of them is refused; a refusal would print
+    // itself under "Not yet importable".
+    let doc = `${fixtures}/webgpu.wit`;
+    let specs = ['wasi:webgpu/webgpu', 'wasi-gfx:surface/surface',
+        'wasi-gfx:surface/surface-webgpu'];
+    for (let spec in specs) {
+      let source = synthesizeWitModule(`wit:${doc}#${spec}`, packagesWit());
+      isTrue(!source.contains('Not yet importable'),
+        `${spec} still refuses something:\n${source}`);
+    }
+    let webgpu = synthesizeWitModule(`wit:${doc}#wasi:webgpu/webgpu`,
+        packagesWit());
+    isTrue(webgpu.contains('  async requestAdapter(options: Option<GpuRequestAdapterOptions>): Future<Option<GpuAdapter>> {'),
+      `request-adapter is not an async member:\n${webgpu}`);
+    isTrue(webgpu.contains('declare function gpuRequestAdapter_raw(args: i32, ret: i32): i32;'),
+      `request-adapter's parameters do not spill:\n${webgpu}`);
+    isTrue(webgpu.contains('storeI32(args, this.#handle);'),
+      `the handle is not first in the spilled buffer:\n${webgpu}`);
+    let surface = synthesizeWitModule(`wit:${doc}#wasi-gfx:surface/surface`,
+        packagesWit());
+    isTrue(surface.contains('  onFrame(): Stream<FrameEvent> {'),
+      `on-frame is not a typed stream:\n${surface}`);
+    let surfaceWebgpu = synthesizeWitModule(
+        `wit:${doc}#wasi-gfx:surface/surface-webgpu`, packagesWit());
+    isTrue(surfaceWebgpu.contains('export class ContextConfiguration(device: GpuDevice, format: GpuTextureFormat,'),
+      `the borrowed device is not a field of the cross-package record:\n${surfaceWebgpu}`);
+  });
+
   test('a stream of records renders per-element pumps',
       (ctx: TestContext): void => {
     // `stream<frame-event>`: the five stream builtins declared per
