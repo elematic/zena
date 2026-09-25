@@ -259,7 +259,7 @@ export final class SharedCheckerState {
   invalidatePath(path: String): void {
     let tpKeys = this.typeParameterTypes.keys();
     let toDeleteTp = new Array<String>();
-    while (let (true, k) = tpKeys.next()) {
+    for (let k in tpKeys) {
       if (k.startsWith(path + "#")) {
         toDeleteTp.push(k);
       }
@@ -270,7 +270,7 @@ export final class SharedCheckerState {
 
     let symKeys = this.declaredSymbolTypes.keys();
     let toDeleteSym = new Array<String>();
-    while (let (true, k) = symKeys.next()) {
+    for (let k in symKeys) {
       if (k.startsWith(path + "#")) {
         toDeleteSym.push(k);
       }
@@ -281,7 +281,7 @@ export final class SharedCheckerState {
 
     let mixKeys = this.mixinApplications.keys();
     let toDeleteMix = new Array<String>();
-    while (let (true, k) = mixKeys.next()) {
+    for (let k in mixKeys) {
       if (k.contains(path + "#")) {
         toDeleteMix.push(k);
       }
@@ -7540,7 +7540,7 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
     var needsAdaptation = nonNullSrc.properties.size != nonNullTgt.properties.size;
     if (!needsAdaptation) {
       let keys = nonNullSrc.properties.keys();
-      while (let (true, key) = keys.next()) {
+      for (let key in keys) {
         if (nonNullTgt.properties.has(key)) {
           let t1 = nonNullSrc.properties[key];
           let t2 = nonNullTgt.properties[key];
@@ -8274,7 +8274,7 @@ let typesEqual = (a: Type, b: Type): boolean => {
           let pb = rb.properties;
           if (pa.size != pb.size) { return false; }
           let keys = pa.keys();
-          while (let (true, key) = keys.next()) {
+          for (let key in keys) {
             if (!pb.has(key)) { return false; }
             if (!typesEqual(pa[key], pb[key])) { return false; }
             if (ra.isOptional(key) != rb.isOptional(key)) { return false; }
@@ -12306,7 +12306,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             case RecordT as spreadRec: {
               let spreadProps = spreadRec.properties;
               let keys = spreadProps.keys();
-              while (let (true, key) = keys.next()) {
+              for (let key in keys) {
                 propTypes[key] = spreadProps[key];
                 if (spreadRec.isOptional(key)) {
                   literalOptionals ??= new Set<String>();
@@ -12318,7 +12318,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             }
             case ClassType as ct: {
               let keys = ct.members.keys();
-              while (let (true, key) = keys.next()) {
+              for (let key in keys) {
                 let member = ct.members[key];
                 if (member is FieldInfo && !member.isStatic && !member.isPrivate && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
                   propTypes[key] = member.type;
@@ -13035,7 +13035,7 @@ let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
 
 let inheritMembersFrom = (fromClass: ClassType, toClass: ClassType): void => {
   let memberKeys = fromClass.members.keys();
-  while (let (true, key) = memberKeys.next()) {
+  for (let key in memberKeys) {
     // Privates are never inherited: skip "#..." members, the get##/set##
     // entries of private accessors, and mixin-scoped private members.
     let isPrivate = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
@@ -13096,7 +13096,7 @@ let getOrCreateMixinApplication = (
 
     // Copy members from generic mixin source
     let memberKeys = mixinSource.members.keys();
-    while (let (true, key) = memberKeys.next()) {
+    for (let key in memberKeys) {
       let mtMember = mixinSource.members[key];
       let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
           key.startsWith("get##") || key.startsWith("set##");
@@ -13123,7 +13123,7 @@ let getOrCreateMixinApplication = (
 
   // Validate method override types
   let memberKeys = mt.members.keys();
-  while (let (true, key) = memberKeys.next()) {
+  for (let key in memberKeys) {
     let mtMember = mt.members[key];
     let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
         key.startsWith("get##") || key.startsWith("set##");
@@ -14363,7 +14363,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
         // Inherit members from parent.
         let parentMemberKeys = classType.members.keys();
-        while (let (true, key) = parentMemberKeys.next()) {
+        for (let key in parentMemberKeys) {
           variantType.members[key] = classType.members[key];
         }
 
@@ -14434,7 +14434,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 ct.isFinal = true;
                 // Inherit members from parent.
                 let pmKeys = classType.members.keys();
-                while (let (true, pmk) = pmKeys.next()) {
+                for (let pmk in pmKeys) {
                   ct.members[pmk] = classType.members[pmk];
                 }
                 if (ct.constructorType == null) {
@@ -14456,7 +14456,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
             // Inherit members from parent.
             let parentMemberKeys2 = classType.members.keys();
-            while (let (true, key2) = parentMemberKeys2.next()) {
+            for (let key2 in parentMemberKeys2) {
               unitType.members[key2] = classType.members[key2];
             }
             // Unit variant: zero-arg constructor.
@@ -14566,7 +14566,7 @@ let checkFieldInitializer = (
   let keysToHide = new Array<String>();
 
   let allFieldKeys = classType.members.keys();
-  while (let (true, k) = allFieldKeys.next()) {
+  for (let k in allFieldKeys) {
     if (classType.members[k] is FieldInfo) {
       var isPriorLocal = false;
       var fi = 0;
@@ -14604,7 +14604,7 @@ let checkFieldInitializer = (
 
   // Restore hidden fields.
   let restoreKeys = hiddenFields.keys();
-  while (let (true, key) = restoreKeys.next()) {
+  for (let key in restoreKeys) {
     classType.members[key] = hiddenFields[key];
   }
 
@@ -15002,7 +15002,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
   // Check for unimplemented abstract fields in non-abstract classes.
   if (!cd.isAbstract && !cd.isSealed) {
     let fieldKeys = classType.members.keys();
-    while (let (true, absName) = fieldKeys.next()) {
+    for (let absName in fieldKeys) {
       let memberInfo = classType.members[absName];
       if (memberInfo is FieldInfo && memberInfo.isAbstract) {
         ctx.error(
@@ -15674,7 +15674,7 @@ let checkMethodBody = (
     // Validate that all non-nullable fields are initialized
     let {superType} = classType;
     let keys = classType.members.keys();
-    while (let (true, fieldName) = keys.next()) {
+    for (let fieldName in keys) {
       let member = classType.members[fieldName];
       if (member is FieldInfo && !fieldName.startsWith(":")) {
 
@@ -17921,7 +17921,7 @@ let resolveMemberType = (
           let mixinName = ct.name.sliceBytes(0, ct.name.length - 5);
           var foundId = noSymbolId;
           let mixinKeys = ctx.model.mixinDeclarations.keys();
-          while (let (true, k) = mixinKeys.next()) {
+          for (let k in mixinKeys) {
             let decl = ctx.model.mixinDeclarations[k];
             if (decl.name.name == mixinName) {
               foundId = k;
@@ -17932,7 +17932,7 @@ let resolveMemberType = (
             classSymId = foundId;
           } else {
             let classKeys = ctx.model.classDeclarations.keys();
-            while (let (true, k) = classKeys.next()) {
+            for (let k in classKeys) {
               let decl = ctx.model.classDeclarations[k];
               if (decl.name.name == mixinName) {
                 foundId = k;

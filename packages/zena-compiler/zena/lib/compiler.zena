@@ -200,7 +200,7 @@ export final class ProgramCheckResult {
   ) {
     // Aggregate diagnostics from all modules.
     let iter = results.keys();
-    while (let (true, key) = iter.next()) {
+    for (let key in iter) {
       let cr = results[key];
       var i = 0;
       while (i < cr.diagnostics.length) {
@@ -242,7 +242,7 @@ export let withBuiltinPackages = (
 ): Map<String, PackageConfig> => {
   let all = new Map<String, PackageConfig>();
   let userPkgIter = packages.keys();
-  while (let (true, name) = userPkgIter.next()) {
+  for (let name in userPkgIter) {
     all[name] = packages[name];
   }
   if (!all.has("wasi")) {
@@ -346,7 +346,7 @@ export final class Compiler {
     // Load prelude modules first.
     let prelude = getStandardPrelude(this.#resolver.target);
     let specifierIter = prelude.keys();
-    while (let (true, specifier) = specifierIter.next()) {
+    for (let specifier in specifierIter) {
       let resolved = this.#resolver.resolve(specifier, "");
       entries.push(this.#loader.load(resolved.path, null));
     }
@@ -506,7 +506,7 @@ export final class Compiler {
     let names = new Map<String, String>();
     let prelude = getStandardPrelude(this.#resolver.target);
     let specifierIter = prelude.keys();
-    while (let (true, specifier) = specifierIter.next()) {
+    for (let specifier in specifierIter) {
       for (let name in prelude[specifier]) {
         names[name] = specifier;
       }
@@ -821,7 +821,7 @@ let computeExportSignature = (
   let sig = new Map<String, Type>();
 
   let iter = exports.keys();
-  while (let (true, name) = iter.next()) {
+  for (let name in iter) {
     let exp = (if (let (true, val) = exports.get(name)) { val } else { null }) as Symbol;
     if (exp.isValue()) {
       let scopeInfo = rootScope.getLocal(name);
@@ -962,7 +962,7 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: Set<String>): boolean =
         case RecordType as rb: {
           if (ra.properties.size != rb.properties.size) { return false; }
           let keys = ra.properties.keys();
-          while (let (true, key) = keys.next()) {
+          for (let key in keys) {
             if (!rb.properties.has(key)) { return false; }
             if (!signatureTypeEqualsRec(ra.properties[key], rb.properties[key], visited)) {
               return false;
@@ -1510,7 +1510,7 @@ let fileCheckInputs = (
   let depExports = new Map<String, ScopeModuleExports>();
   let depModels = new Map<String, SemanticModel>();
   let specIter = file.imports.keys();
-  while (let (true, specifier) = specIter.next()) {
+  for (let specifier in specIter) {
     let depPath = file.imports[specifier];
     var li = 0;
     while (li < allFiles.length) {
@@ -1530,12 +1530,12 @@ let fileCheckInputs = (
 
   // Populate depModels with all known semantics models by their absolute path.
   let resIter = allResults.keys();
-  while (let (true, path) = resIter.next()) {
+  for (let path in resIter) {
     depModels[path] = allResults[path].model;
   }
   if (inProgress != null) {
     let progIter = inProgress.keys();
-    while (let (true, path) = progIter.next()) {
+    for (let path in progIter) {
       if (path != file.path) {
         depModels[path] = inProgress[path].ctx.model;
       }
@@ -1603,7 +1603,7 @@ let refreshDepModels = (
   inProgress: Map<String, ModuleCheck>
 ): void => {
   let specIter = file.imports.keys();
-  while (let (true, specifier) = specIter.next()) {
+  for (let specifier in specIter) {
     let depPath = file.imports[specifier];
     if (allResults.has(depPath)) {
       mc.ctx.addDepModel(specifier, allResults[depPath].model);
@@ -1612,11 +1612,11 @@ let refreshDepModels = (
     }
   }
   let resIter = allResults.keys();
-  while (let (true, path) = resIter.next()) {
+  for (let path in resIter) {
     mc.ctx.addDepModel(path, allResults[path].model);
   }
   let progIter = inProgress.keys();
-  while (let (true, path) = progIter.next()) {
+  for (let path in progIter) {
     if (path != file.path) {
       mc.ctx.addDepModel(path, inProgress[path].ctx.model);
     }
@@ -1705,7 +1705,7 @@ final class ImportComponents {
     this.#onStack[v] = true;
     let file = this.#files[v];
     let iter = file.imports.keys();
-    while (let (true, spec) = iter.next()) {
+    for (let spec in iter) {
       let depPath = file.imports[spec];
       if (!this.#pathIndex.has(depPath)) {
         continue;
@@ -1792,7 +1792,7 @@ export let checkCompilation = (
         mustCheck.add(file.path);
       } else if (!file.isStdlib) {
         let importIter = file.imports.keys();
-        while (let (true, spec) = importIter.next()) {
+        for (let spec in importIter) {
           let target = file.imports[spec];
           if (!target.startsWith("zena:") && !currentPaths.has(target)) {
             mustCheck.add(file.path);
@@ -1802,11 +1802,11 @@ export let checkCompilation = (
     }
 
     let prevIter = previous.sources.keys();
-    while (let (true, prevPath) = prevIter.next()) {
+    for (let prevPath in prevIter) {
       if (!currentPaths.has(prevPath)) {
         for (let file in result.files) {
           let importIter = file.imports.keys();
-          while (let (true, spec) = importIter.next()) {
+          for (let spec in importIter) {
             if (file.imports[spec] == prevPath) {
               mustCheck.add(file.path);
             }
@@ -1889,7 +1889,7 @@ export let checkCompilation = (
       let exports = (file.scopeResult as ScopeResult).exports;
       let stdlibPrelude = getStandardPrelude("host");
       let specIter = stdlibPrelude.keys();
-      while (let (true, specifier) = specIter.next()) {
+      for (let specifier in specIter) {
         let names = stdlibPrelude[specifier];
         var ni = 0;
         while (ni < names.length) {
@@ -1961,7 +1961,7 @@ export let checkCompilation = (
 
         let importerMap = reverseDeps[file.path];
         let importerIter = importerMap.keys();
-        while (let (true, importerPath) = importerIter.next()) {
+        for (let importerPath in importerIter) {
           let importedNames = importerMap[importerPath];
           // Check if any of the names this importer uses actually changed.
           var affected = false;

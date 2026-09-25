@@ -5,7 +5,7 @@
  * provide mock host imports, and exercise the check/diagnostic/format API.
  */
 
-import {suite, test, before} from 'node:test';
+import {suite, test, beforeEach} from 'node:test';
 import assert from 'node:assert';
 import {readFile} from 'node:fs/promises';
 import {readFileSync} from 'node:fs';
@@ -174,10 +174,17 @@ function checkSource(lsp: LspHandle, source: string, path = '/test/main.zena') {
 }
 
 suite('lsp.wasm integration', () => {
-  // Load once, reuse across tests.
   let lsp: LspHandle;
 
-  before(async () => {
+  // A fresh handle per test. A single LspSession holds one long-lived
+  // compiler, and what a compiler accumulates per checked entry — nominal
+  // types and instantiations interned onto the stdlib's own generic types —
+  // is never collected while it lives (see the batch-compilation note in
+  // packages/zena-compiler/CONTEXT.md, which caps reuse at 16 entries for the
+  // same reason). Across ~60 checks that growth is superlinear and exhausts
+  // the heap; instantiating lsp.wasm afresh costs well under 100ms, so each
+  // test simply starts clean. Every test here is self-contained.
+  beforeEach(async () => {
     lsp = await loadLsp();
   });
 

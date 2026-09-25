@@ -235,7 +235,7 @@ export let tests = suite('OrderedMap', (): void => {
     var seen = "";
     var added = false;
     let it = m.[Iterable.iterator]();
-    while (let (true, e) = it.next()) {
+    for (let e in it) {
       seen = seen + e.key;
       if (!added) {
         m["c"] = 3;
@@ -253,7 +253,7 @@ export let tests = suite('OrderedMap', (): void => {
 
     var seen = "";
     let it = m.[Iterable.iterator]();
-    while (let (true, e) = it.next()) {
+    for (let e in it) {
       seen = seen + e.key;
       if (e.key == "a") {
         isTrue(m.delete("b"));
@@ -270,7 +270,7 @@ export let tests = suite('OrderedMap', (): void => {
 
     var seen = "";
     let it = m.[Iterable.iterator]();
-    while (let (true, e) = it.next()) {
+    for (let e in it) {
       seen = seen + e.key;
       isTrue(m.delete(e.key));
     }
@@ -283,15 +283,20 @@ export let tests = suite('OrderedMap', (): void => {
     m["a"] = 1;
 
     let it = m.[Iterable.iterator]();
-    if (let (true, first) = it.next()) {
-      equal(first.key, "a");
-    } else {
-      isTrue(false);
+    match (it.next()) {
+      case (1, let first, _): { equal(first.key, "a"); }
+      case _: { isTrue(false); }
     }
-    if (let (true, extra) = it.next()) { isTrue(false); }
+    match (it.next()) {
+      case (1, let extra, _): { isTrue(false); }
+      case _: {}
+    }
 
     m["b"] = 2;
-    if (let (true, later) = it.next()) { isTrue(false); }
+    match (it.next()) {
+      case (1, let later, _): { isTrue(false); }
+      case _: {}
+    }
   });
 
   test('forEach follows the same rules', (ctx: TestContext): void => {

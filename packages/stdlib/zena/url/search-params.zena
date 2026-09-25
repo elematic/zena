@@ -1,4 +1,5 @@
 import { IterableUtils } from 'zena:core';
+import { Step } from 'zena:async';
 import { parseFormUrlencoded, serializeFormUrlencoded } from './encoding.zena';
 
 /**
@@ -40,16 +41,16 @@ final class URLSearchParamsIterator implements Iterator<(String, String)> {
   new(pairs: Array<(String, String)>, version: Box<i32>)
     : #pairs = pairs, #version = version, #expected = version.value;
 
-  next(): inline (true, (String, String)) | inline (false, _) {
+  next(): Step<(String, String)> {
     if (this.#version.value != this.#expected) {
       throw new ConcurrentModificationError();
     }
     if (this.#index < this.#pairs.length) {
       let pair = this.#pairs[this.#index];
       this.#index += 1;
-      return (true, pair);
+      return (1, pair, _);
     }
-    return (false, _);
+    return (0, _, _);
   }
 }
 

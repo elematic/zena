@@ -4,22 +4,26 @@
  * Usage pattern with let-pattern conditions:
  * ```
  * let iter = collection.[Iterable.iterator]();
- * while (let (true, item) = iter.next()) {
+ * for (let item in iter) {
  *   // use item
  * }
  * ```
  * 
- * Design: Uses inline tuple returns for zero-allocation iteration.
- * - next() returns inline (true, T) when there's an element
- * - next() returns inline (false, _) when exhausted
+ * `next()` returns a `Step<T>`, an inline three-arm tuple, so a step
+ * that is ready now allocates nothing:
+ * - `(1, value, _)` when there's an element
+ * - `(0, _, _)` when exhausted
+ * - `(2, _, future)` when the element is still coming (async iteration)
  */
+import { Step } from 'zena:async';
+
 export interface Iterator<T> {
   /**
-   * Advances the iterator and returns the next element.
-   * Returns `inline (true, element)` if there is an element,
-   * `inline (false, _)` if exhausted.
+   * Advances the iterator and returns the next element as a `Step<T>`:
+   * `Ready` with a value, `Done` when exhausted, or `Pending` when the
+   * value is still coming (async-iteration.md).
    */
-  next(): inline (true, T) | inline (false, _);
+  next(): Step<T>;
 }
 
 /**

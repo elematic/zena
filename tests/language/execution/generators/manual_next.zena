@@ -1,7 +1,7 @@
 // @mode: run
 // @result: 642100
-// Manual protocol consumption: while (let (true, x) = it.next()),
-// exhausted iterators stay politely done, and two iterators from the
+// Manual protocol consumption: match the Step from next() by hand,
+// exhausted iterators stay politely Done, and two iterators from the
 // same generator are independent.
 import { Iterator } from 'zena:core';
 
@@ -16,20 +16,30 @@ let countdown = gen (n: i32): Iterator<i32> => {
 export let main = (): i32 => {
   var acc = 0;
   let it = countdown(3);
-  while (let (true, v) = it.next()) {
-    acc = acc * 10 + v * 2;
+  var running = true;
+  while (running) {
+    match (it.next()) {
+      case (1, let v, _): { acc = acc * 10 + v * 2; }
+      case _: { running = false; }
+    }
   }
-  // Exhausted: every further next() is (false, _).
-  if (let (true, _v) = it.next()) {
-    return -1;
+  // Exhausted: every further next() is Done.
+  match (it.next()) {
+    case (1, let _v, _): { return -1; }
+    case _: {}
   }
-  if (let (true, _v2) = it.next()) {
-    return -2;
+  match (it.next()) {
+    case (1, let _v2, _): { return -2; }
+    case _: {}
   }
   // Independent second iterator from the same generator.
   let it2: Iterator<i32> = countdown(1);
-  while (let (true, v) = it2.next()) {
-    acc = acc * 10 + v;
+  var running2 = true;
+  while (running2) {
+    match (it2.next()) {
+      case (1, let v, _): { acc = acc * 10 + v; }
+      case _: { running2 = false; }
+    }
   }
   return acc * 100;
 };

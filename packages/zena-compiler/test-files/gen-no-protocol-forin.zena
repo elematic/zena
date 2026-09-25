@@ -6,13 +6,17 @@ let counting = gen (): Iterator<i32> => {
 };
 
 export let main = (): i32 => {
-  // Manual protocol consumption only — no for-in through the
-  // Iterator protocol, so nothing can dispose and the gate stays
-  // closed.
+  // Manual protocol consumption only — the Step is matched by hand,
+  // not iterated through a for-in over the Iterator protocol — so
+  // nothing can dispose and the gate stays closed.
   var acc = 0;
   let it = counting();
-  while (let (true, v) = it.next()) {
-    acc += v;
+  var running = true;
+  while (running) {
+    match (it.next()) {
+      case (1, let v, _): { acc += v; }
+      case _: { running = false; }
+    }
   }
   return acc - 3;
 };

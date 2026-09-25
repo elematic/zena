@@ -8,6 +8,7 @@
 // notification, and a rehash strategy — leaving every lookup path shared.
 
 import { KeyNotFoundError, hash, equals, IterableUtils } from 'zena:core';
+import { Step } from 'zena:async';
 import { clz } from 'zena:math';
 import { MapEntry, next } from './map.zena';
 
@@ -432,13 +433,13 @@ final class BucketEntryIterator<K, V> implements Iterator<MapEntry<K, V>> {
     }
   }
 
-  next(): inline (true, MapEntry<K, V>) | inline (false, _) {
+  next(): Step<MapEntry<K, V>> {
     let entry = this.#current;
     if (entry == null) {
-      return (false, _);
+      return (0, _, _);
     }
     this.#advanceToNext();
-    return (true, entry);
+    return (1, entry, _);
   }
 }
 
@@ -449,11 +450,11 @@ final class BucketKeyIterator<K, V> implements Iterator<K> {
   new(buckets: FixedArray<MapEntry<K, V> | null>)
     : #inner = new BucketEntryIterator<K, V>(buckets);
 
-  next(): inline (true, K) | inline (false, _) {
-    if (let (true, entry) = this.#inner.next()) {
-      return (true, entry.key);
+  next(): Step<K> {
+    match (this.#inner.next()) {
+      case (1, let entry, _): { return (1, entry.key, _); }
+      case _: { return (0, _, _); }
     }
-    return (false, _);
   }
 }
 
@@ -471,17 +472,17 @@ final class OrderedEntryIterator<K extends Hashable, V> implements Iterator<MapE
 
   new(map: OrderedMap<K, V>) : #map = map;
 
-  next(): inline (true, MapEntry<K, V>) | inline (false, _) {
+  next(): Step<MapEntry<K, V>> {
     if (this.#exhausted) {
-      return (false, _);
+      return (0, _, _);
     }
     let node = this.#map.[nextLive](this.#last);
     if (node == null) {
       this.#exhausted = true;
-      return (false, _);
+      return (0, _, _);
     }
     this.#last = node;
-    return (true, node);
+    return (1, node, _);
   }
 }
 
@@ -491,10 +492,10 @@ final class OrderedKeyIterator<K extends Hashable, V> implements Iterator<K> {
 
   new(map: OrderedMap<K, V>) : #inner = new OrderedEntryIterator<K, V>(map);
 
-  next(): inline (true, K) | inline (false, _) {
-    if (let (true, entry) = this.#inner.next()) {
-      return (true, entry.key);
+  next(): Step<K> {
+    match (this.#inner.next()) {
+      case (1, let entry, _): { return (1, entry.key, _); }
+      case _: { return (0, _, _); }
     }
-    return (false, _);
   }
 }
