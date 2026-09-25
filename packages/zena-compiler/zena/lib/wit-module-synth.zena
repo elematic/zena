@@ -1441,20 +1441,20 @@ let writeSlot = (sb: StringBuilder, indent: String, slot: String,
       // Into a joined slot: an integer widens, a float goes as its
       // bits (widened too, for an f32 in an i64).
       if (want == "i64" && haveCore == "i32") {
-        rhs = "((" + expr + ") as i64)";
+        rhs = `((${expr}) as i64)`;
       } else if (want == "i32" && haveCore == "f32") {
         reinterpretUsed = true;
-        rhs = "i32_reinterpret_f32(" + expr + ")";
+        rhs = `i32_reinterpret_f32(${expr})`;
       } else if (want == "i64" && haveCore == "f32") {
         reinterpretUsed = true;
-        rhs = "(i32_reinterpret_f32(" + expr + ") as i64)";
+        rhs = `(i32_reinterpret_f32(${expr}) as i64)`;
       } else if (want == "i64" && haveCore == "f64") {
         reinterpretUsed = true;
-        rhs = "i64_reinterpret_f64(" + expr + ")";
+        rhs = `i64_reinterpret_f64(${expr})`;
       }
     }
   }
-  sb.append(indent).append(slot).append(" = ").append(rhs).append(";\n");
+  sb.append(indent).append(`${slot} = ${rhs};\n`);
 };
 
 function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
@@ -1466,24 +1466,24 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     return 1;
   }
   if (ty.kind == TyKind.Enumeration) {
-    writeSlot(sb, indent, slots[base], base, "(" + value + " as i32)",
+    writeSlot(sb, indent, slots[base], base, `(${value} as i32)`,
         "i32");
     return 1;
   }
   if (ty.kind == TyKind.Flags) {
     writeSlot(sb, indent, slots[base], base,
-        "((" + value + " as u32) as i32)", "i32");
+        `((${value} as u32) as i32)`, "i32");
     return 1;
   }
   if (ty.kind == TyKind.ResourceH) {
     uses.useAbi("rawHandle");
-    writeSlot(sb, indent, slots[base], base, value + ".[rawHandle]()",
+    writeSlot(sb, indent, slots[base], base, `${value}.[rawHandle]()`,
         "i32");
     if (!ty.isBorrow) {
       // An owned handle transfers to the callee: the wrapper's later
       // dispose must not drop an index it no longer owns.
       uses.useAbi("markMoved");
-      sb.append(indent).append(value).append(".[markMoved]();\n");
+      sb.append(indent).append(`${value}.[markMoved]();\n`);
     }
     return 1;
   }
@@ -1494,8 +1494,7 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   }
   if (ty.kind == TyKind.FutureH) {
     writeSlot(sb, indent, slots[base], base,
-        "lowerFuture" + i32ToString(uses.futureIndexOf(ty)) + "(" +
-        value + ")", "i32");
+        `lowerFuture${uses.futureIndexOf(ty)}(${value})`, "i32");
     return 1;
   }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
@@ -1503,11 +1502,9 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
         else "stageByteList";
     uses.useAbi(stage);
     uses.stagedAny = true;
-    let p = "p" + i32ToString(uses.nextTmp());
-    let l = "l" + i32ToString(uses.nextTmp());
-    sb.append(indent).append("let (").append(p).append(", ").append(l)
-        .append(") = ").append(stage).append("(").append(value)
-        .append(");\n");
+    let p = `p${uses.nextTmp()}`;
+    let l = `l${uses.nextTmp()}`;
+    sb.append(indent).append(`let (${p}, ${l}) = ${stage}(${value});\n`);
     writeSlot(sb, indent, slots[base], base, p, "i32");
     writeSlot(sb, indent, slots[base + 1], base + 1, l, "i32");
     return 2;
@@ -1524,23 +1521,23 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     var consumed = 0;
     for (var i = 0; i < ty.children.length; i += 1) {
       consumed += lowerFlatStmts(sb, ty.children[i],
-          value + "." + ty.childNames[i], slots, base + consumed,
+          `${value}.${ty.childNames[i]}`, slots, base + consumed,
           indent, uses);
     }
     return consumed;
   }
   if (ty.kind == TyKind.TupleT) {
-    let t = "t" + i32ToString(uses.nextTmp());
+    let t = `t${uses.nextTmp()}`;
     sb.append(indent).append("let (");
     for (var i = 0; i < ty.children.length; i += 1) {
       if (i > 0) { sb.append(", "); }
-      sb.append(t).append("v").append(i32ToString(i));
+      sb.append(`${t}v${i}`);
     }
     sb.append(") = ").append(value).append(";\n");
     var consumed = 0;
     for (var i = 0; i < ty.children.length; i += 1) {
       consumed += lowerFlatStmts(sb, ty.children[i],
-          t + "v" + i32ToString(i), slots, base + consumed, indent,
+          `${t}v${i}`, slots, base + consumed, indent,
           uses);
     }
     return consumed;
@@ -1548,11 +1545,11 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   if (ty.kind == TyKind.OptionT) {
     uses.option = true;
     let inner = ty.children[0];
-    sb.append(indent).append("if (").append(value).append(" is Some<")
-        .append(zenaTypeOf(inner, uses)).append(">) {\n");
+    let innerType = zenaTypeOf(inner, uses);
+    sb.append(indent).append(`if (${value} is Some<${innerType}>) {\n`);
     writeSlot(sb, indent + "  ", slots[base], base, "1", "i32");
     lowerFlatStmts(sb, inner,
-        "(" + value + " as Some<" + zenaTypeOf(inner, uses) + ">).value",
+        `(${value} as Some<${innerType}>).value`,
         slots, base + 1, indent + "  ", uses);
     sb.append(indent).append("}\n");
     let total = flatCoreSlots(ty);
@@ -1564,19 +1561,18 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     uses.outcome = true;
     let okZ = zenaTypeOf(ty.children[0], uses);
     let errZ = zenaTypeOf(ty.children[1], uses);
-    sb.append(indent).append("if (").append(value).append(" is Ok<")
-        .append(okZ).append(", ").append(errZ).append(">) {\n");
+    sb.append(indent).append(`if (${value} is Ok<${okZ}, ${errZ}>) {\n`);
     writeSlot(sb, indent + "  ", slots[base], base, "0", "i32");
     if (!isVoid(ty.children[0])) {
       lowerFlatStmts(sb, ty.children[0],
-          "(" + value + " as Ok<" + okZ + ", " + errZ + ">).value",
+          `(${value} as Ok<${okZ}, ${errZ}>).value`,
           slots, base + 1, indent + "  ", uses);
     }
     sb.append(indent).append("} else {\n");
     writeSlot(sb, indent + "  ", slots[base], base, "1", "i32");
     if (!isVoid(ty.children[1])) {
       lowerFlatStmts(sb, ty.children[1],
-          "(" + value + " as Err<" + okZ + ", " + errZ + ">).error",
+          `(${value} as Err<${okZ}, ${errZ}>).error`,
           slots, base + 1, indent + "  ", uses);
     }
     sb.append(indent).append("}\n");
@@ -1588,12 +1584,11 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   for (var i = 0; i < ty.children.length; i += 1) {
     sb.append(indent);
     if (i > 0) { sb.append("} else "); }
-    sb.append("if (").append(value).append(" is ")
-        .append(ty.childNames[i]).append(") {\n");
-    writeSlot(sb, indent + "  ", slots[base], base, i32ToString(i), "i32");
+    sb.append(`if (${value} is ${ty.childNames[i]}) {\n`);
+    writeSlot(sb, indent + "  ", slots[base], base, `${i}`, "i32");
     if (!isVoid(ty.children[i])) {
       lowerFlatStmts(sb, ty.children[i],
-          "(" + value + " as " + ty.childNames[i] + ").value", slots,
+          `(${value} as ${ty.childNames[i]}).value`, slots,
           base + 1, indent + "  ", uses);
     }
   }
