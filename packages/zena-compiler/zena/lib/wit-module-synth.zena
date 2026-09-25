@@ -948,84 +948,84 @@ function liftExprOf(ty: Ty, ptrExpr: String, uses: SynthUses): String {
     let s = ty.scalar;
     if (s == "boolean") {
       uses.useAbi("loadU8");
-      return "(loadU8(" + ptrExpr + ") != 0)";
+      return `(loadU8(${ptrExpr}) != 0)`;
     }
     if (s == "u8") {
       uses.useAbi("loadU8");
-      return "(loadU8(" + ptrExpr + ") as u8)";
+      return `(loadU8(${ptrExpr}) as u8)`;
     }
     if (s == "i8") {
       uses.useAbi("loadS8");
-      return "(loadS8(" + ptrExpr + ") as i8)";
+      return `(loadS8(${ptrExpr}) as i8)`;
     }
     if (s == "u16") {
       uses.useAbi("loadU16");
-      return "(loadU16(" + ptrExpr + ") as u16)";
+      return `(loadU16(${ptrExpr}) as u16)`;
     }
     if (s == "i16") {
       uses.useAbi("loadS16");
-      return "(loadS16(" + ptrExpr + ") as i16)";
+      return `(loadS16(${ptrExpr}) as i16)`;
     }
     if (s == "i32") {
       uses.useAbi("loadI32");
-      return "loadI32(" + ptrExpr + ")";
+      return `loadI32(${ptrExpr})`;
     }
     if (s == "u32") {
       uses.useAbi("loadI32");
-      return "(loadI32(" + ptrExpr + ") as u32)";
+      return `(loadI32(${ptrExpr}) as u32)`;
     }
     if (s == "i64") {
       uses.useAbi("loadI64");
-      return "loadI64(" + ptrExpr + ")";
+      return `loadI64(${ptrExpr})`;
     }
     if (s == "u64") {
       uses.useAbi("loadI64");
-      return "(loadI64(" + ptrExpr + ") as u64)";
+      return `(loadI64(${ptrExpr}) as u64)`;
     }
     if (s == "f32") {
       uses.useAbi("loadF32");
-      return "loadF32(" + ptrExpr + ")";
+      return `loadF32(${ptrExpr})`;
     }
     uses.useAbi("loadF64");
-    return "loadF64(" + ptrExpr + ")";
+    return `loadF64(${ptrExpr})`;
   }
   if (ty.kind == TyKind.Str) {
     uses.useAbi("liftStringAt");
-    return "liftStringAt(" + ptrExpr + ")";
+    return `liftStringAt(${ptrExpr})`;
   }
   if (ty.kind == TyKind.BytesList) {
     uses.useAbi("liftBytesAt");
-    return "liftBytesAt(" + ptrExpr + ")";
+    return `liftBytesAt(${ptrExpr})`;
   }
   if (ty.kind == TyKind.Enumeration) {
     uses.needEnumLift(ty);
-    return "lift" + ty.typeName + "(" +
-        discLoad(ty.size, ptrExpr, uses) + ")";
+    let loaded = discLoad(ty.size, ptrExpr, uses);
+    return `lift${ty.typeName}(${loaded})`;
   }
   if (ty.kind == TyKind.Flags) {
-    return "((" + discLoad(ty.size, ptrExpr, uses) + " as u32) as " +
-        ty.typeName + ")";
+    let loaded = discLoad(ty.size, ptrExpr, uses);
+    return `((${loaded} as u32) as ${ty.typeName})`;
   }
   if (ty.kind == TyKind.ResourceH) {
     uses.useAbi("loadI32");
-    return "new " + ty.typeName + "(loadI32(" + ptrExpr + "))";
+    return `new ${ty.typeName}(loadI32(${ptrExpr}))`;
   }
   if (ty.kind == TyKind.StreamH) {
     uses.useAbi("loadI32");
-    return streamLiftCall(ty, "loadI32(" + ptrExpr + ")", uses);
+    return streamLiftCall(ty, `loadI32(${ptrExpr})`, uses);
   }
   if (ty.kind == TyKind.FutureH) {
     uses.useAbi("loadI32");
-    return "liftFuture" + i32ToString(uses.futureIndexOf(ty)) +
-        "(loadI32(" + ptrExpr + "))";
+    let fid = `${uses.futureIndexOf(ty)}`;
+    return `liftFuture${fid}(loadI32(${ptrExpr}))`;
   }
   // RecordT, VariantT, OptionT, TupleT, ListT: a generated helper.
-  return uses.liftNameOf(ty) + "(" + ptrExpr + ")";
+  return `${uses.liftNameOf(ty)}(${ptrExpr})`;
 }
 
 /** `ptr` displaced by a field offset, elided when zero. */
 let atOffset = (offset: i32): String =>
-    if (offset == 0) "ptr" else "ptr + " + i32ToString(offset);
+    if (offset == 0) "ptr" else `ptr + ${offset}`;
 
 // ============================================================================
 // The lowering half: parameters into flat slots and staged memory
