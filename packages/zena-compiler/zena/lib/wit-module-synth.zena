@@ -1640,77 +1640,97 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
 }
 
 /** Emit the body of one registered lift helper. */
-function emitLiftHelper(sb: StringBuilder, entry: LiftEntry,
-    uses: SynthUses): void {
+function emitLiftHelper(entry: LiftEntry, uses: SynthUses): ZenaTemplate {
   let ty = entry.ty;
-  sb.append("function ").append(entry.name).append("(ptr: i32): ")
-      .append(zenaTypeOf(ty, uses)).append(" {\n");
-  if (ty.kind == TyKind.RecordT || ty.kind == TyKind.TupleT) {
+  let retType = zenaTypeOf(ty, uses);
+  if (ty.kind == TyKind.RecordT) {
     let offsets = fieldOffsets(ty);
     var args = "";
     for (var i = 0; i < ty.children.length; i += 1) {
-      if (i > 0) { args = args + ",\n      "; }
-      args = args + liftExprOf(ty.children[i], atOffset(offsets[i]), uses);
+      if (i > 0) { args = `${args},\n        `; }
+      args = `${args}${liftExprOf(ty.children[i], atOffset(offsets[i]), uses)}`;
     }
-    if (ty.kind == TyKind.RecordT) {
-      sb.append("  return new ").append(ty.typeName).append("(\n      ")
-          .append(args).append(");\n");
-    } else {
-      sb.append("  return (\n      ").append(args).append(");\n");
+    return zena`
+      function ${entry.name}(ptr: i32): ${retType} {
+        return new ${ty.typeName}(
+            ${args});
+      }
+    `;
+  }
+  if (ty.kind == TyKind.TupleT) {
+    let offsets = fieldOffsets(ty);
+    var args = "";
+    for (var i = 0; i < ty.children.length; i += 1) {
+      if (i > 0) { args = `${args},\n        `; }
+      args = `${args}${liftExprOf(ty.children[i], atOffset(offsets[i]), uses)}`;
     }
-  } else if (ty.kind == TyKind.OptionT) {
+    return zena`
+      function ${entry.name}(ptr: i32): ${retType} {
+        return (
+            ${args});
+      }
+    `;
+  }
+  if (ty.kind == TyKind.OptionT) {
     uses.option = true;
     let payoff = payloadOffset(ty);
-    sb.append("  if (").append(discLoad(1, "ptr", uses))
-        .append(" == 0) {\n    return none;\n  }\n  return some(")
-        .append(liftExprOf(ty.children[0],
-            "ptr + " + i32ToString(payoff), uses))
-        .append(");\n");
-  } else if (ty.kind == TyKind.VariantT) {
+    let disc = discLoad(1, "ptr", uses);
+    let inner = liftExprOf(ty.children[0], `ptr + ${payoff}`, uses);
+    return zena`
+      function ${entry.name}(ptr: i32): ${retType} {
+        if (${disc} == 0) {
+          return none;
+        }
+        return some(${inner});
+      }
+    `;
+  }
+  if (ty.kind == TyKind.VariantT) {
     uses.error = true;
     let payoff = payloadOffset(ty);
-    sb.append("  let disc = ")
-        .append(discLoad(discSize(ty.caseCount), "ptr", uses))
-        .append(";\n");
+    let disc = discLoad(discSize(ty.caseCount), "ptr", uses);
+    var casesSb = new StringBuilder();
     for (var i = 0; i < ty.children.length; i += 1) {
-      sb.append("  if (disc == ").append(i32ToString(i))
-          .append(") {\n    return new ").append(ty.childNames[i]);
+      casesSb.append(`if (disc == ${i}) {\n`);
       if (isVoid(ty.children[i])) {
-        sb.append("();\n  }\n");
+        casesSb.append(`  return new ${ty.childNames[i]}();\n}\n`);
       } else {
-        sb.append("(").append(liftExprOf(ty.children[i],
-            "ptr + " + i32ToString(payoff), uses)).append(");\n  }\n");
+        let childExpr = liftExprOf(ty.children[i], `ptr + ${payoff}`, uses);
+        casesSb.append(`  return new ${ty.childNames[i]}(${childExpr});\n}\n`);
       }
     }
-    sb.append("  throw new Error('invalid ").append(ty.typeName)
-        .append(" discriminant');\n");
-  } else {
-    // ListT: the `(base, count)` pair at `ptr`, then the elements. Two
-    // functions, because a list arrives either way: as a pair in
-    // memory (a result, a field), or as two flat core values (an
-    // export's parameter), and the elements lift the same.
-    let element = ty.children[0];
-    uses.useAbi("loadI32");
-    sb.append("  return ").append(entry.name)
-        .append("Elems(loadI32(ptr), loadI32(ptr + 4));\n}\n");
-    // The elements are laid out back to back at the element type's
-    // (already padding-inclusive) size, in a buffer that is ours to
-    // free once the last element is lifted.
-    uses.useAbi("freeLifted");
-    uses.array = true;
-    sb.append("function ").append(entry.name)
-        .append("Elems(base: i32, count: i32): ")
-        .append(zenaTypeOf(ty, uses)).append(" {\n");
-    sb.append("  let out = new GrowableArray<")
-        .append(zenaTypeOf(element, uses)).append(">();\n");
-    sb.append("  for (var i = 0; i < count; i += 1) {\n");
-    sb.append("    out.push(").append(liftExprOf(element,
-        "base + i * " + i32ToString(element.size), uses))
-        .append(");\n  }\n");
-    sb.append("  if (count > 0) {\n    freeLifted(base);\n  }\n");
-    sb.append("  return out;\n");
+    let cases = casesSb.toString();
+    return zena`
+      function ${entry.name}(ptr: i32): ${retType} {
+        let disc = ${disc};
+        ${cases}
+        throw new Error('invalid ${ty.typeName} discriminant');
+      }
+    `;
   }
-  sb.append("}\n");
+  // ListT:
+  let element = ty.children[0];
+  let elemType = zenaTypeOf(element, uses);
+  let elemSize = `${element.size}`;
+  let elemExpr = liftExprOf(element, `base + i * ${elemSize}`, uses);
+  uses.useAbi("loadI32");
+  uses.useAbi("freeLifted");
+  uses.array = true;
+  return zena`
+    function ${entry.name}(ptr: i32): ${retType} {
+      return ${entry.name}Elems(loadI32(ptr), loadI32(ptr + 4));
+    }
+    function ${entry.name}Elems(base: i32, count: i32): ${retType} {
+      let out = new GrowableArray<${elemType}>();
+      for (var i = 0; i < count; i += 1) {
+        out.push(${elemExpr});
+      }
+      if (count > 0) {
+        freeLifted(base);
+      }
+      return out;
+    }
+  `;
 }
 
 // ============================================================================
@@ -2593,7 +2613,8 @@ function drainHelpers(body: StringBuilder, uses: SynthUses,
     while (uses.emittedLifts < uses.lifts.length) {
       let entry = uses.lifts[uses.emittedLifts];
       uses.emittedLifts += 1;
-      emitLiftHelper(body, entry, uses);
+      emit(body, "", emitLiftHelper(entry, uses));
+      body.append("\n");
     }
     while (uses.emittedFlatLifts < uses.flatLifts.length) {
       let entry = uses.flatLifts[uses.emittedFlatLifts];
