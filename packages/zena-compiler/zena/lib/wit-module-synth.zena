@@ -1647,7 +1647,7 @@ function emitLiftHelper(entry: LiftEntry, uses: SynthUses): ZenaTemplate {
     let offsets = fieldOffsets(ty);
     var args = "";
     for (var i = 0; i < ty.children.length; i += 1) {
-      if (i > 0) { args = `${args},\n        `; }
+      if (i > 0) { args = `${args},\n`; }
       args = `${args}${liftExprOf(ty.children[i], atOffset(offsets[i]), uses)}`;
     }
     return zena`
@@ -1661,7 +1661,7 @@ function emitLiftHelper(entry: LiftEntry, uses: SynthUses): ZenaTemplate {
     let offsets = fieldOffsets(ty);
     var args = "";
     for (var i = 0; i < ty.children.length; i += 1) {
-      if (i > 0) { args = `${args},\n        `; }
+      if (i > 0) { args = `${args},\n`; }
       args = `${args}${liftExprOf(ty.children[i], atOffset(offsets[i]), uses)}`;
     }
     return zena`
@@ -1740,13 +1740,13 @@ function emitLiftHelper(entry: LiftEntry, uses: SynthUses): ZenaTemplate {
 /** A core value cast to its scalar spelling, as source text. */
 let castFromCore = (scalar: String, expr: String): String => {
   if (scalar == "boolean") {
-    return "(" + expr + " != 0)";
+    return `(${expr} != 0)`;
   }
   if (scalar == "i32" || scalar == "i64" || scalar == "f32" ||
       scalar == "f64") {
     return expr;
   }
-  return "(" + expr + " as " + scalar + ")";
+  return `(${expr} as ${scalar})`;
 };
 
 /**
@@ -1766,19 +1766,19 @@ function liftFlatExpr(ty: Ty, slotTypes: GrowableArray<String>,
     // Out of a joined slot: an i64 wraps to an i32, and a float comes
     // back from its bits.
     if (have == "i64" && want == "i32") {
-      return "(" + slots[i] + " as i32)";
+      return `(${slots[i]} as i32)`;
     }
     if (have == "i32" && want == "f32") {
       reinterpretUsed = true;
-      return "f32_reinterpret_i32(" + slots[i] + ")";
+      return `f32_reinterpret_i32(${slots[i]})`;
     }
     if (have == "i64" && want == "f32") {
       reinterpretUsed = true;
-      return "f32_reinterpret_i32((" + slots[i] + " as i32))";
+      return `f32_reinterpret_i32((${slots[i]} as i32))`;
     }
     if (have == "i64" && want == "f64") {
       reinterpretUsed = true;
-      return "f64_reinterpret_i64(" + slots[i] + ")";
+      return `f64_reinterpret_i64(${slots[i]})`;
     }
     return slots[i];
   };
@@ -1787,36 +1787,33 @@ function liftFlatExpr(ty: Ty, slotTypes: GrowableArray<String>,
   }
   if (ty.kind == TyKind.Enumeration) {
     uses.needEnumLift(ty);
-    return "lift" + ty.typeName + "(" + slot(base, "i32") + ")";
+    return `lift${ty.typeName}(${slot(base, "i32")})`;
   }
   if (ty.kind == TyKind.Flags) {
-    return "((" + slot(base, "i32") + " as u32) as " + ty.typeName + ")";
+    return `((${slot(base, "i32")} as u32) as ${ty.typeName})`;
   }
   if (ty.kind == TyKind.ResourceH) {
     // An owned handle: the wrapper's class around it, which the
     // program then owns and disposes. A borrow is refused before this.
-    return "new " + ty.typeName + "(" + slot(base, "i32") + ")";
+    return `new ${ty.typeName}(${slot(base, "i32")})`;
   }
   if (ty.kind == TyKind.StreamH) {
     return streamLiftCall(ty, slot(base, "i32"), uses);
   }
   if (ty.kind == TyKind.FutureH) {
-    return "liftFuture" + i32ToString(uses.futureIndexOf(ty)) + "(" +
-        slot(base, "i32") + ")";
+    let fid = `${uses.futureIndexOf(ty)}`;
+    return `liftFuture${fid}(${slot(base, "i32")})`;
   }
   if (ty.kind == TyKind.Str) {
     uses.useAbi("takeStringArgument");
-    return "takeStringArgument(" + slot(base, "i32") + ", " +
-        slot(base + 1, "i32") + ")";
+    return `takeStringArgument(${slot(base, "i32")}, ${slot(base + 1, "i32")})`;
   }
   if (ty.kind == TyKind.BytesList) {
     uses.useAbi("takeBytesArgument");
-    return "takeBytesArgument(" + slot(base, "i32") + ", " +
-        slot(base + 1, "i32") + ")";
+    return `takeBytesArgument(${slot(base, "i32")}, ${slot(base + 1, "i32")})`;
   }
   if (ty.kind == TyKind.ListT) {
-    return uses.liftNameOf(ty) + "Elems(" + slot(base, "i32") + ", " +
-        slot(base + 1, "i32") + ")";
+    return `${uses.liftNameOf(ty)}Elems(${slot(base, "i32")}, ${slot(base + 1, "i32")})`;
   }
   // RecordT, TupleT, OptionT, ResultT, VariantT: a generated helper
   // taking the slots — at the aggregate's own slot types, which may
@@ -1824,47 +1821,69 @@ function liftFlatExpr(ty: Ty, slotTypes: GrowableArray<String>,
   let own = flatCoreSlots(ty) as GrowableArray<String>;
   var args = "";
   for (var i = 0; i < own.length; i += 1) {
-    if (i > 0) { args = args + ", "; }
-    args = args + slot(base + i, own[i]);
+    if (i > 0) { args = `${args}, `; }
+    args = `${args}${slot(base + i, own[i])}`;
   }
-  return uses.flatLiftNameOf(ty) + "(" + args + ")";
+  return `${uses.flatLiftNameOf(ty)}(${args})`;
 }
 
 /** Emit the body of one registered flat lift helper: the aggregate
  * built from its flat core values, `s0..sN`. */
-function emitFlatLiftHelper(sb: StringBuilder, entry: LiftEntry,
-    uses: SynthUses): void {
+function emitFlatLiftHelper(entry: LiftEntry, uses: SynthUses): ZenaTemplate {
   let ty = entry.ty;
   let slotTypes = flatCoreSlots(ty) as GrowableArray<String>;
   let slots = new GrowableArray<String>();
-  sb.append("function ").append(entry.name).append("(");
+  var params = "";
   for (var i = 0; i < slotTypes.length; i += 1) {
-    let name = "s" + i32ToString(i);
+    let name = `s${i}`;
     slots.push(name);
-    if (i > 0) { sb.append(", "); }
-    sb.append(name).append(": ").append(slotTypes[i]);
+    if (i > 0) { params = `${params}, `; }
+    params = `${params}${name}: ${slotTypes[i]}`;
   }
-  sb.append("): ").append(futurePayloadZenaType(ty, uses)).append(" {\n");
-  if (ty.kind == TyKind.RecordT || ty.kind == TyKind.TupleT) {
+  let retType = futurePayloadZenaType(ty, uses);
+  if (ty.kind == TyKind.RecordT) {
     var args = "";
     var at = 0;
     for (var i = 0; i < ty.children.length; i += 1) {
-      if (i > 0) { args = args + ",\n      "; }
-      args = args + liftFlatExpr(ty.children[i], slotTypes, slots, at, uses);
+      if (i > 0) { args = `${args},\n`; }
+      args = `${args}${liftFlatExpr(ty.children[i], slotTypes, slots, at, uses)}`;
       at += (flatCoreSlots(ty.children[i]) as GrowableArray<String>).length;
     }
-    if (ty.kind == TyKind.RecordT) {
-      sb.append("  return new ").append(ty.typeName).append("(\n      ")
-          .append(args).append(");\n");
-    } else {
-      sb.append("  return (\n      ").append(args).append(");\n");
+    return zena`
+      function ${entry.name}(${params}): ${retType} {
+        return new ${ty.typeName}(
+            ${args});
+      }
+    `;
+  }
+  if (ty.kind == TyKind.TupleT) {
+    var args = "";
+    var at = 0;
+    for (var i = 0; i < ty.children.length; i += 1) {
+      if (i > 0) { args = `${args},\n`; }
+      args = `${args}${liftFlatExpr(ty.children[i], slotTypes, slots, at, uses)}`;
+      at += (flatCoreSlots(ty.children[i]) as GrowableArray<String>).length;
     }
-  } else if (ty.kind == TyKind.OptionT) {
+    return zena`
+      function ${entry.name}(${params}): ${retType} {
+        return (
+            ${args});
+      }
+    `;
+  }
+  if (ty.kind == TyKind.OptionT) {
     uses.option = true;
-    sb.append("  if (s0 == 0) {\n    return none;\n  }\n  return some(")
-        .append(liftFlatExpr(ty.children[0], slotTypes, slots, 1, uses))
-        .append(");\n");
-  } else if (ty.kind == TyKind.ResultT) {
+    let inner = liftFlatExpr(ty.children[0], slotTypes, slots, 1, uses);
+    return zena`
+      function ${entry.name}(${params}): ${retType} {
+        if (s0 == 0) {
+          return none;
+        }
+        return some(${inner});
+      }
+    `;
+  }
+  if (ty.kind == TyKind.ResultT) {
     uses.outcome = true;
     let okZ = futurePayloadZenaType(ty.children[0], uses);
     let errZ = futurePayloadZenaType(ty.children[1], uses);
@@ -1875,29 +1894,37 @@ function emitFlatLiftHelper(sb: StringBuilder, entry: LiftEntry,
       }
       return liftFlatExpr(child, slotTypes, slots, 1, uses);
     };
-    sb.append("  if (s0 == 0) {\n    return new Ok<").append(okZ)
-        .append(", ").append(errZ).append(">(").append(arm(ty.children[0]))
-        .append(");\n  }\n");
-    sb.append("  return new Err<").append(okZ).append(", ").append(errZ)
-        .append(">(").append(arm(ty.children[1])).append(");\n");
-  } else {
-    // VariantT: the discriminant picks the case, each reading its own
-    // prefix of the shared payload slots.
-    uses.error = true;
-    for (var i = 0; i < ty.children.length; i += 1) {
-      sb.append("  if (s0 == ").append(i32ToString(i))
-          .append(") {\n    return new ").append(ty.childNames[i]);
-      if (isVoid(ty.children[i])) {
-        sb.append("();\n  }\n");
-      } else {
-        sb.append("(").append(liftFlatExpr(ty.children[i], slotTypes,
-            slots, 1, uses)).append(");\n  }\n");
+    let okArm = arm(ty.children[0]);
+    let errArm = arm(ty.children[1]);
+    return zena`
+      function ${entry.name}(${params}): ${retType} {
+        if (s0 == 0) {
+          return new Ok<${okZ}, ${errZ}>(${okArm});
+        }
+        return new Err<${okZ}, ${errZ}>(${errArm});
       }
-    }
-    sb.append("  throw new Error('invalid ").append(ty.typeName)
-        .append(" discriminant');\n");
+    `;
   }
-  sb.append("}\n");
+  // VariantT: the discriminant picks the case, each reading its own
+  // prefix of the shared payload slots.
+  uses.error = true;
+  var casesSb = new StringBuilder();
+  for (var i = 0; i < ty.children.length; i += 1) {
+    casesSb.append(`if (s0 == ${i}) {\n`);
+    if (isVoid(ty.children[i])) {
+      casesSb.append(`  return new ${ty.childNames[i]}();\n}\n`);
+    } else {
+      let childExpr = liftFlatExpr(ty.children[i], slotTypes, slots, 1, uses);
+      casesSb.append(`  return new ${ty.childNames[i]}(${childExpr});\n}\n`);
+    }
+  }
+  let cases = casesSb.toString();
+  return zena`
+    function ${entry.name}(${params}): ${retType} {
+      ${cases}
+      throw new Error('invalid ${ty.typeName} discriminant');
+    }
+  `;
 }
 
 /** The `zena:stream` import a module that rendered streams needs. */
@@ -2619,7 +2646,8 @@ function drainHelpers(body: StringBuilder, uses: SynthUses,
     while (uses.emittedFlatLifts < uses.flatLifts.length) {
       let entry = uses.flatLifts[uses.emittedFlatLifts];
       uses.emittedFlatLifts += 1;
-      emitFlatLiftHelper(body, entry, uses);
+      emit(body, "", emitFlatLiftHelper(entry, uses));
+      body.append("\n");
     }
     if (uses.emittedFutures < uses.futures.length) {
       emitFutureHelpers(body, uses.futures[uses.emittedFutures],
