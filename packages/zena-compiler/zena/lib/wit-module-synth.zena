@@ -72,7 +72,7 @@ import {
   mainScalarResultOf, hasAsyncMain, renderMainWrapper, renderWrapperHeader,
   componentSyncExportSuffix
 } from './component-entry.zena';
-import { zena, emit } from './code-template.zena';
+import { zena, emit, ZenaTemplate } from './code-template.zena';
 
 
 /** Whether `path` is a synthesized WIT module's canonical path. */
@@ -1199,13 +1199,13 @@ let storeCall = (size: i32, isFloat: boolean, ptrExpr: String,
     name = "storeI64";
   }
   uses.useAbi(name);
-  return name + "(" + ptrExpr + ", " + value + ")";
+  return `${name}(${ptrExpr}, ${value})`;
 };
 
 /** `ptrExpr` displaced by `offset`, elided when zero. */
 let displaced = (ptrExpr: String, offset: i32): String =>
     if (offset == 0) ptrExpr
-    else "(" + ptrExpr + ") + " + i32ToString(offset);
+    else `(${ptrExpr}) + ${offset}`;
 
 /**
  * Emit statements writing `value` (of type `ty`) into memory at
@@ -1213,47 +1213,57 @@ let displaced = (ptrExpr: String, offset: i32): String =>
  * list buffer is filled with. Buffers staged along the way register
  * with the arena; `releaseStaged()` after the call frees them all.
  */
-function lowerMemStmts(sb: StringBuilder, ty: Ty, value: String,
-    ptrExpr: String, indent: String, uses: SynthUses): void {
+function lowerMemStmts(ty: Ty, value: String, ptrExpr: String,
+    uses: SynthUses): ZenaTemplate {
   if (ty.kind == TyKind.Scalar) {
     let isFloat = ty.scalar == "f32" || ty.scalar == "f64";
-    sb.append(indent).append(storeCall(ty.size, isFloat, ptrExpr,
-        castToCore(ty.scalar, value), uses)).append(";\n");
-    return;
+    let call = storeCall(ty.size, isFloat, ptrExpr,
+        castToCore(ty.scalar, value), uses);
+    return zena`
+      ${call};
+    `;
   }
   if (ty.kind == TyKind.Enumeration) {
-    sb.append(indent).append(storeCall(ty.size, false, ptrExpr,
-        "(" + value + " as i32)", uses)).append(";\n");
-    return;
+    let call = storeCall(ty.size, false, ptrExpr,
+        `(${value} as i32)`, uses);
+    return zena`
+      ${call};
+    `;
   }
   if (ty.kind == TyKind.Flags) {
-    sb.append(indent).append(storeCall(ty.size, false, ptrExpr,
-        "((" + value + " as u32) as i32)", uses)).append(";\n");
-    return;
+    let call = storeCall(ty.size, false, ptrExpr,
+        `((${value} as u32) as i32)`, uses);
+    return zena`
+      ${call};
+    `;
   }
   if (ty.kind == TyKind.ResourceH) {
     uses.useAbi("storeI32");
     uses.useAbi("rawHandle");
-    sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
-        .append(value).append(".[rawHandle]());\n");
     if (!ty.isBorrow) {
       uses.useAbi("markMoved");
-      sb.append(indent).append(value).append(".[markMoved]();\n");
+      return zena`
+        storeI32(${ptrExpr}, ${value}.[rawHandle]());
+        ${value}.[markMoved]();
+      `;
     }
-    return;
+    return zena`
+      storeI32(${ptrExpr}, ${value}.[rawHandle]());
+    `;
   }
   if (ty.kind == TyKind.StreamH) {
     uses.useAbi("storeI32");
-    sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
-        .append(streamLowerCall(ty, value, uses)).append(");\n");
-    return;
+    let streamCall = streamLowerCall(ty, value, uses);
+    return zena`
+      storeI32(${ptrExpr}, ${streamCall});
+    `;
   }
   if (ty.kind == TyKind.FutureH) {
     uses.useAbi("storeI32");
-    sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
-        .append("lowerFuture").append(i32ToString(uses.futureIndexOf(ty)))
-        .append("(").append(value).append("));\n");
-    return;
+    let fid = `${uses.futureIndexOf(ty)}`;
+    return zena`
+      storeI32(${ptrExpr}, lowerFuture${fid}(${value}));
+    `;
   }
   if (ty.kind == TyKind.ResultT) {
     // Only reachable as a future payload: the value is an Outcome,
@@ -1263,113 +1273,143 @@ function lowerMemStmts(sb: StringBuilder, ty: Ty, value: String,
     let errZ = zenaTypeOf(ty.children[1], uses);
     let payoff = payloadOffset(ty);
     uses.useAbi("storeU8");
-    sb.append(indent).append("if (").append(value).append(" is Ok<")
-        .append(okZ).append(", ").append(errZ).append(">) {\n");
-    sb.append(indent).append("  storeU8(").append(ptrExpr)
-        .append(", 0);\n");
+
+    var okStmts = new Array<ZenaTemplate>();
+    okStmts.push(zena`storeU8(${ptrExpr}, 0);`);
     if (!isVoid(ty.children[0])) {
-      lowerMemStmts(sb, ty.children[0],
-          "(" + value + " as Ok<" + okZ + ", " + errZ + ">).value",
-          displaced(ptrExpr, payoff), indent + "  ", uses);
+      okStmts.push(lowerMemStmts(ty.children[0],
+          `(${value} as Ok<${okZ}, ${errZ}>).value`,
+          displaced(ptrExpr, payoff), uses));
     }
-    sb.append(indent).append("} else {\n");
-    sb.append(indent).append("  storeU8(").append(ptrExpr)
-        .append(", 1);\n");
+
+    var errStmts = new Array<ZenaTemplate>();
+    errStmts.push(zena`storeU8(${ptrExpr}, 1);`);
     if (!isVoid(ty.children[1])) {
-      lowerMemStmts(sb, ty.children[1],
-          "(" + value + " as Err<" + okZ + ", " + errZ + ">).error",
-          displaced(ptrExpr, payoff), indent + "  ", uses);
+      errStmts.push(lowerMemStmts(ty.children[1],
+          `(${value} as Err<${okZ}, ${errZ}>).error`,
+          displaced(ptrExpr, payoff), uses));
     }
-    sb.append(indent).append("}\n");
-    return;
+
+    return zena`
+      if (${value} is Ok<${okZ}, ${errZ}>) {
+        ${okStmts}
+      } else {
+        ${errStmts}
+      }
+    `;
   }
   if (ty.kind == TyKind.Str || ty.kind == TyKind.BytesList) {
     let stage = if (ty.kind == TyKind.Str) "stageString"
         else "stageByteList";
     uses.useAbi(stage);
     uses.stagedAny = true;
-    let p = "p" + i32ToString(uses.nextTmp());
-    let l = "l" + i32ToString(uses.nextTmp());
-    sb.append(indent).append("let (").append(p).append(", ").append(l)
-        .append(") = ").append(stage).append("(").append(value)
-        .append(");\n");
-    sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
-        .append(p).append(");\n");
-    sb.append(indent).append("storeI32(").append(displaced(ptrExpr, 4))
-        .append(", ").append(l).append(");\n");
+    let ptr = `ptr${uses.nextTmp()}`;
+    let len = `len${uses.nextTmp()}`;
+    let displacedPtr = displaced(ptrExpr, 4);
     uses.useAbi("storeI32");
-    return;
+    return zena`
+      let (${ptr}, ${len}) = ${stage}(${value});
+      storeI32(${ptrExpr}, ${ptr});
+      storeI32(${displacedPtr}, ${len});
+    `;
   }
   if (ty.kind == TyKind.ListT) {
-    emitListStaging(sb, ty, value, indent, uses,
-        (buf: String, count: String): void => {
-      sb.append(indent).append("storeI32(").append(ptrExpr).append(", ")
-          .append(buf).append(");\n");
-      sb.append(indent).append("storeI32(").append(displaced(ptrExpr, 4))
-          .append(", ").append(count).append(");\n");
-      uses.useAbi("storeI32");
-    });
-    return;
+    let element = ty.children[0];
+    uses.useAbi("stageBuffer");
+    uses.stagedAny = true;
+    uses.useAbi("storeI32");
+    let buffer = `buffer${uses.nextTmp()}`;
+    let length = `length${uses.nextTmp()}`;
+    let index = `index${uses.nextTmp()}`;
+    let elemSize = `${element.size}`;
+    let elemStmt = lowerMemStmts(element, `${value}[${index}]`,
+        `${buffer} + ${index} * ${elemSize}`, uses);
+    let displacedPtr = displaced(ptrExpr, 4);
+    return zena`
+      var ${buffer} = 0;
+      let ${length} = ${value}.length;
+      if (${length} > 0) {
+        ${buffer} = stageBuffer(${length} * ${elemSize});
+        for (var ${index} = 0; ${index} < ${length}; ${index} += 1) {
+          ${elemStmt}
+        }
+      }
+      storeI32(${ptrExpr}, ${buffer});
+      storeI32(${displacedPtr}, ${length});
+    `;
   }
-  if (ty.kind == TyKind.RecordT || ty.kind == TyKind.TupleT) {
+  if (ty.kind == TyKind.RecordT) {
     let offsets = fieldOffsets(ty);
-    var names = new Array<String>();
-    if (ty.kind == TyKind.RecordT) {
-      for (let field in ty.childNames) {
-        names.push(value + "." + field);
-      }
-    } else {
-      let t = "t" + i32ToString(uses.nextTmp());
-      sb.append(indent).append("let (");
-      for (var i = 0; i < ty.children.length; i += 1) {
-        if (i > 0) { sb.append(", "); }
-        sb.append(t).append("v").append(i32ToString(i));
-        names.push(t + "v" + i32ToString(i));
-      }
-      sb.append(") = ").append(value).append(";\n");
-    }
+    var stmts = new Array<ZenaTemplate>();
     for (var i = 0; i < ty.children.length; i += 1) {
-      lowerMemStmts(sb, ty.children[i], names[i],
-          displaced(ptrExpr, offsets[i]), indent, uses);
+      stmts.push(lowerMemStmts(ty.children[i],
+          `${value}.${ty.childNames[i]}`,
+          displaced(ptrExpr, offsets[i]), uses));
     }
-    return;
+    return zena`
+      ${stmts}
+    `;
+  }
+  if (ty.kind == TyKind.TupleT) {
+    let offsets = fieldOffsets(ty);
+    let t = `t${uses.nextTmp()}`;
+    var tupleVars = "";
+    for (var i = 0; i < ty.children.length; i += 1) {
+      if (i > 0) { tupleVars = `${tupleVars}, `; }
+      tupleVars = `${tupleVars}${t}v${i}`;
+    }
+    var stmts = new Array<ZenaTemplate>();
+    for (var i = 0; i < ty.children.length; i += 1) {
+      stmts.push(lowerMemStmts(ty.children[i],
+          `${t}v${i}`,
+          displaced(ptrExpr, offsets[i]), uses));
+    }
+    return zena`
+      let (${tupleVars}) = ${value};
+      ${stmts}
+    `;
   }
   if (ty.kind == TyKind.OptionT) {
     uses.option = true;
     uses.useAbi("storeU8");
     let inner = ty.children[0];
+    let innerType = zenaTypeOf(inner, uses);
     let payoff = payloadOffset(ty);
-    sb.append(indent).append("if (").append(value).append(" is Some<")
-        .append(zenaTypeOf(inner, uses)).append(">) {\n");
-    sb.append(indent).append("  storeU8(").append(ptrExpr)
-        .append(", 1);\n");
-    lowerMemStmts(sb, inner,
-        "(" + value + " as Some<" + zenaTypeOf(inner, uses) + ">).value",
-        displaced(ptrExpr, payoff), indent + "  ", uses);
-    sb.append(indent).append("} else {\n");
-    sb.append(indent).append("  storeU8(").append(ptrExpr)
-        .append(", 0);\n");
-    sb.append(indent).append("}\n");
-    return;
+    let innerStmt = lowerMemStmts(inner,
+        `(${value} as Some<${innerType}>).value`,
+        displaced(ptrExpr, payoff), uses);
+    return zena`
+      if (${value} is Some<${innerType}>) {
+        storeU8(${ptrExpr}, 1);
+        ${innerStmt}
+      } else {
+        storeU8(${ptrExpr}, 0);
+      }
+    `;
   }
   // VariantT: an if chain over the sealed cases, each storing the
   // discriminant and its own payload layout.
   let payoff = payloadOffset(ty);
+  var chainSb = new StringBuilder();
   for (var i = 0; i < ty.children.length; i += 1) {
-    sb.append(indent);
-    if (i > 0) { sb.append("} else "); }
-    sb.append("if (").append(value).append(" is ")
-        .append(ty.childNames[i]).append(") {\n");
-    sb.append(indent).append("  ").append(storeCall(
-        discSize(ty.caseCount), false, ptrExpr, i32ToString(i), uses))
-        .append(";\n");
+    if (i > 0) { chainSb.append("} else "); }
+    chainSb.append(`if (${value} is ${ty.childNames[i]}) {\n`);
+    let call = storeCall(
+        discSize(ty.caseCount), false, ptrExpr, `${i}`, uses);
+    chainSb.append(`  ${call};\n`);
     if (!isVoid(ty.children[i])) {
-      lowerMemStmts(sb, ty.children[i],
-          "(" + value + " as " + ty.childNames[i] + ").value",
-          displaced(ptrExpr, payoff), indent + "  ", uses);
+      let armStmt = lowerMemStmts(ty.children[i],
+          `(${value} as ${ty.childNames[i]}).value`,
+          displaced(ptrExpr, payoff), uses);
+      emit(chainSb, "  ", armStmt);
+      chainSb.append("\n");
     }
   }
-  sb.append(indent).append("}\n");
+  chainSb.append("}");
+  let chain = chainSb.toString();
+  return zena`
+    ${chain}
+  `;
 }
 
 /**
@@ -1385,31 +1425,26 @@ function emitListStaging(sb: StringBuilder, ty: Ty, value: String,
   let element = ty.children[0];
   uses.useAbi("stageBuffer");
   uses.stagedAny = true;
-  let b = `b${uses.nextTmp()}`;
-  let n = `n${uses.nextTmp()}`;
-  let idx = `i${uses.nextTmp()}`;
+  let buffer = `buffer${uses.nextTmp()}`;
+  let length = `length${uses.nextTmp()}`;
+  let index = `index${uses.nextTmp()}`;
   let elemSize = `${element.size}`;
 
-  let bodySb = new StringBuilder();
-  lowerMemStmts(bodySb, element, `${value}[${idx}]`,
-      `${b} + ${idx} * ${elemSize}`, "", uses);
-  var body = bodySb.toString();
-  if (body.endsWith("\n")) {
-    body = body.sliceBytes(0, body.length - 1);
-  }
+  let body = lowerMemStmts(element, `${value}[${index}]`,
+      `${buffer} + ${index} * ${elemSize}`, uses);
 
   emit(sb, indent, zena`
-    var ${b} = 0;
-    let ${n} = ${value}.length;
-    if (${n} > 0) {
-      ${b} = stageBuffer(${n} * ${elemSize});
-      for (var ${idx} = 0; ${idx} < ${n}; ${idx} += 1) {
+    var ${buffer} = 0;
+    let ${length} = ${value}.length;
+    if (${length} > 0) {
+      ${buffer} = stageBuffer(${length} * ${elemSize});
+      for (var ${index} = 0; ${index} < ${length}; ${index} += 1) {
         ${body}
       }
     }
   `);
   sb.append("\n");
-  finish(b, n);
+  finish(buffer, length);
 }
 
 /**
@@ -1502,18 +1537,18 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
         else "stageByteList";
     uses.useAbi(stage);
     uses.stagedAny = true;
-    let p = `p${uses.nextTmp()}`;
-    let l = `l${uses.nextTmp()}`;
-    sb.append(indent).append(`let (${p}, ${l}) = ${stage}(${value});\n`);
-    writeSlot(sb, indent, slots[base], base, p, "i32");
-    writeSlot(sb, indent, slots[base + 1], base + 1, l, "i32");
+    let ptr = `ptr${uses.nextTmp()}`;
+    let len = `len${uses.nextTmp()}`;
+    sb.append(indent).append(`let (${ptr}, ${len}) = ${stage}(${value});\n`);
+    writeSlot(sb, indent, slots[base], base, ptr, "i32");
+    writeSlot(sb, indent, slots[base + 1], base + 1, len, "i32");
     return 2;
   }
   if (ty.kind == TyKind.ListT) {
     emitListStaging(sb, ty, value, indent, uses,
-        (buf: String, count: String): void => {
-      writeSlot(sb, indent, slots[base], base, buf, "i32");
-      writeSlot(sb, indent, slots[base + 1], base + 1, count, "i32");
+        (buffer: String, length: String): void => {
+      writeSlot(sb, indent, slots[base], base, buffer, "i32");
+      writeSlot(sb, indent, slots[base + 1], base + 1, length, "i32");
     });
     return 2;
   }
@@ -2001,7 +2036,8 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
   sb.append("      let v = (item as Some<").append(z).append(">).value;\n");
   sb.append("      let m0 = stagedMark();\n");
   sb.append("      let buf = stageBuffer(").append(size).append(");\n");
-  lowerMemStmts(sb, element, "v", "buf", "      ", uses);
+  emit(sb, "      ", lowerMemStmts(element, "v", "buf", uses));
+  sb.append("\n");
   sb.append("      var packed = streamWrite").append(k)
       .append("_raw(end, buf, 1);\n");
   sb.append("      if (packed == -1) {\n");
@@ -2143,7 +2179,8 @@ function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
   sb.append("  let m0 = stagedMark();\n");
   sb.append("  let buf = stageBuffer(")
       .append(i32ToString(payload.size)).append(");\n");
-  lowerMemStmts(sb, payload, "v", "buf", "  ", uses);
+  emit(sb, "  ", lowerMemStmts(payload, "v", "buf", uses));
+  sb.append("\n");
   sb.append("  var packed = futureWrite").append(k)
       .append("_raw(end, buf);\n");
   sb.append("  if (packed == -1) {\n");
@@ -3677,7 +3714,8 @@ function renderSyncExportWrapper(sb: StringBuilder, witName: String,
   sb.append("  let m0 = stagedMark();\n");
   sb.append("  let ret = stageBuffer(")
       .append(i32ToString(resultTy.size)).append(");\n");
-  lowerMemStmts(sb, resultTy, "value", "ret", "  ", uses);
+  emit(sb, "  ", lowerMemStmts(resultTy, "value", "ret", uses));
+  sb.append("\n");
   sb.append("  notePostReturn(m0);\n");
   sb.append("  return ret;\n}\n");
 }
