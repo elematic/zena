@@ -98,17 +98,20 @@ enforce by hierarchy or convention.
 
 ## Scopes
 
-`CancelScope` is a class in `zena:async` (the cancellable half of the
-`TaskGroup` [concurrency.md](concurrency.md) sketches; the structured
-half layers on below). A scope holds a level-triggered cancelled flag
-and a parent link; cancelling a scope marks it and every descendant.
+`CancelScope` is a class in `zena:async`. A scope holds a
+level-triggered cancelled flag and a parent link; cancelling a scope
+marks it and every descendant. Code running inside a scope can read it
+and nothing more: `isCancelled` is its only public member. Creating a
+scope and cancelling it are operations of `TaskGroup`, described under
+"The cancel capability" below.
 
 Frames bind to a scope at creation, with no signature or context
 machinery. Zena owns its executor and runs to completion between
 suspensions, so an ambient current scope is ordinary library state
 maintained at exactly two control-transfer sites: the executor sets it
-around each `task.run()` (to the running frame's scope), and a scope's
-own entry sets it around running its body. Eager start does the
+around each `task.run()` (to the running frame's scope), and
+`TaskGroup.spawn` sets it around the synchronous start of a spawned
+body. Eager start does the
 inheritance: an async call's ramp runs synchronously inside its
 caller, so the ambient scope at frame creation is the caller's, and
 the frame stores it in one field. After creation, nothing consults the
@@ -120,17 +123,95 @@ dependency-tracking cell propagated across suspensions the same way
 (see "Integration with planned systems"), and one record at the same
 two sites serves every such consumer.
 
-A scope with no parent, wherever it is created, comes from
-`CancelScope.detached()`: cancelling any other scope never reaches
-it, and only its holder can cancel it. This is the scope for work
-that must outlive its callers — a cache's shared fills — where the
-plain constructor would quietly parent to whichever scope happens to
-be current at construction.
+A group with no parent scope, wherever it is created, comes from
+`TaskGroup.detached()`: cancelling any other scope never reaches its
+members, and only the group's holder can cancel them. This is the
+group for work that must outlive its callers — a cache's shared fills
+— where `new TaskGroup()` would quietly parent to whichever scope
+happens to be current at construction.
 
 Sync code never observes any of this. A compute loop that wants to
-stop early polls explicitly — a `currentScope()` getter, or a context
-parameter once [context-parameters.md](context-parameters.md) lands —
-and its signature stays whatever it was.
+stop early polls explicitly — `currentScope().isCancelled` to stop
+without unwinding, `checkCancellation()` to unwind the way an `await`
+would, or a context parameter once
+[context-parameters.md](context-parameters.md) lands — and its
+signature stays whatever it was.
+
+## The cancel capability
+
+Suppose a function starts two fetches in a group and waits for both:
+
+```zena
+let loadPage = async (): Future<Page> => {
+  let group = new TaskGroup();
+  let users = group.spawn(() => fetchUsers());
+  let posts = group.spawn(() => fetchPosts());
+  await group.join();
+  return new Page(await users, await posts);
+};
+```
+
+Before this change, any function called from inside `fetchPosts` could
+write `currentScope().cancel()`. The current scope there is the
+group's scope, so that call would cancel `fetchUsers` at its next
+`await` and deliver a cancellation to `loadPage` at the join. The
+caller of `cancel` never started that work and held no reference to
+the group; the ambient scope handed it the capability. The same
+function could call `raiseCancellation()`, which unwinds `fetchPosts`
+as if it had been cancelled: its future completes cancelled,
+`loadPage` gets the cancellation when it awaits `posts`, and so on up
+to the nearest place that records cancellation as an outcome. Both
+calls let work cancel its siblings and its callers.
+
+The fix is the split `Future` and `Completer` already make for
+settling ([async-runtime-shape.md](async-runtime-shape.md)): the
+object that flows down to the work is read-only, and the object that
+can act on the work stays with whoever created it.
+
+- `CancelScope` is read-only. Its public surface is `isCancelled`.
+  `cancel`, `run`, `detached`, and the public constructor are removed;
+  the constructors become symbol-keyed, with symbols `zena:async` does
+  not export, so only the library creates scopes. The symbol-keyed
+  methods the compiler calls (`:install`, `:checkpoint`,
+  `:registerTask`, `:shieldScope`) are unchanged.
+- `TaskGroup` creates scopes and holds `cancel`. `new TaskGroup()`
+  creates a scope as a child of the current one, and
+  `TaskGroup.detached()` creates one with no parent. `spawn` starts a
+  body with the group's scope current, `cancel` marks the scope, and
+  `join` waits for the members. The group is an ordinary reference:
+  code can cancel a group only if the group's creator passed it that
+  reference.
+- `currentScope()` stays. It returns a scope that can be read and not
+  cancelled, so exposing it grants nothing.
+- `raiseCancellation` is no longer exported. Cancellation is delivered
+  at three sites, each of which tests the current scope and raises
+  only if some group has been cancelled: entering an `await`, resuming
+  from one, and `checkCancellation()`. The library's own raise sites
+  (a cancelled future's reads, the checkpoint method, generator
+  disposal) keep the intrinsic; nothing outside `zena:async` can raise
+  on the channel.
+
+A scope is current in exactly two situations. `spawn` installs the
+group's scope around the synchronous start of the body and restores
+the previous scope in a `finally`, so the scope is current until the
+body reaches its first `await` or returns. After that, each async
+frame the body created holds the scope in a field, and the frame's
+compiler-emitted `run()` installs it around each step. User code has
+no operation that leaves a scope installed after it returns, so a
+scope never reaches the spawner's later frames or its siblings.
+
+`Task.run` and `FutureClaim.spawn` each need one cancellable scope for
+one body. Each creates a group with one member. The cost over a bare
+scope is the group's member counter and the waiter it subscribes to
+the member's future; the group's failure handling finds no other
+member to cancel. Handles that expose `cancel` — `TaskGroup`, `Task`,
+`FutureClaim.release` — are references their creator handed out on
+purpose, which is the intended way to grant the capability.
+
+`shielded` is unchanged: it masks the frame's checkpoints and installs
+the root scope, so work started inside binds to a scope nothing can
+cancel. The root scope is created by the library and belongs to no
+group.
 
 ## Delivery at checkpoints
 
@@ -163,11 +244,12 @@ masked, a spuriously woken frame re-parks.
 Async code carries the cancellation machinery — the second tag, the
 frame's scope field, the checkpoints, the wake registration, the run()
 interposer — only when the program can actually cause a cancellation.
-The evidence is a reached call that raises or leads to a raise: a call
-to `cancel` on a `CancelScope` (which covers `TaskGroup`, whose
-failure handling calls it), or a call to `raiseCancellation` from
-outside `zena:async` — the library's own raise sites observe
-cancellation rather than cause it. The checker records the evidence on
+The evidence is a reached call to `TaskGroup.cancel`, the one
+operation that marks a scope. The group's own failure handling and
+`TaskGroup.race` call the same method, and `Task.cancel`, `Task.run`,
+and `FutureClaim.release` reach it through their bodies. The library's
+raise sites observe cancellation, and `raiseCancellation` is not
+exported, so there is no other cause. The checker records the evidence on
 each body's dependency record, reachability aggregates it over reached
 bodies, and the machinery is minted and queued the moment a cause
 surfaces, equipping every async frame discovered before or after.
@@ -424,6 +506,37 @@ already uses `Task` for the executor's queue protocol (the interface
 suspended frames implement). The internal protocol should yield the
 name.
 
+### Synchronous calls into microtask-only async code
+
+One possible mitigation of function coloring: a sync function calls
+an async function whose awaits only ever wait on other such functions,
+so every continuation is a microtask and none waits on a timer or a
+host completion. The call runs the callee, drains only the
+continuations the callee's frames scheduled, and returns the settled
+value.
+
+That asks one thing of the scope design: a queue per scope. Frames
+bound to a scope would schedule their continuations onto that scope's
+queue, and the synchronous call would create a scope, start the body
+under it, and drain that queue. The ambient record installed at the
+two sites already carries the scope, so a queue is one more field on
+it, and `CancelScope` would then want a broader name such as
+`AsyncScope`. Creating the scope and running the drain is an operation
+of whatever creates scopes, which is one more reason to keep scope
+creation on the group. Such a program also needs the scope machinery
+installed without any cancel cause, so the gate would gain a second
+cause.
+
+Two problems belong to that design and are recorded here so the
+refactor above can leave them open. A frame waiting on a future
+sits in that future's waiter list and on no queue, so if the future is
+settled by a timer or by a frame in another scope, the scoped drain
+runs dry with the result still pending; the call must fail loudly at
+that point, the way `runFuture` reports a deadlock today. And a nested
+drain runs the callee's frames inside the caller's step, so the
+always-async rule ([async.md](async.md) §2) holds only for frames
+outside the scope.
+
 ### Streams and Component Model async
 
 WASI 0.3 streams come with the Component Model's own cancellation
@@ -469,6 +582,15 @@ the caller, not a directive to unwind.
    scope machinery, the `for`-in exit finalizer drives a suspended
    frame's delivery, and `yield` inside `finally` became an error so
    finalizers always run to completion.
+6. **The cancel capability.** `CancelScope` loses `cancel`, `run`,
+   `detached`, and its public constructor; `TaskGroup` gains
+   `detached()` and becomes the only creator of scopes;
+   `raiseCancellation` stops being exported; `Task.run` and
+   `FutureClaim.spawn` move onto groups; the gate's evidence becomes
+   `TaskGroup.cancel`. Tests that called `raiseCancellation` directly
+   cancel a group and call `checkCancellation()` instead: a spawned
+   body's synchronous start runs even in a cancelled scope, so a
+   `checkCancellation()` there raises.
 
 ## Alternatives considered
 
@@ -486,3 +608,23 @@ the caller, not a directive to unwind.
   the swallowing hole with a nicer name; loosening a too-strict
   observer later is cheap, and the reverse is the Python 3.8
   migration.
+- **A separate controller class beside `TaskGroup`.** A
+  `CancelSource`-style object holding only `cancel` and a `run`, with
+  `TaskGroup` composing one, would let `Task.run` and
+  `FutureClaim.spawn` skip the group's member tracking. Rejected for
+  now: the tracking costs one counter and one waiter, and a second
+  public creator of scopes is a second surface to keep sound. If a
+  consumer appears that needs a cancellable scope and cannot afford a
+  group, that class can be split out of `TaskGroup` without changing
+  `CancelScope`.
+- **A child-scope method on `CancelScope`.** `scope.child()` returning
+  a controller would let code parent new work to any scope it holds a
+  reference to. It grants nothing dangerous, since the new scope is
+  cancelled only when its parent is, but it is a second creation path
+  with no consumer.
+- **Keeping `raiseCancellation` public.** A raise from inside work
+  unwinds every awaiter up to the nearest boundary that records the
+  outcome, so it is a cancel of the callers by the callee. Python's
+  asyncio and Kotlin both allow it: a task that raises
+  `CancelledError` or `CancellationException` itself counts as
+  cancelled, and each awaiter is cancelled in turn.

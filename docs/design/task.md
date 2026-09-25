@@ -93,7 +93,8 @@ the op read its argument from where the caller put it — the same
 answer @lit/task gives with its `args` callback, minus the reactive
 host that makes an implicit-args protocol pay for itself.
 
-Each run starts its op inside a child `CancelScope`. That is what
+Each run starts its op as the one member of a fresh `TaskGroup`, so
+it runs inside that group's `CancelScope`. That is what
 makes supersession real: `run()` while pending cancels the previous
 attempt's whole subtree — timers, spawned children — rather than
 letting it race the new run for the state cell (the abandoned-promise
@@ -182,7 +183,7 @@ ship without it.
 
 ## Implementation notes
 
-`Task.run` is ordinary library code over `CancelScope.run`,
+`Task.run` is ordinary library code over `TaskGroup.spawn`,
 completers for `completed` and the `changed()` rounds, and the state
 cell; no compiler support. The
 supersession test — run, run again before the first settles, assert
