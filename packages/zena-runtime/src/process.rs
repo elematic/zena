@@ -2,9 +2,9 @@
 //!
 //! Spawning is a deliberate escape from the WASI sandbox, so it is a
 //! capability the embedder grants per instantiation ([`crate::Spawn`]).
-//! `zena-cli` gives its own orchestrator programs (the bench and test
-//! runners) and repo tests real implementations; `zena-cli run` and
-//! `zena-run` give them only with `--allow-spawn` or ZENA_ALLOW_SPAWN=1.
+//! `zena-cli` gives the CLI module real implementations, and the CLI
+//! module passes the grant on to repo tests; `zena-cli run` and `zena-run`
+//! give them to a program only with `--allow-spawn` or ZENA_ALLOW_SPAWN=1.
 //! Without the grant every `zena_process` import the module declares is
 //! linked to a stub that traps with an explanatory message, so unrelated
 //! programs still instantiate and run.

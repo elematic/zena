@@ -96,8 +96,9 @@ versions, or Zena vs a frozen reference vs Node — needs processes,
 which WASI cannot spawn. That capability is now a stdlib library,
 `zena:process` (host imports provided by zena-cli to trusted
 invocations only; see `packages/stdlib/zena/process/README.md`), and
-the orchestrator is itself a Zena program, part of the `zena` command
-(`packages/zena-cli/zena/bench-run.zena`). It parses the config, runs
+the orchestrator is itself Zena: `zena:bench`'s `runSuite`
+(`packages/stdlib/zena/bench/suite.zena`), which `zena bench` calls
+with a function that compiles `zena` variants. It parses the config, runs
 the round-robin sampling loop, analyzes with `zena:bench`'s `analyze()`
 — one implementation of the math — and writes the report. A `zena`,
 `wasm` or `wat` variant is run with `zena:wasm` in a fresh store per
@@ -113,12 +114,11 @@ zena-cli bench benchmarks/fib.json          # prints report, writes fib.results.
 The config lists variants; sample semantics differ by kind, which is the
 answer to "is one iteration per round the right granularity?":
 
-- `zena` / `wasm` / `wat` — each sample is one run of the `sample`
-  worker: a **fresh instance + one timed call** of the exported
-  function (default `main`), the milliseconds self-reported by the
-  worker. Worker startup, module compilation (cached), and
-  instantiation are excluded from the timed region; per-call timing is
-  host-side `Instant` (ns resolution).
+- `zena` / `wasm` / `wat` — each sample is one run of the module with
+  `zena:wasm`: a **fresh store + one timed call** of the exported
+  function (default `main`). The host times the call alone (`callTime`,
+  from a host-side `Instant`, ns resolution), so module compilation
+  (once, and cached) and instantiation are excluded.
 - `command` (e.g. Node) — each sample is **one process run**, but the
   measurement is the guest's **self-reported** milliseconds: the last
   non-empty stdout line that parses as a float (ANSI escapes stripped —

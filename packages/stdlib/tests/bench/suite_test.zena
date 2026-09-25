@@ -1,0 +1,53 @@
+// zena:bench's runSuite: a module variant and a command variant, sampled
+// and reported. Repo tests run with the grant, which running modules and
+// spawning commands need.
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { exists, readFile, unlink } from 'zena:fs';
+import { runSuite } from 'zena:bench';
+
+let fixtures = 'packages/stdlib/tests/bench/fixtures';
+
+export let tests = suite('bench suites', (): void => {
+  test('a module and a command are sampled and reported', () => {
+    let out = '/tmp/zena-suite-test.results.json';
+    equal(runSuite(`${fixtures}/suite.json`, {out: out}), 0);
+    isTrue(exists(out));
+    let json = readFile(out);
+    isTrue(json.contains('"module"'));
+    isTrue(json.contains('"command"'));
+    // The command reports 0.25 ms on its last line, so every one of its
+    // samples is exactly that.
+    isTrue(json.contains('0.25'));
+    unlink(out);
+  });
+
+  test('a path that climbs out of the config\'s directory is resolved', () => {
+    // `../sum.wat` from `fixtures/nested`: zena:wasm refuses a path with
+    // a `..` segment, so the suite has to resolve it first.
+    let out = '/tmp/zena-suite-nested.results.json';
+    equal(runSuite(`${fixtures}/nested/suite.json`, {out: out}), 0);
+    unlink(out);
+  });
+
+  test('a zena variant without a compiler is an error', () => {
+    equal(runSuite(`${fixtures}/needs-compiler.json`, {out: '/tmp/unused.json'}), 1);
+  });
+
+  test('a compiler compiles each zena variant once', () => {
+    var compiled = 0;
+    let out = '/tmp/zena-suite-compile.results.json';
+    let status = runSuite(`${fixtures}/needs-compiler.json`, {
+      out: out,
+      // Stands in for a compiler: hands back an existing module.
+      compile: (source: String): String => {
+        compiled += 1;
+        equal(source, `${fixtures}/fib.zena`);
+        return `${fixtures}/sum.wat`;
+      },
+    });
+    equal(status, 0);
+    equal(compiled, 1);
+    unlink(out);
+  });
+});

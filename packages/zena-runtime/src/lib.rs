@@ -13,8 +13,8 @@
 //! It is the Rust counterpart of `packages/runtime`, which does the same
 //! job for the `js` target in JavaScript. Two binaries embed it:
 //! `zena-run`, a small wrapper that runs one compiled module, and
-//! `zena-cli`, which also bundles the compiler and the test and benchmark
-//! runners.
+//! `zena-cli`, which runs the `zena` command's own module, the CLI
+//! module.
 //!
 //! Typical use:
 //!

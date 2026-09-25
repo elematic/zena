@@ -11,7 +11,9 @@ the `zena` command. The design is in
    - `zena/main.zena` reads the command line (`zena:args`) and dispatches.
      Beside it: `env.zena` (what the host told the module, shared flags),
      `compile.zena` (compiling, and the compile cache), `run.zena`,
-     `test-run.zena`, `bench-run.zena`.
+     `test-run.zena`, and `bench-run.zena`, which hands a suite to
+     `zena:bench`'s `runSuite` with a function that compiles its `zena`
+     variants.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc and the formatter linked
      in. Other programs (the VS Code extension's `lsp.wasm`, the

@@ -84,6 +84,6 @@ The host side lives in `packages/zena-runtime/src/process.rs`. Strings
 cross the boundary through the `$stringCreate` / `$stringSetByte` /
 `$stringGetByte` / `$stringGetLength` helpers every compiled Zena
 module exports; handles cross as `externref`s wrapping host state.
-Consumers in-repo: zb, which runs build commands, and `zena bench`
-(`packages/zena-cli/zena/bench-run.zena`), which runs command variants.
+Consumers in-repo: zb, which runs build commands, and `zena:bench`'s
+`runSuite`, which runs command variants.
 Running another Wasm module is `zena:wasm`'s job.

@@ -6,11 +6,12 @@ statistics implementation:
 
 - **`zena:bench`** (this library) — an in-process runner: closures
   registered on a `BenchRunner`, timed with the WASI monotonic clock.
-- **`zena-cli bench`** — cross-binary comparison (Zena vs a pinned
-  `.wat` milestone vs Node). The orchestration is itself a Zena program
-  (`packages/zena-cli/zena/bench-run.zena`) that takes each sample of a
-  module with `zena:wasm`, and each sample of a command with
-  `zena:process`, and analyzes with this library.
+- **`runSuite`** (also this library, `suite.zena`) — cross-binary
+  comparison (Zena vs a pinned `.wat` milestone vs Node), described by a
+  JSON config. It takes each sample of a module with `zena:wasm` and each
+  sample of a command with `zena:process`, so it needs the host's grant.
+  `zena bench <config>` calls it, passing a function that compiles the
+  suite's `zena` variants.
 
 The full rationale and architecture live in
 [docs/design/benchmarking.md](../../../../docs/design/benchmarking.md).
@@ -116,6 +117,7 @@ milestone workload suite.
 | File         | Role                                                                                             |
 | ------------ | ------------------------------------------------------------------------------------------------ |
 | `index.zena` | Public entry: runner, reports, `analyze()` for external samples                                  |
+| `suite.zena` | `runSuite`: suites of separate programs, from a JSON config — re-exported from the entry point      |
 | `stats.zena` | Private: t-table, `summarize`, Welch difference CIs, horizons — re-exported from the entry point |
 
 Statistics are deliberately small: a Student-t table at 95% (the only
