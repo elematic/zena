@@ -1963,16 +1963,8 @@ final class CheckerContext {
           checkAliasTargetInlineTuples(this, targetType, bodyAnn.loc);
           aliasType.target = targetType;
         } else {
-          // A `declare type` operator has no body. Its placeholder
-          // target is its own first parameter, which is what makes an
-          // OPEN instance erase and key exactly as its argument does
-          // (docs/design/type-operators.md); a closed instance never
-          // survives to read the target at all.
-          aliasType.target = if (typeParams != null && typeParams.length > 0) {
-            typeParams[0] as Type
-          } else {
-            new HoleType()
-          };
+          // A `declare type` operator has no body.
+          aliasType.target = typeOperatorTarget(this, aliasType, typeParams);
         }
         aliasType.resolving = false;
         this.exitScope();
@@ -13165,6 +13157,38 @@ let getOrCreateMixinApplication = (
  * alias cross an import cycle's back edge — an importer holds the shell
  * and the origin fills its body here (docs/design/import-cycles.md).
  */
+/**
+ * The target a body-less type operator carries.
+ *
+ * `type.scopedFrom` expands to `Scoped<R>`, so its target names the
+ * `Scoped` declaration, which substitution instantiates without a checker
+ * context (types.zena `scopedFromTypeOf`). Any other operator's target is
+ * its own first parameter, which is what makes an open instance erase and
+ * key exactly as its argument does (docs/design/type-operators.md); a
+ * closed instance never survives to read the target at all.
+ *
+ * Registration sets this, not the statement check: on an import cycle an
+ * importer registers signatures naming the operator before the declaring
+ * module's statements are checked, and an instance copies the target it
+ * finds.
+ */
+let typeOperatorTarget = (
+  ctx: CheckerContext,
+  alias: TypeAliasType,
+  typeParams: Array<TypeParameterType> | null
+): Type => {
+  if (alias.intrinsicName == 'type.scopedFrom') {
+    let scopedDecl = ctx.resolveTypeName('Scoped');
+    if (scopedDecl != null && scopedDecl is TypeAliasType) {
+      return scopedDecl;
+    }
+  }
+  if (typeParams != null && typeParams.length > 0) {
+    return typeParams[0];
+  }
+  return new HoleType();
+};
+
 let registerTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration): void => {
   if (ta.isDistinct) {
     // Distinct/opaque aliases are nominal already; the old path handles
@@ -13209,6 +13233,17 @@ let registerTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaratio
     }
   }
   alias.typeParameters = typeParams;
+  // The alias may be the shell an importer across an import cycle made,
+  // which knows only the name and parameters: registration supplies the
+  // rest the declaration determines, the operator a decorated alias
+  // names included, or `Awaited<T>` would read as an ordinary alias of
+  // its placeholder.
+  alias.intrinsicName = null;
+  for (let dec in ta.decorators) {
+    if (dec.name == 'intrinsic' && dec.args.length == 1) {
+      alias.intrinsicName = dec.args[0].value;
+    }
+  }
   alias.resolving = true;
   let bodyAnn = ta.typeAnnotation;
   if (bodyAnn != null) {
@@ -13221,6 +13256,9 @@ let registerTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaratio
     ctx.setDiagnosticsSuppressed(true);
     alias.target = resolveTypeAnnotation(ctx, bodyAnn, true);
     ctx.setDiagnosticsSuppressed(false);
+  } else {
+    // A `declare type` operator has no body.
+    alias.target = typeOperatorTarget(ctx, alias, typeParams);
   }
   alias.resolving = false;
   ctx.exitScope();
@@ -16284,16 +16322,12 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
         ctx.error("The 'type.scopedFrom' operator takes exactly two type parameters.",
             DiagnosticCode.TypeMismatch, ta.name.loc);
       }
-      // The operator expands to Scoped<R>; its target names the
-      // Scoped declaration so substitution can instantiate it without
-      // a checker context (types.zena scopedFromTypeOf).
+      // Registration points the operator at the Scoped declaration
+      // (typeOperatorTarget); here it only has to exist.
       let scopedDecl = ctx.resolveTypeName('Scoped');
-      let selfAlias = ctx.resolveTypeName(ta.name.name);
       if (scopedDecl == null || !(scopedDecl is TypeAliasType)) {
         ctx.error("The 'type.scopedFrom' operator needs 'Scoped' in scope.",
             DiagnosticCode.TypeMismatch, ta.name.loc);
-      } else if (selfAlias != null && selfAlias is TypeAliasType) {
-        selfAlias.target = scopedDecl;
       }
     } else if (dec.args[0].value != 'type.awaited') {
       ctx.error("Unknown type intrinsic '" + dec.args[0].value + "'.",
