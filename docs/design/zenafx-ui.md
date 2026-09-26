@@ -1315,6 +1315,14 @@ exports, which needs `resource.new`, `resource.rep` and a destructor export
 alongside the `resource.drop` the compiler already emits for imported handles.
 Nothing else in §7 works without it, so it is the first item.
 
+**An async world export alongside an interface that declares a resource.**
+Compiling a program against a world that imports `zenafx:ui/scene` and exports
+`main: async func()` fails with "the component target cannot export
+'main$asyncEntry': it has no declaration to read a signature from", where the
+same world without the scene import compiles. The entry wrapper and the
+synthesized handle class interact somewhere; this is the first thing to
+diagnose, because every milestone-1 program has that shape.
+
 **Passing an imported resource handle between components.** A parent holds a
 `viewport` it got from the runtime and hands it to a child through the child's
 `mount`. Both components import the same resource type from the same instance,

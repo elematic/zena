@@ -1,0 +1,248 @@
+// ZenaFX interfaces. Two packages live in this one file so that both
+// toolchains can read the directory: `wasm-tools` accepts one top-level
+// package per directory plus nested ones, and Zena's `readWitSource`
+// concatenates the directory's `.wit` files and registers nested
+// packages from the result.
+//
+//   zenafx:ui    what a widget component imports, and what the runtime
+//                component exports.
+//   zenafx:host  the primitives `zfx` serves in Rust: text, layout,
+//                paint and the window.
+//
+// Designed in docs/design/zenafx-ui.md.
+
+package zenafx:ui@0.1.0;
+
+interface geometry {
+  record size { width: f32, height: f32 }
+  record rect { x: f32, y: f32, width: f32, height: f32 }
+}
+
+interface style {
+  /// Non-premultiplied sRGB; each channel runs 0..1.
+  record color { r: f32, g: f32, b: f32, a: f32 }
+
+  record box-look {
+    background: option<color>,
+    border-color: option<color>,
+    border-width: f32,
+    corner-radius: f32,
+    opacity: f32,
+  }
+
+  record text-look {
+    family: string,
+    size: f32,
+    weight: u16,
+    italic: bool,
+    color: color,
+  }
+
+  variant length { auto, px(f32), percent(f32) }
+  enum axis { row, column }
+  enum justify { start, center, end, space-between }
+  enum align { start, center, end, stretch }
+  record edges { top: f32, right: f32, bottom: f32, left: f32 }
+
+  /// Geometry only. Nothing here affects painting, and nothing in
+  /// `box-look` or `text-look` affects measurement.
+  record flex {
+    axis: axis,
+    justify-content: justify,
+    align-items: align,
+    gap: f32,
+    padding: edges,
+    width: length,
+    height: length,
+    grow: f32,
+    shrink: f32,
+  }
+}
+
+interface scene {
+  use geometry.{rect};
+  use style.{box-look, text-look, flex, color, length};
+
+  /// A node within one viewport, named by whoever holds that viewport.
+  /// Node 0 is the viewport's own root and already exists. An id means
+  /// nothing outside the viewport it is used with.
+  type node = u32;
+
+  record box-op { id: node, parent: node, layout: flex, look: box-look }
+  record text-op { id: node, parent: node, content: string, layout: flex,
+                   look: text-look }
+  record layout-op { target: node, layout: flex }
+  record look-op { target: node, look: box-look }
+  record content-op { target: node, content: string }
+
+  /// A value that inherits down the tree, resolved at the nearest node
+  /// at or above the reader that provides it. The set is closed on
+  /// purpose: these are the things a theme carries. Anything richer is
+  /// bound by the loader instead.
+  variant inherited {
+    color(color),
+    length(length),
+    scalar(f32),
+    flag(bool),
+    name(string),
+  }
+
+  /// Provide `key` at `target` for the subtree beneath it. `none`
+  /// withdraws, so the subtree sees whatever an ancestor provides.
+  record provide-op { target: node, key: string, value: option<inherited> }
+
+  variant op {
+    make-box(box-op),
+    make-text(text-op),
+    set-layout(layout-op),
+    set-look(look-op),
+    set-content(content-op),
+    provide(provide-op),
+    /// Removes the node and its descendants, and frees the ids.
+    remove(node),
+  }
+
+  /// What a viewport permits. A derived viewport may drop grants and
+  /// never add them.
+  flags grants {
+    pointer,
+    keyboard,
+  }
+
+  /// The authority to build nodes under one node of the scene. Holding
+  /// it is the only way to name a node; dropping it discards the
+  /// subtree.
+  resource viewport {
+    /// Apply a batch of operations in order. Returns nothing, so the
+    /// call may be delivered after the caller's own call returns.
+    apply: func(ops: list<op>);
+
+    /// The node's box after the most recent layout pass, in window
+    /// coordinates. Zero-sized before the first pass.
+    bounds: func(target: node) -> rect;
+
+    /// The value of `key` in effect at `target`: from the nearest node at
+    /// or above it that provides one, including nodes belonging to other
+    /// components. `none` when nothing provides it.
+    inherited: func(target: node, key: string) -> option<inherited>;
+
+    /// A viewport rooted at one of this viewport's nodes, carrying at
+    /// most the grants this one holds. Handing it to another component
+    /// is how a parent gives a child somewhere to draw, and how a child
+    /// offers a slot back to its parent.
+    derive: func(container: node, permitted: grants) -> viewport;
+
+    /// Mark this subtree as needing layout and paint, and ask the host
+    /// for a frame.
+    invalidate: func();
+  }
+
+  /// Solve layout for every dirty subtree and present one frame. Called
+  /// once per frame by the root component, which drives the frame loop.
+  flush: func();
+}
+
+/// How the root viewport enters the graph. Only the loader calls this —
+/// no component imports it, which is what stops a component from
+/// helping itself to the root instead of being handed a subtree.
+interface session {
+  use scene.{viewport};
+
+  root-viewport: func() -> viewport;
+}
+
+package zenafx:host@0.1.0 {
+
+  interface text {
+    use zenafx:ui/style@0.1.0.{text-look};
+
+    record measured { width: f32, height: f32, baseline: f32 }
+
+    /// Shape `content` under `look` and keep it. The id is valid until
+    /// `release-run`.
+    register-run: func(content: string, look: text-look) -> u32;
+    update-run: func(run: u32, content: string, look: text-look);
+    release-run: func(run: u32);
+
+    /// Shape at a width. `none` asks for the unconstrained size.
+    measure-run: func(run: u32, available-width: option<f32>) -> measured;
+  }
+
+  interface layout {
+    use zenafx:ui/style@0.1.0.{flex};
+    use zenafx:ui/geometry@0.1.0.{size, rect};
+
+    /// One node of a tree given in pre-order. Index 0 is the root; a
+    /// node's children are the `child-count` entries starting at
+    /// `first-child`. The tree is flat because WIT records cannot recurse.
+    record node {
+      style: flex,
+      /// A run from `text`, measured during the solve. `none` for a box.
+      run: option<u32>,
+      first-child: u32,
+      child-count: u32,
+    }
+
+    /// Solve one tree. The result is parallel to `nodes`, and each rect is
+    /// in the root's coordinate space.
+    solve: func(nodes: list<node>, available: size) -> list<rect>;
+  }
+
+  interface paint {
+    use zenafx:ui/geometry@0.1.0.{rect};
+    use zenafx:ui/style@0.1.0.{color};
+
+    record quad {
+      bounds: rect,
+      background: option<color>,
+      border-color: option<color>,
+      border-width: f32,
+      corner-radius: f32,
+    }
+
+    record glyphs { run: u32, x: f32, y: f32 }
+
+    variant command {
+      quad(quad),
+      glyphs(glyphs),
+      push-clip(rect),
+      pop-clip,
+    }
+
+    /// Draw the frame and present it.
+    present: func(commands: list<command>);
+  }
+
+  interface surface {
+    record frame-event {
+      /// Milliseconds on a monotonic clock since the window opened.
+      time-ms: f64,
+      width: u32,
+      height: u32,
+      /// Physical pixels per logical pixel.
+      scale: f32,
+    }
+    record pointer-event { x: f32, y: f32, button: u8, down: bool }
+    record key-event { code: u32, down: bool, text: string }
+
+    /// One event per requested redraw, and none otherwise.
+    frames: func() -> stream<frame-event>;
+    pointer: func() -> stream<pointer-event>;
+    keys: func() -> stream<key-event>;
+
+    /// Ask for one more frame. Coalesced.
+    request-redraw: func();
+  }
+
+  world runtime {
+    import text;
+    import layout;
+    import paint;
+    import surface;
+
+    export zenafx:ui/scene@0.1.0;
+    /// Called by the loader only, to mint the root viewport it hands to
+    /// the application.
+    export zenafx:ui/session@0.1.0;
+  }
+}
