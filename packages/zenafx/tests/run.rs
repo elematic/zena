@@ -35,47 +35,74 @@ fn reports_error_on_missing_file() {
 }
 
 #[test]
+fn reports_error_when_given_nothing_to_run() {
+    let out = zfx(&[]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("No .wasm component given"));
+}
+
+/// The ZenaFX host primitives with no Wasm in the picture: `--ui` builds a
+/// scene in Rust, solves it with taffy, rasterizes it with vello_cpu and
+/// presents it through softbuffer. Reaching the first frame means all four
+/// worked against a real window.
+#[test]
+#[ignore = "requires a graphical display; run with: cargo test -p zenafx -- --ignored"]
+fn ui_demo_presents_a_frame() {
+    assert!(
+        wait_for_line(&["--ui"], "presented frame 1"),
+        "timed out waiting for the first frame from --ui"
+    );
+}
+
+#[test]
 #[ignore = "requires graphical display and GPU; run with: cargo test -p zenafx -- --ignored"]
 fn runs_triangle_component_smoke_test() {
-    use std::io::{BufRead, BufReader};
     use std::path::PathBuf;
-    use std::process::Stdio;
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/triangle.wasm");
     assert!(fixture.exists(), "fixture {} must exist", fixture.display());
 
+    assert!(
+        wait_for_line(&[fixture.to_str().unwrap()], "frame event"),
+        "timed out waiting for 'frame event' from triangle.wasm"
+    );
+}
+
+/// Run `zfx` with `args` and wait up to five seconds for a line containing
+/// `needle` on either stream, then kill it. Both streams are watched because
+/// `wasi-gfx` prints to stdout while `zfx`'s own logging goes to stderr.
+fn wait_for_line(args: &[&str], needle: &str) -> bool {
+    use std::io::{BufRead, BufReader, Read};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     let mut child = Command::new(env!("CARGO_BIN_EXE_zfx"))
-        .arg(&fixture)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn zfx");
 
-    let stdout = child.stdout.take().expect("failed to capture stdout");
     let (tx, rx) = mpsc::channel();
-
-    // Read stdout on a background thread
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if let Ok(l) = line {
-                if l.contains("frame event") {
-                    let _ = tx.send(true);
-                    break;
+    let watch = |stream: Box<dyn Read + Send>| {
+        let tx = tx.clone();
+        let needle = needle.to_owned();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                if line.contains(&needle) {
+                    let _ = tx.send(());
+                    return;
                 }
             }
-        }
-    });
+        });
+    };
+    watch(Box::new(child.stdout.take().expect("no stdout")));
+    watch(Box::new(child.stderr.take().expect("no stderr")));
+    drop(tx);
 
-    // Wait up to 5 seconds for the first frame event
-    let frame_rendered = rx.recv_timeout(Duration::from_secs(5));
+    let found = rx.recv_timeout(Duration::from_secs(5)).is_ok();
     let _ = child.kill();
     let _ = child.wait();
-
-    assert!(
-        frame_rendered.is_ok(),
-        "timed out waiting for 'frame event' from triangle.wasm"
-    );
+    found
 }

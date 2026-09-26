@@ -2,7 +2,9 @@
 
 ## Status
 
-- **Status**: Proposed
+- **Status**: Proposed; the host primitives of §8 are built and the rest is
+  not. `zfx --ui` opens a window on a scene assembled in Rust — steps 1 to 5
+  of milestone 1 below. Nothing loads a component yet.
 - **Date**: 2026-09-25
 - **Scope**: a retained-mode UI system whose applications are trees of
   WebAssembly components linked at run time; which parts of it are written in
@@ -87,7 +89,7 @@ rule that produced that split and what it costs.
   function. A widget may be a component of its own or one of many inside a
   component, and §9.2 is about why that choice is free.
 - **Viewport** is the region a widget paints into and the authority to do so.
-  Fuchsia calls the child's end of the same link a *view*; this document uses
+  Fuchsia calls the child's end of the same link a _view_; this document uses
   "viewport" for both ends and reserves "view" for quoting Flatland.
 - **Node** is an entry in the retained tree: a box, a text run, a slot, a
   canvas, or a GPU viewport. Nodes are what layout and paint operate on.
@@ -154,21 +156,21 @@ program.
 
 ### The split
 
-| Concern | Where | Reason |
-| --- | --- | --- |
-| Window, OS input, vsync | Rust, in `zfx` | [`winit`][winit]; macOS requires the event loop on the main thread |
-| Text layout, shaping, line breaking | Rust | [`parley`][parley]: Unicode and OpenType tables |
-| Flexbox and grid solving | Rust | [`taffy`][taffy] |
-| Vector and glyph rasterization | Rust | [`vello_cpu`][vello-cpu] first, [`vello`][vello] on the GPU later |
-| GPU pipelines for Tier 3 | Rust | [`wgpu`][wgpu], already served through [`wasi:webgpu`][wasi-webgpu] |
-| Retained node tree | Zena | bookkeeping over data the host never needs to see |
-| Dirty tracking, incremental layout and paint | Zena | policy: deciding when to call the solver, and on which subtree |
-| Widget instances, props, dirty checking, lifecycle | Zena | application semantics; no external dependency |
-| Templates and slot updates | Zena | the target `html` blocks lower to |
-| Frame scheduling | Zena | ordering policy over the widget tree |
-| Hit testing | Zena | arithmetic over rects the runtime already holds |
-| Slot projection and shadow subtrees | Zena | tree bookkeeping |
-| Capability bookkeeping and attenuation | Zena | the runtime is what issues and checks node ids |
+| Concern                                            | Where          | Reason                                                              |
+| -------------------------------------------------- | -------------- | ------------------------------------------------------------------- |
+| Window, OS input, vsync                            | Rust, in `zfx` | [`winit`][winit]; macOS requires the event loop on the main thread  |
+| Text layout, shaping, line breaking                | Rust           | [`parley`][parley]: Unicode and OpenType tables                     |
+| Flexbox and grid solving                           | Rust           | [`taffy`][taffy]                                                    |
+| Vector and glyph rasterization                     | Rust           | [`vello_cpu`][vello-cpu] first, [`vello`][vello] on the GPU later   |
+| GPU pipelines for Tier 3                           | Rust           | [`wgpu`][wgpu], already served through [`wasi:webgpu`][wasi-webgpu] |
+| Retained node tree                                 | Zena           | bookkeeping over data the host never needs to see                   |
+| Dirty tracking, incremental layout and paint       | Zena           | policy: deciding when to call the solver, and on which subtree      |
+| Widget instances, props, dirty checking, lifecycle | Zena           | application semantics; no external dependency                       |
+| Templates and slot updates                         | Zena           | the target `html` blocks lower to                                   |
+| Frame scheduling                                   | Zena           | ordering policy over the widget tree                                |
+| Hit testing                                        | Zena           | arithmetic over rects the runtime already holds                     |
+| Slot projection and shadow subtrees                | Zena           | tree bookkeeping                                                    |
+| Capability bookkeeping and attenuation             | Zena           | the runtime is what issues and checks node ids                      |
 
 [winit]: https://github.com/rust-windowing/winit
 [taffy]: https://github.com/DioxusLabs/taffy
@@ -453,7 +455,7 @@ A [WIT][wit] `resource` is a handle in the holder's own table: it cannot be
 forged, cannot be guessed, and its destructor tells the provider when the holder
 lets go. One resource per node would put a handle-table entry behind every box
 and text run in the tree, and make every parent/child edge a handle crossing.
-One resource per *viewport* gets the same security for a fraction of that.
+One resource per _viewport_ gets the same security for a fraction of that.
 
 So `viewport` is a resource — the authority to build under one node — and a
 `node` is a plain `u32` **chosen by the holder** and meaningful only relative to
@@ -528,6 +530,8 @@ interface style {
     color: color,
   }
 
+  /// `percent` is a CSS percentage of the containing block: 100.0 is full,
+  /// not 1.0.
   variant length { auto, px(f32), percent(f32) }
   enum axis { row, column }
   enum justify { start, center, end, space-between }
@@ -684,11 +688,11 @@ Some bindings are not part of the frame protocol — a component reaching a
 service that happens to be another component rather than the host. For those a
 push is the natural shape, and the loader decides whether it can be deferred:
 
-- **Every function return-free.** The binding is *deferrable*. The host keeps a
+- **Every function return-free.** The binding is _deferrable_. The host keeps a
   stack of the instances it has entered and not yet returned from; when a
   trampoline fires against a target on that stack, it records the call and
   returns, running it once the target's activation has unwound.
-- **Any function with a result.** The binding is *direct only* — the caller is
+- **Any function with a result.** The binding is _direct only_ — the caller is
   waiting for a value, so there is nothing to defer. A re-entrant call on such a
   binding reaches `do_not_enter` and fails as §6.4 describes.
 
@@ -824,7 +828,7 @@ needs the same shape plus an import it can call to measure: `measure(run,
 available-width) -> measured`, called mid-solve. That works because the
 implementation of `measure` is in the host: the guest solver makes an ordinary
 synchronous host call and gets an answer back. It would stop working if
-measurement were delegated to a *second* guest component, because the solver
+measurement were delegated to a _second_ guest component, because the solver
 would then be suspended at a guest→guest call while the callee ran — the case
 §6.4 rules out. Text measurement staying in the host is what keeps guest layout
 tractable. The first milestones use `taffy` in the host; §13 has the rest.
@@ -1066,7 +1070,7 @@ that wants to mediate every userland call can have exactly that.
 **Keeping components unbundled is therefore itself a security choice.** Bundling
 two widgets into one component removes the host from between them: no binding is
 left to mediate, the two share a memory, and nothing remains for a policy to
-check. So whether a given pair of widgets *may* be bundled is a question for
+check. So whether a given pair of widgets _may_ be bundled is a question for
 policy, not for whoever is optimising the build. Within one trust domain the
 boundary is free to move; across one it is mandatory, and the separation is the
 feature rather than an overhead to remove.
@@ -1194,7 +1198,7 @@ child cannot widen what it was given, because the runtime records what each
 viewport permits at the point it was derived.
 
 **Slots.** A component that wants its parent to supply content exposes a slot
-node. The parent assigns nodes from *its own* viewport to the slot; the child
+node. The parent assigns nodes from _its own_ viewport to the slot; the child
 positions the slot but cannot read or mutate what is inside it. This is how
 a panel gets its buttons from its parent without either side gaining access to
 the other's tree.
@@ -1248,6 +1252,7 @@ tracks the [W3C WebGPU][webgpu] API, and presents it; the compositor maps the
 texture into the scene with the right z-order and scissor.
 
 [webgpu]: https://www.w3.org/TR/webgpu/
+
 `zfx` already serves `wasi:webgpu` and the surface-to-device bridge
 ([graphical-runtime.md](./graphical-runtime.md)), so Tier 3 is mostly a matter
 of giving a node a texture rather than new host machinery.
@@ -1300,6 +1305,17 @@ uses is §6.2's.
 - Imported resources with methods, statics and constructors, and a borrowed
   resource inside a record parameter `use`d from another WIT package
   (`gfx-configure.zena`, compile-level).
+- **Resources a Zena program provides**, with both sides of the boundary
+  generated. `gfx-surface.wit` declares two resources; `gfx-surface-provider`
+  exports them as ordinary Zena classes behind compiler-written wrappers, and
+  `gfx-surface-consumer` imports them and constructs a `surface`, calls a
+  sync method, an `async func(...) -> stream<frame-event>`, a
+  string-returning method and a static, and passes a `borrow<surface>` both
+  to another resource's constructor and to a free function. The composed pair
+  runs and returns 103. That is the `viewport` shape of §7.3 almost
+  construct for construct.
+- A world whose only export is `main: async func()` — no result — which is
+  the shape of every milestone-1 program (`async-void-main.zena`).
 
 Taken together these cover every construct the milestone 1 interfaces use.
 
@@ -1310,24 +1326,14 @@ against what the Zena compiler emits today. Zena's one standing limit is that it
 cannot be multi-threaded; everything else here is compiler work with a known
 shape, so this is a work list rather than a set of constraints on the design.
 
-**Providing a resource.** `viewport` is a resource the runtime component
-exports, which needs `resource.new`, `resource.rep` and a destructor export
-alongside the `resource.drop` the compiler already emits for imported handles.
-Nothing else in §7 works without it, so it is the first item.
-
-**An async world export alongside an interface that declares a resource.**
-Compiling a program against a world that imports `zenafx:ui/scene` and exports
-`main: async func()` fails with "the component target cannot export
-'main$asyncEntry': it has no declaration to read a signature from", where the
-same world without the scene import compiles. The entry wrapper and the
-synthesized handle class interact somewhere; this is the first thing to
-diagnose, because every milestone-1 program has that shape.
-
-**Passing an imported resource handle between components.** A parent holds a
-`viewport` it got from the runtime and hands it to a child through the child's
-`mount`. Both components import the same resource type from the same instance,
-so the handle is transferable; the lowering has to move it out of one handle
-table and into the other rather than copying a representation.
+**Forwarding an imported handle to a third component.** The consumer fixture
+above passes a `borrow` back to the component it imported the resource from,
+which is one handle table and a borrow. §7.5 needs the other case: a parent
+holds an owned `viewport` it got from the runtime and hands it to a child
+through the child's `mount`. Both components import the same resource type
+from the same runtime instance, so the handle is transferable, but it has to
+move out of the parent's table and into the child's rather than being copied
+as a representation — and the runtime, not either guest, owns it.
 
 **Deferrable exports.** §7.4's deferred delivery is the host's doing, but a
 Zena component on either end has to tolerate it: an exported return-free
@@ -1350,28 +1356,36 @@ import to the runtime component's export, and opens a window showing
 
 [softbuffer]: https://github.com/rust-windowing/softbuffer
 
-New work, in order:
+New work, in order. Steps 1 to 5 are done, and `zfx --ui` runs them end to
+end against a real window with no Wasm in the picture — `ui::demo` assembles
+the tree that the runtime component will assemble in step 7.
 
-1. **WIT.** `packages/zenafx/wit/` holding `zenafx-ui.wit` and
-   `zenafx-host.wit` from §7.3 and §8.5. Both are read as one document,
-   because `readWitSource` concatenates a directory's `.wit` files in name
-   order.
-2. **Host: surface.** A `winit` loop in `zfx` under `ControlFlow::Wait`, one
-   window, and `zenafx:host/surface` over it: `frames` written only after
-   `request-redraw`, `pointer` and `keys` from `WindowEvent`.
-3. **Host: text.** [`parley`][parley] behind `register-run` / `measure-run`,
-   which brings `fontique`, `harfrust` and `skrifa` with it. A run id indexes a
-   slab holding the shaped layout and its glyph raster cache.
-4. **Host: layout.** [`taffy`][taffy] 0.14, rebuilt per `solve` from the flat
-   node list, with the `compute_layout_with_measure` closure calling the text
-   engine from step 3.
-5. **Host: paint.** [`vello_cpu`][vello-cpu] rasterizing the display list into
-   a buffer presented through [`softbuffer`][softbuffer], which the workspace
-   already resolves at 0.4.8 by way of `frame-buffer-wasmtime`. `vello_cpu`
-   0.2.0 re-exports [`vello_common`][vello]'s `color`, `kurbo` and `peniko`,
-   which the GPU renderer shares, so the geometry and brush types the display
-   list is built from survive a move to the GPU. Whether the renderer-facing
-   scene API also survives it is worth checking when the versions are pinned.
+1. ~~**WIT.**~~ `packages/zenafx/wit/zenafx.wit` holds both packages, with
+   `zenafx:host` nested inside `zenafx:ui`: `wasm-tools` wants one top-level
+   package per directory plus nested ones, and `readWitSource` concatenates
+   the directory's `.wit` files.
+2. ~~**Host: surface.**~~ A `winit` loop under `ControlFlow::Wait`, one
+   window, presenting through `softbuffer`. A frame happens on
+   `RedrawRequested` and at no other time. Input is delivered to a `Scene`,
+   which is the seam the loader will sit behind; the WIT-facing `stream`s
+   arrive with the loader, since there is nothing to stream to yet.
+3. ~~**Host: text.**~~ [`parley`][parley] behind `register_run` /
+   `measure_run`, which brings `fontique`, `harfrust` and `skrifa` with it. A
+   run id indexes a table of shaped layouts; a layout is re-broken only when
+   the width it is asked about differs from the one it holds.
+4. ~~**Host: layout.**~~ [`taffy`][taffy] 0.14, rebuilt per `solve` from the
+   flat node list, with the `compute_layout_with_measure` closure calling the
+   text engine from step 3. Taffy reports each node relative to its parent,
+   so the solve ends with a pre-order walk that puts every rect in the root's
+   space.
+5. ~~**Host: paint.**~~ [`vello_cpu`][vello-cpu] rasterizing the display list
+   into a buffer presented through [`softbuffer`][softbuffer], which the
+   workspace already resolved at 0.4.8 by way of `frame-buffer-wasmtime`.
+   `vello_cpu` 0.2.0 re-exports [`vello_common`][vello]'s `color`, `kurbo` and
+   `peniko`, which the GPU renderer shares, so the geometry and brush types
+   the display list is built from survive a move to the GPU. Whether the
+   renderer-facing scene API also survives it is worth checking when the
+   versions are pinned.
 6. **Host: the loader.** The §6.2 path, at its smallest: compile both
    components, read each one's imports, bind `zenafx:host/*` to the host
    implementations and the application's `zenafx:ui/scene` import to a
@@ -1386,7 +1400,7 @@ New work, in order:
 8. **The application.** `examples/zenafx/hello.zena` and its world.
 9. **Build wiring.** Two separate mechanisms have to be set up, and confusing
    them is the likely first stumble. A Zena `import {...} from
-   'zenafx:ui/scene'` resolves through a **package manifest** entry, which is
+'zenafx:ui/scene'` resolves through a **package manifest** entry, which is
    what makes the specifier's `zenafx` namespace WIT-backed:
 
    ```json
@@ -1527,20 +1541,22 @@ becomes a node inside a ZenaFX tree instead of owning the window.
 ```
 packages/zenafx/
   wit/
-    zenafx-ui.wit             # zenafx:ui@0.1.0
-    zenafx-host.wit           # zenafx:host@0.1.0
+    zenafx.wit                # zenafx:ui@0.1.0, zenafx:host@0.1.0 nested
   src/
-    main.rs                   # existing: engine, wasi-gfx
+    main.rs                   # engine, wasi-gfx, and `--ui`
+    lib.rs
     loader/
       mod.rs                  # fetch, compile, cache by content hash
       link.rs                 # per-instance Linker, import binding, policy
       bridge.rs               # guest->guest trampolines over func_new
     ui/
-      mod.rs                  # registration for zenafx:host
-      surface.rs              # winit loop, ControlFlow::Wait, event streams
-      text.rs                 # parley, run table and glyph cache
+      mod.rs
+      types.rs                # Rust mirrors of the WIT records
+      surface.rs              # winit loop, ControlFlow::Wait, the Scene seam
+      text.rs                 # parley, the run table
       layout.rs               # taffy, flat tree in, rects out
       paint.rs                # vello_cpu + softbuffer
+      demo.rs                 # a scene in Rust; retired by the loader
 packages/zenafx-ui/
   package.json                # @zena-lang/zenafx-ui
   zena/

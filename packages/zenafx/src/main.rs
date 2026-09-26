@@ -33,8 +33,18 @@ struct Cli {
     #[arg(long)]
     invoke: Option<String>,
 
+    /// Open a window on the built-in scene instead of loading a component:
+    /// the ZenaFX host primitives with no Wasm involved.
+    #[arg(
+        long,
+        value_name = "MESSAGE",
+        num_args = 0..=1,
+        default_missing_value = "Hello, world"
+    )]
+    ui: Option<String>,
+
     /// The .wasm component file to run
-    file: String,
+    file: Option<String>,
 
     /// Arguments passed to the program
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -163,9 +173,26 @@ fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let path = Path::new(&cli.file);
+
+    // The host primitives on their own. No engine, no linker, no component —
+    // this is the path that exists before the loader does.
+    if let Some(message) = cli.ui {
+        return zenafx::ui::surface::run(
+            zenafx::ui::surface::WindowConfig {
+                title: "ZenaFX".to_owned(),
+                width: 800,
+                height: 600,
+            },
+            zenafx::ui::demo::HelloScene::new(message),
+        );
+    }
+
+    let Some(file) = cli.file.clone() else {
+        anyhow::bail!("No .wasm component given. Pass one, or --ui for the built-in scene.");
+    };
+    let path = Path::new(&file);
     if !path.exists() {
-        anyhow::bail!("File not found: {}", cli.file);
+        anyhow::bail!("File not found: {file}");
     }
 
     let (main_thread_loop, main_thread_proxy) =
@@ -194,7 +221,7 @@ fn main() -> Result<()> {
 
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.inherit_stdio().inherit_env();
-    let mut guest_args = vec![cli.file.clone()];
+    let mut guest_args = vec![file.clone()];
     guest_args.extend_from_slice(&cli.args);
     wasi_builder.args(&guest_args);
     let wasi_ctx = wasi_builder.build();
@@ -203,7 +230,7 @@ fn main() -> Result<()> {
     let mut store = Store::new(&engine, workload_state);
 
     let component = Component::from_file(&engine, path)
-        .map_err(|e| anyhow::anyhow!("failed to load component from {}: {e}", cli.file))?;
+        .map_err(|e| anyhow::anyhow!("failed to load component from {file}: {e}"))?;
 
     let invoke_fn = cli.invoke.clone();
 

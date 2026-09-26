@@ -7,6 +7,7 @@ Wasmtime, `wasi-gfx`, and `wasi:webgpu`.
 zfx app.wasm
 zfx --invoke start app.wasm
 zfx -g app.wasm             # turn off Cranelift inlining for readable backtraces
+zfx --ui                    # the ZenaFX host primitives, no component
 ```
 
 ## Overview
@@ -26,6 +27,56 @@ It provides host-side support for:
 
 Design document:
 [docs/design/graphical-runtime.md](../../docs/design/graphical-runtime.md).
+
+## The ZenaFX UI stack
+
+A second, independent layer is being built alongside the `wasi-gfx` path: a
+retained-mode UI whose applications are trees of components linked at run
+time. Its interfaces are declared in [`wit/zenafx.wit`](wit/zenafx.wit) and
+designed in [docs/design/zenafx-ui.md](../../docs/design/zenafx-ui.md).
+
+`src/ui/` holds the Rust side — the four `zenafx:host` primitives:
+
+| Module       | Serves                | Built on               |
+| ------------ | --------------------- | ---------------------- |
+| `text.rs`    | `zenafx:host/text`    | `parley`               |
+| `layout.rs`  | `zenafx:host/layout`  | `taffy`                |
+| `paint.rs`   | `zenafx:host/paint`   | `vello_cpu`            |
+| `surface.rs` | `zenafx:host/surface` | `winit` + `softbuffer` |
+
+Text measurement happens _inside_ the layout solve, because how tall a run is
+depends on the width flexbox gives it. `layout::solve` hands taffy a closure
+over the text engine, so a container that is too narrow makes its label wrap
+and the solve sees the new height.
+
+This stack does not use `wasi-gfx:surface`, which wakes every surface 60 times
+a second whether or not anything changed. `ui::surface` runs its own `winit`
+loop under `ControlFlow::Wait`: a frame happens when a redraw was requested,
+and never otherwise.
+
+Nothing here loads a component yet. `zfx --ui` drives the primitives from
+`ui::demo`, a scene assembled in Rust, which is how the stack is exercised
+before the loader and the runtime component exist.
+
+```bash
+npm run zfx -w @zena-lang/zenafx -- --ui       # builds, then opens the window
+npm run zfx -w @zena-lang/zenafx -- --ui 'Hello from ZenaFX'
+cargo run -p zenafx -- --ui                    # unoptimised, no Wireit
+```
+
+A window opens showing the message in a rounded card, centred by a flexbox
+layout. Resizing it re-solves and repaints; the layout is recomputed from the
+new size rather than scaled. Close the window to exit. Nothing is drawn
+between frames — the loop waits, and a frame happens only when a redraw was
+requested.
+
+Everything but the window is covered by unit tests, including rasterization,
+so `cargo test -p zenafx` checks the stack headless. The window itself has an
+`#[ignore]`d smoke test that watches for the first presented frame:
+
+```bash
+cargo test -p zenafx --test run -- --ignored ui_demo_presents_a_frame
+```
 
 ## Threading Architecture
 
