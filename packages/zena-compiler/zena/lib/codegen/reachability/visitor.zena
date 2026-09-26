@@ -1661,7 +1661,17 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * organ four of the skipped-walk blindness).
    */
   registerTaggedTemplate(expr: TaggedTemplateExpression, model: SemanticModel): void {
-        
+        // The tag receives the raw text of each segment as well as the
+        // cooked (`strings.raw`), and the lowering reads both out of the
+        // string registry. The walk above notes every segment's cooked
+        // text; a raw text that differs — a segment with an escape in
+        // it — is a literal of its own.
+        for (let quasi in expr.quasi.quasis) {
+          if (quasi.raw != quasi.cooked) {
+            this.noteStringLiteral(quasi.raw);
+          }
+        }
+
         if (!this.pass.wasm.templateLiteralGlobals.has(expr)) {
           var tsaStruct: WasmStruct | null = null;
           let tsaClass = this.pass.wasm.templateStringsArrayClass;
