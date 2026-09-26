@@ -33,7 +33,7 @@ import {
 } from '../component-emitter.zena';
 import { targetEmitsComponent } from '../../targets.zena';
 import {
-  isComponentEntryPath, componentSyncExportSuffix
+  isComponentEntryPath, componentSyncExportSuffix, hasAsyncMain
 } from '../../component-entry.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 
@@ -709,6 +709,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (isComponentEntryPath(unit.ast.path)) {
         anyDoorReached = true;
       }
+    }
+    // An `async main` is the same case without a wrapper to notice it
+    // by. The async pass replaces the `main` export with a synthesized
+    // wrapper, and only the entry can lift one — a wrapper has no
+    // declaration for the component target to read a signature from. So
+    // the program is driven whether or not it awaits anything, and
+    // leaving the driver unrooted here means `prepareComponentEntry`
+    // finds no `componentPoll` in the function map, builds no entry,
+    // and the export loops reach the wrapper instead.
+    let entry = prog.entryPoint;
+    if (entry != null && hasAsyncMain((entry as CompilationUnit).ast)) {
+      anyDoorReached = true;
     }
     if (!anyDoorReached) {
       return;

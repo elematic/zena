@@ -199,6 +199,18 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'async-void-main',
+    wasi: ['p3=y'],
+    wit: ['async-void-main.wit', 'app'],
+    // The smallest program that needs the component entry: an `async
+    // main` returning nothing, with no imports and no other export. The
+    // async pass hands the `main` export to a synthesized wrapper that
+    // only the entry can lift, and the entry exists only when the async
+    // driver is rooted — which an `async main` now does on its own,
+    // rather than only through an awaited import or a wrapper module.
+    invocations: [{invoke: 'main()', expect: '()'}],
+  },
+  {
     name: 'print',
     wasi: ['p3=y'],
     // The first component that prints: `zena:console` over p3
