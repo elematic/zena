@@ -447,9 +447,7 @@ const FIXTURES: Fixture[] = [
     // records (one carrying a string) into a stream the provider
     // sums. 0+1+2 frames, plus 2 (the pressed button) + 3 + 2 (label
     // bytes) from the sink.
-    invocations: [
-      {invoke: 'main()', expect: '10', expectOutput: ['frames 3']},
-    ],
+    invocations: [{invoke: 'main()', expect: '10', expectOutput: ['frames 3']}],
   },
   {
     name: 'gfx-surface-provider',

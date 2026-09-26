@@ -117,7 +117,7 @@ milestone workload suite.
 | File         | Role                                                                                             |
 | ------------ | ------------------------------------------------------------------------------------------------ |
 | `index.zena` | Public entry: runner, reports, `analyze()` for external samples                                  |
-| `suite.zena` | `runSuite`: suites of separate programs, from a JSON config — re-exported from the entry point      |
+| `suite.zena` | `runSuite`: suites of separate programs, from a JSON config — re-exported from the entry point   |
 | `stats.zena` | Private: t-table, `summarize`, Welch difference CIs, horizons — re-exported from the entry point |
 
 Statistics are deliberately small: a Student-t table at 95% (the only
