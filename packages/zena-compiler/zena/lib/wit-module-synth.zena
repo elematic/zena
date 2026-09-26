@@ -936,14 +936,14 @@ function liftBlocker(ty: Ty, nested: boolean): String {
 let discLoad = (size: i32, ptrExpr: String, uses: SynthUses): String => {
   if (size == 1) {
     uses.useAbi("loadU8");
-    return "loadU8(" + ptrExpr + ")";
+    return `loadU8(${ptrExpr})`;
   }
   if (size == 2) {
     uses.useAbi("loadU16");
-    return "loadU16(" + ptrExpr + ")";
+    return `loadU16(${ptrExpr})`;
   }
   uses.useAbi("loadI32");
-  return "loadI32(" + ptrExpr + ")";
+  return `loadI32(${ptrExpr})`;
 };
 
 /**
@@ -1049,16 +1049,16 @@ let coreOf = (scalar: String): String => {
 /** `value` cast to its core flat type, as source text. */
 let castToCore = (scalar: String, value: String): String => {
   if (scalar == "boolean") {
-    return "(if (" + value + ") 1 else 0)";
+    return `(if (${value}) 1 else 0)`;
   }
   if (scalar == "i32" || scalar == "i64" || scalar == "f32" ||
       scalar == "f64") {
     return value;
   }
   if (scalar == "u64") {
-    return "(" + value + " as i64)";
+    return `(${value} as i64)`;
   }
-  return "(" + value + " as i32)";
+  return `(${value} as i32)`;
 };
 
 /**
@@ -1955,21 +1955,21 @@ function streamElementZenaType(ty: Ty, uses: SynthUses): String {
 /** The expression lifting a stream handle into a `Stream<T>`. */
 function streamLiftCall(ty: Ty, handle: String, uses: SynthUses): String {
   if (isTypedStream(ty)) {
-    return "liftStream" + i32ToString(uses.streamIndexOf(ty)) + "(" +
-        handle + ")";
+    let sid = `${uses.streamIndexOf(ty)}`;
+    return `liftStream${sid}(${handle})`;
   }
   uses.useComponentStream("liftByteStream");
-  return "liftByteStream(" + handle + ")";
+  return `liftByteStream(${handle})`;
 }
 
 /** The expression lowering a `Stream<T>` into a stream handle. */
 function streamLowerCall(ty: Ty, value: String, uses: SynthUses): String {
   if (isTypedStream(ty)) {
-    return "lowerStream" + i32ToString(uses.streamIndexOf(ty)) + "(" +
-        value + ")";
+    let sid = `${uses.streamIndexOf(ty)}`;
+    return `lowerStream${sid}(${value})`;
   }
   uses.useComponentStream("lowerByteStream");
-  return "lowerByteStream(" + value + ")";
+  return `lowerByteStream(${value})`;
 }
 
 /** Elements a typed inbound pump reads per canonical copy. */
