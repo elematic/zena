@@ -7491,6 +7491,40 @@ let checkTypeParameterCast = (
   }
 };
 
+/**
+ * The element type an array literal's context asks for: the `T` of an
+ * expected `Array<T>`, `FixedArray<T>`, `GrowableArray<T>`,
+ * `ImmutableArray<T>`, `MutableArray<T>`, `Iterable<T>` or `array<T>`,
+ * nullable or not. Null when the context says nothing about elements.
+ */
+let expectedArrayElementType = (ctx: CheckerContext, expectedType: Type | null): Type | null => {
+  if (expectedType == null) { return null; }
+  var typeArgs: Array<Type> | null = null;
+  match (baseType(subtractNullFromType(expectedType))) {
+    case ClassType as ct: {
+      if (isWellKnownClassType(ctx, ct, WellKnown.GrowableArrayClass) ||
+          isWellKnownClassType(ctx, ct, WellKnown.ArrayInterface) ||
+          isWellKnownClassType(ctx, ct, WellKnown.FixedArrayClass) ||
+          isWellKnownClassType(ctx, ct, WellKnown.ImmutableArrayClass)) {
+        typeArgs = ct.typeArguments;
+      }
+    }
+    case InterfaceType as it: {
+      if (isWellKnownInterfaceType(ctx, it, WellKnown.ArrayInterface) ||
+          isWellKnownInterfaceType(ctx, it, WellKnown.MutableArrayInterface) ||
+          isWellKnownInterfaceType(ctx, it, WellKnown.IterableInterface)) {
+        typeArgs = it.typeArguments;
+      }
+    }
+    case ArrayType {elementType}: { return elementType; }
+    case _: {}
+  }
+  if (typeArgs != null && typeArgs.length > 0) {
+    return typeArgs[0];
+  }
+  return null;
+};
+
 let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void => {
   // `C | null` is assignable to no single member of `I | null`, so the
   // payloads are what the adaptation is about: peel null off the source
@@ -12164,52 +12198,63 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     new BooleanType()
   }
   case ArrayLiteral {elements, loc}: {
+    let expectedElementType = expectedArrayElementType(ctx, expectedType);
     var inferredElementType: Type = new ErrorType() as Type;
     if (elements.length == 0) {
-      // Empty array — need contextual type or return unknown element type.
-      if (expectedType != null) {
-        match (expectedType) {
-          case ClassType as ct: {
-            if ((isWellKnownClassType(ctx, ct, WellKnown.GrowableArrayClass) || isWellKnownClassType(ctx, ct, WellKnown.ArrayInterface) || isWellKnownClassType(ctx, ct, WellKnown.FixedArrayClass) || isWellKnownClassType(ctx, ct, WellKnown.ImmutableArrayClass)) && ct.typeArguments != null) {
-              let typeArgs = ct.typeArguments as Array<Type>;
-              if (typeArgs.length > 0) {
-                inferredElementType = typeArgs[0];
-              }
-            }
-          }
-          case InterfaceType as it: {
-            if ((isWellKnownInterfaceType(ctx, it, WellKnown.ArrayInterface) ||
-                 isWellKnownInterfaceType(ctx, it, WellKnown.MutableArrayInterface) ||
-                 isWellKnownInterfaceType(ctx, it, WellKnown.IterableInterface)) &&
-                it.typeArguments != null) {
-              let typeArgs = it.typeArguments as Array<Type>;
-              if (typeArgs.length > 0) {
-                inferredElementType = typeArgs[0];
-              }
-            }
-          }
-          case ArrayType {elementType}: {
-            inferredElementType = elementType;
-          }
-          case _: {}
-        }
+      // Empty array: only the context can say what it holds.
+      if (expectedElementType != null) {
+        inferredElementType = expectedElementType;
       }
     } else {
-      // Infer element type from first element.
-      let firstType = checkExpression(ctx, elements[0], null);
-      var i = 1;
-      while (i < elements.length) {
-        let elemType = checkExpression(ctx, elements[i], null);
-        if (!isAssignableTo(ctx, elemType, firstType)) {
-          ctx.error(
-            "Array element type mismatch: '" + typeToString(elemType) + "' is not assignable to '" + typeToString(firstType) + "'.",
-            DiagnosticCode.TypeMismatch,
-            elements[i].loc
-          );
+      let elementTypes = new Array<Type>();
+      var allFitExpected = expectedElementType != null;
+      for (let element in elements) {
+        let elementType = checkExpression(ctx, element, expectedElementType);
+        elementTypes.push(elementType);
+        if (expectedElementType != null &&
+            !isAssignableTo(ctx, elementType, expectedElementType)) {
+          allFitExpected = false;
         }
-        i += 1;
       }
-      inferredElementType = firstType;
+      if (allFitExpected) {
+        // `let xs: Array<Animal> = [dog, cat]`: arrays are invariant, so
+        // the literal has to be an array of the expected element type
+        // itself for the assignment to go through.
+        let target = expectedElementType as Type;
+        for (var i = 0; i < elements.length; i += 1) {
+          checkAndRegisterInterfaceAdaptation(ctx, elements[i], elementTypes[i], target);
+        }
+        inferredElementType = target;
+      } else {
+        // With no usable context the elements decide. When one element's
+        // type holds all the others (`[animal, dog]`) that is the element
+        // type; otherwise it is their union (`[dog, cat]` holds
+        // `Dog | Cat`). When there was an expected type the elements did
+        // not fit, the assignment of the literal reports the mismatch.
+        let widened = new Array<Type>();
+        for (let elementType in elementTypes) {
+          widened.push(widenType(ctx, elementType));
+        }
+        var common: Type | null = null;
+        for (let candidate in widened) {
+          var holdsAll = true;
+          for (let other in widened) {
+            if (!isAssignableTo(ctx, other, candidate)) {
+              holdsAll = false;
+              break;
+            }
+          }
+          if (holdsAll) {
+            common = candidate;
+            break;
+          }
+        }
+        inferredElementType = if (common != null) {
+          common
+        } else {
+          createUnionType(widened, ctx, loc)
+        };
+      }
     }
 
     // Inference reaches `Array<Borrow<R>>` with no one writing the type

@@ -1,0 +1,32 @@
+// @mode: check
+// An array literal's element type comes from its context when every
+// element fits it, and otherwise from the elements themselves: the one
+// element type that holds all the others, or else their union.
+class Animal {}
+class Dog extends Animal {}
+class Cat extends Animal {}
+
+// The expected element type wins even though no element has it.
+let animals: Array<Animal> = [new Dog(), new Cat()];
+
+// With no context, unrelated classes make a union.
+let pets = [new Dog(), new Cat()];
+let pet: Dog | Cat = pets[0];
+
+// When one element's type holds the others, that is the element type.
+let widened = [new Animal(), new Dog()];
+let firstAnimal: Animal = widened[0];
+let widenedArray: Array<Animal> = widened;
+
+// A null element makes the elements nullable.
+let maybeDogs = [new Dog(), null];
+let maybeDog: Dog | null = maybeDogs[1];
+
+// Literal types widen: `false` does not have to fit `true`.
+let flags = [true, false];
+let flag: boolean = flags[1];
+
+// Elements that fit neither the context nor each other are still an error.
+let dogs: Array<Dog> = [new Dog(), new Cat()]; // @error: 'ImmutableArray<Dog | Cat>' is not assignable to 'Array<Dog>'
+let numbers = [1, 2.5]; // @error: cannot mix primitives of different base types
+let mixed = [1, "one"]; // @error: cannot mix primitive types with reference types

@@ -4503,6 +4503,22 @@ let inline = fixed([1, 2, 3]);        // mutable, no annotation needed
 let empty: FixedArray<i32> = [];      // empty (type annotation required)
 ```
 
+Elements don't all need the same type:
+
+```zena
+let animals: Array<Animal> = [new Dog(), new Cat()];  // ImmutableArray<Animal>
+let pets = [new Dog(), new Cat()];                    // ImmutableArray<Dog | Cat>
+let zoo = [new Animal(), new Dog()];                  // ImmutableArray<Animal>
+let flags = [true, false];                            // ImmutableArray<boolean>
+```
+
+When the context names an element type and every element is assignable to it,
+the literal takes that element type. Otherwise the elements decide: if one
+element's type can hold all the others, that is the element type, and if not,
+the element type is the union of the elements' types. That union follows the
+usual rules for unions, so `[1, "one"]` is an error because a union can't mix
+`i32` with a reference type.
+
 Elements are accessed by index and `.length` returns the array size; only a
 `FixedArray`'s elements can be assigned:
 

@@ -1,0 +1,51 @@
+// @mode: run
+// Array literals whose elements have different types: the literal takes
+// the element type its context asks for, or else the union of its
+// elements' types.
+interface Shape {
+  area(): i32;
+}
+
+class Square implements Shape {
+  area(): i32 { return 4; }
+}
+
+class Dog {
+  bark(): i32 { return 1; }
+}
+
+class Cat {
+  meow(): i32 { return 10; }
+}
+
+let count = <T>(xs: Array<T>): i32 => xs.length;
+
+export let main = (): i32 => {
+  // Each element is packed into the interface the context names.
+  let shapes: Array<Shape> = [new Square(), new Square()];
+  var total = shapes[0].area() + shapes[1].area(); // 8
+
+  // A generic parameter binds to the union of the elements.
+  total += count([new Dog(), new Cat(), new Dog()]); // 11
+
+  for (let pet in [new Dog(), new Cat()]) {
+    total += match (pet) {
+      case Dog as d: d.bark()
+      case Cat as c: c.meow()
+    };
+  } // 22
+
+  let maybe = [new Dog(), null];
+  let first = maybe[0];
+  if (first != null) {
+    total += first.bark(); // 23
+  }
+
+  // Element context reaches nested literals and closure parameters.
+  let nested: Array<Array<i64>> = [[1], [2, 3]];
+  total += nested[1][1] as i32; // 26
+  let fs: Array<(x: i32) => i32> = [(x) => x + 1, (x) => x * 2];
+  total += fs[1](50); // 126
+  return total;
+};
+// @result: 126
