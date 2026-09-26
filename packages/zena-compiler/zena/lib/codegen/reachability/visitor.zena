@@ -1187,11 +1187,13 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // The checkpoint an async `tail return` emits before its callee's
     // eager ramp (async.md §8) — by name, like currentScope.
     this.queueStdlibFunction('async', 'checkCancellation');
+    // The scope's constructors are symbol-keyed and reached by the
+    // walks of currentScope (the root scope) and TaskGroup's
+    // constructors (every other scope); nothing queues them by key.
     let scopeCt = this.cancelScopeType();
     if (scopeCt != null) {
       let sct = scopeCt as ClassType;
       this.pass.specializer.instantiateClassType(sct, model);
-      this.queueExplicitCtor(sct);
       this.queuePrivateMethod(sct, ':install');
       this.queuePrivateMethod(sct, ':checkpoint');
       this.queuePrivateMethod(sct, ':registerTask');

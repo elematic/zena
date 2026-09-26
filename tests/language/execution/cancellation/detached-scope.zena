@@ -1,19 +1,19 @@
 // @mode: run
 // @result: 42
 
-// A scope created with CancelScope.detached() has no parent wherever
-// it is created: cancelling the scope that was current at its
-// construction does not reach it, while its holder still can cancel
-// it. This is the scope for work that must outlive its callers — a
-// cache's shared fills, for example.
+// A group created with TaskGroup.detached() has no parent scope
+// wherever it is created: cancelling the group that was current at
+// its construction does not reach its members, while its holder still
+// can cancel them. This is the group for work that must outlive its
+// callers — a cache's shared fills, for example.
 
 import {
-  Future, Completer, CancelScope, drainMicrotasks, runFuture,
+  Future, Completer, TaskGroup, drainMicrotasks, runFuture,
 } from 'zena:async';
 
 var trace = '';
 var fut: Future<i32> | null = null;
-var held: CancelScope | null = null;
+var held: TaskGroup | null = null;
 
 let work = async (gate: Future<i32>): Future<i32> => {
   trace += 'a';
@@ -23,14 +23,13 @@ let work = async (gate: Future<i32>): Future<i32> => {
 };
 
 export function main(): i32 {
-  let outer = new CancelScope();
+  let outer = new TaskGroup();
   let g = new Completer<i32>();
-  outer.run(() => {
-    let detached = CancelScope.detached();
+  outer.spawn(() => {
+    let detached = TaskGroup.detached();
     held = detached;
-    detached.run(() => {
-      fut = work(g.future);
-    });
+    fut = detached.spawn(() => work(g.future));
+    return Future.of(0);
   });
   outer.cancel();
   g.complete(21);
@@ -49,8 +48,8 @@ export function main(): i32 {
   if (c == null) {
     return 5;
   }
-  (c as CancelScope).cancel();
-  if (!(c as CancelScope).isCancelled) {
+  (c as TaskGroup).cancel();
+  if (!(c as TaskGroup).isCancelled) {
     return 6;
   }
   return 42;

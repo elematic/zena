@@ -112,9 +112,9 @@ A run is started by calling `task.run()`.
 let future = task.run();
 ```
 
-Each invocation of `run()` executes the operation within a new child
-`CancelScope`. The returned `Future<T>` resolves with the result of that
-specific run.
+Each invocation of `run()` executes the operation as the one member of a new
+`TaskGroup`, whose scope is a child of the current one. The returned `Future<T>`
+resolves with the result of that specific run.
 
 ### Supersession
 

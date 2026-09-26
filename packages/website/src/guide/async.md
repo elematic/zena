@@ -238,9 +238,7 @@ As cancellation unwinds through the stack:
   preventing tasks from accidentally resuming cancelled work.
 
 ```zena
-import { CancelScope } from 'zena:async';
-
-let scope = new CancelScope();
+import { TaskGroup } from 'zena:async';
 
 let worker = async (): Future<void> => {
   try {
@@ -252,9 +250,16 @@ let worker = async (): Future<void> => {
   }
 };
 
-// Cancel the scope to stop the worker:
-scope.cancel();
+let group = new TaskGroup();
+group.spawn(() => worker());
+
+// Cancel the group to stop the worker at its next await:
+group.cancel();
 ```
+
+Only the group can cancel the work it started. The worker sees its scope
+read-only through `currentScope()`, so a task cannot cancel its siblings or the
+code that started it.
 
 ### The `cancel` clause in `try`
 
@@ -285,18 +290,16 @@ Because cancellation is delivered only at checkpoints, compute-intensive
 synchronous loops between `await` expressions do not yield control or observe
 cancellation automatically.
 
-Synchronous routines that run for extended periods will be able to poll for
-cancellation cooperatively:
+Synchronous routines that run for extended periods poll for cancellation
+cooperatively with `checkCancellation()` from `zena:async`, which unwinds the
+way an `await` checkpoint would if the ambient scope has been cancelled:
 
 ```zena
-// Planned polling mechanism for long-running synchronous loops
-checkCancellation();
+for (let item in items) {
+  checkCancellation();
+  process(item);
+}
 ```
-
-::: note Planned feature: checkCancellation()
-The `checkCancellation()` function is planned for an upcoming release to allow
-synchronous code to poll and unwind from its ambient `CancelScope`.
-:::
 
 ## Next
 

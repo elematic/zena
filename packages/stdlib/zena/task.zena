@@ -18,7 +18,7 @@
  */
 
 import {
-  Completer, TaskGroup, CancelScope, scheduleMicrotask,
+  Completer, TaskGroup, scheduleMicrotask,
 } from 'zena:async';
 import {
   sleep, monotonic, milliseconds, Instant, Duration,
@@ -189,7 +189,7 @@ symbol takeCompleter;
  *
  * The op is fixed at construction with its policies already composed:
  * `new Task(retry(3, timeout(milliseconds(100), fetchUser)))`. Each
- * run starts the op inside a child `CancelScope`, so a superseding
+ * run starts the op as the one member of a fresh `TaskGroup`, so a superseding
  * `run()` cancels the previous attempt's whole subtree rather than
  * racing it for the state.
  */
@@ -202,7 +202,8 @@ export class Task<T> {
   var #state: TaskState<T> = new Initial<T>();
   /** What a cancelled run restores. */
   var #prev: TaskState<T> = new Initial<T>();
-  var #scope: CancelScope? = null;
+  /** The pending run's group: one member, cancelled on supersession. */
+  var #group: TaskGroup? = null;
   var #runId = 0;
   /** Settles `completed`: minted lazily, carried across supersession,
    * replaced by the next run after a settle. */
@@ -244,29 +245,29 @@ export class Task<T> {
    * future, which settles the way the run does even if superseded.
    */
   run(): Future<T> {
-    let prevScope = this.#scope;
-    if (prevScope != null) {
-      prevScope.cancel();
+    let prevGroup = this.#group;
+    if (prevGroup != null) {
+      prevGroup.cancel();
     }
     this.#runId += 1;
     let id = this.#runId;
     if (this.#completed == null || this.#isSettled()) {
       this.#completed = new Completer<T>();
     }
-    let scope = new CancelScope();
-    this.#scope = scope;
+    let group = new TaskGroup();
+    this.#group = group;
     let op = this.#op;
     let t = this;
-    return scope.run(() => monitorRun(t, id, op));
+    return group.spawn(() => monitorRun(t, id, op));
   }
 
   /** Cancels a pending run; the previous settled state is restored
    * when the cancellation lands. A task with no run pending is
    * unchanged. */
   cancel(): void {
-    let s = this.#scope;
-    if (s != null) {
-      s.cancel();
+    let g = this.#group;
+    if (g != null) {
+      g.cancel();
     }
   }
 
@@ -291,7 +292,7 @@ export class Task<T> {
     if (id != this.#runId) {
       return;
     }
-    this.#scope = null;
+    this.#group = null;
     this.#prev = s;
     this.#transition(s);
   }
@@ -300,7 +301,7 @@ export class Task<T> {
     if (id != this.#runId) {
       return;
     }
-    this.#scope = null;
+    this.#group = null;
     // The restore keeps `completed` consistent with the state it
     // restores: a task holding Complete or Errored has a settled
     // `completed`, so a completer minted for the cancelled run

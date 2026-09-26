@@ -3,7 +3,7 @@
 // and hand cancellation through untouched.
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, CancelScope, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, TaskGroup, drainMicrotasks, runFuture} from 'zena:async';
 import {
   Op, TimeoutError, timeout, deadline, retry, fallback, hedge,
 } from 'zena:task';
@@ -126,16 +126,14 @@ export let tests = suite('task ops', () => {
     log = '';
     altRan = false;
     let gate = new Completer<i32>();
-    let scope = new CancelScope();
-    scope.run(() => {
-      inner = pass(gate.future);
-    });
+    let group = new TaskGroup();
+    inner = group.spawn(() => pass(gate.future));
     let op = fallback(() => inner, () => {
       altRan = true;
       return Future.of(-1);
     });
     probe(op());
-    scope.cancel();
+    group.cancel();
     drainMicrotasks();
     equal(log, 'C');
     isFalse(altRan);

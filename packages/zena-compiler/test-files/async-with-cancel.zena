@@ -1,5 +1,5 @@
 import {
-  Future, CancelScope, drainMicrotasks, runFuture,
+  Future, TaskGroup, drainMicrotasks, runFuture,
 } from 'zena:async';
 
 let work = async (gate: Future<i32>): Future<i32> => {
@@ -8,13 +8,10 @@ let work = async (gate: Future<i32>): Future<i32> => {
 };
 
 export let main = (): i32 => {
-  let scope = new CancelScope();
-  var got = 0;
-  scope.run(() => {
-    let f = work(Future.of(21));
-    drainMicrotasks();
-    got = runFuture(f);
-  });
-  scope.cancel();
+  let group = new TaskGroup();
+  let f = group.spawn(() => work(Future.of(21)));
+  drainMicrotasks();
+  let got = runFuture(f);
+  group.cancel();
   return got;
 };

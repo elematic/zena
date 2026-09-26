@@ -4,7 +4,7 @@
 // an explicit second claim; the bare future stays an ordinary value.
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, FutureClaim, CancelScope, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, FutureClaim, TaskGroup, drainMicrotasks, runFuture} from 'zena:async';
 
 let doubled = async (gate: Future<i32>): Future<i32> => {
   let v = await gate;
@@ -107,10 +107,11 @@ export let tests = suite('FutureClaim', (): void => {
 
   test('enclosing cancellation still reaches owned work', (ctx: TestContext): void => {
     let gate = new Completer<i32>();
-    let outer = new CancelScope();
+    let outer = new TaskGroup();
     var h: FutureClaim<i32> | null = null;
-    outer.run(() => {
+    outer.spawn(() => {
       h = FutureClaim.spawn(() => doubled(gate.future));
+      return Future.of(0);
     });
     let handle = h as FutureClaim<i32>;
     outer.cancel();
@@ -121,14 +122,15 @@ export let tests = suite('FutureClaim', (): void => {
     drainMicrotasks();
   });
 
-  test('work spawned under a detached scope ignores enclosing cancellation', (ctx: TestContext): void => {
+  test('work spawned under a detached group ignores enclosing cancellation', (ctx: TestContext): void => {
     let gate = new Completer<i32>();
-    let outer = new CancelScope();
-    let shared = CancelScope.detached();
+    let outer = new TaskGroup();
+    let shared = TaskGroup.detached();
     var h: FutureClaim<i32> | null = null;
-    outer.run(() => {
-      shared.run(() => {
+    outer.spawn(() => {
+      return shared.spawn(() => {
         h = FutureClaim.spawn(() => doubled(gate.future));
+        return Future.of(0);
       });
     });
     let handle = h as FutureClaim<i32>;

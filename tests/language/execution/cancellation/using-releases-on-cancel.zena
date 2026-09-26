@@ -3,9 +3,10 @@
 
 // `using` releases on a cancellation unwind exactly as it does on an
 // exception unwind, in reverse declaration order, and the unwind then
-// continues past the block.
+// continues past the block. The raise comes from checkCancellation()
+// inside the synchronous start of a member of a cancelled group.
 
-import { raiseCancellation } from 'zena:async';
+import { TaskGroup, Future, checkCancellation } from 'zena:async';
 import { Disposable } from 'zena:core';
 
 var trace = '';
@@ -20,7 +21,7 @@ let work = (): void => {
   using a = new Guard('a');
   using b = new Guard('b');
   trace += 'r';
-  raiseCancellation();
+  checkCancellation();
   trace += 'X';
 };
 
@@ -34,7 +35,14 @@ let run = (): i32 => {
 };
 
 export function main(): i32 {
-  if (run() != 5) {
+  let group = new TaskGroup();
+  group.cancel();
+  var got = 0;
+  group.spawn(() => {
+    got = run();
+    return Future.of(0);
+  });
+  if (got != 5) {
     return 1;
   }
   if (trace != 'rba') {

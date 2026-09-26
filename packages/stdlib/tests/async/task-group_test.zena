@@ -5,7 +5,7 @@
 // there was one, and normally otherwise.
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, TaskGroup, CancelScope, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, TaskGroup, drainMicrotasks, runFuture} from 'zena:async';
 
 let doubled = async (gate: Future<i32>): Future<i32> => {
   let v = await gate;
@@ -163,10 +163,11 @@ export let tests = suite('TaskGroup', (): void => {
 
   test('cancellation from outside completes the race cancelled', (ctx: TestContext): void => {
     let g1 = new Completer<i32>();
-    let outer = new CancelScope();
+    let outer = new TaskGroup();
     var race: Future<i32> | null = null;
-    outer.run(() => {
+    outer.spawn(() => {
       race = TaskGroup.race([() => doubled(g1.future)]);
+      return Future.of(0);
     });
     outer.cancel();
     drainMicrotasks();

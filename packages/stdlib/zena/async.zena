@@ -5,8 +5,8 @@
  * `Future<T>` represents a value delivered asynchronously, produced through a
  * `Completer<T>`. Callbacks attached via `then` run asynchronously through the
  * FIFO microtask queue. `TaskGroup` coordinates concurrent tasks with structured
- * lifetime and error propagation, and `CancelScope` provides hierarchical
- * cancellation.
+ * lifetime, error propagation, and cancellation; `CancelScope` is the
+ * read-only view of a group's cancellation that the work inside it sees.
  *
  * ## Examples
  *
@@ -41,10 +41,16 @@ export {
 } from './async/future.zena';
 export { Step } from './async/step.zena';
 
-/** TaskGroup's child-settlement report, and the CancelScope methods
- * only compiler-emitted code calls — symbol-keyed so user code cannot
- * name them (docs/design/classes.md §9.4). */
+/** The members only this module may call, symbol-keyed so user code
+ * cannot name them (docs/design/classes.md §9.4): TaskGroup's
+ * child-settlement report and scope-taking constructor, CancelScope's
+ * two constructors and the cancel that marks a scope, and the scope
+ * methods compiler-emitted code calls. */
 symbol childSettled;
+symbol childScope;
+symbol detachedScope;
+symbol cancelScope;
+symbol withScope;
 symbol registerTask;
 symbol install;
 symbol checkpoint;
@@ -55,12 +61,16 @@ symbol shieldScope;
  * Raises on the cancellation channel: a second exception tag that
  * `catch (e)` cannot observe, so cancellation cannot be swallowed —
  * `finally`, `using`, and scope-drop regions still run their cleanup,
- * and the unwind then continues (docs/design/cancellation.md). This is
- * the raw raise the checkpoint machinery will emit; until `CancelScope`
- * lands there is no reason to call it directly.
+ * and the unwind then continues (docs/design/cancellation.md).
+ *
+ * Not exported. Cancellation is delivered at three sites, each of
+ * which raises only if the current scope has been cancelled: entering
+ * an `await`, resuming from one, and `checkCancellation()`. Code
+ * outside this module cannot raise on the channel, so work cannot
+ * cancel its own awaiters by raising.
  */
 @intrinsic('cancel.raise')
-export declare function raiseCancellation(): never;
+declare function raiseCancellation(): never;
 
 // ---------------------------------------------------------------------------
 // Cancellation scopes (docs/design/cancellation.md)
@@ -70,9 +80,9 @@ export declare function raiseCancellation(): never;
  * The current scope: ordinary module state, changed at exactly two
  * kinds of control-transfer site — a frame's run() installs the
  * frame's scope around each step() (compiler-emitted, via
- * `:install`), and a scope's own `run` installs itself around its
- * body. Null until the root is constructed; `currentScope` resolves
- * null to the root.
+ * `:install`), and `TaskGroup.spawn` installs the group's scope
+ * around the synchronous start of a spawned body. Null until the root
+ * is constructed; `currentScope` resolves null to the root.
  */
 var current: CancelScope | null = null;
 var rootScope: CancelScope | null = null;
@@ -81,7 +91,7 @@ let getRootScope = (): CancelScope => {
   if (s != null) {
     return s as CancelScope;
   }
-  let newScope = CancelScope.detached();
+  let newScope = new CancelScope.[detachedScope]();
   rootScope = newScope;
   return newScope;
 };
@@ -93,6 +103,12 @@ let getRootScope = (): CancelScope => {
  * Async frames bind to the current scope at creation and test it at
  * each checkpoint; sync code that wants to stop early polls
  * `currentScope()` explicitly.
+ *
+ * Seen from inside the work, a scope is read-only: `isCancelled` is
+ * its only public member. A `TaskGroup` creates its scope and holds
+ * the cancel for it, so code can cancel work only through a group
+ * whose creator handed it the reference (docs/design/cancellation.md,
+ * "The cancel capability").
  */
 export class CancelScope {
   #parent: CancelScope | null;
@@ -110,7 +126,7 @@ export class CancelScope {
   #tasks = new Array<Waiter>();
 
   /** A child of the current scope, sharing its cancelled level. */
-  new() : #parent = current {
+  new [childScope]() : #parent = current {
     let p = this.#parent;
     if (p != null) {
       let parent = p as CancelScope;
@@ -119,24 +135,10 @@ export class CancelScope {
     }
   }
 
-  /**
-   * A scope with no parent, wherever it is created: cancelling any
-   * other scope never reaches it, and only its holder can cancel it.
-   * This is the scope for work that must outlive its callers — a
-   * cache's shared fills, for example — where `new CancelScope()`
-   * would quietly parent to whichever scope happens to be current at
-   * construction.
-   */
-  static detached(): CancelScope {
-    // The constructor reads the current scope; hide it for the one
-    // construction. Single-threaded, and nothing between the two
-    // writes can observe the slot.
-    let prev = current;
-    current = null;
-    let scope = new CancelScope();
-    current = prev;
-    return scope;
-  }
+  /** A scope with no parent, wherever it is created: cancelling any
+   * other scope never reaches it. The root scope is one, and so is
+   * the scope of a group made with `TaskGroup.detached()`. */
+  new [detachedScope]() : #parent = null;
 
   isCancelled: boolean {
     get {
@@ -147,14 +149,11 @@ export class CancelScope {
   /**
    * Marks this scope and every descendant cancelled. Code between
    * checkpoints is never interrupted: each frame bound to a marked
-   * scope raises at its next checkpoint. The root scope cannot be
-   * cancelled — code that started before any scope existed belongs to
-   * it, and cancelling everything is not a meaningful request.
+   * scope raises at its next checkpoint. `TaskGroup.cancel` is the
+   * only caller; the root scope belongs to no group, so nothing can
+   * cancel it.
    */
-  cancel(): void {
-    if (rootScope != null && this == rootScope) {
-      throw new Error('The root scope cannot be cancelled');
-    }
+  [cancelScope](): void {
     if (this.#cancelled) {
       return;
     }
@@ -165,7 +164,7 @@ export class CancelScope {
       scheduleTask(this.#tasks.pop());
     }
     for (let child in this.#children) {
-      child.cancel();
+      child.[cancelScope]();
     }
   }
 
@@ -222,23 +221,6 @@ export class CancelScope {
    */
   [shieldScope](): CancelScope {
     return getRootScope();
-  }
-
-  /**
-   * Runs `body` with this scope as the current scope, so async
-   * frames created inside bind to it. Eager start does the
-   * inheritance: a frame's ramp runs synchronously here, reads the
-   * current scope once, and stores it — after creation the frame
-   * never consults it again.
-   */
-  run<R>(body: () => R): R {
-    let prev = current;
-    current = this;
-    try {
-      return body();
-    } finally {
-      current = prev;
-    }
   }
 }
 
@@ -305,16 +287,37 @@ class GroupWaiter<T> implements Waiter {
  * that completes once every member has settled — failing with the
  * first member failure, if there was one. A member that ends
  * cancelled is a recorded outcome, not an error.
+ *
+ * A group is the only way to create a scope and the only holder of
+ * its cancel. Work inside the group sees the scope read-only through
+ * `currentScope()`, so code can cancel the group's work only if the
+ * group's creator passed it the group.
  */
 export class TaskGroup {
-  /** The group's scope: a child of the scope current at construction,
-   * so cancelling an ancestor cancels the group's children too. */
-  #scope = new CancelScope();
+  /** The group's scope, which every member's frame binds to. */
+  #scope: CancelScope;
   var #outstanding: i32 = 0;
   var #firstError: Error | null = null;
   var #joinWaiter: Completer<void> | null = null;
 
-  new();
+  /** A group whose scope is a child of the scope current at
+   * construction, so cancelling an ancestor cancels the group's
+   * members too. */
+  new() : #scope = new CancelScope.[childScope]();
+
+  new [withScope](scope: CancelScope) : #scope = scope;
+
+  /**
+   * A group whose scope has no parent, wherever it is created:
+   * cancelling any other scope never reaches its members, and only
+   * the group's holder can cancel them. This is the group for work
+   * that must outlive its callers — a cache's shared fills, for
+   * example — where `new TaskGroup()` would quietly parent to
+   * whichever scope happens to be current at construction.
+   */
+  static detached(): TaskGroup {
+    return new TaskGroup.[withScope](new CancelScope.[detachedScope]());
+  }
 
   isCancelled: boolean {
     get {
@@ -322,10 +325,12 @@ export class TaskGroup {
     }
   }
 
-  /** Cancels every child (and work they spawned): marks the group's
-   * scope, so each child raises at its next checkpoint. */
+  /** Cancels every member (and work they spawned): marks the group's
+   * scope, so each member raises at its next checkpoint. Reaching
+   * this call is what opens the compiler's whole-program cancellation
+   * gate; it is the one operation that marks a scope. */
   cancel(): void {
-    this.#scope.cancel();
+    this.#scope.[cancelScope]();
   }
 
   /**
@@ -355,7 +360,7 @@ export class TaskGroup {
       // One member's failure cancels the rest; the error itself
       // surfaces at join, once.
       this.#firstError = err;
-      this.#scope.cancel();
+      this.cancel();
     }
     this.#outstanding -= 1;
     if (this.#outstanding == 0) {
@@ -481,9 +486,9 @@ class RaceGroupWaiter<T> implements Waiter {
  * release allocates nothing.
  */
 class Interest implements Waiter {
-  scope: CancelScope;
+  group: TaskGroup;
   var count: i32 = 1;
-  new(this.scope);
+  new(this.group);
 
   release(): void {
     this.count -= 1;
@@ -499,8 +504,8 @@ class Interest implements Waiter {
   /** The deferred check: if the count is still zero a turn after it
    * got there, nobody holds a claim, and the work is cancelled. */
   run(): void {
-    if (this.count == 0 && !this.scope.isCancelled) {
-      this.scope.cancel();
+    if (this.count == 0 && !this.group.isCancelled) {
+      this.group.cancel();
     }
   }
 }
@@ -533,23 +538,17 @@ export class FutureClaim<T> implements Disposable {
   new(this.future, interest: Interest) : #interest = interest;
 
   /**
-   * Starts `body` as owned work: the call runs under a new scope — a
-   * child of the current scope, so enclosing cancellation still
-   * reaches it — and the returned handle carries the one initial
-   * claim. Work that must not inherit the caller's cancellation runs
-   * the spawn under `CancelScope.detached()`.
+   * Starts `body` as owned work: the call runs as the one member of a
+   * new group — whose scope is a child of the current scope, so
+   * enclosing cancellation still reaches it — and the returned handle
+   * carries the one initial claim. Work that must not inherit the
+   * caller's cancellation runs the spawn inside a member of
+   * `TaskGroup.detached()`.
    */
   static spawn<A>(body: () => Future<A>): FutureClaim<A> {
-    let scope = new CancelScope();
-    let prev = current;
-    current = scope;
-    var fut: Future<A> | null = null;
-    try {
-      fut = body();
-    } finally {
-      current = prev;
-    }
-    return new FutureClaim<A>(fut as Future<A>, new Interest(scope));
+    let group = new TaskGroup();
+    let fut = group.spawn(body);
+    return new FutureClaim<A>(fut, new Interest(group));
   }
 
   /** Whether this handle still holds its claim. */

@@ -1,7 +1,7 @@
 // @mode: run
 // @result: 42
 
-// Eager start is unchanged: a call in a just-cancelled scope still
+// Eager start is unchanged: a call in a just-cancelled group still
 // runs its ramp segment — code between suspensions is never
 // interrupted. Delivery happens at the first checkpoint, which is
 // ENTERING the await: the frame never parks, the finalizer runs, and
@@ -9,7 +9,7 @@
 // the ramp.
 
 import {
-  Future, Completer, CancelScope, drainMicrotasks,
+  Future, Completer, TaskGroup, drainMicrotasks,
 } from 'zena:async';
 
 var trace = '';
@@ -44,11 +44,9 @@ let probeOutcome = async (pf: Future<i32>): Future<void> => {
 
 export function main(): i32 {
   let c = new Completer<i32>();
-  let scope = new CancelScope();
-  scope.cancel();
-  scope.run(() => {
-    fut = work(c.future);
-  });
+  let group = new TaskGroup();
+  group.cancel();
+  fut = group.spawn(() => work(c.future));
   if (trace != 'rampf') {
     return 2;
   }

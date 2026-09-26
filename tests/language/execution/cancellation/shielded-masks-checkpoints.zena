@@ -7,7 +7,7 @@
 // the next checkpoint — entering the following await — raises.
 
 import {
-  Future, Completer, CancelScope, drainMicrotasks,
+  Future, Completer, TaskGroup, drainMicrotasks,
 } from 'zena:async';
 
 var trace = '';
@@ -44,12 +44,10 @@ let probeOutcome = async (pf: Future<i32>): Future<void> => {
 export function main(): i32 {
   let bye = new Completer<i32>();
   let never = new Completer<i32>();
-  let scope = new CancelScope();
-  scope.run(() => {
-    fut = work(bye.future, never.future);
-  });
+  let group = new TaskGroup();
+  fut = group.spawn(() => work(bye.future, never.future));
   trace += '1';
-  scope.cancel();
+  group.cancel();
   bye.complete(5);
   drainMicrotasks();
   if (trace != 'as1g') {

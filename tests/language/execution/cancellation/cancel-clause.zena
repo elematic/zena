@@ -7,7 +7,7 @@
 // suppress. `catch (e)` sees failures only and stays silent here.
 
 import {
-  Future, Completer, CancelScope, drainMicrotasks,
+  Future, Completer, TaskGroup, drainMicrotasks,
 } from 'zena:async';
 
 var trace = '';
@@ -47,11 +47,9 @@ let probeOutcome = async (pf: Future<i32>): Future<void> => {
 
 export function main(): i32 {
   let c = new Completer<i32>();
-  let scope = new CancelScope();
-  scope.run(() => {
-    fut = work(c.future);
-  });
-  scope.cancel();
+  let group = new TaskGroup();
+  fut = group.spawn(() => work(c.future));
+  group.cancel();
   c.complete(9);
   drainMicrotasks();
   if (trace != 'acf') {

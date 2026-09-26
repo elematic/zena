@@ -7,21 +7,26 @@
 // with them. This fails silently if it regresses — the success path is
 // byte-for-byte plausible and only the unwinding path skips the
 // finalizer — which is why the raise sits on the far side of a
-// suspension. The error-tag capture in step() must not reject the
-// future: the cancellation reaches step()'s own cancellation capture,
-// which completes the frame as cancelled, so the executor continues
-// and main observes the state as data.
+// suspension. The member holds its own group: after the resume it
+// cancels the group and the explicit checkCancellation() is the raise.
+// The error-tag capture in step() must not reject the future: the
+// cancellation reaches step()'s own cancellation capture, which
+// completes the frame as cancelled, so the executor continues and
+// main observes the state as data.
 
-import { Future, Completer, drainMicrotasks, raiseCancellation } from 'zena:async';
+import {
+  Future, Completer, TaskGroup, drainMicrotasks, checkCancellation,
+} from 'zena:async';
 
 var trace = '';
 
-let work = async (gate: Future<i32>): Future<i32> => {
+let work = async (gate: Future<i32>, group: TaskGroup): Future<i32> => {
   try {
     trace += 'a';
     let v = await gate;
     trace += 'b';
-    raiseCancellation();
+    group.cancel();
+    checkCancellation();
     trace += 'X';
   } finally {
     trace += 'f';
@@ -47,7 +52,8 @@ let probeOutcome = async (pf: Future<i32>): Future<void> => {
 
 export function main(): i32 {
   let c = new Completer<i32>();
-  let fut = work(c.future);
+  let group = new TaskGroup();
+  let fut = group.spawn(() => work(c.future, group));
   trace += '1';
   c.complete(9);
   drainMicrotasks();

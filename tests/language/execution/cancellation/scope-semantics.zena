@@ -1,52 +1,60 @@
 // @mode: run
 // @result: 42
 
-// Sync scope semantics: `run` installs the ambient and restores it;
-// a child created inside a scope's run is marked when the parent
-// cancels; the flag is level-triggered (it stays set); and the root
-// scope refuses to be cancelled.
+// Sync scope semantics: `spawn` installs the group's scope around the
+// body's synchronous start and restores the previous scope after; a
+// group created inside a spawned body is a child of the enclosing
+// group and is marked when it cancels; the flag is level-triggered
+// (it stays set); and the root scope, which belongs to no group, is
+// never marked.
 
-import { CancelScope, currentScope } from 'zena:async';
+import { TaskGroup, CancelScope, currentScope, Future } from 'zena:async';
 
 export function main(): i32 {
   let root = currentScope();
-  var rootRefused = false;
-  try {
-    root.cancel();
-  } catch (e) {
-    rootRefused = true;
-  }
-  if (!rootRefused) {
+  let parent = new TaskGroup();
+  var inner: CancelScope | null = null;
+  var child: TaskGroup | null = null;
+  var sawGroupScope = false;
+  parent.spawn(() => {
+    inner = currentScope();
+    sawGroupScope = !(currentScope() == root);
+    child = new TaskGroup();
+    return Future.of(0);
+  });
+  if (!sawGroupScope) {
     return 2;
   }
-
-  let parent = new CancelScope();
-  var child: CancelScope | null = null;
-  var sawParentAmbient = false;
-  parent.run(() => {
-    sawParentAmbient = currentScope() == parent;
-    child = new CancelScope();
-  });
-  if (!sawParentAmbient) {
+  if (!(currentScope() == root)) {
     return 3;
   }
-  if (!(currentScope() == root)) {
+  let s = inner;
+  if (s == null) {
     return 4;
   }
   let c = child;
   if (c == null) {
     return 5;
   }
-  parent.cancel();
-  if (!parent.isCancelled) {
+  if ((s as CancelScope).isCancelled) {
     return 6;
   }
-  if (!(c as CancelScope).isCancelled) {
+  parent.cancel();
+  if (!parent.isCancelled) {
     return 7;
+  }
+  if (!(s as CancelScope).isCancelled) {
+    return 8;
+  }
+  if (!(c as TaskGroup).isCancelled) {
+    return 9;
   }
   parent.cancel();
   if (!parent.isCancelled) {
-    return 8;
+    return 10;
+  }
+  if (root.isCancelled) {
+    return 11;
   }
   return 42;
 }

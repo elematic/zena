@@ -29,10 +29,13 @@ let group = new TaskGroup();
 When a `TaskGroup` is instantiated:
 
 1. It creates an internal `CancelScope` parented to whichever cancellation scope
-   is currently ambient (`currentScope()`).
+   is currently ambient (`currentScope()`). `TaskGroup.detached()` creates a
+   group whose scope has no parent instead.
 2. If an ancestor scope cancels, the cancellation automatically cascades down to
    the task group and all tasks executing within it.
 3. The group can be explicitly cancelled at any time by calling `group.cancel()`.
+   The group is the only holder of that capability: work running inside it sees
+   its scope read-only through `currentScope()` and cannot cancel it.
 4. Its status can be checked via the `group.isCancelled` getter.
 
 ## Spawning tasks

@@ -34,25 +34,34 @@ When an operation is cancelled, the stack unwinds through `catch` blocks without
 invoking them, preventing code intended for error recovery from intercepting the
 cancellation directive.
 
-## Cancel scopes
+## Cancel scopes and task groups
 
-Cancellation in Zena is managed through `CancelScope` from `zena:async`.
+Cancellation in Zena is managed through two classes from `zena:async`:
+
+- `TaskGroup` creates a cancel scope, starts work inside it with `spawn`, and
+  holds the `cancel()` for it. The group is the cancel capability: code can
+  cancel the group's work only if the group's creator passed it the group.
+- `CancelScope` is the read-only view of a scope that the work inside it sees.
+  Its only public member is `isCancelled`. Code obtains the current scope with
+  `currentScope()`, and nothing on it can cancel anything.
 
 ### Hierarchical scope trees
 
 Scopes form a hierarchy mirroring the call tree:
 
 - A cancel scope maintains a cancelled flag and a reference to its parent scope.
-- Cancelling a parent scope marks that scope and all descendant scopes as cancelled.
-- Async tasks created within a scope inherit that scope as their parent.
+- Cancelling a group marks its scope and all descendant scopes as cancelled.
+- Async tasks created within a scope inherit that scope as their parent, and a
+  `TaskGroup` created inside a scope makes its own scope a child of it.
 
 ```zena
-import { CancelScope } from 'zena:async';
+import { TaskGroup } from 'zena:async';
 
-let scope = new CancelScope();
+let group = new TaskGroup();
+let result = group.spawn(() => fetchReport());
 
-// Cancelling the parent cancels all child tasks in the scope:
-scope.cancel();
+// Cancelling the group cancels every task started inside it:
+group.cancel();
 ```
 
 ### Scope binding and frame storage
@@ -94,33 +103,31 @@ and resumption):
 
 Synchronous code between `await` expressions executes without interruption.
 
-### Detached scopes
+### Detached groups
 
-When creating a new scope with `new CancelScope()`, it automatically parents
-itself to the ambient scope (`currentScope()`). If an ancestor scope cancels,
-that cancellation cascades downward to all child scopes and tasks.
+`new TaskGroup()` parents the group's scope to the ambient scope
+(`currentScope()`). If an ancestor scope cancels, that cancellation cascades
+downward to the group and its tasks.
 
 To run work that must outlive its caller—such as shared cache fills or telemetry
-daemons—use `CancelScope.detached()`. A detached scope has no parent link:
+daemons—use `TaskGroup.detached()`. A detached group's scope has no parent link:
 cancelling an outer caller scope will not affect it, and only calling `.cancel()`
-on the detached scope itself will terminate its work.
+on the detached group itself will terminate its work.
 
-To associate async tasks with a detached scope, run them inside `scope.run()`:
+To associate async tasks with a detached group, start them with `spawn`:
 
 ```zena
-import { CancelScope } from 'zena:async';
+import { TaskGroup } from 'zena:async';
 
-let cacheScope = CancelScope.detached();
+let cacheGroup = TaskGroup.detached();
 
 function populateCache(key: String): void {
-  // Binds the async task to cacheScope instead of the caller's scope
-  cacheScope.run(() => {
-    fetchAndCacheData(key);
-  });
+  // Binds the async task to cacheGroup's scope instead of the caller's
+  cacheGroup.spawn(() => fetchAndCacheData(key));
 }
 ```
 
-### Explicit checkpoints: checkCancellation and raiseCancellation
+### Explicit checkpoints: checkCancellation
 
 Long-running CPU-bound synchronous code has no natural `await` suspension points.
 To allow such loops to observe cancellation and unwind promptly, use
@@ -142,12 +149,13 @@ unwinding, triggering `finally` blocks and `using` disposals exactly like an
 `await` checkpoint. If the scope is not cancelled, it performs a single boolean
 check.
 
-For custom execution engines or low-level async primitives, `zena:async` provides:
+`currentScope().isCancelled` allows passive polling of cancellation status
+without unwinding.
 
-- **`raiseCancellation(): never`**: Unconditionally raises on the cancellation
-  channel on the current execution frame.
-- **`currentScope().isCancelled`**: Allows passive polling of cancellation status
-  without unwinding.
+Cancellation is delivered at exactly three sites: entering an `await`, resuming
+from one, and `checkCancellation()`. Each raises only if the current scope has
+been cancelled through some group's `cancel()`. There is no way to raise a
+cancellation directly, so a task cannot cancel its own awaiters.
 
 ## Cleanup on cancellation
 
@@ -176,25 +184,24 @@ Because a cancelled scope remains cancelled, subsequent `await` expressions
 inside a cleanup handler would also trigger cancellation immediately.
 
 When cleanup must perform asynchronous operations (such as closing a network
-connection or flushing a buffer), execute the cleanup in a **shielded scope**:
+connection or flushing a buffer), execute the cleanup in a **`shielded` block**,
+inside which checkpoints do not deliver cancellation:
 
 ```zena
-import { shield } from 'zena:async';
-
 try {
   await performTask();
 } finally {
-  await shield(async () => {
+  shielded {
     await socket.flush();
     await socket.closeAsync();
-  });
+  }
 }
 ```
 
 ## Structured concurrency
 
-Cancel scopes are used by `TaskGroup` to implement **structured concurrency**,
-where concurrent tasks are bounded by lexical scope.
+`TaskGroup` also implements **structured concurrency**, where concurrent tasks
+are bounded by lexical scope.
 
 ### Task group rules
 

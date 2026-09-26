@@ -5,7 +5,7 @@
 // able to swallow an unwind).
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {Completer, CancelScope, drainMicrotasks, runFuture} from 'zena:async';
+import {Completer, TaskGroup, drainMicrotasks, runFuture} from 'zena:async';
 
 var log = '';
 
@@ -123,18 +123,15 @@ export let tests = suite('Future.then', (): void => {
   test('cancellation forwards without running callbacks', (ctx: TestContext): void => {
     log = '';
     let gate = new Completer<i32>();
-    let scope = new CancelScope();
-    var src: Future<i32> | null = null;
-    scope.run(() => {
-      src = doubled(gate.future);
-    });
+    let group = new TaskGroup();
+    let src = group.spawn(() => doubled(gate.future));
     var ran = false;
-    let derived = (src as Future<i32>).then((v: i32): i32 => {
+    let derived = src.then((v: i32): i32 => {
       ran = true;
       return v;
     });
     probe(derived);
-    scope.cancel();
+    group.cancel();
     drainMicrotasks();
     isFalse(ran);
     equal(log, 'C');

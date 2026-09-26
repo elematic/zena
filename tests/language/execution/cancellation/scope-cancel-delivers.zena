@@ -1,14 +1,14 @@
 // @mode: run
 // @result: 42
 
-// Cancelling a scope delivers at the parked frame's next checkpoint:
+// Cancelling a group delivers at the parked frame's next checkpoint:
 // the awaited future completes NORMALLY, but the resume tests the
 // frame's scope first and raises — the finalizer runs, the value is
 // never read, and the frame's future completes as cancelled. The
-// scope that cancelled observes all of it as data.
+// group that cancelled observes all of it as data.
 
 import {
-  Future, Completer, CancelScope, drainMicrotasks,
+  Future, Completer, TaskGroup, drainMicrotasks,
 } from 'zena:async';
 
 var trace = '';
@@ -43,12 +43,10 @@ let probeOutcome = async (pf: Future<i32>): Future<void> => {
 
 export function main(): i32 {
   let c = new Completer<i32>();
-  let scope = new CancelScope();
-  scope.run(() => {
-    parked = work(c.future);
-  });
+  let group = new TaskGroup();
+  parked = group.spawn(() => work(c.future));
   trace += '1';
-  scope.cancel();
+  group.cancel();
   c.complete(9);
   drainMicrotasks();
   if (trace != 'a1f') {

@@ -6,8 +6,13 @@
 // the unwind then continues. A finalizer that leaves on its own
 // discards the pending exit — the language's existing rule, and the
 // one legitimate way for this test to survive the unwind.
+//
+// The raise comes from checkCancellation() in sync code running as
+// the synchronous start of a member of an already-cancelled group:
+// the start runs even in a cancelled scope, and the check is the
+// first place that observes the cancellation.
 
-import { raiseCancellation } from 'zena:async';
+import { TaskGroup, Future, checkCancellation } from 'zena:async';
 
 var trace = '';
 
@@ -15,7 +20,7 @@ let observe = (): i32 => {
   try {
     try {
       trace += 'a';
-      raiseCancellation();
+      checkCancellation();
       trace += 'X';
     } catch (e) {
       trace += 'C';
@@ -30,7 +35,14 @@ let observe = (): i32 => {
 };
 
 export function main(): i32 {
-  if (observe() != 7) {
+  let group = new TaskGroup();
+  group.cancel();
+  var got = 0;
+  group.spawn(() => {
+    got = observe();
+    return Future.of(0);
+  });
+  if (got != 7) {
     return 1;
   }
   if (trace != 'af') {
