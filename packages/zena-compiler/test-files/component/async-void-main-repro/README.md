@@ -74,58 +74,76 @@ export let declaredTypeOf = (func: WasmFunction, what: String): FunctionType => 
 AST node and `declaredTypeOf` cannot read a signature off it. The
 emitter should not have been asked to export it directly.
 
-## Probable cause
+## Root cause
 
-`synthesizeExportWrapper` in
-[wit-module-synth.zena](../../../zena/lib/wit-module-synth.zena) builds
-the entry wrapper that declares each async export's typed return, and
-its own documentation says it returns "Null when the program needs
-neither". Two rules combine to make a void async `main` need neither:
+The component entry is never built, so nothing claims the `main` export
+and two separate sites then try to lift `main$asyncEntry` as if it were
+an ordinary function.
 
-- World-level async exports get a `<name>_export` wrapper, but `main` is
-  skipped, because "the world's async `main` is the entry: the component
-  lifts the program's async main on its own, with its typed return
-  declared by the entry wrapper (lib/component-entry.zena), and a second
-  wrapper here would export the name twice".
-- That entry wrapper covers "`main`'s own wrapper **when it returns a
-  scalar**".
+`prepareComponentEntry` in
+[component-adapters.zena](../../../zena/lib/codegen/ir/component-adapters.zena)
+opens with:
 
-A void `main` is neither, so no wrapper is produced, no module is
-generated to hold a declaration, and emission falls back to the raw
-`main$asyncEntry`. The scalar case works because the entry wrapper
-exists; the two-export case works because the other export forces a
-wrapper module into being, which incidentally gives `main` somewhere to
-be declared.
-
-## The loose end
-
-`compose-consumer.zena` has exactly the failing shape —
-`export async function main(): Future<void>` against `compose.wit`'s
-`world consumer { ... export main: async func(); }` — and it passes
-`npm run test:component`, which was re-run against this tree to confirm.
-
-The difference is somewhere in that world's imports:
-
-```wit
-world consumer {
-  import wasi:clocks/monotonic-clock@0.3.0;  // in provider; consumer has stdio
-  import wasi:cli/stdout@0.3.0;
-  import wasi:cli/stderr@0.3.0;
-  import oracle;                             // ask: async func(n: s32) -> future<s32>
-  export main: async func();
+```zena
+let poll = wasm.getStdlibFunc(driverModule, 'componentPoll');
+let resume = wasm.getStdlibFunc(driverModule, 'componentResume');
+let begin = wasm.getStdlibFunc(driverModule, 'beginTask');
+if (poll == null || resume == null || begin == null) {
+  return;
 }
 ```
 
-Importing `wasi:cli/stdout` alone is not enough — that case fails. The
-remaining candidate is `oracle`, an async import returning `future<s32>`,
-which makes the compiler emit `future.new`/`future.read` canon builtins
-and the helpers around them. If those land in the same synthesized
-module the entry wrapper would use, that would explain why `main` gets a
-declaration there and not here. Worth confirming before fixing, because
-it decides whether the fix belongs in `synthesizeExportWrapper` (always
-produce the wrapper when the world declares an async `main`) or in the
-emitter (derive a signature for a synthesized entry instead of demanding
-an AST node).
+**`poll` is null in the failing case.** Confirmed by instrumenting that
+branch and rebuilding: a program with an async `main` reaches it and
+returns without building the entry.
+
+`zena:wasi` is linked — `getTargetRuntimeModules` in
+[prelude.zena](../../../zena/lib/prelude.zena) returns `["zena:wasi"]`
+for every component build, whether or not the program names it. But
+being linked is not being *in the function map*: as the comment on the
+next gate puts it, "the checkable traversal registers functions it only
+type-walked". Nothing in a program whose only asynchrony is its own
+`main` ever type-walks `componentPoll`, so the lookup returns null.
+
+With the entry unbuilt, `wasm.componentEntryFunc` stays null, and both
+guards that would have skipped `main` fail open:
+
+- `prepareComponentExports` in component-adapters.zena —
+  `if (wasm.componentEntryFunc != null && coreName == 'main') continue;`
+- the export loop in
+  [component-shape.zena](../../../zena/lib/codegen/component-shape.zena) —
+  `if (entry != null && coreName == "main") continue;`
+
+Whichever runs first calls `declaredTypeOf` on the wrapper and throws.
+
+That also explains every row of the table. A scalar result routes through
+`entryWrapperRun`, and the wrapper module it lives in type-walks the
+driver. A second async export does the same through
+`prepareAsyncExports`. And `compose-consumer.zena` — which has exactly
+the failing signature and passes `npm run test:component` — awaits
+`oracle`'s `ask: async func(n: s32) -> future<s32>`, an async import,
+which is precisely what type-walks the driver.
+
+## Where the fix belongs
+
+Not in `prepareComponentEntry`: by the time it runs, the driver's
+functions are already absent from the map, and there is nothing to
+mark reached. Rooting them is a reachability decision, so the condition
+belongs wherever the component target roots its runtime modules — the
+driver should be rooted when the program has an async `main`, the same
+way it is rooted today by an async import.
+
+An attempt to fix it inside `prepareComponentEntry` is recorded here as
+a dead end: detecting the async main wrapper there and calling
+`pass.markFunctionReached(poll)` does not help, because the early return
+above it fires first on `poll == null`.
+
+The alternative — teaching the two export loops to derive a component
+signature for `main$asyncEntry` without an AST node — avoids linking the
+driver into a program that cannot suspend, at the cost of a second way
+to compute an export's signature. The wrapper's shape is known: no
+parameters, and a result that is the `Future`'s payload, so for
+`Future<void>` the component export is `func()`.
 
 ## Fixtures
 
