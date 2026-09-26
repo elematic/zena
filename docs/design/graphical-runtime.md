@@ -18,6 +18,11 @@ The runtime builds upon the `wasi-gfx` and `wasi:webgpu` specifications,
 implemented via host crates from the
 [wasi-gfx-runtime](https://github.com/wasi-gfx/wasi-gfx-runtime) project.
 
+This document covers the host: the window, the GPU, and the interfaces `zfx`
+serves. The retained-mode UI system above it — a scene graph, layout, text and
+a widget model, divided between a Zena component and Rust host primitives — is
+designed in [zenafx-ui.md](./zenafx-ui.md).
+
 ---
 
 ## Host Architecture

@@ -294,3 +294,11 @@ Features that distinguish Zena from TypeScript:
   - **Host runtime (`zfx`) is implemented**: `packages/zenafx` embeds Wasmtime 48 with Zena's engine settings (WasmGC, exceptions, tail calls) and `wasi-gfx` host linkers (`surface-wasmtime`, `wasi-webgpu-wasmtime`, `frame-buffer-wasmtime`), running the `winit` OS event loop on the main thread and Wasm execution on Tokio.
   - Design in [graphical-runtime.md](docs/design/graphical-runtime.md).
   - Native Zena guest translation waits on the Component Model track landing async methods on resources (`request-adapter`) and typed event record streams (`stream<frame-event>`).
+  - **ZenaFX**, the retained-mode UI system above `zfx`: an application is a
+    tree of components sharing one window, linked at run time rather than
+    composed ahead of it, so the host binds each component's imports itself and
+    decides per instance what it reaches. The scene graph, widget model and
+    scheduler are written in Zena, with layout (`taffy`), text (`parley`) and
+    rasterization (`vello`) as Rust host primitives behind WIT. Design and
+    milestones in [zenafx-ui.md](docs/design/zenafx-ui.md); the first milestone
+    is centred text in a window.
