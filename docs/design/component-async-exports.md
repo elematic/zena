@@ -443,3 +443,44 @@ async func()` is the entry itself — the wrapper synthesizer skips
     Composed: the consumer's seventeen-argument `sum` and `describe`
     (a string among them) and five-argument async `sum-async` run
     against a Zena provider.
+13. Resources the program provides — landed as the `gfx-surface`
+    fixtures. A WIT `resource surface` in an exported interface is the
+    program's `export class Surface`: its constructor is the WIT
+    constructor, its methods and statics match by name. The wrapper
+    keeps a table of instances by representation. A constructor
+    export builds the instance, registers it and returns a handle
+    minted over the representation with `resource.new`; a method
+    export receives `self` as the representation — the canonical ABI
+    passes a borrow into the component that implements the resource
+    as the rep, not a handle — and looks the instance up; a borrowed
+    parameter of the program's own resource is a lookup too, and an
+    own result mints a handle like a constructor's. The encoder
+    defines the resource as a component-level resource type with an
+    `i32` representation, which the exported instance exports beside
+    the interface's other types, and the function types of the
+    mangled exports (`[constructor]surface`, `[method]surface.size`)
+    carry `own` and `borrow` of it. The exported instance changes
+    shape for such an interface: a `[method]surface.size` export is
+    validated against the resource names a component's own exports
+    establish, which an instance built from a bag of exports never
+    has (the validator's name context there is empty by
+    construction). So the interface is realized the way wit-component
+    does it — a nested component that imports each resource as a
+    subtype of `resource` and each other type as `eq` of a local copy,
+    imports the lifted functions at types naming those, exports the
+    resources and fresh copies of the other types under their names,
+    and exports each function with a type naming the exported ones;
+    the outer component instantiates it with its resource types and
+    lifted functions and exports the instance. An interface without a
+    resource keeps the bag-of-exports form, byte for byte. Two things
+    wait. An own of the
+    program's resource arriving as a parameter needs `resource.rep`
+    and a rule for the handle's disposal. And the resource has no
+    destructor: one names a core function of the program's instance,
+    and the type must exist before that instance does (the core
+    module imports `resource.new` for it), so it takes a trampoline
+    table in the runtime module — until then a dropped handle leaves
+    its instance in the table. Composed: the consumer constructs a
+    surface, calls sync, async-stream, string-returning and static
+    members, and passes a borrow of it to another resource's
+    constructor and to a free function.

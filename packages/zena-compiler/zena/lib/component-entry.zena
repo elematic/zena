@@ -34,6 +34,7 @@ import {
   Module, FunctionDeclaration, VariableDeclaration, FunctionExpression,
   IdentifierPattern, NamedTypeAnnotation
 } from './ast.zena';
+import { toKebabName } from './codegen/component-emitter.zena';
 
 /** What the wrapper's path adds to the entry's. */
 let wrapperSuffix = '.component-entry.zena';
@@ -58,6 +59,49 @@ export let componentEntryRunName = 'run';
  * an underscore and the suffix cannot collide.
  */
 export let componentExportSuffix = '_export';
+/**
+ * The component export name a wrapper's base name stands for. A plain
+ * name is the kebab-case of the Zena spelling (`describe`). A
+ * resource's function carries the resource and the kind in the base,
+ * joined by double underscores (no WIT-derived name contains one):
+ * `surface__constructor`, `surface__method__onFrame` and
+ * `surface__static__create` name the canonical ABI's
+ * `[constructor]surface`, `[method]surface.on-frame` and
+ * `[static]surface.create`. The empty string for a base with no
+ * kebab-case rendering.
+ */
+export function componentExportNameOf(base: String): String {
+  let parts = base.split('__');
+  if (parts.length == 1) {
+    return toKebabName(base);
+  }
+  let resource = toKebabName(parts[0]);
+  if (resource == '') {
+    return '';
+  }
+  if (parts.length == 2 && parts[1] == 'constructor') {
+    return '[constructor]' + resource;
+  }
+  if (parts.length == 3 && (parts[1] == 'method' || parts[1] == 'static')) {
+    let member = toKebabName(parts[2]);
+    if (member == '') {
+      return '';
+    }
+    return '[' + parts[1] + ']' + resource + '.' + member;
+  }
+  return '';
+}
+
+/** The wrapper base name for a resource's function: see
+ * `componentExportNameOf`. */
+export function resourceWrapperBase(resource: String, kind: String,
+    member: String): String {
+  if (kind == 'constructor') {
+    return resource + '__constructor';
+  }
+  return resource + '__' + kind + '__' + member;
+}
+
 /**
  * The suffix of a declared world's synchronous export wrapper — one
  * whose parameters or result are richer than the flat scalars and

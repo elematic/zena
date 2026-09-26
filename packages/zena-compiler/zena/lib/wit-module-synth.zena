@@ -75,7 +75,7 @@ import { Module } from './ast.zena';
 import { withWasiPackages } from './codegen/wit-imports.zena';
 import {
   ComponentEntryWrapper, componentEntryPathFor,
-  componentEntrySpecifierFor, componentExportSuffix,
+  componentEntrySpecifierFor, componentExportSuffix, resourceWrapperBase,
   mainScalarResultOf, hasAsyncMain, renderMainWrapper, renderWrapperHeader,
   componentSyncExportSuffix
 } from './component-entry.zena';
@@ -121,6 +121,53 @@ final class UsedTypeImport {
 }
 
 var usedTypeImports = new Array<UsedTypeImport>();
+
+/**
+ * An interface the export wrapper being written provides, by the
+ * specifier its types classify under and the qualified name the canon
+ * builtins spell. A resource declared in one is the program's own
+ * class, exported through the wrapper, rather than a handle class of
+ * a synthesized module.
+ */
+final class ExportedInterface {
+  specifier: String;
+  qualified: String;
+  new(this.specifier, this.qualified);
+}
+
+var exportedInterfaces = new Array<ExportedInterface>();
+
+/** The qualified name of the exported interface at `specifier`, or
+ * "" when the wrapper does not export it. */
+function exportedQualifiedOf(specifier: String): String {
+  for (let e in exportedInterfaces) {
+    if (e.specifier == specifier) { return e.qualified; }
+  }
+  return "";
+}
+
+/**
+ * A resource the program provides: its class (imported from the
+ * entry), the WIT name (the table helpers are named after it), and
+ * the interface declaring it (the canon `resource.new` names its
+ * type).
+ */
+final class ProgramResource {
+  className: String;
+  witName: String;
+  qualified: String;
+  new(this.className, this.witName, this.qualified);
+}
+
+var programResources = new Array<ProgramResource>();
+
+function noteProgramResource(className: String, witName: String,
+    qualified: String): void {
+  for (let existing in programResources) {
+    if (existing.className == className) { return; }
+  }
+  programResources.push(new ProgramResource(className, witName, qualified));
+}
 
 function noteUsedImport(specifier: String, name: String): void {
   for (let existing in usedTypeImports) {
@@ -215,6 +262,14 @@ final class Ty {
    * Everywhere else a resource in value position is an implicit
    * `own`, which consumes — the wrapper is marked moved when lowered. */
   var isBorrow = false;
+  /** ResourceH only: whether the resource is the program's own — one
+   * an exported interface declares, implemented by the program's class
+   * — rather than a handle class of a synthesized module. Its wire
+   * form is the representation, an index into the wrapper's table. */
+  var isProgram = false;
+  /** ResourceH only: the resource's WIT name, which the wrapper's
+   * table helpers are named after. */
+  var resourceName = "";
   /** FutureH only: the payload's WIT source text, whitespace
    * collapsed — the canon type spelling the generated builtins name. */
   var witText = "";
@@ -502,6 +557,15 @@ function classifyNamed(name: String, ifaceItems: Array<InterfaceItem>): Ty {
         ty.size = 4;
         ty.align = 4;
         ty.flats = 1;
+        ty.resourceName = name;
+        let qualified = exportedQualifiedOf(currentSpecifier);
+        if (qualified != "") {
+          // The program's own: its class comes from the entry, not
+          // from a synthesized module.
+          ty.isProgram = true;
+          noteProgramResource(ty.typeName, name, qualified);
+          return ty;
+        }
         noteNamedType(ty);
         return ty;
       }
@@ -1015,6 +1079,9 @@ function liftExprOf(ty: Ty, ptrExpr: String, uses: SynthUses): String {
   }
   if (ty.kind == TyKind.ResourceH) {
     uses.useAbi("loadI32");
+    if (ty.isProgram) {
+      return `${camelName(ty.resourceName)}At(loadI32(${ptrExpr}))`;
+    }
     return `new ${ty.typeName}(loadI32(${ptrExpr}))`;
   }
   if (ty.kind == TyKind.StreamH) {
@@ -1154,6 +1221,11 @@ function lowerBlocker(ty: Ty): String {
   if (ty.kind == TyKind.Unsupported) {
     return ty.reason;
   }
+  if (ty.kind == TyKind.ResourceH && ty.isProgram && ty.isBorrow) {
+    return "a borrow of the program's own resource cannot be lowered " +
+        "yet: it would need a handle minted for the call and dropped " +
+        "after it";
+  }
   if (ty.kind == TyKind.ResultT) {
     return "a result parameter waits on the interop stages (the " +
         "inline Result is return-position-only)";
@@ -1242,6 +1314,13 @@ function lowerMemStmts(ty: Ty, value: String, ptrExpr: String,
         `((${value} as u32) as i32)`, uses);
     return zena`
       ${call};
+    `;
+  }
+  if (ty.kind == TyKind.ResourceH && ty.isProgram) {
+    uses.useAbi("storeI32");
+    let prefix = camelName(ty.resourceName);
+    return zena`
+      storeI32(${ptrExpr}, ${prefix}New_raw(${prefix}Register(${value})));
     `;
   }
   if (ty.kind == TyKind.ResourceH) {
@@ -1515,6 +1594,14 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
   if (ty.kind == TyKind.Flags) {
     writeSlot(sb, indent, slots[base], base,
         `((${value} as u32) as i32)`, "i32");
+    return 1;
+  }
+  if (ty.kind == TyKind.ResourceH && ty.isProgram) {
+    // An own of the program's resource leaves as a fresh handle over
+    // the instance's representation.
+    let prefix = camelName(ty.resourceName);
+    writeSlot(sb, indent, slots[base], base,
+        `${prefix}New_raw(${prefix}Register(${value}))`, "i32");
     return 1;
   }
   if (ty.kind == TyKind.ResourceH) {
@@ -1793,6 +1880,13 @@ function liftFlatExpr(ty: Ty, slotTypes: GrowableArray<String>,
     return `((${slot(base, "i32")} as u32) as ${ty.typeName})`;
   }
   if (ty.kind == TyKind.ResourceH) {
+    if (ty.isProgram) {
+      // A borrow of the program's own resource arrives as its
+      // representation — the canonical ABI passes a borrow into the
+      // implementing component as the rep — so it is a table lookup.
+      // An own arriving is refused before this.
+      return camelName(ty.resourceName) + "At(" + slot(base, "i32") + ")";
+    }
     // An owned handle: the wrapper's class around it, which the
     // program then owns and disposes. A borrow is refused before this.
     return `new ${ty.typeName}(${slot(base, "i32")})`;
@@ -2366,7 +2460,11 @@ function renderResource(
   body.append("    }\n  }\n\n");
   body.append(members.toString());
   body.append("}\n");
-  body.append("@external(\"canon\", \"resource.drop\", \"resource:")
+  // Per resource: each declaration is its own core import, named
+  // apart by the suffix, as the stream and future families are.
+  body.append("@external(\"canon\", \"resource.drop#")
+      .append(interfaceName).append("#").append(resourceName)
+      .append("\", \"resource:")
       .append(interfaceName).append("#").append(resourceName)
       .append("\")\n");
   body.append("declare function ").append(rawPrefix)
@@ -2485,6 +2583,8 @@ export function synthesizeWitModule(canonicalPath: String,
   selfSpecifier = namespace + ":" + interfacePath;
   currentSpecifier = selfSpecifier;
   usedTypeImports = new Array<UsedTypeImport>();
+  exportedInterfaces = new Array<ExportedInterface>();
+  programResources = new Array<ProgramResource>();
   let version = iface.packageName.version;
   var interfaceName = namespace + ":" + interfacePath;
   if (version != null) {
@@ -2659,6 +2759,40 @@ function drainHelpers(body: StringBuilder, uses: SynthUses,
           interfaceName, uses);
       uses.emittedStreams += 1;
     }
+  }
+}
+
+/**
+ * The table behind each resource the program provides: instances by
+ * representation (the index a handle carries), the registration a
+ * constructor or an own result goes through, the lookup a method's
+ * `self` or a borrowed parameter goes through, and the canon
+ * `resource.new` that mints a handle over a representation. Slots are
+ * never reused: the resource has no destructor yet to say a handle is
+ * gone, so a dropped handle leaves its instance in the table.
+ */
+function emitProgramResourceTables(body: StringBuilder,
+    uses: SynthUses): void {
+  for (let r in programResources) {
+    uses.array = true;
+    let prefix = camelName(r.witName);
+    let table = `${prefix}Table`;
+    body.append("\n");
+    emit(body, "", zena`
+      /** The program's ${r.className} instances behind WIT resource
+       * ${r.witName}, by representation. */
+      let ${table} = new Array<${r.className}>();
+      function ${prefix}Register(value: ${r.className}): i32 {
+        ${table}.push(value);
+        return ${table}.length - 1;
+      }
+      function ${prefix}At(rep: i32): ${r.className} {
+        return ${table}[rep];
+      }
+      @external("canon", "resource.new#${r.qualified}#${r.witName}", "resource:${r.qualified}#${r.witName}")
+      declare function ${prefix}New_raw(rep: i32): i32;
+    `);
+    body.append("\n");
   }
 }
 
@@ -3314,7 +3448,27 @@ final class AsyncWorldExport {
   var interfaceIndex = -1;
   var qualifiedInterface = "";
   var specifier = "";
+  /** For a resource's function: the resource's WIT name, the kind
+   * ("constructor", "method", "static") and the member's WIT name. */
+  var resourceName = "";
+  var kind = "";
+  var member = "";
   new(this.name, this.func);
+
+  /** The wrapper's target: the class for a resource's function, the
+   * function itself otherwise. */
+  target(): ExportTarget {
+    if (this.resourceName == "") {
+      return new ExportTarget(this.name, camelName(this.name));
+    }
+    let prefix = camelName(this.resourceName);
+    let memberZena = if (this.kind == "constructor") ""
+        else zenaMemberName(this.member);
+    return new ExportTarget(this.name,
+        resourceWrapperBase(prefix, this.kind, camelName(this.member)),
+        pascalName(this.resourceName), this.resourceName, this.kind,
+        memberZena);
+  }
 }
 
 /**
@@ -3405,6 +3559,35 @@ export function synthesizeExportWrapper(
           qualified = qualified + "@" + (version as String);
         }
         for (let item in iface.def.items) {
+          if (item.tag == InterfaceItemTag.TypeDef) {
+            // A resource the program provides: every function of it
+            // goes through a wrapper — a method's first parameter is
+            // the representation to look the instance up by.
+            let td = item.typeDef as TypeDef;
+            if (td.tag != TypeDefTag.Resource) { continue; }
+            for (let rf in td.resourceFuncs as GrowableArray<ResourceFunc>) {
+              var kind = "method";
+              var member = rf.func.name.name;
+              var name = "[method]" + td.name.name + "." + member;
+              if (rf.tag == ResourceFuncTag.Constructor) {
+                kind = "constructor";
+                member = "";
+                name = "[constructor]" + td.name.name;
+              } else if (rf.tag == ResourceFuncTag.Static) {
+                kind = "static";
+                name = "[static]" + td.name.name + "." + member;
+              }
+              let e = new AsyncWorldExport(name, rf.func.func);
+              e.interfaceIndex = interfaces.length;
+              e.qualifiedInterface = qualified;
+              e.specifier = namespace + ":" + interfacePath;
+              e.resourceName = td.name.name;
+              e.kind = kind;
+              e.member = member;
+              interfaceExports.push(e);
+            }
+            continue;
+          }
           if (item.tag != InterfaceItemTag.Func) { continue; }
           let nf = item.func as NamedFunc;
           if (!nf.func.isAsync &&
@@ -3417,6 +3600,8 @@ export function synthesizeExportWrapper(
           e.specifier = namespace + ":" + interfacePath;
           interfaceExports.push(e);
         }
+        exportedInterfaces.push(new ExportedInterface(
+            namespace + ":" + interfacePath, qualified));
         interfaces.push(iface);
       }
     }
@@ -3434,22 +3619,29 @@ export function synthesizeExportWrapper(
   currentSpecifier = "";
   reinterpretUsed = false;
   usedTypeImports = new Array<UsedTypeImport>();
+  programResources = new Array<ProgramResource>();
   let noItems = new Array<InterfaceItem>();
   let uses = new SynthUses();
   let body = new StringBuilder();
   let imported = new Array<String>();
+  let importFromEntry = (name: String): void => {
+    for (let existing in imported) {
+      if (existing == name) { return; }
+    }
+    imported.push(name);
+  };
   if (mainResult != "") {
     imported.push("main");
     renderMainWrapper(body, mainResult);
   }
   for (let e in exports) {
-    let zenaName = camelName(e.name);
-    imported.push(zenaName);
+    let target = e.target();
+    importFromEntry(target.base);
     body.append("\n");
     if (e.func.isAsync) {
-      renderExportWrapper(body, e.name, zenaName, e.func, noItems, uses, "");
+      renderExportWrapper(body, target, e.func, noItems, uses, "");
     } else {
-      renderSyncExportWrapper(body, e.name, zenaName, e.func, noItems, uses);
+      renderSyncExportWrapper(body, target, e.func, noItems, uses);
     }
     // A world-level export's future is structural: its canon type
     // names no interface.
@@ -3465,15 +3657,25 @@ export function synthesizeExportWrapper(
     currentPackage = iface.packageName;
     selfSpecifier = "";
     currentSpecifier = e.specifier;
-    let zenaName = camelName(e.name);
-    imported.push(zenaName);
+    let target = e.target();
+    if (target.resourceName != "") {
+      // The class comes from the entry; classifying the resource
+      // registers it for the table helpers below, and a constructor's
+      // result is an own of it.
+      importFromEntry(target.className);
+      let resourceTy = classifyNamed(target.resourceName, iface.def.items);
+      if (target.kind == "constructor") {
+        target.implicitResult = resourceTy;
+      }
+    } else {
+      importFromEntry(target.base);
+    }
     body.append("\n");
     if (e.func.isAsync) {
-      renderExportWrapper(body, e.name, zenaName, e.func, iface.def.items,
-          uses, e.qualifiedInterface);
+      renderExportWrapper(body, target, e.func, iface.def.items, uses,
+          e.qualifiedInterface);
     } else {
-      renderSyncExportWrapper(body, e.name, zenaName, e.func,
-          iface.def.items, uses);
+      renderSyncExportWrapper(body, target, e.func, iface.def.items, uses);
     }
     // A future this export moves — a `future<T>` result the program's
     // `Future<T>` lowers into — gets its helpers here, typed against
@@ -3481,6 +3683,8 @@ export function synthesizeExportWrapper(
     drainHelpers(body, uses, e.qualifiedInterface);
   }
   emitHelperTrailer(body, uses);
+  emitProgramResourceTables(body, uses);
+  exportedInterfaces = new Array<ExportedInterface>();
 
   let specifier = componentEntrySpecifierFor(entryPath);
   let sb = new StringBuilder();
@@ -3593,10 +3797,56 @@ function needsSyncWrapper(func: Func, items: Array<InterfaceItem>): boolean {
 }
 
 /**
+ * What an export wrapper reaches in the program: a free function by
+ * name, or a resource's constructor, method or static through the
+ * program's class. `witName` is the component export name
+ * (`describe`, `[method]surface.on-frame`); `base` the wrapper's
+ * identifier base (`describe`, `surface__method__onFrame`), which
+ * `componentExportNameOf` reads the export name back from.
+ */
+final class ExportTarget {
+  witName: String;
+  base: String;
+  /** The class behind a resource's function; "" for a free function. */
+  className: String;
+  /** The resource's WIT name; "" for a free function. */
+  resourceName: String;
+  /** "constructor", "method" or "static"; "" for a free function. */
+  kind: String;
+  /** The member's Zena name on the class, for a method or static. */
+  member: String;
+  /** A constructor's implicit result: an own of the resource. */
+  var implicitResult: Ty | null = null;
+  new(this.witName, this.base, this.className = "", this.resourceName = "",
+      this.kind = "", this.member = "");
+
+  /** The expression the wrapper calls, before its argument list. */
+  callee(): String {
+    if (this.kind == "constructor") {
+      return "new " + this.className;
+    }
+    if (this.kind == "method") {
+      return "self0." + this.member;
+    }
+    if (this.kind == "static") {
+      return this.className + "." + this.member;
+    }
+    return this.base;
+  }
+
+  /** Whether the wrapper takes the resource's representation first. */
+  hasSelf(): boolean {
+    return this.kind == "method";
+  }
+}
+
+/**
  * The parameters of an export wrapper, async or sync: the core-shaped
  * signature the lift calls with, the statements lifting each into its
  * Zena value, and the arguments to call the program's function with.
- * Throws with the reason on a parameter this cannot marshal.
+ * A method's `self` leads: the resource's representation, looked up
+ * in the wrapper's table as `self0`. Throws with the reason on a
+ * parameter this cannot marshal.
  */
 final class WrapperParams {
   rawSig = new StringBuilder();
@@ -3605,26 +3855,28 @@ final class WrapperParams {
   new();
 }
 
-function renderWrapperParams(witName: String, func: Func,
+function renderWrapperParams(target: ExportTarget, func: Func,
     items: Array<InterfaceItem>, uses: SynthUses): WrapperParams {
+  let witName = target.witName;
   let refuse = (what: String, why: String): Error =>
       new Error("The declared world's export '" + witName + "', " +
           what + ": " + why);
   let out = new WrapperParams();
   let {rawSig, liftStmts, callArgs} = out;
+  let selfPrefix = camelName(target.resourceName);
   // Every parameter classified and flattened first: past sixteen core
-  // values in all, the canonical ABI spills them into memory and the
-  // lift takes one address.
+  // values in all — a method's `self` among them — the canonical ABI
+  // spills them into memory and the lift takes one address.
   let tys = new GrowableArray<Ty>();
   let slotLists = new GrowableArray<GrowableArray<String>>();
-  var totalFlats = 0;
+  var totalFlats = if (target.hasSelf()) 1 else 0;
   for (var i = 0; i < func.params.length; i += 1) {
     let p = func.params[i];
     let ty = classifyType(p.type, items);
     if (ty.kind == TyKind.Unsupported) {
       throw refuse("parameter '" + p.name.name + "'", ty.reason);
     }
-    if (ty.kind == TyKind.ResourceH && ty.isBorrow) {
+    if (ty.kind == TyKind.ResourceH && ty.isBorrow && !ty.isProgram) {
       throw refuse("parameter '" + p.name.name + "'",
           "a borrowed handle is the caller's for the call only, and a " +
           "wrapper cannot hand it to the program without disposing it " +
@@ -3661,6 +3913,11 @@ function renderWrapperParams(witName: String, func: Func,
     uses.useAbi("freeLifted");
     rawSig.append("args: i32");
     var offset = 0;
+    if (target.hasSelf()) {
+      uses.useAbi("loadI32");
+      liftStmts.append(`  let self0 = ${selfPrefix}At(loadI32(args));\n`);
+      offset = 4;
+    }
     for (var i = 0; i < tys.length; i += 1) {
       let ty = tys[i];
       offset = alignTo(offset, ty.align);
@@ -3672,11 +3929,15 @@ function renderWrapperParams(witName: String, func: Func,
     liftStmts.append("  freeLifted(args);\n");
     return out;
   }
+  if (target.hasSelf()) {
+    rawSig.append("self: i32");
+    liftStmts.append(`  let self0 = ${selfPrefix}At(self);\n`);
+  }
   for (var i = 0; i < tys.length; i += 1) {
     let ty = tys[i];
     let k = i32ToString(i);
     let slotTypes = slotLists[i];
-    if (i > 0) { rawSig.append(", "); }
+    if (i > 0 || target.hasSelf()) { rawSig.append(", "); }
     if (ty.kind == TyKind.Str) {
       // The host lowered the string into linear memory through the
       // lift's realloc; the guest owns that buffer and frees it once
@@ -3715,7 +3976,11 @@ function renderWrapperParams(witName: String, func: Func,
  * holds a borrowed handle, which a wrapper cannot hand to the program
  * without also owning its disposal. The reason, or the empty string. */
 function paramLiftBlocker(ty: Ty): String {
-  if (ty.kind == TyKind.ResourceH && ty.isBorrow) {
+  if (ty.kind == TyKind.ResourceH && ty.isProgram && !ty.isBorrow) {
+    return "an owned handle of the program's own resource cannot be " +
+        "lifted yet: it needs `resource.rep` and the handle's disposal";
+  }
+  if (ty.kind == TyKind.ResourceH && ty.isBorrow && !ty.isProgram) {
     return "a borrowed handle inside an aggregate cannot be lifted yet";
   }
   for (let child in ty.children) {
@@ -3734,9 +3999,11 @@ function paramLiftBlocker(ty: Ty): String {
  * layout, staged until the host has read it and `post-return` runs.
  * Throws with the reason on a parameter or result this cannot marshal.
  */
-function renderSyncExportWrapper(sb: StringBuilder, witName: String,
-    zenaName: String, func: Func, items: Array<InterfaceItem>,
-    uses: SynthUses): void {
+function renderSyncExportWrapper(sb: StringBuilder, target: ExportTarget,
+    func: Func, items: Array<InterfaceItem>, uses: SynthUses): void {
+  let witName = target.witName;
+  let base = target.base;
+  let callee = target.callee();
   let refuse = (what: String, why: String): Error =>
       new Error("The declared world's export '" + witName + "', " +
           what + ": " + why);
@@ -3756,19 +4023,23 @@ function renderSyncExportWrapper(sb: StringBuilder, witName: String,
       carriesEnd(classifyType(func.result as Type, items))) {
     throw refuse("the result", pumped);
   }
-  let params = renderWrapperParams(witName, func, items, uses);
+  let params = renderWrapperParams(target, func, items, uses);
   let result = func.result;
-  if (result == null) {
-    sb.append("export function ").append(zenaName)
+  // A constructor's result is implicit: an own of the resource.
+  var resultTyOpt: Ty | null = target.implicitResult;
+  if (resultTyOpt == null && result != null) {
+    resultTyOpt = classifyType(result as Type, items);
+  }
+  if (resultTyOpt == null) {
+    sb.append("export function ").append(base)
         .append(componentSyncExportSuffix).append("(")
         .append(params.rawSig.toString()).append("): void {\n");
     sb.append(params.liftStmts.toString());
-    sb.append("  ").append(zenaName).append("(")
+    sb.append("  ").append(callee).append("(")
         .append(params.callArgs.toString()).append(");\n}\n");
     return;
   }
-  let resultType = result as Type;
-  let resultTy = classifyType(resultType, items);
+  let resultTy = resultTyOpt as Ty;
   if (resultTy.kind == TyKind.Unsupported) {
     throw refuse("the result", resultTy.reason);
   }
@@ -3786,12 +4057,12 @@ function renderSyncExportWrapper(sb: StringBuilder, witName: String,
   let zenaResult = futurePayloadZenaType(resultTy, uses);
   if (slotTypes.length == 1) {
     // One core value: returned as the call's result.
-    sb.append("export function ").append(zenaName)
+    sb.append("export function ").append(base)
         .append(componentSyncExportSuffix).append("(")
         .append(params.rawSig.toString()).append("): ")
         .append(slotTypes[0]).append(" {\n");
     sb.append(params.liftStmts.toString());
-    sb.append("  let value = ").append(zenaName).append("(")
+    sb.append("  let value = ").append(callee).append("(")
         .append(params.callArgs.toString()).append(");\n");
     let zero = if (slotTypes[0] == "f32" || slotTypes[0] == "f64") "0.0"
         else "0";
@@ -3811,11 +4082,11 @@ function renderSyncExportWrapper(sb: StringBuilder, witName: String,
   uses.useAbi("stagedMark");
   uses.useAbi("stageBuffer");
   uses.useAbi("notePostReturn");
-  sb.append("export function ").append(zenaName)
+  sb.append("export function ").append(base)
       .append(componentSyncExportSuffix).append("(")
       .append(params.rawSig.toString()).append("): i32 {\n");
   sb.append(params.liftStmts.toString());
-  sb.append("  let value = ").append(zenaName).append("(")
+  sb.append("  let value = ").append(callee).append("(")
       .append(params.callArgs.toString()).append(");\n");
   sb.append("  let m0 = stagedMark();\n");
   sb.append("  let ret = stageBuffer(")
@@ -3830,13 +4101,16 @@ function renderSyncExportWrapper(sb: StringBuilder, witName: String,
  * One async export's typed return and `<name>_export` wrapper. Throws
  * with the reason on a parameter or result this cannot marshal.
  */
-function renderExportWrapper(sb: StringBuilder, witName: String,
-    zenaName: String, func: Func, items: Array<InterfaceItem>,
-    uses: SynthUses, returnScope: String): void {
+function renderExportWrapper(sb: StringBuilder, target: ExportTarget,
+    func: Func, items: Array<InterfaceItem>, uses: SynthUses,
+    returnScope: String): void {
+  let witName = target.witName;
+  let base = target.base;
+  let callee = target.callee();
   let refuse = (what: String, why: String): Error =>
       new Error("The declared world's async export '" + witName + "', " +
           what + ": " + why);
-  let params = renderWrapperParams(witName, func, items, uses);
+  let params = renderWrapperParams(target, func, items, uses);
   let {rawSig, liftStmts, callArgs} = params;
 
   let result = func.result;
@@ -3880,7 +4154,7 @@ function renderExportWrapper(sb: StringBuilder, witName: String,
     sb.append("@external(\"canon\", \"task.return#").append(witName)
         .append("\", \"return:").append(returnScope).append("#")
         .append(typeText).append("\")\n");
-    sb.append("declare function taskReturn").append(pascalName(witName))
+    sb.append("declare function taskReturn").append(pascalName(base))
         .append("(");
     for (var k = 0; k < slotTypes.length; k += 1) {
       let slotName = "s" + i32ToString(k);
@@ -3891,7 +4165,7 @@ function renderExportWrapper(sb: StringBuilder, witName: String,
     sb.append("): void;\n\n");
   }
 
-  sb.append("export function ").append(zenaName)
+  sb.append("export function ").append(base)
       .append(componentExportSuffix).append("(").append(rawSig.toString())
       .append("): void {\n");
   sb.append(liftStmts.toString());
@@ -3899,12 +4173,12 @@ function renderExportWrapper(sb: StringBuilder, witName: String,
     // Nothing to return: the driver's bare `task.return` closes the
     // task once its work is done, as it does for a `main` that
     // returns nothing.
-    sb.append("  ").append(zenaName).append("(").append(callArgs.toString())
+    sb.append("  ").append(callee).append("(").append(callArgs.toString())
         .append(");\n}\n");
     return;
   }
   sb.append("  finishTask<").append(zenaResult).append(">(")
-      .append(zenaName).append("(").append(callArgs.toString())
+      .append(callee).append("(").append(callArgs.toString())
       .append("), (value: ").append(zenaResult).append("): void => {\n");
   let staging = mayStage(resultTy);
   if (staging) {
@@ -3922,7 +4196,7 @@ function renderExportWrapper(sb: StringBuilder, witName: String,
   }
   currentSlotTypes = slotTypes;
   lowerFlatStmts(sb, resultTy, "value", slotNames, 0, "    ", uses);
-  sb.append("    taskReturn").append(pascalName(witName)).append("(");
+  sb.append("    taskReturn").append(pascalName(base)).append("(");
   for (var k = 0; k < slotNames.length; k += 1) {
     if (k > 0) { sb.append(", "); }
     sb.append(slotNames[k]);

@@ -48,10 +48,36 @@ export final class ExportedInstanceType {
   new(this.name, this.index);
 }
 
+/** A type a nested component's instantiation takes from this one. */
+export final class NestedInstanceArg {
+  name: String;
+  index: i32;
+  new(this.name, this.index);
+}
+
+/**
+ * An exported interface realized as a nested component rather than a
+ * bag of exports: what the encoder built (the whole nested component's
+ * bytes) and what its instantiation supplies — the types by name and
+ * index, and the lifted functions by name, one per export of the
+ * instance in `shape.exports` order. An interface with a resource of
+ * its own needs this: a `[method]r.f` export is validated against the
+ * resource names a component's own exports establish.
+ */
+export final class NestedInstanceExport {
+  bytes: ByteBuffer;
+  typeArgs = new Array<NestedInstanceArg>();
+  funcImports = new Array<String>();
+  new(this.bytes);
+}
+
 export final class EncodedImports {
   pieces = new Array<EncodedImportPiece>();
   var typeCount = 0;
   var instanceCount = 0;
+  /** The exported interfaces realized as nested components, by the
+   * interface's qualified name. */
+  nestedExports = new Map<String, NestedInstanceExport>();
   /** The types each exported interface declares itself, by the
    * interface's qualified name, encoded by the encoder at component
    * level; its instance exports each under its name. */
@@ -600,6 +626,8 @@ let canonBuiltinOpcode = (fieldName: String): i32 => {
   if (name == "future.drop-readable") { return 0x1a; }
   if (name == "future.drop-writable") { return 0x1b; }
   if (name == "resource.drop") { return 0x03; }
+  if (name == "resource.new") { return 0x02; }
+  if (name == "resource.rep") { return 0x04; }
   return -1;
 };
 
@@ -1368,9 +1396,47 @@ export let emitComponent = (
     if (!seen) { instanceNames.push(e.instanceName); }
   }
   if (instanceNames.length > 0) {
+    // An interface with a resource of its own is a nested component,
+    // written first so the instance section can instantiate it: the
+    // components take indices in this order.
+    let nestedIndex = new Map<String, i32>();
+    for (let name in instanceNames) {
+      if (let (true, nested) = encoded.nestedExports.get(name)) {
+        nestedIndex[name] = nestedIndex.size;
+        writeSection(out, ComponentSectionId.Component as i32, nested.bytes);
+      }
+    }
     let instances = new ByteBuffer();
     instances.writeULEB128(instanceNames.length);
     for (let name in instanceNames) {
+      if (let (true, nested) = encoded.nestedExports.get(name)) {
+        instances.writeByte(0x00); // instantiate a component
+        instances.writeULEB128(nestedIndex[name]);
+        var funcs = 0;
+        for (let e in shape.exports) {
+          if (e.instanceName == name) { funcs += 1; }
+        }
+        if (funcs != nested.funcImports.length) {
+          throw new Error("The nested component for '" + name +
+              "' imports " + i32ToString(nested.funcImports.length) +
+              " function(s), and the program lifts " + i32ToString(funcs));
+        }
+        instances.writeULEB128(nested.typeArgs.length + funcs);
+        for (let t in nested.typeArgs) {
+          writeName(instances, t.name);
+          instances.writeByte(0x03); // sort: type
+          instances.writeULEB128(t.index);
+        }
+        var k = 0;
+        for (var i = 0; i < shape.exports.length; i += 1) {
+          if (shape.exports[i].instanceName != name) { continue; }
+          writeName(instances, nested.funcImports[k]);
+          instances.writeByte(0x01); // sort: func
+          instances.writeULEB128(firstExportFunc + i);
+          k += 1;
+        }
+        continue;
+      }
       instances.writeByte(0x01); // an instance from inline exports
       // The interface's own types first, so the instance reads back
       // with them, then its functions.

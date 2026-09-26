@@ -440,6 +440,31 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'gfx-surface-provider',
+    wasi: ['p3=y'],
+    wit: ['gfx-surface.wit', 'provider'],
+    // The provider half of the exported-resource composition: the
+    // `surface` interface's two resources are the program's classes,
+    // each function of them a wrapper over a table of instances by
+    // representation. Built and validated here; run composed, below.
+    invocations: [],
+  },
+  {
+    name: 'gfx-surface-consumer',
+    wasi: ['p3=y'],
+    wit: ['gfx-surface.wit', 'consumer'],
+    compose: ['gfx-surface-provider'],
+    // A resource the program provides, with both sides generated: the
+    // consumer constructs a surface (a handle minted over the
+    // provider's instance), calls a sync method, an async method
+    // returning a typed stream, a string-returning method and a
+    // static, and hands a borrow of the surface to another resource's
+    // constructor and to a free function. 12 + 0+1+2 + 12 + 12 + 64.
+    invocations: [
+      {invoke: 'main()', expect: '103', expectOutput: ['surface 3x4']},
+    ],
+  },
+  {
     name: 'spill-provider',
     wasi: ['p3=y'],
     wit: ['spill.wit', 'provider'],

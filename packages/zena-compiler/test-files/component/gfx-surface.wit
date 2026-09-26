@@ -1,0 +1,45 @@
+// A resource the program provides, composed: `provider` exports
+// `surface`, whose `surface` and `context` resources are Zena classes
+// behind compiler-written wrappers, and `consumer` imports it and
+// drives them — constructing a surface, reading its typed event
+// stream, and handing a borrow of it to another resource's
+// constructor. The shape wasi-gfx's surface has, with the event
+// stream async (a stream is pumped by callback re-entries, which a
+// synchronous export never gets).
+//
+// Stdio is the stdlib's vendored WASI WIT, imported by name.
+package test:gfx-surface@1.0.0;
+
+interface surface {
+  record frame-event {
+    frame: u64,
+    elapsed-ms: f32,
+  }
+
+  resource surface {
+    constructor(width: u32, height: u32);
+    size: func() -> u32;
+    on-frame: async func(count: u32) -> stream<frame-event>;
+    describe: func() -> string;
+    default-size: static func() -> u32;
+  }
+
+  resource context {
+    constructor(surface: borrow<surface>);
+    area: func() -> u32;
+  }
+
+  open-context: func(surface: borrow<surface>) -> context;
+}
+
+world provider {
+  export surface;
+}
+
+world consumer {
+  import wasi:cli/stdout@0.3.0;
+  import wasi:cli/stderr@0.3.0;
+  import surface;
+
+  export main: async func() -> u32;
+}

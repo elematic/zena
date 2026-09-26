@@ -24,17 +24,19 @@ import { parse } from 'wit-parser:wit';
 import {
   ComponentTypeEncoder, EncodedWorld, funcFlatMeta, worldFuncFlatMeta,
   interfaceExportFlatMeta, WitFuncMeta,
-  worldNames, qualifiedInterfaceName
+  worldNames, qualifiedInterfaceName, NestedExport
 } from 'wit-parser:component-encoder';
 import {
   Ast, AstItemTag, WorldDef, WorldItemTag, Import, Export, ExternKind,
   ExternKindTag, UsePath, UsePathTag, Id, Func, Type, TypeTag, PackageName,
-  AstItem, InterfaceDef, InterfaceItem, InterfaceItemTag, NamedFunc, TypeDef, TypeDefTag
+  AstItem, InterfaceDef, InterfaceItem, InterfaceItemTag, NamedFunc, TypeDef, TypeDefTag,
+  ResourceFunc, ResourceFuncTag
 } from 'wit-parser:parser';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc,
   ComponentFuncType, noComponentResult, EncodedImports, EncodedImportPiece,
-  ImportTypeEncoder, ExportedInstanceType
+  ImportTypeEncoder, ExportedInstanceType, NestedInstanceExport,
+  NestedInstanceArg
 } from './component-emitter.zena';
 
 /** The WIT spelling of a flat-scalar component value type opcode. */
@@ -655,14 +657,24 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
               new DeclaredExport(nf.name.name, nf.func, qualified));
         } else if (item.tag == InterfaceItemTag.TypeDef &&
             (item.typeDef as TypeDef).tag == TypeDefTag.Resource) {
-          // Its records, variants, enums, flags and aliases the encoder
-          // writes at component level and the instance exports; a
-          // resource is a class of the program's, with a
-          // representation and a destructor, and waits.
-          throw new Error("The declared world exports '" + qualified +
-              "', which declares a resource of its own; an exported " +
-              "resource needs the program's class behind it, which is " +
-              "not built yet.");
+          // A resource is a class of the program's; its constructor,
+          // methods and statics are exports under the canonical ABI's
+          // mangled names, each implemented by a wrapper the compiler
+          // writes around the class.
+          let td = item.typeDef as TypeDef;
+          let resourceName = td.name.name;
+          for (let rf in td.resourceFuncs as GrowableArray<ResourceFunc>) {
+            var exported = "";
+            if (rf.tag == ResourceFuncTag.Constructor) {
+              exported = "[constructor]" + resourceName;
+            } else if (rf.tag == ResourceFuncTag.Method) {
+              exported = "[method]" + resourceName + "." + rf.func.name.name;
+            } else {
+              exported = "[static]" + resourceName + "." + rf.func.name.name;
+            }
+            this.#declaredExports.push(
+                new DeclaredExport(exported, rf.func.func, qualified));
+          }
         }
       }
       return;
@@ -733,6 +745,36 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
     let out = mirrorEncodedWorld(world);
     copyIndices(canonTypes, out.canonTypeIndices);
     copyIndices(exportTypes, out.exportTypeIndices);
+    // An exported interface with a resource of its own is realized as
+    // a nested component (NestedInstanceExport): encoded here, after
+    // the world and every type the lifts name exist at component
+    // level, with the instance's exports in the order the emitter
+    // lifts them.
+    let instanceNames = new Array<String>();
+    for (let e in shape.exports) {
+      if (e.instanceName == "") { continue; }
+      var seen = false;
+      for (let name in instanceNames) {
+        if (name == e.instanceName) { seen = true; }
+      }
+      if (!seen) { instanceNames.push(e.instanceName); }
+    }
+    for (let name in instanceNames) {
+      if (!encoder.interfaceDeclaresResource(name)) { continue; }
+      let exportNames = new Array<String>();
+      for (let e in shape.exports) {
+        if (e.instanceName == name) { exportNames.push(e.exportName); }
+      }
+      let nested = encoder.encodeExportedInterfaceComponent(name, exportNames);
+      let mirrored = new NestedInstanceExport(nested.bytes);
+      for (let t in nested.typeImports) {
+        mirrored.typeArgs.push(new NestedInstanceArg(t.name, t.outerIndex));
+      }
+      for (let f in nested.funcImports) {
+        mirrored.funcImports.push(f);
+      }
+      out.nestedExports[name] = mirrored;
+    }
     return out;
   }
 

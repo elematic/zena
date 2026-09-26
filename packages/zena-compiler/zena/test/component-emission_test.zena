@@ -713,6 +713,49 @@ export function reset(): boolean { return true; }
       `the option's string is not staged into the buffer:\n${source}`);
   });
 
+  test('a resource the program provides gets wrappers over a table of instances',
+      (ctx: TestContext): void => {
+    // The gfx-surface world: `surface` and `context` are the program's
+    // classes. Each resource function is an export under the canonical
+    // ABI's mangled name, implemented by a wrapper: a constructor
+    // builds the instance, registers it and returns a handle minted
+    // over its representation; a method's `self` arrives as that
+    // representation and is looked up; a borrowed parameter of the
+    // program's own resource is a lookup too; a static calls the class.
+    let wit = readFile(`${fixtures}/gfx-surface.wit`);
+    let entry = `${fixtures}/gfx-surface-provider.zena`;
+    let wrapperOpt = synthesizeExportWrapper(wit, 'provider', entry,
+        parse(readFile(entry), entry), packagesWit());
+    isTrue(wrapperOpt != null, 'the provider world gets no wrapper');
+    let source = (wrapperOpt as ComponentEntryWrapper).source;
+    isTrue(source.contains('export function surface__constructor_export_sync(a0: u32, a1: u32): i32 {'),
+      `the constructor is not a sync wrapper returning the handle:\n${source}`);
+    isTrue(source.contains('let value = new Surface(a0, a1);'),
+      `the constructor does not build the class:\n${source}`);
+    isTrue(source.contains('surfaceNew_raw(surfaceRegister(value))'),
+      `the constructor does not mint a handle over the registered instance:\n${source}`);
+    isTrue(source.contains('export function surface__method__size_export_sync(self: i32): i32 {\n  let self0 = surfaceAt(self);\n  let value = self0.size();'),
+      `the method does not look its instance up by representation:\n${source}`);
+    isTrue(source.contains('export function surface__method__onFrame_export(self: i32, a0: u32): void {'),
+      `the async method is not an async wrapper with self first:\n${source}`);
+    isTrue(source.contains('@external("canon", "task.return#[method]surface.on-frame", "return:test:gfx-surface/surface@1.0.0#stream<frame-event>")'),
+      `the async method's typed return is not named after the export:\n${source}`);
+    isTrue(source.contains('let value = Surface.defaultSize();'),
+      `the static does not call the class:\n${source}`);
+    isTrue(source.contains('export function context__constructor_export_sync(a0: i32): i32 {\n  let v0 = surfaceAt(a0);'),
+      `a borrowed parameter of the program's resource is not a lookup:\n${source}`);
+    isTrue(source.contains('export function openContext_export_sync(a0: i32): i32 {'),
+      `the free function taking a borrow is not wrapped:\n${source}`);
+    isTrue(source.contains('contextNew_raw(contextRegister(value))'),
+      `an own result of the program's resource does not mint a handle:\n${source}`);
+    isTrue(source.contains('let surfaceTable = new Array<Surface>();'),
+      `the surface table is missing:\n${source}`);
+    isTrue(source.contains('@external("canon", "resource.new#test:gfx-surface/surface@1.0.0#surface", "resource:test:gfx-surface/surface@1.0.0#surface")'),
+      `resource.new is not declared at the resource's type:\n${source}`);
+    isTrue(!source.contains('new Surface(loadI32') && !source.contains('.[rawHandle]()'),
+      `the program's resource is treated as a handle class somewhere:\n${source}`);
+  });
+
   test('the graphics runtime fixture\'s WIT synthesizes whole',
       (ctx: TestContext): void => {
     // `webgpu.wit` is the WIT the zenafx triangle fixture is built
@@ -1306,7 +1349,7 @@ world only {
     isTrue(source.contains('bucketDrop_raw(this.#handle);'),
       'dispose does not drop the handle:\n' + source);
     isTrue(source.contains(
-        '@external("canon", "resource.drop", ' +
+        '@external("canon", "resource.drop#fixture:store/kv@1.0.0#bucket", ' +
         '"resource:fixture:store/kv@1.0.0#bucket")'),
       'the drop builtin is not typed by the imported resource:\n' +
       source);

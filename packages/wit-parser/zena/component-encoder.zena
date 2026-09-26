@@ -89,6 +89,26 @@ export let sectionCoreModule = 1;
 export let sectionType = 7;
 export let sectionAlias = 6;
 export let sectionImport = 10;
+export let sectionExport = 11;
+
+/** The name a nested component imports the export `name` under: the
+ * resource and the kind spelled out, as wit-component names them. */
+let nestedFuncImportName = (name: String): String => {
+  if (name.startsWith("[constructor]")) {
+    return "import-constructor-" + name.sliceBytes(13, name.length);
+  }
+  if (name.startsWith("[method]") || name.startsWith("[static]")) {
+    let kind = name.sliceBytes(1, 7);
+    let rest = name.sliceBytes(9, name.length);
+    var out = "import-" + kind + "-";
+    for (var i = 0; i < rest.length; i += 1) {
+      let c = rest.getByteAt(i);
+      out = out + (if (c == 46) "-" else rest.sliceBytes(i, i + 1)); // '.'
+    }
+    return out;
+  }
+  return "import-func-" + name;
+};
 
 /**
  * One section of the component head, in emission order. The ids repeat —
@@ -217,7 +237,76 @@ final class Scope {
    * interface's types from outside any instance scope.
    */
   var aliasSource: RegisteredInterface | null = null;
+  /**
+   * Set while encoding into a nested component (an exported
+   * interface's): declared types go to its sections and count in its
+   * own index space, and a named type of the interface is imported
+   * into it on first use rather than aliased.
+   */
+  var nested: NestedComponent | null = null;
+  /**
+   * The nested component's hooks, installed by its encoder: where a
+   * declared type goes, and how a named type is met. Closures rather
+   * than calls on `nested`, because a program that never builds a
+   * nested component (the encoder's own round-trip tool) never
+   * constructs the class, and the compiler refuses a method call on
+   * a class it never constructed even on a path that cannot run
+   * (issue #447); a closure that is never created reaches nothing.
+   */
+  var nestedDeclare: ((body: ByteBuffer) => void) | null = null;
+  var nestedNamed: ((name: String) => i32) | null = null;
   new();
+}
+
+/**
+ * A type a nested component imports from the enclosing one: the
+ * import's name, and the enclosing component's type index the
+ * instantiation supplies for it.
+ */
+export final class NestedTypeImport {
+  name: String;
+  outerIndex: i32;
+  new(this.name, this.outerIndex);
+}
+
+/**
+ * An exported interface realized as a nested component, the shape an
+ * exported resource needs: a component's own exports name a resource
+ * (`export "surface" (type $r)`), and a `[method]surface.size` export
+ * is validated against the names in that context, which an instance
+ * built from a bag of exports never has. The nested component imports
+ * each resource as a subtype of `resource` and each non-resource type
+ * as `eq` of a local copy, imports the enclosing component's lifted
+ * functions at types naming those, exports the resources and fresh
+ * copies of the other types under their names, and exports each
+ * function with a type naming the exported ones — what wit-component
+ * emits. `funcImports` are the function import names, one per export
+ * name the encoding was asked for, in that order.
+ */
+export final class NestedExport {
+  bytes = new ByteBuffer();
+  typeImports = new GrowableArray<NestedTypeImport>();
+  funcImports = new GrowableArray<String>();
+  new();
+}
+
+/** A nested component under construction. */
+final class NestedComponent {
+  out: NestedExport;
+  var funcCount = 0;
+  /** The interface's own non-resource types imported so far, to
+   * export again once the resources have their names. */
+  ownTypes = new GrowableArray<String>();
+  /** Whether the export phase has begun: a named type met now is
+   * exported as a fresh copy rather than imported. */
+  var exporting = false;
+  new(this.out);
+
+  section(id: i32, payload: ByteBuffer): void {
+    this.out.bytes.writeByte(id);
+    this.out.bytes.writeULEB128(payload.length);
+    this.out.bytes.writeBuffer(payload);
+  }
 }
 
 /** What `encodeWorld` produced. */
@@ -539,6 +628,13 @@ export final class ComponentTypeEncoder {
       throw new EncodeError("'" + typeName + "' is not a resource of '" +
           qualifiedInterface + "'");
     }
+    if (!this.#instanceIndex.has(qualifiedInterface)) {
+      // No instance to alias from: the interface is exported, and the
+      // resource is the program's own — `resource.new` and
+      // `resource.rep` name its component-level type.
+      return this.#encodeExportedOwnType(reg as RegisteredInterface,
+          typeName);
+    }
     return this.#aliasTypeExport(qualifiedInterface, typeName);
   }
 
@@ -666,8 +762,326 @@ export final class ComponentTypeEncoder {
       scope.aliasSource = reg;
       return this.#encodeFuncType(scope, nf.func, -1, nf.func.isAsync);
     }
+    // A resource's function, exported under its mangled name: the
+    // program's resource type is encoded (or found) at component
+    // level, and a method's `self` is a borrow of it.
+    let found = resourceFuncNamed((reg as RegisteredInterface).items, funcName);
+    if (found != null) {
+      let rf = (found as NamedResourceFunc).rf;
+      let scope = new Scope();
+      scope.atComponentLevel = true;
+      scope.typeCount = this.#result.typeCount;
+      scope.aliasSource = reg;
+      let resourceIndex = this.#namedIndex(scope,
+          (found as NamedResourceFunc).resourceName);
+      if (rf.tag == ResourceFuncTag.Constructor) {
+        return this.#constructorFuncType(scope, rf.func.func, resourceIndex);
+      }
+      if (rf.tag == ResourceFuncTag.Method) {
+        let borrowIndex = this.#handleType(scope, 0x68, resourceIndex);
+        return this.#encodeFuncType(scope, rf.func.func, borrowIndex,
+            rf.func.func.isAsync);
+      }
+      return this.#encodeFuncType(scope, rf.func.func, -1,
+          rf.func.func.isAsync);
+    }
     throw new EncodeError("'" + qualifiedInterface +
         "' declares no function '" + funcName + "'");
+  }
+
+  /** Whether the interface `qualified` declares a resource of its own. */
+  interfaceDeclaresResource(qualified: String): boolean {
+    let reg = this.#findRegistered(qualified);
+    if (reg == null) {
+      return false;
+    }
+    for (let item in (reg as RegisteredInterface).items) {
+      if (item.tag == InterfaceItemTag.TypeDef &&
+          (item.typeDef as TypeDef).tag == TypeDefTag.Resource) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The nested component realizing the exported interface
+   * `qualifiedInterface` (see `NestedExport`), with the functions the
+   * program exports under `exportNames` — every function of the
+   * interface, in the order the emitter lifts them.
+   */
+  encodeExportedInterfaceComponent(qualifiedInterface: String,
+      exportNames: Array<String>): NestedExport {
+    let regOpt = this.#findRegistered(qualifiedInterface);
+    if (regOpt == null) {
+      throw new EncodeError("'" + qualifiedInterface +
+          "' is not a known interface");
+    }
+    let reg = regOpt as RegisteredInterface;
+    let out = new NestedExport();
+    let nested = new NestedComponent(out);
+    out.bytes.writeU32(0x6D736100); // \0asm
+    out.bytes.writeU32(0x0001000D); // version 0x0d, layer 1: a component
+    let scope = new Scope();
+    scope.nested = nested;
+    scope.aliasSource = reg;
+    scope.nestedDeclare = (body: ByteBuffer): void => {
+      let section = new ByteBuffer();
+      section.writeULEB128(1);
+      section.writeBuffer(body);
+      nested.section(sectionType, section);
+    };
+    scope.nestedNamed = (name: String): i32 =>
+        this.#nestedNamedIndex(scope, name);
+
+    // 1. Every resource the interface declares or `use`s, imported as
+    // a subtype of `resource`; the enclosing component's own resource
+    // type, or its alias of an imported instance's, instantiates it.
+    let resources = new GrowableArray<String>();
+    for (let item in reg.items) {
+      if (item.tag == InterfaceItemTag.TypeDef) {
+        let td = item.typeDef as TypeDef;
+        if (td.tag == TypeDefTag.Resource) {
+          resources.push(td.name.name);
+        }
+      } else if (item.tag == InterfaceItemTag.Use) {
+        for (let n in (item.use as Use).names) {
+          let asName = n.asName;
+          let localName =
+              if (asName == null) n.name.name else (asName as Id).name;
+          if (this.#isResource(reg, localName)) {
+            resources.push(localName);
+          }
+        }
+      }
+    }
+    for (let r in resources) {
+      let hop = this.#useSourceOf(reg, r);
+      let outerIndex = if (hop == null) {
+        this.#encodeExportedOwnType(reg, r)
+      } else {
+        this.#aliasTypeExport((hop as UseHop).source, (hop as UseHop).typeName)
+      };
+      let imp = new ByteBuffer();
+      imp.writeULEB128(1);
+      writeExternName(imp, "import-type-" + r);
+      imp.writeByte(0x03); // externdesc: type
+      imp.writeByte(0x01); // typebound: sub resource
+      nested.section(sectionImport, imp);
+      let index = scope.typeCount;
+      scope.typeCount += 1;
+      scope.named[r] = index;
+      scope.resourceIndices[index] = true;
+      out.typeImports.push(new NestedTypeImport("import-type-" + r, outerIndex));
+    }
+
+    // 2. The functions, imported at types naming the imported
+    // resources (an import may name only imported types).
+    for (let name in exportNames) {
+      let typeIndex = this.#nestedFuncType(scope, reg, name);
+      let importName = nestedFuncImportName(name);
+      let imp = new ByteBuffer();
+      imp.writeULEB128(1);
+      writeExternName(imp, importName);
+      imp.writeByte(0x01); // externdesc: func
+      imp.writeULEB128(typeIndex);
+      nested.section(sectionImport, imp);
+      out.funcImports.push(importName);
+      nested.funcCount += 1;
+    }
+
+    // 3. The exports: the resources under their names — which is what
+    // names them for the method-style exports — then fresh copies of
+    // the interface's other types, then each function at a type naming
+    // the exported ones, ascribed on the export.
+    nested.exporting = true;
+    scope.anon.clear();
+    for (let name in nested.ownTypes) {
+      scope.named.delete(name);
+    }
+    for (let r in resources) {
+      let imported = scope.named[r];
+      let index = this.#nestedExportType(scope, r, imported);
+      scope.named[r] = index;
+      scope.resourceIndices[index] = true;
+    }
+    let ownTypes = new GrowableArray<String>();
+    for (let name in nested.ownTypes) {
+      ownTypes.push(name);
+    }
+    for (let name in ownTypes) {
+      this.#namedIndex(scope, name);
+    }
+    for (var i = 0; i < exportNames.length; i += 1) {
+      let ascribed = this.#nestedFuncType(scope, reg, exportNames[i]);
+      let exp = new ByteBuffer();
+      exp.writeULEB128(1);
+      writeExternName(exp, exportNames[i]);
+      exp.writeByte(0x01); // sort: func
+      exp.writeULEB128(i);
+      exp.writeByte(0x01); // an ascribed type follows
+      exp.writeByte(0x01); // externdesc: func
+      exp.writeULEB128(ascribed);
+      nested.section(sectionExport, exp);
+    }
+    return out;
+  }
+
+  /** Exports nested type `index` under `name`; the export's own index. */
+  #nestedExportType(scope: Scope, name: String, index: i32): i32 {
+    let nested = scope.nested as NestedComponent;
+    let exp = new ByteBuffer();
+    exp.writeULEB128(1);
+    writeExternName(exp, name);
+    exp.writeByte(0x03); // sort: type
+    exp.writeULEB128(index);
+    exp.writeByte(0x00); // no ascribed type
+    nested.section(sectionExport, exp);
+    let exported = scope.typeCount;
+    scope.typeCount += 1;
+    return exported;
+  }
+
+  /**
+   * A named non-resource type met inside a nested component: its
+   * structure declared there, resolved against the interface that
+   * declares it, then imported as `eq` of that declaration (the
+   * enclosing component's type instantiates it) — or, in the export
+   * phase, exported as a fresh copy under its name.
+   */
+  #nestedNamedIndex(scope: Scope, name: String): i32 {
+    let nested = scope.nested as NestedComponent;
+    let reg = scope.aliasSource as RegisteredInterface;
+    if (this.#isResource(reg, name)) {
+      throw new EncodeError("resource '" + name + "' of '" +
+          reg.qualifiedName + "' was not imported into its exported instance");
+    }
+    var owner = reg;
+    var tdName = name;
+    var outerIndex = -1;
+    let hop = this.#useSourceOf(reg, name);
+    if (hop == null) {
+      if (!this.#declaresType(reg, name)) {
+        throw new EncodeError("'" + reg.qualifiedName +
+            "' declares no type '" + name + "'");
+      }
+      outerIndex = this.#encodeExportedOwnType(reg, name);
+    } else {
+      let h = hop as UseHop;
+      let source = this.#findRegistered(h.source);
+      if (source == null) {
+        throw new EncodeError("'" + h.source + "' is not a known interface");
+      }
+      owner = source as RegisteredInterface;
+      tdName = h.typeName;
+      outerIndex = this.#aliasTypeExport(h.source, h.typeName);
+    }
+    var found: TypeDef | null = null;
+    for (let item in owner.items) {
+      if (item.tag != InterfaceItemTag.TypeDef) { continue; }
+      let td = item.typeDef as TypeDef;
+      if (td.name.name == tdName) { found = td; }
+    }
+    if (found == null) {
+      throw new EncodeError("'" + owner.qualifiedName +
+          "' declares no type '" + tdName + "'");
+    }
+    let td = found as TypeDef;
+    let savedSource = scope.aliasSource;
+    scope.aliasSource = owner;
+    var local = -1;
+    if (td.tag == TypeDefTag.Alias) {
+      let target = td.aliasType as Type;
+      if (target.tag == TypeTag.Name) {
+        local = this.#namedIndex(scope, (target.name as Id).name);
+      } else {
+        let encoded = this.#encodeType(scope, target);
+        if (encoded < 0) {
+          let body = new ByteBuffer();
+          body.writeByte(0 - encoded);
+          local = this.#declareType(scope, body);
+        } else {
+          local = encoded;
+        }
+      }
+    } else {
+      local = this.#encodeTypeBody(scope, td);
+    }
+    scope.aliasSource = savedSource;
+    if (nested.exporting) {
+      let index = this.#nestedExportType(scope, name, local);
+      scope.named[name] = index;
+      return index;
+    }
+    let imp = new ByteBuffer();
+    imp.writeULEB128(1);
+    writeExternName(imp, "import-type-" + name);
+    imp.writeByte(0x03); // externdesc: type
+    imp.writeByte(0x00); // typebound: eq
+    imp.writeULEB128(local);
+    nested.section(sectionImport, imp);
+    let index = scope.typeCount;
+    scope.typeCount += 1;
+    scope.named[name] = index;
+    nested.out.typeImports.push(
+        new NestedTypeImport("import-type-" + name, outerIndex));
+    if (hop == null) {
+      nested.ownTypes.push(name);
+    }
+    return index;
+  }
+
+  /**
+   * The function type of the export `name` of `reg` in `scope` — a
+   * free function's, or a resource function's found by its mangled
+   * name, with a constructor's implicit `own` result and a method's
+   * `self` borrow.
+   */
+  #nestedFuncType(scope: Scope, reg: RegisteredInterface,
+      name: String): i32 {
+    for (let item in reg.items) {
+      if (item.tag != InterfaceItemTag.Func) { continue; }
+      let nf = item.func as NamedFunc;
+      if (nf.name.name == name) {
+        return this.#encodeFuncType(scope, nf.func, -1, nf.func.isAsync);
+      }
+    }
+    let found = resourceFuncNamed(reg.items, name);
+    if (found == null) {
+      throw new EncodeError("'" + reg.qualifiedName +
+          "' declares no function '" + name + "'");
+    }
+    let rf = (found as NamedResourceFunc).rf;
+    let resourceIndex = scope.named[(found as NamedResourceFunc).resourceName];
+    if (rf.tag == ResourceFuncTag.Constructor) {
+      return this.#constructorFuncType(scope, rf.func.func, resourceIndex);
+    }
+    if (rf.tag == ResourceFuncTag.Method) {
+      let borrowIndex = this.#handleType(scope, 0x68, resourceIndex);
+      return this.#encodeFuncType(scope, rf.func.func, borrowIndex,
+          rf.func.func.isAsync);
+    }
+    return this.#encodeFuncType(scope, rf.func.func, -1, rf.func.func.isAsync);
+  }
+
+  /** A constructor's function type: its parameters, and `own` of the
+   * resource as the result. */
+  #constructorFuncType(scope: Scope, func: Func, resourceIndex: i32): i32 {
+    let ownIndex = this.#handleType(scope, 0x69, resourceIndex);
+    let paramCodes = new GrowableArray<i32>();
+    for (let p in func.params) {
+      paramCodes.push(this.#encodeType(scope, p.type));
+    }
+    let body = new ByteBuffer();
+    body.writeByte(0x40);
+    body.writeULEB128(func.params.length);
+    for (var i = 0; i < func.params.length; i += 1) {
+      writeName(body, func.params[i].name.name);
+      writeValType(body, paramCodes[i]);
+    }
+    body.writeByte(0x00);
+    writeValType(body, ownIndex);
+    return this.#declareType(scope, body);
   }
 
   /**
@@ -753,7 +1167,10 @@ export final class ComponentTypeEncoder {
 
   /** Declare an anonymous type from `body`; the index it gets. */
   #declareType(scope: Scope, body: ByteBuffer): i32 {
-    if (scope.atComponentLevel) {
+    let nestedDeclare = scope.nestedDeclare;
+    if (nestedDeclare != null) {
+      nestedDeclare(body);
+    } else if (scope.atComponentLevel) {
       let section = new ByteBuffer();
       section.writeULEB128(1);
       section.writeBuffer(body);
@@ -1123,6 +1540,10 @@ export final class ComponentTypeEncoder {
     if (let (true, index) = scope.named.get(name)) {
       return index;
     }
+    let nestedNamed = scope.nestedNamed;
+    if (nestedNamed != null) {
+      return nestedNamed(name);
+    }
     if (let (true, td) = scope.pending.get(name)) {
       // Declared later in the interface: encode it now, first use
       // being the encoding order.
@@ -1177,10 +1598,14 @@ export final class ComponentTypeEncoder {
    * body as a component-level type, its named parts resolved against
    * the interface the same way (a record's enum field, a variant's
    * record payload) — and recording it for the instance to export. A
-   * resource is refused: an exported resource is a class of the
-   * program's, with a representation and a destructor the canon
-   * `resource.new`/`resource.rep`/`resource.drop` builtins would
-   * carry, which is its own piece of work.
+   * resource is a component-level resource type whose representation
+   * is an `i32` — the index into the entry wrapper's table of the
+   * program's instances — which the canon `resource.new` and
+   * `resource.rep` builtins mint handles for and read back. It has no
+   * destructor yet: one would name a core function of the program's
+   * instance, and this type has to exist before that instance does
+   * (the core module imports `resource.new` for it), which takes a
+   * trampoline the runtime module does not carry today.
    */
   #encodeExportedOwnType(reg: RegisteredInterface, name: String): i32 {
     let key = reg.qualifiedName + "#own:" + name;
@@ -1198,18 +1623,18 @@ export final class ComponentTypeEncoder {
           "' declares no type '" + name + "'");
     }
     let td = found as TypeDef;
-    if (td.tag == TypeDefTag.Resource) {
-      throw new EncodeError("'" + reg.qualifiedName +
-          "' is exported, and its own resource '" + name +
-          "' is not encodable yet: an exported resource needs the " +
-          "program's class behind it");
-    }
     let scope = new Scope();
     scope.atComponentLevel = true;
     scope.typeCount = this.#result.typeCount;
     scope.aliasSource = reg;
     var index = -1;
-    if (td.tag == TypeDefTag.Alias) {
+    if (td.tag == TypeDefTag.Resource) {
+      let body = new ByteBuffer();
+      body.writeByte(0x3f); // resource
+      body.writeByte(0x7f); // rep: i32
+      body.writeByte(0x00); // no destructor
+      index = this.#declareType(scope, body);
+    } else if (td.tag == TypeDefTag.Alias) {
       let target = td.aliasType as Type;
       if (target.tag == TypeTag.Name) {
         index = this.#namedIndex(scope, (target.name as Id).name);
@@ -1554,10 +1979,12 @@ function registeredFlatIfaces(ast: Ast): GrowableArray<FlatIface> {
 function exportMetaOf(
   interfaces: Array<FlatIface>,
   owner: FlatIface,
-  func: Func
+  func: Func,
+  selfParams: i32 = 0
 ): WitFuncMeta {
   let meta = new WitFuncMeta();
   meta.isAsync = func.isAsync;
+  meta.paramFlatCount = selfParams;
   for (let p in func.params) {
     let m = flatMetaOfType(interfaces, owner, p.type);
     meta.paramFlatCount += m.flatCount;
@@ -1635,6 +2062,53 @@ export let interfaceExportFlatMeta = (
       let nf = item.func as NamedFunc;
       if (nf.name.name == funcName) {
         return exportMetaOf(interfaces, iface, nf.func);
+      }
+    }
+    // A resource's function under its mangled export name: a method's
+    // `self` is one core value, and a constructor returns the handle.
+    let found = resourceFuncNamed(iface.items, funcName);
+    if (found != null) {
+      let rf = (found as NamedResourceFunc).rf;
+      let selfParams = if (rf.tag == ResourceFuncTag.Method) 1 else 0;
+      let meta = exportMetaOf(interfaces, iface, rf.func.func, selfParams);
+      if (rf.tag == ResourceFuncTag.Constructor) {
+        meta.resultFlatCount = 1; // the own handle
+      }
+      return meta;
+    }
+  }
+  return null;
+};
+
+/** A resource's function found by its mangled export name. */
+final class NamedResourceFunc {
+  resourceName: String;
+  rf: ResourceFunc;
+  new(this.resourceName, this.rf);
+}
+
+/**
+ * The resource function `items` exports as `fieldName` — a
+ * `[constructor]r`, `[method]r.f` or `[static]r.f` — or null.
+ */
+let resourceFuncNamed = (items: Array<InterfaceItem>,
+    fieldName: String): NamedResourceFunc | null => {
+  for (let item in items) {
+    if (item.tag != InterfaceItemTag.TypeDef) { continue; }
+    let td = item.typeDef as TypeDef;
+    if (td.tag != TypeDefTag.Resource) { continue; }
+    let resourceName = td.name.name;
+    for (let rf in td.resourceFuncs as GrowableArray<ResourceFunc>) {
+      var exported = "";
+      if (rf.tag == ResourceFuncTag.Constructor) {
+        exported = "[constructor]" + resourceName;
+      } else if (rf.tag == ResourceFuncTag.Method) {
+        exported = "[method]" + resourceName + "." + rf.func.name.name;
+      } else {
+        exported = "[static]" + resourceName + "." + rf.func.name.name;
+      }
+      if (exported == fieldName) {
+        return new NamedResourceFunc(resourceName, rf);
       }
     }
   }

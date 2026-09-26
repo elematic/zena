@@ -1,0 +1,31 @@
+// The consumer half of the exported-resource composition: it drives
+// the provider's `surface` resources through the bindings any
+// imported resource gets — a WIT constructor is `static create`, a
+// borrowed parameter takes the class. 3*4 = 12 from `size`, 12 again
+// from the context's `area`, 12 from the second context, 64 from the
+// static, and 0+1+2 frames: 103.
+import { Surface, Context, openContext, FrameEvent } from 'test:gfx-surface/surface';
+import { Future } from 'zena:async';
+import { Some } from 'zena:core';
+
+export async function main(): Future<u32> {
+  let surface = Surface.create(3 as u32, 4 as u32);
+  var total = surface.size();
+  console.log(`surface ${surface.describe()}`);
+  let frames = await surface.onFrame(3 as u32);
+  var open = true;
+  while (open) {
+    let item = await frames.readOne();
+    if (item is Some<FrameEvent>) {
+      total += (item as Some<FrameEvent>).value.frame as u32;
+    } else {
+      open = false;
+    }
+  }
+  let context = Context.create(surface);
+  total += context.area();
+  let opened = openContext(surface);
+  total += opened.area();
+  total += Surface.defaultSize();
+  return total;
+}

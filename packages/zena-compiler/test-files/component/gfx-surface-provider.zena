@@ -1,0 +1,53 @@
+// The provider half of the exported-resource composition: `Surface`
+// and `Context` are the classes behind the `surface` interface's
+// resources. The compiler-written wrapper keeps each instance in a
+// table by its representation, mints a handle over it when a
+// constructor or an own result hands one out, and looks it up again
+// when a method's `self` or a borrowed parameter arrives.
+import { FrameEvent } from 'test:gfx-surface/surface';
+import { Stream, StreamWriter } from 'zena:stream';
+import { Future } from 'zena:async';
+
+async function produce(writer: StreamWriter<FrameEvent>, count: i32): Future<void> {
+  for (var i = 0; i < count; i += 1) {
+    await writer.write(new FrameEvent(i as u64, (i as f32) * 16.5));
+  }
+  writer.close();
+}
+
+export class Surface {
+  width: u32;
+  height: u32;
+  new(this.width, this.height);
+
+  size(): u32 {
+    return this.width * this.height;
+  }
+
+  async onFrame(count: u32): Future<Stream<FrameEvent>> {
+    let writer = new StreamWriter<FrameEvent>();
+    produce(writer, count as i32);
+    return writer.stream;
+  }
+
+  describe(): String {
+    return `${this.width}x${this.height}`;
+  }
+
+  static defaultSize(): u32 {
+    return 64 as u32;
+  }
+}
+
+export class Context {
+  surface: Surface;
+  new(this.surface);
+
+  area(): u32 {
+    return this.surface.size();
+  }
+}
+
+export function openContext(surface: Surface): Context {
+  return new Context(surface);
+}
