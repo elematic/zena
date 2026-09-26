@@ -179,6 +179,11 @@ This project is an **npm monorepo** managed with **Wireit**.
 
 - **Conversational Requirement**: You MUST explain your plan in plain English
   BEFORE generating code or editing files. Do not act silently.
+- **Version Control**: Do not run `git commit` unless asked to. Leave finished
+  work in the working tree so it can be reviewed as a diff; `git add` is fine.
+  When reporting on a failed experiments leave files in place and say what
+  happened. Do not revert or delete your own changes before they have been
+  reviewed.
 - **Tool Usage**:
   - NEVER create temporary files or shell scripts to edit code.
   - ALWAYS use the provided VS Code text editing tools to modify files
@@ -371,7 +376,9 @@ import project modules because relative paths are broken.
 - If you truly need a temporary file for debugging, create temporary test files
   in the **normal test directories** (e.g., `packages/runtime/src/test/`).
 - For portable tests, create them in `tests/language/`.
-- Delete temporary files when done, or better yet, keep them as permanent tests.
+- Keep them. Promote a scratch file to a permanent test, or leave it where it
+  is. A probe that located a bug is the reproduction for that bug, so deleting
+  it leaves a claim with nothing behind it.
 
 ## ⚠️ CRITICAL: Test-First Workflow
 
