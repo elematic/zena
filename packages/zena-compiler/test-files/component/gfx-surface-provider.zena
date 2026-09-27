@@ -7,6 +7,11 @@
 import { FrameEvent } from 'test:gfx-surface/surface';
 import { Stream, StreamWriter } from 'zena:stream';
 import { Future } from 'zena:async';
+import { Disposable } from 'zena:core';
+
+/** How many surfaces have been disposed: the destructor reaches the
+ * class's `dispose` when the consumer drops its last handle. */
+var disposedSurfaces = 0 as u32;
 
 async function produce(writer: StreamWriter<FrameEvent>, count: i32): Future<void> {
   for (var i = 0; i < count; i += 1) {
@@ -15,10 +20,14 @@ async function produce(writer: StreamWriter<FrameEvent>, count: i32): Future<voi
   writer.close();
 }
 
-export class Surface {
+export class Surface implements Disposable {
   width: u32;
   height: u32;
   new(this.width, this.height);
+
+  [Disposable.dispose](): void {
+    disposedSurfaces += 1 as u32;
+  }
 
   size(): u32 {
     return this.width * this.height;
@@ -37,15 +46,23 @@ export class Surface {
   static defaultSize(): u32 {
     return 64 as u32;
   }
+
+  static disposed(): u32 {
+    return disposedSurfaces;
+  }
 }
 
-export class Context {
+export class Context implements Disposable {
   surface: Surface;
   new(this.surface);
 
   area(): u32 {
     return this.surface.size();
   }
+
+  // A resource's class is a Disposable: its dispose is the destructor
+  // the host calls when the last handle over it is dropped.
+  [Disposable.dispose](): void {}
 }
 
 export function openContext(surface: Surface): Context {

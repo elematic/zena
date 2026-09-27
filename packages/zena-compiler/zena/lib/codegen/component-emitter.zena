@@ -71,10 +71,31 @@ export final class NestedInstanceExport {
   new(this.bytes);
 }
 
+/** A resource the program provides, whose destructor is the shim's
+ * trampoline at this position (`DtorSlot` in the encoder). */
+export final class ResourceDtorSlot {
+  qualified: String;
+  name: String;
+  new(this.qualified, this.name);
+}
+
+/**
+ * The program's destructor for one of its resources: the resource's
+ * WIT name, and the core export the wrapper's `<resource>__dtor`
+ * function is exported under, which the shim's table is filled with.
+ */
+export final class ComponentDtorExport {
+  resourceName: String;
+  coreName: String;
+  new(this.resourceName, this.coreName);
+}
+
 export final class EncodedImports {
   pieces = new Array<EncodedImportPiece>();
   var typeCount = 0;
   var instanceCount = 0;
+  /** The program's resources, in destructor-slot order. */
+  dtorSlots = new Array<ResourceDtorSlot>();
   /** The exported interfaces realized as nested components, by the
    * interface's qualified name. */
   nestedExports = new Map<String, NestedInstanceExport>();
@@ -441,6 +462,8 @@ export final class ComponentShape {
   imports = new Array<ComponentImportFunc>();
   builtins = new Array<ComponentCanonBuiltin>();
   exports = new Array<ComponentExportFunc>();
+  /** The destructors of the resources the program provides. */
+  dtorExports = new Array<ComponentDtorExport>();
   /**
    * Whether the program module imports its memory from the runtime
    * memory module — true exactly when it touches linear memory at all,
@@ -776,6 +799,117 @@ let writeSection = (out: ByteBuffer, id: i32, payload: ByteBuffer): void => {
   out.writeBuffer(payload);
 };
 
+/** The shim table's export name, and the fixup's import of it. */
+let dtorTableExport = "$dtors";
+
+/**
+ * The destructor shim: a core module holding a table of `n` function
+ * references and one trampoline per entry, `k(rep)` calling the k-th
+ * reference. Instantiated before the resource types, whose destructors
+ * name the trampolines; the fixup module below fills the table once
+ * the program's destructors exist. The shape wit-component emits.
+ */
+let dtorShimModule = (n: i32): ByteBuffer => {
+  let m = new ByteBuffer();
+  m.writeU32(0x6D736100);
+  m.writeU32(1);
+  let types = new ByteBuffer();
+  types.writeULEB128(1);
+  types.writeByte(0x60); // func
+  types.writeULEB128(1);
+  types.writeByte(0x7f); // (param i32)
+  types.writeULEB128(0); // no result
+  writeSection(m, 1, types);
+  let funcs = new ByteBuffer();
+  funcs.writeULEB128(n);
+  for (var k = 0; k < n; k += 1) {
+    funcs.writeULEB128(0);
+  }
+  writeSection(m, 3, funcs);
+  let tables = new ByteBuffer();
+  tables.writeULEB128(1);
+  tables.writeByte(0x70); // funcref
+  tables.writeByte(0x01); // min and max
+  tables.writeULEB128(n);
+  tables.writeULEB128(n);
+  writeSection(m, 4, tables);
+  let exports = new ByteBuffer();
+  exports.writeULEB128(n + 1);
+  for (var k = 0; k < n; k += 1) {
+    writeName(exports, i32ToString(k));
+    exports.writeByte(0x00); // func
+    exports.writeULEB128(k);
+  }
+  writeName(exports, dtorTableExport);
+  exports.writeByte(0x01); // table
+  exports.writeULEB128(0);
+  writeSection(m, 7, exports);
+  let code = new ByteBuffer();
+  code.writeULEB128(n);
+  for (var k = 0; k < n; k += 1) {
+    let body = new ByteBuffer();
+    body.writeULEB128(0); // no locals
+    body.writeByte(0x20); // local.get
+    body.writeULEB128(0);
+    body.writeByte(0x41); // i32.const
+    body.writeSLEB128(k);
+    body.writeByte(0x11); // call_indirect
+    body.writeULEB128(0); // type 0
+    body.writeULEB128(0); // table 0
+    body.writeByte(0x0b); // end
+    code.writeULEB128(body.length);
+    code.writeBuffer(body);
+  }
+  writeSection(m, 10, code);
+  return m;
+};
+
+/**
+ * The destructor fixup: a core module importing the shim's table and
+ * the program's `n` destructors, whose one element segment writes the
+ * destructors into the table at instantiation.
+ */
+let dtorFixupModule = (n: i32): ByteBuffer => {
+  let m = new ByteBuffer();
+  m.writeU32(0x6D736100);
+  m.writeU32(1);
+  let types = new ByteBuffer();
+  types.writeULEB128(1);
+  types.writeByte(0x60);
+  types.writeULEB128(1);
+  types.writeByte(0x7f);
+  types.writeULEB128(0);
+  writeSection(m, 1, types);
+  let imports = new ByteBuffer();
+  imports.writeULEB128(n + 1);
+  for (var k = 0; k < n; k += 1) {
+    writeName(imports, "");
+    writeName(imports, i32ToString(k));
+    imports.writeByte(0x00); // func
+    imports.writeULEB128(0); // type 0
+  }
+  writeName(imports, "");
+  writeName(imports, dtorTableExport);
+  imports.writeByte(0x01); // table
+  imports.writeByte(0x70); // funcref
+  imports.writeByte(0x01); // min and max
+  imports.writeULEB128(n);
+  imports.writeULEB128(n);
+  writeSection(m, 2, imports);
+  let elems = new ByteBuffer();
+  elems.writeULEB128(1);
+  elems.writeByte(0x00); // active, table 0, an offset expression
+  elems.writeByte(0x41); // i32.const
+  elems.writeSLEB128(0);
+  elems.writeByte(0x0b); // end
+  elems.writeULEB128(n);
+  for (var k = 0; k < n; k += 1) {
+    elems.writeULEB128(k);
+  }
+  writeSection(m, 9, elems);
+  return m;
+};
+
 /**
  * Emit a component wrapping `coreModule`.
  *
@@ -837,6 +971,36 @@ export let emitComponent = (
       "last step."
     );
   }
+  // The destructor shim comes before everything: the resource types in
+  // the encoder's pieces name its trampolines as core functions 0..n-1,
+  // and its instance is core instance 0. Every core module, instance
+  // and function index below shifts past it.
+  let dtorCount = encoded.dtorSlots.length;
+  let dtorInstances = if (dtorCount > 0) 1 else 0;
+  var moduleCount = 0;
+  if (dtorCount > 0) {
+    writeSection(out, ComponentSectionId.CoreModule as i32,
+        dtorShimModule(dtorCount));
+    moduleCount += 1;
+    let shimInst = new ByteBuffer();
+    shimInst.writeULEB128(1);
+    shimInst.writeByte(0x00); // instantiate
+    shimInst.writeULEB128(0); // the shim module
+    shimInst.writeULEB128(0); // no arguments
+    writeSection(out, ComponentSectionId.CoreInstance as i32, shimInst);
+    let trampolines = new ByteBuffer();
+    trampolines.writeULEB128(dtorCount);
+    for (var k = 0; k < dtorCount; k += 1) {
+      trampolines.writeByte(0x00); // sort: core
+      trampolines.writeByte(0x00); // core sort: func
+      trampolines.writeByte(0x01); // target: core instance export
+      trampolines.writeULEB128(0); // the shim instance
+      writeName(trampolines, i32ToString(k));
+    }
+    writeSection(out, ComponentSectionId.Alias as i32, trampolines);
+  }
+  let coreFuncBase = dtorCount;
+
   for (let piece in encoded.pieces) {
     writeSection(out, piece.id, piece.payload);
   }
@@ -895,13 +1059,14 @@ export let emitComponent = (
     let runtimeInst = new ByteBuffer();
     runtimeInst.writeULEB128(1);
     runtimeInst.writeByte(0x00); // instantiate
-    runtimeInst.writeULEB128(0); // the runtime module, embedded first
+    runtimeInst.writeULEB128(moduleCount); // the runtime module, just embedded
     runtimeInst.writeULEB128(0); // no arguments
     writeSection(out, ComponentSectionId.CoreInstance as i32, runtimeInst);
+    moduleCount += 1;
   };
   if (lowersNeedMemory) {
     writeRuntimeModuleAndInstance();
-    runtimeInstance = 0;
+    runtimeInstance = dtorInstances;
     // The memory and the allocator, as core memory 0 and core func 0.
     let early = new ByteBuffer();
     early.writeULEB128(2);
@@ -916,7 +1081,7 @@ export let emitComponent = (
     early.writeULEB128(runtimeInstance);
     writeName(early, componentMemoryExport);
     writeSection(out, ComponentSectionId.Alias as i32, early);
-    earlyReallocCoreFunc = 0;
+    earlyReallocCoreFunc = coreFuncBase;
   }
 
   /** A group's component-level instance index, from the encoder. */
@@ -1108,7 +1273,7 @@ export let emitComponent = (
         groups.length + (if (shape.builtins.length > 0) 1 else 0));
     // Core function indices: the early realloc alias, when the lowers
     // needed one, occupies index 0 ahead of the lowered functions.
-    var loweredIndex = if (lowersNeedMemory) 1 else 0;
+    var loweredIndex = coreFuncBase + (if (lowersNeedMemory) 1 else 0);
     for (let group in groups) {
       coreInstances.writeByte(0x01); // from inline exports
       coreInstances.writeULEB128(group.funcs.length);
@@ -1138,27 +1303,29 @@ export let emitComponent = (
   // memory-carrying lower moved it (and its aliases) ahead of the
   // lowering section above instead.
   if (shape.needsRuntimeMemory && runtimeInstance < 0) {
-    runtimeInstance =
+    runtimeInstance = dtorInstances +
         groups.length + (if (shape.builtins.length > 0) 1 else 0);
     writeRuntimeModuleAndInstance();
   }
 
   // --- core module: the Zena module, verbatim -----------------------------
   writeSection(out, ComponentSectionId.CoreModule as i32, coreModule);
+  let programModule = moduleCount;
+  moduleCount += 1;
 
   // --- core instance: instantiate it against the synthesized instances ----
   let instantiate = new ByteBuffer();
   instantiate.writeULEB128(1);
   instantiate.writeByte(0x00); // instantiate
-  // The program module's index: after the runtime module when there is
-  // one, first otherwise.
-  instantiate.writeULEB128(if (shape.needsRuntimeMemory) 1 else 0);
+  // The program module's index: after the shim and the runtime module
+  // when there are any.
+  instantiate.writeULEB128(programModule);
   instantiate.writeULEB128(
       groups.length + (if (shape.builtins.length > 0) 1 else 0) +
       (if (shape.needsRuntimeMemory) 1 else 0));
   // The synthesized instances' indices shift by one when the runtime
   // memory module was instantiated ahead of them.
-  let synthBase = if (lowersNeedMemory) 1 else 0;
+  let synthBase = dtorInstances + (if (lowersNeedMemory) 1 else 0);
   for (var i = 0; i < groups.length; i += 1) {
     // The argument name is the core module's import module name, which
     // is the interface string itself.
@@ -1193,7 +1360,7 @@ export let emitComponent = (
   // The core function index space: the early realloc alias when the
   // lowers needed one, then the lowered imports, then the builtins,
   // then everything aliased back out of the program instance.
-  var coreFuncIndex = if (lowersNeedMemory) 1 else 0;
+  var coreFuncIndex = coreFuncBase + (if (lowersNeedMemory) 1 else 0);
   for (let group in groups) {
     coreFuncIndex += group.funcs.length;
   }
@@ -1374,6 +1541,73 @@ export let emitComponent = (
     lifts.writeULEB128(exportTypeIndex[i]);
   }
   writeSection(out, ComponentSectionId.Canon as i32, lifts);
+
+  // --- the destructor fixup ------------------------------------------------
+  // The shim's table and the program's destructors, aliased, gathered
+  // into a core instance the fixup module is instantiated against; its
+  // element segment writes the destructors into the table. From here
+  // on a dropped handle reaches the program.
+  if (dtorCount > 0) {
+    let coreFuncsSoFar = firstExportCoreFunc + shape.exports.length +
+        callbackNames.length +
+        (if (needsMemory && earlyReallocCoreFunc < 0) 1 else 0) +
+        (if (needsPostReturn) 1 else 0);
+    let fixupAliases = new ByteBuffer();
+    fixupAliases.writeULEB128(dtorCount + 1);
+    fixupAliases.writeByte(0x00); // sort: core
+    fixupAliases.writeByte(0x01); // core sort: table
+    fixupAliases.writeByte(0x01); // target: core instance export
+    fixupAliases.writeULEB128(0); // the shim instance
+    writeName(fixupAliases, dtorTableExport);
+    for (let slot in encoded.dtorSlots) {
+      var coreName = "";
+      for (let d in shape.dtorExports) {
+        if (d.resourceName == slot.name) {
+          if (coreName != "") {
+            throw new Error("Two of the program's resources are named '" +
+                slot.name + "'; their destructors cannot be told apart yet.");
+          }
+          coreName = d.coreName;
+        }
+      }
+      if (coreName == "") {
+        throw new Error("The program provides resource '" + slot.name +
+            "' of '" + slot.qualified + "', and its wrapper exports no " +
+            "destructor for it.");
+      }
+      fixupAliases.writeByte(0x00);
+      fixupAliases.writeByte(0x00); // core sort: func
+      fixupAliases.writeByte(0x01);
+      fixupAliases.writeULEB128(programInstance);
+      writeName(fixupAliases, coreName);
+    }
+    writeSection(out, ComponentSectionId.Alias as i32, fixupAliases);
+    let fixupArgs = new ByteBuffer();
+    fixupArgs.writeULEB128(1);
+    fixupArgs.writeByte(0x01); // from inline exports
+    fixupArgs.writeULEB128(dtorCount + 1);
+    writeName(fixupArgs, dtorTableExport);
+    fixupArgs.writeByte(0x01); // core sort: table
+    fixupArgs.writeULEB128(0); // the one core table aliased
+    for (var k = 0; k < dtorCount; k += 1) {
+      writeName(fixupArgs, i32ToString(k));
+      fixupArgs.writeByte(0x00); // core sort: func
+      fixupArgs.writeULEB128(coreFuncsSoFar + k);
+    }
+    writeSection(out, ComponentSectionId.CoreInstance as i32, fixupArgs);
+    writeSection(out, ComponentSectionId.CoreModule as i32,
+        dtorFixupModule(dtorCount));
+    let fixup = new ByteBuffer();
+    fixup.writeULEB128(1);
+    fixup.writeByte(0x00); // instantiate
+    fixup.writeULEB128(moduleCount); // the fixup module, just embedded
+    fixup.writeULEB128(1);
+    writeName(fixup, "");
+    fixup.writeByte(0x12); // core sort: instance
+    fixup.writeULEB128(programInstance + 1); // the arguments instance
+    writeSection(out, ComponentSectionId.CoreInstance as i32, fixup);
+    moduleCount += 1;
+  }
 
   // --- instance + export ----------------------------------------------------
   // Component function indices: the aliased imports come first, then the

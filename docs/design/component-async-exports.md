@@ -472,15 +472,34 @@ async func()` is the entry itself — the wrapper synthesizer skips
     and exports each function with a type naming the exported ones;
     the outer component instantiates it with its resource types and
     lifted functions and exports the instance. An interface without a
-    resource keeps the bag-of-exports form, byte for byte. Two things
-    wait. An own of the
-    program's resource arriving as a parameter needs `resource.rep`
-    and a rule for the handle's disposal. And the resource has no
-    destructor: one names a core function of the program's instance,
-    and the type must exist before that instance does (the core
-    module imports `resource.new` for it), so it takes a trampoline
-    table in the runtime module — until then a dropped handle leaves
-    its instance in the table. Composed: the consumer constructs a
-    surface, calls sync, async-stream, string-returning and static
-    members, and passes a borrow of it to another resource's
-    constructor and to a free function.
+    resource keeps the bag-of-exports form, byte for byte. One thing
+    waits: an own of the program's resource arriving as a parameter
+    needs `resource.rep` and a rule for the handle's disposal.
+    Composed: the consumer constructs a surface, calls sync,
+    async-stream, string-returning and static members, and passes a
+    borrow of it to another resource's constructor and to a free
+    function.
+14. Destructors for the resources a program provides. A destructor
+    names a core function of the program's instance, and the resource
+    type must exist before that instance does, because the program's
+    core module imports `resource.new` for the type — so the two
+    cannot name each other directly. The way through is
+    wit-component's: a shim core module holding a table of function
+    references and one trampoline per provided resource, which the
+    component instantiates before anything else, so the resource
+    types name the trampolines as core functions 0..n-1; and a fixup
+    module instantiated after the program's instance, whose element
+    segment writes the program's destructor exports into the table.
+    The encoder assigns each provided resource a slot as it encodes
+    the type (`DtorSlot`), and the emitter writes the two modules
+    around that promise, shifting every core module, instance and
+    function index past the shim; a component with no provided
+    resource is emitted byte for byte as before. The wrapper's
+    `<resource>__dtor(rep)` frees the table slot for reuse and
+    disposes the instance: the class behind a provided resource is a
+    `Disposable`, the way the handle class a consumer gets is, and
+    its `dispose` is what the destructor means (a class that is not
+    one fails the wrapper's type check, since a runtime `is
+    Disposable` on an unknown class has no lowering). The
+    `gfx-surface` consumer drops a spare handle and reads back the
+    count the provider's `dispose` kept.

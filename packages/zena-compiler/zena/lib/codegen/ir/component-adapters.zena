@@ -52,7 +52,8 @@
  */
 
 import {
-  WasmModule, WasmFunction, ComponentAsyncExport, ComponentSyncExport
+  WasmModule, WasmFunction, ComponentAsyncExport, ComponentSyncExport,
+  ComponentResourceDtor
 } from '../wasm-module.zena';
 import { ValType, ValTypeI32 } from '../wasm.zena';
 import { FunctionDeclaration } from '../../ast.zena';
@@ -296,6 +297,44 @@ let prepareAsyncExports = (
         entryBodies[adapter.uid] = b.finish();
         wasm.componentAsyncExports.push(
             new ComponentAsyncExport(exportName, adapter));
+      }
+    }
+  }
+};
+
+/**
+ * Register the entry wrapper's resource destructors: a
+ * `<resource>__dtor` per resource the program provides, which the
+ * component's destructor shim calls when the last handle over an
+ * instance is dropped, from whichever component held it. A core
+ * export, never lifted.
+ */
+export let prepareResourceDestructors = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis
+): void => {
+  let prog = wasm.program;
+  if (prog == null) {
+    return;
+  }
+  let suffix = '__dtor';
+  for (let unit in prog.units) {
+    if (!isComponentEntryPath(unit.ast.path)) { continue; }
+    for (let stmt in unit.ast.body) {
+      if (stmt is FunctionDeclaration) {
+        let name = stmt.name.name;
+        if (!name.endsWith(suffix)) { continue; }
+        let found = wasm.getUnitFunc(unit.ast.path, name);
+        if (found == null) {
+          throw new Error('The entry wrapper declares ' + name +
+              ' and codegen registered no function for it.');
+        }
+        let target = found as WasmFunction;
+        pass.markFunctionReached(target);
+        let resourceName = toKebabName(
+            name.sliceBytes(0, name.length - suffix.length));
+        wasm.componentResourceDtors.push(new ComponentResourceDtor(
+            resourceName, name + '$dtor', target));
       }
     }
   }

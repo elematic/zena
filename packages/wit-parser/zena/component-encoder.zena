@@ -309,6 +309,23 @@ final class NestedComponent {
   }
 }
 
+/**
+ * A resource the program provides, in the order its type was encoded:
+ * the k-th one's destructor is core function k. The emitter keeps that
+ * promise with a shim core module it instantiates before anything
+ * else — a table of function references and one trampoline per slot,
+ * aliased as the first core functions — and fills the table with the
+ * program's destructor exports once the program instance exists. The
+ * indirection is what lets the resource type name a destructor that
+ * lives in an instance which cannot exist yet: the program's core
+ * module imports `resource.new` for the type, so the type comes first.
+ */
+export final class DtorSlot {
+  qualified: String;
+  name: String;
+  new(this.qualified, this.name);
+}
+
 /** What `encodeWorld` produced. */
 /** One type an exported interface declares itself: its name in the
  * interface, and the component-level type index it was encoded at. */
@@ -329,6 +346,8 @@ export final class EncodedWorld {
    * interface reads back with its own types.
    */
   exportedTypes = new HashMap<String, GrowableArray<ExportedTypeIndex>>();
+  /** The program's resources with a destructor slot each (`DtorSlot`). */
+  dtorSlots = new GrowableArray<DtorSlot>();
   /** How many component-level types the pieces defined. */
   var typeCount = 0;
   /** How many instances the pieces imported. */
@@ -1601,11 +1620,10 @@ export final class ComponentTypeEncoder {
    * resource is a component-level resource type whose representation
    * is an `i32` — the index into the entry wrapper's table of the
    * program's instances — which the canon `resource.new` and
-   * `resource.rep` builtins mint handles for and read back. It has no
-   * destructor yet: one would name a core function of the program's
-   * instance, and this type has to exist before that instance does
-   * (the core module imports `resource.new` for it), which takes a
-   * trampoline the runtime module does not carry today.
+   * `resource.rep` builtins mint handles for and read back. Its
+   * destructor is a shim trampoline (`DtorSlot`): the program's own
+   * destructor lives in an instance that cannot exist before this type
+   * does, since the core module imports `resource.new` for it.
    */
   #encodeExportedOwnType(reg: RegisteredInterface, name: String): i32 {
     let key = reg.qualifiedName + "#own:" + name;
@@ -1629,10 +1647,15 @@ export final class ComponentTypeEncoder {
     scope.aliasSource = reg;
     var index = -1;
     if (td.tag == TypeDefTag.Resource) {
+      // The destructor is core function `slot`: the emitter's shim
+      // trampoline for this resource (see `DtorSlot`).
+      let slot = this.#result.dtorSlots.length;
+      this.#result.dtorSlots.push(new DtorSlot(reg.qualifiedName, name));
       let body = new ByteBuffer();
       body.writeByte(0x3f); // resource
       body.writeByte(0x7f); // rep: i32
-      body.writeByte(0x00); // no destructor
+      body.writeByte(0x01); // a destructor:
+      body.writeULEB128(slot);
       index = this.#declareType(scope, body);
     } else if (td.tag == TypeDefTag.Alias) {
       let target = td.aliasType as Type;

@@ -1426,9 +1426,11 @@ uses is §6.2's.
   `gfx-surface-consumer` imports them and constructs a `surface`, calls a
   sync method, an `async func(...) -> stream<frame-event>`, a
   string-returning method and a static, and passes a `borrow<surface>` both
-  to another resource's constructor and to a free function. The composed pair
-  runs and returns 103. That is the `viewport` shape of §7.3 almost
-  construct for construct.
+  to another resource's constructor and to a free function, then drops a
+  handle, which reaches the provider's destructor. The composed pair runs
+  and returns 104. That is the `viewport` shape of §7.3 almost construct for
+  construct. The class behind a provided resource implements `Disposable`,
+  and its `dispose` is what the destructor means.
 - A world whose only export is `main: async func()` — no result — which is
   the shape of every milestone-1 program (`async-void-main.zena`).
 - **An exported interface of synchronous functions, with no `main`**, which

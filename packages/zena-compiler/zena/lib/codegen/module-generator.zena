@@ -9,7 +9,8 @@ import { ReachabilityAnalysis } from './reachability/analysis.zena';
 import { prepareGenerators } from './ir/generators.zena';
 import { prepareAsyncFunctions } from './ir/async.zena';
 import {
-  prepareComponentEntry, prepareComponentExports, prepareSyncExports
+  prepareComponentEntry, prepareComponentExports, prepareSyncExports,
+  prepareResourceDestructors
 } from './ir/component-adapters.zena';
 import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending, parseI64OrU64Literal, parseI32WithHex } from './codegen-utils.zena';
 import { ClassType } from '../types.zena';
@@ -224,6 +225,11 @@ export final class ModuleGenerator {
     // WIT's type.
     for (let syncExport in wasm.componentSyncExports) {
       exports.push(new WasmExport(syncExport.coreName, syncExport.func));
+    }
+    // The resource destructors: core exports the component's destructor
+    // shim is filled from, never lifted.
+    for (let dtor in wasm.componentResourceDtors) {
+      exports.push(new WasmExport(dtor.coreName, dtor.func));
     }
     // The wrappers, and the two functions the canonical options name.
     // They are core-module exports and not component ones: the component
@@ -541,6 +547,7 @@ export final class ModuleGenerator {
     if (targetEmitsComponent(this.target)) {
       prepareComponentEntry(wasm, pass);
       prepareSyncExports(wasm, pass);
+      prepareResourceDestructors(wasm, pass);
       prepareComponentExports(wasm, pass);
     }
 

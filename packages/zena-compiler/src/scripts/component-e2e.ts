@@ -481,9 +481,10 @@ const FIXTURES: Fixture[] = [
     // provider's instance), calls a sync method, an async method
     // returning a typed stream, a string-returning method and a
     // static, and hands a borrow of the surface to another resource's
-    // constructor and to a free function. 12 + 0+1+2 + 12 + 12 + 64.
+    // constructor and to a free function, then drops a handle, which
+    // reaches the provider's destructor. 12 + 0+1+2 + 12 + 12 + 64 + 1.
     invocations: [
-      {invoke: 'main()', expect: '103', expectOutput: ['surface 3x4']},
+      {invoke: 'main()', expect: '104', expectOutput: ['surface 3x4']},
     ],
   },
   {

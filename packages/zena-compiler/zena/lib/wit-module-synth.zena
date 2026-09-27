@@ -2766,10 +2766,13 @@ function drainHelpers(body: StringBuilder, uses: SynthUses,
  * The table behind each resource the program provides: instances by
  * representation (the index a handle carries), the registration a
  * constructor or an own result goes through, the lookup a method's
- * `self` or a borrowed parameter goes through, and the canon
- * `resource.new` that mints a handle over a representation. Slots are
- * never reused: the resource has no destructor yet to say a handle is
- * gone, so a dropped handle leaves its instance in the table.
+ * `self` or a borrowed parameter goes through, the destructor the
+ * host calls when the last handle over an instance is dropped, and
+ * the canon `resource.new` that mints a handle over a representation.
+ * The destructor frees the slot for reuse and disposes the instance:
+ * the class behind a resource is a `Disposable`, the way the handle
+ * class a consumer gets is, and its `dispose` is what the destructor
+ * means. A class that is not one fails the wrapper's type check.
  */
 function emitProgramResourceTables(body: StringBuilder,
     uses: SynthUses): void {
@@ -2780,14 +2783,30 @@ function emitProgramResourceTables(body: StringBuilder,
     body.append("\n");
     emit(body, "", zena`
       /** The program's ${r.className} instances behind WIT resource
-       * ${r.witName}, by representation. */
-      let ${table} = new Array<${r.className}>();
+       * ${r.witName}, by representation, and the slots freed by the
+       * destructor. */
+      let ${table} = new Array<${r.className} | null>();
+      let ${prefix}Free = new Array<i32>();
       function ${prefix}Register(value: ${r.className}): i32 {
+        if (${prefix}Free.length > 0) {
+          let rep = ${prefix}Free.pop();
+          ${table}[rep] = value;
+          return rep;
+        }
         ${table}.push(value);
         return ${table}.length - 1;
       }
       function ${prefix}At(rep: i32): ${r.className} {
-        return ${table}[rep];
+        return ${table}[rep] as ${r.className};
+      }
+      /** The destructor: the host calls it when the last handle over
+       * the instance at rep is dropped, from whichever component held
+       * it. The class is a Disposable, and this is its dispose. */
+      export function ${prefix}__dtor(rep: i32): void {
+        let value = ${table}[rep] as ${r.className};
+        ${table}[rep] = null;
+        ${prefix}Free.push(rep);
+        value.[Disposable.dispose]();
       }
       @external("canon", "resource.new#${r.qualified}#${r.witName}", "resource:${r.qualified}#${r.witName}")
       declare function ${prefix}New_raw(rep: i32): i32;
@@ -3710,6 +3729,9 @@ export function synthesizeExportWrapper(
   }
   if (uses.error) {
     sb.append("import { Error } from 'zena:core';\n");
+  }
+  if (programResources.length > 0) {
+    sb.append("import { Disposable } from 'zena:core';\n");
   }
   if (uses.result) {
     sb.append("import { Result } from 'zena:core';\n");

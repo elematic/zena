@@ -26,7 +26,7 @@ import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc, ComponentFuncType,
   ComponentCanonBuiltin, ComponentValType, noComponentResult, isKebabName,
   toKebabName, canonNamespace, isKnownCanonBuiltin, isTypedCanonBuiltin,
-  componentEntryExport,
+  componentEntryExport, ComponentDtorExport,
   componentCallbackExport, componentTypeNeedsMemory,
   componentSignatureNeedsMemory, componentRuntimeNamespace
 } from './component-emitter.zena';
@@ -481,6 +481,12 @@ export let buildComponentShape = (
           noComponentResult, false));
     lifted.witTyped = true;
     shape.exports.push(lifted);
+  }
+  // The destructors of the resources the program provides: not
+  // lifted; the emitter's shim table is filled from them.
+  for (let dtor in wasm.componentResourceDtors) {
+    shape.dtorExports.push(
+        new ComponentDtorExport(dtor.resourceName, dtor.coreName));
   }
 
   let exportKeys = wasm.exportMap.keys();
