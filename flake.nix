@@ -116,7 +116,11 @@
             pkgs.cargo
             pkgs.rustc
             pkgs.rustPlatform.cargoSetupHook
+            # zenafx's text stack (parley -> fontique) links the system
+            # fontconfig on Linux, found through pkg-config at build time.
+            pkgs.pkg-config
           ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.fontconfig ];
 
           buildPhase = ''
             runHook preBuild
@@ -222,6 +226,7 @@
         };
 
         devShells.default = pkgs.mkShell {
+          nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [
             nodejs
             wasmtime
@@ -232,7 +237,9 @@
             pkgs.rustc
             pkgs.rustfmt
             pkgs.rust-analyzer
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ]
+            # zenafx's text stack links the system fontconfig on Linux.
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.fontconfig ];
 
           # Every Rust binary on darwin links -liconv, but cargo invokes the
           # system `cc` as the linker, which reads neither NIX_LDFLAGS nor
