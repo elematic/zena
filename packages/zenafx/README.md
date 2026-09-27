@@ -54,9 +54,24 @@ a second whether or not anything changed. `ui::surface` runs its own `winit`
 loop under `ControlFlow::Wait`: a frame happens when a redraw was requested,
 and never otherwise.
 
-Nothing here loads a component yet. `zfx --ui` drives the primitives from
-`ui::demo`, a scene assembled in Rust, which is how the stack is exercised
-before the loader and the runtime component exist.
+`src/loader/` loads an application component and runs it in that window. It
+compiles the component, builds a `Linker` for it, defines the `zenafx:host`
+interfaces the component imports, instantiates it and calls its `render`
+export once per frame. A fresh `Linker` per instance is the shape the design
+needs: which imports an instance gets is decided per instance, so that a
+component can be given some interfaces and not others, and so that a binding
+to another component can go through a host trampoline.
+
+[`examples/zenafx/hello.zena`](../../examples/zenafx/hello.zena) is such a
+component — the same card-and-text scene, written in Zena:
+
+```bash
+npm run build:example -w @zena-lang/zenafx    # compiles it to out/hello.wasm
+npm run zfx -w @zena-lang/zenafx -- --app out/hello.wasm
+```
+
+`zfx --ui` shows the same scene assembled in Rust by `ui::demo`, with no Wasm
+in the picture:
 
 ```bash
 npm run zfx -w @zena-lang/zenafx -- --ui       # builds, then opens the window
@@ -64,18 +79,27 @@ npm run zfx -w @zena-lang/zenafx -- --ui 'Hello from ZenaFX'
 cargo run -p zenafx -- --ui                    # unoptimised, no Wireit
 ```
 
+What is not here yet is the second component. The design has an application
+importing `zenafx:ui/scene` from a runtime component that owns the scene
+graph, with the application driving the frame loop. Today the application
+builds the flat layout tree itself and the host calls it once a frame. The
+design document's milestone 1 says which parts that leaves out.
+
 A window opens showing the message in a rounded card, centred by a flexbox
 layout. Resizing it re-solves and repaints; the layout is recomputed from the
 new size rather than scaled. Close the window to exit. Nothing is drawn
 between frames — the loop waits, and a frame happens only when a redraw was
 requested.
 
-Everything but the window is covered by unit tests, including rasterization,
-so `cargo test -p zenafx` checks the stack headless. The window itself has an
-`#[ignore]`d smoke test that watches for the first presented frame:
+Everything but the window is covered by tests that need no display, including
+rasterization: `src/ui/` has unit tests for each primitive, and
+`tests/app.rs` loads the hello component and asserts its geometry against the
+same numbers the Rust scene is asserted against. The two windowed paths have
+`#[ignore]`d smoke tests that watch for the first presented frame:
 
 ```bash
-cargo test -p zenafx --test run -- --ignored ui_demo_presents_a_frame
+npm test -w @zena-lang/zenafx             # headless; builds the component first
+npm run test:gui -w @zena-lang/zenafx     # opens windows
 ```
 
 ## Threading Architecture

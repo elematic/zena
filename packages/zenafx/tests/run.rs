@@ -54,6 +54,26 @@ fn ui_demo_presents_a_frame() {
     );
 }
 
+/// The same scene as `--ui`, but built by a WebAssembly component: `zfx`
+/// binds the component's `zenafx:host` imports, instantiates it, and calls
+/// its `render` export once a frame.
+#[test]
+#[ignore = "requires a graphical display; run with: cargo test -p zenafx -- --ignored"]
+fn app_component_presents_a_frame() {
+    use std::path::PathBuf;
+
+    let wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out/hello.wasm");
+    assert!(
+        wasm.exists(),
+        "{} is missing; build it with `npm run build:example -w @zena-lang/zenafx`",
+        wasm.display()
+    );
+    assert!(
+        wait_for_line(&["--app", wasm.to_str().unwrap()], "presented frame 1"),
+        "timed out waiting for the first frame from the hello component"
+    );
+}
+
 #[test]
 #[ignore = "requires graphical display and GPU; run with: cargo test -p zenafx -- --ignored"]
 fn runs_triangle_component_smoke_test() {

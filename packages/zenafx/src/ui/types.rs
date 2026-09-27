@@ -5,9 +5,17 @@
 //! a `bindgen!` world to lift them out of. Each type here corresponds one for
 //! one to a record in `packages/zenafx/wit/zenafx.wit`; the canonical-ABI
 //! conversion happens where the host functions are registered.
+//!
+//! The `ComponentType` derive names a field or case after its Rust
+//! identifier verbatim, so every name WIT spells with a hyphen carries an
+//! explicit `#[component(name = ...)]`. A mismatch is caught when the
+//! linker typechecks the import against the component, not at runtime.
+
+use wasmtime::component::{ComponentType, Lift, Lower};
 
 /// Non-premultiplied sRGB, each channel 0..1.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Color {
     pub r: f32,
     pub g: f32,
@@ -21,13 +29,15 @@ impl Color {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Size {
     pub width: f32,
     pub height: f32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
@@ -35,16 +45,21 @@ pub struct Rect {
     pub height: f32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Default, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct BoxLook {
     pub background: Option<Color>,
+    #[component(name = "border-color")]
     pub border_color: Option<Color>,
+    #[component(name = "border-width")]
     pub border_width: f32,
+    #[component(name = "corner-radius")]
     pub corner_radius: f32,
     pub opacity: f32,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct TextLook {
     pub family: String,
     pub size: f32,
@@ -65,39 +80,60 @@ impl Default for TextLook {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(variant)]
 pub enum Length {
+    #[component(name = "auto")]
     Auto,
+    #[component(name = "px")]
     Px(f32),
+    #[component(name = "percent")]
     Percent(f32),
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, ComponentType, Lift, Lower)]
+#[component(enum)]
+#[repr(u8)]
 pub enum Axis {
+    #[component(name = "row")]
     Row,
     #[default]
+    #[component(name = "column")]
     Column,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, ComponentType, Lift, Lower)]
+#[component(enum)]
+#[repr(u8)]
 pub enum Justify {
     #[default]
+    #[component(name = "start")]
     Start,
+    #[component(name = "center")]
     Center,
+    #[component(name = "end")]
     End,
+    #[component(name = "space-between")]
     SpaceBetween,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, ComponentType, Lift, Lower)]
+#[component(enum)]
+#[repr(u8)]
 pub enum Align {
     #[default]
+    #[component(name = "start")]
     Start,
+    #[component(name = "center")]
     Center,
+    #[component(name = "end")]
     End,
+    #[component(name = "stretch")]
     Stretch,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Default, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Edges {
     pub top: f32,
     pub right: f32,
@@ -118,10 +154,13 @@ impl Edges {
 
 /// Geometry only. Nothing here affects painting, and nothing in a look
 /// affects measurement.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Flex {
     pub axis: Axis,
+    #[component(name = "justify-content")]
     pub justify_content: Justify,
+    #[component(name = "align-items")]
     pub align_items: Align,
     pub gap: f32,
     pub padding: Edges,
@@ -150,7 +189,8 @@ impl Default for Flex {
 }
 
 /// What a shaped run occupies at some width.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Measured {
     pub width: f32,
     pub height: f32,
@@ -160,43 +200,58 @@ pub struct Measured {
 
 /// One node of a tree given in pre-order. Index 0 is the root; a node's
 /// children are the `child_count` entries starting at `first_child`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Node {
     pub style: Flex,
     /// A run registered with the text engine, measured during the solve.
     /// `None` for a box.
     pub run: Option<u32>,
+    #[component(name = "first-child")]
     pub first_child: u32,
+    #[component(name = "child-count")]
     pub child_count: u32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Quad {
     pub bounds: Rect,
     pub background: Option<Color>,
+    #[component(name = "border-color")]
     pub border_color: Option<Color>,
+    #[component(name = "border-width")]
     pub border_width: f32,
+    #[component(name = "corner-radius")]
     pub corner_radius: f32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct Glyphs {
     pub run: u32,
     pub x: f32,
     pub y: f32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(variant)]
 pub enum Command {
+    #[component(name = "quad")]
     Quad(Quad),
+    #[component(name = "glyphs")]
     Glyphs(Glyphs),
+    #[component(name = "push-clip")]
     PushClip(Rect),
+    #[component(name = "pop-clip")]
     PopClip,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct FrameEvent {
     /// Milliseconds on a monotonic clock since the window opened.
+    #[component(name = "time-ms")]
     pub time_ms: f64,
     pub width: u32,
     pub height: u32,
@@ -204,7 +259,8 @@ pub struct FrameEvent {
     pub scale: f32,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct PointerEvent {
     pub x: f32,
     pub y: f32,
@@ -212,7 +268,8 @@ pub struct PointerEvent {
     pub down: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
 pub struct KeyEvent {
     pub code: u32,
     pub down: bool,

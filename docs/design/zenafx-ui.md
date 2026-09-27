@@ -2,9 +2,13 @@
 
 ## Status
 
-- **Status**: Proposed; the host primitives of §8 are built and the rest is
-  not. `zfx --ui` opens a window on a scene assembled in Rust — steps 1 to 5
-  of milestone 1 below. Nothing loads a component yet.
+- **Status**: Proposed, and partly built. `zfx --app` loads one Zena
+  component, binds its `zenafx:host` imports and shows the window it draws;
+  `zfx --ui` does the same scene from Rust. That is milestone 1 below with
+  its second component missing: there is no runtime component, so no
+  `zenafx:ui/scene`, no viewport resource and no guest→guest binding, and
+  the host calls the application once a frame rather than the application
+  driving the frame as §6.3 has it.
 - **Date**: 2026-09-25
 - **Scope**: a retained-mode UI system whose applications are trees of
   WebAssembly components linked at run time; which parts of it are written in
@@ -1356,9 +1360,8 @@ import to the runtime component's export, and opens a window showing
 
 [softbuffer]: https://github.com/rust-windowing/softbuffer
 
-New work, in order. Steps 1 to 5 are done, and `zfx --ui` runs them end to
-end against a real window with no Wasm in the picture — `ui::demo` assembles
-the tree that the runtime component will assemble in step 7.
+New work, in order. Steps 1 to 5 are done; so is a reduced form of 6 and 8,
+described under the list.
 
 1. ~~**WIT.**~~ `packages/zenafx/wit/zenafx.wit` holds both packages, with
    `zenafx:host` nested inside `zenafx:ui`: `wasm-tools` wants one top-level
@@ -1386,7 +1389,7 @@ the tree that the runtime component will assemble in step 7.
    the display list is built from survive a move to the GPU. Whether the
    renderer-facing scene API also survives it is worth checking when the
    versions are pinned.
-6. **Host: the loader.** The §6.2 path, at its smallest: compile both
+6. **Host: the loader**, partly. The §6.2 path, at its smallest: compile both
    components, read each one's imports, bind `zenafx:host/*` to the host
    implementations and the application's `zenafx:ui/scene` import to a
    trampoline over the runtime instance's export, then instantiate both and
@@ -1397,7 +1400,7 @@ the tree that the runtime component will assemble in step 7.
 7. **Runtime component.** `packages/zenafx-ui/zena/`: the node arena, the
    dirty set, the id table keyed by viewport, `flush` calling `solve` then
    `present`, and the paint walk. Compiled against `world runtime`.
-8. **The application.** `examples/zenafx/hello.zena` and its world.
+8. ~~**The application.**~~ `examples/zenafx/hello.zena` and its world.
 9. **Build wiring.** Two separate mechanisms have to be set up, and confusing
    them is the likely first stumble. A Zena `import {...} from
 'zenafx:ui/scene'` resolves through a **package manifest** entry, which is
@@ -1511,6 +1514,33 @@ a template and a scheduler (§9, §10) replace.
 Milestone 1 is done when `zfx` shows the window, and when resizing it
 re-centres the text — which proves the layout solve, the measure callback and
 the demand-driven redraw are all on the path.
+
+#### What exists, and how it is reduced
+
+`zfx --app packages/zenafx/out/hello.wasm` shows the window and re-centres on
+resize. One component does it, against a world that imports
+`zenafx:host/{text,layout,paint}` and exports `render: func(width, height)`;
+`src/loader/` compiles it, defines those imports on a `Linker` of its own and
+calls `render` on each frame. Two differences from the design, both of them
+the missing second component rather than a change of mind:
+
+- **The host calls the application.** §6.4 fixes the call direction the other
+  way: the root awaits `zenafx:host/surface`'s frame events and the host
+  enters only the root. The reasons given there — update order across a tree,
+  and re-entrancy — need a tree, and one component is not one. The `Scene`
+  trait in `ui/surface.rs` is where a guest sits today and where the frame
+  stream will attach.
+- **There is no scene graph.** The application builds the flat node list
+  `zenafx:host/layout` takes and hands the display list straight to
+  `zenafx:host/paint`, so it does the runtime component's job itself. Nothing
+  of §7 is exercised: no viewport, no node ids, no `apply`, no dirty set.
+
+What the reduced form does establish is the part that had never been tried:
+a Zena component's records, variants, enums and options crossing the canonical
+ABI into a Rust host in a real embedding, and the host's flexbox solve calling
+back into text measurement while the guest waits. `tests/app.rs` asserts the
+component's geometry against the same numbers `ui::demo`'s tests assert, so
+the two sides are known to agree.
 
 ### Later milestones
 

@@ -130,6 +130,7 @@ pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
 /// whatever size each frame arrives with.
 pub struct HelloScene {
     message: String,
+    text: TextEngine,
     scene: Option<FlatScene>,
 }
 
@@ -137,17 +138,17 @@ impl HelloScene {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            text: TextEngine::new(),
             scene: None,
         }
     }
 }
 
 impl Scene for HelloScene {
-    fn frame(&mut self, frame: FrameEvent, text: &mut TextEngine) -> Vec<Command> {
+    fn frame(&mut self, frame: FrameEvent) -> Vec<Command> {
         let message = self.message.clone();
-        let scene = self
-            .scene
-            .get_or_insert_with(|| hello(text, &message));
+        let text = &mut self.text;
+        let scene = self.scene.get_or_insert_with(|| hello(text, &message));
         scene.display_list(
             Size {
                 width: frame.width as f32,
@@ -155,6 +156,14 @@ impl Scene for HelloScene {
             },
             text,
         )
+    }
+
+    fn text(&self) -> &TextEngine {
+        &self.text
+    }
+
+    fn text_mut(&mut self) -> &mut TextEngine {
+        &mut self.text
     }
 
     fn background(&self) -> Color {

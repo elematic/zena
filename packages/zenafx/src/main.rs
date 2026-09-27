@@ -43,6 +43,10 @@ struct Cli {
     )]
     ui: Option<String>,
 
+    /// Load a ZenaFX application component and open a window on it.
+    #[arg(long, value_name = "FILE")]
+    app: Option<String>,
+
     /// The .wasm component file to run
     file: Option<String>,
 
@@ -187,8 +191,28 @@ fn main() -> Result<()> {
         );
     }
 
+    if let Some(app) = cli.app {
+        let path = Path::new(&app);
+        if !path.exists() {
+            anyhow::bail!("File not found: {app}");
+        }
+        let engine = zenafx::loader::engine(cli.debug)?;
+        let scene = zenafx::loader::GuestScene::load(&engine, path)?;
+        return zenafx::ui::surface::run(
+            zenafx::ui::surface::WindowConfig {
+                title: "ZenaFX".to_owned(),
+                width: 800,
+                height: 600,
+            },
+            scene,
+        );
+    }
+
     let Some(file) = cli.file.clone() else {
-        anyhow::bail!("No .wasm component given. Pass one, or --ui for the built-in scene.");
+        anyhow::bail!(
+            "No .wasm component given. Pass one, --app for a ZenaFX application, \
+             or --ui for the built-in scene."
+        );
     };
     let path = Path::new(&file);
     if !path.exists() {

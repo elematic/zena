@@ -28,9 +28,17 @@ use super::types::{Color, Command, FrameEvent, KeyEvent, PointerEvent};
 /// loader exists. Either way the host owns the frame clock and asks for a
 /// display list when a frame is due.
 pub trait Scene {
-    /// Produce the display list for one frame. The text engine is passed in
-    /// because the scene registers and measures its own runs.
-    fn frame(&mut self, frame: FrameEvent, text: &mut TextEngine) -> Vec<Command>;
+    /// Produce the display list for one frame.
+    fn frame(&mut self, frame: FrameEvent) -> Vec<Command>;
+
+    /// The runs this scene's display list refers to.
+    ///
+    /// A scene owns its text engine: the ids in a `Glyphs` command mean
+    /// nothing without the engine that minted them, and for a guest scene
+    /// the engine lives inside the component's store.
+    fn text(&self) -> &TextEngine;
+
+    fn text_mut(&mut self) -> &mut TextEngine;
 
     /// What to clear to before drawing.
     fn background(&self) -> Color {
@@ -76,7 +84,6 @@ pub fn run(config: WindowConfig, scene: impl Scene + 'static) -> Result<()> {
     let mut app = App {
         config,
         scene: Box::new(scene),
-        text: TextEngine::new(),
         window: None,
         started: Instant::now(),
         frames: 0,
@@ -96,7 +103,6 @@ struct Live {
 struct App {
     config: WindowConfig,
     scene: Box<dyn Scene>,
-    text: TextEngine,
     window: Option<Live>,
     started: Instant,
     frames: u64,
@@ -138,7 +144,7 @@ impl ApplicationHandler for App {
             }
         };
         let size = window.inner_size();
-        self.text.set_scale(window.scale_factor() as f32);
+        self.scene.text_mut().set_scale(window.scale_factor() as f32);
         self.window = Some(Live {
             window: window.clone(),
             surface,
@@ -162,7 +168,7 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                self.text.set_scale(live.window.scale_factor() as f32);
+                self.scene.text_mut().set_scale(live.window.scale_factor() as f32);
                 live.window.request_redraw();
             }
 
@@ -220,11 +226,11 @@ impl ApplicationHandler for App {
                     height: size.height,
                     scale: live.window.scale_factor() as f32,
                 };
-                let commands = self.scene.frame(frame, &mut self.text);
+                let commands = self.scene.frame(frame);
 
                 live.painter.resize(size.width as u16, size.height as u16);
                 live.painter
-                    .draw(&commands, self.scene.background(), &self.text);
+                    .draw(&commands, self.scene.background(), self.scene.text());
 
                 if let Err(e) = live.surface.resize(w, h) {
                     log::error!("could not resize the surface: {e}");
