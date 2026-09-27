@@ -740,6 +740,12 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
         // flattening past that comes back as a return area's address,
         // which the host reads and then hands to `post-return`.
         e.needsPostReturnLift = !m.isAsync && m.resultFlatCount > 1;
+        // The return area is in linear memory, so such a lift carries the
+        // memory options whether or not any string or list is involved:
+        // `func() -> size`, two bare floats, needs them.
+        if (e.needsPostReturnLift) {
+          e.needsMemoryLift = true;
+        }
       }
     }
     let out = mirrorEncodedWorld(world);

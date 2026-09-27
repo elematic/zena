@@ -199,6 +199,18 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'sync-only',
+    wasi: ['p3=y'],
+    wit: ['sync-only.wit', 'provider'],
+    // No `main`, and nothing async: the wrapper a declared world
+    // synthesizes roots the async driver anyway, and there is nothing for
+    // it to drive.
+    invocations: [
+      {invoke: 'double(21)', expect: '42'},
+      {invoke: 'split(3)', expect: '{x: 3, y: 6}'},
+    ],
+  },
+  {
     name: 'async-void-main',
     wasi: ['p3=y'],
     wit: ['async-void-main.wit', 'app'],
