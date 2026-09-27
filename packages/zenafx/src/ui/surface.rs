@@ -54,6 +54,13 @@ pub trait Scene {
     fn key(&mut self, _event: KeyEvent) -> bool {
         false
     }
+
+    /// Whether the scene has work that needs one more frame. Asked after
+    /// each frame; a scene that always answers `true` runs the window flat
+    /// out, which is what `ControlFlow::Wait` otherwise avoids.
+    fn wants_another_frame(&self) -> bool {
+        false
+    }
 }
 
 /// How the window is opened.
@@ -243,6 +250,9 @@ impl ApplicationHandler for App {
                             log::error!("could not present a frame: {e}");
                         } else {
                             self.frames += 1;
+                            if self.scene.wants_another_frame() {
+                                live.window.request_redraw();
+                            }
                             log::info!(
                                 "presented frame {} at {}x{}, {} commands",
                                 self.frames,

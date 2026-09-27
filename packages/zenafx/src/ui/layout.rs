@@ -13,7 +13,10 @@ use taffy::{
 };
 
 use super::text::TextEngine;
-use super::types::{Align, Axis, Flex, Justify, Length, Node, Rect, Size};
+use super::types::{
+    Align, Available, Axis, Content, Flex, Justify, Length, Measured, MeasureRequest, Node, Rect,
+    Size,
+};
 
 /// Solve one tree. The result is parallel to `nodes`, and each rect is in the
 /// root's coordinate space.
@@ -22,11 +25,51 @@ use super::types::{Align, Axis, Flex, Justify, Length, Node, Rect, Size};
 /// the `child_count` entries starting at `first_child`. Nodes carrying a run
 /// id are leaves whose size comes from `text`.
 pub fn solve(nodes: &[Node], available: Size, text: &mut TextEngine) -> Vec<Rect> {
+    solve_with(nodes, available, |content, query| match content {
+        Content::Text(run) => measure_text(text, *run, query),
+        // Nothing else is measurable without a component registry; a
+        // caller that embeds children uses `solve_with` and supplies one.
+        _ => Measured {
+            width: 0.0,
+            height: 0.0,
+            baseline: 0.0,
+        },
+    })
+}
+
+/// Measure a text run against one query.
+///
+/// A width the parent fixed wins. Otherwise the answer depends on which
+/// question was asked: the two intrinsic widths are different numbers, and
+/// answering `MinContent` with the unconstrained width would tell the solve
+/// the text cannot wrap.
+pub fn measure_text(text: &mut TextEngine, run: u32, query: MeasureRequest) -> Measured {
+    let width = match (query.known_width, query.available_width) {
+        (Some(w), _) => Some(w),
+        (None, Available::Definite(w)) => Some(w),
+        (None, Available::MaxContent) => None,
+        (None, Available::MinContent) => text.content_widths(run).map(|(min, _)| min),
+    };
+    text.measure_run(run, width)
+}
+
+/// [`solve`] with measurement supplied by the caller.
+///
+/// `measure` is given a leaf's content and one [`MeasureRequest`], and is
+/// called several times per leaf — see `taffy_queries_a_text_leaf_repeatedly`
+/// below for what a real tree produces. Everything that is not a plain box
+/// goes through it, so this is where a child component is asked for its size
+/// and where a slot resolves to whatever fills it.
+pub fn solve_with(
+    nodes: &[Node],
+    available: Size,
+    mut measure: impl FnMut(&Content, MeasureRequest) -> Measured,
+) -> Vec<Rect> {
     if nodes.is_empty() {
         return Vec::new();
     }
 
-    let mut tree: TaffyTree<Option<u32>> = TaffyTree::with_capacity(nodes.len());
+    let mut tree: TaffyTree<Content> = TaffyTree::with_capacity(nodes.len());
     let mut ids: Vec<Option<NodeId>> = vec![None; nodes.len()];
 
     // A child always follows its parent in pre-order, so building from the
@@ -39,7 +82,7 @@ pub fn solve(nodes: &[Node], available: Size, text: &mut TextEngine) -> Vec<Rect
             .filter_map(|c| ids.get(c).copied().flatten())
             .collect();
         let id = if children.is_empty() {
-            tree.new_leaf_with_context(style, node.run)
+            tree.new_leaf_with_context(style, node.content.clone())
                 .expect("taffy rejected a leaf")
         } else {
             tree.new_with_children(style, &children)
@@ -56,26 +99,24 @@ pub fn solve(nodes: &[Node], available: Size, text: &mut TextEngine) -> Vec<Rect
             height: AvailableSpace::Definite(available.height),
         },
         |inputs, _node_id, context, style| {
-            let run = context.copied().flatten();
+            // `context` is None for a container; only leaves are measured.
+            let content = context.map(|c| c.clone()).unwrap_or(Content::Box);
             compute_leaf_layout(inputs, style, |_, _| 0.0, |known, space| {
-                let Some(run) = run else {
-                    // A childless box with no run measures to nothing; its
-                    // size comes from its own style, which `compute_leaf_layout`
-                    // has already applied.
+                if matches!(content, Content::Box) {
+                    // A childless box has no content of its own; its size
+                    // comes from its style, which `compute_leaf_layout` has
+                    // already applied.
                     return taffy::Size::ZERO;
-                };
-                // A known width wins over the available space: taffy is
-                // asking what the height is *at that width*.
-                let width = known.width.or(match space.width {
-                    AvailableSpace::Definite(w) => Some(w),
-                    // MinContent would be the fully-wrapped width and
-                    // MaxContent the unwrapped one; parley reports the
-                    // unwrapped size when broken at `None`, which is
-                    // MaxContent. MinContent is approximated the same way
-                    // for now, and is only consulted for shrink-to-fit.
-                    AvailableSpace::MinContent | AvailableSpace::MaxContent => None,
-                });
-                let m = text.measure_run(run, width);
+                }
+                let m = measure(
+                    &content,
+                    MeasureRequest {
+                        known_width: known.width,
+                        known_height: known.height,
+                        available_width: available_of(space.width),
+                        available_height: available_of(space.height),
+                    },
+                );
                 taffy::Size {
                     width: known.width.unwrap_or(m.width),
                     height: known.height.unwrap_or(m.height),
@@ -100,8 +141,16 @@ pub fn solve(nodes: &[Node], available: Size, text: &mut TextEngine) -> Vec<Rect
     out
 }
 
+fn available_of(space: AvailableSpace) -> Available {
+    match space {
+        AvailableSpace::Definite(v) => Available::Definite(v),
+        AvailableSpace::MinContent => Available::MinContent,
+        AvailableSpace::MaxContent => Available::MaxContent,
+    }
+}
+
 fn absolutize(
-    tree: &TaffyTree<Option<u32>>,
+    tree: &TaffyTree<Content>,
     nodes: &[Node],
     ids: &[Option<NodeId>],
     index: usize,
@@ -184,7 +233,7 @@ mod tests {
     fn boxed(style: Flex, first_child: u32, child_count: u32) -> Node {
         Node {
             style,
-            run: None,
+            content: Content::Box,
             first_child,
             child_count,
         }
@@ -193,7 +242,7 @@ mod tests {
     fn leaf(run: u32) -> Node {
         Node {
             style: Flex::default(),
-            run: Some(run),
+            content: Content::Text(run),
             first_child: 0,
             child_count: 0,
         }
@@ -378,6 +427,91 @@ mod tests {
         assert_eq!((rects[1].x, rects[1].y), (16.0, 16.0));
         // The grandchild's rect is in the root's space, not its parent's.
         assert_eq!((rects[2].x, rects[2].y), (24.0, 24.0));
+    }
+
+    /// What a solve actually asks a leaf, and in what order.
+    ///
+    /// Layout is not one pass down and one pass up: a leaf is queried
+    /// repeatedly, and which queries it gets depends on the styles above it.
+    /// Two trees are printed here rather than asserted line by line, because
+    /// the exact sequence is taffy's business. What is asserted is the part
+    /// the ZenaFX design rests on — that one leaf is asked more than once in
+    /// a single solve.
+    #[test]
+    fn taffy_queries_a_text_leaf_repeatedly() {
+        let long = "The quick brown fox jumps over the lazy dog";
+
+        // A fixed-width parent: the child's width is imposed.
+        let mut text = TextEngine::new();
+        let run = text.register_run(long, &TextLook::default());
+        let fixed = vec![
+            boxed(
+                Flex {
+                    align_items: Align::Start,
+                    width: Length::Px(160.0),
+                    height: Length::Percent(100.0),
+                    ..Flex::default()
+                },
+                1,
+                1,
+            ),
+            leaf(run),
+        ];
+        let mut imposed = Vec::new();
+        solve_with(
+            &fixed,
+            Size {
+                width: 160.0,
+                height: 600.0,
+            },
+            |c, q| {
+                imposed.push(q);
+                let Content::Text(r) = c else { unreachable!() };
+                measure_text(&mut text, *r, q)
+            },
+        );
+
+        // A shrink-to-fit parent: the child's width is its own to choose, so
+        // the solve has to discover it.
+        let mut text = TextEngine::new();
+        let run = text.register_run(long, &TextLook::default());
+        let hugging = vec![
+            boxed(
+                Flex {
+                    axis: Axis::Row,
+                    align_items: Align::Start,
+                    ..Flex::default()
+                },
+                1,
+                1,
+            ),
+            leaf(run),
+        ];
+        let mut discovered = Vec::new();
+        solve_with(
+            &hugging,
+            Size {
+                width: 1000.0,
+                height: 600.0,
+            },
+            |c, q| {
+                discovered.push(q);
+                let Content::Text(r) = c else { unreachable!() };
+                measure_text(&mut text, *r, q)
+            },
+        );
+
+        println!("imposed width:   {} queries", imposed.len());
+        for q in &imposed {
+            println!("  known {:?} available {:?}", q.known_width, q.available_width);
+        }
+        println!("shrink to fit:   {} queries", discovered.len());
+        for q in &discovered {
+            println!("  known {:?} available {:?}", q.known_width, q.available_width);
+        }
+
+        assert!(imposed.len() > 1, "{imposed:?}");
+        assert!(discovered.len() > 1, "{discovered:?}");
     }
 
     #[test]

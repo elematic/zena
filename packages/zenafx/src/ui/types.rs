@@ -198,15 +198,62 @@ pub struct Measured {
     pub baseline: f32,
 }
 
+/// The space a solve offers on one axis.
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(variant)]
+pub enum Available {
+    #[component(name = "definite")]
+    Definite(f32),
+    #[component(name = "min-content")]
+    MinContent,
+    #[component(name = "max-content")]
+    MaxContent,
+}
+
+/// One question a solve asks about a leaf.
+///
+/// Layout is a recursive query rather than one pass down and one pass up: a
+/// leaf is asked several times per solve, and which questions it gets depend
+/// on the styles above it. A `known` dimension is one the parent has already
+/// fixed, and the solve is asking what the other becomes at that size.
+#[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(record)]
+pub struct MeasureRequest {
+    #[component(name = "known-width")]
+    pub known_width: Option<f32>,
+    #[component(name = "known-height")]
+    pub known_height: Option<f32>,
+    #[component(name = "available-width")]
+    pub available_width: Available,
+    #[component(name = "available-height")]
+    pub available_height: Available,
+}
+
+/// What a leaf holds.
+#[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
+#[component(variant)]
+pub enum Content {
+    /// Sized by its own style and its children.
+    #[component(name = "box")]
+    Box,
+    /// A run registered with the text engine.
+    #[component(name = "text")]
+    Text(u32),
+    /// A child component, asked for its own size during the solve.
+    #[component(name = "child")]
+    Child(u32),
+    /// A hole this component's embedder fills, named.
+    #[component(name = "slot")]
+    Slot(String),
+}
+
 /// One node of a tree given in pre-order. Index 0 is the root; a node's
 /// children are the `child_count` entries starting at `first_child`.
 #[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
 #[component(record)]
 pub struct Node {
     pub style: Flex,
-    /// A run registered with the text engine, measured during the solve.
-    /// `None` for a box.
-    pub run: Option<u32>,
+    pub content: Content,
     #[component(name = "first-child")]
     pub first_child: u32,
     #[component(name = "child-count")]

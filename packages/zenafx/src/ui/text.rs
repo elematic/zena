@@ -171,6 +171,18 @@ impl TextEngine {
     pub fn broken_at(&self, id: u32) -> Option<f32> {
         self.get(id).and_then(|r| r.broken_at)
     }
+
+    /// The narrowest and widest this run can be: the width with every soft
+    /// break taken, and with none taken.
+    ///
+    /// A solve asks for these when a box shrinks to fit, because the box's
+    /// own width is then whatever the content settles on.
+    pub fn content_widths(&self, id: u32) -> Option<(f32, f32)> {
+        self.get(id).map(|r| {
+            let w = r.layout.calculate_content_widths();
+            (w.min, w.max)
+        })
+    }
 }
 
 /// Re-break `run` if it does not already reflect `available_width`.
@@ -276,6 +288,30 @@ mod tests {
         let wide = text.measure_run(id, None);
         text.measure_run(id, Some(wide.width / 3.0));
         assert_eq!(text.measure_run(id, None), wide);
+    }
+
+    /// The two intrinsic widths a shrink-to-fit box chooses between: the
+    /// longest word, and the whole string unwrapped.
+    #[test]
+    fn min_content_is_narrower_than_max_content() {
+        let mut text = TextEngine::new();
+        let id = text.register_run(
+            "The quick brown fox jumps over the lazy dog",
+            &TextLook::default(),
+        );
+        let (min, max) = text.content_widths(id).expect("a registered run");
+        assert!(min > 0.0 && min < max, "min {min} max {max}");
+
+        // max-content is the unconstrained measurement.
+        let unconstrained = text.measure_run(id, None);
+        assert!(
+            (unconstrained.width - max).abs() < 1.0,
+            "unconstrained {unconstrained:?} vs max {max}"
+        );
+
+        // At min-content the text wraps as hard as it can, so it is tallest.
+        let narrow = text.measure_run(id, Some(min));
+        assert!(narrow.height > unconstrained.height, "{narrow:?}");
     }
 
     #[test]

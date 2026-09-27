@@ -2,13 +2,15 @@
 
 ## Status
 
-- **Status**: Proposed, and partly built. `zfx --app` loads one Zena
-  component, binds its `zenafx:host` imports and shows the window it draws;
-  `zfx --ui` does the same scene from Rust. That is milestone 1 below with
-  its second component missing: there is no runtime component, so no
-  `zenafx:ui/scene`, no viewport resource and no guest→guest binding, and
-  the host calls the application once a frame rather than the application
-  driving the frame as §6.3 has it.
+- **Status**: Proposed, and partly built. `zfx --app` loads a tree of Zena
+  components, binds their `zenafx:host` imports and shows the window they
+  draw. Text, flexbox layout, painting and the window are real (§8); so are
+  child components and slot projection (§9.2), with each child's layout
+  queried and each child's drawing clipped by the host. What is not built is
+  §7 — there is no runtime component, so no `zenafx:ui/scene`, no viewport
+  resource and no scene graph — and the host calls the root once a frame
+  rather than the root driving the frame as §6.3 has it. Input, navigation
+  and assets do not exist.
 - **Date**: 2026-09-25
 - **Scope**: a retained-mode UI system whose applications are trees of
   WebAssembly components linked at run time; which parts of it are written in
@@ -39,8 +41,8 @@ This list defines the numbers the `§` cross-references in this document use.
 8. Host primitives — 8.1 Layout with measurement inside the solve, 8.2 Text,
    8.3 Paint, 8.4 Surface, frames and demand-driven redraw,
    8.5 `zenafx:host` in WIT
-9. Widgets, templates and updates — 9.1 Widgets and templates, 9.2 Moving the
-   component boundary
+9. Widgets, templates and updates — 9.1 Widgets and templates, 9.2 Children
+   and slots, 9.3 Moving the component boundary
 10. Scheduling
 11. Reactive state
 12. Capabilities and isolation
@@ -820,6 +822,45 @@ engine directly. The guest never measures anything.
 
 [taffy-measure]: https://docs.rs/taffy/latest/taffy/tree/struct.TaffyTree.html#method.compute_layout_with_measure
 
+#### Layout is a recursive query, not two passes
+
+A layout system where constraints go down and sizes come back up, once each,
+is the model Flutter uses. CSS does not work that way, and neither does
+taffy. A parent asks a child questions, possibly several, and which questions
+it asks depend on the parent's own style. Taffy carries them in `LayoutInput`:
+`known_dimensions` are dimensions the parent has already fixed,
+`available_space` is `Definite(px)` or `MinContent` or `MaxContent` per axis,
+and `run_mode` says whether the answer needs to be a full layout or only a
+size.
+
+What one text leaf is actually asked, recorded from
+`ui::layout`'s own tests:
+
+```
+shrink-to-fit parent (row, align-start, no width):
+  known None      available MaxContent          how wide would you like to be?
+  known None      available MinContent          how narrow could you be?
+  known 280.27    available Definite(280.27)    at 280.27 wide, how tall?
+  known None      available Definite(280.27)    final placement
+
+fixed-width parent (160px):
+  known None      available Definite(160.0)     x3
+  known None      available Definite(149.71)    final, at the measured width
+```
+
+So the intrinsic size does travel upward, but as two different numbers —
+min-content, every soft break taken, and max-content, none taken — and a
+parent that already knows the width never asks for either. `zenafx:host/layout`
+exposes this as `measure-request`, which is taffy's question with taffy's
+vocabulary removed.
+
+Two consequences for the rest of this document. A leaf is measured four or
+more times per frame, so measurement must be cheap and side-effect free —
+which is why a run is registered once and referred to by id (§8.2), and why
+`measure_run` re-breaks only when the width it is asked about differs from the
+one it holds. And when a leaf is a child _component_ (§9.3), those four
+questions are four calls into that component.
+
 The tree is passed flat, in pre-order, with each node naming the index of its
 first child and how many children it has. WIT has no recursive types outside
 resources, so a record cannot contain a list of itself: `wasm-tools 1.252.0`
@@ -1032,6 +1073,76 @@ compiling to numbered slots. ZenaFX's template representation is what that
 syntax lowers to, so the two designs have to agree on three things — holes are
 positional, a hole carries a value rather than a subtree, and a hole holding a
 child widget is a distinct kind of slot.
+
+### Children and slots
+
+A component embeds another by handle. `zenafx:host/children` has four
+functions: `spawn` names a component and returns a handle, `place` draws one
+into a rect, `fill-slot` puts one inside another, and `place-slot` draws
+whatever was put there. An embedder never holds the child's exports, only an
+opaque `u32` the host resolves, so the host decides what may be spawned and
+can refuse.
+
+A slot is a named hole. A component declares one with a `slot(name)` leaf in
+the tree it hands to `solve`; its embedder fills it by naming the same string.
+The component that declares the slot never learns what went in it. This is
+shadow DOM's arrangement: the shadow tree says where projected content goes
+and the light DOM says what it is, and neither names the other.
+
+#### How a slot gets a size
+
+The question a slot raises is where its size comes from, because the content
+is in a different component. The answer falls out of §8.1: **the host owns the
+solve**, so it is the host that asks.
+
+When the solve reaches a `child` or `slot` leaf, it calls that component's
+`measure` export with the same `measure-request` a text run would get. Three
+components deep, one frame looks like this:
+
+```
+host → page.render
+         page → solve([root, child(card)])
+                  host → card.measure(max-content)
+                           card → solve([frame, slot("body")])
+                                    host → label.measure(max-content)
+                           card returns its padding plus the label
+                  ... three more rounds of the same
+         page → place(card, rect)
+                  host → card.render
+                           card → solve(...)        // again, at the real size
+                           card → place-slot("body", rect)
+                                    host → label.render
+```
+
+Nothing in that trace is a component calling another component. Every arrow
+into a guest comes from the host, which is what makes it safe: the page is
+suspended inside its own `solve`, and §6.4's rule is about a component being
+re-entered while an activation of _itself_ is on the stack. The card is a
+different instance, so nothing is re-entered. A component's layout can depend
+on a component it cannot see, and no guest→guest call happens at all.
+
+What it costs is calls. A leaf is measured four or more times per solve, and a
+nested one multiplies: the trace above crosses the ABI a dozen times for three
+components. Memoizing a `measure` answer per (component, request) within a
+frame is the obvious fix and is not written yet.
+
+#### What a child may draw
+
+`place` wraps the child in a clip of the box it was given and translates its
+display list into it. A child draws in its own coordinates from its own
+origin, and is never told where it ended up, so it cannot paint over its
+embedder or read its position out of the geometry it is handed. That is the
+compositor half of §12, and it is enforced for slot content too — the clip
+round a slot is the rect the _declaring_ component's layout chose, not one the
+filler asked for.
+
+#### What is missing
+
+A slot may only be filled with a component, not with a subtree the embedder
+already built. Fallback content for an empty slot, several slots of the same
+name, and reassigning a filled slot are all unimplemented; an empty slot
+measures and paints as nothing. Ordering within a slot does not arise yet
+because a slot holds one thing.
 
 ### Moving the component boundary
 
@@ -1320,6 +1431,15 @@ uses is §6.2's.
   construct for construct.
 - A world whose only export is `main: async func()` — no result — which is
   the shape of every milestone-1 program (`async-void-main.zena`).
+- **An exported interface of synchronous functions, with no `main`**, which
+  is what every ZenaFX component is. The wrapper a declared world synthesizes
+  roots the p3 async driver whether or not anything is async, and the
+  component target used to reject a program in that state; `greeter` did not
+  cover it because one of its exports is `async`. `sync-only.zena`.
+- **A result that flattens past one core value from an exported interface**,
+  such as `func() -> size`: it comes back through a return area, which lives
+  in linear memory, so the lift needs the memory options even with no string
+  or list in the signature (`sync-only.zena`'s `split`).
 
 Taken together these cover every construct the milestone 1 interfaces use.
 
@@ -1338,6 +1458,24 @@ through the child's `mount`. Both components import the same resource type
 from the same runtime instance, so the handle is transferable, but it has to
 move out of the parent's table and into the child's rather than being copied
 as a representation — and the runtime, not either guest, owns it.
+
+**Binding a WIT `result` to a variable.** `let r = spawn(name);` fails with
+`typeToValType: unsupported type: (true, u32, _)`. A `result<T, E>` arrives
+as a tuple of (ok, value, error) and can only be destructured where it is
+produced — `if (let (true, handle, _) = spawn(name))`. Every call site that
+handles a fallible import is shaped around this.
+
+**A world-level export whose parameter is a named record.** `export measure:
+func(request: measure-request) -> size` at world level is refused with "the
+named type 'measure-request' waits on the interop stages". The same signature
+inside an exported _interface_ works, which is why `zenafx:host/widget` is an
+interface rather than two world-level functions. That is the better shape
+anyway, so this costs nothing today.
+
+**Returning an array literal from an arrow.** `let tree = (): Array<Node> =>
+[a, b];` fails with `zir unsupported: return requires conversion`. The literal
+has to be built at the call site, which is why `card.zena` has two node
+builders instead of one tree builder.
 
 **Deferrable exports.** §7.4's deferred delivery is the host's doing, but a
 Zena component on either end has to tolerate it: an exported return-free
@@ -1704,3 +1842,6 @@ button then coexist.
   streams ride on
 - [record-presence.md](./record-presence.md) — presence-optional record
   fields, which the style records want
+- [zenafx-navigation-and-assets.md](./zenafx-navigation-and-assets.md) —
+  how a window names what it shows, and how a component names an image it
+  did not compile into itself. Both are unbuilt.

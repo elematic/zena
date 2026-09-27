@@ -15,8 +15,8 @@ use super::layout::solve;
 use super::surface::Scene;
 use super::text::TextEngine;
 use super::types::{
-    Align, Axis, BoxLook, Color, Command, Edges, Flex, FrameEvent, Glyphs, Length, Node, Quad,
-    Size, TextLook,
+    Align, Axis, BoxLook, Color, Command, Content, Edges, Flex, FrameEvent, Glyphs, Length, Node,
+    Quad, Size, TextLook,
 };
 
 /// A flat scene: layout nodes in pre-order, with a look for each.
@@ -43,7 +43,7 @@ impl FlatScene {
                     corner_radius: look.corner_radius,
                 }));
             }
-            if let Some(run) = self.nodes[i].run {
+            if let Content::Text(run) = self.nodes[i].content {
                 commands.push(Command::Glyphs(Glyphs {
                     run,
                     x: rect.x,
@@ -87,7 +87,7 @@ pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
                     height: Length::Percent(100.0),
                     ..Flex::default()
                 },
-                run: None,
+                content: Content::Box,
                 first_child: 1,
                 child_count: 1,
             },
@@ -101,13 +101,13 @@ pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
                     },
                     ..Flex::default()
                 },
-                run: None,
+                content: Content::Box,
                 first_child: 2,
                 child_count: 1,
             },
             Node {
                 style: Flex::default(),
-                run: Some(run),
+                content: Content::Text(run),
                 first_child: 0,
                 child_count: 0,
             },

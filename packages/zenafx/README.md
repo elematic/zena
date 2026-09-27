@@ -79,17 +79,50 @@ npm run zfx -w @zena-lang/zenafx -- --ui 'Hello from ZenaFX'
 cargo run -p zenafx -- --ui                    # unoptimised, no Wireit
 ```
 
-What is not here yet is the second component. The design has an application
-importing `zenafx:ui/scene` from a runtime component that owns the scene
-graph, with the application driving the frame loop. Today the application
-builds the flat layout tree itself and the host calls it once a frame. The
-design document's milestone 1 says which parts that leaves out.
-
 A window opens showing the message in a rounded card, centred by a flexbox
 layout. Resizing it re-solves and repaints; the layout is recomputed from the
 new size rather than scaled. Close the window to exit. Nothing is drawn
 between frames — the loop waits, and a frame happens only when a redraw was
 requested.
+
+### Children and slots
+
+A component embeds another through `zenafx:host/children`: `spawn` returns an
+opaque handle, `place` draws that component into a rect, `fill-slot` puts one
+component inside another's named hole, and `place-slot` draws whatever was
+put there. An embedder holds a handle, never the child's exports.
+
+[`examples/zenafx/`](../../examples/zenafx/) has a three-component demo:
+`page.zena` spawns `card.zena` and `label.zena`, and projects the label into
+the card's `body` slot. The card draws a title and an inset well so the
+boundary is visible on screen — everything outside the well belongs to the
+card, everything inside it is the label:
+
+```bash
+npm run zfx -w @zena-lang/zenafx -- --app out/page.wasm
+```
+
+The card declares a slot and never learns what filled it, yet the card's size
+is its padding plus the label's size. That works because the **host** owns the
+layout solve: when the solve reaches a slot it calls the filling component's
+`measure` export itself. The embedder is suspended inside its own `solve` at
+that moment, but it is not on the stack of the call into the child, so no
+component is re-entered and no guest ever calls another guest.
+
+The host also clips each child to the box it was given and translates its
+display list into it, so a component draws in its own coordinates from its own
+origin and cannot paint outside its box or discover where it ended up.
+
+### What is not here yet
+
+There is no scene graph. The design has an application importing
+`zenafx:ui/scene` from a runtime component that owns one, with the application
+driving the frame loop; today each component builds its own flat layout tree
+and the host calls the root once a frame. Pointer and keyboard events reach
+the window but are not routed to components, so nothing is interactive.
+Navigation and asset loading are designed in
+[zenafx-navigation-and-assets.md](../../docs/design/zenafx-navigation-and-assets.md)
+and not built. Milestone 1 of the UI design says what else that leaves out.
 
 Everything but the window is covered by tests that need no display, including
 rasterization: `src/ui/` has unit tests for each primitive, and

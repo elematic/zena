@@ -174,13 +174,50 @@ package zenafx:host@0.1.0 {
     use zenafx:ui/style@0.1.0.{flex};
     use zenafx:ui/geometry@0.1.0.{size, rect};
 
+    /// The space a solve offers on one axis.
+    variant available {
+      /// A specific number of pixels.
+      definite(f32),
+      /// The narrowest the content can be: every soft break taken.
+      min-content,
+      /// The widest it would like to be: no soft break taken.
+      max-content,
+    }
+
+    /// One question a solve asks about a leaf.
+    ///
+    /// Layout is a recursive query rather than one pass down and one pass
+    /// up, so a leaf is asked several times per solve and the questions
+    /// depend on the styles above it. A `known` dimension is one the parent
+    /// has already fixed: the solve is asking what the other dimension
+    /// becomes at that size.
+    record measure-request {
+      known-width: option<f32>,
+      known-height: option<f32>,
+      available-width: available,
+      available-height: available,
+    }
+
+    /// What a leaf holds. A box has no content of its own and is sized by
+    /// its style and its children.
+    variant content {
+      box,
+      /// A run registered with `zenafx:host/text`.
+      text(u32),
+      /// A child component, from `zenafx:host/children`. The solve asks it
+      /// for its size.
+      child(u32),
+      /// A hole this component's embedder fills, named. Empty unless the
+      /// embedder called `fill-slot`, and empty slots take no space.
+      slot(string),
+    }
+
     /// One node of a tree given in pre-order. Index 0 is the root; a
     /// node's children are the `child-count` entries starting at
     /// `first-child`. The tree is flat because WIT records cannot recurse.
     record node {
       style: flex,
-      /// A run from `text`, measured during the solve. `none` for a box.
-      run: option<u32>,
+      content: content,
       first-child: u32,
       child-count: u32,
     }
@@ -188,6 +225,35 @@ package zenafx:host@0.1.0 {
     /// Solve one tree. The result is parallel to `nodes`, and each rect is
     /// in the root's coordinate space.
     solve: func(nodes: list<node>, available: size) -> list<rect>;
+  }
+
+  /// Embedding one component inside another.
+  ///
+  /// A child is instantiated by the host, not by its embedder, so the
+  /// embedder never holds the child's memory or exports — only a handle the
+  /// host resolves. Which components an embedder may spawn is the host's to
+  /// decide, which is where a policy check goes.
+  interface children {
+    use zenafx:ui/geometry@0.1.0.{rect};
+
+    /// Instantiate what `source` names and return a handle to it. The
+    /// handle is valid until the embedder is torn down.
+    spawn: func(source: string) -> result<u32, string>;
+
+    /// Put `content` in `child`'s slot called `name`, replacing whatever
+    /// was there. This is how an embedder projects into a component it does
+    /// not otherwise control: the child decides where the slot sits and how
+    /// big it may be, and the embedder decides what goes in it.
+    fill-slot: func(child: u32, name: string, content: u32);
+
+    /// Draw `child` into `bounds` and append what it draws to this frame.
+    /// The host clips it to `bounds` and translates its coordinates, so a
+    /// child cannot draw outside the box it was given.
+    place: func(child: u32, bounds: rect);
+
+    /// Draw whatever fills this component's slot `name` into `bounds`.
+    /// Nothing is drawn if the slot is empty.
+    place-slot: func(name: string, bounds: rect);
   }
 
   interface paint {
@@ -234,6 +300,22 @@ package zenafx:host@0.1.0 {
 
     /// Ask for one more frame. Coalesced.
     request-redraw: func();
+  }
+
+  /// What every ZenaFX component exports, root or embedded.
+  ///
+  /// `render` draws a frame into a box of the given size, in that box's own
+  /// coordinates — a component is never told where it ended up. `measure`
+  /// answers the solve that is deciding how big the box should be, and runs
+  /// while the embedder is suspended inside its own `solve`; the host makes
+  /// that call, not the embedder, so no component is re-entered. A root is
+  /// never embedded and its `measure` is never called.
+  interface widget {
+    use layout.{measure-request};
+    use zenafx:ui/geometry@0.1.0.{size};
+
+    render: func(width: f32, height: f32);
+    measure: func(request: measure-request) -> size;
   }
 
   world runtime {
