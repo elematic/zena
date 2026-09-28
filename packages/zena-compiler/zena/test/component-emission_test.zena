@@ -1631,13 +1631,16 @@ world only {
     let bytes = compileFor(`${fixtures}/print.zena`, 'component');
     // Front matter declares one instance type per imported interface
     // (types, stdout, stderr); the fourth type section is the canon
-    // types'.
+    // types'. A write that does not complete at once waits in
+    // `waitable-set.wait`, which wasmtime allows only inside a call to
+    // an async export, so a printing component exports `main` async and
+    // carries the event loop: beside the stream type sits the event
+    // loop's wake future, a bare `future`.
     let canonTypes = sectionPayloadAfter(bytes, 7, 3);
-    equal(canonTypes.length, 4, 'the canon-type section payload');
-    equal(canonTypes[0], 0x01); // one type
-    equal(canonTypes[1], 0x66); // stream
-    equal(canonTypes[2], 0x01); // element present
-    equal(canonTypes[3], 0x7d); // u8
+    equal(canonTypes[0], 0x02, 'the canon-type section declares two types');
+    // stream (0x66), element present, u8.
+    isTrue(containsBytes(canonTypes, [0x66, 0x01, 0x7d]),
+      'the canon-type section does not declare (stream u8)');
     // The second canon section holds the builtins. stream.write (0x10)
     // carries the type index and its options — async (0x06), so a full
     // stream returns BLOCKED rather than gating on wasmtime's

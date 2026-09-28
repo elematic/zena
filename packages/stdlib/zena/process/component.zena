@@ -1,0 +1,119 @@
+/**
+ * Spawning host processes, for programs the `zena` command's host runs:
+ * `zena-cli:host/process` as the compiler synthesizes it from the
+ * host's WIT. The host grants it to the command and to `zena-run
+ * --allow-spawn`; anywhere else the imports are stubs that trap.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { run } from 'zena:process';
+ *
+ * let result = run(['git', 'status']);
+ * if (result.succeeded()) {
+ *   console.log(result.stdout);
+ * }
+ * ```
+ */
+
+import { Command, Process as HostProcess, Finished } from 'zena-cli:host/process';
+
+/** How a process ended, and what it wrote. */
+export class ProcessResult {
+  exitCode: i32;
+  stdout: String;
+  stderr: String;
+  /** Wall-clock nanoseconds from spawn to exit. */
+  wallNanos: i64;
+  /**
+   * True when the process overran a `waitFor` deadline and was killed
+   * rather than exiting on its own. Whatever it had written before the
+   * deadline is still in `stdout`/`stderr`.
+   */
+  timedOut: boolean;
+
+  new(this.exitCode, this.stdout, this.stderr, this.wallNanos, this.timedOut);
+
+  succeeded(): boolean {
+    return this.exitCode == 0 && !this.timedOut;
+  }
+}
+
+let resultOf = (finished: Finished): ProcessResult => new ProcessResult(
+    finished.exitCode,
+    String.fromBytes(finished.stdout),
+    String.fromBytes(finished.stderr),
+    finished.wallNanos,
+    finished.timedOut);
+
+/** A running process. */
+export final class Process {
+  #proc: HostProcess;
+  var #result: ProcessResult | null = null;
+
+  new(proc: HostProcess) : #proc = proc;
+
+  wait(): ProcessResult {
+    return this.waitFor(0 as i64);
+  }
+
+  /**
+   * Waits at most `millis` for the process to exit, killing it if it
+   * overruns — the result then has `timedOut` set, and holds whatever
+   * it managed to write first. A non-positive `millis` waits forever,
+   * so a caller can disable its timeout without branching. Waiting
+   * again returns the same result.
+   */
+  waitFor(millis: i64): ProcessResult {
+    let cached = this.#result;
+    if (cached != null) {
+      return cached;
+    }
+    let result = resultOf(this.#proc.wait(millis));
+    this.#result = result;
+    return result;
+  }
+}
+
+/**
+ * Start a process from an argument vector, the program first, in the
+ * directory `cwd` (this program's own when null). With `inheritStdio`
+ * the process writes to this program's own streams instead of having
+ * its output captured.
+ */
+export let spawnIn = (
+  argv: Array<String>,
+  cwd: String | null,
+  inheritStdio: boolean = false,
+): Process => {
+  let cmd = Command.create(argv);
+  if (cwd != null) {
+    cmd.cwd(cwd as String);
+  }
+  if (inheritStdio) {
+    cmd.inheritStdio();
+  }
+  match (cmd.spawn()) {
+    case (true, let proc, _): { return new Process(proc); }
+    case (false, _, let why): {
+      throw new Error(`could not start ${argv[0]}: ${why}`);
+    }
+  }
+};
+
+export let spawn = (argv: Array<String>): Process => spawnIn(argv, null);
+
+export let runIn = (argv: Array<String>, cwd: String | null): ProcessResult =>
+  spawnIn(argv, cwd).wait();
+
+export let run = (argv: Array<String>): ProcessResult => spawnIn(argv, null).wait();
+
+/**
+ * Run a process connected to this program's own stdio, so its output
+ * appears as it is written; the result's `stdout` and `stderr` are
+ * empty.
+ */
+export let runInheriting = (
+  argv: Array<String>,
+  cwd: String | null = null,
+): ProcessResult => spawnIn(argv, cwd, true).wait();

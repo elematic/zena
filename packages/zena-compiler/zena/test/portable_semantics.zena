@@ -17,7 +17,7 @@ import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import {
   Diagnostic, DiagnosticSeverity, formatDiagnostic,
 } from '../lib/diagnostics.zena';
-import { createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
+import { Compiler, createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { Discovery, TestFile, registerSuites } from './portable-harness.zena';
@@ -53,9 +53,30 @@ class FsHost implements CompilerHost {
 // deterministic (see portable-harness.zena).
 let stdlibRoot = 'packages/stdlib/zena';
 let host = new FsHost(stdlibRoot);
-let packages = loadPackageMap(host, 'zena-packages.json');
-let options = new CompilerOptions('host', stdlibRoot, packages);
-let compiler = createCompiler(host, options);
+// Made on first use rather than at module init: loading the package
+// map reads files, and a component's module initializers run in the
+// instance's start function, before any task exists to block in.
+var sharedOptions: CompilerOptions | null = null;
+var sharedCompiler: Compiler | null = null;
+let optionsOnce = (): CompilerOptions => {
+  let existing = sharedOptions;
+  if (existing != null) {
+    return existing;
+  }
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  let fresh = new CompilerOptions('host', stdlibRoot, packages);
+  sharedOptions = fresh;
+  return fresh;
+};
+let compilerOnce = (): Compiler => {
+  let existing = sharedCompiler;
+  if (existing != null) {
+    return existing;
+  }
+  let fresh = createCompiler(host, optionsOnce());
+  sharedCompiler = fresh;
+  return fresh;
+};
 var prevCheckResult: ProgramCheckResult | null = null;
 
 /** Renders diagnostics one per line for a failure message. */
@@ -138,8 +159,9 @@ let runSemanticTest = (f: TestFile): void => {
   host.fileSourceOverride = f.source;
 
   // Invalidate the loader cache for this path so the file is re-read.
+  let compiler = compilerOnce();
   compiler.invalidate(f.path);
-  options.warnUnnecessaryCasts = warnUnnecessaryCasts;
+  optionsOnce().warnUnnecessaryCasts = warnUnnecessaryCasts;
 
   let result = compiler.compile(f.path);
   let checkResult = checkCompilation(result, prevCheckResult, false, warnUnnecessaryCasts);

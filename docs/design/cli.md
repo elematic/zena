@@ -1,5 +1,17 @@
 # CLI Standard Library Design
 
+## Status
+
+Implemented over `wasi:cli@0.3.0`, in `packages/stdlib/zena/cli/component.zena`,
+since 2026-09-28: `getArguments`, `getEnvironment` and `initialCwd` call the
+modules the compiler synthesizes from the vendored WIT
+(`wasi:cli/environment`), and `exit` calls `wasi:cli/exit`'s `exit-with-code`.
+The module resolves on the `zena-cli` and `component` targets, which are
+both components. The WASI preview 1 implementation this document describes
+below, with its linear-memory buffers and C strings, was deleted with the
+rest of preview 1; those sections are kept as the record of the first
+implementation.
+
 ## Overview
 
 The `zena:cli` module provides command-line interface utilities for Zena
@@ -14,16 +26,17 @@ programs, including:
 
 ### WASI P2 API Compatibility
 
-The API is designed to closely mirror **WASI Preview 2**'s CLI interfaces, even
-though the current implementation uses WASI Preview 1. This provides:
-
-1. **Easy migration path** - When Zena moves to WASI P2, the API stays the same
-2. **Familiar interface** - Developers familiar with WASI will recognize the API
-3. **Consistency** - Similar approach to other Zena stdlib modules (fs, console)
+The API was designed to closely mirror **WASI Preview 2**'s CLI interfaces
+while the first implementation used WASI Preview 1. That paid off when the
+implementation moved to WASI 0.3, whose `wasi:cli` interfaces are the same
+functions: the API did not change.
 
 ### Interface Mapping
 
-| Zena API           | WASI P2 Interface                      | WASI P1 Implementation             |
+The 0.3 column is what the implementation calls today; the preview 1 column
+is what the first implementation called.
+
+| Zena API           | WASI 0.3 Interface                     | WASI P1 Implementation (deleted)   |
 | ------------------ | -------------------------------------- | ---------------------------------- |
 | `getArguments()`   | `wasi:cli/environment.get-arguments`   | `args_sizes_get`, `args_get`       |
 | `getEnvironment()` | `wasi:cli/environment.get-environment` | `environ_sizes_get`, `environ_get` |
@@ -162,10 +175,16 @@ for (let arg in getArguments()) {
 
 ## Implementation Details
 
-### Memory Management
+The 0.3 implementation has no marshaling of its own: the compiler
+synthesizes a Zena module per WIT interface, so `get-arguments` arrives as
+a function returning `Array<String>` and `exit-with-code` as one taking a
+`u8`. Everything below describes the preview 1 implementation, kept as
+history.
 
-The CLI functions use WASI Preview 1, which requires linear memory for passing
-data. The implementation:
+### Memory Management (preview 1)
+
+The CLI functions used WASI Preview 1, which requires linear memory for
+passing data. The implementation:
 
 1. Allocates temporary buffers using `zena:memory.defaultAllocator`
 2. Calls WASI functions to populate the buffers
@@ -174,7 +193,7 @@ data. The implementation:
 
 This is similar to how `zena:fs` handles WASI I/O.
 
-### String Handling
+### String Handling (preview 1)
 
 WASI P1 uses null-terminated C strings in linear memory. The `readCString`
 helper:
@@ -221,8 +240,9 @@ These will be added when needed, possibly as a separate `zena:terminal` module.
 
 ### Stdin Reading
 
-Reading from stdin is available via WASI P1's `fd_read` on fd 0. This may be
-exposed via:
+Reading from stdin is available through `wasi:cli/stdin@0.3.0`'s
+`read-via-stream`, which hands back a `stream<u8>`. This may be exposed
+via:
 
 ```zena
 // Option 1: Add to zena:cli
@@ -233,25 +253,17 @@ import { stdin } from 'zena:io';
 let line = stdin.readLine();
 ```
 
-## WASI P2 Migration Path
+## The move to WASI 0.3
 
-When Zena adopts WASI Component Model (Preview 2):
-
-1. **No API changes needed** - The Zena API already mirrors P2
-2. **Implementation swap** - Replace P1 calls with P2 component imports
-3. **Better error handling** - P2 uses `result` types which map to Zena's
-   error handling
-
-The P2 implementation would look like:
+Zena skipped Preview 2 and moved from preview 1 to WASI 0.3 in one step
+(2026-09-28; see [component-emission.md](./component-emission.md)). As
+planned, the API did not change and the implementation was swapped. The
+0.3 implementation imports the synthesized interface modules directly:
 
 ```zena
-// Future P2 implementation (conceptual)
-@import("wasi:cli/environment", "get-arguments")
-declare function __wasi_get_arguments(): Array<String>;
+import { getArguments as witGetArguments } from 'wasi:cli/environment';
 
-export let getArguments = (): Array<String> => {
-  return __wasi_get_arguments();  // Direct, no marshalling needed with CM-GC
-};
+export let getArguments = (): Array<String> => witGetArguments();
 ```
 
 ## References

@@ -29,11 +29,15 @@ import {
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
+import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { getEnv } from 'zena:cli';
+import { readWitSource } from 'wit-parser:document';
 
 /** Mirrors codegen-wat_test's helper; UPDATE_SNAPSHOTS=1 regenerates. */
 let assertSnapshot = (name: String, content: String): void => {
@@ -59,6 +63,12 @@ let stdlibRoot = 'packages/stdlib/zena';
 class PlainHost implements CompilerHost {
   new();
   readFile(path: String): String {
+    // A WIT-backed package's module has no file: the `zena-cli` target's
+    // stack traces import `zena-cli:host/stack-trace`, synthesized from
+    // the host WIT the stdlib carries.
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
+    }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
@@ -66,8 +76,15 @@ class PlainHost implements CompilerHost {
   }
 }
 
-/** Compiles to wasm the way `zena-cli build` does — names off. */
-let compile = (path: String, target: String = 'zena-cli'): ByteArray => {
+/**
+ * Compiles to wasm the way `zena-cli build` does — names off. The
+ * budgets measure the core module with no host beneath it, which is
+ * `freestanding`: `zena-cli` and `component` wrap the same module in a
+ * component, and `zena-cli` always adds the event loop that lets
+ * `main` be an async export, which is the host's cost rather than the
+ * program's.
+ */
+let compile = (path: String, target: String = 'freestanding'): ByteArray => {
   let host = new PlainHost();
   let packages = loadPackageMap(host, 'zena-packages.json');
   let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
@@ -239,7 +256,7 @@ export let tests = suite('Binary size', (): void => {
     // FixedArray<String> as a sibling force-reached its `contains`,
     // whose `==` on elements dragged the whole String equality/hash
     // family into a program with no strings.
-    let wat = new WatGenerator('zena-cli', false).generate(programOf(arrayTarget));
+    let wat = new WatGenerator('freestanding', false).generate(programOf(arrayTarget));
     isTrue(!wat.contains('ArrayIterator'),
       `${arrayTarget} emits ArrayIterator machinery for a loop lowering ` +
       `compiles to an index loop.`);
@@ -314,7 +331,7 @@ export let tests = suite('Binary size', (): void => {
     // COMPILE once subclassed — the erased body has no operand type to
     // dispatch on. See
     // tests/language/execution/generics/subclassed-generic-eq-hash.zena.
-    let wat = new WatGenerator('zena-cli', false).generate(programOf(subclassedTarget));
+    let wat = new WatGenerator('freestanding', false).generate(programOf(subclassedTarget));
     isTrue(!wat.contains('_anyref.'),
       `${subclassedTarget} emits a method on an erased class type. No value ` +
       `can have that type — every value the mention stands for is a real ` +
@@ -352,7 +369,7 @@ export let tests = suite('Binary size', (): void => {
     // component suite's CPU-time assertion.
     let unreachedTarget =
         'packages/zena-compiler/test-files/unreached-class-generic-field.zena';
-    let wat = new WatGenerator('zena-cli', false).generate(programOf(unreachedTarget));
+    let wat = new WatGenerator('freestanding', false).generate(programOf(unreachedTarget));
     isTrue(!wat.contains('Marker'),
       `${unreachedTarget} emits the Cell<Marker> specialization. Only an ` +
       `unreachable class's field type names it, and laying that class out ` +
@@ -370,7 +387,7 @@ export let tests = suite('Binary size', (): void => {
     // returns `'hello'.length`, which is the whole of what `zena:core`
     // cost over importing the same name from its own module.
     let quiet = 'packages/zena-compiler/test-files/core-facade-no-template.zena';
-    let wat = new WatGenerator('zena-cli', false).generate(programOf(quiet));
+    let wat = new WatGenerator('freestanding', false).generate(programOf(quiet));
     isTrue(!wat.contains('TemplateStringsArray'),
       `${quiet} emits TemplateStringsArray. Importing a library that ` +
       `re-exports it is not evidence that a tagged template exists.`);
@@ -385,7 +402,7 @@ export let tests = suite('Binary size', (): void => {
     // never emitting the class at all.
     let tagged =
         'packages/zena-compiler/test-files/core-facade-tagged-template.zena';
-    let wat = new WatGenerator('zena-cli', false).generate(programOf(tagged));
+    let wat = new WatGenerator('freestanding', false).generate(programOf(tagged));
     isTrue(wat.contains('TemplateStringsArray'),
       `${tagged} does not emit TemplateStringsArray, but its tagged ` +
       `template needs one built.`);
@@ -397,7 +414,7 @@ export let tests = suite('Binary size', (): void => {
     // UPDATE_SNAPSHOTS=1; `zena build <file> -o out.wat` dumps the
     // same text for any program.
     assertSnapshot('hello_string_program',
-        new WatGenerator('zena-cli', false).generate(programOf(helloTarget)));
+        new WatGenerator('freestanding', false).generate(programOf(helloTarget)));
   });
 
   test('the array-sum WAT names everything it ships', (ctx: TestContext): void => {
@@ -407,7 +424,7 @@ export let tests = suite('Binary size', (): void => {
     // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry means a
     // loop that lowers to array.get started reaching machinery again.
     assertSnapshot('array_sum_program',
-        new WatGenerator('zena-cli', false).generate(programOf(arrayTarget)));
+        new WatGenerator('freestanding', false).generate(programOf(arrayTarget)));
   });
 
   test('the minimal program WAT is exactly the ideal module', (ctx: TestContext): void => {
@@ -417,7 +434,7 @@ export let tests = suite('Binary size', (): void => {
     // UPDATE_SNAPSHOTS=1 and eyeball the diff — a new entry here means
     // something reached code a program with no code in it cannot run.
     assertSnapshot('minimal_program',
-        new WatGenerator('zena-cli', false).generate(programOf(target)));
+        new WatGenerator('freestanding', false).generate(programOf(target)));
   });
 
   test('a program with no strings exports no string helpers', (ctx: TestContext): void => {
@@ -436,16 +453,14 @@ export let tests = suite('Binary size', (): void => {
 
   test('naming zena:wasi links none of the component runtime', (ctx: TestContext): void => {
     // The library is all-target, because the name is the subject and not
-    // the host: a wasi-family program can say `zena:wasi` and a component
+    // the host: a core-module program can say `zena:wasi` and a component
     // is only where the canonical parts have anything beneath them. What
     // makes that safe is that the `@external("canon", ...)` declarations
     // are declarations — reachability links one when the program calls
     // it, and this program calls none.
-    equal(importCount(compile(wasiTarget, 'wasi')), 0,
-      `${wasiTarget} imports something on the wasi target. Naming the ` +
-      `module must not link the component runtime behind it.`);
     equal(importCount(compile(wasiTarget, 'freestanding')), 0,
-      `${wasiTarget} imports something on the freestanding target.`);
+      `${wasiTarget} imports something on the freestanding target. Naming ` +
+      `the module must not link the component runtime behind it.`);
   });
 
   test('freestanding imports nothing the program did not ask for', (ctx: TestContext): void => {
@@ -462,18 +477,21 @@ export let tests = suite('Binary size', (): void => {
       `target with no host must import only what the program declared.`);
     equal(importCount(compile(target, 'freestanding')), 0,
       `${target} imports something on the freestanding target.`);
-    // The same program on a target that HAS the hooks still links them:
-    // this is a target-conditional implementation, not a deletion.
-    equal(importCount(compile(errorTarget, 'zena-cli')), 2,
-      `${errorTarget} does not import the two stack-trace hooks on ` +
-      `zena-cli, whose host supplies them.`);
+    // The same program on a target that HAS a host still links the
+    // hooks: `zena-cli`'s traces come from its host's `stack-trace`
+    // interface, so that import must be there. Import names are stored
+    // verbatim like export names, so the byte scan finds it the same way.
+    isTrue(hasExport(compileComponent(errorTarget, 'zena-cli'),
+        'zena-cli:host/stack-trace'),
+      `${errorTarget} does not import the host's stack-trace interface on ` +
+      `zena-cli, whose host supplies it.`);
   });
 
   test('the name section is opt-in', (ctx: TestContext): void => {
     // Debug metadata, and for a small module the largest thing in it.
     // `-g` (ZENA_DEBUG_NAMES) turns it on; the default must not.
     let plain = compile(target);
-    let named = new BinaryGenerator('zena-cli', false, true)
+    let named = new BinaryGenerator('freestanding', false, true)
       .generate(programOf(target))
       .toByteArray();
     isTrue(named.length > plain.length,
@@ -483,11 +501,29 @@ export let tests = suite('Binary size', (): void => {
   });
 });
 
-/** The `Program` for a path, for a second generate() over the same input. */
-let programOf = (path: String): Program => {
+/**
+ * Compiles a component the way `zena-cli build` does for a component
+ * target, with the runtime memory module and the WIT-typed import
+ * encoder the wrapper needs; `compile` above stops at the core module.
+ */
+let compileComponent = (path: String, target: String): ByteArray => {
   let host = new PlainHost();
   let packages = loadPackageMap(host, 'zena-packages.json');
-  let c = createCompiler(host, new CompilerOptions('zena-cli', stdlibRoot, packages));
+  let generator = new BinaryGenerator(target, false);
+  generator.runtimeMemoryModule =
+      compileComponentRuntimeModule(host, stdlibRoot, packages);
+  // The WIT-backed packages the stdlib carries, as the CLI passes them.
+  let packagesWit = readWitSource(`${stdlibRoot}/wit`) + '\n' +
+      readWitSource(`${stdlibRoot}/host-wit`);
+  generator.importEncoder = makeImportEncoder(null, '', packagesWit);
+  return generator.generate(programOf(path, target)).toByteArray();
+};
+
+/** The `Program` for a path, for a second generate() over the same input. */
+let programOf = (path: String, target: String = 'freestanding'): Program => {
+  let host = new PlainHost();
+  let packages = loadPackageMap(host, 'zena-packages.json');
+  let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
   let result = c.compile(path);
   let checked = checkCompilation(result, null, false);
   let entryAst = result.entry.ast;

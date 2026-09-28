@@ -32,7 +32,10 @@
  */
 
 import { Set } from 'zena:collections';
-import { Completer, drainMicrotasks } from 'zena:async';
+import {
+  Completer, Parker, drainMicrotasks, setBlockingParker
+} from 'zena:async';
+import { Memory, defaultAllocator } from 'zena:memory';
 
 
 // ============================================================================
@@ -73,6 +76,19 @@ declare function waitableSetDrop(set: WaitableSet): void;
  * it is in. A join is persistent until the next join. */
 @external("canon", "waitable.join")
 export declare function waitableJoin(waitable: Waitable, set: WaitableSet): void;
+
+/**
+ * The blocking wait: suspends this task until something in the set
+ * fires, returns the event's kind, and stores the waitable index and
+ * the payload as two u32s at `ptr`. Only a task the host lifted async
+ * may call it: a synchronous task that blocks traps ("cannot block a
+ * synchronous task before returning"), which is why every component
+ * entry is lifted async, and why a synchronous WIT export can never
+ * do blocking I/O. `blockOn` below is the driver's use; the byte
+ * stream's blocking write is the other.
+ */
+@external("canon", "waitable-set.wait")
+export declare function waitableSetWait(set: i32, ptr: i32): i32;
 
 @external("canon", "subtask.drop")
 declare function subtaskDrop(subtask: Waitable): void;
@@ -238,6 +254,61 @@ let pendingCopies = new Map<Waitable, Completer<i32>>();
 export function beginTask(): void {
   currentTask = new TaskContext();
 }
+
+/**
+ * The synchronous wait's park source on this target: one blocking
+ * `waitable-set.wait` on the running task's set, dispatched the way the
+ * callback would. `runFuture` falls back to it once the microtask queue
+ * is empty, which is what lets a synchronous caller wait out a p3
+ * import or timer — `zena:fs` does, and so does a test that runs a
+ * future to its value. Installed by `blockOn` (block.zena), and on the
+ * zena command's host by the entry, through `zena:host-setup`. Not by
+ * `beginTask`: building the parker links the wait, whose event pair
+ * lives in linear memory, and a component that only awaits has no use
+ * for either.
+ */
+final class DriverParker implements Parker {
+  new();
+
+  park(): boolean {
+    let ctx = currentContext();
+    if (ctx.pendingWaitables == 0) {
+      return false;
+    }
+    if (let (true, area) = defaultAllocator.alloc(8)) {
+      let mem = Memory.default;
+      let event = waitableSetWait(ensureSet(ctx) as i32, area);
+      let fired = mem.getI32(area);
+      let code = mem.getI32(area + 4);
+      defaultAllocator.free(area);
+      let waitable = fired as Waitable;
+      let isCopy = event == EVENT_STREAM_READ || event == EVENT_STREAM_WRITE ||
+          event == EVENT_FUTURE_READ || event == EVENT_FUTURE_WRITE;
+      if ((event == EVENT_SUBTASK && code == STATE_RETURNED) || isCopy) {
+        dispatchEvent(event, waitable, code);
+        // The event may have belonged to another task; the blocking
+        // one is running again now.
+        currentTask = ctx;
+      }
+      return true;
+    }
+    throw new Error('the blocking wait could not allocate its event area');
+  }
+}
+
+var blockingParkerInstalled = false;
+
+/**
+ * Register the parker, once: for `blockOn` (block.zena) and the zena
+ * command's host setup. A program that reaches neither links no
+ * blocking wait.
+ */
+export let installBlockingParker = (): void => {
+  if (!blockingParkerInstalled) {
+    blockingParkerInstalled = true;
+    setBlockingParker(new DriverParker());
+  }
+};
 
 /** The running task, created lazily when nothing began one: code
  * that waits before any adapter ran, which is the synchronous
@@ -413,6 +484,20 @@ export async function finishTask<T>(
 }
 
 /**
+ * Note that the running task's typed `task.return` has been called
+ * already, by the entry itself: a synchronous `main`'s value is known
+ * when it returns, and the entry adapter the compiler builds returns
+ * it before asking what to do next (ir/component-adapters.zena in the
+ * compiler). Without this the driver would issue its bare
+ * `task.return` at exit, a second return for the same task.
+ */
+export function markReturned(): void {
+  let ctx = currentContext();
+  ctx.returnsValue = true;
+  ctx.returned = true;
+}
+
+/**
  * Decide how the task returns to the host: EXIT once it has nothing
  * left to wait on — after `task.return`, and after dropping its
  * waitable set, since a set left alive at exit is a leak the host
@@ -511,6 +596,18 @@ export function componentResume(
   if (event != EVENT_SUBTASK && !isCopy) {
     return waitOn(currentContext().waitableSet);
   }
+  let ctx = dispatchEvent(event, waitable, code);
+  return nextCode(ctx);
+}
+
+/**
+ * Resolve what an event settles — the completer parked on the
+ * subtask, or on the stream or future end — and run the microtask
+ * checkpoint. Returns the task that was waiting on the waitable,
+ * which becomes the running task. The callback's second half, and
+ * the whole of a `blockOn` turn.
+ */
+let dispatchEvent = (event: i32, waitable: Waitable, code: i32): TaskContext => {
   let released = release(waitable);
   let ctx = if (released != null) released else currentContext();
   currentTask = ctx;
@@ -530,5 +627,6 @@ export function componentResume(
     completer.complete(code);
   }
   drainMicrotasks();
-  return nextCode(ctx);
-}
+  return ctx;
+};
+

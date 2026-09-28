@@ -253,20 +253,24 @@ compile-time error.
 
 ## Host imports
 
-External functions provided by the host environment (such as JavaScript or WASI)
-are declared using `declare function` paired with the `@external` decorator:
+External functions provided by the host environment (such as JavaScript or a
+WASI interface) are declared using `declare function` paired with the
+`@external` decorator:
 
 ```zena
 @external("env", "readTimestamp")
 declare function readTimestamp(): i64;
 
-@external("wasi_snapshot_preview1", "proc_exit")
-declare function procExit(rval: i32): void;
+@external("wasi:clocks/monotonic-clock@0.3.0", "now")
+declare function now(): u64;
 ```
 
 The `@external` decorator takes two arguments: the WebAssembly import module
-name and the field name within that module. Host declarations omit the function
-body and compile directly to WebAssembly function imports.
+name and the field name within that module. On a core-module target (`js`,
+`freestanding`) the module name is a core import namespace such as `env`; on a
+component target (`component`, `zena-cli`) it names a WIT interface. Host
+declarations omit the function body and compile directly to WebAssembly
+function imports.
 
 ## Library resolution
 
@@ -332,7 +336,8 @@ A package entry takes one of three forms:
     them using relative paths.
   - `path`: Overrides the entry file for a library relative to `root`.
   - `virtual`: Target-conditional mapping. Selects different library files based
-    on the compilation target (`--target host` versus `--target wasi`).
+    on the compilation target (`js`, `zena-cli`, `freestanding` or
+    `component`).
 - **WIT-backed package**: `"wit": "./path"`. Configures a package backed by
   WebAssembly Component Model WIT interfaces. The compiler synthesizes
   declarations directly from the WIT definitions.

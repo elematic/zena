@@ -1,10 +1,11 @@
 //! `zena-cli`: the `zena` command.
 //!
 //! The command is a Zena program, the CLI module
-//! (`packages/zena-cli/zena/main.zena`, built to `out/zena.wasm`), which
-//! reads the command line, compiles, runs programs and tests, and builds
-//! targets. This binary is its host: it does what `zena-run` does for any
-//! module, plus three things the module cannot find out for itself.
+//! (`packages/zena-cli/zena/main.zena`, built to `out/zena.wasm` as a
+//! component), which reads the command line, compiles, runs programs and
+//! tests, and builds targets. This binary is its host: it does what
+//! `zena-run` does for any component, plus three things the module
+//! cannot find out for itself.
 //!
 //! - Where the module is, and the repository it works in.
 //! - The directory the user ran the command from. The module's working
@@ -14,15 +15,16 @@
 //!   else.
 //! - How many CPUs there are, which WASI cannot ask.
 //!
-//! The module may spawn processes and run modules (zb runs build
+//! The module may spawn processes and run components (zb runs build
 //! commands, and `zena test` runs each test), so it gets the grant. See
 //! docs/design/cli-module.md.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use wasmtime::{Engine, Linker, Store, Val};
+use wasmtime::Store;
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
-use zena_runtime::{Grant, HostState, Spawn};
+use zena_runtime::Grant;
+use zena_runtime::component::ComponentState;
 
 /// The repository root: the compiler, the standard library and the CLI
 /// module hang off it. Defaults to the checkout this binary was built in
@@ -61,13 +63,17 @@ fn cli_module(repo_root: &Path) -> Result<PathBuf> {
 fn main() -> Result<()> {
     let repo_root = repo_root()?;
     let module_path = cli_module(&repo_root)?;
+    if zena_runtime::core_module::is_core_module_file(&module_path)? {
+        anyhow::bail!(
+            "{} is a core module; the zena command's module is a component, \
+             built for the zena-cli target.",
+            module_path.display()
+        );
+    }
     let cwd = std::env::current_dir()?;
     let cpus = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-
-    let engine = Engine::new(&zena_runtime::engine::config(false))?;
-    let module = zena_runtime::cache::load_module(&engine, &module_path, false)?;
 
     // argv[0] is the program's name; the rest is the user's.
     let mut args = vec!["zena".to_string()];
@@ -86,36 +92,24 @@ fn main() -> Result<()> {
         .preopened_dir(&repo_root, ".", FsPerms::ReadWrite)?
         .preopened_dir("/", "/", FsPerms::ReadWrite)?;
 
-    let spawn = Spawn::Allow(Grant {
+    let grant = Grant {
         path_map: vec![
             (".".to_string(), repo_root.clone()),
             ("/".to_string(), PathBuf::from("/")),
         ],
         debug: false,
-    });
-    let mut linker: Linker<HostState> = Linker::new(&engine);
-    zena_runtime::add_to_linker(&mut linker, &engine, &module, spawn)?;
-
+    };
+    let engine = zena_runtime::engine::shared_component_engine(false)?;
+    let component =
+        zena_runtime::cache::load_component_variant(&engine, &module_path, false, false)?;
+    let linker = zena_runtime::component::linker(&engine)?;
     let mut store = Store::new(
         &engine,
-        HostState {
-            wasi: wasi.build_p1(),
-        },
+        ComponentState::new(&engine, wasi.build(), Some(grant)),
     );
-    zena_runtime::engine::reserve_gc_heap(&engine, &mut store)?;
-
-    let instance = linker.instantiate(&mut store, &module).inspect_err(|e| {
-        eprintln!("Instantiation failed!");
-        zena_runtime::report_trap(e);
-    })?;
-
-    match zena_runtime::call_export(&mut store, &instance, "main") {
+    match zena_runtime::component::run_main(&mut store, &linker, &component, "main") {
         Ok(results) => {
-            let code = match results.first() {
-                Some(Val::I32(code)) => *code,
-                _ => 0,
-            };
-            std::process::exit(code);
+            std::process::exit(zena_runtime::component::exit_status(&results));
         }
         Err(e) => {
             if let Some(code) = zena_runtime::exit_code(&e) {

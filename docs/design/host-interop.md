@@ -503,7 +503,8 @@ result.instance.exports.main();
 
 ## WASI Consideration
 
-**Decision**: We do **NOT** use WASI Preview 1 for basic I/O.
+**Decision** (at the time): do not use WASI Preview 1 for basic I/O on the
+JS host.
 
 WASI Preview 1 is designed for Linear Memory with pointers and lengths. Using it with WASM GC would require:
 
@@ -511,7 +512,12 @@ WASI Preview 1 is designed for Linear Memory with pointers and lengths. Using it
 2. Copying GC data to Linear Memory
 3. Managing iovec structs
 
-This adds complexity for a GC-native language. We will revisit when WASI Preview 2 (Component Model) matures.
+This adds complexity for a GC-native language. The JS host kept its own
+`console` imports. The zena command's host did use preview 1 for a time,
+through `zena:fs`, `zena:cli` and a `wasi_write_string` intrinsic; all of
+that was replaced by WASI 0.3 through components on 2026-09-28
+([component-emission.md](./component-emission.md)), and preview 1 no
+longer appears anywhere in the repository.
 
 ## Next Steps (Completed)
 

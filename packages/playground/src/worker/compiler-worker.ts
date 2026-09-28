@@ -227,15 +227,6 @@ async function runProgram(
         info_string: logToPane('info'),
         debug_string: logToPane('log'),
       },
-      // A host-target module still declares whatever WASI its stdlib
-      // reached; there is no filesystem or clock behind it in a worker.
-      wasi_snapshot_preview1: {
-        fd_write: () => 0,
-        proc_exit: () => 0,
-        environ_get: () => 0,
-        environ_sizes_get: () => 0,
-        clock_time_get: () => 0,
-      },
     });
     const instance = 'instance' in result ? result.instance : result;
     programExports = instance.exports;

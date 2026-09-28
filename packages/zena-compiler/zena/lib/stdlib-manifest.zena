@@ -26,8 +26,6 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
     "args",
     "assert",
     "async",
-    "cli",
-    "fs",
     "glob",
     "json",
     "math",
@@ -56,8 +54,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   let memoryVirtual = new Map<String, String>();
   memoryVirtual["host"] = "memory.zena";
   memoryVirtual["js"] = "memory.zena";
-  memoryVirtual["wasi"] = "memory.zena";
-  memoryVirtual["zena-cli"] = "memory.zena";
+  memoryVirtual["zena-cli"] = "memory/component.zena";
   memoryVirtual["freestanding"] = "memory.zena";
   memoryVirtual["component"] = "memory/component.zena";
   exports["memory"] = new ModuleExport(memoryVirtual);
@@ -65,8 +62,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   let consoleVirtual = new Map<String, String>();
   consoleVirtual["host"] = "console/host.zena";
   consoleVirtual["js"] = "console/host.zena";
-  consoleVirtual["wasi"] = "console/wasi.zena";
-  consoleVirtual["zena-cli"] = "console/wasi.zena";
+  consoleVirtual["zena-cli"] = "console/component.zena";
   // The component console prints over p3 stdio. `freestanding` shares
   // it: a freestanding build is a component's core module without the
   // wrapper, and the two must load the same prelude for the wrapper to
@@ -96,8 +92,10 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   let errorStackVirtual = new Map<String, String>();
   errorStackVirtual["host"] = "core/error/stack-host.zena";
   errorStackVirtual["js"] = "core/error/stack-host.zena";
-  errorStackVirtual["wasi"] = "core/error/stack-host.zena";
-  errorStackVirtual["zena-cli"] = "core/error/stack-host.zena";
+  // The zena command's host formats the backtrace over its own
+  // interface, installed at run time by `zena:host-setup` (below); a
+  // portable component has no host to ask.
+  errorStackVirtual["zena-cli"] = "core/error/stack-hooked.zena";
   errorStackVirtual["freestanding"] = "core/error/stack-none.zena";
   errorStackVirtual["component"] = "core/error/stack-none.zena";
   // Internal: `zena:core` is the only thing that reaches it, through
@@ -106,12 +104,35 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // exists at all.
   exports["error-stack"] = new ModuleExport(errorStackVirtual, null, true);
 
-  // Virtual module: process → host process spawning. Only wasi-family
-  // targets can compile it, and only the zena-cli host links real
-  // implementations (for trusted invocations); see the library header.
+  // Virtual module: host-setup → what a program on the zena command's
+  // host needs installed before it runs: the host as the source of
+  // `Error`'s stack traces, and the blocking wait. A runtime module of
+  // the zena-cli target (prelude.zena's getTargetRuntimeModules), whose
+  // `installHost` the component entry calls before `main`.
+  let hostSetupVirtual = new Map<String, String>();
+  hostSetupVirtual["zena-cli"] = "host-setup.zena";
+  exports["host-setup"] = new ModuleExport(hostSetupVirtual);
+
+  // Virtual module: fs → the file system, over wasi:filesystem 0.3 on
+  // both component targets. The 0.3 filesystem is asynchronous
+  // throughout, so every call waits for the host in `blockOn`.
+  let fsVirtual = new Map<String, String>();
+  fsVirtual["zena-cli"] = "fs/component.zena";
+  fsVirtual["component"] = "fs/component.zena";
+  exports["fs"] = new ModuleExport(fsVirtual);
+
+  // Virtual module: cli → arguments, environment and exit, over
+  // wasi:cli 0.3.
+  let cliVirtual = new Map<String, String>();
+  cliVirtual["zena-cli"] = "cli/component.zena";
+  cliVirtual["component"] = "cli/component.zena";
+  exports["cli"] = new ModuleExport(cliVirtual);
+
+  // Virtual module: process → host process spawning, on the zena
+  // command's host only, which links it for trusted invocations; see
+  // the library header.
   let processVirtual = new Map<String, String>();
-  processVirtual["wasi"] = "process/wasi.zena";
-  processVirtual["zena-cli"] = "process/wasi.zena";
+  processVirtual["zena-cli"] = "process/component.zena";
   exports["process"] = new ModuleExport(processVirtual);
 
   // Virtual module: wasm → running other Wasm modules, on zena-cli only:
@@ -119,7 +140,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // process spawning and linked by the same hosts; see the library
   // header.
   let wasmVirtual = new Map<String, String>();
-  wasmVirtual["zena-cli"] = "wasm/wasi.zena";
+  wasmVirtual["zena-cli"] = "wasm/component.zena";
   exports["wasm"] = new ModuleExport(wasmVirtual);
 
   // Virtual module: js → JavaScript-host interop, currently the
@@ -151,14 +172,13 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   httpVirtual["component"] = "http/index.zena";
   exports["http"] = new ModuleExport(httpVirtual);
 
-  // Virtual module: time → sleeping and the monotonic clock. Both
-  // entries park synchronously and share time/queue.zena; only the
-  // clock differs (poll_oneoff vs a host import). See async.md §4.
+  // Virtual module: time → sleeping and the monotonic clock. The JS
+  // entry parks synchronously on a host import and shares
+  // time/queue.zena; see async.md §4.
   let timeVirtual = new Map<String, String>();
   timeVirtual["host"] = "time/host.zena";
   timeVirtual["js"] = "time/host.zena";
-  timeVirtual["wasi"] = "time/wasi.zena";
-  timeVirtual["zena-cli"] = "time/wasi.zena";
+  timeVirtual["zena-cli"] = "time/p3.zena";
   // The component target's clock is p3's, and p3's wait is asynchronous:
   // see docs/design/component-emission.md, Part 5.
   timeVirtual["component"] = "time/p3.zena";

@@ -15,6 +15,7 @@ import {
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
 import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
 
 // ============================================================================
@@ -28,6 +29,11 @@ class FsHost implements CompilerHost {
   new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
 
   readFile(path: String): String {
+    // A WIT-backed package's module has no file: it is synthesized
+    // from the package's WIT.
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
+    }
     if (path.startsWith("zena:")) {
       // Map zena:array → packages/stdlib/zena/core/array.zena and
       // zena:console/host.zena → packages/stdlib/zena/console/host.zena
@@ -55,11 +61,11 @@ let errorDiagnostics = (diags: Array<Diagnostic>): Array<Diagnostic> => {
   return errors;
 };
 
-let checkFile = (entryPath: String): Array<Diagnostic> => {
+let checkFile = (entryPath: String, target: String = "host"): Array<Diagnostic> => {
   let stdlibRoot = "packages/stdlib/zena";
   let host = new FsHost(stdlibRoot);
   let packages = loadPackageMap(host, "zena-packages.json");
-  let options = new CompilerOptions("host", stdlibRoot, packages);
+  let options = new CompilerOptions(target, stdlibRoot, packages);
   let compiler = createCompiler(host, options);
   // console.log("Compiling " + entryPath + "...");
   let result = compiler.compile(entryPath);
@@ -136,9 +142,9 @@ export let tests = suite('Checker: Real Files', (): void => {
     equal(errors.length, 0);
   });
 
-  test('checks cli.zena', (ctx: TestContext): void => {
-    let errors = checkFile("packages/stdlib/zena/cli.zena");
-    printDiagnostics(errors, "cli.zena");
+  test('checks cli/component.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/stdlib/zena/cli/component.zena", "zena-cli");
+    printDiagnostics(errors, "cli/component.zena");
     equal(errors.length, 0);
   });
 
@@ -154,9 +160,9 @@ export let tests = suite('Checker: Real Files', (): void => {
     equal(errors.length, 0);
   });
 
-  test('checks console-wasi.zena', (ctx: TestContext): void => {
-    let errors = checkFile("packages/stdlib/zena/console/wasi.zena");
-    printDiagnostics(errors, "console-wasi.zena");
+  test('checks console/component.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/stdlib/zena/console/component.zena", "zena-cli");
+    printDiagnostics(errors, "console/component.zena");
     equal(errors.length, 0);
   });
 
@@ -172,9 +178,9 @@ export let tests = suite('Checker: Real Files', (): void => {
     equal(errors.length, 0);
   });
 
-  test('checks fs.zena', (ctx: TestContext): void => {
-    let errors = checkFile("packages/stdlib/zena/fs.zena");
-    printDiagnostics(errors, "fs.zena");
+  test('checks fs/component.zena', (ctx: TestContext): void => {
+    let errors = checkFile("packages/stdlib/zena/fs/component.zena", "zena-cli");
+    printDiagnostics(errors, "fs/component.zena");
     equal(errors.length, 0);
   });
 
@@ -311,7 +317,9 @@ export let tests = suite('Checker: Real Files', (): void => {
   });
 
   test('checks compiler main.zena', (ctx: TestContext): void => {
-    let errors = checkFile("packages/zena-compiler/zena/cli/main.zena");
+    // The zena command's entry, on the target it is built for: it
+    // imports the modules only that host provides.
+    let errors = checkFile("packages/zena-compiler/zena/cli/main.zena", "zena-cli");
     printDiagnostics(errors, "main.zena");
     equal(errors.length, 0);
   });

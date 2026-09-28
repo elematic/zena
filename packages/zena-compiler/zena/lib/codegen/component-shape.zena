@@ -20,7 +20,7 @@ import { WasmModule, WasmFunction } from './wasm-module.zena';
 import {
   Type, FunctionType, TypeAliasType, ClassType, I32Type, U32Type, I64Type,
   U64Type, F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, BooleanType,
-  VoidType, typeToString
+  VoidType, typeToString, baseType
 } from '../types.zena';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc, ComponentFuncType,
@@ -35,9 +35,15 @@ import {
 } from './component-emitter.zena';
 
 /** Look through type aliases (`type`, `distinct type`) to the type itself. */
+/**
+ * The type a value of `t` is represented as: through distinct aliases
+ * and enums to the scalar under them, and from a literal type (an
+ * unannotated `main` returning `false` is typed at the literal) to
+ * its base.
+ */
 let underlying = (t: Type): Type => match (t) {
   case TypeAliasType as alias: underlying(alias.target)
-  case _: t
+  case _: baseType(t)
 };
 
 /**
@@ -317,6 +323,12 @@ export let buildComponentShape = (
               "none.");
         }
         returnsFor = field.sliceBytes(hashAt + 1, field.length);
+      } else if (canonBuiltinBaseName(field) == "task.return" &&
+          f.node == null) {
+        // The entry adapter's own `task.return#main`, for a
+        // synchronous main: no declaration to read, and its type is
+        // the entry's result (ir/component-adapters.zena).
+        builtinResult = wasm.componentEntryResult;
       } else if (canonBuiltinBaseName(field) == "task.return") {
         // `task.return` carries the lifted task's result, so its type
         // comes from what the declaration takes, not from what it

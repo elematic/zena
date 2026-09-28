@@ -144,22 +144,23 @@ let isScalarResult = (name: String): boolean => {
 
 /**
  * The scalar `T` of an `async` function annotated `Future<T>`, or the
- * empty string when the function is not that shape.
+ * empty string when the function is not that shape. A synchronous
+ * main needs no wrapper: its value is known when it returns, and the
+ * entry adapter returns it itself (ir/component-adapters.zena).
  */
-let asyncScalarResultOf = (func: FunctionExpression): String => {
-  if (!func.isAsync) { return ''; }
+let scalarResultOf = (func: FunctionExpression): String => {
   let annotation = func.returnType;
-  if (annotation is NamedTypeAnnotation) {
-    if (annotation.name == 'Future') {
-      let args = annotation.typeArguments;
-      if (args != null) {
-        if (args.length == 1) {
-          let arg = args[0];
-          if (arg is NamedTypeAnnotation) {
-            if (arg.typeArguments == null) {
-              if (isScalarResult(arg.name)) {
-                return arg.name;
-              }
+  if (!(annotation is NamedTypeAnnotation)) { return ''; }
+  if (!func.isAsync) { return ''; }
+  if (annotation.name == 'Future') {
+    let args = annotation.typeArguments;
+    if (args != null) {
+      if (args.length == 1) {
+        let arg = args[0];
+        if (arg is NamedTypeAnnotation) {
+          if (arg.typeArguments == null) {
+            if (isScalarResult(arg.name)) {
+              return arg.name;
             }
           }
         }
@@ -171,12 +172,13 @@ let asyncScalarResultOf = (func: FunctionExpression): String => {
 
 /**
  * The scalar result of the module's exported async `main`, or the
- * empty string. Both spellings count: `export async function main()`
- * and `export let main = async () => ...`.
+ * empty string: the payload of a main annotated `Future<T>`. Both
+ * spellings count: `export async function main()` and
+ * `export let main = async () => ...`.
  */
 export function mainScalarResultOf(ast: Module): String {
   let main = exportedMainOf(ast);
-  return if (main == null) '' else asyncScalarResultOf(main as FunctionExpression);
+  return if (main == null) '' else scalarResultOf(main as FunctionExpression);
 }
 
 /** Whether the module exports an async `main`: the entry the
@@ -240,9 +242,9 @@ export function renderWrapperHeader(sb: StringBuilder): void {
 }
 
 /**
- * The typed return for `main`'s scalar `result`, and `run`, which
- * starts main and hands the driver the return. Appended to a wrapper
- * whose imports already bring in `main` and `finishTask`.
+ * The typed return for an async `main`'s scalar `result`, and `run`,
+ * which starts main and hands the driver the return. Appended to a
+ * wrapper whose imports already bring in `main` and `finishTask`.
  */
 export function renderMainWrapper(sb: StringBuilder, result: String): void {
   sb.append('@external("canon", "task.return#main")\n');
@@ -259,7 +261,7 @@ export function renderMainWrapper(sb: StringBuilder, result: String): void {
 
 /**
  * The wrapper for the entry at `entryPath` with syntax `ast`, or null
- * when the program's `main` returns nothing, is synchronous, or
+ * when the program's `main` is synchronous, returns nothing or
  * returns something other than a flat scalar.
  */
 export function componentEntryWrapperFor(

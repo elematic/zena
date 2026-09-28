@@ -1,17 +1,22 @@
-//! `zena-run`: runs one compiled Zena module on wasmtime.
+//! `zena-run`: runs one compiled Zena component, or a core module, on
+//! wasmtime.
 //!
-//! This is the smallest host a module built for the `zena-cli` target
-//! can run under: wasmtime configured for Zena's output, WASI preview 1,
-//! and the imports from `zena-runtime` (stack traces, and `zena:process`
-//! when granted). It does not compile Zena source; `zena-cli` bundles the
-//! compiler and hands modules it builds to the same runtime crate.
+//! This is the smallest host a component built for the `zena-cli` target
+//! can run under: wasmtime configured for Zena's output, WASI 0.3, and
+//! the `zena-cli:host` interfaces from `zena-runtime` (stack traces, and
+//! `zena:process` and `zena:wasm` when granted). A core module — a
+//! `freestanding` build, hand-written `.wat` — runs with no imports, so
+//! `--dir`, `--allow-spawn` and the arguments do not reach it. It does
+//! not compile Zena source; `zena-cli` bundles the compiler and hands
+//! programs it builds to the same runtime crate.
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::Path;
-use wasmtime::{Engine, Linker, Store};
+use wasmtime::Store;
 use wasmtime_wasi::{FsPerms, WasiCtxBuilder};
-use zena_runtime::{DirMapping, Grant, HostState, Spawn};
+use zena_runtime::component::ComponentState;
+use zena_runtime::{DirMapping, Grant};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -31,17 +36,17 @@ struct Cli {
     invoke: String,
 
     /// Allow the program to spawn host processes via zena:process and run
-    /// other Wasm modules via zena:wasm (a deliberate sandbox escape;
+    /// other components via zena:wasm (a deliberate sandbox escape;
     /// ZENA_ALLOW_SPAWN=1 also works)
     #[arg(long = "allow-spawn")]
     allow_spawn: bool,
 
-    /// Compile the module in memory instead of reading or writing the
+    /// Compile the component in memory instead of reading or writing the
     /// ahead-of-time compiled `.cwasm` kept beside it
     #[arg(long = "no-cache")]
     no_cache: bool,
 
-    /// The .wasm (or .wat) file to run
+    /// The .wasm (or .wat) component or core module to run
     file: String,
 
     /// Arguments passed to the program
@@ -54,19 +59,15 @@ fn main() -> Result<()> {
     let path = Path::new(&cli.file);
     if path.extension().is_some_and(|e| e == "zena") {
         anyhow::bail!(
-            "{} is Zena source; zena-run only runs compiled modules. \
+            "{} is Zena source; zena-run only runs compiled components. \
              Build it first with `zena build {} -o <out>.wasm`.",
             cli.file,
             cli.file
         );
     }
-
-    let engine = Engine::new(&zena_runtime::engine::config(cli.debug))?;
-    let module = if cli.no_cache {
-        zena_runtime::cache::compile_uncached(&engine, path)?
-    } else {
-        zena_runtime::cache::load_module(&engine, path, cli.debug)?
-    };
+    if zena_runtime::core_module::is_core_module_file(path)? {
+        return run_core_module(&cli, path);
+    }
 
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.inherit_stdio().inherit_env();
@@ -84,34 +85,30 @@ fn main() -> Result<()> {
         path_map.push((mapping.guest, host));
     }
 
-    let spawn = if zena_runtime::spawn_allowed(cli.allow_spawn) {
-        Spawn::Allow(Grant {
+    let grant = if zena_runtime::spawn_allowed(cli.allow_spawn) {
+        Some(Grant {
             path_map,
             debug: cli.debug,
         })
     } else {
-        Spawn::Deny
+        None
     };
-    let mut linker: Linker<HostState> = Linker::new(&engine);
-    zena_runtime::add_to_linker(&mut linker, &engine, &module, spawn)?;
 
+    let engine = zena_runtime::engine::shared_component_engine(cli.debug)?;
+    let component = if cli.no_cache {
+        zena_runtime::cache::compile_component_uncached(&engine, path)?
+    } else {
+        zena_runtime::cache::load_component_variant(&engine, path, cli.debug, false)?
+    };
+    let linker = zena_runtime::component::linker(&engine)?;
     let mut store = Store::new(
         &engine,
-        HostState {
-            wasi: wasi_builder.build_p1(),
-        },
+        ComponentState::new(&engine, wasi_builder.build(), grant),
     );
-    zena_runtime::engine::reserve_gc_heap(&engine, &mut store)?;
-
-    let instance = linker.instantiate(&mut store, &module).inspect_err(|e| {
-        eprintln!("Instantiation failed!");
-        zena_runtime::report_trap(e);
-    })?;
-
-    match zena_runtime::call_export(&mut store, &instance, &cli.invoke) {
+    match zena_runtime::component::run_main(&mut store, &linker, &component, &cli.invoke) {
         Ok(results) => {
             if let Some(res) = results.first() {
-                println!("{}", zena_runtime::format_result(res));
+                println!("{}", zena_runtime::component::format_val(res));
             }
             Ok(())
         }
@@ -121,6 +118,31 @@ fn main() -> Result<()> {
             if let Some(code) = zena_runtime::exit_code(&e) {
                 std::process::exit(code);
             }
+            zena_runtime::report_trap(&e);
+            Err(e.into())
+        }
+    }
+}
+
+/// Runs a core module: no imports, and its first result printed the way
+/// a component's is.
+fn run_core_module(cli: &Cli, path: &Path) -> Result<()> {
+    let engine = zena_runtime::engine::shared_component_engine(cli.debug)?;
+    let module = if cli.no_cache {
+        zena_runtime::cache::compile_module_uncached(&engine, path)?
+    } else {
+        zena_runtime::cache::load_module_variant(&engine, path, cli.debug, false)?
+    };
+    let mut store = Store::new(&engine, ());
+    zena_runtime::engine::reserve_gc_heap(&engine, &mut store)?;
+    match zena_runtime::core_module::call_export(&mut store, &module, &cli.invoke) {
+        Ok(results) => {
+            if let Some(res) = results.first() {
+                println!("{}", zena_runtime::core_module::format_val(res));
+            }
+            Ok(())
+        }
+        Err(e) => {
             zena_runtime::report_trap(&e);
             Err(e.into())
         }

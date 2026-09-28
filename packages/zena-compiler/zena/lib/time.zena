@@ -1,24 +1,14 @@
-import { Memory, defaultAllocator } from 'zena:memory';
+/**
+ * Wall-time measurement for the compiler's own phases: `performance`
+ * accumulates the time spent under each named phase, over the
+ * standard library's monotonic clock, which every target supplies.
+ */
 
-@external("wasi_snapshot_preview1", "clock_time_get")
-declare function __wasi_clock_time_get(
-  clockId: i32,
-  precision: i64,
-  timePtr: i32
-): i32;
+import { monotonic } from 'zena:time';
 
+/** The monotonic clock, in milliseconds. */
 let getMonotonicTimeMs = (): f64 => {
-  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
-    // Clock ID 1 is CLOCK_MONOTONIC. Precision 1ns.
-    let res = __wasi_clock_time_get(1, 1 as i64, addr);
-    if (res == 0) {
-      let ns = Memory.default.getI64(addr);
-      defaultAllocator.free(addr);
-      return (ns as f64) / 1000000.0;
-    }
-    defaultAllocator.free(addr);
-  }
-  return 0.0;
+  return ((monotonic() as i64) as f64) / 1000000.0;
 };
 
 final class Measure {
@@ -27,6 +17,10 @@ final class Measure {
   new(this.name, this.startTime);
 }
 
+/**
+ * Named phase timings. `start` opens a measure and returns its id;
+ * `end` closes it and adds its duration to the phase's total.
+ */
 export final class Performance {
   var #nextId: i32 = 0;
   #active = new Map<i32, Measure>();

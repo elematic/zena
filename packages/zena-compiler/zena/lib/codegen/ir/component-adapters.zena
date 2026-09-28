@@ -66,7 +66,7 @@ import {
   componentAbiModule, ComponentValType, toKebabName
 } from '../component-emitter.zena';
 import { componentTypeOf, declaredTypeOf } from '../component-shape.zena';
-import { ClassType, VoidType } from '../../types.zena';
+import { ClassType, Type, VoidType } from '../../types.zena';
 import {
   isComponentEntryPath, componentEntryRunName, componentExportSuffix,
   componentSyncExportSuffix, componentExportNameOf
@@ -86,9 +86,12 @@ let driverModule = 'wasi';
  * Build the async entry, if this program links a driver that needs one.
  *
  * "Needs one" is decided by reachability, not by a flag: `componentPoll`
- * is reached exactly when the program pulled in `zena:wasi`,
- * which happens when it uses `zena:time` or any async WIT import. A
- * program with no asynchrony gets the synchronous lift and none of this.
+ * is reached exactly when the program pulled in `zena:wasi` and either
+ * awaited something through it, blocked through it (a file read, a
+ * stdout write that did not complete at once — only a task the host
+ * lifted async may block), or has an async main; and always on the
+ * zena command's host. A program that does none of that gets the
+ * synchronous lift and none of this.
  */
 export let prepareComponentEntry = (
   wasm: WasmModule,
@@ -99,7 +102,9 @@ export let prepareComponentEntry = (
   let poll = wasm.getStdlibFunc(driverModule, 'componentPoll');
   let resume = wasm.getStdlibFunc(driverModule, 'componentResume');
   let begin = wasm.getStdlibFunc(driverModule, 'beginTask');
-  if (poll == null || resume == null || begin == null) {
+  let markReturned = wasm.getStdlibFunc(driverModule, 'markReturned');
+  if (poll == null || resume == null || begin == null ||
+      markReturned == null) {
     return;
   }
   if (!poll.isReached || !resume.isReached) {
@@ -117,7 +122,9 @@ export let prepareComponentEntry = (
   wasm.componentCallbackFunc = resume;
   pass.markFunctionReached(resume);
   pass.markFunctionReached(begin);
-  prepareAsyncExports(wasm, pass, begin, poll);
+  pass.markFunctionReached(markReturned);
+  let install = hostSetupInstall(wasm, pass);
+  prepareAsyncExports(wasm, pass, begin, install, poll);
 
   let key = 'main' as ExportKey;
   if (!wasm.exportMap.has(key)) {
@@ -149,27 +156,38 @@ export let prepareComponentEntry = (
       'The component target cannot drive a main that takes parameters.'
     );
   }
-  // What the entry calls: `main` itself, or, when main's future
-  // carries a value, the wrapper's `run` (lib/component-entry.zena),
-  // which starts main and hands the driver the typed `task.return` to
-  // call once the value is known. The lifted entry then has that
-  // result type, and the value reaches the host through the return
-  // rather than through the callee.
+  // What the entry calls: `main` itself, or, when an async main's
+  // future carries a value, the wrapper's `run`
+  // (lib/component-entry.zena), which starts main and hands the driver
+  // the typed `task.return` to call once the value is known. A
+  // synchronous main's value is known as soon as it returns, so the
+  // entry returns it itself, through a `task.return` declared here at
+  // the checked return type — an annotation is not needed, and an
+  // enum or a distinct alias returns as the scalar under it. The
+  // lifted entry then has that result type, and the value reaches the
+  // host through the return rather than through the callee.
   var callee = main;
   var calleeReturnsFuture = mainIsAsync;
+  var syncReturn: WasmFunction | null = null;
   wasm.componentEntryResult = -1;
   if (main.signature.returns.length != 0) {
     var accepted = false;
     let declared = declaredTypeOf(main, 'export');
     let ret = declared.returnType;
-    if (mainIsAsync && ret is ClassType && ret.name == 'Future') {
-      let targs = ret.typeArguments;
-      if (targs != null && targs.length == 1) {
-        let payload = targs[0];
-        if (payload is VoidType) {
+    if (mainIsAsync) {
+      var payload: Type | null = null;
+      if (ret is ClassType && ret.name == 'Future') {
+        let targs = ret.typeArguments;
+        if (targs != null && targs.length == 1) {
+          payload = targs[0];
+        }
+      }
+      if (payload != null) {
+        let value = payload as Type;
+        if (value is VoidType) {
           accepted = true;
         } else {
-          let result = componentTypeOf(wasm, payload);
+          let result = componentTypeOf(wasm, value);
           let run = entryWrapperRun(wasm);
           if (result >= 0 && run != null) {
             callee = run;
@@ -180,15 +198,21 @@ export let prepareComponentEntry = (
           }
         }
       }
+    } else {
+      let result = componentTypeOf(wasm, ret);
+      if (result >= 0) {
+        wasm.componentEntryResult = result;
+        syncReturn = mainTaskReturn(wasm, main);
+        accepted = true;
+      }
     }
     if (!accepted) {
       throw new Error(
-        'A program that sleeps on the component target must declare ' +
-        '`main(): void`, `async function main(): Future<void>`, or an ' +
-        'exported `async function main(): Future<T>` with T a flat ' +
-        'scalar. The entry is lifted async, and an async lift returns ' +
-        'its result through task.return once the value is known, which ' +
-        'is not where main returned it.'
+        'On this target `main` is lifted async, and an async lift ' +
+        'returns its result through task.return, which carries a flat ' +
+        'scalar. Declare it `main(): void`, `main(): T`, `async function ' +
+        'main(): Future<void>` or `async function main(): Future<T>`, ' +
+        'with T a flat scalar.'
       );
     }
   }
@@ -207,10 +231,25 @@ export let prepareComponentEntry = (
   // can wait or return.
   b.callFunc(b.addRef(new IrRefFunc(begin)), new Array<i32>(0),
       null);
+  if (install != null) {
+    b.callFunc(b.addRef(new IrRefFunc(install as WasmFunction)),
+        new Array<i32>(0), null);
+  }
   if (calleeReturnsFuture) {
     // The frame future, deliberately unobserved (see above).
     b.callFunc(b.addRef(new IrRefFunc(callee)), new Array<i32>(0),
         callee.signature.returns[0]);
+  } else if (syncReturn != null) {
+    // The value is known now: return it, and tell the driver so it
+    // does not return again at exit.
+    let value = b.callFunc(b.addRef(new IrRefFunc(callee)),
+        new Array<i32>(0), callee.signature.returns[0]);
+    let args = new Array<i32>(1);
+    args.push(value);
+    b.callFunc(b.addRef(new IrRefFunc(syncReturn as WasmFunction)), args,
+        null);
+    b.callFunc(b.addRef(new IrRefFunc(markReturned)), new Array<i32>(0),
+        null);
   } else {
     b.callFunc(b.addRef(new IrRefFunc(callee)), new Array<i32>(0),
         null);
@@ -221,6 +260,44 @@ export let prepareComponentEntry = (
   entryBodies[entry.uid] = b.finish();
 
   wasm.componentEntryFunc = entry;
+};
+
+/**
+ * The `task.return#main` import a synchronous main's entry returns
+ * through: a canonical builtin taking main's one core result, added
+ * here because no source module can name a program's main. Its
+ * component-level type is `componentEntryResult`, which the shape
+ * reads for an import with no declaration.
+ */
+let mainTaskReturn = (wasm: WasmModule, main: WasmFunction): WasmFunction => {
+  let params = new Array<ValType>(1);
+  params.push(main.signature.returns[0]);
+  let sig = wasm.getSignature(params, new Array<ValType>(0));
+  let f = new WasmFunction(sig, null, main.model);
+  f.name = 'task.return#main';
+  f.isImport = true;
+  f.importModule = 'canon';
+  f.importName = 'task.return#main';
+  wasm.functionImports.push(f);
+  return f;
+};
+
+/**
+ * `zena:host-setup`'s `installHost`, when the target loads that module
+ * (the zena command's host): called by every entry before the program
+ * runs, so `Error`'s stack traces come from the host and a synchronous
+ * wait may block. Null on a portable component, which has no host to
+ * ask and links the blocking wait only where it blocks.
+ */
+let hostSetupInstall = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis
+): WasmFunction | null => {
+  let install = wasm.getStdlibFunc('host-setup', 'installHost');
+  if (install != null) {
+    pass.markFunctionReached(install as WasmFunction);
+  }
+  return install;
 };
 
 /**
@@ -253,6 +330,7 @@ let prepareAsyncExports = (
   wasm: WasmModule,
   pass: ReachabilityAnalysis,
   begin: WasmFunction,
+  install: WasmFunction | null,
   poll: WasmFunction
 ): void => {
   let prog = wasm.program;
@@ -290,6 +368,10 @@ let prepareAsyncExports = (
         b.switchTo(block);
         b.callFunc(b.addRef(new IrRefFunc(begin)), new Array<i32>(0),
             null);
+        if (install != null) {
+          b.callFunc(b.addRef(new IrRefFunc(install as WasmFunction)),
+              new Array<i32>(0), null);
+        }
         b.callFunc(b.addRef(new IrRefFunc(target)), args, null);
         let code = b.callFunc(b.addRef(new IrRefFunc(poll)),
             new Array<i32>(0), new ValTypeI32());

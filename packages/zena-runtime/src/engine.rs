@@ -1,11 +1,11 @@
-//! Wasmtime engine configuration for compiled Zena modules.
+//! Wasmtime engine configuration for compiled Zena components.
 
 use anyhow::Result;
 use wasmtime::{Collector, Config, Engine, Inlining, Linker, Module, Store};
 
-use crate::HostState;
-
-/// The wasmtime `Config` every Zena host uses.
+/// The core-wasm part of the wasmtime `Config` every Zena host uses;
+/// [`component_config`] adds the Component Model on top, and `zenafx`
+/// adds its own component and graphics settings.
 ///
 /// Zena's output needs GC, exception handling, typed function references
 /// and tail calls (`return_call` for `tail return`, see
@@ -51,30 +51,69 @@ pub const EPOCH_TICK: std::time::Duration = std::time::Duration::from_millis(10)
 /// [`EPOCH_TICK`], is out of reach.
 pub const NO_DEADLINE: u64 = u64::MAX / 2;
 
-/// The engine that runs modules with a time limit (`zena:wasm`'s
-/// `withTimeout`), one per `debug` setting, created on first use.
-///
-/// It is [`config`] with epoch interruption on: compiled code checks the
-/// engine's epoch at function entries and loop back edges, and a ticker
-/// thread advances the epoch every [`EPOCH_TICK`]. Those checks cost
-/// every call something, so only runs that ask for a limit use this
-/// engine; every other module runs on an engine without them. Its
-/// modules are cached under their own `.cwasm` name
-/// ([`crate::cache::cwasm_path_for_variant`]), because wasmtime refuses a
-/// `.cwasm` compiled with different settings.
-///
-/// Every store on it needs a deadline, or it traps at the first call:
-/// set one with `store.set_epoch_deadline`, [`NO_DEADLINE`] for none.
-pub fn interruptible_engine(debug: bool) -> Result<Engine> {
+/// Whether `engine` is one of the [`interruptible_component_engine`]s. A
+/// component run from inside one runs on it too, and is cached under its
+/// name.
+pub fn is_interruptible(engine: &Engine) -> bool {
+    [
+        &COMPONENT_INTERRUPTIBLE_RELEASE,
+        &COMPONENT_INTERRUPTIBLE_DEBUG,
+    ]
+    .iter()
+    .any(|cell| cell.get().is_some_and(|e| Engine::same(e, engine)))
+}
+
+/// The wasmtime `Config` every Zena host uses: [`config`] plus the
+/// Component Model with its async ABI, since a Zena component's `main`
+/// may be lifted async and its imports include streams and futures.
+pub fn component_config(debug: bool) -> Config {
+    let mut config = config(debug);
+    config.wasm_component_model(true);
+    config.wasm_component_model_async(true);
+    config
+}
+
+/// The engine every ordinary run shares, one per `debug` setting,
+/// created on first use. A run started through `zena:wasm` with its
+/// caller's debug setting shares the caller's engine; one with the
+/// other setting takes the other engine.
+pub fn shared_component_engine(debug: bool) -> Result<Engine> {
     let cell = if debug {
-        &INTERRUPTIBLE_DEBUG
+        &COMPONENT_SHARED_DEBUG
     } else {
-        &INTERRUPTIBLE_RELEASE
+        &COMPONENT_SHARED_RELEASE
     };
     if let Some(engine) = cell.get() {
         return Ok(engine.clone());
     }
-    let mut config = config(debug);
+    let created = Engine::new(&component_config(debug))?;
+    Ok(cell.get_or_init(|| created).clone())
+}
+
+/// The engine that runs components with a time limit (`zena:wasm`'s
+/// `timeout`), one per `debug` setting, created on first use.
+///
+/// It is [`component_config`] with epoch interruption on: compiled code
+/// checks the engine's epoch at function entries and loop back edges,
+/// and a ticker thread advances the epoch every [`EPOCH_TICK`]. Those
+/// checks cost every call something, so only runs that ask for a limit
+/// use this engine; every other component runs on an engine without
+/// them. Its components are cached under their own `.cwasm` name
+/// ([`crate::cache::cwasm_path_for_variant`]), because wasmtime refuses
+/// a `.cwasm` compiled with different settings.
+///
+/// Every store on it needs a deadline, or it traps at the first call:
+/// set one with `store.set_epoch_deadline`, [`NO_DEADLINE`] for none.
+pub fn interruptible_component_engine(debug: bool) -> Result<Engine> {
+    let cell = if debug {
+        &COMPONENT_INTERRUPTIBLE_DEBUG
+    } else {
+        &COMPONENT_INTERRUPTIBLE_RELEASE
+    };
+    if let Some(engine) = cell.get() {
+        return Ok(engine.clone());
+    }
+    let mut config = component_config(debug);
     config.epoch_interruption(true);
     let created = Engine::new(&config)?;
     let mut started_here = false;
@@ -84,7 +123,6 @@ pub fn interruptible_engine(debug: bool) -> Result<Engine> {
             created
         })
         .clone();
-    // One ticker per engine, started by whichever thread created it.
     if started_here {
         let ticked = engine.clone();
         std::thread::spawn(move || {
@@ -97,35 +135,11 @@ pub fn interruptible_engine(debug: bool) -> Result<Engine> {
     Ok(engine)
 }
 
-/// The engine for a run whose debug setting differs from its caller's
-/// (`zena:wasm`'s `debugging`), one per setting, created on first use.
-/// A run with the caller's setting shares the caller's engine instead.
-pub fn shared_engine(debug: bool) -> Result<Engine> {
-    let cell = if debug {
-        &SHARED_DEBUG
-    } else {
-        &SHARED_RELEASE
-    };
-    if let Some(engine) = cell.get() {
-        return Ok(engine.clone());
-    }
-    let created = Engine::new(&config(debug))?;
-    Ok(cell.get_or_init(|| created).clone())
-}
-
-static SHARED_RELEASE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
-static SHARED_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
-
-static INTERRUPTIBLE_RELEASE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
-static INTERRUPTIBLE_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
-
-/// Whether `engine` is one of the [`interruptible_engine`]s. A module run
-/// from inside one runs on it too, and is cached under its name.
-pub fn is_interruptible(engine: &Engine) -> bool {
-    [&INTERRUPTIBLE_RELEASE, &INTERRUPTIBLE_DEBUG]
-        .iter()
-        .any(|cell| cell.get().is_some_and(|e| Engine::same(e, engine)))
-}
+static COMPONENT_SHARED_RELEASE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+static COMPONENT_SHARED_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+static COMPONENT_INTERRUPTIBLE_RELEASE: std::sync::OnceLock<Engine> =
+    std::sync::OnceLock::new();
+static COMPONENT_INTERRUPTIBLE_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
 
 /// Selects the wasmtime GC collector via the ZENA_GC env var
 /// (null | drc | copying). Defaults to wasmtime's Auto.
@@ -166,7 +180,7 @@ const DEFAULT_GC_RESERVE_MB: u64 = 0;
 /// `array.new_default` because the host-side `ArrayRef::new`
 /// initializes elements one `Val` at a time (~2.4s/GiB, versus
 /// memset speed here).
-pub fn reserve_gc_heap(engine: &Engine, store: &mut Store<HostState>) -> Result<()> {
+pub fn reserve_gc_heap<T>(engine: &Engine, store: &mut Store<T>) -> Result<()> {
     let mb: u64 = match std::env::var("ZENA_GC_RESERVE_MB") {
         Ok(v) => v
             .trim()
@@ -187,7 +201,7 @@ pub fn reserve_gc_heap(engine: &Engine, store: &mut Store<HostState>) -> Result<
       (func (export "balloon") (param $len i32)
         (drop (array.new_default $balloon (local.get $len)))))"#;
     let module = Module::new(engine, wat)?;
-    let instance = Linker::<HostState>::new(engine).instantiate(&mut *store, &module)?;
+    let instance = Linker::<T>::new(engine).instantiate(&mut *store, &module)?;
     let balloon = instance.get_typed_func::<i32, ()>(&mut *store, "balloon")?;
     let len = i32::try_from(mb * (1 << 20) / 8).unwrap();
     // A failure here only means less headroom, not incorrectness.

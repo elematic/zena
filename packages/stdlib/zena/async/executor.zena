@@ -112,6 +112,37 @@ export let setParker = (p: Parker): void => {
   parker = p;
 };
 
+/**
+ * The park source a *synchronous* wait falls back to: `runFuture`, once
+ * the drain has emptied the queue and the parker above has declined,
+ * asks it to block until the host delivers something, and drains
+ * again. The component target registers its driver here, whose turn
+ * is one blocking `waitable-set.wait` on the running task's set —
+ * which the host allows only inside a task it lifted async, so a
+ * component's entries are. The plain parker cannot do this: a p3
+ * timer arms an asynchronous wait and returns, so the host may
+ * re-enter the program through the callback, and only a caller that
+ * insists on a value here and now should block instead. Null on the
+ * targets where nothing external can complete a future.
+ */
+var blockingParker: Parker | null = null;
+
+/** Register the synchronous wait's park source. */
+export let setBlockingParker = (p: Parker): void => {
+  blockingParker = p;
+};
+
+/** One blocking turn of the synchronous wait's park source: true when
+ * it delivered something, false when there is nothing to wait on or no
+ * source is registered. */
+export let parkBlocking = (): boolean => {
+  let p = blockingParker;
+  if (p == null) {
+    return false;
+  }
+  return (p as Parker).park();
+};
+
 /** Enqueue a task on the microtask queue. */
 export let scheduleTask = (task: Waiter): void => {
   getQueue().schedule(task);

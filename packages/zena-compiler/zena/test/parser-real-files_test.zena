@@ -1,5 +1,5 @@
 import { suite, test, TestContext } from 'zena:test';
-import { isTrue } from 'zena:assert';
+import { equal } from 'zena:assert';
 import { readFile, listDir, FileType } from 'zena:fs';
 import { parse } from '../lib/parser.zena';
 
@@ -19,30 +19,37 @@ let parseFile = (path: String): boolean => {
   return mod;
 };
 
-let parseDir = (dirPath: String): void => {
-  let entries = listDir(dirPath);
-  for (let entry in entries) {
+/** Every `.zena` file under `dirPath`, deepest directories included. */
+let zenaFilesUnder = (dirPath: String, out: GrowableArray<String>): void => {
+  for (let entry in listDir(dirPath)) {
     if (entry.fileType == FileType.Directory) {
       if (entry.name != "." && entry.name != "..") {
-        let subPath = dirPath + "/" + entry.name;
-        suite(entry.name, (): void => {
-          parseDir(subPath);
-        });
+        zenaFilesUnder(dirPath + "/" + entry.name, out);
       }
     } else if (entry.fileType == FileType.RegularFile) {
       if (entry.name.endsWith(".zena")) {
-        let filePath = dirPath + "/" + entry.name;
-        test(entry.name, (ctx: TestContext): void => {
-          isTrue(parseFile(filePath));
-        });
+        out.push(dirPath + "/" + entry.name);
       }
     }
   }
 };
 
+// The files are listed inside the test rather than while the suite
+// registers: registration runs in the instance's start function,
+// before any task exists, and a component's file system calls block
+// in a task.
 export let tests = suite('Parser: Real Files', (): void => {
-  suite('stdlib', (): void => {
-    parseDir('packages/stdlib/zena');
+  test('every standard library file parses', (ctx: TestContext): void => {
+    let files = new Array<String>();
+    zenaFilesUnder('packages/stdlib/zena', files);
+    var failed = 0;
+    var names = '';
+    for (let path in files) {
+      if (!parseFile(path)) {
+        failed += 1;
+        names = names + ' ' + path;
+      }
+    }
+    equal(failed, 0, `files that did not parse:${names}`);
   });
 });
-

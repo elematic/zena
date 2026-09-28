@@ -20,7 +20,7 @@
  */
 
 import { Outcome, Ok, Err, ScopedFrom } from 'zena:core';
-import { Waiter, scheduleTask, drainMicrotasks } from './executor.zena';
+import { Waiter, scheduleTask, drainMicrotasks, parkBlocking } from './executor.zena';
 
 /**
  * Raises on the cancellation channel (docs/design/cancellation.md).
@@ -641,9 +641,23 @@ export class DeferredFuture<T> extends Future<T> {
  *
  * Top-level only — a driver, a test, `main`. Calling it from inside a
  * task would re-enter the drain and break run-to-completion.
+ *
+ * What the host owes — a p3 import's result, a timer — arrives only
+ * while the program waits for it, and on a component target this waits
+ * through the parker `zena:wasi` registers: on the zena command's host
+ * at every entry, and on a portable component only once something
+ * links `blockOn`. A portable component that runs a future waiting on
+ * the host without that is reported as a deadlock here; an `async
+ * main` that awaits it is the way to write it.
  */
 export let runFuture = <T>(f: Future<T>): T => {
   drainMicrotasks();
+  // Still pending after the drain: block for what the host owes, when
+  // the target can (see `setBlockingParker`), draining after each
+  // delivery, until the value is in or nothing is left to wait on.
+  while (!f.isCompleted && parkBlocking()) {
+    drainMicrotasks();
+  }
   return f.[valueOrThrow]();
 };
 

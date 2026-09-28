@@ -33,7 +33,8 @@ import {
 } from '../component-emitter.zena';
 import { targetEmitsComponent } from '../../targets.zena';
 import {
-  isComponentEntryPath, componentSyncExportSuffix, hasAsyncMain
+  isComponentEntryPath, componentSyncExportSuffix, componentEntryRunName,
+  hasAsyncMain
 } from '../../component-entry.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 
@@ -325,7 +326,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
   var typeIdGenerator = makeTypeIdGenerator(1);
 
-  new(this.program, this.wasm, this.target = "zena-cli") {
+  new(this.program, this.wasm, this.target = "freestanding") {
     var idGen: IdGenerator<TypeId> | null = null;
     let {entryPoint} = program;
     if (entryPoint != null) {
@@ -511,8 +512,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.markTypeReached(func.signature);
 
         // Reaching a linear-memory intrinsic means the module needs a
-        // memory section (and the "memory" export). WASI targets get
-        // this from registerWasiInfra, but the host target reaches
+        // memory section (and the "memory" export). A target reaches
         // zena:memory only through user code — the compiler's own
         // time.zena, for the LSP — and previously emitted memory ops
         // with no declared memory (invalid wasm at instantiation).
@@ -686,11 +686,20 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * wrappers. So the gate is that the program's own traversal, which
    * has just finished, reached a door into the driver's registries:
    * `awaitPacked` (subtasks) or `awaitWaitable` (stream and future
-   * copies). A program that never awaits an async-lowered import or
-   * a canonical copy keeps the synchronous lift.
+   * copies), or `waitable-set.wait` itself, which is how a synchronous
+   * call blocks — a file read, a stdout write that did not complete at
+   * once — and which the host allows only inside a task it lifted
+   * async. A program that never awaits an async-lowered import, never
+   * blocks and has no async main keeps the synchronous lift.
+   *
+   * The zena command's host is the exception: it lifts every `main`
+   * async, so that the entry installs the host's stack-trace hooks
+   * before the program runs, and so that a program run there may block
+   * on whatever it links later.
    */
   #rootComponentAsyncDriver(): void {
     let driverPath = componentDriverUnitId;
+    let hostSetupUnitId = "zena:host-setup";
     let prog = this.program;
     if (prog == null || !prog.unitsByPath.has(driverPath)) {
       return;
@@ -698,34 +707,93 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let awaitPacked = this.wasm.getStdlibFunc('wasi', 'awaitPacked');
     let awaitWaitable =
         this.wasm.getStdlibFunc('wasi', 'awaitWaitable');
+    let blockingWait =
+        this.wasm.getStdlibFunc('wasi', 'waitableSetWait');
     var anyDoorReached =
         (awaitPacked != null && (awaitPacked as WasmFunction).isReached) ||
-        (awaitWaitable != null && (awaitWaitable as WasmFunction).isReached);
-    // An entry wrapper hands the driver main's value through
-    // `finishTask`, which only the entry and callback can deliver: a
-    // program with one is driven whether or not it ever awaits an
-    // import.
+        (awaitWaitable != null && (awaitWaitable as WasmFunction).isReached) ||
+        (blockingWait != null && (blockingWait as WasmFunction).isReached);
+    // A declared world's export wrappers hand the event loop a value
+    // through `finishTask`, which only an async export's entry and
+    // callback can deliver: a program with one needs the event loop
+    // whether or not it ever awaits an import. The wrapper's `run` is
+    // written only for an async main, which counts below on its own;
+    // it is kept below with the rest of the event loop.
+    var wrapper: CompilationUnit | null = null;
     for (let unit in prog.units) {
       if (isComponentEntryPath(unit.ast.path)) {
-        anyDoorReached = true;
+        wrapper = unit;
+        for (let stmt in unit.ast.body) {
+          if (stmt is FunctionDeclaration) {
+            let fn = stmt as FunctionDeclaration;
+            if (fn.exported && fn.name.name != componentEntryRunName) {
+              anyDoorReached = true;
+            }
+          }
+        }
       }
     }
-    // An `async main` is the same case without a wrapper to notice it
-    // by. The async pass replaces the `main` export with a synthesized
-    // wrapper, and only the entry can lift one — a wrapper has no
-    // declaration for the component target to read a signature from. So
-    // the program is driven whether or not it awaits anything, and
-    // leaving the driver unrooted here means `prepareComponentEntry`
-    // finds no `componentPoll` in the function map, builds no entry,
-    // and the export loops reach the wrapper instead.
+    // An async main is the same case without a wrapper to notice it
+    // by: the async pass replaces its export with a synthesized wrapper
+    // only the entry can lift. Leaving the driver unrooted here means
+    // `prepareComponentEntry` finds no `componentPoll` in the function
+    // map, builds no entry, and the export loops reach the wrapper
+    // instead.
+    // Only a component has an entry to lift: a freestanding core module
+    // links the driver's unit through the console it shares with the
+    // component target, and must not root it.
     let entry = prog.entryPoint;
-    if (entry != null && hasAsyncMain((entry as CompilationUnit).ast)) {
+    if (entry != null && targetEmitsComponent(this.target) &&
+        (this.target == "zena-cli" ||
+            hasAsyncMain((entry as CompilationUnit).ast))) {
       anyDoorReached = true;
     }
     if (!anyDoorReached) {
       return;
     }
-    let unit = prog.unitsByPath[driverPath];
+    // The four the adapters call from outside the program, by name:
+    // rooting every export of the driver's module would build the
+    // blocking parker too, and with it the wait and the linear memory
+    // its event pair lives in, into a component that only awaits.
+    let driver = prog.unitsByPath[driverPath];
+    this.#rootUnitExport(driver, 'componentPoll');
+    this.#rootUnitExport(driver, 'componentResume');
+    this.#rootUnitExport(driver, 'beginTask');
+    this.#rootUnitExport(driver, 'markReturned');
+    if (wrapper != null) {
+      this.#rootUnitExports(wrapper as CompilationUnit);
+    }
+    // The zena command's host also supplies `Error`'s stack traces and
+    // the blocking wait, through `zena:host-setup`, whose installer the
+    // entry calls before the program runs: rooted with the driver,
+    // since the entry needs it in the function map the same way.
+    if (prog.unitsByPath.has(hostSetupUnitId)) {
+      this.#rootUnitExports(prog.unitsByPath[hostSetupUnitId]);
+    }
+    // The abi rooting above queues before the main drain; this one runs
+    // after it, so it drains what it queued.
+    this.processQueues();
+  }
+
+  /** Queue one exported function of a unit as a root, by name. */
+  #rootUnitExport(unit: CompilationUnit, name: String): void {
+    let {model} = unit;
+    let gKeys = model.globalDeclarations.keys();
+    for (let id in gKeys) {
+      let decl = model.globalDeclarations[id];
+      if (decl is FunctionDeclaration) {
+        let fn = decl as FunctionDeclaration;
+        if (fn.exported && fn.name.name == name) {
+          this.queueReferrer(new Referrer(true, id, -1, model, null, true));
+          return;
+        }
+      }
+    }
+    throw new Error(`${unit.ast.path} does not export the function '${name}'`);
+  }
+
+  /** Queue every export of a unit as a root. */
+  #rootUnitExports(unit: CompilationUnit): void {
     let {model} = unit;
     let gKeys = model.globalDeclarations.keys();
     for (let id in gKeys) {
@@ -742,9 +810,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.queueReferrer(new Referrer(true, id, -1, model, null, true));
       }
     }
-    // The abi rooting above queues before the main drain; this one runs
-    // after it, so it drains what it queued.
-    this.processQueues();
   }
 
   #linkSuperAndVT(ct: ClassType, model: SemanticModel, linkedClasses: Map<ClassKey, boolean>): void {
@@ -1146,10 +1211,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // `componentResume` from outside the program — but its exports
       // root conditionally, after the main traversal below: see
       // `#rootComponentAsyncDriver`. The component entry wrapper the
-      // compiler writes (lib/component-entry.zena) is one too: the
-      // entry adapter calls its `run` from outside the program.
-      let isHostBoundary = unit.ast.path == 'zena:js/index.zena' ||
-          isComponentEntryPath(unit.ast.path);
+      // compiler writes (lib/component-entry.zena) is one too, and
+      // roots with the driver for the same reason: the entry adapter
+      // calls its `run` from outside the program, and only exists when
+      // the driver does.
+      let isHostBoundary = unit.ast.path == 'zena:js/index.zena';
       // The root set is `main` plus the exports of those two units.
       // Every other unit is a library: its globals are roots only if
       // something reaches them. Queuing them all — which is what this
@@ -1164,7 +1230,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let decl = model.globalDeclarations[id];
         var isExported = false;
         var isMain = false;
-        
+
         if (decl is VariableDeclaration) {
           let isFunction = decl.init is FunctionExpression;
           isExported = rootsExports && (decl.exported || (isEntry && !isFunction));
@@ -2789,10 +2855,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (this.wasm.stringSetByteFunc != null) { this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction); }
       if (this.wasm.stringGetByteFunc != null) { this.markFunctionReached(this.wasm.stringGetByteFunc as WasmFunction); }
       if (this.wasm.stringGetLengthFunc != null) { this.markFunctionReached(this.wasm.stringGetLengthFunc as WasmFunction); }
-    }
-    let {wasiWriteStringHelper} = this.wasm;
-    if (wasiWriteStringHelper != null) {
-      this.markFunctionReached(wasiWriteStringHelper);
     }
     // The string hash helper follows the equality evidence, like the
     // ==/hashCode slots it serves. If literal interning ever calls it

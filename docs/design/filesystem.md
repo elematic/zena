@@ -1,10 +1,31 @@
 # Filesystem Support Design
 
+## Status
+
+Implemented over `wasi:filesystem@0.3.0`, in
+`packages/stdlib/zena/fs/component.zena`, since 2026-09-28, with the
+synchronous API described below (`readFile`, `writeFile`, `listDir`,
+`Descriptor`, the `Result`-returning variants). The 0.3 filesystem is
+asynchronous throughout: every descriptor method returns a future, and a
+file's contents arrive as a `stream<u8>`. A synchronous call waits for the
+future in `blockOn` (`packages/stdlib/zena/wasi/block.zena`), which blocks
+in `waitable-set.wait` on the running task's set and dispatches each event
+the way the component's callback would, so timers and other tasks make
+progress while a read is in flight. Only a task the host lifted async may
+block, and the compiler lifts `main` async for any program that reaches
+this wait ("When `main` is lifted async" in
+[component-emission.md](./component-emission.md)). Module initializers run
+before any task exists, so a file read at module level traps; reads belong
+inside `main`. The first implementation, over WASI preview 1 with
+linear-memory buffers, was deleted with the rest of preview 1; the
+sections below that describe pointers and `path_open` are its record.
+
 ## Overview
 
-This document describes Zena's filesystem abstraction, targeting **WASI 0.2**
-(Preview 2) for compatibility with wasmtime and other WASI-compliant runtimes.
-This is a key step toward a self-hosted compiler.
+This document describes Zena's filesystem abstraction, first designed
+against **WASI 0.2** (Preview 2) for compatibility with wasmtime and other
+WASI-compliant runtimes, and now implemented against WASI 0.3. This is a
+key step toward a self-hosted compiler.
 
 ## Goals
 
@@ -738,8 +759,8 @@ mkdir -p /tmp/zena-test
 echo "Hello, Zena!" > /tmp/zena-test/hello.txt
 
 # Build and run
-zena build examples/read-file.zena --target wasi -o /tmp/test.wasm
-wasmtime run -W gc=y -W exceptions=y --dir /tmp/zena-test::/ /tmp/test.wasm
+zena build examples/read-file.zena --target component -o /tmp/test.wasm
+wasmtime run -S p3=y --dir /tmp/zena-test::/ /tmp/test.wasm
 ```
 
 ## Usage Example
@@ -834,14 +855,13 @@ class Path {
 }
 ```
 
-### Async I/O (WASI Preview 3)
+### Async I/O (WASI 0.3)
 
-When WASI Preview 3 stabilizes with async support, add async file operations:
-
-```zena
-// Future API
-let readFileAsync = async (path: String): Promise<String> => { ... };
-```
+The implementation is already over the asynchronous 0.3 interfaces; what
+`zena:fs` exports is the synchronous API on top of them. An asynchronous
+API, `readFile` returning a `Future<String>` that a program awaits instead
+of blocking on, is a thin layer over the same synthesized modules and
+could be added beside the synchronous one.
 
 ---
 

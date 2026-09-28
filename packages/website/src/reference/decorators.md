@@ -115,29 +115,31 @@ a WebAssembly Component Model dependency.
 
 ### Two-argument imports
 
-When targeting standard WebAssembly (`--target host`), `@external` takes two arguments:
-the module name and the exported field name:
+When targeting a core WebAssembly module (`--target js` or `--target
+freestanding`), `@external` takes two arguments: the module name and the
+exported field name:
 
 ```zena
 @external('console', 'log')
 declare function printI32(value: i32): void;
 
-@external('wasi_snapshot_preview1', 'proc_exit')
-declare function procExit(code: i32): void;
+@external('env', 'readTimestamp')
+declare function readTimestamp(): i64;
 ```
 
 During code generation, the compiler records these in the WebAssembly Import section:
 
 ```wat
 (import "console" "log" (func (param i32)))
-(import "wasi_snapshot_preview1" "proc_exit" (func (param i32)))
+(import "env" "readTimestamp" (func (result i64)))
 ```
 
 ### Three-argument component imports
 
-When compiling to a WebAssembly Component Model target (`--target component`),
-`@external` accepts an optional third argument containing comma-separated canonical
-options:
+When compiling to a WebAssembly Component Model target (`--target component`
+or `--target zena-cli`), the module name names a WIT interface, and
+`@external` accepts an optional third argument containing comma-separated
+canonical options:
 
 ```zena
 @external(

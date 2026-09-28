@@ -62,18 +62,24 @@ own entry points from the same libraries:
 
 ## The host surface
 
-The CLI module imports four things from its host:
+The CLI module is a component, and it imports four things from its
+host:
 
-- **WASI preview 1**, for files, the environment, the clock and stdio.
-- **The stack-trace imports** that `Error` uses.
-- **`zena_process`**, to spawn host processes. zb runs build commands
-  through it, and `zena bench` runs command variants through it.
-- **A new import that runs a Wasm module.** This is what Wasm cannot do
-  for itself: start wasmtime on another module. The test runner needs it
-  to run each compiled test.
+- **WASI 0.3**, for files, the environment, the clock and stdio.
+- **`zena-cli:host/stack-trace`**, the `capture` function behind
+  `Error`'s stack traces on this target.
+- **`zena-cli:host/process`**, to spawn host processes. zb runs build
+  commands through it, and `zena bench` runs command variants through
+  it.
+- **`zena-cli:host/wasm`**, which runs another component. This is what
+  Wasm cannot do for itself: start wasmtime on another component. The
+  test runner needs it to run each compiled test.
 
-All four live in the `zena-runtime` crate, so `zena-run` provides the
-same set. File watching, which zb's watch mode needs, will be a fifth
+The three `zena-cli:host` interfaces are declared in
+`packages/stdlib/zena/host-wit/host.wit` (package `zena-cli:host@1.0.0`)
+and implemented in the `zena-runtime` crate
+(`packages/zena-runtime/src/component.rs`), so `zena-run` provides the
+same set. File watching, which zb's watch mode needs, will be a further
 import when that lands; see [workflow.md](./workflow.md#file-watching).
 
 ### Running a module
@@ -82,15 +88,14 @@ The Zena side sees a library, `zena:wasm`, in the shape of
 `zena:process`:
 
 ```zena
-import { RunOptions, startModule } from 'zena:wasm';
+import { milliseconds } from 'zena:time';
+import { startModule } from 'zena:wasm';
 
-let run = startModule(
-  '.zena/cache/array_test_1f2e.wasm',
-  new RunOptions()
-    .withArgs(['array_test'])
-    .withDir('.', '.')
-    .withTimeout(60000 as i64),
-);
+let run = startModule('.zena/cache/array_test_1f2e.wasm', {
+  args: ['array_test'],
+  dirs: [{from: '.', to: '.'}],
+  timeout: milliseconds(60000 as i64),
+});
 let result = run.wait();
 // result.outcome (Returned, Trapped, TimedOut or Failed), result.exitCode,
 // result.message, result.stdout, result.stderr, result.callNanos
@@ -110,7 +115,7 @@ let result = run.wait();
   instantiation, which is the measurement `zena bench` needs.
 
 Running a module is granted together with spawning. A module started
-without the grant gets trapping stubs, as `zena_process` does today.
+without the grant gets trapping stubs, as `zena:process` does.
 Paths are in the caller's own view of the filesystem: the module's path
 and every directory handed to it are translated through the caller's
 preopens, and a path outside them, or one with a `..` segment, makes the

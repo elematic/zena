@@ -1,10 +1,19 @@
-//! A cache of ahead-of-time compiled modules (`.cwasm`) kept beside the
-//! `.wasm` files they were compiled from, so a module pays for Cranelift
-//! once rather than on every run.
+//! A cache of ahead-of-time compiled components and core modules
+//! (`.cwasm`) kept beside the `.wasm` or `.wat` files they were compiled
+//! from, so each pays for Cranelift once rather than on every run.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
+use wasmtime::component::Component;
 use wasmtime::{Engine, Module};
+
+/// Which kind of WebAssembly a file holds; they compile and serialize
+/// through different wasmtime entry points.
+#[derive(Clone, Copy)]
+pub enum Kind {
+    Component,
+    CoreModule,
+}
 
 /// The cwasm path for a wasm (or wat) file under the given config variant.
 ///
@@ -17,8 +26,8 @@ pub fn cwasm_path_for(wasm_path: &Path, debug: bool) -> PathBuf {
 }
 
 /// [`cwasm_path_for`], for either engine configuration: `interruptible`
-/// selects [`crate::engine::interruptible_engine`]'s, whose compiled code
-/// differs and so needs its own file.
+/// selects [`crate::engine::interruptible_component_engine`]'s, whose
+/// compiled code differs and so needs its own file.
 pub fn cwasm_path_for_variant(wasm_path: &Path, debug: bool, interruptible: bool) -> PathBuf {
     let mut suffix = String::new();
     if wasm_path.extension().is_some_and(|e| e == "wat") {
@@ -32,44 +41,6 @@ pub fn cwasm_path_for_variant(wasm_path: &Path, debug: bool, interruptible: bool
     }
     suffix.push_str("cwasm");
     wasm_path.with_extension(suffix)
-}
-
-/// Loads a module through its beside-the-file cwasm cache, compiling and
-/// writing the cache entry first when it is missing or stale.
-pub fn load_module(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<Module> {
-    load_or_compile_module(engine, wasm_path, &cwasm_path_for(wasm_path, debug))
-}
-
-/// [`load_module`], for either engine configuration; see
-/// [`cwasm_path_for_variant`].
-pub fn load_module_variant(
-    engine: &Engine,
-    wasm_path: &Path,
-    debug: bool,
-    interruptible: bool,
-) -> Result<Module> {
-    load_or_compile_module(
-        engine,
-        wasm_path,
-        &cwasm_path_for_variant(wasm_path, debug, interruptible),
-    )
-}
-
-/// Compiles a module in memory, touching no cache files.
-pub fn compile_uncached(engine: &Engine, wasm_path: &Path) -> Result<Module> {
-    let bytes = std::fs::read(wasm_path)
-        .with_context(|| format!("failed to read {}", wasm_path.display()))?;
-    Module::new(engine, &bytes)
-        .map_err(anyhow::Error::from)
-        .with_context(|| format!("failed to compile {}", wasm_path.display()))
-}
-
-/// Writes the cwasm for `wasm_path` (if missing or stale) and returns its
-/// path.
-pub fn precompile(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<PathBuf> {
-    let cwasm_path = cwasm_path_for(wasm_path, debug);
-    load_or_compile_module(engine, wasm_path, &cwasm_path)?;
-    Ok(cwasm_path)
 }
 
 /// True when the cached cwasm is missing or older than its source wasm.
@@ -90,17 +61,18 @@ pub fn cwasm_is_stale(wasm_path: &Path, cwasm_path: &Path) -> bool {
 
 /// Compiles wasm_path to cwasm_path atomically, holding a file lock.
 ///
-/// The lock serializes concurrent compiles of the same module. Script
+/// The lock serializes concurrent compiles of the same component. Script
 /// runners can launch many host processes at once against a stale cache
 /// (e.g. a test fan-out right after the compiler was rebuilt), and each
-/// Cranelift compile of the compiler module costs on the order of a GiB
-/// of RSS. Let one process compile while the rest block on the lock and
+/// Cranelift compile of the compiler costs on the order of a GiB of
+/// RSS. Let one process compile while the rest block on the lock and
 /// then reuse its output. `should_compile` is re-checked under the lock:
 /// another process may have refreshed the cache while we waited.
 pub fn write_cwasm(
     engine: &Engine,
     wasm_path: &Path,
     cwasm_path: &Path,
+    kind: Kind,
     should_compile: impl Fn() -> bool,
 ) -> Result<()> {
     let lock_path = cwasm_path.with_extension("lock");
@@ -111,7 +83,10 @@ pub fn write_cwasm(
     lock_file.lock()?;
     if should_compile() {
         let wasm_bytes = std::fs::read(wasm_path)?;
-        let serialized = engine.precompile_module(&wasm_bytes)?;
+        let serialized = match kind {
+            Kind::Component => engine.precompile_component(&wasm_bytes)?,
+            Kind::CoreModule => engine.precompile_module(&wasm_bytes)?,
+        };
         let temp_path = cwasm_path.with_extension(format!("tmp-{}", std::process::id()));
         std::fs::write(&temp_path, serialized)?;
         if let Err(e) = std::fs::rename(&temp_path, cwasm_path) {
@@ -123,37 +98,131 @@ pub fn write_cwasm(
     Ok(())
 }
 
+/// Loads a component through its beside-the-file cwasm cache, compiling
+/// and writing the cache entry first when it is missing or stale;
+/// `interruptible` and `debug` pick the cache file, see
+/// [`cwasm_path_for_variant`].
+pub fn load_component_variant(
+    engine: &Engine,
+    wasm_path: &Path,
+    debug: bool,
+    interruptible: bool,
+) -> Result<Component> {
+    load_or_compile_component(
+        engine,
+        wasm_path,
+        &cwasm_path_for_variant(wasm_path, debug, interruptible),
+    )
+}
+
+/// Writes the cwasm for the component at `wasm_path` (if missing or
+/// stale) and returns its path.
+pub fn precompile_component(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<PathBuf> {
+    let cwasm_path = cwasm_path_for(wasm_path, debug);
+    load_or_compile_component(engine, wasm_path, &cwasm_path)?;
+    Ok(cwasm_path)
+}
+
+/// Compiles a component in memory, touching no cache files.
+pub fn compile_component_uncached(engine: &Engine, wasm_path: &Path) -> Result<Component> {
+    let bytes = std::fs::read(wasm_path)
+        .with_context(|| format!("failed to read {}", wasm_path.display()))?;
+    Component::new(engine, &bytes)
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("failed to compile {}", wasm_path.display()))
+}
+
 /// Loads `cwasm_path`, first (re)writing it from `wasm_path` when it is
-/// stale or will not deserialize.
+/// stale or will not deserialize. A fresh-looking cwasm that will not
+/// deserialize was produced by an incompatible engine (different
+/// wasmtime version or config); it is recompiled in place, since
+/// otherwise every invocation would silently repeat the multi-second
+/// in-process compile.
+pub fn load_or_compile_component(
+    engine: &Engine,
+    wasm_path: &Path,
+    cwasm_path: &Path,
+) -> Result<Component> {
+    if cwasm_is_stale(wasm_path, cwasm_path) {
+        write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || {
+            cwasm_is_stale(wasm_path, cwasm_path)
+        })?;
+    }
+    match unsafe { Component::deserialize_file(engine, cwasm_path) } {
+        Ok(c) => Ok(c),
+        Err(first_err) => {
+            eprintln!(
+                "WARNING: recompiling {}: deserialization failed: {:?}",
+                cwasm_path.display(),
+                first_err
+            );
+            write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || true)?;
+            match unsafe { Component::deserialize_file(engine, cwasm_path) } {
+                Ok(c) => Ok(c),
+                Err(e) => {
+                    eprintln!("WARNING: deserialization of cwasm failed again: {:?}", e);
+                    compile_component_uncached(engine, wasm_path)
+                }
+            }
+        }
+    }
+}
+
+/// [`load_component_variant`], for a core module.
+pub fn load_module_variant(
+    engine: &Engine,
+    wasm_path: &Path,
+    debug: bool,
+    interruptible: bool,
+) -> Result<Module> {
+    load_or_compile_module(
+        engine,
+        wasm_path,
+        &cwasm_path_for_variant(wasm_path, debug, interruptible),
+    )
+}
+
+/// [`precompile_component`], for a core module.
+pub fn precompile_module(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<PathBuf> {
+    let cwasm_path = cwasm_path_for(wasm_path, debug);
+    load_or_compile_module(engine, wasm_path, &cwasm_path)?;
+    Ok(cwasm_path)
+}
+
+/// [`compile_component_uncached`], for a core module.
+pub fn compile_module_uncached(engine: &Engine, wasm_path: &Path) -> Result<Module> {
+    let bytes = std::fs::read(wasm_path)
+        .with_context(|| format!("failed to read {}", wasm_path.display()))?;
+    Module::new(engine, &bytes)
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("failed to compile {}", wasm_path.display()))
+}
+
+/// [`load_or_compile_component`], for a core module.
 pub fn load_or_compile_module(
     engine: &Engine,
     wasm_path: &Path,
     cwasm_path: &Path,
 ) -> Result<Module> {
     if cwasm_is_stale(wasm_path, cwasm_path) {
-        write_cwasm(engine, wasm_path, cwasm_path, || {
+        write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || {
             cwasm_is_stale(wasm_path, cwasm_path)
         })?;
     }
-
     match unsafe { Module::deserialize_file(engine, cwasm_path) } {
         Ok(m) => Ok(m),
         Err(first_err) => {
-            // A fresh-looking cwasm that will not deserialize was produced by
-            // an incompatible engine (different wasmtime version or config).
-            // Recompile it in place; without this, every invocation would
-            // silently repeat the multi-second in-process compile.
             eprintln!(
                 "WARNING: recompiling {}: deserialization failed: {:?}",
                 cwasm_path.display(),
                 first_err
             );
-            write_cwasm(engine, wasm_path, cwasm_path, || true)?;
+            write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || true)?;
             match unsafe { Module::deserialize_file(engine, cwasm_path) } {
                 Ok(m) => Ok(m),
                 Err(e) => {
                     eprintln!("WARNING: deserialization of cwasm failed again: {:?}", e);
-                    compile_uncached(engine, wasm_path)
+                    compile_module_uncached(engine, wasm_path)
                 }
             }
         }

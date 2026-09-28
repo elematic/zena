@@ -264,14 +264,11 @@ export async function createLanguageService(
   const imports: WebAssembly.Imports = {
     console: consoleImports,
     compiler: {read_file: readFileImport},
-    // lsp.wasm is built for the host target and does not use WASI, but the
-    // stdlib can still import these; stub them so instantiation succeeds.
-    wasi_snapshot_preview1: {
-      fd_write: () => 0,
-      proc_exit: () => 0,
-      environ_get: () => 0,
-      environ_sizes_get: () => 0,
-      clock_time_get: () => 0,
+    // The compiler times its own phases through `zena:time`, which on
+    // the host target is this clock. It never sleeps.
+    time: {
+      now_ms: () => performance.now(),
+      sleep_ms: () => {},
     },
     env: {
       getStackTrace: () => null,

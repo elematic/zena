@@ -1,0 +1,44 @@
+// `zena:fs` writing and reading files of increasing size, each through
+// the byte stream pumps: a file past one 4096-byte chunk takes several
+// canonical reads, with the synchronous caller waiting in `blockOn`
+// between them. Every size prints its outcome, so a failure names the
+// smallest size that breaks.
+import { readFile, writeFile, unlink, exists } from 'zena:fs';
+import { StringBuilder } from 'zena:core';
+
+let textOf = (size: i32): String => {
+  let sb = new StringBuilder();
+  var i = 0;
+  while (i < size) {
+    sb.append('abcdefghij'.sliceBytes(i % 10, i % 10 + 1));
+    i += 1;
+  }
+  return sb.toString();
+};
+
+export function main(): i32 {
+  let sizes = [10, 4095, 4096, 4097, 8192, 20000, 100000];
+  let path = 'fs-sizes-scratch.txt';
+  var failures = 0;
+  for (let size in sizes) {
+    let text = textOf(size);
+    try {
+      writeFile(path, text);
+    } catch (e) {
+      console.log(`write ${size}: ${(e as Error).message}`);
+      failures += 1;
+      continue;
+    }
+    try {
+      let back = readFile(path);
+      console.log(`size ${size}: ${back == text}`);
+    } catch (e) {
+      console.log(`read ${size}: ${(e as Error).message}`);
+      failures += 1;
+    }
+  }
+  if (exists(path)) {
+    unlink(path);
+  }
+  return failures;
+}

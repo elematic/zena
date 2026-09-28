@@ -1,0 +1,42 @@
+// Stack traces supplied at run time, for a component the `zena`
+// command's host runs. `Error` is in `zena:core`, and every module that
+// could reach the host's `zena-cli:host/stack-trace` import — through
+// `zena:wasi` or `zena:memory` — imports `zena:core` back, a cycle a
+// module-level value cannot cross. So this module holds two hooks and
+// nothing else; `zena:host-setup`, loaded as one of the target's
+// runtime modules and called by the component entry before `main`,
+// installs the host's capture into them. Until then, and on any other
+// host, an `Error` has no trace, as with `stack-none.zena`.
+//
+// See docs/design/component-emission.md, Part 2.
+
+/** The captured trace, opaque to `Error`: the text, held as a reference. */
+export distinct type StackRef = anyref;
+
+var captureHook: (() => StackRef | null) | null = null;
+var formatHook: ((stack: StackRef | null) => String | null) | null = null;
+
+/** Install the host's capture and format. */
+export function installStackTraceHooks(
+  capture: () => StackRef | null,
+  format: (stack: StackRef | null) => String | null
+): void {
+  captureHook = capture;
+  formatHook = format;
+}
+
+export function captureStackTrace(): StackRef | null {
+  let hook = captureHook;
+  if (hook == null) {
+    return null;
+  }
+  return hook();
+}
+
+export function formatStackTrace(stack: StackRef | null): String | null {
+  let hook = formatHook;
+  if (hook == null) {
+    return null;
+  }
+  return hook(stack);
+}

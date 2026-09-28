@@ -1,0 +1,48 @@
+// Probe: synthesize the WASI 0.3 interfaces `zena:fs` and `zena:cli`
+// would be written against, and print every function the synthesizer
+// still refuses. Run with `zena-cli run` from the repository root.
+import { synthesizeWitModule } from '../lib/wit-module-synth.zena';
+import { readWitSource } from 'wit-parser:document';
+import { writeFile } from 'zena:fs';
+
+let stdlibRoot = 'packages/stdlib/zena';
+
+export let main = (): i32 => {
+  console.log('reading the vendored WIT');
+  let wit = try {
+    readWitSource(`${stdlibRoot}/wit`)
+  } catch (e) {
+    console.log(`readWitSource threw: ${(e as Error).message}`);
+    ''
+  };
+  console.log(`${wit.length} bytes of WIT`);
+  let specs = [
+    'wasi:cli/environment', 'wasi:cli/exit', 'wasi:cli/stdin',
+    'wasi:cli/stdout', 'wasi:cli/stderr', 'wasi:cli/terminal-stdin',
+    'wasi:filesystem/preopens', 'wasi:filesystem/types',
+    'wasi:clocks/wall-clock', 'wasi:clocks/system-clock',
+  ];
+  var refused = 0;
+  var index = 0;
+  for (let spec in specs) {
+    index += 1;
+    let source = try {
+      synthesizeWitModule(`wit:${stdlibRoot}/wit#${spec}`, wit)
+    } catch (e) {
+      console.log(`${spec}: THREW ${(e as Error).message}`);
+      ''
+    };
+    let lines = source.split('\n');
+    var count = 0;
+    for (let line in lines) {
+      if (line.contains('Not yet importable') || line.contains('waits on')) {
+        console.log(`${spec}: ${line}`);
+        count += 1;
+      }
+    }
+    console.log(`${spec}: ${lines.length} lines, ${count} refusals`);
+    refused += count;
+    writeFile(`packages/zena-compiler/zena/out/synth-${index}.zena`, source);
+  }
+  return refused;
+};

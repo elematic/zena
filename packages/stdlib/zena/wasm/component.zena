@@ -1,0 +1,226 @@
+/**
+ * Running other Wasm programs, for programs the `zena` command's host
+ * runs: `zena-cli:host/wasm` as the compiler synthesizes it from the
+ * host's WIT. The test runner runs each compiled test this way. The
+ * host grants it together with process spawning; anywhere else the
+ * imports are stubs that trap.
+ *
+ * A program is a component or a core module, and the host tells them
+ * apart from the file itself. A core module — a `freestanding` build,
+ * hand-written `.wat`, another language's output — runs with no
+ * imports, so arguments, environment, directories and the grant do not
+ * reach it, and it has no output to capture. The rest of this module's
+ * documentation says "component" for the program being run.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { runModule } from 'zena:wasm';
+ *
+ * let result = runModule('out/hello.wasm', {args: ['hello', 'world']});
+ * console.log(`${result.outcome} ${result.exitCode}`);
+ * ```
+ */
+
+import { Duration } from 'zena:time';
+import {
+  DirMapping as HostDirMapping, Outcome, Run as HostRun,
+  RunOptions as HostRunOptions, RunResult as HostRunResult, precompile,
+} from 'zena-cli:host/wasm';
+
+/** How a run ended. */
+export enum RunOutcome {
+  /**
+   * The exported function returned. `exitCode` is the `i32` it returned,
+   * and `resultText` its first result however typed.
+   */
+  Returned,
+  /** The component ended itself with `exit(code)`; `exitCode` is the code. */
+  Exited,
+  /** The component trapped. `message` has the trap and its backtrace. */
+  Trapped,
+  /** The run was stopped at its time limit. */
+  TimedOut,
+  /**
+   * The component did not start: it could not be read, compiled, linked
+   * or instantiated, or a path it was given is outside what this
+   * program can reach. `message` says which.
+   */
+  Failed,
+}
+
+let outcomeOf = (outcome: Outcome): RunOutcome => {
+  if (outcome == Outcome.Returned) { return RunOutcome.Returned; }
+  if (outcome == Outcome.Trapped) { return RunOutcome.Trapped; }
+  if (outcome == Outcome.TimedOut) { return RunOutcome.TimedOut; }
+  if (outcome == Outcome.Exited) { return RunOutcome.Exited; }
+  return RunOutcome.Failed;
+};
+
+/** What a run produced. */
+export class RunResult {
+  outcome: RunOutcome;
+  /**
+   * The status the component ended with: the `i32` its exported
+   * function returned, the code it passed to `exit`, or 0 when the
+   * function returns nothing. -1 when it trapped, timed out or failed
+   * to start.
+   */
+  exitCode: i32;
+  /**
+   * What the exported function returned, formatted the way `zena run`
+   * prints it (`7`, `2.5`); '' when it returned nothing or did not
+   * return.
+   */
+  resultText: String;
+  /** Why a run trapped, timed out or failed to start; otherwise ''. */
+  message: String;
+  /** What the component wrote, when its output was captured; otherwise ''. */
+  stdout: String;
+  stderr: String;
+  /**
+   * How long the exported call took. Loading and instantiating the
+   * component are not included, so this is the number a benchmark wants.
+   */
+  callTime: Duration;
+
+  new(
+    this.outcome,
+    this.exitCode,
+    this.resultText,
+    this.message,
+    this.stdout,
+    this.stderr,
+    this.callTime,
+  );
+
+  /** True when the component returned or exited with status 0. */
+  succeeded(): boolean {
+    return (this.outcome == RunOutcome.Returned || this.outcome == RunOutcome.Exited) &&
+        this.exitCode == 0;
+  }
+}
+
+let resultOf = (r: HostRunResult): RunResult => new RunResult(
+    outcomeOf(r.outcome),
+    r.exitCode,
+    r.resultText,
+    r.message,
+    String.fromBytes(r.stdout),
+    String.fromBytes(r.stderr),
+    r.callNanos as Duration);
+
+/** A directory of this program's, `from`, preopened for the run as `to`. */
+export type DirMapping = {from: String, to: String};
+
+/** How to run a component. Every field is optional. */
+export type RunOptions = {
+  /**
+   * The component's argument vector, program name first, as
+   * `getArguments()` will return it inside. Empty if absent.
+   */
+  args?: Array<String>,
+  /** Environment variables to set in the component's environment. */
+  env?: Map<String, String>,
+  /**
+   * Give the component this host process's environment variables,
+   * before `env` is applied. Off if absent.
+   */
+  inheritEnv?: boolean,
+  /**
+   * The directories to preopen, in order. The first is where the
+   * component's relative paths resolve. None if absent.
+   */
+  dirs?: Array<DirMapping>,
+  /** The exported function to call; `main` if absent. */
+  invoke?: String,
+  /**
+   * Connect the component to this program's own stdin, stdout and
+   * stderr, so what it prints appears as it prints it. Its output is
+   * captured into the result if absent.
+   */
+  inheritStdio?: boolean,
+  /**
+   * Let the component spawn processes and run components itself,
+   * within the directories it was given. Off if absent.
+   */
+  grant?: boolean,
+  /**
+   * Run with inlining off, so a trap's backtrace names every function
+   * on the way to it. The caller's own setting if absent.
+   */
+  debug?: boolean,
+  /**
+   * Stop the run if its exported call takes longer than this. The limit
+   * is checked every few milliseconds, so it is approximate. No limit if
+   * absent or not positive.
+   */
+  timeout?: Duration,
+};
+
+let configure = (options: RunOptions): HostRunOptions => {
+  let argList = new Array<String>();
+  if (let {args} = options) {
+    for (let arg in args) {
+      argList.push(arg);
+    }
+  }
+  let envList = new Array<(String, String)>();
+  if (let {env} = options) {
+    for (let entry in env) {
+      envList.push((entry.key, entry.value));
+    }
+  }
+  let dirList = new Array<HostDirMapping>();
+  if (let {dirs} = options) {
+    for (let dir in dirs) {
+      dirList.push(new HostDirMapping(dir.from, dir.to));
+    }
+  }
+  let {
+    inheritEnv = false, invoke = 'main', inheritStdio = false, grant = false,
+    debug = false,
+  } = options;
+  var timeoutNanos = 0 as i64;
+  if (let {timeout} = options) {
+    if (timeout.isPositive()) {
+      timeoutNanos = timeout as i64;
+    }
+  }
+  return new HostRunOptions(argList, envList, inheritEnv, dirList, invoke,
+      inheritStdio, grant, debug, timeoutNanos);
+};
+
+/** A run in progress. */
+export final class Run {
+  #run: HostRun;
+  var #result: RunResult | null = null;
+
+  new(run: HostRun) : #run = run;
+
+  /** Block until the run ends. Waiting again returns the same result. */
+  wait(): RunResult {
+    let cached = this.#result;
+    if (cached != null) {
+      return cached;
+    }
+    let result = resultOf(this.#run.wait());
+    this.#result = result;
+    return result;
+  }
+}
+
+/** Start a component and return at once. */
+export let startModule = (path: String, options: RunOptions = {}): Run =>
+  new Run(HostRun.create(path, configure(options)));
+
+/** Run a component to its end. */
+export let runModule = (path: String, options: RunOptions = {}): RunResult =>
+  startModule(path, options).wait();
+
+/**
+ * Write a component's ahead-of-time compiled form beside it, so its
+ * first run skips compilation. Returns '' or why it could not.
+ */
+export let precompileModule = (path: String, debug: boolean = false): String =>
+  precompile(path, debug);

@@ -36,6 +36,7 @@ import {
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
@@ -45,6 +46,9 @@ let stdlibRoot = 'packages/stdlib/zena';
 class PlainHost implements CompilerHost {
   new();
   readFile(path: String): String {
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
+    }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
@@ -55,7 +59,9 @@ class PlainHost implements CompilerHost {
 let newCompiler = (): Compiler => {
   let host = new PlainHost();
   let packages = loadPackageMap(host, 'zena-packages.json');
-  return createCompiler(host, new CompilerOptions('zena-cli', stdlibRoot, packages));
+  // The core module with no host beneath it: the bytes compared are
+  // the program's own.
+  return createCompiler(host, new CompilerOptions('freestanding', stdlibRoot, packages));
 };
 
 /** Compiles to wasm with a fresh compiler, throwing on any check error. */
@@ -79,7 +85,7 @@ let compileFresh = (path: String): ByteArray => {
       if (file.ast.path == entryAst.path) { entryUnit = unit; }
     }
   }
-  return new BinaryGenerator('zena-cli', false)
+  return new BinaryGenerator('freestanding', false)
     .generate(new Program(units, entryUnit))
     .toByteArray();
 };

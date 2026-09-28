@@ -97,12 +97,14 @@ WASM).
 | `virtual` | `Record<string, string>` | yes      | Map of target name → entry file path (package-root-relative) |
 
 ```json
-"console": { "virtual": { "host": "console/host.zena", "wasi": "console/wasi.zena" } }
+"console": { "virtual": { "js": "console/js.zena", "component": "console/component.zena" } }
 ```
 
-When compiling with `--target wasi`, `import { log } from 'pkg:console'`
-resolves to `<root>/console/wasi.zena`. With `--target host`, it resolves to
-`<root>/console/host.zena`.
+When compiling with `--target component`, `import { log } from 'pkg:console'`
+resolves to `<root>/console/component.zena`. With `--target js`, it resolves
+to `<root>/console/js.zena`. The keys are target names (`js`, `zena-cli`,
+`freestanding`, `component`), and a module with no entry for the current
+target does not resolve.
 
 ### Package-Private Files
 

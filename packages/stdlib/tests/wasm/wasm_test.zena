@@ -1,7 +1,8 @@
-// zena:wasm: running other modules and reading how they ended. The
-// modules are hand-written .wat fixtures, so nothing here depends on
-// the compiler. Repo tests run with the spawn grant, which covers
-// zena:wasm too.
+// zena:wasm: running other programs and reading how they ended. The
+// programs that need no host are hand-written .wat core modules, which
+// run with no imports; the one that talks to WASI (`cli.zena`) is a
+// component compiled by the package's `build:fixtures` script. Repo
+// tests run with the spawn grant, which covers zena:wasm too.
 import { suite, test } from 'zena:test';
 import { equal, isFalse, isTrue } from 'zena:assert';
 import { exists } from 'zena:fs';
@@ -36,7 +37,7 @@ export let tests = suite('wasm', (): void => {
   });
 
   test('exit ends the run with its code', () => {
-    let result = runModule(fixture('wasi.wat'), {invoke: 'exits'});
+    let result = runModule(fixture('cli.wasm'), {invoke: 'exits'});
     equal(result.outcome, RunOutcome.Exited);
     equal(result.exitCode, 3);
     equal(result.resultText, '');
@@ -46,7 +47,7 @@ export let tests = suite('wasm', (): void => {
     equal(precompileModule(fixture('traps.wat')), '');
     isTrue(exists(fixture('traps.wat.cwasm')));
     isTrue(precompileModule('/etc/passwd').contains('outside'));
-    isTrue(precompileModule(fixture('no-such-module.wat')).contains('no such module'));
+    isTrue(precompileModule(fixture('no-such-module.wat')).contains('no such file'));
     equal(precompileModule(fixture('traps.wat'), true), '');
   });
 
@@ -65,7 +66,7 @@ export let tests = suite('wasm', (): void => {
   });
 
   test('output is captured and arguments are passed', () => {
-    let result = runModule(fixture('wasi.wat'), {args: ['prog', 'a', 'b']});
+    let result = runModule(fixture('cli.wasm'), {args: ['prog', 'a', 'b']});
     equal(result.outcome, RunOutcome.Returned);
     equal(result.stdout, 'hello\n');
     // main returns its argument count.
@@ -74,9 +75,9 @@ export let tests = suite('wasm', (): void => {
 
   test('environment variables are set', () => {
     // `env` returns how many variables the module sees.
-    let none = runModule(fixture('wasi.wat'), {invoke: 'env'});
+    let none = runModule(fixture('cli.wasm'), {invoke: 'env'});
     equal(none.exitCode, 0);
-    let two = runModule(fixture('wasi.wat'), {
+    let two = runModule(fixture('cli.wasm'), {
       invoke: 'env',
       env: {'ZENA_A' => '1', 'ZENA_B' => '2'},
     });
@@ -84,15 +85,27 @@ export let tests = suite('wasm', (): void => {
   });
 
   test('a directory is preopened only when handed over', () => {
-    let without = runModule(fixture('wasi.wat'), {invoke: 'preopen'});
-    // EBADF: fd 3 is not a preopened directory.
-    equal(without.exitCode, 8);
+    // `preopen` returns how many directories the component was given.
+    let without = runModule(fixture('cli.wasm'), {invoke: 'preopen'});
+    equal(without.exitCode, 0);
 
-    let shared = runModule(fixture('wasi.wat'), {
+    let shared = runModule(fixture('cli.wasm'), {
       invoke: 'preopen',
       dirs: [{from: '.', to: '.'}],
     });
-    equal(shared.exitCode, 0);
+    equal(shared.exitCode, 1);
+  });
+
+  test('spawning needs the grant, which a run passes on explicitly', () => {
+    // Without it the host's process interface traps with the hint;
+    // with `grant: true` the child runs.
+    let denied = runModule(fixture('cli.wasm'), {invoke: 'spawns'});
+    equal(denied.outcome, RunOutcome.Trapped);
+    isTrue(denied.message.contains('--allow-spawn'), denied.message);
+
+    let allowed = runModule(fixture('cli.wasm'), {invoke: 'spawns', grant: true});
+    equal(allowed.outcome, RunOutcome.Returned);
+    equal(allowed.exitCode, 5);
   });
 
   test('a path outside this program\'s reach does not start', () => {

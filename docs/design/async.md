@@ -322,6 +322,13 @@ under plain `wasmtime --invoke main` today.
 
 ### Level 1 — timers, no custom host code (WASI p1 already suffices)
 
+(Written when the zena command's host was a WASI preview 1 core-module
+host. That host became a component host on 2026-09-28, the preview 1
+clock in `time/wasi.zena` was deleted, and the timer on every component
+target is the p3 clock described in
+[component-emission.md](./component-emission.md), Part 5. The level's
+reasoning about where timers live still applies.)
+
 `sleep(ms)`/timeouts need a clock and a way to park. WASI preview 1
 already provides both: `clock_time_get` and `poll_oneoff` with a
 clock subscription. The drain loop grows one arm: when the queue is
@@ -390,8 +397,8 @@ This inherits `setTimeout`'s web semantics on purpose, including the
 Real I/O means the host completes futures. The shape, for a JS host
 (`zena:js` is virtual and resolves only on the JS-hosted targets — the
 protocol assumes an embedder with an event loop that calls back into
-the module's exports; WASI p1 parks instead, and the component
-target's futures ride the canonical ABI's waitables):
+the module's exports; a component's futures ride the canonical ABI's
+waitables instead, on the `component` and `zena-cli` targets alike):
 
 1. A host-async import takes a freshly minted handle; `zena:js`
    keeps the `Completer` behind it and hands Zena code the `Future`.
@@ -468,25 +475,26 @@ WASI story.
 
 The p3 clock (`time/p3.zena`) is a third `Clock` on the non-blocking
 side: it arms `wait-for` and returns `false` like the JS entry, and the
-host re-enters through the component's callback. That leaves exactly one
-blocking driver, and it is **slated for removal**. Blocking is only
-unobservable on `zena-cli` because timers are the one thing that can
-settle a future there; a second source — p1 fd readiness, a host-async
-binding, a process future — would be starved by a drain that sleeps on
-the nearest deadline. What keeps it alive is that zena-cli calls `main`
-once and never re-enters, so an async `main` there depends on the drain
-running everything to completion before it returns.
-
-Removing it is therefore not a stdlib change but a host one, and the
-destination is the component target rather than a second driver over
-zena-cli's private `env.*` surface: a p3 host already does the blocking
-on its own threads and hands the guest a subtask, which is the thread
-pool such a driver would otherwise reimplement. When that lands, the
-`Parker`, the boolean on `Clock.waitNs` and `drainMicrotasks()`'s park
-loop go together, and the drain becomes what it already is on JS — run
-every runnable microtask, then return, as the host's re-entry point
-rather than an API a program calls. See
+host re-enters through the component's callback. That left exactly one
+blocking driver, the preview 1 clock, and it was removed on 2026-09-28
+when the zena command's host became a component host: a p3 host does the
+blocking on its own threads and hands the guest a subtask, which is the
+thread pool a second driver would otherwise have reimplemented. See
 [component-emission.md](./component-emission.md), open question 2.
+
+The `Parker` hook outlived that removal, with a different job. A
+synchronous program on a component still has to wait for the host
+sometimes — a `readFile` over the asynchronous 0.3 filesystem, or
+`runFuture` in a test body. `zena:wasi` registers a `Parker` whose
+`park` makes one blocking `waitable-set.wait` on the handles the current
+call from the host owns, and handles the event the way the component's
+callback would, so everything else in flight keeps making progress
+while the caller waits. That is `blockOn` in
+`packages/stdlib/zena/wasi/block.zena`; `runFuture` falls back to the
+same `Parker` once the microtask queue is empty. The compiler exports
+`main` async for any program that can reach that wait, because wasmtime
+allows it only inside a call to an async export (component-emission.md,
+"When `main` is lifted async").
 
 On the **Rust CLI**, the same shape backed by tokio: host ops spawn onto
 a runtime keyed by handle, and a `zena_park()` import blocks until a

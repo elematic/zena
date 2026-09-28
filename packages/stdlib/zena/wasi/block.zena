@@ -1,0 +1,38 @@
+/**
+ * Waiting for a future without returning to the host: the synchronous
+ * program's event loop.
+ *
+ * `zena:fs` reads a file this way — the p3 filesystem is asynchronous
+ * throughout, and a synchronous `readFile` blocks here until the
+ * synthesized `async` call has settled. Kept out of the event loop's
+ * own module (async.zena), so that a program that only awaits never
+ * carries the blocking wait, whose event record lives in linear
+ * memory.
+ */
+
+import { Future, runFuture } from 'zena:async';
+import { installBlockingParker } from './async.zena';
+
+/**
+ * Wait for `future` without returning to the host. Each turn blocks in
+ * `waitable-set.wait` on the running task's set and dispatches the
+ * event the way the callback would, so everything the task has in
+ * flight — pumps, timers, other calls — makes progress meanwhile.
+ *
+ * Only a task the host lifted async may block. The compiler lifts a
+ * `main` async when the program can reach this wait, so a program that
+ * blocks is always entered through such a task; a synchronous WIT
+ * export that reaches here traps. A future pending with nothing waited
+ * on cannot settle, and is reported rather than hung on.
+ */
+export function blockOn<T>(future: Future<T>): T {
+  installBlockingParker();
+  // Awaited, so that a deferred future — what a lifted `future<T>` is —
+  // starts its work: nothing else would subscribe to it here.
+  return runFuture(awaited(future));
+}
+
+/** `future`, subscribed to: the settled value, or its failure. */
+async function awaited<T>(future: Future<T>): Future<T> {
+  return await future;
+}

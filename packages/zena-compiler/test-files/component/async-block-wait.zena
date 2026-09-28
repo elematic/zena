@@ -1,0 +1,57 @@
+// The blocking wait of sync-block-wait.zena, inside an async export: the
+// entry is lifted with the callback ABI, and the question is whether a
+// task under it may block in `waitable-set.wait` rather than returning
+// a callback code. `main` never awaits, so the whole body runs in the
+// task's first entry.
+import {
+  waitableSetNew, waitableJoin, waitableSetWait, Waitable
+} from 'zena:wasi';
+import { Memory, defaultAllocator } from 'zena:memory';
+import { Future } from 'zena:async';
+
+@external("wasi:clocks/monotonic-clock@0.3.0", "now")
+declare function now(): u64;
+
+@external("wasi:clocks/monotonic-clock@0.3.0", "wait-for", "async")
+declare function waitFor(howLong: u64): i32;
+
+let STATE_MASK = 15;
+let STATE_RETURNED = 2;
+let EVENT_SUBTASK = 1;
+
+let blockingWait = (): u32 => {
+  let start = now();
+  let packed = waitFor(30000000 as u64);
+  if ((packed & STATE_MASK) != STATE_RETURNED) {
+    let subtask = packed >> 4;
+    let set = waitableSetNew();
+    waitableJoin(subtask as Waitable, set);
+    if (let (true, area) = defaultAllocator.alloc(8)) {
+      let mem = Memory.default;
+      var done = false;
+      while (!done) {
+        let event = waitableSetWait(set as i32, area);
+        let fired = mem.getI32(area);
+        let code = mem.getI32(area + 4);
+        if (event != EVENT_SUBTASK || fired != subtask) {
+          return 3 as u32;
+        }
+        done = code == STATE_RETURNED;
+      }
+      defaultAllocator.free(area);
+      // The subtask is left undropped: the driver declares
+      // `subtask.drop`, and a core module may declare a builtin once.
+    } else {
+      return 4 as u32;
+    }
+  }
+  let elapsed = now() - start;
+  if (elapsed >= (30000000 as u64)) {
+    return 1 as u32;
+  }
+  return 2 as u32;
+};
+
+export async function main(): Future<u32> {
+  return blockingWait();
+}

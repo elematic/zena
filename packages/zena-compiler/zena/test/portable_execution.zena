@@ -16,8 +16,8 @@
  * `entriesPerCompiler` entry points, because sharing one is worth a lot
  * and then worth nothing — see that constant for the measured curve.
  * The batch is also **sliced** across worker processes, which is what
- * makes the phase parallel; workers are this same module re-invoked at
- * `compileSlice`.
+ * makes the phase parallel; workers are this same module re-invoked with
+ * `compile-slice` as its first argument.
  *
  * **Running** is one `zena-cli run` process per test (via
  * `zena:process`, bounded pool), because that is where traps and
@@ -41,12 +41,14 @@
  * Usage (spawned by `run-wasmtime.js`, which grants `--allow-spawn`):
  *   portable_execution <zenaCli> <parallelism> [filter]
  * and, re-invoked on itself for one slice of the compile phase:
- *   portable_execution --invoke compileSlice <index> <count> [filter]
+ *   portable_execution compile-slice <index> <count> [filter]
+ * Both enter through `main`: the slice reads files, and only the entry
+ * the host lifted async may block on a read.
  */
 
 import { Set } from 'zena:collections';
 import { getArguments } from 'zena:cli';
-import { StringBuilder } from 'zena:core';
+import { ByteBuffer, StringBuilder } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
 import { readFile, readFileBytes, writeFile, writeFileBytes, mkdir, exists, unlink } from 'zena:fs';
 import {
@@ -65,10 +67,18 @@ import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { DiagnosticSeverity, SourceSpan } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
+import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
+import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
+import { toKebabName } from '../lib/codegen/component-emitter.zena';
+import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
+import { readWitSource } from 'wit-parser:document';
 
 let testsRoot = 'tests/language/execution';
 let stdlibRoot = 'packages/stdlib/zena';
+
+/** The first argument that makes a re-invocation a compile worker. */
+let compileSliceCommand = 'compile-slice';
 
 /**
  * Where the compile phase leaves the modules the run phase executes.
@@ -303,6 +313,11 @@ class FsHost implements CompilerHost {
   new();
 
   readFile(path: String): String {
+    // A WIT-backed package's module has no file: it is synthesized
+    // from the package's WIT.
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
+    }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
@@ -387,6 +402,18 @@ let selectedTests = (filter: String): Array<TestFile> => {
 };
 
 /**
+ * What every component build in a slice shares, since neither depends
+ * on the program: the component's second core module, owning linear
+ * memory and the allocator, and the WIT-backed packages' source for
+ * the import encoder.
+ */
+final class ComponentSettings {
+  runtimeMemory: ByteBuffer;
+  packagesWit: String;
+  new(this.runtimeMemory, this.packagesWit);
+}
+
+/**
  * Compiles one entry point on a shared compiler, threading `previous`
  * so files whose source has not changed — the whole stdlib, every time
  * after the first — carry their `CheckResult` forward instead of being
@@ -398,7 +425,8 @@ let selectedTests = (filter: String): Array<TestFile> => {
 let compileOne = (
   compiler: Compiler,
   f: TestFile,
-  previous: ProgramCheckResult | null
+  previous: ProgramCheckResult | null,
+  settings: ComponentSettings
 ): ProgramCheckResult | null => {
   return try {
     let compResult = compiler.compile(f.path);
@@ -440,7 +468,13 @@ let compileOne = (
       // Names on: a test that traps prints a wasmtime backtrace, and
       // `wasm-function[2621]` is not a diagnosis. Test artifacts are
       // throwaway, so the section costs nothing here.
-      let bytes = new BinaryGenerator('zena-cli', false, true)
+      let generator = new BinaryGenerator('zena-cli', false, true);
+      // The component's second core module and the WIT-typed import
+      // encoder, as the CLI sets them up; both are shared across the
+      // slice, since they do not depend on the program.
+      generator.runtimeMemoryModule = settings.runtimeMemory;
+      generator.importEncoder = makeImportEncoder(null, '', settings.packagesWit);
+      let bytes = generator
         .generate(new Program(units, entryUnit))
         .toByteArray();
       emit(f.relPath, bytes);
@@ -458,25 +492,29 @@ let compileOne = (
 /**
  * Worker entry point: compile every test whose position in discovery
  * order is `index` mod `count`. Invoked as
- * `zena-cli run --dir .::/ --invoke compileSlice <self.wasm> <index> <count> <filter>`.
+ * `zena-cli run --dir .::/ <self.wasm> compile-slice <index> <count> <filter>`,
+ * and dispatched to from `main` on that first argument.
  */
-export let compileSlice = (): i32 => {
-  let args = getArguments();
-  if (args.length < 4) {
-    console.error('Usage: compileSlice <index> <count> <filter>');
+let compileSlice = (args: Array<String>): i32 => {
+  if (args.length < 5) {
+    console.error('Usage: portable_execution compile-slice <index> <count> <filter>');
     return 1;
   }
   var index = 0;
   var count = 1;
-  if (let (true, n) = parseI64(args[1])) { index = n as i32; }
-  if (let (true, n) = parseI64(args[2])) { count = n as i32; }
-  let filter = args[3];
+  if (let (true, n) = parseI64(args[2])) { index = n as i32; }
+  if (let (true, n) = parseI64(args[3])) { count = n as i32; }
+  let filter = args[4];
 
   let files = selectedTests(filter);
   let host = new FsHost();
   let packages = loadPackageMap(host, 'zena-packages.json');
   let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
   var compiler = createCompiler(host, options);
+  let settings = new ComponentSettings(
+      compileComponentRuntimeModule(host, stdlibRoot, packages),
+      readWitSource(`${stdlibRoot}/wit`) + '\n' +
+          readWitSource(`${stdlibRoot}/host-wit`));
 
   var previous: ProgramCheckResult | null = null;
   var sinceFresh = 0;
@@ -500,7 +538,7 @@ export let compileSlice = (): i32 => {
       // the module beside it usable.
       let statusPath = statusPathOf(f.relPath);
       if (exists(statusPath)) { unlink(statusPath); }
-      previous = compileOne(compiler, f, previous);
+      previous = compileOne(compiler, f, previous, settings);
     }
     pos += 1;
   }
@@ -534,9 +572,8 @@ let runCompilePhase = (
     // needing to know the absolute host path.
     argv.push('--dir');
     argv.push('.::/');
-    argv.push('--invoke');
-    argv.push('compileSlice');
     argv.push(selfWasm);
+    argv.push(compileSliceCommand);
     argv.push(i32ToString(i));
     argv.push(i32ToString(workers));
     argv.push(filter);
@@ -568,6 +605,9 @@ let runCompilePhase = (
 
 export let main = (): i32 => {
   let args = getArguments();
+  if (args.length > 1 && args[1] == compileSliceCommand) {
+    return compileSlice(args);
+  }
   if (args.length < 3) {
     console.error('Usage: portable_execution <zenaCli> <parallelism> [filter]');
     return 1;
@@ -665,7 +705,7 @@ export let main = (): i32 => {
     argv.push(zenaCli);
     argv.push('run');
     argv.push('--invoke');
-    argv.push(expectation.invoke);
+    argv.push(toKebabName(expectation.invoke));
     argv.push(wasmPath);
     running.push(new RunningTest(file, expectation, spawn(argv), null));
   }

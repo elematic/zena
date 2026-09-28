@@ -42,7 +42,6 @@ These require more complex codegen than a single opcode.
 
 - `eq`: Handles deep comparison. It dispatches statically to exact `i32.eq` / `f32.eq` for primitives, calls `String.operator==` statically for strings, and relies on vtable dynamic dispatch for classes implementing overloaded `==` operators. Falls back to `ref.eq`.
 - `hash`: Computes the proper hash of a value, traversing the vtable for `hashCode` implementations on reference objects.
-- `wasi_write_string`: Synthesizes an ad-hoc function internally that performs the WASI standard `fd_write` procedure on string buffers.
 
 ## 4. Wasm GC Arrays (`__array_*`)
 

@@ -26,8 +26,9 @@
 
 import { StringBuilder } from 'zena:core';
 import { JsonBuilder } from 'zena:json';
-import { Memory, defaultAllocator } from 'zena:memory';
 import { readFile, isFile } from 'zena:fs';
+import { monotonic } from 'zena:time';
+import { now as wallClockNow } from 'wasi:clocks/system-clock';
 import { abs, floor, div } from 'zena:math';
 import {
   SummaryStats,
@@ -46,31 +47,14 @@ export { SuiteOptions, runSuite } from './suite.zena';
 // Clocks
 // ============================================================================
 
-@external("wasi_snapshot_preview1", "clock_time_get")
-declare function __wasi_clock_time_get(
-  clockId: i32,
-  precision: i64,
-  timePtr: i32
-): i32;
-
-let readClockMs = (clockId: i32): f64 => {
-  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
-    let res = __wasi_clock_time_get(clockId, 1 as i64, addr);
-    if (res == 0) {
-      let ns = Memory.default.getI64(addr);
-      defaultAllocator.free(addr);
-      return (ns as f64) / 1000000.0;
-    }
-    defaultAllocator.free(addr);
-  }
-  return 0.0;
-};
-
-/** Monotonic time in milliseconds (nanosecond-resolution WASI clock). */
-export let nowMs = (): f64 => readClockMs(1);
+/** Monotonic time in milliseconds: what a measurement takes. */
+export let nowMs = (): f64 => ((monotonic() as i64) as f64) / 1000000.0;
 
 /** Wall-clock milliseconds since the Unix epoch, for stamping results. */
-export let realtimeMs = (): f64 => readClockMs(0);
+export let realtimeMs = (): f64 => {
+  let at = wallClockNow();
+  return (at.seconds as f64) * 1000.0 + (at.nanoseconds as f64) / 1000000.0;
+};
 
 // ============================================================================
 // Benchmark registration and measurement

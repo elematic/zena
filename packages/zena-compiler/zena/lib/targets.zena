@@ -10,10 +10,13 @@
 // See docs/design/component-emission.md, Part 3.
 //
 //   js            core module, `@zena-lang/runtime` imports
-//   zena-cli      core module, WASI p1 plus zena-cli's private `env.*`
+//   zena-cli      component, WASI 0.3 plus the `zena-cli:host` interfaces
+//                 the zena command's host provides (stack traces, process
+//                 spawning, running components)
 //   freestanding  core module, nothing beyond what the program declares
 //                 with `@external`
-//   component     component, WIT interfaces (p3 clocks, application worlds)
+//   component     component, WASI 0.3 and application worlds: what any
+//                 component host can run
 //
 // What a target selects is a set of standard-library implementations, and
 // therefore an import set: `ModuleResolver` picks the `virtual` entry
@@ -27,12 +30,8 @@
 export let targetNames = (): FixedArray<String> =>
     ["js", "zena-cli", "freestanding", "component"];
 
-/**
- * Legacy spellings still accepted by `--target`. `host` predates `js`;
- * `wasi` is what the stdlib manifest called zena-cli's p1 entries before
- * p1 became zena-cli's private business rather than a portable target.
- */
-let legacyTargetNames = (): FixedArray<String> => ["host", "wasi"];
+/** Legacy spellings still accepted by `--target`: `host` predates `js`. */
+let legacyTargetNames = (): FixedArray<String> => ["host"];
 
 /** Whether `target` is a target name the compiler knows. */
 export let isKnownTarget = (target: String): boolean => {
@@ -69,5 +68,5 @@ export let knownTargetsDescription = (): String => {
  * A component is the only form that can reach WASI p2 or p3.
  */
 export let targetEmitsComponent = (target: String): boolean =>
-    target == "component";
+    target == "component" || target == "zena-cli";
 

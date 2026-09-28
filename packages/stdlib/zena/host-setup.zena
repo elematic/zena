@@ -1,0 +1,42 @@
+/**
+ * What a program on the `zena` command's host needs installed before it
+ * runs, for the `zena-cli` target: `Error`'s stack traces, from
+ * `zena-cli:host/stack-trace` as the compiler synthesizes it from the
+ * host's WIT, installed into `zena:core` through the hooks in
+ * `core/error/stack-hooked.zena`; and the blocking wait, so that a
+ * synchronous `runFuture` on this host waits out a p3 import or timer.
+ *
+ * Loaded as one of the target's runtime modules, and `installHost` is
+ * called by the component entry before the program's `main`: the hooks
+ * exist because `Error` cannot import this module — everything here
+ * imports `zena:core` back — and the entry calls it because a runtime
+ * module has no other way to run before the program does.
+ */
+
+import { installStackTraceHooks, StackRef } from 'zena:error-stack';
+import { installBlockingParker } from 'zena:wasi';
+import { capture } from 'zena-cli:host/stack-trace';
+
+let captureText = (): StackRef | null => {
+  let text = capture();
+  if (text == '') {
+    return null;
+  }
+  return text as StackRef;
+};
+
+let formatText = (stack: StackRef | null): String | null => {
+  if (stack == null) {
+    return null;
+  }
+  return stack as String;
+};
+
+/**
+ * Point `Error`'s stack traces at the host, and let a synchronous wait
+ * block. Called by the entry.
+ */
+export function installHost(): void {
+  installStackTraceHooks(captureText, formatText);
+  installBlockingParker();
+}

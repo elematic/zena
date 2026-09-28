@@ -21,14 +21,14 @@ export function main() {
 > repository](https://github.com/porfirioribeiro/zena).
 
 ```bash
-# Compile for host environment (JS)
-zena build hello.zena -o hello.wasm --target host
+# Compile for a JavaScript host (Node.js, the browser)
+zena build hello.zena -o hello.wasm --target js
 
-# Compile for WASI
-zena build hello.zena -o hello.wasm --target wasi
+# Compile a portable component over WASI 0.3
+zena build hello.zena -o hello.wasm --target component
 
 # Run with wasmtime
-wasmtime run -W gc,function-references,exceptions --invoke main hello.wasm
+wasmtime run -S p3=y hello.wasm
 ```
 
 ## Basic Syntax
@@ -2238,10 +2238,10 @@ console.debug('Debug info');
 
 The console implementation is selected based on the `--target` flag:
 
-- **`--target host`**: Uses imported JavaScript functions (`env.console_log`,
+- **`--target js`**: Uses imported JavaScript functions (`console.log_string`,
   etc.) that the host must provide
-- **`--target wasi`**: Writes directly to stdout/stderr using WASI file
-  descriptors
+- **`--target component`** and **`--target zena-cli`**: Writes to stdout and
+  stderr through `wasi:cli@0.3.0`'s streams
 
 This means the same Zena code works in both browser/Node.js environments and
 standalone WASI runtimes like wasmtime.

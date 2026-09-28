@@ -11,7 +11,6 @@ import {readFile} from 'node:fs/promises';
 import {readFileSync} from 'node:fs';
 import {resolve, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {WASI} from 'node:wasi';
 import {
   createStringReader,
   createStringWriter,
@@ -104,18 +103,19 @@ async function loadLsp(): Promise<LspHandle> {
       }
     },
   };
-  const wasi = new WASI({
-    version: 'preview1',
-    args: [],
-    env: process.env,
-  });
-
+  // lsp.wasm is built for the host target: its imports are the console,
+  // the file reader, the clock and the stack-trace hooks below, and
+  // no WASI.
   const result = await WebAssembly.instantiate(wasmBuffer, {
-    ...wasi.getImportObject(),
     env: {
       getStackTrace: () => null,
       captureStackTrace: () => null,
       formatStackTrace: () => null,
+    },
+    // The compiler times its phases through `zena:time`'s host clock.
+    time: {
+      now_ms: () => performance.now(),
+      sleep_ms: () => {},
     },
     console: consoleImports,
     compiler: compilerImports,
@@ -123,7 +123,6 @@ async function loadLsp(): Promise<LspHandle> {
 
   const instance =
     (result as unknown as {instance: WebAssembly.Instance}).instance ?? result;
-  wasi.initialize(instance);
   exports = instance.exports as LspExports;
   writeString = createStringWriter(exports);
   readString = createStringReader(exports);
@@ -1115,13 +1114,6 @@ let x: i32 = 0;`;
           const reader = createStringReader(programExports!);
           loggedMessage = reader(strRef, strLen);
         },
-      },
-      wasi_snapshot_preview1: {
-        fd_write: () => 0,
-        proc_exit: () => 0,
-        environ_get: () => 0,
-        environ_sizes_get: () => 0,
-        clock_time_get: () => 0,
       },
       env: {
         getStackTrace: () => null,

@@ -1,0 +1,112 @@
+/// What the `zena` command's host provides beyond WASI: the imports
+/// behind `zena:error-stack`, `zena:process` and `zena:wasm` on the
+/// component target. `zena-runtime` implements every interface here,
+/// and `zena-cli` and `zena-run` link them; nothing else does.
+package zena-cli:host@1.0.0;
+
+/// Backtraces for `Error`: what wasmtime knows about the guest's stack.
+interface stack-trace {
+  /// The wasm backtrace at the call, formatted one frame per line, or
+  /// the empty string when the host keeps none.
+  capture: func() -> string;
+}
+
+/// Spawning host processes. Granted to the command; a component without
+/// the grant gets stubs that trap.
+interface process {
+  /// How a process ended, and what it wrote.
+  record finished {
+    exit-code: s32,
+    stdout: list<u8>,
+    stderr: list<u8>,
+    /// Wall-clock nanoseconds from spawn to exit.
+    wall-nanos: s64,
+    /// The process overran its deadline and was killed.
+    timed-out: bool,
+  }
+
+  /// A process being configured.
+  resource command {
+    constructor(argv: list<string>);
+    /// The working directory, in the guest's view of the file system.
+    cwd: func(path: string);
+    /// Connect the process to the host's own stdio instead of capturing.
+    inherit-stdio: func();
+    /// Start it. An error is why it could not start.
+    spawn: func() -> result<process, string>;
+  }
+
+  /// A running process.
+  resource process {
+    /// Wait at most `millis` milliseconds, killing the process on
+    /// overrun; a non-positive limit waits forever. Waiting again
+    /// returns the same result.
+    wait: func(millis: s64) -> finished;
+  }
+}
+
+/// Running other Wasm components. Granted with `process`.
+interface wasm {
+  /// A directory of the caller's, `source`, preopened for the run under
+  /// the path `target`.
+  record dir-mapping {
+    source: string,
+    target: string,
+  }
+
+  /// How to run a component. See `zena:wasm`'s `RunOptions`.
+  record run-options {
+    args: list<string>,
+    env: list<tuple<string, string>>,
+    inherit-env: bool,
+    dirs: list<dir-mapping>,
+    invoke: string,
+    inherit-stdio: bool,
+    grant: bool,
+    debug: bool,
+    /// A time limit in nanoseconds; none when not positive.
+    timeout-nanos: s64,
+  }
+
+  /// How a run ended.
+  enum outcome {
+    /// The export returned.
+    returned,
+    trapped,
+    timed-out,
+    /// The component could not be read, compiled, linked or instantiated.
+    failed,
+    /// The component ended itself with `exit(code)`.
+    exited,
+  }
+
+  record run-result {
+    outcome: outcome,
+    exit-code: s32,
+    /// The export's first result as `zena run` prints it; '' without one.
+    result-text: string,
+    message: string,
+    stdout: list<u8>,
+    stderr: list<u8>,
+    /// Nanoseconds the exported call took.
+    call-nanos: s64,
+  }
+
+  /// A run in progress. Starting is the constructor.
+  resource run {
+    constructor(path: string, options: run-options);
+    /// Block until the run ends. Waiting again returns the same result.
+    wait: func() -> run-result;
+  }
+
+  /// Write a component's ahead-of-time compiled form beside it; '' on
+  /// success, else why not.
+  precompile: func(path: string, debug: bool) -> string;
+}
+
+/// The command's imports beyond WASI.
+world command {
+  import stack-trace;
+  import process;
+  import wasm;
+}

@@ -1,0 +1,766 @@
+/**
+ * File system access over WASI 0.3, for the component target.
+ *
+ * Provides file reading and writing, directory listing and metadata,
+ * relative to the directories the host preopened, over
+ * `wasi:filesystem@0.3.0` as the compiler synthesizes it from the
+ * vendored WIT.
+ *
+ * The API is synchronous. The 0.3 filesystem is asynchronous
+ * throughout — every descriptor method is an `async func`, and file
+ * contents travel as a `stream<u8>` — so each operation here starts
+ * the synthesized call and waits in `blockOn` until it settles. The
+ * compiler exports `main` async for a program that uses this module,
+ * because wasmtime allows such a wait only inside a call to an async
+ * export; a synchronous WIT export cannot use this module.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { readFile, writeFile, listDir } from 'zena:fs';
+ *
+ * let content = readFile('config.json');
+ * writeFile('output.txt', 'Hello, World!');
+ * for (let entry in listDir('.')) {
+ *   console.log(entry.name);
+ * }
+ * ```
+ */
+
+import { newByteArray, Disposable, Ok, Err, Some } from 'zena:core';
+import { Stream, StreamWriter, readAllBytes } from 'zena:stream';
+import { blockOn } from 'zena:wasi';
+import { GlobPattern, hasMagic } from 'zena:glob';
+import { getDirectories } from 'wasi:filesystem/preopens';
+import {
+  Descriptor as WitDescriptor, DescriptorStat, DescriptorType,
+  DescriptorTypeBlockDevice, DescriptorTypeCharacterDevice,
+  DescriptorTypeDirectory, DescriptorTypeRegularFile,
+  DescriptorTypeSocket, DescriptorTypeSymbolicLink, DirectoryEntry,
+  ErrorCode, ErrorCodeAccess, ErrorCodeBadDescriptor, ErrorCodeExist,
+  ErrorCodeInsufficientSpace, ErrorCodeInvalid, ErrorCodeInvalidSeek,
+  ErrorCodeIo, ErrorCodeIsDirectory, ErrorCodeLoop, ErrorCodeNameTooLong,
+  ErrorCodeNoEntry, ErrorCodeNotDirectory, ErrorCodeNotEmpty,
+  ErrorCodeNotPermitted, ErrorCodeReadOnly, ErrorCodeTooManyLinks,
+  PathFlags, pathFlagsSymlinkFollow,
+  OpenFlags as WitOpenFlags, openFlagsCreate, openFlagsDirectory,
+  openFlagsTruncate,
+  DescriptorFlags as WitDescriptorFlags, descriptorFlagsRead,
+  descriptorFlagsWrite, descriptorFlagsMutateDirectory,
+} from 'wasi:filesystem/types';
+import { Instant } from 'wasi:clocks/system-clock';
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+/**
+ * The failures a file operation reports. The numbers are the WASI
+ * preview 1 errno values the codes were first modelled on, kept so
+ * `FsError.errno` stays what it was; a 0.3 `error-code` maps onto them.
+ */
+export enum FsErrorCode {
+  Success,          // No error (0)
+  Access,           // Permission denied (2)
+  BadDescriptor,    // Bad file descriptor (8)
+  Exist,            // File exists (20)
+  NotFound,         // No such file or directory (44)
+  IsDirectory,      // Is a directory (31)
+  NotDirectory,     // Not a directory (54)
+  NotEmpty,         // Directory not empty (55)
+  ReadOnly,         // Read-only file system (69)
+  InvalidSeek,      // Invalid seek (70)
+  Io,               // I/O error (29)
+  InvalidArgument,  // Invalid argument (28)
+  TooManyLinks,     // Too many symbolic links (72)
+  NameTooLong,      // Filename too long (37)
+  NoSpace,          // No space left on device (51)
+  NotPermitted,     // Operation not permitted (63)
+}
+
+let errnoToCode = (errno: i32): FsErrorCode => {
+  return match (errno) {
+    case 0: FsErrorCode.Success
+    case 2: FsErrorCode.Access
+    case 8: FsErrorCode.BadDescriptor
+    case 20: FsErrorCode.Exist
+    case 44: FsErrorCode.NotFound
+    case 31: FsErrorCode.IsDirectory
+    case 54: FsErrorCode.NotDirectory
+    case 55: FsErrorCode.NotEmpty
+    case 69: FsErrorCode.ReadOnly
+    case 70: FsErrorCode.InvalidSeek
+    case 29: FsErrorCode.Io
+    case 28: FsErrorCode.InvalidArgument
+    case 72: FsErrorCode.TooManyLinks
+    case 37: FsErrorCode.NameTooLong
+    case 51: FsErrorCode.NoSpace
+    case 63: FsErrorCode.NotPermitted
+    case _: FsErrorCode.Io
+  };
+};
+
+/** The errno a 0.3 `error-code` stands for; anything unlisted is I/O. */
+let errnoOf = (code: ErrorCode): i32 => {
+  if (code is ErrorCodeAccess) { return 2; }
+  if (code is ErrorCodeBadDescriptor) { return 8; }
+  if (code is ErrorCodeExist) { return 20; }
+  if (code is ErrorCodeNoEntry) { return 44; }
+  if (code is ErrorCodeIsDirectory) { return 31; }
+  if (code is ErrorCodeNotDirectory) { return 54; }
+  if (code is ErrorCodeNotEmpty) { return 55; }
+  if (code is ErrorCodeReadOnly) { return 69; }
+  if (code is ErrorCodeInvalidSeek) { return 70; }
+  if (code is ErrorCodeInvalid) { return 28; }
+  if (code is ErrorCodeTooManyLinks || code is ErrorCodeLoop) { return 72; }
+  if (code is ErrorCodeNameTooLong) { return 37; }
+  if (code is ErrorCodeInsufficientSpace) { return 51; }
+  if (code is ErrorCodeNotPermitted) { return 63; }
+  return 29;
+};
+
+let describe = (code: ErrorCode): String => {
+  return match (errnoOf(code)) {
+    case 2: 'permission denied'
+    case 8: 'bad descriptor'
+    case 20: 'already exists'
+    case 44: 'no such file or directory'
+    case 31: 'is a directory'
+    case 54: 'not a directory'
+    case 55: 'directory not empty'
+    case 69: 'read-only file system'
+    case 70: 'invalid seek'
+    case 28: 'invalid argument'
+    case 72: 'too many links'
+    case 37: 'name too long'
+    case 51: 'no space left'
+    case 63: 'operation not permitted'
+    case _: 'I/O error'
+  };
+};
+
+/** A failed file operation: its code, and what was being done. */
+export class FsError extends Error {
+  code: FsErrorCode;
+  errno: i32;
+  new(errno: i32, message: String)
+    : errno = errno, code = errnoToCode(errno), super(message);
+}
+
+let fail = (code: ErrorCode, what: String): never => {
+  throw new FsError(errnoOf(code), `${what}: ${describe(code)}`);
+};
+
+// ============================================================================
+// File Types
+// ============================================================================
+
+/** The kind of a directory entry or stat'd path. */
+export enum FileType {
+  Unknown,
+  BlockDevice,
+  CharacterDevice,
+  Directory,
+  RegularFile,
+  SymbolicLink,
+  Socket,
+}
+
+let fileTypeOf = (t: DescriptorType): FileType => {
+  if (t is DescriptorTypeRegularFile) { return FileType.RegularFile; }
+  if (t is DescriptorTypeDirectory) { return FileType.Directory; }
+  if (t is DescriptorTypeSymbolicLink) { return FileType.SymbolicLink; }
+  if (t is DescriptorTypeBlockDevice) { return FileType.BlockDevice; }
+  if (t is DescriptorTypeCharacterDevice) { return FileType.CharacterDevice; }
+  if (t is DescriptorTypeSocket) { return FileType.Socket; }
+  return FileType.Unknown;
+};
+
+/** File metadata. */
+export type FileStat = {
+  fileType: FileType,
+  size: i64,
+  /** When the contents last changed, in nanoseconds since the Unix epoch. */
+  modified: i64,
+};
+
+/** A directory entry. */
+export type DirEntry = {
+  name: String,
+  fileType: FileType,
+};
+
+/** How `Descriptor.openAt` opens a path. */
+export enum DescriptorFlags {
+  Read,
+  Write,
+  ReadWrite,
+  MutateDirectory,
+}
+
+let statOf = (s: DescriptorStat): FileStat => {
+  var modified = 0 as i64;
+  let stamp = s.dataModificationTimestamp;
+  if (stamp is Some<Instant>) {
+    let at = (stamp as Some<Instant>).value;
+    modified = at.seconds * (1000000000 as i64) + (at.nanoseconds as i64);
+  }
+  return {
+    fileType: fileTypeOf(s.type),
+    size: s.size as i64,
+    modified: modified,
+  };
+};
+
+// ============================================================================
+// Descriptors
+// ============================================================================
+
+let noOpenFlags = (0 as u32) as WitOpenFlags;
+let noPathFlags = (0 as u32) as PathFlags;
+
+let witDescriptorFlags = (flags: DescriptorFlags): WitDescriptorFlags => {
+  return match (flags) {
+    case DescriptorFlags.Read: descriptorFlagsRead
+    case DescriptorFlags.Write: descriptorFlagsWrite
+    case DescriptorFlags.ReadWrite: {
+      ((descriptorFlagsRead as u32) | (descriptorFlagsWrite as u32)) as WitDescriptorFlags
+    }
+    case DescriptorFlags.MutateDirectory: {
+      ((descriptorFlagsRead as u32) | (descriptorFlagsMutateDirectory as u32)) as WitDescriptorFlags
+    }
+  };
+};
+
+/** Every byte of a stream, collected as a `ByteArray`. */
+let collectBytes = (stream: Stream<u8>): ByteArray => {
+  let bytes = blockOn(readAllBytes(stream));
+  let out = newByteArray(bytes.length);
+  for (var i = 0; i < bytes.length; i += 1) {
+    out[i] = bytes[i];
+  }
+  return out;
+};
+
+/** A stream carrying `data`, then end-of-stream, fed by a background
+ * task as the host takes the bytes. */
+let bytesStream = (data: ByteArray): Stream<u8> => {
+  let writer = new StreamWriter<u8>();
+  pumpBytes(writer, data);
+  return writer.stream;
+};
+
+async function pumpBytes(writer: StreamWriter<u8>, data: ByteArray): Future<void> {
+  let count = __byte_array_length(data);
+  // A write of nothing is refused; an empty file is end-of-stream.
+  if (count > 0) {
+    let bytes = new Array<u8>.fixed(count, 0);
+    for (var i = 0; i < count; i += 1) {
+      bytes[i] = __byte_array_get(data, i) as u8;
+    }
+    await writer.writeAll(bytes, count);
+  }
+  writer.close();
+}
+
+/** Every entry of a directory stream. */
+async function collectEntries(stream: Stream<DirectoryEntry>): Future<Array<DirEntry>> {
+  let out = new Array<DirEntry>();
+  while (true) {
+    let next = await stream.readOne();
+    if (next is Some<DirectoryEntry>) {
+      let entry = (next as Some<DirectoryEntry>).value;
+      out.push({ name: entry.name, fileType: fileTypeOf(entry.type) });
+    } else {
+      break;
+    }
+  }
+  return out;
+}
+
+/**
+ * An open file or directory: a handle the host owns, released by
+ * `close`. Paths given to the `*At` methods are relative to a
+ * directory descriptor.
+ */
+export class Descriptor {
+  #inner: WitDescriptor;
+  var #closed = false;
+
+  new(inner: WitDescriptor) : #inner = inner;
+
+  #open(): WitDescriptor {
+    if (this.#closed) {
+      throw new FsError(8, 'Descriptor is closed');
+    }
+    return this.#inner;
+  }
+
+  /** The entire contents, as bytes. */
+  readAllBytes(): ByteArray {
+    let (stream, done) = this.#open().readViaStream(0 as u64);
+    let bytes = collectBytes(stream);
+    let outcome = blockOn(done);
+    if (outcome is Err<void, ErrorCode>) {
+      fail((outcome as Err<void, ErrorCode>).error, 'read');
+    }
+    return bytes;
+  }
+
+  /** The entire contents, as text. */
+  readString(): String {
+    let (stream, done) = this.#open().readViaStream(0 as u64);
+    let bytes = blockOn(readAllBytes(stream));
+    let outcome = blockOn(done);
+    if (outcome is Err<void, ErrorCode>) {
+      fail((outcome as Err<void, ErrorCode>).error, 'read');
+    }
+    return String.fromBytes(bytes);
+  }
+
+  /** Write `data` from the start of the file. */
+  writeBytes(data: ByteArray): void {
+    let done = this.#open().writeViaStream(bytesStream(data), 0 as u64);
+    let outcome = blockOn(done);
+    if (outcome is Err<void, ErrorCode>) {
+      fail((outcome as Err<void, ErrorCode>).error, 'write');
+    }
+  }
+
+  /** Write `data` from the start of the file. */
+  writeString(data: String): void {
+    let bytes = data.toBytes();
+    let out = newByteArray(bytes.length);
+    for (var i = 0; i < bytes.length; i += 1) {
+      out[i] = bytes[i];
+    }
+    this.writeBytes(out);
+  }
+
+  /** Open a path under this directory, following symlinks. */
+  openAt(path: String, flags: DescriptorFlags): Descriptor {
+    let outcome = blockOn(this.#open().openAt(
+        pathFlagsSymlinkFollow, path, noOpenFlags, witDescriptorFlags(flags)));
+    if (outcome is Err<WitDescriptor, ErrorCode>) {
+      fail((outcome as Err<WitDescriptor, ErrorCode>).error, `open '${path}'`);
+    }
+    return new Descriptor((outcome as Ok<WitDescriptor, ErrorCode>).value);
+  }
+
+  /** Create a file under this directory, or truncate the one there,
+   * open for writing. */
+  createAt(path: String): Descriptor {
+    let openFlags =
+        ((openFlagsCreate as u32) | (openFlagsTruncate as u32)) as WitOpenFlags;
+    let outcome = blockOn(this.#open().openAt(
+        pathFlagsSymlinkFollow, path, openFlags, descriptorFlagsWrite));
+    if (outcome is Err<WitDescriptor, ErrorCode>) {
+      fail((outcome as Err<WitDescriptor, ErrorCode>).error, `create '${path}'`);
+    }
+    return new Descriptor((outcome as Ok<WitDescriptor, ErrorCode>).value);
+  }
+
+  /** Open a directory under this one. */
+  openDirAt(path: String): Descriptor {
+    let outcome = blockOn(this.#open().openAt(
+        pathFlagsSymlinkFollow, path, openFlagsDirectory,
+        witDescriptorFlags(DescriptorFlags.MutateDirectory)));
+    if (outcome is Err<WitDescriptor, ErrorCode>) {
+      fail((outcome as Err<WitDescriptor, ErrorCode>).error, `opendir '${path}'`);
+    }
+    return new Descriptor((outcome as Ok<WitDescriptor, ErrorCode>).value);
+  }
+
+  /** This descriptor's metadata. */
+  stat(): FileStat {
+    let outcome = blockOn(this.#open().stat());
+    if (outcome is Err<DescriptorStat, ErrorCode>) {
+      fail((outcome as Err<DescriptorStat, ErrorCode>).error, 'stat');
+    }
+    return statOf((outcome as Ok<DescriptorStat, ErrorCode>).value);
+  }
+
+  /** The metadata of a path under this directory, following symlinks. */
+  statAt(path: String): FileStat {
+    let outcome = blockOn(this.#open().statAt(pathFlagsSymlinkFollow, path));
+    if (outcome is Err<DescriptorStat, ErrorCode>) {
+      fail((outcome as Err<DescriptorStat, ErrorCode>).error, `stat '${path}'`);
+    }
+    return statOf((outcome as Ok<DescriptorStat, ErrorCode>).value);
+  }
+
+  /** The entries of this directory. `.` and `..` are not among them. */
+  readDir(): Array<DirEntry> {
+    let (stream, done) = this.#open().readDirectory();
+    let entries = blockOn(collectEntries(stream));
+    let outcome = blockOn(done);
+    if (outcome is Err<void, ErrorCode>) {
+      fail((outcome as Err<void, ErrorCode>).error, 'readdir');
+    }
+    return entries;
+  }
+
+  /** Create a directory under this one. */
+  mkdirAt(path: String): void {
+    let outcome = blockOn(this.#open().createDirectoryAt(path));
+    if (outcome is Err<void, ErrorCode>) {
+      fail((outcome as Err<void, ErrorCode>).error, `mkdir '${path}'`);
+    }
+  }
+
+  /** Remove a file under this directory. */
+  unlinkAt(path: String): void {
+    let outcome = blockOn(this.#open().unlinkFileAt(path));
+    if (outcome is Err<void, ErrorCode>) {
+      fail((outcome as Err<void, ErrorCode>).error, `unlink '${path}'`);
+    }
+  }
+
+  /** Remove an empty directory under this one. */
+  rmdirAt(path: String): void {
+    let outcome = blockOn(this.#open().removeDirectoryAt(path));
+    if (outcome is Err<void, ErrorCode>) {
+      fail((outcome as Err<void, ErrorCode>).error, `rmdir '${path}'`);
+    }
+  }
+
+  /** Rename a path under this directory to a path under `to`. */
+  renameAt(from: String, to: Descriptor, toPath: String): void {
+    let outcome = blockOn(this.#open().renameAt(from, to.#open(), toPath));
+    if (outcome is Err<void, ErrorCode>) {
+      fail((outcome as Err<void, ErrorCode>).error, `rename '${from}' to '${toPath}'`);
+    }
+  }
+
+  /** Release the handle. Closing twice is harmless. */
+  close(): void {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#inner.[Disposable.dispose]();
+    }
+  }
+}
+
+// ============================================================================
+// Preopened Directories
+// ============================================================================
+
+var preopensCache: Array<(Descriptor, String)> | null = null;
+
+/**
+ * The directories the host preopened, each with the path it is known
+ * by. Every relative path in this module resolves against the first.
+ */
+export let getPreopens = (): Array<(Descriptor, String)> => {
+  let cached = preopensCache;
+  if (cached != null) {
+    return cached;
+  }
+  let result = new Array<(Descriptor, String)>();
+  for (let (descriptor, path) in getDirectories()) {
+    result.push((new Descriptor(descriptor), path));
+  }
+  preopensCache = result;
+  return result;
+};
+
+/** The first preopened directory. */
+export let getRootDir = (): Descriptor => {
+  let preopens = getPreopens();
+  if (preopens.length == 0) {
+    throw new FsError(44, 'No preopened directories available');
+  }
+  return preopens[0][0];
+};
+
+/**
+ * The preopen a path falls under, and the path relative to it: the
+ * longest preopen prefix of an absolute path, else the first preopen.
+ */
+let resolvePreopen = (path: String): (Descriptor, String) => {
+  let preopens = getPreopens();
+  if (preopens.length == 0) {
+    throw new FsError(44, 'No preopened directories available');
+  }
+  var bestMatch: Descriptor | null = null;
+  var longestPrefix = -1;
+  var relativePath = path;
+  for (let (poDescriptor, poPath) in preopens) {
+    if (bestMatch == null) {
+      bestMatch = poDescriptor;
+    }
+    if (poPath != '.' && path.startsWith(poPath)) {
+      if (poPath.length > longestPrefix) {
+        longestPrefix = poPath.length;
+        bestMatch = poDescriptor;
+        var sliceStart = poPath.length;
+        if (path.length > sliceStart &&
+            path.sliceBytes(sliceStart, sliceStart + 1) == '/') {
+          sliceStart += 1;
+        }
+        relativePath = path.sliceBytes(sliceStart, path.length);
+      }
+    }
+  }
+  // A path naming a preopen exactly strips to ''; a path operation
+  // rejects an empty path, so name the preopen's own directory.
+  if (relativePath == '') {
+    relativePath = '.';
+  }
+  return (bestMatch as Descriptor, relativePath);
+};
+
+// ============================================================================
+// High-Level Convenience Functions
+// ============================================================================
+
+/** The contents of a file, as text. */
+export let readFile = (path: String): String => {
+  let (dir, rel) = resolvePreopen(path);
+  let file = dir.openAt(rel, DescriptorFlags.Read);
+  let content = file.readString();
+  file.close();
+  return content;
+};
+
+/** The contents of a file, as bytes. */
+export let readFileBytes = (path: String): ByteArray => {
+  let (dir, rel) = resolvePreopen(path);
+  let file = dir.openAt(rel, DescriptorFlags.Read);
+  let content = file.readAllBytes();
+  file.close();
+  return content;
+};
+
+/** Write text to a file, creating or truncating it. */
+export let writeFile = (path: String, content: String): void => {
+  let (dir, rel) = resolvePreopen(path);
+  let file = dir.createAt(rel);
+  file.writeString(content);
+  file.close();
+};
+
+/** Write bytes to a file, creating or truncating it. */
+export let writeFileBytes = (path: String, content: ByteArray): void => {
+  let (dir, rel) = resolvePreopen(path);
+  let file = dir.createAt(rel);
+  file.writeBytes(content);
+  file.close();
+};
+
+/** The entries of a directory. */
+export let listDir = (path: String): Array<DirEntry> => {
+  let (dir, rel) = resolvePreopen(path);
+  let opened = dir.openDirAt(rel);
+  let entries = opened.readDir();
+  opened.close();
+  return entries;
+};
+
+/** Whether anything exists at a path. */
+export let exists = (path: String): boolean => {
+  let (dir, rel) = resolvePreopen(path);
+  return try {
+    dir.statAt(rel);
+    true
+  } catch (e) {
+    false
+  };
+};
+
+/** Whether a regular file exists at a path. */
+export let isFile = (path: String): boolean => {
+  let (dir, rel) = resolvePreopen(path);
+  return try {
+    dir.statAt(rel).fileType == FileType.RegularFile
+  } catch (e) {
+    false
+  };
+};
+
+/** Whether a directory exists at a path. */
+export let isDirectory = (path: String): boolean => {
+  let (dir, rel) = resolvePreopen(path);
+  return try {
+    dir.statAt(rel).fileType == FileType.Directory
+  } catch (e) {
+    false
+  };
+};
+
+/** Create a directory. */
+export let mkdir = (path: String): void => {
+  let (dir, rel) = resolvePreopen(path);
+  dir.mkdirAt(rel);
+};
+
+/** Remove a file. */
+export let unlink = (path: String): void => {
+  let (dir, rel) = resolvePreopen(path);
+  dir.unlinkAt(rel);
+};
+
+/** Move a file or directory. */
+export let rename = (from: String, to: String): void => {
+  let (fromDir, fromRel) = resolvePreopen(from);
+  let (toDir, toRel) = resolvePreopen(to);
+  fromDir.renameAt(fromRel, toDir, toRel);
+};
+
+/** The metadata of a path. */
+export let stat = (path: String): FileStat => {
+  let (dir, rel) = resolvePreopen(path);
+  return dir.statAt(rel);
+};
+
+/** Remove an empty directory. */
+export let rmdir = (path: String): void => {
+  let (dir, rel) = resolvePreopen(path);
+  dir.rmdirAt(rel);
+};
+
+// ============================================================================
+// Glob
+// ============================================================================
+
+/** How `glob` searches. */
+export class GlobOptions {
+  var cwd: String = '.';
+  var onlyFiles: boolean = true;
+  var exclude = new GrowableArray<String>();
+}
+
+/** Insertion sort, in place: directory listings are nearly sorted. */
+let sortStrings = (arr: GrowableArray<String>): void => {
+  for (var i = 1; i < arr.length; i += 1) {
+    let cur = arr[i];
+    var j = i - 1;
+    for (; j >= 0 && arr[j].compareTo(cur) > 0; j -= 1) {
+      arr[j + 1] = arr[j];
+    }
+    arr[j + 1] = cur;
+  }
+};
+
+/** The directory prefix of a pattern before its first wildcard. */
+let baseDirOf = (pattern: String): String => {
+  var lastSlash = 0 - 1;
+  for (var i = 0; i < pattern.length; i += 1) {
+    let b = pattern.getByteAt(i);
+    if (b == 42 || b == 63 || b == 91 || b == 123) { // '*', '?', '[', '{'
+      break;
+    }
+    if (b == 47) { // '/'
+      lastSlash = i;
+    }
+  }
+  if (lastSlash < 0) {
+    return '.';
+  }
+  if (lastSlash == 0) {
+    return '/';
+  }
+  return pattern.sliceBytes(0, lastSlash);
+};
+
+let scanDir = (
+  currentDir: String,
+  relPrefix: String,
+  globPattern: GlobPattern,
+  excludePatterns: GrowableArray<GlobPattern>,
+  onlyFiles: boolean,
+  results: GrowableArray<String>
+): void => {
+  let entries = try {
+    listDir(currentDir)
+  } catch (e) {
+    return;
+  };
+  for (let entry in entries) {
+    if (entry.name == '.' || entry.name == '..') {
+      continue;
+    }
+    let relPath = if (relPrefix.length == 0 || relPrefix == '.') {
+      entry.name
+    } else {
+      relPrefix + '/' + entry.name
+    };
+    let fullPath = if (currentDir == '.') {
+      entry.name
+    } else {
+      currentDir + '/' + entry.name
+    };
+    var excluded = false;
+    for (var ex = 0; ex < excludePatterns.length; ex += 1) {
+      if (excludePatterns[ex].matches(relPath) || excludePatterns[ex].matches(fullPath)) {
+        excluded = true;
+        break;
+      }
+    }
+    if (excluded) {
+      continue;
+    }
+    let isDir = entry.fileType == FileType.Directory;
+    if (globPattern.matches(relPath)) {
+      if (!onlyFiles || !isDir) {
+        results.push(relPath);
+      }
+    }
+    if (isDir) {
+      scanDir(fullPath, relPath, globPattern, excludePatterns, onlyFiles, results);
+    }
+  }
+};
+
+/**
+ * The paths under `options.cwd` matching a glob pattern, sorted. A
+ * pattern with no wildcard names one path, reported if it exists.
+ */
+export let glob = (
+  pattern: String,
+  options: GlobOptions | null = null
+): Array<String> => {
+  let opts = if (options != null) {
+    options as GlobOptions
+  } else {
+    new GlobOptions()
+  };
+  let results = new GrowableArray<String>();
+  let excludePatterns = new GrowableArray<GlobPattern>();
+  for (var ex = 0; ex < opts.exclude.length; ex += 1) {
+    excludePatterns.push(new GlobPattern(opts.exclude[ex]));
+  }
+  if (!hasMagic(pattern)) {
+    let target = if (opts.cwd == '.') {
+      pattern
+    } else {
+      opts.cwd + '/' + pattern
+    };
+    if (exists(target)) {
+      var excluded = false;
+      for (var ex = 0; ex < excludePatterns.length; ex += 1) {
+        if (excludePatterns[ex].matches(pattern)) {
+          excluded = true;
+          break;
+        }
+      }
+      if (!excluded) {
+        results.push(pattern);
+      }
+    }
+    return results;
+  }
+  let baseDir = baseDirOf(pattern);
+  let scanRoot = if (opts.cwd == '.') {
+    baseDir
+  } else if (baseDir == '.') {
+    opts.cwd
+  } else {
+    opts.cwd + '/' + baseDir
+  };
+  let relPrefix = if (baseDir == '.') '' else baseDir;
+  let globPattern = new GlobPattern(pattern);
+  scanDir(scanRoot, relPrefix, globPattern, excludePatterns, opts.onlyFiles, results);
+  sortStrings(results);
+  return results;
+};

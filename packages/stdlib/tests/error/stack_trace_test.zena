@@ -1,0 +1,28 @@
+// `Error` on the zena-cli target carries the wasm backtrace the zena
+// command's host formats through `zena-cli:host/stack-trace`, installed
+// into `zena:core` by the component entry before the program runs.
+// Every test here runs under that host, so the trace is never absent.
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+
+let boom = (): void => {
+  throw new Error('boom');
+};
+
+export let tests = suite('error stack traces', () => {
+  test('a thrown Error carries the host\'s formatted backtrace', () => {
+    var trace: String | null = null;
+    try {
+      boom();
+    } catch (e) {
+      trace = (e as Error).getStackTrace();
+    }
+    isTrue(trace != null, 'the trace is present');
+    isTrue((trace as String).length > 0, 'the trace has frames');
+  });
+
+  test('an Error made without being thrown has one too', () => {
+    let trace = new Error('quiet').getStackTrace();
+    isTrue(trace != null, 'the trace is present');
+  });
+});

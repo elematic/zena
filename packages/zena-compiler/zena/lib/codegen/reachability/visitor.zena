@@ -2825,9 +2825,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           }
           if (dfIntrinsicName != "") {
             this.pass.wasm.intrinsics[df.id] = dfIntrinsicName;
-            if (dfIntrinsicName == "wasi_write_string") {
-              this.registerWasiInfra(moduleModel);
-            } else if (dfIntrinsicName == "cancel.raise") {
+            if (dfIntrinsicName == "cancel.raise") {
               // The cancellation tag exists exactly when the program
               // can cancel; finalizer-region lowering consults it.
               // The stdlib's own raise sites (a cancelled future's
@@ -2878,7 +2876,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       let returns = new Array<ValType>();
       mapReturnTypeToWasmResults(this.pass.wasm, funcType.returnType, returns);
 
-      let isWasi = (externalModule == "wasi_snapshot_preview1");
       var isGcRef = false;
       if (returns.length == 1) {
         match (returns[0]) {
@@ -2891,7 +2888,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         }
       }
 
-      if (isGcRef && !isWasi) {
+      if (isGcRef) {
         let importReturns = new Array<ValType>();
         importReturns.push(new ValTypeExternRef());
         let importSig = this.pass.wasm.getSignature(params, importReturns);
@@ -2960,52 +2957,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     this.pass.markFunctionReached(helperFunc);
   }
 
-  registerWasiInfra(model: SemanticModel): void {
-    if (this.pass.wasm.wasiFdWriteIndex >= 0) return;
-    
-    this.pass.wasm.ensureMemory();
-    
-    let fdWriteParams = new Array<ValType>();
-    fdWriteParams.push(new ValTypeI32());
-    fdWriteParams.push(new ValTypeI32());
-    fdWriteParams.push(new ValTypeI32());
-    fdWriteParams.push(new ValTypeI32());
-    let fdWriteReturns = new Array<ValType>();
-    fdWriteReturns.push(new ValTypeI32());
-    let fdWriteSig = this.pass.wasm.getSignature(fdWriteParams, fdWriteReturns);
-    
-    let fdWriteFunc = new WasmFunction(fdWriteSig, null, model);
-    fdWriteFunc.isImport = true;
-    fdWriteFunc.importModule = "wasi_snapshot_preview1";
-    fdWriteFunc.importName = "fd_write";
-    this.pass.wasm.functionImports.push(fdWriteFunc);
-    this.pass.wasm.wasiFdWriteIndex = 1;
-    
-    var stringStruct: WasmStruct | null = null;
-    let {stringClass} = this.pass.wasm;
-    if (stringClass != null) {
-      let key = getClassKey(stringClass);
-      if (let (true, stringInfo) = this.pass.wasm.classInfos.get(key)) {
-        stringStruct = stringInfo.structType;
-      }
-    }
-    if (stringStruct == null) {
-      throw new Error("wasi_write_string_helper discovery: String class struct not found!");
-    }
-    
-    let helperParams = new Array<ValType>();
-    helperParams.push(new ValTypeI32());
-    helperParams.push(new ValTypeRefNull(stringStruct));
-    let helperReturns = new Array<ValType>();
-    let helperSig = this.pass.wasm.getSignature(helperParams, helperReturns);
-    
-    let helperFunc = new WasmFunction(helperSig, null, model);
-    helperFunc.name = "wasi_write_string_helper";
-    this.pass.wasm.addFunction(helperFunc);
-    this.pass.wasm.wasiWriteStringHelper = helperFunc;
-    this.pass.markFunctionReached(helperFunc);
-    this.pass.wasm.wasiWriteStringIndex = 1;
-  }
 }
 
 /**

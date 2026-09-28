@@ -325,21 +325,6 @@ let lowerMemoryGrow = (cx: LoweringContext, call: CallExpression): i32 => {
   return cx.b.emit(IrOp.memory_grow, new ValTypeI32(), pages, -1);
 };
 
-/** wasi_write_string(fd, s): call the synthesized write helper. */
-let lowerWasiWriteString = (cx: LoweringContext, call: CallExpression): i32 => {
-  let helperOpt = cx.wasm.wasiWriteStringHelper;
-  if (helperOpt == null) {
-    cx.fail('wasi write helper missing');
-  }
-  let helper = helperOpt;
-  let sig = helper.signature;
-  let args = new Array<i32>();
-  let fd = lowerExpr(cx, call.args[0], sig.params[0]);
-  args.push(fd);
-  let s = lowerExpr(cx, call.args[1], sig.params[1]);
-  args.push(s);
-  return cx.b.callFunc(cx.b.addRef(new IrRefFunc(helper)), args, null);
-};
 
 
 
@@ -793,7 +778,6 @@ export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpres
     case 'f64.store': lowerMemStore(cx, call, IrOp.f64_store, 0)
     case 'memory.size': cx.b.emit(IrOp.memory_size, new ValTypeI32(), -1, -1)
     case 'memory.grow': lowerMemoryGrow(cx, call)
-    case 'wasi_write_string': lowerWasiWriteString(cx, call)
     case 'cancel.raise': lowerCancelRaise(cx, call)
     case 'eq': {
       lowerEqIntrinsic(cx, call)

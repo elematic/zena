@@ -19,6 +19,7 @@
  * ```
  */
 
+import { Map } from 'zena:collections';
 import { Allocator } from '../memory.zena';
 
 export { Memory, Allocator, FreeListAllocator, BumpAllocator } from '../memory.zena';
@@ -51,24 +52,35 @@ declare function runtimeRealloc(
  * allocator-generic.
  */
 final class DelegatingAllocator implements Allocator {
+  /**
+   * Blocks aligned past 8, by the pointer handed out: the runtime
+   * module's blocks are 8-aligned with the request ignored beyond
+   * that, so a larger ask (a SIMD scratch buffer at 16) takes a
+   * bigger block and returns an aligned address inside it, which
+   * `free` has to map back to the block.
+   */
+  #overAligned = new Map<i32, i32>();
+
   alloc(bytes: i32): inline (true, i32) | inline (false, _) {
     return (true, runtimeRealloc(0, 0, 8, bytes));
   }
 
   allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, _) {
-    if (align > 8) {
-      // Reachable: `allocAligned` is public `Allocator` surface, and
-      // user code on this target can ask for any alignment. The
-      // standard library itself never asks past 8 (the canonical ABI
-      // does not either), and the runtime module's blocks are 8-aligned
-      // with the request ignored beyond that — so a larger ask must
-      // throw rather than hand back a misaligned block.
-      throw new Error('the component allocator aligns to at most 8');
+    if (align <= 8) {
+      return (true, runtimeRealloc(0, 0, align, bytes));
     }
-    return (true, runtimeRealloc(0, 0, align, bytes));
+    let block = runtimeRealloc(0, 0, 8, bytes + align);
+    let aligned = (block + align - 1) & (0 - align);
+    this.#overAligned[aligned] = block;
+    return (true, aligned);
   }
 
   free(ptr: i32): void {
+    if (let (true, block) = this.#overAligned.get(ptr)) {
+      this.#overAligned.delete(ptr);
+      runtimeRealloc(block, 0, 8, 0);
+      return;
+    }
     runtimeRealloc(ptr, 0, 8, 0);
   }
 }

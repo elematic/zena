@@ -16,8 +16,11 @@ test('external function import and call from Node.js', async () => {
 
   execSync(`mkdir -p "${dirname(wasmFile)}"`);
 
+  // A core module with only the import the program declares: the
+  // freestanding target. The default target is a component now, which
+  // Node cannot instantiate as a plain module.
   execSync(
-    `"${join(repoRoot, 'target', 'release', 'zena-cli')}" build "${zenaFile}" -o "${wasmFile}"`,
+    `"${join(repoRoot, 'target', 'release', 'zena-cli')}" build "${zenaFile}" --target freestanding -o "${wasmFile}"`,
     {stdio: 'pipe', cwd: repoRoot},
   );
 
@@ -27,21 +30,10 @@ test('external function import and call from Node.js', async () => {
   let callCount = 0;
   const importObject = {
     env: {
-      getStackTrace: () => null,
-      captureStackTrace: () => null,
-      formatStackTrace: () => null,
       getAnswer: (n: number) => {
         callCount++;
         return n * 2;
       },
-    },
-    wasi_snapshot_preview1: {
-      fd_write: (
-        fd: number,
-        iovs: number,
-        iovs_len: number,
-        nwritten: number,
-      ) => 0,
     },
   };
 
@@ -103,9 +95,9 @@ test('console.log and return string in Node.js (target host)', async () => {
   }
 });
 
-test('console.log and return string in zena-cli (target zena-cli)', async () => {
-  const zenaFile = join(pkgDir, 'test-files', 'console-log-and-return.zena');
-  const wasmCliFile = join(pkgDir, 'test', 'console-log-and-return-cli.wasm');
+test('console.log and return a status in zena-cli (target zena-cli, a component)', async () => {
+  const zenaFile = join(pkgDir, 'test-files', 'console-log-and-exit-code.zena');
+  const wasmCliFile = join(pkgDir, 'test', 'console-log-and-exit-code-cli.wasm');
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
   const zenaFileRel = relative(repoRoot, zenaFile);
@@ -125,9 +117,13 @@ test('console.log and return string in zena-cli (target zena-cli)', async () => 
     cwd: repoRoot,
   }).trim();
 
-  // The output should be "hello from integration test\nAnyRef(...)"
-  // The first line is stdout print, and the second line is the CLI formatted return value representation.
+  // The first line is what the program printed; the second is the
+  // value its `main` returned, as `zena run` prints it. On this host
+  // the entry is lifted async and the value arrives through a typed
+  // `task.return`, which carries a flat scalar; a `main` returning a
+  // String is refused at compile time until that return learns
+  // strings.
   const lines = cliOutput.split('\n');
   assert.equal(lines[0], 'hello from integration test');
-  assert.ok(lines[1].includes('AnyRef') || lines[1].includes('anyref'));
+  assert.equal(lines[1], '7');
 });

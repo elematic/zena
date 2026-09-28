@@ -1,14 +1,34 @@
 # WASI Support Design
 
+## Status
+
+This is the original plan, kept as history. What was built:
+
+- Zena programs reach WASI as components, emitted by the compiler itself
+  ([component-emission.md](./component-emission.md)), and the WASI they
+  reach is 0.3. Preview 2 was skipped, because its blocking calls stall
+  the event loop. WASI preview 1 was used by the zena command's own host
+  for a time and was deleted on 2026-09-28.
+- WIT is consumed by the compiler: the [WIT parser](./wit-parser.md)
+  reads the vendored WASI 0.3 under `packages/stdlib/zena/wit/`, and the
+  compiler synthesizes a Zena module per interface, with the marshaling
+  ([component-model.md](./component-model.md)). `zena:fs`, `zena:cli`,
+  `zena:console`, `zena:time` and `zena:http` are written over those
+  modules.
+- Async imports are futures: calling an `async` WIT function starts the
+  call on the host and returns a handle, which the event loop in
+  `zena:wasi` (`wasi/async.zena`) turns into a `Future`. A synchronous
+  API over one waits for it in `blockOn`.
+
 ## Overview
 
-This document outlines the plan for adding WASI (WebAssembly System Interface)
-support to Zena. The goal is to allow Zena programs to run in WASI-compliant
-runtimes (wasmtime, Node.js via jco, browsers) and consume WASI APIs
-(filesystem, HTTP, etc.).
+This document outlined the plan for adding WASI (WebAssembly System
+Interface) support to Zena. The goal was to allow Zena programs to run in
+WASI-compliant runtimes (wasmtime, Node.js via jco, browsers) and consume
+WASI APIs (filesystem, HTTP, etc.).
 
-We target **WASI Preview 2** initially, moving to **Preview 3** for async
-support.
+The plan targeted **WASI Preview 2** initially, moving to **Preview 3** for
+async support.
 
 ## 1. The Component Model & WIT
 

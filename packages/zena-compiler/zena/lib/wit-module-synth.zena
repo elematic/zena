@@ -101,6 +101,25 @@ var currentWitSource = "";
  * nested package's is not the document's main one).
  */
 var currentAst: Ast | null = null;
+
+/**
+ * The document last parsed, by its text: every synthesized module of
+ * a program reads the same spliced corpus, and parsing it is most of
+ * a synthesis. The AST is only read, so one serves every module.
+ */
+var memoSource = "";
+var memoAst: Ast | null = null;
+
+let parsedWit = (source: String): Ast => {
+  let cached = memoAst;
+  if (cached != null && memoSource == source) {
+    return cached;
+  }
+  let ast = parse(source);
+  memoSource = source;
+  memoAst = ast;
+  return ast;
+};
 var currentPackage: PackageName | null = null;
 
 /**
@@ -2579,7 +2598,7 @@ export function synthesizeWitModule(canonicalPath: String,
   let witSource = withWasiPackages(readWitSource(witRoot), packagesWit);
   reinterpretUsed = false;
   currentWitSource = witSource;
-  let ast = parse(witSource);
+  let ast = parsedWit(witSource);
   let iface = findInterface(ast, namespace, interfacePath);
   currentAst = ast;
   currentPackage = iface.packageName;
@@ -3545,7 +3564,7 @@ export function synthesizeExportWrapper(
   // With the compiler's WASI WIT and the program's WIT-backed packages
   // riding along, as the declared-world encoder parses it.
   let source = withWasiPackages(witSource, packagesWit);
-  let ast = parse(source);
+  let ast = parsedWit(source);
   var world: WorldDef | null = null;
   for (let item in ast.items) {
     if (item.tag == AstItemTag.World) {

@@ -1,8 +1,8 @@
 /**
  * Synthesizers for the named module-scaffold helpers streaming builds
  * without an AST: the host-interop string helpers ($stringCreate,
- * $stringSetByte, $stringGetByte, $stringGetLength, $stringHash), the
- * internal string_hash_helper, and wasi_write_string_helper. Each
+ * $stringSetByte, $stringGetByte, $stringGetLength, $stringHash) and
+ * the internal string_hash_helper. Each
  * mirrors its streaming generator instruction for instruction — these
  * exist in EVERY module, so they were the structural blocker keeping
  * zir-strict red before any real construct was measured.
@@ -295,101 +295,6 @@ let synthStringHash = (wasm: WasmModule, func: WasmFunction): IrBody => {
 };
 
 /**
- * wasi_write_string_helper(fd, str): copies the string's bytes into
- * the fixed linear-memory scratch window and calls the fd_write
- * import, dropping the errno — streaming's exact layout (string
- * bytes at 64, iovec at 0, nwritten at 8).
- */
-let synthWasiWriteString = (wasm: WasmModule, func: WasmFunction): IrBody => {
-  let lay = stringLayoutOf(wasm);
-  var fdWrite: WasmFunction | null = null;
-  for (let f in wasm.functionImports) {
-    let {importName} = f;
-    if (importName == 'fd_write') {
-      fdWrite = f;
-    }
-  }
-  if (fdWrite == null) {
-    throw new Error('string helper synthesis: fd_write import not found');
-  }
-  let i32vt = new ValTypeI32() as ValType;
-  let b = new IrBuilder();
-  let params = entryOf(b, func);
-  let fd = params[0];
-  let sRaw = params[1];
-
-  // null string: nothing to write.
-  let isNull = b.emit(IrOp.ref_is_null, i32vt, sRaw, -1);
-  let retB = b.newBlock();
-  let contB = b.newBlock();
-  b.brIf(isNull, retB, new Array<i32>(), contB, new Array<i32>());
-  b.switchTo(retB);
-  b.retVoid();
-
-  b.switchTo(contB);
-  let vt = new ValTypeRef(lay.st) as ValType;
-  let s = b.emit(IrOp.ref_cast, vt, sRaw, b.internType(vt));
-  let data = fieldGet(b, lay.st, lay.data, s);
-  let start = fieldGet(b, lay.st, lay.start, s);
-  let end = fieldGet(b, lay.st, lay.end, s);
-  let len = b.binary(IrOp.i32_sub, i32vt, end, start);
-  let emptyB = b.newBlock();
-  let writeB = b.newBlock();
-  b.brIf(len, writeB, new Array<i32>(), emptyB, new Array<i32>());
-  b.switchTo(emptyB);
-  b.retVoid();
-
-  // copy loop: mem[64 + i] = data[start + i]
-  b.switchTo(writeB);
-  let header = b.newBlock();
-  let iParam = b.blockParam(header, i32vt);
-  let iInit = new Array<i32>();
-  iInit.push(i32c(b, 0));
-  b.br(header, iInit);
-  b.switchTo(header);
-  let done = b.binary(IrOp.i32_ge_s, i32vt, iParam, len);
-  let bodyB = b.newBlock();
-  let afterB = b.newBlock();
-  b.brIf(done, afterB, new Array<i32>(), bodyB, new Array<i32>());
-  b.switchTo(bodyB);
-  let addr = b.binary(IrOp.i32_add, i32vt, i32c(b, 64), iParam);
-  let srcIdx = b.binary(IrOp.i32_add, i32vt, start, iParam);
-  let byte = b.emit(IrOp.array_get_u, i32vt, data, srcIdx);
-  let storePair = new Array<i32>();
-  storePair.push(addr);
-  storePair.push(byte);
-  b.emitVoid(IrOp.i32_store8, b.pushExtra(storePair), 0);
-  let next = b.binary(IrOp.i32_add, i32vt, iParam, i32c(b, 1));
-  let back = new Array<i32>();
-  back.push(next);
-  b.br(header, back);
-
-  b.switchTo(afterB);
-  let iov0 = new Array<i32>();
-  iov0.push(i32c(b, 0));
-  iov0.push(i32c(b, 64));
-  b.emitVoid(IrOp.i32_store, b.pushExtra(iov0), 2);
-  let iov1 = new Array<i32>();
-  iov1.push(i32c(b, 4));
-  iov1.push(len);
-  b.emitVoid(IrOp.i32_store, b.pushExtra(iov1), 2);
-  let args = new Array<i32>();
-  args.push(fd);
-  args.push(i32c(b, 0));
-  args.push(i32c(b, 1));
-  args.push(i32c(b, 8));
-  let resultType = if (fdWrite.signature.returns.length == 1) {
-    fdWrite.signature.returns[0]
-  } else {
-    null
-  };
-  b.callFunc(b.addRef(new IrRefFunc(fdWrite)), args, resultType);
-  // errno intentionally ignored, mirroring streaming's drop.
-  b.retVoid();
-  return b.finish();
-};
-
-/**
  * string_from_shared(offset, len): a String struct.new with every
  * field in declaration order — vtable global, #data = the shared
  * byte-array global, #start = offset, #end = offset + len, scalars
@@ -563,7 +468,6 @@ export let synthesizeScaffold = (wasm: WasmModule, func: WasmFunction): IrBody |
   if (name == '$stringGetLength') { return synthStringGetLength(wasm, func); }
   if (name == '$stringHash') { return synthStringHash(wasm, func); }
   if (name == 'string_hash_helper') { return synthStringHashHelper(wasm, func); }
-  if (name == 'wasi_write_string_helper') { return synthWasiWriteString(wasm, func); }
   if (name == 'string_from_shared') { return synthStringFromShared(wasm, func); }
   if (name == 'get_string_literal') { return synthGetStringLiteral(wasm, func); }
   return null;

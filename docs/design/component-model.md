@@ -12,8 +12,10 @@
 
 ## Status
 
-- **Status**: Design accepted; prerequisites landed; **next up, ahead of
-  C4** — see the sequencing decision below
+- **Status**: Design accepted; prerequisites landed; the WIT-typed
+  modules and synthesized marshaling carried C4 (`zena:fs` and
+  `zena:cli` over WASI 0.3, 2026-09-28) — see the sequencing decision
+  below for the order this was built in
 - **Date**: 2026-08-04; Part 5 and Part 8 revised 2026-08-06 against
   measured WASI p2; status, naming and sequencing revised 2026-08-17
   after C3 completed
@@ -78,7 +80,11 @@ That reorders the tracks:
 3. **p3 stdio** — done: `zena:console` flipped to `write-via-stream`
    over guest-created streams, and the p2 scaffold is retired
    (component-emission.md, C6's stdio slice).
-4. **C4 = p3 filesystem and CLI**, on interop + streams.
+4. **C4 = p3 filesystem and CLI**, on interop + streams — done
+   2026-09-28: `fs/component.zena` and `cli/component.zena` over the
+   synthesized `wasi:filesystem` and `wasi:cli` modules, a synchronous
+   API blocking in `zena:wasi`'s `blockOn`, and the zena command's host
+   a component host (component-emission.md, C4).
 5. **p3 HTTP** — `wasi:http@0.3.0` is served by the host already.
 
 Part 7 below ("You can have an HTTP server _before_ async") argued for

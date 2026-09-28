@@ -28,6 +28,7 @@ import { CompilerHost } from '../lib/library-loader.zena';
 import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
@@ -38,6 +39,9 @@ class FsHost implements CompilerHost {
   new();
 
   readFile(path: String): String {
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
+    }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
@@ -45,12 +49,17 @@ class FsHost implements CompilerHost {
   }
 }
 
-/** Compiles one entry to wasm bytes, throwing on any error. */
+/**
+ * Compiles one entry to wasm bytes, throwing on any error. The core
+ * module with no host beneath it: what is compared is the program's
+ * own code, and a component target would wrap it in the same bytes
+ * every time.
+ */
 let compileToWasm = (
     host: FsHost,
     packages: Map<String, PackageConfig>,
     path: String): ByteArray => {
-  let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
+  let options = new CompilerOptions('freestanding', stdlibRoot, packages);
   let compiler = createCompiler(host, options);
   let compResult = compiler.compile(path);
   let checkResults = checkCompilation(compResult, null, false);
@@ -73,7 +82,7 @@ let compileToWasm = (
       }
     }
   }
-  return new BinaryGenerator('zena-cli', false)
+  return new BinaryGenerator('freestanding', false)
     .generate(new Program(units, entryUnit))
     .toByteArray();
 };

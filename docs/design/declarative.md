@@ -235,7 +235,7 @@ Target "build" {
   ],
 
   Command {
-    run: "zena-cli build src/main.zena -o dist/main.wasm --target wasi",
+    run: "zena-cli build src/main.zena -o dist/main.wasm --target component",
   }
 }
 

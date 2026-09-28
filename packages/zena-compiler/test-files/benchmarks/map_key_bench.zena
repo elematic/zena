@@ -1,6 +1,6 @@
-import { Memory, defaultAllocator } from 'zena:memory';
 import { i32ToString, Hashable } from 'zena:core';
 import { getArguments } from 'zena:cli';
+import { monotonic } from 'zena:time';
 
 @intrinsic('hash')
 declare function hash<T>(value: T): i32;
@@ -8,27 +8,7 @@ declare function hash<T>(value: T): i32;
 @intrinsic('eq')
 declare function equals<T>(a: T, b: T): boolean;
 
-
-@external("wasi_snapshot_preview1", "clock_time_get")
-declare function __wasi_clock_time_get(
-  clockId: i32,
-  precision: i64,
-  timePtr: i32
-): i32;
-
-let getMonotonicTimeMs = (): f64 => {
-  if (let (true, addr) = defaultAllocator.allocAligned(8, 8)) {
-    // Clock ID 1 is CLOCK_MONOTONIC. Precision 1ns.
-    let res = __wasi_clock_time_get(1, 1 as i64, addr);
-    if (res == 0) {
-      let ns = Memory.default.getI64(addr);
-      defaultAllocator.free(addr);
-      return (ns as f64) / 1000000.0;
-    }
-    defaultAllocator.free(addr);
-  }
-  return 0.0;
-};
+let getMonotonicTimeMs = (): f64 => ((monotonic() as i64) as f64) / 1000000.0;
 
 let formatFloat = (n: f64): String => {
   let total = n;

@@ -28,6 +28,7 @@ import {
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
@@ -44,6 +45,9 @@ class MutableHost implements CompilerHost {
   readFile(path: String): String {
     if (let (true, source) = this.overrides.get(path)) {
       return source;
+    }
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(path);
     }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
@@ -79,7 +83,9 @@ let collisionCount = (result: CompilationResult): i32 => {
 
 let newCompiler = (host: MutableHost): Compiler => {
   let packages = loadPackageMap(host, 'zena-packages.json');
-  return createCompiler(host, new CompilerOptions('zena-cli', stdlibRoot, packages));
+  // The core module with no host beneath it: the bytes compared are
+  // the program's own.
+  return createCompiler(host, new CompilerOptions('freestanding', stdlibRoot, packages));
 };
 
 /** Compiles to wasm, throwing on any check error. */
@@ -102,7 +108,7 @@ let compileToWasm = (c: Compiler, path: String): ByteArray => {
       if (file.ast.path == entryAst.path) { entryUnit = unit; }
     }
   }
-  return new BinaryGenerator('zena-cli', false)
+  return new BinaryGenerator('freestanding', false)
     .generate(new Program(units, entryUnit))
     .toByteArray();
 };

@@ -7,7 +7,6 @@
  * files, no child process. Only stdlib reads (and any relative imports)
  * go through the `compiler.read_file` callback.
  */
-import {WASI} from 'node:wasi';
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -48,9 +47,13 @@ const instantiateCompiler = () => {
   let writeString: ((s: string) => unknown) | undefined;
   let readString: ((ref: unknown, len: number) => string) | undefined;
 
-  const wasi = new WASI({version: 'preview1', args: [], env: {}});
   const instance = new WebAssembly.Instance(compilerModule, {
-    ...wasi.getImportObject(),
+    // The compiler times its own phases through `zena:time`, which on
+    // the host target is this clock. It never sleeps.
+    time: {
+      now_ms: () => performance.now(),
+      sleep_ms: () => {},
+    },
     env: {
       getStackTrace: () => null,
       captureStackTrace: () => null,
@@ -69,7 +72,6 @@ const instantiateCompiler = () => {
     },
   });
   exports = instance.exports as ApiExports;
-  wasi.initialize(instance as object as Parameters<WASI['initialize']>[0]);
   writeString = createStringWriter(exports);
   readString = createStringReader(exports);
   return {exports, writeString, readString};

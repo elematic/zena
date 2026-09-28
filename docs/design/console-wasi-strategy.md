@@ -1,5 +1,19 @@
 # Console/WASI Output Strategy
 
+## Status
+
+This document is the plan from before component emission existed, kept as
+history. What was built differs from it in three ways: the compiler emits
+components itself, with no `wasm-tools` step
+([component-emission.md](./component-emission.md)); the console on every
+component target (`component`, `zena-cli`, and `freestanding`, which shares
+the component's core module) is `console/component.zena`, writing through
+`wasi:cli/stdout@0.3.0`'s `write-via-stream` over the guest half of
+`stream<u8>` in `zena:wasi`; and the target names are `js`, `zena-cli`,
+`freestanding` and `component`. There was a `console/wasi.zena` over WASI
+preview 1's `fd_write` for a time; it was deleted with the rest of preview 1
+on 2026-09-28.
+
 ## Target Architecture
 
 Two compilation targets with different binary formats:
@@ -154,13 +168,14 @@ packages/stdlib/zena/
 └── console/
     ├── interface.zena    # Shared Console interface
     ├── host.zena         # @external("console", ...) implementation
-    └── wasi.zena         # WASI stream implementation
+    └── component.zena    # wasi:cli/stdout@0.3.0 over stream<u8>
 ```
 
 The compiler switches which file backs `zena:console` based on `--target`,
-via the `virtual` entry in `stdlib-manifest.json` (host → `console/host.zena`,
-wasi → `console/wasi.zena`). The implementation files are not importable by
-name; they share `interface.zena` via relative imports.
+via the `virtual` entry in `stdlib-manifest.json` (`js` → `console/host.zena`;
+`component`, `zena-cli` and `freestanding` → `console/component.zena`). The
+implementation files are not importable by name; they share
+`interface.zena` via relative imports.
 
 ## The GC + Component Model Challenge
 

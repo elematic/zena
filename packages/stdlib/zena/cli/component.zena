@@ -1,0 +1,179 @@
+/**
+ * Command-line interface support over WASI 0.3, for the component
+ * target: arguments, environment variables, the working directory and
+ * process exit, over `wasi:cli@0.3.0` as the compiler synthesizes it
+ * from the vendored WIT, plus option-parsing helpers.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { getArguments, getEnv, exit } from 'zena:cli';
+ *
+ * let args = getArguments();
+ * let home = getEnv('HOME');
+ * if (args.length < 2) {
+ *   console.error('usage: tool <file>');
+ *   exit(2);
+ * }
+ * ```
+ */
+
+import { Some } from 'zena:core';
+import {
+  getArguments as witGetArguments, getEnvironment as witGetEnvironment,
+  getInitialCwd,
+} from 'wasi:cli/environment';
+import { exitWithCode } from 'wasi:cli/exit';
+
+// ============================================================================
+// Exit Codes
+// ============================================================================
+
+/** Conventional exit statuses. */
+export enum ExitCode {
+  /** Successful program termination (code 0). */
+  Success,
+  /** Generic failure (code 1). */
+  Failure,
+  /** Invalid command-line arguments (code 2). */
+  InvalidArguments,
+  /** Resource not found (code 3). */
+  NotFound,
+  /** Permission denied (code 4). */
+  PermissionDenied,
+  /** I/O error (code 5). */
+  IoError,
+}
+
+// ============================================================================
+// Environment
+// ============================================================================
+
+/** An environment variable. */
+export type EnvVar = {
+  name: String,
+  value: String,
+};
+
+/** Every environment variable, as name and value pairs. */
+export let getEnvironment = (): Array<EnvVar> => {
+  let result = new Array<EnvVar>();
+  for (let (name, value) in witGetEnvironment()) {
+    result.push({ name: name, value: value });
+  }
+  return result;
+};
+
+/** The value of an environment variable, or null when it is unset. */
+export let getEnv = (name: String): String | null => {
+  for (let (envName, value) in witGetEnvironment()) {
+    if (envName == name) {
+      return value;
+    }
+  }
+  return null;
+};
+
+/** The command-line arguments, the program's name first. */
+export let getArguments = (): Array<String> => witGetArguments();
+
+/** The program's name: the first argument, or '' without one. */
+export let getProgramName = (): String => {
+  let args = getArguments();
+  if (args.length > 0) {
+    return args[0];
+  }
+  return '';
+};
+
+/** The directory the program was started in, when the host says. */
+export let initialCwd = (): String | null => {
+  let cwd = getInitialCwd();
+  if (cwd is Some<String>) {
+    return (cwd as Some<String>).value;
+  }
+  return null;
+};
+
+// ============================================================================
+// Process Exit
+// ============================================================================
+
+/** End the program with an exit status. Does not return. */
+export let exit = (code: i32): void => {
+  exitWithCode(code as u8);
+};
+
+/** End the program successfully. */
+export let exitSuccess = (): void => {
+  exitWithCode(0 as u8);
+};
+
+/** End the program with the generic failure status. */
+export let exitFailure = (): void => {
+  exitWithCode(1 as u8);
+};
+
+// ============================================================================
+// Argument Parsing Utilities
+// ============================================================================
+
+/** An option as `parseLongOption` reads it. */
+export type ParsedOption = {
+  /** The option name (without leading dashes). */
+  name: String,
+  /** The option value, if provided (for --name=value). Null if no value. */
+  value: String | null
+};
+
+/** Whether `arg` is a short option: `-x`. */
+export let isShortOption = (arg: String): boolean => {
+  if (arg.length != 2) {
+    return false;
+  }
+  if (arg.getByteAt(0) != 45) {
+    return false;
+  }
+  if (arg.getByteAt(1) == 45) {
+    return false;
+  }
+  return true;
+};
+
+/** Whether `arg` is a long option: `--name` or `--name=value`. */
+export let isLongOption = (arg: String): boolean => {
+  if (arg.length < 3) {
+    return false;
+  }
+  if (arg.getByteAt(0) != 45 || arg.getByteAt(1) != 45) {
+    return false;
+  }
+  return true;
+};
+
+/** Whether `arg` starts with a dash. */
+export let isOption = (arg: String): boolean => {
+  if (arg.length == 0) {
+    return false;
+  }
+  return arg.getByteAt(0) == 45;
+};
+
+/** The name and value of a long option. */
+export let parseLongOption = (arg: String): ParsedOption => {
+  let optPart = arg.sliceBytes(2, arg.length);
+  var eqIndex = 0 - 1;
+  for (var i = 0; i < optPart.length; i += 1) {
+    if (optPart.getByteAt(i) == 61) {
+      eqIndex = i;
+      i = optPart.length;
+    }
+  }
+  if (eqIndex >= 0) {
+    return {
+      name: optPart.sliceBytes(0, eqIndex),
+      value: optPart.sliceBytes(eqIndex + 1, optPart.length)
+    };
+  }
+  return { name: optPart, value: null };
+};

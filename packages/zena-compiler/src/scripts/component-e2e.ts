@@ -94,6 +94,8 @@ interface Fixture {
   /** Preopen a scratch directory for the run: `--dir`, for a fixture
    * that imports wasi:filesystem. */
   preopen?: boolean;
+  /** Environment variables set for the run. */
+  env?: Record<string, string>;
   invocations: Invocation[];
 }
 
@@ -544,6 +546,70 @@ const FIXTURES: Fixture[] = [
     ],
   },
   {
+    name: 'fs-roundtrip',
+    wasi: ['p3=y'],
+    preopen: true,
+    // `zena:fs` over wasi:filesystem 0.3.0 from a synchronous `main`:
+    // every call waits in `blockOn` until its asynchronous import
+    // settles, which wasmtime allows because `main` is exported async. A
+    // directory made, a file written and read back as text and as
+    // bytes, listed, stat'd, renamed, removed.
+    invocations: [
+      {
+        invoke: 'main()',
+        expect: '0',
+        expectOutput: [
+          'read hello, file',
+          'size 11 regular true',
+          'bytes 3 255',
+          'entries 2 true true',
+          'gone true',
+        ],
+      },
+    ],
+  },
+  {
+    name: 'fs-sizes',
+    wasi: ['p3=y'],
+    preopen: true,
+    // Files from ten bytes to a hundred thousand, written and read back
+    // through the byte stream pumps: past one 4096-byte chunk a read
+    // takes several canonical copies, each waited for in `blockOn`.
+    // The result future of a write is a deferred future, which only
+    // starts once something awaits it; this sweep caught `blockOn`
+    // polling it instead.
+    invocations: [
+      {
+        invoke: 'main()',
+        expect: '0',
+        expectOutput: ['size 10: true', 'size 4097: true', 'size 100000: true'],
+      },
+    ],
+  },
+  {
+    name: 'cli-env',
+    wasi: ['p3=y'],
+    env: {ZENA_GREETING: 'hello'},
+    // `zena:cli` over wasi:cli 0.3.0: arguments and environment.
+    invocations: [
+      {
+        invoke: 'main()',
+        expect: '0',
+        expectOutput: ['args 1', 'program true', 'greeting hello', 'listed true'],
+      },
+    ],
+  },
+  {
+    name: 'async-block-wait',
+    wasi: ['p3=y'],
+    // A task under a callback-lifted export blocks in
+    // `waitable-set.wait` for an async-lowered import: what every
+    // synchronous `zena:fs` call does. A synchronous export cannot —
+    // wasmtime traps with "cannot block a synchronous task before
+    // returning" — which is why the entry is lifted async.
+    invocations: [{invoke: 'main()', expect: '1', minWallMs: 25}],
+  },
+  {
     name: 'exit-value',
     wasi: ['p3=y'],
     // An async main with a value: the entry is lifted `async func() ->
@@ -746,6 +812,9 @@ for (const fixture of FIXTURES) {
     }
     if (fixture.preopen) {
       flags.push('--dir', outDir);
+    }
+    for (const [name, value] of Object.entries(fixture.env ?? {})) {
+      flags.push('--env', `${name}=${value}`);
     }
     // Through `time -p` (POSIX, so the format is fixed) rather than
     // spawnSync directly: Node reports no CPU time for a child, and CPU

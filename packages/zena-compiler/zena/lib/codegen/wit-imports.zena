@@ -20,7 +20,7 @@
  */
 
 import { StringBuilder } from 'zena:core';
-import { parse } from 'wit-parser:wit';
+import { parse, parseSyntax, resolve } from 'wit-parser:wit';
 import {
   ComponentTypeEncoder, EncodedWorld, funcFlatMeta, worldFuncFlatMeta,
   interfaceExportFlatMeta, WitFuncMeta,
@@ -30,7 +30,7 @@ import {
   Ast, AstItemTag, WorldDef, WorldItemTag, Import, Export, ExternKind,
   ExternKindTag, UsePath, UsePathTag, Id, Func, Type, TypeTag, PackageName,
   AstItem, InterfaceDef, InterfaceItem, InterfaceItemTag, NamedFunc, TypeDef, TypeDefTag,
-  ResourceFunc, ResourceFuncTag
+  ResourceFunc, ResourceFuncTag, NestedPackage, Docs
 } from 'wit-parser:parser';
 import {
   ComponentShape, ComponentImportFunc, ComponentExportFunc,
@@ -132,6 +132,53 @@ let derivedWorldName = "imports";
  * substitutes for the derived spelling, exactly as the compiler's own
  * baked WASI blocks do.
  */
+/**
+ * The WIT-backed packages' document, parsed once per source text. The
+ * stdlib's vendored WASI is most of it, and every component compiled
+ * in a process reads the same text: a test runner compiling hundreds
+ * of programs paid a parse of the corpus for each, and the parse was
+ * nearly all of the compile.
+ */
+var memoPackagesWit = "";
+var memoPackagesAst: Ast | null = null;
+
+let packagesAstOf = (packagesWit: String): Ast | null => {
+  if (packagesWit == "") {
+    return null;
+  }
+  let cached = memoPackagesAst;
+  if (cached != null && memoPackagesWit == packagesWit) {
+    return cached;
+  }
+  let parsed = parse(packagesWit);
+  memoPackagesWit = packagesWit;
+  memoPackagesAst = parsed;
+  return parsed;
+};
+
+/**
+ * Add the packages `packages` declares to `into`, as nested packages:
+ * what splicing their text at the end of `into`'s document parsed to,
+ * when the document was built as text. The corpus's main package is
+ * wrapped; its nested ones are shared as they are.
+ */
+let addPackages = (into: Ast, packages: Ast): void => {
+  let main = packages.packageName;
+  if (main != null) {
+    let name = main as PackageName;
+    var docs = packages.packageDocs;
+    if (docs == null) {
+      docs = new Docs(name.span);
+    }
+    let pkg = new NestedPackage(docs as Docs, name);
+    pkg.items = packages.items;
+    into.nestedPackages.push(pkg);
+  }
+  for (let nested in packages.nestedPackages) {
+    into.nestedPackages.push(nested);
+  }
+};
+
 /** Whether `ast` declares the package `ns:pkg@version`, in its main
  * package or a nested one. */
 let docDeclaresPackage = (ast: Ast, packageKey: String): boolean => {
@@ -211,7 +258,7 @@ export let deriveImportsWit = (
   shape: ComponentShape,
   packagesWit: String = ""
 ): String => {
-  let packagesAst = if (packagesWit == "") null else parse(packagesWit);
+  let packagesAst = packagesAstOf(packagesWit);
   let provided = (name: String): boolean =>
       packagesAst != null && docDeclaresInterface(packagesAst as Ast, name);
   // Group by interface, preserving first-appearance order (the same
@@ -231,18 +278,8 @@ export let deriveImportsWit = (
 
   // Interfaces whose real WIT a WIT-backed package carries — the
   // stdlib's vendored WASI, a manifest package's — are not derived:
-  // `packagesWit` is appended whole at the END of the document (after
-  // the world), and the world imports them by name like any other. At
-  // the end because its files declare their packages unbraced, and an
-  // unbraced `package` declaration switches the rest of the document
-  // into that package — spliced here, it would swallow the world.
-  var anyPackaged = false;
-  for (let name in interfaceNames) {
-    if (provided(name)) {
-      anyPackaged = true;
-    }
-  }
-
+  // `encodeImportTypes` adds the packages' parsed document to this
+  // one, and the world imports them by name like any other.
   let renderedPackages = new Array<String>();
   for (let name in interfaceNames) {
     if (provided(name)) { continue; }
@@ -291,9 +328,6 @@ export let deriveImportsWit = (
     sb.append("  import ").append(name).append(";\n");
   }
   sb.append("}\n");
-  if (anyPackaged) {
-    sb.append("\n").append(packagesWit);
-  }
   return sb.toString();
 };
 
@@ -314,7 +348,14 @@ export let encodeImportTypes = (
     return new EncodedImports();
   }
   let text = deriveImportsWit(shape, packagesWit);
-  let ast = parse(text);
+  // Resolved once the packages are in: the derived world imports
+  // their interfaces by name.
+  let ast = parseSyntax(text);
+  let packagesAst = packagesAstOf(packagesWit);
+  if (packagesAst != null) {
+    addPackages(ast, packagesAst as Ast);
+  }
+  resolve(ast);
   for (let imp in shape.imports) {
     if (!imp.witProvided) {
       continue;
@@ -435,17 +476,12 @@ let mirrorEncodedWorld = (world: EncodedWorld): EncodedImports => {
 final class DerivedImportEncoder implements ImportTypeEncoder {
   /** The concatenated WIT of the program's WIT-backed packages. */
   #packagesWit: String;
-  var #packagesAst: Ast | null = null;
   new(packagesWit: String = "") : #packagesWit = packagesWit;
 
   witProvided(interfaceName: String): boolean {
-    if (this.#packagesWit == "") {
-      return false;
-    }
-    if (this.#packagesAst == null) {
-      this.#packagesAst = parse(this.#packagesWit);
-    }
-    return docDeclaresInterface(this.#packagesAst as Ast, interfaceName);
+    let packagesAst = packagesAstOf(this.#packagesWit);
+    return packagesAst != null &&
+        docDeclaresInterface(packagesAst as Ast, interfaceName);
   }
 
   encode(shape: ComponentShape): EncodedImports {
@@ -911,6 +947,15 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
         continue;
       }
       if (e.callbackCoreName != "") {
+        if (e.exportName == "main") {
+          // A program that blocks has its entry lifted async whatever
+          // the world says, because only a task the host lifted async
+          // may block; a synchronous declaration is satisfied by it,
+          // the value arriving through `task.return` as the host
+          // waits. Its result was typed from the program's own
+          // annotation (lib/component-entry.zena).
+          continue;
+        }
         throw new Error("The program's '" + e.exportName + "' is async, " +
             "and the declared world exports it as a synchronous function.");
       }

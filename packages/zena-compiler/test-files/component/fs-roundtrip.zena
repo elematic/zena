@@ -1,0 +1,75 @@
+// `zena:fs` over wasi:filesystem 0.3.0, the synchronous API from a
+// synchronous `main`: a directory made, a file written and read back
+// as text and as bytes, listed, stat'd, renamed, and everything
+// removed again — under `wasmtime -S p3=y --dir`. Every call waits in
+// `blockOn` until its asynchronous import settles, which wasmtime
+// allows because the compiler exports `main` async.
+import {
+  exists, isDirectory, isFile, listDir, mkdir, readFile, readFileBytes,
+  rename, rmdir, stat, unlink, writeFile, writeFileBytes, FileType,
+} from 'zena:fs';
+import { newByteArray } from 'zena:core';
+
+export function main(): u32 {
+  let dir = 'fs-roundtrip-scratch';
+  if (exists(dir)) {
+    for (let entry in listDir(dir)) {
+      unlink(`${dir}/${entry.name}`);
+    }
+    rmdir(dir);
+  }
+  mkdir(dir);
+  if (!isDirectory(dir)) {
+    console.log('mkdir did not make a directory');
+    return 1 as u32;
+  }
+
+  let path = `${dir}/hello.txt`;
+  writeFile(path, 'hello, file');
+  let text = readFile(path);
+  console.log(`read ${text}`);
+  if (!isFile(path) || isDirectory(path)) {
+    console.log('the file is not a file');
+    return 2 as u32;
+  }
+  let info = stat(path);
+  console.log(`size ${info.size} regular ${info.fileType == FileType.RegularFile}`);
+
+  // Overwriting truncates: the shorter text replaces the longer one.
+  writeFile(path, 'hi');
+  if (readFile(path) != 'hi') {
+    console.log('overwrite did not truncate');
+    return 3 as u32;
+  }
+
+  let bytes = newByteArray(3);
+  bytes[0] = 1 as u8;
+  bytes[1] = 2 as u8;
+  bytes[2] = 255 as u8;
+  let binPath = `${dir}/bytes.bin`;
+  writeFileBytes(binPath, bytes);
+  let back = readFileBytes(binPath);
+  console.log(`bytes ${back.length} ${back[2]}`);
+
+  // The host lists in its own order, so membership is what is checked.
+  let entries = listDir(dir);
+  var sawText = false;
+  var sawBytes = false;
+  for (let entry in entries) {
+    if (entry.name == 'hello.txt') { sawText = entry.fileType == FileType.RegularFile; }
+    if (entry.name == 'bytes.bin') { sawBytes = true; }
+  }
+  console.log(`entries ${entries.length} ${sawText} ${sawBytes}`);
+
+  rename(binPath, `${dir}/moved.bin`);
+  if (exists(binPath) || !exists(`${dir}/moved.bin`)) {
+    console.log('rename did not move the file');
+    return 4 as u32;
+  }
+
+  unlink(path);
+  unlink(`${dir}/moved.bin`);
+  rmdir(dir);
+  console.log(`gone ${!exists(dir)}`);
+  return 0 as u32;
+}

@@ -546,14 +546,19 @@ Blocking at the top of the drain is correct by construction:
 there. When the module blocks, nothing is runnable, so nothing is
 starved.
 
-Blocking anywhere else stops the world, and nothing marks it. `zena:fs`
-imports `fd_read`, `fd_write` and `path_open` — ordinary synchronous WASI
-p1 calls, callable from inside an async function, during which no frame
-runs, no timer fires and no completion is processed. This is not unsound,
-but it is the point at which "async" stops meaning anything, and the
-cause is the stackless choice: with stackful coroutines a single task can
-block, while with stackless frames blocking is always global. A function
-that suspends and a function that blocks the world are indistinguishable
+Blocking anywhere else stops the world, and nothing marks it. When this
+was written, `zena:fs` imported `fd_read`, `fd_write` and `path_open` —
+ordinary synchronous WASI preview 1 calls, callable from inside an async
+function, during which no frame ran, no timer fired and no completion was
+processed. Since 2026-09-28 `zena:fs` is written over the asynchronous
+0.3 filesystem, and a synchronous `readFile` waits in `blockOn`, which
+dispatches the events of every other task while it waits; the caller's
+frame is still stopped, so a `readFile` inside an async function still
+holds up that task, but nothing else. The cause of the remaining
+limitation is the stackless choice: with stackful coroutines a single
+task can block, while with stackless frames blocking is always global. A
+function that suspends and a function that blocks the world are
+indistinguishable
 at the call site, and the language has no way to say which is which.
 Naming that distinction is a separate design question; it is recorded
 here because parking is where it surfaces.
@@ -614,9 +619,12 @@ above. These are the same change.
 **Do not generalize it.** Under a WASI p3 component the clock does not
 block: the export returns WAIT and the host drives re-entry through the
 callback ABI, which is the JS shape
-([component-emission.md](component-emission.md)). `Parker` is a p1-era
-artifact whose successor is the component backend, so multiple sources,
-priorities, and fairness are all investment in the wrong place.
+([component-emission.md](component-emission.md)). The preview 1 clock
+that parked is gone; the one `Parker` left is the component's blocking
+wait (`DriverParker` in `packages/stdlib/zena/wasi/async.zena`), which
+parks on the task's waitable set and lets the host choose what fires
+next, so multiple sources, priorities, and fairness are all investment
+in the wrong place.
 
 ## The multi-value ramp
 
