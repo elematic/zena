@@ -1,52 +1,39 @@
 // The component's root widget, and the entry point that hands it over.
 //
-// `start` returns a handle; `mount` installs the tree once. Nothing calls
-// back into this component after that — a resize is solved and painted
-// entirely by the host, which is what the retained tree is for.
-import { Color, BoxLook, TextLook, Axis, Justify, Align } from 'zenafx:ui/style';
-import { Box, Widget, panel, fill, mountRoot, update } from './widget.zena';
-import { Card } from './card.zena';
-import { Label } from './label.zena';
+// `Root` is a widget like any other: it describes a tree and does nothing
+// else. It installs nothing, learns nothing about being installed, and
+// holds no handle. The host asks for the tree and mounts it.
+import { Color, BoxLook, TextLook, Justify, Align } from 'zenafx:ui/style';
+import { Node } from 'zenafx:host/scene';
+import { Box, Widget, box, full, layoutTree } from './widget.zena';
+import { card } from './card.zena';
+import { label } from './label.zena';
 import { some, none } from 'zena:core';
 
 let page = new Color(0.98, 0.98, 0.99, 1.0);
 let ink = new Color(0.10, 0.11, 0.13, 1.0);
 let pageLook = new BoxLook(some(page), none, 0.0, 0.0, 1.0);
+let bodyLook = new TextLook('system-ui', 20.0, 400 as u16, false, ink);
 
-/// The root of the widget tree, and the resource the host holds.
+/**
+ * The root of the widget tree. A widget like any other: it describes a
+ * tree, and that is the whole of it.
+ */
 export class Root implements Widget {
-  #child: Widget;
-  /// The one thing a widget keeps: where its subtree lives, so it can
-  /// replace it. Unused until something changes.
-  var #node = 0 as u32;
-
-  new(child: Widget) : #child = child;
-
   build(): Box {
-    let root = panel(fill(Axis.Column, Justify.Center, Align.Center), pageLook);
-    root.add(this.#child.build());
-    return root;
-  }
-
-  /// Install the tree. Called once, by the host, after instantiation.
-  mount(): void {
-    this.#node = mountRoot(this);
-  }
-
-  /// Rebuild and replace this widget's subtree. Nothing calls it yet;
-  /// it is what a state change would do.
-  refresh(): void {
-    this.#node = update(this, this.#node);
+    return box({look: pageLook, justify: Justify.Center, align: Align.Center,
+                width: full, height: full}, [
+      card('Card widget — container', [
+        label('This is a child widget inside of a slot', bodyLook),
+      ]),
+    ]);
   }
 }
 
-/// The component's root widget. This is where the tree is composed, and it
-/// reads the way a UI framework's does: constructors and arguments.
-export function start(): Root {
-  return new Root(
-    new Card(
-      'Card widget — container',
-      new Label(
-        'This is a child widget inside of a slot',
-        new TextLook('system-ui', 20.0, 400 as u16, false, ink))));
+/**
+ * What the component draws. Pure: it builds the root widget and hands back
+ * the tree it describes. The host installs it.
+ */
+export function start(): GrowableArray<Node> {
+  return layoutTree(new Root());
 }

@@ -239,12 +239,6 @@ pub enum Content {
     /// A run registered with the text engine.
     #[component(name = "text")]
     Text(u32),
-    /// A child component, asked for its own size during the solve.
-    #[component(name = "child")]
-    Child(u32),
-    /// A hole this component's embedder fills, named.
-    #[component(name = "slot")]
-    Slot(String),
 }
 
 /// One node of a tree given in pre-order. Index 0 is the root; a node's

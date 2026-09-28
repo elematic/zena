@@ -1,26 +1,20 @@
-// A titled panel with another widget inside it.
+// A titled panel with a hole in it.
 //
-// The card takes its content as a constructor argument and knows nothing
-// about it beyond the `Widget` interface. It decides where that content
-// goes — inside the well, under the title — and one solve sizes the card
-// around whatever the content turned out to be.
-//
-// Two fields, one method. Compare the component version: a `slot(name)`
-// leaf, a `fill-slot` call, a handle, and a `measure` round trip through
-// the host for every layout query.
-import { Color, BoxLook, TextLook, Edges, Axis, Justify, Align } from 'zenafx:ui/style';
-import { Box, Widget, panel, text, stack, noPadding } from './widget.zena';
+// The card says where its content goes — inside the well, under the title —
+// and never sees what that content is. It has no reference to it, cannot
+// call it, and could not tell a label from a component it has never heard
+// of. The framework puts the children in the slot; one solve then sizes the
+// card around whatever they turned out to be.
+import { Color, BoxLook, TextLook, Edges, Align } from 'zenafx:ui/style';
+import { Box, Widget, box, slot, text, expand } from './widget.zena';
 import { some, none } from 'zena:core';
 
 let surface = new Color(0.94, 0.96, 0.99, 1.0);
 let edge = new Color(0.68, 0.75, 0.86, 1.0);
 let heading = new Color(0.18, 0.27, 0.45, 1.0);
-/// The well is paler than the card, so the hole reads as a hole.
+/** The well is paler than the card, so the hole reads as a hole. */
 let wellFill = new Color(1.0, 1.0, 1.0, 1.0);
 let wellEdge = new Color(0.78, 0.84, 0.91, 1.0);
-
-let cardPadding = new Edges(18.0, 22.0, 22.0, 22.0);
-let wellPadding = new Edges(16.0, 18.0, 16.0, 18.0);
 
 let headingLook = new TextLook('system-ui', 15.0, 600 as u16, false, heading);
 let cardLook = new BoxLook(some(surface), some(edge), 1.0, 12.0, 1.0);
@@ -28,24 +22,26 @@ let wellLook = new BoxLook(some(wellFill), some(wellEdge), 1.0, 8.0, 1.0);
 
 export class Card implements Widget {
   #title: String;
-  #body: Widget;
 
-  new(title: String, body: Widget) : #title = title, #body = body;
+  new(title: String) : #title = title;
 
   build(): Box {
-    let frame = panel(
-      stack(Axis.Column, Justify.Start, Align.Stretch, 10.0, cardPadding),
-      cardLook);
-    frame.add(text(
-      stack(Axis.Column, Justify.Start, Align.Start, 0.0, noPadding),
-      this.#title, headingLook));
-    let well = panel(
-      stack(Axis.Column, Justify.Start, Align.Start, 0.0, wellPadding),
-      wellLook);
-    // The slot. No name, no registration, no host call: the content's
-    // boxes join this tree.
-    well.add(this.#body.build());
-    frame.add(well);
-    return frame;
+    return box({
+      look: cardLook,
+      align: Align.Stretch,
+      gap: 10.0,
+      padding: new Edges(18.0, 22.0, 22.0, 22.0)
+    }, [
+      text(this.#title, headingLook),
+      slot({
+        look: wellLook,
+        padding: new Edges(16.0, 18.0, 16.0, 18.0)
+      }),
+    ]);
   }
+}
+
+/** A card wrapped round some content. */
+export function card(title: String, children: Array<Box>): Box {
+  return expand(new Card(title), children);
 }

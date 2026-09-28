@@ -1077,6 +1077,10 @@ child widget is a distinct kind of slot.
 
 ### Children and slots
 
+This section describes a design, not what is built. It was implemented once
+and removed; ["What the widget prototype found"](#what-the-widget-prototype-found)
+says why, and what a replacement has to do differently.
+
 A component embeds another by handle. `zenafx:host/children` has four
 functions: `spawn` names a component and returns a handle, `place` draws one
 into a rect, `fill-slot` puts one inside another, and `place-slot` draws
@@ -1159,10 +1163,49 @@ list, and nothing handles a shaped run: the host shapes a text node when it
 is installed and releases it when the node is replaced.
 
 **Resizing is free, and that is the point.** The component is entered once,
-to mount. Every frame after that, at any size, is host-side.
-`resizing_never_re_enters_the_component` resizes four times and asserts the
-entry count stays at one. Layout still changes — the same nodes solve
+at load, to ask what it draws. Every frame after that, at any size, is
+host-side. `resizing_never_re_enters_the_component` resizes four times and
+asserts the entry count stays at one. Layout still changes — the same nodes solve
 differently at a different size, which is what declarative layout is for.
+
+**A widget does not receive its children.** It puts a `slot` in the tree it
+builds, and the framework places them there. A container decides where its
+children go and how much room they get, and has no reference to them: it
+cannot read them, call them, or keep them across a rebuild. That is the
+property worth having when the container and the content come from
+components that do not trust each other, and it is why the in-component
+design keeps slots rather than passing a child into a constructor — which is
+what the first prototype did, and what made `Card` hold a `Widget`.
+
+The shape is shadow DOM's and React's: the content is declared where it is
+used, the container declares where it goes, and neither names the other.
+
+```zena
+card('Card widget — container', [
+  label('This is a child widget inside of a slot', bodyLook),
+])
+```
+
+**Options are a record with every field optional.** A box names the two or
+three things it cares about and takes the rest — a column, packed to the
+start, sized by its content, drawing nothing — from the defaults:
+
+```zena
+box({look: cardLook, align: Align.Stretch, gap: 10.0, padding: cardPadding}, [
+  text(this.#title, headingLook),
+  slot({look: wellLook, padding: wellPadding}),
+])
+```
+
+That needs presence-optional record fields, which landed in August, and `??`
+reads one: `opts.axis ?? Axis.Column`, where the default is any expression
+and is evaluated only on absence. Nine of those are the whole of `flexOf`.
+
+Presence is real rather than a sentinel, which matters for the numeric
+fields: `{gap: 0.0}` reads `0.0` and not the default. A default in a
+*destructuring pattern* is the thing that is still limited to a literal —
+`let {axis = Axis.Column} = opts` fails with "Variable 'Axis' not found" —
+but nothing here needs one.
 
 **Whole-subtree replacement is the only update, and the grain is the
 widget.** A widget that changes rebuilds itself and replaces its subtree,
@@ -1172,34 +1215,48 @@ over this — the host can diff a replacement against what it held — rather
 than a different design, and nothing in the interface has to change for that
 to arrive later.
 
-The one piece of state a widget keeps is the id of its own subtree. That is
-what makes it the replacement boundary, and it is the minimum a retained
-system can ask for. Everything else the earlier prototype kept — run ids,
-references to its own nodes, a paint method — went away when appearance
-joined the tree.
+A widget keeps nothing. Replacement needs the id of the subtree being
+replaced, but that is the framework's bookkeeping rather than the widget's:
+a widget is a description of a tree, and a description that also holds a
+node id is no longer one. Everything the earlier prototype kept — run ids,
+references to its own nodes, a paint method, a registration — went away as
+appearance joined the tree and mounting moved to the host.
 
 Untested: the guest-side `update()` path. `replace` has host-side tests, but
 nothing triggers a state change yet because no input reaches a component.
 
 ### What the widget prototype found
 
-`examples/zenafx/widgets/` is the same picture as the three-component demo
-built the other way: one component, three widget classes, composed by
-constructor argument. `zenafx:host/app` is how the host gets at it —
-`start: func() -> root` hands over a resource handle, and `render` is a
-method on it, so the component owns as many widget instances as it likes and
-shows the host one.
+`examples/zenafx/widgets/` is one component holding three widget classes,
+composed in the language. An earlier prototype drew the same picture across
+three components, one per widget; the comparison below is what came of
+running both, and the three-component version has since been deleted.
+`zenafx:host/app` is how the host gets at the remaining one, and it is one
+function:
+
+```wit
+start: func() -> list<node>;
+```
+
+**A widget never mounts itself.** The component builds its root widget and
+returns the tree that widget describes; the host installs it. There is no
+`mount`, because a widget that mounts itself has to know it was mounted, and
+then it is not just a description any more. `Root` is a class with one
+method, `build`, and no fields:
+
+```zena
+export function start(): GrowableArray<Node> {
+  return layoutTree(new Root());
+}
+```
+
+`start` is entered once, at load, before the first frame — so the entry
+count is one before anything is drawn, not one after the first frame.
 
 **A widget inside a component needs no measure protocol.** Every widget
 contributes boxes to one tree, the root flattens it, and one `solve` sizes
 everything. Nothing asks a widget how big it is, because the solve already
-knows. `zenafx:host/app`'s `root` resource has `render` and nothing else.
-
-**A slot is a constructor argument.** `new Card(title, new Label(...))`. The
-card decides where the content sits and knows nothing else about it; the
-child's boxes join the card's tree. No name, no registration, no handle, no
-host call. Everything `slot(name)`, `fill-slot` and `place-slot` exist for is
-already true of an object reference.
+knows.
 
 **The boundary is expensive, measured.** The same picture, one frame:
 
@@ -1223,19 +1280,44 @@ a boundary should be where isolation is wanted and nowhere else, and that
 §9.2's machinery is for the boundary rather than for composition. Widgets
 that trust each other should compose in the language.
 
+**One widget per component was the wrong unit, so that prototype is gone.**
+It got its numbers by making every widget a component, which is a shape
+nobody would deploy: a component that is isolated still wants many widgets
+inside it. `zenafx:host/widget` and `zenafx:host/children` went with it, and
+with them the three-component demo, the `child` and `slot` cases of
+`layout.content`, and the host's `place`/`measure` machinery. The measurement
+above is therefore not reproducible from this tree — the numbers stand as a
+record of what was run, and redoing it means embedding two components of the
+`zenafx:host/app` shape, each with a widget tree of its own, which is the
+comparison worth having.
+
 **Breadth first, not pre-order.** `solve` needs a node's children contiguous
 and after it. Pre-order only manages that when no child except the last has
 children of its own — true of every tree written by hand so far, false in
 general. The WIT said "pre-order" and now says what it means.
 
-**Two compiler gaps.** An interface-typed field initialised from a `new`
-expression in a constructor initialiser list fails with `zir unsupported:
-constructor field type`; taking it as a parameter works, which is why the
-tree is composed in `start` rather than in `Root`'s constructor. And a `use`d
-`variant` in an exported interface encodes as a `future` — "type mismatch for
-import `import-type-available`: expected variant, found future" — which is
-why `root` has no `measure` taking a `measure-request`. It would have wanted
-one only for the embedded case.
+**Compiler gaps the prototype hit.** An interface-typed field initialised
+from a `new` expression in a constructor initialiser list fails with `zir
+unsupported: constructor field type`; taking it as a parameter works, which
+is why the tree is composed in `start` rather than in `Root`'s constructor.
+A `use`d `variant` in an *imported* interface encodes as a `future` — "type
+mismatch for import `import-type-available`: expected variant, found future".
+A `use` does not bring in what the named type depends on, so an interface
+that uses `node` must also name `look`, `flex`, `axis` and the rest by hand,
+or the build fails with "declares no type 'axis'".
+
+And an **exported resource emits an invalid component**: `wasm-tools
+validate` rejects the output with "unknown type 13: type index out of
+bounds", pointing into the instance section that groups the exported
+interface's types, so the encoder counts a type it never defines. The same
+interface with the resource replaced by a plain function — same `use` list,
+same `list<node>` return — validates. That is why `start` returns the tree
+rather than a handle to the root widget.
+
+A handle would be worth having once input reaches a component and the host
+needs somewhere to send it. Until then it would be a handle nothing holds
+for a call nothing makes, and the thing the host actually wants from a
+component at startup is the picture.
 
 ### Moving the component boundary
 
@@ -1563,15 +1645,22 @@ handles a fallible import is shaped around this.
 **A world-level export whose parameter is a named record.** `export measure:
 func(request: measure-request) -> size` at world level is refused with "the
 named type 'measure-request' waits on the interop stages". The same signature
-inside an exported _interface_ works, which is why `zenafx:host/widget` is an
-interface rather than two world-level functions. That is the better shape
+inside an exported _interface_ works, which is why `zenafx:host/app` is an
+interface rather than a world-level function. That is the better shape
 anyway, so this costs nothing today.
 
-**Returning an array literal from an arrow.** `let tree = (): Array<Node> =>
-[a, b];` failed with `zir unsupported: return requires conversion`, which is
-why `card.zena` has two node builders instead of one tree builder. _Fixed: an
-expression body's value now adapts to the declared return type the way a
-`return` statement's does (`array_literal_returned_as_array.zena`)._
+**An exported resource.** A component that exports an interface containing a
+`resource` compiles, but the component it emits does not validate: "unknown
+type 13: type index out of bounds", in the instance section that groups the
+exported interface's types. Replacing the resource with a plain function over
+the same types validates. Until this is fixed the host cannot hold a handle
+to anything inside a component, which is why `zenafx:host/app` hands back a
+tree rather than a root widget, and why the method-less form — which fails
+earlier still, with "Type 'Root' not found" — is untested.
+
+**A `use` that brings in what it depends on.** `use scene.{node}` puts `node`
+in scope but not the types `node` is made of, so the build fails with
+"declares no type 'axis'" until every transitive type is named by hand.
 
 **Deferrable exports.** §7.4's deferred delivery is the host's doing, but a
 Zena component on either end has to tolerate it: an exported return-free
@@ -1634,7 +1723,7 @@ described under the list.
 7. **Runtime component.** `packages/zenafx-ui/zena/`: the node arena, the
    dirty set, the id table keyed by viewport, `flush` calling `solve` then
    `present`, and the paint walk. Compiled against `world runtime`.
-8. ~~**The application.**~~ `examples/zenafx/hello.zena` and its world.
+8. ~~**The application.**~~ `examples/zenafx/widgets/` and its world.
 9. **Build wiring.** Two separate mechanisms have to be set up, and confusing
    them is the likely first stumble. A Zena `import {...} from
 'zenafx:ui/scene'` resolves through a **package manifest** entry, which is
@@ -1751,30 +1840,31 @@ the demand-driven redraw are all on the path.
 
 #### What exists, and how it is reduced
 
-`zfx --app packages/zenafx/out/hello.wasm` shows the window and re-centres on
-resize. One component does it, against a world that imports
-`zenafx:host/{text,layout,paint}` and exports `render: func(width, height)`;
-`src/loader/` compiles it, defines those imports on a `Linker` of its own and
-calls `render` on each frame. Two differences from the design, both of them
-the missing second component rather than a change of mind:
+`zfx --app packages/zenafx/out/widgets.wasm` shows the window and re-centres
+on resize. One component does it, against a world that imports
+`zenafx:host/scene` and exports `start: func() -> list<node>`; `src/loader/`
+compiles it, defines the host imports on a `Linker` of its own, and calls
+`start` once. Two differences from the design, both of them the missing
+second component rather than a change of mind:
 
-- **The host calls the application.** §6.4 fixes the call direction the other
+- **The host drives the frame.** §6.4 fixes the call direction the other
   way: the root awaits `zenafx:host/surface`'s frame events and the host
   enters only the root. The reasons given there — update order across a tree,
-  and re-entrancy — need a tree, and one component is not one. The `Scene`
-  trait in `ui/surface.rs` is where a guest sits today and where the frame
-  stream will attach.
-- **There is no scene graph.** The application builds the flat node list
-  `zenafx:host/layout` takes and hands the display list straight to
-  `zenafx:host/paint`, so it does the runtime component's job itself. Nothing
-  of §7 is exercised: no viewport, no node ids, no `apply`, no dirty set.
+  and re-entrancy — need a tree, and one component is not one. Today the
+  component is not entered on the frame path at all: the host solves and
+  paints the tree it was given. The `Scene` trait in `ui/surface.rs` is where
+  a guest sits and where the frame stream will attach.
+- **The scene graph is the host's, not a runtime component's.** The host
+  holds the retained tree behind `zenafx:host/scene` and solves and paints it
+  itself, which is the job §7 gives a Zena runtime component. Node ids and a
+  dirty flag exist; a viewport, `apply` and a dirty set do not.
 
 What the reduced form does establish is the part that had never been tried:
 a Zena component's records, variants, enums and options crossing the canonical
-ABI into a Rust host in a real embedding, and the host's flexbox solve calling
-back into text measurement while the guest waits. `tests/app.rs` asserts the
-component's geometry against the same numbers `ui::demo`'s tests assert, so
-the two sides are known to agree.
+ABI into a Rust host in a real embedding, and the host's flexbox solve
+measuring the text it was handed. `tests/app.rs` asserts the component's
+geometry against the same numbers `ui::demo`'s tests assert, so the two sides
+are known to agree.
 
 ### Later milestones
 
@@ -1830,8 +1920,8 @@ packages/zenafx-ui/
     template.zena             # milestone 3
     schedule.zena             # milestone 3
 examples/zenafx/
-  hello.zena
-  hello.wit
+  widgets.wit
+  widgets/                    # main, widget, card, label
 ```
 
 The runtime component goes in its own package rather than under `zenafx`,
