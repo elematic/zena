@@ -468,9 +468,9 @@ export let main = () => {
         (d) =>
           d.severity === 'error' &&
           d.line === 1 &&
-          d.message.includes("Module not found: './math.zena'"),
+          d.message.includes("Library not found: './math.zena'"),
       ),
-      `Expected Module not found error on line 1, got: ${JSON.stringify(diagsAfter)}`,
+      `Expected Library not found error on line 1, got: ${JSON.stringify(diagsAfter)}`,
     );
 
     const bytes = service.compileToWasm(

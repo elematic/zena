@@ -1,5 +1,5 @@
 import { Token, TokenType, Tokenizer } from './tokenizer.zena';
-import { Diagnostic, DiagnosticCode, DiagnosticSeverity, SourceSpan } from './diagnostics.zena';
+import { Diagnostic, DiagnosticCode, DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
 import { walkEnter } from './visitor.zena';
 import { 
   SourceLocation,
@@ -400,12 +400,17 @@ export final class Parser {
     throw this.#error(message);
   }
   
-  #error(message: String): Error {
+  /**
+   * The error to throw where the grammar ran out, formatted for a
+   * terminal: the same `file:line:column - Error: ` header a type error
+   * carries, then the offending line and an underline of the token.
+   */
+  #error(message: String): SyntaxError {
     let token = this.#peek();
     let {line} = token;
     let col = token.column;
-    let header = this.#path + ":" + i32ToString(line) + ":" + i32ToString(col) + ": ";
-    
+    let header = `${this.#path}:${i32ToString(line)}:${i32ToString(col)} - Error: `;
+
     // Extract the source line for context
     let src = this.#source;
     var lineStart = token.start;
@@ -417,17 +422,27 @@ export final class Parser {
       lineEnd += 1;
     }
     let sourceLine = src.sliceBytes(lineStart, lineEnd);
-    
-    // Build caret line
-    var caretPad = "";
+
+    // Underline the whole token, not just the byte it starts at. A zero
+    // width token — end of input — still gets one caret to point with.
+    var underline = "";
     var ci = 1;
     while (ci < col) {
-      caretPad = caretPad + " ";
+      underline = underline + " ";
       ci += 1;
     }
-    let caret = caretPad + "^";
-    
-    return new Error(header + message + " (got '" + token.value + "')\n" + sourceLine + "\n" + caret);
+    var width = token.end - token.start;
+    if (width < 1) {
+      width = 1;
+    }
+    var drawn = 0;
+    while (drawn < width) {
+      underline = underline + "^";
+      drawn += 1;
+    }
+
+    return new SyntaxError(
+      `${header}${message} (got '${token.value}')\n${sourceLine}\n${underline}`);
   }
 
   /**

@@ -230,7 +230,7 @@ suite('lsp.wasm integration', () => {
       (d) =>
         d.severity === 0 &&
         d.line === 1 &&
-        d.message.includes("Module not found: './does_not_exist.zena'"),
+        d.message.includes("Library not found: './does_not_exist.zena'"),
     );
     assert.ok(
       hasModuleNotFound,
@@ -254,7 +254,7 @@ suite('lsp.wasm integration', () => {
         d.severity === 0 &&
         d.line === 1 &&
         d.message.includes(
-          "Module './math.zena' has no exported member 'nonexistent'",
+          "Library './math.zena' has no exported member 'nonexistent'",
         ),
     );
     assert.ok(

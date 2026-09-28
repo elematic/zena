@@ -7,7 +7,7 @@
  */
 
 import { suite, test } from 'zena:test';
-import { equal } from 'zena:assert';
+import { equal, isTrue } from 'zena:assert';
 import { checkCompilation } from '../lib/compiler.zena';
 import { parse } from '../lib/parser.zena';
 import { DiagnosticBag, DiagnosticCode, SourceSpan } from '../lib/diagnostics.zena';
@@ -74,6 +74,38 @@ export let tests = suite('Cross-Module Type Checking', () => {
       bag.reportError('test error', DiagnosticCode.UnknownError, null);
       let span = bag.diagnostics[0].location as SourceSpan;
       equal(span.file, 'b.zena');
+    });
+  });
+
+  suite('an import whose target does not parse', () => {
+
+    // The loader wraps import resolution in a try/catch, because a
+    // specifier that resolves to nothing is the checker's to report. The
+    // recursive load sat inside the same try, so a syntax error in the
+    // imported file was swallowed the same way and the importer was told
+    // the library was missing — naming a file that was sitting right
+    // there, with no mention of the real error or its line.
+    test('reports the syntax error, not a missing library', () => {
+      let host = new MockHost();
+      host.addFile('/project/dep.zena',
+          'export class C {\n  #x: String;\n  new(this.#x);\n}');
+      host.addFile('/project/main.zena',
+          "import { C } from './dep.zena';\nlet c = new C();");
+      let compiler = makeCompiler(host);
+      let message = try {
+        compiler.compile('/project/main.zena');
+        ''
+      } catch (e) {
+        e.message
+      };
+      isTrue(message.contains('dep.zena:3:12 - Error:'),
+          `expected the file, line and column, got: ${message}`);
+      isTrue(message.contains('Expected identifier'),
+          `expected the parser's own message, got: ${message}`);
+      isTrue(message.contains('new(this.#x);'),
+          `expected the offending line as context, got: ${message}`);
+      isTrue(message.contains('^'),
+          `expected the token underlined, got: ${message}`);
     });
   });
 });

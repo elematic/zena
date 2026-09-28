@@ -17,7 +17,7 @@ import { loadPackageMap } from './package-manifest.zena';
 import {
   createCompiler, CompilerOptions, checkCompilation, withBuiltinPackages
 } from './compiler.zena';
-import { DiagnosticSeverity, SourceSpan } from './diagnostics.zena';
+import { DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
 import { BinaryGenerator } from './codegen/binary-generator.zena';
 import { WatGenerator } from './codegen/wat-generator.zena';
 import { Program, CompilationUnit } from './program.zena';
@@ -412,6 +412,15 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       console.log("==============================");
     }
   } catch (e) {
+    // A syntax error is a fault in the input, and the parser has already
+    // formatted it with its file, line, column and an underline. Report
+    // it the way a type error is reported and fail: the banner and the
+    // wasm backtrace below are for a fault in the compiler itself, and
+    // printing them here says the wrong thing about whose bug it is.
+    if (e is SyntaxError) {
+      console.error(e.message);
+      return 1;
+    }
     console.log("Exception caught in CLI compiler!");
     if (e is Error) {
       console.log("Error message: " + e.message);

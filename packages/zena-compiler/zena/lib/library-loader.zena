@@ -280,13 +280,40 @@ export class LibraryLoader {
         record.imports[specifier] = pinned[specifier];
         return;
       }
+      // Two failures here mean the import names nothing, and the checker
+      // reports both against the import itself: a specifier that does not
+      // resolve, and a path with no file behind it.
+      var resolvedPath: String | null = null;
       try {
         let resolved = this.#resolver.resolve(specifier, path);
         record.imports[specifier] = resolved.path;
-        this.load(resolved.path, null);
+        resolvedPath = resolved.path;
       } catch (e) {
-        // Reported by the checker, against the import that named it.
+        // Nothing to load, and nothing more to say here.
       }
+      if (resolvedPath == null) {
+        return;
+      }
+      let target = resolvedPath as String;
+      if (this.#cache.has(target)) {
+        return;
+      }
+      let tLoad = performance.start("load");
+      var source: String | null = null;
+      try {
+        source = this.#host.readFile(target);
+      } catch (e) {
+        // No file there, so this is the missing-library case after all.
+      }
+      this.loadTime = this.loadTime + performance.end(tLoad);
+      if (source == null) {
+        return;
+      }
+      // Parsing sits outside both catches. A dependency that does not
+      // parse throws, and swallowing that here would report the file as
+      // missing at the import site — naming a file that is sitting right
+      // there, and saying nothing about the error or its line.
+      this.#register(target, source as String, null, null);
     };
     var i = 0;
     while (i < ast.body.length) {
