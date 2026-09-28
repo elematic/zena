@@ -14,6 +14,7 @@
 pub mod demo;
 pub mod layout;
 pub mod paint;
+pub mod scene;
 pub mod surface;
 pub mod text;
 pub mod types;

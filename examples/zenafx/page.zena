@@ -20,66 +20,80 @@ import { some, none } from 'zena:core';
 let page = new Color(0.98, 0.98, 0.99, 1.0);
 let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
 
-/// The handles the host promised. A spawn returns immediately with the
-/// handle the component will occupy, but the component is not instantiated
-/// until the frame ends, so the first frame draws the page alone.
-var card: u32 = 0;
-var label: u32 = 0;
-var asked = false;
+export class PageApp {
+  #cardPath: String;
+  #labelPath: String;
+  var #card: u32 = 0;
+  var #label: u32 = 0;
+  var #asked = false;
 
-export function render(width: f32, height: f32): void {
-  if (!asked) {
-    // A WIT `result` arrives as a tuple of (ok, value, error) and has to be
-    // destructured where it is produced; binding one to a variable does not
-    // compile today.
-    if (let (true, c, _) = spawn('card.wasm')) {
-      if (let (true, l, _) = spawn('label.wasm')) {
-        card = c;
-        label = l;
-        // Projection: the label goes in the card's "body". The card is
-        // never told what it received.
-        fillSlot(card, 'body', label);
-        asked = true;
+  new(cardPath: String = 'card.wasm', labelPath: String = 'label.wasm')
+    : #cardPath = cardPath, #labelPath = labelPath;
+
+  render(width: f32, height: f32): void {
+    if (!this.#asked) {
+      // A WIT `result` arrives as a tuple of (ok, value, error) and has to be
+      // destructured where it is produced; binding one to a variable does not
+      // compile today.
+      if (let (true, c, _) = spawn(this.#cardPath)) {
+        if (let (true, l, _) = spawn(this.#labelPath)) {
+          this.#card = c;
+          this.#label = l;
+          // Projection: the label goes in the card's "body". The card is
+          // never told what it received.
+          fillSlot(this.#card, 'body', this.#label);
+          this.#asked = true;
+        }
       }
+      return;
     }
-    return;
+
+    // A root that fills the window and centres the card, which is a child
+    // component rather than a box — the solve asks it how big it is.
+    let nodes = [
+      new Node(
+        new Flex(Axis.Column, Justify.Center, Align.Center, 0.0, noPadding,
+                 new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0),
+        new ContentBox(),
+        1,
+        1,
+      ),
+      new Node(
+        new Flex(Axis.Column, Justify.Start, Align.Start, 0.0, noPadding,
+                 new LengthAuto(), new LengthAuto(), 0.0, 1.0),
+        new ContentChild(this.#card),
+        0,
+        0,
+      ),
+    ];
+
+    let rects = solve(nodes, new Size(width, height));
+
+    present([
+      new CommandQuad(new Quad(
+        rects[0],
+        some(page),
+        none,
+        0.0,
+        0.0,
+      ))
+    ]);
+
+    place(this.#card, rects[1]);
   }
 
-  // A root that fills the window and centres the card, which is a child
-  // component rather than a box — the solve asks it how big it is.
-  let nodes = [
-    new Node(
-      new Flex(Axis.Column, Justify.Center, Align.Center, 0.0, noPadding,
-               new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0),
-      new ContentBox(),
-      1,
-      1,
-    ),
-    new Node(
-      new Flex(Axis.Column, Justify.Start, Align.Start, 0.0, noPadding,
-               new LengthAuto(), new LengthAuto(), 0.0, 1.0),
-      new ContentChild(card),
-      0,
-      0,
-    ),
-  ];
-
-  let rects = solve(nodes, new Size(width, height));
-
-  present([
-    new CommandQuad(new Quad(
-      rects[0],
-      some(page),
-      none,
-      0.0,
-      0.0,
-    ))
-  ]);
-
-  place(card, rects[1]);
+  /// A root is never embedded, so nothing calls this.
+  measure(request: MeasureRequest): Size {
+    return new Size(0.0, 0.0);
+  }
 }
 
-/// A root is never embedded, so nothing calls this.
+let defaultApp = new PageApp();
+
+export function render(width: f32, height: f32): void {
+  defaultApp.render(width, height);
+}
+
 export function measure(request: MeasureRequest): Size {
-  return new Size(0.0, 0.0);
+  return defaultApp.measure(request);
 }

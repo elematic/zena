@@ -113,6 +113,46 @@ The host also clips each child to the box it was given and translates its
 display list into it, so a component draws in its own coordinates from its own
 origin and cannot paint outside its box or discover where it ended up.
 
+### Widgets inside one component
+
+[`examples/zenafx/widgets/`](../../examples/zenafx/widgets/) is the same
+picture built the other way: one component, three widget classes, composed
+by constructor argument.
+
+```bash
+npm run zfx -w @zena-lang/zenafx -- --app out/widgets.wasm
+```
+
+A widget there is an ordinary Zena object with one method, `build(): Box`.
+A box says how it looks as well as how it lays out, so the host paints the
+same tree it solved — no widget builds a display list, holds a shaped run,
+or keeps references to its own nodes. A slot is
+`new Card(title, new Label(...))`: the card places the content and knows
+nothing else about it.
+
+The tree is installed once through `zenafx:host/scene`, and the host owns it
+after that. A resize is solved and painted host-side with **no call into the
+component at all** — `tests/app.rs` resizes four times and asserts the entry
+count stays at one. A widget that changes replaces its own subtree, which is
+the only update there is and the reason a widget keeps one piece of state:
+the id of that subtree.
+
+The component exports `zenafx:host/app`, whose `start: func() -> root` hands
+the host a resource handle. `render` is a method on that handle, so the
+component owns as many widget instances as it likes and shows the host one.
+
+The two shapes draw the same picture — `tests/app.rs` asserts that — and
+cost very different amounts:
+
+| | `solve` calls | cross-component `measure` calls | frames to settle |
+| --- | --- | --- | --- |
+| three components | 6 | 54 | 2 |
+| one component, retained | 0 | 0 | 1 |
+
+A component boundary is worth paying for where isolation is wanted. Between
+widgets that trust each other it buys nothing and costs 54 guest re-entries
+a frame.
+
 ### What is not here yet
 
 There is no scene graph. The design has an application importing

@@ -212,9 +212,13 @@ package zenafx:host@0.1.0 {
       slot(string),
     }
 
-    /// One node of a tree given in pre-order. Index 0 is the root; a
-    /// node's children are the `child-count` entries starting at
-    /// `first-child`. The tree is flat because WIT records cannot recurse.
+    /// One node of a flat tree. Index 0 is the root; a node's children are
+    /// the `child-count` entries starting at `first-child`, and they must
+    /// come after it. The tree is flat because WIT records cannot recurse.
+    ///
+    /// Breadth-first order always satisfies that. Pre-order does not: it
+    /// only keeps siblings adjacent when no child but the last has
+    /// children of its own, so it works for a chain and breaks for a tree.
     record node {
       style: flex,
       content: content,
@@ -300,6 +304,95 @@ package zenafx:host@0.1.0 {
 
     /// Ask for one more frame. Coalesced.
     request-redraw: func();
+  }
+
+  /// The retained scene: the tree the host holds and draws from.
+  ///
+  /// A component installs a tree once and the host keeps it. A frame is
+  /// then a solve and a paint over what the host already has, with no call
+  /// into any component — which is what makes resizing free. The component
+  /// is back on the path only when something it draws actually changes, and
+  /// then it replaces a subtree rather than describing an edit.
+  ///
+  /// Whole-subtree replacement is the only update. It is coarse, and the
+  /// grain is the widget: a widget that changes replaces itself and
+  /// everything under it. Finer edits are an optimisation over this, not a
+  /// different design.
+  interface scene {
+    use zenafx:ui/style@0.1.0.{flex, box-look, text-look};
+
+    /// A node of the retained tree. Ids are the host's, not the
+    /// component's, and mean nothing to anyone else.
+    type node-id = u32;
+
+    record text-content {
+      content: string,
+      look: text-look,
+    }
+
+    /// What a node draws. A node's appearance travels with its geometry,
+    /// so the host paints the same tree it solved and a component never
+    /// builds a display list.
+    variant look {
+      /// Nothing of its own: a box that exists to lay out its children.
+      nothing,
+      /// A filled and bordered rectangle.
+      fill(box-look),
+      /// Text. The host shapes it and keeps the result for as long as the
+      /// node lives, so a component never handles a shaped run.
+      text(text-content),
+    }
+
+    /// One node of a flat tree. Index 0 is the tree's root; a node's
+    /// children are the `child-count` entries starting at `first-child`,
+    /// and must come after it. Breadth-first order always satisfies that.
+    record node {
+      layout: flex,
+      look: look,
+      first-child: u32,
+      child-count: u32,
+    }
+
+    /// Install a tree and return the id of its root. `parent` is the node
+    /// to hang it under; `none` installs the scene's own root, replacing
+    /// whatever was there.
+    install: func(parent: option<node-id>, nodes: list<node>) -> node-id;
+
+    /// Replace the subtree rooted at `target`, returning the new root's
+    /// id. The old nodes are dropped and any text they held is released.
+    replace: func(target: node-id, nodes: list<node>) -> node-id;
+
+    /// Ask for a frame. Coalesced; a resize does not need one, because the
+    /// host already knows the tree changed shape.
+    invalidate: func();
+  }
+
+  /// How a component hands the host a widget instance.
+  ///
+  /// `widget` below exports two free functions, so it can describe exactly
+  /// one widget per component and cannot say which instance is being
+  /// drawn. This describes instances: the host asks for the root and gets
+  /// a handle. What is under that handle is the component's business —
+  /// widgets inside one component compose in their own language, not
+  /// through the host.
+  interface app {
+    /// One widget, as the host sees it.
+    ///
+    /// There is no `measure` here, and that is the point. A widget inside
+    /// a component is laid out by the same solve as everything around it,
+    /// so nothing asks it how big it is. Only a component boundary needs
+    /// `measure`, because only there does the solve stop.
+    resource root {
+      /// Build the component's tree and install it. Called once, after
+      /// instantiation. Nothing calls back into the component after this
+      /// until it invalidates something itself — a resize, in particular,
+      /// is handled entirely by the host.
+      mount: func();
+    }
+
+    /// The component's root widget. Called once, after instantiation and
+    /// before the first frame.
+    start: func() -> root;
   }
 
   /// What every ZenaFX component exports, root or embedded.

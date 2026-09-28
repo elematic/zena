@@ -42,7 +42,8 @@ This list defines the numbers the `§` cross-references in this document use.
    8.3 Paint, 8.4 Surface, frames and demand-driven redraw,
    8.5 `zenafx:host` in WIT
 9. Widgets, templates and updates — 9.1 Widgets and templates, 9.2 Children
-   and slots, 9.3 Moving the component boundary
+   and slots, 9.3 The retained scene, 9.4 What the widget prototype found,
+   9.5 Moving the component boundary
 10. Scheduling
 11. Reactive state
 12. Capabilities and isolation
@@ -1143,6 +1144,98 @@ already built. Fallback content for an empty slot, several slots of the same
 name, and reassigning a filled slot are all unimplemented; an empty slot
 measures and paints as nothing. Ordering within a slot does not arise yet
 because a slot holds one thing.
+
+### The retained scene
+
+`zenafx:host/scene` is the tree the host holds. A component installs one
+through `install(parent, nodes)` and gets back a node id; a frame after that
+is a solve and a paint over what the host already has, with no call into any
+component. `replace(target, nodes)` swaps a subtree, and `invalidate()` asks
+for a frame.
+
+A node carries its appearance as well as its geometry — `nothing`, `fill` or
+`text` — so the host paints the same tree it solved. Nothing builds a display
+list, and nothing handles a shaped run: the host shapes a text node when it
+is installed and releases it when the node is replaced.
+
+**Resizing is free, and that is the point.** The component is entered once,
+to mount. Every frame after that, at any size, is host-side.
+`resizing_never_re_enters_the_component` resizes four times and asserts the
+entry count stays at one. Layout still changes — the same nodes solve
+differently at a different size, which is what declarative layout is for.
+
+**Whole-subtree replacement is the only update, and the grain is the
+widget.** A widget that changes rebuilds itself and replaces its subtree,
+which discards and re-shapes everything under it. That is coarse, and it is
+where Flutter sat before stateful widgets. Finer updates are an optimisation
+over this — the host can diff a replacement against what it held — rather
+than a different design, and nothing in the interface has to change for that
+to arrive later.
+
+The one piece of state a widget keeps is the id of its own subtree. That is
+what makes it the replacement boundary, and it is the minimum a retained
+system can ask for. Everything else the earlier prototype kept — run ids,
+references to its own nodes, a paint method — went away when appearance
+joined the tree.
+
+Untested: the guest-side `update()` path. `replace` has host-side tests, but
+nothing triggers a state change yet because no input reaches a component.
+
+### What the widget prototype found
+
+`examples/zenafx/widgets/` is the same picture as the three-component demo
+built the other way: one component, three widget classes, composed by
+constructor argument. `zenafx:host/app` is how the host gets at it —
+`start: func() -> root` hands over a resource handle, and `render` is a
+method on it, so the component owns as many widget instances as it likes and
+shows the host one.
+
+**A widget inside a component needs no measure protocol.** Every widget
+contributes boxes to one tree, the root flattens it, and one `solve` sizes
+everything. Nothing asks a widget how big it is, because the solve already
+knows. `zenafx:host/app`'s `root` resource has `render` and nothing else.
+
+**A slot is a constructor argument.** `new Card(title, new Label(...))`. The
+card decides where the content sits and knows nothing else about it; the
+child's boxes join the card's tree. No name, no registration, no handle, no
+host call. Everything `slot(name)`, `fill-slot` and `place-slot` exist for is
+already true of an object reference.
+
+**The boundary is expensive, measured.** The same picture, one frame:
+
+| | `solve` calls | cross-component `measure` calls |
+| --- | --- | --- |
+| three components | 6 | 54 |
+| one component, retained | 0 | 0 |
+
+Zero, not one, because a retained tree does not call `solve` either: the
+component installed a tree and the host solves it.
+
+54 re-entries into a guest, per frame, for a card containing a label. §8.1
+explains where they come from: a leaf is queried four or more times per
+solve, every component boundary turns each of those into a call, and each
+embedded component then solves its own subtree. It is also two frames rather
+than one, because a spawned child is not instantiated until the frame that
+asked for it ends.
+
+That is not an argument against component boundaries. It is an argument that
+a boundary should be where isolation is wanted and nowhere else, and that
+§9.2's machinery is for the boundary rather than for composition. Widgets
+that trust each other should compose in the language.
+
+**Breadth first, not pre-order.** `solve` needs a node's children contiguous
+and after it. Pre-order only manages that when no child except the last has
+children of its own — true of every tree written by hand so far, false in
+general. The WIT said "pre-order" and now says what it means.
+
+**Two compiler gaps.** An interface-typed field initialised from a `new`
+expression in a constructor initialiser list fails with `zir unsupported:
+constructor field type`; taking it as a parameter works, which is why the
+tree is composed in `start` rather than in `Root`'s constructor. And a `use`d
+`variant` in an exported interface encodes as a `future` — "type mismatch for
+import `import-type-available`: expected variant, found future" — which is
+why `root` has no `measure` taking a `measure-request`. It would have wanted
+one only for the embedded case.
 
 ### Moving the component boundary
 

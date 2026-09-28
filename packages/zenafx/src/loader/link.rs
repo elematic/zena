@@ -10,10 +10,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use wasmtime::component::{Linker, TypedFunc};
+use wasmtime::component::{Linker, ResourceAny, TypedFunc};
 use wasmtime::StoreContextMut;
 
 use crate::ui::layout::{measure_text, solve_with};
+use crate::ui::scene::{Scene, SceneNode};
 use crate::ui::text::TextEngine;
 use crate::ui::types::{
     Command, Content, Measured, MeasureRequest, Node, Rect, Size, TextLook,
@@ -31,6 +32,13 @@ pub struct Widget {
     pub render: Option<TypedFunc<(f32, f32), ()>>,
     /// Absent for the root, which is never embedded and so never measured.
     pub measure: Option<TypedFunc<(MeasureRequest,), (Size,)>>,
+    /// A `zenafx:host/app` root: the instance the component handed over and
+    /// the method that installs its tree. Called once.
+    ///
+    /// A component that exports this owns as many widgets as it likes and
+    /// shows the host one. The flat `render`/`measure` above are the older
+    /// shape, where the component *is* the widget.
+    pub root: Option<(ResourceAny, TypedFunc<(ResourceAny,), ()>)>,
     /// What this widget's embedder has put in each of its named slots.
     pub slots: HashMap<String, u32>,
 }
@@ -42,6 +50,9 @@ pub struct Widget {
 /// embedder names a slot on the child, and the child asks what is in it.
 pub struct UiHostState {
     pub text: TextEngine,
+    /// The retained tree. Once a component installs one, a frame is a solve
+    /// and a paint over this and nothing else.
+    pub scene: Scene,
     /// The frame being built. Every `present` appends to it, translated into
     /// window coordinates, so the order components are placed in is the
     /// order they paint in.
@@ -57,6 +68,16 @@ pub struct UiHostState {
     /// only name a file in the directory the root was loaded from. A real
     /// policy check replaces this.
     pub component_dir: PathBuf,
+    /// How many times the guest called `solve` this frame, and how many
+    /// times the host had to ask a component to measure itself. Both are
+    /// zero for a tree that lives in one component, which is the point of
+    /// keeping the count.
+    pub solves: u32,
+    pub cross_measures: u32,
+    /// Every entry into a component since the scene was created: mounts,
+    /// renders and measures. A retained tree should leave this flat while
+    /// the window resizes.
+    pub guest_entries: u32,
     /// Handles promised by `spawn` and not yet instantiated, as
     /// (handle, source). The loader instantiates outside the host call,
     /// because instantiation needs the `Linker` and the `Component`,
@@ -68,10 +89,14 @@ impl UiHostState {
     pub fn new(component_dir: PathBuf) -> Self {
         Self {
             text: TextEngine::new(),
+            scene: Scene::new(),
             frame: Vec::new(),
             widgets: Vec::new(),
             stack: Vec::new(),
             origin: (0.0, 0.0),
+            solves: 0,
+            cross_measures: 0,
+            guest_entries: 0,
             component_dir,
             pending_spawns: Vec::new(),
         }
@@ -100,9 +125,14 @@ fn place_widget(
 ) -> wasmtime::Result<()> {
     // Not instantiated yet: the handle was promised this frame and draws
     // nothing until the next one.
-    let Some(Some(render)) = caller.data().widgets.get(widget as usize).map(|w| w.render) else {
+    let Some(entry) = caller.data().widgets.get(widget as usize) else {
         return Ok(());
     };
+    let root = entry.root;
+    let flat = entry.render;
+    if root.is_none() && flat.is_none() {
+        return Ok(());
+    }
 
     let saved = caller.data().origin;
     let outer = Rect {
@@ -118,7 +148,16 @@ fn place_widget(
         data.stack.push(widget);
     }
 
-    let result = render.call(&mut *caller, (bounds.width, bounds.height));
+    // A retained root is not drawn by being called; the host draws its
+    // installed tree. Only the older flat shape renders on demand.
+    let result = match flat {
+        Some(render) => {
+            caller.data_mut().guest_entries += 1;
+            render.call(&mut *caller, (bounds.width, bounds.height))
+        }
+        None => Ok(()),
+    };
+    let _ = root;
 
     {
         let data = caller.data_mut();
@@ -153,6 +192,8 @@ fn measure_widget(
         };
     };
     caller.data_mut().stack.push(widget);
+    caller.data_mut().cross_measures += 1;
+    caller.data_mut().guest_entries += 1;
     let answer = measure.call(&mut *caller, (request,));
     caller.data_mut().stack.pop();
     match answer {
@@ -243,6 +284,7 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
     layout.func_wrap(
         "solve",
         |mut caller: StoreContextMut<'_, UiHostState>, (nodes, available): (Vec<Node>, Size)| {
+            caller.data_mut().solves += 1;
             Ok((solve_tree(&mut caller, &nodes, available),))
         },
     )?;
@@ -254,6 +296,33 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
             let origin = caller.data().origin;
             let frame = &mut caller.data_mut().frame;
             frame.extend(commands.into_iter().map(|c| translate(c, origin)));
+            Ok(())
+        },
+    )?;
+
+    let mut scene = linker.instance("zenafx:host/scene@0.1.0")?;
+    scene.func_wrap(
+        "install",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (parent, nodes): (Option<u32>, Vec<SceneNode>)| {
+            let data = caller.data_mut();
+            let UiHostState { scene, text, .. } = data;
+            Ok((scene.install(parent, &nodes, text),))
+        },
+    )?;
+    scene.func_wrap(
+        "replace",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (target, nodes): (u32, Vec<SceneNode>)| {
+            let data = caller.data_mut();
+            let UiHostState { scene, text, .. } = data;
+            Ok((scene.replace(target, &nodes, text),))
+        },
+    )?;
+    scene.func_wrap(
+        "invalidate",
+        |mut caller: StoreContextMut<'_, UiHostState>, (): ()| {
+            caller.data_mut().scene.dirty = true;
             Ok(())
         },
     )?;

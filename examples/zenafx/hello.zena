@@ -24,12 +24,6 @@ let ink = new Color(0.10, 0.11, 0.13, 1.0);
 let card = new Color(0.93, 0.95, 0.98, 1.0);
 let edge = new Color(0.76, 0.81, 0.88, 1.0);
 
-/// The text run, registered on the first frame and reused after it. A
-/// run id stands for shaped text until it is released, so re-registering
-/// it every frame would reshape the string for nothing.
-var labelRun: u32 = 0;
-var haveLabel = false;
-
 /// Geometry with everything at its default but the fields named.
 let box = (
   axis: Axis,
@@ -42,59 +36,82 @@ let box = (
 
 let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
 
-export function render(width: f32, height: f32): void {
-  if (!haveLabel) {
-    labelRun = registerRun(
-      'Hello, ZenaFX',
-      new TextLook('system-ui', 32.0, 500 as u16, false, ink),
-    );
-    haveLabel = true;
+export class HelloApp {
+  #greeting: String;
+  var #labelRun: u32 = 0;
+  var #haveLabel = false;
+
+  new(greeting: String = 'Hello, ZenaFX') : #greeting = greeting;
+
+  #ensureLabel(): u32 {
+    if (!this.#haveLabel) {
+      this.#labelRun = registerRun(
+        this.#greeting,
+        new TextLook('system-ui', 32.0, 500 as u16, false, ink),
+      );
+      this.#haveLabel = true;
+    }
+    return this.#labelRun;
   }
 
-  // Three nodes in pre-order: a root filling the window and centring its
-  // one child, a padded card, and the text.
-  let nodes = [
-    new Node(
-      box(Axis.Column, Justify.Center, Align.Center, noPadding,
-          new LengthPercent(100.0), new LengthPercent(100.0)),
-      new ContentBox(),
-      1,
-      1,
-    ),
-    new Node(
-      box(Axis.Column, Justify.Start, Align.Start,
-          new Edges(24.0, 40.0, 24.0, 40.0), new LengthAuto(), new LengthAuto()),
-      new ContentBox(),
-      2,
-      1,
-    ),
-    new Node(
-      box(Axis.Column, Justify.Start, Align.Start, noPadding,
-          new LengthAuto(), new LengthAuto()),
-      new ContentText(labelRun),
-      0,
-      0,
-    )
-  ];
+  render(width: f32, height: f32): void {
+    let run = this.#ensureLabel();
 
-  let rects = solve(nodes, new Size(width, height));
-  let text = rects[2];
+    // Three nodes in pre-order: a root filling the window and centring its
+    // one child, a padded card, and the text.
+    let nodes = [
+      new Node(
+        box(Axis.Column, Justify.Center, Align.Center, noPadding,
+            new LengthPercent(100.0), new LengthPercent(100.0)),
+        new ContentBox(),
+        1,
+        1,
+      ),
+      new Node(
+        box(Axis.Column, Justify.Start, Align.Start,
+            new Edges(24.0, 40.0, 24.0, 40.0), new LengthAuto(), new LengthAuto()),
+        new ContentBox(),
+        2,
+        1,
+      ),
+      new Node(
+        box(Axis.Column, Justify.Start, Align.Start, noPadding,
+            new LengthAuto(), new LengthAuto()),
+        new ContentText(run),
+        0,
+        0,
+      )
+    ];
 
-  present([
-    new CommandQuad(new Quad(
-      rects[1],
-      some(card),
-      some(edge),
-      1.0,
-      12.0,
-    )),
-    new CommandGlyphs(new Glyphs(labelRun, text.x, text.y))
-  ]);
+    let rects = solve(nodes, new Size(width, height));
+    let text = rects[2];
+
+    present([
+      new CommandQuad(new Quad(
+        rects[1],
+        some(card),
+        some(edge),
+        1.0,
+        12.0,
+      )),
+      new CommandGlyphs(new Glyphs(run, text.x, text.y))
+    ]);
+  }
+
+  /// A root is never embedded, so nothing calls this. The interface every
+  /// component exports has it, so it is answered honestly: the page fills
+  /// whatever it is given.
+  measure(request: MeasureRequest): Size {
+    return new Size(0.0, 0.0);
+  }
 }
 
-/// A root is never embedded, so nothing calls this. The interface every
-/// component exports has it, so it is answered honestly: the page fills
-/// whatever it is given.
+let defaultApp = new HelloApp();
+
+export function render(width: f32, height: f32): void {
+  defaultApp.render(width, height);
+}
+
 export function measure(request: MeasureRequest): Size {
-  return new Size(0.0, 0.0);
+  return defaultApp.measure(request);
 }

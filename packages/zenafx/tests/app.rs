@@ -340,3 +340,181 @@ fn the_three_component_tree_rasterizes() {
         .count();
     assert!(dark > 100, "expected the label's glyphs, got {dark} dark pixels");
 }
+
+// ---------------------------------------------------------------------
+// One component, several widgets: composition in the language rather than
+// across the component boundary.
+// ---------------------------------------------------------------------
+
+fn widgets() -> GuestScene {
+    let wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out/widgets.wasm");
+    assert!(wasm.exists(), "{} is missing", wasm.display());
+    let engine = engine(false).expect("could not create an engine");
+    GuestScene::load(&engine, &wasm).expect("could not load the widgets component")
+}
+
+/// Nothing is spawned, so there is nothing to wait for: the first frame is
+/// the finished picture. The component version needs two.
+#[test]
+fn the_first_frame_is_complete() {
+    let mut app = widgets();
+    let commands = app.frame(frame_at(WIDTH, HEIGHT));
+    assert!(!commands.is_empty(), "the first frame should draw");
+    assert!(!app.wants_another_frame(), "nothing is owed");
+}
+
+/// Five commands and no clips. The component version of the same picture
+/// draws nine, four of which are the clips the host puts round each child
+/// — isolation nobody asked for between widgets that trust each other.
+#[test]
+fn one_component_paints_the_same_picture_without_clips() {
+    let mut app = widgets();
+    let commands = app.frame(frame_at(WIDTH, HEIGHT));
+
+    let shape: Vec<&str> = commands
+        .iter()
+        .map(|c| match c {
+            Command::Quad(_) => "quad",
+            Command::Glyphs(_) => "glyphs",
+            Command::PushClip(_) => "push",
+            Command::PopClip => "pop",
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        vec!["quad", "quad", "glyphs", "quad", "glyphs"],
+        "{commands:?}"
+    );
+}
+
+/// A frame crosses the boundary not at all.
+///
+/// The component does not even call `solve`: it installed a tree, and the
+/// host solves and paints that on its own. Both counters are host-side
+/// tallies of calls that cross the component boundary, and both are zero.
+#[test]
+fn a_frame_costs_no_boundary_crossings() {
+    let mut app = widgets();
+    app.frame(frame_at(WIDTH, HEIGHT));
+    assert_eq!(app.last_frame_calls(), (0, 0));
+}
+
+/// The same picture as the three-component version, to within a pixel: the
+/// card hugs its label, the label is inset by both paddings, and the card
+/// is centred. Composition moved into the language; the layout did not
+/// change.
+#[test]
+fn the_widget_tree_lays_out_like_the_component_tree() {
+    let mut app = widgets();
+    let commands = app.frame(frame_at(WIDTH, HEIGHT));
+
+    let card = quad(&commands, 1);
+    let well = quad(&commands, 2);
+    let (lx, ly) = glyphs(&commands, 1);
+
+    assert!(
+        (well.x - (card.x + CARD_PAD_LEFT)).abs() < 1.0,
+        "well {well:?} in card {card:?}"
+    );
+    assert!(
+        (lx - (well.x + WELL_PAD_LEFT)).abs() < 1.0,
+        "label x {lx}, well {well:?}"
+    );
+    assert!(
+        (ly - (well.y + WELL_PAD_TOP)).abs() < 1.0,
+        "label y {ly}, well {well:?}"
+    );
+
+    let cx = card.x + card.width / 2.0;
+    let cy = card.y + card.height / 2.0;
+    assert!((cx - 400.0).abs() < 1.0, "centre x {cx}, {card:?}");
+    assert!((cy - 300.0).abs() < 1.0, "centre y {cy}, {card:?}");
+}
+
+#[test]
+fn the_widget_tree_rasterizes() {
+    let mut app = widgets();
+    let commands = app.frame(frame_at(WIDTH, HEIGHT));
+    let mut painter = Painter::new(WIDTH as u16, HEIGHT as u16);
+    painter.draw(&commands, app.background(), app.text());
+    let dark = painter
+        .pixels()
+        .iter()
+        .filter(|px| px.r < 100 && px.g < 100 && px.b < 100)
+        .count();
+    assert!(dark > 100, "expected glyphs, got {dark} dark pixels");
+}
+
+/// The same picture across three components, counted at the boundary.
+///
+/// The one-component version does it in one solve and no cross-component
+/// measures. Here every widget boundary is a component boundary, so the
+/// host has to re-enter a guest for each of taffy's layout queries, and
+/// each embedded component solves its own subtree on top of that.
+#[test]
+fn three_components_cost_far_more_boundary_traffic() {
+    let mut page = page();
+    settled(&mut page);
+    let (solves, measures) = page.last_frame_calls();
+
+    let mut one = widgets();
+    one.frame(frame_at(WIDTH, HEIGHT));
+    let (one_solve, one_measure) = one.last_frame_calls();
+
+    println!("three components: {solves} solves, {measures} cross-component measures");
+    println!("one component:    {one_solve} solves, {one_measure} cross-component measures");
+
+    assert!(solves > one_solve, "{solves} vs {one_solve}");
+    assert!(measures > 0, "the component tree should cross the boundary");
+    assert_eq!(
+        (one_solve, one_measure),
+        (0, 0),
+        "a retained tree crosses the boundary not at all"
+    );
+}
+
+// ---------------------------------------------------------------------
+// The retained tree: installed once, then resized for free.
+// ---------------------------------------------------------------------
+
+/// A resize costs nothing.
+///
+/// The component is entered once, to mount. After that the host owns the
+/// tree, and every frame — at any size — is a solve and a paint over it.
+/// This is the property the retained scene exists for.
+#[test]
+fn resizing_never_re_enters_the_component() {
+    let mut app = widgets();
+    app.frame(frame_at(WIDTH, HEIGHT));
+    assert_eq!(app.guest_entries(), 1, "mounting is the one entry");
+
+    for (w, h) in [(400, 1000), (1200, 300), (800, 600), (640, 480)] {
+        let commands = app.frame(frame_at(w, h));
+        assert!(!commands.is_empty(), "still draws at {w}x{h}");
+    }
+    assert_eq!(
+        app.guest_entries(),
+        1,
+        "four resizes should not have entered the component again"
+    );
+}
+
+/// And the layout really does change — the resize is not a no-op that
+/// trivially satisfies the test above.
+#[test]
+fn the_retained_tree_re_solves_at_each_size() {
+    let mut app = widgets();
+    app.frame(frame_at(WIDTH, HEIGHT));
+    let wide = quad(&app.frame(frame_at(WIDTH, HEIGHT)), 1);
+    let tall = quad(&app.frame(frame_at(400, 1000)), 1);
+
+    assert_eq!(wide.width, tall.width, "the card still hugs its content");
+    assert!(
+        (tall.x + tall.width / 2.0 - 200.0).abs() < 1.0,
+        "re-centred horizontally: {tall:?}"
+    );
+    assert!(
+        (tall.y + tall.height / 2.0 - 500.0).abs() < 1.0,
+        "re-centred vertically: {tall:?}"
+    );
+}

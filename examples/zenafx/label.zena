@@ -12,50 +12,65 @@ import { registerRun, measureRun } from 'zenafx:host/text';
 import { MeasureRequest, Available, AvailableDefinite, AvailableMinContent,
          AvailableMaxContent } from 'zenafx:host/layout';
 import { Quad, Glyphs, Command, CommandGlyphs, present } from 'zenafx:host/paint';
-import { Some, some, none } from 'zena:core';
+import { Option, Some, some, none } from 'zena:core';
 
 let ink = new Color(0.10, 0.11, 0.13, 1.0);
 
-var run: u32 = 0;
-var ready = false;
+export class Label {
+  #text: String;
+  var #run: u32 = 0;
+  var #ready = false;
 
-let ensureRun = (): u32 => {
-  if (!ready) {
-    run = registerRun(
-      'This is a child widget inside of a slot',
-      new TextLook('system-ui', 20.0, 400 as u16, false, ink),
-    );
-    ready = true;
-  }
-  return run;
-};
+  new(text: String = 'This is a child widget inside of a slot') : #text = text;
 
-/// The width to shape at for one query. A width the embedder's solve has
-/// already fixed wins; otherwise `definite` is that width, `max-content` is
-/// unconstrained, and `min-content` has no answer here — the host measures
-/// the run itself for that case, so a label nested in a shrink-to-fit box
-/// reports its unwrapped width.
-let widthFor = (request: MeasureRequest): Option<f32> => {
-  if (request.knownWidth is Some<f32>) {
-    return request.knownWidth;
+  #ensureRun(): u32 {
+    if (!this.#ready) {
+      this.#run = registerRun(
+        this.#text,
+        new TextLook('system-ui', 20.0, 400 as u16, false, ink),
+      );
+      this.#ready = true;
+    }
+    return this.#run;
   }
-  let space = request.availableWidth;
-  if (space is AvailableDefinite) {
-    return some((space as AvailableDefinite).value);
+
+  /// The width to shape at for one query. A width the embedder's solve has
+  /// already fixed wins; otherwise `definite` is that width, `max-content` is
+  /// unconstrained, and `min-content` has no answer here — the host measures
+  /// the run itself for that case, so a label nested in a shrink-to-fit box
+  /// reports its unwrapped width.
+  #widthFor(request: MeasureRequest): Option<f32> {
+    if (request.knownWidth is Some<f32>) {
+      return request.knownWidth;
+    }
+    let space = request.availableWidth;
+    if (space is AvailableDefinite) {
+      return some((space as AvailableDefinite).value);
+    }
+    return none;
   }
-  return none;
-};
+
+  measure(request: MeasureRequest): Size {
+    let id = this.#ensureRun();
+    let m = measureRun(id, this.#widthFor(request));
+    return new Size(m.width, m.height);
+  }
+
+  render(width: f32, height: f32): void {
+    let id = this.#ensureRun();
+    // Shape at the width actually given, so the glyphs match the box the
+    // embedder's layout settled on.
+    measureRun(id, some(width));
+    present([new CommandGlyphs(new Glyphs(id, 0.0, 0.0))]);
+  }
+}
+
+let defaultLabel = new Label();
 
 export function measure(request: MeasureRequest): Size {
-  let id = ensureRun();
-  let m = measureRun(id, widthFor(request));
-  return new Size(m.width, m.height);
+  return defaultLabel.measure(request);
 }
 
 export function render(width: f32, height: f32): void {
-  let id = ensureRun();
-  // Shape at the width actually given, so the glyphs match the box the
-  // embedder's layout settled on.
-  measureRun(id, some(width));
-  present([new CommandGlyphs(new Glyphs(id, 0.0, 0.0))]);
+  defaultLabel.render(width, height);
 }
