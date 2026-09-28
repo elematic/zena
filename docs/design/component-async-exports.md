@@ -472,13 +472,10 @@ async func()` is the entry itself — the wrapper synthesizer skips
     and exports each function with a type naming the exported ones;
     the outer component instantiates it with its resource types and
     lifted functions and exports the instance. An interface without a
-    resource keeps the bag-of-exports form, byte for byte. One thing
-    waits: an own of the program's resource arriving as a parameter
-    needs `resource.rep` and a rule for the handle's disposal.
-    Composed: the consumer constructs a surface, calls sync,
-    async-stream, string-returning and static members, and passes a
-    borrow of it to another resource's constructor and to a free
-    function.
+    resource keeps the bag-of-exports form, byte for byte. Composed:
+    the consumer constructs a surface, calls sync, async-stream,
+    string-returning and static members, and passes a borrow of it to
+    another resource's constructor and to a free function.
 14. Destructors for the resources a program provides. A destructor
     names a core function of the program's instance, and the resource
     type must exist before that instance does, because the program's
@@ -503,3 +500,12 @@ async func()` is the entry itself — the wrapper synthesizer skips
     Disposable` on an unknown class has no lowering). The
     `gfx-surface` consumer drops a spare handle and reads back the
     count the provider's `dispose` kept.
+15. An own of the program's resource arriving as a parameter: the
+    caller giving the instance up. The wrapper reads the
+    representation back with `resource.rep`, takes the instance out
+    of the table, drops the handle, and hands the program the class
+    itself. The drop reaches the destructor, which finds the slot
+    already cleared and disposes nothing — the program holds the
+    instance now, and disposing it is the program's call. The
+    `gfx-surface` consumer hands a surface to a static `adopt` and
+    checks the dispose count stayed where it was.

@@ -1080,7 +1080,8 @@ function liftExprOf(ty: Ty, ptrExpr: String, uses: SynthUses): String {
   if (ty.kind == TyKind.ResourceH) {
     uses.useAbi("loadI32");
     if (ty.isProgram) {
-      return `${camelName(ty.resourceName)}At(loadI32(${ptrExpr}))`;
+      let helper = if (ty.isBorrow) "At" else "Take";
+      return `${camelName(ty.resourceName)}${helper}(loadI32(${ptrExpr}))`;
     }
     return `new ${ty.typeName}(loadI32(${ptrExpr}))`;
   }
@@ -1884,8 +1885,10 @@ function liftFlatExpr(ty: Ty, slotTypes: GrowableArray<String>,
       // A borrow of the program's own resource arrives as its
       // representation — the canonical ABI passes a borrow into the
       // implementing component as the rep — so it is a table lookup.
-      // An own arriving is refused before this.
-      return camelName(ty.resourceName) + "At(" + slot(base, "i32") + ")";
+      // An own arrives as a handle the caller gave up: the instance
+      // is taken back out of the table.
+      let helper = if (ty.isBorrow) "At" else "Take";
+      return camelName(ty.resourceName) + helper + "(" + slot(base, "i32") + ")";
     }
     // An owned handle: the wrapper's class around it, which the
     // program then owns and disposes. A borrow is refused before this.
@@ -2772,7 +2775,11 @@ function drainHelpers(body: StringBuilder, uses: SynthUses,
  * The destructor frees the slot for reuse and disposes the instance:
  * the class behind a resource is a `Disposable`, the way the handle
  * class a consumer gets is, and its `dispose` is what the destructor
- * means. A class that is not one fails the wrapper's type check.
+ * means. A class that is not one fails the wrapper's type check. An
+ * own handle arriving as a parameter is the caller giving the instance
+ * up: it is taken back out of the table and handed to the program as
+ * the class, and the handle dropped — which reaches the destructor,
+ * which finds the slot already cleared and disposes nothing.
  */
 function emitProgramResourceTables(body: StringBuilder,
     uses: SynthUses): void {
@@ -2799,17 +2806,36 @@ function emitProgramResourceTables(body: StringBuilder,
       function ${prefix}At(rep: i32): ${r.className} {
         return ${table}[rep] as ${r.className};
       }
+      /** An own handle arriving: the caller gave the instance up, so it
+       * leaves the table and goes to the program as the class. The
+       * handle is dropped, which reaches the destructor below with the
+       * slot already cleared, so nothing is disposed. */
+      function ${prefix}Take(handle: i32): ${r.className} {
+        let rep = ${prefix}Rep_raw(handle);
+        let value = ${table}[rep] as ${r.className};
+        ${table}[rep] = null;
+        ${prefix}Drop_raw(handle);
+        ${prefix}Free.push(rep);
+        return value;
+      }
       /** The destructor: the host calls it when the last handle over
        * the instance at rep is dropped, from whichever component held
        * it. The class is a Disposable, and this is its dispose. */
       export function ${prefix}__dtor(rep: i32): void {
-        let value = ${table}[rep] as ${r.className};
+        let value = ${table}[rep];
+        if (value == null) {
+          return;
+        }
         ${table}[rep] = null;
         ${prefix}Free.push(rep);
-        value.[Disposable.dispose]();
+        (value as ${r.className}).[Disposable.dispose]();
       }
       @external("canon", "resource.new#${r.qualified}#${r.witName}", "resource:${r.qualified}#${r.witName}")
       declare function ${prefix}New_raw(rep: i32): i32;
+      @external("canon", "resource.rep#${r.qualified}#${r.witName}", "resource:${r.qualified}#${r.witName}")
+      declare function ${prefix}Rep_raw(handle: i32): i32;
+      @external("canon", "resource.drop#${r.qualified}#${r.witName}", "resource:${r.qualified}#${r.witName}")
+      declare function ${prefix}Drop_raw(handle: i32): void;
     `);
     body.append("\n");
   }
@@ -3998,10 +4024,6 @@ function renderWrapperParams(target: ExportTarget, func: Func,
  * holds a borrowed handle, which a wrapper cannot hand to the program
  * without also owning its disposal. The reason, or the empty string. */
 function paramLiftBlocker(ty: Ty): String {
-  if (ty.kind == TyKind.ResourceH && ty.isProgram && !ty.isBorrow) {
-    return "an owned handle of the program's own resource cannot be " +
-        "lifted yet: it needs `resource.rep` and the handle's disposal";
-  }
   if (ty.kind == TyKind.ResourceH && ty.isBorrow && !ty.isProgram) {
     return "a borrowed handle inside an aggregate cannot be lifted yet";
   }

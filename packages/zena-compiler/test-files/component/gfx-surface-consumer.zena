@@ -3,7 +3,8 @@
 // imported resource gets — a WIT constructor is `static create`, a
 // borrowed parameter takes the class. 3*4 = 12 from `size`, 12 again
 // from the context's `area`, 12 from the second context, 64 from the
-// static, 0+1+2 frames, and 1 surface the provider saw dropped: 104.
+// static, 0+1+2 frames, 1 surface the provider saw dropped, and 2*3
+// from a surface handed over whole: 110.
 import { Surface, Context, openContext, FrameEvent } from 'test:gfx-surface/surface';
 import { Future } from 'zena:async';
 import { Some, Disposable } from 'zena:core';
@@ -32,5 +33,13 @@ export async function main(): Future<u32> {
   let spare = Surface.create(1 as u32, 1 as u32);
   spare.[Disposable.dispose]();
   total += Surface.disposed();
+  // Handing a surface over: the provider takes the instance back out
+  // of its table, and its destructor does not run for it (the count
+  // stays 1).
+  let given = Surface.create(2 as u32, 3 as u32);
+  total += Surface.adopt(given);
+  if (Surface.disposed() != (1 as u32)) {
+    return 0 as u32;
+  }
   return total;
 }
