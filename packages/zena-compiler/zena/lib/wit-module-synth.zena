@@ -2104,9 +2104,9 @@ let STREAM_CHUNK = 64;
  */
 function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
     interfaceName: String, uses: SynthUses): void {
-  let k = i32ToString(entry.index);
+  let k = `${entry.index}`;
   let element = entry.ty.children[0];
-  let canonType = "stream:" + interfaceName + "#" + entry.ty.witText;
+  let canonType = `stream:${interfaceName}#${entry.ty.witText}`;
   let z = zenaTypeOf(element, uses);
   uses.awaitWaitable = true;
   uses.error = true;
@@ -2121,12 +2121,8 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
   uses.useAbi("stageBuffer");
   let declare = (builtin: String, options: String, name: String,
       sig: String): void => {
-    sb.append("@external(\"canon\", \"").append(builtin).append("#")
-        .append(interfaceName).append(".").append(k)
-        .append("\", \"").append(canonType).append(options)
-        .append("\")\n");
-    sb.append("declare function ").append(name).append(k)
-        .append("_raw").append(sig).append(";\n");
+    sb.append(`@external("canon", "${builtin}#${interfaceName}.${k}", "${canonType}${options}")\n`);
+    sb.append(`declare function ${name}${k}_raw${sig};\n`);
   };
   declare("stream.new", "", "streamNew", "(): u64");
   declare("stream.read", ",async", "streamRead",
@@ -2138,85 +2134,79 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
   declare("stream.drop-writable", "", "streamDropWritable",
       "(end: i32): void");
 
-  // The lift: a writer whose stream is handed out at once, fed by a
-  // pump that reads the host's end a chunk at a time, lifts each
-  // element, and delivers with the writer's backpressure. The pump
-  // closes the stream when the host drops its writable end, and
-  // drops the readable end when the guest reader stops.
-  let size = i32ToString(element.size);
-  sb.append("function liftStream").append(k)
-      .append("(end: i32): Stream<").append(z).append("> {\n");
-  sb.append("  let writer = new StreamWriter<").append(z).append(">();\n");
-  sb.append("  pumpStreamIn").append(k).append("(end, writer);\n");
-  sb.append("  return writer.stream;\n}\n");
-  sb.append("async function pumpStreamIn").append(k)
-      .append("(end: i32, writer: StreamWriter<").append(z)
-      .append(">): Future<void> {\n");
-  sb.append("  var open = true;\n");
-  sb.append("  while (open) {\n");
-  sb.append("    let buf = resultArea(").append(i32ToString(STREAM_CHUNK))
-      .append(" * ").append(size).append(");\n");
-  sb.append("    var packed = streamRead").append(k)
-      .append("_raw(end, buf, ").append(i32ToString(STREAM_CHUNK))
-      .append(");\n");
-  sb.append("    if (packed == -1) {\n");
-  sb.append("      packed = await awaitWaitable(end);\n    }\n");
-  sb.append("    let n = packed >> 4;\n");
-  sb.append("    let completed = (packed & 15) == 0;\n");
-  sb.append("    if (n > 0) {\n");
-  sb.append("      let items = new GrowableArray<").append(z)
-      .append(">();\n");
-  sb.append("      for (var i = 0; i < n; i += 1) {\n");
-  sb.append("        items.push(")
-      .append(liftExprOf(element, "buf + i * " + size, uses))
-      .append(");\n      }\n");
-  sb.append("      let delivered = await writer.writeAll(")
-      .append("FixedArray.from(items), n);\n");
-  sb.append("      if (!delivered) {\n        open = false;\n      }\n");
-  sb.append("    } else if (completed) {\n");
-  sb.append("      freeLifted(buf);\n");
-  sb.append("      throw new Error('the stream read made no progress');\n");
-  sb.append("    }\n");
-  sb.append("    freeLifted(buf);\n");
-  sb.append("    if (!completed) {\n      open = false;\n    }\n");
-  sb.append("  }\n");
-  sb.append("  writer.close();\n");
-  sb.append("  streamDropReadable").append(k).append("_raw(end);\n");
-  sb.append("}\n");
+  let size = `${element.size}`;
+  let chunkSize = `${STREAM_CHUNK}`;
+  let elemExpr = liftExprOf(element, `buf + i * ${size}`, uses);
+  let lowerElemStmt = lowerMemStmts(element, "v", "buf", uses);
 
-  // The lower: a fresh pair, the readable end handed over as the
-  // value, and a pump that takes the guest stream's elements one at a
-  // time and writes each into the writable end, staged until the
-  // copy completes. A dropped host end stops the source.
-  sb.append("function lowerStream").append(k).append("(source: Stream<")
-      .append(z).append(">): i32 {\n");
-  sb.append("  let pair = streamNew").append(k).append("_raw();\n");
-  sb.append("  pumpStreamOut").append(k)
-      .append("(source, (pair >> 32) as i32);\n");
-  sb.append("  return pair as i32;\n}\n");
-  sb.append("async function pumpStreamOut").append(k)
-      .append("(source: Stream<").append(z)
-      .append(">, end: i32): Future<void> {\n");
-  sb.append("  var open = true;\n");
-  sb.append("  while (open) {\n");
-  sb.append("    let item = await source.readOne();\n");
-  sb.append("    if (!(item is Some<").append(z).append(">)) {\n");
-  sb.append("      open = false;\n    } else {\n");
-  sb.append("      let v = (item as Some<").append(z).append(">).value;\n");
-  sb.append("      let m0 = stagedMark();\n");
-  sb.append("      let buf = stageBuffer(").append(size).append(");\n");
-  emit(sb, "      ", lowerMemStmts(element, "v", "buf", uses));
+  emit(sb, "", zena`
+    function liftStream${k}(end: i32): Stream<${z}> {
+      let writer = new StreamWriter<${z}>();
+      pumpStreamIn${k}(end, writer);
+      return writer.stream;
+    }
+    async function pumpStreamIn${k}(end: i32, writer: StreamWriter<${z}>): Future<void> {
+      var open = true;
+      while (open) {
+        let buf = resultArea(${chunkSize} * ${size});
+        var packed = streamRead${k}_raw(end, buf, ${chunkSize});
+        if (packed == -1) {
+          packed = await awaitWaitable(end);
+        }
+        let n = packed >> 4;
+        let completed = (packed & 15) == 0;
+        if (n > 0) {
+          let items = new GrowableArray<${z}>();
+          for (var i = 0; i < n; i += 1) {
+            items.push(${elemExpr});
+          }
+          let delivered = await writer.writeAll(FixedArray.from(items), n);
+          if (!delivered) {
+            open = false;
+          }
+        } else if (completed) {
+          freeLifted(buf);
+          throw new Error('the stream read made no progress');
+        }
+        freeLifted(buf);
+        if (!completed) {
+          open = false;
+        }
+      }
+      writer.close();
+      streamDropReadable${k}_raw(end);
+    }
+    function lowerStream${k}(source: Stream<${z}>): i32 {
+      let pair = streamNew${k}_raw();
+      pumpStreamOut${k}(source, (pair >> 32) as i32);
+      return pair as i32;
+    }
+    async function pumpStreamOut${k}(source: Stream<${z}>, end: i32): Future<void> {
+      var open = true;
+      while (open) {
+        let item = await source.readOne();
+        if (!(item is Some<${z}>)) {
+          open = false;
+        } else {
+          let v = (item as Some<${z}>).value;
+          let m0 = stagedMark();
+          let buf = stageBuffer(${size});
+          ${lowerElemStmt}
+          var packed = streamWrite${k}_raw(end, buf, 1);
+          if (packed == -1) {
+            packed = await awaitWaitable(end);
+          }
+          releaseStagedFrom(m0);
+          if ((packed & 15) != 0) {
+            source.stop();
+            open = false;
+          }
+        }
+      }
+      streamDropWritable${k}_raw(end);
+    }
+  `);
   sb.append("\n");
-  sb.append("      var packed = streamWrite").append(k)
-      .append("_raw(end, buf, 1);\n");
-  sb.append("      if (packed == -1) {\n");
-  sb.append("        packed = await awaitWaitable(end);\n      }\n");
-  sb.append("      releaseStagedFrom(m0);\n");
-  sb.append("      if ((packed & 15) != 0) {\n");
-  sb.append("        source.stop();\n        open = false;\n      }\n");
-  sb.append("    }\n  }\n");
-  sb.append("  streamDropWritable").append(k).append("_raw(end);\n");
-  sb.append("}\n");
 }
 
 /**
