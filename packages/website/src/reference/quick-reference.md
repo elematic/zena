@@ -146,8 +146,8 @@ let s: String = 'hello'; // Explicit String type
 ## Primitive Types
 
 Zena's primitive types map directly to WebAssembly value types, with no boxing
-overhead. Integer and float literals default to `i32` and `f32` respectively;
-use `as` to convert to other numeric types.
+overhead. Integer literals default to `i32` and float literals to `f64`; a
+contextual type or an `as` cast selects another numeric type.
 
 | Type       | WASM Type       | Description                                          |
 | ---------- | --------------- | ---------------------------------------------------- |
@@ -157,8 +157,8 @@ use `as` to convert to other numeric types.
 | `u64`      | `i64`           | 64-bit unsigned (uses unsigned WASM operators)       |
 | `u8` `u16` | `i32`           | Narrow unsigned; promote to `u32` in any operation   |
 | `i8` `i16` | `i32`           | Narrow signed; promote to `i32` in any operation     |
-| `f32`      | `f32`           | 32-bit float (default for float literals)            |
-| `f64`      | `f64`           | 64-bit float                                         |
+| `f32`      | `f32`           | 32-bit float                                         |
+| `f64`      | `f64`           | 64-bit float (default for float literals)            |
 | `boolean`  | `i32`           | `true` or `false`                                    |
 | `v128`     | `v128`          | SIMD vector; no literals, operators or casts         |
 | `String`   | `(ref $String)` | Immutable Unicode string                             |

@@ -98,8 +98,8 @@ safety.
 
 - **`i32`**: 32-bit signed integer. This is the default type for integer
   literals. Operations like division and comparison use signed semantics.
-- **`i64`**: 64-bit signed integer. Used for large numbers. Constructed via
-  casting (e.g., `100 as i64`).
+- **`i64`**: 64-bit signed integer. Used for large numbers. Obtained from a
+  contextual type (e.g., `let n: i64 = 100;`) or a cast (`100 as i64`).
 - **`u32`**: 32-bit unsigned integer. Operations like division, modulo, and
   comparison use unsigned semantics. `i32` and `u32` cannot be mixed in
   operations without explicit casting using `as`.
@@ -111,10 +111,12 @@ safety.
   so a narrow type never survives arithmetic and storing a result back needs
   an explicit `as`. See
   [arithmetic-conversions.md](design/arithmetic-conversions.md).
-- **`f32`**: 32-bit floating-point number. This is the default type for
-  floating-point literals.
-- **`f64`**: 64-bit floating-point number. Constructed via casting (e.g., `1.0
-as f64`).
+- **`f32`**: 32-bit floating-point number. Obtained from a contextual type
+  (e.g., `let x: f32 = 1.5;`) or a cast (`1.5 as f32`).
+- **`f64`**: 64-bit floating-point number. This is the default type for
+  floating-point literals. See [Default literal
+  types](design/types.md#default-literal-types) for why the integer default is
+  32-bit while the float default is 64-bit.
 - **`boolean`**: Boolean value (`true` or `false`).
 - **`v128`**: A 128-bit WebAssembly SIMD vector. It has no literal syntax and
   no operators of its own: the bits carry no interpretation — the same vector
@@ -286,7 +288,7 @@ let z = 50 + x;         // Also works: 50 is inferred from x
 
 The inference is **bidirectional**: whichever operand is a literal gets its type
 from the non-literal operand. When both operands are literals, they default to
-`i32` (or `f32` for decimals).
+`i32` (or `f64` for decimals).
 
 **Variable Declarations**: Contextual typing applies here too — an annotation
 on a declaration supplies the literal's type:
@@ -346,14 +348,20 @@ specific WASM conversion instructions (e.g., `i64.extend_i32_s`,
 - `i32`/`u32` -> `i8`, `i16` (Truncate to the low bits, sign-extended, so
   `200 as i8` is `-56`)
 
-**Implicit Conversions**: Zena supports implicit conversion **only** between
-`i32` and `f32` in binary arithmetic operations.
+**Implicit Conversions**: in binary arithmetic and comparison, the narrower
+operand widens to the wider one, as long as both operands share a signedness.
 
-- `i32` + `f32` -> `f32` (The `i32` is promoted to `f32`)
-- `f32` + `i32` -> `f32`
+- anything + `f64` -> `f64`
+- `i32` + `f32` -> `f32` (the `i32` is promoted to `f32`)
+- `i32` + `i64` -> `i64` (any signed integer widens to `i64`)
+- `f32` + `i64` -> `f64` (an `i64` does not fit an `f32`'s 24-bit significand)
+- `u8`/`u16` promote to `u32` and `i8`/`i16` to `i32` before any operation, so
+  a narrow type never survives arithmetic
 
-All other mixed arithmetic (e.g., `i32` + `i64`, `f32` + `f64`) requires
-explicit casting.
+Mixing signed and unsigned integer types is an error at every width: `i32 + u32`
+does not compile, and neither does `u64 + i64`. Widening never loses a value;
+narrowing is always an explicit `as`. The complete tables are in
+[arithmetic-conversions.md](design/arithmetic-conversions.md).
 
 **Contextual typing through a cast**: a cast to a reference type gives its
 operand the target as a contextual type, so an empty array literal can take its
@@ -1645,7 +1653,7 @@ let usage = dedent`
 ### Unary Operators
 
 - `!` (Logical NOT) - Inverts a boolean value.
-- `-` (Negation) - Negates a numeric value (`i32` or `f32`).
+- `-` (Negation) - Negates a numeric value.
 
 Unary operators apply to primitives only: a class cannot overload them, so a
 type that needs negation names it (`value.neg()`). See [Unary

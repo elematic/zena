@@ -125,8 +125,63 @@ See [Strings Design](./strings.md) for details on string implementation.
 - **`i64`**: 64-bit signed integer. Essential for large numbers and memory
   addressing.
 - **`f32`**: 32-bit floating point.
-- **`f64`**: 64-bit floating point. Default for float literals (to match JS
-  precision).
+- **`f64`**: 64-bit floating point. Default for float literals.
+
+#### Default literal types
+
+An integer literal with no contextual type is `i32`; a literal containing a
+`.` is `f64` — the narrow width for integers and the wide one for floats. The
+two families differ in what the narrow choice risks: an `f32` silently loses
+digits in code that never mentions a float type, while an `i32` holds the
+indices, counts and lengths that unannotated integers are used for.
+
+**A float literal defaults wide because `f32` loses digits in ordinary code
+and `f64` costs little.** An `f32` has a 24-bit significand: about 7 decimal
+digits, and exact integers only up to 16,777,216. Code that never names a
+float type reaches past that routinely.
+
+- A total in cents stops being exact at $167,772.16.
+- A millisecond timestamp lands on a grid 131,072 ms wide, so the stored time
+  is up to a minute off — `1790000000000.0` as an `f32` is 27.6 seconds away
+  from the value written.
+- Accumulating `0.01` a million times gives 9865.22 instead of 10000.
+
+An `f64` has a 53-bit significand: every integer up to 2⁵³
+(9,007,199,254,740,992) and about 16 decimal digits. The extra 29 bits cost 4
+bytes per value in a field or array element, and half as many lanes per SIMD
+vector. On the 64-bit CPUs a wasm engine compiles for, scalar `f64`
+addition and multiplication run at the same rate as `f32`; division and square
+root are somewhat slower. Defaulting to `f32` would accept a silent loss of
+precision in common code to save an amount of time most programs cannot
+measure.
+
+**An integer literal defaults narrow because `i32` covers what unannotated
+integers are used for and `i64` costs without helping.** `i32` reaches
+2,147,483,647, which covers indices, lengths, counts and loop variables —
+`Array.length` is an `i32`, and a wasm GC array's length is a 32-bit value.
+The quantities that genuinely exceed the range — file sizes, nanosecond
+timestamps, hashes, 64-bit bit patterns — belong to code specific enough to
+name `i64` at the declaration. Defaulting to `i64` would double the storage of
+every integer field and array element for a range most programs never reach,
+and 64-bit division is slower than 32-bit even on a 64-bit host. On a 32-bit
+host an engine has to synthesize `i64` arithmetic from pairs of registers.
+
+Each default also agrees with JavaScript, which matters where Zena and JS
+share a program: `0.1` denotes the same value in both languages, and `i32` is
+the width JS bitwise operators already work in.
+
+Most languages carrying both widths chose this same pair — C and C++
+(`int`/`double`), Java (`int`/`double`), C# (`int`/`double`), Rust
+(`i32`/`f64`), Go (`int`/`float64` for untyped constants) and Swift
+(`Int`/`Double`). Zena's integer default stays 32 bits on every host, as
+Java's, C#'s and Rust's do; Go and Swift widen theirs to 64 bits on a 64-bit
+platform.
+
+Both defaults yield to context. A literal takes the type its surroundings ask
+for, so `let x: f32 = 1.5;` and `let n: i64 = 1;` need no cast, and a literal
+that does not fit its contextual type is an error. See
+[arithmetic-conversions.md](./arithmetic-conversions.md) for the promotion and
+range-check rules.
 
 ### Other Primitives
 

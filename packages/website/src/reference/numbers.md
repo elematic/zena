@@ -124,12 +124,38 @@ Zena supports IEEE 754 floating-point numbers in single and double precision:
 | `f32` | Single precision | 32-bit    | `f32`            |
 | `f64` | Double precision | 64-bit    | `f64`            |
 
-`f32` is the default floating-point type in Zena for literals without context:
+`f64` is the default floating-point type in Zena for literals without context:
 
 ```zena
-let pi = 3.14159; // Inferred as f32
-let precisePi: f64 = 3.141592653589793; // Typed as f64 via annotation
+let pi = 3.141592653589793; // Inferred as f64
+let ratio: f32 = 3.14159; // Typed as f32 via annotation
+let scaled = 1.5 as f32; // Or via a cast
 ```
+
+### Rationale for the default widths
+
+Integer literals default to the narrow width (`i32`) and float literals to the
+wide one (`f64`). The two families differ in what the narrow choice risks.
+
+An `f32` holds about 7 decimal digits and exact integers only up to
+16,777,216, which ordinary code passes without trying: a total in cents stops
+being exact at $167,772.16, and accumulating `0.01` a million times gives
+9865.22 instead of 10000. An `f64` holds about 16 digits and every integer up
+to 2⁵³. The extra precision costs 4 bytes per stored value and half as many
+lanes per SIMD vector, while scalar addition and multiplication run at the same
+rate as `f32` on the CPUs a WebAssembly engine targets.
+
+An `i32` reaches 2,147,483,647, which already covers the indices, lengths,
+counts and loop variables that unannotated integers hold — `Array.length` is
+an `i32`. Code handling values beyond that range, such as file sizes or
+nanosecond timestamps, is specific enough to name `i64` at the declaration.
+Defaulting to `i64` would double the storage of every integer field and array
+element for a range most programs never reach, and 64-bit division is slower
+than 32-bit.
+
+Both defaults yield to context, so `let x: f32 = 1.5;` and `let n: i64 = 1;`
+need no cast. Full rationale:
+[types.md](https://github.com/elematic/zena/blob/main/docs/design/types.md#default-literal-types).
 
 ### Division behavior
 
