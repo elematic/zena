@@ -15808,6 +15808,11 @@ let checkMethodBody = (
           DiagnosticCode.TypeMismatch,
           md.loc
         );
+      } else {
+        // The body's value is the return, adapted to the declared type
+        // the way a `return` statement's argument is.
+        checkAndRegisterInterfaceAdaptation(ctx, bodyExpr, bodyType,
+            effectiveReturnType);
       }
       ctx.exitOwnScope(bodyExpr as Node);
     }
@@ -20760,6 +20765,16 @@ let checkFunctionExpression = (
               loc
             );
           }
+        } else {
+          // The body's value is the return: it adapts to the declared
+          // type the way a `return` statement's argument does — an
+          // array literal returned as `Array<T>` packs into the
+          // interface here.
+          let instantiated = tryInstantiateGenericFunction(ctx, bodyType, retType);
+          if (instantiated != bodyType) {
+            ctx.setNodeType(bodyExpr, instantiated);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, bodyExpr, instantiated, retType);
         }
       } else {
         // Infer return type from expression body.

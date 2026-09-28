@@ -1475,9 +1475,10 @@ interface rather than two world-level functions. That is the better shape
 anyway, so this costs nothing today.
 
 **Returning an array literal from an arrow.** `let tree = (): Array<Node> =>
-[a, b];` fails with `zir unsupported: return requires conversion`. The literal
-has to be built at the call site, which is why `card.zena` has two node
-builders instead of one tree builder.
+[a, b];` failed with `zir unsupported: return requires conversion`, which is
+why `card.zena` has two node builders instead of one tree builder. _Fixed: an
+expression body's value now adapts to the declared return type the way a
+`return` statement's does (`array_literal_returned_as_array.zena`)._
 
 **Deferrable exports.** §7.4's deferred delivery is the host's doing, but a
 Zena component on either end has to tolerate it: an exported return-free
