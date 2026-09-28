@@ -2223,9 +2223,9 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
  */
 function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
     interfaceName: String, uses: SynthUses): void {
-  let k = i32ToString(entry.index);
+  let k = `${entry.index}`;
   let payload = entry.ty.children[0];
-  let canonType = "future:" + interfaceName + "#" + entry.ty.witText;
+  let canonType = `future:${interfaceName}#${entry.ty.witText}`;
   let z = futurePayloadZenaType(payload, uses);
   uses.awaitWaitable = true;
   uses.error = true;
@@ -2236,12 +2236,8 @@ function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
   uses.useAbi("stageBuffer");
   let declare = (builtin: String, options: String, name: String,
       sig: String): void => {
-    sb.append("@external(\"canon\", \"").append(builtin).append("#")
-        .append(interfaceName).append(".").append(k)
-        .append("\", \"").append(canonType).append(options)
-        .append("\")\n");
-    sb.append("declare function ").append(name).append(k)
-        .append("_raw").append(sig).append(";\n");
+    sb.append(`@external("canon", "${builtin}#${interfaceName}.${k}", "${canonType}${options}")\n`);
+    sb.append(`declare function ${name}${k}_raw${sig};\n`);
   };
   declare("future.new", "", "futureNew", "(): u64");
   declare("future.read", ",async", "futureRead",
@@ -2263,28 +2259,13 @@ function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
   // value arrived, and a peer that dropped its end without writing
   // fails the future with a throw.
   uses.deferred = true;
-  sb.append("function liftFuture").append(k)
-      .append("(end: i32): Future<").append(z).append("> {\n");
-  sb.append("  return new DeferredFuture<").append(z)
-      .append(">((): Future<").append(z).append("> => readFuture")
-      .append(k).append("(end));\n}\n");
-  sb.append("async function readFuture").append(k)
-      .append("(end: i32): Future<").append(z).append("> {\n");
-  sb.append("  let ret = resultArea(")
-      .append(i32ToString(payload.size)).append(");\n");
-  sb.append("  var packed = futureRead").append(k)
-      .append("_raw(end, ret);\n");
-  sb.append("  if (packed == -1) {\n");
-  sb.append("    packed = await awaitWaitable(end);\n  }\n");
-  sb.append("  futureDropReadable").append(k).append("_raw(end);\n");
-  sb.append("  if ((packed & 15) != 0) {\n");
-  sb.append("    freeLifted(ret);\n");
-  sb.append("    throw new Error(")
-      .append("'the future was dropped without a value');\n  }\n");
+  let payloadSize = `${payload.size}`;
+
+  var readPayload = zena``;
   if (payload.kind == TyKind.ResultT) {
     let okZ = zenaTypeOf(payload.children[0], uses);
     let errZ = zenaTypeOf(payload.children[1], uses);
-    let payoff = payloadOffset(payload);
+    let payoff = `${payloadOffset(payload)}`;
     var okExpr = "ok";
     var errExpr = "err";
     if (isVoid(payload.children[0])) {
@@ -2295,60 +2276,82 @@ function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
       uses.unit = true;
       errExpr = "witUnit()";
     }
-    sb.append("  if (").append(discLoad(1, "ret", uses))
-        .append(" == 0) {\n");
+    let disc = discLoad(1, "ret", uses);
+    var okArm = zena`
+      freeLifted(ret);
+      return new Ok<${okZ}, ${errZ}>(${okExpr});
+    `;
     if (okExpr == "ok") {
-      sb.append("    let ok = ")
-          .append(liftExprOf(payload.children[0],
-              "ret + " + i32ToString(payoff), uses))
-          .append(";\n");
+      okArm = zena`
+        let ok = ${liftExprOf(payload.children[0], `ret + ${payoff}`, uses)};
+        freeLifted(ret);
+        return new Ok<${okZ}, ${errZ}>(${okExpr});
+      `;
     }
-    sb.append("    freeLifted(ret);\n");
-    sb.append("    return new Ok<").append(okZ).append(", ")
-        .append(errZ).append(">(").append(okExpr).append(");\n  }\n");
+    var errArm = zena`
+      freeLifted(ret);
+      return new Err<${okZ}, ${errZ}>(${errExpr});
+    `;
     if (errExpr == "err") {
-      sb.append("  let err = ")
-          .append(liftExprOf(payload.children[1],
-              "ret + " + i32ToString(payoff), uses))
-          .append(";\n");
+      errArm = zena`
+        let err = ${liftExprOf(payload.children[1], `ret + ${payoff}`, uses)};
+        freeLifted(ret);
+        return new Err<${okZ}, ${errZ}>(${errExpr});
+      `;
     }
-    sb.append("  freeLifted(ret);\n");
-    sb.append("  return new Err<").append(okZ).append(", ")
-        .append(errZ).append(">(").append(errExpr).append(");\n");
+    readPayload = zena`
+      if (${disc} == 0) {
+        ${okArm}
+      }
+      ${errArm}
+    `;
   } else {
-    sb.append("  let out = ")
-        .append(liftExprOf(payload, "ret", uses)).append(";\n");
-    sb.append("  freeLifted(ret);\n");
-    sb.append("  return out;\n");
+    let out = liftExprOf(payload, "ret", uses);
+    readPayload = zena`
+      let out = ${out};
+      freeLifted(ret);
+      return out;
+    `;
   }
-  sb.append("}\n");
 
-  // The lower: a fresh pair, the readable end handed over as the
-  // value, and a pump that writes the guest future's value once it
-  // settles. The staging range spans the write's await — the callee
-  // lifts the payload when the copy completes, not before.
-  sb.append("function lowerFuture").append(k).append("(value: Future<")
-      .append(z).append(">): i32 {\n");
-  sb.append("  let pair = futureNew").append(k).append("_raw();\n");
-  sb.append("  pumpFuture").append(k)
-      .append("(value, (pair >> 32) as i32);\n");
-  sb.append("  return pair as i32;\n}\n");
-  sb.append("async function pumpFuture").append(k)
-      .append("(value: Future<").append(z)
-      .append(">, end: i32): Future<void> {\n");
-  sb.append("  let v = await value;\n");
-  sb.append("  let m0 = stagedMark();\n");
-  sb.append("  let buf = stageBuffer(")
-      .append(i32ToString(payload.size)).append(");\n");
-  emit(sb, "  ", lowerMemStmts(payload, "v", "buf", uses));
+  let lowerPayloadStmt = lowerMemStmts(payload, "v", "buf", uses);
+
+  emit(sb, "", zena`
+    function liftFuture${k}(end: i32): Future<${z}> {
+      return new DeferredFuture<${z}>((): Future<${z}> => readFuture${k}(end));
+    }
+    async function readFuture${k}(end: i32): Future<${z}> {
+      let ret = resultArea(${payloadSize});
+      var packed = futureRead${k}_raw(end, ret);
+      if (packed == -1) {
+        packed = await awaitWaitable(end);
+      }
+      futureDropReadable${k}_raw(end);
+      if ((packed & 15) != 0) {
+        freeLifted(ret);
+        throw new Error('the future was dropped without a value');
+      }
+      ${readPayload}
+    }
+    function lowerFuture${k}(value: Future<${z}>): i32 {
+      let pair = futureNew${k}_raw();
+      pumpFuture${k}(value, (pair >> 32) as i32);
+      return pair as i32;
+    }
+    async function pumpFuture${k}(value: Future<${z}>, end: i32): Future<void> {
+      let v = await value;
+      let m0 = stagedMark();
+      let buf = stageBuffer(${payloadSize});
+      ${lowerPayloadStmt}
+      var packed = futureWrite${k}_raw(end, buf);
+      if (packed == -1) {
+        packed = await awaitWaitable(end);
+      }
+      releaseStagedFrom(m0);
+      futureDropWritable${k}_raw(end);
+    }
+  `);
   sb.append("\n");
-  sb.append("  var packed = futureWrite").append(k)
-      .append("_raw(end, buf);\n");
-  sb.append("  if (packed == -1) {\n");
-  sb.append("    packed = await awaitWaitable(end);\n  }\n");
-  sb.append("  releaseStagedFrom(m0);\n");
-  sb.append("  futureDropWritable").append(k).append("_raw(end);\n");
-  sb.append("}\n");
 }
 
 /**
