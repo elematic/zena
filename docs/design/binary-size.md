@@ -1494,7 +1494,7 @@ different place. Prerequisite for 1 and everything after it.
 
 ## The ratchet
 
-`zena/test/binary-size_test.zena` holds three fixtures to absolute
+`zena/test/binary-size_test.zena` holds four fixtures to absolute
 byte budgets, to be moved DOWN only:
 
 | fixture                        | what it adds                                                                                   | bytes | budget |
@@ -1502,6 +1502,17 @@ byte budgets, to be moved DOWN only:
 | `test-files/minimal.zena`      | `return 42` — no strings, no allocation, no calls                                              |    37 |     37 |
 | `test-files/array-sum.zena`    | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) |   119 |    130 |
 | `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports                     |   399 |    420 |
+| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime | 7,810 | 8,000 |
+
+The first three are `freestanding` core modules. The fourth is a
+component, because the event loop exists only there. It held 22,839
+bytes while the event loop kept three hash maps from the host's handle
+numbers to the task and completer each handle was owed: each map was a
+separate instantiation, and each came with every method a map has,
+since building a class's method table reaches all of its methods. One
+array indexed by handle replaced them. Most of what remains is the
+`Future` code, emitted once for `void` and once for `i32`, and string
+code for error messages.
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the other two. A budget left

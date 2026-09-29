@@ -211,6 +211,13 @@ let helloTarget = 'packages/zena-compiler/test-files/hello-string.zena';
 let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zena';
 
 /**
+ * An async `main` with an empty body, built as a component: nothing of
+ * its own, so its size is what the event loop in `zena:wasi` and the
+ * async runtime cost every program that awaits.
+ */
+let asyncNoopTarget = 'packages/zena-compiler/test-files/component/async-noop.zena';
+
+/**
  * Ratchet these down as reachability improves. Do not raise one
  * without recording why in docs/design/binary-size.md — the number
  * moving up is the signal this test exists to give.
@@ -218,6 +225,7 @@ let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zen
 let budget = 37;
 let arrayBudget = 110;
 let helloBudget = 400;
+let asyncNoopBudget = 8000;
 
 export let tests = suite('Binary size', (): void => {
   test('a minimal program stays within its byte budget', (ctx: TestContext): void => {
@@ -242,6 +250,21 @@ export let tests = suite('Binary size', (): void => {
       `${helloTarget} compiles to ${i32ToString(bytes.length)} bytes, over the ` +
       `${i32ToString(helloBudget)}-byte budget. Instantiating String is ` +
       `reaching more than a program with one literal uses — see ` +
+      `docs/design/binary-size.md.`);
+  });
+
+  test('an async main that does nothing stays within its byte budget', (ctx: TestContext): void => {
+    // The whole component, wrapper included. The event loop used to
+    // keep three hash maps from the host's handle numbers to what each
+    // handle was owed, and each map came with every method a map has:
+    // 22,839 bytes, about 60% of it map code. One array indexed by
+    // handle does the same job.
+    let bytes = compileComponent(asyncNoopTarget, 'component');
+    isTrue(bytes.length <= asyncNoopBudget,
+      `${asyncNoopTarget} compiles to ${i32ToString(bytes.length)} bytes, ` +
+      `over the ${i32ToString(asyncNoopBudget)}-byte budget. The event ` +
+      `loop in zena:wasi (wasi/async.zena) or the async runtime under it ` +
+      `is carrying more than a program that awaits needs — see ` +
       `docs/design/binary-size.md.`);
   });
 

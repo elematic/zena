@@ -1041,12 +1041,15 @@ wait for the host only once something in the program uses `blockOn`;
 otherwise a future still waiting on the host is reported as a deadlock.
 An `async main` that awaits is the way to write that program.
 
-The event loop is not small. An `async main` with an empty body
-(`packages/zena-compiler/test-files/component/async-noop.zena`) has a
-22,546-byte core module, and about 60% of its code is three hash maps
-from the host's handle numbers to the waiting task and completers, each
-emitted in full. Replacing them with one array indexed by handle is
-follow-up work.
+An `async main` with an empty body
+(`packages/zena-compiler/test-files/component/async-noop.zena`) is a
+7,810-byte component. The event loop records what each in-flight
+handle is owed — the task waiting on it and the completer its event
+resolves — in one array indexed by handle; the host hands out handles
+as small integers and reuses them, so the array stays short. It used
+three hash maps until 2026-09-29, and the component was 22,839 bytes,
+about 60% of it map code. `binary-size_test.zena` holds it to a budget
+("The ratchet" in binary-size.md).
 
 ### What it costs in the compiler
 

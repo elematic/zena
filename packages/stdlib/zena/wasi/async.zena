@@ -31,7 +31,6 @@
  * resolves this module.
  */
 
-import { Set } from 'zena:collections';
 import {
   Completer, Parker, drainMicrotasks, setBlockingParker
 } from 'zena:async';
@@ -227,19 +226,33 @@ final class TaskContext {
  */
 var currentTask: TaskContext | null = null;
 
-/** Which task each in-flight waitable was joined for, by handle. */
-let owners = new Map<Waitable, TaskContext>();
-
-/** In-flight subtasks, each owed one completion. */
-let pending = new Map<Waitable, Completer<void>>();
+/**
+ * What one in-flight waitable is owed: the task it was joined for, and
+ * the completer its event resolves. A subtask's completes when the
+ * call returns; a stream or future copy's completes with the packed
+ * payload of its one event. Exactly one of the two is set.
+ */
+final class Wait {
+  owner: TaskContext;
+  subtask: Completer<void> | null;
+  copy: Completer<i32> | null;
+  new(this.owner, this.subtask, this.copy);
+}
 
 /**
- * In-flight stream and future copies, by end handle, each owed one
- * event whose packed payload resolves the future. Read ends and write
- * ends are distinct handle indices, and an end has at most one copy
- * in flight, so the handle is the whole key.
+ * The in-flight waitables, indexed by handle. A handle is the index of
+ * an entry in this instance's handle table, which the host allocates
+ * from small integers and reuses once a handle is dropped, so an array
+ * stays short. Read ends and write ends are distinct handles, and an
+ * end has at most one copy in flight, so the handle is the whole key.
  */
-let pendingCopies = new Map<Waitable, Completer<i32>>();
+let waits = new Array<Wait | null>();
+
+/** The wait recorded for `waitable`, or null. */
+let waitFor = (waitable: Waitable): Wait | null => {
+  let i = waitable as i32;
+  return if (i < waits.length) waits[i] else null;
+};
 
 /**
  * Start a task. Called by the synthesized adapter at the top of every
@@ -332,30 +345,33 @@ let ensureSet = (ctx: TaskContext): WaitableSet => {
   return ctx.waitableSet;
 };
 
-/** Join `waitable` to `ctx`'s set and record that `ctx` is waiting on
- * it — from whichever task is running: a set is the instance's, and
- * any task may put a waitable into any set. */
-let registerFor = (ctx: TaskContext, waitable: Waitable): void => {
+/** Join `waitable` to `ctx`'s set and record what it is owed — from
+ * whichever task is running: a set is the instance's, and any task may
+ * put a waitable into any set. */
+let registerFor = (
+  ctx: TaskContext,
+  waitable: Waitable,
+  subtask: Completer<void> | null,
+  copy: Completer<i32> | null
+): void => {
   waitableJoin(waitable, ensureSet(ctx));
-  owners[waitable] = ctx;
+  let i = waitable as i32;
+  while (waits.length <= i) {
+    waits.push(null);
+  }
+  waits[i] = new Wait(ctx, subtask, copy);
   ctx.pendingWaitables += 1;
 };
 
-/** Join `waitable` to the running task's set and record that the
- * task is waiting on it. */
-let register = (waitable: Waitable): void => {
-  registerFor(currentContext(), waitable);
-};
-
-/** Look up which task was waiting on `waitable`, forget the
- * waitable, and count it off that task. Null if none was. */
-let release = (waitable: Waitable): TaskContext | null => {
-  if (let (true, ctx) = owners.get(waitable)) {
-    owners.delete(waitable);
-    ctx.pendingWaitables -= 1;
-    return ctx;
+/** Forget the wait recorded for `waitable` and count it off the task
+ * that was waiting. Null if nothing was. */
+let release = (waitable: Waitable): Wait | null => {
+  let wait = waitFor(waitable);
+  if (wait != null) {
+    waits[waitable as i32] = null;
+    wait.owner.pendingWaitables -= 1;
   }
-  return null;
+  return wait;
 };
 
 /**
@@ -377,8 +393,7 @@ export function awaitPacked(packed: i32): Future<void> {
     return completer.future;
   }
   let subtask = (packed >> 4) as Waitable;
-  register(subtask);
-  pending[subtask] = completer;
+  registerFor(currentContext(), subtask, completer, null);
   return completer.future;
 }
 
@@ -391,9 +406,7 @@ export function awaitPacked(packed: i32): Future<void> {
  */
 export function awaitWaitable(end: i32): Future<i32> {
   let completer = new Completer<i32>();
-  let waitable = end as Waitable;
-  register(waitable);
-  pendingCopies[waitable] = completer;
+  registerFor(currentContext(), end as Waitable, null, completer);
   return completer.future;
 }
 
@@ -416,8 +429,7 @@ let armWake = (ctx: TaskContext): void => {
   if (wakeFutureRead(readable, 0) != -1) {
     throw new Error("a wake future was readable before it was written");
   }
-  registerFor(ctx, readable as Waitable);
-  pendingCopies[readable as Waitable] = new Completer<i32>();
+  registerFor(ctx, readable as Waitable, null, new Completer<i32>());
 };
 
 /**
@@ -586,8 +598,9 @@ export function componentResume(
   if (event == EVENT_SUBTASK && code != STATE_RETURNED) {
     // Started, not returned: nothing to resolve, keep waiting.
     var set = currentContext().waitableSet;
-    if (let (true, known) = owners.get(waitable)) {
-      set = known.waitableSet;
+    let known = waitFor(waitable);
+    if (known != null) {
+      set = known.owner.waitableSet;
     }
     return waitOn(set);
   }
@@ -608,23 +621,23 @@ export function componentResume(
  * the whole of a `blockOn` turn.
  */
 let dispatchEvent = (event: i32, waitable: Waitable, code: i32): TaskContext => {
-  let released = release(waitable);
-  let ctx = if (released != null) released else currentContext();
+  let wait = release(waitable);
+  let ctx = if (wait != null) wait.owner else currentContext();
   currentTask = ctx;
-  if (event == EVENT_SUBTASK) {
-    if (let (true, completer) = pending.get(waitable)) {
-      pending.delete(waitable);
+  if (wait != null) {
+    let subtask = wait.subtask;
+    let copy = wait.copy;
+    if (event == EVENT_SUBTASK && subtask != null) {
       subtaskDrop(waitable);
-      completer.complete();
+      subtask.complete();
+    } else if (event != EVENT_SUBTASK && copy != null) {
+      // A join is persistent: the end would stay in the set after its
+      // event, and a set dropped at exit with members still in it
+      // traps. The end leaves the set with its event; the next copy
+      // that blocks joins it again.
+      waitableJoin(waitable, 0 as WaitableSet);
+      copy.complete(code);
     }
-  } else if (let (true, completer) = pendingCopies.get(waitable)) {
-    pendingCopies.delete(waitable);
-    // A join is persistent: the end would stay in the set after its
-    // event, and a set dropped at exit with members still in it
-    // traps. The end leaves the set with its event; the next copy
-    // that blocks joins it again.
-    waitableJoin(waitable, 0 as WaitableSet);
-    completer.complete(code);
   }
   drainMicrotasks();
   return ctx;
