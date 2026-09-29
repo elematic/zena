@@ -417,7 +417,7 @@ WebAssembly.
 
 The rise of AI coding agents does not make programming language design obsolete;
 it elevates the importance of sound design choices. When software generation
-accelerates, the quality of our programming languages matter *more*, even as the
+accelerates, the quality of our programming languages matter _more_, even as the
 bottleneck shifts to verification, sandboxing, and long-term maintainability.
 
 A programming language suited for this era provides:

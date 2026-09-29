@@ -497,7 +497,7 @@ async func()` is the entry itself — the wrapper synthesizer skips
     `Disposable`, the way the handle class a consumer gets is, and
     its `dispose` is what the destructor means (a class that is not
     one fails the wrapper's type check, since a runtime `is
-    Disposable` on an unknown class has no lowering). The
+Disposable` on an unknown class has no lowering). The
     `gfx-surface` consumer drops a spare handle and reads back the
     count the provider's `dispose` kept.
 15. An own of the program's resource arriving as a parameter: the
