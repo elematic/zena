@@ -202,6 +202,43 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
+  test('FreeListAllocator frees an aligned block', (ctx: TestContext): void => {
+    let mem = Memory.default;
+
+    // A private allocator over a 64-aligned region, so the addresses are
+    // known: the 8-byte block below puts the next fresh block at
+    // `base + 24`, which is not 64-aligned.
+    if (let (true, region) = defaultAllocator.alloc(1024 + 64)) {
+      let base = (region + 63) & (63 ^ -1);
+      let alloc = new FreeListAllocator(base);
+      if (let (true, pad) = alloc.alloc(8)) {
+        equal(pad, base + 8);
+      }
+      if (let (true, p1) = alloc.allocAligned(24, 64)) {
+        equal(p1, base + 64);
+        mem.setI32(p1, 1);
+        mem.setI32(p1 + 20, 2);
+        equal(mem.getI32(p1), 1);
+        equal(mem.getI32(p1 + 20), 2);
+
+        // The aligned pointer has a header of its own, so freeing it puts
+        // it back on the free list, where the next allocation that fits
+        // finds it.
+        alloc.free(p1);
+        if (let (true, p2) = alloc.alloc(24)) {
+          equal(p2, p1);
+        }
+
+        // The 40 bytes skipped to reach the aligned address went onto the
+        // free list as a block of their own, with room for 32 bytes.
+        if (let (true, p3) = alloc.alloc(32)) {
+          equal(p3, base + 24);
+        }
+      }
+      defaultAllocator.free(region);
+    }
+  });
+
   // =========================================================================
   // Allocator interface polymorphism
   // =========================================================================

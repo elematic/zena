@@ -244,17 +244,36 @@ export final class FreeListAllocator implements Allocator {
     return (true, ptr + 8);
   }
 
-  /** Allocate with alignment. */
+  /**
+   * Allocate `bytes` bytes at an address that is a multiple of `align`,
+   * a power of two.
+   *
+   * Every block is already 8-aligned. For a larger alignment this takes
+   * a block with room to spare and moves the address forward to an
+   * aligned one at least 16 bytes in, then writes a header in front of
+   * the new address describing the rest of the block. The part skipped
+   * over keeps the original header, shrunk to fit, and goes onto the
+   * free list. Both halves are ordinary blocks, so `free` takes the
+   * aligned pointer like any other.
+   */
   allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, _) {
-    // For simplicity, allocate extra and align within
-    // This wastes some space but keeps the implementation simple
-    if (let (true, ptr) = this.alloc(bytes + align - 1)) {
+    if (align <= 8) {
+      return this.alloc(bytes);
+    }
+    if (let (true, ptr) = this.alloc(bytes + align + 8)) {
       let mask = align - 1;
-      let aligned = (ptr + mask) & (mask ^ -1);
-      
-      // Note: this wastes the unaligned prefix, but free() still works
-      // because we track the original pointer in a more sophisticated impl.
-      // For now, accept the waste.
+      if ((ptr & mask) == 0) {
+        return (true, ptr);
+      }
+      let mem = Memory.default;
+      // Moving at least 16 bytes leaves the front part room for its own
+      // header and the 8 bytes a free block needs. The move is at most
+      // `align + 8`, which the extra requested above covers.
+      let aligned = (ptr + 16 + mask) & (mask ^ -1);
+      let gap = aligned - ptr;
+      mem.setI32(aligned - 8, mem.getI32(ptr - 8) - gap);
+      mem.setI32(ptr - 8, gap - 8);
+      this.free(ptr);
       return (true, aligned);
     } else {
       return (false, _);

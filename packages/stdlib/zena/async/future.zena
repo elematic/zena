@@ -90,6 +90,21 @@ export enum FutureState {
   Cancelled = 3,
 }
 
+/**
+ * The errors a future's own methods throw, built here once: written
+ * inline, every specialization of `Future` carried its own copy of each
+ * message and construction. The deadlock message is one literal
+ * because joining two literals with `+` is a call at run time, and it
+ * brought string concatenation into every program that awaits.
+ */
+function deadlock(): Error {
+  return new Error('Deadlock: the microtask queue is empty but this future is still pending, and no external completion source exists');
+}
+
+function alreadyCompleted(): Error {
+  return new Error('Future already completed');
+}
+
 // ---------------------------------------------------------------------------
 // Future / Completer
 // ---------------------------------------------------------------------------
@@ -155,9 +170,7 @@ export class Future<T> {
       raiseCancellation();
     }
     if (this.#state == FutureState.Pending) {
-      throw new Error(
-        'Deadlock: the microtask queue is empty but this future is ' +
-        'still pending, and no external completion source exists');
+      throw deadlock();
     }
     let stored = this.#value as Box<T>;
     return (true, stored.value, _);
@@ -261,9 +274,7 @@ export class Future<T> {
       raiseCancellation();
     }
     if (this.#state == FutureState.Pending) {
-      throw new Error(
-        'Deadlock: the microtask queue is empty but this future is ' +
-        'still pending, and no external completion source exists');
+      throw deadlock();
     }
     let stored = this.#value as Box<T>;
     return stored.value;
@@ -272,7 +283,7 @@ export class Future<T> {
   /** Settles this future with a value. Throws if already settled. */
   [complete](value: T): void {
     if (!this.[tryComplete](value)) {
-      throw new Error('Future already completed');
+      throw alreadyCompleted();
     }
   }
 
@@ -293,7 +304,7 @@ export class Future<T> {
   /** Settles this future with a failure. Throws if already settled. */
   [fail](error: Error): void {
     if (!this.[tryFail](error)) {
-      throw new Error('Future already completed');
+      throw alreadyCompleted();
     }
   }
 
@@ -321,7 +332,7 @@ export class Future<T> {
    */
   [cancelComplete](): void {
     if (!(this.#state == FutureState.Pending)) {
-      throw new Error('Future already completed');
+      throw alreadyCompleted();
     }
     this.#state = FutureState.Cancelled;
     this.#notify();
@@ -338,7 +349,7 @@ export class Future<T> {
    */
   [adoptFrom](src: Future<T>): void {
     if (!(this.#state == FutureState.Pending)) {
-      throw new Error('Future already completed');
+      throw alreadyCompleted();
     }
     if (!(src.#state == FutureState.Pending)) {
       this.#copySettle(src);

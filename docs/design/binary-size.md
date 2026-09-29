@@ -1494,7 +1494,7 @@ different place. Prerequisite for 1 and everything after it.
 
 ## The ratchet
 
-`zena/test/binary-size_test.zena` holds four fixtures to absolute
+`zena/test/binary-size_test.zena` holds five fixtures to absolute
 byte budgets, to be moved DOWN only:
 
 | fixture                        | what it adds                                                                                   | bytes | budget |
@@ -1502,17 +1502,42 @@ byte budgets, to be moved DOWN only:
 | `test-files/minimal.zena`      | `return 42` — no strings, no allocation, no calls                                              |    37 |     37 |
 | `test-files/array-sum.zena`    | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) |   119 |    130 |
 | `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports                     |   399 |    420 |
-| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime | 7,810 | 8,000 |
+| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime | 6,356 | 6,500 |
+| `test-files/component/print.zena` | three lines written to stdout and stderr, as a whole component: stdio, and the runtime memory module's allocator | 10,113 | 10,500 |
 
-The first three are `freestanding` core modules. The fourth is a
-component, because the event loop exists only there. It held 22,839
-bytes while the event loop kept three hash maps from the host's handle
-numbers to the task and completer each handle was owed: each map was a
-separate instantiation, and each came with every method a map has,
-since building a class's method table reaches all of its methods. One
-array indexed by handle replaced them. Most of what remains is the
-`Future` code, emitted once for `void` and once for `i32`, and string
-code for error messages.
+The first three are `freestanding` core modules. The last two are
+components, because the event loop exists only there.
+
+`async-noop.zena` held 22,839 bytes while the event loop kept three
+hash maps from the host's handle numbers to the task and completer each
+handle was owed: each map was a separate instantiation, and each came
+with every method a map has, since building a class's method table
+reaches all of its methods. One array indexed by handle replaced them,
+which brought it to 7,810. Three smaller changes took it to 6,356:
+
+- The deadlock message was built with `+` from two literals, which
+  kept String concatenation; it is one literal now.
+- Registering the wake future's read created a `Completer<i32>` that
+  nothing ever looked at, and a completed copy's payload went to a
+  `Completer<i32>` stored in the event loop's table. The first is gone,
+  and the second is a function the table holds, so `Future<i32>` and
+  `Completer<i32>` are only emitted by a program that awaits a copy.
+- The two `Future` error messages are built by top-level functions,
+  one copy each, instead of once per `Future` instantiation.
+
+Most of what remains is `Future<void>`, whose methods are all in its
+method table, and String's `==` and `hashCode`, for the same reason.
+Leaving uncalled methods out is compiler work, tracked in #686.
+
+`print.zena` held 16,763 bytes while the program's allocator kept a
+`Map<i32, i32>` from each over-aligned pointer it handed out back to
+the block it came from, so that `free` could find the block. Nothing in
+the program asks for more than 8-byte alignment, but the map was built
+when the allocator was, and it brought every method a map has.
+`FreeListAllocator.allocAligned` now writes a header in front of the
+aligned address, so an aligned block frees like any other, and the
+runtime memory module's `realloc` honors the alignment it is given. The
+program's allocator passes the alignment through and keeps no table.
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the other two. A budget left

@@ -47,12 +47,10 @@ export symbol markMoved;
  * plus an alignment: `ptr == 0` allocates, `newSize == 0` frees, and
  * anything else moves.
  *
- * `align` is not passed on to the allocator. `FreeListAllocator` puts
- * an 8-byte header in front of every block and rounds every size up to
- * 8, so the pointers it hands out are already 8-aligned, and the
- * canonical ABI never asks for more than 8. Going through
- * `allocAligned` instead would align a pointer *inside* a block and
- * return that, which `free` cannot then look up.
+ * Every block is 8-aligned, and the canonical ABI never asks for more,
+ * so `align` only matters to the program's own allocator: an
+ * `allocAligned` call in the program module arrives here as a larger
+ * `align`, and the block has to be freeable by the pointer returned.
  *
  * Exhaustion throws, and this is the one function in the language the
  * host calls with no Zena frame above it — lowering an argument happens
@@ -75,7 +73,7 @@ export function realloc(
     // failure. `align` is a power of two, so it is aligned to itself.
     return align;
   }
-  if (let (true, fresh) = defaultAllocator.alloc(newSize)) {
+  if (let (true, fresh) = defaultAllocator.allocAligned(newSize, align)) {
     if (ptr != 0) {
       var copied = oldSize;
       if (newSize < copied) {

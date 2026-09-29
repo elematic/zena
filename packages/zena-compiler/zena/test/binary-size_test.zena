@@ -218,6 +218,13 @@ let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zen
 let asyncNoopTarget = 'packages/zena-compiler/test-files/component/async-noop.zena';
 
 /**
+ * A component that writes three lines to stdout and stderr: the first
+ * program most people build, and the smallest that allocates linear
+ * memory through the runtime memory module.
+ */
+let printTarget = 'packages/zena-compiler/test-files/component/print.zena';
+
+/**
  * Ratchet these down as reachability improves. Do not raise one
  * without recording why in docs/design/binary-size.md — the number
  * moving up is the signal this test exists to give.
@@ -225,7 +232,8 @@ let asyncNoopTarget = 'packages/zena-compiler/test-files/component/async-noop.ze
 let budget = 37;
 let arrayBudget = 110;
 let helloBudget = 400;
-let asyncNoopBudget = 8000;
+let asyncNoopBudget = 6500;
+let printBudget = 10500;
 
 export let tests = suite('Binary size', (): void => {
   test('a minimal program stays within its byte budget', (ctx: TestContext): void => {
@@ -266,6 +274,20 @@ export let tests = suite('Binary size', (): void => {
       `loop in zena:wasi (wasi/async.zena) or the async runtime under it ` +
       `is carrying more than a program that awaits needs — see ` +
       `docs/design/binary-size.md.`);
+  });
+
+  test('a component that prints stays within its byte budget', (ctx: TestContext): void => {
+    // The allocator this program's linear memory goes through used to
+    // keep a hash map from over-aligned pointers to their blocks, and
+    // the map brought every method a map has: 16,763 bytes. The
+    // runtime module's allocator now frees an aligned block by the
+    // pointer it handed out, so there is nothing to look up.
+    let bytes = compileComponent(printTarget, 'component');
+    isTrue(bytes.length <= printBudget,
+      `${printTarget} compiles to ${i32ToString(bytes.length)} bytes, ` +
+      `over the ${i32ToString(printBudget)}-byte budget. Writing to ` +
+      `stdio, or the allocator under it, is carrying more than a program ` +
+      `that prints needs — see docs/design/binary-size.md.`);
   });
 
   test('a for-in over an array ships no iterator machinery', (ctx: TestContext): void => {

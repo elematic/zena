@@ -230,12 +230,19 @@ var currentTask: TaskContext | null = null;
  * What one in-flight waitable is owed: the task it was joined for, and
  * the completer its event resolves. A subtask's completes when the
  * call returns; a stream or future copy's completes with the packed
- * payload of its one event. Exactly one of the two is set.
+ * payload of its one event. At most one of the two is set: the wake
+ * future's read (`armWake`) resolves nothing, since the event itself,
+ * re-entering the task, is all it is for.
  */
 final class Wait {
   owner: TaskContext;
   subtask: Completer<void> | null;
-  copy: Completer<i32> | null;
+  /**
+   * Hands a copy's packed payload to whoever awaits it. It is a function
+   * so that `dispatchEvent` names no `Completer<i32>`, and a program that
+   * never copies a stream or future carries none of that code.
+   */
+  copy: ((payload: i32) => void) | null;
   new(this.owner, this.subtask, this.copy);
 }
 
@@ -352,7 +359,7 @@ let registerFor = (
   ctx: TaskContext,
   waitable: Waitable,
   subtask: Completer<void> | null,
-  copy: Completer<i32> | null
+  copy: ((payload: i32) => void) | null
 ): void => {
   waitableJoin(waitable, ensureSet(ctx));
   let i = waitable as i32;
@@ -406,7 +413,12 @@ export function awaitPacked(packed: i32): Future<void> {
  */
 export function awaitWaitable(end: i32): Future<i32> {
   let completer = new Completer<i32>();
-  registerFor(currentContext(), end as Waitable, null, completer);
+  // Typed by hand: a parameter's type is not inferred from a nullable
+  // function type.
+  registerFor(currentContext(), end as Waitable, null,
+      (payload: i32): void => {
+        completer.complete(payload);
+      });
   return completer.future;
 }
 
@@ -429,7 +441,9 @@ let armWake = (ctx: TaskContext): void => {
   if (wakeFutureRead(readable, 0) != -1) {
     throw new Error("a wake future was readable before it was written");
   }
-  registerFor(ctx, readable as Waitable, null, new Completer<i32>());
+  // No completer: nothing awaits the wake future's value. The event
+  // re-enters `ctx`, whose `nextCode` then runs the parked return.
+  registerFor(ctx, readable as Waitable, null, null);
 };
 
 /**
@@ -630,13 +644,15 @@ let dispatchEvent = (event: i32, waitable: Waitable, code: i32): TaskContext => 
     if (event == EVENT_SUBTASK && subtask != null) {
       subtaskDrop(waitable);
       subtask.complete();
-    } else if (event != EVENT_SUBTASK && copy != null) {
+    } else if (event != EVENT_SUBTASK) {
       // A join is persistent: the end would stay in the set after its
       // event, and a set dropped at exit with members still in it
       // traps. The end leaves the set with its event; the next copy
       // that blocks joins it again.
       waitableJoin(waitable, 0 as WaitableSet);
-      copy.complete(code);
+      if (copy != null) {
+        copy(code);
+      }
     }
   }
   drainMicrotasks();

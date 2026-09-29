@@ -19,7 +19,6 @@
  * ```
  */
 
-import { Map } from 'zena:collections';
 import { Allocator } from '../memory.zena';
 
 export { Memory, Allocator, FreeListAllocator, BumpAllocator } from '../memory.zena';
@@ -52,35 +51,19 @@ declare function runtimeRealloc(
  * allocator-generic.
  */
 final class DelegatingAllocator implements Allocator {
-  /**
-   * Blocks aligned past 8, by the pointer handed out: the runtime
-   * module's blocks are 8-aligned with the request ignored beyond
-   * that, so a larger ask (a SIMD scratch buffer at 16) takes a
-   * bigger block and returns an aligned address inside it, which
-   * `free` has to map back to the block.
-   */
-  #overAligned = new Map<i32, i32>();
-
   alloc(bytes: i32): inline (true, i32) | inline (false, _) {
     return (true, runtimeRealloc(0, 0, 8, bytes));
   }
 
+  /**
+   * The runtime module honors any alignment, and frees an aligned
+   * block by the pointer it handed out.
+   */
   allocAligned(bytes: i32, align: i32): inline (true, i32) | inline (false, _) {
-    if (align <= 8) {
-      return (true, runtimeRealloc(0, 0, align, bytes));
-    }
-    let block = runtimeRealloc(0, 0, 8, bytes + align);
-    let aligned = (block + align - 1) & (0 - align);
-    this.#overAligned[aligned] = block;
-    return (true, aligned);
+    return (true, runtimeRealloc(0, 0, align, bytes));
   }
 
   free(ptr: i32): void {
-    if (let (true, block) = this.#overAligned.get(ptr)) {
-      this.#overAligned.delete(ptr);
-      runtimeRealloc(block, 0, 8, 0);
-      return;
-    }
     runtimeRealloc(ptr, 0, 8, 0);
   }
 }
