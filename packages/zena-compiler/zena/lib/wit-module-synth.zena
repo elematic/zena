@@ -2361,14 +2361,20 @@ function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
  */
 function renderEnum(sb: StringBuilder, td: TypeDef): void {
   let cases = td.enumCases as GrowableArray<EnumCaseDef>;
-  sb.append("/** WIT `enum ").append(td.name.name).append("`. */\n");
-  sb.append("export enum ").append(pascalName(td.name.name))
-      .append(" {\n");
+  let name = td.name.name;
+  let enumName = pascalName(name);
+  let comment = `/** WIT \`enum ${name}\`. */`;
+  let members = new GrowableArray<String>();
   for (var i = 0; i < cases.length; i += 1) {
-    sb.append("  ").append(pascalName(cases[i].name.name)).append(" = ")
-        .append(i32ToString(i)).append(",\n");
+    members.push(`${pascalName(cases[i].name.name)} = ${i},`);
   }
-  sb.append("}\n");
+  emit(sb, "", zena`
+    ${comment}
+    export enum ${enumName} {
+      ${members}
+    }
+  `);
+  sb.append("\n");
 }
 
 /**
@@ -2379,16 +2385,21 @@ function renderEnum(sb: StringBuilder, td: TypeDef): void {
 function renderFlags(sb: StringBuilder, td: TypeDef): void {
   let flags = td.flags as GrowableArray<FlagDef>;
   let typeName = pascalName(td.name.name);
-  sb.append("/** WIT `flags ").append(td.name.name)
-      .append("`, as a bitset. */\n");
-  sb.append("export distinct type ").append(typeName)
-      .append(" = u32;\n");
+  let prefix = camelName(td.name.name);
+  let name = td.name.name;
+  let comment = `/** WIT \`flags ${name}\`, as a bitset. */`;
+  let members = new GrowableArray<String>();
   for (var i = 0; i < flags.length; i += 1) {
-    sb.append("export let ").append(camelName(td.name.name))
-        .append(pascalName(flags[i].name.name)).append(" = (")
-        .append(i32ToString(1 << i)).append(" as u32) as ")
-        .append(typeName).append(";\n");
+    let flagName = pascalName(flags[i].name.name);
+    let val = `${1 << i}`;
+    members.push(`export let ${prefix}${flagName} = (${val} as u32) as ${typeName};`);
   }
+  emit(sb, "", zena`
+    ${comment}
+    export distinct type ${typeName} = u32;
+    ${members}
+  `);
+  sb.append("\n");
 }
 
 /**
