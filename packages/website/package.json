@@ -66,19 +66,13 @@
       "//": "Extracts the standard library API the reference pages render, so they cannot go stale relative to the source they describe. See docs/design/zenadoc.md."
     },
     "docker:build": {
-      "command": "docker build --file Dockerfile --tag zena-website ../..",
+      "command": "docker build --file Dockerfile --tag zena-website .",
+      "dependencies": [
+        "build"
+      ],
       "//": [
-        "The context is the repo root, so paths in the Dockerfile and in",
-        "../../.dockerignore are root-relative. Deliberately no `files` or",
-        "`output`: wireit then always runs this and Docker's layer cache does",
-        "the incremental work. An image is not a file, and `--iidfile` would",
-        "let wireit call the script fresh after `docker rmi` deleted the image",
-        "that file names.",
-        "",
-        "This does not depend on `build`. The image runs the site build itself",
-        "and .dockerignore excludes `**/_site/`, so a host build is invisible",
-        "to it. This builds for the host architecture -- it is for local",
-        "testing. Deploys build amd64 in Cloud Build; see cloudbuild.yaml."
+        "Packages the pre-built _site/ and serve-static.js into a minimal image.",
+        "Wireit runs `build` first so the image always gets a fresh site build."
       ]
     },
     "docker:run": {
@@ -100,8 +94,11 @@
       "//": "One time, and idempotent. Enables the APIs, creates the Artifact Registry repository, and grants Cloud Build's service account push access to it -- builds push as that account, not as you, so your own access proves nothing. No `files`/`output`, so it always runs: re-running is the fix when a deploy fails on permissions, and wireit would otherwise skip it."
     },
     "deploy:image": {
-      "command": "gcloud builds submit --project ${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the Cloud Run project id} --config cloudbuild.yaml --substitutions _IMAGE=${ZENA_GCP_REGION:-us-central1}-docker.pkg.dev/${ZENA_GCP_PROJECT}/${ZENA_GCP_REPO:-cloud-run-images}/zena-website ../..",
-      "//": "Builds and pushes only. gcloud uploads the repo root, honouring .gitignore, which comes to about 31MB."
+      "command": "gcloud builds submit --project ${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the Cloud Run project id} --config cloudbuild.yaml --substitutions _IMAGE=${ZENA_GCP_REGION:-us-central1}-docker.pkg.dev/${ZENA_GCP_PROJECT}/${ZENA_GCP_REPO:-cloud-run-images}/zena-website .",
+      "dependencies": [
+        "build"
+      ],
+      "//": "Builds and pushes the runtime container. Only _site and serve-static.js are uploaded."
     },
     "deploy": {
       "command": "bash scripts/gcp-deploy.sh",

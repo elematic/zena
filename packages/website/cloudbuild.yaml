@@ -1,33 +1,20 @@
-# Cloud Build config for the documentation site image.
+# Cloud Build config for packaging and pushing the documentation site image.
 #
-# Submitted by `npm run deploy:image -w @zena-lang/website`, which sets the
-# substitutions and passes the repo root as the build context.
+# Submitted by `npm run deploy:image -w @zena-lang/website`, which builds the
+# site on the host via Wireit first and passes packages/website as context.
 #
-# Cloud Build only builds and pushes here. The Cloud Run deploy runs separately
-# under your own credentials, so the Cloud Build service account does not need
-# run.admin or iam.serviceAccountUser -- the usual place this setup goes wrong.
-#
-# Building here rather than locally is deliberate: Cloud Run is amd64, and
-# cross-building on an Apple Silicon Mac runs npm ci, tsc and the Zena->wasm
-# compile under qemu emulation, which is several times slower.
+# Cloud Build only packages the pre-built _site/ and serve-static.js into
+# node:26-slim and pushes it to Artifact Registry.
 
 steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - build
-      - --file=packages/website/Dockerfile
+      - --file=Dockerfile
       - --tag=$_IMAGE
-      # The context is the repo root: the site build needs the compiler,
-      # stdlib, cli, runtime and language-service packages.
       - .
 
 images:
   - $_IMAGE
 
-options:
-  # The build runs the whole toolchain (Rust, self-hosted compiler, Eleventy),
-  # which needs more memory than 8GB when compiling lsp.wasm and stdlib doc
-  # APIs. E2_HIGHCPU_32 provides 32 vCPUs and 32 GB RAM in the default pool.
-  machineType: E2_HIGHCPU_32
-
-timeout: 1800s
+timeout: 300s

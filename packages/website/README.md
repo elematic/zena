@@ -10,6 +10,28 @@ npm run build -w @zena-lang/website   # production build into _site/
 npm run start -w @zena-lang/website   # serve _site/ with the production server
 ```
 
+## Running with Docker Locally
+
+To build and run the production container locally:
+
+```bash
+# 1. Build the Docker image (Wireit runs `build` first to ensure _site/ is fresh)
+npm run docker:build -w @zena-lang/website
+
+# 2. Run the container locally at http://localhost:8080
+npm run docker:run -w @zena-lang/website
+```
+
+Or with direct Docker commands:
+
+```bash
+npm run build -w @zena-lang/website
+docker build -t zena-website packages/website
+docker run --rm --init -p 8080:8080 zena-website
+```
+
+Press `Ctrl-C` to stop (or run `docker stop zena-website`).
+
 ## Deploying
 
 The site runs on Google Cloud Run, built from [`Dockerfile`](Dockerfile) in this
@@ -33,10 +55,59 @@ export ZENA_GCP_REPO=cloud-run-images  # optional, this is the default
 | `deploy:preview` | Same build, but the revision goes up with no traffic and a `next---` URL to check first.                                                                                    |
 | `deploy:promote` | Sends traffic to the newest revision.                                                                                                                                       |
 
-So the first deploy is `deploy:setup` then `deploy`, and after that
-`deploy:preview` → check the URL → `deploy:promote`. Cloud Run rejects
-`--no-traffic` on a service that does not exist yet, which is why the first one
-has to be `deploy`.
+### Preview & Promote Workflow (Deploy Without Moving Live Traffic)
+
+To deploy a new image to Cloud Run without directing live traffic to it:
+
+```bash
+npm run deploy:preview -w @zena-lang/website
+```
+
+This:
+
+1. Builds `_site/` on the host via Wireit and packages/pushes the image via Cloud Build.
+2. Deploys the revision to Cloud Run with `--no-traffic --tag next`.
+3. Outputs a preview URL dedicated to the new revision:
+   ```
+   Preview URL (no live traffic):
+   https://next---zena-website-<hash>-<region>.a.run.app
+   ```
+4. Live traffic to `https://zena-website-<hash>-<region>.a.run.app` continues serving the previous revision uninterrupted.
+
+#### Promoting the New Image
+
+Once you have verified the preview URL, route 100% of live traffic to the new revision:
+
+```bash
+npm run deploy:promote -w @zena-lang/website
+```
+
+#### Equivalent Direct `gcloud` Commands
+
+If you prefer running raw `gcloud` CLI commands instead of npm scripts:
+
+```bash
+# 1. Build and push image:
+npm run deploy:image -w @zena-lang/website
+
+# 2. Deploy preview revision (no live traffic):
+gcloud run deploy zena-website \
+  --project "$ZENA_GCP_PROJECT" \
+  --region "${ZENA_GCP_REGION:-us-central1}" \
+  --image "${ZENA_GCP_REGION:-us-central1}-docker.pkg.dev/${ZENA_GCP_PROJECT}/${ZENA_GCP_REPO:-cloud-run-images}/zena-website" \
+  --no-traffic \
+  --tag next \
+  --quiet
+
+# 3. Promote revision to 100% live traffic:
+gcloud run services update-traffic zena-website \
+  --project "$ZENA_GCP_PROJECT" \
+  --region "${ZENA_GCP_REGION:-us-central1}" \
+  --to-latest \
+  --quiet
+```
+
+_(Note: Cloud Run requires at least one initial deploy to the service before `--no-traffic` can be used. If the service does not exist yet, the very first deploy must be `npm run deploy`.)_
 
 The service is deployed public (`--allow-unauthenticated`), which is what a docs
 site for testers needs — the alternative requires every reader to hold a Google
@@ -59,18 +130,24 @@ of the project and on org policy (Cloud Build used to default to its own
 service account and now defaults to the Compute Engine one), so the script
 grants whichever of the two exist rather than guessing.
 
-### Why the build happens in Cloud Build
+### How deployment works
 
-Cloud Run is amd64. Cross-building with `--platform linux/amd64` on an Apple
-Silicon Mac runs `npm ci`, `tsc` and the Zena→wasm compile under qemu
-emulation, which is several times slower than the ~30s native build. Cloud
-Build runs on amd64 natively.
+The site is built on the host first via Wireit (`npm run build -w @zena-lang/website`),
+which leverages your local Wireit and Cargo caches so incremental builds take
+only seconds. The output (`_site/`) contains static HTML, CSS, client JavaScript
+bundles, and `lsp.wasm`. Because WebAssembly bytecode and web assets are
+architecture-neutral, `_site/` is completely portable.
 
-[`cloudbuild.yaml`](cloudbuild.yaml) only builds and pushes; the Cloud Run
+The Docker container packages only `_site/` and [`serve-static.js`](serve-static.js)
+into `node:26-slim`. Because there are no `RUN` commands in [`Dockerfile`](Dockerfile),
+Docker only creates filesystem layers without executing any code. Packaging and
+pushing the ~4MB context takes ~15–20s in Cloud Build (or 1–2s locally).
+
+[`cloudbuild.yaml`](cloudbuild.yaml) only packages and pushes the image; the Cloud Run
 deploy is a separate step under your own credentials. That way the Cloud Build
 service account needs no `run.admin` or `iam.serviceAccountUser`.
 
-`docker:build` stays for local testing and builds for the host architecture.
+`docker:build` also packages `_site/` directly and runs fast locally for testing.
 
 ### Notes
 
@@ -84,38 +161,12 @@ are ignored. Without it, Ctrl-C does nothing and Cloud Run SIGKILLs the instance
 after its grace period rather than shutting it down. `docker:run` also passes
 `--init` so tini handles signals even if that regresses.
 
-The build context is the repo root, not this package, so `docker build` passes
-`--file Dockerfile ../..` and every path inside the Dockerfile and
-[`.dockerignore`](../../.dockerignore) is root-relative. The site build needs
-the compiler, stdlib, cli, runtime and language-service packages.
+The build context for `Dockerfile` and `cloudbuild.yaml` is this package directory
+(`packages/website`), with `.dockerignore` and `.gcloudignore` excluding everything
+except `_site/` and `serve-static.js`. This keeps the upload size to ~4MB compressed.
 
-`.dockerignore` is generated: edit
-[`.dockerignore-sync`](../../.dockerignore-sync) and run `npm run ignore-sync`.
-Most of it comes from the `.gitignore` files. The `[inline]` section carries
-what those cannot: `**/` forms of the copied entries, since Docker matches a
-slash-less pattern only at the context root where git matches it at any depth,
-and `lsp.wat`, which is tracked and is the largest file in the repo at 9.2MB.
-Excluding the wrong things here is expensive — without the `**/` entries the
-context goes from ~320KB to 1.8GB.
-
-`docker:build` declares no `files` or `output`, so wireit always runs it and
-Docker's layer cache decides what to redo. An image is not a file, so there is
-nothing for wireit to track: `--iidfile` would give it a filename, but wireit
-would then call the script fresh after a `docker rmi` deleted the image that
-file names.
-
-Nothing here depends on `build`. The image runs the site build itself, and
-`.dockerignore` excludes `**/_site/`, so building on the host first would
-produce output the image never sees.
-
-Only Node is needed in the image: `stdlib` and `cli` build with `tsc`, and
-`lsp.wasm` is produced by running the Zena CLI under Node. wasmtime, wasm-tools
-and Rust are used by tests, not by this build.
-
-It is a multi-stage build, so the pruning a monorepo usually needs is not
-necessary. The builder stage uses nearly every workspace package and is then
-thrown away; the runtime stage copies only `_site/` and
-[`serve-static.js`](serve-static.js).
+Both `docker:build` and `deploy:image` declare Wireit dependencies on `build`,
+so running either one automatically ensures `_site/` is fresh before packaging.
 
 Two servers, deliberately:
 
