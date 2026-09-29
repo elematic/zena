@@ -232,8 +232,7 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
       if (
         this.codeMirrorEl &&
         editorDoc !== undefined &&
-        editorDoc !== content &&
-        !this.codeMirrorEl.editorView?.hasFocus
+        editorDoc !== content
       ) {
         this.isSwitchingFile = true;
         this.codeMirrorEl.value = content;

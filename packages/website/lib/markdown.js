@@ -32,11 +32,7 @@ const escapeHtml = (s) =>
     (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c],
   );
 
-const RAW_BLOCK_TAGS = [
-  'zena-playground',
-  'zena-example-playground',
-  'zena-project',
-];
+const RAW_BLOCK_TAGS = ['zena-playground', 'zena-project'];
 const OPEN_TAG_RE = new RegExp(
   `^<(${RAW_BLOCK_TAGS.join('|')})(?=[\\s/>]|$)`,
   'i',

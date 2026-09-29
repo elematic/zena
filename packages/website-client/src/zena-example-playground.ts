@@ -113,6 +113,11 @@ export class ZenaExamplePlayground extends BehaviorElement {
       } else {
         const codeEl =
           figure.querySelector('pre code') ?? figure.querySelector('code');
+        if (!codeEl) {
+          console.warn(
+            `[zena-example-playground] Figure "${slug}" is missing a <pre><code> or <script> block.`,
+          );
+        }
         const rawCode = codeEl?.textContent ?? '';
         files['main.zena'] = unindent(rawCode);
       }
