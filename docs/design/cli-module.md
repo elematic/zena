@@ -2,29 +2,33 @@
 
 ## Status
 
-- **Status**: Proposed
-- **Date**: 2026-09-23
+- **Status**: Implemented, except `zena lsp`
+- **Date**: 2026-09-23; updated 2026-09-29
 
-The `zena` command is a Zena program. It is compiled to one Wasm module,
-the **CLI module**, which holds everything the command does: reading the
-command line, compiling, running programs, running tests, building
-targets, documentation, formatting, and a language server. The Rust
-binary `zena-cli` loads that module and gives it a small set of host
-imports; it contains no command-line logic of its own.
+The `zena` command is a Zena program. It is compiled to one Wasm
+component, the **CLI module**, which holds everything the command does:
+reading the command line, compiling, running programs, running tests,
+building targets, documentation, formatting, and (still to come) a
+language server. The Rust binary `zena-cli` loads that component and
+gives it a small set of host imports; it contains no command-line logic
+of its own.
 
-## The command today
+The source is `packages/zena-cli/zena/`: `main.zena` reads the command
+line and dispatches to `compile.zena`, `run.zena`, `test-run.zena` and
+`bench-run.zena`, and `env.zena` holds what the host tells the module.
 
-`zena-cli` is a Rust program with a Zena compiler inside it. clap reads
-the command line, the `glob` and `walkdir` crates find test files, and
-Rust decides what to compile and in what order. The compiler, the test
-orchestrator (`packages/zena-cli/zena/test-run.zena`), the benchmark
-orchestrator, and zenadoc are Zena programs that the Rust side compiles
-and runs one at a time. The test runner starts one `zena-cli` process
-per test file, and each of those processes compiles and runs its test
-in Rust.
+## The command before
 
-So the logic is split across two languages, and the Zena half cannot do
-much without calling back into Rust.
+`zena-cli` was a Rust program with a Zena compiler inside it. clap read
+the command line, the `glob` and `walkdir` crates found test files, and
+Rust decided what to compile and in what order. The compiler, the test
+orchestrator, the benchmark orchestrator, and zenadoc were Zena programs
+that the Rust side compiled and ran one at a time. The test runner
+started one `zena-cli` process per test file, and each of those
+processes compiled and ran its test in Rust.
+
+So the logic was split across two languages, and the Zena half could not
+do much without calling back into Rust.
 
 ## One module for the command
 
@@ -38,8 +42,8 @@ The CLI module contains:
 | `zena build <target>`     | zb, linked in as a library                           |
 | `zena doc`                | zenadoc, linked in                                   |
 | `zena fmt`                | the formatter, linked in                             |
-| `zena bench`              | `zena:bench`, and the host import that runs a module |
-| `zena lsp`                | the language service, and a JSON-RPC loop over stdio |
+| `zena bench`              | `zena:bench`'s `runSuite`, which runs modules        |
+| `zena lsp` (to come)      | the language service, and a JSON-RPC loop over stdio |
 
 The compiler, zb, zenadoc and the formatter are all Zena packages
 already. The compiler's own command-line program
@@ -97,9 +101,14 @@ let run = startModule('.zena/cache/array_test_1f2e.wasm', {
   timeout: milliseconds(60000 as i64),
 });
 let result = run.wait();
-// result.outcome (Returned, Trapped, TimedOut or Failed), result.exitCode,
-// result.message, result.stdout, result.stderr, result.callNanos
+// result.outcome (Returned, Exited, Trapped, TimedOut or Failed),
+// result.exitCode, result.resultText, result.message, result.stdout,
+// result.stderr, result.callTime
 ```
+
+`Returned` means the exported function returned, and `resultText` is its
+first result as `zena run` prints it (`7`, `2.5`). `Exited` means the
+module called `exit`, so `zena run` can end with the same status.
 
 - `startModule` returns straight away. The host loads the module through
   the `.cwasm` cache it keeps today, including the file lock that stops
@@ -163,17 +172,22 @@ that builds a file the user compiled directly.
 
 ### The compile cache
 
-`zena run` and `zena test` compile through a cache, so a file that has
-not changed since the last run is not compiled again. The cache moves
-from Rust into the CLI module:
+`zena run`, `zena test` and `zena bench` compile through a cache, so a
+file that has not changed since the last run is not compiled again. The
+cache is in the CLI module (`compile.zena`):
 
-- The cache key is a hash of the source path, the compile flags, the
-  CLI module's own identity, and the path, modification time and size of
-  every source file the compile can read. Modification times come from
-  WASI's file stat. `zena:fs`'s `FileStat` gains a `modified` field for
-  them.
-- An entry is written to a temporary file and renamed into place, so a
-  reader never sees half an entry. `zena:fs` gains `rename` for this.
+- An entry is the compiled module plus a `.deps` file listing every
+  file the compile read, each with its modification time and size. The
+  compiler reports each file through an `onRead` hook on
+  `CompileFileOptions`, just before reading it, so an edit made during
+  the compile leaves the entry stale. The entry is fresh while every
+  listed file still matches.
+- The entry's name is a hash of the source path, the compile flags and
+  the compiler's identity: the CLI module's own path, modification time
+  and size, since the compiler is part of it.
+- The module and its `.deps` file are each written to a temporary file
+  and renamed into place, so a reader never sees half an entry.
+- `zena build` always compiles, because running it is the request to.
 - Two `zena` processes that compile the same file at the same moment
   both compile it, and the second rename wins. Both results are correct;
   the cost is one duplicate compile in a rare race. Within one process
@@ -192,46 +206,69 @@ The test runner is Zena from end to end:
 1. Find the test files: each argument is a file, a directory (meaning
    every `_test.zena` beneath it) or a glob, found with `zena:fs`'s
    `glob`.
-2. Compile each file in test mode, through the cache. Compiles run in
-   parallel by starting copies of the CLI module itself with
-   `zena:wasm`, each told to compile one file.
-3. Run each compiled test with `zena:wasm`, with output captured, a
-   bounded number at a time, and report pass or fail in file order.
+2. For each file, start a copy of the CLI module with `zena:wasm`, as
+   `zena test --single <file>`, a bounded number at a time
+   (`ZENA_TEST_PARALLELISM`, else the CPU count up to eight). The copy
+   compiles the file in test mode through the cache, runs the compiled
+   test with `zena:wasm`, and prints what the test printed.
+3. Report each file in order as pass or fail, with its output when it
+   failed.
 
-Each test runs in a fresh store. A trap is caught and reported with its
-backtrace; the memory the test used goes away with its store; a test
-that runs past its time limit is stopped. There is no process per test.
+Each copy and each test runs in its own store. A trap is caught and
+reported with its backtrace, and the memory a test used goes away with
+its store. There is no process per test.
+
+A copy needs the variables the host set for the CLI module
+(`ZENA_REPO_ROOT` and the rest). `zena:wasm`'s `inheritEnv` passes on the
+host process's environment, which does not have them, so the runner
+hands them over explicitly (`hostEnv()` in `env.zena`).
 
 A later version can keep one compiler warm across several test files,
 which [workflow.md](./workflow.md#zena-compiler-integration) plans for
-as the compile server. The first version starts a fresh copy per compile,
-which keeps compiles independent and parallel.
+as the compile server. For now each copy compiles its own file, which
+keeps compiles independent and parallel.
+
+### `zena bench`
+
+A benchmark suite is a JSON config naming its variants: Wasm modules
+(`wasm`, `wat`, or `zena` source) and commands. `zena:bench`'s
+`runSuite` (`packages/stdlib/zena/bench/suite.zena`) samples them
+round-robin, times a module's exported call with `zena:wasm`, runs a
+command with `zena:process`, and writes the report. Compiling `zena`
+variants is the one thing the library cannot do by itself, so the caller
+passes a `compile` function; `zena bench` passes one that compiles
+through the cache. See [benchmarking.md](./benchmarking.md).
 
 ### `zena lsp`
 
-`zena lsp` is a language server that speaks LSP (JSON-RPC over stdin and
-stdout), for editors that start a server process: Neovim, Helix, Zed and
-others. It uses the same analysis code as `lsp.wasm`. That code moves
-into a library both entry points import; `lsp.zena` keeps the exports
-VS Code calls, and the CLI module adds the JSON-RPC loop. Reading stdin
-needs a small addition to `zena:fs` or `zena:cli`.
+Not built yet. `zena lsp` is to be a language server that speaks LSP
+(JSON-RPC over stdin and stdout), for editors that start a server
+process: Neovim, Helix, Zed and others. It uses the same analysis code as
+`lsp.wasm`. That code moves into a library both entry points import;
+`lsp.zena` keeps the exports VS Code calls, and the CLI module adds the
+JSON-RPC loop. Reading stdin needs a small addition to `zena:cli`.
 
 ## The host binary
 
-With all of that in the module, `zena-cli` does what `zena-run` does,
-plus three things:
+With all of that in the module, `zena-cli` (`packages/zena-cli/src/main.rs`,
+about 130 lines) does what `zena-run` does, plus three things:
 
-- It finds the CLI module. In a checkout that is the built module under
-  `packages/zena-cli`; an installed copy keeps the module next to the
-  binary.
-- It grants the module the spawn capability and preopens `/`, because
-  the command works with files anywhere the user points it.
-- It tells the module which directory the user ran it from, since the
-  module's working directory is its preopen.
+- It finds the repository and the CLI module: `ZENA_REPO_ROOT`, else the
+  checkout the binary was built in, and `ZENA_CLI_MODULE`, else
+  `packages/zena-cli/out/zena.wasm` under it.
+- It preopens the repository as `.`, first, because `zena:fs` resolves a
+  relative path against the first preopen and the compiler reads
+  `zena-packages.json` and the standard library relative to it. It
+  preopens `/` as `/` too, because the command works with files anywhere
+  the user points it, and grants the module the spawn capability.
+- It tells the module what it cannot find out for itself, in environment
+  variables: `ZENA_REPO_ROOT`, `ZENA_CWD` (the directory the user ran
+  the command from, which relative paths on the command line are
+  measured from), `ZENA_CLI_MODULE`, and `ZENA_AVAILABLE_PARALLELISM`
+  (the CPU count).
 
-That is a few dozen lines of Rust. It could be a shell script around
-`zena-run`; it stays a binary so that installing `zena` is one file plus
-the module.
+It could be a shell script around `zena-run`; it stays a binary so that
+installing `zena` is one file plus the module.
 
 ## Building the CLI module
 
@@ -266,24 +303,27 @@ It is not done here because:
 - The bootstrap would grow with every tool added to the command.
 - The build order above needs no reseed to land.
 
-The extra compile in a clean build is measured when the CLI module
-first builds. If it matters, this alternative can be taken later with
-one reseed.
+The extra compile in a clean build has not been measured on its own
+yet. If it matters, this alternative can be taken later with one
+reseed.
 
-## Changes to land
+## What landed
 
-Each is one pull request:
+1. **Running a module** (#665). The `zena:wasm` library and its host
+   import in `zena-runtime`, with the time limit on its own engine.
+   `zena:fs` gained `modified` and `rename`, and `zena:process` gained
+   inherited stdio.
+2. **The CLI module** (#669). `zena build` (files and targets), `run`,
+   `test`, `doc`, `fmt` and `bench`, with the compile cache in Zena, the
+   build steps above, and `zena-cli` as the small host. The benchmark
+   suite runner moved into `zena:bench` as `runSuite`.
+3. **Components on WASI 0.3** (#684), which came after and moved
+   everything above onto components: the CLI module, the bootstrap and
+   every test are components, and the host's imports became the
+   `zena-cli:host` WIT interfaces.
 
-1. **Running a module.** The `zena:wasm` library and its host import in
-   `zena-runtime`, with the time limit on its own engine. `zena:fs`
-   gains `modified` and `rename`. `zena:process` gains inherited stdio.
-2. **The CLI module.** `zena build` (files and targets), `run`, `test`,
-   `doc`, `fmt` and `bench`, with the compile cache in Zena. The build
-   steps above. `zena-cli` becomes the small host. This replaces the
-   open pull request #657, whose command-line parsing and test
-   discovery carry over.
-3. **`zena lsp`.** The shared analysis library, the JSON-RPC loop, and
-   reading stdin.
+Still to come: **`zena lsp`**, with the shared analysis library, the
+JSON-RPC loop, and reading stdin.
 
 ## Open questions
 
