@@ -237,6 +237,48 @@ Moving the reference-carrying signatures to nullable `externref` with
 conversions inside belongs to the generic layer below, which fixes the
 signature shapes anyway.
 
+## Futures as JavaScript promises
+
+The completion protocol above lets a host settle a future Zena is
+holding. `toPromise` in `zena:js` goes the other way: it hands the host
+a JavaScript `Promise` that settles when a Zena `Future` does. A
+Worker's `ctx.waitUntil(promise)` is the motivating case, and an async
+export that returns a promise is built from the same piece.
+
+```zena
+@external('worker', 'wait_until')
+declare function __waitUntil(ctx: anyref, promise: anyref): void;
+
+__waitUntil(ctx, toPromise(flushLogs()));
+```
+
+The protocol is the completion protocol run backwards, over a `js`
+import module that `@zena-lang/runtime` provides (`createPromiseHost`):
+
+1. Zena picks an id and calls `js.promise_new(id)`. The host creates a
+   promise, keeps its `resolve` and `reject` under the id, and returns
+   the promise, which `toPromise` returns to its caller.
+2. When the future settles, Zena calls one of
+   `js.promise_resolve_<kind>(id, value)` with the same kinds as the
+   completion exports, `js.promise_reject(id, message)`, or
+   `js.promise_cancel(id)`, which rejects with an `AbortError`.
+
+No JSPI is involved. JSPI is only needed to suspend a wasm stack, and
+here the promise object is made by a JS import and returned like any
+other reference.
+
+`promise_new` also schedules a drain for after the current call into
+wasm returns. The future may already be settled, and a Zena waiter
+always runs from the microtask queue, so a promise made from a
+synchronous export would otherwise wait for something unrelated to
+drain the module.
+
+`toPromise` lives in its own file, `zena/js/promise.zena`, re-exported
+from the module's index. Every export declared in the index is a
+reachability root, because the host calls the `complete*` functions
+from outside the program, and `toPromise` should cost nothing in a
+program that never calls it.
+
 ## Generic JS interop
 
 Status: **planned** (2026-08), after anyref handles. A lowering layer

@@ -3,6 +3,8 @@ export interface ZenaImports {
   console?: Record<string, Function>;
   // Values may be `WebAssembly.Suspending` objects, not just functions.
   time?: Record<string, unknown>;
+  /** Overrides for the `js` imports behind `zena:js`'s `toPromise`. */
+  js?: Record<string, unknown>;
   /**
    * The imports behind `zena:fetch`.
    * Pass `false` to completely omit the `web` namespace from imports (causing LinkError if imported).
@@ -589,6 +591,117 @@ export function createHostAsync(
   };
 }
 
+export interface PromiseHost {
+  /** The `js` import module that `zena:js`'s `toPromise` calls. */
+  imports: Record<string, unknown>;
+}
+
+/**
+ * The JS half of `zena:js`'s `toPromise`: the promises Zena hands out.
+ *
+ * Zena asks for a promise under an id it chose (`promise_new`), returns
+ * it to whoever wanted one, and later settles it by that id through one
+ * `promise_resolve_<kind>` import, `promise_reject`, or
+ * `promise_cancel`. This side only keeps each promise's `resolve` and
+ * `reject` until then. It is the host-async protocol run backwards:
+ * there the host settles a future Zena is holding, here Zena settles a
+ * promise the host is holding.
+ *
+ * `promise_new` also schedules a drain for after the current call into
+ * wasm returns. The future may already be settled, and a Zena waiter
+ * always runs from the microtask queue, so without a drain a promise
+ * made from a synchronous export would wait for whatever next happened
+ * to drain the module.
+ */
+export function createPromiseHost(
+  getExports?: () => WebAssembly.Exports | undefined,
+  work: PendingWork = createPendingWork(),
+): PromiseHost {
+  const settlers = new Map<
+    number,
+    {resolve: (value: unknown) => void; reject: (reason: unknown) => void}
+  >();
+
+  let readString: ((ref: unknown, len: number) => string) | null = null;
+  const fromZenaString = (ref: unknown, len: number): string => {
+    if (!readString) {
+      const exports = getExports?.();
+      if (!exports) {
+        throw new Error('js: cannot read a Zena string before instantiation');
+      }
+      readString = createStringReader(exports);
+    }
+    return readString(ref, len);
+  };
+
+  // Settling spends the id, like a host completion spends its handle: a
+  // second settlement is a bug on the Zena side and says so.
+  const take = (id: number) => {
+    const settler = settlers.get(id);
+    if (!settler) {
+      throw new Error(
+        `js: no promise is pending for id ${id} ` +
+          '(already settled, or never created)',
+      );
+    }
+    settlers.delete(id);
+    return settler;
+  };
+
+  return {
+    imports: {
+      promise_new: (id: number): Promise<unknown> => {
+        const promise = new Promise<unknown>((resolve, reject) => {
+          settlers.set(id, {resolve, reject});
+        });
+        // Counted like any other callback into the module, so a throw
+        // out of this drain reaches run() rather than no one.
+        work.enter();
+        queueMicrotask(() => {
+          try {
+            drainModule(getExports);
+          } catch (e) {
+            work.fail(e);
+          } finally {
+            work.leave();
+          }
+        });
+        return promise;
+      },
+      promise_resolve_void: (id: number): void => {
+        take(id).resolve(undefined);
+      },
+      promise_resolve_i32: (id: number, value: number): void => {
+        take(id).resolve(value);
+      },
+      promise_resolve_f64: (id: number, value: number): void => {
+        take(id).resolve(value);
+      },
+      promise_resolve_string: (id: number, ref: unknown, len: number): void => {
+        take(id).resolve(fromZenaString(ref, len));
+      },
+      promise_resolve_extern: (id: number, value: unknown): void => {
+        take(id).resolve(value);
+      },
+      promise_reject: (id: number, ref: unknown, len: number): void => {
+        take(id).reject(new Error(fromZenaString(ref, len)));
+      },
+      promise_cancel: (id: number): void => {
+        take(id).reject(
+          new DOMException('The Zena future was cancelled', 'AbortError'),
+        );
+      },
+    },
+  };
+}
+
+/** The `js` imports alone, for callers assembling their own object. */
+export function createPromiseImports(
+  getExports?: () => WebAssembly.Exports | undefined,
+): Record<string, unknown> {
+  return createPromiseHost(getExports).imports;
+}
+
 export interface WebHostOptions {
   /**
    * Controls the `fetch` implementation:
@@ -851,10 +964,12 @@ export async function instantiate(
     fetch: userImports.fetch,
     overrides: webOverrides,
   });
+  const promiseHost = createPromiseHost(() => instanceExports, pending);
   const defaultImports: Record<string, Record<string, unknown>> = {
     env: envImports,
     console: createConsoleImports(() => instanceExports),
     time: timeHost.imports,
+    js: promiseHost.imports,
   };
   if (userImports.web !== false) {
     defaultImports.web = webHost.imports;
@@ -872,6 +987,7 @@ export async function instantiate(
     env: {...defaultImports.env, ...userImports.env},
     console: {...defaultImports.console, ...userImports.console},
     time: {...defaultImports.time, ...userImports.time},
+    js: {...defaultImports.js, ...userImports.js},
   };
   if (userImports.web !== false) {
     imports.web = {...defaultImports.web, ...webOverrides};

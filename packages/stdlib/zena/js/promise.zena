@@ -1,0 +1,86 @@
+/**
+ * Zena futures handed to a JavaScript host as promises, the direction
+ * opposite to `pending`. Re-exported by `zena:js`.
+ *
+ * Zena picks an id, asks the host for a promise under it, and later
+ * settles that promise by the same id through one of the imports below.
+ * The host half is `createPromiseHost` in `@zena-lang/runtime`.
+ */
+
+@external("js", "promise_new")
+declare function __promiseNew(id: i32): anyref;
+
+@external("js", "promise_resolve_void")
+declare function __promiseResolveVoid(id: i32): void;
+
+@external("js", "promise_resolve_i32")
+declare function __promiseResolveI32(id: i32, value: i32): void;
+
+@external("js", "promise_resolve_f64")
+declare function __promiseResolveF64(id: i32, value: f64): void;
+
+@external("js", "promise_resolve_string")
+declare function __promiseResolveString(id: i32, value: String, len: i32): void;
+
+@external("js", "promise_resolve_extern")
+declare function __promiseResolveExtern(id: i32, value: anyref): void;
+
+@external("js", "promise_reject")
+declare function __promiseReject(id: i32, message: String, len: i32): void;
+
+@external("js", "promise_cancel")
+declare function __promiseCancel(id: i32): void;
+
+// Ids name promises the host is holding for us. They are a separate
+// sequence from `pending`'s handles, because the two tables live on
+// different sides of the boundary.
+var nextPromiseId = 1;
+
+/**
+ * A JavaScript `Promise` that settles when `future` does.
+ *
+ * The promise resolves with the future's value, rejects with an `Error`
+ * carrying the message of a Zena failure, and rejects with an
+ * `AbortError` if the future is cancelled. The value crosses the same
+ * way a host completion does in the other direction: `i32` and `f64` as
+ * numbers, `String` as a JavaScript string, `void` as `undefined`, and
+ * any other reference as itself. Any other primitive, such as `boolean`
+ * or `i64`, has no kind to cross as: settling it traps, the way
+ * `value as anyref` does for a primitive.
+ *
+ * The host creates the promise, so this returns immediately and needs
+ * nothing from the host's event loop but the usual drain.
+ */
+export let toPromise = <T>(future: Future<T>): anyref => {
+  let id = nextPromiseId;
+  nextPromiseId += 1;
+  let promise = __promiseNew(id);
+  settlePromise(id, future);
+  return promise;
+};
+
+async function settlePromise<T>(id: i32, future: Future<T>): Future<void> {
+  try {
+    if (future is Future<void>) {
+      await (future as Future<void>);
+      __promiseResolveVoid(id);
+    } else if (future is Future<i32>) {
+      let n = await (future as Future<i32>);
+      __promiseResolveI32(id, n);
+    } else if (future is Future<f64>) {
+      let x = await (future as Future<f64>);
+      __promiseResolveF64(id, x);
+    } else if (future is Future<String>) {
+      let s = await (future as Future<String>);
+      __promiseResolveString(id, s, s.length);
+    } else {
+      let value = await future;
+      __promiseResolveExtern(id, value as anyref);
+    }
+  } cancel {
+    __promiseCancel(id);
+  } catch (e) {
+    let message = e.message;
+    __promiseReject(id, message, message.length);
+  }
+}

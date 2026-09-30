@@ -1,8 +1,10 @@
 /**
  * Interoperability utilities for JavaScript hosts.
  *
- * Provides the host-async completion registry for bridging asynchronous host
- * operations to Zena `Future`s using numeric handles.
+ * Bridges futures in both directions. `pending` registers an operation
+ * the host will complete, and hands Zena code its `Future`. `toPromise`
+ * goes the other way: it hands the host a JavaScript `Promise` that
+ * settles when a Zena `Future` does.
  *
  * ## Examples
  *
@@ -19,9 +21,26 @@
  *   return p.future;
  * };
  * ```
+ *
+ * A host API that takes a promise, such as a Cloudflare Worker's
+ * `ctx.waitUntil`, can be given Zena work directly:
+ *
+ * ```zena
+ * import { toPromise } from 'zena:js';
+ *
+ * @external('worker', 'wait_until')
+ * declare function __waitUntil(ctx: anyref, promise: anyref): void;
+ *
+ * __waitUntil(ctx, toPromise(flushLogs()));
+ * ```
  */
 
 import { AnyCompleter, Completer } from 'zena:async';
+
+// Lives in its own file because every export declared in this one is a
+// wasm export root (the host calls `complete*` from outside), and
+// `toPromise` should cost nothing in a program that never calls it.
+export { toPromise } from './promise.zena';
 
 /** A registered operation: the handle to hand outward, and the future to
  * hand to Zena code. */
