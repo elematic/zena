@@ -1,0 +1,44 @@
+/**
+ * A Zena module behind a Cloudflare Worker.
+ *
+ * Between them the three exports cover what a Worker needs from the
+ * WebAssembly features Zena emits: GC heap allocation, exceptions, and a
+ * suspension that resumes on a host callback.
+ */
+
+import { sleep, milliseconds } from 'zena:time';
+
+/** Builds a String on the GC heap. */
+export function greet(name: String): String {
+  let parts = ['Hello', name, 'from', 'Zena'];
+  var out = '';
+  for (let p in parts) {
+    if (out.length > 0) {
+      out += ' ';
+    }
+    out += p;
+  }
+  return out;
+}
+
+/** Throws and catches, which lowers to a wasm tag and `try_table`. */
+export function caught(): String {
+  try {
+    throw new Error('boom');
+  } catch (e) {
+    return 'caught: ' + e.message;
+  }
+}
+
+/**
+ * Suspends on a host timer and resumes.
+ *
+ * `main` is the only export the compiler splits into
+ * `__zena_main_start` / `__zena_main_result`, which is what lets an
+ * async function's value reach JS without JSPI. An async handler has to
+ * be `main` until that split covers any exported async function.
+ */
+export async function main(): Future<String> {
+  await sleep(milliseconds(10));
+  return greet('world') + ' | ' + caught() + ' | awaited';
+}

@@ -67,11 +67,27 @@ Zena strings are implemented as a GC struct wrapping a `ByteArray` (WASM GC `(ar
 ))
 ```
 
-**Problem**: Since WASM GC arrays are opaque, we cannot simply pass a `ByteArray` to JavaScript and have JS iterate over it.
+**Problem**: Since WASM GC arrays are opaque, we cannot simply pass a
+`ByteArray` to JavaScript and have JS iterate over it.
 
-**Solution - V8-Optimized Pattern**: Recommended by the dart2wasm team in https://github.com/WebAssembly/gc/issues/568: pass the string reference as `externref` to the host, then have JavaScript iterate by calling an exported getter function. In the same thread, Jakob Kummerow (V8) notes that V8's Wasm-into-JS inlining only triggers for nullable `externref` in the Wasm signature — not `anyref`, and not typed references — and that an explicit `ref.cast` on the Wasm side is faster than an implicit type check at the boundary. That is why the getter takes `externref` and casts internally.
+**Solution - V8-Optimized Pattern**: Recommended by the dart2wasm team in
+[WebAssembly/gc#568](https://github.com/WebAssembly/gc/issues/568): pass the
+string reference as `externref` to the host, then have JavaScript iterate by
+calling an exported getter function. The reason the loop is driven from
+JavaScript rather than wasm is that ["V8 optimizes JS calling Wasm better than
+Wasm calling
+JS"](https://github.com/WebAssembly/gc/issues/568#issuecomment-2469934328) —
+that comment gives dart2wasm's own generated loop and the `$wasmI8ArrayGet`
+export it calls, which is the same shape as `$stringGetByte`. In the same
+thread, [Jakob Kummerow (V8)
+notes](https://github.com/WebAssembly/gc/issues/568#issuecomment-2470464481)
+that V8's Wasm-into-JS inlining only triggers for nullable `externref` in the
+Wasm signature — not `anyref`, and not typed references — and that an explicit
+`ref.cast` on the Wasm side is faster than an implicit type check at the
+boundary. That is why the getter takes `externref` and casts internally.
 
-Zena automatically exports a `$stringGetByte(externref, i32) -> i32` function that allows JavaScript to read individual bytes from a Zena string:
+Zena automatically exports a `$stringGetByte(externref, i32) -> i32` function
+that allows JavaScript to read individual bytes from a Zena string:
 
 ```wat
 ;; Auto-generated export
@@ -402,7 +418,10 @@ is generated on the JS side. The glue is the fixed generic layer, and
 what varies per API is emitted into the wasm module — string-constant
 imports and calls against the generic imports — so binding a new host
 API adds no runtime JS, which is the size concern this design set out
-to remove.
+to remove. That covers Zena calling into host objects; a host that
+requires the guest to present a JavaScript module of its own is a
+separate problem, under "Generated JavaScript for host-imposed module
+shapes" below.
 
 A declaration is a claim the compiler cannot check against the host —
 the same trust boundary `@external` functions already have, and a wrong
@@ -415,6 +434,149 @@ can audit or refuse it at instantiation without running anything —
 provided the dynamic `selector()` entry point is not also linked, so a
 policy that wants the manifest property can insist on the
 declarations-only form by denying the dynamic import.
+
+### Declarations from TypeScript
+
+Writing an extern class per host interface by hand is a transcription
+job that never finishes, and for the APIs worth binding the
+transcription already exists: `.d.ts` is how the JavaScript ecosystem
+publishes interface definitions. The compiler should read them and emit
+an extern class per interface, with the marshaling per member chosen
+from the declared types by the rules above.
+
+[cloudflare-workers.md](cloudflare-workers.md) is the worked example:
+Cloudflare publishes its whole Workers API as
+`@cloudflare/workers-types`, regenerated alongside the runtime.
+
+#### Resolving the types
+
+`packages/wit-parser` is the precedent for the output half of this —
+turning resolved interface definitions into Zena type bindings
+([wit-parser.md](wit-parser.md)) — and not for the input half. WIT is a
+small closed language with no type-level computation, so Zena parses it
+directly. TypeScript's type language is not comparable: conditional
+types, mapped types, `infer`, template literal types and recursive
+instantiation add up to a language in their own right, and real `.d.ts`
+files use them. Reimplementing that resolution in Zena would be a large
+project whose output has to agree with `tsc` to be worth anything.
+
+The alternative is to let TypeScript resolve its own types and consume
+the result: run the official checker as a separate program or module,
+ask it for the resolved shape of each declaration, and generate
+bindings from that. This trades a build-time dependency on TypeScript
+for not owning a second implementation of its type system, and it is
+the difference between binding whatever `.d.ts` exists and binding the
+subset a hand-written parser happens to cover. How the checker is
+driven — a Node process the compiler shells out to, its output cached
+beside the generated bindings — is open.
+
+#### The two directions are not equally hard
+
+JS interop has two directions, and generated code for them has
+different problems.
+
+**JavaScript calling Zena** is the easier one. Zena's semantics are
+close to a subset of JavaScript's: a Zena function is a JS function, a
+thrown `Error` is a thrown JS error, an async entry point settles like
+a promise. Nothing in Zena needs a JS construct that does not exist, so
+a generated shim presents Zena to JS without inventing anything. What
+friction there is is representational rather than semantic — WasmGC
+structs are opaque, so strings and objects cross through accessors —
+and that is the "Strings" pattern above, already solved.
+
+**Zena calling JavaScript** is where the type mapping gets hard,
+because JS has constructs Zena deliberately lacks: `undefined`,
+structural duck typing, dynamic property access, overloaded and
+variadic signatures. This is the direction `.d.ts` bindings serve, and
+the direction the rest of this section is about.
+
+#### Making it callable, then making it nice
+
+Mapping every `.d.ts` construct to idiomatic Zena is not the goal, and
+treating it as one is what makes the problem look intractable. The goal
+is two tiers:
+
+1. **Callable.** Every declaration the checker resolves produces
+   something a Zena program can call, even where the result is not
+   pretty.
+2. **Idiomatic.** Options and overrides turn selected bindings into the
+   API a Zena programmer would have written by hand.
+
+The second tier is per-API work that a human does once and checks in.
+The first has to be mechanical and total, which means the library needs
+types that can represent JS shapes Zena has no native spelling for.
+
+`undefined` is the clearest case. Rather than adding a language-level
+`undefined` to a language that deliberately has none, the JS library
+provides it as an ordinary type — a distinguished `Undefined` value in
+`zena:js`, which extern signatures may mention and normal Zena code
+never sees. `foo: T | undefined` then binds to a union with that type,
+`null` and `undefined` stay distinguishable for the APIs that care, and
+the language keeps its current three-way story intact:
+
+- A record field marked `?` may be **absent** — presence, not
+  nullability (see "Optional Fields" in the language reference and
+  [record-presence.md](record-presence.md)).
+- `T?` is **nullable**: the field is there and may hold null.
+- Default parameters are argument-count based at compile time, with no
+  runtime sentinel, so nothing in Zena proper acquires an `undefined`.
+
+The same move covers shapes with no static spelling. A JS object whose
+keys are not known from its declaration can be exposed as a view
+implementing `Map<String, JsValue>` — `Map` is already an interface in
+`zena:collections`, with `HashMap` as one implementation, so a view
+backed by the generic call layer is another. An index signature or a
+`Record<string, T>` binds to that instead of failing to bind, and the
+object stays reachable with the collection API Zena programmers already
+use.
+
+Where a construct still has no representation, approximating with a
+runtime check beats refusing to bind. A runtime check keeps the program
+sound, which is what separates this from an escape hatch like `any`:
+the value is tested before it is used as the approximated type, and a
+mismatch raises at the boundary instead of propagating. That is the
+trust boundary `@external` already has, where a declaration is an
+unverifiable claim about the host.
+
+Which constructs deserve a real representation, which get a view type,
+and which get a runtime check is a question about the APIs people
+actually bind. Cloudflare Workers is the first concrete answer, and the
+answers should come from working through it and the DOM rather than
+being decided up front.
+
+### Generated JavaScript for host-imposed module shapes
+
+Everything above serves Zena calling JavaScript, and needs no generated
+JavaScript because the guest is the caller: the fixed generic layer is
+all the JavaScript that has to exist.
+
+The other direction, JavaScript calling Zena, is where generated
+JavaScript appears — and it appears because some hosts require the guest
+to _present_ a module of a particular shape rather than merely being
+available to call. Cloudflare Workers is the case in hand: a Worker's
+entry module
+must be JavaScript — workerd's module table has no wasm entry type, and
+importing a `.wasm` yields a `WebAssembly.Module` for JavaScript to
+instantiate — and a Durable Object is bound by its class name, so the
+class has to exist as a JavaScript class with its RPC methods on it. No
+amount of import-side generality removes that file.
+
+So there is a second kind of generated code, separate from the binding
+layer: a JavaScript module written from the guest's own exports and the
+shape the host demands. It is the mirror of an extern class. An extern
+class declares a host object Zena calls into; this declares a Zena
+object the host calls into, and the compiler emits the JavaScript that
+presents it.
+
+The generator belongs in the compiler, which knows from the source
+which functions are handlers, which are async, and what each parameter
+means. Recovering that from a finished wasm module is the approach
+[workers-rs](https://github.com/cloudflare/workers-rs) takes, and its
+`worker-build` recovers it by string-matching wasm-bindgen's generated
+JavaScript to find entry points.
+
+This does not change the target confinement below: the emitted module
+is JavaScript, so it exists only on the JS-hosted targets.
 
 ### Target confinement
 

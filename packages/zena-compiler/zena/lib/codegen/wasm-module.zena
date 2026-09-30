@@ -1735,6 +1735,17 @@ export final class WasmModule {
     this.exportTagMap["__zena_cancellation"] = tag;
   }
 
+  // The four `$string*` helpers below carry the String as nullable
+  // `externref` and cast internally (scaffold.zena's `externToString`
+  // does the `any.convert_extern` + `ref.cast`). The type is load-bearing,
+  // not incidental: V8's Wasm-into-JS inlining is what makes the host's
+  // per-byte loop fast, and Jakob Kummerow (V8) states it triggers only
+  // for nullable `externref` — `anyref` is unsupported, and an implicit
+  // type check at the boundary is slower than an explicit `ref.cast`
+  // inside. Widening these to `anyref` would keep every test passing and
+  // silently lose the optimization.
+  // https://github.com/WebAssembly/gc/issues/568#issuecomment-2470464481
+  // See docs/design/host-interop.md, "Strings".
   ensureStringCreate(model: SemanticModel): void {
     if (this.stringCreateFunc != null) return;
     let createParams = new Array<ValType>();
