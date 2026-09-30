@@ -70,6 +70,36 @@ export let tests = suite('JSON Parser', (): void => {
       let s: String = parseJson('"a\\/b"') as String;
       equal(s, 'a/b');
     });
+
+    test('escape sequence - unicode, one byte', (ctx: TestContext): void => {
+      let s: String = parseJson('"\\u0041\\u007a"') as String;
+      equal(s, 'Az');
+    });
+
+    test('escape sequence - unicode, two and three bytes', (ctx: TestContext): void => {
+      // U+00E9 is two bytes in UTF-8, U+20AC three.
+      let s: String = parseJson('"caf\\u00e9 \\u20AC"') as String;
+      equal(s, 'café €');
+    });
+
+    test('escape sequence - unicode surrogate pair', (ctx: TestContext): void => {
+      // U+1F600, written as the UTF-16 pair JSON uses for it.
+      let s: String = parseJson('"\\ud83d\\ude00"') as String;
+      equal(s, '😀');
+      equal(s.length, 4);
+    });
+
+    test('escape sequence - lone surrogate becomes U+FFFD', (ctx: TestContext): void => {
+      let s: String = parseJson('"a\\ud83db"') as String;
+      equal(s, 'a�b');
+    });
+
+    test('escape sequence - backspace and form feed', (ctx: TestContext): void => {
+      let s: String = parseJson('"\\b\\f"') as String;
+      equal(s.length, 2);
+      equal(s.getByteAt(0), 8);
+      equal(s.getByteAt(1), 12);
+    });
   });
 
   suite('strings - errors', (): void => {
