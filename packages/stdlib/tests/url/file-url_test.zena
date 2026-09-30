@@ -1,0 +1,35 @@
+import {suite, test} from 'zena:test';
+import {equal, throws} from 'zena:assert';
+import {fileURLToPath, pathToFileURL} from 'zena:url';
+
+export let tests = suite('file URLs', (): void => {
+  test('a path becomes a file URL, with what a path allows escaped', () => {
+    equal(pathToFileURL('/home/a/x.zena'), 'file:///home/a/x.zena');
+    equal(pathToFileURL('/home/a b/x.zena'), 'file:///home/a%20b/x.zena');
+    equal(pathToFileURL('/tmp/100%/#1?.txt'), 'file:///tmp/100%25/%231%3F.txt');
+    equal(pathToFileURL('/tmp/café'), 'file:///tmp/caf%C3%A9');
+  });
+
+  test('a file URL becomes its path, escapes decoded', () => {
+    equal(fileURLToPath('file:///home/a%20b/x.zena'), '/home/a b/x.zena');
+    equal(fileURLToPath('file:///tmp/caf%C3%A9'), '/tmp/café');
+    // An empty host and `localhost` both mean this machine.
+    equal(fileURLToPath('file://localhost/etc/hosts'), '/etc/hosts');
+  });
+
+  test('the two are inverses', () => {
+    for (let path in ['/', '/a/b c/d', '/tmp/100%/#1?.txt', '/tmp/café']) {
+      equal(fileURLToPath(pathToFileURL(path)), path);
+    }
+  });
+
+  test('a URL that names no local file is refused', () => {
+    throws(() => { fileURLToPath('https://example.com/x'); });
+    throws(() => { fileURLToPath('file://server/share/x'); });
+    throws(() => { fileURLToPath('file:///a%2Fb'); });
+  });
+
+  test('a relative path is refused', () => {
+    throws(() => { pathToFileURL('relative/x.zena'); });
+  });
+});

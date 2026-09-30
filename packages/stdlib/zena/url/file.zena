@@ -1,0 +1,66 @@
+/**
+ * Converting between `file:` URLs and file-system paths, as Node's
+ * `url` module does.
+ *
+ * ```zena
+ * pathToFileURL('/home/a b/x.zena');           // 'file:///home/a%20b/x.zena'
+ * fileURLToPath('file:///home/a%20b/x.zena');  // '/home/a b/x.zena'
+ * ```
+ *
+ * Paths are POSIX paths: absolute, with `/` between segments.
+ */
+
+import { StringBuilder } from 'zena:core';
+import {
+  EncodeSet, appendPercentEncodedByte, byteNeedsPercentEncoding, percentDecode,
+} from './encoding.zena';
+import { URL } from './url.zena';
+
+let PERCENT = 0x25;
+let SLASH = 0x2F;
+
+/**
+ * The `file:` URL for an absolute path. Everything a URL's path cannot
+ * hold is percent-encoded, and so is `%` itself, so that the path comes
+ * back unchanged from `fileURLToPath`.
+ */
+export let pathToFileURL = (path: String): String => {
+  if (path.length == 0 || path.getByteAt(0) != SLASH) {
+    throw new Error(`pathToFileURL needs an absolute path, and '${path}' is not one`);
+  }
+  let out = new StringBuilder(path.length + 8);
+  out.append('file://');
+  for (var i = 0; i < path.length; i += 1) {
+    let b = path.getByteAt(i);
+    if (b == PERCENT || byteNeedsPercentEncoding(b, EncodeSet.Path)) {
+      appendPercentEncodedByte(out, b);
+    } else {
+      out.appendByte(b);
+    }
+  }
+  return out.toString();
+};
+
+/**
+ * The path a `file:` URL names, percent-escapes decoded. Throws for a URL
+ * of another scheme, for one naming a host other than this machine
+ * (`file://localhost/` is this machine), and for a path with an encoded
+ * `/`, which no path can hold.
+ */
+export let fileURLToPath = (url: String): String => {
+  let parsed = URL.parse(url);
+  if (parsed == null) {
+    throw new Error(`'${url}' is not a URL`);
+  }
+  if (parsed.protocol != 'file:') {
+    throw new Error(`'${url}' is not a file URL`);
+  }
+  if (parsed.hostname != '' && parsed.hostname != 'localhost') {
+    throw new Error(`'${url}' names a file on another host, '${parsed.hostname}'`);
+  }
+  let encoded = parsed.pathname;
+  if (encoded.asciiLowerCase().contains('%2f')) {
+    throw new Error(`'${url}' holds an encoded '/', which a path cannot`);
+  }
+  return percentDecode(encoded);
+};
