@@ -11,21 +11,26 @@ import { Color, BoxLook, TextLook, Edges, Align } from 'zenafx:ui/style';
 import { Box, Widget, box, slot, text, expand } from './widget.zena';
 import { some, none } from 'zena:core';
 
+// Shared by every card, because every card draws them the same way. What
+// varies per card lives on the instance instead.
 let surface = new Color(0.94, 0.96, 0.99, 1.0);
 let edge = new Color(0.68, 0.75, 0.86, 1.0);
-let heading = new Color(0.18, 0.27, 0.45, 1.0);
 /** The well is paler than the card, so the hole reads as a hole. */
 let wellFill = new Color(1.0, 1.0, 1.0, 1.0);
 let wellEdge = new Color(0.78, 0.84, 0.91, 1.0);
 
-let headingLook = new TextLook('system-ui', 15.0, 600 as u16, false, heading);
 let cardLook = new BoxLook(some(surface), some(edge), 1.0, 12.0, 1.0);
 let wellLook = new BoxLook(some(wellFill), some(wellEdge), 1.0, 8.0, 1.0);
 
 export class Card implements Widget {
   #title: String;
+  /**
+   * The title's colour. On the instance rather than the module, so two
+   * cards in one tree can differ.
+   */
+  #accent: Color;
 
-  new(title: String) : #title = title;
+  new(title: String, accent: Color) : #title = title, #accent = accent;
 
   build(): Box {
     return box({
@@ -34,7 +39,8 @@ export class Card implements Widget {
       gap: 10.0,
       padding: new Edges(18.0, 22.0, 22.0, 22.0)
     }, [
-      text(this.#title, headingLook),
+      text(this.#title, new TextLook('system-ui', 15.0, 600 as u16, false,
+                                     this.#accent)),
       slot({
         look: wellLook,
         padding: new Edges(16.0, 18.0, 16.0, 18.0)
@@ -44,6 +50,6 @@ export class Card implements Widget {
 }
 
 /** A card wrapped round some content. */
-export function card(title: String, children: Array<Box>): Box {
-  return expand(new Card(title), children);
+export function card(title: String, accent: Color, children: Array<Box>): Box {
+  return expand(new Card(title, accent), children);
 }

@@ -85,7 +85,16 @@ requested.
 ### Widgets inside one component
 
 [`examples/zenafx/widgets/`](../../examples/zenafx/widgets/) is one
-component holding three widget classes, composed in the language.
+component holding three widget classes, composed in the language: a page of
+three cards, each with its own title, accent colour and content, and one of
+them holding two labels in its slot.
+
+Instances are what carry that variation. `Card` keeps its title and accent
+as instance fields and reads them in `build`, so three cards in one tree
+draw three titles; the shared constants — the card's fill, its border, its
+corner radius — stay module-level, because every card draws them the same
+way. `tests/app.rs` measures the three title runs and asserts they differ,
+which is the assertion a module-level title fails.
 
 A widget there is an ordinary Zena object with one method, `build(): Box`.
 It does not receive its children: it puts a `slot` in its tree and the

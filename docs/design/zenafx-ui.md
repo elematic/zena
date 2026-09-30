@@ -1203,7 +1203,7 @@ and is evaluated only on absence. Nine of those are the whole of `flexOf`.
 
 Presence is real rather than a sentinel, which matters for the numeric
 fields: `{gap: 0.0}` reads `0.0` and not the default. A default in a
-*destructuring pattern* is the thing that is still limited to a literal —
+_destructuring pattern_ is the thing that is still limited to a literal —
 `let {axis = Axis.Column} = opts` fails with "Variable 'Axis' not found" —
 but nothing here needs one.
 
@@ -1258,12 +1258,26 @@ contributes boxes to one tree, the root flattens it, and one `solve` sizes
 everything. Nothing asks a widget how big it is, because the solve already
 knows.
 
+**A widget class earns its keep at the second instance.** The demo puts
+three `Card`s on the page, each constructed with its own title and accent
+colour, and one of them holding two labels in its slot. The split that falls
+out is that per-card values — the title, the accent — are instance fields,
+and values every card draws the same way — the fill, the border, the corner
+radius — stay module-level constants.
+
+Card _width_ does not test this, because a card is sized by the label in its
+slot rather than by its title: move the title to the module and the three
+cards still come out three widths, sized by three different labels.
+`each_card_instance_draws_its_own_title` measures the three shaped title runs
+instead and asserts they differ. Against a `Card` that reads a module-level
+title, all three measure 31.19px and it fails; the width assertion passes.
+
 **The boundary is expensive, measured.** The same picture, one frame:
 
-| | `solve` calls | cross-component `measure` calls |
-| --- | --- | --- |
-| three components | 6 | 54 |
-| one component, retained | 0 | 0 |
+|                         | `solve` calls | cross-component `measure` calls |
+| ----------------------- | ------------- | ------------------------------- |
+| three components        | 6             | 54                              |
+| one component, retained | 0             | 0                               |
 
 Zero, not one, because a retained tree does not call `solve` either: the
 component installed a tree and the host solves it.
@@ -1300,7 +1314,7 @@ general. The WIT said "pre-order" and now says what it means.
 from a `new` expression in a constructor initialiser list fails with `zir
 unsupported: constructor field type`; taking it as a parameter works, which
 is why the tree is composed in `start` rather than in `Root`'s constructor.
-A `use`d `variant` in an *imported* interface encodes as a `future` — "type
+A `use`d `variant` in an _imported_ interface encodes as a `future` — "type
 mismatch for import `import-type-available`: expected variant, found future".
 A `use` does not bring in what the named type depends on, so an interface
 that uses `node` must also name `look`, `flex`, `axis` and the rest by hand,
