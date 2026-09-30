@@ -1,0 +1,75 @@
+/**
+ * `zena lsp`: a language server over standard input and output, for
+ * editors that start one (Neovim, Helix, Zed and others).
+ *
+ * The protocol and the analysis are the language service's
+ * (`language-service:server` and `language-service:service`); this
+ * connects them to stdin and stdout, and to the repository's standard
+ * library and package map. The analysis sees the `zena-cli` target, so
+ * programs that use `zena:fs` or `zena:process` check the way they
+ * build.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { readStdin } from 'zena:cli';
+import { logString } from 'zena:console';
+import { isFile, readFile } from 'zena:fs';
+import { CompilerHost } from 'zena-compiler:library-loader';
+import { PackageConfig } from 'zena-compiler:module-resolver';
+import { loadPackageMap } from 'zena-compiler:package-manifest';
+import { createLanguageService } from 'language-service:service';
+import { LspServer, MessageReader, frame } from 'language-service:server';
+import { Options, repoRoot, stdlibDir } from './env.zena';
+
+/** A file's text, or null when it cannot be read. */
+let readOrNull = (path: String): String | null => {
+  try {
+    return readFile(path);
+  } catch (e) {
+    return null;
+  }
+};
+
+/** Reads the package manifest for `loadPackageMap`. */
+class ManifestHost implements CompilerHost {
+  new();
+
+  readFile(path: String): String {
+    return readFile(path);
+  }
+}
+
+/**
+ * The repository's package map, with absolute roots so that they match
+ * the absolute paths an editor sends.
+ */
+let packageMap = (): Map<String, PackageConfig> | null => {
+  let manifest = `${repoRoot().value}/zena-packages.json`;
+  if (!isFile(manifest)) {
+    return null;
+  }
+  return loadPackageMap(new ManifestHost(), manifest);
+};
+
+export let lspCommand = (args: ParsedArgs, options: Options): i32 => {
+  let service = createLanguageService(
+    stdlibDir().value,
+    readOrNull,
+    'zena-cli',
+    packageMap(),
+  );
+  // Only the protocol's messages may reach stdout: anything else the
+  // server has to say goes to stderr.
+  let server = new LspServer(service, readOrNull, (json: String): void => {
+    logString(frame(json));
+  });
+  let messages = new MessageReader((): String => readStdin(65536));
+  while (!server.exited) {
+    let body = messages.next();
+    if (body == null) {
+      break;
+    }
+    server.handle(body);
+  }
+  return 0;
+};

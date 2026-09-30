@@ -89,6 +89,11 @@ so a query for a document that was never checked still works.
 
 ## Building
 
+The analysis is `zena/lib/service.zena`, a library that `zena/lsp.zena`
+wraps in the flat exports this API calls. The same library, with the
+protocol in `zena/lib/server.zena`, is the language server that
+`zena lsp` runs over stdin and stdout for other editors.
+
 `lsp.wasm` is built from `zena/lsp.zena` by the Zena compiler:
 
 ```sh

@@ -73,9 +73,36 @@ compiler can load dependency sources from the filesystem.
 
 ### Phase 2: Standalone LSP Server
 
-When the CLI is separated from Node/TypeScript, add a `zena lsp` command that
-speaks LSP over stdio. The VS Code extension becomes a thin client. Other
-editors (Neovim, Helix, Zed) get support for free.
+`zena lsp` speaks LSP over stdio, for editors that start a server process
+(Neovim, Helix, Zed and others). It is part of the zena command's own
+module (see [cli-module.md](./cli-module.md)).
+
+The analysis moved out of `lsp.zena` into a library both use,
+`packages/language-service/zena/lib/service.zena` (`language-service:service`
+in `zena-packages.json`). A program passes the service a function that
+reads files that are not open: `lsp.zena` passes one that calls its
+`read_file` host import, and `zena lsp` one over `zena:fs`.
+`lib/server.zena` (`language-service:server`) is the protocol:
+
+- `MessageReader` splits the input into `Content-Length`-framed messages,
+  and `frame` adds the header to a reply.
+- `LspServer` answers `initialize`, `shutdown` and `exit`, keeps the open
+  documents (full-text sync: the client sends the whole text on every
+  change), publishes each document's diagnostics when it opens or
+  changes, and answers hover, definition, document symbols, completion
+  and formatting.
+- `offsetOf` and `positionOf` convert between the protocol's positions (a
+  line and a UTF-16 character offset) and the service's UTF-8 byte
+  offsets.
+
+`zena lsp` analyses for the `zena-cli` target and loads the repository's
+`zena-packages.json`, so a file that uses `zena:fs` or imports
+`zena-compiler:parser` checks the way it builds. It reads stdin with
+`zena:cli`'s `readStdin`. Diagnostics are published for the document
+that was checked; problems it finds in the files that document imports
+wait until those files are opened.
+
+The VS Code extension still loads `lsp.wasm` in process.
 
 ---
 

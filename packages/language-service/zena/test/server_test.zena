@@ -1,0 +1,138 @@
+// The language server's parts: protocol positions against byte offsets,
+// file URIs, message framing, and a session with the server itself. Run
+// from the repository root, which the service reads the standard library
+// from.
+import { suite, test } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { JsonArray, JsonObject, JsonValue, jsonGet, parseJson } from 'zena:json';
+import { createLanguageService } from '../lib/service.zena';
+import {
+  LspServer, MessageReader, frame, offsetOf, pathToUri, positionOf, uriToPath,
+} from '../lib/server.zena';
+
+let readOrNull = (path: String): String | null => {
+  try {
+    return readFile(path);
+  } catch (e) {
+    return null;
+  }
+};
+
+/** A message reader over fixed chunks, as if they arrived one by one. */
+let readerOf = (chunks: Array<String>): MessageReader => {
+  var next = 0;
+  return new MessageReader((): String => {
+    if (next >= chunks.length) {
+      return '';
+    }
+    let chunk = chunks[next];
+    next += 1;
+    return chunk;
+  });
+};
+
+let message = (json: String): String => frame(json);
+
+let numberAt = (value: JsonValue, path: String): i32 => {
+  let found = jsonGet(value, path);
+  if (found is Box<f64>) {
+    return found.value as i32;
+  }
+  return -1;
+};
+
+export let tests = suite('language server', (): void => {
+  test('positions count UTF-16 units, offsets count bytes', () => {
+    // 'é' is two bytes and one UTF-16 unit; '😀' four bytes and two.
+    let source = 'ab\né😀x\n';
+    equal(offsetOf(source, {line: 0, character: 1}), 1);
+    equal(offsetOf(source, {line: 1, character: 0}), 3);
+    equal(offsetOf(source, {line: 1, character: 1}), 5);
+    equal(offsetOf(source, {line: 1, character: 3}), 9);
+    // Past the end of a line stops at the line's end.
+    equal(offsetOf(source, {line: 1, character: 40}), 10);
+
+    let x = positionOf(source, 9);
+    equal(x.line, 1);
+    equal(x.character, 3);
+    let start = positionOf(source, 3);
+    equal(start.line, 1);
+    equal(start.character, 0);
+  });
+
+  test('file URIs and paths convert both ways', () => {
+    equal(uriToPath('file:///home/a%20b/x.zena'), '/home/a b/x.zena');
+    equal(pathToUri('/home/a b/x.zena'), 'file:///home/a%20b/x.zena');
+    let path = '/tmp/café/x.zena';
+    equal(uriToPath(pathToUri(path)), path);
+  });
+
+  test('messages are split out of chunks, whatever the chunks', () => {
+    let one = message('{"a":1}');
+    let two = message('{"b":"é"}');
+    let whole = one + two;
+    // Every split point, including through a header and a UTF-8 body.
+    for (var cut = 1; cut < whole.length; cut += 1) {
+      let reader = readerOf([whole.sliceBytes(0, cut), whole.sliceBytes(cut, whole.length)]);
+      equal(reader.next() ?? 'none', '{"a":1}');
+      equal(reader.next() ?? 'none', '{"b":"é"}');
+      isTrue(reader.next() == null);
+    }
+  });
+
+  test('a header name is matched whatever its case', () => {
+    let reader = readerOf(['content-length: 2\r\nContent-Type: x\r\n\r\n{}']);
+    equal(reader.next() ?? 'none', '{}');
+  });
+
+  test('a session: open a document, then ask about it', () => {
+    let sent = new Array<String>();
+    let service = createLanguageService(
+      'packages/stdlib/zena', readOrNull, 'zena-cli');
+    let server = new LspServer(service, readOrNull, (json: String): void => {
+      sent.push(json);
+    });
+    let uri = 'file:///nowhere/sample.zena';
+    let text = 'let one = (): i32 => 1;\nlet wrong: String = one();\n';
+
+    server.handle('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}');
+    equal(numberAt(parseJson(sent[0]), '.result.capabilities.textDocumentSync.change'), 1);
+
+    server.handle(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"${uri}","text":${'"'}let one = (): i32 => 1;\\nlet wrong: String = one();\\n${'"'}}}}`);
+    let published = parseJson(sent[1]);
+    equal(jsonGet(published, '.method') as String, 'textDocument/publishDiagnostics');
+    let diagnostics = jsonGet(published, '.params.diagnostics') as JsonArray;
+    isTrue(diagnostics.length >= 1);
+    // The error is on the second line.
+    equal(numberAt(diagnostics[0], '.range.start.line'), 1);
+
+    // Hover over `one` in `one()`, on the second line.
+    server.handle(`{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"${uri}"},"position":{"line":1,"character":21}}}`);
+    let hover = jsonGet(parseJson(sent[2]), '.result.contents.value') as String;
+    isTrue(hover.contains('one'));
+
+    server.handle(`{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"${uri}"},"position":{"line":1,"character":21}}}`);
+    let definition = parseJson(sent[3]);
+    equal(numberAt(definition, '.result.range.start.line'), 0);
+    equal(numberAt(definition, '.result.range.start.character'), 4);
+
+    server.handle('{"jsonrpc":"2.0","id":"x","method":"no/such","params":{}}');
+    equal(numberAt(parseJson(sent[4]), '.error.code'), -32601);
+    equal(jsonGet(parseJson(sent[4]), '.id') as String, 'x');
+
+    isFalse(server.exited);
+    server.handle('{"jsonrpc":"2.0","method":"exit"}');
+    isTrue(server.exited);
+  });
+
+  test('a message that is not JSON gets a parse error', () => {
+    let sent = new Array<String>();
+    let service = createLanguageService('packages/stdlib/zena', readOrNull, 'zena-cli');
+    let server = new LspServer(service, readOrNull, (json: String): void => {
+      sent.push(json);
+    });
+    server.handle('{not json');
+    equal(numberAt(parseJson(sent[0]), '.error.code'), -32700);
+  });
+});

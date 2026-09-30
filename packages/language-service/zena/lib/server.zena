@@ -1,0 +1,633 @@
+/**
+ * A language server: the Language Server Protocol over the language
+ * service, for editors that start a server process and talk to it over
+ * its standard input and output (Neovim, Helix, Zed and others).
+ *
+ * Messages are JSON-RPC, each framed by a `Content-Length` header.
+ * `MessageReader` takes the bytes apart into messages, `LspServer`
+ * answers each one, and `frame` puts a reply's header on. The transport
+ * is the caller's: `zena lsp` connects them to stdin and stdout.
+ *
+ * The server keeps whole documents: the client sends the full text of a
+ * document when it opens and on every change. Positions in the protocol
+ * are a line and a UTF-16 character offset into it; the service works in
+ * UTF-8 byte offsets, and `offsetOf` and `positionOf` convert.
+ */
+
+import { StringBuilder } from 'zena:core';
+import { JsonBuilder, JsonObject, JsonArray, JsonValue, parseJson } from 'zena:json';
+import { Diagnostic, DiagnosticSeverity, SourceSpan } from 'zena-compiler:diagnostics';
+import { format as formatSource } from 'zena-formatter:printer';
+import {
+  CompletionItem, DocumentSymbol, FileReader, HoverResult, LanguageService,
+} from './service.zena';
+
+/** A position as the protocol counts it: a line and a UTF-16 offset. */
+export type Position = {line: i32, character: i32};
+
+/** How many bytes the UTF-8 character starting with `lead` takes. */
+let utf8Size = (lead: i32): i32 => {
+  if (lead < 0xC0) {
+    // ASCII, or a stray continuation byte counted on its own.
+    return 1;
+  }
+  if (lead < 0xE0) {
+    return 2;
+  }
+  if (lead < 0xF0) {
+    return 3;
+  }
+  return 4;
+};
+
+/** How many UTF-16 units a UTF-8 character of `size` bytes takes. */
+let utf16Width = (size: i32): i32 => if (size == 4) 2 else 1;
+
+/** The byte offset in `source` of a protocol position. */
+export let offsetOf = (source: String, position: Position): i32 => {
+  var offset = 0;
+  var line = 0;
+  while (line < position.line && offset < source.length) {
+    if (source.getByteAt(offset) == 10) {
+      line += 1;
+    }
+    offset += 1;
+  }
+  var units = 0;
+  while (units < position.character && offset < source.length) {
+    let b = source.getByteAt(offset);
+    if (b == 10) {
+      break;
+    }
+    let size = utf8Size(b);
+    offset += size;
+    units += utf16Width(size);
+  }
+  if (offset > source.length) {
+    return source.length;
+  }
+  return offset;
+};
+
+/** The protocol position of a byte offset in `source`. */
+export let positionOf = (source: String, offset: i32): Position => {
+  let end = if (offset < source.length) offset else source.length;
+  var line = 0;
+  var lineStart = 0;
+  for (var i = 0; i < end; i += 1) {
+    if (source.getByteAt(i) == 10) {
+      line += 1;
+      lineStart = i + 1;
+    }
+  }
+  var character = 0;
+  var i = lineStart;
+  while (i < end) {
+    let size = utf8Size(source.getByteAt(i));
+    character += utf16Width(size);
+    i += size;
+  }
+  return {line: line, character: character};
+};
+
+let hexValue = (c: i32): i32 => {
+  if (c >= 48 && c <= 57) {
+    return c - 48;
+  }
+  if (c >= 97 && c <= 102) {
+    return c - 87;
+  }
+  if (c >= 65 && c <= 70) {
+    return c - 55;
+  }
+  return -1;
+};
+
+/**
+ * The path a `file:` URI names, percent-escapes decoded. Any other URI
+ * is returned as it is.
+ */
+export let uriToPath = (uri: String): String => {
+  if (!uri.startsWith('file://')) {
+    return uri;
+  }
+  let out = new StringBuilder();
+  var i = 7;
+  while (i < uri.length) {
+    let c = uri.getByteAt(i);
+    if (c == 37 && i + 2 < uri.length) {  // '%'
+      let high = hexValue(uri.getByteAt(i + 1));
+      let low = hexValue(uri.getByteAt(i + 2));
+      if (high >= 0 && low >= 0) {
+        out.appendByte(high * 16 + low);
+        i += 3;
+        continue;
+      }
+    }
+    out.appendByte(c);
+    i += 1;
+  }
+  return out.toString();
+};
+
+let hexDigit = (n: i32): i32 => if (n < 10) 48 + n else 55 + n;
+
+/** A `file:` URI for an absolute path, escaping what a URI cannot hold. */
+export let pathToUri = (path: String): String => {
+  let out = new StringBuilder();
+  out.append('file://');
+  for (var i = 0; i < path.length; i += 1) {
+    let c = path.getByteAt(i);
+    let plain = (c >= 97 && c <= 122) || (c >= 65 && c <= 90) ||
+        (c >= 48 && c <= 57) || c == 47 || c == 45 || c == 46 ||
+        c == 95 || c == 126;
+    if (plain) {
+      out.appendByte(c);
+    } else {
+      out.appendByte(37);
+      out.appendByte(hexDigit(c >> 4));
+      out.appendByte(hexDigit(c & 15));
+    }
+  }
+  return out.toString();
+};
+
+/** The index of `needle` in `text` at or after `from`, or -1. */
+let find = (text: String, needle: String, from: i32): i32 => {
+  let last = text.length - needle.length;
+  for (var i = from; i <= last; i += 1) {
+    var matched = true;
+    for (var k = 0; k < needle.length; k += 1) {
+      if (text.getByteAt(i + k) != needle.getByteAt(k)) {
+        matched = false;
+        break;
+      }
+    }
+    if (matched) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+let lowerByte = (c: i32): i32 => if (c >= 65 && c <= 90) c + 32 else c;
+
+/** The value of the `Content-Length` header in a header block, or -1. */
+let contentLength = (headers: String): i32 => {
+  for (let line in headers.split('\r\n')) {
+    let colon = find(line, ':', 0);
+    if (colon < 0) {
+      continue;
+    }
+    let name = line.sliceBytes(0, colon);
+    var isLength = name.length == 14;
+    let expected = 'content-length';
+    for (var k = 0; isLength && k < 14; k += 1) {
+      if (lowerByte(name.getByteAt(k)) != expected.getByteAt(k)) {
+        isLength = false;
+      }
+    }
+    if (!isLength) {
+      continue;
+    }
+    var value = 0;
+    var digits = 0;
+    for (var k = colon + 1; k < line.length; k += 1) {
+      let c = line.getByteAt(k);
+      if (c >= 48 && c <= 57) {
+        value = value * 10 + (c - 48);
+        digits += 1;
+      }
+    }
+    return if (digits > 0) value else -1;
+  }
+  return -1;
+};
+
+/**
+ * Takes a byte stream apart into messages. Each message is a block of
+ * headers, a blank line, and `Content-Length` bytes of body.
+ */
+export final class MessageReader {
+  /** Reads what the input has next; '' at the end of it. */
+  #read: () => String;
+  var #buffer = '';
+
+  new(read: () => String) : #read = read;
+
+  /** The next message's body, or null at the end of the input. */
+  next(): String | null {
+    while (true) {
+      let headerEnd = find(this.#buffer, '\r\n\r\n', 0);
+      if (headerEnd >= 0) {
+        let length = contentLength(this.#buffer.sliceBytes(0, headerEnd));
+        if (length < 0) {
+          throw new Error('A message has no Content-Length header');
+        }
+        let bodyStart = headerEnd + 4;
+        if (this.#buffer.length >= bodyStart + length) {
+          let body = this.#buffer.sliceBytes(bodyStart, bodyStart + length);
+          this.#buffer = this.#buffer.sliceBytes(bodyStart + length, this.#buffer.length);
+          return body;
+        }
+      }
+      let read = this.#read;
+      let chunk = read();
+      if (chunk == '') {
+        return null;
+      }
+      this.#buffer = this.#buffer + chunk;
+    }
+    return null;
+  }
+}
+
+/** A message with its `Content-Length` header, ready to write. */
+export let frame = (body: String): String =>
+  `Content-Length: ${body.length}\r\n\r\n${body}`;
+
+/** A JSON-RPC error code the protocol defines. */
+enum ErrorCode {
+  ParseError,
+  MethodNotFound,
+  InternalError,
+}
+
+let errorNumber = (code: ErrorCode): i32 => match (code) {
+  case ErrorCode.ParseError: -32700
+  case ErrorCode.MethodNotFound: -32601
+  case ErrorCode.InternalError: -32603
+};
+
+/** The protocol's DiagnosticSeverity number for a severity. */
+let severityNumber = (severity: DiagnosticSeverity): i32 => match (severity) {
+  case DiagnosticSeverity.Error: 1
+  case DiagnosticSeverity.Warning: 2
+  case DiagnosticSeverity.Information: 3
+};
+
+let stringAt = (value: JsonValue, key: String): String | null => {
+  if (value is JsonObject) {
+    let found = value[key];
+    if (found is String) {
+      return found;
+    }
+  }
+  return null;
+};
+
+let objectAt = (value: JsonValue, key: String): JsonObject | null => {
+  if (value is JsonObject) {
+    let found = value[key];
+    if (found is JsonObject) {
+      return found;
+    }
+  }
+  return null;
+};
+
+let intAt = (value: JsonValue, key: String): i32 => {
+  if (value is JsonObject) {
+    let found = value[key];
+    if (found is Box<f64>) {
+      return found.value as i32;
+    }
+  }
+  return 0;
+};
+
+/** Writes a request's id back as it came: a number or a string. */
+let writeId = (b: JsonBuilder, id: JsonValue): void => {
+  if (id is Box<f64>) {
+    b.i64(id.value as i64);
+  } else if (id is String) {
+    b.string(id);
+  } else {
+    b.nullValue();
+  }
+};
+
+let writePosition = (b: JsonBuilder, position: Position): void => {
+  b.beginObject().key('line').i32(position.line)
+    .key('character').i32(position.character).endObject();
+};
+
+/** A byte range of `source` as a protocol range. */
+let writeRange = (b: JsonBuilder, source: String, start: i32, end: i32): void => {
+  b.beginObject().key('start');
+  writePosition(b, positionOf(source, start));
+  b.key('end');
+  writePosition(b, positionOf(source, end));
+  b.endObject();
+};
+
+/**
+ * Answers the protocol's messages from a language service.
+ *
+ * `send` is called with each outgoing message's JSON: replies to
+ * requests, and the diagnostics it publishes when a document opens or
+ * changes. Frame it with `frame` before writing it out.
+ */
+export final class LspServer {
+  #service: LanguageService;
+  #readFile: FileReader;
+  #send: (json: String) => void;
+  /** The text of each open document, by path. */
+  #documents = new Map<String, String>();
+  var #exited = false;
+
+  new(service: LanguageService, readFile: FileReader, send: (json: String) => void)
+    : #service = service, #readFile = readFile, #send = send;
+
+  /** True once the client has sent `exit`. */
+  exited: boolean {
+    get {
+      return this.#exited;
+    }
+  }
+
+  /** Answers one message's body. */
+  handle(body: String): void {
+    var message: JsonValue = null;
+    try {
+      message = parseJson(body);
+    } catch (e) {
+      this.#error(null, ErrorCode.ParseError, `Not JSON: ${e.message}`);
+      return;
+    }
+    let method = stringAt(message, 'method') ?? '';
+    let isRequest = message is JsonObject && (message as JsonObject).has('id');
+    let id: JsonValue = if (message is JsonObject) message['id'] else null;
+    let params: JsonValue = if (message is JsonObject) message['params'] else null;
+    try {
+      if (isRequest) {
+        this.#request(id, method, params);
+      } else {
+        this.#notification(method, params);
+      }
+    } catch (e) {
+      if (isRequest) {
+        this.#error(id, ErrorCode.InternalError, e.message);
+      } else {
+        console.error(`zena lsp: ${method}: ${e.message}`);
+      }
+    }
+  }
+
+  #notification(method: String, params: JsonValue): void {
+    if (method == 'exit') {
+      this.#exited = true;
+      return;
+    }
+    let document = objectAt(params, 'textDocument');
+    if (method == 'textDocument/didOpen' && document != null) {
+      let path = uriToPath(stringAt(document, 'uri') ?? '');
+      this.#setDocument(path, stringAt(document, 'text') ?? '');
+      return;
+    }
+    if (method == 'textDocument/didChange' && document != null) {
+      let path = uriToPath(stringAt(document, 'uri') ?? '');
+      // Full synchronization: the last change holds the whole text.
+      if (params is JsonObject) {
+        let changes = params['contentChanges'];
+        if (changes is JsonArray && changes.length > 0) {
+          this.#setDocument(path, stringAt(changes[changes.length - 1], 'text') ?? '');
+        }
+      }
+      return;
+    }
+    if (method == 'textDocument/didClose' && document != null) {
+      let uri = stringAt(document, 'uri') ?? '';
+      let path = uriToPath(uri);
+      this.#documents.delete(path);
+      this.#service.closeDocument(path);
+      this.#publish(uri, '', new Array<Diagnostic>(), path);
+    }
+    // Everything else ('initialized', '$/cancelRequest', saves) needs
+    // nothing from a server that keeps whole documents.
+  }
+
+  #request(id: JsonValue, method: String, params: JsonValue): void {
+    if (method == 'initialize') {
+      this.#reply(id, initializeResult());
+      return;
+    }
+    if (method == 'shutdown') {
+      this.#reply(id, 'null');
+      return;
+    }
+    let document = objectAt(params, 'textDocument');
+    if (document == null) {
+      this.#error(id, ErrorCode.MethodNotFound, `Unsupported request: ${method}`);
+      return;
+    }
+    let path = uriToPath(stringAt(document, 'uri') ?? '');
+    let text = this.#documents.getOr(path, '');
+    let position: Position = {
+      line: intAt(objectAt(params, 'position'), 'line'),
+      character: intAt(objectAt(params, 'position'), 'character'),
+    };
+    let offset = offsetOf(text, position);
+    if (method == 'textDocument/hover') {
+      this.#reply(id, this.#hover(path, offset));
+    } else if (method == 'textDocument/definition') {
+      this.#reply(id, this.#definition(path, offset));
+    } else if (method == 'textDocument/documentSymbol') {
+      this.#reply(id, this.#documentSymbols(path, text));
+    } else if (method == 'textDocument/completion') {
+      this.#reply(id, this.#completions(path, offset));
+    } else if (method == 'textDocument/formatting') {
+      this.#reply(id, this.#formatting(text));
+    } else {
+      this.#error(id, ErrorCode.MethodNotFound, `Unsupported request: ${method}`);
+    }
+  }
+
+  /** Records a document's text, checks it, and publishes what it found. */
+  #setDocument(path: String, text: String): void {
+    this.#documents[path] = text;
+    let diagnostics = this.#service.check(path, text);
+    this.#publish(pathToUri(path), text, diagnostics, path);
+  }
+
+  /**
+   * Sends the diagnostics that belong to `path`. A check also reports
+   * problems in the files a document imports; those are left for when
+   * the files are opened themselves.
+   */
+  #publish(uri: String, text: String, diagnostics: Array<Diagnostic>, path: String): void {
+    let b = new JsonBuilder();
+    b.beginObject().key('jsonrpc').string('2.0')
+      .key('method').string('textDocument/publishDiagnostics')
+      .key('params').beginObject().key('uri').string(uri)
+      .key('diagnostics').beginArray();
+    for (let diagnostic in diagnostics) {
+      var start = 0;
+      var end = 0;
+      let location = diagnostic.location;
+      if (location != null) {
+        if (location.file != path && location.file != `/${path}`) {
+          continue;
+        }
+        start = location.start;
+        end = location.start + location.length;
+      }
+      b.beginObject().key('range');
+      writeRange(b, text, start, end);
+      b.key('severity').i32(severityNumber(diagnostic.severity))
+        .key('source').string('zena')
+        .key('message').string(diagnostic.message)
+        .endObject();
+    }
+    b.endArray().endObject().endObject();
+    let send = this.#send;
+    send(b.toString());
+  }
+
+  #hover(path: String, offset: i32): String {
+    let hover = this.#service.getHover(path, offset);
+    if (hover == null) {
+      return 'null';
+    }
+    var value = '```zena\n' + hover.label + '\n```';
+    if (hover.docComment != '') {
+      value = value + '\n\n---\n\n' + hover.docComment;
+    }
+    let b = new JsonBuilder();
+    b.beginObject().key('contents').beginObject()
+      .key('kind').string('markdown').key('value').string(value)
+      .endObject().endObject();
+    return b.toString();
+  }
+
+  /** The text of a file, open or on disk; null when it cannot be read. */
+  #textOf(path: String): String | null {
+    if (let (true, open) = this.#documents.get(path)) {
+      return open;
+    }
+    let read = this.#readFile;
+    return read(path);
+  }
+
+  #definition(path: String, offset: i32): String {
+    let span = this.#service.getDefinition(path, offset);
+    if (span == null) {
+      return 'null';
+    }
+    let b = new JsonBuilder();
+    b.beginObject().key('uri').string(pathToUri(span.file)).key('range');
+    let text = this.#textOf(span.file);
+    if (text != null) {
+      writeRange(b, text, span.start, span.start + span.length);
+    } else {
+      // Without the text, the line and column the span carries are the
+      // best there is; the column counts bytes.
+      let at: Position = {line: span.line - 1, character: span.column - 1};
+      b.beginObject().key('start');
+      writePosition(b, at);
+      b.key('end');
+      writePosition(b, at);
+      b.endObject();
+    }
+    b.endObject();
+    return b.toString();
+  }
+
+  #documentSymbols(path: String, text: String): String {
+    let b = new JsonBuilder();
+    b.beginArray();
+    for (let entry in this.#service.getDocumentSymbols(path, text)) {
+      writeSymbol(b, text, entry);
+    }
+    b.endArray();
+    return b.toString();
+  }
+
+  #completions(path: String, offset: i32): String {
+    let b = new JsonBuilder();
+    b.beginArray();
+    for (let item in this.#service.getCompletions(path, offset)) {
+      b.beginObject().key('label').string(item.label).key('kind').i32(item.kind);
+      if (item.detail != '') {
+        b.key('detail').string(item.detail);
+      }
+      if (item.docComment != '') {
+        b.key('documentation').beginObject()
+          .key('kind').string('markdown').key('value').string(item.docComment)
+          .endObject();
+      }
+      b.endObject();
+    }
+    b.endArray();
+    return b.toString();
+  }
+
+  /** One edit replacing the whole document, or none if it is formatted. */
+  #formatting(text: String): String {
+    let formatted = formatSource(text);
+    let b = new JsonBuilder();
+    b.beginArray();
+    if (formatted != text) {
+      b.beginObject().key('range');
+      writeRange(b, text, 0, text.length);
+      b.key('newText').string(formatted).endObject();
+    }
+    b.endArray();
+    return b.toString();
+  }
+
+  /** Sends a request's result, given as JSON. */
+  #reply(id: JsonValue, result: String): void {
+    let b = new JsonBuilder();
+    b.beginObject().key('jsonrpc').string('2.0').key('id');
+    writeId(b, id);
+    b.key('result').raw(result).endObject();
+    let send = this.#send;
+    send(b.toString());
+  }
+
+  #error(id: JsonValue, code: ErrorCode, message: String): void {
+    let b = new JsonBuilder();
+    b.beginObject().key('jsonrpc').string('2.0').key('id');
+    writeId(b, id);
+    b.key('error').beginObject().key('code').i32(errorNumber(code))
+      .key('message').string(message).endObject().endObject();
+    let send = this.#send;
+    send(b.toString());
+  }
+}
+
+let writeSymbol = (b: JsonBuilder, text: String, entry: DocumentSymbol): void => {
+  b.beginObject().key('name').string(entry.name).key('kind').i32(entry.kind)
+    .key('range');
+  writeRange(b, text, entry.start, entry.end);
+  b.key('selectionRange');
+  writeRange(b, text, entry.selStart, entry.selEnd);
+  if (entry.children.length > 0) {
+    b.key('children').beginArray();
+    for (let child in entry.children) {
+      writeSymbol(b, text, child);
+    }
+    b.endArray();
+  }
+  b.endObject();
+};
+
+/** What the server can do, as `initialize` reports it. */
+let initializeResult = (): String => {
+  let b = new JsonBuilder();
+  b.beginObject().key('capabilities').beginObject()
+    // Full text on open and on every change (TextDocumentSyncKind.Full).
+    .key('textDocumentSync').beginObject()
+      .key('openClose').bool(true).key('change').i32(1).endObject()
+    .key('hoverProvider').bool(true)
+    .key('definitionProvider').bool(true)
+    .key('documentSymbolProvider').bool(true)
+    .key('completionProvider').beginObject()
+      .key('triggerCharacters').beginArray().string('.').endArray().endObject()
+    .key('documentFormattingProvider').bool(true)
+    .endObject()
+    .key('serverInfo').beginObject().key('name').string('zena').endObject()
+    .endObject();
+  return b.toString();
+};
