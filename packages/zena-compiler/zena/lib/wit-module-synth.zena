@@ -2507,14 +2507,17 @@ function renderRecord(sb: StringBuilder, td: TypeDef,
   if (blocked != "") {
     return blocked;
   }
-  sb.append("/** WIT `record ").append(td.name.name).append("`. */\n");
-  sb.append("export class ").append(ty.typeName).append("(");
+  let comment = `/** WIT \`record ${td.name.name}\`. */`;
+  var fields = "";
   for (var i = 0; i < ty.children.length; i += 1) {
-    if (i > 0) { sb.append(", "); }
-    sb.append(ty.childNames[i]).append(": ")
-        .append(zenaTypeOf(ty.children[i], uses));
+    if (i > 0) { fields = `${fields}, `; }
+    fields = `${fields}${ty.childNames[i]}: ${zenaTypeOf(ty.children[i], uses)}`;
   }
-  sb.append(")\n");
+  emit(sb, "", zena`
+    ${comment}
+    export class ${ty.typeName}(${fields})
+  `);
+  sb.append("\n");
   return "";
 }
 
@@ -2526,17 +2529,23 @@ function renderVariant(sb: StringBuilder, td: TypeDef,
   if (blocked != "") {
     return blocked;
   }
-  sb.append("/** WIT `variant ").append(td.name.name).append("`. */\n");
-  sb.append("export sealed class ").append(ty.typeName).append(" {\n");
+  let comment = `/** WIT \`variant ${td.name.name}\`. */`;
+  let cases = new GrowableArray<String>();
   for (var i = 0; i < ty.children.length; i += 1) {
-    sb.append("  case ").append(ty.childNames[i]);
-    if (!isVoid(ty.children[i])) {
-      sb.append("(value: ").append(zenaTypeOf(ty.children[i], uses))
-          .append(")");
-    }
-    sb.append("\n");
+    let payload = if (!isVoid(ty.children[i])) {
+      `(value: ${zenaTypeOf(ty.children[i], uses)})`
+    } else {
+      ""
+    };
+    cases.push(`case ${ty.childNames[i]}${payload}`);
   }
-  sb.append("}\n");
+  emit(sb, "", zena`
+    ${comment}
+    export sealed class ${ty.typeName} {
+      ${cases}
+    }
+  `);
+  sb.append("\n");
   return "";
 }
 
