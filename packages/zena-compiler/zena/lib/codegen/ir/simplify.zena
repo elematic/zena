@@ -293,6 +293,23 @@ export let runSimplify = (body: IrBody): i32 => {
         replaceWithValue(inst, body.a[av]);
         continue;
       }
+      // eqz(a < b) becomes a >= b, and likewise for every integer
+      // comparison. A loop's exit test is the negation of its
+      // condition, so this is what lets `while (i < n)` exit on one
+      // comparison. The comparison's only use must be this eqz: it
+      // is emptied, and its operands move here.
+      let inverted = invertedIntComparison(body.op(av));
+      if (inverted >= 0 && useCount[av] == 1) {
+        body.opcode[inst] = inverted;
+        body.a[inst] = body.a[av];
+        body.b[inst] = body.b[av];
+        body.opcode[av] = IrOp.nop as i32;
+        body.typeId[av] = -1;
+        body.a[av] = -1;
+        body.b[av] = -1;
+        rewrites += 1;
+        continue;
+      }
       continue;
     }
     // --- allocation forwarding (scalar replacement, immutable tier) ---
@@ -463,6 +480,37 @@ let log2I32 = (v: i32): i32 => {
     k += 1;
   }
   return k;
+};
+
+/**
+ * The integer comparison that is true exactly when `op` is false, as
+ * an IrOp ordinal, or -1 when `op` is not an integer comparison. Float
+ * comparisons have no such partner: every one of them is false when
+ * an operand is NaN, so `!(a < b)` is not `a >= b`.
+ */
+let invertedIntComparison = (op: IrOp): i32 => {
+  let inverse = if (op == IrOp.i32_eq) IrOp.i32_ne
+    else if (op == IrOp.i32_ne) IrOp.i32_eq
+    else if (op == IrOp.i32_lt_s) IrOp.i32_ge_s
+    else if (op == IrOp.i32_ge_s) IrOp.i32_lt_s
+    else if (op == IrOp.i32_gt_s) IrOp.i32_le_s
+    else if (op == IrOp.i32_le_s) IrOp.i32_gt_s
+    else if (op == IrOp.i32_lt_u) IrOp.i32_ge_u
+    else if (op == IrOp.i32_ge_u) IrOp.i32_lt_u
+    else if (op == IrOp.i32_gt_u) IrOp.i32_le_u
+    else if (op == IrOp.i32_le_u) IrOp.i32_gt_u
+    else if (op == IrOp.i64_eq) IrOp.i64_ne
+    else if (op == IrOp.i64_ne) IrOp.i64_eq
+    else if (op == IrOp.i64_lt_s) IrOp.i64_ge_s
+    else if (op == IrOp.i64_ge_s) IrOp.i64_lt_s
+    else if (op == IrOp.i64_gt_s) IrOp.i64_le_s
+    else if (op == IrOp.i64_le_s) IrOp.i64_gt_s
+    else if (op == IrOp.i64_lt_u) IrOp.i64_ge_u
+    else if (op == IrOp.i64_ge_u) IrOp.i64_lt_u
+    else if (op == IrOp.i64_gt_u) IrOp.i64_le_u
+    else if (op == IrOp.i64_le_u) IrOp.i64_gt_u
+    else IrOp.nop;
+  return if (inverse == IrOp.nop) -1 else inverse as i32;
 };
 
 /**

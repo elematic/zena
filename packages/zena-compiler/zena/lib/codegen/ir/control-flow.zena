@@ -2182,7 +2182,12 @@ export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
   let bodyB = cx.b.newBlock();
   let exitB = cx.b.newBlock();
   let exitParams = cx.addParams(exitB, carried);
-  cx.b.brIf(cond, bodyB, noValues(), exitB, cx.envValues(carried));
+  // Branch on the exit test: the emitter writes a branch to the loop's
+  // exit as a bare br_if, and the simplifier folds this eqz into a
+  // comparison condition (`i < n` exits on `i >= n`), so the loop
+  // tests once instead of testing and negating.
+  let exitTest = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
+  cx.b.brIf(exitTest, exitB, cx.envValues(carried), bodyB, noValues());
 
   cx.loops.push(new LoopCtx(header, exitB, carried));
   cx.b.switchTo(bodyB);
@@ -2259,7 +2264,12 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   let updateParams = cx.addParams(updateB, carried);
   let exitB = cx.b.newBlock();
   let exitParams = cx.addParams(exitB, carried);
-  cx.b.brIf(cond, bodyB, noValues(), exitB, cx.envValues(carried));
+  // Branch on the exit test: the emitter writes a branch to the loop's
+  // exit as a bare br_if, and the simplifier folds this eqz into a
+  // comparison condition (`i < n` exits on `i >= n`), so the loop
+  // tests once instead of testing and negating.
+  let exitTest = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
+  cx.b.brIf(exitTest, exitB, cx.envValues(carried), bodyB, noValues());
 
   cx.loops.push(new LoopCtx(updateB, exitB, carried));
   cx.b.switchTo(bodyB);
