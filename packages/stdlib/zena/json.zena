@@ -926,6 +926,80 @@ export let jsonGet = (value: JsonValue, path: String): JsonValue => {
   return current;
 };
 
+/**
+ * The string at `path` in `value` (a `jsonGet` path), found only when
+ * it is there and is a string.
+ *
+ * ```zena
+ * let uri = jsonString(message, '.params.textDocument.uri') ?? '';
+ * ```
+ */
+export let jsonString = (value: JsonValue, path: String):
+    inline (true, String) | inline (false, _) => {
+  let found = jsonGet(value, path);
+  if (found is String) {
+    return (true, found);
+  }
+  return (false, _);
+};
+
+/** The number at `path` in `value`, found only when it is a number. */
+export let jsonNumber = (value: JsonValue, path: String):
+    inline (true, f64) | inline (false, _) => {
+  let found = jsonGet(value, path);
+  if (found is Box<f64>) {
+    return (true, found.value);
+  }
+  return (false, _);
+};
+
+/**
+ * The integer at `path` in `value`, found only when it is a number with
+ * no fractional part that fits an `i32`.
+ */
+export let jsonInt = (value: JsonValue, path: String):
+    inline (true, i32) | inline (false, _) => {
+  let found = jsonGet(value, path);
+  if (found is Box<f64>) {
+    let n = found.value;
+    let whole = n as i32;
+    if ((whole as f64) == n) {
+      return (true, whole);
+    }
+  }
+  return (false, _);
+};
+
+/** The boolean at `path` in `value`, found only when it is a boolean. */
+export let jsonBool = (value: JsonValue, path: String):
+    inline (true, boolean) | inline (false, _) => {
+  let found = jsonGet(value, path);
+  if (found is Box<boolean>) {
+    return (true, found.value);
+  }
+  return (false, _);
+};
+
+/** The object at `path` in `value`, found only when it is an object. */
+export let jsonObject = (value: JsonValue, path: String):
+    inline (true, JsonObject) | inline (false, _) => {
+  let found = jsonGet(value, path);
+  if (found is JsonObject) {
+    return (true, found);
+  }
+  return (false, _);
+};
+
+/** The array at `path` in `value`, found only when it is an array. */
+export let jsonArray = (value: JsonValue, path: String):
+    inline (true, JsonArray) | inline (false, _) => {
+  let found = jsonGet(value, path);
+  if (found is JsonArray) {
+    return (true, found);
+  }
+  return (false, _);
+};
+
 // ============================================================================
 // JsonBuilder - Streaming JSON construction
 // ============================================================================
@@ -1056,6 +1130,46 @@ export class JsonBuilder {
     this.#sb.append("null");
     this.#incrementCount();
     return this;
+  }
+
+  /**
+   * Writes a parsed value as it came: a request's `id` echoed into its
+   * reply, or a whole object passed through. A number with no fractional
+   * part is written as an integer, so `7` stays `7`.
+   */
+  value(v: JsonValue): JsonBuilder {
+    if (v is String) {
+      return this.string(v);
+    }
+    if (v is Box<f64>) {
+      let n = v.value;
+      // Past 2^53 an f64 holds only whole numbers, and converting one to
+      // i64 could overflow, so it is written as a number as it is.
+      let whole = if (n > -9007199254740992.0 && n < 9007199254740992.0) n as i64 else (0 as i64);
+      if ((whole as f64) == n) {
+        return this.i64(whole);
+      }
+      return this.f64(n);
+    }
+    if (v is Box<boolean>) {
+      return this.bool(v.value);
+    }
+    if (v is JsonObject) {
+      this.beginObject();
+      v.forEach((key: String, item: JsonValue): void => {
+        this.key(key);
+        this.value(item);
+      });
+      return this.endObject();
+    }
+    if (v is JsonArray) {
+      this.beginArray();
+      for (var i = 0; i < v.length; i += 1) {
+        this.value(v[i]);
+      }
+      return this.endArray();
+    }
+    return this.nullValue();
   }
 
   // === Raw JSON (for pre-serialized content) ===
