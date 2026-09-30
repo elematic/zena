@@ -2,6 +2,7 @@
 // and block tags.
 
 import { suite, test, TestContext } from 'zena:test';
+import { StringReader } from 'zena:core';
 import { equal, isTrue } from 'zena:assert';
 import { Comment, VariableDeclaration } from '../lib/ast.zena';
 import { parse } from '../lib/parser.zena';
@@ -15,6 +16,16 @@ import {
 let block = (body: String): Comment => new Comment(body, true, 0, 0, 1, 1);
 
 let line = (body: String): Comment => new Comment(body, false, 0, 0, 1, 1);
+
+/** Where `needle` starts in `source`, which the tests keep ASCII. */
+let offsetOf = (source: String, needle: String): i32 => {
+  let reader = new StringReader(source);
+  let before = reader.readUntil(needle);
+  if (before == null) {
+    throw new Error(`${needle} is not in the source`);
+  }
+  return before.length;
+};
 
 export let tests = suite('doc-comment', () => {
   test('recognizes doc comments', (t: TestContext) => {
@@ -144,12 +155,12 @@ export let tests = suite('doc-comment', () => {
     let source = '/** A point. */\nclass Point {\n  /** Across. */\n  x: f64;\n  y: f64;\n  new(this.x, this.y);\n}\n';
     let ast = parse(source, 'test.zena');
     let comments = attachComments(ast);
-    let x = docCommentAt(ast, source.indexOf('x: f64'), comments);
+    let x = docCommentAt(ast, offsetOf(source, 'x: f64'), comments);
     isTrue(x != null);
     equal((x as DocComment).raw, 'Across.');
     // An undocumented member does not take its class's comment.
-    isTrue(docCommentAt(ast, source.indexOf('y: f64'), comments) == null);
-    let cls = docCommentAt(ast, source.indexOf('class'), comments);
+    isTrue(docCommentAt(ast, offsetOf(source, 'y: f64'), comments) == null);
+    let cls = docCommentAt(ast, offsetOf(source, 'class'), comments);
     equal((cls as DocComment).raw, 'A point.');
   });
 

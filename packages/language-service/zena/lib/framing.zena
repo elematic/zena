@@ -4,14 +4,16 @@
  * written the way HTTP writes them, one `Name: value` per line.
  */
 
+import { StringReader } from 'zena:core';
+
 /** The value of the `Content-Length` header in a header block, or -1. */
 let contentLength = (headers: String): i32 => {
   for (let line in headers.split('\r\n')) {
-    let colon = line.indexOf(':');
-    if (colon < 0 || line.sliceBytes(0, colon).trim().asciiLowerCase() != 'content-length') {
-      continue;
+    let reader = new StringReader(line);
+    let name = reader.readUntil(':');
+    if (name != null && name.trim().asciiLowerCase() == 'content-length') {
+      return parseI32(reader.readToEnd().trim()) ?? -1;
     }
-    return parseI32(line.sliceBytes(colon + 1, line.length).trim()) ?? -1;
   }
   return -1;
 };
@@ -46,21 +48,23 @@ export final class MessageReader {
 
   /** A whole message's body from the front of the buffer, if it has one. */
   #take(): String | null {
-    let headerEnd = this.#buffer.indexOf('\r\n\r\n');
-    if (headerEnd < 0) {
+    let reader = new StringReader(this.#buffer);
+    let headers = reader.readUntil('\r\n\r\n');
+    if (headers == null) {
       return null;
     }
-    let length = contentLength(this.#buffer.sliceBytes(0, headerEnd));
+    let length = contentLength(headers);
     if (length < 0) {
       throw new Error('A message has no Content-Length header');
     }
-    let bodyStart = headerEnd + 4;
-    let bodyEnd = bodyStart + length;
-    if (this.#buffer.length < bodyEnd) {
+    // The length counts bytes, the way the protocol counts it.
+    if (reader.remaining < length) {
       return null;
     }
-    let body = this.#buffer.sliceBytes(bodyStart, bodyEnd);
-    this.#buffer = this.#buffer.sliceBytes(bodyEnd, this.#buffer.length);
+    let bodyStart = reader.mark();
+    reader.skipBytes(length);
+    let body = reader.sliceFrom(bodyStart);
+    this.#buffer = reader.readToEnd();
     return body;
   }
 }

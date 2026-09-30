@@ -341,16 +341,9 @@ export final class String implements Hashable {
   }
 
   /**
-   * The byte index of the first occurrence of `needle` at or after the
-   * byte index `from`, or -1 when there is none. An empty needle is
-   * found at `from`.
-   *
-   * ```zena
-   * "a.b.c".indexOf(".");     // 1
-   * "a.b.c".indexOf(".", 2);  // 3
-   * ```
+   * Returns the byte-index of the first occurrence of `needle`.
    */
-  indexOf(needle: String, from: i32 = 0): i32 {
+  #indexOf(needle: String): i32 {
     // This is a simplified search algorithm that checks the first and last byte
     // of the needle to quickly skip non-matching positions. It performs well
     // for short needles. If we find that this is a bottleneck, we can implement
@@ -364,13 +357,13 @@ export final class String implements Hashable {
     // but in order to not bloat the String class with extra fields, we would
     // need to store the skip table in a side table.
 
-    let haystackLength = this.#end - this.#start;
-    let start = if (from < 0) 0 else from;
-    let needleLength = needle.#end - needle.#start;
+    let needleLength = needle.#end - needle.#start;    
     if (needleLength == 0) {
-      return if (start <= haystackLength) start else -1;
+      return 0;
     }
-    if (needleLength > haystackLength - start) {
+
+    let haystackLength = this.#end - this.#start;
+    if (needleLength > haystackLength) {
       return -1;
     }
 
@@ -379,7 +372,7 @@ export final class String implements Hashable {
     let lastByte = __byte_array_get(needle.#data,
       needle.#start + lastIndex);
 
-    for (var i = start; i <= haystackLength - needleLength; i += 1) {
+    for (var i = 0; i <= haystackLength - needleLength; i += 1) {
       let currentIndex = this.#start + i;
 
       // 1. Check the first byte
@@ -408,7 +401,7 @@ export final class String implements Hashable {
   }
 
   contains(needle: String): boolean {
-    return this.indexOf(needle) != -1;
+    return this.#indexOf(needle) != -1;
   }
 
   /**
