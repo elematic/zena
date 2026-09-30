@@ -7093,16 +7093,27 @@ export final class FunctionLowerer {
         var currentValue = nextValue;
         let {initializer} = m;
         if (initializer != null) {
+          // A number literal, or one with a minus sign, which parses as
+          // a negation; the checker allows nothing else.
+          var literal: NumberLiteral | null = null;
+          var sign = 1;
           if (initializer is NumberLiteral) {
-            let {raw} = initializer;
-            let (ok, v) = parseI32WithHex(raw);
+            literal = initializer;
+          } else if (let UnaryExpression {operator, argument} = initializer) {
+            if (operator == '-' && argument is NumberLiteral) {
+              literal = argument;
+              sign = -1;
+            }
+          }
+          if (literal == null) {
+            this.#bail('enum member initializer');
+          } else {
+            let (ok, v) = parseI32WithHex(literal.raw);
             if (ok) {
-              currentValue = v;
+              currentValue = sign * v;
             } else {
               this.#bail('enum member literal');
             }
-          } else {
-            this.#bail('enum member initializer');
           }
         }
         if (m.name.name == propName) {

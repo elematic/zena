@@ -16404,6 +16404,20 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
 // Enum Declaration
 // ============================================================================
 
+/**
+ * Whether an integer enum member's initializer is a number literal,
+ * which may have a minus sign: `-32700` parses as a negation.
+ */
+let isEnumNumberLiteral = (initializer: Expression): boolean => {
+  if (initializer is NumberLiteral) {
+    return true;
+  }
+  if (let UnaryExpression {operator, argument} = initializer) {
+    return operator == '-' && argument is NumberLiteral;
+  }
+  return false;
+};
+
 let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   let i32Type = new I32Type();
   let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
@@ -16447,8 +16461,8 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
       for (let member in members) {
         if (member.initializer != null) {
           let initType = checkExpression(ctx, member.initializer, null);
-          if (!isAssignableTo(ctx, initType, i32Type) || 
-              !(member.initializer is NumberLiteral)) {
+          if (!isAssignableTo(ctx, initType, i32Type) ||
+              !isEnumNumberLiteral(member.initializer as Expression)) {
             ctx.error(
               "Enum member initializer must be an i32 literal.",
               DiagnosticCode.TypeMismatch,
