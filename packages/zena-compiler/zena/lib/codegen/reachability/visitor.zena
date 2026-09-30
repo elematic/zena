@@ -1,5 +1,5 @@
 import { Set } from 'zena:collections';
-import { collectValueExports } from '../lookup.zena';
+import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
 } from './context.zena';
@@ -783,6 +783,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         this.discoverPatternTypes(n.pattern, model, resolveType);
       }
       if (n is CallExpression) {
+        this.#noteIntrinsicEqTargets(n, model, resolveType);
         // Plain identifier calls (module-level `let` functions,
         // including non-exported ones) are also absent from the
         // dependency records when the callee is private to its
@@ -852,6 +853,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // every method it had.
       if (n is MemberExpression) {
         this.registerGenericMethodUse(n, model, resolveType);
+        this.#noteMemberStaticTarget(n, model, resolveType);
       }
       if (n is NewExpression) {
         let neType = model.getNodeType(n);
@@ -916,6 +918,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       this.registerAsyncNode(n, model, resolveType);
       if (n is CallExpression) {
+        this.#noteIntrinsicEqTargets(n, model, resolveType);
         // Plain identifier calls: the dependency records omit
         // module-private symbols, so the call edge here is the only
         // discovery for non-exported top-level functions. Symbol
@@ -972,6 +975,84 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         }
       }
     });
+  }
+
+  /**
+   * `eq(a, b)` and `hash(v)` lower inline to their operand class's `==`
+   * or `hashCode` (ir/equality.zena), so the call reaches that method the
+   * way a written `a == b` would. The intrinsic is recognized by its
+   * decorator, since the call may be visited before the declaration is.
+   */
+  #noteIntrinsicEqTargets(n: CallExpression, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (!this.pass.currentReachable) {
+      return;
+    }
+    let callee = n.callee;
+    if (!(callee is Identifier)) {
+      return;
+    }
+    let sym = model.resolve(callee);
+    if (sym == null) {
+      return;
+    }
+    let calleeType = model.getNodeType(callee);
+    let calleeFt = if (calleeType is FunctionType) calleeType else null;
+    let decl = findDeclaration(this.pass.wasm, sym.resolveTarget(), calleeFt);
+    if (decl == null) {
+      return;
+    }
+    var opName = "";
+    for (let dec in decl.decorators) {
+      if (dec.name == "intrinsic" && dec.args.length == 1) {
+        let intrinsicName = dec.args[0].value;
+        if (intrinsicName == "eq") {
+          opName = "==";
+        } else if (intrinsicName == "hash") {
+          opName = "hashCode";
+        }
+      }
+    }
+    if (opName == "") {
+      return;
+    }
+    for (let arg in n.args) {
+      let argType = model.getNodeType(arg);
+      if (argType != null) {
+        this.pass.notePendingStaticTargets(resolveType(argType), opName);
+      }
+    }
+  }
+
+  /**
+   * A reached member access on a class-typed value reaches the function
+   * lowering resolves for it, walking up from the value's class: the
+   * method, the getter, and for an assignment target the setter. When
+   * a subclass overrides it the call dispatches, and the analysis then
+   * reaches the overrides (ReachabilityAnalysis.#fillReachedSlots).
+   * Names that are not method table slots are dropped there.
+   */
+  #noteMemberStaticTarget(n: MemberExpression, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (!this.pass.currentReachable) {
+      return;
+    }
+    let objType = model.getNodeType(n.object);
+    if (objType == null) {
+      return;
+    }
+    let resolved = resolveType(objType);
+    let propName = memberKeyOf(model, n.property as Node);
+    if (propName == "") {
+      return;
+    }
+    this.pass.notePendingStaticTargets(resolved, propName);
+    this.pass.notePendingStaticTargets(resolved, "get#" + propName);
+    let parent = model.getParent(n);
+    if (parent is AssignmentExpression &&
+        (parent.left as Node).id == (n as Node).id) {
+      this.pass.notePendingStaticTargets(resolved, "set#" + propName);
+    }
   }
 
   /**
@@ -1848,6 +1929,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       this.registerAsyncNode(n, model, resolveType);
       if (n is CallExpression) {
+        this.#noteIntrinsicEqTargets(n, model, resolveType);
         // Plain identifier calls: the dependency records omit
         // module-private symbols, so the call edge here is the only
         // discovery for non-exported top-level functions. Symbol
@@ -2091,6 +2173,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         }
       }
       if (n is MemberExpression) {
+        this.#noteMemberStaticTarget(n, model, resolveType);
         let objType = model.getNodeType(n.object);
         if (objType != null) {
           let resolvedObj = resolveType(objType);

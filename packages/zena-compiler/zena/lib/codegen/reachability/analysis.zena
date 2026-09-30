@@ -136,22 +136,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   reachablyNamedClasses = new Set<String>();
   /** See ReachabilityVisitor.noteEqualityUse. */
   var equalityDispatchUsed = false;
-  /** Classes whose ==/hashCode slots were dropped while the equality
-   * flag was false — repaired at settle if the flag flips late. */
-  #eqPrunedClasses = new Array<ClassKey>();
-  /**
-   * Generic-source symbol ids of classes some DECLARED class extends —
-   * built at init from every unit's class declarations (and sealed
-   * variants, whose parent is extended by each case). A class can be
-   * dispatched through its class vtable only if a value of a
-   * supertype's static type can hold it: it has a superclass, or
-   * something declared extends it. `String` and `FixedArray<T>` are
-   * final with no superclass — nothing can virtually dispatch on them,
-   * so their vtables need no slots beyond `==`/`hashCode` (which
-   * HashMap and generic equality dispatch through the class vtable
-   * even on hierarchy-less classes).
-   */
-  extendedClassSymbols = new Set<SymbolId>();
   /** Generic-source symbols with at least one `new` site; see queueExplicitCtor. */
   ctorDemandedGenerics = new Set<SymbolId>();
   /**
@@ -505,6 +489,27 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             this.notePendingMemberReach(getClassMethodKey(sKey, "=="));
             this.notePendingMemberReach(getClassMethodKey(sKey, "hashCode"));
           }
+          // A synthesized == or hashCode calls the same operation on each
+          // field of a class type, and the eq/hash intrinsics call it on
+          // their operand; reach those the way a written call would be.
+          let owner = func.classType;
+          if ((func.isCaseClassEq || func.isCaseClassHash) && owner != null) {
+            let opName = if (func.isCaseClassEq) "==" else "hashCode";
+            this.#noteFieldStaticTargets(owner as ClassType, opName);
+          }
+          let {intrinsic} = func;
+          let intrinsicArgs = func.typeArguments;
+          if (intrinsic != null && intrinsicArgs != null) {
+            let opName = if ((intrinsic as String) == "eq") "==" else "hashCode";
+            for (let ta in intrinsicArgs as Array<Type>) {
+              this.notePendingStaticTargets(ta, opName);
+            }
+          }
+        }
+        // A synthesized :dispose releases each resource field the same way.
+        let disposeOwner = func.classType;
+        if (func.isSyntheticDispose && disposeOwner != null) {
+          this.#noteFieldStaticTargets(disposeOwner as ClassType, ":dispose");
         }
         if (!func.isImport) {
           this.wasm.addFunction(func);
@@ -980,15 +985,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let rawClassType = this.getClassDeclType(classDecl, model);
         if (rawClassType != null) {
           let classType = rawClassType;
-          let {superType} = classType;
-          if (superType != null) {
-            let superCt = superType;
-            this.extendedClassSymbols.add((superCt.genericSource ?? superCt).symbolId);
-          }
-          if (classDecl.isSealed && classDecl.sealedVariants != null &&
-              (classDecl.sealedVariants as GrowableArray<SealedVariant>).length > 0) {
-            this.extendedClassSymbols.add((classType.genericSource ?? classType).symbolId);
-          }
           if (isWellKnown(WellKnown.StringClass, classType.name,
               classType.sourcePath)) {
             this.wasm.stringClass = classType;
@@ -1717,23 +1713,23 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     performance.end(tLayout);
     let tQueues2 = performance.start("codegen-discovery-queues");
-    this.processQueues();
+    this.#settleQueues();
     performance.end(tQueues2);
     this.activateCancellationMachinery();
-    this.processQueues();
+    this.#settleQueues();
     let tLayout2 = performance.start("codegen-discovery-layout");
 
     // Pass 2 and the queue drain feed each other; run them to fixpoint.
     var vtRound = true;
     while (vtRound) {
       vtRound = this.#buildClassInterfaceVTables();
-      this.processQueues();
+      this.#settleQueues();
       this.activateCancellationMachinery();
     }
     
     performance.end(tLayout2);
     let tQueues3 = performance.start("codegen-discovery-queues");
-    this.processQueues();
+    this.#settleQueues();
     performance.end(tQueues3);
     let tLayout3 = performance.start("codegen-discovery-layout");
     
@@ -1751,9 +1747,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.markFunctionReached(f);
       }
     }
-    this.processQueues();
+    this.#settleQueues();
     this.activateCancellationMachinery();
-    this.processQueues();
+    this.#settleQueues();
 
     // The drains above can instantiate classes and record interface
     // adaptations the earlier vtable fixpoint never saw — a generic
@@ -1763,7 +1759,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     var lateVtRound = true;
     while (lateVtRound) {
       lateVtRound = this.#buildClassInterfaceVTables();
-      this.processQueues();
+      this.#settleQueues();
       this.activateCancellationMachinery();
       // Generator disposal activates here too: its exception-infra
       // mint queues reaches, and the loop's next round drains them
@@ -1782,44 +1778,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // field fails receiver conformance in lowering. Re-resolve those
     // fields against the settled registrations.
     this.specializer.refreshErasedFieldTypes();
-    // The ==/hashCode slot decision bakes at each class's layout, and
-    // equality evidence can legitimately arrive later — a body walked
-    // in the vtable-fixpoint drains (array-sum's for-in machinery
-    // does). Dispatching through a missing slot would be a silent
-    // wrong answer, so REPAIR: re-add the two slots to every class
-    // that pruned them, rebuild those classes' vtable globals, and
-    // drain the newly reached slot methods.
-    if (this.equalityDispatchUsed && this.#eqPrunedClasses.length > 0) {
-      for (let prunedKey in this.#eqPrunedClasses) {
-        if (let (true, prunedInfo) = this.wasm.classInfos.get(prunedKey)) {
-          let prunedVst = prunedInfo.vtableStructType;
-          if (prunedVst == null) { continue; }
-          var addedSlot = false;
-          for (let slotName in this.wasm.classVtable(prunedKey)) {
-            if (slotName != "==" && slotName != "hashCode") { continue; }
-            if (prunedVst.fieldIndexByName(slotName) >= 0) { continue; }
-            prunedVst.fields.push(new WasmField(slotName, new ValTypeFuncRef(), false));
-            addedSlot = true;
-          }
-          if (addedSlot && prunedInfo.vtableGlobal != null) {
-            let staleGlobal = prunedInfo.vtableGlobal as WasmGlobal;
-            let keptGlobals = new Array<WasmGlobal>();
-            for (let g in this.wasm.globals) {
-              if (g != staleGlobal) { keptGlobals.push(g); }
-            }
-            while (this.wasm.globals.length > 0) { this.wasm.globals.pop(); }
-            for (let g in keptGlobals) { this.wasm.globals.push(g); }
-            prunedInfo.vtableGlobal = null;
-          }
-        }
-      }
-      // Per-key rebuilds: the no-arg builder would also create globals
-      // for late-instantiated classes Pass 1.5 deliberately skipped.
-      for (let prunedKey in this.#eqPrunedClasses) {
-        this.#buildClassVTableGlobals(prunedKey);
-      }
-      this.processQueues();
-    }
     // And late-instantiated String needs its class vtable global,
     // exactly as it needs its struct — $stringCreate is synthesized
     // against it, and String can be instantiated as late as a literal
@@ -1829,6 +1787,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let sKey = getClassKey(stringClass);
       if (this.instantiatedSpecializedClasses.has(sKey as String)) {
         this.#buildClassVTableGlobals(sKey);
+        this.#settleQueues();
       }
     }
     // Superclass constructor phases: every signature and struct these
@@ -1886,6 +1845,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     
+    this.#pruneUndispatchedSlots();
+
     let keptGlobals = new Array<WasmGlobal>();
     for (let g in this.wasm.globals) {
       if (g.symbolId == noSymbolId || this.reachedGlobals.has(g.symbolId)) {
@@ -1917,6 +1878,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     this.ensureAllHelperFunctionsReached();
     this.processQueues();
+    this.#checkNoPrunedSlotDispatched();
 
     for (let iface in this.usedInterfaceTypes) {
       let iName = getInterfaceKey(iface);
@@ -1951,6 +1913,20 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
     this.wasm.functions = reachedList;
+    // Bodies lowered before layout() (the generator and async split
+    // passes) consult classMethodMap too. Until layout() rebuilds it from
+    // the reached functions it still names every registered method, so
+    // such a body could resolve a member to a function that is never
+    // emitted. Drop those now, so early and late lowering see one map.
+    let unreachedKeys = new Array<ClassMethodKey>();
+    for (let mPair in this.wasm.classMethodMap) {
+      if (!this.reachedFunctionsSet.has(mPair.value)) {
+        unreachedKeys.push(mPair.key);
+      }
+    }
+    for (let k in unreachedKeys) {
+      this.wasm.classMethodMap.delete(k);
+    }
 
     if (this.wasm.stringCreateFunc != null) { this.markTypeReached((this.wasm.stringCreateFunc as WasmFunction).signature); }
     if (this.wasm.stringSetByteFunc != null) { this.markTypeReached((this.wasm.stringSetByteFunc as WasmFunction).signature); }
@@ -2039,6 +2015,264 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
+   * Queues `memberName` as a static target on every class `t` names,
+   * looking through unions (`C | null`) and type aliases (the ownership
+   * handles `Own<C>` and friends are aliases).
+   */
+  notePendingStaticTargets(t: Type, memberName: String): void {
+    let classes = new Array<ClassType>();
+    collectNamedClasses(t, classes, 0);
+    for (let ct in classes) {
+      if (isConcrete(ct) && !ct.isMixinIntermediate) {
+        this.#pendingStaticTargets.push(new PendingStaticTarget(ct, memberName));
+      }
+    }
+  }
+
+  /** notePendingStaticTargets for each instance field of `owner`. */
+  #noteFieldStaticTargets(owner: ClassType, memberName: String): void {
+    for (let mPair in owner.members) {
+      let member = mPair.value;
+      if (!(member is FieldInfo) || member.isStatic) {
+        continue;
+      }
+      let fieldType = substituteTypeParamsInCodegen(this.wasm,
+          getClassTypeParameters(owner), owner.typeArguments, member.type);
+      this.notePendingStaticTargets(fieldType, memberName);
+    }
+  }
+
+  /**
+   * Drains the reach queues, then reaches the slot functions that new
+   * reaches made necessary, until neither adds anything.
+   */
+  #settleQueues(): void {
+    this.processQueues();
+    while (this.#fillReachedSlots()) {
+      this.processQueues();
+    }
+  }
+
+  /**
+   * The class a vtable slot belongs to: the topmost class in `ct`'s
+   * superclass chain whose slot list names `slotName`, keyed by its
+   * generic source so every specialization of a hierarchy shares one
+   * answer. Every class below that one has the slot at the same index,
+   * so the slot is kept or dropped for all of them together. Null when
+   * `ct` has no such slot (static, private and constructor members).
+   */
+  #slotOwnerKey(ct: ClassType, slotName: String): String | null {
+    let cacheKey = (getClassKey(ct) as String) + "|" + slotName;
+    if (let (true, cached) = this.#slotOwnerCache.get(cacheKey)) {
+      return if (cached == "") null else cached;
+    }
+    var owner: ClassType | null = null;
+    var c: ClassType | null = ct;
+    while (c != null) {
+      let cc = c as ClassType;
+      var listed = false;
+      for (let n in this.wasm.classVtable(getClassKey(cc))) {
+        if (n == slotName) {
+          listed = true;
+          break;
+        }
+      }
+      if (listed) {
+        owner = cc;
+      }
+      c = cc.superType;
+    }
+    if (owner == null) {
+      this.#slotOwnerCache[cacheKey] = "";
+      return null;
+    }
+    let o = owner as ClassType;
+    let key = (getClassKey(o.genericSource ?? o) as String) + "|" + slotName;
+    this.#slotOwnerCache[cacheKey] = key;
+    return key;
+  }
+  #slotOwnerCache = new Map<String, String>();
+  #pendingStaticTargets = new Array<PendingStaticTarget>();
+
+  /**
+   * The slot keys of every reached class method. `ownOnly` keeps only
+   * methods a class declares below the slot's owner, which are the
+   * ones that can make a call dispatch: lowering calls a method
+   * directly unless some subclass of the receiver's class has its own
+   * reached version (`memberProvidedBySubclass`).
+   */
+  #reachedSlotKeys(ownOnly: boolean): Set<String> {
+    let keys = new Set<String>();
+    for (let f in this.reachedFunctionsSet) {
+      let {classType, methodName} = f;
+      if (classType == null || methodName == null || f.isStatic) {
+        continue;
+      }
+      let ct = classType as ClassType;
+      let key = this.#slotOwnerKey(ct, methodName as String);
+      if (key == null) {
+        continue;
+      }
+      if (ownOnly) {
+        let ownKey = (getClassKey(ct.genericSource ?? ct) as String) + "|" +
+            (methodName as String);
+        if (ownKey == (key as String)) {
+          continue;
+        }
+      }
+      keys.add(key as String);
+    }
+    return keys;
+  }
+
+  /**
+   * Reaches, for every class with a vtable global, the function in
+   * each slot whose method is reached somewhere in the slot's
+   * hierarchy. A call through a base-typed receiver reaches the base's
+   * method, and an instance of a subclass may arrive there, so its
+   * override has to exist too. This replaces reaching every slot of
+   * every instantiated class. Returns whether anything new was reached.
+   */
+  #fillReachedSlots(): boolean {
+    var changed = false;
+    this.currentReachable = true;
+    var pendIdx = 0;
+    while (pendIdx < this.#pendingStaticTargets.length) {
+      let pend = this.#pendingStaticTargets[pendIdx];
+      pendIdx += 1;
+      if (pend.resolved) {
+        continue;
+      }
+      // Only slots matter here: a member with no slot (a generic or
+      // static method, a constructor, a private member) is never
+      // dispatched, and its calls reach their own callees.
+      if (this.#slotOwnerKey(pend.classType, pend.memberName) == null) {
+        pend.resolved = true;
+        continue;
+      }
+      var c: ClassType | null = pend.classType;
+      while (c != null) {
+        let cc = c as ClassType;
+        let key = getClassMethodKey(getClassKey(cc), pend.memberName);
+        if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+          pend.resolved = true;
+          if (!this.reachedFunctionsSet.has(f)) {
+            this.markFunctionReached(f);
+            changed = true;
+          }
+          break;
+        }
+        c = cc.superType;
+      }
+    }
+    let keys = this.#reachedSlotKeys(false);
+    for (let cPair in this.wasm.classInfos) {
+      let info = cPair.value;
+      let {vtableGlobal} = info;
+      if (vtableGlobal == null) {
+        continue;
+      }
+      let init = (vtableGlobal as WasmGlobal).initVTable;
+      let ct = info.structType.classType;
+      if (init == null || ct == null) {
+        continue;
+      }
+      let {fields} = init.structType;
+      for (var i = 0; i < fields.length && i < init.funcs.length; i += 1) {
+        let f = init.funcs[i];
+        if (this.reachedFunctionsSet.has(f)) {
+          continue;
+        }
+        let key = this.#slotOwnerKey(ct as ClassType, fields[i].name as String);
+        if (key != null && keys.has(key as String)) {
+          this.markFunctionReached(f);
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Drops, from every class's vtable struct and vtable global, the slots
+   * nothing can dispatch through: those where no class below the slot's
+   * owner has its own reached version of the method. Every class in a
+   * hierarchy loses the same slots, so each vtable struct still extends
+   * its superclass's. The shape of the hierarchy plays no part: a class
+   * with no subclasses, a final class, a class with a mixin and a deep
+   * hierarchy with one overridden method follow the same rule.
+   */
+  #pruneUndispatchedSlots(): void {
+    // Anything the post-close drain reaches must not need a slot this
+    // drops; #checkNoPrunedSlotDispatched says so loudly if it does.
+    while (this.#fillReachedSlots()) {
+      this.processQueues();
+    }
+    let dispatched = this.#reachedSlotKeys(true);
+    this.#dispatchedSlotKeys = dispatched;
+    for (let cPair in this.wasm.classInfos) {
+      let info = cPair.value;
+      let {vtableStructType} = info;
+      let ct = info.structType.classType;
+      if (vtableStructType == null || ct == null) {
+        continue;
+      }
+      let vst = vtableStructType as WasmStruct;
+      var init: VTableInit | null = null;
+      let {vtableGlobal} = info;
+      if (vtableGlobal != null) {
+        init = (vtableGlobal as WasmGlobal).initVTable;
+      }
+      let keptFields = new Array<WasmField>();
+      let keptFuncs = new Array<WasmFunction>();
+      for (var i = 0; i < vst.fields.length; i += 1) {
+        let field = vst.fields[i];
+        let key = this.#slotOwnerKey(ct as ClassType, field.name as String);
+        if (key == null || !dispatched.has(key as String)) {
+          continue;
+        }
+        keptFields.push(field);
+        if (init != null && i < (init as VTableInit).funcs.length) {
+          keptFuncs.push((init as VTableInit).funcs[i]);
+        }
+      }
+      while (vst.fields.length > 0) {
+        vst.fields.pop();
+      }
+      for (let field in keptFields) {
+        vst.fields.push(field);
+      }
+      if (init != null) {
+        // The builder made this list, as a GrowableArray.
+        let funcs = (init as VTableInit).funcs as GrowableArray<WasmFunction>;
+        while (funcs.length > 0) {
+          funcs.pop();
+        }
+        for (let f in keptFuncs) {
+          f.isReferenceTaken = true;
+          funcs.push(f);
+        }
+      }
+    }
+  }
+  var #dispatchedSlotKeys = new Set<String>();
+
+  /**
+   * After the post-close drain: every slot a call could now dispatch
+   * through must have survived pruning. A method reached this late
+   * that overrides one below a slot's owner would make lowering
+   * dispatch through a slot that no longer exists.
+   */
+  #checkNoPrunedSlotDispatched(): void {
+    for (let key in this.#reachedSlotKeys(true)) {
+      if (!this.#dispatchedSlotKeys.has(key)) {
+        throw new Error("Internal error: vtable slot " + key +
+            " became dispatchable after slots were pruned");
+      }
+    }
+  }
+
+  /**
    * Pass 1.5: builds the class vtable global for every instantiated
    * class that does not have one yet. Incremental — classes with a
    * vtableGlobal are skipped. `onlyKey` restricts a re-run to one
@@ -2051,10 +2285,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * dispatch that does need one fails loudly at its site.
    */
   #buildClassVTableGlobals(onlyKey: ClassKey | null = null): void {
-    // Slot functions WILL be emitted (the vtable global ref.funcs
-    // them), so their bodies are walked as reachable — ambient
-    // currentReachable here is whatever the last referrer left.
-    this.currentReachable = true;
     for (let cPair in this.wasm.classInfos) {
       let cName = cPair.key;
       let info = cPair.value;
@@ -2155,11 +2385,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           continue;
         }
         
-        for (let m in methods) {
-          this.markFunctionReached(m);
-        }
-        
-        let vtableInit = new VTableInit(vstVal, methods);
+        // No slot function is reached here: #fillReachedSlots reaches
+        // the ones whose method is reached anywhere in the hierarchy,
+        // and #pruneUndispatchedSlots drops the rest before emission.
+        let vtableInit = new VTableInit(vstVal, methods, false);
+        vtableInit.isClassVTable = true;
         let vName = getClassVTableName(cName);
         let vtableGlobal = new WasmGlobal(
           vName,
@@ -2683,14 +2913,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
-  /** See extendedClassSymbols: can anything dispatch through this class's vtable? */
-  classCanDispatchVirtually(ct: ClassType): boolean {
-    if (ct.superType != null) {
-      return true;
-    }
-    return this.extendedClassSymbols.has((ct.genericSource ?? ct).symbolId);
-  }
-
   /**
    * Whether `t` mentions the stdlib String class anywhere a value
    * could cross a boundary typed by `t`: directly, in a function
@@ -2808,10 +3030,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (this.inQueueWalk && this.currentReachable) {
       this.reachablyNamedClosures.add(cs);
     }
-  }
-
-  noteEqSlotPruned(key: ClassKey): void {
-    this.#eqPrunedClasses.push(key);
   }
 
   noteExceptionInfra(model: SemanticModel): void {
@@ -3079,6 +3297,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           }
 
           if (targetClassType != null) {
+            // The function lowering will resolve for this access, found
+            // by walking up from the receiver's class: a direct call's
+            // callee, or the slot signature a dispatch uses. It may not
+            // be registered yet (an abstract field's stub is added in
+            // Pass 1.15), so it is resolved later, by #fillReachedSlots.
+            if (this.currentReachable && mName != "" &&
+                !targetClassType.isMixinIntermediate &&
+                isConcrete(targetClassType)) {
+              this.#pendingStaticTargets.push(
+                  new PendingStaticTarget(targetClassType, mName));
+            }
             let {cha} = this;
             let list = new Array<ClassType>();
             if (targetClassType.isExtension) {
@@ -3960,6 +4189,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           if (initVTable != null) {
             let vtableInit = initVTable;
             this.markTypeReached(vtableInit.structType);
+            // A class vtable's slots are reached by #fillReachedSlots,
+            // only where something can dispatch to them; every other
+            // table's functions (interface trampolines) are all live.
+            if (vtableInit.isClassVTable) {
+              continue;
+            }
             for (let func in vtableInit.funcs) {
               if (!this.reachedFunctionsSet.has(func)) {
                 this.markFunctionReached(func);
@@ -4052,3 +4287,44 @@ let sanitizeName = (s: String): String => {
   return sb.toString();
 };
 
+/**
+ * A member a reached access resolves on a class, waiting to be found
+ * among the registered methods (see #fillReachedSlots).
+ */
+final class PendingStaticTarget {
+  classType: ClassType;
+  memberName: String;
+  var resolved = false;
+  new(this.classType, this.memberName);
+}
+
+/**
+ * The classes a type names directly: itself, the members of a union, the
+ * target and arguments of an alias. Bounded, since aliases can nest.
+ */
+let collectNamedClasses = (t: Type, out: GrowableArray<ClassType>,
+    depth: i32): void => {
+  if (depth > 8) {
+    return;
+  }
+  match (t) {
+    case ClassType as ct: {
+      out.push(ct);
+    }
+    case UnionType {types}: {
+      for (let m in types) {
+        collectNamedClasses(m, out, depth + 1);
+      }
+    }
+    case TypeAliasType as ta: {
+      collectNamedClasses(ta.target, out, depth + 1);
+      let {typeArguments} = ta;
+      if (typeArguments != null) {
+        for (let a in typeArguments as Array<Type>) {
+          collectNamedClasses(a, out, depth + 1);
+        }
+      }
+    }
+    case _: {}
+  }
+};

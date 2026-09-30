@@ -763,15 +763,40 @@ downstream of that.
 Sections below this one predate it and describe the earlier attempt
 (kept for the measurements); this is what shipped.
 
-**A vtable slot exists so something can dispatch through it.** A class
-can be virtually dispatched only if a value of a supertype's static
-type can hold it: it has a superclass, or something declared extends
-it (`extendedClassSymbols`, built at init from every declaration,
-sealed variants included). On a class with neither, every slot except
-`==`/`hashCode` — which HashMap and generic equality dispatch through
-the class vtable regardless of hierarchy — is dropped at slot
-materialization. `String` went from 15 slots to 2; each dropped slot
-un-forces an entire method.
+**A vtable slot exists so something can dispatch through it.** The
+decision is made per slot, from what is reached, once reachability
+settles. Lowering calls a method directly unless some subclass of the
+receiver's class has its own reached version of it
+(`memberProvidedBySubclass`), so a slot is kept only when some class
+below the class that introduces it has its own reached version of the
+method. Every class in a hierarchy keeps or drops the same slots, so
+each vtable struct still extends its superclass's
+(`#pruneUndispatchedSlots`). The shape of the hierarchy plays no part:
+a class with no subclasses, a final class, a class with a mixin and a
+deep hierarchy with one overridden method follow the same rule.
+
+Filling slots follows the same idea (`#fillReachedSlots`). Nothing is
+reached because it sits in a vtable. When any implementation of a
+slot's method is reached anywhere in the hierarchy, the implementation
+in every class with a vtable global is reached too, because an
+instance of any of them may arrive at a call through a supertype. Two
+things make "the method is reached" a sound signal. A reached member
+access reaches its static target, the function lowering resolves by
+walking up from the receiver's class, even when that is an abstract
+field's stub registered late (`PendingStaticTarget`). A case class's
+synthesized `==`/`hashCode` reaches the same operation on its fields.
+
+This replaced a per-class rule: a class kept every slot if it had a
+superclass or something extended it, and only `==`/`hashCode`
+otherwise. That kept every method of a final class that used a mixin,
+because a mixin application counts as a superclass. It also hid two
+bugs that removing the force-reach exposed. A body lowered before
+`layout()` (the generator and async split passes) could resolve a
+member to a registered method that was never reached; `classMethodMap`
+is now cut down to reached methods as soon as reachability filters the
+function list. And a call to a method that a class gets from `A`
+through `mixin B with A` found no declaration to reach (fixed
+separately, in the lookups in `hierarchy.zena`).
 
 **And the force-reach went with it**, as the old attempt said it must.
 What replaced it:

@@ -1,0 +1,41 @@
+// Methods nothing calls, in two kinds of hierarchy. `binary-size_test.zena`
+// checks that none of `unused`, `neverCalled` and `quiet` is in the
+// module, and that the overridden `speak` is, since a call through
+// `Animal` dispatches to it.
+
+// A final class that takes its methods from mixins.
+mixin Describe {
+  describe(): i32 { return this.size() * 2; }
+  unused(): i32 { return 99; }
+  size(): i32 { return 1; }
+}
+
+mixin Extra {
+  neverCalled(): i32 { return 7; }
+}
+
+final class Tile with Describe, Extra {
+  width: i32;
+  new(width: i32) : width = width;
+  size(): i32 { return this.width; }
+}
+
+// An ordinary base class and a subclass, called through the base.
+class Animal {
+  new();
+  speak(): i32 { return 1; }
+  quiet(): i32 { return 0; }
+}
+
+class Dog extends Animal {
+  new() : super();
+  speak(): i32 { return 2; }
+  quiet(): i32 { return 5; }
+}
+
+let loudness = (a: Animal): i32 => a.speak();
+
+export function main(): i32 {
+  let t = new Tile(3);
+  return t.describe() + loudness(new Animal()) + loudness(new Dog());
+}

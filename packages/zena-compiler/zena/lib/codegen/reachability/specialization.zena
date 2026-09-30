@@ -1891,33 +1891,12 @@ export final class Specializer implements SpecializerInterface {
     }
 
     if (vst.fields.length == 0) {
-      // A slot exists so something can dispatch through it. On a class
-      // with no superclass that nothing extends, nothing ever can —
-      // except `==`/`hashCode`, which HashMap and generic equality
-      // dispatch through the class vtable regardless of hierarchy.
-      // Every slot's function must be emitted (the vtable global is a
-      // struct.new over ref.funcs), so an unneeded slot is not one
-      // wasted field: it force-reaches an entire method. This is what
-      // kept every String method in a program whose only string is a
-      // literal it returns.
-      let keepAll = this.pass.classCanDispatchVirtually(ct);
-      // ==/hashCode slots exist for the equality diamond and the hash
-      // intrinsic, which dispatch them through the class vtable on
-      // ERASED receivers. A program with no erased equality use needs
-      // neither — but the decision is baked per class at layout, so a
-      // use discovered after pruning began throws (loud) rather than
-      // dispatching through a missing slot (silent).
-      let keepEq = this.pass.equalityDispatchUsed;
+      // Every slot name is laid out here, and the ones nothing
+      // dispatches through are dropped from the whole hierarchy once
+      // reachability settles (ReachabilityAnalysis.#pruneUndispatchedSlots).
+      // Deciding per class at this point would be too early: layout runs
+      // partway through the walk, before most call sites are seen.
       for (let methName in ctVtable) {
-        if (!keepAll) {
-          if (methName != "==" && methName != "hashCode") {
-            continue;
-          }
-          if (!keepEq) {
-            this.pass.noteEqSlotPruned(cKey);
-            continue;
-          }
-        }
         vst.fields.push(new WasmField(methName, new ValTypeFuncRef(), false));
       }
     }

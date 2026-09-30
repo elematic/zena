@@ -211,6 +211,12 @@ let helloTarget = 'packages/zena-compiler/test-files/hello-string.zena';
 let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zena';
 
 /**
+ * Methods nothing calls, on a final class with mixins and on a base
+ * class with a subclass.
+ */
+let mixinTarget = 'packages/zena-compiler/test-files/uncalled-methods.zena';
+
+/**
  * An async `main` with an empty body, built as a component: nothing of
  * its own, so its size is what the event loop in `zena:wasi` and the
  * async runtime cost every program that awaits.
@@ -232,8 +238,8 @@ let printTarget = 'packages/zena-compiler/test-files/component/print.zena';
 let budget = 37;
 let arrayBudget = 110;
 let helloBudget = 400;
-let asyncNoopBudget = 6500;
-let printBudget = 10500;
+let asyncNoopBudget = 5500;
+let printBudget = 9000;
 
 export let tests = suite('Binary size', (): void => {
   test('a minimal program stays within its byte budget', (ctx: TestContext): void => {
@@ -360,6 +366,25 @@ export let tests = suite('Binary size', (): void => {
   test('a generator iterated by a protocol for-in opens the disposal gate', (ctx: TestContext): void => {
     let bytes = compile('packages/zena-compiler/test-files/gen-with-protocol-forin.zena');
     isTrue(hasExport(bytes, '__zena_cancellation'));
+  });
+
+  test('methods nothing calls are not emitted, whatever the hierarchy', (ctx: TestContext): void => {
+    // A method table slot is kept only when a call can dispatch through
+    // it, and a method is reached only when something calls it. How the
+    // class got the method (declared, inherited or from a mixin) and
+    // whether the class is final play no part.
+    let wat = new WatGenerator('freestanding', false).generate(programOf(mixinTarget));
+    isTrue(wat.contains('describe'),
+      `${mixinTarget}: the fixture should call describe.`);
+    isTrue(!wat.contains('unused'),
+      `${mixinTarget} emits a mixin method nothing calls.`);
+    isTrue(!wat.contains('neverCalled'),
+      `${mixinTarget} emits a second mixin's method nothing calls.`);
+    isTrue(!wat.contains('quiet'),
+      `${mixinTarget} emits a method of a base class and its subclass ` +
+      `that nothing calls.`);
+    isTrue(wat.contains('Dog_') && wat.contains('.speak'),
+      `${mixinTarget}: a call through Animal must reach Dog's speak.`);
   });
 
   test('a subclassed generic emits no erased specialization', (ctx: TestContext): void => {

@@ -683,9 +683,23 @@ export final class ForwarderParamPack {
 export final class VTableInit {
   structType: WasmStruct;
   funcs: Array<WasmFunction>;
-  new(this.structType, this.funcs) {
-    for (let f in this.funcs) {
-      f.isReferenceTaken = true;
+  /**
+   * True for a class's method table. Its functions are reached only
+   * where a call can dispatch to them (see ReachabilityAnalysis's
+   * #fillReachedSlots), rather than all at once when the table is made.
+   */
+  var isClassVTable = false;
+  /**
+   * `markReferences` is false for a class's method table, whose slots
+   * are pruned after it is built; the analysis marks the functions that
+   * survive (#pruneUndispatchedSlots). A function marked here is
+   * declared in the module's element section whether or not it stays.
+   */
+  new(this.structType, this.funcs, markReferences: boolean = true) {
+    if (markReferences) {
+      for (let f in this.funcs) {
+        f.isReferenceTaken = true;
+      }
     }
   }
 }
