@@ -89,10 +89,24 @@ so a query for a document that was never checked still works.
 
 ## Building
 
-The analysis is `zena/lib/service.zena`, a library that `zena/lsp.zena`
-wraps in the flat exports this API calls. The same library, with the
-protocol in `zena/lib/server.zena`, is the language server that
-`zena lsp` runs over stdin and stdout for other editors.
+The analysis is a library in `zena/lib/`, which `zena/lsp.zena` wraps in
+the flat exports this API calls. The same library, with the protocol, is
+the language server that `zena lsp` runs over stdin and stdout for other
+editors.
+
+| File              | What                                                                 |
+| ----------------- | -------------------------------------------------------------------- |
+| `service.zena`    | `LanguageService`: the compiler, open documents, go to definition    |
+| `host.zena`       | The compiler host that serves open documents in place of files       |
+| `analysis.zena`   | What the features share about a checked file                         |
+| `hover.zena`      | Hover                                                                |
+| `completion.zena` | Completions                                                          |
+| `symbols.zena`    | Document symbols, the outline                                        |
+| `compile.zena`    | Compiling a document to a module, for the playground                 |
+| `server.zena`     | `LspServer`: the protocol's requests and notifications               |
+| `protocol.zena`   | The protocol's JSON, and its error codes                             |
+| `positions.zena`  | Protocol positions (UTF-16) to and from byte offsets                 |
+| `framing.zena`    | `Content-Length` framing of messages                                 |
 
 `lsp.wasm` is built from `zena/lsp.zena` by the Zena compiler:
 

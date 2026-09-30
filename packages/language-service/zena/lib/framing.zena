@@ -1,0 +1,70 @@
+/**
+ * The protocol's base layer: each message is a block of headers, a
+ * blank line, and a body of `Content-Length` bytes. The headers are
+ * written the way HTTP writes them, one `Name: value` per line.
+ */
+
+/** The value of the `Content-Length` header in a header block, or -1. */
+let contentLength = (headers: String): i32 => {
+  for (let line in headers.split('\r\n')) {
+    let colon = line.indexOf(':');
+    if (colon < 0 || line.sliceBytes(0, colon).trim().asciiLowerCase() != 'content-length') {
+      continue;
+    }
+    return parseI32(line.sliceBytes(colon + 1, line.length).trim()) ?? -1;
+  }
+  return -1;
+};
+
+/**
+ * Takes a byte stream apart into messages, each a block of headers, a
+ * blank line, and `Content-Length` bytes of body.
+ */
+export final class MessageReader {
+  /** Reads what the input has next; '' at the end of it. */
+  #read: () => String;
+  var #buffer = '';
+
+  new(read: () => String) : #read = read;
+
+  /** The next message's body, or null at the end of the input. */
+  next(): String | null {
+    while (true) {
+      let body = this.#take();
+      if (body != null) {
+        return body;
+      }
+      let read = this.#read;
+      let chunk = read();
+      if (chunk == '') {
+        return null;
+      }
+      this.#buffer = this.#buffer + chunk;
+    }
+    return null;
+  }
+
+  /** A whole message's body from the front of the buffer, if it has one. */
+  #take(): String | null {
+    let headerEnd = this.#buffer.indexOf('\r\n\r\n');
+    if (headerEnd < 0) {
+      return null;
+    }
+    let length = contentLength(this.#buffer.sliceBytes(0, headerEnd));
+    if (length < 0) {
+      throw new Error('A message has no Content-Length header');
+    }
+    let bodyStart = headerEnd + 4;
+    let bodyEnd = bodyStart + length;
+    if (this.#buffer.length < bodyEnd) {
+      return null;
+    }
+    let body = this.#buffer.sliceBytes(bodyStart, bodyEnd);
+    this.#buffer = this.#buffer.sliceBytes(bodyEnd, this.#buffer.length);
+    return body;
+  }
+}
+
+/** A message with its `Content-Length` header, ready to write. */
+export let frame = (body: String): String =>
+  `Content-Length: ${body.length}\r\n\r\n${body}`;

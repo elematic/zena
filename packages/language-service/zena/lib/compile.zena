@@ -1,0 +1,22 @@
+/**
+ * Compiling a document to a WebAssembly module, which the playground
+ * runs. It is apart from the service, which only analyzes code, so a
+ * program that imports the service does not import the code generator.
+ */
+
+import { BinaryGenerator } from 'zena-compiler:codegen/binary-generator';
+import { LanguageService } from './service.zena';
+
+/** A document compiled to a module, or null when it does not compile. */
+export let compileToWasm = (service: LanguageService, path: String, source: String): ByteArray | null => {
+  try {
+    let program = service.checkProgram(path, source);
+    if (program == null) {
+      return null;
+    }
+    return new BinaryGenerator('host', false, true).generate(program).toByteArray();
+  } catch (e) {
+    console.error(`compileToWasm failed: ${e.message}\n${e.getStackTrace() ?? ''}`);
+    return null;
+  }
+};

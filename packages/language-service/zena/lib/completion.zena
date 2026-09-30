@@ -1,0 +1,177 @@
+/**
+ * Completions: the members of a value after a `.`, and otherwise the
+ * keywords, the built-in types and the names a file declares or
+ * imports.
+ */
+
+import { Set } from 'zena:collections';
+import {
+  ProgramCheckResult, findMemberExpressionAtOffset, resolveObjectType,
+} from 'zena-compiler:compiler';
+import { ClassType, InterfaceType, MemberInfo, MethodInfo } from 'zena-compiler:types';
+import { ScopeResult } from 'zena-compiler:scope';
+import {
+  Identifier, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, DeclareFunction, FunctionExpression, MethodDefinition,
+} from 'zena-compiler:ast';
+import { FileAnalysis } from './analysis.zena';
+
+/**
+ * The kinds of completion Zena offers, numbered as the language server
+ * protocol's `CompletionItemKind` numbers them.
+ */
+export enum CompletionItemKind {
+  Method = 2,
+  Function = 3,
+  Variable = 6,
+  Class = 7,
+  Keyword = 14,
+}
+
+export class CompletionItem {
+  label: String;
+  kind: CompletionItemKind;
+  detail: String;
+  docComment: String;
+
+  new(this.label, this.kind, this.detail, this.docComment);
+}
+
+let keywords = [
+  'let', 'var', 'class', 'sealed', 'enum', 'type', 'import', 'export',
+  'return', 'if', 'else', 'match', 'case', 'for', 'in', 'while',
+  'new', 'this', 'extends', 'implements', 'true', 'false', 'null', 'try', 'catch',
+];
+
+/** Types every file can name, with the detail completions show for them. */
+let builtins = [
+  ('String', 'class String'),
+  ('i32', 'primitive i32'),
+  ('i64', 'primitive i64'),
+  ('u32', 'primitive u32'),
+  ('u64', 'primitive u64'),
+  ('u8', 'primitive u8'),
+  ('u16', 'primitive u16'),
+  ('i8', 'primitive i8'),
+  ('i16', 'primitive i16'),
+  ('f32', 'primitive f32'),
+  ('f64', 'primitive f64'),
+  ('boolean', 'primitive boolean'),
+  ('void', 'primitive void'),
+  ('anyref', 'the top reference type'),
+  ('ByteArray', 'array<u8>'),
+  ('Map', 'class Map<K, V>'),
+  ('Array', 'interface Array<T>'),
+  ('MutableArray', 'interface MutableArray<T>'),
+  ('GrowableArray', 'class GrowableArray<T>'),
+  ('FixedArray', 'class FixedArray<T>'),
+  ('ImmutableArray', 'class ImmutableArray<T>'),
+  ('Range', 'class Range'),
+  ('Iterable', 'interface Iterable<T>'),
+  ('Iterator', 'interface Iterator<T>'),
+  ('console', 'Console'),
+];
+
+/**
+ * Collects members for completion, each name once: a class's own member
+ * hides the same name on its superclass.
+ */
+class MemberCompletions {
+  #prefix: String;
+  #seen = new Set<String>();
+  items = new Array<CompletionItem>();
+
+  new(prefix: String) : #prefix = prefix;
+
+  add(members: Map<String, MemberInfo>): void {
+    for (let name in members.keys()) {
+      if (this.#seen.has(name) || !name.startsWith(this.#prefix)) {
+        continue;
+      }
+      this.#seen.add(name);
+      let isMethod = if (let (true, info) = members.get(name)) { info is MethodInfo } else { false };
+      let kind = if (isMethod) { CompletionItemKind.Method } else { CompletionItemKind.Variable };
+      this.items.push(new CompletionItem(name, kind, 'member', ''));
+    }
+  }
+}
+
+/**
+ * Completions for the member access at `offset`, like `point.` or
+ * `point.x`, filtered by what has been typed after the dot. Null when
+ * the cursor is not in a member access, or the object's type is not
+ * known.
+ */
+export let memberCompletions = (
+  file: FileAnalysis,
+  offset: i32,
+  program: ProgramCheckResult,
+): Array<CompletionItem> | null => {
+  let scopes = file.scopes;
+  if (scopes == null) {
+    return null;
+  }
+  // Just after the dot, the cursor is past the member expression's end.
+  var access = findMemberExpressionAtOffset(file.ast, offset);
+  if (access == null && offset > 0) {
+    access = findMemberExpressionAtOffset(file.ast, offset - 1);
+  }
+  if (access == null) {
+    return null;
+  }
+  let objectType = resolveObjectType(access.object, file.model, scopes, access.loc, file.ast, program.sharedState);
+  let typed = if (let Identifier {name} = access.property) { name } else { '' };
+  let completions = new MemberCompletions(typed);
+  if (objectType is ClassType) {
+    var current: ClassType | null = objectType;
+    while (current != null) {
+      completions.add(current.members);
+      for (let iface in current.implementsList) {
+        completions.add(iface.members);
+      }
+      current = current.superType;
+    }
+    return completions.items;
+  }
+  if (objectType is InterfaceType) {
+    completions.add(objectType.members);
+    for (let parent in objectType.extendsList) {
+      completions.add(parent.members);
+    }
+    return completions.items;
+  }
+  return null;
+};
+
+/** Keywords, built-in types, and the names declared at the top of a file. */
+export let scopeCompletions = (scopes: ScopeResult | null): Array<CompletionItem> => {
+  let items = new Array<CompletionItem>();
+  let seen = new Set<String>();
+  for (let keyword in keywords) {
+    items.push(new CompletionItem(keyword, CompletionItemKind.Keyword, 'keyword', ''));
+    seen.add(keyword);
+  }
+  for (let (name, detail) in builtins) {
+    items.push(new CompletionItem(name, CompletionItemKind.Class, detail, ''));
+    seen.add(name);
+  }
+  if (scopes == null) {
+    return items;
+  }
+  let bindings = scopes.rootScope.bindings;
+  for (let name in bindings.keys()) {
+    if (name.length == 0 || seen.has(name)) {
+      continue;
+    }
+    seen.add(name);
+    let decl = if (let (true, sym) = bindings.get(name)) { sym.declaration } else { null };
+    let kind = if (decl is ClassDeclaration || decl is InterfaceDeclaration || decl is EnumDeclaration) {
+      CompletionItemKind.Class
+    } else if (decl is DeclareFunction || decl is FunctionExpression || decl is MethodDefinition) {
+      CompletionItemKind.Function
+    } else {
+      CompletionItemKind.Variable
+    };
+    items.push(new CompletionItem(name, kind, '', ''));
+  }
+  return items;
+};

@@ -1,0 +1,131 @@
+// @requires: wasmtime
+// `zena lsp`, the language server in the zena command: the real
+// `zena-cli` process, spoken to over its stdin and stdout the way an
+// editor does. `server_test.zena` covers the server's parts; this covers
+// what only the process has: reading framed messages from stdin, writing
+// them to stdout with nothing else mixed in, and exiting when told to.
+//
+// It runs the `zena-cli` built in the repository, which a test sees as
+// `.`, and needs spawning, which repository tests have.
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { JsonObject, JsonValue, jsonInt, jsonString, parseJson } from 'zena:json';
+import { ProcessResult, runWith } from 'zena:process';
+import { MessageReader, frame } from '../lib/framing.zena';
+
+/** Runs `zena-cli lsp` on a whole session's input. */
+let session = (messages: Array<String>): ProcessResult => {
+  var input = '';
+  for (let message in messages) {
+    input = input + frame(message);
+  }
+  return runWith(['./target/release/zena-cli', 'lsp'], {cwd: '.', input: input});
+};
+
+/** The messages in a process's output, which must hold nothing else. */
+let messagesIn = (output: String): Array<JsonValue> => {
+  var consumed = false;
+  let reader = new MessageReader((): String => {
+    if (consumed) {
+      return '';
+    }
+    consumed = true;
+    return output;
+  });
+  let messages = new Array<JsonValue>();
+  while (true) {
+    let body = reader.next();
+    if (body == null) {
+      return messages;
+    }
+    messages.push(parseJson(body));
+  }
+  return messages;
+};
+
+/** The reply to request `id`, or null if there is none. */
+let replyTo = (messages: Array<JsonValue>, id: i32): JsonValue => {
+  for (let message in messages) {
+    if (let (true, found) = jsonInt(message, '.id')) {
+      if (found == id) {
+        return message;
+      }
+    }
+  }
+  return null;
+};
+
+let uri = 'file:///nowhere/main.zena';
+
+// The document has a doc comment, a type error on its sixth line, and a
+// two-byte character before the call on its fifth.
+let text = [
+  '/** Adds one. */',
+  'let addOne = (a: i32): i32 => a + 1;',
+  '',
+  'export let run = (): i32 => {',
+  "  let value = 'é'.length + addOne(41);",
+  "  let wrong: String = 'é' + 1;",
+  '  return value;',
+  '};',
+  '',
+];
+
+/** Lines joined as the inside of a JSON string, each ending in an escaped newline. */
+let joined = (lines: Array<String>): String => {
+  var out = '';
+  for (let line in lines) {
+    out = `${out}${line}\\n`;
+  }
+  return out;
+};
+
+export let tests = suite('zena lsp', (): void => {
+  test('answers a session and exits with status 0', () => {
+    // The start of `addOne` in `addOne(41)`: UTF-16 character 27, byte
+    // 28, since 'é' is one unit and two bytes. Read as a byte offset,
+    // 27 is the space before it, and there would be nothing to hover.
+    let at = `"textDocument":{"uri":"${uri}"},"position":{"line":4,"character":27}`;
+    let run = session([
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}',
+      '{"jsonrpc":"2.0","method":"initialized","params":{}}',
+      `{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"${uri}","languageId":"zena","version":1,"text":"${joined(text)}"}}}`,
+      `{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{${at}}}`,
+      `{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{${at}}}`,
+      '{"jsonrpc":"2.0","id":4,"method":"shutdown"}',
+      '{"jsonrpc":"2.0","method":"exit"}',
+    ]);
+    equal(run.exitCode, 0, run.stderr);
+    let messages = messagesIn(run.stdout);
+
+    equal(jsonString(replyTo(messages, 1), '.result.serverInfo.name') ?? '', 'zena');
+
+    var diagnosticLine = -1;
+    for (let message in messages) {
+      if ((jsonString(message, '.method') ?? '') == 'textDocument/publishDiagnostics') {
+        diagnosticLine = jsonInt(message, '.params.diagnostics[0].range.start.line') ?? -1;
+      }
+    }
+    equal(diagnosticLine, 5);
+
+    let hover = jsonString(replyTo(messages, 2), '.result.contents.value') ?? '';
+    isTrue(hover.contains('addOne'), hover);
+    isTrue(hover.contains('Adds one.'), hover);
+
+    let definition = replyTo(messages, 3);
+    equal(jsonString(definition, '.result.uri') ?? '', uri);
+    equal(jsonInt(definition, '.result.range.start.line') ?? -1, 1);
+    equal(jsonInt(definition, '.result.range.start.character') ?? -1, 4);
+
+    let shutdown = replyTo(messages, 4);
+    isTrue(shutdown is JsonObject && (shutdown as JsonObject).has('result'));
+  });
+
+  test('ends when its input ends', () => {
+    let run = session([
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}',
+    ]);
+    equal(run.exitCode, 0, run.stderr);
+    equal(messagesIn(run.stdout).length, 1);
+  });
+});

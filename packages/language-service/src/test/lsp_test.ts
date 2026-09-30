@@ -705,6 +705,15 @@ let f = new Foo(42);`;
     assert.strictEqual(hover!.doc, 'Add two numbers.\nReturns their sum.');
   });
 
+  test('getHover: doc comment keeps its paragraphs', () => {
+    const src =
+      '/**\n * Add two numbers.\n *\n * ```zena\n * let three = 1 + 2;\n * ```\n */\nlet add = (a: i32, b: i32): i32 => a + b;';
+    const offset = offsetOf(src, 'add', 1);
+    const hover = getHoverAt(lsp, src, offset);
+    assert.ok(hover, 'Expected hover info');
+    assert.strictEqual(hover!.doc, 'Add two numbers.\n\n```zena\nlet three = 1 + 2;\n```');
+  });
+
   test('getHover: doc comment on function at call site reference', () => {
     const src =
       '/**\n * Greets a user by name.\n */\nlet greet = (name: String): String => "Hello " + name;\n\nexport let main = () => {\n  greet("Zena");\n};';

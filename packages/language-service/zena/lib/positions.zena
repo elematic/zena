@@ -1,0 +1,81 @@
+/**
+ * Positions as the language server protocol counts them, a line and a
+ * UTF-16 offset into it, converted to and from the UTF-8 byte offsets
+ * the language service works in.
+ */
+
+/** A position as the protocol counts it: a line and a UTF-16 offset. */
+export type Position = {line: i32, character: i32};
+
+let NEWLINE = 0x0A;
+
+// The lead byte of a UTF-8 character says how many bytes it takes:
+// below 0xC0 one (ASCII, or a stray continuation byte counted on its
+// own), then two, three and four from these.
+let TWO_BYTE_LEAD = 0xC0;
+let THREE_BYTE_LEAD = 0xE0;
+let FOUR_BYTE_LEAD = 0xF0;
+
+/** How many bytes the UTF-8 character starting with `lead` takes. */
+let utf8Size = (lead: i32): i32 => {
+  if (lead < TWO_BYTE_LEAD) {
+    return 1;
+  }
+  if (lead < THREE_BYTE_LEAD) {
+    return 2;
+  }
+  if (lead < FOUR_BYTE_LEAD) {
+    return 3;
+  }
+  return 4;
+};
+
+/**
+ * How many UTF-16 units a UTF-8 character of `size` bytes takes: two,
+ * a surrogate pair, for one outside the Basic Multilingual Plane.
+ */
+let utf16Width = (size: i32): i32 => if (size == 4) { 2 } else { 1 };
+
+/** The byte offset in `source` of a protocol position. */
+export let offsetOf = (source: String, position: Position): i32 => {
+  var offset = 0;
+  var line = 0;
+  while (line < position.line && offset < source.length) {
+    if (source.getByteAt(offset) == NEWLINE) {
+      line += 1;
+    }
+    offset += 1;
+  }
+  var units = 0;
+  while (units < position.character && offset < source.length) {
+    let b = source.getByteAt(offset);
+    if (b == NEWLINE) {
+      break;
+    }
+    let size = utf8Size(b);
+    offset += size;
+    units += utf16Width(size);
+  }
+  return if (offset > source.length) { source.length } else { offset };
+};
+
+/** The protocol position of a byte offset in `source`. */
+export let positionOf = (source: String, offset: i32): Position => {
+  let end = if (offset < source.length) { offset } else { source.length };
+  var line = 0;
+  var lineStart = 0;
+  for (var i = 0; i < end; i += 1) {
+    if (source.getByteAt(i) == NEWLINE) {
+      line += 1;
+      lineStart = i + 1;
+    }
+  }
+  var character = 0;
+  var i = lineStart;
+  while (i < end) {
+    let size = utf8Size(source.getByteAt(i));
+    character += utf16Width(size);
+    i += size;
+  }
+  return {line: line, character: character};
+};

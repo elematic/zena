@@ -1,0 +1,135 @@
+/**
+ * The protocol's JSON: how the server writes positions, ranges,
+ * diagnostics, symbols and completions, what it says it can do, and the
+ * codes it answers a failed request with.
+ */
+
+import { JsonBuilder } from 'zena:json';
+import { Diagnostic, DiagnosticSeverity } from 'zena-compiler:diagnostics';
+import { CompletionItem } from './completion.zena';
+import { HoverResult } from './hover.zena';
+import { DocumentSymbol } from './symbols.zena';
+import { Position, positionOf } from './positions.zena';
+
+/** The JSON-RPC error codes the server answers with. */
+export enum ErrorCode {
+  ParseError = -32700,
+  InvalidRequest = -32600,
+  MethodNotFound = -32601,
+  InvalidParams = -32602,
+  InternalError = -32603,
+}
+
+/** A request that cannot be answered, and the code to answer it with. */
+export class RequestError extends Error {
+  code: ErrorCode;
+
+  new(code: ErrorCode, message: String) : code = code, super(message);
+}
+
+/** The protocol's DiagnosticSeverity number for a severity. */
+let severityNumber = (severity: DiagnosticSeverity): i32 => match (severity) {
+  case DiagnosticSeverity.Error: 1
+  case DiagnosticSeverity.Warning: 2
+  case DiagnosticSeverity.Information: 3
+};
+
+export let writePosition = (b: JsonBuilder, position: Position): void => {
+  b.beginObject()
+    .key('line').i32(position.line)
+    .key('character').i32(position.character)
+    .endObject();
+};
+
+export let writeRange = (b: JsonBuilder, start: Position, end: Position): void => {
+  b.beginObject().key('start');
+  writePosition(b, start);
+  b.key('end');
+  writePosition(b, end);
+  b.endObject();
+};
+
+/** The range of the bytes `start` to `end` of `source`. */
+export let writeSpan = (b: JsonBuilder, source: String, start: i32, end: i32): void => {
+  writeRange(b, positionOf(source, start), positionOf(source, end));
+};
+
+/** Markdown content: `{kind: 'markdown', value}`. */
+let writeMarkdown = (b: JsonBuilder, value: String): void => {
+  b.beginObject().key('kind').string('markdown').key('value').string(value).endObject();
+};
+
+/** A diagnostic in `source`, the text of the document it belongs to. */
+export let writeDiagnostic = (b: JsonBuilder, source: String, diagnostic: Diagnostic): void => {
+  b.beginObject().key('range');
+  let location = diagnostic.location;
+  if (location == null) {
+    writeSpan(b, source, 0, 0);
+  } else {
+    writeSpan(b, source, location.start, location.start + location.length);
+  }
+  b.key('severity').i32(severityNumber(diagnostic.severity))
+    .key('source').string('zena')
+    .key('message').string(diagnostic.message)
+    .endObject();
+};
+
+/** A hover: the label as Zena code, then the doc comment if there is one. */
+export let writeHover = (b: JsonBuilder, hover: HoverResult): void => {
+  let label = `\`\`\`zena\n${hover.label}\n\`\`\``;
+  let value = if (hover.docComment == '') { label } else { `${label}\n\n---\n\n${hover.docComment}` };
+  b.beginObject().key('contents');
+  writeMarkdown(b, value);
+  b.endObject();
+};
+
+export let writeSymbol = (b: JsonBuilder, source: String, entry: DocumentSymbol): void => {
+  b.beginObject()
+    .key('name').string(entry.name)
+    .key('kind').i32(entry.kind as i32)
+    .key('range');
+  writeSpan(b, source, entry.start, entry.end);
+  b.key('selectionRange');
+  writeSpan(b, source, entry.selStart, entry.selEnd);
+  if (entry.children.length > 0) {
+    b.key('children').beginArray();
+    for (let child in entry.children) {
+      writeSymbol(b, source, child);
+    }
+    b.endArray();
+  }
+  b.endObject();
+};
+
+export let writeCompletion = (b: JsonBuilder, item: CompletionItem): void => {
+  b.beginObject()
+    .key('label').string(item.label)
+    .key('kind').i32(item.kind as i32);
+  if (item.detail != '') {
+    b.key('detail').string(item.detail);
+  }
+  if (item.docComment != '') {
+    b.key('documentation');
+    writeMarkdown(b, item.docComment);
+  }
+  b.endObject();
+};
+
+/** What the server can do, as `initialize` reports it. */
+export let initializeResult = (): String => {
+  let b = new JsonBuilder();
+  b.beginObject().key('capabilities').beginObject()
+    // Full text on open and on every change (TextDocumentSyncKind.Full).
+    .key('textDocumentSync').beginObject()
+      .key('openClose').bool(true).key('change').i32(1).endObject()
+    .key('hoverProvider').bool(true)
+    .key('definitionProvider').bool(true)
+    .key('documentSymbolProvider').bool(true)
+    .key('completionProvider').beginObject()
+      .key('triggerCharacters').beginArray().string('.').endArray().endObject()
+    .key('documentFormattingProvider').bool(true)
+    .endObject()
+    .key('serverInfo').beginObject().key('name').string('zena').endObject()
+    .endObject();
+  return b.toString();
+};

@@ -1,0 +1,68 @@
+/**
+ * The compiler host behind the language service. It serves the
+ * documents an editor has open in place of the files on disk.
+ */
+
+import { CompilerHost } from 'zena-compiler:compiler';
+import { stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
+
+/**
+ * Reads a file that is not open in the editor, by path; null when there
+ * is no such file.
+ */
+export type FileReader = (path: String) => String | null;
+
+/**
+ * A path as the service keys its state. An editor may send a path
+ * without its leading slash; a standard library id like `zena:core` is
+ * left as it is.
+ */
+export let normalizePath = (path: String): String =>
+  if (path.startsWith('/') || path.startsWith('zena:')) { path } else { `/${path}` };
+
+/**
+ * Serves the compiler the editor's copy of each open document, and
+ * everything else through the reader it was given.
+ */
+export class DocumentHost implements CompilerHost {
+  #openDocuments = new Map<String, String>();
+  #stdlibRoot: String;
+  #readFile: FileReader;
+
+  new(stdlibRoot: String, readFile: FileReader)
+    : #stdlibRoot = stdlibRoot, #readFile = readFile;
+
+  /**
+   * Where a module is on disk: a standard library id like `zena:core`
+   * maps into the standard library's directory, and any other path is
+   * already one.
+   */
+  resolveToFilesystemPath(path: String): String {
+    if (path.startsWith('zena:')) {
+      return `${this.#stdlibRoot}/${stdlibIdToRelativeFile(path)}`;
+    }
+    return path;
+  }
+
+  /** Registers or updates an open document's source. */
+  setDocument(path: String, source: String): void {
+    this.#openDocuments[path] = source;
+  }
+
+  deleteDocument(path: String): void {
+    this.#openDocuments.delete(path);
+  }
+
+  readFile(path: String): String {
+    if (let (true, source) = this.#openDocuments.get(path)) {
+      return source;
+    }
+    let fsPath = this.resolveToFilesystemPath(path);
+    let read = this.#readFile;
+    let content = read(fsPath);
+    if (content == null) {
+      throw new Error(`File not found: ${fsPath}`);
+    }
+    return content;
+  }
+}

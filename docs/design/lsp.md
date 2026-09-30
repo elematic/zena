@@ -82,18 +82,30 @@ The analysis moved out of `lsp.zena` into a library both use,
 in `zena-packages.json`). A program passes the service a function that
 reads files that are not open: `lsp.zena` passes one that calls its
 `read_file` host import, and `zena lsp` one over `zena:fs`.
+Each of the service's features is a module of its own beside it
+(`hover.zena`, `completion.zena`, `symbols.zena`), and so is compiling a
+document for the playground (`compile.zena`), so that the language server
+does not carry the code generator. Doc comments are read with the
+compiler's `zena-compiler:doc-comment`, the parser zenadoc uses, and an
+import is followed to its declaration with `Symbol.resolveTarget()`.
+
 `lib/server.zena` (`language-service:server`) is the protocol:
 
-- `MessageReader` splits the input into `Content-Length`-framed messages,
-  and `frame` adds the header to a reply.
+- `MessageReader` (`framing.zena`) splits the input into
+  `Content-Length`-framed messages, and `frame` adds the header to a
+  reply.
 - `LspServer` answers `initialize`, `shutdown` and `exit`, keeps the open
   documents (full-text sync: the client sends the whole text on every
   change), publishes each document's diagnostics when it opens or
   changes, and answers hover, definition, document symbols, completion
-  and formatting.
-- `offsetOf` and `positionOf` convert between the protocol's positions (a
-  line and a UTF-16 character offset) and the service's UTF-8 byte
-  offsets.
+  and formatting. A request without a document or position it needs gets
+  an `InvalidParams` error. Document URIs go through `zena:url`'s
+  `fileURLToPath` and `pathToFileURL`.
+- `offsetOf` and `positionOf` (`positions.zena`) convert between the
+  protocol's positions (a line and a UTF-16 character offset) and the
+  service's UTF-8 byte offsets.
+- `protocol.zena` writes the protocol's JSON: ranges, diagnostics,
+  symbols, completions and hovers.
 
 `zena lsp` analyses for the `zena-cli` target and loads the repository's
 `zena-packages.json`, so a file that uses `zena:fs` or imports

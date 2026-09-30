@@ -1,0 +1,41 @@
+/**
+ * What the service knows about a checked file, as hover, go to
+ * definition and completions read it.
+ */
+
+import { SemanticModel } from 'zena-compiler:compiler';
+import { Symbol, ScopeResult } from 'zena-compiler:scope';
+import { Node, Module } from 'zena-compiler:ast';
+
+/** A checked file: its syntax tree, its types, and its scopes if known. */
+export type FileAnalysis = {
+  ast: Module,
+  model: SemanticModel,
+  scopes: ScopeResult | null,
+};
+
+/** Whether `offset` is inside `node`'s source span. */
+export let spans = (node: Node, offset: i32): boolean => {
+  let loc = node.loc;
+  return loc != null && offset >= loc.start && offset < loc.end;
+};
+
+/**
+ * The symbol under the cursor: the one that starts where the node under
+ * the cursor starts, else the one at the cursor itself.
+ */
+export let symbolUnder = (scopes: ScopeResult | null, node: Node | null, offset: i32): Symbol | null => {
+  if (scopes == null) {
+    return null;
+  }
+  if (node != null) {
+    let loc = node.loc;
+    if (loc != null) {
+      let atNode = scopes.symbols.getByOffset(loc.start);
+      if (atNode != null) {
+        return atNode;
+      }
+    }
+  }
+  return scopes.symbols.getByOffset(offset);
+};

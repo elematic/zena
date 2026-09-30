@@ -1,0 +1,51 @@
+// The outline of a file: declarations, their members, and in a test file
+// its suites and tests.
+import { suite, test } from 'zena:test';
+import { equal } from 'zena:assert';
+import { parse } from 'zena-compiler:parser';
+import { DocumentSymbol, SymbolKind, documentSymbols } from '../lib/symbols.zena';
+
+let outline = (source: String): Array<DocumentSymbol> => documentSymbols(parse(source, '/outline.zena'));
+
+export let tests = suite('document symbols', (): void => {
+  test('a class with members, an enum, and a function value', () => {
+    let symbols = outline(`class Point {
+  x: f64;
+  new(this.x);
+  length(): f64 { return this.x; }
+}
+enum Color { Red, Green }
+let area = (p: Point): f64 => p.x;
+let count = 3;
+`);
+    equal(symbols.length, 4);
+    equal(symbols[0].name, 'Point');
+    equal(symbols[0].kind, SymbolKind.Class);
+    equal(symbols[0].children.length, 3);
+    equal(symbols[0].children[1].kind, SymbolKind.Constructor);
+    equal(symbols[0].children[2].kind, SymbolKind.Method);
+    equal(symbols[1].children[1].name, 'Green');
+    equal(symbols[1].children[1].kind, SymbolKind.EnumMember);
+    equal(symbols[2].kind, SymbolKind.Function);
+    equal(symbols[3].kind, SymbolKind.Variable);
+  });
+
+  test('a test file lists its suites and tests', () => {
+    let symbols = outline(`import { suite, test } from 'zena:test';
+export let tests = suite('parser', () => {
+  test('reads a number', () => {});
+  suite('errors', () => {
+    test('reports a bad token', () => {});
+  });
+});
+`);
+    equal(symbols.length, 1);
+    let tests = symbols[0];
+    equal(tests.kind, SymbolKind.Function);
+    equal(tests.children.length, 2);
+    equal(tests.children[0].name, 'reads a number');
+    equal(tests.children[1].name, 'errors');
+    equal(tests.children[1].kind, SymbolKind.Method);
+    equal(tests.children[1].children[0].name, 'reports a bad token');
+  });
+});

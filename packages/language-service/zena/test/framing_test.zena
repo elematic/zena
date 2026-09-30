@@ -1,0 +1,50 @@
+// Message framing: `frame` and `MessageReader`, which splits a byte
+// stream back into messages.
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { MessageReader, frame } from '../lib/framing.zena';
+
+/** A message reader over fixed chunks, as if they arrived one by one. */
+let readerOf = (chunks: Array<String>): MessageReader => {
+  var next = 0;
+  return new MessageReader((): String => {
+    if (next >= chunks.length) {
+      return '';
+    }
+    let chunk = chunks[next];
+    next += 1;
+    return chunk;
+  });
+};
+
+export let tests = suite('message framing', (): void => {
+  test('a frame counts its body in bytes', () => {
+    equal(frame('{"a":"é"}'), 'Content-Length: 10\r\n\r\n{"a":"é"}');
+  });
+
+  test('messages are split out of chunks, whatever the chunks', () => {
+    let whole = frame('{"a":1}') + frame('{"b":"é"}');
+    // Every split point, including through a header and a UTF-8 body.
+    for (var cut = 1; cut < whole.length; cut += 1) {
+      let reader = readerOf([whole.sliceBytes(0, cut), whole.sliceBytes(cut, whole.length)]);
+      equal(reader.next() ?? 'none', '{"a":1}');
+      equal(reader.next() ?? 'none', '{"b":"é"}');
+      isTrue(reader.next() == null);
+    }
+  });
+
+  test('a header name is matched whatever its case, and its value trimmed', () => {
+    let reader = readerOf(['content-length:  2 \r\nContent-Type: x\r\n\r\n{}']);
+    equal(reader.next() ?? 'none', '{}');
+  });
+
+  test('a message without a length is an error', () => {
+    let reader = readerOf(['Content-Type: x\r\n\r\n{}']);
+    let outcome = try {
+      reader.next() ?? 'end'
+    } catch (e) {
+      'threw'
+    };
+    equal(outcome, 'threw');
+  });
+});
