@@ -305,6 +305,15 @@ export let tests = suite('Component emission', (): void => {
       `clock.zena emitted sections ${idsToString(ids)}`);
   });
 
+  test('two interfaces that each lift a future compile together', (ctx: TestContext): void => {
+    // Each interface's bindings number their future types from zero, and
+    // the builtins they declare used to be named by that number alone:
+    // stdin's future and the filesystem's were both `future.read#0`, at
+    // different types, and the encoder refused the second.
+    let bytes = compileFor(`${fixtures}/two-futures.zena`, 'component');
+    equal(bytes[4], 0x0d, 'a component');
+  });
+
   test('a p3 timer adds a canon section for the builtins', (ctx: TestContext): void => {
     // The same sequence as clock.zena with two additions: a type section
     // declaring the driver's wake future — the one typed builtin every
@@ -486,7 +495,7 @@ export let tests = suite('Component emission', (): void => {
     isTrue(wrapperOpt != null, 'the provider world gets no wrapper');
     let source = (wrapperOpt as ComponentEntryWrapper).source;
     isTrue(source.contains(
-        `@external("canon", "future.new#0", "future:test:compose/oracle@1.0.0#s32")`),
+        `@external("canon", "future.new#test:compose/oracle@1.0.0.0", "future:test:compose/oracle@1.0.0#s32")`),
       `the future builtins are not typed against the exporting interface:\n${source}`);
     isTrue(source.contains(`function lowerFuture0(value: Future<i32>): i32 {`),
       `the lowering helper is missing:\n${source}`);
@@ -809,7 +818,7 @@ export function reset(): boolean { return true; }
     // records one at a time — `Stream<FrameEvent>` in the signatures.
     let source = synthesizeWitModule(
         `wit:${fixtures}/gfx.wit#test:gfx/feed`, packagesWit());
-    isTrue(source.contains(`@external("canon", "stream.read#0", "stream:test:gfx/feed@1.0.0#frame-event,async")`),
+    isTrue(source.contains(`@external("canon", "stream.read#test:gfx/feed@1.0.0.0", "stream:test:gfx/feed@1.0.0#frame-event,async")`),
       `the stream read is not declared per element:\n${source}`);
     isTrue(source.contains(`export async function frames(count: u32): Future<Stream<FrameEvent>> {`),
       `the stream result is not a Stream<FrameEvent>:\n${source}`);
@@ -1478,7 +1487,7 @@ world only {
     isTrue(source.contains('async function readFuture0(end: i32): Future<u32> {'),
       'the deferred read helper is missing:\n' + source);
     isTrue(source.contains(
-        '@external("canon", "future.read#0", ' +
+        '@external("canon", "future.read#fixture:pipe/pipes@1.0.0.0", ' +
         '"future:fixture:pipe/pipes@1.0.0#u32,async")'),
       "the read builtin is not typed by the payload:\n" + source);
     // The future parameter: an Outcome payload with a bare ok arm.
@@ -1491,7 +1500,7 @@ world only {
       'a future parameter should lower through its helper:\n' +
       source);
     isTrue(source.contains(
-        '@external("canon", "future.write#1", ' +
+        '@external("canon", "future.write#fixture:pipe/pipes@1.0.0.1", ' +
         '"future:fixture:pipe/pipes@1.0.0#result<_, pipe-error>,async")'),
       "the write builtin is not typed by the payload:\n" + source);
     isTrue(source.contains('return new Ok<void, PipeError>(witUnit());'),
