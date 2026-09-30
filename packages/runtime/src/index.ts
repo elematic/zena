@@ -73,7 +73,10 @@ export interface ZenaImports {
 /**
  * ByteArray - a WASM GC array of i8 (signed bytes).
  *
- * When accessed from JS, WASM GC arrays are iterable.
+ * A WASM GC array is opaque to JS: it has no indexed access, no length,
+ * and no iterator. The only way to read one is to call back into wasm,
+ * which is what `createStringReader` does. This alias describes the
+ * shape a host function would need, not something JS can consume.
  */
 export type ByteArray = Iterable<number>;
 
@@ -85,8 +88,8 @@ export type ByteArray = Iterable<number>;
  * @returns The decoded JavaScript string
  */
 export function readByteArray(bytes: ByteArray, length: number): string {
-  // Convert the WASM GC array to a Uint8Array
-  // WASM GC arrays are iterable in JS
+  // Only usable on something already iterable in JS. A WASM GC array is
+  // not: reading one goes through createStringReader's exported getter.
   const uint8 = new Uint8Array(length);
   let i = 0;
   for (const byte of bytes) {
@@ -147,6 +150,22 @@ export function isZenaString(value: unknown): value is ZenaString {
  * This is the V8-recommended pattern for reading WASM GC arrays from JS:
  * - WASM exports a getter function $stringGetByte(externref, i32) -> i32
  * - JS receives the string as externref and iterates calling the getter
+ *
+ * A call per byte looks like the slow option and is the fast one. The
+ * dart2wasm team measured the copy being faster driven from JS than
+ * from wasm, because V8 optimizes JS calling wasm better than the
+ * reverse, and dart2wasm generates this same loop
+ * (https://github.com/WebAssembly/gc/issues/568#issuecomment-2469934328).
+ * The optimization is V8's Wasm-into-JS inlining, and Jakob Kummerow
+ * (V8) notes it triggers only for nullable `externref` parameters — not
+ * `anyref`, not typed references — which is why `$stringGetByte` takes
+ * `externref` and casts inside
+ * (https://github.com/WebAssembly/gc/issues/568#issuecomment-2470464481).
+ *
+ * So keep the loop shape: a monomorphic call to `getByte` with the ref
+ * and an integer, nothing else in the body. Replacing it with a bulk
+ * copy export driven from wasm gives the inlining up.
+ * See docs/design/host-interop.md, "Strings".
  *
  * @param exports - The WASM instance exports containing $stringGetByte
  * @returns A function that reads a string from externref + length
