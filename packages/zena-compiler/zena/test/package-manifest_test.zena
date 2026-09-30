@@ -54,15 +54,26 @@ export let tests = suite("Package Manifest", () => {
 
     test("parses virtual module exports", () => {
       let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"host": "console/js.zena", "wasi": "console/wasi.zena"}}}}}}');
+      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"js": "console/js.zena", "zena-cli": "console/cli.zena"}}}}}}');
 
       let packages = loadPackageMap(host, "/project/zena-packages.json");
       let config = packages["mylib"];
       let exports = config.exports as Map<String, ModuleExport>;
       let consoleExport = exports["console"];
       let virtual = consoleExport.virtual as Map<String, String>;
-      equal(virtual["host"], "console/js.zena");
-      equal(virtual["wasi"], "console/wasi.zena");
+      equal(virtual["js"], "console/js.zena");
+      equal(virtual["zena-cli"], "console/cli.zena");
+    });
+
+    test("keys a virtual entry under the legacy name host as js", () => {
+      let host = new MockHost();
+      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"host": "console/js.zena"}}}}}}');
+
+      let packages = loadPackageMap(host, "/project/zena-packages.json");
+      let exports = packages["mylib"].exports as Map<String, ModuleExport>;
+      let virtual = exports["console"].virtual as Map<String, String>;
+      equal(virtual["js"], "console/js.zena");
+      isFalse(virtual.has("host"));
     });
 
     test("parses the internal flag, on any entry shape", () => {
@@ -71,7 +82,7 @@ export let tests = suite("Package Manifest", () => {
           '{"packages": {"mylib": {"root": "./lib", "exports": {' +
           '"plain": {"internal": true}, ' +
           '"withPath": {"path": "impl/x.zena", "internal": true}, ' +
-          '"virt": {"virtual": {"host": "impl/h.zena"}, "internal": true}, ' +
+          '"virt": {"virtual": {"js": "impl/h.zena"}, "internal": true}, ' +
           '"open": {}}}}}');
 
       let packages = loadPackageMap(host, "/project/zena-packages.json");
@@ -123,8 +134,9 @@ export let tests = suite("Package Manifest", () => {
       let exports = config.exports as Map<String, ModuleExport>;
       let consoleExport = exports["console"];
       let virtual = consoleExport.virtual as Map<String, String>;
-      equal(virtual["host"], "console/host.zena");
+      equal(virtual["js"], "console/host.zena");
       equal(virtual["zena-cli"], "console/component.zena");
+      isFalse(virtual.has("host"));
     });
 
     test("does not export console implementation files by name", () => {

@@ -13,9 +13,15 @@ export type Target =
   | 'zena-cli'
   | 'freestanding'
   | 'component'
-  // Legacy spellings: 'host' predates 'js', 'wasi' predates 'zena-cli'.
-  | 'host'
-  | 'wasi';
+  // The legacy spelling of 'js'.
+  | 'host';
+
+/**
+ * The current name of a target. The manifest lists each entry under
+ * current names only, so the legacy 'host' is looked up as 'js'.
+ */
+const canonicalTarget = (target: Target): Target =>
+  target === 'host' ? 'js' : target;
 
 interface ModuleEntry {
   /** Entry file relative to zena/. Defaults to `<name>.zena`. */
@@ -106,7 +112,7 @@ export const resolveStdlibImport = (
     return null;
   }
   if (entry.virtual) {
-    const virtualPath = entry.virtual[target];
+    const virtualPath = entry.virtual[canonicalTarget(target)];
     return virtualPath ? `zena:${virtualPath}` : null;
   }
   if (entry.path) {

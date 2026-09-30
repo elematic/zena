@@ -23,12 +23,12 @@ let makeStdlibConfig = (): PackageConfig => {
   // An internal module: the manifest entry is what picks its file, and
   // only the package's own modules may name it.
   let stackVirtual = new Map<String, String>();
-  stackVirtual["host"] = "core/error/stack-host.zena";
+  stackVirtual["js"] = "core/error/stack-host.zena";
   exports["error-stack"] = new ModuleExport(stackVirtual, null, true);
 
   let consoleVirtual = new Map<String, String>();
-  consoleVirtual["host"] = "console/host.zena";
-  consoleVirtual["wasi"] = "console/wasi.zena";
+  consoleVirtual["js"] = "console/host.zena";
+  consoleVirtual["zena-cli"] = "console/component.zena";
   exports["console"] = new ModuleExport(consoleVirtual);
 
   return new PackageConfig("/stdlib", exports);
@@ -137,17 +137,26 @@ export let tests = suite("Module Resolver", (): void => {
     equal(result.packageName, "zena");
   });
 
-  test("resolves stdlib virtual module for host", (t: TestContext): void => {
-    let resolver = makeResolver("host");
+  test("resolves stdlib virtual module for js", (t: TestContext): void => {
+    let resolver = makeResolver("js");
     let result = resolver.resolve("zena:console", "/my/file.zena");
     equal(result.path, "zena:console/host.zena");
     equal(result.packageName, "zena");
   });
 
-  test("resolves stdlib virtual module for wasi", (t: TestContext): void => {
-    let resolver = makeResolver("wasi");
+  test("resolves the legacy target name host as js", (t: TestContext): void => {
+    // Manifests list entries under "js" only.
+    let resolver = makeResolver("host");
+    equal(resolver.target, "js");
     let result = resolver.resolve("zena:console", "/my/file.zena");
-    equal(result.path, "zena:console/wasi.zena");
+    equal(result.path, "zena:console/host.zena");
+    equal(result.packageName, "zena");
+  });
+
+  test("resolves stdlib virtual module for zena-cli", (t: TestContext): void => {
+    let resolver = makeResolver("zena-cli");
+    let result = resolver.resolve("zena:console", "/my/file.zena");
+    equal(result.path, "zena:console/component.zena");
     equal(result.packageName, "zena");
   });
 

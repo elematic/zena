@@ -11,7 +11,7 @@
 //         "exports": {
 //           "utils": {},
 //           "widgets": { "path": "widgets/index.zena" },
-//           "console": { "virtual": { "host": "console/host.zena", ... } }
+//           "console": { "virtual": { "js": "console/host.zena", ... } }
 //         }
 //       }
 //     }
@@ -25,6 +25,7 @@ import { parseJson, JsonValue, JsonObject } from 'zena:json';
 import { PackageConfig, ModuleExport } from './module-resolver.zena';
 import { CompilerHost } from './library-loader.zena';
 import { dirName, normalizePath } from './module-resolver.zena';
+import { canonicalTarget } from './targets.zena';
 
 // ============================================================================
 // Package Map Loading
@@ -113,8 +114,10 @@ let parseModuleExport = (value: JsonValue): ModuleExport => {
   if (obj.has("virtual")) {
     let virtualObj = obj["virtual"] as JsonObject;
     let virtual = new Map<String, String>();
+    // Keyed by current target names, as the resolver looks them up; a
+    // manifest that still says "host" keeps working.
     virtualObj.forEach((target: String, entryPath: JsonValue): void => {
-      virtual[target] = entryPath as String;
+      virtual[canonicalTarget(target)] = entryPath as String;
     });
     return new ModuleExport(virtual, null, internal);
   }

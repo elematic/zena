@@ -9,6 +9,8 @@
 // Resolution is a pure function of configuration (packages + target).
 // No I/O is performed.
 
+import { canonicalTarget } from './targets.zena';
+
 
 // ============================================================================
 // Package Configuration
@@ -90,17 +92,19 @@ export final class ResolvedModule(
 // compilation target string.
 //
 // Usage:
-//   let resolver = new ModuleResolver(packages, "host");
+//   let resolver = new ModuleResolver(packages, "js");
 //   let resolved = resolver.resolve("zena:regex", "/my/file.zena");
 //   // resolved.path == "zena:regex"
 export final class ModuleResolver {
   #packages: Map<String, PackageConfig>;
   #target: String;
 
+  // The legacy target name "host" is stored as "js", the name manifests
+  // list entries under.
   new(packages: Map<String, PackageConfig>, target: String)
-    : #packages = packages, #target = target;
+    : #packages = packages, #target = canonicalTarget(target);
 
-  // The compilation target (e.g., "js", "zena-cli").
+  // The compilation target, by its current name (e.g., "js", "zena-cli").
   target: String {
     get { return this.#target; }
   }
