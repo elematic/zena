@@ -11,10 +11,15 @@
  * block open a block tag; everything before the first tag is the
  * description, and its first paragraph is the summary.
  *
+ * Tools read doc comments through `parseLeadingDoc`, or through
+ * `declarationDoc` and `docCommentAt`, which find the comments to parse:
+ * zenadoc for API documentation, the language service for hover.
+ *
  * See docs/design/zenadoc.md.
  */
 
-import { Comment } from 'zena-compiler:ast';
+import { Comment, Node, Module, ClassDeclaration, InterfaceDeclaration } from './ast.zena';
+import { CommentMap } from './comment-attachment.zena';
 import { StringBuilder } from 'zena:core';
 
 // The ASCII bytes this file looks for. `i32` rather than an enum
@@ -430,4 +435,64 @@ export let parseLeadingDoc = (comments: Array<Comment> | null): DocComment | nul
     return null;
   }
   return parseDocCommentBody(sb.toString());
+};
+
+/** Whether `offset` is inside `node`'s source span. */
+let spans = (node: Node, offset: i32): boolean => {
+  let loc = node.loc;
+  return loc != null && offset >= loc.start && offset < loc.end;
+};
+
+/** The member of a class or interface body around `offset`, or null. */
+let memberAt = (body: Array<Node>, offset: i32): Node | null => {
+  for (let member in body) {
+    if (spans(member, offset)) {
+      return member;
+    }
+  }
+  return null;
+};
+
+/**
+ * The doc comment on the declaration around `offset`, or null when that
+ * declaration has none.
+ *
+ * The declaration is the class or interface member around the offset
+ * when there is one, else the top-level statement around it. An
+ * undocumented member has no doc comment even when its class has one.
+ */
+export let docCommentAt = (ast: Module, offset: i32, comments: CommentMap): DocComment | null => {
+  for (let stmt in ast.body) {
+    if (!spans(stmt, offset)) {
+      continue;
+    }
+    let member = match (stmt) {
+      case ClassDeclaration {body}: memberAt(body, offset)
+      case InterfaceDeclaration {body}: memberAt(body, offset)
+      case _: null
+    };
+    return parseLeadingDoc(comments.getLeading(member ?? stmt));
+  }
+  return null;
+};
+
+/**
+ * The doc comment on a declaration, or null when it has none. `ast` is
+ * the module the declaration is in, and `comments` that module's
+ * comments.
+ *
+ * A name bound inside a statement, like the `x` in `let x = 1;`, has no
+ * comments of its own. Its doc comment is the statement's, found by
+ * position.
+ */
+export let declarationDoc = (decl: Node, ast: Module, comments: CommentMap): DocComment | null => {
+  let own = comments.getLeading(decl);
+  if (own != null) {
+    return parseLeadingDoc(own);
+  }
+  let loc = decl.loc;
+  if (loc == null) {
+    return null;
+  }
+  return docCommentAt(ast, loc.start, comments);
 };

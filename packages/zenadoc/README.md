@@ -24,12 +24,11 @@ the checker and codegen are unaffected by anything here.
 | `zena doc` (`zena-cli`) | Compiles and runs `zena/cli/main.zena`, the same way `bench` and `test` run their orchestrators |
 | `@zena-lang/website`    | Its build runs `zena doc` over the stdlib and renders `/reference/stdlib/` from the result      |
 
-The language server does not use it yet, and should: `lsp.zena` carries
-its own `isDocComment` / `extractDocComment`, which predate this package
-and do less — they drop blank lines, so a doc comment's paragraphs and
-fenced code run together in hover, and they do not read block tags at
-all. Moving hover onto `lib/doc-comment.zena` would fix both and give
-hover `@param` and `@returns`.
+Doc comments are parsed by the compiler's `zena-compiler:doc-comment`,
+which the language server's hover reads too, so hover shows a comment's
+paragraphs and code the way the generated documentation does. Hover
+shows the comment's text as written, block tags included; it does not
+lay out `@param` and `@returns` separately yet.
 
 ## Parsing happens once
 
@@ -72,7 +71,6 @@ walks beyond the 46 module pages, for about 30 private files.
 
 | Path                        | What                                                                           |
 | --------------------------- | ------------------------------------------------------------------------------ |
-| `zena/lib/doc-comment.zena` | Parses a `/**` comment into a summary, markdown description and block tags     |
 | `zena/lib/model.zena`       | The API model, and the anchors that make it addressable                        |
 | `zena/lib/ids.zena`         | Naming a file inside a package                                                 |
 | `zena/lib/type-text.zena`   | Renders a type annotation to text, recording the spans that name a declaration |

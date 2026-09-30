@@ -1,11 +1,14 @@
 // Doc comment parsing: prefix stripping, summary/description split,
 // and block tags.
 
-import { suite, test, TestContext, runAndReport } from 'zena:test';
-import { equal } from 'zena:assert';
-import { Comment } from 'zena-compiler:ast';
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { Comment, VariableDeclaration } from '../lib/ast.zena';
+import { parse } from '../lib/parser.zena';
+import { attachComments } from '../lib/comment-attachment.zena';
 import {
   DocComment, DocTag, isDocComment, parseDocCommentBody, parseLeadingDoc,
+  declarationDoc, docCommentAt,
 } from '../lib/doc-comment.zena';
 
 /** A block comment's body, as the tokenizer would hand it over. */
@@ -13,7 +16,7 @@ let block = (body: String): Comment => new Comment(body, true, 0, 0, 1, 1);
 
 let line = (body: String): Comment => new Comment(body, false, 0, 0, 1, 1);
 
-let tests = suite('doc-comment', () => {
+export let tests = suite('doc-comment', () => {
   test('recognizes doc comments', (t: TestContext) => {
     equal(isDocComment(block('* Docs. ')), true);
     equal(isDocComment(block(' not a doc comment ')), false);
@@ -136,8 +139,28 @@ let tests = suite('doc-comment', () => {
     let doc = parseDocCommentBody('* Docs.\n * @returns nothing\n ');
     equal(doc.raw, 'Docs.\n@returns nothing');
   });
-});
 
-export let main = (): i32 => runAndReport(tests, (s: String): void => {
-  console.log(s);
+  test('docCommentAt finds the member around an offset', (t: TestContext) => {
+    let source = '/** A point. */\nclass Point {\n  /** Across. */\n  x: f64;\n  y: f64;\n  new(this.x, this.y);\n}\n';
+    let ast = parse(source, 'test.zena');
+    let comments = attachComments(ast);
+    let x = docCommentAt(ast, source.indexOf('x: f64'), comments);
+    isTrue(x != null);
+    equal((x as DocComment).raw, 'Across.');
+    // An undocumented member does not take its class's comment.
+    isTrue(docCommentAt(ast, source.indexOf('y: f64'), comments) == null);
+    let cls = docCommentAt(ast, source.indexOf('class'), comments);
+    equal((cls as DocComment).raw, 'A point.');
+  });
+
+  test('declarationDoc reads a let binding from its statement', (t: TestContext) => {
+    let source = '/**\n * The answer.\n *\n * To everything.\n */\nlet answer = 42;\nlet other = 1;\n';
+    let ast = parse(source, 'test.zena');
+    let comments = attachComments(ast);
+    let first = ast.body[0] as VariableDeclaration;
+    let doc = declarationDoc(first.pattern, ast, comments);
+    equal((doc as DocComment).raw, 'The answer.\n\nTo everything.');
+    let second = ast.body[1] as VariableDeclaration;
+    isTrue(declarationDoc(second.pattern, ast, comments) == null);
+  });
 });
