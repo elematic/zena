@@ -3,7 +3,7 @@
 Spawning host processes from Zena programs.
 
 ```zena
-import {run, runIn, spawn} from 'zena:process';
+import {run, runIn, runWith, spawn, spawnWith} from 'zena:process';
 
 let argv = new Array<String>();
 argv.push('git');
@@ -27,6 +27,11 @@ let a = spawn(argvA);
 let b = spawn(argvB);
 let ra = a.wait();
 let rb = b.wait();
+
+// Options: a working directory, this program's own stdio, and text
+// for the child's stdin, which is closed after it.
+let sorted = runWith(['sort'], {input: 'b\na\n'});
+let inTmp = spawnWith(['ls'], {cwd: '/tmp'}).wait();
 ```
 
 ## Capability model
@@ -58,7 +63,10 @@ stdlib module:
 
 - `argv[0]` is the executable, resolved against `PATH` by the host.
 - The child inherits the host's environment, and its working directory
-  unless `runIn`/`spawnIn` pass one.
+  unless `runIn`/`spawnIn` or a `cwd` option pass one.
+- The child's stdin is empty unless an `input` option gives it text; the
+  host writes the text on a thread of its own and then closes stdin, so
+  a child that writes before it has read everything cannot deadlock.
 - Both output streams are fully captured (no streaming in v1) and read
   on their own host threads, so a child that fills one pipe while the
   parent is reading the other cannot deadlock.

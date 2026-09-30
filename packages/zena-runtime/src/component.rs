@@ -147,6 +147,8 @@ pub struct CommandState {
     argv: Vec<String>,
     cwd: Option<String>,
     inherit_stdio: bool,
+    /// Written to the child's stdin, which is then closed.
+    input: Option<Vec<u8>>,
 }
 
 /// How a child ended, and what it wrote; the host side of `finished`.
@@ -257,8 +259,14 @@ impl process::HostCommand for ComponentState {
                 argv,
                 cwd: None,
                 inherit_stdio: false,
+                input: None,
             })
             .context("failed to push the command resource")
+    }
+
+    fn input(&mut self, this: Resource<CommandState>, data: Vec<u8>) -> Result<()> {
+        self.table.get_mut(&this).context("command")?.input = Some(data);
+        Ok(())
     }
 
     fn cwd(&mut self, this: Resource<CommandState>, path: String) -> Result<()> {
@@ -280,6 +288,7 @@ impl process::HostCommand for ComponentState {
         let argv = cmd.argv.clone();
         let cwd = cmd.cwd.clone();
         let inherit_stdio = cmd.inherit_stdio;
+        let input = cmd.input.clone();
         // The child is spawned here rather than inside the worker
         // thread so its handle is reachable for a deadline to kill.
         // Both pipes are read on their own threads: a child that fills
@@ -293,8 +302,13 @@ impl process::HostCommand for ComponentState {
                 .stdout(std::process::Stdio::inherit())
                 .stderr(std::process::Stdio::inherit());
         } else {
+            let stdin = if input.is_some() {
+                std::process::Stdio::piped()
+            } else {
+                std::process::Stdio::null()
+            };
             command
-                .stdin(std::process::Stdio::null())
+                .stdin(stdin)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
         }
@@ -305,6 +319,15 @@ impl process::HostCommand for ComponentState {
             Ok(child) => child,
             Err(e) => return Ok(Err(format!("{}: {e}", argv[0]))),
         };
+        // The input is written on its own thread, like the output is
+        // read: a child that fills its stdout before reading all of its
+        // stdin would otherwise deadlock. Dropping the pipe closes it.
+        if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
+            std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = stdin.write_all(&data);
+            });
+        }
         let out = child.stdout.take();
         let err = child.stderr.take();
         let shared = Arc::new(Mutex::new(Some(child)));

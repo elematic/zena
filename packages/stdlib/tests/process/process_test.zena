@@ -4,7 +4,7 @@
 // standalone runs need --allow-spawn / ZENA_ALLOW_SPAWN=1).
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {run, runIn, runInheriting, spawn} from 'zena:process';
+import {run, runIn, runInheriting, runWith, spawn} from 'zena:process';
 
 export let tests = suite('zena:process', (): void => {
   test('run captures stdout, stderr, and the exit code', (ctx: TestContext): void => {
@@ -37,6 +37,24 @@ export let tests = suite('zena:process', (): void => {
     equal(res.exitCode, 0);
     // /tmp may be a symlink (e.g. to /private/tmp); accept a suffix match.
     isTrue(res.stdout.contains('tmp'), `pwd printed ${res.stdout}`);
+  });
+
+  test('runWith writes input to stdin and closes it', (ctx: TestContext): void => {
+    let res = runWith(['cat'], {input: 'one\ntwo\n'});
+    equal(res.exitCode, 0);
+    equal(res.stdout, 'one\ntwo\n');
+  });
+
+  test('without input, stdin is at end of input', (ctx: TestContext): void => {
+    let res = runWith(['cat'], {});
+    equal(res.exitCode, 0);
+    equal(res.stdout, '');
+  });
+
+  test('runWith combines input with a working directory', (ctx: TestContext): void => {
+    let res = runWith(['/bin/sh', '-c', 'pwd; cat'], {cwd: '/tmp', input: 'piped'});
+    isTrue(res.stdout.contains('tmp'), `pwd printed ${res.stdout}`);
+    isTrue(res.stdout.endsWith('piped'), `cat printed ${res.stdout}`);
   });
 
   test('spawned processes run concurrently and wait() joins them', (ctx: TestContext): void => {

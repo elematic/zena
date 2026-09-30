@@ -75,6 +75,57 @@ export final class Process {
   }
 }
 
+/** How to start a process. Every field may be left out. */
+export type SpawnOptions = {
+  /**
+   * The working directory, in this program's view of the file system;
+   * this program's own if absent.
+   */
+  cwd?: String,
+  /**
+   * Connect the process to this program's own stdin, stdout and stderr,
+   * so what it writes appears as it writes it. Its output is captured
+   * into the result if absent.
+   */
+  inheritStdio?: boolean,
+  /**
+   * Written to the process's stdin, which is then closed. The process
+   * reads end of input straight away if absent.
+   */
+  input?: String,
+};
+
+/**
+ * Start a process from an argument vector, the program first.
+ *
+ * ```zena
+ * let sorted = runWith(['sort'], {input: 'b\na\n'});
+ * ```
+ */
+export let spawnWith = (argv: Array<String>, options: SpawnOptions): Process => {
+  let cmd = Command.create(argv);
+  if (let {cwd} = options) {
+    cmd.cwd(cwd);
+  }
+  let {inheritStdio = false} = options;
+  if (inheritStdio) {
+    cmd.inheritStdio();
+  }
+  if (let {input} = options) {
+    cmd.input(input.toBytes());
+  }
+  match (cmd.spawn()) {
+    case (true, let proc, _): { return new Process(proc); }
+    case (false, _, let why): {
+      throw new Error(`could not start ${argv[0]}: ${why}`);
+    }
+  }
+};
+
+/** Runs a process to completion; see `spawnWith`. */
+export let runWith = (argv: Array<String>, options: SpawnOptions): ProcessResult =>
+  spawnWith(argv, options).wait();
+
 /**
  * Start a process from an argument vector, the program first, in the
  * directory `cwd` (this program's own when null). With `inheritStdio`
@@ -86,19 +137,10 @@ export let spawnIn = (
   cwd: String | null,
   inheritStdio: boolean = false,
 ): Process => {
-  let cmd = Command.create(argv);
   if (cwd != null) {
-    cmd.cwd(cwd as String);
+    return spawnWith(argv, {cwd: cwd, inheritStdio: inheritStdio});
   }
-  if (inheritStdio) {
-    cmd.inheritStdio();
-  }
-  match (cmd.spawn()) {
-    case (true, let proc, _): { return new Process(proc); }
-    case (false, _, let why): {
-      throw new Error(`could not start ${argv[0]}: ${why}`);
-    }
-  }
+  return spawnWith(argv, {inheritStdio: inheritStdio});
 };
 
 export let spawn = (argv: Array<String>): Process => spawnIn(argv, null);
