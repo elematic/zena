@@ -18,12 +18,58 @@
  * ```
  */
 
-import { Some } from 'zena:core';
+import { Some, StringBuilder } from 'zena:core';
+import { Stream } from 'zena:stream';
+import { blockOn } from 'zena:wasi';
 import {
   getArguments as witGetArguments, getEnvironment as witGetEnvironment,
   getInitialCwd,
 } from 'wasi:cli/environment';
 import { exitWithCode } from 'wasi:cli/exit';
+import { readViaStream } from 'wasi:cli/stdin';
+
+// ============================================================================
+// Standard input
+// ============================================================================
+
+var __stdin: Stream<u8> | null = null;
+
+/**
+ * The program's standard input, as a stream of bytes. It is opened on
+ * the first call and the same stream is returned after that: standard
+ * input can be read only once.
+ */
+export let stdin = (): Stream<u8> => {
+  let open = __stdin;
+  if (open != null) {
+    return open;
+  }
+  let (stream, done) = readViaStream();
+  __stdin = stream;
+  return stream;
+};
+
+/**
+ * Waits for standard input to have something, and returns up to `max`
+ * bytes of it as a string of those bytes; '' at the end of the input.
+ *
+ * ```zena
+ * var chunk = readStdin();
+ * while (chunk != '') {
+ *   handle(chunk);
+ *   chunk = readStdin();
+ * }
+ * ```
+ */
+export let readStdin = (max: i32 = 4096): String => {
+  let buffer = new FixedArray<u8>(max, 0 as u8);
+  let count = blockOn(stdin().read(buffer));
+  let text = new StringBuilder();
+  for (var i = 0; i < count; i += 1) {
+    text.appendByte(buffer[i] as i32);
+  }
+  return text.toString();
+};
 
 // ============================================================================
 // Exit Codes
