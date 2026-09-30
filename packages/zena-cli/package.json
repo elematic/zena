@@ -6,6 +6,8 @@
     "build": "wireit",
     "build:host": "wireit",
     "build:module": "wireit",
+    "build:bundle-assets": "wireit",
+    "build:bundle": "wireit",
     "test": "wireit",
     "zena": "wireit"
   },
@@ -19,7 +21,39 @@
     "build": {
       "#": "The zena command: the host binary and the CLI module it runs.",
       "dependencies": [
-        "build:host",
+        "build:bundle"
+      ]
+    },
+    "build:bundle": {
+      "#": "Recompiles zena-cli to embed out/zena.wasm and stdlib into the host binary once built.",
+      "command": "cargo build --release -p zena-cli",
+      "files": [
+        "out/stdlib_bundle.rs",
+        "build.rs",
+        "Cargo.toml",
+        "src/**/*.rs"
+      ],
+      "output": [],
+      "dependencies": [
+        "build:bundle-assets"
+      ]
+    },
+    "build:bundle-assets": {
+      "#": "Generates out/stdlib_bundle.rs from stdlib sources and out/zena.wasm via bundle.zena.",
+      "command": "cd ../.. && ./target/release/zena-cli run --dir . packages/zena-cli/dev/bundle.zena",
+      "files": [
+        "dev/bundle.zena",
+        "out/zena.wasm",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/zena/wit/*.wit",
+        "../stdlib/zena/host-wit/*.wit",
+        "../zb/zena/sha256.zena",
+        "../workflow/zena/canonical.zena"
+      ],
+      "output": [
+        "out/stdlib_bundle.rs"
+      ],
+      "dependencies": [
         "build:module"
       ]
     },
@@ -27,6 +61,7 @@
       "command": "cargo build --release -p zena-cli",
       "#files": "The crate depends on ../zena-runtime, so its sources are inputs too. The workspace manifest and lockfile at the repo root pin every dependency version.",
       "files": [
+        "build.rs",
         "Cargo.toml",
         "src/**/*.rs",
         "../zena-runtime/Cargo.toml",
