@@ -964,7 +964,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.typeLowerer.discoverType(resolveType(tlType), model);
         }
       }
-      if (n is RangeExpression) {
+      if (n is RangeExpression && !isForInRangeLiteral(model, n)) {
         let reType = model.getNodeType(n);
         if (reType is ClassType) {
           let rangeCt = resolveType(reType) as ClassType;
@@ -1961,7 +1961,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.typeLowerer.discoverType(resolveType(alType), model);
         }
       }
-      if (n is RangeExpression) {
+      if (n is RangeExpression && !isForInRangeLiteral(model, n)) {
         let reType = model.getNodeType(n);
         if (reType is ClassType) {
           let rangeCt = resolveType(reType) as ClassType;
@@ -2109,11 +2109,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           for (let rc in resolvedIterableTypes) {
             if (!forInLowersToIndexLoop(rc)) {
               protocolClasses.push(rc);
-            } else {
+            } else if (!(n.iterable is RangeExpression &&
+                isForInRangeLiteral(model, n.iterable))) {
               // The index loop still consumes the VALUE: the class —
               // and through it an extension's raw representation type,
               // which array.len/array.get reference — must exist even
-              // though no method on it is ever called.
+              // though no method on it is ever called. A range literal
+              // is the exception: the loop reads its bounds directly
+              // and no range value exists.
               this.pass.typeLowerer.discoverType(rc, model);
             }
           }
@@ -3206,16 +3209,20 @@ let ctorMethodName =
 /**
  * True when lowerForIn (ir/control-flow.zena) takes the direct
  * index-loop path for a for-in whose iterable has this class type:
- * FixedArray, ImmutableArray and Array compile to array.len/array.get
- * and never touch the Iterable/Iterator protocol. Mirrors lowerForIn's
- * dispatch, including the type-argument requirement — a bare mention
- * with no arguments has no element type there and falls back to the
- * iterator path.
+ * FixedArray, ImmutableArray and Array compile to array.len/array.get,
+ * and BoundedRange and FromRange to a loop counting from the range's
+ * start. None of them touch the Iterable/Iterator protocol. Mirrors
+ * lowerForIn's dispatch, including the type-argument requirement for
+ * the arrays — a bare mention with no arguments has no element type
+ * there and falls back to the iterator path.
  */
 let forInLowersToIndexLoop = (ct: ClassType): boolean => {
   var canonical = ct;
   while (canonical.genericSource != null) {
     canonical = canonical.genericSource as ClassType;
+  }
+  if (isIterableRangeClass(canonical)) {
+    return true;
   }
   if (canonical.name != "FixedArray" && canonical.name != "ImmutableArray" &&
       canonical.name != "Array" && canonical.name != "GrowableArray") {
@@ -3223,4 +3230,29 @@ let forInLowersToIndexLoop = (ct: ClassType): boolean => {
   }
   let targs = ct.typeArguments;
   return targs != null && targs.length > 0;
+};
+
+/** True for the stdlib's BoundedRange and FromRange classes. */
+let isIterableRangeClass = (ct: ClassType): boolean => {
+  return isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) ||
+      isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath);
+};
+
+/**
+ * True when `range` is a literal written directly as a for-in's
+ * iterable, as in `for (let i in 0..n)`. lowerForIn compiles that loop
+ * from the literal's bounds and never constructs the range, so the
+ * range class needs no instance, constructor or struct type.
+ */
+let isForInRangeLiteral = (model: SemanticModel,
+    range: RangeExpression): boolean => {
+  let parent = model.getParent(range);
+  if (!(parent is ForInStatement)) {
+    return false;
+  }
+  if ((parent.iterable as Node).id != (range as Node).id) {
+    return false;
+  }
+  let t = model.getNodeType(range);
+  return t is ClassType && isIterableRangeClass(t);
 };

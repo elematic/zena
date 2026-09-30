@@ -5860,17 +5860,25 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
 /**
  * True when codegen compiles a for-in over this class to a direct
  * index loop (lowerForIn in ir/control-flow.zena): FixedArray,
- * ImmutableArray and Array lower to array.len/array.get and never
- * touch the Iterable/Iterator protocol, so a for-in iterable of one
- * of these types must not register an interface adaptation. Mirrors
- * lowerForIn's dispatch, including the type-argument requirement — a
- * bare mention with no arguments has no element type there and falls
- * back to the iterator path.
+ * ImmutableArray and Array lower to array.len/array.get, and
+ * BoundedRange and FromRange to a loop counting from the range's
+ * start. None of them touch the Iterable/Iterator protocol, so a for-in
+ * iterable of one of these types must not register an interface
+ * adaptation. Mirrors lowerForIn's dispatch, including the
+ * type-argument requirement for the arrays — a bare mention with no
+ * arguments has no element type there and falls back to the iterator
+ * path.
  */
 let forInLowersToIndexLoop = (ct: ClassType): boolean => {
   var canonical = ct;
   while (canonical.genericSource != null) {
     canonical = canonical.genericSource as ClassType;
+  }
+  if (isWellKnown(WellKnown.BoundedRangeClass, canonical.name,
+          canonical.sourcePath) ||
+      isWellKnown(WellKnown.FromRangeClass, canonical.name,
+          canonical.sourcePath)) {
+    return true;
   }
   if (canonical.name != "FixedArray" && canonical.name != "ImmutableArray" &&
       canonical.name != "Array" && canonical.name != "GrowableArray") {

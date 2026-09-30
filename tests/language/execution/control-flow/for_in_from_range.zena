@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 1
+// A for-in over `start..` counts up with no end. It stops after the
+// largest i32 instead of wrapping around to negative numbers, both in
+// the loop the compiler writes for it and through its iterator.
+let countThrough = (items: Iterable<i32>): i32 => {
+  var n = 0;
+  for (let i in items) {
+    n += 1;
+  }
+  return n;
+};
+
+export let main = (): i32 => {
+  var sum = 0;
+  for (let i in 5..) {
+    if (i == 10) { break; }
+    sum += i;
+  }
+  if (sum != 35) { return 0; }
+
+  let from = 3..;
+  var seen = 0;
+  for (let i in from) {
+    seen = i;
+    if (i >= 6) { break; }
+  }
+  if (seen != 6) { return 0; }
+
+  var count = 0;
+  var last = 0;
+  for (let i in 2147483645..) {
+    count += 1;
+    last = i;
+  }
+  if (count != 3 || last != 2147483647) { return 0; }
+
+  if (countThrough(2147483645..) != 3) { return 0; }
+  return 1;
+};

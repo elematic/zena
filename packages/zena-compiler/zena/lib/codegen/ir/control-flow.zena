@@ -12,7 +12,7 @@ import {
   getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases,
 } from '../codegen-utils.zena';
 import {
-  BindingPattern, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression,
+  BindingPattern, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression, RangeExpression,
 } from '../../ast.zena';
 import {
   ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType,
@@ -2697,6 +2697,140 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
 };
 
 /**
+ * for-in over a BoundedRange or FromRange: a loop counting up from the
+ * range's start, the same loop `for (var i = start; i < end; i += 1)`
+ * compiles to. The Iterable implementations in zena:core/range.zena
+ * define the same sequence for every other use of a range.
+ *
+ * A range literal written in the loop header (`for (let i in 0..n)`)
+ * never exists as a value: its bounds are lowered in place, start
+ * first, as constructing it would. Any other range value has its
+ * `start` and `end` fields read once, before the first iteration.
+ *
+ * A FromRange has no end. Its loop stops after binding the largest
+ * i32 instead of wrapping around, matching FromRangeIterator.
+ */
+let lowerForInRange = (cx: LoweringContext, stmt: ForInStatement,
+    rangeCt: ClassType, bounded: boolean): void => {
+  let i32Vt = new ValTypeI32() as ValType;
+  var start = -1;
+  var end = -1;
+  let iterableExpr = stmt.iterable;
+  if (iterableExpr is RangeExpression) {
+    let startExpr = iterableExpr.start;
+    let endExpr = iterableExpr.end;
+    if (startExpr == null || (bounded && endExpr == null)) {
+      bail(cx, 'for-in range literal shape');
+    }
+    start = lowerExpr(cx, startExpr as Expression, i32Vt);
+    if (bounded) {
+      end = lowerExpr(cx, endExpr as Expression, i32Vt);
+    }
+  } else {
+    let cKey = getClassKey(rangeCt);
+    var infoOpt: ClassCodegenInfo | null = null;
+    if (let (true, info) = cx.wasm.classInfos.get(cKey)) {
+      infoOpt = info;
+    }
+    if (infoOpt == null) {
+      bail(cx, 'for-in range not discovered');
+    }
+    let {structType} = infoOpt;
+    let range = lowerExprRaw(cx, iterableExpr);
+    if (!isValSubtype(cx.valueTypeOf(range),
+        new ValTypeRefNull(structType) as ValType)) {
+      bail(cx, 'for-in range struct mismatch');
+    }
+    let startRef = cx.b.addRef(new IrRefField(structType, 'start'));
+    start = cx.b.emit(IrOp.struct_get,
+        cx.fieldValType(structType, 'start'), range, startRef);
+    if (bounded) {
+      let endRef = cx.b.addRef(new IrRefField(structType, 'end'));
+      end = cx.b.emit(IrOp.struct_get,
+          cx.fieldValType(structType, 'end'), range, endRef);
+    }
+  }
+
+  var pat = stmt.pattern;
+  if (pat is BindingPattern) {
+    pat = pat.pattern;
+  }
+  var symOpt: Symbol | null = null;
+  if (pat is IdentifierPattern || pat is Identifier) {
+    symOpt = cx.func.model.resolveDeclaration(pat);
+    if (symOpt == null) {
+      bail(cx, 'for-in pattern');
+    }
+  } else if (!patternBinds(cx, pat)) {
+    bail(cx, 'for-in pattern');
+  }
+
+  // The counter rides as the header block's first param, ahead of the
+  // loop-carried env symbols (which work as in #lowerFor). First is
+  // where #lowerFor's own counter lands, since the loop variable is
+  // declared before the body's assignments, so both loops get the
+  // same locals.
+  let carried = cx.assignedEnvSyms(stmt.body);
+  let header = cx.b.newBlock();
+  let counter = cx.b.blockParam(header, i32Vt);
+  let headerParams = cx.addParams(header, carried);
+  let initArgs = new GrowableArray<i32>();
+  initArgs.push(start);
+  for (let v in cx.envValues(carried)) {
+    initArgs.push(v);
+  }
+  cx.b.br(header, initArgs);
+
+  cx.b.switchTo(header);
+  cx.applyParams(carried, headerParams);
+  let exitB = cx.b.newBlock();
+  let exitParams = cx.addParams(exitB, carried);
+  if (bounded) {
+    let done = cx.b.binary(IrOp.i32_ge_s, i32Vt, counter, end);
+    let bodyB = cx.b.newBlock();
+    cx.b.brIf(done, exitB, cx.envValues(carried), bodyB, noValues());
+    cx.b.switchTo(bodyB);
+  }
+  if (symOpt != null) {
+    cx.bindPatternSym(symOpt, counter);
+  } else {
+    lowerPatternBindings(cx, pat, counter);
+  }
+
+  let updateB = cx.b.newBlock();
+  let updateParams = cx.addParams(updateB, carried);
+  cx.loops.push(new LoopCtx(updateB, exitB, carried));
+  lowerStmt(cx, stmt.body);
+  if (cx.reachable) {
+    cx.b.br(updateB, cx.envValues(carried));
+  }
+  cx.loops.pop();
+
+  cx.b.switchTo(updateB);
+  cx.reachable = true;
+  cx.applyParams(carried, updateParams);
+  if (!bounded) {
+    let max = cx.b.constI32(2147483647, i32Vt);
+    let atMax = cx.b.binary(IrOp.i32_eq, i32Vt, counter, max);
+    let stepB = cx.b.newBlock();
+    cx.b.brIf(atMax, exitB, cx.envValues(carried), stepB, noValues());
+    cx.b.switchTo(stepB);
+  }
+  let one = cx.b.constI32(1, i32Vt);
+  let next = cx.b.binary(IrOp.i32_add, i32Vt, counter, one);
+  let backArgs = new GrowableArray<i32>();
+  backArgs.push(next);
+  for (let v in cx.envValues(carried)) {
+    backArgs.push(v);
+  }
+  cx.b.br(header, backArgs);
+
+  cx.applyParams(carried, exitParams);
+  cx.b.switchTo(exitB);
+  cx.reachable = true;
+};
+
+/**
  * for-in over FixedArray/ImmutableArray values (a wasm array) and
  * Array instances (#buffer + #length struct): an index loop mirroring
  * the streaming fast paths, with the element re-bound each iteration.
@@ -2728,6 +2862,19 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   if (isScopedType(iterableType)) {
     let scopedIt = scopedInner(iterableType);
     if (scopedIt != null) { iterableType = scopedIt; }
+  }
+
+  if (!(iterableType is ArrayType)) {
+    let resolvedRange = cx.resolveSelfType(iterableType);
+    if (resolvedRange is ClassType) {
+      let bounded = isWellKnown(WellKnown.BoundedRangeClass,
+          resolvedRange.name, resolvedRange.sourcePath);
+      if (bounded || isWellKnown(WellKnown.FromRangeClass,
+              resolvedRange.name, resolvedRange.sourcePath)) {
+        lowerForInRange(cx, stmt, resolvedRange, bounded);
+        return;
+      }
+    }
   }
 
   // FIXED = a bare wasm array value; ARRAY = the Array class struct.

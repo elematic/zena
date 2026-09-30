@@ -1,27 +1,64 @@
 /**
  * Range types for Zena.
  * Represents different types of ranges for array slicing and iteration.
+ *
+ * `BoundedRange` and `FromRange` are also `Iterable<i32>`: iterating one
+ * produces its integers in increasing order, so `for (let i in 0..n)`
+ * counts from 0 up to and excluding n. A `for`-in over a range compiles
+ * to the same counting loop as `for (var i = 0; i < n; i += 1)`.
  */
+import { IterableUtils } from './iterable-utils.zena';
+import { Step } from 'zena:async';
 
 /**
  * A bounded range with both start and end (exclusive).
  * Represents [start, end) - includes start, excludes end.
+ * A range whose end is at or before its start is empty.
  */
-export final class BoundedRange {
+export final class BoundedRange with IterableUtils<i32> implements Iterable<i32> {
   start: i32;
   end: i32;
 
   new(start: i32, end: i32) : start = start, end = end;
+
+  [Iterable.iterator](): Iterator<i32> {
+    return new BoundedRangeIterator(this.start, this.end);
+  }
+
+  /**
+   * Returns true if `value` is in [start, end). Overrides the
+   * `IterableUtils` version, which would iterate.
+   */
+  contains(value: i32): boolean {
+    return value >= this.start && value < this.end;
+  }
 }
 
 /**
  * A range from a start point to infinity/length.
  * Represents [start, ∞) or [start, length).
+ *
+ * Iterating a `FromRange` counts up from `start` and stops after the
+ * largest i32, 2147483647, instead of wrapping around to negative
+ * numbers.
  */
-export final class FromRange {
+export final class FromRange with IterableUtils<i32> implements Iterable<i32> {
   start: i32;
 
   new(start: i32) : start = start;
+
+  [Iterable.iterator](): Iterator<i32> {
+    return new FromRangeIterator(this.start);
+  }
+
+  /**
+   * Returns true if `value` is at least `start`. Overrides the
+   * `IterableUtils` version, which would iterate, and on a range with no
+   * end would not stop for a value below `start`.
+   */
+  contains(value: i32): boolean {
+    return value >= this.start;
+  }
 }
 
 /**
@@ -44,3 +81,46 @@ export final class FullRange {}
  * Union type of all range types.
  */
 export type Range = BoundedRange | FromRange | ToRange | FullRange;
+
+/**
+ * An iterator over the integers of a `BoundedRange`.
+ */
+final class BoundedRangeIterator implements Iterator<i32> {
+  var #next: i32;
+  #end: i32;
+
+  new(start: i32, end: i32) : #next = start, #end = end;
+
+  next(): Step<i32> {
+    if (this.#next < this.#end) {
+      let value = this.#next;
+      this.#next += 1;
+      return (1, value, _);
+    }
+    return (0, _, _);
+  }
+}
+
+/**
+ * An iterator over the integers of a `FromRange`, ending after the
+ * largest i32.
+ */
+final class FromRangeIterator implements Iterator<i32> {
+  var #next: i32;
+  var #done = false;
+
+  new(start: i32) : #next = start;
+
+  next(): Step<i32> {
+    if (this.#done) {
+      return (0, _, _);
+    }
+    let value = this.#next;
+    if (value == 2147483647) {
+      this.#done = true;
+    } else {
+      this.#next = value + 1;
+    }
+    return (1, value, _);
+  }
+}

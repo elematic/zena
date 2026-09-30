@@ -1991,6 +1991,10 @@ let r = 1..10;  // BoundedRange from 1 to 10 (exclusive)
 // Represents indices: 1, 2, 3, 4, 5, 6, 7, 8, 9
 ```
 
+A `BoundedRange` is `Iterable<i32>`, so `for (let i in 1..10)` visits those
+same numbers. `FromRange` is iterable too. See
+[For-In Statement](#for-in-statement).
+
 #### From Range: `a..`
 
 Creates a range from `a` to the end of a collection.
@@ -2351,6 +2355,26 @@ for (let n in counter) {
   console.log(n);  // Prints 1, 2, 3, 4, 5
 }
 ```
+
+A bounded range `a..b` and a from range `a..` are `Iterable<i32>`. Iterating one
+counts up from `a`, so a range is the usual way to write a counting loop:
+
+```zena
+var sum = 0;
+for (let i in 0..n) {
+  sum += i;  // i = 0, 1, ..., n - 1
+}
+```
+
+This compiles to the same WebAssembly as `for (var i = 0; i < n; i += 1)`: no
+range object is made when the range is written in the loop header. The bounds
+are evaluated once, before the first iteration. A range whose end is at or
+before its start runs no iterations.
+
+`a..` has no end, so the loop runs until something leaves it. If nothing does,
+it stops after `i` reaches the largest `i32`, 2147483647, instead of wrapping
+around to negative numbers. `..b` and `..` are not iterable, because they have
+no start to count from.
 
 The loop variable is immutable (`let`) and scoped to the loop body. `break` and
 `continue` work as expected:

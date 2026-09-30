@@ -231,6 +231,14 @@ let asyncNoopTarget = 'packages/zena-compiler/test-files/component/async-noop.ze
 let printTarget = 'packages/zena-compiler/test-files/component/print.zena';
 
 /**
+ * The same counting loop written as a for-in over `0..n` and C-style,
+ * and loops over range values passed in as parameters.
+ */
+let rangeLoopTarget = 'packages/zena-compiler/test-files/range-loop.zena';
+let countingLoopTarget = 'packages/zena-compiler/test-files/counting-loop.zena';
+let rangeValueTarget = 'packages/zena-compiler/test-files/range-value-loop.zena';
+
+/**
  * Ratchet these down as reachability improves. Do not raise one
  * without recording why in docs/design/binary-size.md — the number
  * moving up is the signal this test exists to give.
@@ -332,6 +340,30 @@ export let tests = suite('Binary size', (): void => {
     isTrue(!wat.contains('FixedArray'),
       `${arrayTarget} carries FixedArray's placeholder struct — an ` +
       `extension value is the raw array, so the struct is unreferenceable.`);
+  });
+
+  test('a for-in over a range literal compiles to the C-style loop', (ctx: TestContext): void => {
+    // A range written in the loop header is only syntax for a counting
+    // loop: no range object, no iterator, and the same bytes as
+    // `for (var i = 0; i < n; i += 1)`.
+    let rangeWat = new WatGenerator('freestanding', false)
+        .generate(programOf(rangeLoopTarget));
+    let countingWat = new WatGenerator('freestanding', false)
+        .generate(programOf(countingLoopTarget));
+    equal(rangeWat, countingWat);
+  });
+
+  test('a for-in over a range value ships no iterator machinery', (ctx: TestContext): void => {
+    // A range held in a parameter is a real object, and the loop reads
+    // its start and end fields. It still never asks for an iterator.
+    let wat = new WatGenerator('freestanding', false)
+        .generate(programOf(rangeValueTarget));
+    isTrue(!wat.contains('RangeIterator'),
+      `${rangeValueTarget} emits a range iterator for loops that count ` +
+      `from the range's bounds.`);
+    isTrue(!wat.contains('_trampoline'),
+      `${rangeValueTarget} emits interface trampolines for loops that ` +
+      `never dispatch through an interface.`);
   });
 
   test('async without a way to cancel carries no cancellation machinery', (ctx: TestContext): void => {
