@@ -17,6 +17,13 @@ export let asciiUpperByte = (b: i32): i32 =>
   if (b >= 0x61 && b <= 0x7A) b - 0x20 else b;
 
 /**
+ * Whether `b` is ASCII whitespace: a space, tab, line feed, form feed or
+ * carriage return.
+ */
+let isAsciiSpace = (b: i32): boolean =>
+  b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0C || b == 0x0D;
+
+/**
  * An immutable sequence of characters with value equality.
  *
  * Strings are created from string literals, template literals, concatenation,
@@ -334,9 +341,16 @@ export final class String implements Hashable {
   }
 
   /**
-   * Returns the byte-index of the first occurrence of `needle`.
+   * The byte index of the first occurrence of `needle` at or after the
+   * byte index `from`, or -1 when there is none. An empty needle is
+   * found at `from`.
+   *
+   * ```zena
+   * "a.b.c".indexOf(".");     // 1
+   * "a.b.c".indexOf(".", 2);  // 3
+   * ```
    */
-  #indexOf(needle: String): i32 {
+  indexOf(needle: String, from: i32 = 0): i32 {
     // This is a simplified search algorithm that checks the first and last byte
     // of the needle to quickly skip non-matching positions. It performs well
     // for short needles. If we find that this is a bottleneck, we can implement
@@ -350,13 +364,13 @@ export final class String implements Hashable {
     // but in order to not bloat the String class with extra fields, we would
     // need to store the skip table in a side table.
 
-    let needleLength = needle.#end - needle.#start;    
-    if (needleLength == 0) {
-      return 0;
-    }
-
     let haystackLength = this.#end - this.#start;
-    if (needleLength > haystackLength) {
+    let start = if (from < 0) 0 else from;
+    let needleLength = needle.#end - needle.#start;
+    if (needleLength == 0) {
+      return if (start <= haystackLength) start else -1;
+    }
+    if (needleLength > haystackLength - start) {
       return -1;
     }
 
@@ -365,7 +379,7 @@ export final class String implements Hashable {
     let lastByte = __byte_array_get(needle.#data,
       needle.#start + lastIndex);
 
-    for (var i = 0; i <= haystackLength - needleLength; i += 1) {
+    for (var i = start; i <= haystackLength - needleLength; i += 1) {
       let currentIndex = this.#start + i;
 
       // 1. Check the first byte
@@ -394,7 +408,7 @@ export final class String implements Hashable {
   }
 
   contains(needle: String): boolean {
-    return this.#indexOf(needle) != -1;
+    return this.indexOf(needle) != -1;
   }
 
   /**
@@ -498,6 +512,30 @@ export final class String implements Hashable {
   /** Returns this string with every ASCII letter uppercased. */
   asciiUpperCase(): String {
     return this.#mapAscii(false);
+  }
+
+  /**
+   * Returns this string without the ASCII whitespace at either end:
+   * spaces, tabs, line feeds, form feeds and carriage returns. Other
+   * whitespace, like a no-break space, is kept.
+   *
+   * ```zena
+   * '  Content-Length: 12\r\n'.trim(); // 'Content-Length: 12'
+   * ```
+   */
+  trim(): String {
+    var start = 0;
+    var end = this.length;
+    while (start < end && isAsciiSpace(this.getByteAt(start))) {
+      start += 1;
+    }
+    while (end > start && isAsciiSpace(this.getByteAt(end - 1))) {
+      end -= 1;
+    }
+    if (start == 0 && end == this.length) {
+      return this;
+    }
+    return this.sliceBytes(start, end);
   }
 
   #mapAscii(lower: boolean): String {
