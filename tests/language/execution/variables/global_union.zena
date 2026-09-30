@@ -1,0 +1,20 @@
+// @mode: run
+// @result: 7
+
+// A module-level variable of a union of reference types is a Wasm global
+// of an abstract reference type (`eqref` here). It starts out null and
+// its initializer stores the real value when the module starts. The
+// placeholder used to be `i32.const 0`, which is not a valid `eqref`, so
+// the module failed to validate.
+
+type Value = Box<i32> | String | null;
+
+let seven: Value = new Box<i32>(7);
+
+export let main = (): i32 => {
+  let value = seven;
+  if (value is Box<i32>) {
+    return value.value;
+  }
+  return -1;
+};

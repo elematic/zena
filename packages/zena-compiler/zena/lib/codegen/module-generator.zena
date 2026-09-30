@@ -1,5 +1,9 @@
 import { collectValueExports } from './lookup.zena';
-import { ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRefNull, ValTypeStructRef, ValTypeRef } from './wasm.zena';
+import {
+  ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRefNull, ValTypeStructRef,
+  ValTypeRef, ValTypeI8, ValTypeI16, ValTypeFuncRef, ValTypeExternRef, ValTypeAnyRef,
+  ValTypeEqRef, ValTypeOptRef, ValTypeVoid, ValTypeFunc,
+} from './wasm.zena';
 import { simdInstruction } from '../simd.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, StringLiteralLocation,
@@ -91,31 +95,32 @@ export final class ModuleGenerator {
   new(this.program, this.emitter, this.target = "freestanding", this.zirStats = false,
       this.optLevel = 1);
 
+  /**
+   * The zero of a value type: 0 for a number, a null for a reference. A
+   * null names its heap type, and for an abstract one that is the
+   * reference type's own code as a negative number (`eqref`, 0x6D, is
+   * `ref.null -19`), so each abstract type gets its own null.
+   */
   emitDefaultValue(type: ValType): void {
-    if (type is ValTypeI32) {
-      this.emitter.emitI32Const(0);
-    } else if (type is ValTypeI64) {
-      this.emitter.emitI64Const(0 as i64);
-    } else if (type is ValTypeF64) {
-      this.emitter.emitF64Const(0.0);
-    } else if (type is ValTypeF32) {
-      this.emitter.emitF32Const(0.0);
-    } else if (type is ValTypeV128) {
-      this.emitZeroV128();
-    } else {
-      match (type) {
-        case ValTypeRefNull as refNullType: {
-          this.emitter.emitRefNull(refNullType.target.index);
-        }
-        case ValTypeRef as refType: {
-          this.emitter.emitRefNull(refType.target.index);
-        }
-        case ValTypeStructRef: {
-          this.emitter.emitRefNull(-21);
-        }
-        case _: {
-          this.emitter.emitRefNull(-19); // fallback to eqref
-        }
+    match (type) {
+      // Packed field types are written as i32s.
+      case ValTypeI32: { this.emitter.emitI32Const(0); }
+      case ValTypeI8: { this.emitter.emitI32Const(0); }
+      case ValTypeI16: { this.emitter.emitI32Const(0); }
+      case ValTypeI64: { this.emitter.emitI64Const(0 as i64); }
+      case ValTypeF64: { this.emitter.emitF64Const(0.0); }
+      case ValTypeF32: { this.emitter.emitF32Const(0.0); }
+      case ValTypeV128: { this.emitZeroV128(); }
+      case ValTypeRefNull as refNull: { this.emitter.emitRefNull(refNull.target.index); }
+      case ValTypeRef as ref: { this.emitter.emitRefNull(ref.target.index); }
+      case ValTypeFuncRef: { this.emitter.emitRefNull(-16); }
+      case ValTypeExternRef: { this.emitter.emitRefNull(-17); }
+      case ValTypeAnyRef: { this.emitter.emitRefNull(-18); }
+      case ValTypeEqRef: { this.emitter.emitRefNull(-19); }
+      case ValTypeOptRef: { this.emitter.emitRefNull(-20); }
+      case ValTypeStructRef: { this.emitter.emitRefNull(-21); }
+      case _: {
+        throw new Error('a value of this type has no default: it is not a value type');
       }
     }
   }
@@ -978,31 +983,10 @@ export final class ModuleGenerator {
         emitted = true;
       }
       
+      // A global the start function initializes starts out as its type's
+      // zero.
       if (!emitted) {
-        let {type} = g;
-        if (type is ValTypeI32) {
-          this.emitter.emitI32Const(0);
-        } else if (type is ValTypeI64) {
-          this.emitter.emitI64Const(0 as i64);
-        } else if (type is ValTypeF64) {
-          this.emitter.emitF64Const(0.0);
-        } else if (type is ValTypeF32) {
-          this.emitter.emitF32Const(0.0);
-        } else if (type is ValTypeV128) {
-          this.emitZeroV128();
-        } else {
-          match (type) {
-            case ValTypeRefNull as refNullType: {
-              this.emitter.emitRefNull(refNullType.target.index);
-            }
-            case ValTypeStructRef: {
-              this.emitter.emitRefNull(-21);
-            }
-            case _: {
-              this.emitter.emitI32Const(0);
-            }
-          }
-        }
+        this.emitDefaultValue(g.type);
       }
 
       this.emitter.emitGlobalEnd();
