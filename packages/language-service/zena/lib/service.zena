@@ -1,0 +1,1685 @@
+/**
+ * The language service: what an editor asks about Zena source, answered
+ * from the compiler's own analysis. Diagnostics, hover, go to definition,
+ * completions and document symbols.
+ *
+ * It keeps the documents an editor has open and serves them to the
+ * compiler in place of the files on disk, and keeps the compiler between
+ * requests so that unchanged files are not checked again.
+ *
+ * Two programs use it: `lsp.zena`, the module the VS Code extension and
+ * the playground load, and `zena lsp`, the language server in the zena
+ * command. Each passes in how to read a file that is not open.
+ */
+
+import {
+  Compiler, createCompiler, checkCompilation, CompilerOptions, CompilerHost, ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition, CompilationResult, typeToString, SemanticModel, SourceFile, findMemberExpressionAtOffset, resolveObjectType,
+} from 'zena-compiler:compiler';
+import { parse as parseSource, ParseCompleteness } from 'zena-compiler:parser';
+import {
+  Type, ClassType, InterfaceType, FieldInfo, MethodInfo,
+} from 'zena-compiler:types';
+import { PackageConfig, stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
+import {
+  Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
+} from 'zena-compiler:diagnostics';
+import { Symbol, ScopeResult } from 'zena-compiler:scope';
+import {
+  Comment, Node, SourceLocation, Identifier, IdentifierPattern, ThisExpression, MemberExpression, Expression, Module, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, DeclareFunction, SymbolDeclaration, ImportDeclaration, ImportSpecifier, Parameter, VariableDeclaration, FunctionDeclaration, ExpressionStatement, BlockStatement, FunctionExpression, CallExpression, StringLiteral, MethodDefinition, FieldDefinition, AccessorDeclaration, MethodSignature, AccessorSignature,
+} from 'zena-compiler:ast';
+import { CommentMap, attachComments } from 'zena-compiler:comment-attachment';
+import { BinaryGenerator } from 'zena-compiler:codegen/binary-generator';
+import { Program, CompilationUnit } from 'zena-compiler:program';
+import { format as formatSource } from 'zena-formatter:printer';
+
+/**
+ * Reads a file that is not open in the editor, by path; null when there
+ * is no such file.
+ */
+export type FileReader = (path: String) => String | null;
+
+/**
+ * CompilerHost that tracks open editor documents.
+ *
+ * When the compiler requests a file, this host checks the open documents
+ * map first (to serve unsaved editor buffers), then falls back to the
+ * reader it was given.
+ */
+class LspHost implements CompilerHost {
+  #openDocuments = new Map<String, String>();
+  #stdlibRoot: String;
+  #readFile: FileReader;
+
+  new(stdlibRoot: String, readFile: FileReader)
+    : #stdlibRoot = stdlibRoot, #readFile = readFile;
+
+  /**
+   * Resolve a canonical path to a filesystem path.
+   * For stdlib modules (e.g., "zena:core"), maps to the actual file.
+   * For regular paths, returns the input unchanged.
+   */
+  resolveToFilesystemPath(path: String): String {
+    if (path.startsWith("zena:")) {
+      return this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
+    }
+    return path;
+  }
+
+  /**
+   * Register or update an open document's source.
+   */
+  setDocument(path: String, source: String): void {
+    this.#openDocuments[path] = source;
+  }
+
+  hasDocument(path: String): boolean {
+    return this.#openDocuments.has(path);
+  }
+
+  deleteDocument(path: String): void {
+    this.#openDocuments.delete(path);
+  }
+
+  readFile(path: String): String {
+    // Open editor buffer takes priority.
+    if (this.#openDocuments.has(path)) {
+      return this.#openDocuments[path];
+    }
+    // Stdlib: map canonical "zena:module" to filesystem path.
+    let fsPath = this.resolveToFilesystemPath(path);
+    let read = this.#readFile;
+    let content = read(fsPath);
+    if (content == null) {
+      throw new Error("File not found: " + fsPath);
+    }
+    return content;
+  }
+}
+
+/**
+ * Result of a hover query, containing the type string, display label,
+ * and optional doc comment.
+ */
+export class HoverResult {
+  typeStr: String;
+  label: String;
+  docComment: String;
+  new(this.typeStr, this.label, this.docComment);
+}
+
+// ============================================================================
+// Document Symbols
+// ============================================================================
+
+// VS Code SymbolKind values (subset used by Zena).
+let SK_CLASS = 5;
+let SK_METHOD = 6;
+let SK_PROPERTY = 8;
+let SK_CONSTRUCTOR = 9;
+let SK_ENUM = 10;
+let SK_INTERFACE = 11;
+let SK_FUNCTION = 12;
+let SK_VARIABLE = 13;
+let SK_ENUM_MEMBER = 22;
+
+/**
+ * A document symbol for the outline view.
+ *
+ * Mirrors the VS Code DocumentSymbol interface: name, kind, range
+ * (full span), selectionRange (name span), and children.
+ */
+export class DocumentSymbol {
+  name: String;
+  kind: i32;
+  start: i32;
+  end: i32;
+  selStart: i32;
+  selEnd: i32;
+  var children: GrowableArray<DocumentSymbol> = new Array<DocumentSymbol>();
+
+  new(this.name, this.kind, this.start, this.end, this.selStart, this.selEnd);
+}
+
+export class CompletionItem {
+  label: String;
+  kind: i32;
+  detail: String;
+  docComment: String;
+
+  new(this.label, this.kind, this.detail, this.docComment);
+}
+
+/**
+ * Extract class/interface members from the body Array<Node>.
+ */
+let extractClassMembers = (body: Array<Node>, sym: DocumentSymbol): void => {
+  var j = 0;
+  while (j < body.length) {
+    let member = body[j];
+    // Class members
+    if (member is MethodDefinition) {
+      let methodName = getIdentifierName(member.name);
+      let kind = if (methodName == "new" || methodName == "<constructor>") { SK_CONSTRUCTOR } else { SK_METHOD };
+      sym.children.push(symbolFromNamedNode(member.name, kind, member.loc));
+    }
+    if (member is FieldDefinition) {
+      sym.children.push(symbolFromNamedNode(member.name, SK_PROPERTY, member.loc));
+    }
+    if (member is AccessorDeclaration) {
+      sym.children.push(symbolFromNamedNode(member.name, SK_PROPERTY, member.loc));
+    }
+    // Interface members
+    if (member is MethodSignature) {
+      sym.children.push(symbolFromNamedNode(member.name, SK_METHOD, member.loc));
+    }
+    if (member is AccessorSignature) {
+      sym.children.push(symbolFromNamedNode(member.name, SK_PROPERTY, member.loc));
+    }
+    j += 1;
+  }
+};
+
+/**
+ * Extract document symbols from a Module AST.
+ *
+ * Walks top-level statements and produces symbols for classes,
+ * interfaces, enums, functions, variables, type aliases, etc.
+ * For test files (importing zena:test), suite() and test() calls
+ * produce nested symbols that appear in the outline.
+ */
+let extractSymbols = (ast: Module): GrowableArray<DocumentSymbol> => {
+  let symbols = new Array<DocumentSymbol>();
+  let isTestFile = hasTestImport(ast);
+
+  var i = 0;
+  while (i < ast.body.length) {
+    let stmt = ast.body[i];
+    match (stmt) {
+      case ClassDeclaration {name, body, sealedVariants, loc}: {
+        let sym = symbolFromNamedNode(name, SK_CLASS, loc);
+        // Class members
+        extractClassMembers(body, sym);
+        // Sealed variants as children
+        if (sealedVariants != null) {
+          var k = 0;
+          while (k < sealedVariants.length) {
+            let v = sealedVariants[k];
+            let vSym = symbolFromNamedNode(v.name, SK_CLASS, v.loc);
+            sym.children.push(vSym);
+            k += 1;
+          }
+        }
+        symbols.push(sym);
+      }
+      case InterfaceDeclaration {name, body, loc}: {
+        let sym = symbolFromNamedNode(name, SK_INTERFACE, loc);
+        extractClassMembers(body, sym);
+        symbols.push(sym);
+      }
+      case EnumDeclaration {name, members, loc}: {
+        let sym = symbolFromNamedNode(name, SK_ENUM, loc);
+        var j = 0;
+        while (j < members.length) {
+          let m = members[j];
+          sym.children.push(symbolFromNamedNode(m.name, SK_ENUM_MEMBER, m.loc));
+          j += 1;
+        }
+        symbols.push(sym);
+      }
+      case MixinDeclaration {name, loc}: {
+        symbols.push(symbolFromNamedNode(name, SK_CLASS, loc));
+      }
+      case TypeAliasDeclaration {name, loc}: {
+        symbols.push(symbolFromNamedNode(name, SK_VARIABLE, loc));
+      }
+      case DeclareFunction {name, loc}: {
+        symbols.push(symbolFromNamedNode(name, SK_FUNCTION, loc));
+      }
+      case SymbolDeclaration {name, loc}: {
+        symbols.push(symbolFromNamedNode(name, SK_VARIABLE, loc));
+      }
+      case FunctionDeclaration {name as namePat, func, loc}: {
+        let sym = symbolFromPattern(namePat.name, SK_FUNCTION, loc, namePat as Node);
+        if (isTestFile) {
+          extractTestSymbols(func.body, sym);
+        }
+        symbols.push(sym);
+      }
+      case VariableDeclaration {pattern, init, loc}: {
+        let varName = getPatternName(pattern);
+        if (varName.length > 0) {
+          // Detect if the init is a function expression.
+          let isFn = match (init) {
+            case FunctionExpression: true
+            case _: false
+          };
+          // Detect if the init is a top-level suite() call.
+          let isSuiteCall = if (isTestFile) {
+            match (init) {
+              case CallExpression {callee}: {
+                match (callee) {
+                  case Identifier {name}: name == "suite"
+                  case _: false
+                }
+              }
+              case _: false
+            }
+          } else { false };
+
+          let kind = if (isFn || isSuiteCall) { SK_FUNCTION } else { SK_VARIABLE };
+          let sym = symbolFromPattern(varName, kind, loc, pattern);
+
+          // For test files, extract suite/test child structure.
+          if (isTestFile && isFn) {
+            match (init) {
+              case FunctionExpression as fn: {
+                extractTestSymbols(fn.body, sym);
+              }
+              case _: {}
+            }
+          }
+          if (isSuiteCall) {
+            match (init) {
+              case CallExpression {args}: {
+                // suite('name', callback) — extract from callback body.
+                if (args.length >= 2) {
+                  match (args[1]) {
+                    case FunctionExpression as fn: {
+                      extractTestSymbols(fn.body, sym);
+                    }
+                    case _: {}
+                  }
+                }
+              }
+              case _: {}
+            }
+          }
+
+          symbols.push(sym);
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+
+  return symbols;
+};
+
+/**
+ * Check if the module imports from 'zena:test'.
+ */
+let hasTestImport = (ast: Module): boolean => {
+  var i = 0;
+  while (i < ast.body.length) {
+    match (ast.body[i]) {
+      case ImportDeclaration {moduleSpecifier}: {
+        if (moduleSpecifier.value == "zena:test") {
+          return true;
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+  return false;
+};
+
+/**
+ * Extract suite() and test() calls from a function body (test files).
+ *
+ * Looks for expression statements like:
+ *   suite('name', (): void => { ... })
+ *   test('name', (ctx: TestContext): void => { ... })
+ */
+let extractTestSymbols = (bodyNode: Node, parent: DocumentSymbol): void => {
+  match (bodyNode) {
+    case BlockStatement as block: {
+      var i = 0;
+      while (i < block.body.length) {
+        match (block.body[i]) {
+          case ExpressionStatement {expression}: {
+            extractTestCall(expression, parent);
+          }
+          case _: {}
+        }
+        i += 1;
+      }
+    }
+    case _: {}
+  }
+};
+
+/**
+ * Try to extract a suite() or test() call from an expression.
+ */
+let extractTestCall = (expr: Expression, parent: DocumentSymbol): void => {
+  match (expr) {
+    case CallExpression {callee, args, loc}: {
+      let calleeName = match (callee) {
+        case Identifier {name}: name
+        case _: ""
+      };
+      if ((calleeName == "suite" || calleeName == "test") && args.length >= 2) {
+        // First arg should be a string literal (the test/suite name).
+        let testName = match (args[0]) {
+          case StringLiteral {value}: value
+          case _: ""
+        };
+        if (testName.length > 0) {
+          let kind = if (calleeName == "suite") { SK_METHOD } else { SK_FUNCTION };
+          let sym = symbolFromLoc(testName, kind, loc);
+
+          // For suite(), recurse into the callback body.
+          if (calleeName == "suite" && args.length >= 2) {
+            match (args[1]) {
+              case FunctionExpression as fn: {
+                extractTestSymbols(fn.body, sym);
+              }
+              case _: {}
+            }
+          }
+
+          parent.children.push(sym);
+        }
+      }
+    }
+    case _: {}
+  }
+};
+
+/**
+ * Create a DocumentSymbol from an Identifier node and an outer SourceLocation.
+ */
+let symbolFromNamedNode = (name: Node, kind: i32, outerLoc: SourceLocation | null): DocumentSymbol => {
+  let n = getIdentifierName(name);
+  var start = 0;
+  var end = 0;
+  var selStart = 0;
+  var selEnd = 0;
+  if (outerLoc != null) {
+    start = outerLoc.start;
+    end = outerLoc.end;
+  }
+  if (name.loc != null) {
+    let nl = name.loc as SourceLocation;
+    selStart = nl.start;
+    selEnd = nl.end;
+  } else if (outerLoc != null) {
+    selStart = outerLoc.start;
+    selEnd = outerLoc.end;
+  }
+  return new DocumentSymbol(n, kind, start, end, selStart, selEnd);
+};
+
+/**
+ * Create a DocumentSymbol from a pattern name and outer/pattern locations.
+ */
+let symbolFromPattern = (name: String, kind: i32, outerLoc: SourceLocation | null, pattern: Node): DocumentSymbol => {
+  var start = 0;
+  var end = 0;
+  var selStart = 0;
+  var selEnd = 0;
+  if (outerLoc != null) {
+    start = outerLoc.start;
+    end = outerLoc.end;
+  }
+  if (pattern.loc != null) {
+    let pl = pattern.loc as SourceLocation;
+    selStart = pl.start;
+    selEnd = pl.end;
+  } else if (outerLoc != null) {
+    selStart = outerLoc.start;
+    selEnd = outerLoc.end;
+  }
+  return new DocumentSymbol(name, kind, start, end, selStart, selEnd);
+};
+
+/**
+ * Create a DocumentSymbol from a SourceLocation (for test calls).
+ */
+let symbolFromLoc = (name: String, kind: i32, loc: SourceLocation | null): DocumentSymbol => {
+  var start = 0;
+  var end = 0;
+  if (loc != null) {
+    start = loc.start;
+    end = loc.end;
+  }
+  return new DocumentSymbol(name, kind, start, end, start, end);
+};
+
+/**
+ * Get the name string from an Identifier node.
+ */
+let getIdentifierName = (node: Node): String => match (node) {
+  case Identifier {name}: name
+  case _: "<unknown>"
+};
+
+/**
+ * Get the name string from a Pattern node.
+ */
+let getPatternName = (pattern: Node): String => match (pattern) {
+  case IdentifierPattern {name}: name
+  case _: ""
+};
+
+// ============================================================================
+// Doc Comment Extraction
+// ============================================================================
+
+/**
+ * Check if a comment is a doc comment (/ ** ... * / block comments only).
+ */
+let isDocComment = (comment: Comment): boolean => {
+  // Only block comments starting with /** are doc comments.
+  // Line comments (// and ///) are not doc comments.
+  return comment.isBlock && comment.value.length > 0 && comment.value.getByteAt(0) == 42;
+};
+
+/**
+ * Format a block doc comment value into clean text.
+ * Input is the text between delimiters, e.g. "* Docs " for a / ** Docs * / comment.
+ * Strips leading/trailing whitespace and * prefixes from each line.
+ */
+let formatBlockDoc = (value: String): String => {
+  var result = "";
+  var pos: i32 = 0;
+  let len = value.length;
+  while (pos < len) {
+    // Find end of current line
+    var lineEnd = pos;
+    while (lineEnd < len && value.getByteAt(lineEnd) != 10) {
+      lineEnd += 1;
+    }
+    // Trim trailing \r
+    var trimEnd = lineEnd;
+    if (trimEnd > pos && value.getByteAt(trimEnd - 1) == 13) { trimEnd -= 1; }
+    // Trim leading whitespace
+    var trimStart = pos;
+    while (trimStart < trimEnd && (value.getByteAt(trimStart) == 32 || value.getByteAt(trimStart) == 9)) {
+      trimStart += 1;
+    }
+    // Strip leading '*'
+    if (trimStart < trimEnd && value.getByteAt(trimStart) == 42) {
+      trimStart += 1;
+      // Strip one space after '*'
+      if (trimStart < trimEnd && value.getByteAt(trimStart) == 32) {
+        trimStart += 1;
+      }
+    }
+    // Trim trailing whitespace
+    while (trimEnd > trimStart && (value.getByteAt(trimEnd - 1) == 32 || value.getByteAt(trimEnd - 1) == 9)) {
+      trimEnd -= 1;
+    }
+    let lineText = value.sliceBytes(trimStart, trimEnd);
+    if (lineText.length > 0) {
+      if (result.length > 0) { result = result + "\n"; }
+      result = result + lineText;
+    }
+    pos = lineEnd + 1;
+  }
+  return result;
+};
+
+/**
+ * Extract and format doc comments from an array of leading comments.
+ * Filters for doc comments only (/ ** ... * /) and joins them with newlines.
+ */
+let extractDocComment = (comments: Array<Comment>): String => {
+  var result = "";
+  var i: i32 = 0;
+  while (i < comments.length) {
+    let comment = comments[i];
+    if (isDocComment(comment)) {
+      let text = formatBlockDoc(comment.value);
+      if (text.length > 0) {
+        if (result.length > 0) { result = result + "\n"; }
+        result = result + text;
+      }
+    }
+    i += 1;
+  }
+  return result;
+};
+
+/**
+ * Search a class/interface body for the member containing the given
+ * offset and return its leading doc comment.
+ */
+let findMemberDocAtOffset = (body: Array<Node>, offset: i32, commentMap: CommentMap): String => {
+  var j = 0;
+  while (j < body.length) {
+    let member = body[j];
+    if (member.loc != null) {
+      let mLoc = member.loc as SourceLocation;
+      if (offset >= mLoc.start && offset < mLoc.end) {
+        let leading = commentMap.getLeading(member);
+        if (leading != null) {
+          return extractDocComment(leading);
+        }
+        return "";
+      }
+    }
+    j += 1;
+  }
+  return "";
+};
+
+/**
+ * Find a doc comment purely by source offset.
+ *
+ * Walks the AST to find the declaration containing the offset, then
+ * checks for leading doc comments on it. This handles class members
+ * (fields, methods, constructors) which aren't in scope reference maps.
+ */
+let findDocCommentByOffset = (ast: Module, offset: i32, commentMap: CommentMap): String => {
+  var i = 0;
+  while (i < ast.body.length) {
+    let stmt = ast.body[i];
+    if (stmt.loc != null) {
+      let sLoc = stmt.loc as SourceLocation;
+      if (offset >= sLoc.start && offset < sLoc.end) {
+        // Check class/interface members first.
+        match (stmt) {
+          case ClassDeclaration {body}: {
+            let memberDoc = findMemberDocAtOffset(body, offset, commentMap);
+            if (memberDoc.length > 0) { return memberDoc; }
+          }
+          case InterfaceDeclaration {body}: {
+            let memberDoc = findMemberDocAtOffset(body, offset, commentMap);
+            if (memberDoc.length > 0) { return memberDoc; }
+          }
+          case _: {}
+        }
+        // Fall back to the statement itself.
+        let leading = commentMap.getLeading(stmt);
+        if (leading != null) {
+          return extractDocComment(leading);
+        }
+        break;
+      }
+    }
+    i += 1;
+  }
+  return "";
+};
+
+/**
+ * Find the doc comment for a symbol by looking up its declaration's
+ * leading comments in the CommentMap.
+ *
+ * For ClassDeclaration, InterfaceDeclaration, etc., the comment is
+ * attached directly to the declaration node. For IdentifierPattern
+ * (from variable declarations), we search the module body for the
+ * enclosing statement.
+ */
+let findDocComment = (sym: Symbol, ast: Module, commentMap: CommentMap): String => {
+  let decl = sym.declaration;
+  if (decl == null) { return ""; }
+
+  // Direct lookup on the declaration node.
+  let leading = commentMap.getLeading(decl);
+  if (leading != null) {
+    return extractDocComment(leading);
+  }
+
+  // For IdentifierPattern etc., find the enclosing statement using the
+  // declaration's location (not the hover offset).
+  if (decl.loc != null) {
+    let loc = decl.loc as SourceLocation;
+    return findDocCommentByOffset(ast, loc.start, commentMap);
+  }
+
+  return "";
+};
+
+/**
+ * Find the doc comment for a cross-file symbol.
+ *
+ * When a symbol's declaration is an ImportSpecifier, we follow the import
+ * to the dependency module to find the original declaration and its doc comment.
+ */
+let findCrossFileDocComment = (sym: Symbol, compiler: Compiler): String => {
+  let origSym = resolveImportedSymbol(sym, compiler);
+  if (origSym == null) { return ""; }
+
+  // Get the source file for the original symbol's module.
+  let sourceFile = compiler.getSourceFile(origSym.modulePath);
+  if (sourceFile == null) { return ""; }
+
+  let depAst = sourceFile.ast;
+  let depCommentMap = attachComments(depAst);
+
+  return findDocComment(origSym, depAst, depCommentMap);
+};
+
+/**
+ * Resolve the filesystem path of the module that exports an imported symbol.
+ *
+ * Given a Symbol whose declaration is an ImportSpecifier, resolves the
+ * import to find the actual file path of the dependency module.
+ */
+let resolveImportFilePath = (sym: Symbol, compiler: Compiler): String => {
+  if (sym.declaration == null) { return ""; }
+  let decl = sym.declaration as Node;
+  if (!(decl is ImportSpecifier)) { return ""; }
+
+
+  // Find which file this symbol was declared in.
+  let ownerFile = compiler.getSourceFile(sym.modulePath);
+  if (ownerFile == null) { return ""; }
+
+  // Walk the AST to find the ImportDeclaration that contains this specifier.
+  var moduleSpecifier = "";
+  var i = 0;
+  while (i < ownerFile.ast.body.length) {
+    match (ownerFile.ast.body[i]) {
+      case ImportDeclaration {moduleSpecifier as ms, imports}: {
+        var j = 0;
+        while (j < imports.length) {
+          if (imports[j].loc != null && decl.loc != null) {
+            let specLoc = decl.loc as SourceLocation;
+            let impLoc = imports[j].loc as SourceLocation;
+            if (specLoc.start == impLoc.start) {
+              moduleSpecifier = ms.value;
+            }
+          }
+          j += 1;
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+
+  if (moduleSpecifier.length == 0) { return ""; }
+
+  // Resolve the specifier to a canonical path.
+  if (!ownerFile.imports.has(moduleSpecifier)) { return ""; }
+  let depPath = ownerFile.imports[moduleSpecifier];
+
+  // Get the dependency's actual SourceFile to return the real filesystem path.
+  let depFile = compiler.getSourceFile(depPath);
+  if (depFile == null) { return depPath; }
+  return depFile.path;
+};
+
+/**
+ * Resolve an imported symbol back to the original export in its source module.
+ *
+ * Given a Symbol whose declaration is an ImportSpecifier, walks the AST
+ * to find the parent ImportDeclaration, resolves the module specifier to
+ * a canonical path, then looks up the exported Symbol from the dependency.
+ *
+ * Returns null if the symbol is not an import or cannot be resolved.
+ */
+let resolveImportedSymbol = (sym: Symbol, compiler: Compiler): Symbol | null => {
+  if (sym.declaration == null) { return null; }
+  let decl = sym.declaration as Node;
+  if (!(decl is ImportSpecifier)) { return null; }
+
+  let importedName = decl.imported.name;
+
+  // Find which file this symbol was declared in.
+  let ownerFile = compiler.getSourceFile(sym.modulePath);
+  if (ownerFile == null) { return null; }
+
+  // Walk the AST to find the ImportDeclaration that contains this specifier.
+  var moduleSpecifier = "";
+  var i = 0;
+  while (i < ownerFile.ast.body.length) {
+    match (ownerFile.ast.body[i]) {
+      case ImportDeclaration {moduleSpecifier as ms, imports}: {
+        var j = 0;
+        while (j < imports.length) {
+          // Check if this is the same specifier by comparing locations.
+          if (imports[j].loc != null && decl.loc != null) {
+            let specLoc = decl.loc as SourceLocation;
+            let impLoc = imports[j].loc as SourceLocation;
+            if (specLoc.start == impLoc.start) {
+              moduleSpecifier = ms.value;
+            }
+          }
+          j += 1;
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+
+  if (moduleSpecifier.length == 0) { return null; }
+
+  // Resolve the specifier to a canonical path using the source file's import map.
+  if (!ownerFile.imports.has(moduleSpecifier)) { return null; }
+  let depPath = ownerFile.imports[moduleSpecifier];
+
+  // Get the dependency's source file and scope result.
+  let depFile = compiler.getSourceFile(depPath);
+  if (depFile == null) { return null; }
+  if (depFile.scopeResult == null) { return null; }
+  let depScope = depFile.scopeResult as ScopeResult;
+  let depExports = depScope.exports;
+
+  // Look up the original exported symbol.
+  if (let (true, info) = depExports.get(importedName)) {
+    return info;
+  }
+
+  return null;
+};
+
+/**
+ * Computes a 0-based byte offset in source from 1-based targetLine and targetCol.
+ */
+let computeOffsetForLineCol = (source: String, targetLine: i32, targetCol: i32): i32 => {
+  var curLine = 1;
+  var curCol = 1;
+  var i = 0;
+  let len = source.length;
+  while (i < len) {
+    if (curLine == targetLine && curCol == targetCol) {
+      return i;
+    }
+    let b = source.getByteAt(i);
+    if (b == 10) {
+      curLine += 1;
+      curCol = 1;
+    } else {
+      curCol += 1;
+    }
+    i += 1;
+  }
+  if (curLine == targetLine) {
+    return i;
+  }
+  return 0;
+};
+
+/**
+ * Stateful language service backed by a persistent Compiler.
+ *
+ * Owns the compiler host, compiler instance, and cached analysis
+ * results. The compiler's LibraryLoader caches parsed stdlib files
+ * across calls so they aren't re-parsed on every keystroke.
+ */
+export class LanguageService {
+  #host: LspHost;
+  #compiler: Compiler;
+  var #cachedCheckResult: ProgramCheckResult | null = null;
+  #scopeResults = new Map<String, ScopeResult>();
+  #compilations = new Map<String, CompilationResult>();
+
+  new(host: LspHost, compiler: Compiler) : #host = host, #compiler = compiler;
+
+  preloadStdlib(): void {
+    try {
+      let result = this.#compiler.compile("zena:core");
+      let checkResult = checkCompilation(result, this.#cachedCheckResult);
+      this.#cachedCheckResult = checkResult;
+    } catch (e) {
+      // Best-effort preload
+    }
+  }
+
+  /**
+   * Register or update an open document's source in the host and compiler cache.
+   */
+  openDocument(path: String, source: String): void {
+    let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
+    this.#host.setDocument(path, source);
+    this.#host.setDocument(normPath, source);
+    this.#compiler.delete(path);
+    this.#compiler.delete(normPath);
+  }
+
+  /**
+   * Remove an open document, evicting it from compiler cache and analysis state.
+   */
+  closeDocument(path: String): void {
+    let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
+    this.#host.deleteDocument(path);
+    this.#host.deleteDocument(normPath);
+    this.#compiler.delete(path);
+    this.#compiler.delete(normPath);
+    this.#compilations.delete(path);
+    this.#compilations.delete(normPath);
+    this.#scopeResults.delete(path);
+    this.#scopeResults.delete(normPath);
+  }
+
+  /**
+   * Parse, scope-analyze, and type-check a source string with full
+   * cross-module import resolution.
+   *
+   * Updates the open documents map for `path` so that any module
+   * importing this file sees the editor's version, then compiles
+   * starting from `path` as the root of the dependency tree.
+   */
+  check(path: String, source: String): Array<Diagnostic> {
+    this.openDocument(path, source);
+
+    let diagnostics = try {
+      let result = this.#compiler.compile(path);
+
+      // Cache scope results for ALL files in the compilation (not just the entry)
+      // so that getDefinition()/getHover() work when navigating into dependencies.
+      var fi = 0;
+      while (fi < result.files.length) {
+        let sf = result.files[fi];
+        if (sf.scopeResult != null) {
+          let sfNormPath = if (!sf.path.startsWith("/") && !sf.path.startsWith("zena:")) "/" + sf.path else sf.path;
+          this.#scopeResults[sfNormPath] = sf.scopeResult as ScopeResult;
+          this.#scopeResults[sf.path] = sf.scopeResult as ScopeResult;
+        }
+        fi += 1;
+      }
+      let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
+      this.#compilations[normPath] = result;
+      this.#compilations[path] = result;
+
+      // Type-check all modules, carrying forward unchanged results.
+      let checkResult = checkCompilation(result, this.#cachedCheckResult);
+      this.#cachedCheckResult = checkResult;
+
+      // Recovering from a parse error does not excuse it. The file was
+      // analyzed anyway, so report what the parser had to work around
+      // ahead of what the checker went on to find.
+      let diagnostics = new Array<Diagnostic>(checkResult.diagnostics.length);
+      for (let sf in result.files) {
+        for (let parseError in sf.parseErrors) {
+          diagnostics.push(parseError);
+        }
+      }
+      for (let diagnostic in checkResult.diagnostics) {
+        diagnostics.push(diagnostic);
+      }
+      diagnostics
+    } catch (e) {
+      var diagLocation: SourceSpan | null = null;
+      let rawMsg = e.message;
+      var cleanMsg = rawMsg;
+      let firstLine = if (rawMsg.contains("\n")) {
+        rawMsg.split("\n")[0]
+      } else {
+        rawMsg
+      };
+      let parts = firstLine.split(":");
+      if (parts.length >= 4) {
+        let errFile = parts[0];
+        if (let (true, line) = parseI32(parts[1])) {
+          if (let (true, col) = parseI32(parts[2])) {
+            let offset = computeOffsetForLineCol(source, line, col);
+            diagLocation = new SourceSpan(errFile, offset, 1, line, col);
+            let prefixLen = errFile.length + parts[1].length + parts[2].length + 4;
+            if (firstLine.length > prefixLen) {
+              cleanMsg = firstLine.sliceBytes(prefixLen, firstLine.length);
+            }
+          }
+        }
+      }
+
+      let arr = new Array<Diagnostic>();
+      arr.push(new Diagnostic(DiagnosticCode.UnexpectedToken, cleanMsg, DiagnosticSeverity.Error, diagLocation));
+      arr
+    };
+    return diagnostics;
+  }
+
+  /**
+   * Compile a source string to a WebAssembly binary (ByteArray).
+   * Returns null if compilation fails with errors.
+   */
+  compileToWasm(path: String, source: String): ByteArray | null {
+    this.#host.setDocument(path, source);
+
+    let wasmBytes = try {
+      this.#compiler.invalidate(path);
+      let compResult = this.#compiler.compile(path);
+
+      // A recovered AST holds stand-ins where the user has not finished
+      // typing, so it must not reach codegen. Check here rather than
+      // below: parse errors are not in the checker's diagnostics, so the
+      // error scan that follows would report none.
+      for (let file in compResult.files) {
+        if (file.completeness != ParseCompleteness.Complete) {
+          return null;
+        }
+      }
+
+      let checkResult = checkCompilation(compResult, this.#cachedCheckResult, false);
+      this.#cachedCheckResult = checkResult;
+
+      var hasError = false;
+      var i = 0;
+      while (i < checkResult.diagnostics.length) {
+        if (checkResult.diagnostics[i].severity == DiagnosticSeverity.Error) {
+          hasError = true;
+          break;
+        }
+        i += 1;
+      }
+      if (hasError) {
+        return null;
+      }
+
+      let units = new Array<CompilationUnit>();
+      var entryUnit: CompilationUnit | null = null;
+      var fi = 0;
+      while (fi < compResult.files.length) {
+        let file = compResult.files[fi];
+        if (let (true, res) = checkResult.results.get(file.path)) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.path == compResult.entry.path || file.ast.path == compResult.entry.ast.path) {
+            entryUnit = unit;
+          }
+        } else {
+          console.error('File not in checkResult: ' + file.path);
+        }
+        fi += 1;
+      }
+      if (entryUnit == null && units.length > 0) {
+        entryUnit = units[units.length - 1];
+      }
+
+      let program = new Program(units, entryUnit);
+      let generator = new BinaryGenerator("host", false, true);
+      generator.generate(program).toByteArray()
+    } catch (e) {
+      let err = e as Error;
+      console.error('compileToWasm failed: ' + err.message + '\n' + (err.getStackTrace() ?? ''));
+      null
+    };
+    return wasmBytes;
+  }
+
+  /**
+   * Find the definition of the symbol at the given byte offset.
+   *
+   * Uses the cached ScopeResult for the given file.
+   */
+  getDefinition(path: String, offset: i32): SourceSpan | null {
+    if (!this.#scopeResults.has(path)) { return null; }
+    let scopeResult = this.#scopeResults[path];
+    let syms = scopeResult.symbols;
+
+    var maybeInfo: Symbol | null = null;
+    if (this.#compilations.has(path)) {
+      let compilation = this.#compilations[path];
+      let node = findNodeAtOffset(compilation.entry.ast, offset);
+      if (node != null && node.loc != null) {
+        let nLoc = node.loc as SourceLocation;
+        maybeInfo = syms.getByOffset(nLoc.start);
+      }
+    }
+    if (maybeInfo == null) {
+      maybeInfo = syms.getByOffset(offset);
+    }
+
+    if (maybeInfo != null) {
+      let sym = maybeInfo;
+
+      // For imported symbols, resolve through the import to the original
+      // declaration in the dependency module.
+      if (sym.declaration != null && (sym.declaration as Node) is ImportSpecifier) {
+        let origSym = resolveImportedSymbol(sym, this.#compiler);
+        let depFilePath = resolveImportFilePath(sym, this.#compiler);
+        if (origSym != null && depFilePath.length > 0) {
+          if (origSym.declaration != null) {
+            let origDecl = origSym.declaration as Node;
+            if (origDecl.loc != null) {
+              let loc = origDecl.loc as SourceLocation;
+              // The module that declares it, which is only sometimes the
+              // one the import names. `import { Error } from 'zena:core'`
+              // resolves the specifier to the library's entry point while
+              // the declaration is in a file behind it, and the offsets
+              // below belong to that file — so taking the specifier's path
+              // reports one file's line inside another's.
+              let declaringPath = if (origSym.modulePath.length > 0) {
+                origSym.modulePath
+              } else {
+                depFilePath
+              };
+              // Convert canonical paths (e.g., "zena:core") to filesystem paths.
+              let fsPath = this.#host.resolveToFilesystemPath(declaringPath);
+              return new SourceSpan(fsPath, loc.start, loc.end - loc.start, loc.line, loc.column);
+            }
+          }
+        }
+        // Fall through: if we can't resolve the import, point to the import specifier itself.
+      }
+
+      let decl = sym.declaration;
+      if (decl == null) { return null; }
+
+      if (decl.loc == null) { return null; }
+      let loc = decl.loc as SourceLocation;
+
+      var defFile = path;
+      if (sym.modulePath.length > 0) {
+        defFile = sym.modulePath;
+      }
+
+      return new SourceSpan(defFile, loc.start, loc.end - loc.start, loc.line, loc.column);
+    }
+
+    // Fallback: on-demand member access resolution (e.g., p.x → FieldDefinition).
+    if (this.#cachedCheckResult != null) {
+      let checkResult = this.#cachedCheckResult as ProgramCheckResult;
+
+      // Try entry compilation first.
+      if (this.#compilations.has(path)) {
+        let compilation = this.#compilations[path];
+        let entryPath = compilation.entry.path;
+        if (checkResult.results.has(entryPath)) {
+          let entryModel = checkResult.results[entryPath].model;
+          return resolveMemberDefinition(compilation.entry.ast, offset, entryModel, scopeResult, this.#compiler);
+        }
+      }
+
+      // For dependency files, use the ProgramCheckResult + compiler cache.
+      if (checkResult.results.has(path)) {
+        let depModel = checkResult.results[path].model;
+        let sf = this.#compiler.getSourceFile(path);
+        if (sf != null) {
+          return resolveMemberDefinition(sf.ast, offset, depModel, scopeResult, this.#compiler);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get hover information at a byte offset.
+   *
+   * Returns a HoverResult with the type string and display name,
+   * or null if no type information is available at the offset.
+   */
+  getHover(path: String, offset: i32): HoverResult | null {
+    if (this.#cachedCheckResult == null) {
+      return null;
+    }
+
+    let checkResult = this.#cachedCheckResult as ProgramCheckResult;
+
+    // Try to get the model and AST for the requested file.
+    // First check if we have a compilation with this as the entry file.
+    // Otherwise, look up the file from ProgramCheckResult + Compiler cache.
+    var model: SemanticModel | null = null;
+    var ast: Module | null = null;
+
+    if (this.#compilations.has(path)) {
+      let compilation = this.#compilations[path];
+      let entryPath = compilation.entry.path;
+      if (checkResult.results.has(entryPath)) {
+        model = checkResult.results[entryPath].model;
+        ast = compilation.entry.ast;
+      }
+    }
+
+    // For dependency files (navigated to via goto-def), fall back to
+    // ProgramCheckResult and the compiler's source file cache.
+    if (model == null && checkResult.results.has(path)) {
+      model = checkResult.results[path].model;
+      let sf = this.#compiler.getSourceFile(path);
+      if (sf != null) {
+        ast = sf.ast;
+      }
+    }
+
+    if (model == null || ast == null) {
+      return null;
+    }
+
+
+    // Find the deepest AST node at the cursor position.
+    let node = findNodeAtOffset(ast, offset);
+    if (node == null) { return null; }
+
+    // Handle `this` keyword: find enclosing class type.
+    // Handle MemberExpression: when offset is on the property name.
+    // (The visitor doesn't walk MemberExpression.property, so
+    //  findNodeAtOffset returns the MemberExpression when hovering
+    //  on the property identifier.)
+    match (node) {
+      case ThisExpression: {
+        let classType = findEnclosingClassType(ast, node as Expression, model);
+        if (classType == null) { return null; }
+        let typeStr = typeToString(classType);
+        return new HoverResult(typeStr, "this: " + typeStr, "");
+      }
+      case MemberExpression {property}: {
+        if (property.loc != null) {
+          let propLoc = property.loc as SourceLocation;
+          if (offset >= propLoc.start && offset < propLoc.end) {
+            // Hovering on the property name — use the MemberExpression's type.
+            let memberType = model.getNodeType(node);
+            if (memberType != null) {
+              let typeStr = typeToString(memberType);
+              return new HoverResult(typeStr, "(property) " + property.name + ": " + typeStr, "");
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+
+    // Try to get the type directly from the SemanticModel.
+    var nodeType = model.getNodeType(node);
+
+    // Look up the Symbol for this identifier (needed for both
+    // fallback type resolution and doc comment extraction).
+    let hasScopeResult = this.#scopeResults.has(path);
+    var symbolInfo: Symbol | null = null;
+
+    if (hasScopeResult) {
+      let sr = this.#scopeResults[path];
+      let syms = sr.symbols;
+      var maybeInfo = if (node.loc != null) {
+        let nLoc = node.loc as SourceLocation;
+        syms.getByOffset(nLoc.start)
+      } else {
+        null
+      };
+      if (maybeInfo == null) {
+        maybeInfo = syms.getByOffset(offset);
+      }
+      if (maybeInfo != null) {
+        symbolInfo = maybeInfo;
+        if (nodeType == null) {
+          nodeType = model.getBindingType(symbolInfo);
+        }
+        // For type references (e.g. Symbol in Map<String, Symbol>),
+        // getBindingType may fail because the reference map stores a different
+        // Symbol (type namespace) than the one the checker used to store
+        // the binding type (value namespace). Try the declaration's node type.
+        if (nodeType == null) {
+          if (symbolInfo.declaration != null) {
+            // For imported symbols, the declaration is an ImportSpecifier in the
+            // current file. The declaration offset won't match anything useful in
+            // the current model. Resolve through the dependency's model instead.
+            if (symbolInfo.declaration as Node is ImportSpecifier) {
+              nodeType = this.#getCrossFileNodeType(symbolInfo);
+            } else {
+              nodeType = model.getNodeType(symbolInfo.declaration as Node);
+            }
+          }
+        }
+      }
+    }
+
+    if (nodeType == null) {
+      // Only try class member hover when there's no symbolInfo — i.e., the
+      // cursor is on a class member name at its definition site (which isn't
+      // in the scope's reference or declaration maps). When symbolInfo exists,
+      // the hover is on a reference INSIDE a member, not on the member itself.
+      if (symbolInfo == null) {
+        let memberHover = resolveClassMemberHover(ast, offset, model);
+        if (memberHover != null) {
+          let commentMap = attachComments(ast);
+          let doc = findDocCommentByOffset(ast, offset, commentMap);
+          return new HoverResult(memberHover.typeStr, memberHover.label, doc);
+        }
+      }
+      return null;
+    }
+
+    let typeStr = typeToString(nodeType);
+
+    // Build a display label like "let x: i32" or "class Foo".
+    let label = if (hasScopeResult) {
+      buildHoverLabel(node, typeStr, this.#scopeResults[path])
+    } else {
+      buildHoverLabel(node, typeStr, null)
+    };
+
+    // Extract doc comment from the symbol's declaration site.
+    // Only use the Symbol-based lookup (follows refs → declaration).
+    // Do NOT fall back to offset-based search here — that would pick up
+    // the enclosing field's or class's doc when hovering on a reference
+    // inside it. Offset-based lookup is only used for class member
+    // definition sites (in resolveClassMemberHover above).
+    let commentMap = attachComments(ast);
+    let docComment = if (symbolInfo != null) {
+      // For imported symbols, follow the import to the source module.
+      if (symbolInfo.declaration != null && (symbolInfo.declaration as Node) is ImportSpecifier) {
+        findCrossFileDocComment(symbolInfo, this.#compiler)
+      } else {
+        findDocComment(symbolInfo, ast, commentMap)
+      }
+    } else { "" };
+
+    return new HoverResult(typeStr, label, docComment);
+  }
+
+  /**
+   * Get code completions at the specified offset.
+   */
+  getCompletions(path: String, offset: i32): Array<CompletionItem> {
+    let normPath = if (!path.startsWith("/") && !path.startsWith("zena:")) "/" + path else path;
+
+    if ((this.#compilations.has(normPath) || this.#compilations.has(path)) && this.#cachedCheckResult != null) {
+      let compilation = if (this.#compilations.has(normPath)) { this.#compilations[normPath] } else { this.#compilations[path] };
+      let ast = compilation.entry.ast;
+      let checkResult = this.#cachedCheckResult as ProgramCheckResult;
+      let entryPath = compilation.entry.path;
+      if (checkResult.results.has(entryPath)) {
+        let model = checkResult.results[entryPath].model;
+        let scopeResult = if (this.#scopeResults.has(normPath)) { this.#scopeResults[normPath] } else if (this.#scopeResults.has(path)) { this.#scopeResults[path] } else { null };
+
+        if (scopeResult != null) {
+
+          var me: MemberExpression | null = findMemberExpressionAtOffset(ast, offset);
+          if (me == null && offset > 0) {
+            me = findMemberExpressionAtOffset(ast, offset - 1);
+          }
+
+          if (me != null) {
+            let objType = resolveObjectType(me.object, model, scopeResult, me.loc, ast, checkResult.sharedState);
+            if (objType != null) {
+              let memberItems = new Array<CompletionItem>();
+              let addedMembers = new Map<String, boolean>();
+
+              if (objType is ClassType) {
+                var currClass: ClassType | null = objType;
+                while (currClass != null) {
+                  let ct = currClass;
+                  let mKeys = ct.members.keys();
+                  for (let mName in mKeys) {
+                    if (!addedMembers.has(mName)) {
+                      addedMembers[mName] = true;
+                      let mInfo = ct.members[mName];
+                      var mKind = 6;
+                      if (mInfo is MethodInfo) { mKind = 2; }
+                      memberItems.push(new CompletionItem(mName, mKind, "member", ""));
+                    }
+                  }
+                  for (let implIt in ct.implementsList) {
+                    let itKeys = implIt.members.keys();
+                    for (let mName in itKeys) {
+                      if (!addedMembers.has(mName)) {
+                        addedMembers[mName] = true;
+                        let mInfo = implIt.members[mName];
+                        var mKind = 6;
+                        if (mInfo is MethodInfo) { mKind = 2; }
+                        memberItems.push(new CompletionItem(mName, mKind, "member", ""));
+                      }
+                    }
+                  }
+                  currClass = ct.superType;
+                }
+              } else if (objType is InterfaceType) {
+                let mKeys = objType.members.keys();
+                for (let mName in mKeys) {
+                  if (!addedMembers.has(mName)) {
+                    addedMembers[mName] = true;
+                    let mInfo = objType.members[mName];
+                    var mKind = 6;
+                    if (mInfo is MethodInfo) { mKind = 2; }
+                    memberItems.push(new CompletionItem(mName, mKind, "member", ""));
+                  }
+                }
+                for (let extIt in objType.extendsList) {
+                  let extKeys = extIt.members.keys();
+                  for (let mName in extKeys) {
+                    if (!addedMembers.has(mName)) {
+                      addedMembers[mName] = true;
+                      let mInfo = extIt.members[mName];
+                      var mKind = 6;
+                      if (mInfo is MethodInfo) { mKind = 2; }
+                      memberItems.push(new CompletionItem(mName, mKind, "member", ""));
+                    }
+                  }
+                }
+              }
+
+              // Filter member items by prefix if property is non-empty identifier
+              let prefix = match (me.property as Node) {
+                case Identifier {name}: name
+                case _: ""
+              };
+              if (prefix != "") {
+                let filtered = new Array<CompletionItem>();
+                var fi = 0;
+                while (fi < memberItems.length) {
+                  let item = memberItems[fi];
+                  if (item.label.startsWith(prefix)) {
+                    filtered.push(item);
+                  }
+                  fi += 1;
+                }
+                return filtered;
+              }
+              return memberItems;
+            }
+          }
+        }
+      }
+    }
+
+    let items = new Array<CompletionItem>();
+
+    let keywords = [
+      "let", "var", "class", "sealed", "enum", "type", "import", "export",
+      "return", "if", "else", "match", "case", "for", "in", "while",
+      "new", "this", "extends", "implements", "true", "false", "null", "try", "catch"
+    ];
+    for (let kw in keywords) {
+      items.push(new CompletionItem(kw, 14, "keyword", ""));
+    }
+
+    let builtins = [
+      ("String", "class String"),
+      ("i32", "primitive i32"),
+      ("i64", "primitive i64"),
+      ("u32", "primitive u32"),
+      ("u64", "primitive u64"),
+      ("u8", "primitive u8"),
+      ("u16", "primitive u16"),
+      ("i8", "primitive i8"),
+      ("i16", "primitive i16"),
+      ("f32", "primitive f32"),
+      ("f64", "primitive f64"),
+      ("bool", "primitive bool"),
+      ("void", "primitive void"),
+      ("any", "primitive any"),
+      ("ByteArray", "array<u8>"),
+      ("Map", "class Map<K, V>"),
+      ("Array", "interface Array<T>"),
+      ("MutableArray", "interface MutableArray<T>"),
+      ("GrowableArray", "class GrowableArray<T>"),
+      ("FixedArray", "class FixedArray<T>"),
+      ("ImmutableArray", "class ImmutableArray<T>"),
+      ("Range", "class Range"),
+      ("Iterable", "interface Iterable<T>"),
+      ("Iterator", "interface Iterator<T>"),
+      ("console", "WasiConsole / Console")
+    ];
+    for (let b in builtins) {
+      let (name, detail) = b;
+      items.push(new CompletionItem(name, 7, detail, ""));
+    }
+
+    let searchPath = if (this.#scopeResults.has(normPath)) normPath else path;
+    if (this.#scopeResults.has(searchPath)) {
+      let scopeResult = this.#scopeResults[searchPath];
+      let added = new Map<String, boolean>();
+      for (let kw in keywords) { added[kw] = true; }
+      for (let b in builtins) { let (name, _) = b; added[name] = true; }
+
+      let scopeBindings = scopeResult.rootScope.bindings;
+      let keys = scopeBindings.keys();
+      for (let name in keys) {
+        if (name.length > 0 && !added.has(name)) {
+          added[name] = true;
+          let s = scopeBindings[name];
+          var kind = 6;
+          if (s.declaration != null) {
+            let decl = s.declaration as Node;
+            if (decl is ClassDeclaration || decl is InterfaceDeclaration || decl is EnumDeclaration) {
+              kind = 7;
+            } else if (decl is DeclareFunction || decl is FunctionExpression || decl is MethodDefinition) {
+              kind = 3;
+            }
+          }
+          items.push(new CompletionItem(name, kind, "", ""));
+        }
+      }
+    }
+
+    return items;
+  }
+
+  /**
+   * Look up a cross-file symbol's type from its source module's SemanticModel.
+   *
+   * When a symbol is imported from another module, its declaration is an
+   * ImportSpecifier in the current file. We resolve through the import to
+   * the original symbol in the dependency module and look up its type there.
+   */
+  #getCrossFileNodeType(sym: Symbol): Type | null {
+    if (this.#cachedCheckResult == null) { return null; }
+    let checkResult = this.#cachedCheckResult as ProgramCheckResult;
+
+    // Resolve through the import to find the original symbol.
+    let origSym = resolveImportedSymbol(sym, this.#compiler);
+    if (origSym == null) { return null; }
+
+    let modulePath = origSym.modulePath;
+    if (!checkResult.results.has(modulePath)) { return null; }
+    let depModel = checkResult.results[modulePath].model;
+
+    // Try binding type first (keyed by Symbol.id — stable across modules).
+    let bt = depModel.getBindingType(origSym);
+    if (bt != null) { return bt; }
+    // Fall back to node type (keyed by declaration offset — only valid in the source module).
+    if (origSym.declaration != null) {
+      return depModel.getNodeType(origSym.declaration as Node);
+    }
+    return null;
+  }
+
+  /**
+   * Get document symbols for the outline view.
+   *
+   * Parses the source (or uses the cached AST) and extracts
+   * top-level declarations. For test files, also extracts
+   * suite/test structure.
+   */
+  getDocumentSymbols(path: String, source: String): Array<DocumentSymbol> {
+    let symbols = try {
+      let ast = parseSource(source, path);
+      extractSymbols(ast)
+    } catch (e) {
+      new Array<DocumentSymbol>()
+    };
+    return symbols;
+  }
+}
+
+/**
+ * Build a human-readable hover label for a given AST node and its type.
+ * (Not `getHoverLabel` — that name is taken by the exported HoverResult
+ * accessor below, and module-scope redeclaration is an error.)
+ */
+let buildHoverLabel = (node: Node, typeStr: String, scopeResult: ScopeResult | null): String => {
+  // Extract the name from either an Identifier (reference) or
+  // IdentifierPattern (declaration site).
+  let name = getNodeName(node);
+
+  if (name.length == 0) { return typeStr; }
+
+  var prefix = "let";
+  if (scopeResult != null) {
+    let syms = scopeResult.symbols;
+    let sym = syms.getByNode(node);
+
+    if (sym != null) {
+      // Check if the declaration is a parameter.
+      if (sym.declaration != null) {
+        let declNode = sym.declaration as Node;
+        match (declNode) {
+          case Parameter: { prefix = "(parameter)"; }
+          case ClassDeclaration: { prefix = "class"; }
+          case _: {
+            if (sym.isType() && !sym.isValue()) { prefix = "type"; } else if (sym.isValue() && sym.isMutable) { prefix = "var"; }
+          }
+        }
+      } else {
+        if (sym.isType() && !sym.isValue()) { prefix = "type"; } else if (sym.isValue() && sym.isMutable) { prefix = "var"; }
+      }
+    }
+  }
+  if (prefix == "type") {
+    return prefix + " " + name + " = " + typeStr;
+  }
+  if (prefix == "class") {
+    return prefix + " " + name;
+  }
+  return prefix + " " + name + ": " + typeStr;
+};
+
+/**
+ * Extract the name string from a node, if it has one.
+ */
+let getNodeName = (node: Node): String => match (node) {
+  case Identifier {name}: name
+  case IdentifierPattern {name}: name
+  case _: ""
+};
+
+/**
+ * Find the ClassType for the enclosing class of a `this` expression.
+ *
+ * The checker stores a ClassType on the ClassDeclaration node
+ * (via declareBinding → setNodeType), so we walk the module's
+ * top-level statements to find the enclosing class.
+ */
+let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: SemanticModel): Type | null => {
+  if (thisExpr.loc == null) { return null; }
+  let thisLoc = thisExpr.loc as SourceLocation;
+  let thisOffset = thisLoc.start;
+
+  var i = 0;
+  while (i < ast.body.length) {
+    match (ast.body[i]) {
+      case ClassDeclaration as cd: {
+        if (cd.loc != null) {
+          let cdLoc = cd.loc as SourceLocation;
+          if (thisOffset >= cdLoc.start && thisOffset < cdLoc.end) {
+            // Try nodeType first (set by declareBinding → setNodeType).
+            let nt = model.getNodeType(ast.body[i]);
+            if (nt != null) { return nt; }
+            // Fallback: resolve via declaration map → binding type.
+            let sym = model.resolveDeclaration(ast.body[i]);
+            if (sym != null) {
+              return model.getBindingType(sym);
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+  return null;
+};
+
+/**
+ * Resolve hover info for a class member at its definition site.
+ *
+ * The checker stores field/method types in ClassType.members
+ * rather than on the AST nodes themselves. This
+ * function bridges that gap by finding the enclosing ClassDeclaration,
+ * getting its ClassType, and looking up the member by name.
+ */
+let resolveClassMemberHover = (ast: Module, offset: i32, model: SemanticModel): HoverResult | null => {
+  var i = 0;
+  while (i < ast.body.length) {
+    let stmt = ast.body[i];
+    match (stmt) {
+      case ClassDeclaration as cd: {
+        if (cd.loc != null) {
+          let cdLoc = cd.loc as SourceLocation;
+          if (offset >= cdLoc.start && offset < cdLoc.end) {
+            // Get the ClassType for this class.
+            var classTypeRef = model.getNodeType(stmt);
+            if (classTypeRef == null) {
+              let sym = model.resolveDeclaration(stmt);
+              if (sym != null) {
+                classTypeRef = model.getBindingType(sym);
+              }
+            }
+            if (classTypeRef == null) { return null; }
+            let ct = classTypeRef as ClassType;
+
+            // Search class body for the member whose NAME is at the offset.
+            // Only match the name span, not the entire member span — otherwise
+            // type refs and expressions inside the member body would be caught.
+            var j = 0;
+            while (j < cd.body.length) {
+              let member = cd.body[j];
+              match (member) {
+                case FieldDefinition as fd: {
+                  if (fd.name.loc != null) {
+                    let nLoc = fd.name.loc as SourceLocation;
+                    if (offset >= nLoc.start && offset < nLoc.end) {
+                      let fieldName = getNodeName(fd.name);
+                      if (fieldName.length > 0 && ct.members.has(fieldName) && ct.members[fieldName] is FieldInfo) {
+                        let fieldInfo = ct.members[fieldName];
+                        let typeStr = typeToString(fieldInfo.type);
+                        let isMut = match (fieldInfo) {
+                          case FieldInfo as fi: fi.isMutable
+                          case _: false
+                        };
+                        let prefix = if (isMut) { "(property) var " } else { "(property) " };
+                        return new HoverResult(typeStr, prefix + fieldName + ": " + typeStr, "");
+                      }
+                    }
+                  }
+                }
+                case MethodDefinition as md: {
+                  if (md.name.loc != null) {
+                    let nLoc = md.name.loc as SourceLocation;
+                    if (offset >= nLoc.start && offset < nLoc.end) {
+                      let methodName = getNodeName(md.name);
+                      if (methodName == "new") {
+                        if (ct.constructorType != null) {
+                          let typeStr = typeToString(ct.constructorType as Type);
+                          return new HoverResult(typeStr, "(constructor) new" + typeStr, "");
+                        }
+                      } else if (methodName.length > 0 && ct.members.has(methodName) && ct.members[methodName] is MethodInfo) {
+                        let methodInfo = ct.members[methodName];
+                        let typeStr = typeToString(methodInfo.type);
+                        return new HoverResult(typeStr, "(method) " + methodName + typeStr, "");
+                      }
+                    }
+                  }
+                }
+                case _: {}
+              }
+              j += 1;
+            }
+            return null;
+          }
+        }
+      }
+      case _: {}
+    }
+    i += 1;
+  }
+  return null;
+};
+
+/**
+ * Create a LanguageService with the standard pipeline. `readFile` reads
+ * the files that are not open, the standard library's included;
+ * `target` decides which of the standard library's per-target modules
+ * the analysis sees; and `packages` is the package map imports like
+ * `zena-compiler:parser` resolve through, none if null.
+ */
+export let createLanguageService = (
+  stdlibRoot: String,
+  readFile: FileReader,
+  target: String = "js",
+  packageMap: Map<String, PackageConfig> | null = null,
+): LanguageService => {
+  let host = new LspHost(stdlibRoot, readFile);
+  var packages = new Map<String, PackageConfig>();
+  if (packageMap != null) {
+    packages = packageMap;
+  }
+  let options = new CompilerOptions(target, stdlibRoot, packages);
+  // Source in an editor is source mid-edit: recover from what can be
+  // recovered from, so an unfinished import still yields an AST to
+  // answer completions and symbols against. The errors are still
+  // reported — check() folds them in with the rest.
+  options.recoverFromParseErrors = true;
+  let compiler = createCompiler(host, options);
+  let ls = new LanguageService(host, compiler);
+  ls.preloadStdlib();
+  return ls;
+};
