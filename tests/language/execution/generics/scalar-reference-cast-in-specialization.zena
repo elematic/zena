@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 213
+
+// A cast on a type parameter is checked where the generic is defined,
+// so `v as anyref` is accepted for any T. A specialization
+// can still make one impossible: with T = i32, `v as anyref` asks for a
+// primitive to become a reference, which Zena never does implicitly. Such
+// a cast compiles to a trap, the way any failing `as` traps when it runs.
+// Generic code that only reaches the cast for reference types, like the
+// branches below, has to compile and run normally.
+
+class Token {
+  n: i32;
+  new(n: i32) : n = n {}
+}
+
+/** 1 for a reference, 2 for a String, 0 for anything else. */
+let classify = <T>(v: T): i32 => {
+  if (v is String) {
+    let s = v as String;
+    return if (s.length > 0) { 2 } else { 0 };
+  }
+  if (v is Token) {
+    let r = v as anyref;
+    return if (r == null) { 0 } else { 1 };
+  }
+  return 0;
+};
+
+/** The same, for a value that may be `void`: it has no representation
+ * at all, so it is no more a reference than an i32 is. */
+let classifyMade = <T>(make: () => T): i32 => {
+  let v = make();
+  if (v is Token) {
+    let r = v as anyref;
+    return if (r == null) { 0 } else { 1 };
+  }
+  return 0;
+};
+
+export let main = (): i32 => {
+  // Scalars take the fall-through arm; the casts above never run.
+  let scalars = classify(7) + classify(1.5) + classify(true) +
+      classify(9 as i64);
+  let refs = classify('hi') * 100 + classify(new Token(4)) * 10;
+  let made = classifyMade<void>(() => {}) +
+      classifyMade(() => new Token(5)) * 3;
+  return scalars * 1000 + refs + made;
+};

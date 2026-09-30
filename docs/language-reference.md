@@ -555,6 +555,25 @@ The difference is whether the source already supplies the type arguments. The
 second cast re-labels a container whose elements are already `T`, so it mints
 nothing; the first would produce a `T` for every element.
 
+Casting a `T` value _to_ a reference type is accepted for any `T`, like any
+checked cast. When `T` is a primitive or `void`, no value can satisfy it,
+because Zena never boxes a primitive implicitly, so the cast traps when it
+runs. Code that only reaches the cast for reference types runs normally:
+
+```zena
+let describe = <T>(v: T): String => {
+  if (v is Token) {
+    let r = v as anyref;   // never runs when T is i32
+    return 'a token';
+  }
+  return 'something else';
+};
+
+describe(7);               // 'something else'
+let toRef = <T>(v: T): anyref => v as anyref;
+toRef(7);                  // traps
+```
+
 ### Function Types
 
 Function types describe the signature of a function. They are written using

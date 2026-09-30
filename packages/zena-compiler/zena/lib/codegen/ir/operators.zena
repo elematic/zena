@@ -754,6 +754,24 @@ let narrowCastTarget = (cx: LoweringContext, expr: AsExpression): Type | null =>
  * TO a narrow integer additionally re-normalizes (`normalizeNarrow`),
  * including when the wasm type does not change.
  */
+/**
+ * A cast to a reference type from a value that has no reference
+ * representation in this specialization: `v as anyref` checks for any
+ * T, and T turned out to be a primitive or `void`. Zena never boxes
+ * implicitly, so the cast cannot succeed, and it traps when it runs,
+ * like any failing `as`.
+ *
+ * It still has to compile, because generic code routinely guards it
+ * with a test that is false for this T (`if (v is String)`). The code
+ * after the cast lowers against a placeholder, in a block nothing
+ * branches to.
+ */
+let impossibleRefCast = (cx: LoweringContext, dstVt: ValType): i32 => {
+  cx.b.unreachable();
+  cx.b.switchTo(cx.b.newBlock());
+  return cx.b.emit(IrOp.ref_null, dstVt, -1, -1);
+};
+
 export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
   let dstVt = cx.exprVt(expr);
   let narrowTarget = narrowCastTarget(cx, expr);
@@ -787,6 +805,11 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
         parseF64((expr.expression as NumberLiteral).raw), dstVt);
   }
   let value = lowerExpr(cx, expr.expression, null);
+  if (value < 0 && cx.reachable && isRefValType(dstVt)) {
+    // A `void` operand: `v as anyref` where this specialization made
+    // T void. Like a primitive (below), it can never be a reference.
+    return impossibleRefCast(cx, dstVt);
+  }
   if (value < 0) {
     // A zero-width operand (a read the checker typed `never` or
     // `void`) has no value to cast; bail loudly rather than index the
@@ -854,6 +877,10 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     // `"hi" as i32` compile and trap on a class the program never
     // named.
     bail(cx, 'reference operand for a scalar cast');
+  }
+  if (isRefValType(dstVt) && !isRefValType(srcVt)) {
+    // `v as anyref` where this specialization made T a primitive.
+    return impossibleRefCast(cx, dstVt);
   }
   return normalizeNarrow(cx, scalarConvert(cx, value, dstVt), narrowTarget);
 };
