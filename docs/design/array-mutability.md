@@ -568,13 +568,35 @@ devirtualization above.
 
 ## Covariance
 
-Once `ImmutableArray<T>` is on `(array T)`, `ImmutableArray<Cat>` can
-widen to `ImmutableArray<Animal>` with no copy and no fat pointer. This
-needs `emitArrayType` to stop writing `sub final` with zero supertypes
-(`codegen/binary-emitter.zena:947`) plus a checker rule, since nominal
-generics are invariant today. Sound read-only covariance falls out of the
-representation rather than needing `out` annotations. This is independent
-of the main change and can land separately.
+Landed. An immutable array of references is declared a Wasm subtype of
+its element's supertype's array, up to `(array anyref)` at the top:
+`WasmArray.superArray` carries the supertype, the emitters write
+`(sub $super (array (ref null $Cat)))` instead of `sub final`, layout
+orders a subtype after its supertype, and type pruning keeps a kept
+array's supertype. So `ImmutableArray<Cat>` widens to
+`ImmutableArray<Animal>` and to `ImmutableArray<anyref>` with no copy,
+no cast, and no fat pointer — the checker admits exactly the cases the
+representation and the declared subtyping cover (`immutableElementWidens`):
+`anyref` as the target of any reference element, and a class chain.
+Interface-typed elements are fat pointers, a different representation,
+so those stay invariant, as do extension classes; mutable arrays stay
+invariant and final. The chain is linked after reachability analysis,
+which is when class structs know their supertypes.
+
+For the test program in
+`tests/language/execution/arrays/immutable-covariance.zena` the type
+section reads:
+
+```wat
+(type (;15;) (sub (array anyref)))
+(type (;16;) (sub 15 (array (ref null $Animal))))
+(type (;19;) (sub 16 (array (ref null $Bird))))
+(type (;20;) (sub 16 (array (ref null $Cat))))
+(type (;21;) (sub 15 (array (ref null 19))))   ;; an array of arrays
+```
+
+Sound read-only covariance falls out of the representation rather than
+needing `out` annotations.
 
 ## Alternatives considered
 

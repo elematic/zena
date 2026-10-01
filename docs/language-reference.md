@@ -4636,8 +4636,11 @@ marks the element slot mutable, the same way `var` marks a mutable field
 or binding — and is rejected on any other generic type. Bare `array<T>`
 is the immutable-element array `(array T)`; `array<var T>` is the
 mutable `(array (mut T))`. Wasm gives no subtyping between the two in
-either direction, so they do not interchange. See
-`docs/design/array-mutability.md`.
+either direction, so they do not interchange. An immutable array is
+covariant in its element along the class chain and up to `anyref`: an
+`ImmutableArray<Cat>` is an `ImmutableArray<Animal>` and an
+`ImmutableArray<anyref>`, with no copy. A mutable array is invariant.
+See `docs/design/array-mutability.md`.
 
 #### GrowableArray\<T\>
 

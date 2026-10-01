@@ -1904,7 +1904,9 @@ let empty = new Array<i32>(); // Empty growable array
 `ImmutableArray<T>` is the immutable array — a distinct WebAssembly type from
 `FixedArray<T>`, with no subtyping or casting between them. Writes are
 compile-time errors, and the immutability is real at runtime, not a view over
-mutable storage.
+mutable storage. It is covariant in its element along the class chain and up
+to `anyref` — an `ImmutableArray<Cat>` is an `ImmutableArray<Animal>` — where
+a `FixedArray` is invariant.
 
 ```zena
 let immutable = [1, 2, 3];  // ImmutableArray<i32>

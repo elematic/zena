@@ -337,6 +337,14 @@ export let canonicalClassKey = (ct: ClassType): ClassKey => {
 export final class WasmArray extends WasmType {
   elementType: ValType;
   isMutable: boolean;
+  /**
+   * The declared supertype of an immutable array of references: the
+   * array of its element's supertype, up to `(array anyref)`. That is
+   * what makes an immutable array of a subclass a Wasm subtype of the
+   * immutable array of its superclass, with no cast and no copy. A
+   * mutable array has none — its elements are invariant.
+   */
+  var superArray: WasmArray | null = null;
   new(this.elementType, this.isMutable) : super();
 }
 
@@ -452,6 +460,15 @@ let heapSubtype = (a: WasmType, b: WasmType): boolean => {
         return true;
       }
       current = current.superStruct;
+    }
+  }
+  if (a is WasmArray) {
+    var currentArray: WasmArray | null = a.superArray;
+    while (currentArray != null) {
+      if (currentArray == b) {
+        return true;
+      }
+      currentArray = currentArray.superArray;
     }
   }
   return false;
@@ -1649,7 +1666,66 @@ export final class WasmModule {
     let arr = new WasmArray(finalElemType, isMutable);
     this.types.push(arr);
     this.#arrayCache[key] = arr;
+    // Before reachability has linked class structs to their supertypes
+    // the chain cannot be read yet; linkArraySupertypes fills it in
+    // for every array interned until then.
+    if (!isMutable && this.#arraySupertypesLinked) {
+      arr.superArray = this.#immutableArraySuper(finalElemType);
+    }
     return arr;
+  }
+
+  var #arraySupertypesLinked = false;
+
+  /**
+   * Gives every immutable array interned so far its declared supertype
+   * (WasmArray.superArray), and every one interned from now on its
+   * supertype at creation. Called once reachability analysis has linked
+   * class structs to their supertypes, which the chain reads; arrays
+   * are interned throughout that analysis, before the links exist.
+   */
+  linkArraySupertypes(): void {
+    this.#arraySupertypesLinked = true;
+    // The chain interns supertype arrays as it goes, growing `types`;
+    // an index loop visits those too.
+    var i = 0;
+    while (i < this.types.length) {
+      let t = this.types[i];
+      if (t is WasmArray) {
+        let arr = t as WasmArray;
+        if (!arr.isMutable && arr.superArray == null) {
+          arr.superArray = this.#immutableArraySuper(arr.elementType);
+        }
+      }
+      i += 1;
+    }
+  }
+
+  /**
+   * The supertype an immutable array declares (see WasmArray.superArray):
+   * for an element that is a struct reference, the immutable array of
+   * the struct's supertype, or of `anyref` at the top of a hierarchy;
+   * for an element that is itself an array, `(array anyref)`. Function
+   * references live outside the `anyref` hierarchy and value elements
+   * have no subtypes, so those arrays declare none.
+   */
+  #immutableArraySuper(elementType: ValType): WasmArray | null {
+    match (elementType) {
+      case ValTypeRefNull {target}: {
+        if (target is WasmStruct) {
+          let sup = (target as WasmStruct).superStruct;
+          if (sup != null) {
+            return this.getArray(new ValTypeRefNull(sup), false);
+          }
+          return this.getArray(new ValTypeAnyRef(), false);
+        }
+        if (target is WasmArray) {
+          return this.getArray(new ValTypeAnyRef(), false);
+        }
+        return null;
+      }
+      case _: { return null; }
+    }
   }
 
   getByteArrayType(): WasmArray {
@@ -1995,6 +2071,11 @@ export final class WasmModule {
         }
         for (let f in t.fields) { pushRef(list, f.type); }
       } else if (t is WasmArray) {
+        if (t.superArray != null) {
+          if (let (true, p) = posOf.get(t.superArray as WasmArray)) {
+            list.push(p);
+          }
+        }
         pushRef(list, t.elementType);
       } else if (t is WasmSignature) {
         for (let pv in t.params) { pushRef(list, pv); }
@@ -2116,13 +2197,20 @@ export final class WasmModule {
         for (let m in members) {
           memberSet[m] = true;
         }
+        // A subtype must follow its supertype within a group, and an
+        // array has one as a struct does (WasmArray.superArray).
+        let superOf = (t: WasmType): WasmType | null => {
+          if (t is WasmStruct) { return (t as WasmStruct).superStruct; }
+          if (t is WasmArray) { return (t as WasmArray).superArray; }
+          return null;
+        };
         var hasIntraGroupSubtype = false;
         for (let m in members) {
           let t = uniqueTypes[m];
-          if (t is WasmStruct) {
-            let s = (t as WasmStruct).superStruct;
+          if (superOf(t) != null) {
+            let s = superOf(t) as WasmType;
             if (s != null) {
-              if (let (true, sp) = posOf.get(s as WasmStruct)) {
+              if (let (true, sp) = posOf.get(s)) {
                 if (let (true, _present) = memberSet.get(sp)) {
                   hasIntraGroupSubtype = true;
                   break;
@@ -2139,10 +2227,10 @@ export final class WasmModule {
           }
           for (let m in members) {
             let t = uniqueTypes[m];
-            if (t is WasmStruct) {
-              let s = (t as WasmStruct).superStruct;
+            if (superOf(t) != null) {
+              let s = superOf(t) as WasmType;
               if (s != null) {
-                if (let (true, sp) = posOf.get(s as WasmStruct)) {
+                if (let (true, sp) = posOf.get(s)) {
                   if (let (true, _present) = memberSet.get(sp)) {
                     inDegree[m] = 1;
                     var ch: GrowableArray<i32> | null = null;
@@ -2262,6 +2350,9 @@ export final class WasmModule {
           parts.push("]");
         } else if (t is WasmArray) {
           parts.push("A");
+          if (t.superArray != null) {
+            encodeTarget(t.superArray as WasmArray);
+          }
           encodeVal(t.elementType);
           parts.push(if (t.isMutable) "m" else "c");
         } else if (t is WasmSignature) {

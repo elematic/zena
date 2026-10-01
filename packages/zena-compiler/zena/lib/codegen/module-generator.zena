@@ -292,6 +292,9 @@ export final class ModuleGenerator {
     let tDiscovery = performance.start("codegen-discovery");
     let pass = new ReachabilityAnalysis(this.program, wasm, this.target);
     pass.run();
+    // Class structs now have their supertypes; immutable arrays of
+    // them can declare theirs (lowering's conformance checks read it).
+    wasm.linkArraySupertypes();
     performance.end(tDiscovery);
 
 
@@ -828,7 +831,10 @@ export final class ModuleGenerator {
         
         this.emitter.emitStructTypeEnd();
       } else if (t is WasmArray) {
-        this.emitter.emitArrayType(idx, t.elementType, t.isMutable);
+        let arraySuperIdx =
+          if (t.superArray != null) (t.superArray as WasmArray).index
+          else -1;
+        this.emitter.emitArrayType(idx, t.elementType, t.isMutable, arraySuperIdx);
       }
     };
 

@@ -1,7 +1,7 @@
 import { ValTypeVoid, ValTypeFunc, ValTypeStructRef, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeI64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeOptRef, ValTypeAnyRef, ValTypeFuncRef, ValTypeExternRef, ValTypeEqRef, ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { StringBuilder, ByteBuffer } from 'zena:core';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { ValType } from "./wasm.zena";
+import { ValType, isRefValType } from "./wasm.zena";
 import { WasmFunction } from "./wasm-module.zena";
 import { simdName } from '../simd.zena';
 import { wideArithName } from './wasm.zena';
@@ -691,9 +691,19 @@ export final class WatEmitter implements WasmEmitter {
     this.sb.append('\n');
   }
 
-  emitArrayType(index: i32, elementType: ValType, isMutable: boolean): void {
+  emitArrayType(index: i32, elementType: ValType, isMutable: boolean, superTypeIndex: i32): void {
     this.indent();
-    this.sb.append('(type (;').append(i32ToString(index)).append(';) (array ');
+    this.sb.append('(type (;').append(i32ToString(index)).append(';) ');
+    // Open (`sub`) for an immutable array of references, like the
+    // binary emitter; see WasmArray.superArray.
+    let open = !isMutable && isRefValType(elementType);
+    if (open) {
+      this.sb.append('(sub ');
+      if (superTypeIndex >= 0) {
+        this.sb.append(i32ToString(superTypeIndex)).append(' ');
+      }
+    }
+    this.sb.append('(array ');
     if (isMutable) {
       this.sb.append('(mut ');
     }
@@ -701,7 +711,11 @@ export final class WatEmitter implements WasmEmitter {
     if (isMutable) {
       this.sb.append(')');
     }
-    this.sb.append('))\n');
+    this.sb.append(')');
+    if (open) {
+      this.sb.append(')');
+    }
+    this.sb.append(')\n');
   }
 
   emitMemoryImport(module: String, name: String, minPages: i32): void {

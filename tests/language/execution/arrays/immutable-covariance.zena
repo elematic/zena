@@ -1,0 +1,38 @@
+// @mode: run
+// @stdlib: true
+// @result: 41
+
+// An immutable array of a subclass is an immutable array of its
+// superclass, and of anyref, with no copy and no cast: the Wasm type is
+// declared a subtype of its element's supertype's array.
+class Animal {
+  legs: i32;
+  new(this.legs);
+}
+class Cat extends Animal {
+  new() : super(4);
+}
+class Bird extends Animal {
+  new() : super(2);
+}
+
+let totalLegs = (zoo: ImmutableArray<Animal>): i32 => {
+  var total = 0;
+  for (let animal in zoo) {
+    total += animal.legs;
+  }
+  return total;
+};
+
+let count = (items: ImmutableArray<anyref>): i32 => items.length;
+
+export let main = (): i32 => {
+  let cats: ImmutableArray<Cat> = [new Cat(), new Cat()];
+  let birds: ImmutableArray<Bird> = [new Bird()];
+  let legs = totalLegs(cats) + totalLegs(birds);               // 8 + 2
+  let animals: ImmutableArray<Animal> = cats;                  // assignment, no copy
+  let n = count(cats) + count(birds) + count(["a", "b"]);      // 2 + 1 + 2
+  let nested: ImmutableArray<ImmutableArray<Cat>> = [cats];
+  let m = count(nested) + animals.length;                      // 1 + 2
+  return legs * 3 + n * 2 + m - 2;                             // 30 + 10 + 3 - 2
+};

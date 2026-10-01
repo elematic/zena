@@ -1,0 +1,30 @@
+// @mode: check
+// An immutable array widens along its element's class chain and to
+// anyref — the cases that keep the element representation and have a
+// declared Wasm subtyping. A mutable array is invariant, an
+// interface-typed element is a different representation, and nothing
+// narrows.
+import { FixedArray } from 'zena:core';
+
+class Animal {}
+class Cat extends Animal {}
+interface Named {
+  name: String { get; }
+}
+class Dog extends Animal implements Named {
+  name: String {
+    get { return 'dog'; }
+  }
+}
+
+let cats: ImmutableArray<Cat> = [new Cat()];
+let animals: ImmutableArray<Animal> = cats;
+let refs: ImmutableArray<anyref> = cats;
+
+let fixedCats: FixedArray<Cat> = [new Cat()];
+let fixedAnimals: FixedArray<Animal> = fixedCats; // @error: Type mismatch
+
+let dogs: ImmutableArray<Dog> = [new Dog()];
+let named: ImmutableArray<Named> = dogs; // @error: Type mismatch
+
+let back: ImmutableArray<Cat> = animals; // @error: Type mismatch

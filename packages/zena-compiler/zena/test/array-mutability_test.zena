@@ -3,7 +3,7 @@ import { equal, isTrue, isFalse } from 'zena:assert';
 import { ByteBuffer } from 'zena:core';
 import { ArrayType, I32Type, Type } from '../lib/types.zena';
 import { WasmModule, WasmArray, asWasmArray } from '../lib/codegen/wasm-module.zena';
-import { ValTypeI32 } from '../lib/codegen/wasm.zena';
+import { ValTypeI32, ValTypeAnyRef } from '../lib/codegen/wasm.zena';
 import { typeToValType } from '../lib/codegen/type-mapping.zena';
 import { getTypeKeyForSpecialization } from '../lib/codegen/codegen-utils.zena';
 import { BinaryEmitter } from '../lib/codegen/binary-emitter.zena';
@@ -41,12 +41,12 @@ export let tests = suite('array element mutability', (): void => {
   });
 
   test('binary emitter writes the element mutability bit', (ctx: TestContext): void => {
-    // emitArrayType writes: 0x4F (sub final), 0 supertypes, 0x5E (array
-    // form), the element valtype, then the mutability byte.
+    // An array of values writes: 0x4F (sub final), 0 supertypes, 0x5E
+    // (array form), the element valtype, then the mutability byte.
     let checkMutByte = (isMutable: boolean, expected: i32): void => {
       let emitter = new BinaryEmitter(new ByteBuffer());
       emitter.emitTypeSectionStart(1);
-      emitter.emitArrayType(0, new ValTypeI32(), isMutable);
+      emitter.emitArrayType(0, new ValTypeI32(), isMutable, -1);
       let section = emitter.currentSection as ByteBuffer;
       // Byte 0 is the type count; the array type starts at byte 1.
       equal(section.getByte(1), 0x4F);
@@ -57,5 +57,35 @@ export let tests = suite('array element mutability', (): void => {
     };
     checkMutByte(true, 1);
     checkMutByte(false, 0);
+  });
+
+  test('binary emitter declares an immutable reference array open, with its supertype', (ctx: TestContext): void => {
+    // The root of a chain, (array anyref), is open with no supertype:
+    // 0x50 (sub), 0 supertypes.
+    let root = new BinaryEmitter(new ByteBuffer());
+    root.emitTypeSectionStart(1);
+    root.emitArrayType(0, new ValTypeAnyRef(), false, -1);
+    let rootSection = root.currentSection as ByteBuffer;
+    equal(rootSection.getByte(1), 0x50);
+    equal(rootSection.getByte(2), 0);
+    equal(rootSection.getByte(3), 0x5E);
+
+    // A subtype names its supertype: 0x50, 1 supertype, its index.
+    let sub = new BinaryEmitter(new ByteBuffer());
+    sub.emitTypeSectionStart(1);
+    sub.emitArrayType(8, new ValTypeAnyRef(), false, 7);
+    let subSection = sub.currentSection as ByteBuffer;
+    equal(subSection.getByte(1), 0x50);
+    equal(subSection.getByte(2), 1);
+    equal(subSection.getByte(3), 7);
+    equal(subSection.getByte(4), 0x5E);
+
+    // A mutable reference array stays final: nothing can subtype it.
+    let mut = new BinaryEmitter(new ByteBuffer());
+    mut.emitTypeSectionStart(1);
+    mut.emitArrayType(0, new ValTypeAnyRef(), true, -1);
+    let mutSection = mut.currentSection as ByteBuffer;
+    equal(mutSection.getByte(1), 0x4F);
+    equal(mutSection.getByte(2), 0);
   });
 });

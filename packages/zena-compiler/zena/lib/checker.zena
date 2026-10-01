@@ -7377,6 +7377,33 @@ let castTypeArguments = (t: Type): Array<Type> | null => {
   return null;
 };
 
+/**
+ * Whether an immutable array of `a` may stand in for an immutable array
+ * of `b` with no conversion: `b` is `anyref` and `a` is a reference, or
+ * both are classes and `a` extends `b`. Only these keep the element
+ * representation, and only these have a declared Wasm subtyping — an
+ * immutable array is declared a subtype of its element's supertype's
+ * array (WasmArray.superArray). An interface-typed element is a fat
+ * pointer, a different representation, so those stay invariant, as do
+ * extension classes, which erase to whatever they are declared on.
+ */
+let immutableElementWidens = (ctx: CheckerContext, a: Type, b: Type): boolean => {
+  if (typesEqual(a, b)) { return true; }
+  if (b is AnyRefType) { return isReferenceType(a); }
+  if (a is ClassType && b is ClassType) {
+    let src = a as ClassType;
+    let tgt = b as ClassType;
+    if (src.isExtension || tgt.isExtension) { return false; }
+    var current: ClassType | null = src.superType;
+    while (current != null) {
+      let cur = current;
+      if (typesEqual(cur, tgt)) { return true; }
+      current = cur.superType;
+    }
+  }
+  return false;
+};
+
 /** Same nominal head, ignoring type arguments? */
 let sameGenericHead = (a: Type, b: Type): boolean => {
   if (a is ClassType && b is ClassType) {
@@ -7973,8 +8000,19 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
       match (target) {
         case ClassType as tgtClass: {
           // If they match by id but didn't pass typesEqual early, they have different
-          // type arguments. For invariant nominal types, they are not assignable.
-          if (srcClass.id == tgtClass.id) { return false; }
+          // type arguments. ImmutableArray is covariant in its element along
+          // the class chain and up to anyref (immutableElementWidens); every
+          // other nominal type is invariant.
+          if (srcClass.id == tgtClass.id) {
+            if (isWellKnownClassType(ctx, srcClass, WellKnown.ImmutableArrayClass)) {
+              let sArgs = srcClass.typeArguments;
+              let tArgs = tgtClass.typeArguments;
+              if (sArgs != null && tArgs != null && sArgs.length == 1 && tArgs.length == 1) {
+                return immutableElementWidens(ctx, sArgs[0], tArgs[0]);
+              }
+            }
+            return false;
+          }
           // Walk the supertype chain.
           var current: ClassType | null = srcClass.superType;
           while (current != null) {
@@ -8090,7 +8128,10 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
           if (isArrayLike && tgtClass.typeArguments != null) {
             let tgtArgs = tgtClass.typeArguments as Array<Type>;
             if (tgtArgs.length > 0) {
-              return isAssignableTo(ctx, elementType, tgtArgs[0]);
+              if (elementsMutable) {
+                return isAssignableTo(ctx, elementType, tgtArgs[0]);
+              }
+              return immutableElementWidens(ctx, elementType, tgtArgs[0]);
             }
           }
           // Also match uninstantiated Array/FixedArray (bare type)
@@ -8115,10 +8156,14 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
         case ArrayType {elementType as tgtElem, elementsMutable as tgtMut}: {
           // Wasm gives no subtyping between `(array (mut T))` and
           // `(array T)` in either direction, so mutability must match
-          // exactly. (Read-only covariance for immutable arrays is a
-          // separate change — see docs/design/array-mutability.md.)
+          // exactly. An immutable array is covariant in its element
+          // where the representation and a declared Wasm subtyping
+          // allow (immutableElementWidens); a mutable array is not.
           if (elementsMutable != tgtMut) { return false; }
-          return isAssignableTo(ctx, elementType, tgtElem);
+          if (elementsMutable) {
+            return isAssignableTo(ctx, elementType, tgtElem);
+          }
+          return immutableElementWidens(ctx, elementType, tgtElem);
         }
         case _: {}
       }
