@@ -1,7 +1,8 @@
 //! Binding a component's `zenafx:host` imports to the host primitives.
 //!
 //! The loader defines every import itself rather than handing wasmtime a
-//! generated `add_to_linker`, because §6.2 of `docs/design/zenafx-ui.md`
+//! generated `add_to_linker`, because "Runtime linking and import interposition"
+//! in `docs/design/zenafx-ui.md`
 //! wants each instance's imports decided per instance: a component gets the
 //! interfaces the policy grants it and no others.
 

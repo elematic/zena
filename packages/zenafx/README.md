@@ -133,7 +133,8 @@ own subtree, which is the only update there is.
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed
-in §9.2 of the UI design and not implemented: an earlier prototype did it by
+in [Children and slots](../../docs/design/zenafx-ui.md#children-and-slots) and
+not implemented: an earlier prototype did it by
 having each component export `render` and `measure`, which fixed one widget
 to one component, and that was removed. Whatever replaces it will embed
 components of this shape, each holding as many widgets as it likes.

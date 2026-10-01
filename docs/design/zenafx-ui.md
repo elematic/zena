@@ -4,12 +4,12 @@
 
 - **Status**: Proposed, and partly built. `zfx --app` loads a tree of Zena
   components, binds their `zenafx:host` imports and shows the window they
-  draw. Text, flexbox layout, painting and the window are real (§8); so are
-  child components and slot projection (§9.2), with each child's layout
+  draw. Text, flexbox layout, painting and the window are real ([Host primitives](#host-primitives)); so are
+  child components and slot projection ([Children and slots](#children-and-slots)), with each child's layout
   queried and each child's drawing clipped by the host. What is not built is
-  §7 — there is no runtime component, so no `zenafx:ui/scene`, no viewport
+  [The scene interface](#the-scene-interface) — there is no runtime component, so no `zenafx:ui/scene`, no viewport
   resource and no scene graph — and the host calls the root once a frame
-  rather than the root driving the frame as §6.3 has it. Input, navigation
+  rather than the root driving the frame as [The root drives the frame](#the-root-drives-the-frame) has it. Input, navigation
   and assets do not exist.
 - **Date**: 2026-09-25
 - **Scope**: a retained-mode UI system whose applications are trees of
@@ -24,36 +24,72 @@
 
 ## Contents
 
-This list defines the numbers the `§` cross-references in this document use.
+- [ZenaFX UI Runtime](#zenafx-ui-runtime)
+  - [Status](#status)
+  - [Contents](#contents)
+  - [Overview](#overview)
+  - [Terms](#terms)
+  - [Prior art](#prior-art)
+  - [Division of labour between Zena and Rust](#division-of-labour-between-zena-and-rust)
+    - [The rule](#the-rule)
+    - [The split](#the-split)
+    - [What the split costs](#what-the-split-costs)
+  - [Component and process structure](#component-and-process-structure)
+    - [The component graph](#the-component-graph)
+    - [Runtime linking and import interposition](#runtime-linking-and-import-interposition)
+    - [The root drives the frame](#the-root-drives-the-frame)
+    - [Call direction within a frame](#call-direction-within-a-frame)
+    - [Serialization across components](#serialization-across-components)
+  - [The scene interface](#the-scene-interface)
+    - [The viewport is the capability; nodes are ids inside it](#the-viewport-is-the-capability-nodes-are-ids-inside-it)
+    - [Feed-forward mutation](#feed-forward-mutation)
+    - [`zenafx:ui` in WIT](#zenafxui-in-wit)
+    - [Events: input, and what a widget reports](#events-input-and-what-a-widget-reports)
+      - [Handlers stay in the guest; registrations cross](#handlers-stay-in-the-guest-registrations-cross)
+      - [Scope, not per-type bubbling](#scope-not-per-type-bubbling)
+      - [Why this survives the boundary moving](#why-this-survives-the-boundary-moving)
+      - [Pushed bindings elsewhere](#pushed-bindings-elsewhere)
+      - [WIT](#wit)
+    - [Context: values that inherit down the tree](#context-values-that-inherit-down-the-tree)
+  - [Host primitives](#host-primitives)
+    - [Layout with measurement inside the solve](#layout-with-measurement-inside-the-solve)
+      - [Layout is a recursive query, not two passes](#layout-is-a-recursive-query-not-two-passes)
+    - [Text](#text)
+    - [Paint](#paint)
+    - [Surface, frames and demand-driven redraw](#surface-frames-and-demand-driven-redraw)
+    - [`zenafx:host` in WIT](#zenafxhost-in-wit)
+  - [Widgets, templates and updates](#widgets-templates-and-updates)
+    - [Widgets, templates and bindings](#widgets-templates-and-bindings)
+      - [What identifies a property](#what-identifies-a-property)
+      - [What a frame costs](#what-a-frame-costs)
+      - [The first render](#the-first-render)
+    - [Children and slots](#children-and-slots)
+      - [How a slot gets a size](#how-a-slot-gets-a-size)
+      - [What a child may draw](#what-a-child-may-draw)
+      - [What is missing](#what-is-missing)
+    - [The retained scene](#the-retained-scene)
+    - [What the widget prototype found](#what-the-widget-prototype-found)
+    - [Moving the component boundary](#moving-the-component-boundary)
+  - [Scheduling](#scheduling)
+  - [Reactive state](#reactive-state)
+  - [Capabilities and isolation](#capabilities-and-isolation)
+  - [Tiers beyond boxes and text](#tiers-beyond-boxes-and-text)
+  - [Compiler prerequisites](#compiler-prerequisites)
+    - [What already works](#what-already-works)
+    - [What the compiler still has to build](#what-the-compiler-still-has-to-build)
+  - [Milestones](#milestones)
+    - [Milestone 1: text centred in a window](#milestone-1-text-centred-in-a-window)
+      - [What exists, and how it is reduced](#what-exists-and-how-it-is-reduced)
+    - [Later milestones](#later-milestones)
+  - [Repository layout](#repository-layout)
+  - [Prior implementations](#prior-implementations)
+  - [Alternatives considered](#alternatives-considered)
+  - [Open questions](#open-questions)
+  - [Related](#related)
 
-1. Status
-2. Overview
-3. Terms
-4. Prior art
-5. Division of labour between Zena and Rust — 5.1 The rule, 5.2 The split,
-   5.3 What the split costs
-6. Component and process structure — 6.1 The component graph, 6.2 Runtime
-   linking and import interposition, 6.3 The root drives the frame,
-   6.4 Call direction within a frame, 6.5 Serialization across components
-7. The scene interface — 7.1 The viewport is the capability, 7.2 Feed-forward
-   mutation, 7.3 `zenafx:ui` in WIT, 7.4 Events: talking upward,
-   7.5 Context: values that inherit down the tree
-8. Host primitives — 8.1 Layout with measurement inside the solve, 8.2 Text,
-   8.3 Paint, 8.4 Surface, frames and demand-driven redraw,
-   8.5 `zenafx:host` in WIT
-9. Widgets, templates and updates — 9.1 Widgets and templates, 9.2 Children
-   and slots, 9.3 The retained scene, 9.4 What the widget prototype found,
-   9.5 Moving the component boundary
-10. Scheduling
-11. Reactive state
-12. Capabilities and isolation
-13. Tiers beyond boxes and text
-14. Compiler prerequisites — 14.1 What already works, 14.2 What is missing
-15. Milestones — 15.1 Milestone 1, 15.2 Later milestones
-16. Repository layout
-17. Alternatives considered
-18. Open questions
-19. Related
+Cross-references in this document link to these headings. They are not
+numbered: a number shifts silently when a section is inserted or moved, and a
+link either resolves or visibly does not.
 
 ## Overview
 
@@ -73,7 +109,7 @@ something it chooses, and instantiates it — with nothing linked ahead of time
 and no build step that fuses an application to its dependencies. That is what
 lets a document name a component by URL, and it is what puts the host in
 position to decide, per instance, which interfaces that component reaches at
-all. §6.2 describes the mechanism.
+all. [Runtime linking](#runtime-linking-and-import-interposition) describes the mechanism.
 
 Two further consequences of the structure shape the rest of the design. A
 component reaches a child by importing the child's WIT world, so there is no
@@ -85,7 +121,7 @@ untrusted components can share one window.
 The division of labour is the other half of the design. The scene graph, the
 widget model, the scheduler and the capability bookkeeping are written in Zena,
 in a component. Layout solving, text shaping, vector rasterization, GPU access
-and the OS event loop stay in Rust, behind narrow WIT interfaces. §5 gives the
+and the OS event loop stay in Rust, behind narrow WIT interfaces. [Division of labour](#division-of-labour-between-zena-and-rust) gives the
 rule that produced that split and what it costs.
 
 ## Terms
@@ -94,7 +130,7 @@ rule that produced that split and what it costs.
   [Component Model][component-model]. It never means a UI widget.
 - **Widget** is the unit of UI: private state, a template, and an update
   function. A widget may be a component of its own or one of many inside a
-  component, and §9.2 is about why that choice is free.
+  component, and [Children and slots](#children-and-slots) is about why that choice is free.
 - **Viewport** is the region a widget paints into and the authority to do so.
   Fuchsia calls the child's end of the same link a _view_; this document uses
   "viewport" for both ends and reserves "view" for quoting Flatland.
@@ -197,10 +233,10 @@ and its pixels that would not exist if the scene graph were in the host. Two
 boundaries have to stay cheap.
 
 **Application to runtime component.** An application sends the values that
-changed rather than its tree. A widget whose re-render changes three hole values
+changed rather than its tree. A widget whose re-render changes three bindings
 sends three operations in one `apply` call, and building a subtree of N nodes
-also costs one `apply` call rather than N calls. §7.2 covers the batch
-operation and §9 covers where the three values come from.
+also costs one `apply` call rather than N calls. [Feed-forward mutation](#feed-forward-mutation) covers the batch
+operation and [Widgets, templates and updates](#widgets-templates-and-updates) covers where the three values come from.
 
 **Runtime component to host.** Per frame the runtime makes one `solve` call
 per dirty subtree and one `present` call. `solve` is proportional to the dirty
@@ -208,7 +244,7 @@ subtree rather than the whole scene, and `present` is proportional to what is
 visible. The traffic to avoid is a host call per node, which is why the host
 has no node-shaped API at all.
 
-The `present` call as specified in §8.5 sends the whole frame's display list
+The `present` call as specified in [`zenafx:host` in WIT](#zenafxhost-in-wit) sends the whole frame's display list
 each time. For the first milestones that is the right simplification; a scene
 with tens of thousands of quads will want a retained display list with
 per-node invalidation, which is a change to `zenafx:host/paint` and not to
@@ -300,7 +336,7 @@ path.
 A guest→guest binding is a host function that lowers the caller's arguments,
 calls the callee instance's export, and lifts the result back. The host is on
 the path for every such call, which is what makes attenuation and proxying
-possible at all, and also what makes them cost something — §5.3 bounds how
+possible at all, and also what makes them cost something — [What the split costs](#what-the-split-costs) bounds how
 often the frame path crosses one.
 
 None of this is speculative. A server-side component runner outside this
@@ -339,7 +375,7 @@ loop and calls each widget's `render` is therefore available.
 ZenaFX does not use it, for two reasons that belong to the design rather than to
 the linker.
 
-The first is ordering. §10 gets its guarantee about update order from the frame
+The first is ordering. [Scheduling](#scheduling) gets its guarantee about update order from the frame
 being a single pass in one direction: the root updates, then calls its dirty
 children, which update and call theirs. A runtime that called back into
 applications would be choosing the order in which widgets update, and would have
@@ -397,7 +433,7 @@ component boundary.
 
 ZenaFX therefore adopts a rule. **A guest→guest call on the
 frame path must run to completion without suspending.** `apply`, `flush`,
-`bounds` and the rest of §7.3 are synchronous and do exactly that: the callee
+`bounds` and the rest of [`zenafx:ui` in WIT](#zenafxui-in-wit) are synchronous and do exactly that: the callee
 mutates its own state, returns, and is not on the stack when anything else calls
 it. Anything that needs to await belongs in an `async`-lifted export, where
 re-entry happens by callback after a return instead of by nesting.
@@ -424,7 +460,7 @@ outer call is suspended still has nothing to run.
 
 The call direction is therefore fixed: parents call children, and applications
 call the runtime. The root is the only thing the host enters. The consequence
-§10 depends on is that the call graph of a frame is the component tree, walked
+[Scheduling](#scheduling) depends on is that the call graph of a frame is the component tree, walked
 top-down.
 
 ### Serialization across components
@@ -441,10 +477,10 @@ gave the same answer; the advice for CPU parallelism today was to run multiple
 instances in multiple stores and synchronise between them through a host API
 (#general, "Parallelism (multi-threading) in the CM and Wasmtime?", 2026-09).
 
-Two things follow. The first is that §6.3's single top-down pass gives up no
+Two things follow. The first is that [The root drives the frame](#the-root-drives-the-frame)'s single top-down pass gives up no
 parallelism that was available — serialising the frame costs nothing, because the
 components could not have run concurrently anyway. The second is that a slow
-component is a problem with no parallel escape, which §12 takes up.
+component is a problem with no parallel escape, which [Capabilities and isolation](#capabilities-and-isolation) takes up.
 
 A store per component is the alternative, and it buys real parallelism at a
 price: cross-store calls cannot pass component-model resource handles directly,
@@ -473,7 +509,7 @@ the viewport.
 Flatland works this way, which is the reason to trust the shape:
 `fuchsia.ui.composition` has the client pick every `TransformId` and
 `ContentId`, scoped to the client's own session. Letting the caller name the id
-also removes a round trip — `create` has nothing to return, which §7.2 turns
+also removes a round trip — `create` has nothing to return, which [Feed-forward mutation](#feed-forward-mutation) turns
 into a property of the whole interface.
 
 A component receives its viewport from its parent and can `derive` narrower ones
@@ -481,7 +517,7 @@ to hand on. Slot projection falls out of the same handle rather than needing a
 mechanism: a child creates a node in its own subtree, derives a viewport rooted
 at it, and returns that to its parent. The parent then fills the slot with its
 own content, the child decides where the slot sits, and neither can enumerate or
-mutate the other's nodes. §12 has the rest of the capability story.
+mutate the other's nodes. [Capabilities and isolation](#capabilities-and-isolation) has the rest of the capability story.
 
 [wit]: https://component-model.bytecodealliance.org/design/wit.html
 
@@ -493,7 +529,7 @@ own ids, `apply` has nothing to return — which matters for more than batching.
 
 A function with no result can be delivered late. The host can queue the call,
 return immediately, and run it when the callee is safe to enter, and the caller
-cannot tell the difference. That is what makes the deferred dispatch in §7.4
+cannot tell the difference. That is what makes the deferred dispatch in [Events](#events-input-and-what-a-widget-reports)
 possible, and it is why the operation list has no `create` that answers with an
 id and no single-operation convenience functions that do either. Flatland calls
 the same property feed-forward: operations accumulate and take effect at
@@ -507,7 +543,7 @@ so neither needs deferral.
 ### `zenafx:ui` in WIT
 
 Verified against `wasm-tools 1.252.0`: this package and the `zenafx:host`
-package in §8.5 both resolve, and `wasm-tools component wit` round-trips them.
+package in [`zenafx:host` in WIT](#zenafxhost-in-wit) both resolve, and `wasm-tools component wit` round-trips them.
 
 ```wit
 package zenafx:ui@0.1.0;
@@ -576,7 +612,7 @@ interface scene {
   record look-op { target: node, look: box-look }
   record content-op { target: node, content: string }
 
-  /// A value that inherits down the tree (§7.5). The set is closed on
+  /// A value that inherits down the tree ([Context](#context-values-that-inherit-down-the-tree)). The set is closed on
   /// purpose: these are the things a theme carries. Anything richer is
   /// bound by the loader instead.
   variant inherited {
@@ -638,7 +674,7 @@ interface scene {
   }
 
   /// Solve layout for every dirty subtree and present one frame. Called
-  /// by whoever drives the frame loop (§6.3), once per frame.
+  /// by whoever drives the frame loop ([The root drives the frame](#the-root-drives-the-frame)), once per frame.
   flush: func();
 }
 
@@ -657,43 +693,92 @@ in either affecting the other. That separation is what lets the runtime skip a
 layout solve when only colours changed, and skip re-measuring text when only a
 parent's background changed.
 
-### Events: talking upward
+### Events: input, and what a widget reports
 
-§6.4 fixes the call direction: parents call children, components call the
-runtime, and nothing calls back into a component whose activation is still on
-the stack. That covers every edge of a frame except one. A child telling its
-parent something — a button was pressed, a size settled — runs against the
-direction of the tree, and a direct call would re-enter the parent that is
-mid-call inside it.
+[Call direction](#call-direction-within-a-frame) fixes the call direction: parents call children, components call the
+runtime, and nothing calls back into a component whose activation is still on the
+stack. Two things run against that.
 
-Upward communication is therefore an **event**, and events are asynchronous, as
-they are on the web. The frame protocol gets that by inverting the call: **the
-parent polls.** A child accumulates what it has to report and exposes
-`take-events: func() -> list<event>`, with `event` a variant it declares itself.
-During the pass the parent reads that list, handles it, and then updates the
-child. Nothing calls upward at any point.
+Input arrives from outside the tree and has to reach whoever owns what was
+pointed at, which the sender cannot know. And a child telling its parent
+something — a button was pressed, a size settled — runs against the direction of
+the tree, where a direct call would re-enter the parent that is mid-call inside
+it.
 
-Four properties follow, and the fourth is the reason to prefer polling over a
-push the host defers:
+They are the same problem, and the host answers both by **dispatching**. A
+component registers interest in an event type on a node it owns; the registration
+is data the host keeps; the host finds the target, walks the scene path, and calls
+each registered owner in turn. No component calls another, in either direction,
+so [Call direction](#call-direction-within-a-frame)'s reentrancy question does not arise for either.
 
-1. **Safe by construction.** `take-events` is a downward call on a tree edge, so
-   §6.4's reentrancy question never arises and no dispatch machinery is needed.
-2. **Typed.** The child declares its own `variant event`; nothing degrades to a
-   `list<u8>` envelope.
-3. **Asynchronous, with the web's shape.** An event raised while handling input
-   in frame N is read at the start of the next pass.
-4. **Independent of where the component boundary falls.** A parent widget polling a
-   child widget in-language and a parent component polling a child component's
-   export have the same shape and the same latency, so moving the boundary does
-   not change behaviour. §9.2 relies on this.
+#### Handlers stay in the guest; registrations cross
 
-Polling every child every frame would be waste, so a child that raises an event
-marks itself dirty through the same `invalidate` path a node mutation uses, and
-the parent polls only the children it already knows are dirty.
+A handler cannot cross a boundary, because WIT carries no function type — the
+same limit [Context](#context-values-that-inherit-down-the-tree) notes about the web's context protocol, that a callback inside
+the payload is not something WIT data carries. That rules out sending the
+handler, and nothing more:
 
-Some bindings are not part of the frame protocol — a component reaching a
-service that happens to be another component rather than the host. For those a
-push is the natural shape, and the loader decides whether it can be deferred:
+- the closure stays in a table the component's framework keeps, keyed by node;
+- what crosses is a **registration**: a node, an event type, a scope and a phase;
+- the host calls one exported entry point per component, naming the node;
+- the framework looks the node up and invokes the closure.
+
+An author writes a handler on a node, and the funcref never leaves the component.
+
+The registration being host-side data is what makes propagation cheap: the host
+knows, before it calls anything, which nodes on the path are registered for this
+type, so a path with none costs nothing. This is the property that decides
+against the alternative of a child accumulating events for its parent to poll —
+a poll pays for a call to discover there was nothing to report, and pays it per
+parent per frame.
+
+#### Scope, not per-type bubbling
+
+An ancestor listening for a pointer crossing usually wants its own boxes and not
+every descendant's. The DOM meets that need by having two event types,
+`mouseenter` beside `mouseover`, and a table of which types bubble. Here it is a
+**scope on the registration**:
+
+- **self** — deliver only when this node is the target;
+- **subtree** — deliver when this node or any node beneath it is the target.
+
+One event type can then be heard either way by different listeners, the host
+filters by scope before it calls anything, and there is no per-type table to
+remember. Scope is a degenerate predicate, so the selector algebra in
+[zenafx-widget-authoring.md](./zenafx-widget-authoring.md#selectors-as-data)
+could express more of it later without a second mechanism.
+
+A **phase** on the registration covers interception — a modal that swallows
+clicks, a scroll container claiming a drag that began on a child. Those want the
+event before the target and the ability to stop it, which is a different
+registration rather than a flag on every listener that mostly wants the default.
+
+Two properties of the DOM model disappear rather than being decided. Propagation
+has no composed-versus-local distinction, because the scene path _is_ the
+composed path and there is no second tree. And an event type is identified by a
+WIT type rather than a string: a widget that raises one declares it in an
+interface, a widget that listens imports the same interface, and the loader
+assigns the identity when it links them. Matching is static and a misspelling is
+a compile error.
+
+#### Why this survives the boundary moving
+
+[Moving the component boundary](#moving-the-component-boundary) requires that interposition not change when a call runs relative to its
+caller, since that is what would make one source tree behave differently
+depending on how it was packaged. Dispatch satisfies it directly: the
+registration is the host's either way, so a listener in the same component and a
+listener in another are both reached by a synchronous call from the host, in the
+same order, with the same latency. Fusing two components removes a boundary
+crossing and changes nothing observable.
+
+A mediator keeps its powers. It may refuse to bind, deny a delivery, or rewrite a
+payload, and the components on either side cannot tell it was there.
+
+#### Pushed bindings elsewhere
+
+Some bindings are not part of the frame protocol — a component reaching a service
+that happens to be another component rather than the host. For those a push is
+the natural shape, and the loader decides whether it can be deferred:
 
 - **Every function return-free.** The binding is _deferrable_. The host keeps a
   stack of the instances it has entered and not yet returned from; when a
@@ -701,7 +786,7 @@ push is the natural shape, and the loader decides whether it can be deferred:
   returns, running it once the target's activation has unwound.
 - **Any function with a result.** The binding is _direct only_ — the caller is
   waiting for a value, so there is nothing to defer. A re-entrant call on such a
-  binding reaches `do_not_enter` and fails as §6.4 describes.
+  binding reaches `do_not_enter` and fails as [Call direction](#call-direction-within-a-frame) describes.
 
 Both are decided from `ComponentFunc::results()` at bind time, so the loader
 knows which bindings are safe on which edges without an annotation, a manifest,
@@ -711,50 +796,65 @@ plain `func` cannot. Neither has to know what the other is written in, because t
 decision is the host's. One consequence for anyone designing a pushed interface:
 **its functions return nothing**, or it cannot be deferred.
 
+#### WIT
+
 ```wit
-// A child's own package. It reports upward by being read, so every edge
-// in the frame protocol points down the tree.
-package demo:counter@0.1.0;
-
 interface events {
-  record size { width: f32, height: f32 }
+  use scene.{node};
 
-  variant event {
-    pressed(u32),
-    measured(size),
+  /// Which targets a registration wants.
+  enum scope {
+    /// Only when this node is the target.
+    self,
+    /// When this node or any node beneath it is the target.
+    subtree,
   }
+
+  /// When a registration is offered the event.
+  enum phase {
+    /// After the target, walking up. The default.
+    bubble,
+    /// Before the target, walking down, with the option to stop it.
+    intercept,
+  }
+
+  /// Register interest. `kind` is the identity the loader assigned to an event
+  /// type declared in WIT, not a name matched at run time. Returns nothing, so
+  /// it joins the `apply` list of [Feed-forward mutation](#feed-forward-mutation) and keeps its feed-forward property.
+  listen: func(target: node, kind: u32, in-scope: scope, at: phase);
+  unlisten: func(target: node, kind: u32);
+
+  /// Raise a widget-defined event at one of this component's own nodes. The
+  /// host queues it and dispatches after the current delivery returns.
+  raise: func(source: node, kind: u32, payload: list<u8>);
 }
 
-world counter {
-  use zenafx:ui/scene@0.1.0.{viewport};
-  use events.{event};
+/// What a component exports so the host can deliver to it. One entry point
+/// rather than one per handler: the framework dispatches from `target`.
+interface handler {
+  use scene.{node};
 
-  import zenafx:ui/scene@0.1.0;
-
-  /// Where to draw, handed over by the parent.
-  export mount: func(host: viewport);
-  /// A slot the parent may fill: the child positions it, the parent
-  /// decides what goes inside.
-  export label-slot: func() -> viewport;
-  /// One input, called downward on a tree edge, so it may return.
-  export set-step: func(step: u32);
-  /// Everything raised since the last call, oldest first.
-  export take-events: func() -> list<event>;
+  /// Whether the event was handled, which stops propagation.
+  handle: func(target: node, kind: u32, payload: list<u8>) -> bool;
 }
 ```
 
-A component with only synchronous exports can be polled, mounted and updated
-like any other, which is the point: nothing in the frame protocol asks a
-component to tolerate being re-entered. What such a component cannot do is ask
-its parent a question and wait for the answer — the answer arrives as an input on
-a later call, `set-step` above rather than a `get-step` it calls itself. For a UI
-that is usually what was wanted, since a reply changes props and schedules a
-render regardless.
+`handle` returns a value, so by the rule above it is direct rather than
+deferrable. That is sound because it is called off the frame path and the host
+never has an activation of the target outstanding when it calls: deliveries are
+sequential, and an event raised while handling one is queued rather than nested.
+
+The `payload: list<u8>` is the one place this falls short of the typing described
+above, and [Open questions](#open-questions) keeps it. The candidates are a
+closed variant of built-in input events with an opaque tail for widget-defined
+ones, which keeps the common cases typed and gives up on the rest, and a
+generated interface per event type, which is fully typed and grows the world with
+every event a program declares.
 
 Handling an event can raise more of them, because a parent responding to a child
 may update and cause another child to report. The pass therefore runs to a
 quiescent state or to a budget, and anything outstanding rides to the next frame
-— the same budget §18 needs for a slow component.
+— the same budget [Open questions](#open-questions) needs for a slow component.
 
 ### Context: values that inherit down the tree
 
@@ -767,7 +867,7 @@ The web has no real mechanism for this. The [context protocol][context-protocol]
 that Lit and others implement emulates one: a consumer dispatches a
 `context-request` event, an ancestor catches it **synchronously** and invokes a
 callback carried in the event. Both halves are unavailable here: the synchronous
-upward call is what §6.4 rules out, and a callback inside the payload is not
+upward call is what [Call direction](#call-direction-within-a-frame) rules out, and a callback inside the payload is not
 something WIT data carries.
 
 ZenaFX does not need to, because the runtime holds the whole tree, including
@@ -792,7 +892,7 @@ The value domain is closed — colors, lengths, scalars, flags, names — and th
 is a deliberate scope rather than a limitation to route around. Those are the
 things a theme carries. Richer context, such as a document model, an auth token
 or a service, is **bound by the loader instead**: when a parent instantiates a
-child, §6.2 already decides what the child's imports resolve to, so "the nearest
+child, [Runtime linking](#runtime-linking-and-import-interposition) already decides what the child's imports resolve to, so "the nearest
 provider" is settled once, statically, at full type fidelity, with no lookup and
 no upward call. The web's context protocol conflates those two cases, which is
 part of why it needs callbacks; splitting them lets each use the mechanism that
@@ -857,9 +957,9 @@ vocabulary removed.
 
 Two consequences for the rest of this document. A leaf is measured four or
 more times per frame, so measurement must be cheap and side-effect free —
-which is why a run is registered once and referred to by id (§8.2), and why
+which is why a run is registered once and referred to by id ([Text](#text)), and why
 `measure_run` re-breaks only when the width it is asked about differs from the
-one it holds. And when a leaf is a child _component_ (§9.3), those four
+one it holds. And when a leaf is a child _component_ ([The retained scene](#the-retained-scene)), those four
 questions are four calls into that component.
 
 The tree is passed flat, in pre-order, with each node naming the index of its
@@ -876,8 +976,8 @@ implementation of `measure` is in the host: the guest solver makes an ordinary
 synchronous host call and gets an answer back. It would stop working if
 measurement were delegated to a _second_ guest component, because the solver
 would then be suspended at a guest→guest call while the callee ran — the case
-§6.4 rules out. Text measurement staying in the host is what keeps guest layout
-tractable. The first milestones use `taffy` in the host; §13 has the rest.
+[Call direction](#call-direction-within-a-frame) rules out. Text measurement staying in the host is what keeps guest layout
+tractable. The first milestones use `taffy` in the host; [Tiers beyond boxes and text](#tiers-beyond-boxes-and-text) has the rest.
 
 ### Text
 
@@ -893,7 +993,7 @@ list is an id and a position, not a string and a font.
 
 `present` takes a display list and draws it. The commands are rounded quads,
 glyph runs, and clip push/pop. Clips are what enforce the compositor's part of
-the capability model in §12: the runtime emits a clip for each component's
+the capability model in [Capabilities and isolation](#capabilities-and-isolation): the runtime emits a clip for each component's
 bounds, and the rasterizer discards anything outside it.
 
 ### Surface, frames and demand-driven redraw
@@ -1027,127 +1127,167 @@ and its consumer, so the event streams need no new compiler work.
 
 ## Widgets, templates and updates
 
-### Widgets and templates
+### Widgets, templates and bindings
 
-A widget is a class with private state and public inputs. Its node structure is
-declared once, as a template with numbered holes, and afterwards only the hole
-values change:
+A widget owns its **interior** — the nodes it declares — and not its children.
+The interior is declared once as a **template**, and after that only the values
+in it change.
 
-```zena
-final class Greeting {
-  #label: String;
-  #nodes: TemplateInstance;
+A template is a flat list of nodes. Each node has a kind, children by index, and
+the properties that node sets; a property is either **given** a value in the
+template or marked **bound**, meaning it arrives later. A bound property is a
+binding, and a binding is identified by its position in template order — nothing
+on the wire names it.
 
-  /** The widget's one input. Assigning the value it already holds does nothing. */
-  name: String {
-    get { return this.#label; }
-    set(value) {
-      if (value == this.#label) { return; }
-      this.#label = value;
-      this.#nodes.update([value]);
-    }
-  }
+```wit
+/// A property's value in a template.
+variant slot {
+  given(value),
+  /// Supplied by the next binding, in template order.
+  bound,
+}
 
-  new(host: Viewport, label: String) {
-    this.#label = label;
-    // A centred column holding one text node, with the label in hole 0.
-    this.#nodes = host.instantiate(greetingTemplate, [label]);
-  }
+record template-node {
+  /// A built-in kind, or a widget type the component declares.
+  kind: kind,
+  /// Only the properties this node sets; the rest take the kind's defaults.
+  props: list<prop>,
+  /// Indices into the template's own `nodes`, contiguous and after this one.
+  /// WIT has no recursive types, so a tree is a flat list plus indices — the
+  /// same shape `node` uses. A compiler emits it from a nested node block.
+  first-child: u32,
+  child-count: u32,
+  /// If content is projected here, its position in this widget's slot order.
+  /// Any children are then the fallback, shown when nothing is assigned.
+  slot: option<u32>,
+}
+
+record template {
+  /// Chosen by the component, like a node id.
+  id: u32,
+  nodes: list<template-node>,
+  /// So arity can be checked without walking.
+  binding-count: u32,
 }
 ```
 
-`instantiate` takes a template and its initial hole values and issues one
-`apply` call for the whole structure. `update` compares each new hole value
-against the one the instance holds and sends an operation only for the holes
-that differ — one `set-text` or `set-layout` when a single hole changed, one
-`apply` when several did.
+Registration and instantiation are ops, so they batch and keep
+[Feed-forward mutation](#feed-forward-mutation)'s property of returning nothing:
 
-The comparison in the setter is what makes forwarding cheap. A parent that
-re-renders and hands a child the string it already had causes no node mutation,
-and a parent that hands a child component the props it already had makes no
-call into that component at all.
+```wit
+variant op {
+  /// Once per template per program.
+  register-template(template),
+  /// Stamp out a template, supplying one value per binding in order. The
+  /// instance's nodes occupy a contiguous range from `base`, so node
+  /// `base + i` is template node `i`, and `base` is the instance's identity.
+  instantiate(tuple<node, u32, list<value>>),      // base, template id, values
+  /// Write one binding of one instance. No node and no property name: the
+  /// template already said where binding `i` goes.
+  set-binding(tuple<node, u32, value>),            // base, binding index, value
+  /// Project content into a child's slot. The caller names the child and the
+  /// slot, never the child's slot node, which it has no id for.
+  assign-content(tuple<node, u32, list<node>>),    // child, slot index, content
+  // … the ops [Feed-forward mutation](#feed-forward-mutation) defines
+}
+```
 
-Templates written by hand as node structures are workable for a demo and
-tedious past that. [declarative.md](./declarative.md) designs the syntax that
-replaces them: `html <box>...</box>` blocks in `.zena`, with `${expr}` holes
-compiling to numbered slots. ZenaFX's template representation is what that
-syntax lowers to, so the two designs have to agree on three things — holes are
-positional, a hole carries a value rather than a subtree, and a hole holding a
-child widget is a distinct kind of slot.
+#### What identifies a property
+
+A binding's _target_ is named once, in the template, and never again. That is
+what keeps the update path narrow and it is also what keeps it typed.
+
+For a built-in kind the property is a named field in this package's WIT, because
+the host interprets it — taffy needs the flex values and the rasterizer needs the
+fills. For a widget kind the property is named in the template too, as the
+identifier the widget's own interface declares. Either way the name crosses once,
+at registration, and an update carries a `u32` position.
+
+So the host receives `(base, 2, value)`, looks up what that template declared
+binding 2 to be, and either applies it to a node it owns or calls the widget that
+owns the node. A parent never learns another widget's property numbering, because
+there isn't one.
+
+#### What a frame costs
+
+The diff is the guest's. A widget re-evaluates its binding expressions, compares
+each against the value its instance holds, and emits `set-binding` only for the
+ones that changed. A parent that hands a child the value it already had makes no
+op and no call.
+
+Ops then accumulate and take effect at the frame, so setting a binding twice
+before a frame costs one solve and the intermediate value is never drawn. Reads
+go the other way: `bounds` reports the previous pass, and there is no way to ask
+for a synchronous solve, which makes layout thrashing unexpressible rather than
+merely discouraged.
+
+One `apply` is both the batch and the atomic unit. Ops in one call cannot be
+split by a frame; ops in two calls can.
+
+#### The first render
+
+A widget's first render sends the templates it has not sent yet, and a tree of
+template results — each a template id and its binding values. Widgets in the same
+component are collected into that one tree, because reaching them is an ordinary
+in-language call. The tree stops at a component boundary: a child component
+registers its own templates and sends its own result, and the parent's tree holds
+an anchor where the child's root attaches.
+
+Children assembled into one tree still own their own bindings afterwards. The
+shared send is for structure, once; every later change is the owning widget's own
+`set-binding`.
 
 ### Children and slots
 
-This section describes a design, not what is built. It was implemented once
-and removed; ["What the widget prototype found"](#what-the-widget-prototype-found)
-says why, and what a replacement has to do differently.
+A widget declares a slot in its interior and the host projects content into it.
+The widget that declares the slot never receives, names, reads or holds what
+fills it; the widget that supplies the content never names the slot node, because
+that node is inside an instance it did not create.
 
-A component embeds another by handle. `zenafx:host/children` has four
-functions: `spawn` names a component and returns a handle, `place` draws one
-into a rect, `fill-slot` puts one inside another, and `place-slot` draws
-whatever was put there. An embedder never holds the child's exports, only an
-opaque `u32` the host resolves, so the host decides what may be spawned and
-can refuse.
+That is shadow DOM's arrangement, where the outer author declares children of the
+host element and the browser flattens them into the `<slot>`, and it is the only
+arrangement the ownership rule permits: neither side has an id for the other's
+nodes, so the host — which holds both trees — is what matches them.
 
-A slot is a named hole. A component declares one with a `slot(name)` leaf in
-the tree it hands to `solve`; its embedder fills it by naming the same string.
-The component that declares the slot never learns what went in it. This is
-shadow DOM's arrangement: the shadow tree says where projected content goes
-and the light DOM says what it is, and neither names the other.
+`assign-content` therefore names a child and a slot **index**. Slots are numbered
+in the order a template declares them, and a caller pairs its own property names
+against that order at compile time, so no slot name reaches the protocol and
+nothing can be misspelled. A slot node's own template children are its fallback,
+shown when nothing is assigned.
+
+None of this is built. A string-named variant of it was, and
+[Prior implementations](#prior-implementations) records what that cost.
 
 #### How a slot gets a size
 
-The question a slot raises is where its size comes from, because the content
-is in a different component. The answer falls out of §8.1: **the host owns the
-solve**, so it is the host that asks.
+The question a slot raises is where its size comes from, when the content belongs
+to someone else. The answer falls out of
+[Layout](#layout-with-measurement-inside-the-solve): **the host owns the solve**,
+and the host holds both trees, so it needs to ask nobody. Projected content is
+already in the tree being solved, as a subtree hanging under the slot node, and
+the solve walks into it like any other child.
 
-When the solve reaches a `child` or `slot` leaf, it calls that component's
-`measure` export with the same `measure-request` a text run would get. Three
-components deep, one frame looks like this:
-
-```
-host → page.render
-         page → solve([root, child(card)])
-                  host → card.measure(max-content)
-                           card → solve([frame, slot("body")])
-                                    host → label.measure(max-content)
-                           card returns its padding plus the label
-                  ... three more rounds of the same
-         page → place(card, rect)
-                  host → card.render
-                           card → solve(...)        // again, at the real size
-                           card → place-slot("body", rect)
-                                    host → label.render
-```
-
-Nothing in that trace is a component calling another component. Every arrow
-into a guest comes from the host, which is what makes it safe: the page is
-suspended inside its own `solve`, and §6.4's rule is about a component being
-re-entered while an activation of _itself_ is on the stack. The card is a
-different instance, so nothing is re-entered. A component's layout can depend
-on a component it cannot see, and no guest→guest call happens at all.
-
-What it costs is calls. A leaf is measured four or more times per solve, and a
-nested one multiplies: the trace above crosses the ABI a dozen times for three
-components. Memoizing a `measure` answer per (component, request) within a
-frame is the obvious fix and is not written yet.
+That is the difference the retained scene makes. The removed implementation had
+to call the filling component's `measure` export to size a slot, and
+[What the widget prototype found](#what-the-widget-prototype-found) measured the
+result: 54 cross-component `measure` calls per frame for a card containing a
+label. With a retained tree the same question costs nothing, because no call is
+needed to answer it.
 
 #### What a child may draw
 
-`place` wraps the child in a clip of the box it was given and translates its
-display list into it. A child draws in its own coordinates from its own
-origin, and is never told where it ended up, so it cannot paint over its
-embedder or read its position out of the geometry it is handed. That is the
-compositor half of §12, and it is enforced for slot content too — the clip
-round a slot is the rect the _declaring_ component's layout chose, not one the
-filler asked for.
+A slot's subtree is clipped to the box the _declaring_ widget's layout chose, so
+content cannot paint outside what it was given, and it draws in its own
+coordinates without being told where it ended up. That is the compositor half of
+[Capabilities and isolation](#capabilities-and-isolation).
 
 #### What is missing
 
-A slot may only be filled with a component, not with a subtree the embedder
-already built. Fallback content for an empty slot, several slots of the same
-name, and reassigning a filled slot are all unimplemented; an empty slot
-measures and paints as nothing. Ordering within a slot does not arise yet
-because a slot holds one thing.
+Several slots of the same index, reassigning a filled slot, and ordering between
+content from different sources are all unspecified. Input routing is the larger
+gap: a container hears from its children by registering on its own slot node,
+which needs the dispatch in
+[Events](#events-input-and-what-a-widget-reports) and does not exist yet.
 
 ### The retained scene
 
@@ -1218,9 +1358,9 @@ to arrive later.
 A widget keeps nothing. Replacement needs the id of the subtree being
 replaced, but that is the framework's bookkeeping rather than the widget's:
 a widget is a description of a tree, and a description that also holds a
-node id is no longer one. Everything the earlier prototype kept — run ids,
-references to its own nodes, a paint method, a registration — went away as
-appearance joined the tree and mounting moved to the host.
+node id is no longer one. Putting appearance in the tree and mounting in the
+host is what leaves it with nothing: there is no shaped run to hold, no node of
+its own to reference, and nothing to do at mount time.
 
 Untested: the guest-side `update()` path. `replace` has host-side tests, but
 nothing triggers a state change yet because no input reaches a component.
@@ -1228,10 +1368,9 @@ nothing triggers a state change yet because no input reaches a component.
 ### What the widget prototype found
 
 `examples/zenafx/widgets/` is one component holding three widget classes,
-composed in the language. An earlier prototype drew the same picture across
-three components, one per widget; the comparison below is what came of
-running both, and the three-component version has since been deleted.
-`zenafx:host/app` is how the host gets at the remaining one, and it is one
+composed in the language. The same picture was also built across three
+components, one per widget, and the comparison below is what came of running
+both. `zenafx:host/app` is how the host reaches the surviving one, and it is one
 function:
 
 ```wit
@@ -1282,7 +1421,7 @@ title, all three measure 31.19px and it fails; the width assertion passes.
 Zero, not one, because a retained tree does not call `solve` either: the
 component installed a tree and the host solves it.
 
-54 re-entries into a guest, per frame, for a card containing a label. §8.1
+54 re-entries into a guest, per frame, for a card containing a label. [Layout](#layout-with-measurement-inside-the-solve)
 explains where they come from: a leaf is queried four or more times per
 solve, every component boundary turns each of those into a call, and each
 embedded component then solves its own subtree. It is also two frames rather
@@ -1291,19 +1430,18 @@ asked for it ends.
 
 That is not an argument against component boundaries. It is an argument that
 a boundary should be where isolation is wanted and nowhere else, and that
-§9.2's machinery is for the boundary rather than for composition. Widgets
+[Children and slots](#children-and-slots)'s machinery is for the boundary rather than for composition. Widgets
 that trust each other should compose in the language.
 
-**One widget per component was the wrong unit, so that prototype is gone.**
-It got its numbers by making every widget a component, which is a shape
-nobody would deploy: a component that is isolated still wants many widgets
-inside it. `zenafx:host/widget` and `zenafx:host/children` went with it, and
-with them the three-component demo, the `child` and `slot` cases of
-`layout.content`, and the host's `place`/`measure` machinery. The measurement
-above is therefore not reproducible from this tree — the numbers stand as a
-record of what was run, and redoing it means embedding two components of the
-`zenafx:host/app` shape, each with a widget tree of its own, which is the
-comparison worth having.
+**One widget per component was the wrong unit.** The numbers above come from
+making every widget a component, which is a shape nobody would deploy: a
+component that wants isolation still wants many widgets inside it. So the
+measurement answers a question narrower than it looks, and the comparison worth
+having is between two components of the `zenafx:host/app` shape, each holding a
+widget tree. That one has not been run, and the code for the three-component
+version is gone, so the numbers stand as a record rather than something
+reproducible — [Prior implementations](#prior-implementations) says what was
+removed.
 
 **Breadth first, not pre-order.** `solve` needs a node's children contiguous
 and after it. Pre-order only manages that when no child except the last has
@@ -1335,7 +1473,7 @@ component at startup is the picture.
 
 ### Moving the component boundary
 
-A widget and a component are different things (§3), and which widgets get their own
+A widget and a component are different things ([Terms](#terms)), and which widgets get their own
 component is a deployment decision rather than a structural one. An application
 of three hundred widgets can be one component, one component per widget, or
 anything between, and it behaves the same. That is a requirement, not an
@@ -1350,15 +1488,17 @@ than new machinery:
   receives the result. A widget holds a derived viewport exactly as a child
   component does, with the same clipping and the same attenuation, so the
   authority structure does not change when the boundary moves.
-- **Context.** §7.5 resolves against nodes in the runtime's tree, not against
+- **Context.** [Context](#context-values-that-inherit-down-the-tree) resolves against nodes in the runtime's tree, not against
   components. A widget's nodes sit at the same place in that tree either way, so
   `inherited` returns the same value.
-- **Events.** A parent widget calling a child widget's `takeEvents()` in-language and
-  a parent component calling a child component's `take-events` export have the
-  same shape and the same one-pass latency. This is what §7.4 buys by polling: a
-  host-deferred push would be asynchronous across a component boundary and
-  synchronous within one, so fusing two components would silently change when
-  handlers run.
+- **Events.** A registration is the host's either way, so a listener in the same
+  component and a listener in another are reached by the same synchronous
+  dispatch, in the same order, with the same latency. Fusing two components
+  removes a boundary crossing and changes nothing observable. This is why
+  [Events](#events-input-and-what-a-widget-reports) dispatches rather than having
+  a parent poll its children: a poll is a direct in-language call on one side of
+  a boundary and a host-mediated one on the other, which matches in synchrony but
+  not in cost.
 - **Feed-forward ops.** `apply` batches the same way at any granularity. A fused
   application issues fewer, larger batches, which is faster and not different.
 
@@ -1368,7 +1508,7 @@ it.
 **The host may interpose on any binding, including one between two widgets.**
 That is deliberate. A deployment that mixes widgets from sources which do not
 trust each other equally needs the host between them, deciding per call what is
-allowed to pass, and §6.2's per-instance binding is what supplies it. A policy
+allowed to pass, and [Runtime linking](#runtime-linking-and-import-interposition)'s per-instance binding is what supplies it. A policy
 that wants to mediate every userland call can have exactly that.
 
 **Keeping components unbundled is therefore itself a security choice.** Bundling
@@ -1386,22 +1526,24 @@ it may not do is change when a call runs relative to its caller, because that is
 what would make one source tree behave differently depending on how it was
 packaged.
 
-That constraint is the real reason §7.4's frame protocol polls. `take-events`
-returns a list, so a mediator can drop or rewrite entries and the caller cannot
-tell whether one sat between them, while a bundled widget's in-language
-`takeEvents()` means exactly the same thing. A pushed event that the host defers
-cannot be made transparent that way, which is why §7.4 confines the deferred-push
-binding to return-free interfaces: the absence of a result is what says the caller
-is not waiting, so there is no synchronous expectation for deferral to violate.
+That constraint is what event dispatch is built to satisfy. The host holds every
+registration and makes every delivery, so a mediator can deny a delivery or
+rewrite a payload and neither side can tell it was there, and bundling two
+components changes which boundary is crossed rather than when a handler runs.
 
-Two things still do not survive bundling.
+It is also why [Events](#events-input-and-what-a-widget-reports) confines the
+deferred-push binding to return-free interfaces: the absence of a result is what
+says the caller is not waiting, so there is no synchronous expectation for
+deferral to violate.
+
+Three things still do not survive bundling.
 
 **Isolation does not**, which is the same point from the other side. Widgets in
-one component share one linear memory and one GC heap, so §12's guarantees hold
+one component share one linear memory and one GC heap, so [Capabilities and isolation](#capabilities-and-isolation)'s guarantees hold
 between components and not inside one. A widget from a third party stays its own
 component, and that is a decision about trust rather than about performance.
 
-**The total update order does not.** §10's invariant holds either way: a parent
+**The total update order does not.** [Scheduling](#scheduling)'s invariant holds either way: a parent
 widget updates before anything beneath it. The full ordering does not. Separate,
 a parent component's deepest widgets update before a child component's shallowest
 ones, because the parent's update is one call; bundled, a single depth-ordered
@@ -1409,6 +1551,24 @@ queue interleaves them. Sibling widgets are independent by construction — neit
 is an ancestor of the other — so nothing observable should depend on which runs
 first, and a widget that does depend on it is relying on something the design
 never offered.
+
+**A widget whose public properties are not WIT-expressible cannot be split
+out at all.** The four properties above are about what stays the same when a
+boundary moves; this one is about whether it can move. A widget's inputs cross a
+component boundary as WIT, so `title: String` survives extraction and a property
+whose type is a closure, or a rich Zena object with methods, does not. Nothing
+stops such a widget being written — within one component its inputs are ordinary
+Zena values — and nothing reports the problem until someone tries to extract it,
+at which point the fix is a change to its public interface rather than to the
+build.
+
+That makes "which widgets get their own component is a deployment decision"
+conditional rather than free. A widget meant to be extractable should say so, so
+that its properties can be checked against WIT expressibility when it is
+compiled rather than when it is split. The check is the same one
+[Compiler prerequisites](#compiler-prerequisites) already needs for a component's
+exported interface; what is missing is applying it to a widget that is not yet a
+component.
 
 `wac` and `wasm-tools compose` sit between the two options, and the difference
 matters for the same reason. Their output is one file containing several
@@ -1438,7 +1598,7 @@ child updates a second time in the same frame.
 ZenaFX updates widgets in tree order instead, and gets that ordering from two
 places.
 
-Ordering across components costs nothing, because §6.3 already fixed the call
+Ordering across components costs nothing, because [The root drives the frame](#the-root-drives-the-frame) already fixed the call
 direction: a frame is a single top-down pass in which the root updates, then
 calls its dirty children, which update and call theirs. A component's update is
 one call, so nothing outside it observes a half-updated component. Every widget
@@ -1517,13 +1677,13 @@ learns it happened because it owns the resource's destructor.
 
 **What the loader adds.** The scene is one capability among several. A component
 reaches `zenafx:host/paint` or a network interface only if the loader bound it
-(§6.2), and the check runs before instantiation, so a component asking for
+([Runtime linking](#runtime-linking-and-import-interposition)), and the check runs before instantiation, so a component asking for
 something it may not have fails to load rather than failing at its first call.
 
 **What none of this stops.** A component cannot draw outside its box, read its
 parent's nodes, or reach an interface the loader did not bind. It can still
 spend an unbounded amount of time inside a call it was legitimately asked to
-make, and §6.5 says no other component runs while it does. A loop in one
+make, and [Serialization across components](#serialization-across-components) says no other component runs while it does. A loop in one
 component freezes the window.
 
 The tools for that are wasmtime's epoch deadlines and fuel, and the useful
@@ -1532,14 +1692,14 @@ with async enabled `epoch_deadline_async_yield_and_update` yields back to the
 host at the deadline and resumes later, and `fuel_async_yield_interval` does the
 same on an instruction count. So a component that overruns its share of a frame
 can be suspended and resumed on the next one instead of being killed — which is
-the mechanism §18's frame-budget question needs, and is unbuilt.
+the mechanism [Open questions](#open-questions)'s frame-budget question needs, and is unbuilt.
 
 ## Tiers beyond boxes and text
 
 A node is a rectangle with a transform and a clip. What happens inside it is
 the component's choice among three tiers.
 
-**Tier 1, retained boxes and text**, is what §7 and §8 describe: the host does
+**Tier 1, retained boxes and text**, is what [The scene interface](#the-scene-interface) and [Host primitives](#host-primitives) describe: the host does
 layout, shaping and high-DPI scaling, and the nodes are available for hit
 testing and accessibility.
 
@@ -1563,8 +1723,8 @@ of giving a node a texture rather than new host machinery.
 
 Pluggable layout algorithms belong here too: a component exporting a layout
 interface, imported lexically by the component that wants it, with a
-host-implemented `measure` import for text. The interface is the one in §8.5
-plus that import, and §8.1 says why `measure` has to stay in the host rather
+host-implemented `measure` import for text. The interface is the one in [`zenafx:host` in WIT](#zenafxhost-in-wit)
+plus that import, and [Layout](#layout-with-measurement-inside-the-solve) says why `measure` has to stay in the host rather
 than be delegated to a third component.
 
 ## Compiler prerequisites
@@ -1582,7 +1742,7 @@ because that is what the existing harness does. What they establish is that the
 two sides' interfaces line up and that every value in them survives the
 canonical ABI in both directions — which is the part ZenaFX depends on, and
 which is independent of when the binding is made. The linking mechanism ZenaFX
-uses is §6.2's.
+uses is [Runtime linking](#runtime-linking-and-import-interposition)'s.
 
 - Components are emitted directly by `BinaryEmitter`; a program declares its
   world with `--wit`/`--world`, and disagreements with the world are compile
@@ -1617,7 +1777,7 @@ uses is §6.2's.
   string-returning method and a static, and passes a `borrow<surface>` both
   to another resource's constructor and to a free function, then drops a
   handle, which reaches the provider's destructor. The composed pair runs
-  and returns 104. That is the `viewport` shape of §7.3 almost construct for
+  and returns 104. That is the `viewport` shape of [`zenafx:ui` in WIT](#zenafxui-in-wit) almost construct for
   construct. The class behind a provided resource implements `Disposable`,
   and its `dispose` is what the destructor means.
 - A world whose only export is `main: async func()` — no result — which is
@@ -1643,7 +1803,7 @@ shape, so this is a work list rather than a set of constraints on the design.
 
 **Forwarding an imported handle to a third component.** The consumer fixture
 above passes a `borrow` back to the component it imported the resource from,
-which is one handle table and a borrow. §7.5 needs the other case: a parent
+which is one handle table and a borrow. [Viewports](#the-viewport-is-the-capability-nodes-are-ids-inside-it) needs the other case: a parent
 holds an owned `viewport` it got from the runtime and hands it to a child
 through the child's `mount`. Both components import the same resource type
 from the same runtime instance, so the handle is transferable, but it has to
@@ -1676,7 +1836,7 @@ earlier still, with "Type 'Root' not found" — is untested.
 in scope but not the types `node` is made of, so the build fails with
 "declares no type 'axis'" until every transitive type is named by hand.
 
-**Deferrable exports.** §7.4's deferred delivery is the host's doing, but a
+**Deferrable exports.** [Events](#events-input-and-what-a-widget-reports)'s deferred delivery is the host's doing, but a
 Zena component on either end has to tolerate it: an exported return-free
 function that the host may call at a time of its choosing, and an imported one
 whose call returns before the callee has run.
@@ -1726,7 +1886,7 @@ described under the list.
    the display list is built from survive a move to the GPU. Whether the
    renderer-facing scene API also survives it is worth checking when the
    versions are pinned.
-6. **Host: the loader**, partly. The §6.2 path, at its smallest: compile both
+6. **Host: the loader**, partly. The [Runtime linking](#runtime-linking-and-import-interposition) path, at its smallest: compile both
    components, read each one's imports, bind `zenafx:host/*` to the host
    implementations and the application's `zenafx:ui/scene` import to a
    trampoline over the runtime instance's export, then instantiate both and
@@ -1846,7 +2006,7 @@ export async function main(widget: Viewport): Future<void> {
 
 One `apply` for the whole tree, because naming our own ids means the second
 operation can refer to the first without a round trip. The `while` loop is what
-a template and a scheduler (§9, §10) replace.
+a template and a scheduler ([Widgets, templates and updates](#widgets-templates-and-updates), [Scheduling](#scheduling)) replace.
 
 Milestone 1 is done when `zfx` shows the window, and when resizing it
 re-centres the text — which proves the layout solve, the measure callback and
@@ -1861,7 +2021,7 @@ compiles it, defines the host imports on a `Linker` of its own, and calls
 `start` once. Two differences from the design, both of them the missing
 second component rather than a change of mind:
 
-- **The host drives the frame.** §6.4 fixes the call direction the other
+- **The host drives the frame.** [Call direction](#call-direction-within-a-frame) fixes the call direction the other
   way: the root awaits `zenafx:host/surface`'s frame events and the host
   enters only the root. The reasons given there — update order across a tree,
   and re-entrancy — need a tree, and one component is not one. Today the
@@ -1870,7 +2030,7 @@ second component rather than a change of mind:
   a guest sits and where the frame stream will attach.
 - **The scene graph is the host's, not a runtime component's.** The host
   holds the retained tree behind `zenafx:host/scene` and solves and paints it
-  itself, which is the job §7 gives a Zena runtime component. Node ids and a
+  itself, which is the job [The scene interface](#the-scene-interface) gives a Zena runtime component. Node ids and a
   dirty flag exist; a viewport, `apply` and a dirty set do not.
 
 What the reduced form does establish is the part that had never been tried:
@@ -1887,8 +2047,8 @@ application; the runtime hit-tests a point against the retained tree and
 reports the node; an event handler changes a colour and the frame that follows
 shows it. This is the first milestone where `bounds` earns its place.
 
-**Milestone 3: widgets, templates and the scheduler.** `TemplateInstance`,
-positional slots, per-widget dirty checking, the depth-ordered queue. A counter
+**Milestone 3: widgets, templates and the scheduler.** Template registration,
+positional bindings, per-widget dirty checking, the depth-ordered queue. A counter
 whose label updates on click, making exactly one `apply` call per click.
 
 **Milestone 4: a second component, fetched.** The root imports a child
@@ -1896,8 +2056,8 @@ component's world, derives a viewport for it, fills the slot the child offers
 back, and receives an event from it over a deferred binding — three instances in
 the graph, with the child named by URL, fetched, cached by content hash, and
 checked against a policy before instantiation. This is the milestone that tests
-§7.4, §7.5 and the capability model rather than describing them. The child should
-be written in something other than Zena, so that the dispatch choice in §7.4 is
+[Events](#events-input-and-what-a-widget-reports), [Context](#context-values-that-inherit-down-the-tree) and the capability model rather than describing them. The child should
+be written in something other than Zena, so that the dispatch choice in [Events](#events-input-and-what-a-widget-reports) is
 exercised rather than assumed.
 
 **Milestone 5: Tier 2 and Tier 3.** Path commands in the display list, and a
@@ -1942,6 +2102,58 @@ The runtime component goes in its own package rather than under `zenafx`,
 because it is a Zena program compiled to a component and has nothing to do
 with the Rust crate beyond sharing the WIT directory.
 
+## Prior implementations
+
+Things that were built and then removed. They are recorded because the design
+above is shaped by them, and because a reader who finds them in the history
+deserves to know why they went rather than inferring that nobody thought about
+it. [Alternatives considered](#alternatives-considered) covers designs rejected
+on paper; these were running code.
+
+**One widget per component.** A component exported `zenafx:host/widget` —
+`render(width, height)` and `measure(request)` — so a component _was_ a widget.
+`zenafx:host/children` embedded one in another: `spawn` by filename, `fill-slot`
+by string name, `place` into a rect, `place-slot` to draw what was put there.
+`layout.content` had `child` and `slot` cases so a solve could reach a leaf
+belonging to someone else, and the host called that component's `measure` to size
+it.
+
+It worked, and
+[What the widget prototype found](#what-the-widget-prototype-found) has the
+measurement: three components drawing one card cost 6 solves and 54
+cross-component `measure` calls per frame, where one retained component cost
+nothing. It was removed because the unit was wrong rather than because the
+numbers were bad — a widget and a component are different things, and a component
+that wants isolation still wants many widgets inside it.
+
+Removed with it: the `render`/`measure` interface, the `children` interface, the
+`child` and `slot` content cases, the host's widget table, clip and origin stack,
+spawn queue and cross-boundary counters, and the three-component example that
+produced the numbers. `UiHostState` went from eleven fields to four.
+
+**Polling for upward events.** [Events](#events-input-and-what-a-widget-reports)
+previously inverted upward communication into a poll: a child accumulated events
+and exposed `take-events`, and its parent read the list during the pass. The
+reasoning about call direction survives and is still in that section; the
+mechanism does not, because the host can dispatch to both sides and then neither
+calls the other, and because a poll pays for a call to discover there was nothing
+to report.
+
+**A handle to a subtree.** A `content` resource, minted by `viewport.seal`, let a
+container hold a subtree it could not read. It was never built, and it is recorded
+here because it is the obvious reach and it is unnecessary: the host does the
+projection, so a container is never given its children at all. See
+[Children and slots](#children-and-slots).
+
+**Mounting in the guest.** `zenafx:host/app` briefly handed the host a `root`
+resource with a `mount` method, so a widget installed its own tree. A widget that
+mounts itself has to know it was mounted, which makes it more than a description,
+so `start` now returns the tree and the host installs it. The resource form also
+could not be compiled: a component exporting an interface containing a `resource`
+emits a module that does not validate, which
+[What the compiler still has to build](#what-the-compiler-still-has-to-build)
+records.
+
 ## Alternatives considered
 
 **A retained scene graph in Rust, with the Zena work deferred.** The host
@@ -1961,20 +2173,28 @@ performance escape hatch, and worth not building now.
 **Layout as a guest component from the start.** Measurement is what rules it
 out for milestone 1: a guest solver needs a re-entrant call into the host text
 engine mid-solve, which is more machinery than calling `taffy` in the host, and
-it buys nothing until someone writes a custom layout. §13 describes the shape
+it buys nothing until someone writes a custom layout. [Tiers beyond boxes and text](#tiers-beyond-boxes-and-text) describes the shape
 it takes then.
 
-**Signals as a host resource.** Rejected in §11: a `variant value` erases the
+**Signals as a host resource.** Rejected in [Reactive state](#reactive-state): a `variant value` erases the
 value's type at every read.
 
 **A global registry, so a template can name a child widget by tag.** Rejected
-because it reintroduces the collision described in §4: a component that wants
+because it reintroduces the collision described in [Prior art](#prior-art): a component that wants
 a child imports that child's world, and two libraries that each supply a
 button then coexist.
 
 ## Open questions
 
-1. **Whether the loader should refuse a cyclic binding outright.** §6.4 settles
+1. **What WIT type an event payload has.** The `handle` export in
+   [Events](#events-input-and-what-a-widget-reports) takes `list<u8>`, which is
+   the untyped envelope the rest of that section argues against. A closed variant
+   of built-in input events with an opaque tail for widget-defined ones keeps the
+   common cases typed and gives up on the rest. A generated dispatch interface per
+   event type is fully typed and grows the world with every event a program
+   declares. Neither is obviously right, and the choice is visible to every
+   widget that raises or listens.
+2. **Whether the loader should refuse a cyclic binding outright.** [Call direction](#call-direction-within-a-frame) settles
    what happens when one is exercised — `do_not_enter` and
    `Trap::CannotBlockSyncTask`, so a deadlock rather than corruption. What is
    undecided is whether the loader should detect the cycle when it binds and
@@ -1985,46 +2205,46 @@ button then coexist.
    component exporting `ping` and importing `host-call`, with `ping` calling
    `host-call` and the host calling `ping` again, run under the wasmtime the
    workspace pins.
-2. **Component identity.** Two documents naming the same URL: one instance
+3. **Component identity.** Two documents naming the same URL: one instance
    shared, or one per document? Sharing makes a component a channel between
    documents, which the isolation story has to account for. A separate instance
    per document costs memory and loses warm state. The compiled artifact can be
    cached by content hash either way; this question is about instances.
-3. **Integrity and versioning of a fetched component.** A URL is not a
+4. **Integrity and versioning of a fetched component.** A URL is not a
    version, and a component that changes under the same URL changes an
    application's behaviour silently. Whether a document pins a content hash
    alongside the URL, and what happens when the fetched bytes do not match, is
    undecided.
-4. **Cost of the dynamic binding path.** A guest→guest call goes through a
+5. **Cost of the dynamic binding path.** A guest→guest call goes through a
    host function that lowers and lifts through `Val`. On the frame path that is
    `apply` and `flush` once per frame, which should be immaterial, but it has
    not been measured. If it is not immaterial, `zenafx:ui` is known at build
    time and can use generated bindings for those two calls while everything
    else stays dynamic.
-5. **Coordinate spaces.** `bounds` returns window coordinates, so a component
+6. **Coordinate spaces.** `bounds` returns window coordinates, so a component
    can learn where it sits on screen. Viewport-local coordinates would hide
    that, and would then need pointer positions translated into each
    component's own space before they are dispatched.
-6. **Retained display lists.** At what scene size does
+7. **Retained display lists.** At what scene size does
    `present(list<command>)` stop being adequate, and what replaces it — a
    retained list with per-node invalidation, or damage rectangles plus a full
    list for the damaged area? The answer needs a measurement on a real scene.
-7. **Text runs and reflow.** A run is shaped at registration and measured at
+8. **Text runs and reflow.** A run is shaped at registration and measured at
    a width during the solve. Whether the measured layout at the final width is
    reused for painting, or the run is reshaped once layout settles, decides
    whether a wrapped paragraph costs one shaping pass per frame or none.
-8. **Accessibility.** A retained tree of boxes and text with known bounds is
+9. **Accessibility.** A retained tree of boxes and text with known bounds is
    most of what an accessibility tree needs. Whether the host derives one from
    the scene, or components describe one explicitly, is undecided.
-9. **Per-component frame budget.** A component that takes 50 ms in its update
-   stalls the frame for everyone: the frame is one synchronous top-down pass,
-   and §6.5 rules out running the others meanwhile. §12 names the mechanism —
-   an async epoch deadline or a fuel interval yields out of the overrunning
-   component and resumes it later. What that should mean for the frame is
-   undecided: composite the slow component from its previous frame and carry
-   its update into the next one, or hold the whole frame until it finishes.
-   The first choice needs the scene graph to keep a component's last-good
-   subtree, which it does not today.
+10. **Per-component frame budget.** A component that takes 50 ms in its update
+    stalls the frame for everyone: the frame is one synchronous top-down pass,
+    and [Serialization across components](#serialization-across-components) rules out running the others meanwhile. [Capabilities and isolation](#capabilities-and-isolation) names the mechanism —
+    an async epoch deadline or a fuel interval yields out of the overrunning
+    component and resumes it later. What that should mean for the frame is
+    undecided: composite the slow component from its previous frame and carry
+    its update into the next one, or hold the whole frame until it finishes.
+    The first choice needs the scene graph to keep a component's last-good
+    subtree, which it does not today.
 
 ## Related
 
@@ -2036,6 +2256,11 @@ button then coexist.
   emitted, and the `--wit`/`--world` surface
 - [declarative.md](./declarative.md) — the `html <tag>` syntax that becomes
   ZenaFX's template authoring surface
+- [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) — what a widget
+  looks like written against that syntax: node blocks instead of one
+  convenience function per node kind, children as an opaque value rather than
+  a second call, the template protocol the static/dynamic split needs, and
+  selectors shipped as data. An exploration; nothing in it is built.
 - [capabilities.md](./capabilities.md) — capability-based I/O in the language,
   of which viewports are one instance
 - [streams.md](./streams.md) — `Stream<T>` and the rendezvous core the event

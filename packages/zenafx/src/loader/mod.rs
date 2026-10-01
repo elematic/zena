@@ -1,6 +1,6 @@
 //! Loading a ZenaFX component and running it as a scene.
 //!
-//! §6.2's path at its smallest: compile a component, build a `Linker` for
+//! The "Runtime linking" path at its smallest: compile a component, build a `Linker` for
 //! it, bind its `zenafx:host` imports, instantiate, and ask it once what it
 //! draws. Fetching over the network, caching by content hash and the policy
 //! check come later.
