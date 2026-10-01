@@ -1,7 +1,7 @@
 //! Rust mirrors of the records `zenafx:host` and `zenafx:ui/style` declare.
 //!
 //! These are hand-written rather than generated, because the loader binds
-//! imports itself (see §6.2 of `docs/design/zenafx-ui.md`) and so never gets
+//! imports itself (see "Runtime linking" in `docs/design/zenafx-ui.md`) and so never gets
 //! a `bindgen!` world to lift them out of. Each type here corresponds one for
 //! one to a record in `packages/zenafx/wit/zenafx.wit`; the canonical-ABI
 //! conversion happens where the host functions are registered.

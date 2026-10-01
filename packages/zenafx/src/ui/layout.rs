@@ -5,7 +5,8 @@
 //! the width the run is given — the same string is one line at 600px and
 //! three at 200px. So measurement cannot be an input computed beforehand:
 //! `solve` hands taffy a closure that calls the text engine at whatever width
-//! it discovers mid-solve. §8.1 of `docs/design/zenafx-ui.md`.
+//! it discovers mid-solve. "Layout with measurement inside the solve" in
+//! `docs/design/zenafx-ui.md`.
 
 use taffy::{
     AlignItems, AvailableSpace, Dimension, Display, FlexDirection, JustifyContent,

@@ -4,7 +4,8 @@
 //! time. The loop runs under [`ControlFlow::Wait`], so an idle application
 //! costs nothing — which is why ZenaFX does not sit on `wasi-gfx:surface`,
 //! whose runtime wakes every surface 60 times a second whether or not
-//! anything was invalidated. §8.4 of `docs/design/zenafx-ui.md`.
+//! anything was invalidated. "Surface, frames and demand-driven redraw" in
+//! `docs/design/zenafx-ui.md`.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;

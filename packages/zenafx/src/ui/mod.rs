@@ -9,7 +9,7 @@
 //! imports; until it exists, [`demo`] drives them directly, which is how the
 //! stack is exercised without a component.
 //!
-//! Designed in `docs/design/zenafx-ui.md` §8.
+//! Designed under "Host primitives" in `docs/design/zenafx-ui.md`.
 
 pub mod demo;
 pub mod layout;
