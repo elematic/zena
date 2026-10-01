@@ -18,7 +18,7 @@
 import { getEnv } from 'zena:cli';
 import { HashSet } from 'zena:collections';
 import {
-  exists, isFile, mkdir, readFile, readFileBytes, rename, stat, unlink,
+  exists, isDirectory, isFile, mkdir, readFile, readFileBytes, rename, stat, unlink,
   writeFile, writeFileBytes
 } from 'zena:fs';
 import { AbsolutePath, basename, dirname, extname } from 'zena:path';
@@ -239,8 +239,14 @@ export let ensureDir = (path: String): void => {
     return;
   }
   ensureDir(dirname(path));
-  if (!exists(path)) {
+  try {
     mkdir(path);
+  } catch (e) {
+    // Another process may have made it since `exists` said no: `zena
+    // test` compiles its files in parallel, into one cache directory.
+    if (!isDirectory(path)) {
+      throw e;
+    }
   }
 };
 
