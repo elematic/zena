@@ -7,6 +7,7 @@ import '@radica/ui/components/button/button.js';
 import '@radica/ui/components/icon-button/icon-button.js';
 import '@radica/bootstrap-icons/icons/plus-lg.svg.js';
 import '@radica/bootstrap-icons/icons/layout-sidebar.svg.js';
+import '@radica/bootstrap-icons/icons/camera.svg.js';
 import '@radica/ui/components/dialog/dialog.js';
 import './zena-theme-selector.js';
 import {PlaygroundConnectedElement} from './connected-element.js';
@@ -190,6 +191,16 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
       flex-shrink: 0;
       height: 100%;
     }
+
+    .tabs-controls rad-icon-button {
+      color: var(--rad-neutral-text-muted, #94a3b8);
+      transition: color 0.15s ease;
+    }
+
+    .tabs-controls rad-icon-button:hover,
+    .tabs-controls rad-icon-button:focus-visible {
+      color: var(--rad-neutral-text-normal, #f8fafc);
+    }
   `;
 
   /** Whether the user can create, rename, or delete files. */
@@ -203,6 +214,10 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
   /** Whether to show the theme selection dropdown (opt-in). */
   @property({type: Boolean, attribute: 'show-theme-selector'})
   showThemeSelector = false;
+
+  /** Whether to show the export image button (opt-out). */
+  @property({type: Boolean, attribute: 'show-export-button'})
+  showExportButton = true;
 
   @state()
   private editingTab: string | null = null;
@@ -276,6 +291,19 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
         }),
       );
     }
+  };
+
+  private onExportImage = (e: MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const activeFile = this.projectElement?.activeFile ?? 'main.zena';
+    this.dispatchEvent(
+      new CustomEvent('export-image', {
+        detail: {filename: activeFile},
+        bubbles: true,
+        composed: true,
+      }),
+    );
   };
 
   private startEditingTab(filename: string) {
@@ -425,6 +453,18 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
 
         <div class="tabs-controls">
           <slot name="actions"></slot>
+          ${this.showExportButton
+            ? html`
+                <rad-icon-button
+                  icon-name="camera"
+                  size="small"
+                  variant="text"
+                  title="Export code image..."
+                  aria-label="Export code image"
+                  @click=${this.onExportImage}
+                ></rad-icon-button>
+              `
+            : nothing}
           ${this.showThemeSelector
             ? html`
                 <zena-theme-selector

@@ -8,6 +8,13 @@ import './zena-tab-bar.js';
 import './zena-file-editor.js';
 import './zena-output.js';
 import './zena-console.js';
+import './zena-code-export-dialog.js';
+import type {ZenaCodeExportDialog} from './zena-code-export-dialog.js';
+import {
+  exportCodeToPngBlob,
+  type ExportCodeImageOptions,
+} from './zena-code-export.js';
+import '@radica/bootstrap-icons/icons/camera.svg.js';
 
 /**
  * An embeddable Zena playground IDE.
@@ -59,6 +66,7 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
     }
 
     .editor-pane {
+      position: relative;
       display: flex;
       flex-direction: column;
       min-width: 0;
@@ -67,6 +75,61 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       background: var(--rad-surface-sunken);
       border-right: 1px solid var(--rad-neutral-stroke-faint);
       overflow: hidden;
+    }
+
+    .editor-floating-export {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 10;
+      width: 32px;
+      height: 32px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--rad-surface-chrome, rgba(30, 41, 59, 0.75));
+      border: 1px solid
+        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.12));
+      color: var(--rad-neutral-text-muted, #94a3b8);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      opacity: 0.75;
+      transition:
+        opacity 0.15s ease,
+        transform 0.15s ease,
+        background 0.15s ease,
+        border-color 0.15s ease,
+        color 0.15s ease,
+        box-shadow 0.15s ease;
+      box-sizing: border-box;
+    }
+
+    .editor-floating-export:hover {
+      opacity: 1;
+      color: var(--rad-neutral-text-normal, #f8fafc);
+      background: var(--rad-surface, rgba(45, 55, 72, 0.9));
+      border-color: var(--rad-neutral-stroke-strong, rgba(255, 255, 255, 0.25));
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+      transform: scale(1.06);
+    }
+
+    .editor-floating-export:active {
+      transform: scale(0.96);
+    }
+
+    .editor-floating-export::part(button) {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      color: inherit;
+      padding: 0;
     }
 
     zena-file-editor {
@@ -167,8 +230,19 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
   @property({type: Boolean, attribute: 'allow-unused-variables'})
   allowUnusedVariables = false;
 
+  /** Whether to show the code image export button. Defaults to true. */
+  @property({type: Boolean, attribute: 'show-export-button'})
+  showExportButton = true;
+
+  /** Custom watermark text for exported code images. */
+  @property({type: String, attribute: 'watermark-text'})
+  watermarkText?: string;
+
   @query('zena-project')
   private internalProjectEl?: ZenaProject;
+
+  @query('zena-code-export-dialog')
+  private exportDialogEl?: ZenaCodeExportDialog;
 
   get effectiveProject(): ZenaProject | undefined {
     if (this.project) {
@@ -236,6 +310,55 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
     this.effectiveProject?.clearConsole();
   }
 
+  /**
+   * Opens the Carbon-style code image export dialog.
+   *
+   * @param filename Optional filename to export. Defaults to the active file.
+   */
+  openExportDialog(filename?: string) {
+    const project = this.effectiveProject;
+    const targetFile = filename ?? project?.activeFile ?? 'main.zena';
+    let code = project?.getAllFiles()[targetFile] ?? this.value ?? '';
+    if (!code) {
+      const editor = this.shadowRoot?.querySelector('zena-file-editor') as any;
+      const editorDoc =
+        editor?.codeMirrorEl?.editorView?.state?.doc?.toString() ??
+        editor?.codeMirrorEl?.value;
+      if (editorDoc) {
+        code = editorDoc;
+      }
+    }
+    const dialog =
+      this.exportDialogEl ??
+      (this.shadowRoot?.querySelector(
+        'zena-code-export-dialog',
+      ) as ZenaCodeExportDialog | null);
+    if (dialog) {
+      dialog.filename = targetFile;
+      dialog.code = code;
+      dialog.theme = this.theme;
+      dialog.watermarkText = this.watermarkText;
+      dialog.showModal();
+    }
+  }
+
+  /**
+   * Programmatically exports a high-resolution PNG image of the current code.
+   */
+  async exportImage(options?: Partial<ExportCodeImageOptions>): Promise<Blob> {
+    const project = this.effectiveProject;
+    const filename = options?.filename ?? project?.activeFile ?? 'main.zena';
+    const code =
+      options?.code ?? project?.getAllFiles()[filename] ?? this.value ?? '';
+    return exportCodeToPngBlob({
+      code,
+      filename,
+      theme: options?.theme ?? this.theme,
+      watermarkText: options?.watermarkText ?? this.watermarkText,
+      ...options,
+    });
+  }
+
   private onKeyDown = (e: KeyboardEvent) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
@@ -248,6 +371,10 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
     if (e.detail?.theme) {
       this.theme = e.detail.theme;
     }
+  };
+
+  private onExportImageEvent = (e: CustomEvent<{filename?: string}>) => {
+    this.openExportDialog(e.detail?.filename);
   };
 
   override render() {
@@ -264,13 +391,27 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
                 .project=${project}
                 .theme=${this.theme}
                 ?show-theme-selector=${this.showThemeSelector}
+                ?show-export-button=${this.showExportButton}
                 @theme-change=${this.onThemeChange}
+                @export-image=${this.onExportImageEvent}
               >
                 <slot name="start" slot="start"></slot>
                 <slot name="actions" slot="actions"></slot>
               </zena-tab-bar>
             `
-          : nothing}
+          : this.showExportButton
+            ? html`
+                <rad-icon-button
+                  class="editor-floating-export"
+                  icon-name="camera"
+                  size="small"
+                  variant="text"
+                  title="Export code image..."
+                  aria-label="Export code image"
+                  @click=${() => this.openExportDialog()}
+                ></rad-icon-button>
+              `
+            : nothing}
         <zena-file-editor
           .project=${project}
           .theme=${this.theme}
@@ -282,6 +423,11 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
           <slot name="output-actions" slot="actions"></slot>
         </zena-output>
       </div>
+
+      <zena-code-export-dialog
+        .theme=${this.theme}
+        .watermarkText=${this.watermarkText}
+      ></zena-code-export-dialog>
 
       ${!this.project
         ? html`
