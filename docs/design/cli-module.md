@@ -2,14 +2,13 @@
 
 ## Status
 
-- **Status**: Implemented, except `zena lsp`
-- **Date**: 2026-09-23; updated 2026-09-29
+- **Status**: Implemented
+- **Date**: 2026-09-23; updated 2026-10-01
 
 The `zena` command is a Zena program. It is compiled to one Wasm
 component, the **CLI module**, which holds everything the command does:
 reading the command line, compiling, running programs, running tests,
-building targets, documentation, formatting, and (still to come) a
-language server. The Rust binary `zena-cli` loads that component and
+building targets, documentation, formatting, and a language server. The Rust binary `zena-cli` loads that component and
 gives it a small set of host imports; it contains no command-line logic
 of its own.
 
@@ -43,7 +42,7 @@ The CLI module contains:
 | `zena doc`                | zenadoc, linked in                                   |
 | `zena fmt`                | the formatter, linked in                             |
 | `zena bench`              | `zena:bench`'s `runSuite`, which runs modules        |
-| `zena lsp` (to come)      | the language service, and a JSON-RPC loop over stdio |
+| `zena lsp`                | the language service, and a JSON-RPC loop over stdio |
 
 The compiler, zb, zenadoc and the formatter are all Zena packages
 already. The compiler's own command-line program
@@ -241,12 +240,14 @@ through the cache. See [benchmarking.md](./benchmarking.md).
 
 ### `zena lsp`
 
-Not built yet. `zena lsp` is to be a language server that speaks LSP
-(JSON-RPC over stdin and stdout), for editors that start a server
-process: Neovim, Helix, Zed and others. It uses the same analysis code as
-`lsp.wasm`. That code moves into a library both entry points import;
-`lsp.zena` keeps the exports VS Code calls, and the CLI module adds the
-JSON-RPC loop. Reading stdin needs a small addition to `zena:cli`.
+`zena lsp` is a language server that speaks LSP (JSON-RPC over stdin
+and stdout), for editors that start a server process: Neovim, Helix, Zed
+and others. It uses the same analysis code as `lsp.wasm`: the language
+service is a library in `packages/language-service/zena/lib/`, which
+both entry points import. `lsp.zena` keeps the exports VS Code calls.
+The CLI module's `lsp.zena` reads stdin with `zena:cli`'s `readStdin`,
+hands each message to the library's `LspServer`, and writes the replies
+to stdout. [lsp.md](./lsp.md) describes the server.
 
 ## The host binary
 
@@ -322,8 +323,9 @@ reseed.
    every test are components, and the host's imports became the
    `zena-cli:host` WIT interfaces.
 
-Still to come: **`zena lsp`**, with the shared analysis library, the
-JSON-RPC loop, and reading stdin.
+4. **The language server** (#690). The language service became a
+   library, with an LSP server beside it, and `zena lsp` runs the server
+   over stdin and stdout. `zena:cli` gained `readStdin`.
 
 ## Open questions
 
