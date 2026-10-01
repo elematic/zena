@@ -4,7 +4,7 @@
 import { suite, test } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { readFile } from 'zena:fs';
-import { jsonInt, jsonString, parseJson } from 'zena:json';
+import { JsonObject, parseJson } from 'zena:json';
 import { createLanguageService } from '../lib/service.zena';
 import { LspServer, offsetOf, positionOf } from '../lib/server.zena';
 
@@ -16,6 +16,20 @@ let readOrNull = (path: String): String | null => {
   }
 };
 
+
+/** A message the server sent, which is always a JSON object. */
+let parsed = (json: String): JsonObject => parseJson(json) as JsonObject;
+
+/** The line the first diagnostic in a publishDiagnostics message starts on. */
+let firstDiagnosticLine = (published: JsonObject): i32 => {
+  if (let (true, diagnostics) = published.arrayAt('params.diagnostics')) {
+    let first = if (diagnostics.length > 0) { diagnostics[0] } else { null };
+    if (first is JsonObject) {
+      return first.intAt('range.start.line') ?? -1;
+    }
+  }
+  return -1;
+};
 
 /** A server, and the messages it has sent. */
 let serverSession = (): {server: LspServer, sent: Array<String>} => {
@@ -49,13 +63,13 @@ export let tests = suite('language server', (): void => {
   test('a document without a file URI is published under its own URI', () => {
     let {server, sent} = serverSession();
     server.handle('{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"untitled:Untitled-1","text":"let x: i32 = 1;"}}}');
-    equal(jsonString(parseJson(sent[0]), '.params.uri') ?? '', 'untitled:Untitled-1');
+    equal(parsed(sent[0]).stringAt('params.uri') ?? '', 'untitled:Untitled-1');
   });
 
   test('a request without a position gets an invalid params error', () => {
     let {server, sent} = serverSession();
     server.handle('{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///nowhere/a.zena"}}}');
-    equal(jsonInt(parseJson(sent[0]), '.error.code') ?? 0, -32602);
+    equal(parsed(sent[0]).intAt('error.code') ?? 0, -32602);
   });
 
   test('a session: open a document, then ask about it', () => {
@@ -64,29 +78,29 @@ export let tests = suite('language server', (): void => {
     let text = 'let one = (): i32 => 1;\nlet wrong: String = one();\n';
 
     server.handle('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}');
-    equal(jsonInt(parseJson(sent[0]), '.result.capabilities.textDocumentSync.change') ?? 0, 1);
+    equal(parsed(sent[0]).intAt('result.capabilities.textDocumentSync.change') ?? 0, 1);
 
     server.handle(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"${uri}","text":${'"'}let one = (): i32 => 1;\\nlet wrong: String = one();\\n${'"'}}}}`);
-    let published = parseJson(sent[1]);
-    equal(jsonString(published, '.method') ?? '', 'textDocument/publishDiagnostics');
-    equal(jsonString(published, '.params.uri') ?? '', uri);
+    let published = parsed(sent[1]);
+    equal(published.stringAt('method') ?? '', 'textDocument/publishDiagnostics');
+    equal(published.stringAt('params.uri') ?? '', uri);
     // The error is on the second line.
-    equal(jsonInt(published, '.params.diagnostics[0].range.start.line') ?? -1, 1);
+    equal(firstDiagnosticLine(published), 1);
 
     // Hover over `one` in `one()`, on the second line.
     server.handle(`{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"${uri}"},"position":{"line":1,"character":21}}}`);
-    let hover = jsonString(parseJson(sent[2]), '.result.contents.value') ?? '';
+    let hover = parsed(sent[2]).stringAt('result.contents.value') ?? '';
     isTrue(hover.contains('one'));
 
     server.handle(`{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"${uri}"},"position":{"line":1,"character":21}}}`);
-    let definition = parseJson(sent[3]);
-    equal(jsonString(definition, '.result.uri') ?? '', uri);
-    equal(jsonInt(definition, '.result.range.start.line') ?? -1, 0);
-    equal(jsonInt(definition, '.result.range.start.character') ?? -1, 4);
+    let definition = parsed(sent[3]);
+    equal(definition.stringAt('result.uri') ?? '', uri);
+    equal(definition.intAt('result.range.start.line') ?? -1, 0);
+    equal(definition.intAt('result.range.start.character') ?? -1, 4);
 
     server.handle('{"jsonrpc":"2.0","id":"x","method":"no/such","params":{}}');
-    equal(jsonInt(parseJson(sent[4]), '.error.code') ?? 0, -32601);
-    equal(jsonString(parseJson(sent[4]), '.id') ?? '', 'x');
+    equal(parsed(sent[4]).intAt('error.code') ?? 0, -32601);
+    equal(parsed(sent[4]).stringAt('id') ?? '', 'x');
 
     isFalse(server.exited);
     server.handle('{"jsonrpc":"2.0","method":"exit"}');
@@ -96,6 +110,6 @@ export let tests = suite('language server', (): void => {
   test('a message that is not JSON gets a parse error', () => {
     let {server, sent} = serverSession();
     server.handle('{not json');
-    equal(jsonInt(parseJson(sent[0]), '.error.code') ?? 0, -32700);
+    equal(parsed(sent[0]).intAt('error.code') ?? 0, -32700);
   });
 });

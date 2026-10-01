@@ -1,47 +1,53 @@
-// Typed lookups into parsed JSON, and writing parsed values back out.
+// Typed lookups into a parsed JSON object, and writing parsed values back
+// out.
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {
-  JsonBuilder, JsonValue, parseJson, jsonArray, jsonBool, jsonInt, jsonNumber, jsonObject,
-  jsonString,
-} from 'zena:json';
+import {JsonBuilder, JsonObject, parseJson} from 'zena:json';
 
-let sample = (): JsonValue => parseJson(
-  '{"id": 7, "ok": true, "ratio": 2.5, "params": {"uri": "file:///a", "list": [1, "two"]}}');
+let sample = (): JsonObject => parseJson(
+  '{"id": 7, "ok": true, "ratio": 2.5, "params": {"uri": "file:///a", "list": [1, "two"]}}') as JsonObject;
 
 export let tests = suite('JSON lookups', (): void => {
   test('a lookup of the right type finds the value', () => {
     let message = sample();
-    equal(jsonString(message, '.params.uri') ?? 'none', 'file:///a');
-    equal(jsonInt(message, '.id') ?? -1, 7);
-    equal(jsonNumber(message, '.ratio') ?? 0.0, 2.5);
-    isTrue(jsonBool(message, '.ok') ?? false);
-    equal(jsonString(message, '.params.list[1]') ?? 'none', 'two');
+    equal(message.stringAt('params.uri') ?? 'none', 'file:///a');
+    equal(message.intAt('id') ?? -1, 7);
+    equal(message.numberAt('ratio') ?? 0.0, 2.5);
+    isTrue(message.boolAt('ok') ?? false);
   });
 
   test('a missing value or one of another type is not found', () => {
     let message = sample();
-    equal(jsonString(message, '.params.missing') ?? 'none', 'none');
-    equal(jsonString(message, '.id') ?? 'none', 'none');
-    equal(jsonInt(message, '.params.uri') ?? -1, -1);
+    equal(message.stringAt('params.missing') ?? 'none', 'none');
+    equal(message.stringAt('id') ?? 'none', 'none');
+    equal(message.intAt('params.uri') ?? -1, -1);
     // 2.5 is a number, and not an integer.
-    equal(jsonInt(message, '.ratio') ?? -1, -1);
-    isFalse(jsonBool(message, '.id') ?? false);
+    equal(message.intAt('ratio') ?? -1, -1);
+    isFalse(message.boolAt('id') ?? false);
+    // A path cannot go through anything but objects.
+    equal(message.stringAt('params.uri.more') ?? 'none', 'none');
+    equal(message.stringAt('params.list.1') ?? 'none', 'none');
   });
 
   test('objects and arrays are found as themselves', () => {
     let message = sample();
-    if (let (true, params) = jsonObject(message, '.params')) {
+    if (let (true, params) = message.objectAt('params')) {
       isTrue(params.has('uri'));
     } else {
       isTrue(false, 'no params object');
     }
-    if (let (true, list) = jsonArray(message, '.params.list')) {
+    if (let (true, list) = message.arrayAt('params.list')) {
       equal(list.length, 2);
     } else {
       isTrue(false, 'no list array');
     }
-    isFalse(if (let (true, _) = jsonObject(message, '.params.list')) true else false);
+    isFalse(if (let (true, _) = message.objectAt('params.list')) true else false);
+  });
+
+  test('a lookup of one key is the key', () => {
+    let message = sample();
+    isTrue(message.lookup('params') is JsonObject);
+    isTrue(message.lookup('nope') == null);
   });
 
   test('a parsed value is written back as it came', () => {
@@ -51,7 +57,7 @@ export let tests = suite('JSON lookups', (): void => {
       .key('ratio').value(parseJson('2.5'))
       .key('name').value(parseJson('"x\\ny"'))
       .key('nothing').value(parseJson('null'))
-      .key('params').value(jsonObject(message, '.params') ?? null)
+      .key('params').value(message.lookup('params'))
       .endObject();
     equal(b.toString(),
       '{"id":7,"ratio":2.5,"name":"x\\ny","nothing":null,"params":{"uri":"file:///a","list":[1,"two"]}}');

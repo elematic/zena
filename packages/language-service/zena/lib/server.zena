@@ -15,7 +15,7 @@
  * UTF-8 byte offsets, and `positions.zena` converts.
  */
 
-import { JsonBuilder, JsonObject, JsonValue, parseJson, jsonArray, jsonInt, jsonString } from 'zena:json';
+import { JsonBuilder, JsonObject, JsonValue, parseJson } from 'zena:json';
 import { fileURLToPath, pathToFileURL } from 'zena:url';
 import { Diagnostic } from 'zena-compiler:diagnostics';
 import { format as formatSource } from 'zena-formatter:printer';
@@ -72,8 +72,10 @@ export final class LspServer {
     if (message == null) {
       return;
     }
-    let method = jsonString(message, '.method') ?? '';
-    let params = message['params'];
+    let method = message.stringAt('method') ?? '';
+    // Absent params read as an empty object, so a request that needs one
+    // of its fields gets the error for that field.
+    let params = message.objectAt('params') ?? new JsonObject();
     if (!message.has('id')) {
       try {
         this.#notification(method, params);
@@ -111,19 +113,20 @@ export final class LspServer {
     return null;
   }
 
-  #notification(method: String, params: JsonValue): void {
+  #notification(method: String, params: JsonObject): void {
     match (method) {
       case 'exit': {
         this.#exited = true;
       }
       case 'textDocument/didOpen': {
-        this.#setDocument(this.#uriIn(params), jsonString(params, '.textDocument.text') ?? '');
+        this.#setDocument(this.#uriIn(params), params.stringAt('textDocument.text') ?? '');
       }
       case 'textDocument/didChange': {
         // Full synchronization: the last change holds the whole text.
-        if (let (true, changes) = jsonArray(params, '.contentChanges')) {
-          if (changes.length > 0) {
-            this.#setDocument(this.#uriIn(params), jsonString(changes[changes.length - 1], '.text') ?? '');
+        if (let (true, changes) = params.arrayAt('contentChanges')) {
+          let last = if (changes.length > 0) { changes[changes.length - 1] } else { null };
+          if (last is JsonObject) {
+            this.#setDocument(this.#uriIn(params), last.stringAt('text') ?? '');
           }
         }
       }
@@ -142,7 +145,7 @@ export final class LspServer {
   }
 
   /** A request's result as JSON, or null for a method the server lacks. */
-  #request(method: String, params: JsonValue): String | null {
+  #request(method: String, params: JsonObject): String | null {
     return match (method) {
       case 'initialize': initializeResult()
       case 'shutdown': 'null'
@@ -156,8 +159,8 @@ export final class LspServer {
   }
 
   /** The URI of the document a message is about. */
-  #uriIn(params: JsonValue): String {
-    if (let (true, uri) = jsonString(params, '.textDocument.uri')) {
+  #uriIn(params: JsonObject): String {
+    if (let (true, uri) = params.stringAt('textDocument.uri')) {
       return uri;
     }
     throw new RequestError(ErrorCode.InvalidParams, 'The message names no document');
@@ -169,9 +172,9 @@ export final class LspServer {
   }
 
   /** The byte offset in `text` of the position a request names. */
-  #offsetIn(params: JsonValue, text: String): i32 {
-    if (let (true, line) = jsonInt(params, '.position.line')) {
-      if (let (true, character) = jsonInt(params, '.position.character')) {
+  #offsetIn(params: JsonObject, text: String): i32 {
+    if (let (true, line) = params.intAt('position.line')) {
+      if (let (true, character) = params.intAt('position.character')) {
         return offsetOf(text, {line: line, character: character});
       }
     }
@@ -208,7 +211,7 @@ export final class LspServer {
     send(b.toString());
   }
 
-  #hover(params: JsonValue): String {
+  #hover(params: JsonObject): String {
     let path = pathOf(this.#uriIn(params));
     let hover = this.#service.getHover(path, this.#offsetIn(params, this.#openText(path)));
     if (hover == null) {
@@ -228,7 +231,7 @@ export final class LspServer {
     return read(path);
   }
 
-  #definition(params: JsonValue): String {
+  #definition(params: JsonObject): String {
     let path = pathOf(this.#uriIn(params));
     let span = this.#service.getDefinition(path, this.#offsetIn(params, this.#openText(path)));
     if (span == null) {
@@ -249,7 +252,7 @@ export final class LspServer {
     return b.toString();
   }
 
-  #documentSymbols(params: JsonValue): String {
+  #documentSymbols(params: JsonObject): String {
     let path = pathOf(this.#uriIn(params));
     let text = this.#openText(path);
     let b = new JsonBuilder();
@@ -261,7 +264,7 @@ export final class LspServer {
     return b.toString();
   }
 
-  #completions(params: JsonValue): String {
+  #completions(params: JsonObject): String {
     let path = pathOf(this.#uriIn(params));
     let b = new JsonBuilder();
     b.beginArray();
@@ -273,7 +276,7 @@ export final class LspServer {
   }
 
   /** One edit replacing the whole document, or none if it is formatted. */
-  #formatting(params: JsonValue): String {
+  #formatting(params: JsonObject): String {
     let text = this.#openText(pathOf(this.#uriIn(params)));
     let formatted = formatSource(text);
     let b = new JsonBuilder();

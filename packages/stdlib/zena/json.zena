@@ -96,6 +96,91 @@ export class JsonObject {
     }
   }
 
+  /**
+   * The value at a path of keys separated by dots, like
+   * `'params.textDocument.uri'`. Null when a key is missing, or when a
+   * value on the way is not an object.
+   */
+  lookup(path: String): JsonValue {
+    var current: JsonValue = this;
+    for (let key in path.split('.')) {
+      if (current is JsonObject) {
+        current = current[key];
+      } else {
+        return null;
+      }
+    }
+    return current;
+  }
+
+  /**
+   * The string at `path` (see `lookup`), found only when it is there and
+   * is a string.
+   *
+   * ```zena
+   * let uri = message.stringAt('params.textDocument.uri') ?? '';
+   * ```
+   */
+  stringAt(path: String): inline (true, String) | inline (false, _) {
+    let found = this.lookup(path);
+    if (found is String) {
+      return (true, found);
+    }
+    return (false, _);
+  }
+
+  /** The number at `path`, found only when it is a number. */
+  numberAt(path: String): inline (true, f64) | inline (false, _) {
+    let found = this.lookup(path);
+    if (found is Box<f64>) {
+      return (true, found.value);
+    }
+    return (false, _);
+  }
+
+  /**
+   * The integer at `path`, found only when it is a number with no
+   * fractional part that fits an `i32`.
+   */
+  intAt(path: String): inline (true, i32) | inline (false, _) {
+    let found = this.lookup(path);
+    if (found is Box<f64>) {
+      let n = found.value;
+      let whole = n as i32;
+      if ((whole as f64) == n) {
+        return (true, whole);
+      }
+    }
+    return (false, _);
+  }
+
+  /** The boolean at `path`, found only when it is a boolean. */
+  boolAt(path: String): inline (true, boolean) | inline (false, _) {
+    let found = this.lookup(path);
+    if (found is Box<boolean>) {
+      return (true, found.value);
+    }
+    return (false, _);
+  }
+
+  /** The object at `path`, found only when it is an object. */
+  objectAt(path: String): inline (true, JsonObject) | inline (false, _) {
+    let found = this.lookup(path);
+    if (found is JsonObject) {
+      return (true, found);
+    }
+    return (false, _);
+  }
+
+  /** The array at `path`, found only when it is an array. */
+  arrayAt(path: String): inline (true, JsonArray) | inline (false, _) {
+    let found = this.lookup(path);
+    if (found is JsonArray) {
+      return (true, found);
+    }
+    return (false, _);
+  }
+
   // Iterate over all key-value pairs
   forEach(callback: (key: String, value: JsonValue) => void): void {
     this.#fields.forEach(callback);
@@ -924,80 +1009,6 @@ export let jsonGet = (value: JsonValue, path: String): JsonValue => {
   }
   
   return current;
-};
-
-/**
- * The string at `path` in `value` (a `jsonGet` path), found only when
- * it is there and is a string.
- *
- * ```zena
- * let uri = jsonString(message, '.params.textDocument.uri') ?? '';
- * ```
- */
-export let jsonString = (value: JsonValue, path: String):
-    inline (true, String) | inline (false, _) => {
-  let found = jsonGet(value, path);
-  if (found is String) {
-    return (true, found);
-  }
-  return (false, _);
-};
-
-/** The number at `path` in `value`, found only when it is a number. */
-export let jsonNumber = (value: JsonValue, path: String):
-    inline (true, f64) | inline (false, _) => {
-  let found = jsonGet(value, path);
-  if (found is Box<f64>) {
-    return (true, found.value);
-  }
-  return (false, _);
-};
-
-/**
- * The integer at `path` in `value`, found only when it is a number with
- * no fractional part that fits an `i32`.
- */
-export let jsonInt = (value: JsonValue, path: String):
-    inline (true, i32) | inline (false, _) => {
-  let found = jsonGet(value, path);
-  if (found is Box<f64>) {
-    let n = found.value;
-    let whole = n as i32;
-    if ((whole as f64) == n) {
-      return (true, whole);
-    }
-  }
-  return (false, _);
-};
-
-/** The boolean at `path` in `value`, found only when it is a boolean. */
-export let jsonBool = (value: JsonValue, path: String):
-    inline (true, boolean) | inline (false, _) => {
-  let found = jsonGet(value, path);
-  if (found is Box<boolean>) {
-    return (true, found.value);
-  }
-  return (false, _);
-};
-
-/** The object at `path` in `value`, found only when it is an object. */
-export let jsonObject = (value: JsonValue, path: String):
-    inline (true, JsonObject) | inline (false, _) => {
-  let found = jsonGet(value, path);
-  if (found is JsonObject) {
-    return (true, found);
-  }
-  return (false, _);
-};
-
-/** The array at `path` in `value`, found only when it is an array. */
-export let jsonArray = (value: JsonValue, path: String):
-    inline (true, JsonArray) | inline (false, _) => {
-  let found = jsonGet(value, path);
-  if (found is JsonArray) {
-    return (true, found);
-  }
-  return (false, _);
 };
 
 // ============================================================================

@@ -9,7 +9,7 @@
 // `.`, and needs spawning, which repository tests have.
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { JsonObject, JsonValue, jsonInt, jsonString, parseJson } from 'zena:json';
+import { JsonObject, parseJson } from 'zena:json';
 import { ProcessResult, runWith } from 'zena:process';
 import { MessageReader, frame } from '../lib/framing.zena';
 
@@ -23,7 +23,7 @@ let session = (messages: Array<String>): ProcessResult => {
 };
 
 /** The messages in a process's output, which must hold nothing else. */
-let messagesIn = (output: String): Array<JsonValue> => {
+let messagesIn = (output: String): Array<JsonObject> => {
   var consumed = false;
   let reader = new MessageReader((): String => {
     if (consumed) {
@@ -32,27 +32,27 @@ let messagesIn = (output: String): Array<JsonValue> => {
     consumed = true;
     return output;
   });
-  let messages = new Array<JsonValue>();
+  let messages = new Array<JsonObject>();
   while (true) {
     let body = reader.next();
     if (body == null) {
       return messages;
     }
-    messages.push(parseJson(body));
+    messages.push(parseJson(body) as JsonObject);
   }
   return messages;
 };
 
-/** The reply to request `id`, or null if there is none. */
-let replyTo = (messages: Array<JsonValue>, id: i32): JsonValue => {
+/** The reply to request `id`, or an empty object if there is none. */
+let replyTo = (messages: Array<JsonObject>, id: i32): JsonObject => {
   for (let message in messages) {
-    if (let (true, found) = jsonInt(message, '.id')) {
+    if (let (true, found) = message.intAt('id')) {
       if (found == id) {
         return message;
       }
     }
   }
-  return null;
+  return new JsonObject();
 };
 
 let uri = 'file:///nowhere/main.zena';
@@ -98,27 +98,32 @@ export let tests = suite('zena lsp', (): void => {
     equal(run.exitCode, 0, run.stderr);
     let messages = messagesIn(run.stdout);
 
-    equal(jsonString(replyTo(messages, 1), '.result.serverInfo.name') ?? '', 'zena');
+    equal(replyTo(messages, 1).stringAt('result.serverInfo.name') ?? '', 'zena');
 
     var diagnosticLine = -1;
     for (let message in messages) {
-      if ((jsonString(message, '.method') ?? '') == 'textDocument/publishDiagnostics') {
-        diagnosticLine = jsonInt(message, '.params.diagnostics[0].range.start.line') ?? -1;
+      if ((message.stringAt('method') ?? '') == 'textDocument/publishDiagnostics') {
+        if (let (true, diagnostics) = message.arrayAt('params.diagnostics')) {
+          let first = diagnostics[0];
+          if (first is JsonObject) {
+            diagnosticLine = first.intAt('range.start.line') ?? -1;
+          }
+        }
       }
     }
     equal(diagnosticLine, 5);
 
-    let hover = jsonString(replyTo(messages, 2), '.result.contents.value') ?? '';
+    let hover = replyTo(messages, 2).stringAt('result.contents.value') ?? '';
     isTrue(hover.contains('addOne'), hover);
     isTrue(hover.contains('Adds one.'), hover);
 
     let definition = replyTo(messages, 3);
-    equal(jsonString(definition, '.result.uri') ?? '', uri);
-    equal(jsonInt(definition, '.result.range.start.line') ?? -1, 1);
-    equal(jsonInt(definition, '.result.range.start.character') ?? -1, 4);
+    equal(definition.stringAt('result.uri') ?? '', uri);
+    equal(definition.intAt('result.range.start.line') ?? -1, 1);
+    equal(definition.intAt('result.range.start.character') ?? -1, 4);
 
     let shutdown = replyTo(messages, 4);
-    isTrue(shutdown is JsonObject && (shutdown as JsonObject).has('result'));
+    isTrue(shutdown.has('result'));
   });
 
   test('ends when its input ends', () => {
