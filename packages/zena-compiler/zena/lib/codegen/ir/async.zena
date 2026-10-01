@@ -438,7 +438,12 @@ let buildHostEntry = (
   let rb = new IrBuilder();
   let rEntry = rb.newBlock();
   rb.switchTo(rEntry);
-  let stored = rb.emit(IrOp.global_get, futVt, -1, rb.addRef(slotRef));
+  // A mutable reference global is emitted nullable (it needs a null
+  // initializer), so the load is nullable and the receiver slot of
+  // valueOrThrow is not.
+  let weak = rb.emit(IrOp.global_get, weakenToNullable(futVt), -1,
+      rb.addRef(slotRef));
+  let stored = rb.emit(IrOp.ref_as_non_null, futVt, weak, -1);
   let rArgs = new Array<i32>();
   rArgs.push(stored);
   if (valueOrThrowFn.signature.returns.length == 0) {

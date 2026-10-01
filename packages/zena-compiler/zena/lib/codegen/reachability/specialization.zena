@@ -1322,8 +1322,12 @@ export final class Specializer implements SpecializerInterface {
         if (cType.isExtension && cType.onType != null) {
           params.push(typeToValType(this.pass.wasm, cType.onType as Type));
         } else {
+          // The receiver is the declaring class's struct, non-null:
+          // `this` is never null, and an override shares the slot's
+          // signature by taking the same root receiver, so nullability
+          // plays no part in dispatch.
           if (let (true, rootInfo) = this.pass.wasm.classInfos.get(getClassKey(rootClass))) {
-            params.push(new ValTypeRefNull(rootInfo.structType));
+            params.push(new ValTypeRef(rootInfo.structType));
           } else {
             params.push(new ValTypeStructRef());
           }
@@ -2158,7 +2162,7 @@ export final class Specializer implements SpecializerInterface {
 
     if (ctorHasRunnableBody(factory)) {
       let bodyParams = new Array<ValType>();
-      bodyParams.push(new ValTypeRefNull(structType));
+      bodyParams.push(new ValTypeRef(structType));
       for (let p in factory.signature.params) {
         bodyParams.push(p);
       }

@@ -303,7 +303,7 @@ class Point {
 Compiles to:
 
 ```wat
-(func $Point_distance (param $this (ref null $Point)) (result i32)
+(func $Point_distance (param $this (ref $Point)) (result i32)
   ...
 )
 ```

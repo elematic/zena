@@ -4437,6 +4437,11 @@ export final class FunctionLowerer {
     return this.#cx().conformToSlot(value, want, reason);
   }
 
+  /** LoweringContext.conformReceiver: re-assert a nullable receiver. */
+  #conformReceiver(receiver: i32, want: ValType, reason: String): i32 {
+    return this.#cx().conformReceiver(receiver, want, reason);
+  }
+
   #conformToBinding(value: i32, bindingVt: ValType): i32 {
     return this.#cx().conformToBinding(value, bindingVt);
   }
@@ -4487,9 +4492,10 @@ export final class FunctionLowerer {
   }
 
   /**
-   * `this` in an instance method: the receiver block param, re-asserted
-   * non-null when the checked type demands it (receiver signature slots
-   * are nullable for vtable compatibility, but `this` is never null).
+   * `this` in an instance method: the receiver block param. Method
+   * receivers are typed non-null, so the re-assert below is for the
+   * contexts that still hold `this` nullable, such as a closure's
+   * captured-context field.
    */
   #lowerThis(expr: Expression): i32 {
     if (this.#cx().thisValue < 0) {
@@ -4973,9 +4979,7 @@ export final class FunctionLowerer {
     if (sig.params.length != 2 || sig.returns.length != 0) {
       this.#bail('setter shape');
     }
-    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#failConformance(receiver, sig.params[0], 'setter receiver type');
-    }
+    let recv = this.#conformReceiver(receiver, sig.params[0], 'setter receiver type');
     let valueVt = sig.params[1];
     this.#requireSupported(valueVt, 'setter param type');
     var value = -1;
@@ -4987,11 +4991,11 @@ export final class FunctionLowerer {
         this.#bail('getter shape');
       }
       var current = if (getterVirtual) {
-        this.#lowerVtableCall(receiver, vtInfoOpt as ClassCodegenInfo,
-            'get#' + propName, gsig, this.#oneArg(receiver), gsig.returns[0])
+        this.#lowerVtableCall(recv, vtInfoOpt as ClassCodegenInfo,
+            'get#' + propName, gsig, this.#oneArg(recv), gsig.returns[0])
       } else {
         this.b.callFunc(this.b.addRef(new IrRefFunc(getter)),
-            this.#oneArg(receiver), gsig.returns[0])
+            this.#oneArg(recv), gsig.returns[0])
       };
       current = this.#reassertNonNull(current, this.#exprValType(member));
       value = this.#combineCompound(current, assign, member as Expression);
@@ -5000,10 +5004,10 @@ export final class FunctionLowerer {
       this.#failConformance(value, valueVt, 'setter value type');
     }
     let args = new Array<i32>();
-    args.push(receiver);
+    args.push(recv);
     args.push(value);
     if (setterVirtual) {
-      this.#lowerVtableCall(receiver, vtInfoOpt as ClassCodegenInfo,
+      this.#lowerVtableCall(recv, vtInfoOpt as ClassCodegenInfo,
           'set#' + propName, sig, args, null);
     } else {
       this.b.callFunc(this.b.addRef(new IrRefFunc(setter)), args, null);
@@ -5078,18 +5082,21 @@ export final class FunctionLowerer {
       if (gsig.returns.length != 1) {
         this.#bail('getter shape');
       }
-      var current = this.#lowerVtableCall(receiver, info,
-          'get#' + propName, gsig, this.#oneArg(receiver), gsig.returns[0]);
+      let grecv = this.#conformReceiver(receiver, gsig.params[0],
+          'setter receiver type');
+      var current = this.#lowerVtableCall(grecv, info,
+          'get#' + propName, gsig, this.#oneArg(grecv), gsig.returns[0]);
       current = this.#reassertNonNull(current, this.#exprValType(member));
       value = this.#combineCompound(current, assign, member as Expression);
     }
     if (!isValSubtype(this.#valueType(value), valueVt)) {
       this.#failConformance(value, valueVt, 'setter value type');
     }
+    let recv = this.#conformReceiver(receiver, sig.params[0], 'setter receiver type');
     let args = new Array<i32>();
-    args.push(receiver);
+    args.push(recv);
     args.push(value);
-    this.#lowerVtableCall(receiver, info, 'set#' + propName, sig, args, null);
+    this.#lowerVtableCall(recv, info, 'set#' + propName, sig, args, null);
     return value;
   }
 
@@ -5209,14 +5216,12 @@ export final class FunctionLowerer {
       if (sig.params.length != 1 || sig.returns.length != 1) {
         this.#bail('super getter shape');
       }
-      if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-        this.#failConformance(receiver, sig.params[0],
-            'super receiver type');
-      }
+      let recv = this.#conformReceiver(receiver, sig.params[0],
+          'super receiver type');
       this.#requireSupported(sig.returns[0], 'super getter type');
       let result = this.b.callFunc(
           this.b.addRef(new IrRefFunc(getter)),
-          this.#oneArg(receiver), sig.returns[0]);
+          this.#oneArg(recv), sig.returns[0]);
       return this.#reassertNonNull(result, this.#exprValType(member));
     }
     let cKey = getClassKey(superCt);
@@ -5336,12 +5341,10 @@ export final class FunctionLowerer {
     }
     value = this.#conformToSlot(value, targetVt, 'super write type');
     if (setter != null) {
-      if (!isValSubtype(this.#valueType(receiver), setter.signature.params[0])) {
-        this.#failConformance(receiver, setter.signature.params[0],
-            'super receiver type');
-      }
+      let recv = this.#conformReceiver(receiver, setter.signature.params[0],
+          'super receiver type');
       this.b.callFunc(this.b.addRef(new IrRefFunc(setter)),
-          this.#twoValues(receiver, value), null);
+          this.#twoValues(recv, value), null);
       return value;
     }
     let st = fieldStruct as WasmStruct;
@@ -5402,11 +5405,8 @@ export final class FunctionLowerer {
     if (sig.params.length != this.#liveArgCount(call.args) + 1) {
       this.#bail('super method arity');
     }
-    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#failConformance(receiver, sig.params[0], 'super receiver type');
-    }
     let args = new Array<i32>();
-    args.push(receiver);
+    args.push(this.#conformReceiver(receiver, sig.params[0], 'super receiver type'));
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -5599,12 +5599,10 @@ export final class FunctionLowerer {
     if (egSig.params.length != 1 || egSig.returns.length != 1) {
       this.#bail('getter shape');
     }
-    if (!isValSubtype(this.#valueType(receiver), egSig.params[0])) {
-      this.#failConformance(receiver, egSig.params[0],
-          'member receiver type');
-    }
+    let recv = this.#conformReceiver(receiver, egSig.params[0],
+        'member receiver type');
     let extCall = this.b.callFunc(this.b.addRef(new IrRefFunc(extGetter)),
-        this.#oneArg(receiver), egSig.returns[0]);
+        this.#oneArg(recv), egSig.returns[0]);
     return this.#reassertNonNull(extCall, this.#exprValType(member));
   }
 
@@ -5661,9 +5659,11 @@ export final class FunctionLowerer {
       if (vsig.returns.length != 1) {
         this.#bail('getter shape');
       }
-      let vresult = this.#lowerVtableCall(receiver,
+      let recv = this.#conformReceiver(receiver, vsig.params[0],
+          'member receiver type');
+      let vresult = this.#lowerVtableCall(recv,
           target.vtInfo as ClassCodegenInfo, vtSlot,
-          vsig, this.#oneArg(receiver), vsig.returns[0]);
+          vsig, this.#oneArg(recv), vsig.returns[0]);
       return this.#reassertNonNull(vresult, this.#exprValType(member));
     }
     if (target.fieldName != null) {
@@ -5680,11 +5680,9 @@ export final class FunctionLowerer {
     if (sig.returns.length != 1) {
       this.#bail('getter shape');
     }
-    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#failConformance(receiver, sig.params[0], 'member receiver type');
-    }
+    let recv = this.#conformReceiver(receiver, sig.params[0], 'member receiver type');
     let getterRef = this.b.addRef(new IrRefFunc(getter));
-    let call = this.b.callFunc(getterRef, this.#oneArg(receiver), sig.returns[0]);
+    let call = this.b.callFunc(getterRef, this.#oneArg(recv), sig.returns[0]);
     // Getter signatures return the field's (nullable) storage type; the
     // member's checked type may be non-null.
     return this.#reassertNonNull(call, this.#exprValType(member));
@@ -6092,24 +6090,14 @@ export final class FunctionLowerer {
       this.#bail('method arity adaptation');
     }
 
-    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      if (narrowedFromChecked) {
-        // The value is the declaring class, the slot wants the
-        // subclass the `this` return named. conformToSlot emits the
-        // ref.cast, which traps if a body broke the contract by
-        // handing back something other than its own receiver.
-        // Receiver slots are nullable, so casting straight to the slot
-        // would compare a nullable target against a non-null value and
-        // read as no downcast at all. Cast to the non-null form, which
-        // the slot then accepts.
-        var want = sig.params[0];
-        if (want is ValTypeRefNull && this.#valueType(receiver) is ValTypeRef) {
-          want = new ValTypeRef(want.target) as ValType;
-        }
-        receiver = this.#conformToSlot(receiver, want, 'method receiver type');
-      } else {
-        this.#failConformance(receiver, sig.params[0], 'method receiver type');
-      }
+    if (narrowedFromChecked) {
+      // The value is the declaring class, the slot wants the subclass
+      // the `this` return named. conformToSlot emits the ref.cast,
+      // which traps if a body broke the contract by handing back
+      // something other than its own receiver.
+      receiver = this.#conformToSlot(receiver, sig.params[0], 'method receiver type');
+    } else {
+      receiver = this.#conformReceiver(receiver, sig.params[0], 'method receiver type');
     }
     let defaults = this.#defaultArgInfo(call);
     let args = new Array<i32>();
@@ -6301,9 +6289,7 @@ export final class FunctionLowerer {
     if (sig.params.length != 2 || sig.returns.length > 1) {
       this.#bail('index method arity');
     }
-    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#failConformance(receiver, sig.params[0], 'index receiver type');
-    }
+    let recv = this.#conformReceiver(receiver, sig.params[0], 'index receiver type');
     this.#requireSupported(sig.params[1], 'index param type');
     var indexValue = this.#lowerExpressionCtx(idx.index, sig.params[1]);
     indexValue = this.#conformToSlot(indexValue, sig.params[1], 'index operand type');
@@ -6313,7 +6299,7 @@ export final class FunctionLowerer {
     }
     let methodRef = this.b.addRef(new IrRefFunc(method));
     let result = this.b.callFunc(methodRef,
-        this.#twoValues(receiver, indexValue), resultType);
+        this.#twoValues(recv, indexValue), resultType);
     if (resultType == null) {
       return result;
     }
@@ -6876,9 +6862,7 @@ export final class FunctionLowerer {
     if (sig.params.length != 3 || sig.returns.length > 0) {
       this.#bail('index setter shape');
     }
-    if (!isValSubtype(this.#valueType(receiver), sig.params[0])) {
-      this.#failConformance(receiver, sig.params[0], 'index receiver type');
-    }
+    let recv = this.#conformReceiver(receiver, sig.params[0], 'index receiver type');
     var index = this.#lowerExpressionCtx(idx.index, sig.params[1]);
     index = this.#conformToSlot(index, sig.params[1], 'index operand type');
     var value = -1;
@@ -6908,22 +6892,21 @@ export final class FunctionLowerer {
       if (readSig.params.length != 2 || readSig.returns.length != 1) {
         this.#bail('index method arity');
       }
-      if (!isValSubtype(this.#valueType(receiver), readSig.params[0])) {
-        this.#failConformance(receiver, readSig.params[0], 'index receiver type');
-      }
+      let readRecv = this.#conformReceiver(receiver, readSig.params[0],
+          'index receiver type');
       if (!isValSubtype(this.#valueType(index), readSig.params[1])) {
         this.#failConformance(index, readSig.params[1], 'index operand type');
       }
       this.#requireSupported(readSig.returns[0], 'index result type');
       let current = this.b.callFunc(
           this.b.addRef(new IrRefFunc(readMethod)),
-          this.#twoValues(receiver, index), readSig.returns[0]);
+          this.#twoValues(readRecv, index), readSig.returns[0]);
       value = this.#combineCompound(current, assign, idx as Expression);
     }
     value = this.#conformToSlot(value, sig.params[2], 'index write type');
     let funcRef = this.b.addRef(new IrRefFunc(method));
     let args = new Array<i32>();
-    args.push(receiver);
+    args.push(recv);
     args.push(index);
     args.push(value);
     this.b.callFunc(funcRef, args, null);

@@ -696,8 +696,10 @@ export final class LoweringContext {
     if (sig.returns.length != 1) {
       this.fail('getter shape');
     }
+    let recv = this.conformReceiver(receiver, sig.params[0],
+        'property receiver type');
     return this.b.callFunc(this.b.addRef(new IrRefFunc(getter)),
-        oneValue(receiver), sig.returns[0]);
+        oneValue(recv), sig.returns[0]);
   }
 
   /**
@@ -964,6 +966,31 @@ export final class LoweringContext {
       this.failConformance(value, want, reason);
     }
     return this.b.emit(IrOp.ref_cast, want, value, this.b.internType(want));
+  }
+
+  /**
+   * A call's receiver, conformed to the method's receiver slot. The
+   * slot is non-null, and most receivers already are: identifier and
+   * member reads re-assert to the checker's narrowed type. A nullable
+   * value whose non-null form fits the slot is re-asserted here, which
+   * traps on null like every other re-assert. Anything else bails: a
+   * receiver that needs a downcast is a lowering bug, and the one
+   * legitimate downcast (a `this`-returning call narrowed to the
+   * subclass) goes through conformToSlot by name.
+   */
+  conformReceiver(value: i32, want: ValType, reason: String): i32 {
+    let have = this.valueTypeOf(value);
+    if (this.refConforms(have, want)) {
+      return value;
+    }
+    if (have is ValTypeRefNull && want is ValTypeRef) {
+      let nn = new ValTypeRef(have.target) as ValType;
+      if (isValSubtype(nn, want)) {
+        return this.b.emit(IrOp.ref_as_non_null, nn, value, -1);
+      }
+    }
+    this.failConformance(value, want, reason);
+    return value;
   }
 
   conformToBinding(value: i32, bindingVt: ValType): i32 {

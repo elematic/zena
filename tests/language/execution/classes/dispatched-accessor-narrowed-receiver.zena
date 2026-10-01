@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 10
+// `n.loc` reads an abstract field through Node's method table. The
+// receiver was narrowed by `n != null` inside the `&&`, so it is still
+// in a nullable local and has to be re-asserted before it reaches the
+// getter's non-null receiver parameter. The language service hit this
+// shape, and the module failed validation: "call_ref[0] expected type
+// (ref $T), found local.get of type (ref null $T)".
+class Loc {
+  start: i32;
+  new(this.start);
+}
+
+sealed class Node {
+  abstract loc: Loc | null;
+  case Leaf(loc: Loc | null)
+  case Pair(loc: Loc | null, other: i32)
+}
+
+let startOf = (n: Node | null): i32 => {
+  if (n != null && n.loc != null) {
+    let l = n.loc as Loc;
+    return l.start;
+  }
+  return -1;
+};
+
+export let main = (): i32 =>
+    startOf(new Leaf(new Loc(5))) + startOf(new Pair(new Loc(7), 1)) +
+    startOf(new Leaf(null)) + startOf(null);
