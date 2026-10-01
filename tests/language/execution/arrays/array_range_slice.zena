@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 1
+// Any array can be sliced with a range through `Array<T>`: `a..b`, `a..`,
+// `..b` and `..` each give a copy of those elements, with bounds clamped
+// to the array.
+let sum = (xs: Array<i32>): i32 => {
+  var s = 0;
+  for (let x in xs) {
+    s += x;
+  }
+  return s;
+};
+
+/** Checks every range form on one array holding 1, 2, 3, 4, 5. */
+let check = (xs: Array<i32>): boolean => {
+  return sum(xs[1..3]) == 5 &&      // 2 + 3
+      sum(xs[3..]) == 9 &&          // 4 + 5
+      sum(xs[..2]) == 3 &&          // 1 + 2
+      sum(xs[..]) == 15 &&
+      xs[1..3].length == 2 &&
+      xs[2..100].length == 3 &&     // clamped to the end
+      xs[4..2].length == 0 &&       // empty
+      xs[1..][0] == 2;              // a slice is an Array too
+};
+
+export let main = (): i32 => {
+  let immutable = [1, 2, 3, 4, 5];
+  let fixed = [1, 2, 3, 4, 5] as FixedArray<i32>;
+  let growable = new Array<i32>();
+  for (let i in 1..6) {
+    growable.push(i);
+  }
+  // A growable slice copies: writing to it leaves the original alone.
+  let piece = growable[0..2];
+  piece[0] = 100;
+  if (growable[0] != 1) { return 0; }
+  return if (check(immutable) && check(fixed) && check(growable)) 1 else 0;
+};

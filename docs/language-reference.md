@@ -4604,6 +4604,22 @@ arr[1] = 99;              // mutate in place
 let len = arr.length;     // 3
 ```
 
+Indexing with a [range](#range-operators) gives a copy of those elements, on
+any array and through the `Array<T>` interface. Bounds outside the array are
+clamped to it:
+
+```zena
+let xs = [1, 2, 3, 4, 5];
+let middle = xs[1..4];    // 2, 3, 4
+let tail = xs[3..];       // 4, 5
+let head = xs[..2];       // 1, 2
+let all = xs[..];         // a copy of all five
+```
+
+A slice of a `GrowableArray` is a `GrowableArray`. A slice of a `FixedArray` or
+an `ImmutableArray` is a `FixedArray`, because a WASM-GC immutable array cannot
+be filled after it is created.
+
 #### The builtin `array` type
 
 `array<T>` is the builtin WASM-GC array type that `FixedArray<T>` and

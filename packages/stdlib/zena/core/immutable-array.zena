@@ -8,6 +8,48 @@ export final extension class ImmutableArray<T> on array<T> with IterableUtils<T>
   @intrinsic('array.get')
   declare operator [](index: i32): T;
 
+  // A slice is a FixedArray: Wasm has no way to fill an immutable array
+  // after allocation (see `map` below).
+
+  /** The elements from `a` up to but not including `b` (`a..b`). */
+  operator [](r: BoundedRange): FixedArray<T> {
+    return this.slice(r.start, r.end);
+  }
+
+  /** The elements from `a` to the end (`a..`). */
+  operator [](r: FromRange): FixedArray<T> {
+    return this.slice(r.start, (this as ImmutableArray<T>).length);
+  }
+
+  /** The elements from the start up to but not including `b` (`..b`). */
+  operator [](r: ToRange): FixedArray<T> {
+    return this.slice(0, r.end);
+  }
+
+  /** A copy of every element (`..`). */
+  operator [](_r: FullRange): FixedArray<T> {
+    return this.slice(0, (this as ImmutableArray<T>).length);
+  }
+
+  /**
+   * A copy of the elements from `start` up to but not including `end`.
+   * Bounds outside the array are clamped to it.
+   */
+  slice(start: i32, end: i32): FixedArray<T> {
+    let self = this as ImmutableArray<T>;
+    let len = self.length;
+    let s = if (start < 0) 0 else start;
+    let e = if (end > len) len else end;
+    if (s >= e) {
+      return __array_new_empty<T>(0) as FixedArray<T>;
+    }
+    let result = __array_new_empty<T>(e - s) as FixedArray<T>;
+    for (var i = 0; i < e - s; i += 1) {
+      result[i] = self[s + i];
+    }
+    return result;
+  }
+
   // There is no `from(seq)`: Wasm has no way to fill an immutable array
   // after allocation, so an immutable array is only produced fully
   // formed — by an array literal or `array.new_data`.

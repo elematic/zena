@@ -1914,12 +1914,21 @@ immutable[0] = 9;           // error: elements are immutable
 
 ### Slicing
 
-Use range syntax to slice a `FixedArray`. Slices are independent copies.
+Use range syntax to slice any array, including through `Array<T>`. Slices are
+independent copies, and bounds outside the array are clamped to it.
 
 ```zena
 let arr = fixed([1, 2, 3, 4, 5]);
 let slice = arr[1..4];    // [2, 3, 4] (a fresh FixedArray)
+let rest = arr[2..];      // [3, 4, 5]
+let front = arr[..2];     // [1, 2]
+
+let sum = (xs: Array<i32>): i32 => xs.fold(0, (a: i32, x: i32) => a + x);
+sum(arr[1..3]);           // 5, through the Array<i32> interface
 ```
+
+A `GrowableArray` slice is a `GrowableArray`; a slice of a `FixedArray` or an
+immutable array (an array literal) is a `FixedArray`.
 
 ### Map
 
