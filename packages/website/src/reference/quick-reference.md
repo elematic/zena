@@ -1763,6 +1763,19 @@ interface Person extends Named {
 }
 ```
 
+### Overloads in Interfaces
+
+An interface can declare a method or operator more than once with different
+parameter types. Implementing classes provide every overload, and may return a
+narrower type than the interface declares.
+
+```zena
+interface Seq {
+  operator [](index: i32): i32;
+  operator [](r: BoundedRange): Seq;
+}
+```
+
 ## Mixins
 
 Mixins provide reusable chunks of functionality that can be composed into

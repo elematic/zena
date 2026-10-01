@@ -47,7 +47,7 @@
 import { isValidIntrinsic } from './intrinsics.zena';
 import { Set } from 'zena:collections';
 
-import { StringBuilder } from 'zena:core';
+import { StringBuilder, growable } from 'zena:core';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
 import {
   FlowNode, FlowStart, FlowAssign, FlowMove, FlowNarrowings, FlowJoin,
@@ -12800,6 +12800,25 @@ let hasSameSignature = (a: FunctionType, b: FunctionType): boolean => {
   return true;
 };
 
+/**
+ * The signatures a member type stands for: each overload of an overloaded
+ * method, or the type itself.
+ */
+let functionSignatures = (t: Type): GrowableArray<Type> => {
+  let signatures = new Array<Type>();
+  if (t is FunctionType) {
+    let {overloads} = t;
+    if (overloads != null) {
+      for (let overload in overloads) {
+        signatures.push(overload);
+      }
+      return signatures;
+    }
+  }
+  signatures.push(t);
+  return signatures;
+};
+
 let findMatchingOverload = (
   method: FunctionType,
   signature: FunctionType
@@ -14869,14 +14888,22 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
                 }
                 
                 let expectedMethodType = substituteThisType(receiverType, expectedMethodType0);
-                if (!isAssignableTo(ctx, classMethod, expectedMethodType)) {
-                  ctx.error(
-                    "Class '" + className + "' incorrectly implements interface '" + iface.name +
-                    "': Method '" + displayMemberName(methodName) + "' is type '" + typeToString(classMethod) +
-                    "' but expected '" + typeToString(expectedMethodType) + "'.",
-                    DiagnosticCode.IncompatibleTypes,
-                    cd.loc
-                  );
+                // Every signature the interface declares under this name
+                // needs a class method assignable to it, from any of the
+                // class's overloads.
+                let classSignatures = functionSignatures(classMethod);
+                let expectedSignatures = functionSignatures(expectedMethodType);
+                for (let expected in expectedSignatures) {
+                  if (classSignatures.some((candidate) => isAssignableTo(ctx, candidate, expected))) {
+                    continue;
+                  }
+                  let method = `Class '${className}' incorrectly implements interface '${iface.name}': Method '${displayMemberName(methodName)}'`;
+                  let message = if (expectedSignatures.length == 1) {
+                    `${method} is type '${typeToString(classMethod)}' but expected '${typeToString(expected)}'.`
+                  } else {
+                    `${method} has no overload of type '${typeToString(expected)}'.`
+                  };
+                  ctx.error(message, DiagnosticCode.IncompatibleTypes, cd.loc);
                 }
               } else if (methodName.startsWith("get#") && classType.members.has(methodName.sliceBytes(4, methodName.length)) && classType.members[methodName.sliceBytes(4, methodName.length)] is FieldInfo) {
                 // A field can satisfy a getter interface method.
@@ -15927,6 +15954,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
   // Process body members.
   ctx.enterInterface();
   let ownConstructorNames = new Set<String>();
+  let ownMethodNames = new Set<String>();
   for (let member in id.body) {
     match (member) {
       case MethodDefinition as md: {
@@ -15972,14 +16000,25 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         let methodName = getMemberName(ctx, ms.name as Node);
         let ft = new FunctionType(paramTypes, null, retType);
         ft.typeParameters = typeParams;
-        let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
-        ifaceType.members[methodName] = new MethodInfo(
-          ft,
-          true, // isAbstract
-          false, // isStatic
-          isPrivate,
-          false // isFinal
-        );
+        // A second signature with the same name is an overload, collected
+        // the way a class's are. The first one in this pass replaces any
+        // earlier registration, so registering twice adds nothing.
+        if (ownMethodNames.has(methodName)) {
+          let existing = ifaceType.members[methodName].type;
+          if (existing is FunctionType) {
+            (existing.overloads ??= growable([existing])).push(ft);
+          }
+        } else {
+          ownMethodNames.add(methodName);
+          let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
+          ifaceType.members[methodName] = new MethodInfo(
+            ft,
+            true, // isAbstract
+            false, // isStatic
+            isPrivate,
+            false // isFinal
+          );
+        }
         ctx.exitScope();
       }
       case PropertySignature as ps: {

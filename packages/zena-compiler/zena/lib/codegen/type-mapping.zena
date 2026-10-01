@@ -13,7 +13,7 @@ import {
 import {
   ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode, WasmType,
 } from './wasm.zena';
-import { compareStrings, presentWordCount, presentWordName } from './codegen-utils.zena';
+import { compareStrings, presentWordCount, presentWordName, getSignatureKey } from './codegen-utils.zena';
 import {
   getMemberRootClass, getClassKey, getClassMethodKey, getInterfaceKey, InterfaceKey, CellKey, ClosureKey,
 } from './codegen-utils.zena';
@@ -803,6 +803,129 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     return wasm.getSignature(params, returns);
   }
 };
+
+/**
+ * The overloads of interface method `name`, each with the interface's
+ * type arguments substituted, or null when the method has a single
+ * signature. Each overload has its own vtable slot, named by
+ * `interfaceOverloadSlotName`; a method with one signature keeps the
+ * slot named after the method.
+ */
+export let interfaceMethodOverloads = (wasm: WasmModule, iface: InterfaceType,
+    name: String): GrowableArray<FunctionType> | null => {
+  if (let (true, member) = iface.members.get(name)) {
+    let memberType = member.type;
+    if (memberType is FunctionType) {
+      let {overloads} = memberType;
+      if (overloads != null) {
+        let typeParameters = getInterfaceTypeParameters(iface);
+        return overloads.map((overload) => substituteTypeParamsInCodegen(wasm,
+            typeParameters, iface.typeArguments, overload) as FunctionType);
+      }
+    }
+  }
+  return null;
+};
+
+/** The vtable slot of one overload of an interface method. */
+export let interfaceOverloadSlotName = (name: String,
+    overload: FunctionType): String => {
+  return name + getSignatureKey(overload);
+};
+
+/** The signature of an interface vtable slot for one overload. */
+export let interfaceOverloadSignature = (wasm: WasmModule,
+    overload: FunctionType): WasmSignature => {
+  let params = new Array<ValType>();
+  params.push(new ValTypeAnyRef());
+  for (let parameter in overload.parameters) {
+    mapParamTypeToWasmParams(wasm, parameter, params);
+  }
+  let returns = new Array<ValType>();
+  mapReturnTypeToWasmResults(wasm, overload.returnType, returns);
+  return wasm.getSignature(params, returns);
+};
+
+/**
+ * Which overload of which method an interface vtable slot holds, when the
+ * slot belongs to an overloaded method; null for any other slot.
+ */
+export let interfaceSlotOverload = (wasm: WasmModule, iface: InterfaceType,
+    slotName: String): InterfaceSlotOverload | null => {
+  for (let name in iface.members.keys()) {
+    if (!slotName.startsWith(name)) {
+      continue;
+    }
+    let overloads = interfaceMethodOverloads(wasm, iface, name);
+    if (overloads != null) {
+      if (let (true, overload) = overloads.find(
+          (overload) => interfaceOverloadSlotName(name, overload) == slotName)) {
+        return new InterfaceSlotOverload(name, overload);
+      }
+    }
+  }
+  return null;
+};
+
+/**
+ * Appends the vtable slots of interface method `name` to `vtable`: one
+ * per overload, or one named after the method when it has a single
+ * signature. A generic overload has no slot of its own; its uses get
+ * slots per specialization (`#syncGenericInterfaceSlots`).
+ */
+export let pushInterfaceMethodSlots = (wasm: WasmModule, iface: InterfaceType,
+    name: String, vtable: WasmStruct): void => {
+  let overloads = interfaceMethodOverloads(wasm, iface, name);
+  if (overloads == null) {
+    let signature = getInterfaceMemberSignature(wasm, iface, name);
+    vtable.fields.push(new WasmField(name, new ValTypeRef(signature), false));
+    return;
+  }
+  for (let overload in overloads) {
+    let {typeParameters} = overload;
+    if (typeParameters != null && typeParameters.length > 0) {
+      continue;
+    }
+    vtable.fields.push(new WasmField(interfaceOverloadSlotName(name, overload),
+        new ValTypeRef(interfaceOverloadSignature(wasm, overload)), false));
+  }
+};
+
+/**
+ * The vtable slot a use of interface method `name` goes through, given
+ * the overload the checker chose for it (`getResolvedOverload`, null when
+ * the method has one signature). The checker records the overload as
+ * declared or with the receiver's type arguments substituted, so both
+ * forms are matched.
+ */
+export let interfaceCallSlotName = (wasm: WasmModule, iface: InterfaceType,
+    name: String, chosen: FunctionType | null): String => {
+  let overloads = interfaceMethodOverloads(wasm, iface, name);
+  if (overloads == null) {
+    return name;
+  }
+  if (chosen == null) {
+    throw new Error(`No overload was chosen for interface method ${name} of ${iface.name}`);
+  }
+  let declaredKey = getSignatureKey(chosen);
+  let substituted = substituteTypeParamsInCodegen(wasm,
+      getInterfaceTypeParameters(iface), iface.typeArguments, chosen) as FunctionType;
+  let substitutedKey = getSignatureKey(substituted);
+  if (let (true, overload) = overloads.find((overload) => {
+    let key = getSignatureKey(overload);
+    return key == substitutedKey || key == declaredKey;
+  })) {
+    return interfaceOverloadSlotName(name, overload);
+  }
+  throw new Error(`Interface method ${name} of ${iface.name} has no overload ${declaredKey}`);
+};
+
+/** An overloaded interface method's name and one of its overloads. */
+export final class InterfaceSlotOverload {
+  methodName: String;
+  overload: FunctionType;
+  new(this.methodName, this.overload);
+}
 
 /**
  * `this` as seen through an interface receiver: the interface type

@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 901
+// An interface can declare `[]` more than once with different parameter
+// types. A call through the interface picks the overload by argument
+// type, and an implementation may return a narrower type.
+interface Seq {
+  length: i32 { get; }
+  operator [](index: i32): i32;
+  operator [](r: BoundedRange): Seq;
+}
+
+final class Nums implements Seq {
+  #items: FixedArray<i32>;
+  new(items: FixedArray<i32>) : #items = items;
+  length: i32 { get { return this.#items.length; } }
+  operator [](index: i32): i32 { return this.#items[index]; }
+  operator [](r: BoundedRange): Nums { return new Nums(this.#items[r]); }
+}
+
+let sumOf = (s: Seq): i32 => {
+  var t = 0;
+  for (var i = 0; i < s.length; i += 1) {
+    t += s[i];
+  }
+  return t;
+};
+
+export let main = (): i32 => {
+  let all: Seq = new Nums([1, 2, 3, 4, 5] as FixedArray<i32>);
+  let middle = all[1..4];
+  // 2 + 3 + 4 = 9, then the first element of the whole sequence.
+  return sumOf(middle) * 100 + all[0];
+};

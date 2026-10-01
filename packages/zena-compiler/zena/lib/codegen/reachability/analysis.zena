@@ -1,6 +1,6 @@
 import { Program, CompilationUnit } from '../../program.zena';
 import {
-  WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack,
+  WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack, isValSubtype,
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
@@ -16,7 +16,7 @@ import {
   getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, getClosureStruct, getInterfaceMemberSignature, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen,
+  typeToValType, getClosureStruct, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots, interfaceSlotOverload, interfaceOverloadSignature, InterfaceSlotOverload, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen,
 } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
@@ -1409,6 +1409,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       for (let mPair in it.members) {
         let resolvedType = substituteTypeParamsInCodegen(this.wasm, itParams, it.typeArguments, mPair.value.type);
         this.typeLowerer.discoverType(resolvedType, ifaceModel);
+        // Substitution leaves an overload list as declared, so each
+        // overload's types are discovered separately.
+        let overloads = interfaceMethodOverloads(this.wasm, it, mPair.key);
+        if (overloads != null) {
+          for (let overload in overloads) {
+            this.typeLowerer.discoverType(overload, ifaceModel);
+          }
+        }
       }
       let keys = it.members.keys();
       for (let key in keys) {
@@ -1432,8 +1440,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               }
             }
             if (!isGeneric) {
-              let sig = getInterfaceMemberSignature(this.wasm, it, key);
-              vst.fields.push(new WasmField(key, new ValTypeRef(sig), false));
+              pushInterfaceMethodSlots(this.wasm, it, key, vst);
             }
           }
           case _: {}
@@ -2659,6 +2666,87 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
+   * A class may implement an interface method with a narrower result:
+   * `scaled(): Square` for `scaled(): Shape`. When the interface's result
+   * is an interface type and the class method returns a class value, the
+   * trampoline packs that value into the interface (the same adaptation
+   * #computeGenericTrampolineAdaptations makes for generic methods).
+   */
+  #adaptCovariantResult(trampoline: WasmFunction, target: WasmFunction,
+      iface: InterfaceType, slotName: String,
+      slotOverload: InterfaceSlotOverload | null): void {
+    let slotResults = trampoline.signature.returns;
+    let targetResults = target.signature.returns;
+    if (slotResults.length != 1 || targetResults.length != 1 ||
+        isValSubtype(targetResults[0], slotResults[0])) {
+      return;
+    }
+    let interfaceResult = this.#interfaceSlotResult(iface, slotName, slotOverload);
+    // The class is read off the method's declared result rather than its
+    // wasm result: a value of an extension class is its underlying array,
+    // which names no class.
+    let classResult = this.#declaredResultType(target);
+    if (interfaceResult is InterfaceType && classResult is ClassType) {
+      this.#demandPackPair(classResult, interfaceResult);
+      trampoline.trampolineResultPackPair = getClassInterfaceKey(
+          getClassKey(classResult), getInterfaceKey(interfaceResult));
+      trampoline.trampolineResultPackIface = getInterfaceKey(interfaceResult);
+    }
+  }
+
+  /**
+   * The result type an interface vtable slot declares, with the
+   * interface's type arguments substituted.
+   */
+  #interfaceSlotResult(iface: InterfaceType, slotName: String,
+      slotOverload: InterfaceSlotOverload | null): Type | null {
+    if (slotOverload != null) {
+      return slotOverload.overload.returnType;
+    }
+    if (let (true, member) = iface.members.get(slotName)) {
+      let resolved = substituteTypeParamsInCodegen(this.wasm,
+          getInterfaceTypeParameters(iface), iface.typeArguments, member.type);
+      if (member is MethodInfo && resolved is FunctionType) {
+        return resolved.returnType;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * A class method's declared result type, in its class's context. The
+   * method is registered under its member name, plus the overload's
+   * signature key when the member is overloaded.
+   */
+  #declaredResultType(method: WasmFunction): Type | null {
+    let {classType, methodName} = method;
+    if (classType == null || methodName == null) {
+      return null;
+    }
+    for (let memberName in classType.members.keys()) {
+      if (!methodName.startsWith(memberName)) {
+        continue;
+      }
+      let member = classType.members[memberName];
+      let memberType = member.type;
+      if (!(member is MethodInfo) || !(memberType is FunctionType)) {
+        continue;
+      }
+      if (memberName == methodName) {
+        return substituteTypeParamsInClassContext(this.wasm, classType, memberType.returnType);
+      }
+      let {overloads} = memberType;
+      if (overloads != null) {
+        if (let (true, overload) = overloads.find(
+            (overload) => memberName + getSignatureKey(overload) == methodName)) {
+          return substituteTypeParamsInClassContext(this.wasm, classType, overload.returnType);
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Builds the trampoline for one interface vtable slot of one class.
    * A generic slot (a recorded demand names it) first instantiates the
    * class's monomorphized copy — a class can join a demand's interface
@@ -2684,6 +2772,24 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     var foundFunc: WasmFunction | null = null;
     var currClass: ClassType | null = cType;
+    // A slot for one overload of an overloaded interface method: the class
+    // registers each of its overloads under the name plus its signature
+    // key, and a class with a single method of that name under the name.
+    let slotOverload = interfaceSlotOverload(this.wasm, iface, fName);
+    if (slotOverload != null) {
+      let overloadName = slotOverload.methodName + getSignatureKey(slotOverload.overload);
+      while (currClass != null && foundFunc == null) {
+        let classKey = getClassKey(currClass);
+        if (let (true, method) = this.wasm.classMethodMap.get(
+            getClassMethodKey(classKey, overloadName))) {
+          foundFunc = method;
+        } else if (let (true, method) = this.wasm.classMethodMap.get(
+            getClassMethodKey(classKey, slotOverload.methodName))) {
+          foundFunc = method;
+        }
+        currClass = currClass.superType;
+      }
+    }
 
     while (currClass != null && foundFunc == null) {
       let mKey = getClassMethodKey(getClassKey(currClass), fName);
@@ -2728,6 +2834,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     let trampSig = if (demand != null) {
       getGenericInterfaceMemberSignature(this.wasm, iface, demand.methName, demand.typeArgs)
+    } else if (slotOverload != null) {
+      interfaceOverloadSignature(this.wasm, slotOverload.overload)
     } else {
       getInterfaceMemberSignature(this.wasm, iface, fName)
     };
@@ -2736,6 +2844,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     trampFunc.interfaceTrampolineTarget = foundFunc;
     if (demand != null) {
       this.#computeGenericTrampolineAdaptations(trampFunc, cType, iface, demand);
+    } else {
+      this.#adaptCovariantResult(trampFunc, foundFunc, iface, fName, slotOverload);
     }
     this.wasm.addFunction(trampFunc);
     this.markFunctionReached(trampFunc);

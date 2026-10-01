@@ -3619,6 +3619,30 @@ class Child extends Base {
 
 Subclasses can also add new overloads not present in the base class.
 
+#### Overloading in Interfaces
+
+An interface can declare a method or operator more than once with different
+parameter types. A class that implements the interface must provide every
+overload, and a call through the interface picks the overload by argument type,
+as it does on a class:
+
+```zena
+interface Seq {
+  operator [](index: i32): i32;
+  operator [](r: BoundedRange): Seq;
+}
+
+final class Nums implements Seq {
+  #items: FixedArray<i32>;
+  new(items: FixedArray<i32>) : #items = items;
+  operator [](index: i32): i32 { return this.#items[index]; }
+  operator [](r: BoundedRange): Nums { return new Nums(this.#items[r]); }
+}
+```
+
+An implementation may return a narrower type than the interface declares, as
+`Nums` does above: a call through `Seq` still gets a `Seq`.
+
 ````
 
 - **Fields**: Immutable by default. Use `var` for mutable fields. See [Field Mutability](#field-mutability).

@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 74
+// An extension class can implement an interface method with a narrower
+// result, like any class: `rest()` declares `Seq` and the extension class
+// returns itself. A value of an extension class is its underlying array,
+// so the call through the interface packs that array as a `Seq`.
+interface Seq {
+  length: i32 { get; }
+  operator [](index: i32): i32;
+  rest(): Seq;
+}
+
+final extension class Ints on FixedArray<i32> implements Seq {
+  length: i32 { get { return (this as FixedArray<i32>).length; } }
+  operator [](index: i32): i32 { return (this as FixedArray<i32>)[index]; }
+  rest(): Ints { return (this as FixedArray<i32>)[1..] as Ints; }
+}
+
+let sumOf = (s: Seq): i32 => {
+  var t = 0;
+  for (var i = 0; i < s.length; i += 1) {
+    t += s[i];
+  }
+  return t;
+};
+
+export let main = (): i32 => {
+  let all: Seq = [5, 7, 9] as FixedArray<i32> as Ints;
+  // rest() is [7, 9]: 16, then its rest is [9]: 9; 5 is the head.
+  let tail = all.rest();
+  return sumOf(tail) * 4 + sumOf(tail.rest()) + all[0] - 4;
+};

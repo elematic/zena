@@ -14,7 +14,7 @@ import { SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { Set } from 'zena:collections';
 
 import { getClassKey, getInterfaceKey, getInterfaceConstructorBaseName, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, containsErasedType } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, substituteTypeParamsInClassContext, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, substituteTypeParamsInClassContext, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots } from '../type-mapping.zena';
 
 /**
  * A struct field whose class type was not yet registered when the
@@ -841,6 +841,14 @@ export final class Specializer implements SpecializerInterface {
     for (let pair in it.members) {
       let resolvedType = substituteTypeParamsInCodegen(this.pass.wasm, itParams, it.typeArguments, pair.value.type);
       this.pass.typeLowerer.discoverSignatureType(resolvedType, sourceModel);
+      // Substitution leaves an overload list as declared, so each
+      // overload's types are discovered separately.
+      let overloads = interfaceMethodOverloads(this.pass.wasm, it, pair.key);
+      if (overloads != null) {
+        for (let overload in overloads) {
+          this.pass.typeLowerer.discoverSignatureType(overload, sourceModel);
+        }
+      }
     }
     this.pass.suppressNameEvidence = savedSuppress;
 
@@ -866,8 +874,7 @@ export final class Specializer implements SpecializerInterface {
             }
           }
           if (!isGeneric) {
-            let sig = getInterfaceMemberSignature(this.pass.wasm, it, key);
-            emptyVTableStruct.fields.push(new WasmField(key, new ValTypeRef(sig), false));
+            pushInterfaceMethodSlots(this.pass.wasm, it, key, emptyVTableStruct);
           }
         }
         case _: {}

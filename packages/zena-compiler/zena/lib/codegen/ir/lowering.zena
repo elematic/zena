@@ -35,7 +35,7 @@ import {
   WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec,
 } from '../wasm-module.zena';
 import {
-  typeToValTypeWithSub, typeToValType, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, inlineLaneValTypes, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames,
+  typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, inlineLaneValTypes, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -5827,6 +5827,10 @@ export final class FunctionLowerer {
               this.#bail('generic interface method call');
             }
             slotName = getSpecializedName(propName, targs);
+          } else {
+            // An overloaded method has a slot per overload.
+            slotName = interfaceCallSlotName(this.wasm, selfResolved, propName,
+                this.func.model.getResolvedOverload(call));
           }
         }
       }
@@ -6177,8 +6181,10 @@ export final class FunctionLowerer {
     if (selfResolved is InterfaceType) {
       let args = new Array<Expression>();
       args.push(idx.index);
+      let slotName = interfaceCallSlotName(this.wasm, selfResolved, '[]',
+          this.func.model.getResolvedOverload(idx));
       let result = this.#lowerInterfaceDispatch(
-          selfResolved, '[]', idx.object, args);
+          selfResolved, slotName, idx.object, args);
       return this.#reassertNonNull(result, this.#exprValType(idx));
     }
 
@@ -6774,8 +6780,10 @@ export final class FunctionLowerer {
       // Setter dispatch returns no value; assignment-as-expression on
       // an interface index would need the value replayed — the
       // verifier's produces-no-value check trips loudly if used.
+      let slotName = interfaceCallSlotName(this.wasm, selfResolved, '[]=',
+          this.func.model.getResolvedOverload(assign));
       return this.#lowerInterfaceDispatch(
-          selfResolved, '[]=', idx.object, dispatchArgs);
+          selfResolved, slotName, idx.object, dispatchArgs);
     }
 
     let receiver = this.#lowerExpression(idx.object);
@@ -6937,8 +6945,15 @@ export final class FunctionLowerer {
     if (vst == null || fatPtr == null) {
       this.#bail('interface not discovered');
     }
-    let readSlot = vst.fieldIndexByName('[]');
-    let writeSlot = vst.fieldIndexByName('[]=');
+    // An overloaded `[]` or `[]=` has a slot per overload: the read's
+    // overload is recorded on the index expression, the write's on the
+    // assignment.
+    let readName = interfaceCallSlotName(this.wasm, it, '[]',
+        this.func.model.getResolvedOverload(idx));
+    let writeName = interfaceCallSlotName(this.wasm, it, '[]=',
+        this.func.model.getResolvedOverload(assign));
+    let readSlot = vst.fieldIndexByName(readName);
+    let writeSlot = vst.fieldIndexByName(writeName);
     if (readSlot < 0 || writeSlot < 0) {
       this.#bail('interface member not in vtable');
     }
@@ -6975,13 +6990,13 @@ export final class FunctionLowerer {
     }
     let vt = this.b.emit(IrOp.iface_vtable, fatPtr.fields[1].type, recv, -1);
     let readCallee = this.b.emit(IrOp.struct_get, vst.fields[readSlot].type,
-        vt, this.b.addRef(new IrRefField(vst, '[]')));
+        vt, this.b.addRef(new IrRefField(vst, readName)));
     let current = this.b.callRef(
         readCallee, this.#twoValues(inst, index), readSig.returns[0]);
     var value = this.#combineCompound(current, assign, idx as Expression);
     value = this.#conformToSlot(value, writeSig.params[2], 'index write type');
     let writeCallee = this.b.emit(IrOp.struct_get, vst.fields[writeSlot].type,
-        vt, this.b.addRef(new IrRefField(vst, '[]=')));
+        vt, this.b.addRef(new IrRefField(vst, writeName)));
     this.b.callRef(writeCallee, this.#threeValues(inst, index, value), null);
     return value;
   }
