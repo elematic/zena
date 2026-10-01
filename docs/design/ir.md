@@ -928,7 +928,16 @@ Three sub-steps, all per-function, feeding the existing
    effects between def and use, rides the wasm operand stack and never
    touches a local (this reconstructs the expression trees that today's
    direct AST walk gets for free — without it, ZIR output would be
-   `local.set`/`local.get` soup). Everything else gets a local; locals are
+   `local.set`/`local.get` soup). A value whose consumer has earlier
+   operands that are parameters, values already in locals, or
+   constants streams too: those operands are read before the value's
+   producer runs, under everything it pushes, so `i >= this.length`
+   and `this.length = n + 1` keep the fresh value on the stack. The
+   reads are emitted at the start of the chain of pending producers
+   feeding the consumer, and the pending queue keeps each entry until
+   the consumer it is owed to claims it, so an inner consumer claims
+   its own operands over an outer consumer's early reads. Everything
+   else gets a local; locals are
    assigned per-type by linear scan over live ranges, reusing slots whose
    ranges ended (first-fit; no graph coloring needed since spilling doesn't
    exist). This subsumes today's ad-hoc scratch-local machinery

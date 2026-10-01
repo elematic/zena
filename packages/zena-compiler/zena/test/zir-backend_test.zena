@@ -1452,6 +1452,34 @@ export let tests = suite('zir backend', (): void => {
         'the getter dispatches through the method table on a re-asserted receiver');
   });
 
+  test('a fresh trailing operand streams past a parameter read', (ctx: TestContext): void => {
+    // `i - p.x`: the first operand is a parameter and the second is
+    // produced right before the subtraction. The parameter read is
+    // emitted before the field load, so the load's result stays on
+    // the stack — no local for it, no set/get pair. The same for a
+    // store: `p.y = i * 2` pushes `p` before the multiply.
+    let result = compileWithZir(
+        'class Point {\n' +
+        '  x: i32;\n' +
+        '  var y: i32;\n' +
+        '  new(this.x, this.y);\n' +
+        '}\n' +
+        'let sub = (p: Point, i: i32): i32 => i - p.x;\n' +
+        'let store = (p: Point, i: i32): void => { p.y = i * 2; };\n' +
+        'export let main = (): i32 => {\n' +
+        '  let p = new Point(3, 0);\n' +
+        '  store(p, 5);\n' +
+        '  return sub(p, 10) + p.y;\n' +
+        '};');
+    let locals = new Array<String>();
+    locals.push('local.set');
+    locals.push('local.tee');
+    assertFunctionOmits(result, '$sub', locals,
+        'the field load streams into the subtraction');
+    assertFunctionOmits(result, '$store', locals,
+        'the product streams into the store');
+  });
+
   test('simplify leaves division by a constant zero to trap', (ctx: TestContext): void => {
     // % lowers to i32.rem_s, which traps on a zero divisor. The
     // simplifier must not fold or delete it — the trap is the

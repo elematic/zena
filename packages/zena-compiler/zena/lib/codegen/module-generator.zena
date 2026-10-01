@@ -1061,8 +1061,21 @@ export final class ModuleGenerator {
     this.emitter.emitCodeSectionStart(wasm.functions.length);
     var bodyIndex = 0;
     for (let wasmFunc in wasm.functions) {
-      let (graduated, demoted) =
-          emitZirFunction(wasm, this.emitter, wasmFunc, bodies[bodyIndex]);
+      var graduated = 0;
+      var demoted = 0;
+      try {
+        let (g, d) = emitZirFunction(wasm, this.emitter, wasmFunc, bodies[bodyIndex]);
+        graduated = g;
+        demoted = d;
+      } catch (e) {
+        if (this.zirStats && e is Error) {
+          // The body as emission saw it: a schedule violation names
+          // value ids that mean nothing without it.
+          let fname = if (wasmFunc.name != null) wasmFunc.name as String else "<unnamed>";
+          throw new Error(e.message + "\n" + printIr(bodies[bodyIndex], fname));
+        }
+        throw e;
+      }
       bodyIndex += 1;
       zirGraduated += graduated;
       zirDemoted += demoted;

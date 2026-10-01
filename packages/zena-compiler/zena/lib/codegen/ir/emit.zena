@@ -83,16 +83,32 @@ export final class ZirFunctionEmitter {
    * and the queue resets once every pending value is claimed.
    */
   pendingStreamed = new Array<i32>();
-  var claimedStreamed = 0;
   /**
-   * Per streamed/teed producer: the consumer its on-stack copy is
-   * scheduled for. Only that consumer may claim it from the pending
-   * queue — an INTERVENING instruction that also uses the value (a
-   * teed producer's other consumer) must read the local instead, or
-   * it would consume a stack slot that sits below its own other
-   * operands and call with its arguments swapped.
+   * Per pending entry, the consumer it is owed to. Only that consumer
+   * may claim it — an INTERVENING instruction that also uses the
+   * value (a teed producer's other consumer) must read the local
+   * instead, or it would consume a stack slot that sits below its own
+   * other operands and call with its arguments swapped. Per entry
+   * rather than per value because one value can be read early for two
+   * consumers of the same chain (#prePush).
    */
+  pendingOwner = new Array<i32>();
+  /** Per streamed/teed producer: the consumer its on-stack copy is for. */
   #streamedFor = new Array<i32>();
+  /**
+   * Leading operands pushed early. `i >= this.length` has a parameter
+   * first and a value produced right before the compare second, so no
+   * leading run streams and the length takes a set/get round trip. A
+   * parameter, a value already in a local, or a constant can be read
+   * at any point, so the scheduler reads such leading operands BEFORE
+   * the trailing run's producers — at the start of the chain of
+   * pending producers feeding the run, so they sit under everything
+   * the run pushes — and the run streams. Keyed by that chain-start
+   * instruction: the values to push, in order, and the consumer each
+   * is owed to (an outer consumer's values come first, deepest).
+   */
+  #prePush = new Map<i32, GrowableArray<i32>>();
+  #prePushFor = new Map<i32, GrowableArray<i32>>();
   /**
    * Rematerialized constants: a numeric constant or ref.null gets no
    * local and emits NOTHING at its definition — every #pushValue of it
@@ -929,7 +945,31 @@ export final class ZirFunctionEmitter {
     for (var sc = 0; sc < count; sc += 1) {
       stackClaimed.push(false);
     }
-    for (let blk in body.blocks) {
+    // Where each instruction sits, for the early-read check below: a
+    // leading operand read before a chain must be defined before it.
+    let instBlock = new Array<i32>();
+    let instPos = new Array<i32>();
+    for (var ip = 0; ip < count; ip += 1) {
+      instBlock.push(-1);
+      instPos.push(-1);
+    }
+    for (var bi = 0; bi < body.blocks.length; bi += 1) {
+      let bl = body.blocks[bi];
+      for (var q = 0; q < bl.insts.length; q += 1) {
+        instBlock[bl.insts[q]] = bi;
+        instPos[bl.insts[q]] = q;
+      }
+    }
+    // Rematerialized constants and elision candidates emit nothing at
+    // their site, so they are invisible to emission adjacency, like
+    // nops.
+    let nonEmitting = (inst: i32): boolean => {
+      let op = body.op(inst);
+      return op == IrOp.nop || op == IrOp.mv_get || this.remat[inst] ||
+          this.#elisionCandidate[inst];
+    };
+    for (var bi = 0; bi < body.blocks.length; bi += 1) {
+      let blk = body.blocks[bi];
       let {insts} = blk;
       for (var j = 0; j < insts.length; j += 1) {
         let consumer = insts[j];
@@ -1017,7 +1057,112 @@ export final class ZirFunctionEmitter {
           }
           attempt += 1;
         }
+        if (matched || isIrTerminator(cop)) { continue; }
+        this.#scheduleTrailingRun(consumer, j, insts, bi, useCount,
+            stackClaimed, instBlock, instPos, nonEmitting);
       }
+    }
+  }
+
+  /**
+   * The second shape (#prePush): a TRAILING run of operands produced
+   * immediately before the consumer, with every operand before the run
+   * readable early — a constant, or a value defined before the chain
+   * of pending producers that feeds the run. The longest such run
+   * wins. A terminator never gets here: its later operands can be
+   * branch arguments, which are not pushed.
+   */
+  #scheduleTrailingRun(consumer: i32, j: i32, insts: Array<i32>,
+      blockIndex: i32, useCount: Array<i32>,
+      stackClaimed: GrowableArray<boolean>,
+      instBlock: Array<i32>, instPos: Array<i32>,
+      nonEmitting: (inst: i32) => boolean): void {
+    let {body} = this;
+    // The swap attempt above may have left `ops` reordered; decode
+    // the operands afresh.
+    let ops = new Array<i32>();
+    body.appendValueOperands(consumer, ops);
+    if (ops.length < 2) { return; }
+    var k = 1;
+    while (k < ops.length) {
+      var ok = true;
+      var scan = j;
+      var start = -1;
+      var oi = ops.length - 1;
+      while (oi >= k) {
+        var p = scan - 1;
+        while (p >= 0 && nonEmitting(insts[p])) {
+          p -= 1;
+        }
+        if (p < 0) { ok = false; break; }
+        let producer = insts[p];
+        if (producer != ops[oi] || !body.producesValue(producer) ||
+            body.op(producer) == IrOp.mv_get || stackClaimed[producer]) {
+          ok = false;
+          break;
+        }
+        scan = p;
+        oi -= 1;
+      }
+      if (ok) {
+        // Walk back over the pending producers feeding the run's first
+        // producer: the early reads go under all of them.
+        start = scan;
+        while (true) {
+          var p = start - 1;
+          while (p >= 0 && nonEmitting(insts[p])) {
+            p -= 1;
+          }
+          if (p < 0 || !(this.streamed[insts[p]] || this.teed[insts[p]])) {
+            break;
+          }
+          start = p;
+        }
+        for (var i = 0; i < k; i += 1) {
+          let v = ops[i];
+          if (this.remat[v]) { continue; }
+          // A streamed value has no local to read; a value defined at
+          // or after the chain start is not defined yet when the
+          // read would be emitted.
+          if (this.streamed[v] ||
+              (instBlock[v] == blockIndex && instPos[v] >= start)) {
+            ok = false;
+            break;
+          }
+        }
+      }
+      if (ok) {
+        let startInst = insts[start];
+        let pre = new Array<i32>();
+        let owners = new Array<i32>();
+        for (var i = 0; i < k; i += 1) {
+          pre.push(ops[i]);
+          owners.push(consumer);
+        }
+        // A chain already carrying early reads for an inner consumer
+        // (one whose result this run streams) keeps them after these:
+        // this consumer claims last, so its reads go deepest.
+        if (let (true, inner) = this.#prePush.get(startInst)) {
+          let innerOwners = this.#prePushFor[startInst];
+          for (var i = 0; i < inner.length; i += 1) {
+            pre.push(inner[i]);
+            owners.push(innerOwners[i]);
+          }
+        }
+        this.#prePush[startInst] = pre;
+        this.#prePushFor[startInst] = owners;
+        for (var s = k; s < ops.length; s += 1) {
+          stackClaimed[ops[s]] = true;
+          this.#streamedFor[ops[s]] = consumer;
+          if (useCount[ops[s]] == 1) {
+            this.streamed[ops[s]] = true;
+          } else {
+            this.teed[ops[s]] = true;
+          }
+        }
+        return;
+      }
+      k += 1;
     }
   }
 
@@ -1125,19 +1270,19 @@ export final class ZirFunctionEmitter {
 
   /** Loads a value at its declared IR type. */
   #pushValue(inst: i32): void {
-    if (this.claimedStreamed < this.pendingStreamed.length &&
-        this.pendingStreamed[this.claimedStreamed] == inst &&
-        this.#streamedFor[inst] == this.currentEmit) {
+    // The first pending value owed to this consumer. Entries owed to
+    // an OUTER consumer (early reads, #prePush) sit below it on the
+    // stack and stay queued until that consumer claims them.
+    var qi = 0;
+    while (qi < this.pendingStreamed.length &&
+        this.pendingOwner[qi] != this.currentEmit) {
+      qi += 1;
+    }
+    if (qi < this.pendingStreamed.length && this.pendingStreamed[qi] == inst) {
       // Already on the stack from a preceding instruction, at its
       // declared IR type — no local, no re-assert. Claims run
       // bottom-up: the consumer's operand order is the push order.
-      this.claimedStreamed += 1;
-      if (this.claimedStreamed == this.pendingStreamed.length) {
-        while (this.pendingStreamed.length > 0) {
-          this.pendingStreamed.pop();
-        }
-        this.claimedStreamed = 0;
-      }
+      this.#removePending(qi);
       return;
     }
     // A non-pending push while pendings are unclaimed is fine: a later
@@ -1146,13 +1291,29 @@ export final class ZirFunctionEmitter {
     // top — the pending prefix below is untouched. Only claiming out
     // of order or reading a streamed value that is not pending (the
     // localOf < 0 error below) is a schedule violation.
+    this.#emitRead(inst);
+  }
+
+  #removePending(index: i32): void {
+    for (var i = index + 1; i < this.pendingStreamed.length; i += 1) {
+      this.pendingStreamed[i - 1] = this.pendingStreamed[i];
+      this.pendingOwner[i - 1] = this.pendingOwner[i];
+    }
+    this.pendingStreamed.pop();
+    this.pendingOwner.pop();
+  }
+
+  /** Reads a value that is not on the stack: its constant, or its local. */
+  #emitRead(inst: i32): void {
     if (this.remat[inst]) {
       this.#emitConstInline(inst);
       return;
     }
     if (this.localOf[inst] < 0) {
       throw new Error('zir emit: streamed value %' + i32ToString(inst) +
-          ' read outside its schedule');
+          ' read outside its schedule by %' + i32ToString(this.currentEmit) +
+          ' (' + irOpName(this.body.op(this.currentEmit)) + ') in ' +
+          (this.func.name ?? '?'));
     }
     this.#trackGet(this.localOf[inst]);
     this.emitter.emitLocalGet(this.localOf[inst]);
@@ -1389,27 +1550,26 @@ export final class ZirFunctionEmitter {
     this.#flushPendingReturn();
     let {body} = this;
     let op = body.op(inst);
-    if (this.claimedStreamed < this.pendingStreamed.length) {
+    if (this.pendingStreamed.length > 0) {
       // ret / ret_multi / throw / br_if push their leading decoded
       // operands first, through #pushValue, which claims pending
       // values in order. Anything else with pending values is a
       // schedule violation.
       let operands = new Array<i32>();
       body.appendValueOperands(inst, operands);
-      let pendingCount = this.pendingStreamed.length - this.claimedStreamed;
+      let pendingCount = this.pendingStreamed.length;
       var ok = this.#streamsFirstOperand(op) &&
           operands.length >= pendingCount;
       if (ok) {
         for (var pi = 0; pi < pendingCount; pi += 1) {
-          if (operands[pi] !=
-              this.pendingStreamed[this.claimedStreamed + pi]) {
+          if (operands[pi] != this.pendingStreamed[pi]) {
             ok = false;
           }
         }
       }
       if (!ok) {
         throw new Error('zir emit: streamed value %' +
-            i32ToString(this.pendingStreamed[this.claimedStreamed]) +
+            i32ToString(this.pendingStreamed[0]) +
             ' left on stack at terminator');
       }
     }
@@ -1684,6 +1844,16 @@ export final class ZirFunctionEmitter {
     this.#flushPendingReturn();
     let {body} = this;
     let op = body.op(inst);
+    // Early reads scheduled at this chain start: pushed before the
+    // chain's own code, owed to the consumers that read past them.
+    if (let (true, pre) = this.#prePush.get(inst)) {
+      let owners = this.#prePushFor[inst];
+      for (var i = 0; i < pre.length; i += 1) {
+        this.#emitRead(pre[i]);
+        this.pendingStreamed.push(pre[i]);
+        this.pendingOwner.push(owners[i]);
+      }
+    }
     this.currentEmit = inst;
     match (op) {
       case IrOp.nop: { return; }
@@ -1852,6 +2022,7 @@ export final class ZirFunctionEmitter {
     if (body.producesValue(inst)) {
       if (this.streamed[inst]) {
         this.pendingStreamed.push(inst);
+        this.pendingOwner.push(this.#streamedFor[inst]);
       } else if (this.teed[inst]) {
         this.#markLocalSet(this.localOf[inst]);
         this.emitter.emitLocalTee(this.localOf[inst]);
@@ -1862,6 +2033,7 @@ export final class ZirFunctionEmitter {
           this.emitter.emitRemovableRefAsNonNull(this.localOf[inst]);
         }
         this.pendingStreamed.push(inst);
+        this.pendingOwner.push(this.#streamedFor[inst]);
       } else {
         this.#setLocal(this.localOf[inst]);
       }

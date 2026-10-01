@@ -1527,8 +1527,8 @@ byte budgets, to be moved DOWN only:
 | `test-files/minimal.zena`      | `return 42` — no strings, no allocation, no calls                                              |    37 |     37 |
 | `test-files/array-sum.zena`    | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) |   119 |    130 |
 | `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports                     |   399 |    420 |
-| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime | 6,356 | 6,500 |
-| `test-files/component/print.zena` | three lines written to stdout and stderr, as a whole component: stdio, and the runtime memory module's allocator | 10,113 | 10,500 |
+| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime | 4,995 | 5,100 |
+| `test-files/component/print.zena` | three lines written to stdout and stderr, as a whole component: stdio, and the runtime memory module's allocator | 8,361 | 8,500 |
 
 The first three are `freestanding` core modules. The last two are
 components, because the event loop exists only there.
@@ -1563,6 +1563,14 @@ when the allocator was, and it brought every method a map has.
 aligned address, so an aligned block frees like any other, and the
 runtime memory module's `realloc` honors the alignment it is given. The
 program's allocator passes the alignment through and keeps no table.
+
+Keeping a method-table slot only when a call can dispatch through it
+(#697) then took the two to 5,270 and 8,737 bytes, and two emission
+changes (#703) to 4,995 and 8,361: method receivers are typed non-null,
+so `this.field` reads no longer re-assert, and a value produced right
+before its consumer streams even when the consumer's earlier operands
+are parameters or values already in locals, since those are read
+early instead of the fresh value taking a local (ir.md §12, step 3).
 
 Minimal alone cannot notice a regression in generic specialization,
 because it specializes nothing — hence the other two. A budget left
