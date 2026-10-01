@@ -3,7 +3,7 @@
 //! The commands are rounded quads, glyph runs, and clip push/pop. Clips are
 //! what enforce the compositor's part of the capability model: the runtime
 //! emits one for each component's bounds, and the rasterizer discards
-//! anything outside it. §8.3 of `docs/design/zenafx-ui.md`.
+//! anything outside it. "Paint" in `docs/design/zenafx-ui.md`.
 
 use vello_cpu::color::{AlphaColor, PremulRgba8, Srgb};
 use vello_cpu::kurbo::{Affine, BezPath, Rect as KRect, RoundedRect, Shape, Stroke};
