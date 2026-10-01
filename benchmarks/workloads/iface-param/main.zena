@@ -8,6 +8,23 @@
 // The callee has two loops and two call sites, so it stays a real
 // function: the inliner's budgets do not take it, and the pack is
 // made once outside the loop so the argument rule does not fire.
+// The arrays are built once, at module level, so each timed call of
+// main runs only the sum loops: building a 1024-element array from a
+// literal is an array.new_fixed with 1024 operands, which wasmtime
+// runs at about a microsecond per element — a cost of its own, kept
+// out of this measurement.
+let makeSrc = (): FixedArray<i32> => {
+  let arr = new FixedArray<i32>(1024, 0);
+  var i = 0;
+  while (i < 1024) {
+    arr[i] = i;
+    i += 1;
+  }
+  return arr;
+};
+let src = makeSrc();
+let view: Array<i32> = src;
+
 let sum = (xs: Array<i32>, k: i32): i32 => {
   var s = 0;
   var i = 0;
@@ -24,17 +41,10 @@ let sum = (xs: Array<i32>, k: i32): i32 => {
 };
 
 export let main = (): i32 => {
-  let src = new FixedArray<i32>(1024, 0);
-  var i = 0;
-  while (i < 1024) {
-    src[i] = i;
-    i += 1;
-  }
-  let xs: Array<i32> = src;
-  var total = sum(xs, 7);
+  var total = sum(view, 7);
   var round = 0;
   while (round < 2000) {
-    total = (total + sum(xs, round)) & 16777215;
+    total = (total + sum(view, round)) & 16777215;
     round += 1;
   }
   return total & 255;

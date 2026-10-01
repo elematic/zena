@@ -1,6 +1,22 @@
 // The iface-param workload with the callee taking FixedArray<i32>
 // directly: same loops, same arithmetic, every access a plain array
 // read. iface-param compares itself against this build.
+// The arrays are built once, at module level, so each timed call of
+// main runs only the sum loops: building a 1024-element array from a
+// literal is an array.new_fixed with 1024 operands, which wasmtime
+// runs at about a microsecond per element — a cost of its own, kept
+// out of this measurement.
+let makeSrc = (): FixedArray<i32> => {
+  let arr = new FixedArray<i32>(1024, 0);
+  var i = 0;
+  while (i < 1024) {
+    arr[i] = i;
+    i += 1;
+  }
+  return arr;
+};
+let src = makeSrc();
+
 let sum = (xs: FixedArray<i32>, k: i32): i32 => {
   var s = 0;
   var i = 0;
@@ -17,12 +33,6 @@ let sum = (xs: FixedArray<i32>, k: i32): i32 => {
 };
 
 export let main = (): i32 => {
-  let src = new FixedArray<i32>(1024, 0);
-  var i = 0;
-  while (i < 1024) {
-    src[i] = i;
-    i += 1;
-  }
   var total = sum(src, 7);
   var round = 0;
   while (round < 2000) {

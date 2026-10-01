@@ -37,25 +37,22 @@ npm run test:execution -w @zena-lang/zena-compiler
 
 ## Benchmarking
 
-We have a micro-benchmarking suite to measure execution speed of Zena code (under `wasmtime` and Node.js) against native JS.
-
-To run the full suite:
-
-```bash
-npm run benchmark -w @zena-lang/zena-compiler
-```
-
-### Filtering and Options
-
-You can pass flags to the benchmark script to select specific suites or filter by test name:
-
-- `--compiler`: Run only compiler compilation tests (comparing self-hosted and bootstrap compiler speeds).
-- `--strings`: Run only the string micro-benchmark suite.
-- `--filter <pattern>` (or `-f <pattern>`): Filter benchmarks to those whose names match the pattern.
-- `--runs <N>` (or `-r <N>`): Number of iterations per benchmark target (defaults to 5).
-
-Example to run only the `StringBuilder` benchmarks:
+Benchmarks live at the repository root under `benchmarks/workloads/`, one
+small program per workload, built at `-O2` and timed by `zena-cli bench`
+with statistical sampling; `benchmarks/README.md` lists them. Several are
+pairs that set an abstract form of a computation against the same
+computation written concretely, so the optimizer's remaining gap is the
+number reported.
 
 ```bash
-npm run benchmark -w @zena-lang/zena-compiler -- --filter StringBuilder
+npm run bench                                   # build every workload, report sizes
+npm run bench:speed                             # time every workload
+npm run bench -- --build --speed poly-param     # one workload
 ```
+
+To time the compiler itself on a source file:
+
+```bash
+./target/release/zena-cli build <file>.zena -o out.wasm --time --no-cache
+```
+

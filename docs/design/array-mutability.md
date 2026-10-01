@@ -1,33 +1,35 @@
 # Array Element Mutability
 
-**Status: Proposed, and gated.** The representation change is small and
-mostly already plumbed. What blocks it is performance: the change removes
-a free abstraction and replaces it with one that currently costs about
-35× on element access. The optimizer work in
-[Required optimizations](#required-optimizations) has to land first, and
-the [Acceptance gate](#acceptance-gate) defines what "first" means.
+**Status: Landed.** Bare `array<T>` is the immutable-element `(array T)`
+and `array<var T>` the mutable `(array (mut T))`; array literals are
+`ImmutableArray` unless the context wants mutable elements; the
+optimizer work in [Required optimizations](#required-optimizations) has
+landed and the [Acceptance gate](#acceptance-gate) records how each
+criterion was measured. The split landed before the optimizer work
+rather than after it, because `Array<T>` had already become an
+interface and so the interface-dispatch cost this document worries
+about was already being paid; the gate then tracked the optimizer
+closing it.
 
-The representation change itself has landed: `ArrayType` carries
-`elementsMutable`, bare `array<T>` resolves to the immutable-element
-`(array T)` with `array<var T>` the mutable `(array (mut T))`, array
-literals default to `ImmutableArray` unless the context wants mutable
-elements, and `ImmutableArray` sits on the immutable representation
-(its `from` is gone; `map` returns a `FixedArray`). The landing took
-three steps because the stdlib is compiled by the pinned bootstrap,
-which could not parse `array<var T>`: the machinery and syntax first,
-then a reseed, then the stdlib migration and the default flip.
+The landing took three steps because the stdlib is compiled by the
+pinned bootstrap, which could not parse `array<var T>`: the machinery
+and syntax first, then a reseed, then the stdlib migration and the
+default flip. `ImmutableArray` has no `from` (nothing can fill an
+immutable array after allocation) and its `map` returns a `FixedArray`;
+`fixed([...])` and `growable([...])` give a literal a mutable home in
+expression position.
 
-What remains gated on the optimizer work is the performance story for
-representation-polymorphic code — the [Required
-optimizations](#required-optimizations) and [Acceptance
-gate](#acceptance-gate) below.
+Still open: [covariance](#covariance) for immutable arrays, the
+immutable globals and final-struct items under
+[Other mutability sites](#other-mutability-sites), and the naming
+question.
 
 ## Overview
 
-`ImmutableArray<T>` and `FixedArray<T>` are both declared
-`extension class ... on array<T>`. An extension class is erased to its
-`on` type during code generation, so both compile to the same Wasm type
-index and a cast converts freely between them:
+Before the split, `ImmutableArray<T>` and `FixedArray<T>` were both
+declared `extension class ... on array<T>`. An extension class is erased
+to its `on` type during code generation, so both compiled to the same
+Wasm type index and a cast converted freely between them:
 
 ```zena
 let frozen = [1, 2, 3] as ImmutableArray<i32>;
@@ -41,24 +43,24 @@ runtime rather than by convention, and it enables covariance,
 data-segment-backed constant tables, and loads the engine can treat as
 pure.
 
-It also has a cost that is easy to miss. Today one Wasm type serves every
-array, so a function taking `FixedArray<T>` accepts an `ImmutableArray<T>`
+It also has a cost that is easy to miss. With one Wasm type serving every
+array, a function taking `FixedArray<T>` accepted an `ImmutableArray<T>`
 and vice versa, for free. After the split they are unrelated types, and a
 function that must accept both has to be generic or interface-typed.
-Interface-typed array access is currently about 35× slower than direct
-access. The split therefore converts an abstraction that costs nothing
-into one that costs a great deal, unless the optimizer closes the gap
-first.
+Interface-typed array access cost about 35× direct access when this was
+written. The split therefore converts an abstraction that costs nothing
+into one that costs a great deal, unless the optimizer closes the gap.
 
-## Current representation
+## Representation before the split
 
 `typeToValType` maps an extension class to its `on` type
 (`packages/zena-compiler/zena/lib/codegen/type-mapping.zena`), so
-`array<T>`, `FixedArray<T>`, and `ImmutableArray<T>` are one Wasm type.
-The cast above emits no instructions because there is nothing to check.
+`array<T>`, `FixedArray<T>`, and `ImmutableArray<T>` were one Wasm type.
+The cast above emitted no instructions because there was nothing to
+check.
 
-The code generation plumbing for immutable arrays already exists and is
-unused:
+The code generation plumbing for immutable arrays already existed and
+was unused:
 
 - `WasmArray` carries `isMutable` (`codegen/wasm-module.zena:343`)
 - `ArrayKey` includes it in the intern key
@@ -279,11 +281,10 @@ byte tables, and `array.new` or `array.new_default` for uniform fill.
 
 ### Measurements
 
-From `docs/benchmarks/2026-08-05-pre-retirement-baseline.md`, iterating
-10,000,000 elements. This is the only recorded run in the repository and
-predates three weeks of codegen work, so the absolute figures want
-re-measuring; the generated code below shows why the gap has the shape
-the benchmark reports.
+The figures that motivated this section, from
+`docs/benchmarks/2026-08-05-pre-retirement-baseline.md`, iterating
+10,000,000 elements with the micro-benchmark suite that existed at the
+time:
 
 | Benchmark                            | wasmtime  | node     |
 | ------------------------------------ | --------- | -------- |
@@ -294,10 +295,12 @@ the benchmark reports.
 | for-in / growable array              | 9.82 ms   | 2.98 ms  |
 | for-in / growable array (interface)  | 317.10 ms | 27.04 ms |
 
-The gap is dispatch, not the array operation. The interface trampoline
-for `array.get`, `array.set`, and `array.len` already inlines the
+The gap was dispatch, not the array operation. The interface trampoline
+for `array.get`, `array.set`, and `array.len` already inlined the
 operation instead of calling through to a method body
-(`codegen/ir/lowering.zena`, `synthesizeInterfaceTrampoline`).
+(`codegen/ir/lowering.zena`, `synthesizeInterfaceTrampoline`). Where the
+gap stands after the optimizer work is in the
+[Acceptance gate](#acceptance-gate).
 
 ### Generated code
 
@@ -446,37 +449,59 @@ returning `Array<T>`, a value crossing a module boundary.
 
 ## Acceptance gate
 
-The split lands only if the common case reaches parity with today's
-design. "Today's design" is the commit immediately before the split;
-"common case" is code that reads and iterates arrays without caring which
-representation it was handed.
+The split lands only if the common case reaches parity with the design
+before it. "Common case" is code that reads and iterates arrays without
+caring which representation it was handed.
 
-Measured with `npm run benchmark -w @zena-lang/zena-compiler` against a
-baseline captured on that parent commit:
+Measured with the workload pairs under `benchmarks/workloads/`
+(`npm run bench -- --build --speed <workload>`; each is built at `-O2`
+and timed by `zena-cli bench`), against a concretely typed baseline in
+the same run:
 
-1. **No concrete-typed regression.** `LoopForInArray`, `LoopWhileArray`,
-   `LoopForInImmutableArray`, and `LoopForInGrowableArray` stay within
-   noise of baseline.
-2. **Representation-polymorphic parity.** A loop whose parameter is
-   typed so that it accepts both a `FixedArray<i32>` and an
-   `ImmutableArray<i32>` runs within noise of the same loop typed
-   concretely. This holds for the generic-bound form by construction once
-   operator lookup lands, and is what the optimizer work has to achieve
-   for the interface form.
-3. **Interface dispatch closes most of the gap.** With one reachable
-   implementer, the interface forms should match their concrete
-   counterparts, since devirtualization plus inlining reduces them to the
-   same code. With several implementers, loop-invariant hoisting and
-   scalar replacement should remove four of the six per-iteration loads.
+1. **No concrete-typed regression.** `concrete-param` (a two-loop sum
+   over a `FixedArray<i32>`) and `immutable-param` (the same loops over
+   an `ImmutableArray<i32>`) run at the same speed: the callee bodies
+   are byte-identical apart from the array type, and the engine treats
+   `(array i32)` loads no differently from `(array (mut i32))` loads.
+2. **Representation-polymorphic parity.** `generic-param` — the same
+   sum as `<A extends Array<i32>>`, called with a `FixedArray` for half
+   the rounds and an `ImmutableArray` for the other half — runs at the
+   speed of the concrete forms. Each call site specializes the callee
+   to its argument, so there is nothing to dispatch; this is the
+   signature for code that must accept every representation.
+3. **Interface dispatch closes the gap with one implementer, and not
+   with two.** `iface-param` (the sum taking `Array<i32>`, called with a
+   `FixedArray`) matches `concrete-param`: devirtualization resolves the
+   one live implementation and the accesses become direct. `poly-param`
+   (the same, called with both representations) does not: two
+   implementations are live, the calls stay indirect, and it runs about
+   2.8× slower than the direct forms. Per-class cloning of the callee
+   is the optimization that regime still needs.
 4. **Binary size.** The hello-world figure tracked in
-   `docs/design/binary-size.md` does not regress beyond type-section
+   `docs/design/binary-size.md` did not regress beyond type-section
    growth.
-5. **Self-compilation.** `test:fixpoint` still passes and self-compile
-   time does not regress materially.
+5. **Self-compilation.** `test:fixpoint` passes and self-compile time
+   did not regress materially.
 
-Thresholds for "within noise" and for criterion 3 need agreement before
-the work starts. The benchmarks in criterion 2 do not exist yet and
-should be added first, so the gate has a baseline to measure against.
+Measured on 2026-10-01 (wasmtime 47, a shared machine at load 3–5, so
+only the relative figures mean anything; each is the mean of 1,700+
+samples with a 95% confidence interval under ±0.04 ms):
+
+| Workload                       | mean     | relative to `concrete-param` |
+| ------------------------------ | -------- | ---------------------------- |
+| `concrete-param` (FixedArray)  | 5.06 ms  | —                            |
+| `immutable-param`              | 5.08 ms  | within noise                 |
+| `generic-param` (both, bound)  | 5.03 ms  | within noise                 |
+| `iface-param` (one implementer)| 5.04 ms  | within noise                 |
+| `poly-param` (two implementers)| 14.19 ms | 2.8× slower                  |
+
+One measurement trap worth recording: the workloads build their arrays
+once at module level. Built inside the timed `main`, a 1,024-element
+literal — an `array.new_fixed` with 1,024 operands — added about 0.9 ms
+per call, around a microsecond per element, and made the immutable
+array look 20% slower than the loop-filled mutable one when the loops
+were identical. Large constant literals want `array.new_data`; that is
+issue #706.
 
 ## Other mutability sites
 

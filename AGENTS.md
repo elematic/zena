@@ -221,15 +221,20 @@ wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main
 
 ### Running Benchmarks
 
-We have a micro-benchmarking suite that compares Zena's execution speed (under `wasmtime` and Node.js) with native JS.
-
-To run the benchmarks:
+Benchmarks are workload pairs under `benchmarks/workloads/`: each is a
+small program built at `-O2`, and the pairs set an abstract form (an
+interface-typed parameter, `map` over a closure, the iterator protocol)
+against the same computation written concretely, so the gap is the
+optimizer's to close. `benchmarks/README.md` lists them.
 
 ```bash
-npm run benchmark -w @zena-lang/zena-compiler
+npm run bench                       # build every workload and report binary sizes
+npm run bench:speed                 # time them (zena-cli bench, statistical sampling)
+npm run bench -- --build --speed poly-param   # one workload, build + time
 ```
 
-You can filter benchmarks (e.g. `--filter StringBuilder`) or specify iteration runs (`--runs 1`).
+Timings on a loaded machine are noise; check `uptime` before trusting a
+number.
 
 ### Debugging WASM Crashes
 

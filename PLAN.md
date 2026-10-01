@@ -179,7 +179,7 @@ This document tracks completed work and planned features. For project instructio
     accumulating across a shared compiler rather than any per-site cost.
     See "Compile-time cost of the Step protocol" in
     `docs/design/async-iteration.md` and the `iter-*` compile benchmarks
-    (`npm run benchmark -w @zena-lang/zena-compiler -- --compiler --filter iter`). 4. **`await` on tuple and record literals of futures** —
+    (`zena-cli build <file> -o out.wasm --time --no-cache`). 4. **`await` on tuple and record literals of futures** —
     `let (a, b) = await (getA(), getB());` and
     `let {x, y} = await {x: fx(), y: fy()};` — the typed form of
     JS's `all`/`allKeyed`/`await*`, heterogeneous and with no

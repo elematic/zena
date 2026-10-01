@@ -209,17 +209,20 @@ and inspection utilities.
 
 ### Running benchmarks
 
-The Zena repository includes a micro-benchmarking suite that compares Zena's
-execution performance against native JavaScript under Node.js and Wasmtime:
+The Zena repository benchmarks workload pairs under `benchmarks/workloads/`:
+each pair sets an abstract form of a computation (an interface-typed
+parameter, `map` over a closure, the iterator protocol) against the same
+computation written by hand, built at `-O2` and timed with statistical
+sampling, alongside AssemblyScript and Rust builds of the same workloads.
 
 ```bash
-npm run benchmark -w @zena-lang/zena-compiler
+npm run bench:speed
 ```
 
-To filter for specific benchmarks:
+To build and time one workload:
 
 ```bash
-npm run benchmark -w @zena-lang/zena-compiler -- --filter StringBuilder
+npm run bench -- --build --speed iface-param
 ```
 
 ### Inspecting WebAssembly bytecode
