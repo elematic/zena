@@ -215,14 +215,15 @@ export let arrayElementRead = (cx: LoweringContext, value: i32, index: i32): i32
       let vstOpt = asWasmStruct(st.fields[1].type);
       if (vstOpt != null) {
         let vst = vstOpt;
-        let slot = vst.fieldIndexByName('[]');
-        if (slot >= 0) {
+        let slotName = indexReadSlotName(vst);
+        if (slotName != null) {
+          let slot = vst.fieldIndexByName(slotName);
           let sigOpt = asWasmSignature(vst.fields[slot].type);
           if (sigOpt != null) {
             let sig = sigOpt;
             let inst = cx.b.emit(IrOp.iface_instance, st.fields[0].type, value, -1);
             let vt = cx.b.emit(IrOp.iface_vtable, st.fields[1].type, value, -1);
-            let fieldRef = cx.b.addRef(new IrRefField(vst, '[]'));
+            let fieldRef = cx.b.addRef(new IrRefField(vst, slotName));
             let callee = cx.b.emit(IrOp.struct_get, vst.fields[slot].type, vt, fieldRef);
             let idxVal = cx.b.constI32(index, new ValTypeI32());
             let args = twoValues(inst, idxVal);
@@ -234,6 +235,29 @@ export let arrayElementRead = (cx: LoweringContext, value: i32, index: i32): i32
     }
   }
   bail(cx, 'array element read');
+};
+
+/**
+ * The name of the interface vtable slot that reads one element by index,
+ * or null when there is none. When `[]` is overloaded (`Array<T>` also
+ * slices by range), each overload has its own slot, named by its
+ * signature key, and this is the one whose parameter is an i32.
+ */
+let indexReadSlotName = (vtable: WasmStruct): String | null => {
+  if (vtable.fieldIndexByName('[]') >= 0) {
+    return '[]';
+  }
+  for (let field in vtable.fields) {
+    let {name} = field;
+    if (name != null && name.startsWith('[]$')) {
+      let signature = asWasmSignature(field.type);
+      if (signature != null && signature.params.length == 2 &&
+          signature.params[1] is ValTypeI32) {
+        return name;
+      }
+    }
+  }
+  return null;
 };
 
 /** Slices an array from `startIndex` to the end, returning a new FixedArray. */
@@ -262,8 +286,9 @@ export let arraySliceRead = (cx: LoweringContext, value: i32, startIndex: i32): 
         let vstOpt = asWasmStruct(st.fields[1].type);
         if (vstOpt != null) {
           let vst = vstOpt;
-          let slot = vst.fieldIndexByName('[]');
-          if (slot >= 0) {
+          let slotName = indexReadSlotName(vst);
+          if (slotName != null) {
+            let slot = vst.fieldIndexByName(slotName);
             let sig = asWasmSignature(vst.fields[slot].type);
             if (sig != null && sig.returns.length > 0) {
               // An interface-typed receiver hides which array backs it:
