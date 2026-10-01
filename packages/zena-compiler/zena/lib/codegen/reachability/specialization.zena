@@ -1636,10 +1636,14 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
+    // A mixin application's intermediate class gets no methods of its own,
+    // with or without a superclass: each class that applies the mixin
+    // compiles its own copies (the mixin chain walk below), so a mixin
+    // body's `this` is always a class that implements the mixin's `on`
+    // interfaces.
     let cdDecl = if (cd is ClassDeclaration) cd else null;
-    let mdDecl = if (cd is MixinDeclaration) cd else null;
     let isErasedCt = containsErasedType(ct as Type);
-    if ((cdDecl != null || (mdDecl != null && ct.superType != null)) && !isErasedCt) {
+    if (cdDecl != null && !isErasedCt) {
       let allMembers = new Array<Node>();
       let allScopes = new Array<String>();
       let allModels = new Array<SemanticModel>();
@@ -1693,30 +1697,6 @@ export final class Specializer implements SpecializerInterface {
           allModels.push(sourceModel);
           allDecls.push(cdDecl);
           allDeclaringTypes.push(null);
-        }
-      } else if (mdDecl != null) {
-        for (let composed in ct.mixins) {
-          let compLookupId = (composed.genericSource ?? composed).symbolId;
-          if (this.pass.classDecls.has(compLookupId)) {
-            let cDecl = this.pass.classDecls[compLookupId];
-            if (cDecl is MixinDeclaration) {
-              let compModel = if (this.pass.classModels.has(compLookupId)) this.pass.classModels[compLookupId] else sourceModel;
-              for (let ms in (cDecl as MixinDeclaration).body) {
-                allMembers.push(ms);
-                allScopes.push(composed.privateScopeKey ?? "");
-                allModels.push(compModel);
-                allDecls.push(cDecl);
-                allDeclaringTypes.push(ct);
-              }
-            }
-          }
-        }
-        for (let ms in mdDecl.body) {
-          allMembers.push(ms);
-          allScopes.push(ct.privateScopeKey ?? "");
-          allModels.push(sourceModel);
-          allDecls.push(mdDecl);
-          allDeclaringTypes.push(ct);
         }
       }
 

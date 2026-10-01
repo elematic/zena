@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 1231
+// Super calls through a mixin applied over a superclass: a class that
+// overrides a mixin method reaches the mixin's version with `super`, and a
+// mixin method reaches the superclass's version with `super`.
+class Base {
+  value(): i32 {
+    return 1;
+  }
+}
+
+mixin Plus10 on Base {
+  value(): i32 {
+    return super.value() + 10;
+  }
+
+  label(): i32 {
+    return 200;
+  }
+}
+
+class Middle extends Base with Plus10 {
+  new() : super();
+
+  label(): i32 {
+    return super.label() + 1000;
+  }
+}
+
+final class Leaf extends Middle {
+  new() : super();
+
+  value(): i32 {
+    return super.value() + 20;
+  }
+}
+
+export let main = (): i32 => {
+  let leaf = new Leaf();
+  let middle: Middle = leaf;
+  // 31 from the value chain, 1200 from the label chain.
+  return middle.value() + middle.label();
+};

@@ -1,0 +1,46 @@
+// @mode: run
+// @result: 4
+// @skip: `super.wrap()` reaches the copy of `wrap` compiled for the class
+// that applies the mixin (`Base$Wrap`), whose `this` has no `Sized`
+// vtable: "interface vtable global not found @Base$Wrap.wrap"
+// An override that reaches a mixin method through `super`, where the mixin
+// method passes `this` on as the mixin's `on` interface, with the mixin
+// applied over a superclass.
+interface Sized {
+  size(): i32;
+}
+
+final class Holder {
+  #item: Sized;
+
+  new(item: Sized) : #item = item;
+
+  read(): i32 {
+    return this.#item.size();
+  }
+}
+
+mixin Wrap on Sized {
+  wrap(): Holder {
+    return new Holder(this);
+  }
+}
+
+class Base {}
+
+final class Four extends Base with Wrap implements Sized {
+  new() : super();
+
+  size(): i32 {
+    return 4;
+  }
+
+  wrap(): Holder {
+    return super.wrap();
+  }
+}
+
+export let main = (): i32 => {
+  let four = new Four();
+  return four.wrap().read();
+};

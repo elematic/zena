@@ -1,0 +1,42 @@
+// @mode: run
+// @result: 6
+// A class that extends a superclass can mix in `IterableUtils` and
+// implement `Iterable`, and iterates like any other iterable.
+import { IterableUtils } from 'zena:core';
+import { Step } from 'zena:async';
+
+class Base {}
+
+final class Counter extends Base with IterableUtils<i32> implements Iterable<i32> {
+  end: i32;
+
+  new(end: i32) : end = end, super();
+
+  [Iterable.iterator](): Iterator<i32> {
+    return new CounterIterator(this.end);
+  }
+}
+
+final class CounterIterator implements Iterator<i32> {
+  var #next: i32;
+  #end: i32;
+
+  new(end: i32) : #next = 0, #end = end;
+
+  next(): Step<i32> {
+    if (this.#next < this.#end) {
+      let value = this.#next;
+      this.#next += 1;
+      return (1, value, _);
+    }
+    return (0, _, _);
+  }
+}
+
+export let main = (): i32 => {
+  var total = 0;
+  for (let i in new Counter(4)) {
+    total += i;
+  }
+  return total;
+};

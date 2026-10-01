@@ -1,0 +1,65 @@
+// @mode: run
+// @result: 42
+// A distributed variant of a sealed class can be final, take a mixin and
+// implement an interface, and a parameter typed as the sealed base accepts
+// every variant and matches on them exhaustively. This is the shape a
+// sealed `Range` over `BoundedRange`, `FromRange`, `ToRange` and
+// `FullRange` would have.
+import { IterableUtils } from 'zena:core';
+import { Step } from 'zena:async';
+
+sealed class Span {
+  case Closed, Open, Everything
+}
+
+final class Closed extends Span with IterableUtils<i32> implements Iterable<i32> {
+  start: i32;
+  end: i32;
+
+  new(start: i32, end: i32) : start = start, end = end, super();
+
+  [Iterable.iterator](): Iterator<i32> {
+    return new ClosedIterator(this.start, this.end);
+  }
+}
+
+final class Open extends Span {
+  start: i32;
+
+  new(start: i32) : start = start, super();
+}
+
+final class Everything extends Span {}
+
+final class ClosedIterator implements Iterator<i32> {
+  var #next: i32;
+  #end: i32;
+
+  new(start: i32, end: i32) : #next = start, #end = end;
+
+  next(): Step<i32> {
+    if (this.#next < this.#end) {
+      let value = this.#next;
+      this.#next += 1;
+      return (1, value, _);
+    }
+    return (0, _, _);
+  }
+}
+
+let width = (span: Span, length: i32): i32 => match (span) {
+  case Closed {start, end}: end - start
+  case Open {start}: length - start
+  case Everything {}: length
+};
+
+export let main = (): i32 => {
+  var total = 0;
+  for (let i in new Closed(0, 4)) {
+    total += i;                                 // 6
+  }
+  total += width(new Closed(2, 5), 10);         // 3
+  total += width(new Open(7), 10);              // 3
+  total += width(new Everything(), 30);         // 30
+  return total;
+};
