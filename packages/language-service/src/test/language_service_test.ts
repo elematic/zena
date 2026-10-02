@@ -219,9 +219,7 @@ export let main = () => {
   }
 }
 
-class C with M {
-  new();
-}
+class C with M {}
 
 export let main = (): i32 => {
   let c = new C();

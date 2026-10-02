@@ -869,19 +869,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         // class arm must not run for it.
         let calleeNodeT = model.getNodeType(n.callee);
         if (neType is ClassType && !(calleeNodeT is InterfaceType)) {
-          var resolved = resolveType(neType) as ClassType;
-          // A body constructs what its EMISSION constructs. The erasure
-          // of a generic function is emitted and runs, so its
-          // `new Full<T>` really does build a `Full<erased>` and really
-          // does need that constructor ('constructor missing for
-          // Full_s867_erased'). A TEMPLATE's body is never emitted, so
-          // erasing there would fabricate a class instead of finding
-          // one — which is the whole difference between construction
-          // and the mere MENTION gated in discoverType.
-          if (!isConcrete(resolved) && this.pass.walkingTemplateOf == null) {
-            resolved = eraseTypeParameters(this.pass.wasm, resolved) as ClassType;
+          let resolved = resolveType(neType) as ClassType;
+          if (isConcrete(resolved) && !containsErasedType(resolved as Type)) {
+            specializer.instantiateClassType(resolved, model);
           }
-          specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved, ctorMethodKey);
         }
         // `new I<args>.name(...)` on an interface: the constructor is a
@@ -1087,7 +1078,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.pass.ctorDemandedGenerics.add((dc.genericSource ?? dc).symbolId);
       demandCt = dc.superType;
     }
-    if (isConcrete(resolved)) {
+    if (isConcrete(resolved) && !containsErasedType(resolved as Type)) {
       this.pass.notePendingMemberReach(
           getClassMethodKey(getClassKey(resolved), ctorMethodKey));
     }
@@ -1880,19 +1871,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         // class arm must not run for it.
         let calleeNodeT = model.getNodeType(n.callee);
         if (neType is ClassType && !(calleeNodeT is InterfaceType)) {
-          var resolved = resolveType(neType) as ClassType;
-          // A body constructs what its EMISSION constructs. The erasure
-          // of a generic function is emitted and runs, so its
-          // `new Full<T>` really does build a `Full<erased>` and really
-          // does need that constructor ('constructor missing for
-          // Full_s867_erased'). A TEMPLATE's body is never emitted, so
-          // erasing there would fabricate a class instead of finding
-          // one — which is the whole difference between construction
-          // and the mere MENTION gated in discoverType.
-          if (!isConcrete(resolved) && this.pass.walkingTemplateOf == null) {
-            resolved = eraseTypeParameters(this.pass.wasm, resolved) as ClassType;
+          let resolved = resolveType(neType) as ClassType;
+          if (isConcrete(resolved) && !containsErasedType(resolved as Type)) {
+            specializer.instantiateClassType(resolved, model);
           }
-          specializer.instantiateClassType(resolved, model);
           this.queueExplicitCtor(resolved, ctorMethodKey);
         }
         // `new I<args>.name(...)` on an interface: the constructor is a
