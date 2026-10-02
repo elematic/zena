@@ -11,15 +11,36 @@ import { IterableUtils } from './iterable-utils.zena';
 import { Step } from 'zena:async';
 
 /**
+ * Any range: `a..b`, `a..`, `..b` or `..`.
+ *
+ * Each form is its own class, so a range literal has the type of its
+ * form, and a parameter typed `Range` accepts all four.
+ */
+export sealed class Range {
+  case BoundedRange, FromRange, ToRange, FullRange
+
+  /**
+   * The start and end (exclusive) of this range in a sequence of
+   * `length` elements: a range with no start starts at 0, and one with
+   * no end ends at `length`. The bounds are not clamped to the sequence.
+   */
+  abstract bounds(length: i32): inline (i32, i32);
+}
+
+/**
  * A bounded range with both start and end (exclusive).
  * Represents [start, end) - includes start, excludes end.
  * A range whose end is at or before its start is empty.
  */
-export final class BoundedRange with IterableUtils<i32> implements Iterable<i32> {
+export final class BoundedRange extends Range with IterableUtils<i32> implements Iterable<i32> {
   start: i32;
   end: i32;
 
-  new(start: i32, end: i32) : start = start, end = end;
+  new(start: i32, end: i32) : start = start, end = end, super();
+
+  bounds(_length: i32): inline (i32, i32) {
+    return (this.start, this.end);
+  }
 
   [Iterable.iterator](): Iterator<i32> {
     return new BoundedRangeIterator(this.start, this.end);
@@ -42,10 +63,14 @@ export final class BoundedRange with IterableUtils<i32> implements Iterable<i32>
  * largest i32, 2147483647, instead of wrapping around to negative
  * numbers.
  */
-export final class FromRange with IterableUtils<i32> implements Iterable<i32> {
+export final class FromRange extends Range with IterableUtils<i32> implements Iterable<i32> {
   start: i32;
 
-  new(start: i32) : start = start;
+  new(start: i32) : start = start, super();
+
+  bounds(length: i32): inline (i32, i32) {
+    return (this.start, length);
+  }
 
   [Iterable.iterator](): Iterator<i32> {
     return new FromRangeIterator(this.start);
@@ -65,22 +90,25 @@ export final class FromRange with IterableUtils<i32> implements Iterable<i32> {
  * A range from zero to an end point (exclusive).
  * Represents [0, end).
  */
-export final class ToRange {
+export final class ToRange extends Range {
   end: i32;
 
-  new(end: i32) : end = end;
+  new(end: i32) : end = end, super();
+
+  bounds(_length: i32): inline (i32, i32) {
+    return (0, this.end);
+  }
 }
 
 /**
  * A full range representing all elements.
  * Represents [0, length).
  */
-export final class FullRange {}
-
-/**
- * Union type of all range types.
- */
-export type Range = BoundedRange | FromRange | ToRange | FullRange;
+export final class FullRange extends Range {
+  bounds(length: i32): inline (i32, i32) {
+    return (0, length);
+  }
+}
 
 /**
  * An iterator over the integers of a `BoundedRange`.

@@ -1995,11 +1995,8 @@ Range operators create range objects that represent sequences of indices. They
 are primarily used for array slicing and iteration. The range operator is `..`
 (two dots).
 
-Range types must be imported from `zena:core`:
-
-```zena
-import { BoundedRange, FromRange, ToRange, FullRange, Range } from 'zena:core';
-```
+Each form of range is its own class, and `Range` is the sealed class over
+all four (see [Range Type](#range-type)). All five are in the prelude.
 
 #### Bounded Range: `a..b`
 
@@ -2042,10 +2039,34 @@ let r = ..;  // FullRange (all elements)
 
 #### Range Type
 
-The `Range` type is a union of all range types:
+`Range` is a sealed class whose variants are the four range classes:
 
 ```zena
-type Range = BoundedRange | FromRange | ToRange | FullRange;
+sealed class Range {
+  case BoundedRange, FromRange, ToRange, FullRange
+
+  abstract bounds(length: i32): inline (i32, i32);
+}
+```
+
+A parameter typed `Range` accepts any range, and a `match` over one is
+checked for exhaustiveness like any sealed class. `bounds(length)` gives the
+start and end a range covers in a sequence of `length` elements: a range with
+no start starts at 0, and one with no end ends at `length`.
+
+```zena
+let r: Range = 3..;
+let (start, end) = r.bounds(10);  // (3, 10)
+```
+
+Arrays take any range through one operator, `operator [](r: Range)`, which
+returns a copy of those elements with the bounds clamped to the array:
+
+```zena
+let xs = [1, 2, 3, 4, 5];
+xs[1..3];  // [2, 3]
+let r: Range = ..2;
+xs[r];     // [1, 2]
 ```
 
 **Note**: Range bounds must be valid array/loop indices (type `i32`). Ranges

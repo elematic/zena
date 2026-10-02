@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 1
+// A value typed `Range` indexes any array: a concrete class, or one seen
+// through `Array<T>`. `Range` is in the prelude.
+let sum = (xs: Array<i32>): i32 => {
+  var total = 0;
+  for (let x in xs) {
+    total += x;
+  }
+  return total;
+};
+
+let pickFixed = (xs: FixedArray<i32>, r: Range): FixedArray<i32> => xs[r];
+
+let pickAny = (xs: Array<i32>, r: Range): Array<i32> => xs[r];
+
+export let main = (): i32 => {
+  let fixed = [1, 2, 3, 4, 5] as FixedArray<i32>;
+  let ranges: FixedArray<Range> = [1..3, 3.., ..2, ..];
+  var ok = true;
+  // 2 + 3, 4 + 5, 1 + 2, 1 + ... + 5
+  let expected = [5, 9, 3, 15];
+  for (var i = 0; i < ranges.length; i += 1) {
+    ok = ok && sum(pickFixed(fixed, ranges[i])) == expected[i] &&
+        sum(pickAny(fixed, ranges[i])) == expected[i] &&
+        sum(pickAny([1, 2, 3, 4, 5], ranges[i])) == expected[i];
+  }
+  return if (ok) 1 else 0;
+};

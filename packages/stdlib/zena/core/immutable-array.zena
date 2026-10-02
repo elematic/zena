@@ -11,24 +11,13 @@ export final extension class ImmutableArray<T> on array<T> with IterableUtils<T>
   // A slice is a FixedArray: Wasm has no way to fill an immutable array
   // after allocation (see `map` below).
 
-  /** The elements from `a` up to but not including `b` (`a..b`). */
-  operator [](r: BoundedRange): FixedArray<T> {
-    return this.slice(r.start, r.end);
-  }
-
-  /** The elements from `a` to the end (`a..`). */
-  operator [](r: FromRange): FixedArray<T> {
-    return this.slice(r.start, (this as ImmutableArray<T>).length);
-  }
-
-  /** The elements from the start up to but not including `b` (`..b`). */
-  operator [](r: ToRange): FixedArray<T> {
-    return this.slice(0, r.end);
-  }
-
-  /** A copy of every element (`..`). */
-  operator [](_r: FullRange): FixedArray<T> {
-    return this.slice(0, (this as ImmutableArray<T>).length);
+  /**
+   * A copy of the elements whose indices are in the range: `a..b`, `a..`,
+   * `..b` or `..`. Bounds outside the array are clamped to it.
+   */
+  operator [](r: Range): FixedArray<T> {
+    let (start, end) = r.bounds(this.length);
+    return this.slice(start, end);
   }
 
   /**

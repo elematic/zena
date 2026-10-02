@@ -206,6 +206,7 @@ needed. They come from the _prelude_, which is implicitly imported.
 | `ImmutableArray<T>`     | Immutable array — what a `[1, 2, 3]` literal is              |
 | `Map<K, V>`             | Hash map (literal syntax: `{"a" => 1}`)                      |
 | `Box<T>`                | Wraps a primitive for use in a union or `anyref`             |
+| `Range`                 | Any range; sealed class over the four below (`xs[r]`)        |
 | `BoundedRange`          | Range with start and end (`1..10`)                           |
 | `FromRange`             | Range with start only (`5..`)                                |
 | `ToRange`               | Range with end only (`..10`)                                 |
