@@ -662,6 +662,22 @@ export let classInterfaceKeyToString = (key: ClassInterfaceKey): String => {
 };
 
 
+/** `<a,b>` for a type's arguments, keyed like `getTypeKey`; empty when
+ * it has none. */
+let typeArgumentsKey = (typeArguments: Array<Type> | null): String => {
+  if (typeArguments == null || typeArguments.length == 0) {
+    return "";
+  }
+  var key = "<";
+  for (var i = 0; i < typeArguments.length; i += 1) {
+    if (i > 0) {
+      key = key + ",";
+    }
+    key = key + getTypeKey(typeArguments[i]);
+  }
+  return key + ">";
+};
+
 export let getTypeKey = (type: Type): String => {
   return match (type) {
     case I32Type: "i32"
@@ -679,8 +695,11 @@ export let getTypeKey = (type: Type): String => {
     case BoolLiteralType: "bool"
     case NullType: "null"
     case VoidType: "void"
-    case ClassType as ct: ct.name
-    case InterfaceType as it: it.name
+    // Type arguments are part of the key: `of(b: Box<i32>)` and
+    // `of(b: Box<f64>)` are two overloads, and the key is what names
+    // each one's function.
+    case ClassType as ct: ct.name + typeArgumentsKey(ct.typeArguments)
+    case InterfaceType as it: it.name + typeArgumentsKey(it.typeArguments)
     case ArrayType {elementType, elementsMutable}:
       (if (elementsMutable) "arr_" else "arrimm_") + getTypeKey(elementType)
     case RecordType: "rec"
