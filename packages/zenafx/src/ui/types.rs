@@ -47,7 +47,7 @@ pub struct Rect {
 
 #[derive(Copy, Clone, Debug, PartialEq, Default, ComponentType, Lift, Lower)]
 #[component(record)]
-pub struct BoxLook {
+pub struct BoxStyle {
     pub background: Option<Color>,
     #[component(name = "border-color")]
     pub border_color: Option<Color>,
@@ -60,7 +60,7 @@ pub struct BoxLook {
 
 #[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
 #[component(record)]
-pub struct TextLook {
+pub struct TextStyle {
     pub family: String,
     pub size: f32,
     pub weight: u16,
@@ -68,7 +68,7 @@ pub struct TextLook {
     pub color: Color,
 }
 
-impl Default for TextLook {
+impl Default for TextStyle {
     fn default() -> Self {
         Self {
             family: "system-ui".to_owned(),
@@ -152,7 +152,7 @@ impl Edges {
     }
 }
 
-/// Geometry only. Nothing here affects painting, and nothing in a look
+/// Geometry only. Nothing here affects painting, and nothing in a style
 /// affects measurement.
 #[derive(Copy, Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
 #[component(record)]
@@ -246,7 +246,7 @@ pub enum Content {
 #[derive(Clone, Debug, PartialEq, ComponentType, Lift, Lower)]
 #[component(record)]
 pub struct Node {
-    pub style: Flex,
+    pub layout: Flex,
     pub content: Content,
     #[component(name = "first-child")]
     pub first_child: u32,

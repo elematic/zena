@@ -1,55 +1,82 @@
 /**
  * A titled panel with a hole in it.
  *
- * The card says where its content goes — inside the well, under the title —
- * and never sees what that content is. It has no reference to it, cannot
- * call it, and could not tell a label from a component it has never heard
- * of. The framework puts the children in the slot; one solve then sizes the
- * card around whatever they turned out to be.
+ * The card says where its content goes — inside the well, under the title — and
+ * never sees into it. The host hands it a node per child and nothing else: it
+ * cannot read what a child rendered, cannot reach a node inside one, and could
+ * not tell a label from a component it has never heard of. One solve then sizes
+ * the card around whatever the children turned out to be, with no call to
+ * anyone.
+ *
+ * What differs between the three cards on screen is two holes — the title and
+ * its colour — so all three share one template.
  */
-import { Color, BoxLook, TextLook, Edges, Align } from 'zenafx:ui/style';
-import { Box, Widget, box, slot, text, expand } from './widget.zena';
-import { some, none } from 'zena:core';
+import { Color, BoxStyle, TextStyle, Edges, Align } from 'zenafx:ui/style';
+import { Binding, BindingTarget, BindingValueContent,
+         BindingValueTextStyle } from 'zenafx:host/scene';
+import { Rendering, Widget } from '../framework.zena';
+import { box, slot, text, template } from './widget.zena';
+import { some } from 'zena:core';
 
-// Shared by every card, because every card draws them the same way. What
-// varies per card lives on the instance instead.
+// Shared by every card, because every card draws them the same way. What varies
+// per card is a hole.
 let surface = new Color(0.94, 0.96, 0.99, 1.0);
 let edge = new Color(0.68, 0.75, 0.86, 1.0);
 /** The well is paler than the card, so the hole reads as a hole. */
 let wellFill = new Color(1.0, 1.0, 1.0, 1.0);
 let wellEdge = new Color(0.78, 0.84, 0.91, 1.0);
 
-let cardLook = new BoxLook(some(surface), some(edge), 1.0, 12.0, 1.0);
-let wellLook = new BoxLook(some(wellFill), some(wellEdge), 1.0, 8.0, 1.0);
+let cardStyle = new BoxStyle(some(surface), some(edge), 1.0, 12.0, 1.0);
+let wellStyle = new BoxStyle(some(wellFill), some(wellEdge), 1.0, 8.0, 1.0);
 
-export class Card implements Widget {
+/** The title's style, which differs per card only in its colour. */
+let titleStyle = (accent: Color): TextStyle =>
+    new TextStyle('system-ui', 15.0, 600 as u16, false, accent);
+
+/**
+ * The card's template.
+ *
+ * Breadth first, the nodes are: 0 the card's own box, 1 the title, 2 the well,
+ * 3 the slot inside it. The well is a box *around* the slot rather than the slot
+ * itself, because a slot is not a box and so cannot be given a panel — the same
+ * reason a `<slot>` gets wrapped in a styled `<div>`.
+ */
+let cardTemplate = template(
+  box({style: cardStyle, align: Align.Stretch, gap: 10.0,
+       padding: new Edges(18.0, 22.0, 22.0, 22.0)}, [
+    text('', titleStyle(surface)),
+    box({style: wellStyle, align: Align.Stretch,
+         padding: new Edges(16.0, 18.0, 16.0, 18.0)}, [slot()]),
+  ]),
+  [new Binding(1 as u32, BindingTarget.Content),
+   new Binding(1 as u32, BindingTarget.Style)],
+);
+
+export class Card extends Widget {
   #title: String;
-  /**
-   * The title's colour. On the instance rather than the module, so two
-   * cards in one tree can differ.
-   */
+  /** The title's colour, so two cards in one tree can differ. */
   #accent: Color;
+  /**
+   * What goes in the well.
+   *
+   * Held, because a slot's content is named by the widget that put it there and
+   * the framework asks for it on every render — it has to be given the same
+   * widgets each time, since a widget's identity is what its state hangs off.
+   * The card can keep these and still not see into them: holding a `Widget` is
+   * ordinary composition within one component, and the isolation that matters is
+   * the host's — the card has no node id for anything a child rendered. Across a
+   * component boundary a child is not a Zena object at all, and the card holds
+   * the node it gave away instead.
+   */
+  #content: Array<Widget>;
 
-  new(title: String, accent: Color) : #title = title, #accent = accent;
+  new(title: String, accent: Color, content: Array<Widget>)
+      : #title = title, #accent = accent, #content = content, super();
 
-  build(): Box {
-    return box({
-      look: cardLook,
-      align: Align.Stretch,
-      gap: 10.0,
-      padding: new Edges(18.0, 22.0, 22.0, 22.0)
-    }, [
-      text(this.#title, new TextLook('system-ui', 15.0, 600 as u16, false,
-                                     this.#accent)),
-      slot({
-        look: wellLook,
-        padding: new Edges(16.0, 18.0, 16.0, 18.0)
-      }),
-    ]);
+  build(): Rendering {
+    return new Rendering(cardTemplate,
+      [new BindingValueContent(this.#title),
+       new BindingValueTextStyle(titleStyle(this.#accent))],
+      [this.#content]);
   }
-}
-
-/** A card wrapped round some content. */
-export function card(title: String, accent: Color, children: Array<Box>): Box {
-  return expand(new Card(title, accent), children);
 }

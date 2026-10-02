@@ -1,25 +1,25 @@
 /**
- * The in-component widget framework.
+ * Writing a template readably.
  *
- * A widget describes a tree and nothing else: no run ids, no node
- * references, no paint code. A box says how it looks as well as how it
- * lays out, so the host paints the tree it solved.
+ * A widget's interior is a flat list of nodes, and a flat list with child
+ * indices in it is not something to write by hand. So a tree of `Box` is built
+ * with nested calls and flattened into the list a template takes.
  *
- * A widget does not receive its children. It puts a `slot` in its tree and
- * the framework places them there, the way a shadow tree's `<slot>` takes
- * content the widget never sees. A container decides where its children go
- * and how much room they get, and cannot read them, call them, or keep
- * them — which is the property worth having when the container and the
- * content come from components that do not trust each other.
+ * Nothing here is per-instance. A template belongs to a widget *class* — two
+ * cards on screen share one and differ only in what they write into its holes —
+ * so these are called once, at module level, and never again.
  *
- * The tree is installed once. After that the host owns it, and a resize is
- * solved and painted with no call into this component.
+ * What is still written by hand is the binding list, which names holes by their
+ * node's index in the flattened tree. That is the fragile part, and it is the
+ * part a node block would remove: the grammar in
+ * docs/design/zenafx-widget-authoring.md puts the hole where its value is
+ * written and leaves the numbering to the compiler.
  */
-import { Flex, Edges, Axis, Justify, Align, Length, BoxLook, TextLook,
+import { Flex, Edges, Axis, Justify, Align, Length, BoxStyle, TextStyle,
          LengthAuto, LengthPercent } from 'zenafx:ui/style';
-import { Node, Look, LookNothing, LookFill, LookText, TextContent,
-         replace, invalidate } from 'zenafx:host/scene';
-import { none } from 'zena:core';
+import { NodeDef, Appearance, AppearanceNothing, AppearanceFill, AppearanceText,
+         TextContent, Binding } from 'zenafx:host/scene';
+import { Template } from '../framework.zena';
 
 export let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
 export let full = new LengthPercent(100.0);
@@ -28,8 +28,8 @@ export let full = new LengthPercent(100.0);
  * How a box lays out and how it looks.
  *
  * Every field is optional and the defaults are the common case: a column,
- * packed to the start, sized by its content, drawing nothing. A call site
- * names what it cares about and nothing else.
+ * packed to the start, sized by its content, drawing nothing. A call site names
+ * what it cares about and nothing else.
  */
 export type BoxOpts = {
   axis?: Axis,
@@ -40,7 +40,7 @@ export type BoxOpts = {
   width?: Length,
   height?: Length,
   grow?: f32,
-  look?: BoxLook,
+  style?: BoxStyle,
 };
 
 /** Read the options, filling in what was left out. */
@@ -56,87 +56,62 @@ let flexOf = (opts: BoxOpts): Flex => new Flex(
   1.0,
 );
 
-let lookOf = (opts: BoxOpts): Look => {
-  if (let {look} = opts) {
-    return new LookFill(look);
+let appearanceOf = (opts: BoxOpts): Appearance => {
+  if (let {style} = opts) {
+    return new AppearanceFill(style);
   }
-  return new LookNothing();
+  return new AppearanceNothing();
 };
 
-/** A node of the tree a widget describes. */
+/** A node of the tree a widget's template describes. */
 export class Box {
   layout: Flex;
-  look: Look;
+  appearance: Appearance;
   children: GrowableArray<Box>;
-  /**
-   * A hole for the children of the widget that built this tree. The
-   * framework fills it; the widget never sees what goes in.
-   */
+  /** Whether content hangs here. */
   isSlot: boolean;
 
-  new(this.layout, this.look, this.children, this.isSlot = false);
+  new(this.layout, this.appearance, this.children, this.isSlot = false);
 }
 
-/** A box. Lays out its children, and draws a panel when given a `look`. */
+/** A box. Lays out its children, and draws a panel when given a `style`. */
 export function box(opts: BoxOpts = {}, children: Array<Box> = []): Box {
-  return new Box(flexOf(opts), lookOf(opts), GrowableArray.from(children));
-}
-
-/** The hole this widget's children go into. A widget has at most one. */
-export function slot(opts: BoxOpts = {}): Box {
-  return new Box(flexOf(opts), lookOf(opts), new GrowableArray<Box>(), true);
+  return new Box(flexOf(opts), appearanceOf(opts), GrowableArray.from(children));
 }
 
 /**
- * Text. The host shapes it and keeps the result for as long as the node
- * lives, so nothing here handles a shaped run.
+ * Where this widget's content hangs. A widget has at most one.
+ *
+ * A slot is not a box: it contributes no geometry, so what hangs in it lays out
+ * as a child of whatever contains the slot. That is what keeps a widget one box
+ * instead of two — and it is why a slot takes no options. To give the content a
+ * panel of its own, put the slot inside a `box` and style that.
  */
-export function text(content: String, look: TextLook, opts: BoxOpts = {}): Box {
-  return new Box(flexOf(opts), new LookText(new TextContent(content, look)),
+export function slot(): Box {
+  return new Box(flexOf({}), new AppearanceNothing(), new GrowableArray<Box>(), true);
+}
+
+/**
+ * Text. The host shapes it and keeps the result for as long as the node lives,
+ * so nothing here handles a shaped run.
+ *
+ * In a template the content is usually a placeholder, because a hole supplies
+ * it: what differs between two instances of a widget belongs in a hole and not
+ * in the template they share.
+ */
+export function text(content: String, style: TextStyle, opts: BoxOpts = {}): Box {
+  return new Box(flexOf(opts), new AppearanceText(new TextContent(content, style)),
                  new GrowableArray<Box>());
 }
 
-/** Anything that can describe itself as a tree. */
-export interface Widget {
-  build(): Box;
-}
-
 /**
- * Build `widget` and put `children` in its slot.
+ * Flatten a box tree into the node list a template takes.
  *
- * The only thing that ever brings the two together, and it is the framework
- * rather than the widget. A widget with no slot ignores its children, the
- * way an element with no `<slot>` shows nothing.
+ * Breadth first, because the host wants a node's children contiguous and after
+ * it, and pre-order only manages that when no child except the last has children
+ * of its own. Node 0 is the widget's own box.
  */
-export function expand(widget: Widget, children: Array<Box>): Box {
-  let root = widget.build();
-  fillSlot(root, children);
-  return root;
-}
-
-let fillSlot = (node: Box, children: Array<Box>): boolean => {
-  if (node.isSlot) {
-    for (let child in children) {
-      node.children.push(child);
-    }
-    return true;
-  }
-  for (let child in node.children) {
-    if (fillSlot(child, children)) {
-      return true;
-    }
-  }
-  return false;
-};
-
-/**
- * Flatten a box tree into the array the scene takes.
- *
- * Breadth first: the scene wants a node's children contiguous and after it,
- * and pre-order only manages that when no child except the last has children
- * of its own.
- */
-export function flatten(root: Box): GrowableArray<Node> {
+export function flatten(root: Box): Array<NodeDef> {
   let order = new GrowableArray<Box>();
   let firstChildOf = new GrowableArray<i32>();
   order.push(root);
@@ -150,39 +125,18 @@ export function flatten(root: Box): GrowableArray<Node> {
     i += 1;
   }
 
-  let nodes = new GrowableArray<Node>();
+  let nodes = new GrowableArray<NodeDef>();
   var n = 0;
   while (n < order.length) {
     let node = order[n];
-    nodes.push(new Node(node.layout, node.look,
-                        firstChildOf[n] as u32, node.children.length as u32));
+    nodes.push(new NodeDef(node.layout, node.appearance, firstChildOf[n] as u32,
+                           node.children.length as u32, node.isSlot));
     n += 1;
   }
   return nodes;
 }
 
-/**
- * What `widget` describes, flattened and ready to install.
- *
- * Pure. A widget does not mount itself and does not learn that it was
- * mounted; the host asks for this and installs it. The root is the top of
- * the tree, so it takes no children.
- */
-export function layoutTree(widget: Widget): GrowableArray<Node> {
-  return flatten(expand(widget, []));
-}
-
-/**
- * Replace the subtree at `node` with what `widget` now describes, and ask
- * for a frame. This is the only update: the grain is the widget.
- *
- * Where the node id lives is unsettled. Nothing triggers an update yet,
- * because no input reaches a component; when something does, the id belongs
- * in a table the framework keeps rather than in the widget, so that a widget
- * stays a description of a tree and nothing more.
- */
-export function update(widget: Widget, children: Array<Box>, node: u32): u32 {
-  let next = replace(node, flatten(expand(widget, children)));
-  invalidate();
-  return next;
+/** A template: a box tree, and where its holes are. */
+export function template(root: Box, bindings: Array<Binding>): Template {
+  return new Template(flatten(root), bindings);
 }

@@ -1,19 +1,35 @@
-/** A line of text. */
-import { TextLook } from 'zenafx:ui/style';
-import { Box, Widget, text } from './widget.zena';
+/**
+ * A line of text.
+ *
+ * The smallest widget there is: one node, which is its own box, and two holes.
+ * Its template has a single node, so a label is exactly one box in the scene —
+ * node 0 of a template *is* the node it is rendered into.
+ */
+import { Color, TextStyle } from 'zenafx:ui/style';
+import { Binding, BindingTarget, BindingValueContent,
+         BindingValueTextStyle } from 'zenafx:host/scene';
+import { Rendering, Widget, shows } from '../framework.zena';
+import { text, template } from './widget.zena';
 
-export class Label implements Widget {
+/** Overwritten by hole 1 on every render, so anything will do here. */
+let placeholder = new TextStyle('system-ui', 16.0, 400 as u16, false,
+                                new Color(0.0, 0.0, 0.0, 1.0));
+
+let labelTemplate = template(text('', placeholder), [
+  new Binding(0 as u32, BindingTarget.Content),
+  new Binding(0 as u32, BindingTarget.Style),
+]);
+
+export class Label extends Widget {
   #text: String;
-  #look: TextLook;
+  #style: TextStyle;
 
-  new(text: String, look: TextLook) : #text = text, #look = look;
+  new(content: String, style: TextStyle) : #text = content, #style = style, super();
 
-  build(): Box {
-    return text(this.#text, this.#look);
+  build(): Rendering {
+    return shows(labelTemplate, [
+      new BindingValueContent(this.#text),
+      new BindingValueTextStyle(this.#style),
+    ]);
   }
-}
-
-/** A label, as a tree. A leaf, so it takes no children. */
-export function label(content: String, look: TextLook): Box {
-  return new Label(content, look).build();
 }

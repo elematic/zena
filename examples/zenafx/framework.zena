@@ -1,0 +1,262 @@
+/**
+ * The in-component widget framework.
+ *
+ * A widget is one node of the scene and says what to show there: a template,
+ * one value per hole in it, and the widgets to hang in its slots. Everything
+ * else here is the bookkeeping that lets `render` be the only call — which
+ * template has been sent, which hole values have changed, and which slot still
+ * holds the children it held last time.
+ *
+ * Nothing in a widget refers to its parent. It is handed a node to live in and
+ * never learns what contains it, which is what lets a tree of widgets be
+ * described without a single parent pointer.
+ *
+ * The diff is here rather than in the host because every value crossing
+ * `render` is marshalled, so comparing before the call is strictly cheaper than
+ * comparing after it.
+ */
+import { Node, NodeDef, Binding, BindingValue, Hole, TemplateDef, TemplateRef,
+         TemplateRefKnown, TemplateRefFresh, root, ready } from 'zenafx:host/scene';
+
+/**
+ * A widget's interior, described once.
+ *
+ * Node 0 of `nodes` is the widget's own box — what CSS would reach with
+ * `:host` — and the rest hang beneath it. `bindings` says which node and which
+ * property each hole writes, so a hole on the wire is a number and nothing
+ * more.
+ *
+ * Made once per widget class rather than once per instance: that is the whole
+ * point of a template. Two widgets of the same class on screen share this and
+ * differ only in what they write into it.
+ */
+export class Template {
+  #id: u32;
+  #nodes: Array<NodeDef>;
+  #bindings: Array<Binding>;
+  /** Whether the host has the definition yet. */
+  var #sent = false;
+
+  new(nodes: Array<NodeDef>, bindings: Array<Binding>)
+      : #nodes = nodes, #bindings = bindings, #id = freshTemplateId();
+
+  /**
+   * How to name this template in a render: the definition the first time it is
+   * used, and the id every time after.
+   *
+   * Nothing is registered up front, so a component with a dozen templates and
+   * one on screen has sent one. The host's table lives and dies with this
+   * instance, so the two cannot drift.
+   */
+  reference(): TemplateRef {
+    if (this.#sent) {
+      return new TemplateRefKnown(this.#id);
+    }
+    this.#sent = true;
+    return new TemplateRefFresh(new TemplateDef(this.#id, this.#nodes, this.#bindings));
+  }
+}
+
+/** Template ids are the guest's, which is what lets a definition travel with
+ *  the first render that uses it instead of needing a round trip. */
+var lastTemplateId: u32 = 0;
+
+let freshTemplateId = (): u32 => {
+  lastTemplateId += 1;
+  return lastTemplateId;
+};
+
+/**
+ * What a widget shows: which template, the value for each of its holes, and the
+ * widgets to hang in each of its slots.
+ *
+ * `content` is indexed by slot, in the order the template declares them. A slot
+ * a rendering says nothing about keeps whatever is already in it.
+ */
+export class Rendering {
+  template: Template;
+  values: Array<BindingValue>;
+  content: Array<Array<Widget>>;
+
+  new(this.template, this.values, this.content);
+}
+
+let noValues: Array<BindingValue> = [];
+let noContent: Array<Array<Widget>> = [];
+
+/** A widget with holes to fill and no content. */
+export function shows(template: Template, values: Array<BindingValue>): Rendering {
+  return new Rendering(template, values, noContent);
+}
+
+/** A widget that is pure structure: content in its slots and no holes at all. */
+export function holds(template: Template, content: Array<Array<Widget>>): Rendering {
+  return new Rendering(template, noValues, content);
+}
+
+/** What a widget last hung in one slot: the widgets, and the nodes they got. */
+class Hung {
+  var children: Array<Widget>;
+  var nodes: Array<Node>;
+
+  new(this.children, this.nodes);
+}
+
+/**
+ * A widget: one node of the scene, and what it shows there.
+ *
+ * A subclass writes `build` and nothing else. It never sees a node, a node id,
+ * a template id or a hole number — and when its own state changes it calls
+ * `refresh`, which works out what that costs.
+ */
+export abstract class Widget {
+  /** Where this widget lives, once a parent has given it somewhere. */
+  var #node: Node | null = null;
+  /** What it last showed there. A different template is a rebuild. */
+  var #showing: Template | null = null;
+  /**
+   * The value last sent for each hole, so only what changed is sent.
+   *
+   * Initialised from a shared empty array rather than written `= []`, because a
+   * field at an interface type — and `Array<T>` is one — whose default is a
+   * class value fails to lower: `zir unsupported: constructor field type`, which
+   * `tests/language/execution/interfaces/interface-field-default.zena` records
+   * as issue 475.
+   */
+  var #sent: Array<BindingValue> = noValues;
+  /** What it last hung in each slot, so an unchanged slot is left alone. */
+  var #hung = new GrowableArray<Hung>();
+
+  /**
+   * What to show: the template, its hole values, and the content for its slots.
+   * Called on every render, so it is a description and not a side effect.
+   *
+   * Every subclass overrides it, so this body is unreachable. It wants to be
+   * `abstract` and cannot be: a base method calling an abstract one fails to
+   * lower, with `zir unsupported: method not found`, which
+   * `tests/language/execution/classes/base-calls-abstract-method.zena` records
+   * beside the concrete-override version that works. `abstract class` still
+   * keeps a bare `Widget` from being constructed.
+   */
+  build(): Rendering {
+    throw new Error('a widget must override build()');
+  }
+
+  /**
+   * Give this widget a node to live in, forgetting whatever it showed before.
+   *
+   * Called by a parent, and only when the node is one this widget has not been
+   * rendered into: a handle cannot be compared with another handle, so the
+   * parent is the one that knows. Forgetting matters — a fresh node shows
+   * nothing, and a widget that still believed its holes were sent would send
+   * none of them.
+   */
+  placeIn(node: Node): void {
+    this.#node = node;
+    this.#showing = null;
+    this.#sent = noValues;
+    this.#hung = new GrowableArray<Hung>();
+  }
+
+  /**
+   * Show what `build` describes, where this widget already lives.
+   *
+   * What a widget calls when its own state changes. A widget that is not placed
+   * yet has nothing to render into and nothing to do; its parent will place it.
+   */
+  refresh(): void {
+    let node = this.#node;
+    if (node != null) {
+      this.#renderInto(node);
+    }
+  }
+
+  #renderInto(node: Node): void {
+    let shown = this.build();
+    // A template this widget was not already showing has to be built, and then
+    // every hole is new and so is every slot.
+    let showing = this.#showing;
+    let rebuilt = showing == null || showing != shown.template;
+
+    let holes = new GrowableArray<Hole>();
+    var index = 0;
+    for (let value in shown.values) {
+      if (rebuilt || this.#sent[index] != value) {
+        holes.push(new Hole(index as u32, value));
+      }
+      index += 1;
+    }
+
+    // Nothing to say is nothing to call: a widget whose values all compared
+    // equal makes no call at all.
+    if (rebuilt || holes.length > 0) {
+      node.render(shown.template.reference(), holes);
+    }
+    this.#showing = shown.template;
+    this.#sent = shown.values;
+    if (rebuilt) {
+      this.#hung = new GrowableArray<Hung>();
+    }
+
+    this.#hang(node, shown.content, rebuilt);
+  }
+
+  /** Put each slot's children in it, and render them. */
+  #hang(node: Node, content: Array<Array<Widget>>, rebuilt: boolean): void {
+    var slot = 0;
+    for (let children in content) {
+      // The host hands back the same nodes when the count has not changed, so a
+      // slot whose children are the same is left entirely alone — the children
+      // keep their nodes and the diffing each one does still holds.
+      var before: Hung | null = null;
+      if (slot < this.#hung.length) {
+        before = this.#hung[slot];
+      }
+      let remade = rebuilt || before == null ||
+          before.children.length != children.length;
+
+      var nodes: Array<Node> = [];
+      if (remade) {
+        nodes = node.content(slot as u32, children.length as u32);
+      } else if (before != null) {
+        nodes = before.nodes;
+      }
+
+      var position = 0;
+      for (let child in children) {
+        let moved = remade || before == null || before.children[position] != child;
+        if (moved) {
+          child.placeIn(nodes[position]);
+        }
+        child.refresh();
+        position += 1;
+      }
+
+      let now = new Hung(children, nodes);
+      if (slot < this.#hung.length) {
+        this.#hung[slot] = now;
+      } else {
+        this.#hung.push(now);
+      }
+      slot += 1;
+    }
+  }
+}
+
+/**
+ * Show `widget` as the application's root, and tell the host the tree is worth
+ * drawing.
+ *
+ * The one call an application makes. `main` cannot simply return the widget:
+ * `main` is the component's export and its result would have to cross WIT,
+ * which a Zena class cannot do and the host is the wrong side to hold anyway.
+ * So the handover is a call rather than a return, which is also where `ready`
+ * belongs — the host has to be told when the tree is complete, because it
+ * cannot wait for the entry to return. A component that keeps working never
+ * does.
+ */
+export function runApp(widget: Widget): void {
+  widget.placeIn(root());
+  widget.refresh();
+  ready();
+}

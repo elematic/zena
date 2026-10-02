@@ -432,8 +432,26 @@ export let buildComponentShape = (
   // mean different things. So a program is always entered as `main`,
   // and whether that is the synchronous lift or the callback-lifted
   // entry is the compiler's business.
+  // A declared world whose `main` is `async func` while the program's
+  // `main` is an ordinary synchronous function gets both: the wrapper
+  // synthesizer writes `main_export` (its skip fires only for an async
+  // `main`), and the entry is built anyway because the program reached a
+  // door into the async driver — `sleep` does, without any `await`. Both
+  // claimed the name and the component failed to validate with "export
+  // name `main` conflicts with previous name `main`". The wrapper is the
+  // one that knows the WIT's signature and issues its typed return, so
+  // the entry yields the name to it and stays in the module as the
+  // driver's host.
+  var wrappedMain = false;
+  for (let asyncExport in wasm.componentAsyncExports) {
+    if (asyncExport.exportName == "main") { wrappedMain = true; }
+  }
+  for (let syncExport in wasm.componentSyncExports) {
+    if (syncExport.exportName == "main") { wrappedMain = true; }
+  }
+
   let entry = wasm.componentEntryFunc;
-  if (entry != null) {
+  if (entry != null && !wrappedMain) {
     let callback = wasm.componentCallbackFunc;
     if (callback == null) {
       throw new Error(

@@ -65,7 +65,7 @@ fn app_component_presents_a_frame() {
     let wasm = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("out/widgets.wasm");
     assert!(
         wasm.exists(),
-        "{} is missing; build it with `npm run build:example -w @zena-lang/zenafx`",
+        "{} is missing; build it with `npm run build:widgets -w @zena-lang/zenafx`",
         wasm.display()
     );
     assert!(

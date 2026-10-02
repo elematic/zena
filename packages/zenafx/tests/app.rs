@@ -125,7 +125,7 @@ fn each_card_instance_draws_its_own_title() {
     let runs: Vec<u32> = (0..3).map(|n| glyph_run(&commands, n)).collect();
     let widths: Vec<f32> = runs
         .iter()
-        .map(|run| app.text_mut().measure_run(*run, None).width)
+        .map(|run| app.text().lock().unwrap().measure_run(*run, None).width)
         .collect();
 
     for (a, b) in [(0, 1), (0, 2), (1, 2)] {
@@ -239,7 +239,7 @@ fn the_widget_tree_rasterizes() {
     let mut app = widgets();
     let commands = app.frame(frame_at(WIDTH, HEIGHT));
     let mut painter = Painter::new(WIDTH as u16, HEIGHT as u16);
-    painter.draw(&commands, app.background(), app.text());
+    painter.draw(&commands, app.background(), &app.text().lock().unwrap());
     let dark = painter
         .pixels()
         .iter()

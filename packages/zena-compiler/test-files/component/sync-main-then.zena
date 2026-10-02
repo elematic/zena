@@ -1,0 +1,25 @@
+// A synchronous `main` that starts async work with `then` and returns.
+//
+// Zena lets a synchronous function call an asynchronous one — what it
+// cannot do is `await` the result — so `sleep(...).then(...)` is ordinary
+// code here. Nothing in the guest drives the timer, though: the
+// continuation sits in the microtask queue, and the queue only runs while
+// guest code is running. The task the wrapper opens is what keeps it
+// reachable, by reporting WAIT at its post-return checkpoint for as long
+// as a timer is armed.
+//
+// The two sleeps chain, so the wall clock proves the first continuation
+// ran: waiting out only the first timer would return at about 200ms, and
+// arming the second from inside the first takes it past 400.
+import { sleep, milliseconds } from 'zena:time';
+
+export function main(): void {
+  console.log("Main started");
+  sleep(milliseconds(200)).then(() => {
+    console.log("First continuation ran");
+    sleep(milliseconds(200)).then(() => {
+      console.log("Second continuation ran");
+    });
+  });
+  console.log("Main finished");
+}

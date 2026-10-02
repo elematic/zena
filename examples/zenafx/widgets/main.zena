@@ -1,54 +1,90 @@
 /**
  * The component's root widget, and the entry point that hands it over.
  *
- * `Root` is a widget like any other: it describes a tree and does nothing
- * else. It installs nothing, learns nothing about being installed, and
- * holds no handle. The host asks for the tree and mounts it.
+ * `Root` is a widget like any other: it declares a template, says what goes in
+ * its slot, and does nothing else. Nothing is outstanding when `main` returns,
+ * so the component's task finishes and no frame ever enters it again — a resize
+ * is a solve and a paint over the tree the host now owns.
  */
-import { Color, BoxLook, TextLook, Justify, Align } from 'zenafx:ui/style';
-import { Node } from 'zenafx:host/scene';
-import { Box, Widget, box, full, layoutTree } from './widget.zena';
-import { card } from './card.zena';
-import { label } from './label.zena';
+import { Color, BoxStyle, TextStyle, Justify, Align } from 'zenafx:ui/style';
+import { Rendering, Widget, holds, runApp } from '../framework.zena';
+import { box, slot, full, template } from './widget.zena';
+import { Card } from './card.zena';
+import { Label } from './label.zena';
 import { some, none } from 'zena:core';
 
 let page = new Color(0.98, 0.98, 0.99, 1.0);
 let ink = new Color(0.10, 0.11, 0.13, 1.0);
-let pageLook = new BoxLook(some(page), none, 0.0, 0.0, 1.0);
-let bodyLook = new TextLook('system-ui', 20.0, 400 as u16, false, ink);
+let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
+let bodyStyle = new TextStyle('system-ui', 20.0, 400 as u16, false, ink);
 
-// One accent per card. Passed to the constructor, so what differs between
-// the three cards on screen is instance state and nothing else.
+// One accent per card. Passed to the constructor, so what differs between the
+// three cards on screen is two hole values and nothing else.
 let plum = new Color(0.42, 0.20, 0.52, 1.0);
 let moss = new Color(0.13, 0.40, 0.26, 1.0);
 let rust = new Color(0.62, 0.28, 0.12, 1.0);
 
+/** The page: its own box, and one slot for the cards. */
+let rootTemplate = template(
+  box({style: pageStyle, justify: Justify.Center, align: Align.Center,
+       gap: 18.0, width: full, height: full}, [slot()]),
+  [],
+);
+
 /**
- * The root of the widget tree. A widget like any other: it describes a
- * tree, and that is the whole of it.
+ * The root of the widget tree. A widget like any other.
  */
-export class Root implements Widget {
-  build(): Box {
-    return box({look: pageLook, justify: Justify.Center, align: Align.Center,
-                gap: 18.0, width: full, height: full}, [
-      card('First card', plum, [
-        label('One child widget in this slot', bodyLook),
-      ]),
-      card('Second card', moss, [
-        label('Another instance, sized around its own longer label', bodyLook),
-      ]),
-      card('Third card', rust, [
-        label('Two children', bodyLook),
-        label('in one slot', bodyLook),
-      ]),
-    ]);
+export class Root extends Widget {
+  /** Built with the page and held, so every render hands back the same cards. */
+  #cards: Array<Widget>;
+
+  new() : #cards = cards(), super();
+
+  build(): Rendering {
+    return holds(rootTemplate, [this.#cards]);
   }
 }
 
 /**
- * What the component draws. Pure: it builds the root widget and hands back
- * the tree it describes. The host installs it.
+ * The three cards, and what is in each.
+ *
+ * A helper rather than written in the constructor: an array literal of widgets
+ * assigned to an `Array<Widget>` field fails to lower today.
  */
-export function start(): GrowableArray<Node> {
-  return layoutTree(new Root());
+let cards = (): Array<Widget> => {
+  let list = new GrowableArray<Widget>();
+  list.push(new Card('First card', plum,
+      one(new Label('One child widget in this slot', bodyStyle))));
+  list.push(new Card('Second card', moss,
+      one(new Label('Another instance, sized around its own longer label',
+                    bodyStyle))));
+  list.push(new Card('Third card', rust,
+      two(new Label('Two children', bodyStyle),
+          new Label('in one slot', bodyStyle))));
+  return list;
+};
+
+let one = (widget: Widget): Array<Widget> => {
+  let list = new GrowableArray<Widget>();
+  list.push(widget);
+  return list;
+};
+
+let two = (first: Widget, second: Widget): Array<Widget> => {
+  let list = new GrowableArray<Widget>();
+  list.push(first);
+  list.push(second);
+  return list;
+};
+
+/**
+ * The component's entry.
+ *
+ * An ordinary synchronous function, even though the world declares
+ * `main: async func()`. The async-ness belongs to the lift: it is what lets the
+ * host re-enter a component that started work, and a component that starts none
+ * simply never needs re-entering.
+ */
+export function main(): void {
+  runApp(new Root());
 }

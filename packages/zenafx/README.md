@@ -63,9 +63,13 @@ given some interfaces and not others, and so that a binding to another
 component can go through a host trampoline.
 
 ```bash
-npm run build:example -w @zena-lang/zenafx    # compiles it to out/widgets.wasm
+npm run build:widgets -w @zena-lang/zenafx    # compiles it to out/widgets.wasm
 npm run zfx -w @zena-lang/zenafx -- --app out/widgets.wasm
 ```
+
+There is one build script per example, so `build:widgets` compiles only the
+widgets and `build:counter` only the counter. `build:examples` does both, and is
+what `npm test` depends on.
 
 `zfx --ui` shows the same scene assembled in Rust by `ui::demo`, with no Wasm
 in the picture:
@@ -96,44 +100,95 @@ corner radius — stay module-level, because every card draws them the same
 way. `tests/app.rs` measures the three title runs and asserts they differ,
 which is the assertion a module-level title fails.
 
-A widget there is an ordinary Zena object with one method, `build(): Box`.
-It does not receive its children: it puts a `slot` in its tree and the
-framework places them, so a container can say where its content goes without
-being able to read, call or keep it. Options are a record with every field
-optional, so a box names what it cares about and nothing else.
+A widget there is an ordinary Zena object with one method, `build(): Rendering`,
+which names the template to show, one value per hole in it, and the widgets for
+each of its slots. The template is module-level, built once per widget class, and
+a box tree is written with nested calls and flattened into the flat node list the
+host takes. Options are a record with every field optional, so a box names what it
+cares about and nothing else.
 
 ```zena
-box({look: cardLook, align: Align.Stretch, gap: 10.0, padding: cardPadding}, [
-  text(this.#title, headingLook),
-  slot({look: wellLook, padding: wellPadding}),
-])
+let cardTemplate = template(
+  box({style: cardStyle, align: Align.Stretch, gap: 10.0, padding: cardPadding}, [
+    text('', titleStyle(surface)),
+    box({style: wellStyle, padding: wellPadding}, [slot()]),
+  ]),
+  [new Binding(1 as u32, BindingTarget.Content),
+   new Binding(1 as u32, BindingTarget.Style)],
+);
 ```
 
-A box says how it looks as well as how it lays out, so the host paints the
-same tree it solved — no widget builds a display list, holds a shaped run,
-or keeps references to its own nodes.
+The title is a hole rather than a value, which is what lets three cards share one
+template. The well is a box *around* the slot because a slot is not a box: it
+contributes no geometry, so its content lays out in whatever contains the slot —
+the same reason a `<slot>` gets wrapped in a styled `<div>`.
+
+A box says how it looks as well as how it lays out, so the host paints the same
+tree it solved — no widget builds a display list and none handles a shaped run.
 
 The component exports `zenafx:host/app`, which is one function:
 
 ```wit
-start: func() -> list<node>;
+main: async func();
 ```
 
-It builds its root widget and returns the tree that widget describes. The
-host installs it. A widget never mounts itself, never learns that it was
-mounted, and holds nothing afterwards — `Root` is a class with one method
-and no fields.
+It builds its root widget, renders it, and calls `ready`. `async func` is about
+the lift rather than the body: it is what lets the host re-enter a component that
+started work, so an ordinary synchronous `main` can arm a timer and return — see
+`examples/zenafx/counter/`. A component that starts nothing never needs
+re-entering.
 
-The host owns the tree from there. A resize is solved and painted host-side
-with **no call into the component at all** — `tests/app.rs` resizes four
-times and asserts the entry count stays at one, the single entry being
-`start` itself, before the first frame. A widget that changes replaces its
-own subtree, which is the only update there is.
+Building the tree goes through `zenafx:host/scene`, whose whole write surface is
+one method:
+
+```wit
+resource node {
+  render: func(template: template-ref, holes: list<hole>);
+  content: func(slot: u32, count: u32) -> list<own<node>>;
+}
+```
+
+`render` creates, patches or replaces, and the host decides which by comparing
+template identity against what the node already shows — the guest never says
+which it meant. Node 0 of a template *is* the node rendered into, so a widget is
+one box; the rest is its interior. `content` is how a parent gives each of its
+children a node, and the only place a child is added or removed. A template's
+definition travels with its first use and afterwards only its id does.
+
+The host owns the tree from there. A resize is solved and painted host-side with
+**no call into the component at all** — `tests/app.rs` resizes four times and
+asserts the entry count stays at one, and `tests/counter.rs` makes the same
+assertion for a component that is still working: re-entering the entry's task
+through its callback is not another call to `main`.
+
+### Updating what is on screen
+
+[`examples/zenafx/counter/`](../../examples/zenafx/counter/) is the other half:
+two counters in a row, one template used twice, each advancing on its own timer.
+
+The rate belongs to the widget. A counter arms a `sleep` from `zena:time` over
+`wasi:clocks` — 500ms for one and 1500ms for the other — and ZenaFX declares no
+timer interface of its own; the display's refresh rate has nothing to do with
+either. When a period comes due the counter advances its count and calls
+`refresh`, and because the template has not changed, the only thing that crosses
+the boundary is the digit string.
+
+```bash
+npm run build:counter -w @zena-lang/zenafx    # compiles it to out/counter.wasm
+npm run zfx -w @zena-lang/zenafx -- --app out/counter.wasm
+```
+
+The host then patches that one node, keeping its id and the run it shaped for it.
+`tests/counter.rs` is the evidence: the run id is the same after ten periods, so
+nothing was rebuilt, while the run measures wider once the count reaches two
+digits, so it really was reshaped. Four of those tests wait out real sleeps and
+are `#[ignore]`d until a clock can be substituted for `wasi:clocks`; run them with
+`cargo test -p zenafx --test counter -- --ignored`.
 
 ### What is not here yet
 
 A window shows one component. Embedding one component in another is designed
-in [Children and slots](../../docs/design/zenafx-ui.md#children-and-slots) and
+in [Interior and content](../../docs/design/zenafx-ui.md#interior-and-content) and
 not implemented: an earlier prototype did it by
 having each component export `render` and `measure`, which fixed one widget
 to one component, and that was removed. Whatever replaces it will embed

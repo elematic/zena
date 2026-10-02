@@ -225,6 +225,26 @@ const FIXTURES: Fixture[] = [
     invocations: [{invoke: 'main()', expect: '()'}],
   },
   {
+    name: 'sync-main-then',
+    wasi: ['p3=y'],
+    wit: ['sync-main-then.wit', 'app'],
+    // A declared world whose `main` is async while the program's `main` is
+    // an ordinary synchronous function calling `sleep(...).then(...)`. The
+    // async-ness that matters is the lift's: it is what reports WAIT, which
+    // is the only way the host learns to come back and run the
+    // continuation. `fs-roundtrip` covers the same split without a declared
+    // world, where the reachability rule lifts `main` async on its own.
+    //
+    // Two chained 200ms sleeps, so the wall clock separates "waited out the
+    // first timer" from "ran the first continuation and armed the second".
+    // The CPU bound holds the path to actually sleeping: 2x400ms measured
+    // 820ms wall against 50ms cpu, which is fixed startup rather than a
+    // spin.
+    invocations: [
+      {invoke: 'main()', expect: '()', minWallMs: 380, maxCpuFraction: 0.5},
+    ],
+  },
+  {
     name: 'print',
     wasi: ['p3=y'],
     // The first component that prints: `zena:console` over p3

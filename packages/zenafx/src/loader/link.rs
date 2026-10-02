@@ -7,35 +7,85 @@
 //! interfaces the policy grants it and no others.
 
 use anyhow::Result;
-use wasmtime::component::Linker;
 use wasmtime::StoreContextMut;
+use wasmtime::component::{Linker, Resource, ResourceTable, ResourceType};
+use wasmtime_wasi::clocks::{WasiClocksCtx, WasiClocksCtxView, WasiClocksView};
 
 use crate::ui::layout::{measure_text, solve_with};
-use crate::ui::scene::{Scene, SceneNode};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+
+use crate::ui::scene::{Hole, Scene, TemplateRef};
 use crate::ui::text::TextEngine;
-use crate::ui::types::{Command, Content, Measured, Node, Rect, Size, TextLook};
+use crate::ui::types::{Command, Content, Measured, Node, Rect, Size, TextStyle};
+
+/// What a `node` handle names.
+///
+/// A host resource's representation is a `u32` the host chooses, and the scene
+/// id is already one, so the id *is* the representation and there is no table
+/// to keep beside the tree. Nothing hangs off this type — it exists to give
+/// `ResourceType::host` something to name, so that a `node` handle cannot be
+/// confused with a handle of some other resource.
+///
+/// Two handles can therefore share a representation: a parent that asks for the
+/// same slot twice gets two owned handles onto one node. That is sound here
+/// because dropping a handle is not structural — see `resource node` in
+/// `wit/zenafx.wit` — so the destructor has nothing to do and running it twice
+/// does nothing twice.
+pub struct HostNode;
 
 /// What a ZenaFX window's host functions read and write.
+///
+/// The tree and the text engine sit behind locks rather than inside the
+/// store, because an async entry's task holds `&mut Store` for as long as it
+/// is parked: a frame could not read the scene out of the store while the
+/// component waits on a timer. Holding them here lets the window draw from
+/// the same tree the guest is writing.
 pub struct UiHostState {
-    pub text: TextEngine,
+    pub text: Arc<Mutex<TextEngine>>,
     /// The retained tree. The component installs one when it starts, and a
     /// frame after that is a solve and a paint over this and nothing else.
-    pub scene: Scene,
+    pub scene: Arc<Mutex<Scene>>,
     /// The frame being built. A component that paints for itself, rather
     /// than describing a tree, appends to this through `present`.
     pub frame: Vec<Command>,
     /// Every entry into the component since the scene was created. A
     /// retained tree should leave this at one while the window resizes.
-    pub guest_entries: u32,
+    /// Shared for the same reason the scene is: the store it lives in is
+    /// held by the entry's task.
+    pub guest_entries: Arc<AtomicU32>,
+    /// Set by the component's `ready`, which is how it says the tree it has
+    /// built is worth drawing. The loader waits for it rather than for the
+    /// entry call, which for a component that keeps working never returns.
+    pub ready: Arc<AtomicBool>,
+    /// `wasi:clocks`, which is what `zena:time`'s `sleep` parks on. A
+    /// component that never sleeps still carries it: the interface is in the
+    /// linker either way, and an unused import costs nothing.
+    clocks: WasiClocksCtx,
+    /// For `wasi:clocks`' own resources. The `node` resource needs none: its
+    /// handles carry a scene id and nothing else — see [`HostNode`].
+    table: ResourceTable,
+}
+
+impl WasiClocksView for UiHostState {
+    fn clocks(&mut self) -> WasiClocksCtxView<'_> {
+        WasiClocksCtxView {
+            ctx: &mut self.clocks,
+            table: &mut self.table,
+        }
+    }
 }
 
 impl UiHostState {
     pub fn new() -> Self {
         Self {
-            text: TextEngine::new(),
-            scene: Scene::new(),
+            text: Arc::new(Mutex::new(TextEngine::new())),
+            scene: Arc::new(Mutex::new(Scene::new())),
             frame: Vec::new(),
-            guest_entries: 0,
+            guest_entries: Arc::new(AtomicU32::new(0)),
+            ready: Arc::new(AtomicBool::new(false)),
+            clocks: WasiClocksCtx::default(),
+            table: ResourceTable::new(),
         }
     }
 }
@@ -49,7 +99,7 @@ impl Default for UiHostState {
 /// Define `zenafx:host/{text,layout,paint,scene}` on `linker`.
 ///
 /// `zenafx:ui/{style,geometry}` are imported too — a component that names
-/// `text-look` imports the interface that declares it — but they carry only
+/// `text-style` imports the interface that declares it — but they carry only
 /// types, so they need an instance and no functions.
 pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
     linker.instance("zenafx:ui/style@0.1.0")?;
@@ -58,22 +108,25 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
     let mut text = linker.instance("zenafx:host/text@0.1.0")?;
     text.func_wrap(
         "register-run",
-        |mut caller: StoreContextMut<'_, UiHostState>, (content, look): (String, TextLook)| {
-            Ok((caller.data_mut().text.register_run(&content, &look),))
+        |mut caller: StoreContextMut<'_, UiHostState>, (content, style): (String, TextStyle)| {
+            let text = caller.data_mut().text.clone();
+            Ok((text.lock().unwrap().register_run(&content, &style),))
         },
     )?;
     text.func_wrap(
         "update-run",
         |mut caller: StoreContextMut<'_, UiHostState>,
-         (run, content, look): (u32, String, TextLook)| {
-            caller.data_mut().text.update_run(run, &content, &look);
+         (run, content, style): (u32, String, TextStyle)| {
+            let text = caller.data_mut().text.clone();
+            text.lock().unwrap().update_run(run, &content, &style);
             Ok(())
         },
     )?;
     text.func_wrap(
         "release-run",
         |mut caller: StoreContextMut<'_, UiHostState>, (run,): (u32,)| {
-            caller.data_mut().text.release_run(run);
+            let text = caller.data_mut().text.clone();
+            text.lock().unwrap().release_run(run);
             Ok(())
         },
     )?;
@@ -81,7 +134,8 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         "measure-run",
         |mut caller: StoreContextMut<'_, UiHostState>,
          (run, available_width): (u32, Option<f32>)| {
-            let m: Measured = caller.data_mut().text.measure_run(run, available_width);
+            let engine = caller.data_mut().text.clone();
+            let m: Measured = engine.lock().unwrap().measure_run(run, available_width);
             Ok((m,))
         },
     )?;
@@ -103,29 +157,62 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         },
     )?;
 
+    wasmtime_wasi::p3::clocks::add_to_linker(linker)?;
+
     let mut scene = linker.instance("zenafx:host/scene@0.1.0")?;
-    scene.func_wrap(
-        "install",
-        |mut caller: StoreContextMut<'_, UiHostState>,
-         (parent, nodes): (Option<u32>, Vec<SceneNode>)| {
-            let data = caller.data_mut();
-            let UiHostState { scene, text, .. } = data;
-            Ok((scene.install(parent, &nodes, text),))
-        },
+
+    // Nothing to free: the node belongs to whoever's interior it sits in, and
+    // it goes away when that interior is rebuilt. A guest letting go of a
+    // handle says only that this guest has stopped referring to the node.
+    scene.resource(
+        "node",
+        ResourceType::host::<HostNode>(),
+        |_store, _rep| Ok(()),
     )?;
+
     scene.func_wrap(
-        "replace",
-        |mut caller: StoreContextMut<'_, UiHostState>,
-         (target, nodes): (u32, Vec<SceneNode>)| {
-            let data = caller.data_mut();
-            let UiHostState { scene, text, .. } = data;
-            Ok((scene.replace(target, &nodes, text),))
-        },
-    )?;
-    scene.func_wrap(
-        "invalidate",
+        "root",
         |mut caller: StoreContextMut<'_, UiHostState>, (): ()| {
-            caller.data_mut().scene.dirty = true;
+            let scene = caller.data_mut().scene.clone();
+            let id = scene.lock().unwrap().root();
+            Ok((Resource::<HostNode>::new_own(id),))
+        },
+    )?;
+    scene.func_wrap(
+        "[method]node.render",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (node, template, holes): (Resource<HostNode>, TemplateRef, Vec<Hole>)| {
+            let data = caller.data_mut();
+            let (scene, text) = (data.scene.clone(), data.text.clone());
+            let mut scene = scene.lock().unwrap();
+            let mut text = text.lock().unwrap();
+            scene.render(node.rep(), &template, &holes, &mut text);
+            Ok(())
+        },
+    )?;
+    scene.func_wrap(
+        "[method]node.content",
+        |mut caller: StoreContextMut<'_, UiHostState>,
+         (node, slot, count): (Resource<HostNode>, u32, u32)| {
+            let data = caller.data_mut();
+            let (scene, text) = (data.scene.clone(), data.text.clone());
+            let mut scene = scene.lock().unwrap();
+            let mut text = text.lock().unwrap();
+            // A slot a template never declared is a guest bug, and there is
+            // nothing to hand back that would be less wrong than a trap.
+            match scene.content(node.rep(), slot, count, &mut text) {
+                Some(ids) => Ok((ids
+                    .into_iter()
+                    .map(Resource::<HostNode>::new_own)
+                    .collect::<Vec<_>>(),)),
+                None => Err(wasmtime::Error::msg(format!("a node has no slot {slot}"))),
+            }
+        },
+    )?;
+    scene.func_wrap(
+        "ready",
+        |mut caller: StoreContextMut<'_, UiHostState>, (): ()| {
+            caller.data_mut().ready.store(true, Ordering::Relaxed);
             Ok(())
         },
     )?;
@@ -139,8 +226,10 @@ fn solve_tree(
     nodes: &[Node],
     available: Size,
 ) -> Vec<Rect> {
+    let engine = caller.data_mut().text.clone();
+    let mut text = engine.lock().unwrap();
     solve_with(nodes, available, |content, query| match content {
-        Content::Text(run) => measure_text(&mut caller.data_mut().text, *run, query),
+        Content::Text(run) => measure_text(&mut text, *run, query),
         Content::Box => Measured {
             width: 0.0,
             height: 0.0,
