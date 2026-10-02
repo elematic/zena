@@ -1707,7 +1707,6 @@ export final class Specializer implements SpecializerInterface {
         let msIdx = vtableMethIdx;
         vtableMethIdx += 1;
         if (ms is MethodDefinition) {
-          if (ms.isAbstract) { continue; }
           let {typeParameters} = ms;
           if (typeParameters != null && typeParameters.length > 0) {
             continue;
@@ -1725,7 +1724,7 @@ export final class Specializer implements SpecializerInterface {
                 }
               }
             }
-            
+
             // Privates: no vtable slot (never virtual); mixin
             // privates register under the mixin's scope key.
             let isPrivateMeth = methName.length > 0 && methName.sliceBytes(0, 1) == "#";
@@ -1736,6 +1735,11 @@ export final class Specializer implements SpecializerInterface {
               ctVtable.push(vtableMethName);
               vtableSet.add(vtableMethName);
             }
+            // An abstract method has a slot, so a call through this
+            // class dispatches to the subclass's override, and no body:
+            // the slot is filled with a stub until a subclass's
+            // implementation replaces it.
+            if (ms.isAbstract) { continue; }
             let declNode = allDecls[msIdx];
             var regName = methName;
             if (ms.isConstructor) {

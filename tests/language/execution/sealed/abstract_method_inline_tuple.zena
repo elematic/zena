@@ -1,0 +1,52 @@
+// @mode: run
+// @result: 1
+// A sealed class's abstract method can return an inline tuple, and a call
+// through the sealed type dispatches to each variant's override.
+sealed class Span {
+  case Closed, Open
+
+  abstract bounds(length: i32): inline (i32, i32);
+
+  abstract width(length: i32): i32;
+}
+
+final class Closed extends Span {
+  start: i32;
+  end: i32;
+
+  new(start: i32, end: i32) : start = start, end = end, super();
+
+  bounds(_length: i32): inline (i32, i32) {
+    return (this.start, this.end);
+  }
+
+  width(_length: i32): i32 {
+    return this.end - this.start;
+  }
+}
+
+final class Open extends Span {
+  start: i32;
+
+  new(start: i32) : start = start, super();
+
+  bounds(length: i32): inline (i32, i32) {
+    return (this.start, length);
+  }
+
+  width(length: i32): i32 {
+    return length - this.start;
+  }
+}
+
+let encode = (span: Span, length: i32): i32 => {
+  let (start, end) = span.bounds(length);
+  return start * 100 + end;
+};
+
+export let main = (): i32 => {
+  let closed: Span = new Closed(2, 5);
+  let open: Span = new Open(3);
+  return if (encode(closed, 10) == 205 && encode(open, 10) == 310 &&
+      closed.width(10) == 3 && open.width(10) == 7) 1 else 0;
+};
