@@ -20,7 +20,8 @@ programs, including:
 - Command-line argument access
 - Environment variable access
 - Process exit control
-- Argument parsing utilities
+
+Command-line argument and flag parsing is provided separately by `zena:args`.
 
 ## Design Philosophy
 
@@ -138,39 +139,22 @@ if (args.length < 2) {
 exitSuccess();
 ```
 
-### Argument Parsing Utilities
+### Argument Parsing
+
+For parsing options, flags, positional arguments, and generating help text,
+use the dedicated `zena:args` module (`ArgParser`):
 
 ```zena
-// Check option types
-let isOption = (arg: String): bool       // starts with -
-let isShortOption = (arg: String): bool  // -x format
-let isLongOption = (arg: String): bool   // --name format
+import { getArguments } from 'zena:cli';
+import { ArgParser, OptionType } from 'zena:args';
 
-// Parse long option with value
-let parseLongOption = (arg: String): ParsedOption
+let parser = new ArgParser('mytool')
+  .addOption('verbose', { type: OptionType.Flag, abbr: 'v' })
+  .addOption('output', { abbr: 'o' });
 
-type ParsedOption = {
-  name: String,
-  value: String?,
-}
-```
-
-**Example:**
-
-```zena
-import { getArguments, isLongOption, parseLongOption, isOption } from 'zena:cli';
-
-for (let arg in getArguments()) {
-  if (isLongOption(arg)) {
-    let opt = parseLongOption(arg);
-    console.log("Option: " + opt.name);
-    if (opt.value != null) {
-      console.log("  Value: " + opt.value);
-    }
-  } else if (!isOption(arg)) {
-    console.log("Positional: " + arg);
-  }
-}
+let parsed = parser.parse(getArguments(), 1);
+let verbose = parsed.getFlag('verbose');
+let output = parsed.getOption('output');
 ```
 
 ## Implementation Details

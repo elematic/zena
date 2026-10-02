@@ -6,8 +6,9 @@
 import { suite, test, TestContext, runAndReport } from 'zena:test';
 import { equal } from 'zena:assert';
 import {
-  loadPackage, Package, baseName, dirName, join,
+  loadPackage, Package,
 } from '../lib/package.zena';
+import { join2 } from 'zena:path';
 import { documentPackage, DocumentOptions } from '../lib/document.zena';
 import { packageToJson } from '../lib/json.zena';
 
@@ -35,56 +36,56 @@ let entryFile = (pkg: Package, name: String): String => {
 
 let tests = suite('package', () => {
   test('reads a manifest package', (t: TestContext) => {
-    let pkg = loadPackage(join(FIXTURES, 'lib'));
+    let pkg = loadPackage(join2(FIXTURES, 'lib'));
     equal(pkg.name, 'fixture');
     equal(pkg.version, '1.2.3');
     equal(pkg.root, FIXTURES + '/lib');
   });
 
   test('lists exported modules in name order', (t: TestContext) => {
-    let pkg = loadPackage(join(FIXTURES, 'lib'));
+    let pkg = loadPackage(join2(FIXTURES, 'lib'));
     equal(moduleNames(pkg), 'console,facade,shapes,widgets');
   });
 
   test('uses the entry file the manifest names', (t: TestContext) => {
-    let pkg = loadPackage(join(FIXTURES, 'lib'));
+    let pkg = loadPackage(join2(FIXTURES, 'lib'));
     equal(entryFile(pkg, 'shapes'), 'shapes.zena');
     equal(entryFile(pkg, 'widgets'), 'nested/widgets.zena');
   });
 
   test('picks a virtual module entry by target', (t: TestContext) => {
-    equal(entryFile(loadPackage(join(FIXTURES, 'lib'), null, 'zena-cli'),
+    equal(entryFile(loadPackage(join2(FIXTURES, 'lib'), null, 'zena-cli'),
         'console'), 'nested/console-cli.zena');
-    equal(entryFile(loadPackage(join(FIXTURES, 'lib'), null, 'js'), 'console'),
+    equal(entryFile(loadPackage(join2(FIXTURES, 'lib'), null, 'js'), 'console'),
         'nested/console-js.zena');
   });
 
   test('drops a module the target does not have', (t: TestContext) => {
     // `component-only` exists on the component target and nowhere else.
-    equal(moduleNames(loadPackage(join(FIXTURES, 'lib'), null, 'component')),
+    equal(moduleNames(loadPackage(join2(FIXTURES, 'lib'), null, 'component')),
         'component-only,facade,shapes,widgets');
   });
 
   test('takes every file when there is no manifest', (t: TestContext) => {
-    let pkg = loadPackage(join(FIXTURES, 'open'));
+    let pkg = loadPackage(join2(FIXTURES, 'open'));
     equal(pkg.name, 'open');
     equal(moduleNames(pkg), 'nested/deep,tools');
     equal(entryFile(pkg, 'nested/deep'), 'nested/deep.zena');
   });
 
   test('takes a single file as a package of one module', (t: TestContext) => {
-    let pkg = loadPackage(join(FIXTURES, 'open/tools.zena'));
+    let pkg = loadPackage(join2(FIXTURES, 'open/tools.zena'));
     equal(pkg.name, 'tools');
     equal(pkg.root, FIXTURES + '/open');
     equal(moduleNames(pkg), 'tools');
   });
 
   test('honours a name override', (t: TestContext) => {
-    equal(loadPackage(join(FIXTURES, 'open'), 'renamed').name, 'renamed');
+    equal(loadPackage(join2(FIXTURES, 'open'), 'renamed').name, 'renamed');
   });
 
   test('documents a package end to end', (t: TestContext) => {
-    let pkg = loadPackage(join(FIXTURES, 'lib'));
+    let pkg = loadPackage(join2(FIXTURES, 'lib'));
     let result = documentPackage(pkg, new DocumentOptions());
     equal(result.failures.length, 0);
     equal(result.hasErrors(), false);
@@ -98,16 +99,6 @@ let tests = suite('package', () => {
     equal(json.contains('"summary": "A square."'), true);
     // The virtual module documents the target's entry file.
     equal(json.contains('"file": "nested/console-cli.zena"'), true);
-  });
-
-  test('splits a path', (t: TestContext) => {
-    equal(baseName('a/b/c.zena'), 'c.zena');
-    equal(baseName('c.zena'), 'c.zena');
-    equal(dirName('a/b/c.zena'), 'a/b');
-    equal(dirName('c.zena'), '.');
-    equal(join('a', 'b'), 'a/b');
-    equal(join('.', 'b'), 'b');
-    equal(join('a/', 'b'), 'a/b');
   });
 });
 

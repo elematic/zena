@@ -2,7 +2,7 @@
  * Command-line interface support over WASI 0.3, for the component
  * target: arguments, environment variables, the working directory and
  * process exit, over `wasi:cli@0.3.0` as the compiler synthesizes it
- * from the vendored WIT, plus option-parsing helpers.
+ * from the vendored WIT.
  *
  * ## Examples
  *
@@ -160,66 +160,3 @@ export let exitFailure = (): void => {
   exitWithCode(1 as u8);
 };
 
-// ============================================================================
-// Argument Parsing Utilities
-// ============================================================================
-
-/** An option as `parseLongOption` reads it. */
-export type ParsedOption = {
-  /** The option name (without leading dashes). */
-  name: String,
-  /** The option value, if provided (for --name=value). Null if no value. */
-  value: String | null
-};
-
-/** Whether `arg` is a short option: `-x`. */
-export let isShortOption = (arg: String): boolean => {
-  if (arg.length != 2) {
-    return false;
-  }
-  if (arg.getByteAt(0) != 45) {
-    return false;
-  }
-  if (arg.getByteAt(1) == 45) {
-    return false;
-  }
-  return true;
-};
-
-/** Whether `arg` is a long option: `--name` or `--name=value`. */
-export let isLongOption = (arg: String): boolean => {
-  if (arg.length < 3) {
-    return false;
-  }
-  if (arg.getByteAt(0) != 45 || arg.getByteAt(1) != 45) {
-    return false;
-  }
-  return true;
-};
-
-/** Whether `arg` starts with a dash. */
-export let isOption = (arg: String): boolean => {
-  if (arg.length == 0) {
-    return false;
-  }
-  return arg.getByteAt(0) == 45;
-};
-
-/** The name and value of a long option. */
-export let parseLongOption = (arg: String): ParsedOption => {
-  let optPart = arg.sliceBytes(2, arg.length);
-  var eqIndex = 0 - 1;
-  for (var i = 0; i < optPart.length; i += 1) {
-    if (optPart.getByteAt(i) == 61) {
-      eqIndex = i;
-      i = optPart.length;
-    }
-  }
-  if (eqIndex >= 0) {
-    return {
-      name: optPart.sliceBytes(0, eqIndex),
-      value: optPart.sliceBytes(eqIndex + 1, optPart.length)
-    };
-  }
-  return { name: optPart, value: null };
-};

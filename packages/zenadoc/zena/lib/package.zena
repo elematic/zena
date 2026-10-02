@@ -13,6 +13,7 @@
 
 import { parseJson, JsonValue, JsonObject } from 'zena:json';
 import { exists, isDirectory, listDir, readFile, FileType } from 'zena:fs';
+import { basename, dirname, join2 } from 'zena:path';
 
 let PACKAGE_MANIFEST = 'zena-package.json';
 let STDLIB_MANIFEST = 'stdlib-manifest.json';
@@ -62,11 +63,11 @@ export let loadPackage = (
 
 /** The manifest in a directory, whichever of the two names it uses. */
 let manifestIn = (root: String): String | null => {
-  let preferred = join(root, PACKAGE_MANIFEST);
+  let preferred = join2(root, PACKAGE_MANIFEST);
   if (exists(preferred)) {
     return preferred;
   }
-  let stdlib = join(root, STDLIB_MANIFEST);
+  let stdlib = join2(root, STDLIB_MANIFEST);
   if (exists(stdlib)) {
     return stdlib;
   }
@@ -96,7 +97,7 @@ let manifestPackage = (
   // root, not to the manifest.
   let declaredRoot = manifest['root'];
   let sourceRoot = if (declaredRoot is String) {
-    join(root, declaredRoot)
+    join2(root, declaredRoot)
   } else {
     root
   };
@@ -168,12 +169,12 @@ let manifestName = (manifest: JsonObject, root: String): String => {
   if (name is String) {
     return name;
   }
-  return baseName(root);
+  return basename(root);
 };
 
 /** Every `.zena` file under a root, as a module named by its path. */
 let openPackage = (root: String, override: String | null): Package => {
-  let name = if (override != null) { override } else { baseName(root) };
+  let name = if (override != null) { override } else { basename(root) };
   let out = new Package(name, root);
   out.modules = openModules(root);
   return out;
@@ -190,7 +191,7 @@ let collectZenaFiles = (
   prefix: String,
   out: GrowableArray<PackageModule>
 ): void => {
-  let dir = if (prefix.length == 0) { root } else { join(root, prefix) };
+  let dir = if (prefix.length == 0) { root } else { join2(root, prefix) };
   for (let entry in listDir(dir)) {
     if (entry.name == '.' || entry.name == '..') {
       continue;
@@ -198,7 +199,7 @@ let collectZenaFiles = (
     let relative = if (prefix.length == 0) {
       entry.name
     } else {
-      prefix + '/' + entry.name
+      join2(prefix, entry.name)
     };
     if (entry.fileType == FileType.Directory) {
       collectZenaFiles(root, relative, out);
@@ -211,13 +212,13 @@ let collectZenaFiles = (
 };
 
 let singleFilePackage = (path: String, override: String | null): Package => {
-  let file = baseName(path);
+  let file = basename(path);
   let name = if (override != null) {
     override
   } else {
     stripExtension(file)
   };
-  let out = new Package(name, dirName(path));
+  let out = new Package(name, dirname(path));
   let modules = new Array<PackageModule>(1);
   modules.push(new PackageModule(stripExtension(file), file));
   out.modules = modules;
@@ -264,41 +265,6 @@ let precedes = (a: String, b: String): boolean => {
   return a.length < b.length;
 };
 
-// ============================================================================
-// Paths
-// ============================================================================
-
-export let join = (a: String, b: String): String => {
-  if (a.length == 0 || a == '.') {
-    return b;
-  }
-  if (a.endsWith('/')) {
-    return a + b;
-  }
-  return a + '/' + b;
-};
-
-export let baseName = (path: String): String => {
-  var i = path.length;
-  while (i > 0) {
-    if (path.getByteAt(i - 1) == 47) {
-      return path.sliceBytes(i, path.length);
-    }
-    i -= 1;
-  }
-  return path;
-};
-
-export let dirName = (path: String): String => {
-  var i = path.length;
-  while (i > 0) {
-    if (path.getByteAt(i - 1) == 47) {
-      return path.sliceBytes(0, i - 1);
-    }
-    i -= 1;
-  }
-  return '.';
-};
 
 let stripExtension = (file: String): String => {
   if (file.endsWith('.zena')) {
