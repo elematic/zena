@@ -33,7 +33,8 @@ import {
   deriveImportsWit, encodeImportTypes, makeImportEncoder
 } from '../lib/codegen/wit-imports.zena';
 import {
-  isWitModulePath, synthesizeWitModule, synthesizeExportWrapper
+  isWitModulePath, synthesizeWitModule, synthesizeWitModuleFrom,
+  synthesizeExportWrapper
 } from '../lib/wit-module-synth.zena';
 import { ComponentEntryWrapper } from '../lib/component-entry.zena';
 import { Module } from '../lib/ast.zena';
@@ -660,6 +661,26 @@ export function reset(): boolean { return true; }
       `the escaped field is not rendered under its bare name:\n${source}`);
     isTrue(!source.contains('%'),
       `an explicit-identifier prefix leaked into the synthesized source:\n${source}`);
+  });
+
+  test('a WIT module synthesizes from a document the host supplies',
+      (ctx: TestContext): void => {
+    // A host that serves its sources from memory reads the root's
+    // document itself. The root names no file, so reading it from disk
+    // would throw.
+    let document =
+        'package memo:demo;\ninterface greet { hello: func(name: string) -> string; }\n';
+    var asked = '';
+    let source = synthesizeWitModuleFrom('wit:<memory>#memo:demo/greet',
+        (witRoot) => {
+          asked = witRoot;
+          return document;
+        });
+    equal(asked, '<memory>');
+    isTrue(source.contains('memo:demo/greet'),
+      `the module is not synthesized from the supplied document:\n${source}`);
+    isTrue(source.contains('hello'),
+      `the interface's function is not rendered:\n${source}`);
   });
 
   test('an async method on an imported resource renders as an async member',

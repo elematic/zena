@@ -2570,8 +2570,24 @@ export function declaredPackageNamespaces(witSource: String): Array<String> {
  * source, spliced in where the root's document lacks it: a declared
  * world's document is a root too, and its worlds import `wasi:cli` by
  * name, which the parser resolves.
+ *
+ * The root's document is read from disk with `readWitSource`.
  */
 export function synthesizeWitModule(canonicalPath: String,
+    packagesWit: String = ""): String {
+  return synthesizeWitModuleFrom(canonicalPath,
+      (witRoot) => readWitSource(witRoot), packagesWit);
+}
+
+/**
+ * `synthesizeWitModule`, with the root's document read by `readWit`,
+ * which is given the `<root>` part of the canonical path. A host that
+ * serves its sources from memory passes its own reader, so a compiler
+ * built around that host links no file system: on the `component`
+ * target, `readWitSource` would import `wasi:filesystem`.
+ */
+export function synthesizeWitModuleFrom(canonicalPath: String,
+    readWit: (witRoot: String) => String,
     packagesWit: String = ""): String {
   let rest = canonicalPath.sliceBytes(4, canonicalPath.length);
   var hash = -1;
@@ -2596,7 +2612,7 @@ export function synthesizeWitModule(canonicalPath: String,
   let interfacePath = spec.sliceBytes(colon + 1, spec.length);
 
   // The splice appends, so the spans the type text is read from hold.
-  let witSource = withWasiPackages(readWitSource(witRoot), packagesWit);
+  let witSource = withWasiPackages(readWit(witRoot), packagesWit);
   reinterpretUsed = false;
   currentWitSource = witSource;
   let ast = parsedWit(witSource);
