@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 9
+// A subclass first instantiated in a method reached only through an
+// interface still dispatches to its own override. `SquareMaker` is an
+// extension class, so nothing instantiates it and `make` is reached only
+// when its interface trampoline is built, late in reachability. `measure`
+// is reached earlier, from `main`, with a plain `Shape`.
+class Shape {
+  area(): i32 {
+    return 0;
+  }
+}
+
+final class Square extends Shape {
+  side: i32;
+
+  new(side: i32) : side = side, super();
+
+  area(): i32 {
+    return this.side * this.side;
+  }
+}
+
+let measure = (shape: Shape): i32 => shape.area();
+
+interface Maker {
+  make(): i32;
+}
+
+final extension class SquareMaker on FixedArray<i32> implements Maker {
+  make(): i32 {
+    return measure(new Square(3));
+  }
+}
+
+export let main = (): i32 => {
+  let plain = measure(new Shape());
+  let maker: Maker = [1] as FixedArray<i32> as SquareMaker;
+  return plain + maker.make();
+};

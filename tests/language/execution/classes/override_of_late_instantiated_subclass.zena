@@ -1,0 +1,39 @@
+// @mode: run
+// @result: 37
+// A call through a base class reaches the override of a subclass that is
+// first instantiated after the call has been seen, for an abstract base
+// method as for a concrete one.
+abstract class Shape {
+  abstract area(): i32;
+
+  perimeter(): i32 {
+    return 0;
+  }
+}
+
+final class Square extends Shape {
+  side: i32;
+
+  new(side: i32) : side = side, super();
+
+  area(): i32 {
+    return this.side * this.side;
+  }
+
+  perimeter(): i32 {
+    return 4 * this.side;
+  }
+}
+
+/** Reached first: nothing has built a Shape when its body is walked. */
+let measure = (shape: Shape): i32 => shape.area() + shape.perimeter();
+
+/** Reached through `measure`'s caller only after `measure` itself. */
+let build = (): Shape => new Square(3);
+
+export let main = (): i32 => {
+  let probe = measure;
+  // 9 + 12, then 16 for the second square's area
+  let square = build();
+  return probe(square) + 16;
+};

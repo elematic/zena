@@ -1778,7 +1778,24 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // pass or the final drain instantiated, then CLOSE: from here a
     // new class cannot get a struct, so becoming instantiated now is a
     // bug, and a named one.
+    //
+    // A class first instantiated after the class vtable globals were
+    // built has none, and that is fine while it only inherits. One that
+    // overrides a method called through a base-typed receiver needs its
+    // vtable, or the call is lowered as a direct call to the base's
+    // method. Building its vtable lets #fillReachedSlots reach the
+    // override, whose body can instantiate further classes, so this
+    // runs to a fixpoint with layout and the interface vtables.
     this.#layoutClassStructs(populated);
+    while (this.#buildLateOverridingVTableGlobals()) {
+      this.#settleQueues();
+      var lateOverrideVtRound = true;
+      while (lateOverrideVtRound) {
+        lateOverrideVtRound = this.#buildClassInterfaceVTables();
+        this.#settleQueues();
+      }
+      this.#layoutClassStructs(populated);
+    }
     // Catching up is not only missing structs: a struct laid out early
     // can hold a field baked `structref` for a class a later walk then
     // registered — whose method signatures are precise, so the erased
@@ -2280,16 +2297,53 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
+   * Builds the class vtable global for each instantiated class that has
+   * none yet and declares its own version of a slot whose method is
+   * reached somewhere in the slot's hierarchy. Without it, lowering sees
+   * no reached override below the receiver's class and calls the base's
+   * method directly, so an instance of this class would run the wrong
+   * method. Returns whether any global was built.
+   */
+  #buildLateOverridingVTableGlobals(): boolean {
+    let reachedKeys = this.#reachedSlotKeys(false);
+    let lateKeys = new Array<ClassKey>();
+    for (let cPair in this.wasm.classInfos) {
+      let cName = cPair.key;
+      let info = cPair.value;
+      let ct = info.structType.classType;
+      if (info.vtableGlobal != null || info.vtableStructType == null ||
+          ct == null || !this.instantiatedSpecializedClasses.has(cName as String)) {
+        continue;
+      }
+      let overrides = this.wasm.classVtable(cName).some((slotName) => {
+        if (!this.wasm.classMethodMap.has(getClassMethodKey(cName, slotName))) {
+          return false;
+        }
+        let key = this.#slotOwnerKey(ct, slotName);
+        return key != null && reachedKeys.has(key);
+      });
+      if (overrides) {
+        lateKeys.push(cName);
+      }
+    }
+    for (let cName in lateKeys) {
+      this.#buildClassVTableGlobals(cName);
+    }
+    return lateKeys.length > 0;
+  }
+
+  /**
    * Pass 1.5: builds the class vtable global for every instantiated
    * class that does not have one yet. Incremental — classes with a
    * vtableGlobal are skipped. `onlyKey` restricts a re-run to one
    * class: at the settle point it runs again for String alone, because
    * $stringCreate is synthesized against String's vtable global and a
    * literal in a body walked late instantiates String after the main
-   * pass. Other late-instantiated classes deliberately get NO vtable
-   * global — nothing dispatches through one (building them for all
-   * late classes cost array-sum 13 functions and 9 globals), and a
-   * dispatch that does need one fails loudly at its site.
+   * pass. Other late-instantiated classes get one only when they
+   * override a method that something calls through a base-typed
+   * receiver (#buildLateOverridingVTableGlobals); a class that only
+   * inherits needs none, and building them for all late classes cost
+   * array-sum 13 functions and 9 globals.
    */
   #buildClassVTableGlobals(onlyKey: ClassKey | null = null): void {
     for (let cPair in this.wasm.classInfos) {
