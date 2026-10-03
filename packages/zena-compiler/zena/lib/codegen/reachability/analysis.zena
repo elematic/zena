@@ -3782,7 +3782,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
         let valType = typeToValType(this.wasm, symType as Type);
         var fieldType: ValType = valType;
-        if (closureDep.mutableCaptures.has(symId)) {
+        // A closure that only reads a local still captures its cell when
+        // another closure assigns it, or it would read a stale copy.
+        if (closureDep.mutableCaptures.has(symId) ||
+            model.mutablyCapturedSymbols.has(symId)) {
           let cellStruct = getCellStruct(this.wasm, valType);
           fieldType = new ValTypeRefNull(cellStruct);
         }

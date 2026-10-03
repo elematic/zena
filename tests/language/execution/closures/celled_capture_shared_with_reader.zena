@@ -1,0 +1,45 @@
+// @mode: run
+// @result: 123
+// One closure assigns a local and another only reads it. The reader
+// captures the same heap cell as the writer, so it sees every
+// assignment, including those made after it was created. Before this
+// was fixed the reader's context held a copy, and creating it failed to
+// compile ("celled capture").
+let readerAfterWriter = (): i32 => {
+  var count = 0;
+  let bump = (): void => {
+    count += 1;
+  };
+  let read = (): i32 => count;
+  bump();
+  bump();
+  return read();
+};
+
+let readerBeforeWriter = (): i32 => {
+  var total = 0;
+  let read = (): i32 => total;
+  let add = (n: i32): void => {
+    total += n;
+  };
+  add(20);
+  return read();
+};
+
+// The same shape one level down: both closures are created inside
+// another closure.
+let nested = (): (() => i32) => {
+  return (): i32 => {
+    var n = 100;
+    let set = (v: i32): void => {
+      n = v;
+    };
+    let get = (): i32 => n;
+    set(101);
+    return get();
+  };
+};
+
+export let main = (): i32 => {
+  return readerAfterWriter() + readerBeforeWriter() + nested()();
+};
