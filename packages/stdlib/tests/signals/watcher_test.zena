@@ -1,0 +1,252 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse, throws, same} from 'zena:assert';
+import {
+  State, Computed, Watcher, ReactiveNode,
+  untrack, currentComputed, introspectSources, introspectSinks, hasSinks, hasSources,
+} from 'zena:signals';
+
+export let tests = suite('Signals: Watcher', (): void => {
+  test('notify runs inside set, once until re-armed', (ctx: TestContext): void => {
+    let s = new State(1);
+    var notified = 0;
+    let w = new Watcher((w: Watcher): void => {
+      notified += 1;
+    });
+    w.watch(s);
+    s.set(2);
+    equal(notified, 1);
+    s.set(3);
+    equal(notified, 1);
+    w.watch();
+    s.set(4);
+    equal(notified, 2);
+  });
+
+  test('a watched computed notifies through its sources', (ctx: TestContext): void => {
+    let s = new State(1);
+    let c = new Computed<i32>((): i32 => s.get() * 2);
+    var notified = 0;
+    let w = new Watcher((w: Watcher): void => {
+      notified += 1;
+    });
+    w.watch(c);
+    c.get();
+    s.set(2);
+    equal(notified, 1);
+    let pending = w.getPending();
+    equal(pending.length, 1);
+    same(pending[0], c as ReactiveNode);
+    equal(c.get(), 4);
+    equal(w.getPending().length, 0);
+  });
+
+  test('a watched computed that was never read is pending', (ctx: TestContext): void => {
+    let s = new State(1);
+    let c = new Computed<i32>((): i32 => s.get());
+    let w = new Watcher();
+    w.watch(c);
+    equal(w.getPending().length, 1);
+    c.get();
+    equal(w.getPending().length, 0);
+  });
+
+  test('reading or writing in notify throws', (ctx: TestContext): void => {
+    let s = new State(1);
+    let other = new State(0);
+    var readThrew = false;
+    var writeThrew = false;
+    var untrackThrew = false;
+    let w = new Watcher((w: Watcher): void => {
+      try {
+        other.get();
+      } catch (e) {
+        readThrew = true;
+      }
+      try {
+        other.set(1);
+      } catch (e) {
+        writeThrew = true;
+      }
+      try {
+        untrack<i32>((): i32 => other.get());
+      } catch (e) {
+        untrackThrew = true;
+      }
+    });
+    w.watch(s);
+    s.set(2);
+    isTrue(readThrew);
+    isTrue(writeThrew);
+    isTrue(untrackThrew);
+    equal(other.get(), 0);
+  });
+
+  test('an error in notify reaches set after every watcher ran', (ctx: TestContext): void => {
+    let s = new State(1);
+    var secondRan = false;
+    let w1 = new Watcher((w: Watcher): void => {
+      throw new Error('first');
+    });
+    let w2 = new Watcher((w: Watcher): void => {
+      secondRan = true;
+    });
+    w1.watch(s);
+    w2.watch(s);
+    throws((): void => {
+      s.set(2);
+    });
+    isTrue(secondRan);
+    equal(s.get(), 2);
+  });
+
+  test('unwatch stops notifications and throws for an unwatched signal', (ctx: TestContext): void => {
+    let s = new State(1);
+    var notified = 0;
+    let w = new Watcher((w: Watcher): void => {
+      notified += 1;
+    });
+    w.watch(s);
+    w.unwatch(s);
+    s.set(2);
+    equal(notified, 0);
+    throws((): void => {
+      w.unwatch(s);
+    });
+  });
+
+  test('watched and unwatched callbacks', (ctx: TestContext): void => {
+    var log = '';
+    let s = new State<i32>(1, {
+      watched: (): void => {
+        log = log + 'w';
+      },
+      unwatched: (): void => {
+        log = log + 'u';
+      },
+    });
+    let c = new Computed<i32>((): i32 => s.get() + 1);
+    c.get();
+    equal(log, '');
+    let w = new Watcher();
+    w.watch(c);
+    equal(log, 'w');
+    let w2 = new Watcher();
+    w2.watch(c);
+    equal(log, 'w');
+    w.unwatch(c);
+    equal(log, 'w');
+    w2.unwatch(c);
+    equal(log, 'wu');
+  });
+
+  test('a computed is live only while something live reads it', (ctx: TestContext): void => {
+    let s = new State(1);
+    let c = new Computed<i32>((): i32 => s.get());
+    c.get();
+    isFalse(hasSinks(s));
+    isTrue(hasSources(c));
+    let w = new Watcher();
+    w.watch(c);
+    isTrue(hasSinks(s));
+    isTrue(hasSinks(c));
+    same(introspectSinks(s)[0], c as ReactiveNode);
+    same(introspectSinks(c)[0], w as ReactiveNode);
+    w.unwatch(c);
+    isFalse(hasSinks(s));
+    isFalse(hasSinks(c));
+  });
+
+  test('a computed made live after a write is checked', (ctx: TestContext): void => {
+    let s = new State(1);
+    let c = new Computed<i32>((): i32 => s.get() * 10);
+    equal(c.get(), 10);
+    s.set(2);
+    let w = new Watcher();
+    w.watch(c);
+    equal(c.get(), 20);
+  });
+
+  test('introspectSources lists sources in read order', (ctx: TestContext): void => {
+    let a = new State(1);
+    let b = new State(2);
+    let c = new Computed<i32>((): i32 => b.get() + a.get() + b.get());
+    c.get();
+    let sources = introspectSources(c);
+    equal(sources.length, 2);
+    same(sources[0], b as ReactiveNode);
+    same(sources[1], a as ReactiveNode);
+    equal(introspectSources(a).length, 0);
+  });
+
+  test('currentComputed and untrack', (ctx: TestContext): void => {
+    let s = new State(1);
+    let t = new State(10);
+    var inside: ReactiveNode | null = null;
+    let c = new Computed<i32>((): i32 => {
+      inside = currentComputed();
+      return s.get() + untrack<i32>((): i32 => t.get());
+    });
+    equal(c.get(), 11);
+    same(inside as ReactiveNode, c as ReactiveNode);
+    isTrue(currentComputed() == null);
+    t.set(20);
+    equal(c.get(), 11);
+    s.set(2);
+    equal(c.get(), 22);
+  });
+
+  test('a live computed that switches branches releases the old source', (ctx: TestContext): void => {
+    let useA = new State<boolean>(true);
+    let a = new State(1);
+    let b = new State(2);
+    let c = new Computed<i32>((): i32 => if (useA.get()) a.get() else b.get());
+    let w = new Watcher();
+    w.watch(c);
+    c.get();
+    isTrue(hasSinks(a));
+    isFalse(hasSinks(b));
+    useA.set(false);
+    c.get();
+    isFalse(hasSinks(a));
+    isTrue(hasSinks(b));
+  });
+
+  test('watch inside notify throws', (ctx: TestContext): void => {
+    let s = new State(1);
+    let other = new State(2);
+    var threw = false;
+    let w = new Watcher((w: Watcher): void => {
+      try {
+        w.watch(other);
+      } catch (e) {
+        threw = true;
+      }
+    });
+    w.watch(s);
+    s.set(2);
+    isTrue(threw);
+  });
+
+  test('a watcher is notified once per write in depth-first order', (ctx: TestContext): void => {
+    let s = new State(1);
+    let c1 = new Computed<i32>((): i32 => s.get() + 1);
+    let c2 = new Computed<i32>((): i32 => s.get() + 2);
+    var log = '';
+    let w1 = new Watcher((w: Watcher): void => {
+      log = log + '1';
+    });
+    let w2 = new Watcher((w: Watcher): void => {
+      log = log + '2';
+    });
+    w1.watch(c1);
+    w1.watch(c2);
+    w2.watch(c2);
+    // `s` lists its consumers in the order they first read it, so c2's
+    // watchers come first: w1, then w2. w1 is reached again through c1
+    // and is not notified twice.
+    c2.get();
+    c1.get();
+    s.set(5);
+    equal(log, '12');
+  });
+});

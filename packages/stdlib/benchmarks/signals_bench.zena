@@ -1,0 +1,146 @@
+// Timings for zena:signals on the paths that run most: a write followed
+// by a read through a chain of computeds, a write that re-runs many
+// effects, and reads outside any computed. Each variant reports the time
+// for its whole loop; divide by the iteration count for one operation.
+//
+//   zena-cli run packages/stdlib/benchmarks/signals_bench.zena
+
+import { BenchRunner, BenchContext, reportToString } from 'zena:bench';
+import { State, Computed, Effect, effect, batch } from 'zena:signals';
+
+let ITERATIONS = 10000;
+let WIDTH = 100;
+
+/** A computed that adds one to the signal before it. */
+class Step extends Computed<i32> {
+  source: Computed<i32>;
+  new(source: Computed<i32>) : source = source, super();
+  compute(): i32 {
+    return this.source.get() + 1;
+  }
+}
+
+/** The same chain with no signals: each link adds one to the link
+ * before it through a virtual call, and caches nothing. A reference
+ * point for what the chain costs without dependency tracking. */
+class PlainStep {
+  source: PlainStep | null;
+  var value = 0;
+  new(source: PlainStep | null) : source = source;
+  get(): i32 {
+    let s = this.source;
+    if (s == null) {
+      return this.value;
+    }
+    return s.get() + 1;
+  }
+}
+
+export function main(): i32 {
+  let runner = new BenchRunner('signals');
+  runner.options.minSamples = 30;
+
+  // set, then get at the end of a chain of 100 computeds: every link
+  // reruns, and each rerun reuses its one dependency link.
+  runner.bench('chain of 100: set + get', (ctx: BenchContext): void => {
+    let s = new State(0);
+    var last: Computed<i32> = new Computed<i32>((): i32 => s.get());
+    for (var i = 0; i < WIDTH; i += 1) {
+      last = new Step(last);
+    }
+    let end = last;
+    end.get();
+    ctx.start();
+    var check = 0;
+    for (var i = 0; i < ITERATIONS; i += 1) {
+      s.set(i + 1);
+      check = end.get();
+    }
+    ctx.stop();
+    if (check != ITERATIONS + WIDTH) {
+      console.log('wrong result');
+    }
+  });
+
+  runner.bench('chain of 100, no signals: set + get', (ctx: BenchContext): void => {
+    let first = new PlainStep(null);
+    var last = first;
+    for (var i = 0; i < WIDTH; i += 1) {
+      last = new PlainStep(last);
+    }
+    ctx.start();
+    var check = 0;
+    for (var i = 0; i < ITERATIONS; i += 1) {
+      first.value = i + 1;
+      check = last.get();
+    }
+    ctx.stop();
+    if (check != ITERATIONS + WIDTH) {
+      console.log('wrong result');
+    }
+  });
+
+  // One state read by 100 effects: each set marks and reruns all of them.
+  runner.bench('100 effects: set', (ctx: BenchContext): void => {
+    let s = new State(0);
+    var total = 0;
+    let effects = new Array<Effect>();
+    for (var i = 0; i < WIDTH; i += 1) {
+      effects.push(effect((): void => {
+        total += s.get();
+      }));
+    }
+    ctx.start();
+    for (var i = 0; i < ITERATIONS; i += 1) {
+      s.set(i + 1);
+    }
+    ctx.stop();
+    for (let e in effects) {
+      e.dispose();
+    }
+  });
+
+  // An effect reading 100 states, all set in one batch: the effect runs
+  // once per batch.
+  runner.bench('batch of 100 sets, 1 effect', (ctx: BenchContext): void => {
+    let states = new Array<State<i32>>();
+    for (var i = 0; i < WIDTH; i += 1) {
+      states.push(new State(0));
+    }
+    var runs = 0;
+    let e = effect((): void => {
+      runs += 1;
+      for (let s in states) {
+        s.get();
+      }
+    });
+    ctx.start();
+    for (var i = 0; i < ITERATIONS / WIDTH as i32; i += 1) {
+      batch<void>((): void => {
+        for (let s in states) {
+          s.set(i + 1);
+        }
+      });
+    }
+    ctx.stop();
+    e.dispose();
+  });
+
+  // Reading a state outside any computed: the cost every plain read pays.
+  runner.bench('untracked get', (ctx: BenchContext): void => {
+    let s = new State(1);
+    ctx.start();
+    var sum = 0;
+    for (var i = 0; i < ITERATIONS * 10; i += 1) {
+      sum += s.get();
+    }
+    ctx.stop();
+    if (sum != ITERATIONS * 10) {
+      console.log('wrong result');
+    }
+  });
+
+  let report = runner.run();
+  console.log(reportToString(report));
+  return 0;
+}

@@ -1,0 +1,285 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse, throws} from 'zena:assert';
+import {State, Computed, Effect, Watcher, SignalErrors, effect, onCleanup, batch, untrack, hasSinks} from 'zena:signals';
+
+export let tests = suite('Signals: Effect', (): void => {
+  test('runs now and after each change', (ctx: TestContext): void => {
+    let s = new State(1);
+    var seen = 0;
+    var runs = 0;
+    effect((): void => {
+      runs += 1;
+      seen = s.get();
+    });
+    equal(runs, 1);
+    equal(seen, 1);
+    s.set(2);
+    equal(runs, 2);
+    equal(seen, 2);
+  });
+
+  test('batch runs an effect once for several writes', (ctx: TestContext): void => {
+    let a = new State(1);
+    let b = new State(2);
+    var runs = 0;
+    var sum = 0;
+    effect((): void => {
+      runs += 1;
+      sum = a.get() + b.get();
+    });
+    let result = batch<i32>((): i32 => {
+      a.set(10);
+      b.set(20);
+      equal(runs, 1);
+      return 7;
+    });
+    equal(result, 7);
+    equal(runs, 2);
+    equal(sum, 30);
+  });
+
+  test('does not run when a computed it reads is unchanged', (ctx: TestContext): void => {
+    let s = new State(1);
+    let parity = new Computed<i32>((): i32 => s.get() % 2);
+    var runs = 0;
+    effect((): void => {
+      runs += 1;
+      parity.get();
+    });
+    s.set(3);
+    equal(runs, 1);
+    s.set(4);
+    equal(runs, 2);
+  });
+
+  test('a diamond under an effect is glitch-free', (ctx: TestContext): void => {
+    let first = new State<String>('Ada');
+    let last = new State<String>('Lovelace');
+    let full = new Computed<String>((): String => first.get() + ' ' + last.get());
+    let letters = new Computed<i32>((): i32 => first.get().length + last.get().length);
+    var log = new Array<String>();
+    effect((): void => {
+      log.push(full.get() + '/' + i32ToString(letters.get()));
+    });
+    batch<void>((): void => {
+      first.set('Grace');
+      last.set('Hopper');
+    });
+    equal(log.length, 2);
+    equal(log[1], 'Grace Hopper/11');
+  });
+
+  test('dispose unsubscribes', (ctx: TestContext): void => {
+    let s = new State(1);
+    var runs = 0;
+    let e = effect((): void => {
+      runs += 1;
+      s.get();
+    });
+    isTrue(hasSinks(s));
+    e.dispose();
+    isFalse(hasSinks(s));
+    s.set(2);
+    equal(runs, 1);
+  });
+
+  test('cleanups run before the next run and on dispose', (ctx: TestContext): void => {
+    let s = new State(1);
+    var log = '';
+    let e = effect((): void => {
+      let v = s.get();
+      log = log + 'run' + i32ToString(v) + ' ';
+      onCleanup((): void => {
+        log = log + 'clean' + i32ToString(v) + ' ';
+      });
+    });
+    s.set(2);
+    e.dispose();
+    equal(log, 'run1 clean1 run2 clean2 ');
+  });
+
+  test('an effect created inside another belongs to it', (ctx: TestContext): void => {
+    let outer = new State(1);
+    let inner = new State(1);
+    var innerRuns = 0;
+    effect((): void => {
+      outer.get();
+      effect((): void => {
+        innerRuns += 1;
+        inner.get();
+      });
+    });
+    equal(innerRuns, 1);
+    outer.set(2);
+    equal(innerRuns, 2);
+    // The first inner effect was disposed when the outer one re-ran, so
+    // only one inner effect reacts.
+    inner.set(2);
+    equal(innerRuns, 3);
+  });
+
+  test('an effect may write signals', (ctx: TestContext): void => {
+    let celsius = new State(0);
+    let fahrenheit = new State(32);
+    effect((): void => {
+      let scaled = celsius.get() * 9 / 5 as i32;
+      fahrenheit.set(scaled + 32);
+    });
+    var seen = 0;
+    effect((): void => {
+      seen = fahrenheit.get();
+    });
+    celsius.set(100);
+    equal(fahrenheit.get(), 212);
+    equal(seen, 212);
+  });
+
+  test('a write inside a computed runs effects when the read finishes', (ctx: TestContext): void => {
+    let s = new State(1);
+    let log = new State(0);
+    var seen = 0;
+    effect((): void => {
+      seen = log.get();
+    });
+    let c = new Computed<i32>((): i32 => {
+      let v = s.get();
+      log.set(v);
+      equal(seen, 0);
+      return v;
+    });
+    equal(c.get(), 1);
+    equal(seen, 1);
+  });
+
+  test('an error in the first run disposes the effect', (ctx: TestContext): void => {
+    let s = new State(1);
+    throws((): void => {
+      effect((): void => {
+        s.get();
+        throw new Error('boom');
+      });
+    });
+    isFalse(hasSinks(s));
+  });
+
+  test('an error in a later run reaches the write, and other effects still run', (ctx: TestContext): void => {
+    let s = new State(1);
+    var otherRuns = 0;
+    effect((): void => {
+      if (s.get() == 2) {
+        throw new Error('two');
+      }
+    });
+    effect((): void => {
+      otherRuns += 1;
+      s.get();
+    });
+    throws((): void => {
+      s.set(2);
+    });
+    equal(otherRuns, 2);
+    s.set(3);
+    equal(otherRuns, 3);
+  });
+
+  test('errors from notify and from effects are thrown together', (ctx: TestContext): void => {
+    let s = new State(1);
+    let w = new Watcher((w: Watcher): void => {
+      throw new Error('notify');
+    });
+    w.watch(s);
+    effect((): void => {
+      if (s.get() == 2) {
+        throw new Error('effect');
+      }
+    });
+    var count = 0;
+    try {
+      s.set(2);
+    } catch (e) {
+      if (e is SignalErrors) {
+        count = e.errors.length;
+      }
+    }
+    equal(count, 2);
+  });
+
+  test('an effect that disposes itself stops reading', (ctx: TestContext): void => {
+    let a = new State(1);
+    let b = new State(1);
+    let e = new SelfDisposing(a, b);
+    a.set(2);
+    isFalse(hasSinks(a));
+    isFalse(hasSinks(b));
+    b.set(2);
+    equal(e.runs, 2);
+  });
+
+  test('untrack inside an effect', (ctx: TestContext): void => {
+    let a = new State(1);
+    let b = new State(1);
+    var runs = 0;
+    effect((): void => {
+      runs += 1;
+      a.get();
+      untrack<i32>((): i32 => b.get());
+    });
+    b.set(2);
+    equal(runs, 1);
+    a.set(2);
+    equal(runs, 2);
+  });
+
+  test('a subclass overrides execute', (ctx: TestContext): void => {
+    let s = new State(1);
+    let e = new Logger(s);
+    s.set(5);
+    equal(e.last, 5);
+    equal(e.runs, 2);
+  });
+
+  test('an effect that writes what it read runs until it settles', (ctx: TestContext): void => {
+    let s = new State(0);
+    var runs = 0;
+    effect((): void => {
+      runs += 1;
+      let v = s.get();
+      if (v < 3) {
+        s.set(v + 1);
+      }
+    });
+    equal(s.get(), 3);
+    equal(runs, 4);
+  });
+});
+
+/** An effect with its state in fields instead of a closure. */
+class Logger extends Effect {
+  source: State<i32>;
+  var last = 0;
+  var runs = 0;
+
+  new(source: State<i32>) : source = source, super();
+
+  execute(): void {
+    this.runs += 1;
+    this.last = this.source.get();
+  }
+}
+
+/** Disposes itself when `a` is 2, then reads `b`. */
+class SelfDisposing extends Effect {
+  a: State<i32>;
+  b: State<i32>;
+  var runs = 0;
+
+  new(a: State<i32>, b: State<i32>) : a = a, b = b, super();
+
+  execute(): void {
+    this.runs += 1;
+    if (this.a.get() == 2) {
+      this.dispose();
+      this.b.get();
+    }
+  }
+}

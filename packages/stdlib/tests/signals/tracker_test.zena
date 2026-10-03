@@ -1,0 +1,119 @@
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue, isFalse, throws} from 'zena:assert';
+import {Computed, Tracker, Watcher, effect, isTracking, hasSinks} from 'zena:signals';
+
+/**
+ * A class with a reactive field, written out by hand the way a `@signal`
+ * field decorator would generate it (docs/design/signals.md): the value
+ * lives in an ordinary field, and the tracker is created the first time
+ * a computed or effect reads it.
+ */
+class Todo {
+  title: String;
+  var #done: boolean;
+  var #doneTracker: Tracker | null = null;
+
+  new(title: String, done: boolean) : title = title, #done = done;
+
+  done: boolean {
+    get {
+      if (isTracking()) {
+        this.#doneTracker ??= new Tracker();
+        (this.#doneTracker as Tracker).reportRead();
+      }
+      return this.#done;
+    }
+    set(value) {
+      if (value != this.#done) {
+        this.#done = value;
+        let tracker = this.#doneTracker;
+        if (tracker != null) {
+          tracker.reportChanged();
+        }
+      }
+    }
+  }
+
+  hasTracker: boolean {
+    get {
+      return this.#doneTracker != null;
+    }
+  }
+}
+
+export let tests = suite('Signals: Tracker', (): void => {
+  test('an untracked read or write creates no tracker', (ctx: TestContext): void => {
+    let t = new Todo('write tests', false);
+    isFalse(t.done);
+    t.done = true;
+    isTrue(t.done);
+    isFalse(t.hasTracker);
+  });
+
+  test('a field read by a computed', (ctx: TestContext): void => {
+    let todos = [new Todo('a', false), new Todo('b', true), new Todo('c', false)];
+    var runs = 0;
+    let remaining = new Computed<i32>((): i32 => {
+      runs += 1;
+      var n = 0;
+      for (let t in todos) {
+        if (!t.done) {
+          n += 1;
+        }
+      }
+      return n;
+    });
+    equal(remaining.get(), 2);
+    isTrue(todos[0].hasTracker);
+    todos[0].done = true;
+    equal(remaining.get(), 1);
+    todos[2].done = false;
+    equal(remaining.get(), 1);
+    equal(runs, 2);
+  });
+
+  test('a field read by an effect', (ctx: TestContext): void => {
+    let t = new Todo('a', false);
+    var log = '';
+    effect((): void => {
+      log = log + (if (t.done) 'x' else 'o');
+    });
+    t.done = true;
+    t.done = false;
+    equal(log, 'oxo');
+  });
+
+  test('watched and unwatched callbacks', (ctx: TestContext): void => {
+    var log = '';
+    let tracker = new Tracker({
+      watched: (): void => {
+        log = log + 'w';
+      },
+      unwatched: (): void => {
+        log = log + 'u';
+      },
+    });
+    let e = effect((): void => {
+      tracker.reportRead();
+    });
+    isTrue(hasSinks(tracker));
+    e.dispose();
+    equal(log, 'wu');
+  });
+
+  test('reportChanged in a notify callback throws', (ctx: TestContext): void => {
+    let tracker = new Tracker();
+    let other = new Tracker();
+    var threw = false;
+    let w = new Watcher((w: Watcher): void => {
+      try {
+        other.reportChanged();
+      } catch (e) {
+        threw = true;
+      }
+    });
+    w.watch(tracker);
+    tracker.reportChanged();
+    isTrue(threw);
+  });
+});

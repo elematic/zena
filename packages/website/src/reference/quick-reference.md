@@ -2386,6 +2386,41 @@ let config = parseJson(text, {
 JSON values are represented as `JsonObject`, `JsonArray`, `String`, `Box<f64>`,
 `Box<boolean>`, or `null`.
 
+### zena:signals
+
+Values that record which computations read them, with the semantics of the
+[TC39 signals proposal](https://github.com/tc39/proposal-signals), plus
+effects.
+
+```zena
+import {State, Computed, effect, batch} from 'zena:signals';
+
+let count = new State(0);
+let doubled = new Computed<i32>((): i32 => count.get() * 2);
+
+// Runs now, and again after anything it read changes.
+let e = effect((): void => {
+  console.log(i32ToString(doubled.get()));
+});
+
+count.set(1); // prints 2
+
+// Effects run once the outermost batch finishes.
+batch<void>((): void => {
+  count.set(2);
+  count.set(3);
+}); // prints 6
+
+e.dispose();
+```
+
+A `Computed` runs its function only when it is read after a source changed,
+and stops the update when its new value equals the old one. `Watcher` is told
+synchronously when a watched signal might have changed, for frameworks that
+schedule their own work. `Tracker` is a signal with no value, for classes that
+keep a reactive value in an ordinary field. See
+[signals.md](https://github.com/elematic/zena/blob/main/docs/design/signals.md).
+
 ### zena:test
 
 Test framework for writing unit tests. Tests are defined using `suite()` and

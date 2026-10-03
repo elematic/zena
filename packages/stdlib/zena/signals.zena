@@ -1,0 +1,1337 @@
+/**
+ * Signals: values that track which computations read them, and bring
+ * those computations up to date when they change.
+ *
+ * The semantics follow the TC39 signals proposal
+ * (https://github.com/tc39/proposal-signals): `State` is a value you set,
+ * `Computed` is a cached function of other signals that runs only when
+ * read, and `Watcher` is told synchronously when something it watches
+ * might have changed. On top of that this module adds `Effect`, a
+ * function that re-runs after the signals it read change, and `Tracker`,
+ * a signal that holds no value, for classes that keep a reactive value
+ * in an ordinary field. The design, and where this differs from the
+ * proposal, is in docs/design/signals.md.
+ *
+ * A write is pushed and then pulled. `set` walks the subscribers of the
+ * state and marks each one stale, without running anything. The work
+ * happens when something reads: a stale computed checks whether any of
+ * its sources really changed, in the order it read them, and runs its
+ * function only if one did.
+ *
+ * Allocation: each signal is one object, and each dependency edge is one
+ * `Link`. A computed that reads the same signals in the same order as
+ * last time reuses its links, so re-running it allocates nothing. `set`,
+ * the stale marking, and the queues of watchers and effects waiting to
+ * run allocate nothing: the queues are linked through fields on the
+ * nodes themselves.
+ */
+
+// ---------------------------------------------------------------------------
+// Node fields
+//
+// The graph's bookkeeping lives on the public classes under symbols this
+// module does not export, so code outside it cannot name or change them.
+// ---------------------------------------------------------------------------
+
+/** The node's state bits (the constants below). */
+symbol flags;
+/** Incremented each time the node's value changes. */
+symbol version;
+/** First and last link in the list of live consumers that read this node. */
+symbol subs;
+symbol subsTail;
+/** The run that last read this node; see `track`. */
+symbol readStamp;
+/** First link in the list of sources this consumer read on its last run. */
+symbol deps;
+/** During a run: the last link confirmed so far. Between runs: the last
+ * link of the list. */
+symbol depsTail;
+/** The value of `epoch` when this consumer was last known up to date. */
+symbol seenEpoch;
+/** Next consumer in the queue of effects to run or watchers to notify. */
+symbol nextQueued;
+symbol refresh;
+symbol run;
+symbol watchedChanged;
+symbol addCleanup;
+
+// State bits. The kind bits are set once, by the constructor.
+
+/** The consumer must run again: a source it read directly has changed. */
+let DIRTY = 1;
+/** The consumer might be out of date: a source further up has changed,
+ * so it has to check its sources before deciding whether to run. */
+let CHECK = 2;
+/** The consumer's function is running. Reading it now is a cycle. */
+let COMPUTING = 4;
+/** In the effect queue or the watcher queue. */
+let QUEUED = 8;
+/** A watcher that will be notified at the next change. */
+let WATCHING = 16;
+/** A disposed effect. */
+let DISPOSED = 32;
+/** A computed whose last run threw: the error is its value. */
+let HAS_ERROR = 64;
+/** A computed that has run at least once. */
+let HAS_VALUE = 128;
+/** Has `watched` or `unwatched` callbacks to call. */
+let HAS_HOOKS = 256;
+let IS_COMPUTED = 512;
+let IS_EFFECT = 1024;
+let IS_WATCHER = 2048;
+
+let STALE = 3; // DIRTY | CHECK
+
+function without(f: i32, bits: i32): i32 {
+  return f & (bits ^ -1);
+}
+
+// ---------------------------------------------------------------------------
+// Global state
+// ---------------------------------------------------------------------------
+
+/** The computed or effect whose function is running, which reads are
+ * recorded against. */
+var activeConsumer: Consumer | null = null;
+/** A number unique to the active consumer's current run. */
+var activeRun: i64 = 0;
+var runCounter: i64 = 0;
+/** Incremented by every write to any signal. A consumer that nothing
+ * subscribes to compares it with its `seenEpoch` to skip checking its
+ * sources when nothing at all has been written. */
+var epoch: i64 = 0;
+/** True while a watcher's notify callback or a watched/unwatched callback
+ * runs. Signals cannot be read or written then. */
+var frozen = false;
+/** Nesting depth of `batch` calls, writes and runs. Effects and
+ * watched/unwatched callbacks wait until it is back to zero. */
+var batchDepth = 0;
+/** True while `settle` is running queued effects. */
+var flushing = false;
+/** The effect that owns effects created now, and `onCleanup` callbacks.
+ * Unlike `activeConsumer`, `untrack` does not clear it. */
+var currentOwner: Effect | null = null;
+
+var effectHead: Consumer | null = null;
+var effectTail: Consumer | null = null;
+var watcherHead: Consumer | null = null;
+var watcherTail: Consumer | null = null;
+
+/** watched/unwatched callbacks waiting to run, and whether each is the
+ * watched one. Created on first use: most programs have none. */
+var hookNodes: GrowableArray<ReactiveNode> | null = null;
+var hookWatched: GrowableArray<boolean> | null = null;
+var hookCount = 0;
+
+function frozenError(): Error {
+  return new Error('Signals cannot be read or written in a Watcher notify callback or a watched/unwatched callback');
+}
+
+function cycleError(): Error {
+  return new Error('Cycle detected: a computed signal read itself');
+}
+
+// ---------------------------------------------------------------------------
+// Links
+// ---------------------------------------------------------------------------
+
+/**
+ * One dependency edge: `sub` read `dep` on its last run.
+ *
+ * Every link is in `sub`'s list of sources, a singly linked list in the
+ * order they were read. A link is also in `dep`'s list of subscribers,
+ * doubly linked so it can be removed in place, but only while `sub` is
+ * live: an effect, a watcher, or a computed that something live reads.
+ * A computed nobody watches therefore has no references to it from its
+ * sources, and is garbage when the program drops it.
+ */
+final class Link {
+  dep: ReactiveNode;
+  /** `dep` again when it is a computed, typed so that bringing it up to
+   * date needs no cast. On wasmtime a cast to `Consumer` of an object
+   * whose class is a subclass of it is a call into the runtime, and it
+   * would happen for every computed source on every check
+   * (https://code.rictic.com/justin/zena/issues/718). */
+  depComputed: Consumer | null;
+  sub: Consumer;
+  /** `dep`'s version when `sub` last read it. */
+  var version: i64;
+  var nextDep: Link | null;
+  var prevSub: Link | null = null;
+  var nextSub: Link | null = null;
+  new(this.dep, this.depComputed, this.sub, this.version, this.nextDep);
+}
+
+/**
+ * Records that the active consumer read `dep`.
+ *
+ * The active consumer's previous run left its sources in a list, and a
+ * cursor (`depsTail`) walks that list as this run reads. If the next
+ * link names the same source, it is reused and nothing is allocated.
+ * Otherwise a new link goes in at the cursor; the links this run never
+ * reached are removed by `finishRun`.
+ */
+function track(dep: ReactiveNode, depComputed: Consumer | null): void {
+  let sub = activeConsumer;
+  if (sub == null) {
+    return;
+  }
+  // Already read in this run: one link per source is enough.
+  if (dep.[readStamp] == activeRun) {
+    return;
+  }
+  dep.[readStamp] = activeRun;
+  let tail = sub.[depsTail];
+  let next = if (tail == null) sub.[deps] else tail.nextDep;
+  if (next != null && next.dep === dep) {
+    next.version = dep.[version];
+    sub.[depsTail] = next;
+    return;
+  }
+  let link = new Link(dep, depComputed, sub, dep.[version], next);
+  if (tail == null) {
+    sub.[deps] = link;
+  } else {
+    tail.nextDep = link;
+  }
+  sub.[depsTail] = link;
+  if (isLive(sub)) {
+    linkSub(link);
+  }
+}
+
+/** Removes the sources the run that just ended did not read. */
+function finishRun(sub: Consumer): void {
+  let tail = sub.[depsTail];
+  var stale: Link | null = null;
+  if (tail == null) {
+    stale = sub.[deps];
+    sub.[deps] = null;
+  } else {
+    stale = tail.nextDep;
+    tail.nextDep = null;
+  }
+  let live = isLive(sub);
+  while (stale != null) {
+    let link = stale as Link;
+    stale = link.nextDep;
+    link.nextDep = null;
+    if (live) {
+      unlinkSub(link);
+    }
+  }
+}
+
+function isLive(c: Consumer): boolean {
+  let f = c.[flags];
+  // A disposed effect is not live, so reads made after it disposed itself
+  // during its own run do not subscribe it again.
+  return (f & DISPOSED) == 0 && ((f & (IS_EFFECT | IS_WATCHER)) != 0 || c.[subs] != null);
+}
+
+/** Adds `link` to the end of its source's subscriber list. */
+function linkSub(link: Link): void {
+  let dep = link.dep;
+  let tail = dep.[subsTail];
+  link.prevSub = tail;
+  link.nextSub = null;
+  dep.[subsTail] = link;
+  if (tail != null) {
+    tail.nextSub = link;
+    return;
+  }
+  dep.[subs] = link;
+  // `dep` was not live and now is. A computed now has to keep its own
+  // sources' subscriber lists up to date, so that writes reach it.
+  let f = dep.[flags];
+  let c = link.depComputed;
+  if (c != null) {
+    // While nobody subscribed, writes did not mark it. If anything was
+    // written since it was last up to date, it has to check.
+    if ((f & STALE) == 0 && c.[seenEpoch] != epoch) {
+      c.[flags] = f | CHECK;
+    }
+    var each = c.[deps];
+    while (each != null) {
+      let l = each as Link;
+      linkSub(l);
+      each = l.nextDep;
+    }
+  }
+  if ((f & HAS_HOOKS) != 0) {
+    queueHook(dep, true);
+  }
+}
+
+/** Removes `link` from its source's subscriber list. */
+function unlinkSub(link: Link): void {
+  let dep = link.dep;
+  let prev = link.prevSub;
+  let next = link.nextSub;
+  if (prev == null) {
+    dep.[subs] = next;
+  } else {
+    prev.nextSub = next;
+  }
+  if (next == null) {
+    dep.[subsTail] = prev;
+  } else {
+    next.prevSub = prev;
+  }
+  link.prevSub = null;
+  link.nextSub = null;
+  if (dep.[subs] != null) {
+    return;
+  }
+  // `dep` lost its last live subscriber. A computed lets go of its
+  // sources in turn, so they stop holding it.
+  let f = dep.[flags];
+  let c = link.depComputed;
+  if (c != null) {
+    var each = c.[deps];
+    while (each != null) {
+      let l = each as Link;
+      unlinkSub(l);
+      each = l.nextDep;
+    }
+  }
+  if ((f & HAS_HOOKS) != 0) {
+    queueHook(dep, false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Writes
+// ---------------------------------------------------------------------------
+
+/**
+ * Marks the consumers of `node` stale and queues the watchers and effects
+ * among them. `mark` is DIRTY for the direct consumers of the written
+ * signal and CHECK further down. A consumer that was already stale was
+ * already handled, so the walk stops there.
+ */
+function propagate(node: ReactiveNode, mark: i32): void {
+  var each = node.[subs];
+  while (each != null) {
+    let link = each as Link;
+    let sub = link.sub;
+    let f = sub.[flags];
+    if ((f & STALE) == 0) {
+      if ((f & IS_COMPUTED) != 0) {
+        sub.[flags] = f | mark;
+        propagate(sub, CHECK);
+      } else if ((f & IS_EFFECT) != 0) {
+        sub.[flags] = f | mark;
+        enqueueEffect(sub);
+      } else if ((f & WATCHING) != 0) {
+        sub.[flags] = without(f | mark, WATCHING);
+        enqueueWatcher(sub);
+      }
+    } else if (mark == DIRTY) {
+      sub.[flags] = f | DIRTY;
+    }
+    each = link.nextSub;
+  }
+}
+
+/** Records a change to `node`'s value and tells its consumers. */
+function changed(node: ReactiveNode): void {
+  node.[version] = node.[version] + 1;
+  epoch += 1;
+  if (node.[subs] == null) {
+    return;
+  }
+  batchDepth += 1;
+  propagate(node, DIRTY);
+  let notifyError = notifyWatchers();
+  batchDepth -= 1;
+  if (notifyError == null) {
+    settle();
+    return;
+  }
+  // The effects still run; their errors are thrown with the notify
+  // callbacks' errors.
+  var errors = addError(null, notifyError);
+  try {
+    settle();
+  } catch (e) {
+    errors = addError(errors, e);
+  }
+  throw errorResult(errors) as Error;
+}
+
+function enqueueEffect(c: Consumer): void {
+  let f = c.[flags];
+  if ((f & QUEUED) != 0) {
+    return;
+  }
+  c.[flags] = f | QUEUED;
+  let tail = effectTail;
+  if (tail == null) {
+    effectHead = c;
+  } else {
+    tail.[nextQueued] = c;
+  }
+  effectTail = c;
+}
+
+function enqueueWatcher(c: Consumer): void {
+  let f = c.[flags];
+  if ((f & QUEUED) != 0) {
+    return;
+  }
+  c.[flags] = f | QUEUED;
+  let tail = watcherTail;
+  if (tail == null) {
+    watcherHead = c;
+  } else {
+    tail.[nextQueued] = c;
+  }
+  watcherTail = c;
+}
+
+/**
+ * Calls the notify callback of each queued watcher, in the order the
+ * write reached them. Every callback runs even if an earlier one throws;
+ * the errors are returned, combined if there are several.
+ */
+function notifyWatchers(): Error | null {
+  var errors: ErrorCollector | null = null;
+  while (watcherHead != null) {
+    let w = watcherHead as Consumer;
+    watcherHead = w.[nextQueued];
+    if (watcherHead == null) {
+      watcherTail = null;
+    }
+    w.[nextQueued] = null;
+    w.[flags] = without(w.[flags], QUEUED);
+    let wasFrozen = frozen;
+    frozen = true;
+    try {
+      (w as Watcher).notify();
+    } catch (e) {
+      errors = addError(errors, e);
+    }
+    frozen = wasFrozen;
+  }
+  return errorResult(errors);
+}
+
+/**
+ * Runs what was waiting for the outermost operation to finish: queued
+ * watched/unwatched callbacks, then queued effects. An effect that writes
+ * a signal can queue more effects, which run in the same loop.
+ */
+function settle(): void {
+  if (batchDepth != 0 || flushing || frozen) {
+    return;
+  }
+  if (hookCount == 0 && effectHead == null) {
+    return;
+  }
+  flushing = true;
+  var errors: ErrorCollector | null = null;
+  while (true) {
+    if (hookCount != 0) {
+      errors = addError(errors, runHooks());
+    }
+    let e = effectHead;
+    if (e == null) {
+      break;
+    }
+    effectHead = e.[nextQueued];
+    if (effectHead == null) {
+      effectTail = null;
+    }
+    e.[nextQueued] = null;
+    e.[flags] = without(e.[flags], QUEUED);
+    if ((e.[flags] & DISPOSED) == 0) {
+      try {
+        e.[refresh]();
+      } catch (err) {
+        errors = addError(errors, err);
+      }
+    }
+  }
+  flushing = false;
+  let error = errorResult(errors);
+  if (error != null) {
+    throw error;
+  }
+}
+
+function queueHook(node: ReactiveNode, watched: boolean): void {
+  if (hookNodes == null) {
+    hookNodes = new GrowableArray<ReactiveNode>();
+    hookWatched = new GrowableArray<boolean>();
+  }
+  (hookNodes as GrowableArray<ReactiveNode>).push(node);
+  (hookWatched as GrowableArray<boolean>).push(watched);
+  hookCount += 1;
+}
+
+function runHooks(): Error | null {
+  let nodes = hookNodes as GrowableArray<ReactiveNode>;
+  let watched = hookWatched as GrowableArray<boolean>;
+  var errors: ErrorCollector | null = null;
+  frozen = true;
+  var i = 0;
+  while (i < nodes.length) {
+    try {
+      nodes[i].[watchedChanged](watched[i]);
+    } catch (e) {
+      errors = addError(errors, e);
+    }
+    i += 1;
+  }
+  frozen = false;
+  while (nodes.length > 0) {
+    nodes.pop();
+    watched.pop();
+  }
+  hookCount = 0;
+  return errorResult(errors);
+}
+
+/**
+ * Adds `e` to `errors`, creating the collector on the first error, so a
+ * series of callbacks that all succeed allocates nothing.
+ */
+function addError(errors: ErrorCollector | null, e: Error | null): ErrorCollector | null {
+  if (e == null) {
+    return errors;
+  }
+  let c = errors ?? new ErrorCollector();
+  c.add(e);
+  return c;
+}
+
+/** The error to throw for what `errors` gathered, or null if nothing. */
+function errorResult(errors: ErrorCollector | null): Error | null {
+  if (errors == null) {
+    return null;
+  }
+  return errors.result();
+}
+
+/**
+ * Gathers the errors from a series of callbacks that must all run. Holds
+ * the first error in a field, and allocates a list only for a second.
+ */
+final class ErrorCollector {
+  var first: Error | null = null;
+  var rest: GrowableArray<Error> | null = null;
+  new();
+
+  add(e: Error | null): void {
+    if (e == null) {
+      return;
+    }
+    if (this.first == null) {
+      this.first = e;
+      return;
+    }
+    if (this.rest == null) {
+      this.rest = new GrowableArray<Error>();
+    }
+    (this.rest as GrowableArray<Error>).push(e as Error);
+  }
+
+  result(): Error | null {
+    let rest = this.rest;
+    if (rest == null) {
+      return this.first;
+    }
+    let all = new GrowableArray<Error>();
+    all.push(this.first as Error);
+    for (let e in rest) {
+      all.push(e);
+    }
+    return new SignalErrors(all);
+  }
+}
+
+/**
+ * Several errors from callbacks that all had to run: the notify callbacks
+ * reached by one write, or the effects run after one, in the order they
+ * ran.
+ */
+export class SignalErrors extends Error {
+  errors: Array<Error>;
+  new(this.errors) : super(i32ToString(errors.length) + ' errors in signal callbacks');
+}
+
+// ---------------------------------------------------------------------------
+// Nodes
+// ---------------------------------------------------------------------------
+
+/**
+ * The common base of every signal, computed, effect and watcher: what
+ * `introspectSources` and `introspectSinks` return, and what
+ * `Watcher.watch` accepts.
+ */
+export abstract class ReactiveNode {
+  // Symbol-keyed fields cannot have initializers yet, so the constructor
+  // sets them (https://code.rictic.com/justin/zena/issues/717).
+  var [flags]: i32;
+  var [version]: i64;
+  var [subs]: Link | null;
+  var [subsTail]: Link | null;
+  var [readStamp]: i64;
+
+  new(kind: i32) {
+    this.[flags] = kind;
+    this.[version] = 0;
+    this.[subs] = null;
+    this.[subsTail] = null;
+    this.[readStamp] = 0;
+  }
+
+  /** Calls the node's `watched` or `unwatched` callback. */
+  [watchedChanged](watched: boolean): void {}
+}
+
+/**
+ * A node that reads other nodes: a computed, an effect or a watcher.
+ */
+abstract class Consumer extends ReactiveNode {
+  var [deps]: Link | null;
+  var [depsTail]: Link | null;
+  var [seenEpoch]: i64;
+  var [nextQueued]: Consumer | null;
+
+  new(kind: i32) : super(kind) {
+    this.[deps] = null;
+    this.[depsTail] = null;
+    this.[seenEpoch] = -1;
+    this.[nextQueued] = null;
+  }
+
+  /** Runs the consumer's function, recording what it reads. */
+  [run](): void {}
+
+  /** Brings the consumer up to date, running it only if a source
+   * changed. */
+  [refresh](): void {
+    let f = this.[flags];
+    if ((f & COMPUTING) != 0) {
+      throw cycleError();
+    }
+    if ((f & DIRTY) == 0) {
+      if ((f & CHECK) == 0 && (isLive(this) || this.[seenEpoch] == epoch)) {
+        return;
+      }
+      if (!this.#sourcesChanged()) {
+        this.[flags] = without(f, CHECK);
+        this.[seenEpoch] = epoch;
+        return;
+      }
+    }
+    this.[run]();
+  }
+
+  /** Whether any source has a new version since this consumer last read
+   * it. Brings computed sources up to date first, in the order they were
+   * read, and stops at the first that changed: a source after it might
+   * not be read at all on the next run. */
+  #sourcesChanged(): boolean {
+    var each = this.[deps];
+    while (each != null) {
+      let link = each as Link;
+      let c = link.depComputed;
+      if (c != null) {
+        if ((c.[flags] & COMPUTING) != 0) {
+          // A cycle. Running this consumer will read `c` again and
+          // throw, and that error becomes this consumer's value.
+          return true;
+        }
+        c.[refresh]();
+      }
+      if (link.dep.[version] != link.version) {
+        return true;
+      }
+      each = link.nextDep;
+    }
+    return false;
+  }
+}
+
+/**
+ * Options for `State` and `Computed`.
+ *
+ * `equals` decides whether a new value is the same as the old one; when
+ * it is, consumers are not told about it. The default is `==`.
+ *
+ * `watched` is called when the signal gains its first live consumer (an
+ * effect, a watcher, or a computed something live reads), and
+ * `unwatched` when it loses the last one. Neither may read or write
+ * signals. They run once the operation that caused them finishes.
+ */
+export type SignalOptions<T> = {
+  equals?: (a: T, b: T) => boolean,
+  watched?: () => void,
+  unwatched?: () => void,
+};
+
+/** A signal you can read: a `State` or a `Computed`. */
+export interface Signal<T> {
+  get(): T;
+}
+
+function hookFlag<T>(options: SignalOptions<T> | null): i32 {
+  if (options == null) {
+    return 0;
+  }
+  let o = options as SignalOptions<T>;
+  if ((o.watched ?? null) != null || (o.unwatched ?? null) != null) {
+    return HAS_HOOKS;
+  }
+  return 0;
+}
+
+function callHook<T>(options: SignalOptions<T> | null, watched: boolean): void {
+  if (options == null) {
+    return;
+  }
+  let o = options as SignalOptions<T>;
+  let hook = if (watched) (o.watched ?? null) else (o.unwatched ?? null);
+  if (hook != null) {
+    hook();
+  }
+}
+
+/**
+ * A value that can be read and set. Reading it inside a computed or an
+ * effect records the dependency; setting it to a value that is not
+ * `equals` to the current one marks those consumers stale.
+ */
+export class State<T> extends ReactiveNode implements Signal<T> {
+  var #value: T;
+  #options: SignalOptions<T> | null;
+
+  new(initial: T, options: SignalOptions<T> | null = null)
+    : #value = initial, #options = options, super(hookFlag<T>(options));
+
+  get(): T {
+    if (frozen) {
+      throw frozenError();
+    }
+    track(this, null);
+    return this.#value;
+  }
+
+  set(value: T): void {
+    if (frozen) {
+      throw frozenError();
+    }
+    if (this.#equal(this.#value, value)) {
+      return;
+    }
+    this.#value = value;
+    changed(this);
+  }
+
+  #equal(a: T, b: T): boolean {
+    let options = this.#options;
+    if (options != null) {
+      let eq = (options as SignalOptions<T>).equals ?? null;
+      if (eq != null) {
+        return eq(a, b);
+      }
+    }
+    return a == b;
+  }
+
+  [watchedChanged](watched: boolean): void {
+    callHook<T>(this.#options, watched);
+  }
+}
+
+/**
+ * A value computed from other signals, and cached.
+ *
+ * The function runs the first time the computed is read, and again only
+ * when it is read after one of the signals it read last time has changed.
+ * If the function throws, the error is cached the same way and thrown to
+ * every reader until a source changes.
+ *
+ * Instead of passing a function, a subclass can override `compute`, which
+ * saves allocating a closure per computed.
+ */
+export class Computed<T> extends Consumer implements Signal<T> {
+  #fn: (() => T) | null;
+  #options: SignalOptions<T> | null;
+  /** The cached value, in a one-element array because there is no value
+   * of an arbitrary `T` to put in a field before the first run. */
+  #value: FixedArray<T>;
+  var #error: Error | null = null;
+
+  new(fn: (() => T) | null = null, options: SignalOptions<T> | null = null)
+    : #fn = fn,
+      #options = options,
+      #value = __array_new_empty<T>(1) as FixedArray<T>,
+      super(IS_COMPUTED | DIRTY | hookFlag<T>(options));
+
+  get(): T {
+    if (frozen) {
+      throw frozenError();
+    }
+    this.[refresh]();
+    track(this, this);
+    if ((this.[flags] & HAS_ERROR) != 0) {
+      throw this.#error as Error;
+    }
+    return this.#value[0];
+  }
+
+  /** Computes the value. Calls the function given to the constructor
+   * unless a subclass overrides it. */
+  compute(): T {
+    let fn = this.#fn;
+    if (fn == null) {
+      throw new Error('Computed: no function was given and compute() is not overridden');
+    }
+    return fn();
+  }
+
+  [run](): void {
+    let prevConsumer = activeConsumer;
+    let prevRun = activeRun;
+    runCounter += 1;
+    activeConsumer = this;
+    activeRun = runCounter;
+    this.[depsTail] = null;
+    this.[flags] = without(this.[flags], STALE) | COMPUTING;
+    batchDepth += 1;
+    if (this.#computeAndStore(prevConsumer, prevRun)) {
+      this.[version] = this.[version] + 1;
+    }
+    this.[seenEpoch] = epoch;
+    batchDepth -= 1;
+    settle();
+  }
+
+  /** The part of a run that can throw: the function, and `equals`.
+   * Returns whether the value changed. An error from either becomes the
+   * value.
+   *
+   * Nothing declared outside the `try` is assigned inside it. A local
+   * assigned in a `try` body lives in a heap cell, which would be an
+   * allocation on every run. */
+  #computeAndStore(prevConsumer: Consumer | null, prevRun: i64): boolean {
+    try {
+      let next = this.compute();
+      this.#endRun(prevConsumer, prevRun);
+      return this.#store(next);
+    } catch (e) {
+      // COMPUTING is still set if the function threw, and clear if
+      // `equals` did.
+      if ((this.[flags] & COMPUTING) != 0) {
+        this.#endRun(prevConsumer, prevRun);
+      }
+      this.#error = e;
+      this.[flags] = this.[flags] | HAS_ERROR;
+      return true;
+    }
+  }
+
+  #endRun(prevConsumer: Consumer | null, prevRun: i64): void {
+    activeConsumer = prevConsumer;
+    activeRun = prevRun;
+    this.[flags] = without(this.[flags], COMPUTING);
+    finishRun(this);
+  }
+
+  /** Stores a new value. Returns false if it equals the old one, which is
+   * then kept. */
+  #store(next: T): boolean {
+    let f = this.[flags];
+    if ((f & (HAS_VALUE | HAS_ERROR)) == HAS_VALUE) {
+      if (this.#equal(this.#value[0], next)) {
+        return false;
+      }
+    }
+    this.#value[0] = next;
+    this.#error = null;
+    this.[flags] = without(f, HAS_ERROR) | HAS_VALUE;
+    return true;
+  }
+
+  #equal(a: T, b: T): boolean {
+    let options = this.#options;
+    if (options != null) {
+      let eq = (options as SignalOptions<T>).equals ?? null;
+      if (eq != null) {
+        return eq(a, b);
+      }
+    }
+    return a == b;
+  }
+
+  [watchedChanged](watched: boolean): void {
+    callHook<T>(this.#options, watched);
+  }
+}
+
+/**
+ * Watches signals and is told, synchronously, when one of them might have
+ * changed: the notify callback runs inside the `set` that caused it, after
+ * the stale marking is done.
+ *
+ * The callback may not read or write signals; it is for scheduling work
+ * that reads them later. After notifying once, a watcher stays quiet
+ * until `watch` is called again, with or without a signal.
+ *
+ * Instead of passing a callback, a subclass can override `notify`.
+ */
+export class Watcher extends Consumer {
+  #callback: ((w: Watcher) => void) | null;
+
+  new(callback: ((w: Watcher) => void) | null = null)
+    : #callback = callback, super(IS_WATCHER);
+
+  /** Called when a watched signal might have changed. Calls the callback
+   * given to the constructor unless a subclass overrides it. */
+  notify(): void {
+    let cb = this.#callback;
+    if (cb != null) {
+      cb(this);
+    }
+  }
+
+  /**
+   * Starts watching `signal`, which must be a `State`, `Computed` or
+   * `Tracker`, and re-arms the watcher so the next change notifies it.
+   * Call it with no argument just to re-arm.
+   */
+  watch(signal: ReactiveNode | null = null): void {
+    if (frozen) {
+      throw frozenError();
+    }
+    if (signal != null) {
+      let s = signal as ReactiveNode;
+      if ((s.[flags] & (IS_EFFECT | IS_WATCHER)) != 0) {
+        throw new Error('Watcher.watch: only a State, Computed or Tracker can be watched');
+      }
+      if (this.#find(s) == null) {
+        let computed = if ((s.[flags] & IS_COMPUTED) != 0) (s as Consumer) else null;
+        let link = new Link(s, computed, this, s.[version], null);
+        let tail = this.[depsTail];
+        if (tail == null) {
+          this.[deps] = link;
+        } else {
+          tail.nextDep = link;
+        }
+        this.[depsTail] = link;
+        linkSub(link);
+      }
+    }
+    this.[flags] = without(this.[flags], STALE) | WATCHING;
+    settle();
+  }
+
+  /** Stops watching `signal`. Throws if it is not being watched. */
+  unwatch(signal: ReactiveNode): void {
+    if (frozen) {
+      throw frozenError();
+    }
+    var prev: Link | null = null;
+    var each = this.[deps];
+    while (each != null) {
+      let link = each as Link;
+      if (link.dep === signal) {
+        if (prev == null) {
+          this.[deps] = link.nextDep;
+        } else {
+          prev.nextDep = link.nextDep;
+        }
+        if (this.[depsTail] === link) {
+          this.[depsTail] = prev;
+        }
+        link.nextDep = null;
+        unlinkSub(link);
+        if (this.[deps] == null) {
+          this.[flags] = without(this.[flags], WATCHING);
+        }
+        settle();
+        return;
+      }
+      prev = link;
+      each = link.nextDep;
+    }
+    throw new Error('Watcher.unwatch: the signal is not being watched');
+  }
+
+  /**
+   * The watched computed signals that are stale, in the order they were
+   * watched. Reading them brings them up to date.
+   */
+  getPending(): GrowableArray<ReactiveNode> {
+    let pending = new GrowableArray<ReactiveNode>();
+    var each = this.[deps];
+    while (each != null) {
+      let link = each as Link;
+      let f = link.dep.[flags];
+      if ((f & IS_COMPUTED) != 0 && (f & STALE) != 0) {
+        pending.push(link.dep);
+      }
+      each = link.nextDep;
+    }
+    return pending;
+  }
+
+  #find(signal: ReactiveNode): Link | null {
+    var each = this.[deps];
+    while (each != null) {
+      let link = each as Link;
+      if (link.dep === signal) {
+        return link;
+      }
+      each = link.nextDep;
+    }
+    return null;
+  }
+}
+
+/**
+ * A function that runs now, and runs again after any signal it read
+ * changes.
+ *
+ * Effects do not run inside `set`. They run when the outermost write,
+ * `batch` or computed read finishes, so a function that sets several
+ * signals in a `batch` runs each affected effect once. An effect that was
+ * marked only because a computed it reads might have changed checks that
+ * computed first, and does not run if its value is the same.
+ *
+ * An effect created while another effect runs belongs to it, and is
+ * disposed when that effect runs again or is disposed. Functions passed
+ * to `onCleanup` while the effect runs are called before its next run and
+ * when it is disposed.
+ *
+ * If the first run throws, the effect is disposed and the error is
+ * thrown from the constructor. An error from a later run is thrown from
+ * the operation that ran it, and the effect stays subscribed.
+ */
+export class Effect extends Consumer {
+  #fn: (() => void) | null;
+  var #cleanup: (() => void) | null = null;
+  var #firstChild: Effect | null = null;
+  var #nextSibling: Effect | null = null;
+
+  new(fn: (() => void) | null = null) : #fn = fn, super(IS_EFFECT | DIRTY) {
+    let owner = currentOwner;
+    if (owner != null) {
+      owner.#adopt(this);
+    }
+    try {
+      this.[run]();
+    } catch (e) {
+      this.dispose();
+      throw e;
+    }
+  }
+
+  /** The effect's body. Calls the function given to the constructor
+   * unless a subclass overrides it.
+   *
+   * The constructor runs the effect, so a subclass that overrides this
+   * must set the fields it reads in its initializer list, which runs
+   * before `super()`. A constructor body runs too late. */
+  execute(): void {
+    let fn = this.#fn;
+    if (fn != null) {
+      fn();
+    }
+  }
+
+  /** Stops the effect: runs its cleanups, disposes the effects it owns,
+   * and unsubscribes it from everything it read. */
+  dispose(): void {
+    let f = this.[flags];
+    if ((f & DISPOSED) != 0) {
+      return;
+    }
+    this.[flags] = f | DISPOSED;
+    var errors: ErrorCollector | null = null;
+    try {
+      this.#cleanUp();
+    } catch (e) {
+      errors = addError(errors, e);
+    }
+    var each = this.[deps];
+    this.[deps] = null;
+    this.[depsTail] = null;
+    while (each != null) {
+      let link = each as Link;
+      each = link.nextDep;
+      link.nextDep = null;
+      unlinkSub(link);
+    }
+    try {
+      settle();
+    } catch (e) {
+      errors = addError(errors, e);
+    }
+    let error = errorResult(errors);
+    if (error != null) {
+      throw error;
+    }
+  }
+
+  [run](): void {
+    if ((this.[flags] & DISPOSED) != 0) {
+      return;
+    }
+    this.#cleanUp();
+    let prevConsumer = activeConsumer;
+    let prevRun = activeRun;
+    let prevOwner = currentOwner;
+    runCounter += 1;
+    activeConsumer = this;
+    activeRun = runCounter;
+    currentOwner = this;
+    this.[depsTail] = null;
+    this.[flags] = without(this.[flags], STALE);
+    batchDepth += 1;
+    try {
+      this.execute();
+    } finally {
+      activeConsumer = prevConsumer;
+      activeRun = prevRun;
+      currentOwner = prevOwner;
+      finishRun(this);
+      this.[seenEpoch] = epoch;
+      batchDepth -= 1;
+    }
+    settle();
+  }
+
+  #adopt(child: Effect): void {
+    child.#nextSibling = this.#firstChild;
+    this.#firstChild = child;
+  }
+
+  [addCleanup](fn: () => void): void {
+    let prev = this.#cleanup;
+    if (prev == null) {
+      this.#cleanup = fn;
+    } else {
+      this.#cleanup = (): void => {
+        prev();
+        fn();
+      };
+    }
+  }
+
+  /** Disposes owned effects and calls the cleanup functions, all of
+   * them even if some throw. */
+  #cleanUp(): void {
+    var child = this.#firstChild;
+    this.#firstChild = null;
+    let cleanup = this.#cleanup;
+    this.#cleanup = null;
+    if (child == null && cleanup == null) {
+      return;
+    }
+    var errors: ErrorCollector | null = null;
+    while (child != null) {
+      let c = child as Effect;
+      child = c.#nextSibling;
+      c.#nextSibling = null;
+      try {
+        c.dispose();
+      } catch (e) {
+        errors = addError(errors, e);
+      }
+    }
+    if (cleanup != null) {
+      let prevConsumer = activeConsumer;
+      activeConsumer = null;
+      try {
+        cleanup();
+      } catch (e) {
+        errors = addError(errors, e);
+      }
+      activeConsumer = prevConsumer;
+    }
+    let error = errorResult(errors);
+    if (error != null) {
+      throw error;
+    }
+  }
+
+}
+
+/**
+ * Options for `Tracker`: callbacks for when it gains its first live
+ * consumer and loses its last one. See `SignalOptions`.
+ */
+export type TrackerOptions = {
+  watched?: () => void,
+  unwatched?: () => void,
+};
+
+/**
+ * A signal with no value of its own: the dependency-tracking part of a
+ * `State`, for a value stored somewhere else.
+ *
+ * A class that keeps a reactive value in an ordinary field calls
+ * `reportRead` in the field's getter and `reportChanged` in its setter
+ * when the value changes. The value is then read straight from the
+ * field. A tracker is only needed once something reactive reads the
+ * field, so a class can create it on the first read inside a computed or
+ * effect (`isTracking()` tells it when) and leave it null until then.
+ * See docs/design/signals.md.
+ */
+export final class Tracker extends ReactiveNode {
+  #options: TrackerOptions | null;
+
+  new(options: TrackerOptions | null = null)
+    : #options = options, super(Tracker.#hookFlag(options));
+
+  /** Records that the running computed or effect read the value. */
+  reportRead(): void {
+    if (frozen) {
+      throw frozenError();
+    }
+    track(this, null);
+  }
+
+  /** Marks the computeds and effects that read the value stale. Call it
+   * after the value has changed. */
+  reportChanged(): void {
+    if (frozen) {
+      throw frozenError();
+    }
+    changed(this);
+  }
+
+  [watchedChanged](watched: boolean): void {
+    let options = this.#options;
+    if (options == null) {
+      return;
+    }
+    let o = options as TrackerOptions;
+    let hook = if (watched) (o.watched ?? null) else (o.unwatched ?? null);
+    if (hook != null) {
+      hook();
+    }
+  }
+
+  static #hookFlag(options: TrackerOptions | null): i32 {
+    if (options == null) {
+      return 0;
+    }
+    let o = options as TrackerOptions;
+    if ((o.watched ?? null) != null || (o.unwatched ?? null) != null) {
+      return HAS_HOOKS;
+    }
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates an effect that runs `fn` now and again whenever a signal it
+ * read changes. Shorthand for `new Effect(fn)`.
+ */
+export let effect = (fn: () => void): Effect => new Effect(fn);
+
+/**
+ * Registers `fn` to be called before the running effect runs again, and
+ * when it is disposed. Throws if no effect is running.
+ */
+export let onCleanup = (fn: () => void): void => {
+  let owner = currentOwner;
+  if (owner == null) {
+    throw new Error('onCleanup: no effect is running');
+  }
+  owner.[addCleanup](fn);
+};
+
+/**
+ * Runs `fn`, and runs the effects it caused once it returns, so an effect
+ * that depends on several signals `fn` sets runs once. Watchers are still
+ * notified inside each `set`. Batches nest; effects wait for the
+ * outermost.
+ */
+export let batch = <R>(fn: () => R): R => {
+  batchDepth += 1;
+  try {
+    return fn();
+  } finally {
+    batchDepth -= 1;
+    settle();
+  }
+};
+
+/**
+ * Runs `fn` without recording what it reads against the running computed
+ * or effect. Unsafe in the TC39 sense: a computed that reads a signal
+ * this way is not updated when that signal changes.
+ */
+export let untrack = <R>(fn: () => R): R => {
+  let prev = activeConsumer;
+  activeConsumer = null;
+  try {
+    return fn();
+  } finally {
+    activeConsumer = prev;
+  }
+};
+
+/** Whether a computed or effect is running and recording what it reads. */
+export let isTracking = (): boolean => activeConsumer != null;
+
+/** The computed or effect that is recording reads, if any. */
+export let currentComputed = (): ReactiveNode | null => activeConsumer;
+
+/**
+ * The signals `node` read on its last run, in the order it first read
+ * them, or the signals a watcher watches. Empty for a `State` or
+ * `Tracker`.
+ */
+export let introspectSources = (node: ReactiveNode): GrowableArray<ReactiveNode> => {
+  let result = new GrowableArray<ReactiveNode>();
+  if ((node.[flags] & (IS_COMPUTED | IS_EFFECT | IS_WATCHER)) == 0) {
+    return result;
+  }
+  var each = (node as Consumer).[deps];
+  while (each != null) {
+    let link = each as Link;
+    result.push(link.dep);
+    each = link.nextDep;
+  }
+  return result;
+};
+
+/**
+ * The live consumers that read `node`: watchers watching it, effects that
+ * read it, and computeds that read it and are themselves live. A computed
+ * that nothing live reads does not appear.
+ */
+export let introspectSinks = (node: ReactiveNode): GrowableArray<ReactiveNode> => {
+  let result = new GrowableArray<ReactiveNode>();
+  var each = node.[subs];
+  while (each != null) {
+    let link = each as Link;
+    result.push(link.sub);
+    each = link.nextSub;
+  }
+  return result;
+};
+
+/** Whether `node` has a live consumer. */
+export let hasSinks = (node: ReactiveNode): boolean => node.[subs] != null;
+
+/** Whether `node` read any signal on its last run, or watches any. */
+export let hasSources = (node: ReactiveNode): boolean => {
+  if ((node.[flags] & (IS_COMPUTED | IS_EFFECT | IS_WATCHER)) == 0) {
+    return false;
+  }
+  return (node as Consumer).[deps] != null;
+};
