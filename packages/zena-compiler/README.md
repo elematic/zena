@@ -55,4 +55,3 @@ To time the compiler itself on a source file:
 ```bash
 ./target/release/zena-cli build <file>.zena -o out.wasm --time --no-cache
 ```
-

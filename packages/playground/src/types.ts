@@ -60,10 +60,7 @@ export interface CompletionsRequest {
 }
 
 export type WorkerRequest =
-  | InitRequest
-  | CheckRequest
-  | HoverRequest
-  | CompletionsRequest;
+  InitRequest | CheckRequest | HoverRequest | CompletionsRequest;
 
 /** The compiler is loaded and initialized. */
 export interface ReadyResponse {

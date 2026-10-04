@@ -174,8 +174,7 @@ export function isZenaString(value: unknown): value is ZenaString {
  */
 export function createStringReader(exports: WebAssembly.Exports) {
   const getByte = exports.$stringGetByte as
-    | ((str: unknown, index: number) => number)
-    | undefined;
+    ((str: unknown, index: number) => number) | undefined;
 
   return (strRef: unknown, length: number): string => {
     if (!getByte) {
@@ -208,11 +207,9 @@ export function createStringReader(exports: WebAssembly.Exports) {
  */
 export function createStringWriter(exports: WebAssembly.Exports) {
   const create = exports.$stringCreate as
-    | ((len: number) => unknown)
-    | undefined;
+    ((len: number) => unknown) | undefined;
   const setByte = exports.$stringSetByte as
-    | ((str: unknown, index: number, value: number) => void)
-    | undefined;
+    ((str: unknown, index: number, value: number) => void) | undefined;
 
   const encoder = new TextEncoder();
 

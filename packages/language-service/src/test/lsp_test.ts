@@ -711,7 +711,10 @@ let f = new Foo(42);`;
     const offset = offsetOf(src, 'add', 1);
     const hover = getHoverAt(lsp, src, offset);
     assert.ok(hover, 'Expected hover info');
-    assert.strictEqual(hover!.doc, 'Add two numbers.\n\n```zena\nlet three = 1 + 2;\n```');
+    assert.strictEqual(
+      hover!.doc,
+      'Add two numbers.\n\n```zena\nlet three = 1 + 2;\n```',
+    );
   });
 
   test('getHover: doc comment on function at call site reference', () => {

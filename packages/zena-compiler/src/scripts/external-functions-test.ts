@@ -97,7 +97,11 @@ test('console.log and return string in Node.js (target host)', async () => {
 
 test('console.log and return a status in zena-cli (target zena-cli, a component)', async () => {
   const zenaFile = join(pkgDir, 'test-files', 'console-log-and-exit-code.zena');
-  const wasmCliFile = join(pkgDir, 'test', 'console-log-and-exit-code-cli.wasm');
+  const wasmCliFile = join(
+    pkgDir,
+    'test',
+    'console-log-and-exit-code-cli.wasm',
+  );
   const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
   const zenaFileRel = relative(repoRoot, zenaFile);

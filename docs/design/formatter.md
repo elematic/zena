@@ -345,27 +345,27 @@ Listed roughly in order of implementation priority.
 
 **Tier 1 — Expressions & basics** (needed for any output):
 
-| AST Node                        | Formatting approach                                     |
+| AST Node | Formatting approach |
 | ------------------------------- | ------------------------------------------------------- | --------------- |
-| `NumberLiteral`                 | Print raw value                                         |
-| `StringLiteral`                 | Normalize to single quotes                              |
-| `BooleanLiteral`                | `true` / `false`                                        |
-| `NullLiteral`                   | `null`                                                  |
-| `Identifier`                    | Print name                                              |
-| `BinaryExpression`              | `group([left, " ", op, indent([line, right])])`         |
-| `UnaryExpression`               | `[op, arg]` or `[arg, op]`                              |
-| `AssignmentExpression`          | `group([left, " = ", indent([line, right])])`           |
-| `MemberExpression`              | `[object, ".", property]` with chain grouping           |
-| `IndexExpression`               | `[object, "[", index, "]"]`                             |
-| `CallExpression`                | `group(["(", indent([softline, args]), softline, ")"])` |
-| `NewExpression`                 | `["new ", callee, "(", args, ")"]`                      |
-| `ThisExpression`                | `this`                                                  |
-| `SuperExpression`               | `super`                                                 |
-| `TemplateLiteral`               | Template parts with embedded expressions                |
-| `AsExpression` / `IsExpression` | `[expr, " as ", type]`                                  |
-| `PipelineExpression`            | `group([left, indent([line, "                           | > ", right])])` |
-| `RangeExpression`               | `[start, "..", end]`                                    |
-| `ThrowExpression`               | `["throw ", expr]`                                      |
+| `NumberLiteral` | Print raw value |
+| `StringLiteral` | Normalize to single quotes |
+| `BooleanLiteral` | `true` / `false` |
+| `NullLiteral` | `null` |
+| `Identifier` | Print name |
+| `BinaryExpression` | `group([left, " ", op, indent([line, right])])` |
+| `UnaryExpression` | `[op, arg]` or `[arg, op]` |
+| `AssignmentExpression` | `group([left, " = ", indent([line, right])])` |
+| `MemberExpression` | `[object, ".", property]` with chain grouping |
+| `IndexExpression` | `[object, "[", index, "]"]` |
+| `CallExpression` | `group(["(", indent([softline, args]), softline, ")"])` |
+| `NewExpression` | `["new ", callee, "(", args, ")"]` |
+| `ThisExpression` | `this` |
+| `SuperExpression` | `super` |
+| `TemplateLiteral` | Template parts with embedded expressions |
+| `AsExpression` / `IsExpression` | `[expr, " as ", type]` |
+| `PipelineExpression` | `group([left, indent([line, "                           | > ", right])])` |
+| `RangeExpression` | `[start, "..", end]` |
+| `ThrowExpression` | `["throw ", expr]` |
 
 **Tier 2 — Statements**:
 
