@@ -52,7 +52,7 @@ The one p2 surface in-tree — `zena:console` over p2 stdio — stays as
 the scaffold that proved the marshaling, flips to p3 when streams
 land, and grows no further.
 
-The host is ready: `wasmtime 46 -S p3=y` registers the complete 0.3
+The host is ready: `wasmtime -S p3=y`, on 46 and later, registers the complete 0.3
 surface — `wasi:cli` (stdio, environment, exit, run, terminals),
 `wasi:clocks`, `wasi:filesystem` (preopens, types), `wasi:http`
 (client, handler, types), `wasi:random`, `wasi:sockets` — and probes
