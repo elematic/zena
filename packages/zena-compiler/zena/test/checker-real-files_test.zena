@@ -16,6 +16,7 @@ import {
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
+import { directoryNames } from '../lib/fs-host.zena';
 import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
 
 // ============================================================================
@@ -32,7 +33,7 @@ class FsHost implements CompilerHost {
     // A WIT-backed package's module has no file: it is synthesized
     // from the package's WIT.
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(path);
+      return synthesizeWitModule(this, path);
     }
     if (path.startsWith("zena:")) {
       // Map zena:array → packages/stdlib/zena/core/array.zena and
@@ -41,6 +42,10 @@ class FsHost implements CompilerHost {
       return readFile(fsPath);
     }
     return readFile(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
   }
 }
 

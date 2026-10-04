@@ -1,0 +1,33 @@
+/**
+ * A WIT root's document, read through the compiler host.
+ *
+ * The WIT parser takes source text and reads nothing. The root of a
+ * WIT-backed package, or of a `--wit` world, is a path: one `.wit`
+ * file, or a directory of them. This reads it the way the compiler
+ * reads modules, through `CompilerHost`, so a host that keeps its files
+ * in memory serves WIT exactly as it serves source.
+ */
+
+import { WitFile, joinWitFiles } from 'wit-parser:document';
+import { CompilerHost } from './library-loader.zena';
+
+/**
+ * The WIT document at `path`: one file, or a directory's `.wit` files
+ * joined by `joinWitFiles`.
+ */
+export function readWitSource(host: CompilerHost, path: String): String {
+  let names = host.listDir(path);
+  if (names == null) {
+    return host.readFile(path);
+  }
+  let files = new GrowableArray<WitFile>();
+  for (let name in names as Array<String>) {
+    if (name.endsWith(".wit")) {
+      files.push(new WitFile(name, host.readFile(`${path}/${name}`)));
+    }
+  }
+  if (files.length == 0) {
+    throw new Error("No .wit files in directory: " + path);
+  }
+  return joinWitFiles(files);
+}

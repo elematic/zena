@@ -1,8 +1,9 @@
 // Probe: synthesize the WASI 0.3 interfaces `zena:fs` and `zena:cli`
 // would be written against, and print every function the synthesizer
 // still refuses. Run with `zena-cli run` from the repository root.
+import { readWitSource } from '../lib/wit-source.zena';
 import { synthesizeWitModule } from '../lib/wit-module-synth.zena';
-import { readWitSource } from 'wit-parser:document';
+import { DiskHost } from '../lib/fs-host.zena';
 import { writeFile } from 'zena:fs';
 
 let stdlibRoot = 'packages/stdlib/zena';
@@ -10,7 +11,7 @@ let stdlibRoot = 'packages/stdlib/zena';
 export let main = (): i32 => {
   console.log('reading the vendored WIT');
   let wit = try {
-    readWitSource(`${stdlibRoot}/wit`)
+    readWitSource(new DiskHost(), `${stdlibRoot}/wit`)
   } catch (e) {
     console.log(`readWitSource threw: ${(e as Error).message}`);
     ''
@@ -27,7 +28,7 @@ export let main = (): i32 => {
   for (let spec in specs) {
     index += 1;
     let source = try {
-      synthesizeWitModule(`wit:${stdlibRoot}/wit#${spec}`, wit)
+      synthesizeWitModule(new DiskHost(), `wit:${stdlibRoot}/wit#${spec}`, wit)
     } catch (e) {
       console.log(`${spec}: THREW ${(e as Error).message}`);
       ''

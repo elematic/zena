@@ -2,14 +2,15 @@
 // target's zena:process, zena:wasm and zena:error-stack are written
 // against, and dump each module. Run with `zena-run --dir .::.` from
 // the repository root.
+import { readWitSource } from '../lib/wit-source.zena';
 import { synthesizeWitModule } from '../lib/wit-module-synth.zena';
-import { readWitSource } from 'wit-parser:document';
+import { DiskHost } from '../lib/fs-host.zena';
 import { writeFile } from 'zena:fs';
 
 let root = 'packages/stdlib/zena/host-wit';
 
 export let main = (): i32 => {
-  let wit = readWitSource(root);
+  let wit = readWitSource(new DiskHost(), root);
   let specs = ['zena-cli:host/stack-trace', 'zena-cli:host/process',
       'zena-cli:host/wasm'];
   var refused = 0;
@@ -17,7 +18,7 @@ export let main = (): i32 => {
   for (let spec in specs) {
     index += 1;
     let source = try {
-      synthesizeWitModule(`wit:${root}#${spec}`, wit)
+      synthesizeWitModule(new DiskHost(), `wit:${root}#${spec}`, wit)
     } catch (e) {
       console.log(`${spec}: THREW ${(e as Error).message}`);
       ''

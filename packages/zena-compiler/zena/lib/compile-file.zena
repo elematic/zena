@@ -31,7 +31,8 @@ import {
   declaredPackageNamespaces
 } from './wit-module-synth.zena';
 import { ComponentEntryWrapper } from './component-entry.zena';
-import { readWitSource } from 'wit-parser:document';
+import { readWitSource } from './wit-source.zena';
+import { directoryNames } from './fs-host.zena';
 
 /**
  * "-O" levels: 0, 1, 2, and s (size — the loop with budgets down,
@@ -101,7 +102,7 @@ class FileHost implements CompilerHost {
     // A WIT-backed package's module: no file exists — the source is
     // synthesized from the package's WIT.
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(path, this.packagesWit);
+      return synthesizeWitModule(this, path, this.packagesWit);
     }
     var actualPath = path;
     if (path.startsWith("zena:")) {
@@ -131,6 +132,10 @@ class FileHost implements CompilerHost {
         "\nexport let main = (): i32 => {\n  return runAndReport(tests, (s: String): void => {\n    console.log(s);\n  });\n};\n";
     }
     return content;
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
   }
 }
 
@@ -182,6 +187,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     return 1;
   }
 
+  let host = new FileHost(options.testMode, filename, stdlibRoot, options.onRead);
   // The declared world's WIT: one file, or a directory whose *.wit
   // files are concatenated in name order into one document.
   var witSource = "";
@@ -190,10 +196,8 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       console.error("Error: --wit path does not exist: " + witPath);
       return 1;
     }
-    witSource = readWitSource(witPath);
+    witSource = readWitSource(host, witPath);
   }
-
-  let host = new FileHost(options.testMode, filename, stdlibRoot, options.onRead);
   let packages = loadPackages(host);
   // A declared world's document answers for its own packages: the
   // program imports the world's interfaces by name (`test:app/oracle`
@@ -253,7 +257,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     }
     for (let packageName in witPackages) {
       packagesWit = packagesWit +
-          readWitSource(allPackages[packageName].witRoot as String) + "\n";
+          readWitSource(host, allPackages[packageName].witRoot as String) + "\n";
     }
     host.packagesWit = packagesWit;
   }

@@ -21,6 +21,7 @@ import {
 } from 'zena-compiler:compiler';
 import { stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
 import { isWitModulePath, synthesizeWitModule } from 'zena-compiler:wit-module-synth';
+import { directoryNames } from 'zena-compiler:fs-host';
 import { Package } from './package.zena';
 import { join2 } from 'zena:path';
 import { extractModule, ExtractOptions } from './extract.zena';
@@ -92,12 +93,16 @@ final class FsHost implements CompilerHost {
     // A WIT-backed package's module has no file: the source is
     // synthesized from the package's WIT.
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(path);
+      return synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
       return readFile(join2(this.#stdlibRoot, stdlibIdToRelativeFile(path)));
     }
     return readFile(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
   }
 }
 

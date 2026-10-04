@@ -30,6 +30,8 @@ import {
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
+import { readWitSource } from '../lib/wit-source.zena';
+import { directoryNames } from '../lib/fs-host.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
@@ -37,7 +39,6 @@ import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.
 import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { getEnv } from 'zena:cli';
-import { readWitSource } from 'wit-parser:document';
 
 /** Mirrors codegen-wat_test's helper; UPDATE_SNAPSHOTS=1 regenerates. */
 let assertSnapshot = (name: String, content: String): void => {
@@ -67,12 +68,16 @@ class PlainHost implements CompilerHost {
     // stack traces import `zena-cli:host/stack-trace`, synthesized from
     // the host WIT the stdlib carries.
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(path);
+      return synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
     return readFile(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
   }
 }
 
@@ -615,8 +620,8 @@ let compileComponent = (path: String, target: String): ByteArray => {
   generator.runtimeMemoryModule =
       compileComponentRuntimeModule(host, stdlibRoot, packages);
   // The WIT-backed packages the stdlib carries, as the CLI passes them.
-  let packagesWit = readWitSource(`${stdlibRoot}/wit`) + '\n' +
-      readWitSource(`${stdlibRoot}/host-wit`);
+  let packagesWit = readWitSource(host, `${stdlibRoot}/wit`) + '\n' +
+      readWitSource(host, `${stdlibRoot}/host-wit`);
   generator.importEncoder = makeImportEncoder(null, '', packagesWit);
   return generator.generate(programOf(path, target)).toByteArray();
 };

@@ -1,0 +1,40 @@
+/**
+ * Filesystem helpers for compiler hosts that read from disk: the CLI's,
+ * zenadoc's and the test hosts. The compiler itself reads only through
+ * `CompilerHost` and does not import this module.
+ */
+
+import { readFile, isDirectory, listDir } from 'zena:fs';
+import { CompilerHost } from './library-loader.zena';
+
+/**
+ * `CompilerHost.listDir` on disk: the names of the entries in the
+ * directory at `path`, or null when `path` is not a directory.
+ */
+export function directoryNames(path: String): Array<String> | null {
+  if (!isDirectory(path)) {
+    return null;
+  }
+  let names = new Array<String>();
+  for (let entry in listDir(path)) {
+    names.push(entry.name);
+  }
+  return names;
+}
+
+/**
+ * A compiler host that reads every path directly from disk.
+ *
+ * It does not map standard library ids or synthesize WIT-backed
+ * modules. It is for reading WIT roots with `readWitSource` and
+ * passing to `synthesizeWitModule`.
+ */
+export class DiskHost implements CompilerHost {
+  readFile(path: String): String {
+    return readFile(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
+  }
+}

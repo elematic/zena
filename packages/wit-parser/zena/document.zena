@@ -1,15 +1,18 @@
 /**
- * Loading and querying WIT documents, for the parser's consumers.
+ * Assembling and querying WIT documents, for the parser's consumers.
  *
  * The parser takes a source string; these are the steps just before
- * and after it that every consumer repeats — reading a package's
- * source off disk in a canonical way, and finding an interface in the
- * parsed result. They live here rather than in each consumer because
- * their behavior is contract: the compiler's `--wit` flag and its
- * WIT-backed packages must agree on what "a directory of WIT" means.
+ * and after it that every consumer repeats — joining a package
+ * directory's files into one document in a canonical way, and finding
+ * an interface in the parsed result. They live here rather than in
+ * each consumer because their behavior is contract: the compiler's
+ * `--wit` flag and its WIT-backed packages must agree on what "a
+ * directory of WIT" means, whether the host reads it from disk or
+ * holds it in memory.
+ *
+ * Nothing here does I/O. The caller reads the files.
  */
 
-import { readFile, isDirectory, listDir } from 'zena:fs';
 import {
   Ast, AstItem, AstItemTag, InterfaceDef, PackageName
 } from './parser.zena';
@@ -29,36 +32,39 @@ let byteCompare = (a: String, b: String): i32 => {
   return a.length - b.length;
 };
 
+/** One file of a WIT package directory: its name and its text. */
+export final class WitFile {
+  name: String;
+  source: String;
+  new(this.name, this.source);
+}
+
 /**
- * The WIT source at `path`: one file, or a directory whose `.wit` files
- * are concatenated in name order into one document.
+ * The document a directory of WIT makes: its `.wit` files concatenated
+ * in byte order of their names, each followed by a newline. Files with
+ * other extensions are left out, and with no `.wit` files the document
+ * is empty.
  */
-export function readWitSource(path: String): String {
-  if (!isDirectory(path)) {
-    return readFile(path);
-  }
-  let names = new GrowableArray<String>();
-  for (let entry in listDir(path)) {
-    if (entry.name.endsWith(".wit")) {
-      names.push(entry.name);
+export function joinWitFiles(files: Array<WitFile>): String {
+  let wit = new GrowableArray<WitFile>();
+  for (let file in files) {
+    if (file.name.endsWith(".wit")) {
+      wit.push(file);
     }
   }
-  if (names.length == 0) {
-    throw new Error("No .wit files in directory: " + path);
-  }
   // Name order, so the document is the same however the host lists.
-  for (var a = 0; a < names.length; a += 1) {
-    for (var b = a + 1; b < names.length; b += 1) {
-      if (byteCompare(names[b], names[a]) < 0) {
-        let t = names[a];
-        names[a] = names[b];
-        names[b] = t;
+  for (var a = 0; a < wit.length; a += 1) {
+    for (var b = a + 1; b < wit.length; b += 1) {
+      if (byteCompare(wit[b].name, wit[a].name) < 0) {
+        let t = wit[a];
+        wit[a] = wit[b];
+        wit[b] = t;
       }
     }
   }
   var source = "";
-  for (let n in names) {
-    source = source + readFile(path + "/" + n) + "\n";
+  for (let file in wit) {
+    source = source + file.source + "\n";
   }
   return source;
 }

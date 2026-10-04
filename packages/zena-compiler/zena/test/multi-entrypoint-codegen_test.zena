@@ -29,6 +29,7 @@ import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compil
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
+import { directoryNames } from '../lib/fs-host.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
@@ -38,12 +39,16 @@ let stdlibRoot = 'packages/stdlib/zena';
 class FsHost implements CompilerHost {
   readFile(path: String): String {
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(path);
+      return synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
     return readFile(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
   }
 }
 
