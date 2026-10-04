@@ -537,7 +537,7 @@ functions**, with `stream<u8>`/`future<T>` as canonical-ABI built-ins
 replacing 0.2's resource streams + `poll`. `wasi:http@0.3`'s handler
 is an async export (`handle: func(request) -> result<response,
 error-code>` under async lifting); body I/O is `stream<u8>`. And this
-is not hypothetical tooling: **wasmtime 46 (in our dev shell) ships
+is not hypothetical tooling: **wasmtime 46 and later ship
 `wasmtime serve` with `-S p3` and `-W component-model-async`.**
 
 The mapping onto this design, piece by piece:
