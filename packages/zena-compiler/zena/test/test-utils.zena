@@ -25,6 +25,35 @@ export class MockHost implements CompilerHost {
   readFile(path: String): String {
     return this.#files.getOr(path, '');
   }
+
+  /**
+   * The files directly under `path`, and the directories that hold the
+   * rest; null when no file is under `path`, since a map of files holds
+   * no empty directories.
+   */
+  listDir(path: String): Array<String> | null {
+    let prefix = `${path}/`;
+    let names = new GrowableArray<String>();
+    for (let file in this.#files.keys()) {
+      if (!file.startsWith(prefix)) {
+        continue;
+      }
+      var name = file.sliceBytes(prefix.length, file.length);
+      for (var i = 0; i < name.length; i += 1) {
+        if (name.getByteAt(i) == 47) { // '/'
+          name = name.sliceBytes(0, i);
+          break;
+        }
+      }
+      if (!names.contains(name)) {
+        names.push(name);
+      }
+    }
+    if (names.length == 0) {
+      return null;
+    }
+    return names;
+  }
 }
 
 /**

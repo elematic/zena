@@ -71,8 +71,9 @@ import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.
 import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
 import { toKebabName } from '../lib/codegen/component-emitter.zena';
 import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
+import { readWitSource } from '../lib/wit-source.zena';
+import { directoryNames } from '../lib/fs-host.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
-import { readWitSource } from 'wit-parser:document';
 
 let testsRoot = 'tests/language/execution';
 let stdlibRoot = 'packages/stdlib/zena';
@@ -314,12 +315,16 @@ class FsHost implements CompilerHost {
     // A WIT-backed package's module has no file: it is synthesized
     // from the package's WIT.
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(path);
+      return synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
     return readFile(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
   }
 }
 
@@ -511,8 +516,8 @@ let compileSlice = (args: Array<String>): i32 => {
   var compiler = createCompiler(host, options);
   let settings = new ComponentSettings(
       compileComponentRuntimeModule(host, stdlibRoot, packages),
-      readWitSource(`${stdlibRoot}/wit`) + '\n' +
-          readWitSource(`${stdlibRoot}/host-wit`));
+      readWitSource(host, `${stdlibRoot}/wit`) + '\n' +
+          readWitSource(host, `${stdlibRoot}/host-wit`));
 
   var previous: ProgramCheckResult | null = null;
   var sinceFresh = 0;

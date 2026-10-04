@@ -5,10 +5,10 @@
  * A WIT-backed package (`{"wit": "./path"}` in the manifest) resolves
  * its modules to `wit:<root>#<namespace>:<interface-path>` canonical
  * paths, and the compiler host answers `readFile` for those by calling
- * `synthesizeWitModule` here: parse the package's WIT, find the
- * interface, and render its declarations as Zena typed *from the WIT*
- * — the checker then sees the interface's real signatures rather than
- * whatever an author transcribed.
+ * `synthesizeWitModule` here: read the root's WIT back through the
+ * host, parse it, find the interface, and render its declarations as
+ * Zena typed *from the WIT* — the checker then sees the interface's
+ * real signatures rather than whatever an author transcribed.
  *
  * This module is imported by the drivers (the CLI's host, the test
  * hosts), never by compiler-lib code — the same edge as
@@ -62,7 +62,7 @@
 import { StringBuilder } from 'zena:core';
 import { parse, parseSyntax } from 'wit-parser:wit';
 import {
-  readWitSource, findInterface, findInterfaceOrNull, FoundInterface
+  findInterface, findInterfaceOrNull, FoundInterface
 } from 'wit-parser:document';
 import {
   InterfaceItem, InterfaceItemTag, NamedFunc, Type, TypeTag, TypeDef,
@@ -72,6 +72,8 @@ import {
   ExternKindTag, Func
 } from 'wit-parser:parser';
 import { Module } from './ast.zena';
+import { CompilerHost } from './library-loader.zena';
+import { readWitSource } from './wit-source.zena';
 import { withWasiPackages } from './codegen/wit-imports.zena';
 import {
   ComponentEntryWrapper, componentEntryPathFor,
@@ -2577,27 +2579,40 @@ export function declaredPackageNamespaces(witSource: String): Array<String> {
   return names;
 }
 
-/**
- * The synthesized Zena source for a `wit:<root>#<ns>:<iface-path>`
- * canonical path. `packagesWit` is the program's WIT-backed packages'
- * source, spliced in where the root's document lacks it: a declared
- * world's document is a root too, and its worlds import `wasi:cli` by
- * name, which the parser resolves.
- */
-export function synthesizeWitModule(canonicalPath: String,
-    packagesWit: String = ""): String {
-  let rest = canonicalPath.sliceBytes(4, canonicalPath.length);
+/** Where the root ends in a `wit:<root>#<spec>` canonical path: its `#`. */
+let witRootEnd = (canonicalPath: String): i32 => {
   var hash = -1;
-  for (var i = 0; i < rest.length; i += 1) {
-    if (rest.getByteAt(i) == 35) { // '#'
+  for (var i = 4; i < canonicalPath.length; i += 1) {
+    if (canonicalPath.getByteAt(i) == 35) { // '#'
       hash = i;
     }
   }
   if (hash < 0) {
     throw new Error("Malformed WIT module path: " + canonicalPath);
   }
-  let witRoot = rest.sliceBytes(0, hash);
-  let spec = rest.sliceBytes(hash + 1, rest.length);
+  return hash;
+};
+
+/**
+ * The WIT root a `wit:<root>#<ns>:<iface-path>` canonical path names:
+ * the file or directory whose document its module is synthesized from.
+ */
+function witRootOf(canonicalPath: String): String {
+  return canonicalPath.sliceBytes(4, witRootEnd(canonicalPath));
+}
+
+/**
+ * The synthesized Zena source for a `wit:<root>#<ns>:<iface-path>`
+ * canonical path, its root's document read through `host`.
+ * `packagesWit` is the program's WIT-backed packages' source, spliced
+ * in where the root's document lacks it: a declared world's document
+ * is a root too, and its worlds import `wasi:cli` by name, which the
+ * parser resolves.
+ */
+export function synthesizeWitModule(host: CompilerHost, canonicalPath: String,
+    packagesWit: String = ""): String {
+  let spec = canonicalPath.sliceBytes(witRootEnd(canonicalPath) + 1,
+      canonicalPath.length);
   var colon = -1;
   for (var i = 0; i < spec.length; i += 1) {
     if (spec.getByteAt(i) == 58) { // ':'
@@ -2609,7 +2624,8 @@ export function synthesizeWitModule(canonicalPath: String,
   let interfacePath = spec.sliceBytes(colon + 1, spec.length);
 
   // The splice appends, so the spans the type text is read from hold.
-  let witSource = withWasiPackages(readWitSource(witRoot), packagesWit);
+  let witSource = withWasiPackages(
+      readWitSource(host, witRootOf(canonicalPath)), packagesWit);
   reinterpretUsed = false;
   currentWitSource = witSource;
   let ast = parsedWit(witSource);

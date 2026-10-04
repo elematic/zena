@@ -12,7 +12,7 @@
 
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue, equal, throws } from 'zena:assert';
-import { readFile } from 'zena:fs';
+import { readFile, exists, mkdir } from 'zena:fs';
 import { newByteArray } from 'zena:core';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
@@ -35,12 +35,15 @@ import {
 import {
   isWitModulePath, synthesizeWitModule, synthesizeExportWrapper
 } from '../lib/wit-module-synth.zena';
+import { WitFile, joinWitFiles } from 'wit-parser:document';
 import { ComponentEntryWrapper } from '../lib/component-entry.zena';
 import { Module } from '../lib/ast.zena';
 import { parse } from '../lib/parser.zena';
-import { readWitSource } from 'wit-parser:document';
+import { readWitSource } from '../lib/wit-source.zena';
+import { DiskHost, directoryNames } from '../lib/fs-host.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { assertFunctionUsesTimes } from './wat-invariants.zena';
+import { MockHost } from './test-utils.zena';
 
 let stdlibRoot = 'packages/stdlib/zena';
 let fixtures = 'packages/zena-compiler/test-files/component';
@@ -49,14 +52,21 @@ class PlainHost implements CompilerHost {
 
   readFile(path: String): String {
     if (isWitModulePath(path)) {
-      return synthesizeWitModule(path);
+      return synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
       return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
     return readFile(path);
   }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
+  }
 }
+
+/** Reads WIT roots from disk for the tests that synthesize directly. */
+let disk = new DiskHost();
 
 /**
  * The WIT-backed packages' source as the CLI passes it: the `fixture`
@@ -65,8 +75,8 @@ class PlainHost implements CompilerHost {
  * resolves against the latter.
  */
 let packagesWit = (): String =>
-    readWitSource(`${fixtures}/wit-pkg`) + "\n" +
-    readWitSource(`${stdlibRoot}/wit`);
+    readWitSource(disk, `${fixtures}/wit-pkg`) + "\n" +
+    readWitSource(disk, `${stdlibRoot}/wit`);
 
 /** Package map: the repo's, plus the WIT-backed `fixture` package. */
 let testPackages = (host: CompilerHost): Map<String, PackageConfig> => {
@@ -445,7 +455,7 @@ export let tests = suite('Component emission', (): void => {
       'a declared wasi package was replaced by the built-in one');
     // And the shipped WIT really is there, with the interfaces the
     // fetch module speaks.
-    isTrue(readWitSource(`${stdlibRoot}/wit`).contains('interface client'),
+    isTrue(readWitSource(disk, `${stdlibRoot}/wit`).contains('interface client'),
       'the stdlib\'s wasi WIT does not declare wasi:http/client');
   });
 
@@ -653,13 +663,68 @@ export function reset(): boolean { return true; }
     // the name. The parser drops it, so the module renders `type` as
     // a field — before, the whole module failed to synthesize, and
     // every import from it reported as "Library not found".
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
-        readWitSource(`${stdlibRoot}/wit`));
+        readWitSource(disk, `${stdlibRoot}/wit`));
     isTrue(source.contains('type: DescriptorType'),
       `the escaped field is not rendered under its bare name:\n${source}`);
     isTrue(!source.contains('%'),
       `an explicit-identifier prefix leaked into the synthesized source:\n${source}`);
+  });
+
+  test('a WIT module synthesizes from a directory the host holds in memory',
+      (ctx: TestContext): void => {
+    // A host with no filesystem — the playground, or the compiler built
+    // as a component and run in a browser — serves WIT the way it
+    // serves source. The root is a directory that exists only in the
+    // host: its package header and its interface are separate files,
+    // so they join in name order or the document does not parse.
+    let host = new MockHost();
+    host.addFile('/mem/wit/a.wit', 'package mem:greet@1.0.0;\n');
+    host.addFile('/mem/wit/b.wit',
+        'interface hello {\n  greet: func(name: string) -> string;\n}\n');
+    host.addFile('/mem/wit/README.md', 'not WIT');
+    let source = synthesizeWitModule(host, 'wit:/mem/wit#mem:greet/hello');
+    isTrue(source.contains('// Synthesized from WIT: mem:greet/hello@1.0.0.'),
+      `the module is not the in-memory interface's:\n${source}`);
+    isTrue(source.contains('greet'),
+      `the interface's function is not rendered:\n${source}`);
+  });
+
+  test('a directory of WIT joins its .wit files in byte order of their names',
+      (ctx: TestContext): void => {
+    let files = new GrowableArray<WitFile>();
+    files.push(new WitFile('b.wit', '// b'));
+    files.push(new WitFile('README.md', '// not WIT'));
+    files.push(new WitFile('a.wit', '// a'));
+    files.push(new WitFile('B.wit', '// B'));
+    let joined = joinWitFiles(files);
+    isTrue(joined == '// B\n// a\n// b\n',
+      `the files are not joined in byte order, without the README:\n${joined}`);
+  });
+
+  test('an empty WIT directory is reported as a directory with no .wit files',
+      (ctx: TestContext): void => {
+    // git keeps no empty directories, so the test makes one. An empty
+    // listing has to mean "a directory with nothing in it": read as a
+    // file instead, the root failed with the host's error for reading a
+    // directory, which named no WIT.
+    let scratch = 'packages/zena-compiler/zena/out/test-scratch';
+    let dir = `${scratch}/empty-wit`;
+    if (!exists(scratch)) {
+      mkdir(scratch);
+    }
+    if (!exists(dir)) {
+      mkdir(dir);
+    }
+    var message = '';
+    try {
+      readWitSource(disk, dir);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    isTrue(message == `No .wit files in directory: ${dir}`,
+      `the empty directory was not reported as one: '${message}'`);
   });
 
   test('an async method on an imported resource renders as an async member',
@@ -669,9 +734,9 @@ export function reset(): boolean { return true; }
     // handle first and the return area last, and the member wrapper
     // awaits the packed subtask, then lifts the result into Outcome.
     // Refused as "waits on the interop stages" until now.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
-        readWitSource(`${stdlibRoot}/wit`));
+        readWitSource(disk, `${stdlibRoot}/wit`));
     isTrue(source.contains('@external("wasi:filesystem/types@0.3.0", "[method]descriptor.get-type", "async")'),
       `the method is not declared with the async option:\n${source}`);
     isTrue(source.contains('declare function descriptorGetType_raw(self: i32, ret: i32): i32;'),
@@ -694,7 +759,7 @@ export function reset(): boolean { return true; }
     // offsets (a method's handle first), and passes its address as the
     // raw call's one argument; `four` sits exactly at the async limit
     // and stays flat.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:spill/wide`, packagesWit());
     isTrue(!source.contains('Not yet importable'),
       `something is still refused:\n${source}`);
@@ -787,11 +852,11 @@ export function reset(): boolean { return true; }
     let specs = ['wasi:webgpu/webgpu', 'wasi-gfx:surface/surface',
         'wasi-gfx:surface/surface-webgpu'];
     for (let spec in specs) {
-      let source = synthesizeWitModule(`wit:${doc}#${spec}`, packagesWit());
+      let source = synthesizeWitModule(disk, `wit:${doc}#${spec}`, packagesWit());
       isTrue(!source.contains('Not yet importable'),
         `${spec} still refuses something:\n${source}`);
     }
-    let webgpu = synthesizeWitModule(`wit:${doc}#wasi:webgpu/webgpu`,
+    let webgpu = synthesizeWitModule(disk, `wit:${doc}#wasi:webgpu/webgpu`,
         packagesWit());
     isTrue(webgpu.contains('  async requestAdapter(options: Option<GpuRequestAdapterOptions>): Future<Option<GpuAdapter>> {'),
       `request-adapter is not an async member:\n${webgpu}`);
@@ -799,11 +864,11 @@ export function reset(): boolean { return true; }
       `request-adapter's parameters do not spill:\n${webgpu}`);
     isTrue(webgpu.contains('storeI32(args, this.#handle);'),
       `the handle is not first in the spilled buffer:\n${webgpu}`);
-    let surface = synthesizeWitModule(`wit:${doc}#wasi-gfx:surface/surface`,
+    let surface = synthesizeWitModule(disk, `wit:${doc}#wasi-gfx:surface/surface`,
         packagesWit());
     isTrue(surface.contains('  onFrame(): Stream<FrameEvent> {'),
       `on-frame is not a typed stream:\n${surface}`);
-    let surfaceWebgpu = synthesizeWitModule(
+    let surfaceWebgpu = synthesizeWitModule(disk, 
         `wit:${doc}#wasi-gfx:surface/surface-webgpu`, packagesWit());
     isTrue(surfaceWebgpu.contains('export class ContextConfiguration(device: GpuDevice, format: GpuTextureFormat,'),
       `the borrowed device is not a field of the cross-package record:\n${surfaceWebgpu}`);
@@ -816,7 +881,7 @@ export function reset(): boolean { return true; }
     // a lift that reads a chunk of records out of a return area into
     // a StreamWriter, and a lower that writes the guest stream's
     // records one at a time — `Stream<FrameEvent>` in the signatures.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/gfx.wit#test:gfx/feed`, packagesWit());
     isTrue(source.contains(`@external("canon", "stream.read#test:gfx/feed@1.0.0.0", "stream:test:gfx/feed@1.0.0#frame-event,async")`),
       `the stream read is not declared per element:\n${source}`);
@@ -1152,7 +1217,7 @@ world only {
     // address when the result spills past one core value — and the
     // wrapper stages before the call, releases after it, and lifts the
     // result through zena:wasi.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:text/transform`);
     isTrue(source.contains(
         'declare function upper_raw(p0: i32, l0: i32, ret: i32): void;'),
@@ -1194,7 +1259,7 @@ world only {
     // boundary — with a range-checked lift on an enum result, so an
     // out-of-range discriminant is a loud error rather than a value
     // that defeats exhaustive matching later.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:codes/status`);
     isTrue(source.contains('export enum Level {'),
       'no synthesized enum:\n' + source);
@@ -1228,7 +1293,7 @@ world only {
     // and generated lift helpers reading the canonical layout out of
     // a spilled return area — offsets computed per the canonical
     // ABI's size-and-alignment rules.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:geo/survey`);
     isTrue(source.contains(
         'export class Point(x: f64, y: f64, label: String)'),
@@ -1277,7 +1342,7 @@ world only {
     // release its own staging range, then lift the result the host
     // wrote — into Outcome, because a future's payload must be
     // storable and the inline Result is return-position-only.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:geo/survey`);
     isTrue(source.contains(
         '@external("fixture:geo/survey@1.0.0", "fetch-point", "async")'),
@@ -1316,7 +1381,7 @@ world only {
     // staged buffers registered in the arena and one releaseStaged()
     // after the call. A list parameter stages an element buffer and
     // writes each element at its canonical stride.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:geo/survey`);
     // point flattens to [f64, f64, i32, i32].
     isTrue(source.contains(
@@ -1358,7 +1423,7 @@ world only {
     // is the canonical `resource.drop` (idempotent behind a flag),
     // and a bare resource in value position — implicit `own` — wraps
     // the returned handle.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:store/kv`);
     isTrue(source.contains(
         'export final class Bucket implements Disposable {'),
@@ -1406,7 +1471,7 @@ world only {
     // (fresh pair, pump, pass the readable end), `liftByteStream`
     // coming out. Streams inside aggregates ride the same expression
     // forms as any handle. Non-u8 elements and future values refuse.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:pipe/pipes`);
     isTrue(source.contains("import { Stream, StreamWriter } from 'zena:stream';"),
       'the stream type is not imported:\n' + source);
@@ -1472,7 +1537,7 @@ world only {
     // the payload's own component type. A `result` payload rides
     // `Outcome`, and a bare arm — in a future payload or a plain
     // sync result — is a `void` lane filled by `witUnit()`.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:pipe/pipes`);
     // A scalar-payload future result, lifted directly.
     isTrue(source.contains('export function finish(): Future<u32> {'),
@@ -1539,7 +1604,7 @@ world only {
     // The resource crosses because the marshaling symbols live in
     // `zena:wasi`, one identity for every synthesized
     // module, rather than per-module.
-    let source = synthesizeWitModule(
+    let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:relay/forwarding`);
     isTrue(source.contains(
         "import { Level, Packet, Fault, FaultLost, FaultGarbled, " +
@@ -1571,7 +1636,7 @@ world only {
       "the bare result's wire discriminant is the boolean:\n" + source);
     // The declaring module still declares, importing the shared
     // marshaling symbols from the abi.
-    let dataSource = synthesizeWitModule(
+    let dataSource = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:relay/data`);
     isTrue(dataSource.contains(
         'export class Packet(level: Level, body: String)'),
