@@ -1,0 +1,39 @@
+// @mode: run
+// @result: 11
+// A Pending step whose future fails: `for await` resumes by throwing that
+// failure, as `await` on any failed future does, and the loop's own
+// `try` catches it. The body ran once, for the Ready step before it.
+
+import { Future, Completer, AsyncStep, AsyncIterator, scheduleMicrotask } from 'zena:async';
+
+class FailsLater implements AsyncIterator<i32> {
+  var #calls = 0;
+
+  next(): AsyncStep<i32> {
+    this.#calls += 1;
+    if (this.#calls == 1) {
+      return (1, 1, _);
+    }
+    let c = new Completer<Option<i32>>();
+    scheduleMicrotask(() => {
+      c.fail(new Error('source failed'));
+    });
+    return (2, _, c.future);
+  }
+}
+
+export let main = async (): Future<i32> => {
+  let it: AsyncIterator<i32> = new FailsLater();
+  var sum = 0;
+  try {
+    for await (let x in it) {
+      sum += x;
+    }
+  } catch (e) {
+    if (e.message == 'source failed') {
+      return sum + 10;
+    }
+    return -1;
+  }
+  return -2;
+};

@@ -1525,3 +1525,24 @@ export let templateConvertHelperName = (t: Type): String => {
     case _: ''
   };
 };
+
+/**
+ * `Some<V>`, out of the `Future<Option<V>>` a Pending iteration step
+ * carries: the member of the future's `Option<V>` argument that holds a
+ * value. Null for anything else.
+ */
+export let pendingSomeClass = (pendingFuture: ClassType): ClassType | null => {
+  let args = pendingFuture.typeArguments;
+  if (args == null || args.length != 1) {
+    return null;
+  }
+  let option = args[0];
+  if (option is UnionType) {
+    for (let member in option.types) {
+      if (member is ClassType && member.name == 'Some') {
+        return member;
+      }
+    }
+  }
+  return null;
+};

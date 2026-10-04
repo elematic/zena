@@ -64,6 +64,14 @@ export sealed class ValType {
   case ValTypeAnyRef
   case ValTypeEqRef
   case ValTypeStructRef
+  /**
+   * `nullref`, `(ref null none)`: the bottom of the `any` hierarchy,
+   * whose only value is null. An inline-union lane every arm leaves as
+   * a hole (`_`) lowers to it, so a two-arm `Step` forwards through a
+   * three-lane `AsyncStep` slot — null is a subtype of every nullable
+   * reference type.
+   */
+  case ValTypeNullRef
   case ValTypeOptRef
   case ValTypeRef(target: WasmType)
   case ValTypeRefNull(target: WasmType)
@@ -84,6 +92,7 @@ export let valTypeToOpcode = (type: ValType): i32 => match (type) {
   case ValTypeAnyRef: 0x6E
   case ValTypeEqRef: 0x6D
   case ValTypeStructRef: 0x6B
+  case ValTypeNullRef: 0x71
   case ValTypeOptRef: 0x6C
   case ValTypeRef: 0x64
   case ValTypeRefNull: 0x63
@@ -141,7 +150,20 @@ export let isWasmSubtype = (sub: ValType, superType: ValType): boolean => match 
     case ValTypeAnyRef: true
     case _: false
   }
+  case ValTypeNullRef: isNullableAnyRef(superType)
   case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
+};
+
+/** A reference type in the `any` hierarchy that admits null. */
+export let isNullableAnyRef = (vt: ValType): boolean => {
+  return match (vt) {
+    case ValTypeRefNull: true
+    case ValTypeAnyRef: true
+    case ValTypeEqRef: true
+    case ValTypeStructRef: true
+    case ValTypeNullRef: true
+    case _: false
+  };
 };
 
 /**
@@ -166,6 +188,7 @@ export let isRefValType = (vt: ValType): boolean => {
     case ValTypeStructRef: true
     case ValTypeFuncRef: true
     case ValTypeExternRef: true
+    case ValTypeNullRef: true
     case _: false
   };
 };

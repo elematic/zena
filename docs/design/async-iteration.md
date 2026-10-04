@@ -1,4 +1,4 @@
-# Async iteration: one protocol, sync or async by the consumer
+# Async iteration: one step shape, synchronous by default
 
 Two designs already touch this. [generators.md](generators.md) §8.2
 sets `AsyncIterator<T>` as `next(): Future<Option<T>>` — the
@@ -63,20 +63,33 @@ arm.
 ## The Step protocol
 
 `next()` is a synchronous call. Its result is an inline multi-value
-that travels in stack slots and allocates nothing — a tagged union of
-three arms, one per disposition:
+that travels in stack slots and allocates nothing — a tagged union
+with one arm per disposition. The asynchronous form has three:
 
 ```zena
-type Step<V> =
+type AsyncStep<V> =
     inline (0, _, _)                    // Done: no more items
   | inline (1, V, _)                    // Ready: a value, available now
   | inline (2, _, Future<Option<V>>);   // Pending: a value or the end,
                                         //   coming; await the future
 ```
 
+and the synchronous form is its first two arms:
+
+```zena
+type Step<V> =
+    inline (0, _, _)    // Done
+  | inline (1, V, _);   // Ready
+```
+
+`Step<V>` keeps the third position, always a hole, so that it is a
+subtype of `AsyncStep<V>` by ordinary union subtyping: a synchronous
+`next()` can stand wherever an asynchronous one is expected. Both are
+structural aliases; nothing is nominal about a step.
+
 The first lane is the discriminant, the value lane is set only by
 Ready, the future lane only by Pending; the other lanes are holes.
-Because it is an inline multi-value, `Step` is return-position only:
+Because it is an inline multi-value, a step is return-position only:
 `next()` returns it and the caller reads it at once, and Done and
 Ready allocate nothing.
 
@@ -94,14 +107,14 @@ Ready arm.
 The verbosity of matching three arms by hand is not a cost the common
 code pays, because `for` and `for await` are the usual consumers and
 they are lowered directly: the loop reads the discriminant lane as an
-`i32` and branches on it in the backend (as today's two-arm loop reads
-its done flag), never routing through a surface `match`. A producer —
+`i32` and branches on it in the backend (as the two-arm loop it replaced
+read its done flag), never routing through a surface `match`. A producer —
 an `async gen` state machine — constructs the arms against the known
-`Step<V>` type for the same reason. Direct lowering of both is what
+`AsyncStep<V>` type for the same reason. Direct lowering of both is what
 the `for await` desugar and the `async gen` return lowering need, and
 neither depends on surface `match`.
 
-A surface `match` over `Step` is what a program writes only when it
+A surface `match` over a step is what a program writes only when it
 drives `next()` itself, which is rare (see "Hand-written consumption"
 below). That path relies on a `match` over an inline-tuple union
 narrowing an arm's payload by its discriminant literal (`case (1, v, _)`
@@ -110,17 +123,15 @@ binds `v: V`, not `V | _`). It is worth having on its own — defining
 is not on the loop's critical path. The full three-arm shape, including
 the all-hole `Done` arm, constructs and narrow-consumes as written.
 
-`Step` shares Option's and Result's inline-union shape but is not one
+A step shares Option's and Result's inline-union shape but is not one
 of them, and the optionality operators — `??` and the rest — stay
-nominal to `Option`/`Result`. A mixed `Step` is consumed by `for`,
-`for await`, or an explicit `next()` match, where Pending is handled
-rather than hidden. (A synchronous single-step accessor that throws
-on Pending could be added later; it would be a Step-specific operator,
-not the Option `??`. Defining `Option`/`Result` themselves in terms of
-inline tuples, with `??`, is separate future work.)
+nominal to `Option`/`Result`. An `AsyncStep` is consumed by `for
+await`, or an explicit `next()` match, where Pending is handled rather
+than hidden. (Defining `Option`/`Result` themselves in terms of inline
+tuples, with `??`, is separate future work.)
 
-The Pending future carries `Option<V>`, not another `Step`: an inline
-`Step` cannot be a `Future`'s type argument, and `Option<V>`
+The Pending future carries `Option<V>`, not another step: an inline
+step cannot be a `Future`'s type argument, and `Option<V>`
 (`Some<V> | None`) is the storable form that still says whether the
 awaited item is a value or the end. That is where deferred structure
 lives — the socket case, where whether an item exists is not known
@@ -132,31 +143,70 @@ The caller always learns the disposition synchronously, from the
 discriminant. It waits, in the Pending case, only for the eventual
 item, and for whether there turns out to be one.
 
-One type covers the range:
+Two interfaces carry the two forms, and the synchronous one is a
+subtype of the asynchronous one:
 
-- A synchronous iterator returns only Done and Ready. It is
-  consumable by `for`, and a `for await` over it never awaits.
+```zena
+interface AsyncIterator<T> { next(): AsyncStep<T>; }
+interface Iterator<T> extends AsyncIterator<T> { next(): Step<T>; }
+
+interface Iterable<T> {
+  static symbol iterator;
+  [Iterable.iterator](): Iterator<T>;
+  ...
+}
+interface AsyncIterable<T> {
+  static symbol asyncIterator;
+  [AsyncIterable.asyncIterator](): AsyncIterator<T>;
+}
+```
+
+`Iterator<T>` and `Iterable<T>` live in `zena:core` and the prelude;
+`AsyncStep`, `AsyncIterator` and `AsyncIterable` in `zena:async`,
+since only they name `Future`. The two iterables are unrelated types
+with their own symbols, as in JS: a class that is both implements both
+methods.
+
+One shape covers the range:
+
+- A synchronous iterator returns only Done and Ready, and says so in
+  its type. It is consumable by `for`, and a `for await` over it never
+  awaits.
 - Lit SSR returns Done and Ready, and Pending where a bound value is a
-  promise. It is consumable by `for` until a Pending arrives.
+  promise. It is an `AsyncIterator`, consumable by `for await`, and by
+  `for` through `requireSync` until a Pending arrives.
 - A socket returns Pending from the start: even done-ness waits.
 
 ## Consuming: `for` and `for await`
 
-The two loops differ only in the Pending arm — `for` throws, `for
-await` awaits. The shape below is the semantics; the backend lowers it
-directly, reading the discriminant lane as an `i32` and branching,
-rather than emitting a surface `match` (`next()`'s inline multi-value
-has no home in a local, so it is consumed at the call either way):
+A plain `for` accepts the synchronous protocol — arrays, `Iterator<T>`,
+`Iterable<T>` — and nothing else. Its loop reads the discriminant as a
+boolean: Done leaves, Ready binds and runs the body. A `for` over an
+`AsyncIterator<T>` or `AsyncIterable<T>` is a compile error, since the
+loop never waits and a value that is still coming would have nowhere to
+go:
+
+```
+Type 'AsyncIterator<i32>' is an asynchronous iterable, and a `for` never
+waits. Use `for await`, or `requireSync` to throw if a value is not
+available yet.
+```
+
+A `for await` accepts both protocols. Over the synchronous one it lowers
+exactly as a `for` does. Over the asynchronous one it adds the Pending
+arm — the shape below is the semantics; the backend lowers it directly,
+reading the discriminant lane as an `i32` and branching, rather than
+emitting a surface `match` (`next()`'s inline multi-value has no home in
+a local, so it is consumed at the call either way):
 
 ```zena
-// for (x in it) body            // for await (x in it) body
+// for await (x in it) body
 while (true) {
   match (it.next()) {
-    case (0, _, _): break;                    // Done
-    case (1, value, _): { let x = value; body; }   // Ready
-    case (2, _, pending): {                   // Pending
-      throw new AsyncInSyncIteration();        // for
-      if (let Some {value} = await pending) {  // for await
+    case (0, _, _): break;                       // Done
+    case (1, value, _): { let x = value; body; } // Ready
+    case (2, _, pending): {                      // Pending
+      if (let Some {value} = await pending) {
         let x = value;
         body;
       } else {
@@ -167,14 +217,33 @@ while (true) {
 }
 ```
 
-The same iterator serves both. A `for` consumer throws the moment a
-value is genuinely asynchronous; a `for await` consumer handles it.
-The consumer chooses whether to be synchronous; the producer is
-written once. This is Lit's property directly, and it is the runtime
-counterpart to §8.3's compile-time monomorphization: use `for` when a
-synchronous consumer is a runtime assertion that no value will defer,
-and the specializer when the choice is a static fact about a whole
-subsystem.
+A synchronous consumer of an asynchronous source opts in to the runtime
+condition with a library function, `requireSync` over an
+`AsyncIterable<T>` (giving an `Iterable<T>`) or `requireSyncIterator`
+over an `AsyncIterator<T>` (giving an `Iterator<T>`). The adapter
+forwards Ready and Done, and throws `AsyncInSyncIteration` on a Pending
+step. It never reads the future, even one that has already settled:
+a synchronous consumer that reads values out of futures would be
+sometimes synchronous and sometimes not, by whether a future happened to
+be done, and the throw is what keeps the condition visible.
+
+```zena
+for (let chunk in requireSync(template.render(data))) {
+  out.append(chunk);   // throws AsyncInSyncIteration if a chunk defers
+}
+```
+
+So the same producer serves both consumers. A `for await` consumer
+handles a deferred value; a `for` consumer says, in its source, that it
+has asserted none will defer, and the assertion is checked at runtime.
+This is Lit's property, and it is the runtime counterpart to §8.3's
+compile-time monomorphization: use `requireSync` when a synchronous
+consumer is a runtime assertion that no value will defer, and the
+specializer when the choice is a static fact about a whole subsystem.
+What the split adds over a single protocol is that the assertion is
+spelled out where it is made, rather than implied by which loop keyword
+was used, and that a `for` over an ordinary collection compiles to a
+loop with no Pending branch to elide.
 
 A `for await` suspends only in the Pending case, so a loop over a
 mostly-synchronous iterator suspends rarely, and cancellation is
@@ -184,7 +253,7 @@ generator-disposal path (generators.md §6).
 
 ## Hand-written consumption
 
-Driving `next()` by hand — a surface `match` over `Step`, the verbose
+Driving `next()` by hand — a surface `match` over a step, the verbose
 case — is rare, because `for`/`for await` cover iteration and are
 lowered without it. The remaining reason to reach for `next()` is a
 peek: does the iterator have a next element, often just whether it has
@@ -207,21 +276,23 @@ common peek depends on.
 
 A producer declares whether it can defer, the way a function declares
 `async`. A plain `gen` may not `await` — `await` in its body is a
-compile error — so its `next()` returns only `Done` and `Ready`, and
-it carries no async machinery. This is today's generator, unchanged.
+compile error — so it is an `Iterator<T>`: its `next()` returns only
+`Done` and `Ready`, and it carries no async machinery. This is today's
+generator, unchanged.
 
-An `async gen` may `await`. Its `next()` returns `Ready` when it
-produces a value without suspending and `Pending` when it suspends
-before the next yield; the two split passes already share machinery
-(generators.md §6), and an await-then-yield body runs both at once —
-driving the frame synchronously as far as it goes, then handing back a
-`Pending` over the frame's future when it parks. Its type is the mixed
-arm set, so a `for` over it compiles and throws only if a `Pending`
-arrives at runtime, and a `for await` handles it. Requiring the
-keyword is what keeps the arm set — and so the sync-or-async contract
-a caller reads off the signature — a declared property rather than a
-whole-body inference over where `await` happens to appear; the same
-reason `async` on a function is explicit.
+An `async gen` may `await`, and is an `AsyncIterator<T>`. Its `next()`
+returns `Ready` when it produces a value without suspending and
+`Pending` when it suspends before the next yield; the two split passes
+already share machinery (generators.md §6), and an await-then-yield
+body runs both at once — driving the frame synchronously as far as it
+goes, then handing back a `Pending` over the frame's future when it
+parks. A `for await` handles it; a `for` over it is the compile error
+above, and `requireSync` makes it a loop that throws only if a
+`Pending` arrives at runtime. Requiring the keyword is what keeps the
+arm set — and so the sync-or-async contract a caller reads off the
+signature — a declared property rather than a whole-body inference over
+where `await` happens to appear; the same reason `async` on a function
+is explicit.
 
 So Lit SSR is an `async gen` that yields its synchronous chunks
 directly and yields a promise, or `yield await`s, for the deferred
@@ -229,140 +300,137 @@ ones. No driver, no thunks, no convention. The interim pattern
 generators.md §8.3 declined to bless becomes one protocol because the
 protocol carries the sync/async distinction, not the consumer.
 
-An iterator whose `next()` is async-only — where a sync `for` is a
-compile error rather than a possible runtime throw — comes from a
-declared iterator type such as a `Stream` adapter, not from a
-generator: a generator cannot promise statically that it always awaits
-before yielding.
-
 ## Representation and cost
 
-`Step` is the inline multi-value union above, not a heap type — so
-the synchronous path never pays JS's per-item allocation. Its mixed
-form lowers to three wasm results — an `i32` discriminant, a value
+A step is the inline multi-value union above, not a heap type — so
+the synchronous path never pays JS's per-item allocation. `AsyncStep`
+lowers to three wasm results — an `i32` discriminant, a value
 lane, and a `(ref null Future<Option<T>>)` lane null on every
-synchronous step. Today's protocol is already an inline-tuple union,
-`inline (true, T) | inline (false, _)`, whose `false` arm holes the
-value lane, so that lane is _already_ `(ref null T)` for reference
-`T`, and its `ref.as_non_null` on each value read is a cost the
-synchronous protocol already pays. The mixed form does not add it.
-The genuine marginal cost over today is therefore only the extra
+synchronous step. The protocol it replaced was already an inline-tuple
+union, `inline (true, T) | inline (false, _)`, whose `false` arm holed
+the value lane, so that lane was _already_ `(ref null T)` for reference
+`T`, and its `ref.as_non_null` on each value read was a cost the
+synchronous protocol already paid. The mixed form does not add it.
+The genuine marginal cost over the boolean tuple is therefore only the extra
 `(ref null Future<Option<T>>)` result — one nullref moved across the
 call, register-cheap and dwarfed by call overhead — and one branch on
 whether it is null. Both are noise: no memory traffic, nothing
 per-element that a loop body doing real work would notice.
 
-Three tiers erase it:
+`Step` lowers to the same three results, with the third a `nullref`:
+a lane no arm ever fills is `(ref null none)`, the bottom of the
+reference hierarchy, which is a subtype of every nullable reference and
+so of the `(ref null Future<Option<T>>)` lane an `AsyncIterator` slot
+declares. That is what lets a synchronous `next()` forward through an
+`AsyncIterator<T>` vtable slot with no adaptation on the way back —
+the interface trampoline tail-calls the implementation, as it does for
+every other member. The lane costs one `ref.null none` per step and
+nothing else, and a `for` never reads it.
+
+Three tiers erase what remains:
 
 - **Fusion — zero cost, the common case.** `for`-in over arrays,
   ranges, and known containers lowers to an index loop and never
   calls `next()`; the future-lane cost exists only for iteration over a
   genuine custom iterator (streams.md, "the seam is where the
   compiler earns its keep").
-- **Concrete-type erasure.** When the loop's iterator type is known
-  and its producer is synchronous, the `Pending` arm is dead — its
-  `next()` constructs only tags 0/1. Inlining `next()` lets
-  branch-folding (this session's DCE/branch-fold passes) drop the
-  arm, collapsing to the two-result loop with the nullref lane and
-  null-assert gone; best-effort, gated on the inliner accepting the
-  state-machine function.
+- **Static elision.** A `for`, and a `for await` over a synchronous
+  iterator, has no Pending branch at all: the type says the
+  discriminant is 0 or 1, and the loop tests it as a boolean. Only a
+  `for await` over an `AsyncIterator` carries the second test and the
+  suspension.
 - **GVN/simplify** common the constant nullref lane and fold the
-  comparisons against it.
+  comparisons against it; at -O2, inlining a concrete `next()` folds
+  the branches its arms never take.
 
 The full three-lane form survives only for a **virtual** `next()` —
 an iterator held abstractly, where the producer's arms are not
 visible — which is the cost of iterator polymorphism.
 
 The unboxed-sealed-variant thread (the #335 review's "in-place sealed
-variants") is the other route to a zero-allocation `Step` that is not
+variants") is the other route to a zero-allocation step that is not
 return-position-bound; if it lands, `Step` uses it and the inline
 union becomes an implementation detail of `next()`.
 
 ## Compile-time cost of the Step protocol
 
-The runtime cost above is negligible; the compile-time cost is not, and
-it is what makes flipping the stdlib's iterators to `Step` expensive to
-land. Compiling the whole execution-test suite (657 programs) on one
-idle machine takes 9.0s when iterators return the boolean tuple and
-1,095s (18 minutes) when they return `Step<T>` — about 120 times slower.
-Both produce correct code; the difference is entirely in the checker and
-reachability passes.
+The stdlib's iterators return `Step<T>` (#595), and compiling with them
+costs no more than it did with the boolean tuple. Running the whole
+execution-test suite (694 programs, each compiled and then run) took about
+115 seconds of CPU with `Step` iterators, against 147 to 158 seconds just
+before the change, on one machine with warm caches.
 
-A benchmark isolates where that cost is. `test-files/benchmarks/iter-*.zena`
-(generated by `gen-iteration-benchmarks.mjs`; time one with
+It was not always so. Before the flip landed, the same suite (657
+programs then) took 1,095s to compile with `Step` iterators against 9.0s
+with the boolean tuple, about 120 times slower, and that result held the
+flip back. A benchmark showed the cost was not per site.
+`test-files/benchmarks/iter-*.zena` (generated by
+`gen-iteration-benchmarks.mjs`; time one with
 `zena-cli build <file> -o out.wasm --time --no-cache`) compiles
-single programs with many independent iteration sites in four families:
-`Step` over distinct element types, `Step` over one repeated type, the
-boolean-tuple protocol, and plain array `for`-in. What they show is that
-the **per-site** cost is small: 150 distinct-type `Step` sites compile in
-about 2.3s against 1.4s for the boolean form, roughly 1.7×, and a single
-program iterating 100 stdlib maps is under 2s. Materializing `Step<V>`
-(and through it `Future<Option<V>>` and `Option<V>`) at one site is cheap.
+single programs with many independent iteration sites: 150
+distinct-type `Step` sites compile in about 2.3s against 1.4s for the
+boolean form. So the slowdown came from the suite's batches, where many
+entry points share one compiler.
 
-So the ~120× is not per-site — it is accumulation across a batch. The
-suite compiles many entry points through one shared compiler, and what a
-compiler interns per entry (nominal types, and instantiations interned
-onto the stdlib's own generics) is never freed while it lives; capping
-entries per compiler bounds it (see
-`packages/zena-compiler/CONTEXT.md`). Each `Step` entry interns more of
-these than a boolean-tuple entry did — `Step`, `Future`, and `Option`
-instantiations that the tuple never named — so the per-entry work grows
-faster and the batch degrades superlinearly. Confirming this precisely,
-and choosing between the candidate fixes — interning alias instantiations
-so a `Step<T>` is materialized once rather than re-built per site
-(general, not `Step`-specific), or giving sync iterators a return type
-that omits the `Future`-carrying `Pending` arm so sync iteration never
-drags `Future` into checking at all — needs a **batch** measurement (many
-entries through one compiler), which the single-program benchmark above
-deliberately does not capture. This is tracked as an open question below.
+What removed it was not isolated. Between that measurement and the flip,
+`main` changed how import cycles are checked (registering every member of
+a cycle before any bodies are checked), and the prelude became ordinary
+imports (#667), so the stdlib's own modules, which the flip puts on one
+cycle, are checked in import order. The slowdown did not reproduce on the
+flip rebased onto those changes. The `iter-*` benchmarks stay as the
+per-site check.
 
 ## The arm set is part of the type
 
 `next()`'s return type composes by ordinary union subtyping, keeping
 the future lane out of loops that do not need it:
 
-- sync-only — `inline (0, _, _) | inline (1, T, _)`, no `Pending` arm.
-  This is exactly today's `Iterator<T>`: a `gen` with no `await`
-  produces the existing protocol unchanged.
+- sync-only — `Step<T>`, `inline (0, _, _) | inline (1, T, _)`, no
+  `Pending` arm. This is `Iterator<T>`; it carries what the boolean
+  tuple did, and a `gen` with no `await` produces it.
+- mixed — `AsyncStep<T>`, all three arms, the Lit case. This is
+  `AsyncIterator<T>`, and what an `async gen` produces.
 - async-only — `inline (0, _, _) | inline (2, _, Future<Option<T>>)`,
-  no `Ready` arm; every item defers.
-- mixed — all three arms, the Lit case.
+  no `Ready` arm; every item defers. A producer may declare it, and it
+  is an `AsyncIterator<T>` like the mixed form; nothing reads the
+  missing arm off the type today.
 
-A `gen` with no `await` produces the sync-only shape, so `for`/`for
-await` over it never touch a future lane — the loop today's protocol
-produces. A sync `for` over an async-only iterator is _statically_ a
-guaranteed throw and so a compile error ("always async; use `for
-await`"), while a sync `for` over a mixed iterator compiles and
-throws only if a Pending arrives at runtime — the runtime-versus-
-static color distinction, enforced by the type rather than by two
-separate protocol types.
+Which loop accepts which is read straight off the interfaces rather
+than the discriminant range: a `for` takes `Iterator`/`Iterable`, a
+`for await` takes those and `AsyncIterator`/`AsyncIterable`, and
+`requireSync` is the explicit bridge. The runtime-versus-static
+distinction is still there — a `for await` over a mixed iterator
+awaits only when a Pending arrives — but a synchronous consumer of a
+maybe-asynchronous source says so at the loop, instead of a `for`
+over any iterator quietly carrying a throw that only the type could
+have said was reachable.
 
-Behind the `Iterator<V>` interface a single vtable slot needs one
-signature, the mixed three-lane form; a sync-only implementation
-stored there sets the future lane null and a consumer holding only
-`Iterator<V>` runs the three-lane loop. So the future lane's cost —
-a nullref result and one branch on it, noise — falls on abstractly-
-held iterators, where iterator polymorphism is actually used, and a
-concrete sync-only iterator pays nothing.
+Behind an `AsyncIterator<V>` slot a single vtable entry needs one
+signature, the three-lane form, and `Iterator<V> extends
+AsyncIterator<V>` puts every synchronous implementation there too. The
+future lane of a synchronous `next()` is `nullref` (see "Representation
+and cost"), a subtype of the slot's `(ref null Future<Option<V>>)`, so
+the trampoline forwards without converting on the way back. A consumer
+holding only `AsyncIterator<V>` runs the three-lane loop; the future
+lane's cost — a nullref result and one branch on it, noise — falls on
+abstractly-held asynchronous iterators, where that polymorphism is
+actually used, and a `for` over an `Iterator<V>` pays nothing.
 
 What the arm set changes is the _consumer loop_, not the call: a loop
-over a sync-only iterator omits the `Pending` branch (and its throw
-or await), because the discriminant provably never reaches it; a loop
-over a mixed iterator carries all three. So the third arm's code
-appears exactly where an iterator can actually produce it, and the
-static checks — sync `for` over an always-async iterator is an error,
-over a mixed one compiles and may throw — read straight off the
-discriminant range. This supersedes the "one type or two" question:
-one type family, one representation, refined by which discriminants
-occur.
+over a synchronous iterator omits the `Pending` branch, because the
+discriminant provably never reaches it; a `for await` over an
+asynchronous one carries all three. So the third arm's code appears
+exactly where an iterator can actually produce it. This supersedes the
+"one type or two" question: one shape, one representation, refined by
+which arms a type admits.
 
 ## Where `Stream` fits
 
 `Stream<T>` (streams.md) stays the resource layer: batched reads,
-backpressure, the WIT boundary. `Step` is the element-wise protocol
-over it — `for`/`for await` consume a `Step` iterator; a `Stream`
-adapts to one for ergonomic consumption, its `read` batching under the
-`Pending` arm. The two are the "resource versus protocol" split
+backpressure, the WIT boundary. `AsyncStep` is the element-wise
+protocol over it — a `for await` consumes an `AsyncIterator`; a
+`Stream` is an `AsyncIterable` for ergonomic consumption, its `read`
+batching under the `Pending` arm. The two are the "resource versus protocol" split
 streams.md already draws; this document only says what the protocol's
 `next()` returns.
 
@@ -412,8 +480,8 @@ this design does not add one by default.
   loop. Recommendation: ship three, add the fourth only if the wrap
   shows up in a profile. A related question: if inline unions gained a
   storable boxed form as a `Future` type argument, the Pending future
-  could carry `Step<V>` directly and the `Option` intermediary would
-  go away.
+  could carry `AsyncStep<V>` directly and the `Option` intermediary
+  would go away.
 - **Naming.** `Step`/`Ready`/`Pending` — `Pending` collides with
   `Task`'s state. `Done`/`Value`/`Later`? Bikeshed deferred.
 - **Relationship to §8.3 monomorphization.** These are complementary
@@ -421,11 +489,3 @@ this design does not add one by default.
   maybe-async `gen` can _also_ be monomorphized — a sync instantiation
   whose `Pending` arm is statically dead — is a later optimization,
   not a v1 question.
-- **The ~120× batch compile-time cost** (see "Compile-time cost of the
-  Step protocol"). Per-site cost is small; the cost accumulates across a
-  shared compiler's many entry points. Two things are open: a batch
-  measurement that reproduces and isolates it (the `iter-*` benchmark is
-  single-program and does not), and which fix it points to — interning
-  alias instantiations generally, or a sync return type without the
-  `Future`-carrying arm. This gates flipping the stdlib's iterators to
-  `Step`.

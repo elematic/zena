@@ -12,7 +12,7 @@ import {
   sortWasmFields, WasmArray
 } from './wasm-module.zena';
 import {
-  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, valTypeToOpcode, WasmType,
+  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeNullRef, isNullableAnyRef, valTypeToOpcode, WasmType,
 } from './wasm.zena';
 import { compareStrings, presentWordCount, presentWordName, getSignatureKey } from './codegen-utils.zena';
 import {
@@ -727,6 +727,35 @@ export let findImplementedInterfaceTransitive = (wasm: WasmModule, ct: ClassType
       let itParams = getInterfaceTypeParameters(it);
       for (let ext in it.extendsList) {
         let resolvedExt = substituteTypeParamsInCodegen(wasm, itParams, it.typeArguments, ext) as InterfaceType;
+        queue.push(resolvedExt);
+      }
+    }
+  }
+  return null;
+};
+
+/**
+ * The (substituted) InterfaceType named `name` that `it` is or extends,
+ * transitively — findImplementedInterfaceTransitive for a receiver that
+ * is an interface value rather than a class.
+ */
+export let findExtendedInterfaceTransitive = (wasm: WasmModule, it: InterfaceType, name: String): InterfaceType | null => {
+  let seen = new Map<InterfaceKey, boolean>();
+  let queue = new Array<InterfaceType>();
+  queue.push(it);
+  var head = 0;
+  while (head < queue.length) {
+    let cur = queue[head];
+    head += 1;
+    let key = getInterfaceKey(cur);
+    if (!seen.has(key)) {
+      seen[key] = true;
+      if (cur.name == name) {
+        return cur;
+      }
+      let curParams = getInterfaceTypeParameters(cur);
+      for (let ext in cur.extendsList) {
+        let resolvedExt = substituteTypeParamsInCodegen(wasm, curParams, cur.typeArguments, ext) as InterfaceType;
         queue.push(resolvedExt);
       }
     }
@@ -1782,9 +1811,27 @@ export let inlineLaneValTypes = (wasm: WasmModule, type: Type): Array<ValType> |
         break;
       }
     }
-    let finalType = if (nonHoleType != null) nonHoleType else elementTypes[0];
-
-    let vType = typeToValType(wasm, finalType);
+    if (nonHoleType == null) {
+      // No arm puts a value in this lane. A `null` element is still
+      // a value (a `V = null` instantiation writes one), and keeps the
+      // `structref` slot `null` lowers to. A lane every arm leaves as
+      // `_` lowers to `nullref`, a subtype of every nullable
+      // reference, so a union that narrows a wider one by dropping
+      // the arms that fill the lane — `Step<T>` against
+      // `AsyncStep<T>` — still forwards through the wider slot.
+      for (let t in elementTypes) {
+        if (t is NullType) {
+          nonHoleType = t;
+          break;
+        }
+      }
+      if (nonHoleType == null) {
+        lanes.push(new ValTypeNullRef());
+        i += 1;
+        continue;
+      }
+    }
+    let vType = typeToValType(wasm, nonHoleType as Type);
     let finalVType = if (hasHole) {
       match (vType) {
         case ValTypeRef as r: new ValTypeRefNull(r.target)
@@ -2169,6 +2216,7 @@ export let isWasmSubtypeWithStructs = (sub: ValType, superType: ValType): boolea
     case ValTypeAnyRef: true
     case _: false
   }
+  case ValTypeNullRef: isNullableAnyRef(superType)
   case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
 };
 

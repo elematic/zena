@@ -1890,7 +1890,7 @@ maybe-forms (patterns are the general way to consume them):
   `??` may read one.
 - **Protocol inline tuples** — a two-arm
   `inline (true, V, ...) | inline (false, ...)` union (the
-  `Map.get` / `Iterator.next` / Result shapes) coalesces to the true
+  `Map.get` / Result shapes) coalesces to the true
   arm's payload or the default: `m.get(key) ?? 0`. A Result-shaped
   union's error lane is discarded — `??` means "value or default,
   regardless of why"; use `if let` or `match` to observe the error.
@@ -2287,7 +2287,7 @@ if (let (true, value) = maybeGetValue()) {
 // value is NOT in scope here
 
 // With while - iterate while pattern matches
-while (let (true, item) = iterator.next()) {
+while (let (1, item, _) = iterator.next()) {
   // Process item
   console.log(item);
 }
@@ -2300,18 +2300,18 @@ class Counter {
   value: i32;
   new() { this.value = 0; }
 
-  next(): inline (true, i32) | inline (false, _) {
+  next(): Step<i32> {
     this.value = this.value + 1;
     if (this.value <= 3) {
-      return (true, this.value);
+      return (1, this.value, _);
     }
-    return (false, _);
+    return (0, _, _);
   }
 }
 
 let counter = new Counter();
 var sum = 0;
-while (let (true, v) = counter.next()) {
+while (let (1, v, _) = counter.next()) {
   sum = sum + v;
 }
 // sum = 6 (1 + 2 + 3)
@@ -2415,6 +2415,34 @@ before its start runs no iterations.
 it stops after `i` reaches the largest `i32`, 2147483647, instead of wrapping
 around to negative numbers. `..b` and `..` are not iterable, because they have
 no start to count from.
+
+A `for` accepts only synchronous iteration: arrays, `Iterator<T>` and
+`Iterable<T>`. Over an `AsyncIterator<T>` or `AsyncIterable<T>` (from
+`zena:async`) it is a compile error, since the loop never waits for a
+value. Inside an `async` function, `for await` accepts both, and waits
+whenever the iterator reports that a value is still coming:
+
+```zena
+let total = async (source: AsyncIterable<i32>): Future<i32> => {
+  var sum = 0;
+  for await (let x in source) {
+    sum += x;
+  }
+  return sum;
+};
+```
+
+A synchronous consumer of an asynchronous source wraps it in
+`requireSync` (an `AsyncIterable<T>` as an `Iterable<T>`) or
+`requireSyncIterator` (an `AsyncIterator<T>` as an `Iterator<T>`). The
+wrapper passes values through and throws `AsyncInSyncIteration` when a
+value is not available yet:
+
+```zena
+for (let x in requireSync(source)) {
+  sum += x;  // throws if `source` ever reports a pending value
+}
+```
 
 The loop variable is immutable (`let`) and scoped to the loop body. `break` and
 `continue` work as expected:
@@ -4176,9 +4204,9 @@ values, the type system automatically narrows the union based on the literal
 pattern. This enables ergonomic iteration with discriminated unions.
 
 ```zena
-// Iterator.next() returns inline (true, T) | inline (false, _)
-// When pattern includes 'true', only (true, T) variants are considered
-while (let (true, elem) = iterator.next()) {
+// Iterator.next() returns Step<T>: inline (0, _, _) | inline (1, T, _)
+// When the pattern includes '1', only the (1, T, _) variant is considered
+while (let (1, elem, _) = iterator.next()) {
   // elem is narrowed to T (not T | _)
   process(elem);
 }
@@ -4202,7 +4230,7 @@ if (let (true, true, value) = data()) {
 ```
 
 This feature enables zero-allocation iteration idioms like `for-in` loops, which
-internally use `while (let (true, elem) = iter.next())`.
+read the step's discriminant lane the same way.
 
 ### Mixins
 
@@ -4646,12 +4674,47 @@ Array traversal is defined by `Iterator<T>`, `Iterable<T>` and the `IterableUtil
 An `Iterator<T>` yields elements sequentially using inline tuples for zero-allocation iteration:
 
 ```zena
-export interface Iterator<T> {
-  next(): inline (true, T) | inline (false, _);
+export type Step<T> =
+    inline (0, _, _)    // Done
+  | inline (1, T, _);   // Ready
+
+export interface Iterator<T> extends AsyncIterator<T> {
+  next(): Step<T>;
 }
 ```
 
-Calls to `next()` return `(true, value)` for each element until the iterator is exhausted, returning `(false, _)`.
+Calls to `next()` return `(1, value, _)` for each element until the
+iterator is exhausted, returning `(0, _, _)`. The third position is
+always empty: it is there so that a `Step<T>` is also an
+`AsyncStep<T>`, and every `Iterator<T>` an `AsyncIterator<T>`.
+
+#### AsyncIterator\<T\> and AsyncIterable\<T\>
+
+`zena:async` declares the asynchronous counterparts. An
+`AsyncIterator<T>`'s `next()` may also answer `(2, _, future)`: the
+value, or the end, is still coming, and the future settles with
+`Some(value)` or `None`:
+
+```zena
+export type AsyncStep<V> =
+    inline (0, _, _)                    // Done
+  | inline (1, V, _)                    // Ready
+  | inline (2, _, Future<Option<V>>);   // Pending
+
+export interface AsyncIterator<T> {
+  next(): AsyncStep<T>;
+}
+
+export interface AsyncIterable<T> {
+  static symbol asyncIterator;
+  [AsyncIterable.asyncIterator](): AsyncIterator<T>;
+}
+```
+
+`for await` consumes either kind of iterator; a plain `for` consumes
+only the synchronous kind, or an asynchronous one wrapped in
+`requireSync`/`requireSyncIterator`, which throw `AsyncInSyncIteration`
+on a pending step. See the For-In Statement section.
 
 #### Iterable\<T\>
 

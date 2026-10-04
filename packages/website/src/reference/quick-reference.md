@@ -415,14 +415,21 @@ store them in a variable.
 The `Iterator` interface uses multi-value returns for efficient iteration:
 
 ```zena
+type Step<T> = inline (0, _, _) | inline (1, T, _);  // Done | Ready(value)
+
 interface Iterator<T> {
-  next(): (T, true) | (never, false);  // (value, hasValue)
+  next(): Step<T>;
 }
 ```
 
 This avoids the two-call pattern common in Java (`hasNext()` then `next()`) and
 the wrapper-object pattern in JavaScript (returning `{done, value}`). A single
 call returns both the status and the value with zero allocation overhead.
+
+An `AsyncIterator<T>` (from `zena:async`) may also answer `(2, _, future)`,
+a value that is still coming. `for await` consumes either kind; a plain `for`
+consumes only `Iterator<T>`/`Iterable<T>`, or an asynchronous one wrapped in
+`requireSync`, which throws when a value is not available yet.
 
 #### Use Case: Map Lookups
 
@@ -701,7 +708,7 @@ if (let Some(value) = maybeValue) {
 }
 
 // while-let
-while (let (true, item) = iterator.next()) {
+while (let (1, item, _) = iterator.next()) {
   // item is bound here
 }
 ```

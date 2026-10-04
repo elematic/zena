@@ -1,6 +1,6 @@
 /**
  * A stateful iterator over elements of type T.
- * 
+ *
  * Usage pattern with let-pattern conditions:
  * ```
  * let iter = collection.[Iterable.iterator]();
@@ -8,20 +8,37 @@
  *   // use item
  * }
  * ```
- * 
- * `next()` returns a `Step<T>`, an inline three-arm tuple, so a step
- * that is ready now allocates nothing:
+ *
+ * `next()` returns a `Step<T>`, an inline tuple, so a step allocates
+ * nothing:
  * - `(1, value, _)` when there's an element
  * - `(0, _, _)` when exhausted
- * - `(2, _, future)` when the element is still coming (async iteration)
  */
-import { Step } from 'zena:async';
+import { AsyncIterator } from 'zena:async';
 
-export interface Iterator<T> {
+/**
+ * Step<T> — one result of a synchronous iterator's `next()`
+ * (docs/design/async-iteration.md). It is an inline multi-value, so it
+ * travels in stack slots and allocates nothing.
+ *
+ * - `Done` (discriminant 0): no more items.
+ * - `Ready` (discriminant 1): a value, available now.
+ *
+ * The third position is always empty. It is there so that every `Step`
+ * is also an `AsyncStep` (zena:async), whose third arm carries a future:
+ * a synchronous iterator can stand wherever an asynchronous one is
+ * expected, and a `for await` drives both.
+ */
+export type Step<T> =
+    inline (0, _, _)    // Done
+  | inline (1, T, _);   // Ready
+
+export interface Iterator<T> extends AsyncIterator<T> {
   /**
    * Advances the iterator and returns the next element as a `Step<T>`:
-   * `Ready` with a value, `Done` when exhausted, or `Pending` when the
-   * value is still coming (async-iteration.md).
+   * `Ready` with a value, or `Done` when exhausted. Never `Pending`:
+   * that is what makes this iterator synchronous, and what lets a
+   * plain `for` consume it (async-iteration.md).
    */
   next(): Step<T>;
 }

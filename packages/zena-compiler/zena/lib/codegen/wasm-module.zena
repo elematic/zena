@@ -8,6 +8,7 @@ import { ByteBuffer } from 'zena:core';
 import {
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef,
   ValTypeAnyRef, ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32,
+  ValTypeNullRef, isNullableAnyRef,
   valTypeToOpcode, nextWasmTypeUid, refTargetOf, sameHeapType
 } from './wasm.zena';
 import { NodeMap } from '../node-map.zena';
@@ -425,6 +426,9 @@ export let isValSubtype = (a: ValType, b: ValType): boolean => {
   if (a is ValTypeStructRef) {
     // structref <: eqref <: anyref.
     return b is ValTypeAnyRef || b is ValTypeEqRef;
+  }
+  if (a is ValTypeNullRef) {
+    return isNullableAnyRef(b);
   }
   let aTarget = refTargetOf(a);
   if (aTarget == null) {
