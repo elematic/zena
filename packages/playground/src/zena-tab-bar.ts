@@ -383,69 +383,74 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
                   this.startEditingTab(filename);
                 }}
               >
-                ${this.editingTab === filename
-                  ? html`
-                      <input
-                        class="tab-rename-input"
-                        .value=${this.editingName}
-                        @click=${(e: MouseEvent) => e.stopPropagation()}
-                        @dblclick=${(e: MouseEvent) => e.stopPropagation()}
-                        @input=${(e: InputEvent) => {
-                          this.editingName = (
-                            e.target as HTMLInputElement
-                          ).value;
-                        }}
-                        @keydown=${(e: KeyboardEvent) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            this.commitRename(filename);
-                          } else if (e.key === 'Escape') {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            this.cancelRename();
+                ${
+                  this.editingTab === filename
+                    ? html`
+                        <input
+                          class="tab-rename-input"
+                          .value=${this.editingName}
+                          @click=${(e: MouseEvent) => e.stopPropagation()}
+                          @dblclick=${(e: MouseEvent) => e.stopPropagation()}
+                          @input=${(e: InputEvent) => {
+                            this.editingName = (
+                              e.target as HTMLInputElement
+                            ).value;
+                          }}
+                          @keydown=${(e: KeyboardEvent) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              this.commitRename(filename);
+                            } else if (e.key === 'Escape') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              this.cancelRename();
+                            }
+                          }}
+                          @blur=${() => this.commitRename(filename)}
+                        />
+                      `
+                    : html`
+                        <span class="tab-label">
+                          ${file.label ?? filename}
+                          ${
+                            errorCount > 0
+                              ? html`<span
+                                  class="tab-badge tab-badge-error"
+                                  title="${errorCount} error${
+                                    errorCount === 1 ? '' : 's'
+                                  }"
+                                ></span>`
+                              : warningCount > 0
+                                ? html`<span
+                                    class="tab-badge tab-badge-warning"
+                                    title="${warningCount} warning${
+                                      warningCount === 1 ? '' : 's'
+                                    }"
+                                  ></span>`
+                                : nothing
                           }
-                        }}
-                        @blur=${() => this.commitRename(filename)}
-                      />
-                    `
-                  : html`
-                      <span class="tab-label">
-                        ${file.label ?? filename}
-                        ${errorCount > 0
-                          ? html`<span
-                              class="tab-badge tab-badge-error"
-                              title="${errorCount} error${errorCount === 1
-                                ? ''
-                                : 's'}"
-                            ></span>`
-                          : warningCount > 0
-                            ? html`<span
-                                class="tab-badge tab-badge-warning"
-                                title="${warningCount} warning${warningCount ===
-                                1
-                                  ? ''
-                                  : 's'}"
-                              ></span>`
-                            : nothing}
-                      </span>
-                    `}
+                        </span>
+                      `
+                }
               </rad-tab>
             `;
           })}
-          ${this.editableFileSystem
-            ? html`
-                <rad-icon-button
-                  class="btn-add-file"
-                  slot="tabs"
-                  icon-name="plus-lg"
-                  size="small"
-                  variant="text"
-                  @click=${this.addFile}
-                  title="Add file"
-                ></rad-icon-button>
-              `
-            : nothing}
+          ${
+            this.editableFileSystem
+              ? html`
+                  <rad-icon-button
+                    class="btn-add-file"
+                    slot="tabs"
+                    icon-name="plus-lg"
+                    size="small"
+                    variant="text"
+                    @click=${this.addFile}
+                    title="Add file"
+                  ></rad-icon-button>
+                `
+              : nothing
+          }
           ${files.map(
             (file) => html` <rad-tab-panel name=${file.name}></rad-tab-panel> `,
           )}
@@ -453,26 +458,30 @@ export class ZenaTabBar extends PlaygroundConnectedElement {
 
         <div class="tabs-controls">
           <slot name="actions"></slot>
-          ${this.showExportButton
-            ? html`
-                <rad-icon-button
-                  icon-name="camera"
-                  size="small"
-                  variant="text"
-                  title="Export code image..."
-                  aria-label="Export code image"
-                  @click=${this.onExportImage}
-                ></rad-icon-button>
-              `
-            : nothing}
-          ${this.showThemeSelector
-            ? html`
-                <zena-theme-selector
-                  .theme=${this.theme}
-                  @theme-change=${this.onThemeChange}
-                ></zena-theme-selector>
-              `
-            : nothing}
+          ${
+            this.showExportButton
+              ? html`
+                  <rad-icon-button
+                    icon-name="camera"
+                    size="small"
+                    variant="text"
+                    title="Export code image..."
+                    aria-label="Export code image"
+                    @click=${this.onExportImage}
+                  ></rad-icon-button>
+                `
+              : nothing
+          }
+          ${
+            this.showThemeSelector
+              ? html`
+                  <zena-theme-selector
+                    .theme=${this.theme}
+                    @theme-change=${this.onThemeChange}
+                  ></zena-theme-selector>
+                `
+              : nothing
+          }
         </div>
       </div>
 

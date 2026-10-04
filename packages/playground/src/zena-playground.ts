@@ -385,33 +385,35 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
 
     return html`
       <div class="editor-pane" @keydown=${this.onKeyDown}>
-        ${showTabs
-          ? html`
-              <zena-tab-bar
-                .project=${project}
-                .theme=${this.theme}
-                ?show-theme-selector=${this.showThemeSelector}
-                ?show-export-button=${this.showExportButton}
-                @theme-change=${this.onThemeChange}
-                @export-image=${this.onExportImageEvent}
-              >
-                <slot name="start" slot="start"></slot>
-                <slot name="actions" slot="actions"></slot>
-              </zena-tab-bar>
-            `
-          : this.showExportButton
+        ${
+          showTabs
             ? html`
-                <rad-icon-button
-                  class="editor-floating-export"
-                  icon-name="camera"
-                  size="small"
-                  variant="text"
-                  title="Export code image..."
-                  aria-label="Export code image"
-                  @click=${() => this.openExportDialog()}
-                ></rad-icon-button>
+                <zena-tab-bar
+                  .project=${project}
+                  .theme=${this.theme}
+                  ?show-theme-selector=${this.showThemeSelector}
+                  ?show-export-button=${this.showExportButton}
+                  @theme-change=${this.onThemeChange}
+                  @export-image=${this.onExportImageEvent}
+                >
+                  <slot name="start" slot="start"></slot>
+                  <slot name="actions" slot="actions"></slot>
+                </zena-tab-bar>
               `
-            : nothing}
+            : this.showExportButton
+              ? html`
+                  <rad-icon-button
+                    class="editor-floating-export"
+                    icon-name="camera"
+                    size="small"
+                    variant="text"
+                    title="Export code image..."
+                    aria-label="Export code image"
+                    @click=${() => this.openExportDialog()}
+                  ></rad-icon-button>
+                `
+              : nothing
+        }
         <zena-file-editor
           .project=${project}
           .theme=${this.theme}
@@ -429,17 +431,19 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
         .watermarkText=${this.watermarkText}
       ></zena-code-export-dialog>
 
-      ${!this.project
-        ? html`
-            <zena-project
-              id="internal-project"
-              .wasmUrl=${this.wasmUrl}
-              ?allow-unused-variables=${this.allowUnusedVariables}
-            >
-              <slot></slot>
-            </zena-project>
-          `
-        : nothing}
+      ${
+        !this.project
+          ? html`
+              <zena-project
+                id="internal-project"
+                .wasmUrl=${this.wasmUrl}
+                ?allow-unused-variables=${this.allowUnusedVariables}
+              >
+                <slot></slot>
+              </zena-project>
+            `
+          : nothing
+      }
     `;
   }
 }

@@ -208,76 +208,84 @@ export class ZenaOutput extends PlaygroundConnectedElement {
     const shortcutLabel = this.isMac ? '⌘↵' : 'Ctrl+Enter';
 
     return html`
-      ${!this.hideHeader
-        ? html`
-            <div class="output-header">
-              <div class="output-title">
-                <span>Output</span>
-                ${errorCount > 0
-                  ? html`
-                      <span class="diag-badge diag-badge-error">
-                        ${errorCount} Error${errorCount === 1 ? '' : 's'}
-                      </span>
-                    `
-                  : warningCount > 0
-                    ? html`
-                        <span class="diag-badge diag-badge-warning">
-                          ${warningCount}
-                          Warning${warningCount === 1 ? '' : 's'}
-                        </span>
-                      `
-                    : ''}
-              </div>
-
-              <div class="header-controls">
-                <div class="status-indicator">
-                  <span
-                    class="dot ${status === 'ready'
-                      ? 'dot-ready'
-                      : status === 'checking'
-                        ? 'dot-checking'
-                        : 'dot-error'}"
-                  ></span>
-                  <span>
-                    ${status === 'loading'
-                      ? 'Loading...'
-                      : status === 'checking'
-                        ? 'Checking...'
-                        : status === 'error'
-                          ? 'Error'
-                          : 'Ready'}
-                  </span>
+      ${
+        !this.hideHeader
+          ? html`
+              <div class="output-header">
+                <div class="output-title">
+                  <span>Output</span>
+                  ${
+                    errorCount > 0
+                      ? html`
+                          <span class="diag-badge diag-badge-error">
+                            ${errorCount} Error${errorCount === 1 ? '' : 's'}
+                          </span>
+                        `
+                      : warningCount > 0
+                        ? html`
+                            <span class="diag-badge diag-badge-warning">
+                              ${warningCount}
+                              Warning${warningCount === 1 ? '' : 's'}
+                            </span>
+                          `
+                        : ''
+                  }
                 </div>
 
-                <rad-button
-                  size="small"
-                  variant="success"
-                  @click=${() => this.runProgram()}
-                  title="Run Program (${shortcutLabel})"
-                >
-                  <svg slot="prefix" class="run-icon" viewBox="0 0 24 24">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                  Run
-                  <span class="key-shortcut" slot="suffix"
-                    >${shortcutLabel}</span
+                <div class="header-controls">
+                  <div class="status-indicator">
+                    <span
+                      class="dot ${
+                        status === 'ready'
+                          ? 'dot-ready'
+                          : status === 'checking'
+                            ? 'dot-checking'
+                            : 'dot-error'
+                      }"
+                    ></span>
+                    <span>
+                      ${
+                        status === 'loading'
+                          ? 'Loading...'
+                          : status === 'checking'
+                            ? 'Checking...'
+                            : status === 'error'
+                              ? 'Error'
+                              : 'Ready'
+                      }
+                    </span>
+                  </div>
+
+                  <rad-button
+                    size="small"
+                    variant="success"
+                    @click=${() => this.runProgram()}
+                    title="Run Program (${shortcutLabel})"
                   >
-                </rad-button>
+                    <svg slot="prefix" class="run-icon" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                    Run
+                    <span class="key-shortcut" slot="suffix"
+                      >${shortcutLabel}</span
+                    >
+                  </rad-button>
 
-                <rad-button
-                  size="small"
-                  variant="neutral"
-                  outline
-                  @click=${() => this.clearConsole()}
-                >
-                  Clear
-                </rad-button>
+                  <rad-button
+                    size="small"
+                    variant="neutral"
+                    outline
+                    @click=${() => this.clearConsole()}
+                  >
+                    Clear
+                  </rad-button>
 
-                <slot name="actions"></slot>
+                  <slot name="actions"></slot>
+                </div>
               </div>
-            </div>
-          `
-        : ''}
+            `
+          : ''
+      }
 
       <div class="output-body">
         <zena-console .project=${project}></zena-console>

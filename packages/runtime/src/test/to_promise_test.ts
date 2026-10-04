@@ -11,11 +11,7 @@ import {suite, test} from 'node:test';
 import assert from 'node:assert';
 
 import {compile} from './compile-zena.js';
-import {
-  instantiate,
-  createStringReader,
-  createStringWriter,
-} from '../index.js';
+import {instantiate, createStringReader, createStringWriter} from '../index.js';
 
 type Exports = Record<string, (...args: unknown[]) => unknown>;
 

@@ -487,13 +487,13 @@ Measured on 2026-10-01 (wasmtime 47, a shared machine at load 3–5, so
 only the relative figures mean anything; each is the mean of 1,700+
 samples with a 95% confidence interval under ±0.04 ms):
 
-| Workload                       | mean     | relative to `concrete-param` |
-| ------------------------------ | -------- | ---------------------------- |
-| `concrete-param` (FixedArray)  | 5.06 ms  | —                            |
-| `immutable-param`              | 5.08 ms  | within noise                 |
-| `generic-param` (both, bound)  | 5.03 ms  | within noise                 |
-| `iface-param` (one implementer)| 5.04 ms  | within noise                 |
-| `poly-param` (two implementers)| 14.19 ms | 2.8× slower                  |
+| Workload                        | mean     | relative to `concrete-param` |
+| ------------------------------- | -------- | ---------------------------- |
+| `concrete-param` (FixedArray)   | 5.06 ms  | —                            |
+| `immutable-param`               | 5.08 ms  | within noise                 |
+| `generic-param` (both, bound)   | 5.03 ms  | within noise                 |
+| `iface-param` (one implementer) | 5.04 ms  | within noise                 |
+| `poly-param` (two implementers) | 14.19 ms | 2.8× slower                  |
 
 One measurement trap worth recording: the workloads build their arrays
 once at module level. Built inside the timed `main`, a 1,024-element

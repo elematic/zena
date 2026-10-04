@@ -711,12 +711,12 @@ one that deserves its own flag.
 --target  js | zena-cli | freestanding | component
 ```
 
-| Target         | Output      | Imports                                                                                      |
-| -------------- | ----------- | -------------------------------------------------------------------------------------------- |
-| `js`           | core module | `@zena-lang/runtime` — `console.*`, `time.*`, `env.*`; later JS string builtins              |
-| `zena-cli`     | component   | WASI 0.3, plus `zena-cli:host@1.0.0`: stack traces, process spawning, running components     |
-| `freestanding` | core module | none beyond what the program declares with `@external`                                       |
-| `component`    | component   | WIT interfaces: WASI 0.3 and application worlds                                              |
+| Target         | Output      | Imports                                                                                  |
+| -------------- | ----------- | ---------------------------------------------------------------------------------------- |
+| `js`           | core module | `@zena-lang/runtime` — `console.*`, `time.*`, `env.*`; later JS string builtins          |
+| `zena-cli`     | component   | WASI 0.3, plus `zena-cli:host@1.0.0`: stack traces, process spawning, running components |
+| `freestanding` | core module | none beyond what the program declares with `@external`                                   |
+| `component`    | component   | WIT interfaces: WASI 0.3 and application worlds                                          |
 
 This is the set as of 2026-09-28. The `zena-cli` row was "core module,
 WASI p1 plus the private `env.*` and `zena_process`" until then; open

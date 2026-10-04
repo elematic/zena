@@ -211,25 +211,34 @@ export class ZenaSearch extends LightElement {
             </button>
           </div>
 
-          ${this.query === ''
-            ? html`<p class="empty">Type to search the guide and reference.</p>`
-            : results.length === 0
-              ? html`<p class="empty">No results for “${this.query}”.</p>`
-              : html`
-                  <ul class="results" role="listbox">
-                    ${results.map(
-                      (entry, i) => html`
-                        <li role="option" aria-selected=${i === this.selected}>
-                          <a href=${entry.url}>
-                            <span class="result-section">${entry.section}</span>
-                            <span class="result-title">${entry.title}</span>
-                            ${this.#excerpt(entry)}
-                          </a>
-                        </li>
-                      `,
-                    )}
-                  </ul>
-                `}
+          ${
+            this.query === ''
+              ? html`<p class="empty">
+                  Type to search the guide and reference.
+                </p>`
+              : results.length === 0
+                ? html`<p class="empty">No results for “${this.query}”.</p>`
+                : html`
+                    <ul class="results" role="listbox">
+                      ${results.map(
+                        (entry, i) => html`
+                          <li
+                            role="option"
+                            aria-selected=${i === this.selected}
+                          >
+                            <a href=${entry.url}>
+                              <span class="result-section"
+                                >${entry.section}</span
+                              >
+                              <span class="result-title">${entry.title}</span>
+                              ${this.#excerpt(entry)}
+                            </a>
+                          </li>
+                        `,
+                      )}
+                    </ul>
+                  `
+          }
         </div>
       </div>
     `;

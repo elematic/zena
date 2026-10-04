@@ -595,7 +595,12 @@ const FIXTURES: Fixture[] = [
       {
         invoke: 'main()',
         expect: '0',
-        expectOutput: ['args 1', 'program true', 'greeting hello', 'listed true'],
+        expectOutput: [
+          'args 1',
+          'program true',
+          'greeting hello',
+          'listed true',
+        ],
       },
     ],
   },

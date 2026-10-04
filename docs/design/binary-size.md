@@ -1522,13 +1522,13 @@ different place. Prerequisite for 1 and everything after it.
 `zena/test/binary-size_test.zena` holds five fixtures to absolute
 byte budgets, to be moved DOWN only:
 
-| fixture                        | what it adds                                                                                   | bytes | budget |
-| ------------------------------ | ---------------------------------------------------------------------------------------------- | ----: | -----: |
-| `test-files/minimal.zena`      | `return 42` — no strings, no allocation, no calls                                              |    37 |     37 |
-| `test-files/array-sum.zena`    | an array literal summed by a for-in loop: one index-loop function, one array type (section 17) |   119 |    130 |
-| `test-files/hello-string.zena` | a returned string literal: the literal machinery and the read-side exports                     |   399 |    420 |
-| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime | 4,995 | 5,100 |
-| `test-files/component/print.zena` | three lines written to stdout and stderr, as a whole component: stdio, and the runtime memory module's allocator | 8,361 | 8,500 |
+| fixture                                | what it adds                                                                                                     | bytes | budget |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----: | -----: |
+| `test-files/minimal.zena`              | `return 42` — no strings, no allocation, no calls                                                                |    37 |     37 |
+| `test-files/array-sum.zena`            | an array literal summed by a for-in loop: one index-loop function, one array type (section 17)                   |   119 |    130 |
+| `test-files/hello-string.zena`         | a returned string literal: the literal machinery and the read-side exports                                       |   399 |    420 |
+| `test-files/component/async-noop.zena` | an async `main` with an empty body, as a whole component: the event loop in `zena:wasi` and the async runtime    | 4,995 |  5,100 |
+| `test-files/component/print.zena`      | three lines written to stdout and stderr, as a whole component: stdio, and the runtime memory module's allocator | 8,361 |  8,500 |
 
 The first three are `freestanding` core modules. The last two are
 components, because the event loop exists only there.
