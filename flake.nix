@@ -86,14 +86,13 @@
 
           npmDepsHash = "sha256-sB2e0tdzWZMr+ogZsbxwC9AoOMWL4pee3hn1/2VdUMI=";
 
-          # Don't compile native addons. buildNpmPackage runs `npm rebuild`
-          # after the install, which tries to build keytar's native binding
-          # (`prebuild-install || node-gyp rebuild`) — pulled in transitively
-          # for the VS Code extension's credential storage. It needs network
-          # (prebuild-install) or pkg-config + libsecret (node-gyp), neither of
-          # which exists in the hermetic sandbox, and nothing the compiler or
-          # its test suite imports actually uses it. Without this the build only
-          # ever succeeded by substituting a cached output.
+          # Don't run dependency install scripts. buildNpmPackage runs `npm
+          # rebuild` after the install, which executes any it finds: esbuild's
+          # install.js and @vscode/vsce-sign's postinstall.js each reach for a
+          # platform binary, and ignore-sync runs husky. The hermetic sandbox
+          # has no network, and nothing the compiler or its test suite imports
+          # uses any of the three. Without this the build only ever succeeded
+          # by substituting a cached output.
           npmRebuildFlags = [ "--ignore-scripts" ];
 
           # `npm run build` compiles the Rust crates (packages/zena-cli,
