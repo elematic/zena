@@ -166,21 +166,17 @@ This document tracks completed work and planned features. For project instructio
     generic source in a generic class body (#434), and zero-width
     locals (#435 — `let v = await f` at `Future<void>`, which also
     retires `[failure]()`). 3. **Async iteration**: `async gen` functions (the two split
-    passes already share their machinery), an `AsyncIterator<T>`
-    protocol (`next(): Future<...>` — streams.md's convenience
-    layer), and an explicit `for await` loop — explicit because
-    suspension points are where cancellation delivers, and loop
-    syntax should not hide one. Early exit disposes through the
-    generator-disposal machinery, which for an async generator is
-    exactly right: its pending `next()` is real work. Flipping the
-    stdlib's iterators to return `Step<T>` (the shared sync-or-async
-    protocol) is currently gated on a batch compile-time regression —
-    the whole execution suite compiles ~120× slower with `Step`
-    iterators than with the boolean tuple, from instantiations
-    accumulating across a shared compiler rather than any per-site cost.
-    See "Compile-time cost of the Step protocol" in
-    `docs/design/async-iteration.md` and the `iter-*` compile benchmarks
-    (`zena-cli build <file> -o out.wasm --time --no-cache`). 4. **`await` on tuple and record literals of futures** —
+    passes already share their machinery) producing `AsyncIterator<T>`,
+    and `Stream<T>` as an `AsyncIterable<T>`. The protocol and the
+    loops are in: `Iterator<T>` returns the synchronous `Step<T>`,
+    `AsyncIterator<T>` the three-arm `AsyncStep<T>` whose Pending arm a
+    `for await` awaits — explicit because suspension points are where
+    cancellation delivers, and loop syntax should not hide one — and a
+    plain `for` over an asynchronous iterator is a compile error, with
+    `requireSync` as the opt-in that throws instead. Early exit disposes
+    through the generator-disposal machinery, which for an async
+    generator is exactly right: its pending `next()` is real work. See
+    `docs/design/async-iteration.md`. 4. **`await` on tuple and record literals of futures** —
     `let (a, b) = await (getA(), getB());` and
     `let {x, y} = await {x: fx(), y: fy()};` — the typed form of
     JS's `all`/`allKeyed`/`await*`, heterogeneous and with no

@@ -9,7 +9,7 @@
  * and seams. Bodies are streaming's shapes.
  */
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases, pendingSomeClass,
 } from '../codegen-utils.zena';
 import {
   BindingPattern, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression, RangeExpression,
@@ -31,12 +31,13 @@ import {
   WasmTag, asWasmArray, isValSubtype,
 } from '../wasm-module.zena';
 import {
-  eraseTypeParameters, findImplementedInterfaceTransitive,
-  getNonNullableType, typeToValTypeWithSub,
+  eraseTypeParameters, findExtendedInterfaceTransitive,
+  findImplementedInterfaceTransitive, getNonNullableType,
+  typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
-import { coalesceArmAdaptation, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, returnSlotVt, throwStmt, varDecl } from './lowering.zena';
+import { coalesceArmAdaptation, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported, noValues,
 } from './lowering-context.zena';
@@ -2520,6 +2521,13 @@ export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): 
  * (i32 ok, element) return, through the ITERATOR value's own
  * fat-pointer type; the element downcasts to the binding's type
  * exactly where streaming ref.casts its element temp.
+ *
+ * The synchronous protocol is tried first, then the asynchronous one
+ * — `AsyncIterator` used as is, `AsyncIterable` asked through
+ * `:asyncIterator` — in the order the checker resolved the loop's
+ * element type, so a class that is both iterates the same way in a
+ * `for` and a `for await`. Only a `for await` reaches the asynchronous
+ * half; the checker rejects a plain `for` over it.
  */
 export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iterableType: Type): void => {
   let resolved = cx.resolveSelfType(iterableType);
@@ -2528,25 +2536,36 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
     let ct = eraseTypeParameters(cx.wasm, resolved) as ClassType;
     let recv = lowerExprRaw(cx, stmt.iterable);
     let iteratorIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterator');
+    let iterableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterable');
+    let asyncIteratorIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'AsyncIterator');
+    let asyncIterableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'AsyncIterable');
     if (iteratorIface != null) {
       // The iterable IS an iterator: no :iterator call.
       iter = cx.packInterface(recv, ct, iteratorIface);
-    } else {
-      let iterableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Iterable');
-      if (iterableIface == null) {
-        bail(cx, 'for-in iterable kind');
-      }
-      let packed = cx.packInterface(recv, ct,
-          iterableIface);
+    } else if (iterableIface != null) {
+      let packed = cx.packInterface(recv, ct, iterableIface);
       iter = cx.slotCallSingle(packed, ':iterator');
+    } else if (asyncIteratorIface != null) {
+      iter = cx.packInterface(recv, ct, asyncIteratorIface);
+    } else if (asyncIterableIface != null) {
+      let packed = cx.packInterface(recv, ct, asyncIterableIface);
+      iter = cx.slotCallSingle(packed, ':asyncIterator');
+    } else {
+      bail(cx, 'for-in iterable kind');
     }
   } else if (resolved is InterfaceType) {
     let recv = lowerExpr(cx, stmt.iterable, null);
     if (isWellKnown(WellKnown.IteratorInterface, resolved.name,
+        resolved.sourcePath) ||
+        isWellKnown(WellKnown.AsyncIteratorInterface, resolved.name,
         resolved.sourcePath)) {
       iter = recv;
-    } else {
+    } else if (findExtendedInterfaceTransitive(cx.wasm, resolved, 'Iterable') != null) {
       iter = cx.slotCallSingle(recv, ':iterator');
+    } else if (findExtendedInterfaceTransitive(cx.wasm, resolved, 'AsyncIterable') != null) {
+      iter = cx.slotCallSingle(recv, ':asyncIterator');
+    } else {
+      bail(cx, 'for-in iterable kind');
     }
   } else {
     bail(cx, 'for-in iterable kind');
@@ -2602,6 +2621,57 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
   lowerForInIteratorLoop(cx, stmt, iter, symOpt, bindVtOpt, pat);
 };
 
+/**
+ * A `for await`'s Pending arm: suspend on the step's future, then enter
+ * the body with the value it settles with (`Some`), or leave the loop
+ * (`None`). A failed future resumes by throwing, as any `await` does
+ * (async-iteration.md, "Consuming"). The future's type is the one the
+ * checker recorded on the statement.
+ */
+let lowerPendingStep = (cx: LoweringContext, stmt: ForInStatement,
+    future: i32, zeroWidthElem: boolean, bodyB: i32, exitB: i32,
+    exitArgs: GrowableArray<i32>): void => {
+  let pendingT = cx.substitutedNodeType(stmt);
+  if (pendingT == null || !(pendingT is ClassType)) {
+    bail(cx, 'for await without a pending future type');
+  }
+  let futureCt = pendingT as ClassType;
+  let someOpt = pendingSomeClass(futureCt);
+  if (someOpt == null) {
+    bail(cx, 'for await pending future is not Future<Option<T>>');
+  }
+  let someKey = getClassKey(someOpt as ClassType);
+  var someSt: WasmStruct | null = null;
+  if (let (true, info) = cx.wasm.classInfos.get(someKey)) {
+    someSt = info.structType;
+  }
+  if (someSt == null) {
+    bail(cx, 'for await Some class not discovered');
+  }
+  let st = someSt as WasmStruct;
+  let settled = suspendOnFuture(cx, futureCt, cx.stripNonNull(future));
+
+  let someVt = new ValTypeRef(st) as ValType;
+  let isSome = cx.b.emit(IrOp.ref_test, new ValTypeI32(), settled,
+      cx.b.internType(someVt));
+  let someB = cx.b.newBlock();
+  cx.b.brIf(isSome, someB, noValues(), exitB, exitArgs);
+  cx.b.switchTo(someB);
+  let intoBody = new Array<i32>();
+  if (!zeroWidthElem) {
+    let casted = cx.b.emit(IrOp.ref_cast, someVt, settled,
+        cx.b.internType(someVt));
+    let fieldIdx = st.fieldIndexByName('value');
+    if (fieldIdx < 0) {
+      bail(cx, 'for await Some has no value field');
+    }
+    let fieldRef = cx.b.addRef(new IrRefField(st, 'value'));
+    intoBody.push(cx.b.emit(IrOp.struct_get, st.fields[fieldIdx].type,
+        casted, fieldRef));
+  }
+  cx.b.br(bodyB, intoBody);
+};
+
 /** The protocol loop itself: next() in the header, bind, body, back. */
 let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
     iter: i32, symOpt: Symbol | null, bindVtOpt: ValType | null,
@@ -2616,10 +2686,12 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
   let results = cx.slotCallMulti(iter, 'next');
   // A zero-width element drops its `next()` value lane. Two protocols:
   // the boolean two-arm form `inline (true, T) | inline (false, _)` has
-  // a flag plus the value (one lane when the value is zero-width); the
-  // three-arm Step `inline (0,_,_) | inline (1,V,_) | inline (2,_,F)`
-  // adds a future lane (async-iteration.md), so its `next()` returns
-  // one more result.
+  // a flag plus the value (one lane when the value is zero-width); a
+  // Step — `inline (0,_,_) | inline (1,V,_)`, or an AsyncStep with the
+  // third arm `inline (2,_,F)` — adds a future lane (async-iteration.md),
+  // so its `next()` returns one more result. A synchronous Step's
+  // future lane is `nullref`: it is there so the step fits an
+  // AsyncStep slot, and no arm ever fills it.
   let zeroWidthElem = bindVtOpt != null &&
       (bindVtOpt as ValType) is ValTypeVoid;
   let booleanLanes = if (zeroWidthElem) 1 else 2;
@@ -2637,7 +2709,22 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
   let bodyB = cx.b.newBlock();
   let exitB = cx.b.newBlock();
   let exitParams = cx.addParams(exitB, carried);
-  if (isStep) {
+  // Only a `for await` over an asynchronous iterator can see a Pending
+  // step; the checker records the future's type on the statement for
+  // exactly that loop, and rejects a plain `for` over one
+  // (async-iteration.md, "Consuming"). Every other loop reads the
+  // discriminant as a boolean: Done leaves, anything else has a value.
+  let awaitsPending = isStep && stmt.isAwait &&
+      cx.substitutedNodeType(stmt) != null;
+  if (awaitsPending) {
+    // The body is reached from two places — a Ready step, and a Pending
+    // step whose future settled with a value — so the element arrives
+    // as the body block's parameter.
+    let elemIntoBody = new Array<i32>();
+    if (!zeroWidthElem) {
+      elemIntoBody.push(elem);
+      elem = cx.b.blockParam(bodyB, cx.valueTypeOf(elem));
+    }
     // Step discriminant: 0 = Done (exit), 1 = Ready (bind + body),
     // 2 = Pending. `disc != 0` splits Done from the rest; a second test
     // splits Ready from Pending.
@@ -2647,13 +2734,10 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
     let two = cx.b.constI32(2, new ValTypeI32() as ValType);
     let isPending = cx.b.binary(IrOp.i32_eq, new ValTypeI32(), disc, two);
     let pendingB = cx.b.newBlock();
-    cx.b.brIf(isPending, pendingB, noValues(), bodyB, noValues());
+    cx.b.brIf(isPending, pendingB, noValues(), bodyB, elemIntoBody);
     cx.b.switchTo(pendingB);
-    // A Pending step has no producer yet (it needs `async gen`); the
-    // `for`-throws / `for await`-suspends handling lands with it. Until
-    // then a Pending arrival at runtime traps — unreachable for every
-    // iterator that exists.
-    cx.b.unreachable();
+    lowerPendingStep(cx, stmt, results[results.length - 1], zeroWidthElem,
+        bodyB, exitB, cx.envValues(carried));
   } else {
     cx.b.brIf(disc, bodyB, noValues(), exitB, cx.envValues(carried));
   }
@@ -2850,9 +2934,8 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   // Ready, so the loop is exactly a `for` (async-iteration.md, "a `for
   // await` over [a sync iterator] never awaits"). The Pending arm — the
   // only place `for` and `for await` differ — arises only for an
-  // iterator whose `next()` returns the three-arm Step, handled in
-  // `lowerForInIteratorLoop`; until such iterators exist, `isAwait`
-  // needs no special treatment here.
+  // iterator whose `next()` returns the three-arm Step, and is lowered
+  // in `lowerForInIteratorLoop`, so `isAwait` needs no treatment here.
   var iterableType = cx.substitutedNodeType(stmt.iterable);
   if (iterableType == null) {
     bail(cx, 'untyped for-in iterable');

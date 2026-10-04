@@ -18,10 +18,10 @@ import {
 } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType,
+  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, recordWasmFields, sortedOptionalNames,
+  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, findExtendedInterfaceTransitive, recordWasmFields, sortedOptionalNames,
 } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -714,6 +714,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is TemplateLiteral) {
         this.registerTemplateLiteral(n, model, resolveType);
       }
+      // A `for await`'s Pending arm is a node-level fact too: the
+      // records say a body iterates, and nothing about what future
+      // the loop suspends on.
+      if (n is ForInStatement) {
+        this.registerForInPendingArm(n, model, resolveType);
+      }
       // Interface adaptations (a class value packed at an interface
       // slot) are node-level facts the dependency records never carry
       // — the fourth organ. Without this, a generic class packed into
@@ -1396,6 +1402,89 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * exist, the caller uses `queueOptionalStdlibFunction` and takes the
    * same branch lowering will.
    */
+  /**
+   * Roots one iteration protocol a for-in drives — the iterable
+   * interface's iterator-producing symbol member, the iterator
+   * interface's `next`, and for each class the loop is known to
+   * iterate, its adaptation to the iterable interface and its
+   * implementation of the symbol member.
+   */
+  rootIterationProtocol(iterableName: String, iteratorName: String,
+      symbolKey: String, protocolClasses: Array<ClassType>,
+      model: SemanticModel): void {
+    let iterableIface = this.pass.findPreludeInterface(iterableName);
+    let iteratorIface = this.pass.findPreludeInterface(iteratorName);
+    if (iterableIface != null) {
+      let iterableKey = getInterfaceKey(iterableIface);
+      let itKey = getInterfaceMemberKey(iterableKey, symbolKey);
+      this.pass.wasm.usedInterfaceMembers[itKey] = true;
+
+      let resolvedIfaceStr = i32ToString((iterableIface.genericSource ?? iterableIface).id as i32) + "." + symbolKey;
+      this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
+
+      let cha = this.pass.cha;
+      let typeLowerer = this.pass.typeLowerer;
+      for (let resolvedClass in protocolClasses) {
+        let cName = getClassKey(resolvedClass);
+        this.pass.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iterableKey)] = true;
+
+        let unspecCName = getClassKey(resolvedClass.genericSource ?? resolvedClass);
+        let unspecKey = getClassInterfaceKey(unspecCName, iterableKey);
+        this.pass.wasm.usedInterfaceAdaptations[unspecKey] = true;
+
+        let targetModel = this.pass.getClassModel(resolvedClass);
+        let mds = cha.findImplementingMethods(resolvedClass, symbolKey);
+        for (let md in mds) {
+          this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
+        }
+
+        let specializedIterable = findImplementedInterfaceTransitive(this.pass.wasm, resolvedClass, iterableName);
+        if (specializedIterable != null) {
+          typeLowerer.discoverType(specializedIterable, model);
+        }
+      }
+    }
+
+    if (iteratorIface != null) {
+      let iteratorKey = getInterfaceKey(iteratorIface);
+      let nextKey = getInterfaceMemberKey(iteratorKey, "next");
+      this.pass.wasm.usedInterfaceMembers[nextKey] = true;
+
+      let resolvedIfaceStr = i32ToString((iteratorIface.genericSource ?? iteratorIface).id as i32) + ".next";
+      this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
+    }
+  }
+
+  /**
+   * Roots what a `for await`'s Pending arm lowers to (async-iteration.md,
+   * "Consuming"): the loop suspends on the step's future, whose type the
+   * checker recorded on the statement, and reads `Some<V>`'s value out of
+   * what it settles with. The checker records that type only for a loop
+   * over an asynchronous iterator; a plain `for`, and a `for await` over
+   * a synchronous one, has no Pending arm and roots nothing here.
+   *
+   * Called from both walks, since a body with dependency records skips the
+   * full one.
+   */
+  registerForInPendingArm(n: ForInStatement, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (!n.isAwait) {
+      return;
+    }
+    let pendingT = model.getNodeType(n);
+    if (pendingT == null) {
+      return;
+    }
+    let pendingFuture = resolveType(pendingT);
+    if (pendingFuture is ClassType) {
+      this.registerAsyncFuture(pendingFuture, model, false);
+      let some = pendingSomeClass(pendingFuture);
+      if (some != null) {
+        this.pass.typeLowerer.discoverType(some, model);
+      }
+    }
+  }
+
   queueStdlibFunction(library: String, exportName: String): void {
     if (!this.#tryQueueStdlibFunction(library, exportName)) {
       throw new Error("No file of standard library '" + library +
@@ -2016,13 +2105,20 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         this.registerTemplateLiteral(n, model, resolveType);
       }
       if (n is ForInStatement) {
+        this.registerForInPendingArm(n, model, resolveType);
         let iterableType = model.getNodeType(n.iterable);
         if (iterableType != null) {
           let resolvedIterable = resolveType(iterableType);
-          
+
           if (resolvedIterable is InterfaceType) {
             let iName = getInterfaceKey(resolvedIterable.genericSource ?? resolvedIterable);
-            this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, ":iterator")] = true;
+            let symbolKey = if (findExtendedInterfaceTransitive(this.pass.wasm, resolvedIterable, "AsyncIterable") != null &&
+                findExtendedInterfaceTransitive(this.pass.wasm, resolvedIterable, "Iterable") == null) {
+              ":asyncIterator"
+            } else {
+              ":iterator"
+            };
+            this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, symbolKey)] = true;
           }
           
           let resolvedIterableTypes = new Array<ClassType>();
@@ -2140,47 +2236,37 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             true
           };
 
-          let iterableIface = this.pass.findPreludeInterface("Iterable");
-          let iteratorIface = this.pass.findPreludeInterface("Iterator");
-
-          if (iterableIface != null && usesIteratorProtocol) {
-            let iterableKey = getInterfaceKey(iterableIface);
-            let itKey = getInterfaceMemberKey(iterableKey, ":iterator");
-            this.pass.wasm.usedInterfaceMembers[itKey] = true;
-            
-            let resolvedIfaceStr = i32ToString((iterableIface.genericSource ?? iterableIface).id as i32) + ".:iterator";
-            this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
-
-            let cha = this.pass.cha;
-            let typeLowerer = this.pass.typeLowerer;
-            for (let resolvedClass in protocolClasses) {
-              let cName = getClassKey(resolvedClass);
-              this.pass.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iterableKey)] = true;
-              
-              let unspecCName = getClassKey(resolvedClass.genericSource ?? resolvedClass);
-              let unspecKey = getClassInterfaceKey(unspecCName, iterableKey);
-              this.pass.wasm.usedInterfaceAdaptations[unspecKey] = true;
-
-              let targetModel = this.pass.getClassModel(resolvedClass);
-              let mds = cha.findImplementingMethods(resolvedClass, ":iterator");
-              for (let md in mds) {
-                this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedClass, this.pass.currentReachable));
-              }
-
-              let specializedIterable = findImplementedInterfaceTransitive(this.pass.wasm, resolvedClass, "Iterable");
-              if (specializedIterable != null) {
-                typeLowerer.discoverType(specializedIterable, model);
+          if (usesIteratorProtocol) {
+            // The synchronous protocol first, then the asynchronous
+            // one, in lowerForInIterator's order: a class that is an
+            // Iterator or Iterable iterates synchronously in either
+            // loop, and only a `for await` reaches AsyncIterator or
+            // AsyncIterable (the checker rejects a plain `for` over
+            // them). An interface receiver roots whichever protocol it
+            // extends.
+            let syncClasses = new Array<ClassType>();
+            let asyncClasses = new Array<ClassType>();
+            for (let rc in protocolClasses) {
+              if (findImplementedInterfaceTransitive(this.pass.wasm, rc, "Iterator") != null ||
+                  findImplementedInterfaceTransitive(this.pass.wasm, rc, "Iterable") != null) {
+                syncClasses.push(rc);
+              } else {
+                asyncClasses.push(rc);
               }
             }
-          }
-
-          if (iteratorIface != null && usesIteratorProtocol) {
-            let iteratorKey = getInterfaceKey(iteratorIface);
-            let nextKey = getInterfaceMemberKey(iteratorKey, "next");
-            this.pass.wasm.usedInterfaceMembers[nextKey] = true;
-            
-            let resolvedIfaceStr = i32ToString((iteratorIface.genericSource ?? iteratorIface).id as i32) + ".next";
-            this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
+            var rootSync = protocolClasses.length == 0 || syncClasses.length > 0;
+            var rootAsync = n.isAwait && (protocolClasses.length == 0 || asyncClasses.length > 0);
+            if (resolvedIterable is InterfaceType) {
+              rootSync = findExtendedInterfaceTransitive(this.pass.wasm, resolvedIterable, "Iterable") != null ||
+                  findExtendedInterfaceTransitive(this.pass.wasm, resolvedIterable, "Iterator") != null;
+              rootAsync = !rootSync;
+            }
+            if (rootSync) {
+              this.rootIterationProtocol("Iterable", "Iterator", ":iterator", syncClasses, model);
+            }
+            if (rootAsync) {
+              this.rootIterationProtocol("AsyncIterable", "AsyncIterator", ":asyncIterator", asyncClasses, model);
+            }
           }
         }
       }

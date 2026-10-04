@@ -1,23 +1,115 @@
 /**
- * Step<V> — one result of a sync-or-async iterator's `next()`
- * (docs/design/async-iteration.md). It is an inline multi-value, so it
- * travels in stack slots and the synchronous cases allocate nothing.
+ * The asynchronous side of iteration (docs/design/async-iteration.md):
+ * the step an asynchronous iterator's `next()` returns, the iterator
+ * and iterable interfaces built on it, and the adapters a synchronous
+ * consumer uses to opt in to consuming one.
+ */
+
+import { AsyncInSyncIteration, IterableUtils, Step } from 'zena:core';
+
+/**
+ * AsyncStep<V> — one result of an asynchronous iterator's `next()`. It
+ * is an inline multi-value, so it travels in stack slots and the
+ * synchronous cases allocate nothing.
  *
  * The three arms are the dispositions of a single step:
  * - `Done` (discriminant 0): no more items.
  * - `Ready` (discriminant 1): a value, available now.
  * - `Pending` (discriminant 2): a value or the end is coming; await the
  *   future to learn which. The future carries `Option<V>` — an inline
- *   `Step` cannot be a future's type argument, and `Option<V>` is the
+ *   step cannot be a future's type argument, and `Option<V>` is the
  *   storable form that still says whether the awaited item is a value
  *   (`Some`) or the end (`None`).
  *
  * A caller always learns the disposition synchronously, from the
  * discriminant; only in `Pending` does it wait, and then only for the
- * eventual item.
+ * eventual item. The synchronous `Step<V>` (zena:core) is the first two
+ * arms, so every synchronous step is also an asynchronous one.
  */
-
-export type Step<V> =
+export type AsyncStep<V> =
     inline (0, _, _)                    // Done
   | inline (1, V, _)                    // Ready
   | inline (2, _, Future<Option<V>>);   // Pending
+
+/**
+ * An iterator whose `next()` may report a value that is still coming.
+ * A `for await` consumes one; a plain `for` does not, since it never
+ * waits — wrap the iterator in `requireSyncIterator` to consume it
+ * synchronously anyway, and throw if a value is not there yet.
+ */
+export interface AsyncIterator<T> {
+  /**
+   * Advances the iterator and returns the next element as an
+   * `AsyncStep<T>`: `Ready` with a value, `Done` when exhausted, or
+   * `Pending` when the value is still coming.
+   */
+  next(): AsyncStep<T>;
+}
+
+/**
+ * A source of asynchronous iterators. Distinct from `Iterable<T>`, and
+ * neither is a subtype of the other: a `for await` accepts both, and a
+ * plain `for` accepts only `Iterable<T>`.
+ */
+export interface AsyncIterable<T> {
+  /**
+   * The well-known symbol for the iterator method.
+   * Use `obj.[AsyncIterable.asyncIterator]()` to get an iterator.
+   */
+  static symbol asyncIterator;
+
+  /**
+   * Returns a new iterator over the elements.
+   * Each call returns a fresh iterator starting from the beginning.
+   */
+  [AsyncIterable.asyncIterator](): AsyncIterator<T>;
+}
+
+/**
+ * `source` as a synchronous iterator: every step it forwards is `Ready`
+ * or `Done`, and a `Pending` step throws `AsyncInSyncIteration` — the
+ * value is not there yet, and a synchronous consumer cannot wait for
+ * it. The future is never read, even one that has already settled.
+ */
+export let requireSyncIterator = <T>(source: AsyncIterator<T>): Iterator<T> => {
+  return new SyncRequiredIterator<T>(source);
+};
+
+/**
+ * `source` as a synchronous iterable: each iterator it produces is
+ * `requireSyncIterator` over the source's, so a plain `for` can drive
+ * it, and a `Pending` step throws `AsyncInSyncIteration`.
+ */
+export let requireSync = <T>(source: AsyncIterable<T>): Iterable<T> => {
+  return new SyncRequiredIterable<T>(source);
+};
+
+final class SyncRequiredIterator<T> implements Iterator<T> {
+  #source: AsyncIterator<T>;
+
+  new(source: AsyncIterator<T>) : #source = source;
+
+  next(): Step<T> {
+    match (this.#source.next()) {
+      case (1, let value, _): {
+        return (1, value, _);
+      }
+      case (0, _, _): {
+        return (0, _, _);
+      }
+      case (2, _, _): {
+        throw new AsyncInSyncIteration();
+      }
+    }
+  }
+}
+
+final class SyncRequiredIterable<T> with IterableUtils<T> implements Iterable<T> {
+  #source: AsyncIterable<T>;
+
+  new(source: AsyncIterable<T>) : #source = source;
+
+  [Iterable.iterator](): Iterator<T> {
+    return new SyncRequiredIterator<T>(this.#source.[AsyncIterable.asyncIterator]());
+  }
+}

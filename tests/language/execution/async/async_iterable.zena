@@ -1,0 +1,78 @@
+// @mode: run
+// @result: 66
+// An `AsyncIterable<T>` produces its iterator through
+// `[AsyncIterable.asyncIterator]`. A `for await` drives it, awaiting each
+// Pending step; `requireSync` over the same source gives a plain `for` an
+// `Iterable<T>` that passes Ready steps through and throws on a Pending
+// one. This source's steps are all Ready until `limit`, so both loops
+// see the same elements.
+
+import { AsyncInSyncIteration } from 'zena:core';
+import { Future, Completer, AsyncStep, AsyncIterator, AsyncIterable, requireSync, scheduleMicrotask } from 'zena:async';
+
+let later = (value: Option<i32>): Future<Option<i32>> => {
+  let c = new Completer<Option<i32>>();
+  scheduleMicrotask(() => {
+    c.complete(value);
+  });
+  return c.future;
+};
+
+/** Counts 1..limit; every `pendingAt`th element arrives through a future. */
+class Counter implements AsyncIterator<i32> {
+  var #i = 0;
+  #limit: i32;
+  #pendingAt: i32;
+
+  new(limit: i32, pendingAt: i32) : #limit = limit, #pendingAt = pendingAt;
+
+  next(): AsyncStep<i32> {
+    if (this.#i >= this.#limit) {
+      return (0, _, _);
+    }
+    this.#i += 1;
+    if (this.#i % this.#pendingAt == 0) {
+      return (2, _, later(some(this.#i)));
+    }
+    return (1, this.#i, _);
+  }
+}
+
+class Counting implements AsyncIterable<i32> {
+  #limit: i32;
+  #pendingAt: i32;
+
+  new(limit: i32, pendingAt: i32) : #limit = limit, #pendingAt = pendingAt;
+
+  [AsyncIterable.asyncIterator](): AsyncIterator<i32> {
+    return new Counter(this.#limit, this.#pendingAt);
+  }
+}
+
+export let main = async (): Future<i32> => {
+  // 1..10 with every third element Pending: 55.
+  let source: AsyncIterable<i32> = new Counting(10, 3);
+  var sum = 0;
+  for await (let x in source) {
+    sum += x;
+  }
+  // 1..4 with no Pending steps (pendingAt beyond the limit): 10.
+  var syncSum = 0;
+  for (let x in requireSync(new Counting(4, 100))) {
+    syncSum += x;
+  }
+  // 1..4 with the fourth Pending: the first three add up before the throw.
+  var threw = 0;
+  var partial = 0;
+  try {
+    for (let x in requireSync(new Counting(4, 4))) {
+      partial += x;
+    }
+  } catch (e) {
+    if (e is AsyncInSyncIteration) {
+      threw = 1;
+    }
+  }
+  // 55 + 10 + 1 = 66 when partial is 6.
+  return if (partial == 6) sum + syncSum + threw else -1;
+};

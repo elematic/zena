@@ -31,6 +31,10 @@ export enum WellKnown {
   /** `Iterator<T>` and `Iterable<T>`, the `for`-in protocol. */
   IteratorInterface,
   IterableInterface,
+  /** `AsyncIterator<T>` and `AsyncIterable<T>`, what a `for await` adds
+   * to it (docs/design/async-iteration.md). */
+  AsyncIteratorInterface,
+  AsyncIterableInterface,
   /** The array types, which back array literals and indexed `for`-in. */
   ArrayInterface,
   MutableArrayInterface,
@@ -60,6 +64,8 @@ export enum WellKnown {
   UnmanagedAlias,
   /** `Scoped<T>`, the no-duplicate no-escape corner (not a handle). */
   ScopedAlias,
+  /** `Option<T>`, what a Pending iteration step's future settles with. */
+  OptionAlias,
 }
 
 /**
@@ -122,6 +128,9 @@ let buildLocations = (): Map<i32, Location> => {
   add(WellKnown.BorrowAlias, 'core', 'Borrow');
   add(WellKnown.UnmanagedAlias, 'core', 'Unmanaged');
   add(WellKnown.ScopedAlias, 'core', 'Scoped');
+  add(WellKnown.OptionAlias, 'core', 'Option');
+  add(WellKnown.AsyncIteratorInterface, 'async', 'AsyncIterator');
+  add(WellKnown.AsyncIterableInterface, 'async', 'AsyncIterable');
   locations = t;
   ordered = order;
   return t;
@@ -195,8 +204,10 @@ let buildProtocolSymbols = (): GrowableArray<ProtocolSymbol> => {
   };
   // Dropping a resource runs its release action.
   add('core', 'Disposable', 'dispose');
-  // A `for`-in over anything but an array asks for an iterator.
+  // A `for`-in over anything but an array asks for an iterator; a
+  // `for await` over an asynchronous iterable asks its own symbol.
   add('core', 'Iterable', 'iterator');
+  add('async', 'AsyncIterable', 'asyncIterator');
   // The async runtime's hooks, which `async`/`await` lower onto.
   add('async', '', 'registerTask');
   add('async', '', 'install');

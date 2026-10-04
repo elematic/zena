@@ -1,0 +1,55 @@
+// @mode: run
+// @result: 13
+// `for await` with reference elements, whose Pending steps settle with
+// `Some<String>`: the value arrives through the same loop variable as a
+// Ready step's. The body has an `await` of its own, and leaves with
+// `break` right after a Pending step — the step after it is never asked
+// for.
+
+import { Future, Completer, AsyncStep, AsyncIterator, scheduleMicrotask } from 'zena:async';
+
+let later = (value: Option<String>): Future<Option<String>> => {
+  let c = new Completer<Option<String>>();
+  scheduleMicrotask(() => {
+    c.complete(value);
+  });
+  return c.future;
+};
+
+let tick = async (): Future<i32> => {
+  return 1;
+};
+
+class Letters implements AsyncIterator<String> {
+  var #calls = 0;
+
+  next(): AsyncStep<String> {
+    this.#calls += 1;
+    if (this.#calls == 1) {
+      return (2, _, later(some('a')));
+    }
+    if (this.#calls == 2) {
+      return (1, 'b', _);
+    }
+    if (this.#calls == 3) {
+      return (2, _, later(some('c')));
+    }
+    // Never reached: the loop breaks at 'c'.
+    return (1, 'unreachable', _);
+  }
+}
+
+export let main = async (): Future<i32> => {
+  let it: AsyncIterator<String> = new Letters();
+  var seen = 0;
+  var order = '';
+  for await (let s in it) {
+    order = order + s;
+    seen += await tick();
+    if (s == 'c') {
+      break;
+    }
+  }
+  // Three elements, arriving as 'a', 'b', 'c'.
+  return if (order == 'abc') seen + 10 else seen;
+};

@@ -1,0 +1,56 @@
+// @mode: check
+
+// A plain `for` accepts only the synchronous protocol — `Iterator<T>`,
+// `Iterable<T>` — whose `next()` never reports a Pending step. Over an
+// `AsyncIterator<T>` or `AsyncIterable<T>` it is an error, since the loop
+// never waits; a `for await` accepts both, and a synchronous consumer
+// opts in with `requireSync` (docs/design/async-iteration.md,
+// "Consuming").
+
+import { Future, AsyncIterator, AsyncIterable, requireSync, requireSyncIterator } from 'zena:async';
+
+let syncOverAsyncIterator = (it: AsyncIterator<i32>): i32 => {
+  var total = 0;
+  for (let x in it) { // @error: Type 'AsyncIterator<i32>' is an asynchronous iterable, and a `for` never waits. Use `for await`, or `requireSync` to throw if a value is not available yet.
+    total += x;
+  }
+  return total;
+};
+
+let syncOverAsyncIterable = (source: AsyncIterable<i32>): i32 => {
+  var total = 0;
+  for (let x in source) { // @error: Type 'AsyncIterable<i32>' is an asynchronous iterable, and a `for` never waits. Use `for await`, or `requireSync` to throw if a value is not available yet.
+    total += x;
+  }
+  return total;
+};
+
+let optedIn = (source: AsyncIterable<i32>, it: AsyncIterator<i32>): i32 => {
+  var total = 0;
+  for (let x in requireSync(source)) {
+    total += x;
+  }
+  for (let x in requireSyncIterator(it)) {
+    total += x;
+  }
+  return total;
+};
+
+let awaited = async (source: AsyncIterable<i32>, it: AsyncIterator<i32>, sync: Iterable<i32>): Future<i32> => {
+  var total = 0;
+  for await (let x in source) {
+    total += x;
+  }
+  for await (let x in it) {
+    total += x;
+  }
+  for await (let x in sync) {
+    total += x;
+  }
+  return total;
+};
+
+// A synchronous iterator is an asynchronous one: `Iterator<T>` extends
+// `AsyncIterator<T>`, and its `Step<T>` is the first two arms of an
+// `AsyncStep<T>`.
+let widen = (it: Iterator<i32>): AsyncIterator<i32> => it;

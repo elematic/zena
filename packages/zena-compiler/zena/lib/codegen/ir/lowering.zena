@@ -31,7 +31,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 
 
 
-import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeNullRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, isNullableAnyRef, WasmType, refTargetOf } from '../wasm.zena';
 import {
   WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec,
   noCaptures,
@@ -2514,7 +2514,16 @@ export final class FunctionLowerer {
         this.#bail('multi-value return arity');
       }
       for (var i = 0; i < flat.length; i += 1) {
-        if (!isValSubtype(this.#valueType(flat[i]), sig.returns[i])) {
+        let have = this.#valueType(flat[i]);
+        if (have is ValTypeNullRef && !isValSubtype(have, sig.returns[i])) {
+          // The callee's lane is a hole in every arm (`nullref`), and
+          // this function's lane holds something — a wider union that
+          // fills it in an arm the callee never produces. There is no
+          // value to forward, so the slot takes its default.
+          flat[i] = this.#defaultValueOf(sig.returns[i]);
+          continue;
+        }
+        if (!isValSubtype(have, sig.returns[i])) {
           this.#failConformance(flat[i], sig.returns[i],
               'multi-value return type');
         }
@@ -2626,9 +2635,7 @@ export final class FunctionLowerer {
     if (vt is ValTypeV128) {
       return this.b.constV128Zero(vt);
     }
-    let nullable = vt is ValTypeRefNull || vt is ValTypeAnyRef ||
-        vt is ValTypeEqRef || vt is ValTypeStructRef;
-    if (nullable) {
+    if (isNullableAnyRef(vt)) {
       return this.b.emit(IrOp.ref_null, vt, -1, -1);
     }
     return this.#bailValue('placeholder type');
@@ -7521,6 +7528,9 @@ export final class FunctionLowerer {
   hostOptionalHit(expr: Expression, recv: i32): i32 {
     return this.#lowerOptionalHit(expr, recv);
   }
+  hostSuspendOnFuture(ct: ClassType, future: i32): i32 {
+    return this.#suspendOnFuture(ct, future);
+  }
   /**
    * The value arm of a `??` over a maybe-form: packs it into the
    * interface the context asked for, when the checker recorded one on
@@ -8427,9 +8437,7 @@ export final class FunctionLowerer {
       if (contextVt == null) {
         this.#bail('null without context');
       }
-      let nullable = contextVt is ValTypeRefNull || contextVt is ValTypeAnyRef ||
-          contextVt is ValTypeEqRef || contextVt is ValTypeStructRef;
-      if (!nullable) {
+      if (!isNullableAnyRef(contextVt)) {
         this.#bail('null into non-nullable context');
       }
       return this.b.emit(IrOp.ref_null, contextVt, -1, -1);
@@ -8565,6 +8573,15 @@ export let multiSource = (cx: LoweringContext, init: Expression): Array<i32> =>
 /** Optional-chain hit arm (member machinery). */
 export let optionalHit = (cx: LoweringContext, expr: Expression, recv: i32): i32 =>
     hostOf(cx).hostOptionalHit(expr, recv);
+
+/**
+ * Suspends on `future`, typed `ct`, and resumes with its settled value:
+ * an `await` with no expression behind it, as a `for await` makes on a
+ * Pending step (control-flow).
+ */
+export let suspendOnFuture = (cx: LoweringContext, ct: ClassType,
+    future: i32): i32 =>
+    hostOf(cx).hostSuspendOnFuture(ct, future);
 
 /** Pack the value arm of a `??` over a maybe-form (control-flow). */
 export let coalesceArmAdaptation = (cx: LoweringContext,

@@ -6164,92 +6164,114 @@ let forInLowersToIndexLoop = (ct: ClassType): boolean => {
   return targs != null && targs.length > 0;
 };
 
-let getElementType = (
+/** What a for-in found to iterate: the element type, and whether the
+ * iterator it reaches is asynchronous. */
+type IterationProtocol = {elementType: Type, isAsync: boolean};
+
+/**
+ * The element type a for-in binds over `iterableType`, and which protocol
+ * it drives (docs/design/async-iteration.md, "Consuming"). The synchronous
+ * protocol — an array, `Iterator<T>`, `Iterable<T>` — is looked for
+ * first, then the asynchronous one, `AsyncIterator<T>` and
+ * `AsyncIterable<T>`; a type that is both iterates synchronously. A plain
+ * `for` over the asynchronous protocol is an error: the loop never waits,
+ * and a value that is still coming would have nowhere to go. Reports
+ * and returns an error type for anything that is not iterable.
+ */
+let getIterationProtocol = (
   ctx: CheckerContext,
   iterableType: Type,
-  iterableExpr: Expression
-): Type => {
-  match (iterableType) {
-    case ArrayType {elementType}: {
-      return elementType;
+  iterableExpr: Expression,
+  isAwait: boolean
+): IterationProtocol => {
+  if (iterableType is ErrorType) {
+    return {elementType: new ErrorType(), isAsync: false};
+  }
+  if (iterableType is ArrayType) {
+    return {elementType: iterableType.elementType, isAsync: false};
+  }
+  let sync = protocolElementType(ctx, iterableType,
+      WellKnown.IteratorInterface, WellKnown.IterableInterface);
+  if (sync != null) {
+    return {elementType: sync, isAsync: false};
+  }
+  let asyncElem = protocolElementType(ctx, iterableType,
+      WellKnown.AsyncIteratorInterface, WellKnown.AsyncIterableInterface);
+  if (asyncElem != null) {
+    if (!isAwait) {
+      ctx.error(
+        "Type '" + typeToString(iterableType) + "' is an asynchronous iterable, " +
+        "and a `for` never waits. Use `for await`, or `requireSync` to " +
+        "throw if a value is not available yet.",
+        DiagnosticCode.TypeMismatch,
+        iterableExpr.loc
+      );
+      // The element type is still known; binding it keeps the body's
+      // own errors about the body.
     }
+    return {elementType: asyncElem, isAsync: true};
+  }
+  let name = match (iterableType) {
+    case ClassType as ct: "Type '" + ct.name + "' is not iterable."
+    case InterfaceType as it: "Type '" + it.name + "' is not iterable."
+    case _: "Type is not iterable."
+  };
+  ctx.error(name, DiagnosticCode.TypeMismatch, iterableExpr.loc);
+  return {elementType: new ErrorType(), isAsync: false};
+};
+
+/**
+ * The element type `t` yields through one iteration protocol — its
+ * iterator interface `iteratorW` and iterable interface `iterableW` —
+ * or null when `t` takes no part in it. A class takes part by
+ * implementing either interface, itself or through a superclass; an
+ * interface by being or extending one.
+ */
+let protocolElementType = (
+  ctx: CheckerContext,
+  t: Type,
+  iteratorW: WellKnown,
+  iterableW: WellKnown
+): Type | null => {
+  match (t) {
     case ClassType as ct: {
-      return getElementTypeFromClass(ctx, ct, iterableExpr);
+      for (let iface in ct.implementsList) {
+        let elemType = findProtocolInterface(ctx, iface, iterableW);
+        if (elemType != null) {
+          return substituteTypeParams(ct.typeParameters, ct.typeArguments, elemType);
+        }
+      }
+      for (let iface in ct.implementsList) {
+        let elemType = findProtocolInterface(ctx, iface, iteratorW);
+        if (elemType != null) {
+          return substituteTypeParams(ct.typeParameters, ct.typeArguments, elemType);
+        }
+      }
+      let {superType} = ct;
+      if (superType != null) {
+        return protocolElementType(ctx, superType as Type, iteratorW, iterableW);
+      }
+      return null;
     }
     case InterfaceType as it: {
-      // If the interface IS Iterator, use its first type argument.
-      if (isWellKnown(WellKnown.IteratorInterface, it.name, it.sourcePath) ||
-          isWellKnown(WellKnown.IterableInterface, it.name, it.sourcePath)) {
-         let {typeArguments} = it;
-         if (typeArguments != null) {
-            let args = typeArguments;
-            if (args.length > 0) { return args[0]; }
-         }
+      if (isWellKnown(iteratorW, it.name, it.sourcePath) ||
+          isWellKnown(iterableW, it.name, it.sourcePath)) {
+        let {typeArguments} = it;
+        if (typeArguments != null) {
+          let args = typeArguments;
+          if (args.length > 0) { return args[0]; }
+        }
       }
-
-      let elemType = findIterableInterface(ctx, it);
+      let elemType = findProtocolInterface(ctx, it, iterableW);
       if (elemType != null) {
         return elemType;
       }
-      ctx.error(
-        "Type '" + it.name + "' is not iterable.",
-        DiagnosticCode.TypeMismatch,
-        iterableExpr.loc
-      );
-      return new ErrorType();
-    }
-    case ErrorType: {
-      return new ErrorType();
+      return findProtocolInterface(ctx, it, iteratorW);
     }
     case _: {
-      ctx.error(
-        "Type is not iterable.",
-        DiagnosticCode.TypeMismatch,
-        iterableExpr.loc
-      );
-      return new ErrorType();
+      return null;
     }
   }
-};
-
-let getElementTypeFromClass = (
-  ctx: CheckerContext,
-  ct: ClassType,
-  iterableExpr: Expression
-): Type => {
-  // If the class IS Iterator, use its first type argument.
-  let iteratorPrelude = ctx.tryResolveWellKnownType(WellKnown.IteratorInterface);
-  if (iteratorPrelude is InterfaceType) {
-    if (ct.id == iteratorPrelude.id) {
-       let {typeArguments} = ct;
-       if (typeArguments != null) {
-          let args = typeArguments;
-          if (args.length > 0) { return args[0]; }
-       }
-    }
-  }
-
-  // Check if the class implements Iterable<T> (walk implementsList).
-  var i = 0;
-  while (i < ct.implementsList.length) {
-    let iface = ct.implementsList[i];
-    let elemType = findIterableInterface(ctx, iface);
-    if (elemType != null) {
-      return substituteTypeParams(ct.typeParameters, ct.typeArguments, elemType);
-    }
-    i += 1;
-  }
-  // Walk superclass chain.
-  let {superType} = ct;
-  if (superType != null) {
-    return getElementType(ctx, superType as Type, iterableExpr);
-  }
-  ctx.error(
-    "Type '" + ct.name + "' is not iterable.",
-    DiagnosticCode.TypeMismatch,
-    iterableExpr.loc
-  );
-  return new ErrorType();
 };
 
 /**
@@ -6258,17 +6280,26 @@ let getElementTypeFromClass = (
  * Returns the element type T if found, null otherwise.
  */
 let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | null => {
-  let prelude = ctx.tryResolveWellKnownType(WellKnown.IterableInterface);
+  return findProtocolInterface(ctx, iface, WellKnown.IterableInterface);
+};
+
+/**
+ * The element type of `iface` seen as the well-known generic interface
+ * `w` — `iface` is `w` itself, or extends it — by identity against the
+ * prelude declaration; null when it is neither.
+ */
+let findProtocolInterface = (ctx: CheckerContext, iface: InterfaceType, w: WellKnown): Type | null => {
+  let prelude = ctx.tryResolveWellKnownType(w);
   if (prelude == null) { return null; }
   match (prelude) {
-    case InterfaceType as iterableType: {
+    case InterfaceType as protocolType: {
       // Compare by type id — instantiateInterfaceType preserves the source id.
       let sourceId = if (iface.genericSource != null) {
         (iface.genericSource as InterfaceType).id
       } else {
         iface.id
       };
-      if (sourceId == iterableType.id) {
+      if (sourceId == protocolType.id) {
         let {typeArguments} = iface;
         if (typeArguments != null) {
           let args = typeArguments;
@@ -6287,7 +6318,7 @@ let findIterableInterface = (ctx: CheckerContext, iface: InterfaceType): Type | 
               iface.typeParameters, iface.typeArguments, parent);
         }
         if (parent is InterfaceType) {
-          let result = findIterableInterface(ctx, parent);
+          let result = findProtocolInterface(ctx, parent, w);
           if (result != null) { return result; }
         }
       }
@@ -10349,18 +10380,35 @@ case _: {
       // only root the whole iterator protocol for a loop that never
       // dispatches through it. RTA mirrors the same dispatch in its
       // ForInStatement arm.
+      let protocol = getIterationProtocol(ctx, iterableType, iterable, isAwait);
+      let elementType = protocol.elementType;
       if (baseT is ClassType &&
           !forInLowersToIndexLoop(baseT)) {
-        let iterableIface = findImplementedInterfaceTransitiveInChecker(baseT, "Iterable");
+        // The synchronous protocol's interfaces, or — for a `for await`
+        // over a class that has only the asynchronous one — its.
+        let iterableName = if (protocol.isAsync) "AsyncIterable" else "Iterable";
+        let iteratorName = if (protocol.isAsync) "AsyncIterator" else "Iterator";
+        let iterableIface = findImplementedInterfaceTransitiveInChecker(baseT, iterableName);
         if (iterableIface != null) {
           checkAndRegisterInterfaceAdaptation(ctx, iterable, baseT, iterableIface);
         }
-        let iteratorIface = findImplementedInterfaceTransitiveInChecker(baseT, "Iterator");
+        let iteratorIface = findImplementedInterfaceTransitiveInChecker(baseT, iteratorName);
         if (iteratorIface != null) {
           checkAndRegisterInterfaceAdaptation(ctx, iterable, baseT, iteratorIface);
         }
       }
-      let elementType = getElementType(ctx, iterableType, iterable);
+      // A `for await` over an asynchronous iterator suspends on a Pending
+      // step's future. The statement records that future's type, for
+      // reachability to root its await machinery and for lowering to
+      // suspend on it (docs/design/async-iteration.md, "Consuming"). A
+      // synchronous iterator has no Pending step, so a `for await` over
+      // one records nothing and lowers as a `for` does.
+      if (isAwait && protocol.isAsync) {
+        let pending = pendingStepFutureType(ctx, elementType);
+        if (pending != null) {
+          ctx.setNodeType(stmt, pending);
+        }
+      }
       let loopHead = ctx.enterFlowLoop();
       recordLoopAssignments(ctx, stmt);
       ctx.enterScope();
@@ -10379,6 +10427,31 @@ case _: {
       ctx.exitFlowLoop(loopHead);
     }
   }
+};
+
+/**
+ * `Future<Option<V>>`: the future a Pending iteration step carries for
+ * elements of type `V` (docs/design/async-iteration.md, "The Step
+ * protocol"). Null when the element type is an error or the prelude's
+ * `Future` or `Option` is missing; lowering then refuses the loop loudly.
+ */
+let pendingStepFutureType = (ctx: CheckerContext, elementType: Type): Type | null => {
+  if (elementType is ErrorType) {
+    return null;
+  }
+  let option = ctx.tryResolveWellKnownType(WellKnown.OptionAlias);
+  let future = ctx.tryResolveWellKnownType(WellKnown.FutureClass);
+  if (option == null || !(option is TypeAliasType) ||
+      future == null || !(future is ClassType)) {
+    return null;
+  }
+  let optionArgs = new Array<Type>();
+  optionArgs.push(elementType);
+  let optionOfElement = substituteTypeParams(
+      option.typeParameters, optionArgs, option.target);
+  let futureArgs = new Array<Type>();
+  futureArgs.push(optionOfElement);
+  return instantiateClassType(future, futureArgs);
 };
 
 let checkVariableDeclaration = (

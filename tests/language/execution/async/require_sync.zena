@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 41
+// `requireSyncIterator` lets a plain `for` drive an asynchronous
+// iterator: Ready and Done steps pass through, and a Pending step throws
+// `AsyncInSyncIteration` — the value is not available synchronously, and
+// a `for` never waits (docs/design/async-iteration.md, "Consuming"). The
+// body ran once, for the Ready step before it. The pending future is
+// never read, so it need not settle.
+
+import { AsyncInSyncIteration } from 'zena:core';
+import { Completer, AsyncStep, AsyncIterator, requireSyncIterator } from 'zena:async';
+
+class GoesAsync implements AsyncIterator<i32> {
+  var #calls = 0;
+
+  next(): AsyncStep<i32> {
+    this.#calls += 1;
+    if (this.#calls == 1) {
+      return (1, 1, _);
+    }
+    let c = new Completer<Option<i32>>();
+    return (2, _, c.future);
+  }
+}
+
+export let main = (): i32 => {
+  let it: AsyncIterator<i32> = new GoesAsync();
+  var sum = 0;
+  try {
+    for (let x in requireSyncIterator(it)) {
+      sum += x;
+    }
+  } catch (e) {
+    if (e is AsyncInSyncIteration) {
+      return sum + 40;
+    }
+    return -1;
+  }
+  return -2;
+};
