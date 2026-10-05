@@ -76,11 +76,17 @@ export final class Performance {
    * Adds `ms` to `name` without opening a measure: for a phase timed
    * with `nowMs` around a loop, where a Measure per iteration would
    * cost more than the phase being measured.
+   *
+   * `times` is how much to raise the count by, for a counter kept in a
+   * local across a loop and reported once. Counting in the loop and
+   * reporting after it keeps the hot path free of both the clock and
+   * the map lookup, which matters where the thing being counted is the
+   * reason the loop is hot.
    */
-  add(name: String, ms: f64): void {
+  add(name: String, ms: f64, times: i32 = 1): void {
     let phase = this.#phase(name);
     phase.total = phase.total + ms;
-    phase.count = phase.count + 1;
+    phase.count = phase.count + times;
   }
 
   #phase(name: String): Phase {
