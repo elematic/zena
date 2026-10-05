@@ -1,7 +1,7 @@
 import {suite, test} from 'node:test';
 import assert from 'node:assert';
 import {compile} from './compile-zena.js';
-import {instantiate, createStringReader} from '../index.js';
+import {instantiate, createStringReader, ZenaException} from '../index.js';
 
 async function compileAndInstantiate(source: string) {
   const wasm = compile(source);
@@ -65,5 +65,49 @@ suite('JS Runtime Lazy Stack Trace', () => {
     assert.throws(() => {
       testFormatInvalid();
     }, /formatStackTrace: expected Error instance/);
+  });
+
+  test('uncaught Zena exception is translated to ZenaException with wasm stack', async () => {
+    const source = `
+      import { Error } from 'zena:core';
+
+      function innerHelper(): void {
+        throw new Error("something went wrong");
+      }
+
+      export let failFunction = (): void => {
+        innerHelper();
+      };
+    `;
+
+    const exports = await compileAndInstantiate(source);
+    const failFunction = exports.failFunction as () => void;
+
+    assert.throws(
+      () => {
+        failFunction();
+      },
+      (err: any) => {
+        assert.ok(err instanceof Error, 'Expected err to be instance of Error');
+        assert.ok(
+          err instanceof ZenaException,
+          'Expected err to be instance of ZenaException',
+        );
+        assert.strictEqual(err.name, 'ZenaException');
+        assert.ok(
+          typeof err.stack === 'string',
+          'Expected err.stack to be string',
+        );
+        assert.ok(
+          err.stack.includes('ZenaException'),
+          'Stack should contain ZenaException header',
+        );
+        assert.ok(
+          err.stack.includes('wasm:'),
+          `Stack should contain wasm stack frames, got:\n${err.stack}`,
+        );
+        return true;
+      },
+    );
   });
 });
