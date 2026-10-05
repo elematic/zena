@@ -10,6 +10,7 @@
  */
 
 import { getEnv } from 'zena:cli';
+import { StringBuilder } from 'zena:core';
 import { readFile, writeFileBytes, writeFile, exists } from 'zena:fs';
 import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
@@ -23,7 +24,7 @@ import { BinaryGenerator } from './codegen/binary-generator.zena';
 import { WatGenerator } from './codegen/wat-generator.zena';
 import { Program, CompilationUnit } from './program.zena';
 import { Module } from './ast.zena';
-import { performance } from './time.zena';
+import { nowMs, performance } from './time.zena';
 import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from './targets.zena';
 import { compileComponentRuntimeModule } from './codegen/component-runtime.zena';
 import { makeImportEncoder } from './codegen/wit-imports.zena';
@@ -152,6 +153,106 @@ let loadPackages = (host: CompilerHost): Map<String, PackageConfig> => {
 
 let reportDiagnosticLine = (kind: String, file: String, line: i32, column: i32, message: String): void => {
   console.error(file + ":" + i32ToString(line) + ":" + i32ToString(column) + " - " + kind + ": " + message);
+};
+
+/** `text` followed by spaces, up to `width` bytes. */
+let padRight = (text: String, width: i32): String => {
+  let b = new StringBuilder();
+  b.append(text);
+  var i = text.length;
+  while (i < width) {
+    b.append(" ");
+    i += 1;
+  }
+  return b.toString();
+};
+
+/** Spaces followed by `text`, up to `width` bytes. */
+let padLeft = (text: String, width: i32): String => {
+  let b = new StringBuilder();
+  var i = text.length;
+  while (i < width) {
+    b.append(" ");
+    i += 1;
+  }
+  b.append(text);
+  return b.toString();
+};
+
+/** Milliseconds to one decimal place. */
+let ms1 = (value: f64): String => {
+  return f64ToString(((value * 10.0) as i64 as f64) / 10.0);
+};
+
+/**
+ * The longest phase name that is a proper prefix of `name` followed by
+ * `-`, or null. `codegen-discovery-init` nests under
+ * `codegen-discovery` rather than under `codegen`, so the longest
+ * match wins.
+ */
+let parentPhaseOf = (name: String, names: Array<String>): String | null => {
+  var best: String | null = null;
+  for (let candidate in names) {
+    if (candidate.length >= name.length) {
+      continue;
+    }
+    if (!name.startsWith(`${candidate}-`)) {
+      continue;
+    }
+    let incumbent = best;
+    if (incumbent == null || candidate.length > incumbent.length) {
+      best = candidate;
+    }
+  }
+  return best;
+};
+
+/**
+ * Prints every phase `performance` measured, in the order the compiler
+ * first entered each, nested under the phase whose name prefixes it.
+ * The total is the sum of the top-level phases, which are the ones that
+ * do not overlap.
+ *
+ * The report reads the phase list rather than naming phases itself, so
+ * a `performance.start` added anywhere in the compiler appears here
+ * without this function changing.
+ */
+let printTimingReport = (): void => {
+  let phases = performance.phases();
+  if (phases.length == 0) {
+    return;
+  }
+  let names = new Array<String>(phases.length);
+  for (let phase in phases) {
+    names.push(phase.name);
+  }
+
+  console.log("");
+  console.log("=== Compiler Timing Report ===");
+  var total = 0.0;
+  for (let phase in phases) {
+    let parent = parentPhaseOf(phase.name, names);
+    var depth = 0;
+    var walk = parent;
+    while (walk != null) {
+      depth += 1;
+      walk = parentPhaseOf(walk as String, names);
+    }
+    // A top-level phase is one no other phase contains, so these are
+    // the ones that sum to the whole compile.
+    let label = if (parent == null) {
+      total = total + phase.total;
+      phase.name
+    } else {
+      phase.name.sliceBytes((parent as String).length + 1, phase.name.length)
+    };
+    let indent = padRight("", depth * 2);
+    let calls = if (phase.count == 1) { "" } else { ` (${i32ToString(phase.count)} calls)` };
+    console.log(`${padRight(`${indent}${label}:`, 28)}${padLeft(ms1(phase.total), 9)} ms${calls}`);
+  }
+  console.log("------------------------------");
+  console.log(`${padRight("Total:", 28)}${padLeft(ms1(total), 9)} ms`);
+  console.log("==============================");
 };
 
 /**
@@ -359,8 +460,16 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       // The component's second core module, owning linear memory and
       // the allocator. Compiled up front — whether the program needs it
       // is only known after its own compile, and this one is small.
+      //
+      // The module emits few bytes and still costs a whole compile, with
+      // its own load, parse, scope and check of the standard library it
+      // draws on, which land in the same phase totals as the program's
+      // own. Timed separately so the report says how much of a component
+      // build is this module.
+      let tRuntimeModule = nowMs();
       generator.runtimeMemoryModule =
           compileComponentRuntimeModule(host, stdlibRoot, packages);
+      performance.add("codegen-runtime-module", nowMs() - tRuntimeModule);
       // A declared world compiles against its own document, with the
       // WIT-backed packages spliced in so it can import their
       // interfaces by name; without one, each interface's WIT is
@@ -389,37 +498,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     }
 
     if (options.time) {
-      let loadTime = compiler.loadTime;
-      let parseTime = compiler.parseTime;
-      let scopeTime = performance.getDuration("scope");
-      let checkTime = performance.getDuration("check");
-      let codegenTime = performance.getDuration("codegen");
-      let discoveryTime = performance.getDuration("codegen-discovery");
-      let discoveryInitTime = performance.getDuration("codegen-discovery-init");
-      let discoveryQueuesTime = performance.getDuration("codegen-discovery-queues");
-      let discoveryLayoutTime = performance.getDuration("codegen-discovery-layout");
-      let layoutTime = performance.getDuration("codegen-layout");
-      let emitCodeTime = performance.getDuration("codegen-emit-code");
-      let emitOtherTime = performance.getDuration("codegen-emit-other");
-      let totalTime = loadTime + parseTime + scopeTime + checkTime + codegenTime;
-
-      console.log("");
-      console.log("=== Compiler Timing Report ===");
-      console.log("File Load:  " + f64ToString(loadTime) + " ms");
-      console.log("Pure Parse: " + f64ToString(parseTime) + " ms");
-      console.log("Scope:      " + f64ToString(scopeTime) + " ms");
-      console.log("Check:      " + f64ToString(checkTime) + " ms");
-      console.log("Codegen:    " + f64ToString(codegenTime) + " ms");
-      console.log("  Discovery:  " + f64ToString(discoveryTime) + " ms");
-      console.log("    Discovery Init:   " + f64ToString(discoveryInitTime) + " ms");
-      console.log("    Discovery Queues: " + f64ToString(discoveryQueuesTime) + " ms");
-      console.log("    Discovery Layout: " + f64ToString(discoveryLayoutTime) + " ms");
-      console.log("  Layout:     " + f64ToString(layoutTime) + " ms");
-      console.log("  Emit Code:  " + f64ToString(emitCodeTime) + " ms");
-      console.log("  Emit Other: " + f64ToString(emitOtherTime) + " ms");
-      console.log("------------------------------");
-      console.log("Total:      " + f64ToString(totalTime) + " ms");
-      console.log("==============================");
+      printTimingReport();
     }
   } catch (e) {
     // A syntax error is a fault in the input, and the parser has already
