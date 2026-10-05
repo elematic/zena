@@ -1,21 +1,8 @@
 import * as vscode from 'vscode';
+import {formatError} from '@zena-lang/runtime';
 import {ZenaCompilerService} from './compiler-service.js';
 
 export const outputChannel = vscode.window.createOutputChannel('Zena');
-
-/** Format an unknown caught value for logging. */
-const formatError = (e: unknown): string => {
-  if (e instanceof Error) return e.stack ?? e.message;
-  if (e != null && typeof e === 'object') {
-    const name = e.constructor?.name ?? 'unknown';
-    // WebAssembly.Exception has a .stack in V8
-    const stack = 'stack' in e ? String((e as {stack: unknown}).stack) : '';
-    const message =
-      'message' in e ? String((e as {message: unknown}).message) : '';
-    return stack || message || `[${name}]`;
-  }
-  return String(e);
-};
 
 /**
  * Holds the shared state of the Zena extension and manages its lifecycle.
@@ -73,7 +60,7 @@ export class ZenaExtension {
     try {
       await this.#compiler.initialize(context.extensionPath);
     } catch (e) {
-      outputChannel.appendLine(`Failed to load compiler: ${e}`);
+      outputChannel.appendLine(`Failed to load compiler:\n${formatError(e)}`);
       vscode.window.showErrorMessage(
         'Zena: Failed to load compiler. See Output > Zena for details.',
       );
