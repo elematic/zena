@@ -362,6 +362,15 @@ export sealed class Statement extends Node {
     members: GrowableArray<EnumMember>,
     exported: boolean,
     loc?: SourceLocation)
+  /**
+   * A `mixin` declaration, or a `decorator` declaration, which is a mixin
+   * applied to one field at a time (docs/design/decorators.md).
+   *
+   * `decoratorSubject` is null for a mixin. For a decorator it is the
+   * placeholder field written in the header — `decorator signal<T>(var
+   * value: T)` — whose name the body's one public member must carry and
+   * whose mutability and type the decorated field must match.
+   */
   case MixinDeclaration(
     name: Identifier,
     typeParameters: GrowableArray<TypeParameter> | null,
@@ -369,6 +378,7 @@ export sealed class Statement extends Node {
     mixins: GrowableArray<TypeAnnotation> | null,
     body: GrowableArray<Node>,
     exported: boolean,
+    decoratorSubject: FieldDefinition | null,
     loc?: SourceLocation)
   // `isOpaque` implies `isDistinct`: an opaque alias is a distinct type that
   // additionally restricts casts *to* it to the file that declares it. Every
@@ -606,6 +616,11 @@ export final class FieldDefinition(
   mutability: String | null,
   decorators: GrowableArray<Decorator>,
   setterName: Node | null,
+  /**
+   * `shared`: in a decorator body, one copy per host class rather than
+   * one per decorated field (docs/design/decorators.md).
+   */
+  isShared: boolean,
   loc?: SourceLocation) extends Node
 
 export final class MethodDefinition(
@@ -635,6 +650,8 @@ export final class MethodDefinition(
   isAsync: boolean,
   decorators: GrowableArray<Decorator>,
   isConstructor: boolean,
+  /** `shared`: see FieldDefinition.isShared. */
+  isShared: boolean,
   loc?: SourceLocation) extends Node
 
 // ============================================================================
@@ -720,10 +737,41 @@ export final class PropertySignature(
 // Decorators
 // ============================================================================
 
+/**
+ * A decorator application: `@name`, `@a.b`, or `@name(args)`.
+ *
+ * `path` is the dotted name as written, one identifier per segment, and
+ * `name` is the same path joined with dots — what the builtin checks
+ * (`@intrinsic`, `@external`) compare against. `args` are the call's
+ * arguments when the decorator is written as a call, else empty.
+ */
 export final class Decorator(
   name: String,
-  args: GrowableArray<StringLiteral>,
+  path: GrowableArray<Identifier>,
+  args: GrowableArray<Expression>,
   loc?: SourceLocation) extends Node
+
+/**
+ * The decorator names the compiler itself defines. They are not names in
+ * any scope, so the scope builder does not try to resolve them, and a
+ * `decorator` declaration cannot take one of them over.
+ */
+export let isBuiltinDecoratorName = (name: String): boolean =>
+    name == 'intrinsic' || name == 'external' || name == 'pure';
+
+/**
+ * The string value of a decorator's `i`th argument, or null when there is
+ * no such argument or it is not a string literal.
+ */
+export let decoratorStringArg = (dec: Decorator, i: i32): String | null => {
+  if (i >= dec.args.length) {
+    return null;
+  }
+  return match (dec.args[i]) {
+    case StringLiteral {value}: value
+    case _: null
+  };
+};
 
 // ============================================================================
 // Symbol Property Names

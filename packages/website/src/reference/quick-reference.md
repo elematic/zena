@@ -1848,6 +1848,56 @@ export class HashMap<K, V> with IterableUtils<MapEntry<K, V>> implements Map<K, 
 }
 ```
 
+## Decorators
+
+A field decorator replaces a class field with an accessor and adds the
+storage and state the accessor needs to the class itself. Declare one with
+`decorator`, naming a placeholder field (the subject); apply it with
+`@name` on a field. The decorated field's type binds the type parameter.
+
+```zena
+export decorator signal<T>(var value: T) {
+  var #value: T;            // storage: takes the decorated field's value
+  var #version: i32 = 0;    // extra per-field state, no separate object
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.#version += 1;
+    }
+  }
+}
+
+class Counter {
+  @signal var count: i32 = 0;   // c.count reads call the getter,
+  @signal var label: String = ''; // writes call the setter
+}
+```
+
+Rules: the body's one public member is the accessor named like the
+subject (setter exactly when the subject is `var`); `#<subject>` is the
+storage; everything else is private. A `var` subject applies to `var`
+fields, an immutable one to immutable fields. Decorator arguments and
+dotted names parse but are not applied yet.
+
+Private members are one copy per decorated field; `shared` ones are one
+copy per class. `on` constrains the host so the body can call its API:
+
+```zena
+decorator property<T>(var value: T) on ReactiveElement {
+  var #value: T;
+  shared var #changed: i32 = 0;   // one per class, all properties
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.#changed += 1;
+      this.requestUpdate();        // from ReactiveElement
+    }
+  }
+}
+```
+
 ## Arrays & Collections
 
 Zena provides universal interfaces for indexed collections (`Array<T>` and `MutableArray<T>`), along with concrete implementations for fixed-size and resizable arrays, plus a hash map. All collections are generic and type-safe.

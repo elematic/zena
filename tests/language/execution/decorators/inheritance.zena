@@ -1,0 +1,36 @@
+// @mode: run
+// @invoke: main
+// @result: 30
+
+// A subclass reads and writes a decorated field of its base class through
+// the inherited accessor, and the storage lives in the object's struct.
+decorator tracked<T>(var value: T) {
+  var #value: T;
+  var #version: i32 = 0;
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.#version += 1;
+    }
+  }
+}
+
+class Base {
+  @tracked var n: i32 = 1;
+}
+
+class Derived extends Base {
+  var extra: i32 = 9;
+  bump(): void {
+    this.n = this.n + this.extra;
+  }
+}
+
+export let main = (): i32 => {
+  let d = new Derived();
+  d.bump();
+  d.bump();
+  let asBase: Base = d;
+  return asBase.n + 11;
+};

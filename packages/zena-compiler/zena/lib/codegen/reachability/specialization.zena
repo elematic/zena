@@ -4,7 +4,7 @@ import {
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
 import {
-  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
+  Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, decoratorStringArg, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
 } from '../../ast.zena';
 import { WasmStruct, WasmField, WasmGlobal, WasmFunction, ClassCodegenInfo } from '../wasm-module.zena';
 import {
@@ -552,7 +552,9 @@ export final class Specializer implements SpecializerInterface {
       }
     }
 
+    var vtMemberIdx = -1;
     for (let ms in allMembers) {
+      vtMemberIdx += 1;
       if (ms is MethodDefinition) {
         if (ms.isStatic) { continue; }
         if (ms.isConstructor) { continue; }
@@ -588,7 +590,8 @@ export final class Specializer implements SpecializerInterface {
         }
       } else if (ms is AccessorDeclaration) {
         if (ms.isStatic) { continue; }
-        let accName = memberKeyOf(sourceModel, ms.name as Node);
+        let accName = this.#registeredAccessorName(
+            memberKeyOf(sourceModel, ms.name as Node), allDeclaringTypes[vtMemberIdx]);
         // Private-named accessors are lexical, never virtual: no
         // vtable slots (like private methods).
         if (accName != "" &&
@@ -617,6 +620,7 @@ export final class Specializer implements SpecializerInterface {
       } else if (ms is FieldDefinition) {
         if (ms.isStatic) { continue; }
         let fieldName = memberKeyOf(sourceModel, ms.name as Node);
+        if (this.#isDecoratedField(ct, fieldName)) { continue; }
         if (ms.setterName != null && fieldName != "") {
           let getterName = "get#" + fieldName;
           var found = false;
@@ -673,18 +677,20 @@ export final class Specializer implements SpecializerInterface {
         // different function; bodies from mixins carry the scope for
         // their own private accesses.
         let declNode = allDecls[msIdx];
+        let memberScope = this.#memberScopeOf(ms, msScope, allDeclaringTypes[msIdx]);
         var regName = methName;
         if (ms.isConstructor) {
           regName = if (methName == "<constructor>") "<constructor>" else "<constructor>." + methName;
-        } else if (msScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
-          regName = msScope + "::" + methName;
+        } else if (memberScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
+          regName = memberScope + "::" + methName;
         }
         let regFn = this.registerClassMethod(ct, declNode, regName, ms as Node, false, false, null, allModels[msIdx]);
         regFn.declaringType = allDeclaringTypes[msIdx];
-        applyMixinPrivateScope(regFn, ms as Node, msScope);
+        applyMixinPrivateScope(regFn, ms as Node, memberScope);
       } else if (ms is AccessorDeclaration) {
         let declNode = allDecls[msIdx];
-        let accName = memberKeyOf(sourceModel, ms.name as Node);
+        let accName = this.#registeredAccessorName(
+            memberKeyOf(sourceModel, ms.name as Node), allDeclaringTypes[msIdx]);
         let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
         if (ms.getter != null) {
           var getterRegName = "get#" + accName;
@@ -708,7 +714,7 @@ export final class Specializer implements SpecializerInterface {
       } else if (ms is FieldDefinition) {
         let declNode = allDecls[msIdx];
         let fieldName = memberKeyOf(sourceModel, ms.name as Node);
-        if (fieldName != "") {
+        if (fieldName != "" && !this.#isDecoratedField(ct, fieldName)) {
           if (!fieldName.startsWith("#")) {
             this.registerClassMethod(ct, declNode, "get#" + fieldName, null, true, false, fieldName, allModels[msIdx]);
             if (ms.mutability != null && ms.mutability == "var") {
@@ -1388,7 +1394,7 @@ export final class Specializer implements SpecializerInterface {
     if (decs != null) {
       for (let dec in decs) {
         if (dec.name == "intrinsic" && dec.args.length == 1) {
-          wasmFunc.intrinsic = dec.args[0].value;
+          wasmFunc.intrinsic = decoratorStringArg(dec, 0);
         }
       }
     }
@@ -1571,6 +1577,43 @@ export final class Specializer implements SpecializerInterface {
     }
   }
 
+  /**
+   * The name a written accessor registers under on its host. A decorator's
+   * subject accessor is written against the placeholder name and registered
+   * under the decorated field's name (ClassType.decoratorSubjectName on the
+   * application's intermediate class); every other accessor keeps its own.
+   */
+  #registeredAccessorName(accName: String, declaringType: ClassType | null): String {
+    if (declaringType != null && declaringType.decoratorSubjectName != null &&
+        (declaringType.decoratorSubjectName as String) == accName) {
+      return declaringType.decoratorFieldName as String;
+    }
+    return accName;
+  }
+
+  /**
+   * The scope key a member body's private names register and resolve
+   * under: the declaring intermediate's key, except a decorator's
+   * `shared` method, which lives under the declaration's shared key so
+   * every application in the class calls the one copy.
+   */
+  #memberScopeOf(ms: MethodDefinition, msScope: String, declaringType: ClassType | null): String {
+    if (ms.isShared && declaringType != null && declaringType.decoratorSharedScopeKey != null) {
+      return declaringType.decoratorSharedScopeKey as String;
+    }
+    return msScope;
+  }
+
+  /**
+   * Whether `fieldName` is a decorated field of `ct`'s own body. Such a
+   * field has no storage and no synthesized accessors of its own: the
+   * decorator's accessor is registered under its name instead.
+   */
+  #isDecoratedField(ct: ClassType, fieldName: String): boolean {
+    let decorated = ct.decoratedFields;
+    return decorated != null && decorated.has(fieldName);
+  }
+
   populateClassStructAndMethods(ct: ClassType, cd: Node | null, sourceModel: SemanticModel): void {
     let cKey = getClassKey(ct);
     if (!this.pass.wasm.classInfos.has(cKey)) {
@@ -1741,19 +1784,21 @@ export final class Specializer implements SpecializerInterface {
             // implementation replaces it.
             if (ms.isAbstract) { continue; }
             let declNode = allDecls[msIdx];
+            let memberScope = this.#memberScopeOf(ms, msScope, allDeclaringTypes[msIdx]);
             var regName = methName;
             if (ms.isConstructor) {
               regName = if (methName == "<constructor>") "<constructor>" else "<constructor>." + methName;
-            } else if (msScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
-              regName = msScope + "::" + methName;
+            } else if (memberScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
+              regName = memberScope + "::" + methName;
             }
             let regFn = this.registerClassMethod(ct, declNode, regName, ms as Node, false, false, null, allModels[msIdx]);
             regFn.declaringType = allDeclaringTypes[msIdx];
-            applyMixinPrivateScope(regFn, ms as Node, msScope);
+            applyMixinPrivateScope(regFn, ms as Node, memberScope);
           }
         } else if (ms is AccessorDeclaration) {
           let declNode = allDecls[msIdx];
-          let accName = memberKeyOf(sourceModel, ms.name as Node);
+          let accName = this.#registeredAccessorName(
+              memberKeyOf(sourceModel, ms.name as Node), allDeclaringTypes[msIdx]);
           let isPrivateAcc = accName.length > 0 && accName.sliceBytes(0, 1) == "#";
           if (ms.getter != null) {
             var getterRegName = "get#" + accName;
@@ -1777,7 +1822,7 @@ export final class Specializer implements SpecializerInterface {
         } else if (ms is FieldDefinition) {
           let declNode = allDecls[msIdx];
           let fieldName = memberKeyOf(sourceModel, ms.name as Node);
-          if (fieldName != "") {
+          if (fieldName != "" && !this.#isDecoratedField(ct, fieldName)) {
             if (!fieldName.startsWith("#")) {
               let getterName = "get#" + fieldName;
               if (!vtableSet.has(getterName) && !ct.isExtension) {

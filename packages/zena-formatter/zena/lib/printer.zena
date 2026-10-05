@@ -609,6 +609,8 @@ let printFieldDefinition = (field: FieldDefinition): Doc => {
       text('static symbol '), printNodeName(field.name), text(';')));
   }
   let parts = new Array<Doc>();
+  printMemberDecorators(field.decorators, parts);
+  if (field.isShared) { parts.push(text('shared ')); }
   if (field.isStatic) { parts.push(text('static ')); }
   if (field.isAbstract) { parts.push(text('abstract ')); }
   if (field.isFinal) { parts.push(text('final ')); }
@@ -631,6 +633,8 @@ let printFieldDefinition = (field: FieldDefinition): Doc => {
 
 let printMethodDefinition = (method: MethodDefinition): Doc => {
   let parts = new Array<Doc>();
+  printMemberDecorators(method.decorators, parts);
+  if (method.isShared) { parts.push(text('shared ')); }
   if (method.isStatic) { parts.push(text('static ')); }
   if (method.isAbstract) { parts.push(text('abstract ')); }
   if (method.isFinal) { parts.push(text('final ')); }
@@ -737,26 +741,32 @@ let printInitializerEntry = (entry: Node): Doc => match (entry) {
 
 let printAccessorDeclaration = (acc: AccessorDeclaration): Doc => {
   let parts = new Array<Doc>();
+  printMemberDecorators(acc.decorators, parts);
   if (acc.isStatic) { parts.push(text('static ')); }
   if (acc.isFinal) { parts.push(text('final ')); }
   parts.push(printNodeName(acc.name));
   parts.push(text(': '));
   parts.push(printTypeAnnotation(acc.typeAnnotation));
+  // The accessor block: `name: T { get {...} set(v) {...} }`. Without
+  // the enclosing braces the output does not parse back.
+  parts.push(text(' {'));
+  let accessors = new Array<Doc>();
   if (acc.getter != null) {
-    parts.push(text(' get '));
-    parts.push(printBlockStatement(acc.getter as BlockStatement));
+    accessors.push(concat(docs2(
+        text('get '), printBlockStatement(acc.getter as BlockStatement))));
   }
   if (acc.setter != null) {
     match (acc.setter as Node) {
       case SetterInfo {param, body}: {
-        parts.push(text(' set('));
-        parts.push(text(param.name));
-        parts.push(text(') '));
-        parts.push(printBlockStatement(body));
+        accessors.push(concat(docs2(
+            text('set(' + param.name + ') '), printBlockStatement(body))));
       }
       case _: {}
     }
   }
+  parts.push(indent(concat(docs2(hardline, join(hardline, accessors)))));
+  parts.push(hardline);
+  parts.push(text('}'));
   return concat(parts);
 };
 
@@ -885,10 +895,22 @@ let printEnumDeclaration = (decl: EnumDeclaration): Doc => {
 let printMixinDeclaration = (decl: MixinDeclaration): Doc => {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
-  parts.push(text('mixin '));
+  let subject = decl.decoratorSubject;
+  parts.push(text(if (subject != null) 'decorator ' else 'mixin '));
   parts.push(text(decl.name.name));
   if (decl.typeParameters != null) {
     parts.push(printTypeParams(decl.typeParameters as GrowableArray<TypeParameter>));
+  }
+  if (subject != null) {
+    parts.push(text('('));
+    if (subject.mutability != null) {
+      parts.push(text(subject.mutability as String));
+      parts.push(text(' '));
+    }
+    parts.push(printNodeName(subject.name));
+    parts.push(text(': '));
+    parts.push(printTypeAnnotation(subject.typeAnnotation as TypeAnnotation));
+    parts.push(text(')'));
   }
   if (decl.on != null) {
     parts.push(text(' on '));
@@ -999,19 +1021,35 @@ let printExportFromDeclaration = (decl: ExportFromDeclaration): Doc => {
 
 let printDecorators = (decorators: GrowableArray<Decorator>, parts: GrowableArray<Doc>): void => {
   for (let dec in decorators) {
-    parts.push(text('@'));
-    parts.push(text(dec.name));
-    if (dec.args.length > 0) {
-      parts.push(text('('));
-      var first = true;
-      for (let arg in dec.args) {
-        if (!first) { parts.push(text(', ')); }
-        first = false;
-        parts.push(text("'" + arg.value + "'"));
-      }
-      parts.push(text(')'));
-    }
+    printDecorator(dec, parts);
     parts.push(hardline);
+  }
+};
+
+/** `@name` or `@a.b(args)`, with no trailing break. */
+let printDecorator = (dec: Decorator, parts: GrowableArray<Doc>): void => {
+  parts.push(text('@'));
+  parts.push(text(dec.name));
+  if (dec.args.length > 0) {
+    parts.push(text('('));
+    var first = true;
+    for (let arg in dec.args) {
+      if (!first) { parts.push(text(', ')); }
+      first = false;
+      parts.push(printExpression(arg));
+    }
+    parts.push(text(')'));
+  }
+};
+
+/**
+ * A class member's decorators, each followed by a space so they lead the
+ * member on its own line: `@signal var count: i32 = 0;`.
+ */
+let printMemberDecorators = (decorators: GrowableArray<Decorator>, parts: GrowableArray<Doc>): void => {
+  for (let dec in decorators) {
+    printDecorator(dec, parts);
+    parts.push(text(' '));
   }
 };
 

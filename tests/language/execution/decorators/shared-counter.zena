@@ -1,0 +1,32 @@
+// @mode: run
+// @invoke: main
+// @result: 103
+
+// A shared counter folded into every decorated field's getter: three
+// writes across two fields, so every read sees 3 total writes.
+decorator counted(var value: i32) {
+  var #value: i32;
+  shared var #writes: i32 = 0;
+  value: i32 {
+    get { return this.#value + this.#writes * 100; }
+    set(v) {
+      this.#value = v;
+      this.#bump();
+    }
+  }
+  shared #bump(): void { this.#writes += 1; }
+}
+
+class Pair {
+  @counted var a: i32 = 0;
+  @counted var b: i32 = 0;
+}
+
+export let main = (): i32 => {
+  let p = new Pair();
+  p.a = 1;
+  p.b = 2;
+  p.a = 3;
+  // a reads 3 + 300; b reads 2 + 300. Return a - b + 100.
+  return p.a - p.b + 100 + 2;
+};

@@ -253,9 +253,10 @@ export let walkChildren = (node: Node, enter: (n: Node) => boolean, leave: (n: N
         walk(name, enter, leave);
         for (let m in members) { walk(m, enter, leave); }
       }
-      case MixinDeclaration {name, typeParameters, on, mixins, body}: {
+      case MixinDeclaration {name, typeParameters, on, mixins, body, decoratorSubject}: {
         walk(name, enter, leave);
         if (typeParameters != null) { for (let t in typeParameters) { walk(t, enter, leave); } }
+        if (decoratorSubject != null) { walk(decoratorSubject, enter, leave); }
         if (on != null) { walk(on, enter, leave); }
         if (mixins != null) { for (let m in mixins) { walk(m, enter, leave); } }
         for (let member in body) { walk(member, enter, leave); }
@@ -461,7 +462,11 @@ export let walkChildren = (node: Node, enter: (n: Node) => boolean, leave: (n: N
         walk(imported, enter, leave);
         walk(local, enter, leave);
       }
-      case Decorator {}: {}  // leaf
+      // A leaf: a decorator's path and arguments are compile-time syntax,
+      // and are never runtime values. Walking the arguments made
+      // `@external("env", "print")` register "env" and "print" as string
+      // constants of every program that declared an import.
+      case Decorator {}: {}
       case SymbolPropertyName {symbolRef}: {
         walk(symbolRef, enter, leave);
       }

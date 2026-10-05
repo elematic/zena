@@ -111,6 +111,7 @@ import {
   ExportAllDeclaration,
   ExportFromDeclaration,
   Decorator,
+  decoratorStringArg,
   DeclareFunction,
   SymbolDeclaration,
   SymbolPropertyName
@@ -645,7 +646,12 @@ export final class Parser {
     
     // Mixin declarations
     if (this.#match(TokenType.Mixin)) {
-      return this.#parseMixinDeclaration(exported, startToken);
+      return this.#parseMixinDeclaration(exported, startToken, false);
+    }
+
+    // Decorator declarations: a mixin applied one field at a time.
+    if (this.#match(TokenType.Decorator)) {
+      return this.#parseMixinDeclaration(exported, startToken, true);
     }
     
     // Enum declarations
@@ -3071,6 +3077,7 @@ export final class Parser {
       || t == TokenType.Abstract
       || t == TokenType.Declare
       || t == TokenType.Mixin
+      || t == TokenType.Decorator
       || t == TokenType.Operator
       || t == TokenType.Static
       || t == TokenType.Extension
@@ -3326,7 +3333,20 @@ export final class Parser {
     var isAbstract = false;
     var isDeclare = false;
     var isStatic = false;
-    
+
+    // `shared` is contextual: a modifier when a member follows it, and a
+    // member name when `:`, `(`, `=`, `;` or `<` does.
+    var isShared = false;
+    if (this.#check(TokenType.Identifier) && this.#peek().value == "shared") {
+      let next = this.#peek2().kind;
+      if (next != TokenType.Colon && next != TokenType.LParen &&
+          next != TokenType.Equals && next != TokenType.Semi &&
+          next != TokenType.Less) {
+        isShared = true;
+        this.#advance();
+      }
+    }
+
     if (this.#check(TokenType.Final) && this.#peek2().kind != TokenType.Colon) {
       isFinal = true;
       this.#advance();
@@ -3446,7 +3466,7 @@ export final class Parser {
       } else {
         throw this.#error("Expected '(' or constructor name after 'new'");
       };
-      return this.#parseMethodBody(ctorName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, true);
+      return this.#parseMethodBody(ctorName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, true, false, isShared);
     }
     
     // Operator method: operator ==(other), operator [](index), operator +(other)
@@ -3462,7 +3482,7 @@ export final class Parser {
           opName = "[]=";
         }
         let identifier = new Identifier(opName, this.#makeLocation(opStart));
-        return this.#parseMethodBody(identifier, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false);
+        return this.#parseMethodBody(identifier, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);
       }
       
       // Other operators (==, +, -, etc.)
@@ -3473,7 +3493,7 @@ export final class Parser {
         opName = "==";
       }
       let identifier = new Identifier(opName, this.#makeLocation(opStart));
-      return this.#parseMethodBody(identifier, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false);
+      return this.#parseMethodBody(identifier, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);
     }
     
     // Private field/method: #name
@@ -3484,13 +3504,13 @@ export final class Parser {
       
       // Private method: #name(params) { ... }
       if (this.#check(TokenType.LParen)) {
-        return this.#parseMethodBody(hashName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false);
+        return this.#parseMethodBody(hashName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);
       }
       // Generic private method: #name<T>(params) { ... }
       if (this.#check(TokenType.Less) && this.#isGenericMethodStart()) {
         this.#advance(); // consume '<'
         let typeParams = this.#parseTypeParameterList();
-        return this.#parseMethodBody(hashName, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false);
+        return this.#parseMethodBody(hashName, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);
       }
       if (isGen || isAsyncM) {
         throw this.#error("Expected '(' after generator/async method name");
@@ -3514,7 +3534,7 @@ export final class Parser {
         throw this.#error("Private field must have a type annotation or initializer");
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isStatic, false, mutability, decorators, null, this.#makeLocation(startToken));
+      return new FieldDefinition(hashName, typeAnnotation, value, isFinal, false, isStatic, false, mutability, decorators, null, isShared, this.#makeLocation(startToken));
     }
     
     // Static symbol declaration: static symbol name;
@@ -3523,7 +3543,7 @@ export final class Parser {
       this.#advance(); // consume 'symbol'
       let symName = this.#parseIdentifier();
       this.#consume(TokenType.Semi, "Expected ';' after symbol declaration");
-      return new FieldDefinition(symName, new NamedTypeAnnotation('symbol', null, false, symName.loc), null, true, false, true, false, null, decorators, null, this.#makeLocation(startToken));
+      return new FieldDefinition(symName, new NamedTypeAnnotation('symbol', null, false, symName.loc), null, true, false, true, false, null, decorators, null, false, this.#makeLocation(startToken));
     }
     
     // Symbol-keyed member: [symbolName]
@@ -3539,7 +3559,7 @@ export final class Parser {
       
       // Symbol-keyed method: [name](params) { ... }
       if (this.#check(TokenType.LParen)) {
-        return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false);
+        return this.#parseMethodBody(symPropName, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);
       }
       if (isGen || isAsyncM) {
         throw this.#error("Expected '(' after generator/async method name");
@@ -3559,7 +3579,7 @@ export final class Parser {
         symFieldValue = this.#parseExpression();
       }
       this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-      return new FieldDefinition(symPropName, symTypeAnnotation, symFieldValue, isFinal, false, isStatic, false, mutability, decorators, null, this.#makeLocation(startToken));
+      return new FieldDefinition(symPropName, symTypeAnnotation, symFieldValue, isFinal, false, isStatic, false, mutability, decorators, null, isShared, this.#makeLocation(startToken));
     }
     
     let name = this.#parseIdentifier();
@@ -3568,12 +3588,12 @@ export final class Parser {
     if (this.#check(TokenType.Less) && this.#isGenericMethodStart()) {
       this.#advance(); // consume '<'
       let typeParams = this.#parseTypeParameterList();
-      return this.#parseMethodBody(name, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false);
+      return this.#parseMethodBody(name, typeParams, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);
     }
     
     // Method: name(params) { ... }
     if (this.#check(TokenType.LParen)) {
-      return this.#parseMethodBody(name, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false);
+      return this.#parseMethodBody(name, null, isFinal, isAbstract, isDeclare, isStatic, isGen, isAsyncM, decorators, startToken, false, false, isShared);
     }
     if (isGen || isAsyncM) {
       throw this.#error("Expected '(' after generator/async method name");
@@ -3585,7 +3605,7 @@ export final class Parser {
       this.#consume(TokenType.Colon, "Expected ':' after abstract field name.");
       let typeAnnotation = this.#parseTypeAnnotation();
       this.#consume(TokenType.Semi, "Expected ';' after abstract field declaration.");
-      return new FieldDefinition(name, typeAnnotation, null, false, true, false, false, mutability, decorators, null, this.#makeLocation(startToken));
+      return new FieldDefinition(name, typeAnnotation, null, false, true, false, false, mutability, decorators, null, isShared, this.#makeLocation(startToken));
     }
 
     // Declare field: declare name: Type;
@@ -3594,7 +3614,7 @@ export final class Parser {
       this.#consume(TokenType.Colon, "Expected ':' after declared field name.");
       let typeAnnotation = this.#parseTypeAnnotation();
       this.#consume(TokenType.Semi, "Expected ';' after declared field.");
-      return new FieldDefinition(name, typeAnnotation, null, false, false, false, true, mutability, decorators, null, this.#makeLocation(startToken));
+      return new FieldDefinition(name, typeAnnotation, null, false, false, false, true, mutability, decorators, null, isShared, this.#makeLocation(startToken));
     }
 
     // Field: name: Type; or name: Type = value; or name = value;
@@ -3620,7 +3640,7 @@ export final class Parser {
     }
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
-    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, isStatic, false, mutability, decorators, setterName, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, fieldValue, isFinal, false, isStatic, false, mutability, decorators, setterName, isShared, this.#makeLocation(startToken));
   }
   
   // Check if < starts a generic method (vs a comparison expression)
@@ -3697,7 +3717,7 @@ export final class Parser {
     return new AccessorDeclaration(name, typeAnnotation, getter, setter, isFinal, isStatic, decorators, this.#makeLocation(startToken));
   }
   
-  #parseMethodBody(name: Node, typeParameters: GrowableArray<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isDeclare: boolean, isStatic: boolean, isGenerator: boolean, isAsync: boolean, decorators: GrowableArray<Decorator>, startToken: Token, isConstructor: boolean, inInterface: boolean = false): MethodDefinition {
+  #parseMethodBody(name: Node, typeParameters: GrowableArray<TypeParameter> | null, isFinal: boolean, isAbstract: boolean, isDeclare: boolean, isStatic: boolean, isGenerator: boolean, isAsync: boolean, decorators: GrowableArray<Decorator>, startToken: Token, isConstructor: boolean, inInterface: boolean = false, isShared: boolean = false): MethodDefinition {
     this.#consume(TokenType.LParen, "Expected '(' after method name");
 
     // An explicitly declared receiver: `dispose(this: Own<this>)`. It leads
@@ -3791,7 +3811,7 @@ export final class Parser {
           initListResult = combined;
         }
         
-        return new MethodDefinition(name, typeParameters, receiver, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, true, this.#makeLocation(startToken));
+        return new MethodDefinition(name, typeParameters, receiver, params, null, body, initListResult, superInit, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, true, isShared, this.#makeLocation(startToken));
       } else {
         returnType = this.#parseTypeAnnotation();
       }
@@ -3815,7 +3835,7 @@ export final class Parser {
       thisInitResult = thisInits;
     }
     
-    return new MethodDefinition(name, typeParameters, receiver, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, isConstructor, this.#makeLocation(startToken));
+    return new MethodDefinition(name, typeParameters, receiver, params, returnType, body, thisInitResult, null, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, isConstructor, isShared, this.#makeLocation(startToken));
   }
   
   #parseFieldInitializer(): FieldInitializer {
@@ -3871,37 +3891,33 @@ export final class Parser {
   // Decorators
   // ==========================================================================
   
+  /**
+   * `@name`, `@a.b.c`, or either followed by an argument list. The
+   * arguments are ordinary expressions; what a builtin accepts is checked
+   * where it is read.
+   */
   #parseDecorator(): Decorator {
     let startToken = this.#peek();
     this.#consume(TokenType.At, "Expected '@'");
-    let name = this.#parseIdentifier().name;
-    let args = new Array<StringLiteral>(2);
+    let path = new Array<Identifier>(2);
+    path.push(this.#parseIdentifier());
+    var name = path[0].name;
+    while (this.#match(TokenType.Dot)) {
+      let segment = this.#parseIdentifier();
+      path.push(segment);
+      name = name + "." + segment.name;
+    }
+    let args = new Array<Expression>(2);
     if (this.#match(TokenType.LParen)) {
       if (!this.#check(TokenType.RParen)) {
-        let arg = this.#parseExpression();
-        match (arg) {
-          case StringLiteral {}: {
-            args.push(arg);
-          }
-          case _: {
-            throw this.#error('Decorator arguments must be string literals');
-          }
-        }
+        args.push(this.#parseExpression());
         while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
-          let nextArg = this.#parseExpression();
-          match (nextArg) {
-            case StringLiteral {}: {
-              args.push(nextArg);
-            }
-            case _: {
-              throw this.#error('Decorator arguments must be string literals');
-            }
-          }
+          args.push(this.#parseExpression());
         }
       }
       this.#consume(TokenType.RParen, "Expected ')' after decorator arguments");
     }
-    return new Decorator(name, args, this.#makeLocation(startToken));
+    return new Decorator(name, path, args, this.#makeLocation(startToken));
   }
   
   // ==========================================================================
@@ -3941,8 +3957,13 @@ export final class Parser {
         if (d.args.length != 2 && d.args.length != 3) {
           throw this.#error("@external expects 2 or 3 arguments");
         }
-        externalModule = d.args[0].value;
-        externalName = d.args[1].value;
+        let moduleArg = decoratorStringArg(d, 0);
+        let nameArg = decoratorStringArg(d, 1);
+        if (moduleArg == null || nameArg == null) {
+          throw this.#error("@external arguments must be string literals");
+        }
+        externalModule = moduleArg;
+        externalName = nameArg;
       }
       i += 1;
     }
@@ -4143,31 +4164,58 @@ export final class Parser {
     
     this.#consume(TokenType.Semi, "Expected ';' after field declaration");
     
-    return new FieldDefinition(name, typeAnnotation, null, false, false, false, false, if (mutableField) { "var" } else { null }, new Array<Decorator>(0), null, this.#makeLocation(startToken));
+    return new FieldDefinition(name, typeAnnotation, null, false, false, false, false, if (mutableField) { "var" } else { null }, new Array<Decorator>(0), null, false, this.#makeLocation(startToken));
   }
   
   // ==========================================================================
   // Mixin Declarations
   // ==========================================================================
   
-  #parseMixinDeclaration(exported: boolean, startToken: Token): MixinDeclaration {
+  /**
+   * `mixin Name<T> on Base with A, B { ... }`, or with `isDecorator`,
+   * `decorator Name<T>(var subject: T) { ... }`. A decorator declares the
+   * field it stands in for instead of an `on` or `with` clause.
+   */
+  #parseMixinDeclaration(exported: boolean, startToken: Token, isDecorator: boolean): MixinDeclaration {
     let name = this.#parseIdentifier();
-    
+    let what = if (isDecorator) "decorator" else "mixin";
+
     // Type parameters: mixin Foo<T>
     var typeParameters: GrowableArray<TypeParameter> | null = null;
     if (this.#match(TokenType.Less)) {
       typeParameters = this.#parseTypeParameterList();
     }
-    
-    // On clause: mixin Foo on Bar
+
+    // Subject: decorator Foo(var value: T)
+    var decoratorSubject: FieldDefinition | null = null;
+    if (isDecorator) {
+      this.#consume(TokenType.LParen, "Expected '(' after decorator name");
+      let subjectStart = this.#peek();
+      var mutability: String | null = null;
+      if (this.#match(TokenType.Var)) {
+        mutability = "var";
+      } else if (this.#match(TokenType.Let)) {
+        mutability = "let";
+      }
+      let subjectName = this.#parseIdentifier();
+      this.#consume(TokenType.Colon, "Expected ':' after the decorated field's name");
+      let subjectType = this.#parseTypeAnnotation();
+      this.#consume(TokenType.RParen, "Expected ')' after the decorated field");
+      decoratorSubject = new FieldDefinition(subjectName, subjectType, null, false, false, false, false, mutability, new Array<Decorator>(0), null, false, this.#makeLocation(subjectStart));
+    }
+
+    // On clause: mixin Foo on Bar, decorator Foo(var value: T) on Bar.
+    // A decorator takes no `with`: a mixin's members are public, and a
+    // decorator adds nothing public but the member it decorates
+    // (docs/design/decorators.md §"Shared state across applications").
     var on: TypeAnnotation | null = null;
     if (this.#match(TokenType.On)) {
       on = this.#parseTypeAnnotation();
     }
-    
+
     // With clause: mixin Foo with A, B
     var mixins: GrowableArray<TypeAnnotation> | null = null;
-    if (this.#match(TokenType.With)) {
+    if (!isDecorator && this.#match(TokenType.With)) {
       let ms = new Array<TypeAnnotation>(4);
       ms.push(this.#parseTypeAnnotation());
       while (this.#match(TokenType.Comma)) {
@@ -4175,17 +4223,17 @@ export final class Parser {
       }
       mixins = ms;
     }
-    
-    this.#consume(TokenType.LBrace, "Expected '{' before mixin body");
-    
+
+    this.#consume(TokenType.LBrace, `Expected '{' before ${what} body`);
+
     let body = new Array<Node>(8);
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       body.push(this.#parseClassMember());
     }
-    
-    this.#consume(TokenType.RBrace, "Expected '}' after mixin body");
-    
-    return new MixinDeclaration(name, typeParameters, on, mixins, body, exported, this.#makeLocation(startToken));
+
+    this.#consume(TokenType.RBrace, `Expected '}' after ${what} body`);
+
+    return new MixinDeclaration(name, typeParameters, on, mixins, body, exported, decoratorSubject, this.#makeLocation(startToken));
   }
   
   #parseEnumDeclaration(exported: boolean, startToken: Token): EnumDeclaration {

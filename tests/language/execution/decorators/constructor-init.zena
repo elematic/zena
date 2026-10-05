@@ -1,0 +1,34 @@
+// @mode: run
+// @invoke: main
+// @result: 35
+
+// Constructor initialization of a decorated field — a `this.` parameter
+// and an initializer-list entry — writes the decorator's storage directly,
+// without going through the setter. Assignments in the constructor body
+// go through the setter like any other write.
+decorator counted(var value: i32) {
+  var #value: i32;
+  var #writes: i32 = 0;
+  value: i32 {
+    get { return this.#value + this.#writes; }
+    set(v) {
+      this.#value = v;
+      this.#writes += 10;
+    }
+  }
+}
+
+class Pair {
+  @counted var a: i32;
+  @counted var b: i32;
+  new(this.a, b: i32) : b = b * 2 {
+    this.b = this.b + 1;
+  }
+}
+
+export let main = (): i32 => {
+  // a = 4 (0 writes); b = 2 * 2 = 4, then set to 4 + 0 + 1 = 5 (10 writes).
+  let p = new Pair(4, 2);
+  // a reads 4 + 0; b reads 5 + 10.
+  return p.a + p.b + 16;
+};

@@ -56,6 +56,39 @@ final class ParsedAdaptationRef {
   new(this.classSymId, this.ifaceSymId);
 }
 
+/**
+ * Every field-decorator application in `ct`'s superclass chain whose
+ * declaration body contains `node`. A decorator applied to two fields of
+ * one class puts two intermediates in the chain that share one body, so
+ * a node alone names all of them (docs/design/decorators.md). Empty when
+ * `node` is not a decorator's member.
+ */
+let findDecoratorIntermediates = (ct: ClassType, classDecls: Map<SymbolId, Node>, node: Node): Array<ClassType> => {
+  let found = new Array<ClassType>();
+  var scWalk: ClassType | null = ct.superType;
+  while (scWalk != null && scWalk.isMixinIntermediate) {
+    let sc = scWalk;
+    if (sc.decoratorSubjectName != null) {
+      let scId = (sc.genericSource ?? sc).symbolId;
+      if (classDecls.has(scId)) {
+        let scDecl = classDecls[scId];
+        if (scDecl is MixinDeclaration) {
+          for (let m in (scDecl as MixinDeclaration).body) {
+            if (m == node ||
+                (m is AccessorDeclaration &&
+                 ((m as AccessorDeclaration).setter as Node) == node)) {
+              found.push(sc);
+              break;
+            }
+          }
+        }
+      }
+    }
+    scWalk = sc.superType;
+  }
+  return found;
+};
+
 let findDeclaringMixinIntermediate = (ct: ClassType, classDecls: Map<SymbolId, Node>, node: Node): ClassType | null => {
   var scWalk: ClassType | null = ct.superType;
   while (scWalk != null && scWalk.isMixinIntermediate) {
@@ -4187,7 +4220,83 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               // queues its own referrer.
               let refClassIsErasure = refItem.classType != null &&
                   containsErasedType(refItem.classType as Type);
-              if (node is MethodDefinition && refItem.classType != null && !refClassIsErasure) {
+              // A field decorator's member body is shared by every
+              // application of that decorator in the class's chain, and
+              // each application compiles its own copy under its own
+              // name, scope key and type arguments — as the member
+              // collection loops do. One node cannot say which
+              // application a referrer meant, so every one is registered.
+              var decoratorInts: Array<ClassType> = new Array<ClassType>();
+              if (refItem.classType != null && !refClassIsErasure) {
+                decoratorInts = findDecoratorIntermediates(refItem.classType as ClassType, this.classDecls, node);
+              }
+              if (decoratorInts.length > 0) {
+                let ct = refItem.classType as ClassType;
+                getClassKey(ct);
+                let lookupId = (ct.genericSource ?? ct).symbolId;
+                let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
+                for (let decInt in decoratorInts) {
+                  // A `shared` method lives under the declaration's key,
+                  // one copy for every application in the class.
+                  let scope = if (node is MethodDefinition && node.isShared &&
+                      decInt.decoratorSharedScopeKey != null) {
+                    decInt.decoratorSharedScopeKey
+                  } else {
+                    decInt.privateScopeKey
+                  };
+                  let decId = (decInt.genericSource ?? decInt).symbolId;
+                  let nodeModel = if (this.classModels.has(decId)) {
+                    this.classModels[decId]
+                  } else {
+                    this.classModels[lookupId]
+                  };
+                  let regs = new Array<WasmFunction>();
+                  if (node is MethodDefinition) {
+                    let {typeParameters} = node;
+                    if (node.isConstructor || node.isStatic ||
+                        (typeParameters != null && typeParameters.length > 0)) {
+                      continue;
+                    }
+                    var methName = getMethodName(nodeModel, node);
+                    if (scope != null && methName.startsWith("#")) {
+                      methName = (scope as String) + "::" + methName;
+                    }
+                    let regF = specializer.registerClassMethod(ct, cd, methName, node, false, false, null, nodeModel, null);
+                    regF.declaringType = decInt;
+                    applyMixinPrivateScope(regF, node, scope);
+                    regs.push(regF);
+                  } else if (node is AccessorDeclaration) {
+                    var accName = memberKeyOf(nodeModel, node.name as Node);
+                    if ((decInt.decoratorSubjectName as String) == accName) {
+                      accName = decInt.decoratorFieldName as String;
+                    }
+                    let accPrefix = if (scope != null && accName.startsWith("#")) {
+                      (scope as String) + "::"
+                    } else {
+                      ""
+                    };
+                    if (node.getter != null) {
+                      let regG = specializer.registerClassMethod(ct, cd, accPrefix + "get#" + accName, node, false, false, null, nodeModel, null);
+                      regG.declaringType = decInt;
+                      applyMixinPrivateScope(regG, node, scope);
+                      regs.push(regG);
+                    }
+                    let {setter} = node;
+                    if (setter != null) {
+                      let regS = specializer.registerClassMethod(ct, cd, accPrefix + "set#" + accName, setter, false, false, null, nodeModel, null);
+                      regS.declaringType = decInt;
+                      applyMixinPrivateScope(regS, setter, scope);
+                      regs.push(regS);
+                    }
+                  }
+                  if (refItem.isReachable && isConcrete(ct)) {
+                    for (let f in regs) {
+                      this.wasm.addFunction(f);
+                      this.markFunctionReached(f);
+                    }
+                  }
+                }
+              } else if (node is MethodDefinition && refItem.classType != null && !refClassIsErasure) {
                 let ct = refItem.classType as ClassType;
                 getClassKey(ct);
                 let lookupId = (ct.genericSource ?? ct).symbolId;
@@ -4266,7 +4375,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               } else if (node is AccessorDeclaration && refItem.classType != null && !refClassIsErasure) {
                 let ct = refItem.classType as ClassType;
                 getClassKey(ct);
-                let accName = memberKeyOf(model, node.name as Node);
+                var accName = memberKeyOf(model, node.name as Node);
                 if (accName != "") {
                   let lookupId = (ct.genericSource ?? ct).symbolId;
                   let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;

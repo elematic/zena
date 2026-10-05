@@ -73,6 +73,7 @@ import {
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration,
   TypeAliasDeclaration, ImportDeclaration, ExportAllDeclaration,
   ExportFromDeclaration, DeclareFunction, SymbolDeclaration, Decorator,
+  isBuiltinDecoratorName, decoratorStringArg,
   SymbolPropertyName,
   // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern,
@@ -99,7 +100,7 @@ import {
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
   UnionType as UnionT, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo,
-  ReceiverKind,
+  DecoratedField, ReceiverKind,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
   instantiateTypeAliasType, instantiateFunctionType, GenericNamedType,
@@ -1951,7 +1952,7 @@ final class CheckerContext {
         // have a home. The body is a placeholder the operator ignores.
         for (let dec in ta.decorators) {
           if (dec.name == 'intrinsic' && dec.args.length == 1) {
-            aliasType.intrinsicName = dec.args[0].value;
+            aliasType.intrinsicName = decoratorStringArg(dec, 0);
           }
         }
         this.#materializedTypes[info.id] = aliasType;
@@ -13175,6 +13176,401 @@ let inheritMembersFrom = (fromClass: ClassType, toClass: ClassType): void => {
   }
 };
 
+/**
+ * Applies the decorators written on a field of `classType`. Returns true
+ * when one of them is a field decorator: the field is then not registered
+ * as a member, because its storage lives on the decorator's intermediate
+ * class (see `applyFieldDecorator`). Builtin decorators are not field
+ * decorators and are ignored here.
+ */
+let applyFieldDecorators = (
+  ctx: CheckerContext,
+  classType: ClassType,
+  fd: FieldDefinition,
+  fieldName: String,
+  fieldType: Type,
+): boolean => {
+  var applied = false;
+  for (let dec in fd.decorators) {
+    if (isBuiltinDecoratorName(dec.name)) { continue; }
+    if (dec.path.length > 1) {
+      ctx.error(
+        "Qualified decorator names ('@" + dec.name + "') are not supported yet; import the decorator by name.",
+        DiagnosticCode.SymbolNotFound,
+        dec.loc
+      );
+      continue;
+    }
+    let resolved = ctx.resolveTypeName(dec.name);
+    if (resolved == null) {
+      ctx.error("Unknown decorator '@" + dec.name + "'.", DiagnosticCode.SymbolNotFound, dec.loc);
+      continue;
+    }
+    if (!(resolved is MixinType) || !(resolved as MixinType).isDecorator()) {
+      ctx.error("'" + dec.name + "' is not a decorator.", DiagnosticCode.TypeMismatch, dec.loc);
+      continue;
+    }
+    if (applied) {
+      ctx.error(
+        "Field '" + displayMemberName(fieldName) + "' already has a decorator; a field takes at most one.",
+        DiagnosticCode.TypeMismatch,
+        dec.loc
+      );
+      continue;
+    }
+    if (dec.args.length > 0) {
+      ctx.error("Decorator arguments are not supported yet.", DiagnosticCode.TypeMismatch, dec.loc);
+    }
+    if (fd.isStatic || fd.isAbstract || fd.isDeclare || fd.setterName != null) {
+      ctx.error(
+        "A decorator applies to a plain instance field: not a static, abstract or declared field, and not a 'var(#x)' field.",
+        DiagnosticCode.TypeMismatch,
+        dec.loc
+      );
+      return true;
+    }
+    if (fd.typeAnnotation == null) {
+      ctx.error(
+        "A decorated field needs a type annotation: the decorator's type is taken from it.",
+        DiagnosticCode.TypeMismatch,
+        fd.loc
+      );
+      return true;
+    }
+    applied = true;
+    applyFieldDecorator(ctx, classType, fd, fieldName, fieldType, resolved as MixinType, dec);
+  }
+  return applied;
+};
+
+/**
+ * Applies one field decorator: inserts an intermediate class into
+ * `classType`'s superclass chain carrying the decorator's members, the
+ * way `with` inserts one per mixin. Three things differ from a mixin
+ * application (docs/design/decorators.md):
+ *
+ * - The private scope key is the decorator's key plus the field's name,
+ *   so each application has its own storage and state fields even when
+ *   one decorator is applied to several fields of one class.
+ * - The subject accessor, written against the placeholder name, is
+ *   registered under the decorated field's name.
+ * - The decorator's type parameter is bound to the field's declared type.
+ */
+let applyFieldDecorator = (
+  ctx: CheckerContext,
+  classType: ClassType,
+  fd: FieldDefinition,
+  fieldName: String,
+  fieldType: Type,
+  mt: MixinType,
+  dec: Decorator,
+): void => {
+  let source = mt.genericSource ?? mt;
+  let subject = source.decoratorSubjectName as String;
+  let fieldIsVar = fd.mutability != null && fd.mutability == "var";
+  if (fieldIsVar != source.decoratorSubjectMutable) {
+    let message = if (source.decoratorSubjectMutable) {
+      "Decorator '@" + dec.name + "' applies to 'var' fields; declare '" +
+          displayMemberName(fieldName) + "' with 'var'."
+    } else {
+      "Decorator '@" + dec.name + "' applies to immutable fields, and '" +
+          displayMemberName(fieldName) + "' is 'var'."
+    };
+    ctx.error(message, DiagnosticCode.TypeMismatch, dec.loc);
+    return;
+  }
+
+  // The subject's type says how the field's type binds the decorator's
+  // type parameters: a subject typed by a bare parameter binds it to the
+  // field's type; a concrete subject type must accept the field's type.
+  let typeArgs = new Array<Type>();
+  let subjectType = source.decoratorSubjectType;
+  let {typeParameters} = source;
+  if (typeParameters != null && typeParameters.length > 0) {
+    for (let tp in typeParameters) {
+      if (subjectType != null && subjectType === tp) {
+        typeArgs.push(fieldType);
+      } else {
+        ctx.error(
+          "Cannot infer type parameter '" + tp.name + "' of decorator '@" + dec.name +
+              "': only the type parameter that types the decorated field is inferred.",
+          DiagnosticCode.TypeMismatch,
+          dec.loc
+        );
+        typeArgs.push(new ErrorType());
+      }
+    }
+  } else if (subjectType != null && !isAssignableTo(ctx, fieldType, subjectType)) {
+    ctx.error(
+      "Decorator '@" + dec.name + "' applies to fields of type '" + typeToString(subjectType) +
+          "'; '" + displayMemberName(fieldName) + "' has type '" + typeToString(fieldType) + "'.",
+      DiagnosticCode.TypeMismatch,
+      dec.loc
+    );
+    return;
+  }
+
+  // `on`: the host must extend or implement the decorator's constraint,
+  // as a mixin's host must. Checked against the chain before this
+  // application's intermediate joins it.
+  let {onType} = source;
+  if (onType != null) {
+    var satisfied = false;
+    if (classType.superType != null &&
+        isAssignableTo(ctx, classType.superType as Type, onType)) {
+      satisfied = true;
+    }
+    for (let iface in classType.implementsList) {
+      if (isAssignableTo(ctx, iface as Type, onType)) {
+        satisfied = true;
+      }
+    }
+    if (!satisfied) {
+      ctx.error(
+        "Decorator '@" + dec.name + "' requires its class to extend or implement '" +
+            typeToString(onType) + "'.",
+        DiagnosticCode.TypeMismatch,
+        dec.loc
+      );
+      return;
+    }
+  }
+
+  let declScope = source.privateScopeKey ?? (source.name + "_This");
+  let scope = declScope + "@" + fieldName;
+  // `shared` members are one copy per host class, under the declaration's
+  // scope key: a second application of this decorator in the class finds
+  // the first's copies in the chain and adds none of its own.
+  var sharedPlaced = false;
+  var chain: ClassType | null = classType.superType;
+  while (chain != null && chain.isMixinIntermediate) {
+    let sc = chain;
+    if (sc.decoratorSubjectName != null &&
+        (sc.genericSource ?? sc).symbolId == source.symbolId) {
+      sharedPlaced = true;
+    }
+    chain = sc.superType;
+  }
+  let intermediate = new ClassType(
+      ctx.freshTypeId(), source.symbolId,
+      classType.name + "$" + source.name + "@" + fieldName);
+  intermediate.isMixinIntermediate = true;
+  intermediate.sourcePath = source.sourcePath;
+  intermediate.superType = classType.superType;
+  intermediate.typeParameters = source.typeParameters;
+  intermediate.privateScopeKey = scope;
+  intermediate.decoratorSharedScopeKey = declScope;
+  intermediate.onType = onType;
+  intermediate.mixins = source.mixins;
+  intermediate.decoratorSubjectName = subject;
+  intermediate.decoratorFieldName = fieldName;
+  if (classType.superType != null) {
+    inheritMembersFrom(classType.superType as ClassType, intermediate);
+  }
+  for (let key in source.members.keys()) {
+    let member = source.members[key];
+    let isPrivateKey = key.startsWith("#") || key.startsWith("get##") || key.startsWith("set##");
+    var storeKey: String | null = null;
+    if (source.sharedMembers.has(key)) {
+      if (!sharedPlaced) {
+        storeKey = declScope + "::" + key;
+      }
+    } else if (isPrivateKey) {
+      storeKey = scope + "::" + key;
+    } else if (key == "get#" + subject) {
+      storeKey = "get#" + fieldName;
+    } else if (key == "set#" + subject) {
+      storeKey = "set#" + fieldName;
+    }
+    // Any other public member was rejected at the declaration.
+    if (storeKey != null) {
+      intermediate.members[storeKey as String] = member;
+    }
+  }
+  let applied = if (typeArgs.length > 0) {
+    instantiateClassType(intermediate, typeArgs)
+  } else {
+    intermediate
+  };
+  classType.superType = applied;
+  inheritMembersFrom(applied, classType);
+
+  var decorated = classType.decoratedFields;
+  if (decorated == null) {
+    let created = new Map<String, DecoratedField>();
+    classType.decoratedFields = created;
+    decorated = created;
+  }
+  (decorated as Map<String, DecoratedField>)[fieldName] = new DecoratedField(
+      fieldName, scope, scope + "::#" + subject, mt, fd, fieldType);
+};
+
+/**
+ * The field decorated under `name` on `classType`, or null when `name`
+ * is not a decorated field of it.
+ */
+let decoratedFieldOf = (classType: ClassType, name: String): DecoratedField | null => {
+  let decorated = classType.decoratedFields;
+  if (decorated == null) { return null; }
+  if (let (true, df) = decorated.get(name)) {
+    return df;
+  }
+  return null;
+};
+
+/**
+ * Checks a decorated field's initializer against the field's declared
+ * type. The field has no FieldInfo on the class (its storage is the
+ * decorator's), so `checkFieldInitializer` has nothing to look up.
+ */
+let checkDecoratedFieldInitializer = (
+  ctx: CheckerContext,
+  fd: FieldDefinition,
+  df: DecoratedField,
+): void => {
+  let {value} = fd;
+  if (value == null) { return; }
+  ctx.enterNodeReferrer(fd.id as i32);
+  let initType = checkExpression(ctx, value, df.fieldType);
+  if (!isAssignableTo(ctx, initType, df.fieldType)) {
+    ctx.error(
+      "Type mismatch: field '" + displayMemberName(df.fieldName) + "' has type '" +
+      typeToString(df.fieldType) + "' but initializer has type '" +
+      typeToString(initType) + "'.",
+      DiagnosticCode.TypeMismatch,
+      fd.loc
+    );
+  }
+  ctx.exitNodeReferrer(fd.id as i32);
+};
+
+/**
+ * A `shared` member is one copy per host class, so it cannot be the
+ * storage (which is one per decorated field by definition), and its type
+ * cannot mention the decorator's type parameters, which are bound per
+ * application. A public `shared` member is already rejected as a public
+ * member other than the subject accessor.
+ */
+let validateSharedMember = (
+  ctx: CheckerContext,
+  mt: MixinType,
+  name: String,
+  subject: String,
+  loc: SourceLocation | null,
+): void => {
+  if (!name.startsWith("#")) {
+    return;
+  }
+  if (name == "#" + subject) {
+    ctx.error(
+      "The storage field '#" + subject + "' cannot be 'shared': it holds one decorated field's value.",
+      DiagnosticCode.TypeMismatch, loc);
+    return;
+  }
+  let {typeParameters} = mt;
+  if (typeParameters != null && typeParameters.length > 0 && mt.members.has(name) &&
+      mentionsTypeParams(mt.members[name].type, typeParameters)) {
+    ctx.error(
+      "A 'shared' member's type cannot mention the decorator's type parameters: it is one copy for every decorated field, whatever their types.",
+      DiagnosticCode.TypeMismatch, loc);
+  }
+};
+
+/**
+ * The shape a `decorator` body must have: one public member, an accessor
+ * named like the subject, with a setter exactly when the subject is `var`;
+ * a private field named `#<subject>` holding the decorated field's value;
+ * and otherwise only private members. The public accessor is what the
+ * host class gains under the field's name, and the storage field is where
+ * the field's initializer and constructor assignments go.
+ */
+let validateDecoratorBody = (ctx: CheckerContext, md: MixinDeclaration, mt: MixinType): void => {
+  let subject = mt.decoratorSubjectName as String;
+  let decoratorName = md.name.name;
+  var sawSubject = false;
+  var sawStorage = false;
+  for (let member in md.body) {
+    match (member) {
+      case AccessorDeclaration as acc: {
+        let name = getMemberName(ctx, acc.name as Node);
+        if (name == subject) {
+          sawSubject = true;
+          if (acc.isStatic) {
+            ctx.error("The decorated field's accessor cannot be static.", DiagnosticCode.TypeMismatch, acc.loc);
+          }
+          if (acc.getter == null) {
+            ctx.error(
+              "Decorator '" + decoratorName + "' must give '" + subject + "' a getter.",
+              DiagnosticCode.TypeMismatch, acc.loc);
+          }
+          if (mt.decoratorSubjectMutable && acc.setter == null) {
+            ctx.error(
+              "Decorator '" + decoratorName + "' declares 'var " + subject + "', so '" + subject + "' needs a setter.",
+              DiagnosticCode.TypeMismatch, acc.loc);
+          }
+          if (!mt.decoratorSubjectMutable && acc.setter != null) {
+            ctx.error(
+              "Decorator '" + decoratorName + "' declares an immutable '" + subject +
+                  "', so '" + subject + "' cannot have a setter; declare the subject 'var'.",
+              DiagnosticCode.TypeMismatch, acc.loc);
+          }
+        } else if (!name.startsWith("#")) {
+          ctx.error(
+            "A decorator's only public member is the accessor for '" + subject +
+                "'; make '" + name + "' private.",
+            DiagnosticCode.TypeMismatch, acc.loc);
+        }
+      }
+      case FieldDefinition as fd: {
+        if (isSymbolFieldDeclaration(fd)) { continue; }
+        let name = getMemberName(ctx, fd.name as Node);
+        if (fd.isShared) {
+          validateSharedMember(ctx, mt, name, subject, fd.loc);
+        }
+        if (name == "#" + subject) {
+          sawStorage = true;
+          if (fd.isStatic) {
+            ctx.error("The decorated field's storage cannot be static.", DiagnosticCode.TypeMismatch, fd.loc);
+          }
+        } else if (!name.startsWith("#")) {
+          let hint = if (name == subject) {
+            "; the decorated field is declared as an accessor, with its storage in '#" + subject + "'"
+          } else {
+            "; make '" + name + "' private"
+          };
+          ctx.error(
+            "A decorator's only public member is the accessor for '" + subject + "'" + hint + ".",
+            DiagnosticCode.TypeMismatch, fd.loc);
+        }
+      }
+      case MethodDefinition as m: {
+        let name = getMemberName(ctx, m.name as Node);
+        if (!m.isConstructor && !name.startsWith("#")) {
+          ctx.error(
+            "A decorator's only public member is the accessor for '" + subject +
+                "'; make '" + displayMemberName(name) + "' private.",
+            DiagnosticCode.TypeMismatch, m.loc);
+        }
+        if (m.isShared) {
+          validateSharedMember(ctx, mt, name, subject, m.loc);
+        }
+      }
+      case _: {}
+    }
+  }
+  if (!sawSubject) {
+    ctx.error(
+      "Decorator '" + decoratorName + "' must declare an accessor named '" + subject + "'.",
+      DiagnosticCode.TypeMismatch, md.loc);
+  }
+  if (!sawStorage) {
+    ctx.error(
+      "Decorator '" + decoratorName + "' must declare a private field '#" + subject +
+          "' to hold the decorated field's value.",
+      DiagnosticCode.TypeMismatch, md.loc);
+  }
+};
+
 let getOrCreateMixinApplication = (
   ctx: CheckerContext,
   superClass: ClassType | null,
@@ -13358,7 +13754,7 @@ let registerTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaratio
   alias.intrinsicName = null;
   for (let dec in ta.decorators) {
     if (dec.name == 'intrinsic' && dec.args.length == 1) {
-      alias.intrinsicName = dec.args[0].value;
+      alias.intrinsicName = decoratorStringArg(dec, 0);
     }
   }
   alias.resolving = true;
@@ -13427,6 +13823,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   classType.constructorType = null;
   classType.constructors.clear();
   classType.fieldSetterNames = null;
+  classType.decoratedFields = null;
   classType.declaredFields = null;
   classType.sealedVariants = null;
 
@@ -13678,8 +14075,19 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
     var mi = 0;
     while (mi < mixinAnns.length) {
       let mixinAnn = mixinAnns[mi];
-      let resolvedMixin = resolveTypeAnnotation(ctx, mixinAnn);
-      
+      var resolvedMixin = resolveTypeAnnotation(ctx, mixinAnn);
+      // A decorator is a mixin applied one field at a time; `with` is
+      // the whole-class application and does not fit it.
+      if (resolvedMixin is MixinType && (resolvedMixin as MixinType).isDecorator()) {
+        ctx.error(
+          "'" + (resolvedMixin as MixinType).name + "' is a decorator; apply it to a field with '@" +
+          (resolvedMixin as MixinType).name + "' instead of 'with'.",
+          DiagnosticCode.TypeMismatch,
+          mixinAnn.loc
+        );
+        resolvedMixin = new ErrorType();
+      }
+
       match (resolvedMixin) {
         case MixinType as mt: {
           classType.mixins.push(mt);
@@ -13827,6 +14235,10 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         // type of its own. Registering it as a field asks for a type
         // called `symbol`, which does not exist.
         if (isSymbolFieldDeclaration(fd)) { continue; }
+        if (fd.isShared) {
+          ctx.error("'shared' applies only to a decorator's private members.",
+              DiagnosticCode.TypeMismatch, fd.loc);
+        }
         let fieldName = getMemberName(ctx, fd.name as Node);
         let fieldType = if (fd.typeAnnotation != null) {
           let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
@@ -13835,6 +14247,13 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         } else {
           new ErrorType() as Type
         };
+
+        // A decorated field has no storage of its own: the decorator's
+        // intermediate class carries it (docs/design/decorators.md).
+        if (fd.decorators.length > 0 &&
+            applyFieldDecorators(ctx, classType, fd, fieldName, fieldType)) {
+          continue;
+        }
 
         if (fd.isStatic) {
           if (ownConstructorNames.has(fieldName)) {
@@ -14032,6 +14451,10 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         }      }
       case MethodDefinition as md: {
         let methodName = getMemberName(ctx, md.name as Node);
+        if (md.isShared) {
+          ctx.error("'shared' applies only to a decorator's private members.",
+              DiagnosticCode.TypeMismatch, md.loc);
+        }
 
         if (md.isConstructor) {
           if (methodName == "<constructor>") {
@@ -14392,7 +14815,12 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                   lookupName = m[paramName];
                 }
               }
-              if (param.isThisParam && classType.members.has(lookupName)) {
+              let decoratedParamField = if (param.isThisParam) decoratedFieldOf(classType, paramName) else null;
+              if (decoratedParamField != null) {
+                // `this.x` for a decorated field: typed by the field's
+                // declaration; the value lands in the decorator's storage.
+                paramType = decoratedParamField.fieldType;
+              } else if (param.isThisParam && classType.members.has(lookupName)) {
                 paramType = classType.members[lookupName].type;
               } else if (param.typeAnnotation != null) {
                 paramType = resolveTypeAnnotation(ctx, param.typeAnnotation as TypeAnnotation);
@@ -14799,7 +15227,13 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
     match (member) {
       case FieldDefinition as fd: {
         if (fd.value != null) {
-          checkFieldInitializer(ctx, classType, fd, fieldDeclaredName(ctx, fd), fieldIndex, fieldOrder);
+          let declared = fieldDeclaredName(ctx, fd);
+          let decoratedField = decoratedFieldOf(classType, declared);
+          if (decoratedField != null) {
+            checkDecoratedFieldInitializer(ctx, fd, decoratedField);
+          } else {
+            checkFieldInitializer(ctx, classType, fd, declared, fieldIndex, fieldOrder);
+          }
         }
         fieldIndex = fieldIndex + 1;
       }
@@ -15234,7 +15668,14 @@ let checkMethodSignature = (
         lookupName = m[paramName];
       }
     }
-    if (param.isThisParam && classType != null && classType.members.has(lookupName)) {
+    let decoratedParamField = if (param.isThisParam && classType != null) {
+      decoratedFieldOf(classType as ClassType, paramName)
+    } else {
+      null
+    };
+    if (decoratedParamField != null) {
+      paramType = decoratedParamField.fieldType;
+    } else if (param.isThisParam && classType != null && classType.members.has(lookupName)) {
       // this.-style param inherits type from the class field.
       paramType = classType.members[lookupName].type;
     } else if (param.typeAnnotation != null) {
@@ -15737,7 +16178,10 @@ let checkMethodBody = (
         if (item is FieldInitializer) {
           fieldsInInitializerList.add(item.field.name);
           let fieldName = item.field.name;
-          let fieldType: Type | null = if (classType.members.has(fieldName)) {
+          let decoratedInit = decoratedFieldOf(classType, fieldName);
+          let fieldType: Type | null = if (decoratedInit != null) {
+            decoratedInit.fieldType
+          } else if (classType.members.has(fieldName)) {
             classType.members[fieldName].type
           } else {
             null
@@ -16455,10 +16899,10 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
     if (dec.name != 'intrinsic') {
       ctx.error("Unknown decorator '@" + dec.name + "' on a type alias.",
           DiagnosticCode.TypeMismatch, dec.loc);
-    } else if (dec.args.length != 1) {
+    } else if (dec.args.length != 1 || decoratorStringArg(dec, 0) == null) {
       ctx.error("Intrinsic decorator must have exactly one argument (the intrinsic name).",
           DiagnosticCode.TypeMismatch, dec.loc);
-    } else if (dec.args[0].value == 'type.scopedFrom') {
+    } else if (decoratorStringArg(dec, 0) == 'type.scopedFrom') {
       let tps2 = ta.typeParameters;
       if (tps2 == null || tps2.length != 2) {
         ctx.error("The 'type.scopedFrom' operator takes exactly two type parameters.",
@@ -16471,8 +16915,8 @@ let checkTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaration):
         ctx.error("The 'type.scopedFrom' operator needs 'Scoped' in scope.",
             DiagnosticCode.TypeMismatch, ta.name.loc);
       }
-    } else if (dec.args[0].value != 'type.awaited') {
-      ctx.error("Unknown type intrinsic '" + dec.args[0].value + "'.",
+    } else if (decoratorStringArg(dec, 0) != 'type.awaited') {
+      ctx.error("Unknown type intrinsic '" + (decoratorStringArg(dec, 0) as String) + "'.",
           DiagnosticCode.TypeMismatch, dec.loc);
     } else {
       let tps = ta.typeParameters;
@@ -16628,6 +17072,22 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       resolvedTps.push(tpType);
     }
     mixinType.typeParameters = resolvedTps;
+  }
+
+  // A decorator's subject: the placeholder field its body is written
+  // against. Resolved under the type parameters, so `(var value: T)`
+  // names the parameter the decorated field's type will bind.
+  let {decoratorSubject} = md;
+  if (decoratorSubject != null) {
+    let subject = decoratorSubject;
+    mixinType.decoratorSubjectName = syntacticMemberName(subject.name);
+    mixinType.decoratorSubjectMutable =
+        subject.mutability != null && subject.mutability == "var";
+    mixinType.decoratorSubjectType = if (subject.typeAnnotation != null) {
+      resolveTypeAnnotation(ctx, subject.typeAnnotation as TypeAnnotation)
+    } else {
+      new ErrorType() as Type
+    };
   }
 
   // Resolve 'on' type.
@@ -16788,6 +17248,14 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
         );
         mixinType.members[fieldName] = fdInfo;
         thisType.members[fieldName] = fdInfo;
+        if (fd.isShared) {
+          if (md.decoratorSubject == null) {
+            ctx.error("'shared' applies only to a decorator's private members.",
+                DiagnosticCode.TypeMismatch, fd.loc);
+          } else {
+            mixinType.sharedMembers.add(fieldName);
+          }
+        }
 
         // Check initializer if present.
         let {value} = fd;
@@ -16840,6 +17308,14 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           );
           mixinType.members[methodName] = mi;
           thisType.members[methodName] = mi;
+          if (methDef.isShared) {
+            if (md.decoratorSubject == null) {
+              ctx.error("'shared' applies only to a decorator's private members.",
+                  DiagnosticCode.TypeMismatch, methDef.loc);
+            } else {
+              mixinType.sharedMembers.add(methodName);
+            }
+          }
         }
       }
       case AccessorDeclaration as acc: {
@@ -16908,6 +17384,10 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   // bound, so its symbol keys can be checked, stamped and reported.
   recordSymbolKeyedMemberIdentities(
       ctx, mixinType as Type, mixinType.members, md.body);
+
+  if (md.decoratorSubject != null) {
+    validateDecoratorBody(ctx, md, mixinType);
+  }
 
   // 2. Check bodies
   ctx.enterClass(thisType);
@@ -16998,10 +17478,11 @@ let validateFunctionDecorators = (ctx: CheckerContext, decorators: Array<Decorat
         if (false) {
           ctx.error("@intrinsic decorator is only allowed on declare functions and methods.", DiagnosticCode.TypeMismatch, dec.loc);
         }
-        if (dec.args.length != 1) {
+        let intrinsicName = decoratorStringArg(dec, 0);
+        if (dec.args.length != 1 || intrinsicName == null) {
           ctx.error("Intrinsic decorator must have exactly one argument (the intrinsic name).", DiagnosticCode.TypeMismatch, dec.loc);
         } else {
-          let name = dec.args[0].value;
+          let name = intrinsicName as String;
           if (!isValidIntrinsic(name)) {
             ctx.error("Unknown intrinsic '" + name + "'.", DiagnosticCode.TypeMismatch, dec.loc);
           }

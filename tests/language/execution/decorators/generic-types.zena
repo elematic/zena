@@ -1,0 +1,30 @@
+// @mode: run
+// @invoke: main
+// @result: 11
+
+// The decorator's type parameter is bound to each decorated field's
+// declared type, so one decorator serves a primitive and a reference field.
+decorator tracked<T>(var value: T) {
+  var #value: T;
+  var #version: i32 = 0;
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.#version += 1;
+    }
+  }
+}
+
+class Record {
+  @tracked var count: i32 = 5;
+  @tracked var name: String = 'a';
+}
+
+export let main = (): i32 => {
+  let r = new Record();
+  r.name = r.name + 'bc';
+  r.count = r.count + r.name.length;
+  // 5 + 3 = 8, then + 3 for the name length read again.
+  return r.count + r.name.length;
+};

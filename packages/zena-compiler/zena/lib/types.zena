@@ -16,7 +16,7 @@ import { Set } from 'zena:collections';
 
 
 
-import { Expression, Statement, IdGenerator } from './ast.zena';
+import { Expression, Statement, IdGenerator, FieldDefinition } from './ast.zena';
 import { SymbolId, noSymbolId } from './scope/symbol.zena';
 import { WellKnown, isWellKnown } from './well-known.zena';
 
@@ -311,6 +311,30 @@ export final class ClassType extends Type {
    */
   var privateScopeKey: String | null = null;
   /**
+   * For the intermediate class a field decorator application creates
+   * (docs/design/decorators.md): the decorator's placeholder name and the
+   * decorated field's name. The body's accessor is written against the
+   * placeholder and registered on the host under the field's name; every
+   * pass that registers that accessor by name applies this rename. Null
+   * on every other class.
+   */
+  var decoratorSubjectName: String | null = null;
+  var decoratorFieldName: String | null = null;
+  /**
+   * For a decorator application's intermediate: the declaration's own
+   * scope key, under which the decorator's `shared` members live — one
+   * copy per host class, found from any application's body.
+   */
+  var decoratorSharedScopeKey: String | null = null;
+  /**
+   * For a class with decorated fields: each decorated field by name. The
+   * field has no storage of its own on the class — the decorator's
+   * intermediate holds it under `DecoratedField.storageKey` — so the
+   * passes that would otherwise register or initialize the field consult
+   * this instead. Null when the class decorates nothing.
+   */
+  var decoratedFields: Map<String, DecoratedField> | null = null;
+  /**
    * Declared `resource class` — the class has no unwrapped form, so naming it
    * bare in a type position is an error. Declares resource-ness, not
    * affineness: affineness comes from `Own<T>`. See
@@ -382,6 +406,25 @@ export final class ClassType extends Type {
     return c;
   }
 }
+
+/**
+ * One field decorator application on a host class.
+ *
+ * `storageKey` is the member and struct-field key of the decorator's
+ * storage field (`"<scope>::#<subject>"`), where `scope` is the
+ * application's private scope key: the decorator declaration's key with
+ * the field's name appended, so two applications of one decorator on one
+ * class keep separate storage. `field` is the decorated declaration on
+ * the host, whose initializer and constructor assignments target the
+ * storage.
+ */
+export final class DecoratedField(
+  fieldName: String,
+  scope: String,
+  storageKey: String,
+  decorator: MixinType,
+  field: FieldDefinition,
+  fieldType: Type)
 
 /**
  * A class or interface instantiation substituteInType is in the middle
@@ -611,6 +654,10 @@ let substituteInType = (
         inst.isSealed = ct.isSealed;
         inst.isMixinIntermediate = ct.isMixinIntermediate;
         inst.privateScopeKey = ct.privateScopeKey;
+        inst.decoratorSubjectName = ct.decoratorSubjectName;
+        inst.decoratorFieldName = ct.decoratorFieldName;
+        inst.decoratorSharedScopeKey = ct.decoratorSharedScopeKey;
+        inst.decoratedFields = ct.decoratedFields;
         inst.sealedVariants = ct.sealedVariants;
         inst.declaredFields = ct.declaredFields;
         inst.forwardVariantNames = ct.forwardVariantNames;
@@ -1057,6 +1104,10 @@ export let instantiateClassType = (
   result.isSealed = source.isSealed;
   result.isMixinIntermediate = source.isMixinIntermediate;
   result.privateScopeKey = source.privateScopeKey;
+  result.decoratorSubjectName = source.decoratorSubjectName;
+  result.decoratorFieldName = source.decoratorFieldName;
+  result.decoratorSharedScopeKey = source.decoratorSharedScopeKey;
+  result.decoratedFields = source.decoratedFields;
   result.sourcePath = source.sourcePath;
   result.sealedVariants = source.sealedVariants;
   result.declaredFields = source.declaredFields;
@@ -1197,7 +1248,28 @@ export final class MixinType extends Type {
    * reach it through genericSource.
    */
   var privateScopeKey: String | null = null;
+  /**
+   * For a `decorator` declaration (docs/design/decorators.md): the
+   * placeholder field's name, mutability and resolved type. Null name on
+   * an ordinary mixin. Set on the declaration's MixinType; instantiations
+   * reach them through genericSource.
+   */
+  var decoratorSubjectName: String | null = null;
+  var decoratorSubjectMutable: boolean = false;
+  var decoratorSubjectType: Type | null = null;
+  /**
+   * The member keys (`#name`) a decorator declares `shared`: one copy per
+   * host class, under the declaration's scope key, rather than one per
+   * application. Set on the declaration's MixinType; read through
+   * genericSource.
+   */
+  var sharedMembers: Set<String> = new Set<String>();
   instantiations = new Map<String, MixinType>();
+
+  /** Whether this is a `decorator` declaration rather than a mixin. */
+  isDecorator(): boolean {
+    return (this.genericSource ?? this).decoratorSubjectName != null;
+  }
 
   new(name: String) : name = name, super();
 }
@@ -1216,6 +1288,10 @@ export let instantiateMixinType = (
   };
   result.symbolId = source.symbolId;
   result.privateScopeKey = source.privateScopeKey;
+  result.decoratorSubjectName = source.decoratorSubjectName;
+  result.decoratorSubjectMutable = source.decoratorSubjectMutable;
+  result.decoratorSubjectType = source.decoratorSubjectType;
+  result.sharedMembers = source.sharedMembers;
   result.typeParameters = source.typeParameters;
   result.typeArguments = toGrowable(typeArguments);
   result.genericSource = source;

@@ -197,6 +197,18 @@ let tests = suite('formatter', () => {
     check('class fields', result, input);
   });
 
+  test('formats member decorators and decorator declarations', (t: TestContext) => {
+    let input = "class Counter {\n  @signal var count: i32 = 0;\n  @intrinsic('array.len') length(): i32 {\n    return 0;\n  }\n}\n";
+    let members = format(input);
+    check('member decorators idempotent', format(members), members);
+    isTrue(members.contains('  @signal var count: i32 = 0;\n'), 'field decorator kept');
+    isTrue(members.contains("  @intrinsic('array.len') length(): i32 {\n"), 'method decorator kept');
+    let decl = "export decorator signal<T>(var value: T) {\n  var #value: T;\n  value: T {\n    get {\n      return this.#value;\n    }\n    set(v) {\n      this.#value = v;\n    }\n  }\n}\n";
+    let formatted = format(decl);
+    check('decorator declaration idempotent', format(formatted), formatted);
+    isTrue(formatted.startsWith('export decorator signal<T>(var value: T) {'), 'decorator header');
+  });
+
   test('formats class with method', (t: TestContext) => {
     let input = "class Point {\n  x: i32;\n\n  getX(): i32 {\n    return this.x;\n  }\n}\n";
     let result = format(input);

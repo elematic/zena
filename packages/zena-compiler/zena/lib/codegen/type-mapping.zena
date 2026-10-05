@@ -319,6 +319,10 @@ export let substituteTypeParamsInCodegen = (
           null
         };
         inst.fieldSetterNames = ct.fieldSetterNames;
+        inst.decoratorSubjectName = ct.decoratorSubjectName;
+        inst.decoratorFieldName = ct.decoratorFieldName;
+        inst.decoratedFields = ct.decoratedFields;
+        inst.decoratorSharedScopeKey = ct.decoratorSharedScopeKey;
         inst.isFinal = ct.isFinal;
         inst.isCaseClass = ct.isCaseClass;
         inst.isAbstract = ct.isAbstract;
@@ -699,6 +703,20 @@ export let substituteTypeParamsInFunctionContext = (wasm: WasmModule, wasmFuncti
   }
 
   var substituted = t;
+  // A field decorator's body is compiled once per application, and one
+  // class may apply the same generic decorator to fields of different
+  // types. The host's flattened context holds the decorator's parameter
+  // once per application and answers with whichever came first, so the
+  // body's own application binds it before the host context runs.
+  let declaring = wasmFunction.declaringType;
+  if (declaring != null && declaring.decoratorSubjectName != null &&
+      declaring.typeArguments != null) {
+    let declaringParams = getClassTypeParameters(declaring);
+    if (declaringParams != null) {
+      substituted = substituteTypeParamsInCodegen(
+          wasm, declaringParams, declaring.typeArguments, substituted);
+    }
+  }
   if (wasmFunction.classType != null) {
     substituted = substituteTypeParamsInClassContext(wasm, wasmFunction.classType, substituted);
   }
@@ -1091,6 +1109,10 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
           inst.mixins.push(eraseTypeParameters(wasm, m) as MixinType);
         }
         inst.fieldSetterNames = ct.fieldSetterNames;
+        inst.decoratorSubjectName = ct.decoratorSubjectName;
+        inst.decoratorFieldName = ct.decoratorFieldName;
+        inst.decoratedFields = ct.decoratedFields;
+        inst.decoratorSharedScopeKey = ct.decoratorSharedScopeKey;
         inst.isFinal = ct.isFinal;
         inst.isCaseClass = ct.isCaseClass;
         inst.isAbstract = ct.isAbstract;
@@ -1994,6 +2016,10 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
             null
           };
           inst.fieldSetterNames = resolvedCt.fieldSetterNames;
+          inst.decoratorSubjectName = resolvedCt.decoratorSubjectName;
+          inst.decoratorFieldName = resolvedCt.decoratorFieldName;
+          inst.decoratedFields = resolvedCt.decoratedFields;
+          inst.decoratorSharedScopeKey = resolvedCt.decoratorSharedScopeKey;
           inst.isFinal = resolvedCt.isFinal;
           inst.isCaseClass = resolvedCt.isCaseClass;
           inst.isAbstract = resolvedCt.isAbstract;

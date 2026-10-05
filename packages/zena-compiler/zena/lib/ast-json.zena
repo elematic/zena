@@ -679,7 +679,10 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['mutability'] = mutability;
       }
     }
-    case FieldDefinition { name, typeAnnotation, value, isFinal, isAbstract, isStatic, isDeclare, mutability, decorators }: {
+    case FieldDefinition { name, typeAnnotation, value, isFinal, isAbstract, isStatic, isDeclare, mutability, decorators, isShared }: {
+      if (isShared) {
+        obj['isShared'] = new Box<boolean>(true);
+      }
       obj['name'] = nodeToJson(name);
       if (typeAnnotation != null) {
         obj['typeAnnotation'] = nodeToJson(typeAnnotation as Node);
@@ -696,7 +699,10 @@ export let nodeToJson = (node: Node): JsonObject => {
         obj['mutability'] = mutability;
       }
     }
-    case MethodDefinition { name, typeParameters, receiver, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, isConstructor }: {
+    case MethodDefinition { name, typeParameters, receiver, params, returnType, body, initializerList, superInitializer, isFinal, isAbstract, isStatic, isDeclare, isGenerator, isAsync, decorators, isConstructor, isShared }: {
+      if (isShared) {
+        obj['isShared'] = new Box<boolean>(true);
+      }
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters);
@@ -801,10 +807,13 @@ export let nodeToJson = (node: Node): JsonObject => {
     }
     
     // Mixin Declarations
-    case MixinDeclaration { name, typeParameters, on, mixins, body, exported }: {
+    case MixinDeclaration { name, typeParameters, on, mixins, body, exported, decoratorSubject }: {
       obj['name'] = nodeToJson(name);
       if (typeParameters != null) {
         obj['typeParameters'] = typeParametersToJson(typeParameters);
+      }
+      if (decoratorSubject != null) {
+        obj['decoratorSubject'] = nodeToJson(decoratorSubject);
       }
       if (on != null) {
         obj['on'] = nodeToJson(on as Node);
@@ -1004,7 +1013,7 @@ let decoratorsToJson = (decorators: GrowableArray<Decorator>): JsonArray => {
   return arr;
 };
 
-let decoratorArgsToJson = (args: GrowableArray<StringLiteral>): JsonArray => {
+let decoratorArgsToJson = (args: GrowableArray<Expression>): JsonArray => {
   let arr = new JsonArray();
   for (let arg in args) {
     arr.push(nodeToJson(arg));

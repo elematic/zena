@@ -4248,6 +4248,99 @@ This enables a class to implement an interface (e.g. `Iterable<T>`) **via** a mi
 2. The mixin is applied, injecting the required implementation methods.
 3. The compiler validates that the class has implemented all members of the interface, which succeeds because of the injected mixin methods.
 
+### Decorators
+
+A decorator is written `@name` in front of a declaration. The compiler
+defines `@external` and `@intrinsic` (see [Imports (Host Interop)](#imports-host-interop)
+and [Intrinsics](#9-intrinsics)); a program declares its own **field
+decorators** with the `decorator` keyword.
+
+A field decorator replaces a class field with an accessor and adds the
+storage and state that accessor needs to the class, in the same object as
+the rest of the fields. Its declaration names a placeholder field, the
+subject, and its body is written against that placeholder:
+
+```zena
+export decorator signal<T>(var value: T) {
+  var #value: T;            // storage: receives the decorated field's value
+  var #version: i32 = 0;    // extra per-field state
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.#version += 1;
+    }
+  }
+}
+
+class Counter {
+  @signal var count: i32 = 0;
+  @signal var label: String = '';
+}
+
+let c = new Counter();
+c.count = c.count + 1;    // the read calls the getter, the write the setter
+```
+
+The body follows three rules. Its one public member is an accessor named
+like the subject, with a getter, and with a setter exactly when the subject
+is `var`. A private field named `#<subject>` is the storage: the decorated
+field's initializer, `this.` constructor parameters and initializer-list
+entries write it directly, and its own initializer is the default when the
+decorated field has none. Every other member is private. A decorator has
+no constructor and no `on` or `with` clause, and like a mixin its body
+resolves names in the module that declares it, so a class applying an
+imported decorator needs to import nothing else.
+
+Applying a decorator:
+
+- The field must be a plain instance field with a type annotation. The
+  field's type binds the decorator's type parameter when the subject is
+  typed by it (`value: T`); a subject with a concrete type accepts fields
+  whose type is assignable to it.
+- The field's mutability must match the subject's: a `var` subject applies
+  to `var` fields and an immutable subject to immutable fields.
+- A field takes at most one decorator. `with` cannot name a decorator, and
+  `@` cannot name a mixin or a class.
+
+One decorator applied to two fields of one class keeps separate storage
+and state for each. A subclass reads and writes an inherited decorated
+field through the inherited accessor.
+
+A decorator adds nothing public to the class but the member it decorates.
+State it needs beyond the field is private, in one of two scopes. A plain
+private member is one copy per decorated field. A member marked `shared`
+is one copy per class: every application of the decorator in that class
+reads the same field and calls the same method, and its initializer runs
+once. A `shared` member must be private, cannot be the storage field, and
+its type cannot mention the decorator's type parameters:
+
+```zena
+decorator tracked<T>(var value: T) {
+  var #value: T;                  // one per decorated field
+  shared var #writes: i32 = 0;    // one per class
+  shared #record(): void { this.#writes += 1; }
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.#record();
+    }
+  }
+}
+```
+
+When the decorator needs public API from its host, it constrains the host
+with `on`, as a mixin does: `decorator property<T>(var value: T) on
+ReactiveElement { ... }` may call `this.requestUpdate()`, and applying
+`@property` to a field of a class that does not extend or implement
+`ReactiveElement` is an error.
+
+Decorator syntax also accepts a dotted name (`@signals.state`) and
+arguments (`@property({attribute: false})`), but applying either to a
+field is reported as not yet supported. The design and the remaining work
+are in [decorators.md](design/decorators.md).
+
 ## 8. Libraries & Exports
 
 ### Imports
@@ -5180,7 +5273,11 @@ Library ::= Statement*
 
 Statement ::= ExportStatement | VariableDeclaration | UsingStatement | ExpressionStatement | BlockStatement | ReturnStatement | BreakStatement | ContinueStatement | IfStatement | WhileStatement | ForStatement
 
-ExportStatement ::= "export" (VariableDeclaration | ClassDeclaration | InterfaceDeclaration | MixinDeclaration | DeclareFunction)
+ExportStatement ::= "export" (VariableDeclaration | ClassDeclaration | InterfaceDeclaration | MixinDeclaration | DecoratorDeclaration | DeclareFunction)
+
+DecoratorDeclaration ::= "decorator" Identifier TypeParameters? "(" ("var" | "let")? Identifier ":" Type ")" "{" ClassMember* "}"
+
+Decorator ::= "@" Identifier ("." Identifier)* ("(" Arguments? ")")?
 
 VariableDeclaration ::= ("let" | "var") Identifier "=" Expression ";"
 

@@ -1,0 +1,29 @@
+// Support module for cross-module.zena: a decorator whose body calls a
+// module-private helper.
+
+let bumpVersion = (version: i32): i32 => version + 500;
+
+export decorator signal<T>(var value: T) {
+  var #value: T;
+  var #version: i32 = 0;
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.#version = bumpVersion(this.#version);
+    }
+  }
+  #changed(): boolean { return this.#version > 0; }
+}
+
+export decorator versioned(var value: i32) {
+  var #value: i32;
+  var #version: i32 = 0;
+  value: i32 {
+    get { return this.#value + this.#version; }
+    set(v) {
+      this.#value = v;
+      this.#version = bumpVersion(this.#version);
+    }
+  }
+}

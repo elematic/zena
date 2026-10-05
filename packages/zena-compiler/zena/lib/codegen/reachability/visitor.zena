@@ -9,7 +9,7 @@ import {
   isScopedType, scopedInner,
 } from '../../types.zena';
 import {
-  Node, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
+  Node, decoratorStringArg, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
 } from '../../ast.zena';
 import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction,
@@ -996,7 +996,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     var opName = "";
     for (let dec in decl.decorators) {
       if (dec.name == "intrinsic" && dec.args.length == 1) {
-        let intrinsicName = dec.args[0].value;
+        let intrinsicName = decoratorStringArg(dec, 0) ?? "";
         if (intrinsicName == "eq") {
           opName = "==";
         } else if (intrinsicName == "hash") {
@@ -2819,15 +2819,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     for (let dec in decl.decorators) {
       if (dec.name == "intrinsic") {
         if (dec.args.length == 1) {
-          intrinsicName = dec.args[0].value;
+          intrinsicName = decoratorStringArg(dec, 0) ?? "";
           isIntrinsic = true;
         } else {
           throw new Error("Intrinsic decorator must have exactly one argument");
         }
       } else if (dec.name == "external") {
         if (dec.args.length == 2 || dec.args.length == 3) {
-          externalModule = dec.args[0].value;
-          externalName = dec.args[1].value;
+          externalModule = decoratorStringArg(dec, 0) ?? "";
+          externalName = decoratorStringArg(dec, 1) ?? "";
           isExternal = true;
           // A third argument is the import's canonical options, comma
           // separated. `async` is one; a WIT type spelling (`stream<u8>`,
@@ -2839,7 +2839,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           // depth-aware: a future payload like `result<a, b>` carries
           // commas of its own, so only depth-zero commas separate.
           if (dec.args.length == 3) {
-            let raw = dec.args[2].value;
+            let raw = decoratorStringArg(dec, 2) ?? "";
             let optionList = new Array<String>();
             var depth = 0;
             var from = 0;
@@ -2888,7 +2888,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           var dfIntrinsicName = "";
           for (let dec in df.decorators) {
             if (dec.name == "intrinsic" && dec.args.length == 1) {
-              dfIntrinsicName = dec.args[0].value;
+              dfIntrinsicName = decoratorStringArg(dec, 0) ?? "";
             }
           }
           if (dfIntrinsicName != "") {

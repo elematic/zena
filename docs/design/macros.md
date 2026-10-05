@@ -482,6 +482,11 @@ while truly unusual ones announce themselves.
 
 ## 6. Roadmap
 
+Field decorators (`@signal var count: i32`) are implemented without this
+macro system: a `decorator` declaration is expanded by the compiler by
+reference, with no code run at compile time. [decorators.md](decorators.md)
+describes it and how a procedural decorator would fit here.
+
 1.  **Built-in Intrinsics (Phase 1)**: Implement `mat`, `wat`, and others as hard-coded logic inside the compiler. This avoids the complexity of the macro system initially.
 2.  **Macro Prototype (Phase 2)**: Experiment with running a simple WASM function that accepts/returns a byte array (serialized AST).
 3.  **Full System (Phase 3)**: Define the stable AST schema and the `MacroContext` API.

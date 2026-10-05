@@ -1,0 +1,53 @@
+// @mode: run
+// @invoke: main
+// @result: 2135
+
+// `shared` members are one copy per host class: both decorated fields
+// bump the same write counter through the same private method, while
+// each keeps its own storage and its own per-field counter.
+decorator tracked<T>(var value: T) {
+  var #value: T;
+  var #ownWrites: i32 = 0;
+  shared var #allWrites: i32 = 0;
+  shared #record(): void {
+    this.#allWrites += 1;
+  }
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.#ownWrites += 1;
+      this.#record();
+    }
+  }
+}
+
+decorator stamped(var value: i32) {
+  var #value: i32;
+  shared var #stamp: i32 = 0;
+  value: i32 {
+    get { return this.#value + this.#stamp; }
+    set(v) {
+      this.#value = v;
+      this.#stamp += 10;
+    }
+  }
+}
+
+class Point {
+  @tracked var x: i32 = 0;
+  @tracked var y: String = '';
+  @stamped var a: i32 = 0;
+  @stamped var b: i32 = 0;
+}
+
+export let main = (): i32 => {
+  let p = new Point();
+  p.x = 1;
+  p.y = 'a';
+  p.x = 2;
+  p.a = 1;      // stamp 10
+  p.b = 2;      // stamp 20
+  // x = 2, y.length = 1; a reads 1 + 20, b reads 2 + 20; sum 43.
+  return p.x * 1000 + p.y.length * 100 + p.a + p.b - 8;
+};

@@ -40,7 +40,7 @@ import {
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal, isPresentWordName, presentWordCount, presentWordName,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal, isPresentWordName, presentWordCount, presentWordName,
 } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
@@ -1897,24 +1897,72 @@ export final class FunctionLowerer {
   #mixinFieldValues(values: Map<String, i32>, ct: ClassType,
       structType: WasmStruct, cd: ClassDeclaration,
       mapSetterNames: boolean): void {
-    if (cd.mixins == null ||
-        (cd.mixins as GrowableArray<TypeAnnotation>).length == 0) {
+    if (cd.mixins != null &&
+        (cd.mixins as GrowableArray<TypeAnnotation>).length > 0) {
+      let mixinFields = new Array<FieldDefinition>();
+      let mixinFieldScopes = new Array<String>();
+      let seenMixins = new Map<MixinKey, boolean>();
+      collectMixinFields(this.wasm.program as Program, this.func.model,
+          cd.mixins, mixinFields, mixinFieldScopes, seenMixins);
+      for (var i = 0; i < mixinFields.length; i += 1) {
+        let fd = mixinFields[i];
+        if (fd.value != null && !fd.isStatic) {
+          if (!(fd.name is Identifier)) {
+            this.#bail('field name shape');
+          }
+          this.#computeCtorField(values, ct, structType,
+              (fd.name as Identifier).name,
+              fd.value as Expression, mapSetterNames, mixinFieldScopes[i]);
+        }
+      }
+    }
+    this.#decoratorFieldValues(values, ct, structType, cd, mapSetterNames);
+  }
+
+  /**
+   * Field values for the fields a class gains from its field decorators
+   * (docs/design/decorators.md): each decorator's own fields with
+   * initializers, under the application's scope key. The storage field
+   * takes the decorated field's initializer when it has one — the class's
+   * own-field pass already stored that, routed by #computeCtorField — and
+   * the decorator's default otherwise.
+   */
+  #decoratorFieldValues(values: Map<String, i32>, ct: ClassType,
+      structType: WasmStruct, cd: ClassDeclaration,
+      mapSetterNames: boolean): void {
+    let decorated = ct.decoratedFields;
+    if (decorated == null) {
       return;
     }
-    let mixinFields = new Array<FieldDefinition>();
-    let mixinFieldScopes = new Array<String>();
-    let seenMixins = new Map<MixinKey, boolean>();
-    collectMixinFields(this.wasm.program as Program, this.func.model,
-        cd.mixins, mixinFields, mixinFieldScopes, seenMixins);
-    for (var i = 0; i < mixinFields.length; i += 1) {
-      let fd = mixinFields[i];
-      if (fd.value != null && !fd.isStatic) {
+    for (let member in cd.body) {
+      if (!(member is FieldDefinition) || member.isStatic) { continue; }
+      if (!(member.name is Identifier)) { continue; }
+      let fieldName = (member.name as Identifier).name;
+      if (!decorated.has(fieldName)) { continue; }
+      let df = decorated[fieldName];
+      let decl = findMixinDeclaration(this.wasm.program as Program, df.decorator);
+      if (decl == null) {
+        this.#bail('decorator declaration not found');
+      }
+      let source = df.decorator.genericSource ?? df.decorator;
+      let storageName = "#" + (source.decoratorSubjectName as String);
+      let sharedScope = source.privateScopeKey ?? (source.name + "_This");
+      for (let fd in (decl as MixinDeclaration).body) {
+        if (!(fd is FieldDefinition) || fd.isStatic || fd.value == null) { continue; }
         if (!(fd.name is Identifier)) {
           this.#bail('field name shape');
         }
-        this.#computeCtorField(values, ct, structType,
-            (fd.name as Identifier).name,
-            fd.value as Expression, mapSetterNames, mixinFieldScopes[i]);
+        let name = (fd.name as Identifier).name;
+        if (name == storageName && member.value != null) { continue; }
+        if (fd.isShared) {
+          // One copy per class: the first application initializes it.
+          if (values.has(sharedScope + '::' + name)) { continue; }
+          this.#computeCtorField(values, ct, structType, name,
+              fd.value as Expression, mapSetterNames, sharedScope);
+          continue;
+        }
+        this.#computeCtorField(values, ct, structType, name,
+            fd.value as Expression, mapSetterNames, df.scope);
       }
     }
   }
@@ -2141,6 +2189,16 @@ export final class FunctionLowerer {
       }
     }
     var lookupName = actualName;
+    // A decorated field's value — initializer, `this.x` parameter or
+    // initializer-list entry — lands in the decorator's storage field,
+    // whose struct name is already fully scoped.
+    let decorated = ct.decoratedFields;
+    if (decorated != null && mixinScope == '') {
+      if (let (true, df) = decorated.get(fieldName)) {
+        lookupName = df.storageKey;
+        actualName = df.storageKey;
+      }
+    }
     if (actualName.length > 0 && actualName.sliceBytes(0, 1) == "#") {
       // Mixin privates are lexical to the MIXIN: their struct fields
       // carry the mixin's scope key, never the host class's.
@@ -5955,15 +6013,13 @@ export final class FunctionLowerer {
       // mixin may have been applied at an ancestor.
       let mixScope = this.#mixinScope();
       if (mixScope != null) {
-        let scopedName = mixScope + "::" + slotName;
-        var applied: ClassType | null = ct;
-        while (applied != null) {
-          let key = getClassMethodKey(getClassKey(applied), scopedName);
-          if (let (true, m) = this.wasm.classMethodMap.get(key)) {
-            method = m;
-            break;
+        method = this.#scopedClassMethod(ct, mixScope + "::" + slotName);
+        if (method == null) {
+          // A decorator body calling one of its `shared` methods.
+          let sharedScope = this.#decoratorSharedScope();
+          if (sharedScope != null) {
+            method = this.#scopedClassMethod(ct, sharedScope + "::" + slotName);
           }
-          applied = applied.superType;
         }
         if (method == null) {
           this.#bail('mixin private method not found');
@@ -6467,6 +6523,36 @@ export final class FunctionLowerer {
    * for monomorphized copies of generic mixin methods (their
    * registration paths never see a mixin).
    */
+  /**
+   * The declaration scope key of the decorator whose body this function
+   * is, where the decorator's `shared` members live; null for any other
+   * function. The application's own key is `#mixinScope()`.
+   */
+  #decoratorSharedScope(): String | null {
+    let declaring = this.func.declaringType;
+    if (declaring == null) {
+      return null;
+    }
+    return declaring.decoratorSharedScopeKey;
+  }
+
+  /**
+   * The registered method `scopedName` on `ct` or an ancestor, or null.
+   * Scoped (mixin or decorator) registrations are walked from the
+   * receiver's class because the body may be applied at an ancestor.
+   */
+  #scopedClassMethod(ct: ClassType, scopedName: String): WasmFunction | null {
+    var applied: ClassType | null = ct;
+    while (applied != null) {
+      let key = getClassMethodKey(getClassKey(applied), scopedName);
+      if (let (true, f) = this.wasm.classMethodMap.get(key)) {
+        return f;
+      }
+      applied = applied.superType;
+    }
+    return null;
+  }
+
   #mixinScope(): String | null {
     if (!this.func.privateScopeResolved) {
       this.func.privateScopeResolved = true;
@@ -6499,6 +6585,15 @@ export final class FunctionLowerer {
       if (st.fieldIndexByName(scopedName) >= 0) {
         return scopedName;
       }
+      // A decorator body's `shared` fields live under the declaration's
+      // key rather than the application's.
+      let sharedScope = this.#decoratorSharedScope();
+      if (sharedScope != null) {
+        let sharedName = sharedScope + "::" + propName;
+        if (st.fieldIndexByName(sharedName) >= 0) {
+          return sharedName;
+        }
+      }
       return null;
     }
     // Shared with the streaming backend: struct field names carry the
@@ -6517,14 +6612,13 @@ export final class FunctionLowerer {
   #resolvePrivateAccessor(ct: ClassType, lexicalCt: ClassType, accName: String): WasmFunction | null {
     let mixScope = this.#mixinScope();
     if (mixScope != null) {
-      let scopedName = mixScope + "::" + accName;
-      var applied: ClassType | null = ct;
-      while (applied != null) {
-        let key = getClassMethodKey(getClassKey(applied), scopedName);
-        if (let (true, f) = this.wasm.classMethodMap.get(key)) {
-          return f;
-        }
-        applied = applied.superType;
+      let scoped = this.#scopedClassMethod(ct, mixScope + "::" + accName);
+      if (scoped != null) {
+        return scoped;
+      }
+      let sharedScope = this.#decoratorSharedScope();
+      if (sharedScope != null) {
+        return this.#scopedClassMethod(ct, sharedScope + "::" + accName);
       }
       // The scoped registration is the only one a mixin body may
       // name; the lexical walk below would find the HOST's accessor.
@@ -6657,7 +6751,7 @@ export final class FunctionLowerer {
       currClass = currClass.superType;
     }
     if (getter == null) {
-      this.#bail('member not found');
+      this.#bail('member not found: ' + propName + ' on ' + ct.name);
     }
     if (getter.isStatic) {
       this.#bail('static member');

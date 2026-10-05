@@ -19,6 +19,7 @@ import {
   InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration,
   ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration,
   DeclareFunction, SymbolDeclaration, ImportSpecifier,
+  Decorator, isBuiltinDecoratorName,
   // Patterns
   BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern,
   ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern,
@@ -820,10 +821,15 @@ export final class ScopeBuilder {
         this.#processInterfaceBody(body);
         this.#exitScope();
       }
-      case MixinDeclaration {typeParameters, on, mixins, body}: {
+      case MixinDeclaration {typeParameters, on, mixins, body, decoratorSubject}: {
         this.#enterScope(ScopeKind.Class);
         if (typeParameters != null) {
           this.#declareTypeParameters(typeParameters);
+        }
+        // A decorator's subject is a placeholder, not a binding: only its
+        // type annotation names anything.
+        if (decoratorSubject != null && decoratorSubject.typeAnnotation != null) {
+          this.#processTypeAnnotation(decoratorSubject.typeAnnotation as TypeAnnotation);
         }
         // Traverse `with` clause so mixin names are linked in the ReferenceMap.
         if (on != null) {
@@ -1132,12 +1138,29 @@ export final class ScopeBuilder {
    * checks them as such, so their names need references like any other.
    * Class, mixin and interface bodies all come through here.
    */
+  /**
+   * Records the references a member's decorators make: the name a user
+   * decorator is applied by, and anything its arguments mention. A
+   * builtin decorator (`@intrinsic`, `@external`, `@pure`) is not a name
+   * in any scope, so only its arguments are walked.
+   */
+  #processDecorators(decorators: GrowableArray<Decorator>): void {
+    for (let dec in decorators) {
+      if (dec.path.length > 0 && !isBuiltinDecoratorName(dec.path[0].name)) {
+        this.#processExpression(dec.path[0] as Expression);
+      }
+      for (let arg in dec.args) {
+        this.#processExpression(arg);
+      }
+    }
+  }
+
   #processSymbolKeyedName(member: Node): void {
     var nameNode: Node | null = null;
     match (member) {
-      case FieldDefinition as fd: { nameNode = fd.name; }
-      case MethodDefinition as md: { nameNode = md.name; }
-      case AccessorDeclaration as acc: { nameNode = acc.name; }
+      case FieldDefinition as fd: { nameNode = fd.name; this.#processDecorators(fd.decorators); }
+      case MethodDefinition as md: { nameNode = md.name; this.#processDecorators(md.decorators); }
+      case AccessorDeclaration as acc: { nameNode = acc.name; this.#processDecorators(acc.decorators); }
       case MethodSignature as ms: { nameNode = ms.name; }
       case _: {}
     }

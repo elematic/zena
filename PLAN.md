@@ -288,7 +288,14 @@ Features that distinguish Zena from TypeScript:
   [tail-calls.md](docs/design/tail-calls.md). What remains: multi-value
   tail returns, and callee return types that are wasm subtypes rather
   than the same type.
-- **Decorators and Macros**: Metaprogramming capabilities for compile-time code generation and extension.
+- **Decorators and Macros**: Metaprogramming capabilities for compile-time
+  code generation and extension. Field decorators are implemented: a
+  `decorator` declaration replaces a class field with an accessor and adds
+  per-field state to the class, with no separate allocation — see
+  [decorators.md](docs/design/decorators.md). What remains: decorator
+  arguments, dotted decorator names, method and class decorators, and
+  expression decorators as macro application
+  ([macros.md](docs/design/macros.md)).
 - **Contracts**: `requires` and `ensures` pre/post-conditions, enabling runtime assertion checks and future static verification using SMT solvers.
 - **Graphical Applications & WebGPU Runtime (`zenafx` / `zfx`)**: Native runtime support for running graphical WebAssembly components with GPU hardware acceleration (`wasi:webgpu`) and OS window presentation (`wasi-gfx:surface`).
   - **Host runtime (`zfx`) is implemented**: `packages/zenafx` embeds Wasmtime 48 with Zena's engine settings (WasmGC, exceptions, tail calls) and `wasi-gfx` host linkers (`surface-wasmtime`, `wasi-webgpu-wasmtime`, `frame-buffer-wasmtime`), running the `winit` OS event loop on the main thread and Wasm execution on Tokio.

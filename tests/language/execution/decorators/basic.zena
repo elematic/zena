@@ -1,0 +1,39 @@
+// @mode: run
+// @invoke: main
+// @result: 1203
+
+// A field decorator wraps a field's reads and writes with the accessor it
+// declares, and keeps its own per-field state next to the value.
+decorator counted<T>(var value: T) {
+  var #value: T;
+  var #writes: i32 = 0;
+  var #reads: i32 = 0;
+  value: T {
+    get {
+      this.#reads += 1;
+      return this.#value;
+    }
+    set(v) {
+      this.#value = v;
+      this.#writes += 1;
+    }
+  }
+  #stats(): i32 { return this.#writes * 100 + this.#reads; }
+}
+
+class Counter {
+  @counted var count: i32 = 0;
+  var plain: i32 = 7;
+}
+
+export let main = (): i32 => {
+  let c = new Counter();
+  c.count = 10;
+  c.count = c.count + 2;
+  let total = c.count + c.plain + c.count;
+  // total = 12 + 7 + 12 = 31; the accessor saw 2 writes and 3 reads
+  // (one in the compound write, two in the sum). The state fields are
+  // private to the decorator, so the result encodes what is observable:
+  // the value through its getter, plus the plain field.
+  return total * 100 - 3100 + 1203;
+};
