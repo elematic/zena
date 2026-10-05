@@ -40,7 +40,7 @@ import { checkModule, beginModule, finishModule, ModuleCheck, CheckResult, Share
 import { walk } from './visitor.zena';
 import { Diagnostic, SourceSpan } from './diagnostics.zena';
 import { SemanticModel } from './semantic-model.zena';
-import { performance } from './time.zena';
+import { nowMs, performance } from './time.zena';
 import {
   Type, ClassType, FunctionType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo, RecordType, TypeParameterType, TypeAliasType, SymbolType, ArrayType, TupleType, InlineTupleType, UnionType, BoolLiteralType, StringLiteralType, NumLiteralType, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, V128Type, BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyRefType, EqRefType, ThisType, ErasedType, declaringModuleOf,
 } from './types.zena';
@@ -2085,6 +2085,9 @@ export let checkCompilation = (
         if (previous.exportSignatures.has(file.path)) {
           allSignatures[file.path] = previous.exportSignatures[file.path];
         }
+        // Counted, not timed: how many files a warm compiler carried
+        // forward is what says whether the incremental path is working.
+        performance.add("check-carried", 0.0);
         continue;
       }
     }
@@ -2094,10 +2097,16 @@ export let checkCompilation = (
       // its bodies wait until every member has registered
       // (docs/design/import-cycles.md): a body may construct a class
       // from later in the cycle, and needs that class's constructor.
+      // Counted, not timed: `beginFile` is `check-register`.
+      performance.add("check-cycle-members", 0.0);
       let mc = beginFile(file, allResults, inProgress, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths, defersBodies(file.path));
       inProgress[file.path] = mc;
       sharedState.inProgressModules[file.path] = mc.ctx;
     } else {
+      // Counted, not timed: `checkFile` is register plus bodies plus
+      // exports, each of which times itself, so timing it here as well
+      // would report the same milliseconds twice.
+      performance.add("check-whole-files", 0.0);
       recordChecked(file, checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths, defersBodies(file.path)));
     }
 
@@ -2126,6 +2135,9 @@ export let checkCompilation = (
       }
       for (let member in members) {
         if (inProgress.has(member.path)) {
+          // A cycle member registers twice; the second registration is
+          // `check-register` again, so this only counts them.
+          performance.add("check-cycle-reregistrations", 0.0);
           let again = beginFile(member, allResults, inProgress, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths, defersBodies(member.path));
           inProgress[member.path] = again;
           sharedState.inProgressModules[member.path] = again.ctx;
@@ -2133,7 +2145,9 @@ export let checkCompilation = (
       }
       for (let member in members) {
         if (let (true, mc) = inProgress.get(member.path)) {
+          let tRefresh = nowMs();
           refreshDepModels(mc, member, allResults, inProgress);
+          performance.add("check-cycle-refresh", nowMs() - tRefresh);
           let checkResult = finishModule(mc);
           sharedState.inProgressModules.delete(member.path);
           inProgress.delete(member.path);

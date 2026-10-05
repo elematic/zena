@@ -121,18 +121,27 @@ import {
 import { Symbol, SymbolId, noSymbolId } from './scope/symbol.zena';
 import { ScopeResult, ModuleExports } from './scope/scope-builder.zena';
 import { WellKnown, isWellKnown, wellKnownLibrary, wellKnownName, protocolSymbolKey } from './well-known.zena';
+import { nowMs, performance } from './time.zena';
 
 let lookupBindingTypeInDeps = (ctx: CheckerContext, sym: Symbol): Type | null => {
+  // A linear scan of every dependency's model, asked once per imported
+  // name whose type the direct dependency's model does not hold. A name
+  // re-exported through `export *` is exactly that case, so the cost
+  // here grows with the product of the modules and their dependencies;
+  // the phase total and call count say whether that product matters.
+  let tLookup = nowMs();
+  var found: Type | null = null;
   let models = ctx.depModels;
   if (models != null) {
     for (let depKey in models.keys()) {
       if (let (true, depModel) = models.get(depKey)) {
         let dbt = depModel.getBindingTypeDirect(sym);
-        if (dbt != null) { return dbt; }
+        if (dbt != null) { found = dbt; break; }
       }
     }
   }
-  return null;
+  performance.add("check-dep-lookup", nowMs() - tLookup);
+  return found;
 };
 
 /**
@@ -4410,6 +4419,7 @@ export let beginModule = (
   // member signatures are available before any bodies are checked.
   // The module's implicit prelude imports first, ahead of the imports
   // it writes, as though written at the top of the file.
+  let tRegister = nowMs();
   for (let implicitImport in scopeResult.implicitImportDeclarations) {
     checkStatement(ctx, implicitImport);
   }
@@ -4431,6 +4441,7 @@ export let beginModule = (
     }
     ri += 1;
   }
+  performance.add("check-register", nowMs() - tRegister);
 
   // Index the module's top-level value declarations. Reachability
   // reads `globalDeclarations` to find the declaration behind a symbol
@@ -4483,10 +4494,16 @@ export let finishModule = (mc: ModuleCheck): CheckResult => {
   // are what give an unannotated field its type, and the class rules
   // that mutate the class.
   let deferred = if (mc.deferBodies) new DeferredModule(ctx) else null;
+  // Deferred or not, this measures what Phase 2 did here; a body
+  // checked later on reachability's demand is timed where that happens.
+  let tBodies = nowMs();
   for (let stmt in ast.body) {
     checkTopLevelStatement(ctx, stmt, deferred);
   }
   ctx.model.deferredBodies = deferred;
+
+  performance.add("check-bodies", nowMs() - tBodies);
+  let tExports = nowMs();
 
   // Collect diagnostics from the bag into the model.
   for (let diagnostic in ctx.diagnostics.diagnostics) {
@@ -4561,6 +4578,7 @@ export let finishModule = (mc: ModuleCheck): CheckResult => {
   ctx.model.index = state.modelIndex;
   state.modelIndex.register(ctx.model);
 
+  performance.add("check-exports", nowMs() - tExports);
   return new CheckResult(ctx.model, ctx.diagnostics.diagnostics);
 };
 
