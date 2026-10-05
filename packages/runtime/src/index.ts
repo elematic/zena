@@ -73,6 +73,128 @@ export interface ZenaImports {
 }
 
 /**
+ * A JavaScript Error representing an uncaught exception from a Zena WebAssembly module.
+ *
+ * WebAssembly.Exception does not inherit from Error and lacks standard .stack and
+ * .message properties in V8. ZenaException wraps it with the real call stack
+ * captured inside WebAssembly.
+ */
+export class ZenaException extends Error {
+  readonly wasmException?: unknown;
+
+  constructor(message: string, options?: {cause?: unknown; stack?: string}) {
+    super(message, {cause: options?.cause});
+    this.name = 'ZenaException';
+    this.wasmException = options?.cause;
+    if (options?.stack) {
+      const lines = options.stack.split('\n');
+      const frameLines = lines.filter(
+        (line) =>
+          line.trim().startsWith('at ') && !line.includes('captureStackTrace'),
+      );
+      if (frameLines.length > 0) {
+        this.stack = `${this.name}: ${message}\n${frameLines.join('\n')}`;
+      } else {
+        const firstAt = options.stack.indexOf('    at ');
+        this.stack =
+          firstAt !== -1
+            ? `${this.name}: ${message}\n${options.stack.slice(firstAt)}`
+            : options.stack;
+      }
+    }
+  }
+}
+
+/** Check if a value is an instance of WebAssembly.Exception. */
+export function isWebAssemblyException(val: unknown): boolean {
+  const wasmGlobal =
+    typeof WebAssembly !== 'undefined'
+      ? (WebAssembly as unknown as {Exception?: Function})
+      : undefined;
+  return (
+    val != null &&
+    typeof val === 'object' &&
+    (val.constructor?.name === 'Exception' ||
+      val.constructor?.name === 'WebAssembly.Exception' ||
+      (typeof wasmGlobal?.Exception === 'function' &&
+        val instanceof wasmGlobal.Exception))
+  );
+}
+
+/**
+ * Convert any caught value (including WebAssembly.Exception) to a standard JavaScript Error.
+ */
+export function toError(
+  err: unknown,
+  exports?: WebAssembly.Exports,
+  lastCaptured?: Error | null,
+): Error {
+  if (err instanceof Error && !(err instanceof ZenaException && !err.stack)) {
+    return err;
+  }
+  if (isWebAssemblyException(err)) {
+    let message = 'Zena runtime exception';
+    let stack: string | undefined = lastCaptured?.stack;
+
+    if (exports) {
+      try {
+        const getMsg = exports['getLastErrorMessage'] as
+          (() => unknown) | undefined;
+        if (typeof getMsg === 'function') {
+          const msgRef = getMsg();
+          if (msgRef != null) {
+            const getLen = exports['$stringGetLength'] as
+              ((s: unknown) => number) | undefined;
+            const len = getLen ? getLen(msgRef) : undefined;
+            if (len != null) {
+              message = createStringReader(exports)(msgRef, len);
+            }
+          }
+        }
+      } catch {}
+
+      try {
+        const getStack = exports['getLastErrorStack'] as
+          (() => unknown) | undefined;
+        if (typeof getStack === 'function') {
+          const stackRef = getStack();
+          if (stackRef != null) {
+            const getLen = exports['$stringGetLength'] as
+              ((s: unknown) => number) | undefined;
+            const len = getLen ? getLen(stackRef) : undefined;
+            if (len != null) {
+              stack = createStringReader(exports)(stackRef, len);
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (!stack && lastCaptured?.stack) {
+      stack = lastCaptured.stack;
+    }
+
+    return new ZenaException(message, {cause: err, stack});
+  }
+  return new Error(String(err));
+}
+
+/**
+ * Format any error for display or logging, including WebAssembly stack traces.
+ */
+export function formatError(
+  err: unknown,
+  instanceOrExports?: WebAssembly.Instance | WebAssembly.Exports,
+): string {
+  const exports =
+    instanceOrExports && 'exports' in instanceOrExports
+      ? (instanceOrExports.exports as WebAssembly.Exports)
+      : (instanceOrExports as WebAssembly.Exports | undefined);
+  const e = toError(err, exports);
+  return e.stack ?? e.message;
+}
+
+/**
  * ByteArray - a WASM GC array of i8 (signed bytes).
  *
  * A WASM GC array is opaque to JS: it has no indexed access, no length,
@@ -851,7 +973,11 @@ export function runSync(
   if (typeof main !== 'function') {
     throw new Error('runSync(): the module has no `main` export');
   }
-  return main(...args);
+  try {
+    return main(...args);
+  } catch (err) {
+    throw toError(err, instance.exports);
+  }
 }
 
 /**
@@ -883,12 +1009,20 @@ export async function run(
   const start = exports['__zena_main_start'] as (...a: unknown[]) => void;
   const result = exports['__zena_main_result'] as () => unknown;
 
-  start(...args);
+  try {
+    start(...args);
+  } catch (err) {
+    throw toError(err, exports);
+  }
   const idle = idleWaiters.get(exports as object);
   if (idle) {
     await idle();
   }
-  return result();
+  try {
+    return result();
+  } catch (err) {
+    throw toError(err, exports);
+  }
 }
 
 /**
@@ -904,6 +1038,7 @@ export async function instantiate(
 ): Promise<WebAssembly.WebAssemblyInstantiatedSource | WebAssembly.Instance> {
   // Deferred exports reference - will be set after instantiation
   let instanceExports: WebAssembly.Exports | undefined;
+  let lastCapturedError: Error | null = null;
 
   let writeString: ((s: string) => unknown) | null = null;
   const envImports = {
@@ -923,8 +1058,16 @@ export async function instantiate(
       const stack = new Error().stack || 'Stack trace unavailable';
       return writeString(stack);
     },
-    captureStackTrace: () => {
-      return new Error();
+    captureStackTrace: (msgRef?: unknown, msgLen?: number) => {
+      let msg = 'Zena runtime exception';
+      if (msgRef != null && typeof msgLen === 'number' && instanceExports) {
+        try {
+          msg = createStringReader(instanceExports)(msgRef, msgLen);
+        } catch {}
+      }
+      const err = new Error(msg);
+      lastCapturedError = err;
+      return err;
     },
     formatStackTrace: (err: unknown) => {
       if (err == null) {
@@ -1004,15 +1147,47 @@ export async function instantiate(
   // ImportValue union does not yet describe.
   const importObject = imports as unknown as WebAssembly.Imports;
 
+  const wrapExports = (
+    rawExports: WebAssembly.Exports,
+  ): WebAssembly.Exports => {
+    const wrapped: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(rawExports)) {
+      if (typeof value === 'function') {
+        wrapped[key] = (...args: unknown[]) => {
+          try {
+            return (value as Function)(...args);
+          } catch (err) {
+            throw toError(err, rawExports, lastCapturedError);
+          }
+        };
+      } else {
+        wrapped[key] = value;
+      }
+    }
+    return wrapped as WebAssembly.Exports;
+  };
+
   if (wasm instanceof WebAssembly.Module) {
     const instance = await WebAssembly.instantiate(wasm, importObject);
-    instanceExports = instance.exports;
+    const exports = wrapExports(instance.exports);
+    instanceExports = exports;
+    Object.defineProperty(instance, 'exports', {
+      value: exports,
+      writable: true,
+      configurable: true,
+    });
     idleWaiters.set(instanceExports, pending.idle);
     return instance;
   }
 
   const result = await WebAssembly.instantiate(wasm, importObject);
-  instanceExports = result.instance.exports;
+  const exports = wrapExports(result.instance.exports);
+  instanceExports = exports;
+  Object.defineProperty(result.instance, 'exports', {
+    value: exports,
+    writable: true,
+    configurable: true,
+  });
   idleWaiters.set(instanceExports, pending.idle);
   return result;
 }
