@@ -14,6 +14,28 @@ permissions:
   contents: read
 
 jobs:
+  # Separate from the test job so a formatting slip reports in about a minute
+  # rather than behind the half-hour suite. It needs neither cache: format:check
+  # runs prettier directly rather than through wireit, and nothing here builds
+  # Rust. The test job keeps its id, because rust-cache puts the job id in its
+  # key (v0-rust-test-...) and renaming the job would orphan the entry.
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Install npm dependencies
+        run: nix develop --command npm ci
+
+      - name: Check code formatting
+        run: nix develop --command npm run format:check
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -65,9 +87,6 @@ jobs:
 
       - name: Install npm dependencies
         run: nix develop --command npm ci
-
-      - name: Check code formatting
-        run: nix develop --command npm run format:check
 
       - name: Run test suite
         run: nix develop --command npm test
