@@ -25,15 +25,36 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
 
+      # The runner image ships its own Rust (1.98.1 on ubuntu-24.04), but the
+      # build uses the dev shell's, which the flake pins separately and keeps
+      # in two store paths. Prepend both bin directories so rust-cache keys on
+      # the compiler that does the work. Keyed on the image's rustc instead,
+      # the key would ignore a flake.lock toolchain bump and churn on every
+      # image update. Realising the closure here costs nothing: the next step
+      # would do it anyway.
+      - name: Put the dev shell's cargo and rustc on PATH
+        run: nix develop --command bash -c 'dirname "$(command -v rustc)"; dirname "$(command -v cargo)"' >> "$GITHUB_PATH"
+
+      # Caches ~/.cargo and the dependency half of target/, keyed by
+      # Cargo.lock and the rustc version. The workspace's own crates are
+      # pruned out and recompile quickly; what this keeps is wasmtime,
+      # cranelift and their LLVM bindings, which take minutes from source.
+      # The cargo build runs on every CI run, because the four cargo wireit
+      # scripts declare no inputs -- see packages/zena-run/package.json.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
       # There is deliberately no nix store cache here. 154 of the dev shell's
       # 159 paths come from cache.nixos.org, which a GitHub runner reaches
       # through a Fastly edge, and the 5 that do not are 58.5 MB
       # (`wasmtime`, the WIT corpus fetchzips, the shell derivation).
       # Measured both ways on this workflow: realising the whole closure cold
       # takes 33s, while restoring a 1,116 MB cache-nix-action entry takes 30s
-      # and leaves 8s of substitution, so the cache is break-even at best. It
-      # also spends 1.1 GB of the 10 GB per-repository budget that wireit's
-      # cache needs -- and that one is worth 27 minutes a run.
+      # and leaves 8s of substitution. Paying 30s to save 25s is a loss, and
+      # it spends 1.1 GB of a 10 GB per-repository budget that the Rust cache
+      # above puts to better use against a much slower baseline.
       #
       # magic-nix-cache was worse: it re-uploads paths it fetched from
       # cache.nixos.org, so each run stored the closure it had just restored
