@@ -267,6 +267,16 @@
             echo "WASI WIT corpus: $ZENA_WASI_WIT"
           '';
         };
+
+        # Node and nothing else, for work that needs neither Rust nor
+        # wasmtime. `npm run format:check` runs prettier out of node_modules,
+        # and the default shell's closure is 3.02 GB across 159 paths because
+        # it carries rustc, LLVM and gcc, so CI's format job was downloading a
+        # Rust toolchain to run a formatter. mkShellNoCC rather than mkShell,
+        # which would put a C compiler and binutils back in.
+        devShells.format = pkgs.mkShellNoCC {
+          buildInputs = [ nodejs ];
+        };
       }
     );
 }
