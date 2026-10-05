@@ -122,6 +122,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   wasm: WasmModule;
   target: String;
 
+
   var #chaBacking: ClassHierarchyAnalysis | null = null;
   var #specializerBacking: SpecializerInterface | null = null;
   var #typeLowererBacking: TypeLowererInterface | null = null;
@@ -4113,12 +4114,25 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   processQueues(): void {
+    // Counted in locals and reported once at the end: the item loop is
+    // the hottest in the compiler, and a map lookup per item would be
+    // a measurable part of what it is trying to measure.
+    //
+    // `items` against the size of the program says whether the walk is
+    // linear in the program; `outerRounds` is the specialization
+    // fixpoint, and each of its rounds rewalks whatever the previous
+    // one queued.
+    var items = 0;
+    var outerRounds = 0;
+    let nodesAtStart = this.visitor.discoveredNodes;
     var lastInstantiatedCount = -1;
     while (this.instantiatedSpecializedClasses.size > lastInstantiatedCount) {
+      outerRounds += 1;
       lastInstantiatedCount = this.instantiatedSpecializedClasses.size;
       var progress = true;
       while (progress) {
         while (this.reachHead < this.reachableQueue.length || this.checkHead < this.checkableQueue.length) {
+          items += 1;
           var refItem: Referrer | null = null;
           if (this.reachHead < this.reachableQueue.length) {
             refItem = this.reachableQueue[this.reachHead];
@@ -4135,10 +4149,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           } else {
             null
           };
-          let suffix = if (refItem.classType != null) "@" + (getClassKey(refItem.classType as ClassType) as String) else "";
-          (if (refItem.isSymbol) "sym:" + i32ToString(refItem.symId as i32) else "node:" + i32ToString(refItem.nodeId)) + suffix;
-
-
           if (refItem.isSymbol) {
             let {symId} = refItem;
             let {model} = refItem;
@@ -4509,6 +4519,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
       }
     }
+    performance.add("codegen-discovery-queues-items", 0.0, items);
+    performance.add("codegen-discovery-queues-rounds", 0.0, outerRounds);
+    performance.add("codegen-discovery-queues-nodes", 0.0,
+        this.visitor.discoveredNodes - nodesAtStart);
   }
 }
 

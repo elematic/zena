@@ -470,8 +470,12 @@ export final class TypeLowerer implements TypeLowererInterface {
 export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   pass: ReachabilityContext;
   #discoveringOnDemand = new Set<SymbolId>();
+  var #nodes: i32 = 0;
 
   new(this.pass);
+
+  /** AST nodes the discovery walk has entered. */
+  discoveredNodes: i32 { get { return this.#nodes; } }
 
   /**
    * Registers every string-literal payload under `root` into the
@@ -1793,6 +1797,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // decides which member a private name in this body refers to.
     let bodyScope = mixinScopeOfNode(model, root);
     walkEnter(root, (n: Node) => {
+      // One field increment per node walked, on this class rather than
+      // through `pass`: a compound write to a field reached through an
+      // interface-typed reference does not lower ("zir unsupported:
+      // interface compound write").
+      this.#nodes += 1;
       if (n is ThrowExpression || n is TryExpression) {
         this.pass.noteExceptionInfra(model);
       }
