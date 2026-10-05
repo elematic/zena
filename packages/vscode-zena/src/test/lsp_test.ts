@@ -14,7 +14,7 @@ import {fileURLToPath} from 'node:url';
 import {
   createStringReader,
   createStringWriter,
-  createConsoleImports,
+  instantiate,
 } from '@zena-lang/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,37 +53,25 @@ async function loadLsp(): Promise<LspHandle> {
   let writeString: ((s: string) => unknown) | undefined;
   let readString: ((ref: unknown, len: number) => string) | undefined;
 
-  const consoleImports = createConsoleImports(() => exports);
-
   const compilerImports = {
     read_file: (pathRef: unknown, pathLen: number): unknown => {
       const filePath = readString!(pathRef, pathLen);
-      console.log(`  [read_file] ${filePath}`);
       try {
         const content = readFileSync(filePath, 'utf8');
         return writeString!(content);
       } catch (e: any) {
-        console.error(
-          `lsp_test: read_file failed for: ${filePath}`,
-          e?.message,
-        );
-        return writeString!('');
+        return null;
       }
     },
   };
 
-  const result = await WebAssembly.instantiate(wasmBuffer, {
-    env: {
-      getStackTrace: () => null,
-      captureStackTrace: () => null,
-      formatStackTrace: () => null,
-    },
-    console: consoleImports,
+  const result = await instantiate(wasmBuffer, {
     compiler: compilerImports,
   });
 
   const instance =
-    (result as unknown as {instance: WebAssembly.Instance}).instance ?? result;
+    (result as unknown as {instance: WebAssembly.Instance}).instance ??
+    (result as WebAssembly.Instance);
   exports = instance.exports as LspExports;
   writeString = createStringWriter(exports);
   readString = createStringReader(exports);
@@ -139,7 +127,7 @@ suite('lsp.wasm integration', () => {
   });
 
   test('reports no diagnostics for valid code', () => {
-    const diags = checkSource(lsp, 'let x = 42;');
+    const diags = checkSource(lsp, 'export let x = 42;');
     assert.strictEqual(
       diags.length,
       0,
@@ -187,73 +175,16 @@ suite('lsp.wasm integration', () => {
   });
 
   test('resolves simple stdlib import', () => {
-    // Test with inline source that mimics string.zena features
-    const stringLikeSrc = `
-export final class MyString {
-  #data: i32;
-  #start: i32;
-  #end: i32;
-
-  new(data: i32, start: i32, end: i32)
-    : #data = data, #start = start, #end = end;
-
-  length: i32 {
-    get {
-      return this.#end - this.#start;
-    }
-  }
-
-  static fromParts(x: i32): MyString {
-    return new MyString(x, 0, x);
-  }
-
-  getByteAt(index: i32): i32 {
-    return this.#start + index;
-  }
-
-  copy(): MyString {
-    return new MyString(this.#data, this.#start, this.#end);
-  }
-
-  operator +(other: MyString): MyString {
-    return new MyString(this.#data, this.#start, other.#end);
-  }
-
-  operator ==(other: MyString): boolean {
-    return this.#start == other.#start;
-  }
-}
-`;
-    try {
-      const diags = checkSource(lsp, stringLikeSrc);
-      const errors = diags.filter((d: any) => d.severity === 0);
-      console.log(`  [string-like test] ${errors.length} errors`);
-      if (errors.length > 0) console.log(`    ${JSON.stringify(errors)}`);
-    } catch (e: any) {
-      console.log(`  [string-like test] CRASH - ${e.message}`);
-    }
-
-    // Also test the actual stdlib imports
-    const tests = [
-      {
-        name: 'string',
-        src: `import { String } from 'zena:core'; let x: i32 = 42;`,
-      },
-      {
-        name: 'error',
-        src: `import { Error } from 'zena:core'; let x: i32 = 42;`,
-      },
-    ];
-    for (const t of tests) {
-      try {
-        const diags = checkSource(lsp, t.src);
-        const errors = diags.filter((d: any) => d.severity === 0);
-        console.log(`  [import test] ${t.name}: ${errors.length} errors`);
-        if (errors.length > 0) console.log(`    ${JSON.stringify(errors)}`);
-      } catch (e: any) {
-        console.log(`  [import test] ${t.name}: CRASH - ${e.message}`);
-      }
-    }
+    const diags = checkSource(
+      lsp,
+      `import { String, Error } from 'zena:core'; export let x: i32 = 42;`,
+    );
+    const errors = diags.filter((d: any) => d.severity === 0);
+    assert.strictEqual(
+      errors.length,
+      0,
+      `Expected 0 errors with stdlib import, got: ${JSON.stringify(errors)}`,
+    );
   });
 
   test('reports error for bad import name', () => {

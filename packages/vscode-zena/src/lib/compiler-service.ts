@@ -1,12 +1,42 @@
 import * as vscode from 'vscode';
 import {readFile} from 'node:fs/promises';
-import {readFileSync} from 'node:fs';
+import {readFileSync, existsSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import {
   createStringReader,
   createStringWriter,
-  createConsoleImports,
+  instantiate,
 } from '@zena-lang/runtime';
+
+/**
+ * Locate the stdlib/zena source directory across development workspaces,
+ * monorepo packages, or packaged extensions.
+ */
+function findStdlibRoot(extensionPath: string): string {
+  const candidates = [
+    resolve(extensionPath, '../stdlib/zena'),
+    resolve(extensionPath, '../../stdlib/zena'),
+    resolve(extensionPath, 'stdlib/zena'),
+    resolve(extensionPath, 'node_modules/@zena-lang/stdlib/zena'),
+  ];
+  for (const c of candidates) {
+    if (
+      existsSync(join(c, 'core/index.zena')) ||
+      existsSync(join(c, 'core.zena'))
+    ) {
+      return c;
+    }
+  }
+  if (vscode.workspace.workspaceFolders) {
+    for (const folder of vscode.workspace.workspaceFolders) {
+      const p1 = resolve(folder.uri.fsPath, 'packages/stdlib/zena');
+      if (existsSync(join(p1, 'core/index.zena'))) return p1;
+      const p2 = resolve(folder.uri.fsPath, 'stdlib/zena');
+      if (existsSync(join(p2, 'core/index.zena'))) return p2;
+    }
+  }
+  return candidates[0];
+}
 
 /**
  * Typed interface for the LSP WASM exports.
@@ -90,36 +120,38 @@ export class ZenaCompilerService {
     let writeString: ((s: string) => unknown) | undefined;
     let readString: ((ref: unknown, len: number) => string) | undefined;
 
-    const consoleImports = createConsoleImports(() => exports);
+    let lastReadFile: string | undefined;
+    let lastReadFileFound = true;
 
-    // Host import: read a file by absolute path and return a WASM String.
+    // Host import: read a file by absolute path and return a WASM String, or null if not found.
     const compilerImports = {
       read_file: (pathRef: unknown, pathLen: number): unknown => {
-        const reader = readString!;
-        const writer = writeString!;
-        const filePath = reader(pathRef, pathLen);
         try {
-          const content = readFileSync(filePath, 'utf8');
-          return writer(content);
+          const reader = readString!;
+          const writer = writeString!;
+          const filePath = reader(pathRef, pathLen);
+          lastReadFile = filePath;
+          try {
+            const content = readFileSync(filePath, 'utf8');
+            lastReadFileFound = true;
+            return writer(content);
+          } catch {
+            lastReadFileFound = false;
+            return null;
+          }
         } catch {
-          throw new Error(`File not found: ${filePath}`);
+          return null;
         }
       },
     };
 
-    const result = await WebAssembly.instantiate(wasmBuffer, {
-      env: {
-        getStackTrace: () => null,
-        captureStackTrace: () => null,
-        formatStackTrace: () => null,
-      },
-      console: consoleImports,
+    const result = await instantiate(wasmBuffer, {
       compiler: compilerImports,
     });
 
     const instance =
       (result as unknown as {instance: WebAssembly.Instance}).instance ??
-      result;
+      (result as WebAssembly.Instance);
     exports = instance.exports as LspExports;
     this.#exports = exports;
     writeString = createStringWriter(exports);
@@ -128,12 +160,23 @@ export class ZenaCompilerService {
     this.#readString = readString;
 
     // Initialize the compiler with the stdlib source path.
-    const stdlibRoot = resolve(extensionPath, '../stdlib/zena');
+    const stdlibRoot = findStdlibRoot(extensionPath);
+    this.#outputChannel.appendLine(
+      `Initializing Zena compiler WASM with stdlibRoot: ${stdlibRoot}`,
+    );
     const stdlibRootRef = writeString(stdlibRoot);
-    exports.init(stdlibRootRef);
+    try {
+      exports.init(stdlibRootRef);
+    } catch (e) {
+      if (!lastReadFileFound && lastReadFile) {
+        this.#outputChannel.appendLine(
+          `Last file read attempt failed: ${lastReadFile}`,
+        );
+      }
+      throw e;
+    }
 
-    this.#outputChannel.appendLine('Zena compiler WASM loaded');
-    this.#outputChannel.appendLine(`Stdlib root: ${stdlibRoot}`);
+    this.#outputChannel.appendLine('Zena compiler WASM loaded successfully');
   }
 
   get isReady(): boolean {
