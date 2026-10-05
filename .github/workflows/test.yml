@@ -25,9 +25,20 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/determinate-nix-action@v3
 
-      - name: Cache Nix Store
-        uses: DeterminateSystems/magic-nix-cache-action@v15
-
+      # There is deliberately no nix store cache here. 154 of the dev shell's
+      # 159 paths come from cache.nixos.org, which a GitHub runner reaches
+      # through a Fastly edge, and the 5 that do not are 58.5 MB
+      # (`wasmtime`, the WIT corpus fetchzips, the shell derivation).
+      # Measured both ways on this workflow: realising the whole closure cold
+      # takes 33s, while restoring a 1,116 MB cache-nix-action entry takes 30s
+      # and leaves 8s of substitution, so the cache is break-even at best. It
+      # also spends 1.1 GB of the 10 GB per-repository budget that wireit's
+      # cache needs -- and that one is worth 27 minutes a run.
+      #
+      # magic-nix-cache was worse: it re-uploads paths it fetched from
+      # cache.nixos.org, so each run stored the closure it had just restored
+      # under a fresh key, reaching 17 copies of one 318,764,608 byte rustc
+      # archive and 16.2 GB total (magic-nix-cache#154).
       - name: Setup Wireit GitHub Actions Caching
         uses: google/wireit@setup-github-actions-caching/v2
 
