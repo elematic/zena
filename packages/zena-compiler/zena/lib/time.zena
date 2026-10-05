@@ -2,19 +2,40 @@
  * Wall-time measurement for the compiler's own phases: `performance`
  * accumulates the time spent under each named phase, over the
  * standard library's monotonic clock, which every target supplies.
+ *
+ * A phase keeps a total and a call count, and `phases()` returns them
+ * in the order each name was first measured. `--time` prints that list,
+ * so a `performance.start` added anywhere in the compiler appears in
+ * the report without a line being added for it.
+ *
+ * `start` and `end` allocate a Measure per call. That is nothing for a
+ * phase entered once per compile and too much for one entered once per
+ * function; for those, read `nowMs` into a local, accumulate over the
+ * loop, and `add` the total once at the end.
  */
 
 import { monotonic } from 'zena:time';
 
 /** The monotonic clock, in milliseconds. */
-let getMonotonicTimeMs = (): f64 => {
-  return ((monotonic() as i64) as f64) / 1000000.0;
-};
+export let nowMs = (): f64 => ((monotonic() as i64) as f64) / 1000000.0;
 
 final class Measure {
   name: String;
   startTime: f64;
   new(this.name, this.startTime);
+}
+
+/**
+ * One phase's accumulated time and call count. Only `Performance`
+ * writes the fields; a caller reads them off `phases()`.
+ */
+export final class Phase {
+  name: String;
+  /** Milliseconds accumulated under this name. */
+  var total: f64 = 0.0;
+  /** How many measures have closed under this name. */
+  var count: i32 = 0;
+  new(this.name);
 }
 
 /**
@@ -24,12 +45,19 @@ final class Measure {
 export final class Performance {
   var #nextId: i32 = 0;
   #active = new Map<i32, Measure>();
-  #measures = new Map<String, f64>();
+  #byName = new Map<String, Phase>();
+  // The same phases in the order each was first measured, which is the
+  // order they run in, and so the order to report them in.
+  var #inOrder = new GrowableArray<Phase>();
 
   start(name: String): i32 {
+    // Register the phase now rather than when it closes, so that a
+    // phase that encloses others is ordered — and so reported — ahead
+    // of them. `check` opens first and closes last.
+    this.#phase(name);
     let id = this.#nextId;
     this.#nextId += 1;
-    this.#active[id] = new Measure(name, getMonotonicTimeMs());
+    this.#active[id] = new Measure(name, nowMs());
     return id;
   }
 
@@ -37,22 +65,61 @@ export final class Performance {
     if (this.#active.has(id)) {
       let measure = this.#active[id];
       this.#active.delete(id);
-      let duration = getMonotonicTimeMs() - measure.startTime;
-      let {name} = measure;
-      let prev = if (this.#measures.has(name)) { this.#measures[name] } else { 0.0 };
-      this.#measures[name] = prev + duration;
+      let duration = nowMs() - measure.startTime;
+      this.add(measure.name, duration);
       return duration;
     }
     return 0.0;
   }
 
+  /**
+   * Adds `ms` to `name` without opening a measure: for a phase timed
+   * with `nowMs` around a loop, where a Measure per iteration would
+   * cost more than the phase being measured.
+   */
+  add(name: String, ms: f64): void {
+    let phase = this.#phase(name);
+    phase.total = phase.total + ms;
+    phase.count = phase.count + 1;
+  }
+
+  #phase(name: String): Phase {
+    if (let (true, existing) = this.#byName.get(name)) {
+      return existing;
+    }
+    let created = new Phase(name);
+    this.#byName[name] = created;
+    this.#inOrder.push(created);
+    return created;
+  }
+
   getDuration(name: String): f64 {
-    return if (this.#measures.has(name)) { this.#measures[name] } else { 0.0 };
+    if (let (true, phase) = this.#byName.get(name)) {
+      return phase.total;
+    }
+    return 0.0;
+  }
+
+  getCount(name: String): i32 {
+    if (let (true, phase) = this.#byName.get(name)) {
+      return phase.count;
+    }
+    return 0;
+  }
+
+  /** Every phase measured so far, in the order each was first measured. */
+  phases(): Array<Phase> {
+    let all = new Array<Phase>(this.#inOrder.length);
+    for (let phase in this.#inOrder) {
+      all.push(phase);
+    }
+    return all;
   }
 
   clear(): void {
     this.#active.clear();
-    this.#measures.clear();
+    this.#byName.clear();
+    this.#inOrder = new GrowableArray<Phase>();
   }
 }
 
