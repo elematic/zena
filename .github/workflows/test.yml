@@ -90,6 +90,25 @@ jobs:
       - name: Install npm dependencies
         run: nix develop --command npm ci
 
+      # Two runs died mid-suite on 2026-10-04, at 16m28s and 21m24s, reporting
+      # only "The operation was canceled" with no diagnostics, and the same
+      # commit passed on retry. A kernel that kills the runner agent leaves it
+      # no chance to log the reason, so the memory trajectory has to be
+      # recorded as it goes. Wireit runs cpus * 2 scripts at once, 8 on a
+      # 4 CPU / 16 GB runner, and several start a wasm host with a 1.5 GB GC
+      # reservation. Remove the sampler once the cause is known.
       - name: Run test suite
-        run: nix develop --command npm test
+        run: |
+          (
+            while true; do
+              printf 'mem %s ' "$(date -u +%H:%M:%S)"
+              free -m | awk '/^Mem:/ {printf "used=%sMi available=%sMi ", $3, $7}'
+              ps -eo rss=,comm= --sort=-rss | awk 'NR<=3 {printf "%s=%dMi ", $2, $1/1024}'
+              echo
+              sleep 30
+            done
+          ) &
+          sampler=$!
+          trap 'kill "$sampler" 2>/dev/null || true' EXIT
+          nix develop --command npm test
 
