@@ -31,6 +31,22 @@ import { BinaryGenerator } from './binary-generator.zena';
 let runtimeEntry = "wasi/memory.zena";
 
 /**
+ * The bytes this process has already built, by standard library root.
+ *
+ * The module's source is fixed and the compile deterministic, so two
+ * component builds in one process against the same standard library
+ * want the same bytes, and the second compile is work for nothing. It
+ * is not a small amount of work: compiling it costs about 1.2s, which
+ * on a trivial program is more than compiling the program.
+ *
+ * This only helps a process that builds more than one component — a
+ * test runner, or a batch compile. A single `zena build` still pays
+ * once, and the way to fix that is to build these bytes ahead of time
+ * rather than to cache them here.
+ */
+let cachedByStdlibRoot = new Map<String, ByteBuffer>();
+
+/**
  * Compile the runtime memory module; the finished core-module bytes.
  *
  * `stdlibRoot` and `packages` are the same values the enclosing compile
@@ -44,6 +60,9 @@ export let compileComponentRuntimeModule = (
   stdlibRoot: String,
   packages: Map<String, PackageConfig>
 ): ByteBuffer => {
+  if (let (true, cached) = cachedByStdlibRoot.get(stdlibRoot)) {
+    return cached;
+  }
   let options = new CompilerOptions("freestanding", stdlibRoot, packages);
   let compiler = createCompiler(host, options);
   let entryPath = stdlibRoot + "/" + runtimeEntry;
@@ -71,6 +90,8 @@ export let compileComponentRuntimeModule = (
       }
     }
   }
-  return new BinaryGenerator("freestanding", false)
+  let bytes = new BinaryGenerator("freestanding", false)
       .generate(new Program(units, entryUnit));
+  cachedByStdlibRoot[stdlibRoot] = bytes;
+  return bytes;
 };
