@@ -651,6 +651,42 @@ let printFieldDefinition = (field: FieldDefinition): Doc => {
   return concat(parts);
 };
 
+/**
+ * How many leading initializer entries the parser synthesized for `this.`
+ * parameters, and so how many the printer must leave out.
+ *
+ * Each `this.x` parameter becomes a plain parameter plus a `x = x` entry, and
+ * those entries are prepended to any the source wrote. Printing them as well
+ * as the `this.` on the parameter would give the constructor an initializer
+ * list it never had.
+ *
+ * Only a leading run that actually looks synthesized — a field initialized
+ * from an identifier of its own name, for a parameter marked `isThisParam` —
+ * is counted, so an entry the source wrote is never dropped.
+ */
+let synthesizedInitializerCount = (
+    params: Array<Parameter>,
+    inits: GrowableArray<Node>): i32 => {
+  var thisParams = 0;
+  for (let p in params) {
+    if (p.isThisParam) { thisParams += 1; }
+  }
+
+  var counted = 0;
+  while (counted < thisParams && counted < inits.length) {
+    let looksSynthesized = match (inits[counted]) {
+      case FieldInitializer {field, value}: match (value) {
+        case Identifier {name}: name == field.name
+        case _: false
+      }
+      case _: false
+    };
+    if (!looksSynthesized) { break; }
+    counted += 1;
+  }
+  return counted;
+};
+
 let printMethodDefinition = (method: MethodDefinition): Doc => {
   let parts = new Array<Doc>();
   printMemberDecorators(method.decorators, parts);
@@ -695,18 +731,22 @@ let printMethodDefinition = (method: MethodDefinition): Doc => {
     parts.push(printTypeAnnotation(method.returnType as TypeAnnotation));
   }
 
-  // Initializer list
+  // Initializer list, less the entries synthesized for `this.` parameters —
+  // those are printed as part of the parameter.
+  var printedInitializer = false;
   if (method.initializerList != null) {
     let inits = method.initializerList as GrowableArray<Node>;
-    if (inits.length > 0) {
+    let skip = synthesizedInitializerCount(method.params, inits);
+    if (inits.length > skip) {
       parts.push(text(' : '));
       let initDocs = new Array<Doc>();
-      var i = 0;
+      var i = skip;
       while (i < inits.length) {
         initDocs.push(printInitializerEntry(inits[i]));
         i += 1;
       }
       parts.push(join(text(', '), initDocs));
+      printedInitializer = true;
     }
   }
 
@@ -714,7 +754,7 @@ let printMethodDefinition = (method: MethodDefinition): Doc => {
   if (method.superInitializer != null) {
     match (method.superInitializer as Node) {
       case SuperInitializer {args}: {
-        if (method.initializerList != null) {
+        if (printedInitializer) {
           parts.push(text(', '));
         } else {
           parts.push(text(' : '));
@@ -1580,6 +1620,10 @@ let printParams = (params: Array<Parameter>): Doc => {
 
 let printParam = (param: Parameter): Doc => {
   let parts = new Array<Doc>();
+  // A `this.x` parameter takes its type from the field, so it is written
+  // without one. The parser records it as a plain parameter plus a synthesized
+  // initializer entry; `printConstructorInitializers` leaves that entry out.
+  if (param.isThisParam) { parts.push(text('this.')); }
   parts.push(text(param.name.name));
   if (param.optional) { parts.push(text('?')); }
   if (param.typeAnnotation != null) {
