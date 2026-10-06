@@ -46,7 +46,7 @@ export let tests = suite('array element mutability', (): void => {
     let checkMutByte = (isMutable: boolean, expected: i32): void => {
       let emitter = new BinaryEmitter(new ByteBuffer());
       emitter.emitTypeSectionStart(1);
-      emitter.emitArrayType(0, new ValTypeI32(), isMutable, -1);
+      emitter.emitArrayType(0, new ValTypeI32(), isMutable, -1, true);
       let section = emitter.currentSection as ByteBuffer;
       // Byte 0 is the type count; the array type starts at byte 1.
       equal(section.getByte(1), 0x4F);
@@ -59,31 +59,36 @@ export let tests = suite('array element mutability', (): void => {
     checkMutByte(false, 0);
   });
 
-  test('binary emitter declares an immutable reference array open, with its supertype', (ctx: TestContext): void => {
-    // The root of a chain, (array anyref), is open with no supertype:
-    // 0x50 (sub), 0 supertypes.
+  test('binary emitter writes the supertype an immutable reference array declares', (ctx: TestContext): void => {
+    // The root of a chain, (array anyref), has no supertype of its own,
+    // and the arrays below it name it, so it is emitted open: 0x50
+    // (sub), 0 supertypes. Who is open and who is final is decided by
+    // ModuleGenerator (docs/design/struct-finality.md) and arrives as
+    // the last argument; the emitter writes what it is told.
     let root = new BinaryEmitter(new ByteBuffer());
     root.emitTypeSectionStart(1);
-    root.emitArrayType(0, new ValTypeAnyRef(), false, -1);
+    root.emitArrayType(0, new ValTypeAnyRef(), false, -1, false);
     let rootSection = root.currentSection as ByteBuffer;
     equal(rootSection.getByte(1), 0x50);
     equal(rootSection.getByte(2), 0);
     equal(rootSection.getByte(3), 0x5E);
 
-    // A subtype names its supertype: 0x50, 1 supertype, its index.
+    // A subtype names its supertype, and is itself final when it is the
+    // most derived array in the chain: 0x4F, 1 supertype, its index.
     let sub = new BinaryEmitter(new ByteBuffer());
     sub.emitTypeSectionStart(1);
-    sub.emitArrayType(8, new ValTypeAnyRef(), false, 7);
+    sub.emitArrayType(8, new ValTypeAnyRef(), false, 7, true);
     let subSection = sub.currentSection as ByteBuffer;
-    equal(subSection.getByte(1), 0x50);
+    equal(subSection.getByte(1), 0x4F);
     equal(subSection.getByte(2), 1);
     equal(subSection.getByte(3), 7);
     equal(subSection.getByte(4), 0x5E);
 
-    // A mutable reference array stays final: nothing can subtype it.
+    // A mutable reference array declares no supertype and can have
+    // none, so it is always final.
     let mut = new BinaryEmitter(new ByteBuffer());
     mut.emitTypeSectionStart(1);
-    mut.emitArrayType(0, new ValTypeAnyRef(), true, -1);
+    mut.emitArrayType(0, new ValTypeAnyRef(), true, -1, true);
     let mutSection = mut.currentSection as ByteBuffer;
     equal(mutSection.getByte(1), 0x4F);
     equal(mutSection.getByte(2), 0);

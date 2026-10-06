@@ -571,9 +571,12 @@ devirtualization above.
 Landed. An immutable array of references is declared a Wasm subtype of
 its element's supertype's array, up to `(array anyref)` at the top:
 `WasmArray.superArray` carries the supertype, the emitters write
-`(sub $super (array (ref null $Cat)))` instead of `sub final`, layout
+`(sub final $super (array (ref null $Cat)))`, layout
 orders a subtype after its supertype, and type pruning keeps a kept
-array's supertype. So `ImmutableArray<Cat>` widens to
+array's supertype. The `$super` array drops the `final` because this
+array names it — finality is decided by whether anything declares a
+type as a supertype, not by whether the type declares one
+(`docs/design/struct-finality.md`). So `ImmutableArray<Cat>` widens to
 `ImmutableArray<Animal>` and to `ImmutableArray<anyref>` with no copy,
 no cast, and no fat pointer — the checker admits exactly the cases the
 representation and the declared subtyping cover (`immutableElementWidens`):
@@ -590,10 +593,13 @@ section reads:
 ```wat
 (type (;15;) (sub (array anyref)))
 (type (;16;) (sub 15 (array (ref null $Animal))))
-(type (;19;) (sub 16 (array (ref null $Bird))))
-(type (;20;) (sub 16 (array (ref null $Cat))))
-(type (;21;) (sub 15 (array (ref null 19))))   ;; an array of arrays
+(type (;19;) (sub final 16 (array (ref null $Bird))))
+(type (;20;) (sub final 16 (array (ref null $Cat))))
+(type (;21;) (sub final 15 (array (ref null 19))))   ;; an array of arrays
 ```
+
+Types 15 and 16 are the two that other arrays name, so they are the two
+left open.
 
 Sound read-only covariance falls out of the representation rather than
 needing `out` annotations.

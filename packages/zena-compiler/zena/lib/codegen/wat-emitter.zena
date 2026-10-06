@@ -1,7 +1,7 @@
 import { ValTypeVoid, ValTypeFunc, ValTypeStructRef, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeI64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeOptRef, ValTypeAnyRef, ValTypeFuncRef, ValTypeExternRef, ValTypeEqRef, ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { StringBuilder, ByteBuffer } from 'zena:core';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { ValType, isRefValType } from "./wasm.zena";
+import { ValType } from "./wasm.zena";
 import { WasmFunction } from "./wasm-module.zena";
 import { simdName } from '../simd.zena';
 import { wideArithName } from './wasm.zena';
@@ -16,8 +16,9 @@ export final class WatEmitter implements WasmEmitter {
    */
   var sb: StringBuilder;
   var indentDepth: i32 = 1;
-  var currentSuperTypeIndex: i32 = -1;
   var emittedRecGroup: boolean = false;
+  /** Whether the struct being emitted opened a `(sub ...)` clause. */
+  var #wroteSubClause: boolean = false;
   var currentFunctionName: String = "";
   var #outerSb: StringBuilder | null = null;
   var #funcHeadSb: StringBuilder | null = null;
@@ -85,17 +86,30 @@ export final class WatEmitter implements WasmEmitter {
     this.sb.append('))\n');
   }
 
-  emitStructTypeStart(index: i32, name: String | null, superTypeIndex: i32): void {
-    this.currentSuperTypeIndex = superTypeIndex;
+  emitStructTypeStart(index: i32, name: String | null, superTypeIndex: i32,
+      isFinal: boolean): void {
     this.indent();
     if (name != null) {
       this.sb.append('(type $').append(name).append(' (;').append(i32ToString(index)).append(';) ');
     } else {
       this.sb.append('(type (;').append(i32ToString(index)).append(';) ');
     }
-    
-    if (superTypeIndex >= 0) {
-      this.sb.append('(sub ').append(i32ToString(superTypeIndex)).append(' ');
+
+    // A bare `(struct ...)` already means `sub final` with no
+    // supertype, so the clause is written only when it says something
+    // the bare form does not: that the struct is open, or what it
+    // extends. Printing nothing for an OPEN struct was the bug — it
+    // read as final while the binary emitter declared every struct
+    // open (struct-finality.md).
+    this.#wroteSubClause = !isFinal || superTypeIndex >= 0;
+    if (this.#wroteSubClause) {
+      this.sb.append('(sub ');
+      if (isFinal) {
+        this.sb.append('final ');
+      }
+      if (superTypeIndex >= 0) {
+        this.sb.append(i32ToString(superTypeIndex)).append(' ');
+      }
     }
     this.sb.append('(struct');
   }
@@ -115,12 +129,13 @@ export final class WatEmitter implements WasmEmitter {
   }
 
   emitStructTypeEnd(): void {
-    if (this.currentSuperTypeIndex >= 0) {
+    // Closes the `(struct`, the `(sub` if one was opened, and the `(type`.
+    if (this.#wroteSubClause) {
       this.sb.append(')))\n');
     } else {
       this.sb.append('))\n');
     }
-    this.currentSuperTypeIndex = -1;
+    this.#wroteSubClause = false;
   }
   
   emitTypeSectionEnd(): void {}
@@ -691,14 +706,19 @@ export final class WatEmitter implements WasmEmitter {
     this.sb.append('\n');
   }
 
-  emitArrayType(index: i32, elementType: ValType, isMutable: boolean, superTypeIndex: i32): void {
+  emitArrayType(index: i32, elementType: ValType, isMutable: boolean,
+      superTypeIndex: i32, isFinal: boolean): void {
     this.indent();
     this.sb.append('(type (;').append(i32ToString(index)).append(';) ');
-    // Open (`sub`) for an immutable array of references, like the
-    // binary emitter; see WasmArray.superArray.
-    let open = !isMutable && isRefValType(elementType);
-    if (open) {
+    // As for the struct form above: the bare `(array ...)` is already
+    // `sub final` with no supertype, so an array of values prints
+    // bare.
+    let wroteSubClause = !isFinal || superTypeIndex >= 0;
+    if (wroteSubClause) {
       this.sb.append('(sub ');
+      if (isFinal) {
+        this.sb.append('final ');
+      }
       if (superTypeIndex >= 0) {
         this.sb.append(i32ToString(superTypeIndex)).append(' ');
       }
@@ -712,7 +732,7 @@ export final class WatEmitter implements WasmEmitter {
       this.sb.append(')');
     }
     this.sb.append(')');
-    if (open) {
+    if (wroteSubClause) {
       this.sb.append(')');
     }
     this.sb.append(')\n');
